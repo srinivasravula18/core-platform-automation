@@ -38,6 +38,7 @@ input {
 
 .topbar,
 .control-panel,
+.scenario-panel,
 .standards-panel,
 .table-section,
 .log-panel {
@@ -139,6 +140,35 @@ button.danger:hover {
   font-size: 13px;
 }
 
+.scenario-panel {
+  margin-top: 16px;
+  padding: 16px 20px;
+}
+
+.scenario-panel .section-header {
+  align-items: center;
+}
+
+.scenario-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px 14px;
+  margin-top: 14px;
+}
+
+.scenario-grid label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 38px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--text);
+  padding: 8px 10px;
+  font-size: 13px;
+}
+
 .run-buttons {
   display: flex;
   flex-wrap: wrap;
@@ -155,7 +185,7 @@ button.danger:hover {
 
 .status-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 12px;
   margin-top: 16px;
 }
@@ -255,9 +285,27 @@ button.danger:hover {
   padding: 9px 12px;
 }
 
+#inventory-filter {
+  width: min(320px, 100%);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 9px 12px;
+}
+
+.inventory-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .table-wrap {
   overflow: auto;
   max-height: 58vh;
+}
+
+.inventory-wrap {
+  max-height: 46vh;
 }
 
 .table-wrap.compact {
@@ -268,6 +316,10 @@ table {
   width: 100%;
   border-collapse: collapse;
   min-width: 1900px;
+}
+
+.inventory-table {
+  min-width: 1500px;
 }
 
 th,
@@ -323,6 +375,7 @@ td:nth-child(4) {
   .topbar,
   .section-header,
   .control-panel,
+  .scenario-grid,
   .standards-panel {
     align-items: stretch;
     grid-template-columns: 1fr;

@@ -18,6 +18,8 @@ const runState = {
   running: false,
   command: "",
   surface: "",
+  scenario: "",
+  selectedTestCount: 0,
   reset: false,
   headed: false,
   stopRequested: false,
@@ -27,6 +29,8 @@ const runState = {
   logs: []
 };
 let currentProcess = null;
+let cachedInventory = null;
+let cachedInventoryAt = 0;
 
 const mimeTypes = new Map([
   [".html", "text/html; charset=utf-8"],
@@ -97,7 +101,7 @@ const readRequestJson = async (request) =>
     let body = "";
     request.on("data", (chunk) => {
       body += chunk;
-      if (body.length > 20_000) {
+      if (body.length > 200_000) {
         reject(new Error("Request body too large."));
         request.destroy();
       }
@@ -129,6 +133,91 @@ const readResults = () => {
   return JSON.parse(readFileSync(resultsJsonPath, "utf8"));
 };
 
+const escapeRegex = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+const parseMeta = (title, key) => {
+  const match = new RegExp(`\\[${key}:\\s*([^\\]]+)\\]`, "i").exec(title);
+  return match ? match[1].trim() : "";
+};
+
+const inferSurface = (spec, title) => {
+  const surface = parseMeta(title, "surface");
+  if (surface) return surface;
+  if (spec.includes("admin")) return "Admin";
+  if (spec.includes("keystone")) return "Keystone";
+  if (spec.includes("api")) return "API";
+  return "Application";
+};
+
+const cleanTitle = (title) => title.replace(/\s*\[[^\]]+\]/g, "").trim();
+
+const readInventory = () => {
+  const now = Date.now();
+  if (cachedInventory && now - cachedInventoryAt < 5 * 60 * 1000) {
+    return cachedInventory;
+  }
+
+  const config = "tests/e2e/playwright.list-view-regression.config.ts";
+  const result = spawnSync("npx.cmd", ["playwright", "test", "--list", "-c", config], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    timeout: 120_000,
+    windowsHide: true
+  });
+  const output = `${result.stdout || ""}\n${result.stderr || ""}`;
+  const rows = [];
+  for (const line of output.split(/\r?\n/)) {
+    const marker = " › ";
+    if (!line.includes(marker) || !/\.(spec|test)\.ts:\d+:\d+/.test(line)) continue;
+    const trimmed = line.trim();
+    const location = trimmed.split(marker)[0].trim();
+    const parts = trimmed.split(marker);
+    const title = parts[parts.length - 1].trim();
+    const spec = location.replace(/:\d+:\d+$/, "");
+    const surface = inferSurface(spec, title);
+    const feature = parseMeta(title, "feature") || "List View";
+    rows.push({
+      id: `CASE_${String(rows.length + 1).padStart(3, "0")}`,
+      location,
+      spec,
+      surface,
+      feature,
+      title,
+      displayTitle: cleanTitle(title),
+      precondition: parseMeta(title, "precondition"),
+      input: parseMeta(title, "input"),
+      expected: parseMeta(title, "expected"),
+      proof: parseMeta(title, "proof")
+    });
+  }
+  if (rows.length === 0 && existsSync(resultsJsonPath)) {
+    const previous = readResults();
+    for (const row of previous.rows ?? []) {
+      rows.push({
+        id: row.id,
+        location: "",
+        spec: "",
+        surface: row.surface || "",
+        feature: row.featureArea || "",
+        title: row.testCaseTitle || "",
+        displayTitle: row.testCaseTitle || "",
+        precondition: row.precondition || "",
+        input: row.inputAction || "",
+        expected: row.expectedResult || "",
+        proof: row.proof || ""
+      });
+    }
+  }
+  cachedInventory = {
+    updatedAt: new Date().toISOString(),
+    total: rows.length,
+    rows,
+    error: result.error ? result.error.message : result.status === 0 ? "" : output.slice(-1000)
+  };
+  cachedInventoryAt = now;
+  return cachedInventory;
+};
+
 const runListViewSuite = async (request, response) => {
   if (runState.running || currentProcess) {
     sendJson(response, 409, { error: "A list-view test run is already in progress." });
@@ -151,6 +240,12 @@ const runListViewSuite = async (request, response) => {
 
   const reset = Boolean(body.reset);
   const headed = Boolean(body.headed);
+  const selectedTests = Array.isArray(body.tests)
+    ? body.tests.map((item) => String(item || "").trim()).filter(Boolean)
+    : [];
+  const scenario = selectedTests.length > 0
+    ? selectedTests.map(escapeRegex).join("|")
+    : String(body.scenario || "").trim();
   const args = [
     "-ExecutionPolicy",
     "Bypass",
@@ -159,12 +254,15 @@ const runListViewSuite = async (request, response) => {
     "-Surface",
     surface
   ];
+  if (scenario) args.push("-Scenario", scenario);
   if (!reset) args.push("-SkipReset");
   if (headed) args.push("-Headed");
 
   runState.running = true;
   runState.command = `powershell ${args.join(" ")}`;
   runState.surface = surface;
+  runState.scenario = scenario;
+  runState.selectedTestCount = selectedTests.length;
   runState.reset = reset;
   runState.headed = headed;
   runState.stopRequested = false;
@@ -172,7 +270,11 @@ const runListViewSuite = async (request, response) => {
   runState.finishedAt = null;
   runState.exitCode = null;
   runState.logs = [];
-  pushLog(`Starting ${surface} list-view regression run...`);
+  pushLog(
+    `Starting ${surface} list-view regression run${
+      selectedTests.length > 0 ? ` for ${selectedTests.length} selected test case(s)` : scenario ? ` with scenario filter ${scenario}` : ""
+    }...`
+  );
 
   currentProcess = spawn("powershell", args, {
     cwd: repoRoot,
@@ -244,6 +346,19 @@ const server = createServer(async (request, response) => {
       sendJson(response, 200, readResults());
     } catch (error) {
       sendJson(response, 500, { error: error instanceof Error ? error.message : "Failed to read results." });
+    }
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/inventory") {
+    try {
+      if (url.searchParams.get("refresh") === "1") {
+        cachedInventory = null;
+        cachedInventoryAt = 0;
+      }
+      sendJson(response, 200, readInventory());
+    } catch (error) {
+      sendJson(response, 500, { error: error instanceof Error ? error.message : "Failed to read inventory." });
     }
     return;
   }

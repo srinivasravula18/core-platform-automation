@@ -221,6 +221,12 @@ export const ensureRecordExistsViaUiContext = async (page: Page, request: APIReq
   const rows = page.locator(".object-home table tbody tr");
   if ((await rows.count()) > 0) return;
 
+  await createDisposableRecordViaUiContext(page, request);
+  await clickRefresh(page.locator(".object-home").first());
+  await expect(page.locator(".object-home table tbody tr").first()).toBeVisible();
+};
+
+export const createDisposableRecordViaUiContext = async (page: Page, request: APIRequestContext) => {
   const token = await apiLogin(request);
   const { appId, objectApiName, listViewId } = await activeListViewContext(page);
   if (!appId || !objectApiName) {
@@ -237,10 +243,17 @@ export const ensureRecordExistsViaUiContext = async (page: Page, request: APIReq
   });
   expect(describeRes.ok(), await describeRes.text()).toBeTruthy();
   const describe = (await describeRes.json()) as {
+    object?: { key_fields?: string[] };
     fields?: Array<{ api_name: string; type?: string; required?: boolean | null; read_only?: boolean | null }>;
   };
-  const payload: Record<string, unknown> = { name: `LV Regression ${Date.now()}` };
+  const label = `LV Regression ${Date.now()}`;
+  const payload: Record<string, unknown> = { name: label };
   const reserved = new Set(["id", "created_by", "created_at", "modified_by", "modified_at"]);
+  const keyField = (describe.object?.key_fields ?? []).find((field) => field && !reserved.has(field));
+  if (keyField && keyField !== "name") {
+    payload[keyField] = label;
+  }
+  let assignedDisplayField = Boolean(keyField);
   for (const field of describe.fields ?? []) {
     if (reserved.has(field.api_name) || field.read_only || payload[field.api_name] !== undefined) continue;
     if (!field.required) continue;
@@ -254,7 +267,8 @@ export const ensureRecordExistsViaUiContext = async (page: Page, request: APIReq
     } else if (type.includes("date") || type.includes("time")) {
       payload[field.api_name] = new Date().toISOString();
     } else {
-      payload[field.api_name] = `LV ${field.api_name}`;
+      payload[field.api_name] = assignedDisplayField ? `LV ${field.api_name}` : label;
+      assignedDisplayField = true;
     }
   }
   const createRes = await request.post(`/api/apps/${appId}/objects/${objectApiName}/records`, {
@@ -262,6 +276,25 @@ export const ensureRecordExistsViaUiContext = async (page: Page, request: APIReq
     data: payload
   });
   expect(createRes.ok(), await createRes.text()).toBeTruthy();
-  await clickRefresh(page.locator(".object-home").first());
-  await expect(page.locator(".object-home table tbody tr").first()).toBeVisible();
+  const created = (await createRes.json().catch(() => ({}))) as { id?: string; record?: { id?: string } };
+  return {
+    appId,
+    objectApiName,
+    label,
+    recordId: created.id ?? created.record?.id ?? ""
+  };
+};
+
+export const openKeystoneRecycleBin = async (page: Page) => {
+  const userMenu = page.locator(".user-menu-trigger").first();
+  if (await userMenu.isVisible().catch(() => false)) {
+    await userMenu.click();
+  } else {
+    await page.locator("header button").last().click();
+  }
+  await page.getByRole("button", { name: /^recycle bin$/i }).click();
+  const recycle = page.locator(".object-home, .recycle-bin-panel, .shockwave-recycle-bin-panel").first();
+  await expect(recycle).toBeVisible();
+  await expectListRegionReady(recycle);
+  return recycle;
 };

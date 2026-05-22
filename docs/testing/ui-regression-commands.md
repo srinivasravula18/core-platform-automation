@@ -144,6 +144,7 @@ http://127.0.0.1:5372/
 ```
 
 From the dashboard you can run Admin, Keystone, API, or Full list-view suites, watch live output, open reports, review test cases under execution, and use `Stop Run` to terminate the current test pipeline.
+Use the scenario checkboxes when you want a smaller run, such as settings only, search only, lifecycle/recycle-bin only, multi-step workflows only, or API/security only. Use the Selectable Test Inventory to tick exact test cases and run only those cases.
 
 Terminal commands for each test suite:
 
@@ -177,6 +178,12 @@ Run only Admin list-view regression with the browser visible:
 npm run test:ui:list-view:admin:headed
 ```
 
+Run only Admin disposable app lifecycle and recycle-bin purge coverage:
+
+```powershell
+npm run test:ui:list-view:admin:lifecycle
+```
+
 Run only Keystone/Shockwave list-view regression:
 
 ```powershell
@@ -187,6 +194,36 @@ Run only Keystone/Shockwave list-view regression with the browser visible:
 
 ```powershell
 npm run test:ui:list-view:keystone:headed
+```
+
+Run only Keystone disposable record lifecycle and recycle-bin coverage:
+
+```powershell
+npm run test:ui:list-view:keystone:lifecycle
+```
+
+Run settings-focused coverage across Admin and Keystone:
+
+```powershell
+npm run test:ui:list-view:settings
+```
+
+Run search-focused coverage across Admin and Keystone:
+
+```powershell
+npm run test:ui:list-view:search
+```
+
+Run multi-step workflow coverage:
+
+```powershell
+npm run test:ui:list-view:workflow
+```
+
+Run a custom scenario filter:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tests\scripts\run-list-view-regression.ps1 -Surface all -SkipReset -Scenario "Search|Settings modal|@lifecycle"
 ```
 
 Run only list-view API contract regression:

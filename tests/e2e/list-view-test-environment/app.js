@@ -1,14 +1,24 @@
 const stateEls = {
   runStatus: document.querySelector("#run-status"),
   runSurface: document.querySelector("#run-surface"),
+  runScenario: document.querySelector("#run-scenario"),
   startedAt: document.querySelector("#started-at"),
   exitCode: document.querySelector("#exit-code"),
   logs: document.querySelector("#logs"),
   casesBody: document.querySelector("#cases-body"),
+  inventoryBody: document.querySelector("#inventory-body"),
+  inventoryUpdatedAt: document.querySelector("#inventory-updated-at"),
+  inventoryFilter: document.querySelector("#inventory-filter"),
+  refreshInventory: document.querySelector("#refresh-inventory"),
+  selectVisibleTests: document.querySelector("#select-visible-tests"),
+  clearSelectedTests: document.querySelector("#clear-selected-tests"),
+  runSelectedTests: document.querySelector("#run-selected-tests"),
+  selectedTestCount: document.querySelector("#selected-test-count"),
   bugsBody: document.querySelector("#bugs-body"),
   stopRuns: document.querySelectorAll("[data-stop-run]"),
   updatedAt: document.querySelector("#updated-at"),
   filter: document.querySelector("#case-filter"),
+  clearScenarios: document.querySelector("#clear-scenarios"),
   counts: {
     PENDING: document.querySelector("#count-pending"),
     RUNNING: document.querySelector("#count-running"),
@@ -19,6 +29,8 @@ const stateEls = {
 };
 
 let latestRows = [];
+let inventoryRows = [];
+let selectedTests = new Set();
 
 const formatDate = (value) => {
   if (!value) return "-";
@@ -50,6 +62,68 @@ const renderEvidence = (row) => {
         .join("<br>")
     : "";
   return [notes, screenshots].filter(Boolean).join("<br>");
+};
+
+const selectedInventoryRows = () => inventoryRows.filter((row) => selectedTests.has(row.title));
+
+const updateSelectedCount = () => {
+  stateEls.selectedTestCount.textContent = String(selectedTests.size);
+  stateEls.runSelectedTests.disabled = selectedTests.size === 0;
+};
+
+const filteredInventoryRows = () => {
+  const filter = stateEls.inventoryFilter.value.trim().toLowerCase();
+  if (!filter) return inventoryRows;
+  return inventoryRows.filter((row) =>
+    [
+      row.id,
+      row.surface,
+      row.feature,
+      row.displayTitle,
+      row.precondition,
+      row.input,
+      row.expected,
+      row.proof
+    ]
+      .join(" ")
+      .toLowerCase()
+      .includes(filter)
+  );
+};
+
+const renderInventory = () => {
+  const rows = filteredInventoryRows();
+  updateSelectedCount();
+  if (rows.length === 0) {
+    stateEls.inventoryBody.innerHTML = '<tr><td colspan="9" class="empty">No matching test cases.</td></tr>';
+    return;
+  }
+  stateEls.inventoryBody.innerHTML = rows
+    .map((row) => {
+      const checked = selectedTests.has(row.title) ? "checked" : "";
+      return `<tr>
+        <td><input type="checkbox" class="test-select" data-test-title="${escapeHtml(row.title)}" ${checked} /></td>
+        <td>${escapeHtml(row.id)}</td>
+        <td>${escapeHtml(row.surface)}</td>
+        <td>${escapeHtml(row.feature)}</td>
+        <td>${escapeHtml(row.displayTitle)}</td>
+        <td>${escapeHtml(row.precondition)}</td>
+        <td>${escapeHtml(row.input)}</td>
+        <td>${escapeHtml(row.expected)}</td>
+        <td>${escapeHtml(row.proof)}</td>
+      </tr>`;
+    })
+    .join("");
+  document.querySelectorAll(".test-select").forEach((checkbox) => {
+    checkbox.addEventListener("change", () => {
+      if (checkbox.checked) {
+        selectedTests.add(checkbox.dataset.testTitle);
+      } else {
+        selectedTests.delete(checkbox.dataset.testTitle);
+      }
+      updateSelectedCount();
+    });
+  });
 };
 
 const renderRows = () => {
@@ -128,6 +202,7 @@ const refreshStatus = async () => {
   const status = await response.json();
   stateEls.runStatus.textContent = status.running ? "Running" : "Idle";
   stateEls.runSurface.textContent = status.surface || "-";
+  stateEls.runScenario.textContent = status.scenario || "-";
   stateEls.startedAt.textContent = formatDate(status.startedAt);
   stateEls.exitCode.textContent = status.exitCode === null || status.exitCode === undefined ? "-" : String(status.exitCode);
   stateEls.logs.textContent = Array.isArray(status.logs) && status.logs.length > 0 ? status.logs.join("\n") : "No run started.";
@@ -139,6 +214,16 @@ const refreshStatus = async () => {
     button.disabled = !status.running || Boolean(status.stopRequested);
     button.textContent = status.stopRequested ? "Stopping..." : "Stop Run";
   });
+  stateEls.runSelectedTests.disabled = Boolean(status.running) || selectedTests.size === 0;
+};
+
+const inferSurfaceForSelected = () => {
+  const surfaces = new Set(selectedInventoryRows().map((row) => String(row.surface || "").toLowerCase()));
+  if (surfaces.size === 1) {
+    const [surface] = Array.from(surfaces);
+    if (["admin", "keystone", "api"].includes(surface)) return surface;
+  }
+  return "all";
 };
 
 const refreshResults = async () => {
@@ -160,7 +245,11 @@ const startRun = async (surface) => {
   const payload = {
     surface,
     reset: document.querySelector("#reset-db").checked,
-    headed: document.querySelector("#headed").checked
+    headed: document.querySelector("#headed").checked,
+    scenario: Array.from(document.querySelectorAll("input[name='scenario']:checked"))
+      .map((input) => input.value)
+      .filter(Boolean)
+      .join("|")
   };
   const response = await fetch("/api/run", {
     method: "POST",
@@ -174,6 +263,48 @@ const startRun = async (surface) => {
   }
   await refreshStatus();
   await refreshResults();
+};
+
+const startSelectedRun = async () => {
+  if (selectedTests.size === 0) {
+    alert("Select at least one test case.");
+    return;
+  }
+  const payload = {
+    surface: inferSurfaceForSelected(),
+    reset: document.querySelector("#reset-db").checked,
+    headed: document.querySelector("#headed").checked,
+    tests: Array.from(selectedTests)
+  };
+  const response = await fetch("/api/run", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(payload)
+  });
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ error: "Unable to start selected run." }));
+    alert(error.error || "Unable to start selected run.");
+    return;
+  }
+  await refreshStatus();
+  await refreshResults();
+};
+
+const loadInventory = async (refresh = false) => {
+  stateEls.inventoryUpdatedAt.textContent = "Loading test cases.";
+  const response = await fetch(`/api/inventory${refresh ? "?refresh=1" : ""}`, { cache: "no-store" });
+  const inventory = await response.json();
+  if (!response.ok) {
+    stateEls.inventoryBody.innerHTML = `<tr><td colspan="9" class="empty">${escapeHtml(inventory.error || "Unable to load inventory.")}</td></tr>`;
+    return;
+  }
+  inventoryRows = Array.isArray(inventory.rows) ? inventory.rows : [];
+  selectedTests = new Set(Array.from(selectedTests).filter((title) => inventoryRows.some((row) => row.title === title)));
+  stateEls.inventoryUpdatedAt.textContent = `Loaded ${inventoryRows.length} test cases${inventory.updatedAt ? ` at ${formatDate(inventory.updatedAt)}` : ""}.`;
+  if (inventory.error) {
+    stateEls.inventoryUpdatedAt.textContent += " Inventory warning: see live output if a case is missing.";
+  }
+  renderInventory();
 };
 
 const stopRun = async () => {
@@ -195,8 +326,24 @@ document.querySelectorAll("button[data-surface]").forEach((button) => {
 });
 
 stateEls.filter.addEventListener("input", renderRows);
+stateEls.inventoryFilter.addEventListener("input", renderInventory);
+stateEls.refreshInventory.addEventListener("click", () => loadInventory(true));
+stateEls.selectVisibleTests.addEventListener("click", () => {
+  filteredInventoryRows().forEach((row) => selectedTests.add(row.title));
+  renderInventory();
+});
+stateEls.clearSelectedTests.addEventListener("click", () => {
+  selectedTests.clear();
+  renderInventory();
+});
+stateEls.runSelectedTests.addEventListener("click", startSelectedRun);
 stateEls.stopRuns.forEach((button) => {
   button.addEventListener("click", stopRun);
+});
+stateEls.clearScenarios.addEventListener("click", () => {
+  document.querySelectorAll("input[name='scenario']").forEach((input) => {
+    input.checked = false;
+  });
 });
 
 const poll = async () => {
@@ -205,5 +352,8 @@ const poll = async () => {
   });
 };
 
+loadInventory().catch((error) => {
+  stateEls.inventoryBody.innerHTML = `<tr><td colspan="9" class="empty">Inventory load failed: ${escapeHtml(error.message)}</td></tr>`;
+});
 poll();
 setInterval(poll, 2500);

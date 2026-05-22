@@ -14,8 +14,13 @@
     "test:ui:list-view:full:no-reset": "powershell -ExecutionPolicy Bypass -File .\\tests\\scripts\\run-list-view-regression.ps1 -SkipReset",
     "test:ui:list-view:admin": "powershell -ExecutionPolicy Bypass -File .\\tests\\scripts\\run-list-view-regression.ps1 -Surface admin -SkipReset",
     "test:ui:list-view:admin:headed": "powershell -ExecutionPolicy Bypass -File .\\tests\\scripts\\run-list-view-regression.ps1 -Surface admin -SkipReset -Headed",
+    "test:ui:list-view:admin:lifecycle": "powershell -ExecutionPolicy Bypass -File .\\tests\\scripts\\run-list-view-regression.ps1 -Surface admin -SkipReset -Scenario \"@lifecycle|@recycle|Bulk delete\"",
     "test:ui:list-view:keystone": "powershell -ExecutionPolicy Bypass -File .\\tests\\scripts\\run-list-view-regression.ps1 -Surface keystone -SkipReset",
     "test:ui:list-view:keystone:headed": "powershell -ExecutionPolicy Bypass -File .\\tests\\scripts\\run-list-view-regression.ps1 -Surface keystone -SkipReset -Headed",
+    "test:ui:list-view:keystone:lifecycle": "powershell -ExecutionPolicy Bypass -File .\\tests\\scripts\\run-list-view-regression.ps1 -Surface keystone -SkipReset -Scenario \"@lifecycle|@recycle|Bulk delete\"",
+    "test:ui:list-view:workflow": "powershell -ExecutionPolicy Bypass -File .\\tests\\scripts\\run-list-view-regression.ps1 -Surface all -SkipReset -Scenario \"@workflow\"",
+    "test:ui:list-view:settings": "powershell -ExecutionPolicy Bypass -File .\\tests\\scripts\\run-list-view-regression.ps1 -Surface all -SkipReset -Scenario \"Settings modal|Filters|Columns|Sharing|Preferences|Hierarchy\"",
+    "test:ui:list-view:search": "powershell -ExecutionPolicy Bypass -File .\\tests\\scripts\\run-list-view-regression.ps1 -Surface all -SkipReset -Scenario \"Search|Search navigation|Search empty state\"",
     "test:ui:list-view:api": "powershell -ExecutionPolicy Bypass -File .\\tests\\scripts\\run-list-view-regression.ps1 -Surface api -SkipReset",
     "test:ui:list-view:list": "npx playwright test --list -c tests/e2e/playwright.list-view-regression.config.ts",
     "stop:all": "powershell -ExecutionPolicy Bypass -File .\\tests\\scripts\\stop-all.ps1"

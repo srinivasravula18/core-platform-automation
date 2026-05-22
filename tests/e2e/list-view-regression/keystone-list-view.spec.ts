@@ -5,10 +5,12 @@ import {
   attachEvidence,
   clickRefresh,
   closeModal,
+  createDisposableRecordViaUiContext,
   ensureRecordExistsViaUiContext,
   ensureTableMode,
   hasCredentials,
   loginToKeystone,
+  openKeystoneRecycleBin,
   openListViewSettings,
   searchWithinListView,
   selectKeystoneAppAndTab,
@@ -37,6 +39,12 @@ test.describe("Keystone list-view regression", () => {
   test.beforeEach(async ({ page }) => {
     test.skip(!hasCredentials(), "Keystone credentials are not configured.");
     await loginToKeystone(page);
+  });
+
+  test.afterEach(async ({ page }, testInfo) => {
+    if (testInfo.status !== "skipped") {
+      await attachEvidence(page, testInfo, "keystone-final-evidence").catch(() => null);
+    }
   });
 
   for (const target of keystoneTargets) {
@@ -457,5 +465,140 @@ test.describe("Keystone list-view regression", () => {
     }
     await expect(page.locator(".error, [role='alert'], :text-matches('error|fail|network|could not', 'i')").first()).toBeVisible();
     await page.unroute("**/api/apps/*/objects/*/records/*");
+  });
+
+  test("Keystone disposable record lifecycle deletes verifies recycle bin and opens purge confirmation @lifecycle @recycle [surface: Keystone] [feature: Lifecycle] [precondition: ALLOW_DATA_WRITE=true and selected object supports records] [input: create disposable record, search it, delete selected row, open Recycle Bin, search deleted record, open purge confirmation and cancel] [expected: only disposable automation record is deleted and the Recycle Bin purge confirmation is reachable] [proof: Keystone list-view destructive flow is covered without touching seeded records]", async ({
+    page,
+    request
+  }, testInfo) => {
+    test.skip(!allowWrites(), "Write-enabled disposable lifecycle coverage is disabled.");
+    const { objectHome } = await selectKeystoneAppAndTab(page, ["CRM", "Revenue Hub", "Core Platform"], ["Account"]);
+    const disposable = await createDisposableRecordViaUiContext(page, request);
+    await clickRefresh(objectHome);
+    const search = await searchWithinListView(objectHome, disposable.label);
+    await expect(objectHome.getByText(/loading records/i).first()).toBeHidden({ timeout: 15_000 }).catch(() => null);
+    const row = objectHome.locator("table tbody tr").filter({ hasText: disposable.label }).first();
+    await expect(row).toBeVisible({ timeout: 15_000 });
+    await attachEvidence(page, testInfo, "keystone-record-lifecycle-created-search");
+
+    const checkbox = row.locator("input[type='checkbox']").first();
+    test.skip(!(await checkbox.isVisible().catch(() => false)), "Current object list view does not expose row selection.");
+    await checkbox.check({ force: true });
+    await objectHome.getByRole("button", { name: /^delete$/i }).first().click();
+    await expect(page.getByRole("heading", { name: /confirm delete/i })).toBeVisible();
+    await attachEvidence(page, testInfo, "keystone-record-lifecycle-delete-confirm");
+    await page.getByRole("button", { name: /^delete$/i }).last().click();
+    await expect(page.getByText(/record deleted|records deleted|deleted successfully/i).first()).toBeVisible({ timeout: 15_000 });
+
+    const recycle = await openKeystoneRecycleBin(page);
+    const recycleSearch = await searchWithinListView(recycle, disposable.label);
+    const recycleRow = recycle.locator("table tbody tr").filter({ hasText: disposable.label }).first();
+    await expect(recycleRow).toBeVisible({ timeout: 15_000 });
+    await attachEvidence(page, testInfo, "keystone-record-lifecycle-recycle-entry");
+    const purge = recycleRow.getByRole("button", { name: /^purge$/i }).first();
+    await expect(purge).toBeVisible();
+    await purge.click();
+    await expect(page.getByRole("heading", { name: /confirm purge/i })).toBeVisible();
+    await attachEvidence(page, testInfo, "keystone-record-lifecycle-purge-confirm");
+    await page.getByRole("button", { name: /^cancel$/i }).click();
+    await expect(page.getByRole("heading", { name: /confirm purge/i })).toBeHidden();
+    await recycleSearch.fill("");
+    await search.fill("");
+  });
+
+  test("Keystone Account workflow opens app tab searches row opens record returns and refreshes list @workflow [surface: Keystone] [feature: Record workflow] [precondition: CRM Account list view is available] [input: open CRM Account, ensure a row, search by visible token, open row, verify record workspace, return to list and refresh] [expected: search and record navigation remain connected without losing list context] [proof: Keystone list-view to record workflow is covered as one journey]", async ({
+    page,
+    request
+  }, testInfo) => {
+    const { objectHome } = await selectKeystoneAppAndTab(page, ["CRM", "Revenue Hub", "Core Platform"], ["Account"]);
+    await ensureRecordExistsViaUiContext(page, request);
+    await ensureTableMode(page);
+    const firstRow = objectHome.locator("table tbody tr").first();
+    await expect(firstRow).toBeVisible();
+    const rowText = ((await firstRow.textContent()) ?? "").replace(/\s+/g, " ").trim();
+    const token = rowText.match(/[A-Za-z0-9][A-Za-z0-9_-]{2,}/)?.[0] ?? "Account";
+    const search = await searchWithinListView(objectHome, token);
+    await expect(objectHome.locator("table tbody tr").filter({ hasText: new RegExp(escapeRegex(token), "i") }).first()).toBeVisible();
+    await attachEvidence(page, testInfo, "keystone-account-workflow-search");
+
+    await objectHome.locator("table tbody tr").first().click();
+    await expect(page.locator(".record-tabs, .record-panel, .object-home").first()).toBeVisible();
+    await attachEvidence(page, testInfo, "keystone-account-workflow-record-open");
+    await search.fill("");
+    await clickRefresh(objectHome);
+  });
+
+  test("Keystone list settings workflow validates filters edits columns switches sharing preferences and closes @workflow [surface: Keystone] [feature: Settings workflow] [precondition: Keystone object list view is open] [input: open settings, validate empty filter, edit selected column label, inspect sharing and preferences, close settings] [expected: settings panels work together and return to a usable object list] [proof: Keystone settings workflow is covered as one connected regression case]", async ({
+    page
+  }, testInfo) => {
+    const { objectHome } = await selectKeystoneAppAndTab(page, ["CRM", "Revenue Hub", "Core Platform"], ["Account"]);
+    await openListViewSettings(page, objectHome);
+    await attachEvidence(page, testInfo, "keystone-settings-workflow-open");
+
+    await page.getByRole("button", { name: /^Filters$/i }).click();
+    await page.getByRole("button", { name: /add filter/i }).click();
+    await page.getByRole("button", { name: /save filters/i }).click();
+    await expect(page.locator(".filter-error, [role='alert']").first()).toBeVisible();
+
+    await page.getByRole("button", { name: /^Columns$/i }).click();
+    await page.getByRole("button", { name: /selected columns/i }).click();
+    const labelInput = page.locator(".column-editor .column-label").first();
+    await expect(labelInput).toBeVisible();
+    await labelInput.fill("LV Workflow Label");
+    await expect(labelInput).toHaveValue("LV Workflow Label");
+    await attachEvidence(page, testInfo, "keystone-settings-workflow-columns");
+
+    await page.getByRole("button", { name: /^Sharing$/i }).click();
+    const sharing = page.getByLabel(/sharing scope/i);
+    await expect(sharing).toBeVisible();
+    await sharing.selectOption("specific");
+    await expect(page.locator("label").filter({ hasText: /^roles$/i })).toBeVisible();
+
+    await page.getByRole("button", { name: /^Preferences$/i }).click();
+    await expect(page.getByRole("button", { name: /pin|unpin/i }).first()).toBeVisible();
+    await attachEvidence(page, testInfo, "keystone-settings-workflow-preferences");
+    await closeModal(page);
+    await expectListRegionReady(objectHome);
+  });
+
+  test("Keystone table operations workflow sorts resizes fits switches view modes and returns to table @workflow [surface: Keystone] [feature: Table operations workflow] [precondition: Keystone object list view is open in table mode] [input: sort first header, resize first column, fit columns, switch Kanban Chart and back to Table] [expected: table operations and view mode transitions complete without breaking the list] [proof: Keystone list-view table operations are covered as one journey]", async ({
+    page,
+    request
+  }, testInfo) => {
+    const { objectHome } = await selectKeystoneAppAndTab(page, ["CRM", "Revenue Hub", "Core Platform"], ["Account"]);
+    await ensureRecordExistsViaUiContext(page, request);
+    await ensureTableMode(page);
+    const sortableHeader = objectHome.locator("button.th-button").first();
+    await expect(sortableHeader).toBeVisible();
+    await sortableHeader.click();
+    await expect(sortableHeader.locator(".sort-indicator")).toBeVisible();
+
+    const resizeHandle = objectHome.locator(".resize-handle").first();
+    if (await resizeHandle.isVisible().catch(() => false)) {
+      const headerCell = resizeHandle.locator("xpath=ancestor::th[1]");
+      const beforeBox = await headerCell.boundingBox();
+      if (beforeBox) {
+        await resizeHandle.hover();
+        await page.mouse.down();
+        await page.mouse.move(beforeBox.x + beforeBox.width + 40, beforeBox.y + beforeBox.height / 2);
+        await page.mouse.up();
+      }
+    }
+    const fit = objectHome.getByRole("button", { name: /fit columns/i }).first();
+    if (await fit.isEnabled().catch(() => false)) {
+      await fit.click();
+    }
+    await attachEvidence(page, testInfo, "keystone-table-workflow-resize-fit");
+
+    const viewMenuButton = page.getByRole("button", { name: /select view mode/i }).first();
+    await viewMenuButton.click();
+    await page.getByRole("button", { name: /^Kanban$/ }).click();
+    await expect(page.locator("#kanban-group")).toBeVisible();
+    await viewMenuButton.click();
+    await page.getByRole("button", { name: /^Chart$/ }).click();
+    await expect(page.locator("#chart-group")).toBeVisible();
+    await viewMenuButton.click();
+    await page.getByRole("button", { name: /^Table$/ }).click();
+    await expect(objectHome.getByRole("table").first()).toBeVisible();
   });
 });

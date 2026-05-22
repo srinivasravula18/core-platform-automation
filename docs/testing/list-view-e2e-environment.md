@@ -94,6 +94,8 @@ Use `Stop Run` to terminate the currently running Playwright pipeline and child 
 The dashboard also includes:
 
 - Run status cards.
+- Manual scenario selection for shell/toolbar, search, settings, resize/fit, row navigation, lifecycle/recycle bin, multi-step workflows, exports, and API/security.
+- Selectable test inventory so a tester can tick one or more exact test cases and run only those cases.
 - Pending/running/pass/fail/skip counts.
 - Testing level reference for BVT, Sanity, and Regression.
 - Full test-case inventory.
@@ -127,6 +129,12 @@ Run Admin list-view tests with a visible browser:
 npm run test:ui:list-view:admin:headed
 ```
 
+Run the disposable Admin app lifecycle and recycle-bin checks:
+
+```powershell
+npm run test:ui:list-view:admin:lifecycle
+```
+
 Run Keystone/Shockwave list-view tests only:
 
 ```powershell
@@ -137,6 +145,36 @@ Run Keystone/Shockwave list-view tests with a visible browser:
 
 ```powershell
 npm run test:ui:list-view:keystone:headed
+```
+
+Run the disposable Keystone record lifecycle and recycle-bin checks:
+
+```powershell
+npm run test:ui:list-view:keystone:lifecycle
+```
+
+Run settings-focused coverage across Admin and Keystone:
+
+```powershell
+npm run test:ui:list-view:settings
+```
+
+Run search-focused coverage across Admin and Keystone:
+
+```powershell
+npm run test:ui:list-view:search
+```
+
+Run multi-step workflow coverage:
+
+```powershell
+npm run test:ui:list-view:workflow
+```
+
+Run any scenario filter manually:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tests\scripts\run-list-view-regression.ps1 -Surface all -SkipReset -Scenario "Search|Settings modal|@lifecycle"
 ```
 
 Run list-view API contract tests only:
@@ -349,6 +387,25 @@ test("Admin Objects toolbar works [surface: Admin] [feature: Toolbar controls] [
 Keep Admin tests scoped to metadata views. Admin tests must not open or assert business data records.
 
 Keep Keystone/Shockwave tests scoped to runtime business-object list views and generated metadata-driven object pages.
+
+### Creating A New Scenario
+
+1. Add the Playwright test to the Admin, Keystone, or API spec.
+2. Put the report fields in the title: `[surface: ...] [feature: ...] [precondition: ...] [input: ...] [expected: ...] [proof: ...]`.
+3. Add a searchable scenario word or tag in the title, such as `@lifecycle`, `@recycle`, `Search`, `Settings modal`, `Column resize`, or `Export`.
+4. For destructive tests, create a unique disposable record/app inside the test and delete or purge only that matching automation data.
+5. Attach before/after evidence around major UI changes with `attachEvidence`; the suite also captures a final screenshot for each UI test.
+6. If the scenario needs a dashboard checkbox, add its grep expression to `tests/e2e/list-view-test-environment/index.html`.
+
+### Multi-Step Workflow Cases
+
+A test case can represent a full user journey with many steps. Prefer this pattern for time-saving regression workflows where the value is in proving the connected path, for example:
+
+```text
+Open Apps -> create disposable app -> select app row -> edit label -> save -> delete -> restore from Recycle Bin -> verify restored -> cleanup purge
+```
+
+Use `@workflow` in the test title for these connected journeys. The dashboard exposes a Multi-step workflows scenario checkbox and the terminal command `npm run test:ui:list-view:workflow`.
 
 ## Troubleshooting
 

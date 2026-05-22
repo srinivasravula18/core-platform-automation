@@ -4,6 +4,7 @@
   [switch]$Headed,
   [ValidateSet("all", "admin", "keystone", "api")]
   [string]$Surface = "all",
+  [string]$Scenario = "",
   [string]$AppRoot = $env:CORE_PLATFORM_ROOT
 )
 
@@ -82,17 +83,22 @@ try {
     $adminSpec = "tests/e2e/list-view-regression/admin-list-view.spec.ts"
     $keystoneSpec = "tests/e2e/list-view-regression/keystone-list-view.spec.ts"
     $apiSpec = "tests/e2e/list-view-regression/list-view-api.spec.ts"
+    $scenarioArgs = @()
+    if (-not [string]::IsNullOrWhiteSpace($Scenario)) {
+      $scenarioArgs = @("--grep", $Scenario)
+      Write-Host "Applying list-view scenario filter: $Scenario"
+    }
     if ($Surface -eq "admin") {
-      npx.cmd playwright test $adminSpec -c $config --workers=1
+      npx.cmd playwright test $adminSpec -c $config --workers=1 @scenarioArgs
       $testExitCode = $LASTEXITCODE
     } elseif ($Surface -eq "keystone") {
-      npx.cmd playwright test $keystoneSpec -c $config --workers=1
+      npx.cmd playwright test $keystoneSpec -c $config --workers=1 @scenarioArgs
       $testExitCode = $LASTEXITCODE
     } elseif ($Surface -eq "api") {
-      npx.cmd playwright test $apiSpec -c $config --workers=1
+      npx.cmd playwright test $apiSpec -c $config --workers=1 @scenarioArgs
       $testExitCode = $LASTEXITCODE
     } else {
-      npx.cmd playwright test -c $config --workers=1
+      npx.cmd playwright test -c $config --workers=1 @scenarioArgs
       $testExitCode = $LASTEXITCODE
     }
   } finally {

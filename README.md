@@ -49,6 +49,18 @@ npm run test:ui:list-view:api
 npm run test:ui:list-view:full
 ```
 
+Focused scenario runs:
+
+```powershell
+npm run test:ui:list-view:admin:lifecycle
+npm run test:ui:list-view:keystone:lifecycle
+npm run test:ui:list-view:workflow
+npm run test:ui:list-view:settings
+npm run test:ui:list-view:search
+```
+
+The HTML dashboard also has scenario checkboxes so QA can choose shell/toolbar, search, settings, resize/fit, row navigation, lifecycle/recycle bin, multi-step workflows, exports, or API/security before clicking a run button. Use the Selectable Test Inventory to tick exact test cases and run only those selected cases.
+
 Headed runs:
 
 ```powershell

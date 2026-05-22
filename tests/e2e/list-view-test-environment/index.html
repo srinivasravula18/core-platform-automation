@@ -43,6 +43,27 @@
       </label>
     </section>
 
+    <section class="scenario-panel" aria-label="Scenario selection">
+      <div class="section-header">
+        <div>
+          <h2>Scenario Selection</h2>
+          <p>Select one or more groups before running. Leaving all groups clear runs the selected surface without a scenario filter.</p>
+        </div>
+        <button id="clear-scenarios" type="button" class="secondary">Clear</button>
+      </div>
+      <div class="scenario-grid">
+        <label><input type="checkbox" name="scenario" value="List view shell|Object home|Toolbar controls|primary toolbar" /> Shell and toolbar</label>
+        <label><input type="checkbox" name="scenario" value="Search|Search navigation|Search empty state" /> Search</label>
+        <label><input type="checkbox" name="scenario" value="Settings modal|Filters|Columns|Sharing|Preferences|Hierarchy" /> Settings</label>
+        <label><input type="checkbox" name="scenario" value="Column resize|Column sizing|Sorting|View modes" /> Resize, fit, sort, views</label>
+        <label><input type="checkbox" name="scenario" value="Record navigation|Metadata boundary|Embedded list view|row opens|row can be selected" /> Row navigation</label>
+        <label><input type="checkbox" name="scenario" value="@lifecycle|@recycle|Bulk delete" /> Lifecycle and recycle bin</label>
+        <label><input type="checkbox" name="scenario" value="@workflow" /> Multi-step workflows</label>
+        <label><input type="checkbox" name="scenario" value="Export|CSV|PDF" /> Exports</label>
+        <label><input type="checkbox" name="scenario" value="Security|Validation|Failure state|API" /> API, validation, security</label>
+      </div>
+    </section>
+
     <section class="status-grid" aria-label="Run status">
       <article class="status-card">
         <span>Run status</span>
@@ -51,6 +72,10 @@
       <article class="status-card">
         <span>Surface</span>
         <strong id="run-surface">-</strong>
+      </article>
+      <article class="status-card">
+        <span>Scenario</span>
+        <strong id="run-scenario">-</strong>
       </article>
       <article class="status-card">
         <span>Started</span>
@@ -86,6 +111,42 @@
         <h2>Case Format</h2>
         <p>Each generated case includes ID, module, title, pre-conditions, steps, data, expected result, actual result, status, priority, level, and automation status.</p>
         <p class="muted">ID convention: <strong>BVT_[MODULE]_[NUMBER]</strong>, <strong>SAN_[MODULE]_[NUMBER]</strong>, or <strong>REG_[MODULE]_[NUMBER]</strong>.</p>
+      </div>
+    </section>
+
+    <section class="table-section inventory-section" aria-label="Selectable test inventory">
+      <div class="section-header">
+        <div>
+          <h2>Selectable Test Inventory</h2>
+          <p id="inventory-updated-at">Loading test cases.</p>
+        </div>
+        <div class="inventory-actions">
+          <input id="inventory-filter" type="search" placeholder="Filter test cases" />
+          <button id="refresh-inventory" type="button" class="secondary">Refresh List</button>
+          <button id="select-visible-tests" type="button" class="secondary">Select Visible</button>
+          <button id="clear-selected-tests" type="button" class="secondary">Clear Selected</button>
+          <button id="run-selected-tests" type="button">Run Selected <span id="selected-test-count">0</span></button>
+        </div>
+      </div>
+      <div class="table-wrap inventory-wrap">
+        <table class="inventory-table">
+          <thead>
+            <tr>
+              <th>Select</th>
+              <th>ID</th>
+              <th>Surface</th>
+              <th>Feature</th>
+              <th>Test Case</th>
+              <th>Pre-conditions</th>
+              <th>Test Steps</th>
+              <th>Expected Result</th>
+              <th>What It Does</th>
+            </tr>
+          </thead>
+          <tbody id="inventory-body">
+            <tr><td colspan="9" class="empty">Loading test inventory.</td></tr>
+          </tbody>
+        </table>
       </div>
     </section>
 
