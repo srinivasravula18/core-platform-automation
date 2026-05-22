@@ -1,0 +1,8 @@
+﻿node_modules/
+.runtime/
+reports/
+tests/e2e/.storage/
+tests/e2e/reports/
+test-results/
+playwright-report/
+*.log

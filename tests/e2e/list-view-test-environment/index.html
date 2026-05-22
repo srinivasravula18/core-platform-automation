@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>List View Test Environment</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">Core Platform QA</p>
+        <h1>List View Test Environment</h1>
+      </div>
+      <nav class="links" aria-label="Report links">
+        <a href="/report/list-view-regression-results.html" target="_blank" rel="noreferrer">HTML Report</a>
+        <a href="/report/list-view-regression-results.csv" target="_blank" rel="noreferrer">CSV</a>
+        <a href="/report/list-view-regression-results.pdf" target="_blank" rel="noreferrer">PDF</a>
+        <button data-stop-run class="danger" disabled>Stop Run</button>
+      </nav>
+    </header>
+
+    <section class="control-panel" aria-label="Test controls">
+      <div class="control-copy">
+        <h2>Run List View Suites</h2>
+        <p>Runs are restricted to the Admin, Keystone, API, or full list-view regression suites on this machine.</p>
+      </div>
+      <div class="run-buttons">
+        <button data-surface="admin">Run Admin</button>
+        <button data-surface="keystone">Run Keystone</button>
+        <button data-surface="api">Run API</button>
+        <button data-surface="all" class="secondary">Run Full</button>
+        <button data-stop-run class="danger" disabled>Stop Run</button>
+      </div>
+      <label class="check-row">
+        <input id="reset-db" type="checkbox" />
+        Reset and seed database before run
+      </label>
+      <label class="check-row">
+        <input id="headed" type="checkbox" />
+        Run with visible browser
+      </label>
+    </section>
+
+    <section class="status-grid" aria-label="Run status">
+      <article class="status-card">
+        <span>Run status</span>
+        <strong id="run-status">Idle</strong>
+      </article>
+      <article class="status-card">
+        <span>Surface</span>
+        <strong id="run-surface">-</strong>
+      </article>
+      <article class="status-card">
+        <span>Started</span>
+        <strong id="started-at">-</strong>
+      </article>
+      <article class="status-card">
+        <span>Exit code</span>
+        <strong id="exit-code">-</strong>
+      </article>
+    </section>
+
+    <section class="summary" aria-label="Test result summary">
+      <span class="pill pending">Pending <strong id="count-pending">0</strong></span>
+      <span class="pill running">Running <strong id="count-running">0</strong></span>
+      <span class="pill pass">Passed <strong id="count-pass">0</strong></span>
+      <span class="pill fail">Failed <strong id="count-fail">0</strong></span>
+      <span class="pill skip">Skipped <strong id="count-skip">0</strong></span>
+    </section>
+
+    <section class="standards-panel" aria-label="Testing standards">
+      <div>
+        <h2>Testing Levels</h2>
+        <dl>
+          <dt>BVT</dt>
+          <dd>Core critical paths after every build. If this fails, deeper testing should stop.</dd>
+          <dt>Sanity</dt>
+          <dd>Narrow checks for a specific fix or focused feature area.</dd>
+          <dt>Regression</dt>
+          <dd>Full existing behavior to catch breakage before releases or major merges.</dd>
+        </dl>
+      </div>
+      <div>
+        <h2>Case Format</h2>
+        <p>Each generated case includes ID, module, title, pre-conditions, steps, data, expected result, actual result, status, priority, level, and automation status.</p>
+        <p class="muted">ID convention: <strong>BVT_[MODULE]_[NUMBER]</strong>, <strong>SAN_[MODULE]_[NUMBER]</strong>, or <strong>REG_[MODULE]_[NUMBER]</strong>.</p>
+      </div>
+    </section>
+
+    <section class="table-section" aria-label="Test case inventory">
+      <div class="section-header">
+        <div>
+          <h2>Test Cases Under Execution</h2>
+          <p id="updated-at">Waiting for a run.</p>
+        </div>
+        <input id="case-filter" type="search" placeholder="Filter by surface, feature, scenario, or status" />
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Level</th>
+              <th>Priority</th>
+              <th>Status</th>
+              <th>Module / Suite</th>
+              <th>Test Case Title</th>
+              <th>Pre-conditions</th>
+              <th>Test Steps</th>
+              <th>Test Data</th>
+              <th>Expected Result</th>
+              <th>Actual Result</th>
+              <th>What It Does</th>
+              <th>Automation</th>
+              <th>Evidence</th>
+            </tr>
+          </thead>
+          <tbody id="cases-body">
+            <tr><td colspan="14" class="empty">No generated test inventory yet.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="table-section bug-section" aria-label="Bug report">
+      <div class="section-header">
+        <div>
+          <h2>Bug Report</h2>
+          <p>Failed tests are converted into defect summaries with expected and actual behavior.</p>
+        </div>
+      </div>
+      <div class="table-wrap compact">
+        <table>
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Surface</th>
+              <th>Feature</th>
+              <th>Bug Summary</th>
+              <th>Evidence</th>
+            </tr>
+          </thead>
+          <tbody id="bugs-body">
+            <tr><td colspan="5" class="empty">No failed tests in the current report.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="log-panel" aria-label="Live test output">
+      <div class="section-header">
+        <h2>Live Output</h2>
+      </div>
+      <pre id="logs">No run started.</pre>
+    </section>
+  </main>
+  <script src="/app.js"></script>
+</body>
+</html>

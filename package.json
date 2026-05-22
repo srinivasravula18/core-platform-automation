@@ -1,0 +1,26 @@
+{
+  "name": "core-platform-automation",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Standalone list-view E2E automation environment for Core Platform.",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test:ui:list-view:env": "powershell -ExecutionPolicy Bypass -File .\\tests\\scripts\\start-list-view-test-environment.ps1",
+    "test:ui:list-view:report": "powershell -ExecutionPolicy Bypass -File .\\tests\\scripts\\start-list-view-report.ps1 -AllowMissing -Foreground",
+    "test:ui:list-view:full": "powershell -ExecutionPolicy Bypass -File .\\tests\\scripts\\run-list-view-regression.ps1",
+    "test:ui:list-view:full:headed": "powershell -ExecutionPolicy Bypass -File .\\tests\\scripts\\run-list-view-regression.ps1 -Headed",
+    "test:ui:list-view:full:no-reset": "powershell -ExecutionPolicy Bypass -File .\\tests\\scripts\\run-list-view-regression.ps1 -SkipReset",
+    "test:ui:list-view:admin": "powershell -ExecutionPolicy Bypass -File .\\tests\\scripts\\run-list-view-regression.ps1 -Surface admin -SkipReset",
+    "test:ui:list-view:admin:headed": "powershell -ExecutionPolicy Bypass -File .\\tests\\scripts\\run-list-view-regression.ps1 -Surface admin -SkipReset -Headed",
+    "test:ui:list-view:keystone": "powershell -ExecutionPolicy Bypass -File .\\tests\\scripts\\run-list-view-regression.ps1 -Surface keystone -SkipReset",
+    "test:ui:list-view:keystone:headed": "powershell -ExecutionPolicy Bypass -File .\\tests\\scripts\\run-list-view-regression.ps1 -Surface keystone -SkipReset -Headed",
+    "test:ui:list-view:api": "powershell -ExecutionPolicy Bypass -File .\\tests\\scripts\\run-list-view-regression.ps1 -Surface api -SkipReset",
+    "test:ui:list-view:list": "npx playwright test --list -c tests/e2e/playwright.list-view-regression.config.ts",
+    "stop:all": "powershell -ExecutionPolicy Bypass -File .\\tests\\scripts\\stop-all.ps1"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.58.2"
+  }
+}
