@@ -3,6 +3,7 @@
 reports/
 tests/e2e/.storage/
 tests/e2e/reports/
+tests/e2e/recorded-scenarios/drafts/
 test-results/
 playwright-report/
 *.log

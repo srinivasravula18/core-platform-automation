@@ -78,6 +78,14 @@ while ((Get-ListeningProcessIdsByPort -Port $selectedPort).Count -gt 0) {
 
 Push-Location $repoRoot
 try {
+  if (Test-Path (Join-Path $repoRoot "tests\e2e\dashboard-src\index.html")) {
+    Write-Host "Building modular React test dashboard..."
+    npm.cmd run build:dashboard
+    if ($LASTEXITCODE -ne 0) {
+      throw "Dashboard build failed with exit code $LASTEXITCODE."
+    }
+  }
+
   $nodePath = (Get-Command node.exe -ErrorAction Stop).Source
   if ($Foreground) {
     $url = "http://127.0.0.1:$selectedPort/"

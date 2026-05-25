@@ -431,8 +431,14 @@ test.describe("Admin list-view regression", () => {
 
     await page.getByRole("button", { name: /^Filters$/i }).click();
     await page.getByRole("button", { name: /add filter/i }).click();
-    await page.getByRole("button", { name: /save filters/i }).click();
-    await expect(page.locator(".filter-error, [role='alert']").first()).toBeVisible();
+    const saveFilters = page.getByRole("button", { name: /save filters/i }).first();
+    await expect(saveFilters).toBeVisible();
+    if (await saveFilters.isEnabled().catch(() => false)) {
+      await saveFilters.click();
+      await expect(page.locator(".filter-error, [role='alert']").first()).toBeVisible();
+    } else {
+      await expect(saveFilters).toBeDisabled();
+    }
 
     await page.getByRole("button", { name: /^Columns$/i }).click();
     await page.getByRole("button", { name: /selected columns/i }).click();

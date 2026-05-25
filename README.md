@@ -29,7 +29,7 @@ npx playwright install chromium
 ## Start The HTML E2E Dashboard
 
 ```powershell
-npm run test:ui:list-view:env
+npm run start
 ```
 
 Open:
@@ -38,7 +38,27 @@ Open:
 http://127.0.0.1:5372/
 ```
 
-This starts the Core Platform Service, Admin, Keystone/Shockwave, and worker stack from `CORE_PLATFORM_ROOT`, then serves the HTML test dashboard from this automation folder.
+The dashboard is now a modular React web app with a side navigation layout, light/dark theme support, suite/scenario/test-case navigation, execution controls, report and bug views, and an AI Agent section for scanning `CORE_PLATFORM_ROOT` changes.
+
+Build the dashboard without starting the server:
+
+```powershell
+npm run build:dashboard
+```
+
+Run the Vite development server for dashboard UI work:
+
+```powershell
+npm run dev:dashboard
+```
+
+This starts only the standalone HTML test dashboard from this automation folder. The dashboard shows a live Services card for API `5001`, Admin `5002`, and Shockwave/Keystone `5003` so you can see whether each service is up before running tests.
+
+To start missing Core Platform services automatically and then open the dashboard:
+
+```powershell
+npm run test:ui:list-view:env
+```
 
 ## Run Suites From Terminal
 

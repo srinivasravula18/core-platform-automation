@@ -131,10 +131,10 @@ Before running tests against an old local stack, stop existing dev servers so Ad
 npm run stop:all
 ```
 
-Start the dedicated list-view testing environment:
+Start only the dedicated list-view testing dashboard:
 
 ```powershell
-npm run test:ui:list-view:env
+npm run start
 ```
 
 Open the dashboard:
@@ -143,8 +143,14 @@ Open the dashboard:
 http://127.0.0.1:5372/
 ```
 
-From the dashboard you can run Admin, Keystone, API, or Full list-view suites, watch live output, open reports, review test cases under execution, and use `Stop Run` to terminate the current test pipeline.
+From the dashboard you can see live service health for API `5001`, Admin `5002`, and Shockwave/Keystone `5003`; run Admin, Keystone, API, or Full list-view suites; watch live output; open reports; review test cases under execution; and use `Stop Run` to terminate the current test pipeline.
 Use the scenario checkboxes when you want a smaller run, such as settings only, search only, lifecycle/recycle-bin only, multi-step workflows only, or API/security only. Use the Selectable Test Inventory to tick exact test cases and run only those cases.
+
+To start any missing Core Platform services first and then open the dashboard:
+
+```powershell
+npm run test:ui:list-view:env
+```
 
 Terminal commands for each test suite:
 

@@ -13,7 +13,7 @@ npx playwright install chromium
 Then start the dashboard:
 
 ```powershell
-npm run test:ui:list-view:env
+npm run start
 ```
 
 ---
@@ -33,6 +33,7 @@ The list-view E2E environment provides one local place to:
 - See every generated test case, status, priority, testing level, expected result, actual result, evidence, and bug report.
 - Open HTML, CSV, JSON, PDF, and screenshot evidence from the browser.
 - Stop a running test pipeline from the dashboard.
+- See live service health for API `5001`, Admin `5002`, and Shockwave/Keystone `5003`.
 
 ## Local Ports
 
@@ -55,10 +56,10 @@ Stop any old local stack:
 npm run stop:all
 ```
 
-Start the dedicated list-view E2E environment:
+Start only the dedicated list-view E2E dashboard:
 
 ```powershell
-npm run test:ui:list-view:env
+npm run start
 ```
 
 Open the dashboard:
@@ -67,7 +68,13 @@ Open the dashboard:
 http://127.0.0.1:5372/
 ```
 
-The dashboard starts the local Service, Admin, Keystone/Shockwave, and worker stack, then serves the HTML E2E dashboard on port `5372`.
+The dashboard serves the HTML E2E dashboard on port `5372` and shows whether API `5001`, Admin `5002`, and Shockwave/Keystone `5003` are up.
+
+To start any missing Core Platform services before opening the dashboard, use:
+
+```powershell
+npm run test:ui:list-view:env
+```
 
 ## Dashboard Controls
 
