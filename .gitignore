@@ -1,4 +1,6 @@
-﻿node_modules/
+node_modules/
+.env
+.env.*
 .runtime/
 reports/
 tests/e2e/.storage/
@@ -6,4 +8,6 @@ tests/e2e/reports/
 tests/e2e/recorded-scenarios/drafts/
 test-results/
 playwright-report/
+evidences/
 *.log
+.env.example

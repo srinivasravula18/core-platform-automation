@@ -1,6 +1,5 @@
 ﻿import { defineConfig, devices } from "@playwright/test";
 import path from "node:path";
-import os from "node:os";
 import { loadRepoEnv } from "./loadEnv";
 
 const automationRoot = path.resolve(__dirname, "..", "..");
@@ -9,7 +8,7 @@ loadRepoEnv(appRoot);
 
 const headed = process.env.LIST_VIEW_REGRESSION_HEADED === "1";
 const serviceUrl = process.env.TEST_API_URL || "http://localhost:5001";
-const artifactsDir = path.join(os.tmpdir(), "playwright-artifacts-core-platform-list-view");
+const artifactsDir = path.join(automationRoot, "evidences", "playwright-artifacts-core-platform-list-view");
 const reportDir = path.join(automationRoot, "tests", "e2e", "reports", "list-view-regression");
 const storageState = path.join(__dirname, ".storage", "list-view.json");
 

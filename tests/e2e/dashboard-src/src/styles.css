@@ -55,12 +55,14 @@
   }
 }
 
-* { box-sizing: border-box; }
+* { box-sizing: border-box; min-width: 0; }
+html, body, #root { width: 100%; height: 100%; max-width: 100dvw; max-height: 100dvh; overflow: hidden; }
 body { margin: 0; background: var(--bg); color: var(--text); }
-button, input, select { font: inherit; }
+button, input, select { font: inherit; max-width: 100%; }
 button, a {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 8px;
   border: 1px solid var(--accent);
   border-radius: 7px;
@@ -70,9 +72,11 @@ button, a {
   text-decoration: none;
   font-weight: 700;
   cursor: pointer;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 button:disabled { opacity: .55; cursor: not-allowed; }
-button.secondary { background: var(--panel-2); border-color: var(--border); color: var(--text); }
+button.secondary, a.secondary { background: var(--panel-2); border-color: var(--border); color: var(--text); }
 button.danger { background: var(--danger); border-color: var(--danger); }
 .icon-button { padding: 9px; background: var(--panel); border-color: var(--border); color: var(--text); }
 input, select {
@@ -82,16 +86,27 @@ input, select {
   color: var(--text);
   padding: 9px 10px;
 }
-.app-shell { display: grid; grid-template-columns: 260px minmax(0, 1fr); min-height: 100vh; }
+.app-shell {
+  display: grid;
+  grid-template-columns: 260px minmax(0, 1fr);
+  width: 100dvw;
+  height: 100dvh;
+  max-width: 100dvw;
+  max-height: 100dvh;
+  overflow: hidden;
+}
+.app-shell.sidebar-collapsed { grid-template-columns: 76px minmax(0, 1fr); }
 .sidebar {
   position: sticky;
   top: 0;
-  height: 100vh;
+  height: 100dvh;
+  max-height: 100dvh;
+  overflow: auto;
   border-right: 1px solid var(--border);
   background: var(--panel);
   padding: 18px;
 }
-.brand { display: flex; align-items: center; gap: 12px; margin-bottom: 22px; }
+.brand { display: flex; align-items: center; gap: 10px; margin-bottom: 22px; }
 .brand-mark {
   display: grid;
   place-items: center;
@@ -101,8 +116,11 @@ input, select {
   background: var(--accent-2);
   color: #fff;
   font-weight: 900;
+  flex: 0 0 auto;
 }
+.brand-copy { min-width: 0; flex: 1; }
 .brand small { display: block; color: var(--muted); margin-top: 2px; }
+.sidebar-toggle { flex: 0 0 auto; }
 .sidebar nav { display: grid; gap: 6px; }
 .sidebar nav button {
   justify-content: flex-start;
@@ -111,19 +129,49 @@ input, select {
   background: transparent;
   color: var(--muted);
 }
+.sidebar nav button span, .brand-copy { transition: opacity .16s ease; }
+.sidebar-collapsed .sidebar {
+  padding: 14px 10px;
+  overflow-x: hidden;
+}
+.sidebar-collapsed .brand {
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+.sidebar-collapsed .brand-copy,
+.sidebar-collapsed .sidebar nav button span {
+  width: 0;
+  height: 0;
+  opacity: 0;
+  overflow: hidden;
+  position: absolute;
+}
+.sidebar-collapsed .sidebar nav button {
+  justify-content: center;
+  padding: 10px;
+}
 .sidebar nav button.nav-active {
   background: var(--panel-2);
   border-color: var(--border);
   color: var(--text);
 }
-.workspace { min-width: 0; padding: 20px; }
+.workspace {
+  min-width: 0;
+  height: 100dvh;
+  max-height: 100dvh;
+  overflow: auto;
+  padding: 16px;
+}
 .topbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  margin-bottom: 18px;
+  margin-bottom: 14px;
 }
+.topbar > div:first-child { min-width: 180px; }
+.topbar h1 { overflow-wrap: anywhere; }
 .topbar h1, .topbar p, h2, p { margin: 0; }
 .eyebrow {
   color: var(--muted);
@@ -147,13 +195,14 @@ input, select {
   color: var(--muted);
   font-size: 13px;
 }
-.section-stack { display: grid; gap: 16px; }
+.section-stack { display: grid; gap: 12px; min-height: 0; }
 .panel, .metric, .service-card {
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 8px;
+  min-width: 0;
 }
-.panel { padding: 16px; }
+.panel { padding: 14px; overflow: hidden; }
 .section-heading {
   display: flex;
   align-items: center;
@@ -161,36 +210,27 @@ input, select {
   gap: 12px;
   margin-bottom: 14px;
 }
-.section-heading span, .panel p { color: var(--muted); font-size: 13px; line-height: 1.5; }
+.section-heading span, .panel p { color: var(--muted); font-size: 13px; line-height: 1.45; overflow-wrap: anywhere; }
 .metric-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; }
 .metric-grid.compact { grid-template-columns: repeat(5, minmax(110px, 1fr)); }
-.metric { padding: 14px; min-height: 82px; }
+.metric { padding: 14px; min-height: 82px; overflow: hidden; }
 .metric span { display: block; color: var(--muted); font-size: 12px; margin-bottom: 8px; }
-.metric strong { font-size: 21px; overflow-wrap: anywhere; }
+.metric strong { display: block; font-size: 21px; overflow-wrap: anywhere; }
+.execution-metrics .metric { min-height: 96px; max-height: 132px; }
+.execution-metrics .metric strong {
+  max-height: 68px;
+  overflow: auto;
+  line-height: 1.25;
+}
 .pass { color: var(--pass); }
 .fail { color: var(--fail); }
 .pending { color: var(--pending); }
 .running { color: var(--running); }
+.muted { color: var(--muted); }
 .skip { color: var(--skip); }
-.flow-panel {
-  display: grid;
-  grid-template-columns: 1fr 36px 1fr 36px 1fr 36px 1fr 36px 1fr;
-  align-items: center;
-  padding: 20px;
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-}
-.flow-node {
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--panel-2);
-  padding: 15px;
-  text-align: center;
-  font-weight: 800;
-}
-.flow-line { height: 1px; background: var(--border); }
 .service-grid, .card-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+.suite-card { cursor: pointer; transition: border-color .15s ease, transform .15s ease; }
+.suite-card:hover { border-color: var(--accent); transform: translateY(-1px); }
 .service-card { padding: 16px; }
 .service-card span { color: var(--muted); }
 .service-card strong { display: block; font-size: 24px; margin: 8px 0; }
@@ -215,6 +255,15 @@ code {
 }
 .toolbar-heading { align-items: flex-start; }
 .inline-actions, .agent-controls, .report-links, .recorder-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.category-run { border-color: color-mix(in srgb, var(--accent-2), var(--border) 45%); }
+.report-card-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+.report-card-grid a {
+  min-height: 54px;
+  justify-content: center;
+  background: var(--panel-2);
+  border-color: var(--border);
+  color: var(--text);
+}
 .inline-actions input { width: min(360px, 50vw); }
 .recorder-grid {
   display: grid;
@@ -227,22 +276,23 @@ code {
 .recorder-grid input { width: 100%; }
 .recorder-message { margin: 0 0 12px; }
 .recorder-logs { min-height: 160px; max-height: 260px; }
-.table-panel { padding: 0; }
+.table-panel { padding: 0; max-width: 100%; }
 .table-panel .section-heading { padding: 16px 16px 0; }
-.table-wrap { overflow: auto; max-height: 62vh; }
-table { width: 100%; min-width: 1100px; border-collapse: collapse; }
+.table-wrap { overflow: auto; max-width: 100%; max-height: min(58dvh, 620px); }
+table { width: 100%; min-width: min(1100px, calc(100dvw - 32px)); border-collapse: collapse; }
 th, td {
   border-bottom: 1px solid var(--border);
   padding: 10px 12px;
   text-align: left;
   vertical-align: top;
   font-size: 13px;
+  overflow-wrap: anywhere;
 }
 th { position: sticky; top: 0; background: var(--panel-2); z-index: 1; }
 .empty { color: var(--muted); text-align: center; }
 .logs {
-  min-height: 360px;
-  max-height: 58vh;
+  min-height: 220px;
+  max-height: min(52dvh, 560px);
   overflow: auto;
   margin: 0;
   padding: 16px;
@@ -251,6 +301,8 @@ th { position: sticky; top: 0; background: var(--panel-2); z-index: 1; }
   color: #dbeafe;
   font-size: 12px;
   line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 .builder-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
 .builder-grid article {
@@ -275,20 +327,55 @@ th { position: sticky; top: 0; background: var(--panel-2); z-index: 1; }
 .danger-text { color: var(--danger); }
 
 @media (max-width: 1100px) {
-  .app-shell { grid-template-columns: 1fr; }
-  .sidebar { position: static; height: auto; border-right: 0; border-bottom: 1px solid var(--border); }
+  .app-shell,
+  .app-shell.sidebar-collapsed { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
+  .sidebar {
+    position: static;
+    height: auto;
+    max-height: 34dvh;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .sidebar-collapsed .sidebar {
+    padding: 12px;
+  }
+  .sidebar-collapsed .brand {
+    flex-direction: row;
+    margin-bottom: 12px;
+  }
+  .sidebar-collapsed .brand-copy {
+    width: auto;
+    height: auto;
+    opacity: 1;
+    overflow: visible;
+    position: static;
+  }
   .sidebar nav { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .sidebar-collapsed .sidebar nav { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .sidebar-collapsed .sidebar nav button span {
+    width: 0;
+    height: 0;
+    opacity: 0;
+    overflow: hidden;
+    position: absolute;
+  }
+  .workspace { height: auto; max-height: none; overflow: auto; padding: 14px; }
   .topbar { align-items: stretch; flex-direction: column; }
   .topbar-actions { justify-content: flex-start; }
   .metric-grid, .service-grid, .card-grid, .builder-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .report-card-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .recorder-grid { grid-template-columns: 1fr; }
-  .flow-panel { grid-template-columns: 1fr; gap: 8px; }
-  .flow-line { height: 20px; width: 1px; justify-self: center; }
 }
 
 @media (max-width: 680px) {
-  .workspace { padding: 14px; }
+  .workspace { padding: 10px; }
+  .sidebar { max-height: 38dvh; padding: 12px; }
   .metric-grid, .service-grid, .card-grid, .builder-grid { grid-template-columns: 1fr; }
+  .report-card-grid { grid-template-columns: 1fr; }
   .sidebar nav { grid-template-columns: 1fr; }
   .inline-actions input { width: 100%; }
+  .section-heading { align-items: stretch; flex-direction: column; }
+  .topbar-actions button, .topbar-actions select, .topbar-actions label, .recorder-actions button { width: 100%; }
+  .table-wrap { max-height: 50dvh; }
+  table { min-width: min(860px, calc(100dvw - 20px)); }
 }

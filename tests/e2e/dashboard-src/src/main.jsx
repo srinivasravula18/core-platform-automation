@@ -1,15 +1,14 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
-  Activity, Bot, Bug, CheckSquare, ClipboardList, FileBarChart, GitBranch,
-  LayoutDashboard, Moon, Play, Radio, RefreshCw, Save, Search, Settings, Square, Sun,
+  Bot, Bug, CheckSquare, ClipboardList, FileBarChart, GitBranch,
+  Download, LayoutDashboard, Moon, PanelLeftClose, PanelLeftOpen, Play, Radio, RefreshCw, Save, Search, Settings, Square, Sun,
   TestTube2, Video, Waypoints, XCircle
 } from "lucide-react";
 import "./styles.css";
 
 const navItems = [
   { id: "overview", label: "Overview", icon: LayoutDashboard },
-  { id: "services", label: "Services", icon: Activity },
   { id: "suites", label: "Suites", icon: TestTube2 },
   { id: "scenarios", label: "Scenarios", icon: Waypoints },
   { id: "recorder", label: "Recorder", icon: Radio },
@@ -23,6 +22,27 @@ const navItems = [
 ];
 
 const formatDate = (value) => value ? new Date(value).toLocaleString() : "-";
+const categoryLevels = ["BVT", "Sanity", "Regression"];
+const appSurfaces = new Set(["admin", "keystone"]);
+const summarizeScenario = (status) => {
+  if (status?.selectedTestCount > 0) return `${status.selectedTestCount} selected test cases`;
+  const scenario = String(status?.scenario || "").trim();
+  if (!scenario) return "-";
+  if (scenario.length > 80 || scenario.includes("\\[") || scenario.includes("|")) return "Filtered scenario run";
+  return scenario;
+};
+const normalizeSurface = (value) => String(value || "").toLowerCase().replace(/[^a-z]/g, "");
+const suiteMatchesRow = (suite, row) => {
+  if (!suite) return true;
+  const suiteId = String(suite.id || "").toLowerCase();
+  const suiteSurface = normalizeSurface(suite.surface);
+  const rowSurface = normalizeSurface(row.surface);
+  if (suiteId === "list-view-regression" || suiteSurface === "all") return true;
+  if (suiteId.includes("admin") || suiteSurface === "admin") return rowSurface === "admin";
+  if (suiteId.includes("keystone") || suiteSurface === "keystone") return rowSurface === "keystone";
+  if (suiteId.includes("api") || suiteSurface === "api") return rowSurface === "api";
+  return rowSurface === suiteSurface;
+};
 
 const api = async (path, options) => {
   const response = await fetch(path, {
@@ -91,13 +111,24 @@ function App() {
   const data = useDashboardData();
   const [active, setActive] = useState("overview");
   const [theme, setTheme] = useState(() => localStorage.getItem("qa-theme") || "system");
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem("qa-sidebar") === "collapsed");
   const [filter, setFilter] = useState("");
+  const [inventoryContext, setInventoryContext] = useState(null);
   const [selectedTests, setSelectedTests] = useState(new Set());
   const [scenarioFilter, setScenarioFilter] = useState("");
   const [surface, setSurface] = useState("all");
   const [headed, setHeaded] = useState(false);
   const [reset, setReset] = useState(false);
-  const [agent, setAgent] = useState({ baseRef: "origin/main", scan: null, generated: null, busy: false, error: "" });
+  const [agent, setAgent] = useState({
+    baseRef: "auto",
+    branchName: "main",
+    push: true,
+    scan: null,
+    generated: null,
+    commit: null,
+    busy: false,
+    error: ""
+  });
   const [recorder, setRecorder] = useState({ name: "", busy: false, error: "" });
 
   useEffect(() => {
@@ -105,18 +136,31 @@ function App() {
     document.documentElement.dataset.theme = theme;
   }, [theme]);
 
+  useEffect(() => {
+    localStorage.setItem("qa-sidebar", sidebarCollapsed ? "collapsed" : "expanded");
+  }, [sidebarCollapsed]);
+
   const rows = Array.isArray(data.inventory.rows) ? data.inventory.rows : [];
   const resultRows = Array.isArray(data.results.rows) ? data.results.rows : [];
+  const rowsForCategory = (level) => rows.filter((row) =>
+    String(row.testingLevel || "").toLowerCase() === String(level).toLowerCase()
+    && appSurfaces.has(String(row.surface || "").toLowerCase())
+    && row.title
+  );
+  const categoryCounts = useMemo(() => Object.fromEntries(categoryLevels.map((level) => [level, rowsForCategory(level).length])), [rows]);
   const filteredRows = useMemo(() => {
     const needle = filter.trim().toLowerCase();
-    if (!needle) return rows;
-    return rows.filter((row) =>
-      [row.id, row.surface, row.feature, row.displayTitle, row.precondition, row.input, row.expected, row.proof]
+    const contextRows = inventoryContext
+      ? rows.filter((row) => suiteMatchesRow(inventoryContext, row))
+      : rows;
+    if (!needle) return contextRows;
+    return contextRows.filter((row) =>
+      [row.id, row.tags, row.testingLevel, row.surface, row.feature, row.displayTitle, row.precondition, row.input, row.expected, row.proof]
         .join(" ")
         .toLowerCase()
         .includes(needle)
     );
-  }, [rows, filter]);
+  }, [rows, filter, inventoryContext]);
 
   const selectedTitles = Array.from(selectedTests);
   const failedRows = resultRows.filter((row) => row.status === "FAIL");
@@ -129,6 +173,20 @@ function App() {
     });
     await data.refreshLive();
     setActive("execution");
+  };
+
+  const runCategory = async (level) => {
+    const tests = rowsForCategory(level).map((row) => row.title);
+    if (tests.length === 0) return;
+    await runSuite("all", "", tests);
+  };
+
+  const openSuiteCases = (suite) => {
+    setInventoryContext(suite);
+    setFilter("");
+    setSelectedTests(new Set());
+    setSurface(suite.surface || "all");
+    setActive("inventory");
   };
 
   const stopRun = async () => {
@@ -171,7 +229,6 @@ function App() {
       body: JSON.stringify({ id: scenario.id, headed: runHeaded })
     });
     await data.refreshLive();
-    setActive("execution");
   };
 
   const toggleSelected = (title) => {
@@ -203,9 +260,36 @@ function App() {
     }
   };
 
+  const runAgentGenerated = async () => {
+    setAgent((previous) => ({ ...previous, busy: true, error: "" }));
+    try {
+      const run = await api("/api/agent/run", {
+        method: "POST",
+        body: JSON.stringify({ baseRef: agent.baseRef, headed })
+      });
+      setAgent((previous) => ({ ...previous, generated: run.artifact || previous.generated, busy: false }));
+      await data.refreshLive();
+      setActive("execution");
+    } catch (error) {
+      setAgent((previous) => ({ ...previous, error: error.message, busy: false }));
+    }
+  };
+
+  const commitAgentGenerated = async () => {
+    setAgent((previous) => ({ ...previous, busy: true, error: "" }));
+    try {
+      const commit = await api("/api/agent/commit", {
+        method: "POST",
+        body: JSON.stringify({ branchName: agent.branchName, push: agent.push })
+      });
+      setAgent((previous) => ({ ...previous, commit, busy: false }));
+    } catch (error) {
+      setAgent((previous) => ({ ...previous, error: error.message, busy: false }));
+    }
+  };
+
   const renderSection = () => {
-    if (active === "services") return <ServicesPanel services={data.services} />;
-    if (active === "suites") return <SuitesPanel framework={data.framework} onRun={(suite) => runSuite(suite.surface, suite.grep || "")} />;
+    if (active === "suites") return <SuitesPanel framework={data.framework} onOpen={openSuiteCases} onRun={(suite) => runSuite(suite.surface, suite.grep || "")} />;
     if (active === "scenarios") return <ScenariosPanel framework={data.framework} setScenarioFilter={setScenarioFilter} setActive={setActive} />;
     if (active === "recorder") return (
       <RecorderPanel
@@ -216,7 +300,9 @@ function App() {
         startRecording={startRecording}
         stopRecording={stopRecording}
         runRecordedScenario={runRecordedScenario}
+        stopRun={stopRun}
         running={data.status.running}
+        status={data.status}
       />
     );
     if (active === "inventory") return (
@@ -227,30 +313,54 @@ function App() {
         selectedTests={selectedTests}
         toggleSelected={toggleSelected}
         selectVisible={() => setSelectedTests(new Set(filteredRows.map((row) => row.title)))}
+        selectAll={() => setSelectedTests(new Set(filteredRows.map((row) => row.title)))}
         clearSelected={() => setSelectedTests(new Set())}
         refresh={() => data.refreshStatic(true)}
+        context={inventoryContext}
+        clearContext={() => setInventoryContext(null)}
+        backToSuites={() => setActive("suites")}
+        runSelected={() => runSuite(surface, "", selectedTitles)}
+        running={data.status.running}
       />
     );
     if (active === "builder") return <BuilderPanel framework={data.framework} />;
     if (active === "execution") return <ExecutionPanel status={data.status} stopRun={stopRun} />;
     if (active === "reports") return <ReportsPanel results={data.results} />;
     if (active === "bugs") return <BugsPanel failedRows={failedRows} />;
-    if (active === "agent") return <AgentPanel agent={agent} setAgent={setAgent} runAgentScan={runAgentScan} runAgentGenerate={runAgentGenerate} />;
+    if (active === "agent") return (
+      <AgentPanel
+        agent={agent}
+        setAgent={setAgent}
+        runAgentScan={runAgentScan}
+        runAgentGenerate={runAgentGenerate}
+        runAgentGenerated={runAgentGenerated}
+        commitAgentGenerated={commitAgentGenerated}
+        running={data.status.running}
+      />
+    );
     if (active === "settings") return <SettingsPanel framework={data.framework} theme={theme} setTheme={setTheme} />;
     return <OverviewPanel counts={counts} framework={data.framework} inventory={data.inventory} status={data.status} services={data.services} results={data.results} />;
   };
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
       <aside className="sidebar">
         <div className="brand">
           <span className="brand-mark">CP</span>
-          <div><strong>QA Framework</strong><small>Core Platform</small></div>
+          <div className="brand-copy"><strong>QA Framework</strong><small>Core Platform</small></div>
+          <button
+            className="icon-button sidebar-toggle"
+            onClick={() => setSidebarCollapsed((value) => !value)}
+            aria-label={sidebarCollapsed ? "Open sidebar" : "Close sidebar"}
+            title={sidebarCollapsed ? "Open sidebar" : "Close sidebar"}
+          >
+            {sidebarCollapsed ? <PanelLeftOpen size={18} /> : <PanelLeftClose size={18} />}
+          </button>
         </div>
         <nav aria-label="Framework sections">
           {navItems.map((item) => {
             const Icon = item.icon;
-            return <button key={item.id} className={active === item.id ? "nav-active" : ""} onClick={() => setActive(item.id)}><Icon size={17} /><span>{item.label}</span></button>;
+            return <button key={item.id} className={active === item.id ? "nav-active" : ""} onClick={() => setActive(item.id)} title={item.label}><Icon size={17} /><span>{item.label}</span></button>;
           })}
         </nav>
       </aside>
@@ -268,6 +378,17 @@ function App() {
             <label><input type="checkbox" checked={reset} onChange={(event) => setReset(event.target.checked)} /> Reset</label>
             <label><input type="checkbox" checked={headed} onChange={(event) => setHeaded(event.target.checked)} /> Headed</label>
             <button onClick={() => runSuite()} disabled={data.status.running}><Play size={16} /> Run</button>
+            {categoryLevels.map((level) => (
+              <button
+                key={level}
+                className="secondary category-run"
+                onClick={() => runCategory(level)}
+                disabled={data.status.running || categoryCounts[level] === 0}
+                title={`Run ${level} cases across Admin and Keystone`}
+              >
+                <Play size={16} /> {level} {categoryCounts[level] || 0}
+              </button>
+            ))}
             <button onClick={() => runSuite(surface, "", selectedTitles)} disabled={data.status.running || selectedTitles.length === 0}><CheckSquare size={16} /> Run Selected {selectedTitles.length}</button>
             <button className="danger" onClick={stopRun} disabled={!data.status.running}><XCircle size={16} /> Stop</button>
             <button className="icon-button" onClick={() => setTheme(theme === "dark" ? "light" : "dark")} aria-label="Toggle theme">{theme === "dark" ? <Sun size={18} /> : <Moon size={18} />}</button>
@@ -290,7 +411,7 @@ function OverviewPanel({ counts, framework, inventory, status, services, results
       <Metric label="Services Up" value={`${up}/${services.services?.length || 3}`} />
       <Metric label="Run" value={status.running ? "Running" : "Idle"} />
     </div>
-    <div className="flow-panel"><div className="flow-node">Test Suite</div><div className="flow-line" /><div className="flow-node">Test Scenario</div><div className="flow-line" /><div className="flow-node">Test Case</div><div className="flow-line" /><div className="flow-node">Test Steps</div><div className="flow-line" /><div className="flow-node">Evidence and Bugs</div></div>
+    <ServicesPanel services={services} />
     <div className="metric-grid compact">
       <Metric label="Pending" value={counts.PENDING || 0} tone="pending" /><Metric label="Running" value={counts.RUNNING || 0} tone="running" /><Metric label="Passed" value={counts.PASS || 0} tone="pass" /><Metric label="Failed" value={counts.FAIL || 0} tone="fail" /><Metric label="Skipped" value={counts.SKIP || 0} tone="skip" />
     </div>
@@ -302,15 +423,15 @@ function ServicesPanel({ services }) {
   return <section className="panel"><div className="section-heading"><h2>Local Services</h2><span>Updated {formatDate(services.updatedAt)}</span></div><div className="service-grid">{(services.services || []).map((service) => <article key={service.name} className="service-card"><span>{service.name}</span><strong>:{service.port}</strong><p className={service.up ? "pass" : "fail"}>{service.up ? `up ${service.statusCode}` : service.error || "down"}</p></article>)}</div></section>;
 }
 
-function SuitesPanel({ framework, onRun }) {
-  return <section className="card-grid">{(framework?.suites || []).map((suite) => <article key={suite.id} className="panel"><div className="section-heading"><h2>{suite.label}</h2><span>{suite.surface}</span></div><p>{suite.description}</p><div className="tag-row">{(suite.tags || []).map((tag) => <span key={tag}>{tag}</span>)}</div><button onClick={() => onRun(suite)}><Play size={16} /> Run Suite</button></article>)}</section>;
+function SuitesPanel({ framework, onOpen, onRun }) {
+  return <section className="card-grid">{(framework?.suites || []).map((suite) => <article key={suite.id} className="panel suite-card" onClick={() => onOpen(suite)}><div className="section-heading"><h2>{suite.label}</h2><span>{suite.surface}</span></div><p>{suite.description}</p><div className="tag-row">{(suite.tags || []).map((tag) => <span key={tag}>{tag}</span>)}</div><div className="inline-actions"><button onClick={(event) => { event.stopPropagation(); onOpen(suite); }}><Search size={16} /> View Cases</button><button className="secondary" onClick={(event) => { event.stopPropagation(); onRun(suite); }}><Play size={16} /> Run Suite</button></div></article>)}</section>;
 }
 
 function ScenariosPanel({ framework, setScenarioFilter, setActive }) {
   return <section className="card-grid">{(framework?.scenarios || []).map((scenario) => <article key={scenario.id} className="panel"><div className="section-heading"><h2>{scenario.label}</h2><span>{scenario.suiteId}</span></div><p>{scenario.description}</p><code>{scenario.grep || "No grep filter"}</code><button onClick={() => { setScenarioFilter(scenario.grep || ""); setActive("execution"); }}><Search size={16} /> Use Filter</button></article>)}</section>;
 }
 
-function RecorderPanel({ recorder, setRecorder, recording, recordedScenarios, startRecording, stopRecording, runRecordedScenario, running }) {
+function RecorderPanel({ recorder, setRecorder, recording, recordedScenarios, startRecording, stopRecording, runRecordedScenario, stopRun, running, status }) {
   const scenarios = Array.isArray(recordedScenarios?.scenarios) ? recordedScenarios.scenarios : [];
   const isRecording = Boolean(recording?.recording);
   return <section className="section-stack">
@@ -341,14 +462,15 @@ function RecorderPanel({ recorder, setRecorder, recording, recordedScenarios, st
       renderCell={(row, key) => {
         if (key === "createdAt") return formatDate(row.createdAt);
         if (key !== "actions") return null;
-        return <div className="inline-actions"><button onClick={() => runRecordedScenario(row, false)} disabled={running || isRecording}><Play size={16} /> Run</button><button className="secondary" onClick={() => runRecordedScenario(row, true)} disabled={running || isRecording}>Headed</button></div>;
+        const isCurrentRun = running && status?.scenario === row.name && status?.surface === row.surface;
+        return <div className="inline-actions"><button onClick={() => runRecordedScenario(row, false)} disabled={running || isRecording}><Play size={16} /> Run</button><button className="secondary" onClick={() => runRecordedScenario(row, true)} disabled={running || isRecording}>Headed</button><button className="danger" onClick={stopRun} disabled={!isCurrentRun}><Square size={16} /> Stop</button></div>;
       }}
     />
   </section>;
 }
 
-function InventoryPanel({ rows, filter, setFilter, selectedTests, toggleSelected, selectVisible, clearSelected, refresh }) {
-  return <section className="panel"><div className="section-heading toolbar-heading"><div><h2>Selectable Test Inventory</h2><span>{rows.length} visible cases</span></div><div className="inline-actions"><input value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="Filter by surface, feature, case, step" /><button className="secondary" onClick={refresh}><RefreshCw size={16} /> Refresh</button><button className="secondary" onClick={selectVisible}>Select Visible</button><button className="secondary" onClick={clearSelected}>Clear</button></div></div><DataTable rows={rows} columns={[["select", "Select"], ["id", "ID"], ["surface", "Surface"], ["feature", "Scenario"], ["displayTitle", "Test Case"], ["input", "Test Steps"], ["expected", "Expected Result"], ["proof", "What It Proves"]]} renderCell={(row, key) => key === "select" ? <input type="checkbox" checked={selectedTests.has(row.title)} onChange={() => toggleSelected(row.title)} /> : null} /></section>;
+function InventoryPanel({ rows, filter, setFilter, selectedTests, toggleSelected, selectVisible, selectAll, clearSelected, refresh, context, clearContext, backToSuites, runSelected, running }) {
+  return <section className="panel"><div className="section-heading toolbar-heading"><div><h2>{context ? `${context.label} Test Cases` : "Selectable Test Inventory"}</h2><span>{rows.length} visible cases · {selectedTests.size} selected</span></div><div className="inline-actions">{context ? <button className="secondary" onClick={backToSuites}>Back</button> : null}<input value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="Filter by tag, surface, feature, case, step" />{context ? <button className="secondary" onClick={clearContext}>All Cases</button> : null}<button onClick={runSelected} disabled={running || selectedTests.size === 0}><Play size={16} /> Run Selected {selectedTests.size}</button><a className="secondary" href="/api/inventory.xlsx?refresh=1"><Download size={16} /> Excel</a><button className="secondary" onClick={refresh}><RefreshCw size={16} /> Refresh</button><button className="secondary" onClick={selectAll}>Select All</button><button className="secondary" onClick={selectVisible}>Select Visible</button><button className="secondary" onClick={clearSelected}>Clear</button></div></div><DataTable rows={rows} columns={[["select", "Select"], ["id", "ID"], ["tags", "Tags"], ["testingLevel", "Category"], ["surface", "Surface"], ["feature", "Scenario"], ["displayTitle", "Test Case"], ["input", "Test Steps"], ["expected", "Expected Result"], ["proof", "What It Proves"]]} renderCell={(row, key) => key === "select" ? <input type="checkbox" checked={selectedTests.has(row.title)} onChange={() => toggleSelected(row.title)} /> : null} /></section>;
 }
 
 function BuilderPanel({ framework }) {
@@ -356,19 +478,66 @@ function BuilderPanel({ framework }) {
 }
 
 function ExecutionPanel({ status, stopRun }) {
-  return <section className="section-stack"><div className="metric-grid"><Metric label="Status" value={status.running ? "Running" : "Idle"} /><Metric label="Surface" value={status.surface || "-"} /><Metric label="Scenario" value={status.scenario || "-"} /><Metric label="Selected" value={status.selectedTestCount || 0} /><Metric label="Exit Code" value={status.exitCode ?? "-"} /></div><div className="panel"><div className="section-heading"><h2>Live Output</h2><button className="danger" onClick={stopRun} disabled={!status.running}><Square size={16} /> Stop Run</button></div><pre className="logs">{(status.logs || []).join("\n") || "No run started."}</pre></div></section>;
+  return <section className="section-stack"><div className="metric-grid execution-metrics"><Metric label="Status" value={status.running ? "Running" : "Idle"} /><Metric label="Surface" value={status.surface || "-"} /><Metric label="Scenario" value={summarizeScenario(status)} /><Metric label="Selected" value={status.selectedTestCount || 0} /><Metric label="Exit Code" value={status.exitCode ?? "-"} /></div><div className="panel"><div className="section-heading"><h2>Live Output</h2><button className="danger" onClick={stopRun} disabled={!status.running}><Square size={16} /> Stop Run</button></div><pre className="logs">{(status.logs || []).join("\n") || "No run started."}</pre></div></section>;
 }
 
 function ReportsPanel({ results }) {
-  return <section className="section-stack"><div className="report-links"><a href="/report/list-view-regression-results.html" target="_blank" rel="noreferrer">HTML Report</a><a href="/report/list-view-regression-results.csv" target="_blank" rel="noreferrer">CSV</a><a href="/report/list-view-regression-results.json" target="_blank" rel="noreferrer">JSON</a><a href="/report/list-view-regression-results.pdf" target="_blank" rel="noreferrer">PDF</a></div><DataTable title={`Report Rows (${results.total || 0})`} rows={results.rows || []} columns={[["id", "ID"], ["moduleSuite", "Module / Suite"], ["testCaseTitle", "Test Case"], ["expectedResult", "Expected"], ["actualResult", "Actual"], ["status", "Status"], ["automationStatus", "Automation"]]} /></section>;
+  const counts = results.counts || {};
+  const links = [
+    ["HTML Report", "/report/list-view-regression-results.html"],
+    ["Test Cases Excel", "/api/inventory.xlsx?refresh=1"],
+    ["CSV", "/report/list-view-regression-results.csv"],
+    ["JSON", "/report/list-view-regression-results.json"],
+    ["PDF", "/report/list-view-regression-results.pdf"]
+  ];
+  return <section className="section-stack">
+    <div className="metric-grid compact">
+      <Metric label="Total" value={results.total || results.rows?.length || 0} />
+      <Metric label="Passed" value={counts.PASS || 0} tone="pass" />
+      <Metric label="Failed" value={counts.FAIL || 0} tone="fail" />
+      <Metric label="Running" value={counts.RUNNING || 0} tone="running" />
+      <Metric label="Skipped" value={counts.SKIP || 0} tone="skip" />
+    </div>
+    <section className="panel">
+      <div className="section-heading">
+        <div><h2>Report Exports</h2><span>{results.updatedAt ? `Updated ${formatDate(results.updatedAt)}` : "Waiting for first run"}</span></div>
+      </div>
+      <div className="report-card-grid">
+        {links.map(([label, href]) => <a key={href} href={href} target="_blank" rel="noreferrer">{label}</a>)}
+      </div>
+    </section>
+    <DataTable title={`Report Rows (${results.total || 0})`} rows={results.rows || []} columns={[["id", "ID"], ["tags", "Tags"], ["moduleSuite", "Module / Suite"], ["testCaseTitle", "Test Case"], ["expectedResult", "Expected"], ["actualResult", "Actual"], ["status", "Status"], ["automationStatus", "Automation"]]} />
+  </section>;
 }
 
 function BugsPanel({ failedRows }) {
   return <section className="panel"><DataTable title={`Bug Report (${failedRows.length})`} rows={failedRows} columns={[["id", "ID"], ["surface", "Surface"], ["featureArea", "Feature"], ["bugReport", "Bug Summary"], ["actualResult", "Actual Result"]]} /></section>;
 }
 
-function AgentPanel({ agent, setAgent, runAgentScan, runAgentGenerate }) {
-  return <section className="section-stack"><div className="panel"><div className="section-heading"><div><h2>AI Test Agent</h2><span>Branch plus review workflow</span></div><GitBranch size={20} /></div><div className="agent-controls"><label>Base ref <input value={agent.baseRef} onChange={(event) => setAgent((previous) => ({ ...previous, baseRef: event.target.value }))} /></label><button onClick={runAgentScan} disabled={agent.busy}><Search size={16} /> Scan Changes</button><button onClick={runAgentGenerate} disabled={agent.busy}><Bot size={16} /> Generate Scenarios</button></div>{agent.error ? <p className="danger-text">{agent.error}</p> : null}</div>{agent.scan ? <DataTable title={`Changed Files (${agent.scan.changedFiles?.length || 0})`} rows={agent.scan.changedFiles || []} columns={[["path", "Path"], ["area", "Area"], ["risk", "Risk"], ["reason", "Reason"]]} /> : null}{agent.generated ? <DataTable title={`Generated Candidate Scenarios (${agent.generated.scenarios?.length || 0})`} rows={agent.generated.scenarios || []} columns={[["suite", "Suite"], ["scenario", "Scenario"], ["testCase", "Test Case"], ["steps", "Steps"], ["expected", "Expected"]]} /> : null}</section>;
+function AgentPanel({ agent, setAgent, runAgentScan, runAgentGenerate, runAgentGenerated, commitAgentGenerated, running }) {
+  const generatedCount = agent.generated?.scenarios?.length || 0;
+  return <section className="section-stack">
+    <div className="panel">
+      <div className="section-heading"><div><h2>AI Test Agent</h2><span>Scan changes, generate specs, run, then commit</span></div><GitBranch size={20} /></div>
+      <div className="agent-controls">
+        <label>Base ref <input value={agent.baseRef} onChange={(event) => setAgent((previous) => ({ ...previous, baseRef: event.target.value }))} /></label>
+        <button onClick={runAgentScan} disabled={agent.busy || running}><Search size={16} /> Scan Changes</button>
+        <button onClick={runAgentGenerate} disabled={agent.busy || running}><Bot size={16} /> Generate Specs</button>
+        <button onClick={runAgentGenerated} disabled={agent.busy || running || generatedCount === 0}><Play size={16} /> Run Generated</button>
+      </div>
+      <div className="agent-controls">
+        <label>Branch <input value={agent.branchName} onChange={(event) => setAgent((previous) => ({ ...previous, branchName: event.target.value }))} /></label>
+        <label><input type="checkbox" checked={agent.push} onChange={(event) => setAgent((previous) => ({ ...previous, push: event.target.checked }))} /> Push to origin</label>
+        <button className="secondary" onClick={commitAgentGenerated} disabled={agent.busy || running || generatedCount === 0}><CheckSquare size={16} /> Commit & Push Generated</button>
+      </div>
+      {agent.generated?.spec ? <p className="muted">Spec: <code>{agent.generated.spec}</code></p> : null}
+      {agent.generated?.outputPath ? <p className="muted">Manifest: <code>{agent.generated.outputPath}</code></p> : null}
+      {agent.commit ? <p className="pass">Committed on {agent.commit.branchName}{agent.commit.pushed ? " and pushed" : ""}.</p> : null}
+      {agent.error ? <p className="danger-text">{agent.error}</p> : null}
+    </div>
+    {agent.scan ? <DataTable title={`Changed Files (${agent.scan.changedFiles?.length || 0})`} rows={agent.scan.changedFiles || []} columns={[["path", "Path"], ["area", "Area"], ["risk", "Risk"], ["reason", "Reason"]]} /> : null}
+    {agent.generated ? <DataTable title={`Generated Runnable Scenarios (${generatedCount})`} rows={agent.generated.scenarios || []} columns={[["id", "ID"], ["surfaceLabel", "Surface"], ["feature", "Feature"], ["level", "Testing"], ["tag", "Tag"], ["action", "Action"], ["testCase", "Test Case"], ["risk", "Risk"], ["sourcePath", "Source"]]} /> : null}
+  </section>;
 }
 
 function SettingsPanel({ framework, theme, setTheme }) {

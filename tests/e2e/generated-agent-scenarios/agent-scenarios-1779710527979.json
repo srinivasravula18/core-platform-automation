@@ -1,0 +1,316 @@
+{
+  "generatedAt": "2026-05-25T12:02:07.980Z",
+  "baseRef": "4314f527aca9faa579cca9114d84095a48b2cadf",
+  "requestedBaseRef": "auto",
+  "previousBaselineCommit": "4314f527aca9faa579cca9114d84095a48b2cadf",
+  "headCommit": "201c4461bf09b496619dbfc8d3a48b2ae65d7729",
+  "planner": {
+    "provider": "rules",
+    "model": "gemini-3.5-flash",
+    "error": "API Key not found. Please pass a valid API key.",
+    "groundingMetadata": null
+  },
+  "appRoot": "D:\\core-platform",
+  "spec": "",
+  "summary": {
+    "changedFiles": 6,
+    "generated": 0,
+    "reused": 6
+  },
+  "scenarios": [
+    {
+      "id": "AGENT_001",
+      "suite": "admin-list-view",
+      "surface": "admin",
+      "scenario": "Admin regression for Admin",
+      "testCase": "Verify admin behavior after apps/admin/src/components/AdminCreateObjectModal.tsx",
+      "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
+      "steps": "Open the affected Admin surface. | Navigate to the screen or API path related to apps/admin/src/components/AdminCreateObjectModal.tsx. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.",
+      "expected": "The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.",
+      "risk": "Low",
+      "sourcePath": "apps/admin/src/components/AdminCreateObjectModal.tsx",
+      "surfaceLabel": "Admin",
+      "feature": "Admin",
+      "level": "Regression",
+      "tag": "@regression",
+      "adminScreen": "Objects",
+      "proof": "generated smoke coverage for apps/admin/src/components/AdminCreateObjectModal.tsx",
+      "evidenceName": "agent-agent_001",
+      "action": "reuse",
+      "existingTests": [
+        {
+          "id": "REG_LIFECYCLE_051",
+          "title": "Admin Apps disposable lifecycle creates deletes finds recycle bin entry and purges it @lifecycle @recycle [surface: Admin] [feature: Lifecycle] [precondition: ALLOW_DATA_WRITE=true and admin user can manage apps] [input: create disposable app, search it, open detail, delete, verify Recycle Bin, purge matching entry] [expected: disposable app is created, deleted, visible in Recycle Bin, and removed after purge] [proof: Admin list-view lifecycle is covered without touching seeded data]",
+          "displayTitle": "Admin Apps disposable lifecycle creates deletes finds recycle bin entry and purges it @lifecycle @recycle",
+          "surface": "Admin",
+          "feature": "Lifecycle",
+          "score": 6
+        },
+        {
+          "id": "REG_WORKFLOW_LIFECYCLE_052",
+          "title": "Admin Apps workflow edits saves deletes restores verifies and cleans up disposable app @workflow @lifecycle @recycle [surface: Admin] [feature: Workflow Lifecycle] [precondition: ALLOW_DATA_WRITE=true and admin user can manage apps] [input: open Apps, create disposable app, select row, edit label, save, delete, restore from Recycle Bin, verify restored, then cleanup purge] [expected: complete multi-step Apps workflow succeeds and leaves no disposable app behind] [proof: one E2E case covers the full Admin Apps list-view journey]",
+          "displayTitle": "Admin Apps workflow edits saves deletes restores verifies and cleans up disposable app @workflow @lifecycle @recycle",
+          "surface": "Admin",
+          "feature": "Workflow Lifecycle",
+          "score": 5
+        },
+        {
+          "id": "BVT_LIST_VIEW_SHELL_001",
+          "title": "Admin Apps list view loads [surface: Admin] [feature: List view shell] [precondition: seeded admin user is signed in] [input: open Apps from Admin navigation] [expected: list view table, empty state, or permission/error state renders without crashing] [proof: every Admin list-view surface stays reachable]",
+          "displayTitle": "Admin Apps list view loads",
+          "surface": "Admin",
+          "feature": "List view shell",
+          "score": 4
+        }
+      ],
+      "decision": "Existing REG_LIFECYCLE_051 covers the changed feature area; reuse it instead of duplicating.",
+      "planner": "rules",
+      "title": "@regression Verify admin behavior after apps/admin/src/components/AdminCreateObjectModal.tsx [surface: Admin] [feature: Admin] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open the affected Admin surface. | Navigate to the screen or API path related to apps/admin/src/components/AdminCreateObjectModal.tsx. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: generated smoke coverage for apps/admin/src/components/AdminCreateObjectModal.tsx]"
+    },
+    {
+      "id": "AGENT_002",
+      "suite": "admin-list-view",
+      "surface": "admin",
+      "scenario": "Admin regression for Admin",
+      "testCase": "Verify admin behavior after apps/admin/src/components/AdminObjectHomePanel.tsx",
+      "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
+      "steps": "Open the affected Admin surface. | Navigate to the screen or API path related to apps/admin/src/components/AdminObjectHomePanel.tsx. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.",
+      "expected": "The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.",
+      "risk": "Low",
+      "sourcePath": "apps/admin/src/components/AdminObjectHomePanel.tsx",
+      "surfaceLabel": "Admin",
+      "feature": "Admin",
+      "level": "Regression",
+      "tag": "@regression",
+      "adminScreen": "Objects",
+      "proof": "generated smoke coverage for apps/admin/src/components/AdminObjectHomePanel.tsx",
+      "evidenceName": "agent-agent_002",
+      "action": "reuse",
+      "existingTests": [
+        {
+          "id": "REG_LIFECYCLE_051",
+          "title": "Admin Apps disposable lifecycle creates deletes finds recycle bin entry and purges it @lifecycle @recycle [surface: Admin] [feature: Lifecycle] [precondition: ALLOW_DATA_WRITE=true and admin user can manage apps] [input: create disposable app, search it, open detail, delete, verify Recycle Bin, purge matching entry] [expected: disposable app is created, deleted, visible in Recycle Bin, and removed after purge] [proof: Admin list-view lifecycle is covered without touching seeded data]",
+          "displayTitle": "Admin Apps disposable lifecycle creates deletes finds recycle bin entry and purges it @lifecycle @recycle",
+          "surface": "Admin",
+          "feature": "Lifecycle",
+          "score": 6
+        },
+        {
+          "id": "REG_WORKFLOW_LIFECYCLE_052",
+          "title": "Admin Apps workflow edits saves deletes restores verifies and cleans up disposable app @workflow @lifecycle @recycle [surface: Admin] [feature: Workflow Lifecycle] [precondition: ALLOW_DATA_WRITE=true and admin user can manage apps] [input: open Apps, create disposable app, select row, edit label, save, delete, restore from Recycle Bin, verify restored, then cleanup purge] [expected: complete multi-step Apps workflow succeeds and leaves no disposable app behind] [proof: one E2E case covers the full Admin Apps list-view journey]",
+          "displayTitle": "Admin Apps workflow edits saves deletes restores verifies and cleans up disposable app @workflow @lifecycle @recycle",
+          "surface": "Admin",
+          "feature": "Workflow Lifecycle",
+          "score": 5
+        },
+        {
+          "id": "BVT_LIST_VIEW_SHELL_001",
+          "title": "Admin Apps list view loads [surface: Admin] [feature: List view shell] [precondition: seeded admin user is signed in] [input: open Apps from Admin navigation] [expected: list view table, empty state, or permission/error state renders without crashing] [proof: every Admin list-view surface stays reachable]",
+          "displayTitle": "Admin Apps list view loads",
+          "surface": "Admin",
+          "feature": "List view shell",
+          "score": 4
+        }
+      ],
+      "decision": "Existing REG_LIFECYCLE_051 covers the changed feature area; reuse it instead of duplicating.",
+      "planner": "rules",
+      "title": "@regression Verify admin behavior after apps/admin/src/components/AdminObjectHomePanel.tsx [surface: Admin] [feature: Admin] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open the affected Admin surface. | Navigate to the screen or API path related to apps/admin/src/components/AdminObjectHomePanel.tsx. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: generated smoke coverage for apps/admin/src/components/AdminObjectHomePanel.tsx]"
+    },
+    {
+      "id": "AGENT_003",
+      "suite": "list-view-regression",
+      "surface": "admin",
+      "scenario": "Application regression for Application",
+      "testCase": "Verify application behavior after docs/ui/component-catalog.md",
+      "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
+      "steps": "Open the affected Application surface. | Navigate to the screen or API path related to docs/ui/component-catalog.md. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.",
+      "expected": "The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.",
+      "risk": "Low",
+      "sourcePath": "docs/ui/component-catalog.md",
+      "surfaceLabel": "Admin",
+      "feature": "Application",
+      "level": "Regression",
+      "tag": "@regression",
+      "adminScreen": "Apps",
+      "proof": "generated smoke coverage for docs/ui/component-catalog.md",
+      "evidenceName": "agent-agent_003",
+      "action": "reuse",
+      "existingTests": [
+        {
+          "id": "REG_LIFECYCLE_051",
+          "title": "Admin Apps disposable lifecycle creates deletes finds recycle bin entry and purges it @lifecycle @recycle [surface: Admin] [feature: Lifecycle] [precondition: ALLOW_DATA_WRITE=true and admin user can manage apps] [input: create disposable app, search it, open detail, delete, verify Recycle Bin, purge matching entry] [expected: disposable app is created, deleted, visible in Recycle Bin, and removed after purge] [proof: Admin list-view lifecycle is covered without touching seeded data]",
+          "displayTitle": "Admin Apps disposable lifecycle creates deletes finds recycle bin entry and purges it @lifecycle @recycle",
+          "surface": "Admin",
+          "feature": "Lifecycle",
+          "score": 4
+        },
+        {
+          "id": "BVT_TOOLBAR_CONTROLS_041",
+          "title": "Admin Objects toolbar has all primary list-view controls from reference screenshot [surface: Admin] [feature: Toolbar controls] [precondition: Objects list view is open] [input: inspect list selector, pin, selected count, search, New, Delete, refresh, settings, fit columns, CSV, PDF] [expected: every primary toolbar control is present] [proof: reference screenshot toolbar behavior is covered in the list-view suite]",
+          "displayTitle": "Admin Objects toolbar has all primary list-view controls from reference screenshot",
+          "surface": "Admin",
+          "feature": "Toolbar controls",
+          "score": 3
+        },
+        {
+          "id": "REG_COLUMN_SIZING_050",
+          "title": "Admin list view fit columns action keeps table visible [surface: Admin] [feature: Column sizing] [precondition: Objects table mode is visible] [input: click Fit columns] [expected: table remains visible after auto-resize] [proof: toolbar fit-columns control works on Admin tables]",
+          "displayTitle": "Admin list view fit columns action keeps table visible",
+          "surface": "Admin",
+          "feature": "Column sizing",
+          "score": 3
+        }
+      ],
+      "decision": "Existing REG_LIFECYCLE_051 covers the changed feature area; reuse it instead of duplicating.",
+      "planner": "rules",
+      "title": "@regression Verify application behavior after docs/ui/component-catalog.md [surface: Admin] [feature: Application] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open the affected Application surface. | Navigate to the screen or API path related to docs/ui/component-catalog.md. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: generated smoke coverage for docs/ui/component-catalog.md]"
+    },
+    {
+      "id": "AGENT_004",
+      "suite": "list-view-regression",
+      "surface": "admin",
+      "scenario": "Shared UI regression for Shared UI",
+      "testCase": "Verify shared ui behavior after packages/ui/src/DocumentationCenter.tsx",
+      "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
+      "steps": "Open the affected Shared UI surface. | Navigate to the screen or API path related to packages/ui/src/DocumentationCenter.tsx. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.",
+      "expected": "The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.",
+      "risk": "Low",
+      "sourcePath": "packages/ui/src/DocumentationCenter.tsx",
+      "surfaceLabel": "Admin",
+      "feature": "Shared UI",
+      "level": "Regression",
+      "tag": "@regression",
+      "adminScreen": "Apps",
+      "proof": "generated smoke coverage for packages/ui/src/DocumentationCenter.tsx",
+      "evidenceName": "agent-agent_004",
+      "action": "reuse",
+      "existingTests": [
+        {
+          "id": "REG_LIFECYCLE_051",
+          "title": "Admin Apps disposable lifecycle creates deletes finds recycle bin entry and purges it @lifecycle @recycle [surface: Admin] [feature: Lifecycle] [precondition: ALLOW_DATA_WRITE=true and admin user can manage apps] [input: create disposable app, search it, open detail, delete, verify Recycle Bin, purge matching entry] [expected: disposable app is created, deleted, visible in Recycle Bin, and removed after purge] [proof: Admin list-view lifecycle is covered without touching seeded data]",
+          "displayTitle": "Admin Apps disposable lifecycle creates deletes finds recycle bin entry and purges it @lifecycle @recycle",
+          "surface": "Admin",
+          "feature": "Lifecycle",
+          "score": 4
+        },
+        {
+          "id": "BVT_TOOLBAR_CONTROLS_041",
+          "title": "Admin Objects toolbar has all primary list-view controls from reference screenshot [surface: Admin] [feature: Toolbar controls] [precondition: Objects list view is open] [input: inspect list selector, pin, selected count, search, New, Delete, refresh, settings, fit columns, CSV, PDF] [expected: every primary toolbar control is present] [proof: reference screenshot toolbar behavior is covered in the list-view suite]",
+          "displayTitle": "Admin Objects toolbar has all primary list-view controls from reference screenshot",
+          "surface": "Admin",
+          "feature": "Toolbar controls",
+          "score": 3
+        },
+        {
+          "id": "REG_COLUMN_SIZING_050",
+          "title": "Admin list view fit columns action keeps table visible [surface: Admin] [feature: Column sizing] [precondition: Objects table mode is visible] [input: click Fit columns] [expected: table remains visible after auto-resize] [proof: toolbar fit-columns control works on Admin tables]",
+          "displayTitle": "Admin list view fit columns action keeps table visible",
+          "surface": "Admin",
+          "feature": "Column sizing",
+          "score": 3
+        }
+      ],
+      "decision": "Existing REG_LIFECYCLE_051 covers the changed feature area; reuse it instead of duplicating.",
+      "planner": "rules",
+      "title": "@regression Verify shared ui behavior after packages/ui/src/DocumentationCenter.tsx [surface: Admin] [feature: Shared UI] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open the affected Shared UI surface. | Navigate to the screen or API path related to packages/ui/src/DocumentationCenter.tsx. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: generated smoke coverage for packages/ui/src/DocumentationCenter.tsx]"
+    },
+    {
+      "id": "AGENT_005",
+      "suite": "list-view-regression",
+      "surface": "admin",
+      "scenario": "Shared UI regression for Shared UI",
+      "testCase": "Verify shared ui behavior after packages/ui/src/index.tsx",
+      "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
+      "steps": "Open the affected Shared UI surface. | Navigate to the screen or API path related to packages/ui/src/index.tsx. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.",
+      "expected": "The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.",
+      "risk": "Low",
+      "sourcePath": "packages/ui/src/index.tsx",
+      "surfaceLabel": "Admin",
+      "feature": "Shared UI",
+      "level": "Regression",
+      "tag": "@regression",
+      "adminScreen": "Apps",
+      "proof": "generated smoke coverage for packages/ui/src/index.tsx",
+      "evidenceName": "agent-agent_005",
+      "action": "reuse",
+      "existingTests": [
+        {
+          "id": "REG_LIFECYCLE_051",
+          "title": "Admin Apps disposable lifecycle creates deletes finds recycle bin entry and purges it @lifecycle @recycle [surface: Admin] [feature: Lifecycle] [precondition: ALLOW_DATA_WRITE=true and admin user can manage apps] [input: create disposable app, search it, open detail, delete, verify Recycle Bin, purge matching entry] [expected: disposable app is created, deleted, visible in Recycle Bin, and removed after purge] [proof: Admin list-view lifecycle is covered without touching seeded data]",
+          "displayTitle": "Admin Apps disposable lifecycle creates deletes finds recycle bin entry and purges it @lifecycle @recycle",
+          "surface": "Admin",
+          "feature": "Lifecycle",
+          "score": 4
+        },
+        {
+          "id": "BVT_TOOLBAR_CONTROLS_041",
+          "title": "Admin Objects toolbar has all primary list-view controls from reference screenshot [surface: Admin] [feature: Toolbar controls] [precondition: Objects list view is open] [input: inspect list selector, pin, selected count, search, New, Delete, refresh, settings, fit columns, CSV, PDF] [expected: every primary toolbar control is present] [proof: reference screenshot toolbar behavior is covered in the list-view suite]",
+          "displayTitle": "Admin Objects toolbar has all primary list-view controls from reference screenshot",
+          "surface": "Admin",
+          "feature": "Toolbar controls",
+          "score": 3
+        },
+        {
+          "id": "REG_COLUMN_SIZING_050",
+          "title": "Admin list view fit columns action keeps table visible [surface: Admin] [feature: Column sizing] [precondition: Objects table mode is visible] [input: click Fit columns] [expected: table remains visible after auto-resize] [proof: toolbar fit-columns control works on Admin tables]",
+          "displayTitle": "Admin list view fit columns action keeps table visible",
+          "surface": "Admin",
+          "feature": "Column sizing",
+          "score": 3
+        }
+      ],
+      "decision": "Existing REG_LIFECYCLE_051 covers the changed feature area; reuse it instead of duplicating.",
+      "planner": "rules",
+      "title": "@regression Verify shared ui behavior after packages/ui/src/index.tsx [surface: Admin] [feature: Shared UI] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open the affected Shared UI surface. | Navigate to the screen or API path related to packages/ui/src/index.tsx. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: generated smoke coverage for packages/ui/src/index.tsx]"
+    },
+    {
+      "id": "AGENT_006",
+      "suite": "list-view-regression",
+      "surface": "admin",
+      "scenario": "Application regression for Application",
+      "testCase": "Verify application behavior after reset-metadata-start.bat",
+      "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
+      "steps": "Open the affected Application surface. | Navigate to the screen or API path related to reset-metadata-start.bat. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.",
+      "expected": "The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.",
+      "risk": "Low",
+      "sourcePath": "reset-metadata-start.bat",
+      "surfaceLabel": "Admin",
+      "feature": "Application",
+      "level": "Regression",
+      "tag": "@regression",
+      "adminScreen": "Apps",
+      "proof": "generated smoke coverage for reset-metadata-start.bat",
+      "evidenceName": "agent-agent_006",
+      "action": "reuse",
+      "existingTests": [
+        {
+          "id": "REG_LIFECYCLE_051",
+          "title": "Admin Apps disposable lifecycle creates deletes finds recycle bin entry and purges it @lifecycle @recycle [surface: Admin] [feature: Lifecycle] [precondition: ALLOW_DATA_WRITE=true and admin user can manage apps] [input: create disposable app, search it, open detail, delete, verify Recycle Bin, purge matching entry] [expected: disposable app is created, deleted, visible in Recycle Bin, and removed after purge] [proof: Admin list-view lifecycle is covered without touching seeded data]",
+          "displayTitle": "Admin Apps disposable lifecycle creates deletes finds recycle bin entry and purges it @lifecycle @recycle",
+          "surface": "Admin",
+          "feature": "Lifecycle",
+          "score": 4
+        },
+        {
+          "id": "BVT_TOOLBAR_CONTROLS_041",
+          "title": "Admin Objects toolbar has all primary list-view controls from reference screenshot [surface: Admin] [feature: Toolbar controls] [precondition: Objects list view is open] [input: inspect list selector, pin, selected count, search, New, Delete, refresh, settings, fit columns, CSV, PDF] [expected: every primary toolbar control is present] [proof: reference screenshot toolbar behavior is covered in the list-view suite]",
+          "displayTitle": "Admin Objects toolbar has all primary list-view controls from reference screenshot",
+          "surface": "Admin",
+          "feature": "Toolbar controls",
+          "score": 3
+        },
+        {
+          "id": "REG_FILTERS_043",
+          "title": "Admin Objects filter validation blocks empty filter save [surface: Admin] [feature: Filters] [precondition: Objects list view settings is open] [input: add an incomplete filter and save] [expected: inline filter error is shown] [proof: Admin filter builder fails fast before invalid metadata is saved]",
+          "displayTitle": "Admin Objects filter validation blocks empty filter save",
+          "surface": "Admin",
+          "feature": "Filters",
+          "score": 3
+        }
+      ],
+      "decision": "Existing REG_LIFECYCLE_051 covers the changed feature area; reuse it instead of duplicating.",
+      "planner": "rules",
+      "title": "@regression Verify application behavior after reset-metadata-start.bat [surface: Admin] [feature: Application] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open the affected Application surface. | Navigate to the screen or API path related to reset-metadata-start.bat. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: generated smoke coverage for reset-metadata-start.bat]"
+    }
+  ]
+}

@@ -12,6 +12,7 @@ import { writePdfFromHtml } from "./report";
 
 type Row = {
   id: string;
+  tags: string;
   moduleSuite: string;
   testCaseTitle: string;
   surface: string;
@@ -176,6 +177,9 @@ const moduleCode = (feature: string) =>
 const levelCode = (level: Row["testingLevel"]) =>
   level === "BVT" ? "BVT" : level === "Sanity" ? "SAN" : "REG";
 
+const categoryTag = (level: Row["testingLevel"]) =>
+  level === "BVT" ? "@bvt" : level === "Sanity" ? "@sanity" : "@regression";
+
 const defaultTestData = (surface: string) => {
   if (surface === "API") return "Seeded credentials; app, object, and list-view IDs resolved at runtime.";
   if (surface === "Admin") return "Seeded admin credentials; seeded metadata list views.";
@@ -339,8 +343,10 @@ export default class TableReport implements Reporter {
     const scenario = formatScenario(test);
     const level = normalizeTestingLevel(meta.level, scenario);
     const featureArea = meta.feature || "List View";
+    const id = `${levelCode(level)}_${moduleCode(featureArea)}_${String(index + 1).padStart(3, "0")}`;
     return {
-      id: `${levelCode(level)}_${moduleCode(featureArea)}_${String(index + 1).padStart(3, "0")}`,
+      id,
+      tags: `@case-${id} ${categoryTag(level)}`,
       moduleSuite: `${meta.surface || "Application"} / ${featureArea}`,
       testCaseTitle: formatTitle(test),
       surface: meta.surface,
@@ -449,7 +455,7 @@ export default class TableReport implements Reporter {
           ? row.screenshotPaths
               .map(
                 (screenshotPath, index) =>
-                  `<a href="${screenshotPath}">View ${index + 1}</a><br/><img src="${screenshotPath}" alt="screenshot ${index + 1}" style="max-width: 220px; max-height: 140px;" />`
+                  `<a class="evidence-link" href="${screenshotPath}">View ${index + 1}</a><img class="evidence-shot" src="${screenshotPath}" alt="screenshot ${index + 1}" />`
               )
               .join("<br/>")
           : "";
@@ -458,6 +464,7 @@ export default class TableReport implements Reporter {
           : "";
         return `<tr>
   <td>${sanitize(row.id)}</td>
+  <td><span class="tag-list">${sanitize(row.tags)}</span></td>
   <td>${sanitize(row.moduleSuite)}</td>
   <td>${sanitize(row.testCaseTitle)}</td>
   <td>${sanitize(row.surface)}</td>
@@ -468,7 +475,7 @@ export default class TableReport implements Reporter {
   <td>${sanitize(row.expectedResult)}</td>
   <td>${sanitize(row.actualResult)}</td>
   <td>${sanitize(row.proof)}</td>
-  <td class="${row.status}">${row.status}</td>
+  <td><span class="status ${row.status}">${row.status}</span></td>
   <td>${sanitize(row.priority)}</td>
   <td>${sanitize(row.testingLevel)}</td>
   <td>${sanitize(row.automationStatus)}</td>
@@ -482,59 +489,241 @@ export default class TableReport implements Reporter {
 <html>
 <head>
   <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Automated Test Results</title>
   ${runStatus === "running" ? '<meta http-equiv="refresh" content="5" />' : ""}
   <style>
-    body { font-family: Arial, sans-serif; padding: 16px; }
-    .summary { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
-    .pill { border: 1px solid #ccc; border-radius: 999px; padding: 4px 10px; font-size: 13px; }
-    table { border-collapse: collapse; width: 100%; }
-    th, td { border: 1px solid #ccc; padding: 6px 8px; text-align: left; vertical-align: top; }
-    th { background: #f5f5f5; }
-    .PENDING { color: #6b6b6b; font-weight: 600; }
-    .RUNNING { color: #1d4ed8; font-weight: 600; }
-    .PASS { color: #0a7d16; font-weight: 600; }
-    .FAIL { color: #b00020; font-weight: 600; }
-    .SKIP { color: #6b6b6b; font-weight: 600; }
-    img { border: 1px solid #ddd; margin-top: 6px; }
+    :root {
+      color-scheme: light;
+      --bg: #f4f6f8;
+      --panel: #ffffff;
+      --panel-2: #f8fafc;
+      --border: #d9e0ea;
+      --text: #142033;
+      --muted: #657386;
+      --accent: #2563eb;
+      --pass: #0f7a35;
+      --fail: #b42318;
+      --pending: #6b7280;
+      --running: #1d4ed8;
+      --skip: #64748b;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    * { box-sizing: border-box; min-width: 0; }
+    html, body { width: 100%; height: 100%; max-width: 100dvw; max-height: 100dvh; overflow: hidden; }
+    body { margin: 0; background: var(--bg); color: var(--text); }
+    .report-shell {
+      width: 100dvw;
+      height: 100dvh;
+      max-width: 100dvw;
+      max-height: 100dvh;
+      overflow: auto;
+      padding: 16px;
+    }
+    .hero {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      align-items: flex-start;
+      margin-bottom: 14px;
+    }
+    .eyebrow {
+      margin: 0 0 4px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0;
+      text-transform: uppercase;
+    }
+    h1 { margin: 0; font-size: clamp(22px, 3vw, 34px); line-height: 1.1; overflow-wrap: anywhere; }
+    .run-meta { margin: 8px 0 0; color: var(--muted); overflow-wrap: anywhere; }
+    .report-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+    .report-actions a {
+      display: inline-flex;
+      align-items: center;
+      min-height: 36px;
+      padding: 8px 12px;
+      border-radius: 7px;
+      border: 1px solid var(--border);
+      background: var(--panel);
+      color: var(--text);
+      text-decoration: none;
+      font-weight: 700;
+    }
+    .summary {
+      display: grid;
+      grid-template-columns: repeat(6, minmax(0, 1fr));
+      gap: 10px;
+      margin-bottom: 14px;
+    }
+    .metric {
+      min-height: 76px;
+      padding: 12px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--panel);
+    }
+    .metric span { display: block; color: var(--muted); font-size: 12px; margin-bottom: 7px; }
+    .metric strong { font-size: 22px; overflow-wrap: anywhere; }
+    .table-card {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--panel);
+      overflow: hidden;
+    }
+    .table-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: center;
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--border);
+      background: var(--panel);
+    }
+    .table-head h2 { margin: 0; font-size: 16px; }
+    .table-head span { color: var(--muted); font-size: 13px; }
+    .table-wrap {
+      max-width: 100%;
+      max-height: calc(100dvh - 220px);
+      overflow: auto;
+    }
+    table {
+      width: 100%;
+      min-width: min(1500px, calc(100dvw - 34px));
+      border-collapse: collapse;
+    }
+    th, td {
+      border-bottom: 1px solid var(--border);
+      padding: 9px 10px;
+      text-align: left;
+      vertical-align: top;
+      font-size: 12px;
+      line-height: 1.45;
+      overflow-wrap: anywhere;
+    }
+    th {
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      background: var(--panel-2);
+      color: var(--muted);
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0;
+    }
+    tr:hover td { background: color-mix(in srgb, var(--accent), transparent 96%); }
+    .status {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 70px;
+      border-radius: 999px;
+      padding: 4px 8px;
+      font-weight: 800;
+      font-size: 11px;
+    }
+    .tag-list {
+      display: inline-flex;
+      max-width: 220px;
+      color: var(--accent);
+      font-weight: 800;
+      overflow-wrap: anywhere;
+    }
+    .PENDING { background: #eef0f4; color: var(--pending); }
+    .RUNNING { background: #dbeafe; color: var(--running); }
+    .PASS { background: #dcfce7; color: var(--pass); }
+    .FAIL { background: #fee2e2; color: var(--fail); }
+    .SKIP { background: #e2e8f0; color: var(--skip); }
+    .evidence-link {
+      display: inline-flex;
+      margin-bottom: 6px;
+      color: var(--accent);
+      font-weight: 700;
+      text-decoration: none;
+    }
+    .evidence-shot {
+      display: block;
+      width: min(220px, 28dvw);
+      max-width: 100%;
+      max-height: 140px;
+      object-fit: contain;
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      background: var(--panel-2);
+    }
+    @media (max-width: 900px) {
+      .report-shell { padding: 10px; }
+      .hero { flex-direction: column; }
+      .report-actions { justify-content: flex-start; }
+      .summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .table-wrap { max-height: calc(100dvh - 300px); }
+      table { min-width: min(1100px, calc(100dvw - 20px)); }
+    }
+    @media print {
+      html, body, .report-shell { height: auto; max-height: none; overflow: visible; }
+      .table-wrap { max-height: none; overflow: visible; }
+      .report-actions { display: none; }
+    }
   </style>
 </head>
 <body>
-  <h1>Automated Test Results</h1>
-  <p>Run status: ${sanitize(runStatus)} | Total: ${this.rows.length}</p>
-  <div class="summary">
-    <span class="pill PENDING">Pending: ${counts.PENDING}</span>
-    <span class="pill RUNNING">Running: ${counts.RUNNING}</span>
-    <span class="pill PASS">Passed: ${counts.PASS}</span>
-    <span class="pill FAIL">Failed: ${counts.FAIL}</span>
-    <span class="pill SKIP">Skipped: ${counts.SKIP}</span>
-  </div>
-  <table>
-    <thead>
-      <tr>
-        <th>Test Case ID</th>
-        <th>Module / Suite</th>
-        <th>Test Case Title</th>
-        <th>Surface</th>
-        <th>Feature Area</th>
-        <th>Pre-conditions</th>
-        <th>Test Steps</th>
-        <th>Test Data</th>
-        <th>Expected Result</th>
-        <th>Actual Result</th>
-        <th>What this test proves</th>
-        <th>Status</th>
-        <th>Priority</th>
-        <th>Testing Level</th>
-        <th>Automation Status</th>
-        <th>Bug Report</th>
-        <th>Screenshot</th>
-      </tr>
-    </thead>
-    <tbody>
+  <main class="report-shell">
+    <header class="hero">
+      <div>
+        <p class="eyebrow">Core Platform QA</p>
+        <h1>Automated Test Results</h1>
+        <p class="run-meta">Run status: ${sanitize(runStatus)} | Total cases: ${this.rows.length} | Updated: ${sanitize(new Date().toLocaleString())}</p>
+      </div>
+      <nav class="report-actions" aria-label="Report exports">
+        <a href="/">Back to Dashboard</a>
+        <a href="${sanitize(this.csvFilename)}">CSV</a>
+        <a href="${sanitize(this.jsonFilename)}">JSON</a>
+      </nav>
+    </header>
+    <section class="summary" aria-label="Result summary">
+      <article class="metric"><span>Total</span><strong>${this.rows.length}</strong></article>
+      <article class="metric"><span>Pending</span><strong class="PENDING">${counts.PENDING}</strong></article>
+      <article class="metric"><span>Running</span><strong class="RUNNING">${counts.RUNNING}</strong></article>
+      <article class="metric"><span>Passed</span><strong class="PASS">${counts.PASS}</strong></article>
+      <article class="metric"><span>Failed</span><strong class="FAIL">${counts.FAIL}</strong></article>
+      <article class="metric"><span>Skipped</span><strong class="SKIP">${counts.SKIP}</strong></article>
+    </section>
+    <section class="table-card" aria-label="Test case results">
+      <div class="table-head">
+        <h2>Test Case Results</h2>
+        <span>Scroll inside the table to inspect wide result fields.</span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Test Case ID</th>
+              <th>Tags</th>
+              <th>Module / Suite</th>
+              <th>Test Case Title</th>
+              <th>Surface</th>
+              <th>Feature Area</th>
+              <th>Pre-conditions</th>
+              <th>Test Steps</th>
+              <th>Test Data</th>
+              <th>Expected Result</th>
+              <th>Actual Result</th>
+              <th>What this test proves</th>
+              <th>Status</th>
+              <th>Priority</th>
+              <th>Testing Level</th>
+              <th>Automation Status</th>
+              <th>Bug Report</th>
+              <th>Screenshot</th>
+            </tr>
+          </thead>
+          <tbody>
 ${htmlRows}
-    </tbody>
-  </table>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </main>
 </body>
 </html>`;
 
@@ -543,6 +732,7 @@ ${htmlRows}
     const csvPath = path.join(this.outputFolder, this.csvFilename);
     const csvHeader = [
       "Test Case ID",
+      "Tags",
       "Module / Suite",
       "Test Case Title",
       "Surface",
@@ -563,6 +753,7 @@ ${htmlRows}
     const csvRows = this.rows.map((row) =>
       [
         row.id,
+        row.tags,
         row.moduleSuite,
         row.testCaseTitle,
         row.surface,

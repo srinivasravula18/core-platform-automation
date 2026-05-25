@@ -6,14 +6,34 @@ import { fileURLToPath } from "node:url";
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(scriptDir, "..", "..");
+
+const loadLocalEnv = () => {
+  const envPath = path.join(repoRoot, ".env");
+  if (!existsSync(envPath)) return;
+  for (const line of readFileSync(envPath, "utf8").split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const match = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(trimmed);
+    if (!match) continue;
+    const [, key, rawValue] = match;
+    if (process.env[key] !== undefined) continue;
+    process.env[key] = rawValue.replace(/^['"]|['"]$/g, "");
+  }
+};
+
+loadLocalEnv();
+
 const reportRoot = path.resolve(repoRoot, "tests", "e2e", "reports", "list-view-regression");
 const environmentRoot = path.resolve(repoRoot, "tests", "e2e", "list-view-test-environment");
 const generatedRoot = path.resolve(repoRoot, "tests", "e2e", "generated-agent-scenarios");
+const generatedSpecRoot = path.resolve(repoRoot, "tests", "e2e", "list-view-regression", "generated-agent-scenarios");
 const recordedRoot = path.resolve(repoRoot, "tests", "e2e", "list-view-regression", "recorded-scenarios");
 const recordedMetaRoot = path.resolve(repoRoot, "tests", "e2e", "recorded-scenarios");
 const recordedDraftRoot = path.resolve(recordedMetaRoot, "drafts");
 const recordedMetadataPath = path.join(recordedMetaRoot, "scenarios.json");
+const agentStatePath = path.join(generatedRoot, "agent-state.json");
 const appRoot = path.resolve(process.env.CORE_PLATFORM_ROOT || "D:\\core-platform");
+const geminiModel = process.env.GEMINI_MODEL || "gemini-3.5-flash";
 const resultsJsonPath = path.join(reportRoot, "list-view-regression-results.json");
 const storageStatePath = path.join(repoRoot, "tests", "e2e", ".storage", "list-view.json");
 const port = Number(process.env.LIST_VIEW_REPORT_PORT || process.argv[2] || 5372);
@@ -115,6 +135,7 @@ const mimeTypes = new Map([
   [".js", "text/javascript; charset=utf-8"],
   [".json", "application/json; charset=utf-8"],
   [".csv", "text/csv; charset=utf-8"],
+  [".xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"],
   [".pdf", "application/pdf"],
   [".png", "image/png"],
   [".jpg", "image/jpeg"],
@@ -144,6 +165,19 @@ const sendJson = (response, status, body) => {
 
 const sendText = (response, status, body) => {
   response.writeHead(status, { "content-type": "text/plain; charset=utf-8" });
+  response.end(body);
+};
+
+const sendBuffer = (response, status, body, contentType, filename) => {
+  const headers = {
+    "content-type": contentType,
+    "content-length": body.length,
+    "cache-control": "no-store"
+  };
+  if (filename) {
+    headers["content-disposition"] = `attachment; filename="${filename}"`;
+  }
+  response.writeHead(status, headers);
   response.end(body);
 };
 
@@ -272,7 +306,51 @@ const readResults = () => {
       rows: []
     };
   }
-  return JSON.parse(readFileSync(resultsJsonPath, "utf8"));
+  const payload = JSON.parse(readFileSync(resultsJsonPath, "utf8"));
+  const rows = Array.isArray(payload.rows) ? payload.rows : [];
+  const hasStaleRunningRows = !runState.running && rows.some((row) => row?.status === "RUNNING");
+  if (hasStaleRunningRows) {
+    const normalizedRows = rows.map((row) =>
+      row?.status === "RUNNING"
+        ? {
+            ...row,
+            status: "SKIP",
+            actualResult: runState.stopRequested
+              ? "Stopped by user from the dashboard."
+              : "Run was stopped or interrupted before the reporter finalized this test."
+          }
+        : row
+    );
+    const counts = normalizedRows.reduce(
+      (acc, row) => {
+        if (acc[row.status] !== undefined) acc[row.status] += 1;
+        return acc;
+      },
+      { PENDING: 0, RUNNING: 0, PASS: 0, FAIL: 0, SKIP: 0 }
+    );
+    const normalizedPayload = {
+      ...payload,
+      runStatus: runState.stopRequested ? "stopped" : "interrupted",
+      counts,
+      rows: normalizedRows
+    };
+    writeFileSync(resultsJsonPath, JSON.stringify(normalizedPayload, null, 2), "utf8");
+    return normalizedPayload;
+  }
+  const isDiscoveryOnlyResult =
+    !runState.running &&
+    rows.length > 0 &&
+    rows.every((row) => row?.status === "PENDING" && /^not run\.?$/i.test(String(row?.actualResult || "")));
+  if (isDiscoveryOnlyResult) {
+    return {
+      runStatus: "not_started",
+      updatedAt: payload.updatedAt ?? null,
+      total: 0,
+      counts: { PENDING: 0, RUNNING: 0, PASS: 0, FAIL: 0, SKIP: 0 },
+      rows: []
+    };
+  }
+  return payload;
 };
 
 const readFramework = () => ({
@@ -312,6 +390,53 @@ const slugify = (value) =>
     .slice(0, 80);
 
 const escapeJsString = (value) => String(value || "").replace(/\\/g, "\\\\").replace(/`/g, "\\`").replace(/\$/g, "\\$");
+
+const addRecordedEvidenceHooks = (source) => {
+  let nextSource = source;
+  if (!/attachEvidence/.test(nextSource)) {
+    nextSource = nextSource.replace(
+      /import\s+\{\s*test\s*(,\s*expect\s*)?\}\s+from\s+['"]@playwright\/test['"];?/,
+      (match) => `${match}\nimport { attachEvidence } from '../helpers';`
+    );
+  }
+  if (!/test\.setTimeout/.test(nextSource)) {
+    nextSource = nextSource.replace(
+      /(import\s+\{\s*attachEvidence\s*\}\s+from\s+['"]\.\.\/helpers['"];?\n)/,
+      "$1\ntest.setTimeout(300_000);\n"
+    );
+  }
+  if (!/attachRecordedEvidence/.test(nextSource)) {
+    const helper = `
+const attachRecordedEvidence = async (page, testInfo, name) => {
+  try {
+    if (page.isClosed()) return;
+    await attachEvidence(page, testInfo, name);
+  } catch (error) {
+    await testInfo.attach(\`\${name}-capture-skipped\`, {
+      body: error instanceof Error ? error.message : String(error),
+      contentType: 'text/plain'
+    });
+  }
+};
+`;
+    if (/test\.use\(\{[\s\S]*?\}\);\n/.test(nextSource)) {
+      nextSource = nextSource.replace(/(test\.use\(\{[\s\S]*?\}\);\n)/, `$1${helper}`);
+    } else {
+      nextSource = nextSource.replace(/(test\.setTimeout\(300_000\);\n)/, `$1${helper}`);
+    }
+  }
+  if (!/recorded-flow-start/.test(nextSource)) {
+    nextSource = nextSource.replace(
+      /async\s*\(\{\s*page\s*\}\)\s*=>\s*\{/,
+      "async ({ page }, testInfo) => {\n  await attachRecordedEvidence(page, testInfo, 'recorded-flow-start');\n  try {"
+    );
+  }
+  const lastClose = nextSource.lastIndexOf("\n});");
+  if (lastClose >= 0 && !/recorded-flow-finish/.test(nextSource)) {
+    nextSource = `${nextSource.slice(0, lastClose)}\n  } finally {\n    await attachRecordedEvidence(page, testInfo, 'recorded-flow-finish');\n  }\n${nextSource.slice(lastClose)}`;
+  }
+  return nextSource;
+};
 
 const ensureAuthStorage = async () => {
   if (existsSync(storageStatePath)) return;
@@ -430,6 +555,7 @@ const finalizeRecordedScenario = (name) => {
   } else {
     finalSource = `import { test } from '@playwright/test';\n\ntest(\`${escapeJsString(title)}\`, async ({ page }) => {\n  await page.goto('${recordState.url}');\n});\n`;
   }
+  finalSource = addRecordedEvidenceHooks(finalSource);
   writeFileSync(finalPath, finalSource, "utf8");
 
   const metadata = readRecordedMetadata();
@@ -457,6 +583,227 @@ const escapeRegex = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$
 const parseMeta = (title, key) => {
   const match = new RegExp(`\\[${key}:\\s*([^\\]]+)\\]`, "i").exec(title);
   return match ? match[1].trim() : "";
+};
+
+const moduleCode = (feature) =>
+  String(feature || "LIST_VIEW").toUpperCase().replace(/[^A-Z0-9]+/g, "_").replace(/^_+|_+$/g, "") || "LIST_VIEW";
+
+const levelCode = (level) => (level === "BVT" ? "BVT" : level === "Sanity" ? "SAN" : "REG");
+
+const categoryTag = (level) => (level === "BVT" ? "@bvt" : level === "Sanity" ? "@sanity" : "@regression");
+
+const inferTestingLevel = (level, title) => {
+  const normalized = String(level || "").toLowerCase();
+  if (normalized === "bvt" || normalized.includes("build verification") || normalized.includes("smoke")) return "BVT";
+  if (normalized.includes("sanity")) return "Sanity";
+  if (normalized.includes("regression")) return "Regression";
+  const lower = String(title || "").toLowerCase();
+  if (lower.includes("list view loads") || lower.includes("object list view loads") || lower.includes("primary toolbar")) return "BVT";
+  if (lower.includes("search handles") || lower.includes("refresh preserves") || lower.includes("selection count")) return "Sanity";
+  return "Regression";
+};
+
+const caseIdentity = (feature, level, index) => {
+  const id = `${levelCode(level)}_${moduleCode(feature)}_${String(index + 1).padStart(3, "0")}`;
+  return {
+    id,
+    tags: `@case-${id} ${categoryTag(level)}`,
+    testingLevel: level
+  };
+};
+
+const xmlEscape = (value) =>
+  String(value ?? "")
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+
+const columnName = (index) => {
+  let value = index + 1;
+  let name = "";
+  while (value > 0) {
+    const remainder = (value - 1) % 26;
+    name = String.fromCharCode(65 + remainder) + name;
+    value = Math.floor((value - 1) / 26);
+  }
+  return name;
+};
+
+const crcTable = Array.from({ length: 256 }, (_, index) => {
+  let crc = index;
+  for (let bit = 0; bit < 8; bit += 1) {
+    crc = crc & 1 ? 0xedb88320 ^ (crc >>> 1) : crc >>> 1;
+  }
+  return crc >>> 0;
+});
+
+const crc32 = (buffer) => {
+  let crc = 0xffffffff;
+  for (const byte of buffer) {
+    crc = crcTable[(crc ^ byte) & 0xff] ^ (crc >>> 8);
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+};
+
+const dosDateTime = (date = new Date()) => {
+  const year = Math.max(date.getFullYear(), 1980);
+  return {
+    date: ((year - 1980) << 9) | ((date.getMonth() + 1) << 5) | date.getDate(),
+    time: (date.getHours() << 11) | (date.getMinutes() << 5) | Math.floor(date.getSeconds() / 2)
+  };
+};
+
+const createZip = (files) => {
+  const localParts = [];
+  const centralParts = [];
+  let offset = 0;
+  const { date, time } = dosDateTime();
+
+  for (const file of files) {
+    const name = Buffer.from(file.name, "utf8");
+    const data = Buffer.isBuffer(file.data) ? file.data : Buffer.from(String(file.data), "utf8");
+    const crc = crc32(data);
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0);
+    local.writeUInt16LE(20, 4);
+    local.writeUInt16LE(0x0800, 6);
+    local.writeUInt16LE(0, 8);
+    local.writeUInt16LE(time, 10);
+    local.writeUInt16LE(date, 12);
+    local.writeUInt32LE(crc, 14);
+    local.writeUInt32LE(data.length, 18);
+    local.writeUInt32LE(data.length, 22);
+    local.writeUInt16LE(name.length, 26);
+    local.writeUInt16LE(0, 28);
+    localParts.push(local, name, data);
+
+    const central = Buffer.alloc(46);
+    central.writeUInt32LE(0x02014b50, 0);
+    central.writeUInt16LE(20, 4);
+    central.writeUInt16LE(20, 6);
+    central.writeUInt16LE(0x0800, 8);
+    central.writeUInt16LE(0, 10);
+    central.writeUInt16LE(time, 12);
+    central.writeUInt16LE(date, 14);
+    central.writeUInt32LE(crc, 16);
+    central.writeUInt32LE(data.length, 20);
+    central.writeUInt32LE(data.length, 24);
+    central.writeUInt16LE(name.length, 28);
+    central.writeUInt16LE(0, 30);
+    central.writeUInt16LE(0, 32);
+    central.writeUInt16LE(0, 34);
+    central.writeUInt16LE(0, 36);
+    central.writeUInt32LE(0, 38);
+    central.writeUInt32LE(offset, 42);
+    centralParts.push(central, name);
+    offset += local.length + name.length + data.length;
+  }
+
+  const centralSize = centralParts.reduce((total, part) => total + part.length, 0);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(0, 4);
+  end.writeUInt16LE(0, 6);
+  end.writeUInt16LE(files.length, 8);
+  end.writeUInt16LE(files.length, 10);
+  end.writeUInt32LE(centralSize, 12);
+  end.writeUInt32LE(offset, 16);
+  end.writeUInt16LE(0, 20);
+
+  return Buffer.concat([...localParts, ...centralParts, end]);
+};
+
+const worksheetXml = (rows) => {
+  const lastCell = `${columnName(Math.max(rows[0]?.length || 1, 1) - 1)}${Math.max(rows.length, 1)}`;
+  const xmlRows = rows.map((row, rowIndex) => {
+    const cells = row.map((value, columnIndex) => {
+      const ref = `${columnName(columnIndex)}${rowIndex + 1}`;
+      return `<c r="${ref}" t="inlineStr"><is><t>${xmlEscape(value)}</t></is></c>`;
+    });
+    return `<row r="${rowIndex + 1}">${cells.join("")}</row>`;
+  });
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <dimension ref="A1:${lastCell}"/>
+  <sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>
+  <cols>
+    <col min="1" max="1" width="22" customWidth="1"/>
+    <col min="2" max="2" width="28" customWidth="1"/>
+    <col min="3" max="4" width="18" customWidth="1"/>
+    <col min="5" max="6" width="24" customWidth="1"/>
+    <col min="7" max="10" width="48" customWidth="1"/>
+  </cols>
+  <sheetData>${xmlRows.join("")}</sheetData>
+  <autoFilter ref="A1:${lastCell}"/>
+</worksheet>`;
+};
+
+const buildInventoryWorkbook = () => {
+  const inventory = readInventory();
+  const headers = [
+    "Case ID",
+    "Tags",
+    "Category",
+    "Application",
+    "Scenario",
+    "Test Case",
+    "Precondition",
+    "Test Steps",
+    "Expected Result",
+    "What It Proves",
+    "Spec"
+  ];
+  const rows = (inventory.rows || []).map((row) => [
+    row.id,
+    row.tags,
+    row.testingLevel,
+    row.surface,
+    row.feature,
+    row.displayTitle,
+    row.precondition,
+    row.input,
+    row.expected,
+    row.proof,
+    row.spec
+  ]);
+  const sheet = worksheetXml([headers, ...rows]);
+  return createZip([
+    {
+      name: "[Content_Types].xml",
+      data: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+</Types>`
+    },
+    {
+      name: "_rels/.rels",
+      data: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>`
+    },
+    {
+      name: "xl/workbook.xml",
+      data: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets><sheet name="Test Cases" sheetId="1" r:id="rId1"/></sheets>
+</workbook>`
+    },
+    {
+      name: "xl/_rels/workbook.xml.rels",
+      data: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+</Relationships>`
+    },
+    { name: "xl/worksheets/sheet1.xml", data: sheet }
+  ]);
 };
 
 const inferSurface = (spec, title) => {
@@ -518,15 +865,50 @@ const runGit = (cwd, args, timeout = 120_000) => {
   return (result.stdout || "").trim();
 };
 
-const scanChangedFiles = (baseRef = "origin/main") => {
+const currentGitBranch = (cwd) => runGit(cwd, ["branch", "--show-current"]) || "main";
+
+const readAgentState = () => {
+  if (!existsSync(agentStatePath)) {
+    return { baselineCommit: "", updatedAt: null, history: [] };
+  }
+  try {
+    const parsed = JSON.parse(readFileSync(agentStatePath, "utf8"));
+    return {
+      baselineCommit: parsed.baselineCommit || "",
+      updatedAt: parsed.updatedAt || null,
+      history: Array.isArray(parsed.history) ? parsed.history : []
+    };
+  } catch {
+    return { baselineCommit: "", updatedAt: null, history: [] };
+  }
+};
+
+const writeAgentState = (nextState) => {
+  mkdirSync(generatedRoot, { recursive: true });
+  writeFileSync(agentStatePath, JSON.stringify(nextState, null, 2), "utf8");
+  return nextState;
+};
+
+const currentAppCommit = () => runGit(appRoot, ["rev-parse", "HEAD"]);
+
+const resolveAgentBaseRef = (baseRef = "") => {
+  const requested = String(baseRef || "").trim();
+  if (requested && requested !== "auto") return requested;
+  const state = readAgentState();
+  return state.baselineCommit || "HEAD~1";
+};
+
+const scanChangedFiles = (baseRef = "auto") => {
   if (!existsSync(path.join(appRoot, ".git"))) {
     throw new Error(`Application repo was not found at ${appRoot}.`);
   }
+  const resolvedBaseRef = resolveAgentBaseRef(baseRef);
+  const headCommit = currentAppCommit();
   let output = "";
   try {
-    output = runGit(appRoot, ["diff", "--name-status", `${baseRef}...HEAD`]);
+    output = runGit(appRoot, ["diff", "--name-status", `${resolvedBaseRef}...HEAD`]);
   } catch {
-    output = runGit(appRoot, ["diff", "--name-status", baseRef]);
+    output = runGit(appRoot, ["diff", "--name-status", resolvedBaseRef]);
   }
   const changedFiles = output
     .split(/\r?\n/)
@@ -554,7 +936,10 @@ const scanChangedFiles = (baseRef = "origin/main") => {
   );
   return {
     appRoot,
-    baseRef,
+    requestedBaseRef: baseRef,
+    baseRef: resolvedBaseRef,
+    headCommit,
+    previousBaselineCommit: readAgentState().baselineCommit || "",
     scannedAt: new Date().toISOString(),
     summary,
     changedFiles
@@ -595,18 +980,346 @@ const scenarioForChange = (change, index) => {
   };
 };
 
-const generateAgentScenarios = (baseRef = "origin/main") => {
+const tagForRisk = (risk) => (risk === "High" ? "@bvt" : risk === "Medium" ? "@sanity" : "@regression");
+const levelForTag = (tag) => (tag === "@bvt" ? "BVT" : tag === "@sanity" ? "Sanity" : "Regression");
+
+const tokenize = (value) =>
+  String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .split(/\s+/)
+    .filter((token) => token.length >= 3);
+
+const existingCoverageForScenario = (scenario, inventoryRows) => {
+  const scenarioTokens = new Set([
+    ...tokenize(scenario.feature),
+    ...tokenize(scenario.testCase),
+    ...tokenize(scenario.sourcePath)
+  ]);
+  const candidates = inventoryRows
+    .map((row) => {
+      const haystack = `${row.surface || ""} ${row.feature || ""} ${row.title || ""} ${row.displayTitle || ""} ${row.input || ""} ${row.expected || ""}`;
+      const rowTokens = new Set(tokenize(haystack));
+      let score = 0;
+      for (const token of scenarioTokens) {
+        if (rowTokens.has(token)) score += 1;
+      }
+      if (String(row.surface || "").toLowerCase() === String(scenario.surfaceLabel || scenario.surface || "").toLowerCase()) {
+        score += 2;
+      }
+      return { row, score };
+    })
+    .filter((item) => item.score >= 3)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 3);
+  return candidates.map(({ row, score }) => ({
+    id: row.id,
+    title: row.title,
+    displayTitle: row.displayTitle,
+    surface: row.surface,
+    feature: row.feature,
+    score
+  }));
+};
+
+const changedFileDiff = (baseRef, filePath) => {
+  try {
+    return runGit(appRoot, ["diff", "--unified=80", `${baseRef}...HEAD`, "--", filePath], 60_000).slice(0, 18_000);
+  } catch {
+    try {
+      return runGit(appRoot, ["diff", "--unified=80", baseRef, "--", filePath], 60_000).slice(0, 18_000);
+    } catch {
+      return "";
+    }
+  }
+};
+
+const parseGeminiJson = (payload) => {
+  const text = payload?.candidates?.[0]?.content?.parts?.map((part) => part.text || "").join("\n").trim() || "";
+  if (!text) return null;
+  const cleaned = text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
+  return JSON.parse(cleaned);
+};
+
+const callGeminiPlanner = async (scan, inventoryRows) => {
+  const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || "";
+  if (!apiKey) return null;
+
+  const changedFiles = scan.changedFiles.map((change) => ({
+    ...change,
+    diff: changedFileDiff(scan.baseRef, change.path)
+  }));
+  const existingTests = inventoryRows.slice(0, 180).map((row) => ({
+    id: row.id,
+    title: row.title,
+    surface: row.surface,
+    feature: row.feature,
+    level: row.testingLevel,
+    tags: row.tags,
+    input: row.input,
+    expected: row.expected,
+    proof: row.proof
+  }));
+  const prompt = [
+    "You are the Core Platform QA test-generation agent.",
+    "Analyze changed code and existing tests. Return JSON only.",
+    "Rules:",
+    "- Compare changed business logic, UI behavior, validation, permissions, API behavior, and workflows.",
+    "- Do not duplicate tests. If an existing test is enough, action must be reuse and include existingTestIds.",
+    "- Generate only when missing coverage is clear.",
+    "- Classify every decision as exactly one testing level: BVT, Sanity, or Regression.",
+    "- BVT is for critical smoke/build verification. Sanity is for important focused behavior. Regression is for broader existing behavior and lower-risk changes.",
+    "- Tags must be exactly @bvt, @sanity, or @regression.",
+    "- Keep generated tests practical for Playwright.",
+    "",
+    JSON.stringify({
+      baselineCommit: scan.baseRef,
+      headCommit: scan.headCommit,
+      changedFiles,
+      existingTests
+    })
+  ].join("\n");
+
+  const response = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(geminiModel)}:generateContent?key=${encodeURIComponent(apiKey)}`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ role: "user", parts: [{ text: prompt }] }],
+        tools: [{ google_search: {} }],
+        generationConfig: {
+          responseMimeType: "application/json",
+          temperature: 0.2,
+          responseSchema: {
+            type: "object",
+            properties: {
+              decisions: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: {
+                    sourcePath: { type: "string" },
+                    action: { type: "string", enum: ["reuse", "generate"] },
+                    level: { type: "string", enum: ["BVT", "Sanity", "Regression"] },
+                    tag: { type: "string", enum: ["@bvt", "@sanity", "@regression"] },
+                    feature: { type: "string" },
+                    testCase: { type: "string" },
+                    steps: { type: "string" },
+                    expected: { type: "string" },
+                    proof: { type: "string" },
+                    adminScreen: { type: "string" },
+                    existingTestIds: { type: "array", items: { type: "string" } },
+                    reason: { type: "string" }
+                  },
+                  required: ["sourcePath", "action", "level", "tag", "feature", "testCase", "steps", "expected", "proof", "existingTestIds", "reason"]
+                }
+              }
+            },
+            required: ["decisions"]
+          }
+        }
+      })
+    }
+  );
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload?.error?.message || `Gemini planner failed with HTTP ${response.status}`);
+  }
+  const parsed = parseGeminiJson(payload);
+  return {
+    model: geminiModel,
+    groundingMetadata: payload?.candidates?.[0]?.groundingMetadata || null,
+    decisions: Array.isArray(parsed?.decisions) ? parsed.decisions : []
+  };
+};
+
+const latestGeneratedArtifact = () => {
+  if (!existsSync(generatedRoot)) return null;
+  const files = readdirSync(generatedRoot)
+    .filter((item) => /^agent-scenarios-\d+\.json$/.test(item))
+    .map((item) => {
+      const fullPath = path.join(generatedRoot, item);
+      return { fullPath, mtimeMs: statSync(fullPath).mtimeMs };
+    })
+    .sort((a, b) => b.mtimeMs - a.mtimeMs);
+  if (files.length === 0) return null;
+  const payload = JSON.parse(readFileSync(files[0].fullPath, "utf8"));
+  return { ...payload, outputPath: path.relative(repoRoot, files[0].fullPath).replace(/\\/g, "/") };
+};
+
+const specTitle = (scenario) =>
+  `${scenario.tag || tagForRisk(scenario.risk)} ${scenario.testCase} [surface: ${scenario.surfaceLabel || scenario.surface}] [feature: ${scenario.feature}] [level: ${scenario.level || "Regression"}] [precondition: ${scenario.precondition}] [input: ${scenario.steps}] [expected: ${scenario.expected}] [proof: ${scenario.proof}]`;
+
+const generateAgentSpecSource = (scenarios) => {
+  const cases = JSON.stringify(scenarios.filter((scenario) => scenario.action === "generate"), null, 2);
+  return `import { expect, test } from "@playwright/test";
+import {
+  apiLogin,
+  attachEvidence,
+  hasCredentials,
+  loginToAdmin,
+  loginToKeystone,
+  openAdminScreen,
+  selectKeystoneAppAndTab
+} from "../helpers";
+
+const generatedCases = ${cases};
+
+test.describe("AI generated change-impact smoke tests", () => {
+  for (const generatedCase of generatedCases) {
+    test(generatedCase.title, async ({ page, request }, testInfo) => {
+      test.skip(!hasCredentials(), "Seeded test credentials are not configured.");
+
+      if (generatedCase.surface === "api") {
+        const token = await apiLogin(request);
+        const response = await request.get("/api/apps", {
+          headers: { Authorization: \`Bearer \${token}\` }
+        });
+        expect(response.ok(), await response.text()).toBeTruthy();
+        return;
+      }
+
+      if (generatedCase.surface === "keystone") {
+        await loginToKeystone(page);
+        await selectKeystoneAppAndTab(page);
+        await expect(page.locator(".object-home").first()).toBeVisible();
+      } else {
+        await loginToAdmin(page);
+        const screen = generatedCase.adminScreen || "Apps";
+        const main = await openAdminScreen(page, screen);
+        await expect(main).toBeVisible();
+      }
+
+      await attachEvidence(page, testInfo, generatedCase.evidenceName).catch(() => null);
+    });
+  }
+});
+`;
+};
+
+const generateAgentScenarios = async (baseRef = "origin/main") => {
   const scan = scanChangedFiles(baseRef);
-  const scenarios = scan.changedFiles.map(scenarioForChange);
+  const inventoryRows = readInventory().rows || [];
+  let geminiPlan = null;
+  try {
+    geminiPlan = await callGeminiPlanner(scan, inventoryRows);
+  } catch (error) {
+    geminiPlan = {
+      model: geminiModel,
+      error: error instanceof Error ? error.message : "Gemini planner failed.",
+      decisions: []
+    };
+  }
+  const decisionByPath = new Map((geminiPlan?.decisions || []).map((decision) => [decision.sourcePath, decision]));
+  const scenarios = scan.changedFiles.map((change, index) => {
+    const scenario = scenarioForChange(change, index);
+    const modelDecision = decisionByPath.get(change.path) || null;
+    const surface =
+      scenario.surface === "api" || scenario.surface === "keystone" || scenario.surface === "admin"
+        ? scenario.surface
+        : /api|route|server|backend|service|schema|migration/i.test(change.path)
+          ? "api"
+          : /keystone|object-home|launcher|tab/i.test(change.path)
+            ? "keystone"
+          : "admin";
+    const feature = scenario.scenario.replace(/\s+regression[\s\S]*$/i, "") || scenario.area || "Change Impact";
+    const tag = modelDecision?.tag || tagForRisk(change.risk);
+    const level = modelDecision?.level || levelForTag(tag);
+    const draft = {
+      ...scenario,
+      surface,
+      surfaceLabel: surface === "api" ? "API" : surface === "keystone" ? "Keystone" : "Admin",
+      feature: modelDecision?.feature || feature,
+      level,
+      tag,
+      testCase: modelDecision?.testCase || scenario.testCase,
+      steps: modelDecision?.steps || scenario.steps,
+      expected: modelDecision?.expected || scenario.expected,
+      adminScreen: modelDecision?.adminScreen || (/object/i.test(change.path) ? "Objects" : /role|permission|access/i.test(change.path) ? "Permissions" : "Apps"),
+      proof: modelDecision?.proof || `generated smoke coverage for ${change.path}`,
+      evidenceName: `agent-${scenario.id.toLowerCase()}`
+    };
+    const modelExistingTests = Array.isArray(modelDecision?.existingTestIds)
+      ? modelDecision.existingTestIds
+          .map((id) => inventoryRows.find((row) => row.id === id))
+          .filter(Boolean)
+          .map((row) => ({
+            id: row.id,
+            title: row.title,
+            displayTitle: row.displayTitle,
+            surface: row.surface,
+            feature: row.feature,
+            score: 99
+          }))
+      : [];
+    const existingTests = modelExistingTests.length > 0 ? modelExistingTests : existingCoverageForScenario(draft, inventoryRows);
+    const action = modelDecision?.action === "generate" ? "generate" : existingTests.length > 0 ? "reuse" : "generate";
+    return {
+      ...draft,
+      action,
+      existingTests,
+      decision: modelDecision?.reason || (existingTests.length > 0
+        ? `Existing ${existingTests[0].id} covers the changed feature area; reuse it instead of duplicating.`
+        : `No close existing coverage found; generate a new ${tag} test.`),
+      planner: geminiPlan?.decisions?.length ? "gemini" : "rules",
+      title: specTitle(draft)
+    };
+  });
   mkdirSync(generatedRoot, { recursive: true });
+  mkdirSync(generatedSpecRoot, { recursive: true });
+  const timestamp = Date.now();
+  const specPath = path.join(generatedSpecRoot, `agent-generated-${timestamp}.spec.ts`);
+  const specRelativePath = path.relative(repoRoot, specPath).replace(/\\/g, "/");
+  const generatedCount = scenarios.filter((scenario) => scenario.action === "generate").length;
+  const reusedCount = scenarios.filter((scenario) => scenario.action === "reuse").length;
   const artifact = {
     generatedAt: new Date().toISOString(),
-    baseRef,
+    baseRef: scan.baseRef,
+    requestedBaseRef: baseRef,
+    previousBaselineCommit: scan.previousBaselineCommit,
+    headCommit: scan.headCommit,
+    planner: {
+      provider: geminiPlan?.decisions?.length ? "gemini" : "rules",
+      model: geminiPlan?.model || "",
+      error: geminiPlan?.error || "",
+      groundingMetadata: geminiPlan?.groundingMetadata || null
+    },
     appRoot,
+    spec: generatedCount > 0 ? specRelativePath : "",
+    summary: {
+      changedFiles: scan.changedFiles.length,
+      generated: generatedCount,
+      reused: reusedCount
+    },
     scenarios
   };
-  const outputPath = path.join(generatedRoot, `agent-scenarios-${Date.now()}.json`);
+  const outputPath = path.join(generatedRoot, `agent-scenarios-${timestamp}.json`);
+  if (generatedCount > 0) {
+    writeFileSync(specPath, generateAgentSpecSource(scenarios), "utf8");
+  }
   writeFileSync(outputPath, JSON.stringify(artifact, null, 2), "utf8");
+  const state = readAgentState();
+  writeAgentState({
+    baselineCommit: scan.headCommit,
+    updatedAt: artifact.generatedAt,
+    lastArtifact: path.relative(repoRoot, outputPath).replace(/\\/g, "/"),
+    lastSpec: artifact.spec,
+    history: [
+      {
+        generatedAt: artifact.generatedAt,
+        from: scan.baseRef,
+        to: scan.headCommit,
+        changedFiles: scan.changedFiles.length,
+        generated: generatedCount,
+        reused: reusedCount,
+        artifact: path.relative(repoRoot, outputPath).replace(/\\/g, "/")
+      },
+      ...(state.history || [])
+    ].slice(0, 20)
+  });
+  cachedInventory = null;
+  cachedInventoryAt = 0;
   return {
     ...artifact,
     outputPath: path.relative(repoRoot, outputPath).replace(/\\/g, "/")
@@ -620,7 +1333,7 @@ const readInventory = () => {
   }
 
   const config = "tests/e2e/playwright.list-view-regression.config.ts";
-  const result = spawnSync("npx.cmd", ["playwright", "test", "--list", "-c", config], {
+  const result = spawnSync("cmd", ["/c", "npx.cmd", "playwright", "test", "--list", "-c", config, "--reporter=list"], {
     cwd: repoRoot,
     encoding: "utf8",
     timeout: 120_000,
@@ -638,8 +1351,12 @@ const readInventory = () => {
     const spec = location.replace(/:\d+:\d+$/, "");
     const surface = inferSurface(spec, title);
     const feature = parseMeta(title, "feature") || "List View";
+    const level = inferTestingLevel(parseMeta(title, "level"), title);
+    const identity = caseIdentity(feature, level, rows.length);
     rows.push({
-      id: `CASE_${String(rows.length + 1).padStart(3, "0")}`,
+      id: identity.id,
+      tags: identity.tags,
+      testingLevel: identity.testingLevel,
       location,
       spec,
       surface,
@@ -657,6 +1374,8 @@ const readInventory = () => {
     for (const row of previous.rows ?? []) {
       rows.push({
         id: row.id,
+        tags: row.tags || `@case-${row.id} ${categoryTag(row.testingLevel || "Regression")}`,
+        testingLevel: row.testingLevel || "",
         location: "",
         spec: "",
         surface: row.surface || "",
@@ -818,12 +1537,26 @@ const runRecordedScenario = async (request, response) => {
   pushLog(`Starting recorded scenario "${scenario.name}"...`);
 
   const childEnv = { ...process.env, LIST_VIEW_REGRESSION_HEADED: headed ? "1" : "0" };
-  currentProcess = spawn("npx.cmd", args, {
-    cwd: repoRoot,
-    env: childEnv,
-    windowsHide: true,
-    shell: false
-  });
+  const runCommand = process.platform === "win32" ? "cmd.exe" : "npx";
+  const runArgs = process.platform === "win32" ? ["/d", "/s", "/c", "npx.cmd", ...args] : args;
+  try {
+    currentProcess = spawn(runCommand, runArgs, {
+      cwd: repoRoot,
+      env: childEnv,
+      windowsHide: true,
+      shell: false,
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Failed to start recorded scenario.";
+    pushLog(`Failed to start recorded scenario: ${message}`);
+    runState.running = false;
+    runState.finishedAt = new Date().toISOString();
+    runState.exitCode = 1;
+    currentProcess = null;
+    sendJson(response, 500, { error: message, state: runState });
+    return;
+  }
 
   currentProcess.stdout.on("data", pushLog);
   currentProcess.stderr.on("data", pushLog);
@@ -847,6 +1580,147 @@ const runRecordedScenario = async (request, response) => {
   });
 
   sendJson(response, 202, { ok: true, state: runState });
+};
+
+const runAgentGeneratedScenarios = async (request, response) => {
+  if (runState.running || currentProcess) {
+    sendJson(response, 409, { error: "A list-view test run is already in progress." });
+    return;
+  }
+
+  let body;
+  try {
+    body = await readRequestJson(request);
+  } catch {
+    sendJson(response, 400, { error: "Invalid JSON request body." });
+    return;
+  }
+
+  let artifact = latestGeneratedArtifact();
+  if (!artifact) {
+    artifact = await generateAgentScenarios(String(body.baseRef || "auto").trim() || "auto");
+  }
+  if (!artifact.scenarios || artifact.scenarios.length === 0) {
+    sendJson(response, 409, { error: "No changed files were found, so there are no generated agent scenarios to run." });
+    return;
+  }
+
+  const headed = Boolean(body.headed);
+  const reusableTitles = Array.from(
+    new Set(
+      artifact.scenarios
+        .filter((scenario) => scenario.action === "reuse")
+        .flatMap((scenario) => scenario.existingTests || [])
+        .map((testCase) => testCase.title)
+        .filter(Boolean)
+    )
+  );
+  let runMode = "generated";
+  let args = [];
+  let runCommand = process.platform === "win32" ? "cmd.exe" : "npx";
+  let runArgs = [];
+  let commandLabel = "";
+  let scenarioLabel = "";
+  if (artifact.spec) {
+    const specPath = path.resolve(repoRoot, artifact.spec);
+    if (specPath !== repoRoot && !specPath.startsWith(`${repoRoot}${path.sep}`)) {
+      sendJson(response, 403, { error: "Generated agent spec path is outside the automation repo." });
+      return;
+    }
+    if (!existsSync(specPath)) {
+      sendJson(response, 404, { error: "Generated agent spec file was not found. Generate scenarios again." });
+      return;
+    }
+    const config = "tests/e2e/playwright.list-view-regression.config.ts";
+    const relativeSpec = path.relative(repoRoot, specPath).replace(/\\/g, "/");
+    args = ["playwright", "test", relativeSpec, "-c", config, "--workers=1"];
+    runArgs = process.platform === "win32" ? ["/d", "/s", "/c", "npx.cmd", ...args] : args;
+    commandLabel = `npx ${args.join(" ")}`;
+    scenarioLabel = path.basename(relativeSpec);
+  } else if (reusableTitles.length > 0) {
+    runMode = "reuse";
+    const scenario = reusableTitles.map(escapeRegex).join("|");
+    args = [
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      "tests/scripts/run-list-view-regression.ps1",
+      "-Surface",
+      "all",
+      "-Scenario",
+      scenario,
+      "-SkipReset"
+    ];
+    if (headed) args.push("-Headed");
+    runCommand = "powershell";
+    runArgs = args;
+    commandLabel = `powershell ${args.join(" ")}`;
+    scenarioLabel = "reused existing coverage";
+  } else {
+    sendJson(response, 409, { error: "The agent did not generate new specs or find reusable existing tests." });
+    return;
+  }
+
+  runState.running = true;
+  runState.command = commandLabel;
+  runState.surface = "agent";
+  runState.scenario = scenarioLabel;
+  runState.selectedTestCount = runMode === "reuse" ? reusableTitles.length : artifact.scenarios.filter((scenario) => scenario.action === "generate").length;
+  runState.reset = false;
+  runState.headed = headed;
+  runState.stopRequested = false;
+  runState.startedAt = new Date().toISOString();
+  runState.finishedAt = null;
+  runState.exitCode = null;
+  runState.logs = [];
+  pushLog(
+    runMode === "reuse"
+      ? `Starting AI agent reused existing coverage run (${reusableTitles.length} case(s))...`
+      : `Starting AI generated scenario run (${runState.selectedTestCount} case(s))...`
+  );
+
+  const childEnv = { ...process.env, LIST_VIEW_REGRESSION_HEADED: headed ? "1" : "0" };
+  try {
+    currentProcess = spawn(runCommand, runArgs, {
+      cwd: repoRoot,
+      env: childEnv,
+      windowsHide: true,
+      shell: false,
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Failed to start AI generated scenarios.";
+    pushLog(`Failed to start AI generated scenarios: ${message}`);
+    runState.running = false;
+    runState.finishedAt = new Date().toISOString();
+    runState.exitCode = 1;
+    currentProcess = null;
+    sendJson(response, 500, { error: message, state: runState });
+    return;
+  }
+
+  currentProcess.stdout.on("data", pushLog);
+  currentProcess.stderr.on("data", pushLog);
+  currentProcess.on("error", (error) => {
+    pushLog(`Failed to start AI generated scenarios: ${error.message}`);
+    runState.running = false;
+    runState.finishedAt = new Date().toISOString();
+    runState.exitCode = 1;
+    currentProcess = null;
+  });
+  currentProcess.on("exit", (code) => {
+    runState.running = false;
+    runState.finishedAt = new Date().toISOString();
+    runState.exitCode = runState.stopRequested ? code ?? 130 : code ?? 1;
+    pushLog(
+      runState.stopRequested
+        ? `AI generated scenarios stopped with exit code ${runState.exitCode}.`
+        : `AI generated scenarios finished with exit code ${runState.exitCode}.`
+    );
+    currentProcess = null;
+  });
+
+  sendJson(response, 202, { ok: true, artifact, state: runState });
 };
 
 const startRecording = async (request, response) => {
@@ -916,11 +1790,24 @@ const startRecording = async (request, response) => {
     pushRecorderLog(`Auth storage warning: ${authWarning} You can still sign in manually in the recorder browser.`);
   }
 
-  recorderProcess = spawn("npx.cmd", args, {
-    cwd: repoRoot,
-    windowsHide: false,
-    shell: false
-  });
+  const recorderCommand = process.platform === "win32" ? "cmd.exe" : "npx";
+  const recorderArgs = process.platform === "win32" ? ["/d", "/s", "/c", "npx.cmd", ...args] : args;
+  try {
+    recorderProcess = spawn(recorderCommand, recorderArgs, {
+      cwd: repoRoot,
+      windowsHide: false,
+      shell: false,
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+  } catch (error) {
+    recordState.recording = false;
+    recordState.error = error instanceof Error ? error.message : "Failed to start recorder.";
+    recordState.exitCode = 1;
+    pushRecorderLog(`Failed to start recorder: ${recordState.error}`);
+    recorderProcess = null;
+    sendJson(response, 500, { error: recordState.error, state: recordState });
+    return;
+  }
   recorderProcess.stdout.on("data", pushRecorderLog);
   recorderProcess.stderr.on("data", pushRecorderLog);
   recorderProcess.on("error", (error) => {
@@ -1050,6 +1937,25 @@ const server = createServer(async (request, response) => {
     return;
   }
 
+  if (request.method === "GET" && url.pathname === "/api/inventory.xlsx") {
+    try {
+      if (url.searchParams.get("refresh") === "1") {
+        cachedInventory = null;
+        cachedInventoryAt = 0;
+      }
+      sendBuffer(
+        response,
+        200,
+        buildInventoryWorkbook(),
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "core-platform-test-cases.xlsx"
+      );
+    } catch (error) {
+      sendJson(response, 500, { error: error instanceof Error ? error.message : "Failed to export inventory workbook." });
+    }
+    return;
+  }
+
   if (request.method === "GET" && url.pathname === "/api/recording/status") {
     sendJson(response, 200, recordState);
     return;
@@ -1092,7 +1998,7 @@ const server = createServer(async (request, response) => {
   if (request.method === "POST" && url.pathname === "/api/agent/scan") {
     try {
       const body = await readRequestJson(request);
-      sendJson(response, 200, scanChangedFiles(String(body.baseRef || "origin/main").trim() || "origin/main"));
+      sendJson(response, 200, scanChangedFiles(String(body.baseRef || "auto").trim() || "auto"));
     } catch (error) {
       sendJson(response, 500, { error: error instanceof Error ? error.message : "Agent scan failed." });
     }
@@ -1104,7 +2010,7 @@ const server = createServer(async (request, response) => {
       const body = await readRequestJson(request);
       cachedInventory = null;
       cachedInventoryAt = 0;
-      sendJson(response, 200, generateAgentScenarios(String(body.baseRef || "origin/main").trim() || "origin/main"));
+      sendJson(response, 200, await generateAgentScenarios(String(body.baseRef || "auto").trim() || "auto"));
     } catch (error) {
       sendJson(response, 500, { error: error instanceof Error ? error.message : "Agent scenario generation failed." });
     }
@@ -1112,29 +2018,42 @@ const server = createServer(async (request, response) => {
   }
 
   if (request.method === "POST" && url.pathname === "/api/agent/run") {
-    await runListViewSuite(request, response);
+    await runAgentGeneratedScenarios(request, response);
     return;
   }
 
   if (request.method === "POST" && url.pathname === "/api/agent/commit") {
     try {
       const body = await readRequestJson(request);
-      const branchName = String(body.branchName || `agent/test-scenarios-${Date.now()}`)
+      const activeBranch = currentGitBranch(repoRoot);
+      const branchName = String(body.branchName || activeBranch)
         .replace(/[^A-Za-z0-9/_-]+/g, "-")
         .replace(/^-+|-+$/g, "");
       if (!branchName) {
         sendJson(response, 400, { error: "A branch name is required." });
         return;
       }
-      runGit(repoRoot, ["checkout", "-B", branchName]);
+      if (branchName !== activeBranch) {
+        runGit(repoRoot, ["checkout", "-B", branchName]);
+      }
       runGit(repoRoot, ["add", "tests/e2e/generated-agent-scenarios"]);
-      const statusOutput = runGit(repoRoot, ["status", "--short", "tests/e2e/generated-agent-scenarios"]);
+      runGit(repoRoot, ["add", "tests/e2e/list-view-regression/generated-agent-scenarios"]);
+      const statusOutput = runGit(repoRoot, [
+        "status",
+        "--short",
+        "tests/e2e/generated-agent-scenarios",
+        "tests/e2e/list-view-regression/generated-agent-scenarios"
+      ]);
       if (!statusOutput) {
         sendJson(response, 409, { error: "No generated agent scenario changes are available to commit." });
         return;
       }
       runGit(repoRoot, ["commit", "-m", "Add AI generated test scenarios"]);
-      sendJson(response, 200, { ok: true, branchName, pushed: false });
+      const shouldPush = body.push !== false;
+      if (shouldPush) {
+        runGit(repoRoot, ["push", "-u", "origin", branchName], 180_000);
+      }
+      sendJson(response, 200, { ok: true, branchName, pushed: shouldPush, repo: repoRoot });
     } catch (error) {
       sendJson(response, 500, { error: error instanceof Error ? error.message : "Agent commit failed." });
     }
