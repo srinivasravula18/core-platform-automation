@@ -1,0 +1,775 @@
+{
+  "generatedAt": "2026-05-26T12:06:17.015Z",
+  "baseRef": "0add972a1ea3f3c1b4864397eed8def7a9a753ef",
+  "requestedBaseRef": "auto",
+  "previousBaselineCommit": "0add972a1ea3f3c1b4864397eed8def7a9a753ef",
+  "headCommit": "8aca2867e4a0efd422444c029734e0513d652bae",
+  "planner": {
+    "provider": "rules",
+    "model": "gemini-3.5-flash",
+    "error": "API Key not found. Please pass a valid API key.",
+    "groundingMetadata": null,
+    "gitNexus": {
+      "source": "gitnexus-mcp",
+      "available": true,
+      "connected": true,
+      "repo": "core-platform",
+      "indexedCommit": "b7678da66217f13b23948c24ea156088e33e2bfb",
+      "staleness": {
+        "commitsBehind": 7,
+        "hint": "⚠️ Index is 7 commits behind HEAD. Run analyze tool to update."
+      },
+      "error": ""
+    }
+  },
+  "appRoot": "D:\\core-platform",
+  "gitNexusContext": {
+    "available": true,
+    "connected": true,
+    "source": "gitnexus-mcp",
+    "serverInfo": {
+      "name": "gitnexus",
+      "version": "1.6.5"
+    },
+    "repo": "core-platform",
+    "repoPath": "D:\\core-platform",
+    "indexedAt": "2026-05-26T08:33:47.190Z",
+    "indexedCommit": "b7678da66217f13b23948c24ea156088e33e2bfb",
+    "staleness": {
+      "commitsBehind": 7,
+      "hint": "⚠️ Index is 7 commits behind HEAD. Run analyze tool to update."
+    },
+    "error": "",
+    "busyToolCalls": 3,
+    "generatedAt": "2026-05-26T12:06:15.238Z",
+    "detectChanges": "Error: LadybugDB unavailable for core-platform. Another process may be rebuilding the index. Retry later. (IO exception: Cannot read from file: D:\\core-platform\\.gitnexus\\lbug handle: 2344 numBytesRead: 0 numBytesToRead: 4096 position: 0. Error 33: The process cannot access the file because another process has locked a portion of the file.)",
+    "files": [
+      {
+        "path": "apps/admin/src/components/AdminCreateAccessRecordModal.tsx",
+        "area": "Admin",
+        "risk": "High",
+        "tools": [
+          "cypher"
+        ],
+        "neighborhood": "This operation was aborted"
+      },
+      {
+        "path": "apps/admin/src/hooks/useAdminAccessControls.ts",
+        "area": "Admin",
+        "risk": "High",
+        "tools": [
+          "cypher"
+        ],
+        "neighborhood": "Error: LadybugDB unavailable for core-platform. Another process may be rebuilding the index. Retry later. (IO exception: Cannot read from file: D:\\core-platform\\.gitnexus\\lbug handle: 2560 numBytesRead: 0 numBytesToRead: 4096 position: 0. Error 33: The process cannot access the file because another process has locked a portion of the file.)"
+      },
+      {
+        "path": "apps/service/src/admin/routes.ts",
+        "area": "API / Service",
+        "risk": "High",
+        "tools": [
+          "cypher",
+          "api_impact"
+        ],
+        "neighborhood": "This operation was aborted",
+        "apiImpact": "Error: LadybugDB unavailable for core-platform. Another process may be rebuilding the index. Retry later. (IO exception: Cannot read from file: D:\\core-platform\\.gitnexus\\lbug handle: 2224 numBytesRead: 0 numBytesToRead: 4096 position: 0. Error 33: The process cannot access the file because another process has locked a portion of the file.)"
+      }
+    ]
+  },
+  "spec": "",
+  "summary": {
+    "changedFiles": 13,
+    "generated": 0,
+    "reused": 13
+  },
+  "scenarios": [
+    {
+      "id": "AGENT_001",
+      "suite": "admin-list-view",
+      "surface": "admin",
+      "scenario": "Security regression for Admin",
+      "testCase": "Verify security behavior after apps/admin/src/components/AdminCreateAccessRecordModal.tsx",
+      "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
+      "steps": "Open the affected Admin surface. | Navigate to the screen or API path related to apps/admin/src/components/AdminCreateAccessRecordModal.tsx. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.",
+      "expected": "The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.",
+      "risk": "High",
+      "sourcePath": "apps/admin/src/components/AdminCreateAccessRecordModal.tsx",
+      "surfaceLabel": "Admin",
+      "feature": "Security",
+      "level": "BVT",
+      "tag": "@bvt",
+      "adminScreen": "Permissions",
+      "proof": "GitNexus MCP impact checked for apps/admin/src/components/AdminCreateAccessRecordModal.tsx",
+      "evidenceName": "agent-agent_001",
+      "action": "reuse",
+      "existingTests": [
+        {
+          "id": "REG_LIFECYCLE_051",
+          "title": "Admin Apps disposable lifecycle creates deletes finds recycle bin entry and purges it @lifecycle @recycle [surface: Admin] [feature: Lifecycle] [precondition: ALLOW_DATA_WRITE=true and admin user can manage apps] [input: create disposable app, search it, open detail, delete, verify Recycle Bin, purge matching entry] [expected: disposable app is created, deleted, visible in Recycle Bin, and removed after purge] [proof: Admin list-view lifecycle is covered without touching seeded data]",
+          "displayTitle": "Admin Apps disposable lifecycle creates deletes finds recycle bin entry and purges it @lifecycle @recycle",
+          "surface": "Admin",
+          "feature": "Lifecycle",
+          "score": 6
+        },
+        {
+          "id": "REG_WORKFLOW_LIFECYCLE_052",
+          "title": "Admin Apps workflow edits saves deletes restores verifies and cleans up disposable app @workflow @lifecycle @recycle [surface: Admin] [feature: Workflow Lifecycle] [precondition: ALLOW_DATA_WRITE=true and admin user can manage apps] [input: open Apps, create disposable app, select row, edit label, save, delete, restore from Recycle Bin, verify restored, then cleanup purge] [expected: complete multi-step Apps workflow succeeds and leaves no disposable app behind] [proof: one E2E case covers the full Admin Apps list-view journey]",
+          "displayTitle": "Admin Apps workflow edits saves deletes restores verifies and cleans up disposable app @workflow @lifecycle @recycle",
+          "surface": "Admin",
+          "feature": "Workflow Lifecycle",
+          "score": 5
+        },
+        {
+          "id": "BVT_NAVIGATION_SHELL_059",
+          "title": "Admin Apps list view is ready for smoke navigation [surface: Admin] [feature: Navigation shell] [level: BVT] [precondition: seeded admin user is signed in] [input: open Apps from Admin navigation] [expected: Apps list view and toolbar render] [proof: Admin can reach a critical metadata list view after login]",
+          "displayTitle": "Admin Apps list view is ready for smoke navigation",
+          "surface": "Admin",
+          "feature": "Navigation shell",
+          "score": 5
+        }
+      ],
+      "decision": "Existing REG_LIFECYCLE_051 covers the changed feature area; reuse it instead of duplicating.",
+      "planner": "rules",
+      "graphSource": "gitnexus-mcp",
+      "gitNexus": {
+        "path": "apps/admin/src/components/AdminCreateAccessRecordModal.tsx",
+        "area": "Admin",
+        "risk": "High",
+        "tools": [
+          "cypher"
+        ],
+        "neighborhood": "This operation was aborted"
+      },
+      "title": "@bvt Verify security behavior after apps/admin/src/components/AdminCreateAccessRecordModal.tsx [surface: Admin] [feature: Security] [level: BVT] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open the affected Admin surface. | Navigate to the screen or API path related to apps/admin/src/components/AdminCreateAccessRecordModal.tsx. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: GitNexus MCP impact checked for apps/admin/src/components/AdminCreateAccessRecordModal.tsx]"
+    },
+    {
+      "id": "AGENT_002",
+      "suite": "admin-list-view",
+      "surface": "admin",
+      "scenario": "Admin regression for Admin",
+      "testCase": "Verify admin behavior after apps/admin/src/components/AdminFieldModal.tsx",
+      "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
+      "steps": "Open the affected Admin surface. | Navigate to the screen or API path related to apps/admin/src/components/AdminFieldModal.tsx. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.",
+      "expected": "The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.",
+      "risk": "Low",
+      "sourcePath": "apps/admin/src/components/AdminFieldModal.tsx",
+      "surfaceLabel": "Admin",
+      "feature": "Admin",
+      "level": "Regression",
+      "tag": "@regression",
+      "adminScreen": "Apps",
+      "proof": "generated smoke coverage for apps/admin/src/components/AdminFieldModal.tsx",
+      "evidenceName": "agent-agent_002",
+      "action": "reuse",
+      "existingTests": [
+        {
+          "id": "REG_LIFECYCLE_051",
+          "title": "Admin Apps disposable lifecycle creates deletes finds recycle bin entry and purges it @lifecycle @recycle [surface: Admin] [feature: Lifecycle] [precondition: ALLOW_DATA_WRITE=true and admin user can manage apps] [input: create disposable app, search it, open detail, delete, verify Recycle Bin, purge matching entry] [expected: disposable app is created, deleted, visible in Recycle Bin, and removed after purge] [proof: Admin list-view lifecycle is covered without touching seeded data]",
+          "displayTitle": "Admin Apps disposable lifecycle creates deletes finds recycle bin entry and purges it @lifecycle @recycle",
+          "surface": "Admin",
+          "feature": "Lifecycle",
+          "score": 6
+        },
+        {
+          "id": "REG_WORKFLOW_LIFECYCLE_052",
+          "title": "Admin Apps workflow edits saves deletes restores verifies and cleans up disposable app @workflow @lifecycle @recycle [surface: Admin] [feature: Workflow Lifecycle] [precondition: ALLOW_DATA_WRITE=true and admin user can manage apps] [input: open Apps, create disposable app, select row, edit label, save, delete, restore from Recycle Bin, verify restored, then cleanup purge] [expected: complete multi-step Apps workflow succeeds and leaves no disposable app behind] [proof: one E2E case covers the full Admin Apps list-view journey]",
+          "displayTitle": "Admin Apps workflow edits saves deletes restores verifies and cleans up disposable app @workflow @lifecycle @recycle",
+          "surface": "Admin",
+          "feature": "Workflow Lifecycle",
+          "score": 5
+        },
+        {
+          "id": "BVT_NAVIGATION_SHELL_059",
+          "title": "Admin Apps list view is ready for smoke navigation [surface: Admin] [feature: Navigation shell] [level: BVT] [precondition: seeded admin user is signed in] [input: open Apps from Admin navigation] [expected: Apps list view and toolbar render] [proof: Admin can reach a critical metadata list view after login]",
+          "displayTitle": "Admin Apps list view is ready for smoke navigation",
+          "surface": "Admin",
+          "feature": "Navigation shell",
+          "score": 5
+        }
+      ],
+      "decision": "Existing REG_LIFECYCLE_051 covers the changed feature area; reuse it instead of duplicating.",
+      "planner": "rules",
+      "graphSource": "gitnexus-mcp",
+      "gitNexus": null,
+      "title": "@regression Verify admin behavior after apps/admin/src/components/AdminFieldModal.tsx [surface: Admin] [feature: Admin] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open the affected Admin surface. | Navigate to the screen or API path related to apps/admin/src/components/AdminFieldModal.tsx. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: generated smoke coverage for apps/admin/src/components/AdminFieldModal.tsx]"
+    },
+    {
+      "id": "AGENT_003",
+      "suite": "admin-list-view",
+      "surface": "admin",
+      "scenario": "Admin regression for Admin",
+      "testCase": "Verify admin behavior after apps/admin/src/components/AdminObjectHomePanel.tsx",
+      "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
+      "steps": "Open the affected Admin surface. | Navigate to the screen or API path related to apps/admin/src/components/AdminObjectHomePanel.tsx. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.",
+      "expected": "The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.",
+      "risk": "Low",
+      "sourcePath": "apps/admin/src/components/AdminObjectHomePanel.tsx",
+      "surfaceLabel": "Admin",
+      "feature": "Admin",
+      "level": "Regression",
+      "tag": "@regression",
+      "adminScreen": "Objects",
+      "proof": "generated smoke coverage for apps/admin/src/components/AdminObjectHomePanel.tsx",
+      "evidenceName": "agent-agent_003",
+      "action": "reuse",
+      "existingTests": [
+        {
+          "id": "REG_LIFECYCLE_051",
+          "title": "Admin Apps disposable lifecycle creates deletes finds recycle bin entry and purges it @lifecycle @recycle [surface: Admin] [feature: Lifecycle] [precondition: ALLOW_DATA_WRITE=true and admin user can manage apps] [input: create disposable app, search it, open detail, delete, verify Recycle Bin, purge matching entry] [expected: disposable app is created, deleted, visible in Recycle Bin, and removed after purge] [proof: Admin list-view lifecycle is covered without touching seeded data]",
+          "displayTitle": "Admin Apps disposable lifecycle creates deletes finds recycle bin entry and purges it @lifecycle @recycle",
+          "surface": "Admin",
+          "feature": "Lifecycle",
+          "score": 6
+        },
+        {
+          "id": "REG_WORKFLOW_LIFECYCLE_052",
+          "title": "Admin Apps workflow edits saves deletes restores verifies and cleans up disposable app @workflow @lifecycle @recycle [surface: Admin] [feature: Workflow Lifecycle] [precondition: ALLOW_DATA_WRITE=true and admin user can manage apps] [input: open Apps, create disposable app, select row, edit label, save, delete, restore from Recycle Bin, verify restored, then cleanup purge] [expected: complete multi-step Apps workflow succeeds and leaves no disposable app behind] [proof: one E2E case covers the full Admin Apps list-view journey]",
+          "displayTitle": "Admin Apps workflow edits saves deletes restores verifies and cleans up disposable app @workflow @lifecycle @recycle",
+          "surface": "Admin",
+          "feature": "Workflow Lifecycle",
+          "score": 5
+        },
+        {
+          "id": "BVT_NAVIGATION_SHELL_059",
+          "title": "Admin Apps list view is ready for smoke navigation [surface: Admin] [feature: Navigation shell] [level: BVT] [precondition: seeded admin user is signed in] [input: open Apps from Admin navigation] [expected: Apps list view and toolbar render] [proof: Admin can reach a critical metadata list view after login]",
+          "displayTitle": "Admin Apps list view is ready for smoke navigation",
+          "surface": "Admin",
+          "feature": "Navigation shell",
+          "score": 5
+        }
+      ],
+      "decision": "Existing REG_LIFECYCLE_051 covers the changed feature area; reuse it instead of duplicating.",
+      "planner": "rules",
+      "graphSource": "gitnexus-mcp",
+      "gitNexus": null,
+      "title": "@regression Verify admin behavior after apps/admin/src/components/AdminObjectHomePanel.tsx [surface: Admin] [feature: Admin] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open the affected Admin surface. | Navigate to the screen or API path related to apps/admin/src/components/AdminObjectHomePanel.tsx. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: generated smoke coverage for apps/admin/src/components/AdminObjectHomePanel.tsx]"
+    },
+    {
+      "id": "AGENT_004",
+      "suite": "admin-list-view",
+      "surface": "admin",
+      "scenario": "Security regression for Admin",
+      "testCase": "Verify security behavior after apps/admin/src/hooks/useAdminAccessControls.ts",
+      "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
+      "steps": "Open the affected Admin surface. | Navigate to the screen or API path related to apps/admin/src/hooks/useAdminAccessControls.ts. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.",
+      "expected": "The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.",
+      "risk": "High",
+      "sourcePath": "apps/admin/src/hooks/useAdminAccessControls.ts",
+      "surfaceLabel": "Admin",
+      "feature": "Security",
+      "level": "BVT",
+      "tag": "@bvt",
+      "adminScreen": "Permissions",
+      "proof": "GitNexus MCP impact checked for apps/admin/src/hooks/useAdminAccessControls.ts",
+      "evidenceName": "agent-agent_004",
+      "action": "reuse",
+      "existingTests": [
+        {
+          "id": "REG_LIFECYCLE_051",
+          "title": "Admin Apps disposable lifecycle creates deletes finds recycle bin entry and purges it @lifecycle @recycle [surface: Admin] [feature: Lifecycle] [precondition: ALLOW_DATA_WRITE=true and admin user can manage apps] [input: create disposable app, search it, open detail, delete, verify Recycle Bin, purge matching entry] [expected: disposable app is created, deleted, visible in Recycle Bin, and removed after purge] [proof: Admin list-view lifecycle is covered without touching seeded data]",
+          "displayTitle": "Admin Apps disposable lifecycle creates deletes finds recycle bin entry and purges it @lifecycle @recycle",
+          "surface": "Admin",
+          "feature": "Lifecycle",
+          "score": 6
+        },
+        {
+          "id": "REG_WORKFLOW_LIFECYCLE_052",
+          "title": "Admin Apps workflow edits saves deletes restores verifies and cleans up disposable app @workflow @lifecycle @recycle [surface: Admin] [feature: Workflow Lifecycle] [precondition: ALLOW_DATA_WRITE=true and admin user can manage apps] [input: open Apps, create disposable app, select row, edit label, save, delete, restore from Recycle Bin, verify restored, then cleanup purge] [expected: complete multi-step Apps workflow succeeds and leaves no disposable app behind] [proof: one E2E case covers the full Admin Apps list-view journey]",
+          "displayTitle": "Admin Apps workflow edits saves deletes restores verifies and cleans up disposable app @workflow @lifecycle @recycle",
+          "surface": "Admin",
+          "feature": "Workflow Lifecycle",
+          "score": 5
+        },
+        {
+          "id": "BVT_NAVIGATION_SHELL_059",
+          "title": "Admin Apps list view is ready for smoke navigation [surface: Admin] [feature: Navigation shell] [level: BVT] [precondition: seeded admin user is signed in] [input: open Apps from Admin navigation] [expected: Apps list view and toolbar render] [proof: Admin can reach a critical metadata list view after login]",
+          "displayTitle": "Admin Apps list view is ready for smoke navigation",
+          "surface": "Admin",
+          "feature": "Navigation shell",
+          "score": 5
+        }
+      ],
+      "decision": "Existing REG_LIFECYCLE_051 covers the changed feature area; reuse it instead of duplicating.",
+      "planner": "rules",
+      "graphSource": "gitnexus-mcp",
+      "gitNexus": {
+        "path": "apps/admin/src/hooks/useAdminAccessControls.ts",
+        "area": "Admin",
+        "risk": "High",
+        "tools": [
+          "cypher"
+        ],
+        "neighborhood": "Error: LadybugDB unavailable for core-platform. Another process may be rebuilding the index. Retry later. (IO exception: Cannot read from file: D:\\core-platform\\.gitnexus\\lbug handle: 2560 numBytesRead: 0 numBytesToRead: 4096 position: 0. Error 33: The process cannot access the file because another process has locked a portion of the file.)"
+      },
+      "title": "@bvt Verify security behavior after apps/admin/src/hooks/useAdminAccessControls.ts [surface: Admin] [feature: Security] [level: BVT] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open the affected Admin surface. | Navigate to the screen or API path related to apps/admin/src/hooks/useAdminAccessControls.ts. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: GitNexus MCP impact checked for apps/admin/src/hooks/useAdminAccessControls.ts]"
+    },
+    {
+      "id": "AGENT_005",
+      "suite": "admin-list-view",
+      "surface": "admin",
+      "scenario": "Admin regression for Admin",
+      "testCase": "Verify admin behavior after apps/admin/src/main.tsx",
+      "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
+      "steps": "Open the affected Admin surface. | Navigate to the screen or API path related to apps/admin/src/main.tsx. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.",
+      "expected": "The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.",
+      "risk": "Low",
+      "sourcePath": "apps/admin/src/main.tsx",
+      "surfaceLabel": "Admin",
+      "feature": "Admin",
+      "level": "Regression",
+      "tag": "@regression",
+      "adminScreen": "Apps",
+      "proof": "generated smoke coverage for apps/admin/src/main.tsx",
+      "evidenceName": "agent-agent_005",
+      "action": "reuse",
+      "existingTests": [
+        {
+          "id": "REG_LIFECYCLE_051",
+          "title": "Admin Apps disposable lifecycle creates deletes finds recycle bin entry and purges it @lifecycle @recycle [surface: Admin] [feature: Lifecycle] [precondition: ALLOW_DATA_WRITE=true and admin user can manage apps] [input: create disposable app, search it, open detail, delete, verify Recycle Bin, purge matching entry] [expected: disposable app is created, deleted, visible in Recycle Bin, and removed after purge] [proof: Admin list-view lifecycle is covered without touching seeded data]",
+          "displayTitle": "Admin Apps disposable lifecycle creates deletes finds recycle bin entry and purges it @lifecycle @recycle",
+          "surface": "Admin",
+          "feature": "Lifecycle",
+          "score": 6
+        },
+        {
+          "id": "REG_WORKFLOW_LIFECYCLE_052",
+          "title": "Admin Apps workflow edits saves deletes restores verifies and cleans up disposable app @workflow @lifecycle @recycle [surface: Admin] [feature: Workflow Lifecycle] [precondition: ALLOW_DATA_WRITE=true and admin user can manage apps] [input: open Apps, create disposable app, select row, edit label, save, delete, restore from Recycle Bin, verify restored, then cleanup purge] [expected: complete multi-step Apps workflow succeeds and leaves no disposable app behind] [proof: one E2E case covers the full Admin Apps list-view journey]",
+          "displayTitle": "Admin Apps workflow edits saves deletes restores verifies and cleans up disposable app @workflow @lifecycle @recycle",
+          "surface": "Admin",
+          "feature": "Workflow Lifecycle",
+          "score": 5
+        },
+        {
+          "id": "BVT_NAVIGATION_SHELL_059",
+          "title": "Admin Apps list view is ready for smoke navigation [surface: Admin] [feature: Navigation shell] [level: BVT] [precondition: seeded admin user is signed in] [input: open Apps from Admin navigation] [expected: Apps list view and toolbar render] [proof: Admin can reach a critical metadata list view after login]",
+          "displayTitle": "Admin Apps list view is ready for smoke navigation",
+          "surface": "Admin",
+          "feature": "Navigation shell",
+          "score": 5
+        }
+      ],
+      "decision": "Existing REG_LIFECYCLE_051 covers the changed feature area; reuse it instead of duplicating.",
+      "planner": "rules",
+      "graphSource": "gitnexus-mcp",
+      "gitNexus": null,
+      "title": "@regression Verify admin behavior after apps/admin/src/main.tsx [surface: Admin] [feature: Admin] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open the affected Admin surface. | Navigate to the screen or API path related to apps/admin/src/main.tsx. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: generated smoke coverage for apps/admin/src/main.tsx]"
+    },
+    {
+      "id": "AGENT_006",
+      "suite": "admin-list-view",
+      "surface": "admin",
+      "scenario": "Admin regression for Admin",
+      "testCase": "Verify admin behavior after apps/admin/src/style.css",
+      "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
+      "steps": "Open the affected Admin surface. | Navigate to the screen or API path related to apps/admin/src/style.css. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.",
+      "expected": "The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.",
+      "risk": "Low",
+      "sourcePath": "apps/admin/src/style.css",
+      "surfaceLabel": "Admin",
+      "feature": "Admin",
+      "level": "Regression",
+      "tag": "@regression",
+      "adminScreen": "Apps",
+      "proof": "generated smoke coverage for apps/admin/src/style.css",
+      "evidenceName": "agent-agent_006",
+      "action": "reuse",
+      "existingTests": [
+        {
+          "id": "REG_LIFECYCLE_051",
+          "title": "Admin Apps disposable lifecycle creates deletes finds recycle bin entry and purges it @lifecycle @recycle [surface: Admin] [feature: Lifecycle] [precondition: ALLOW_DATA_WRITE=true and admin user can manage apps] [input: create disposable app, search it, open detail, delete, verify Recycle Bin, purge matching entry] [expected: disposable app is created, deleted, visible in Recycle Bin, and removed after purge] [proof: Admin list-view lifecycle is covered without touching seeded data]",
+          "displayTitle": "Admin Apps disposable lifecycle creates deletes finds recycle bin entry and purges it @lifecycle @recycle",
+          "surface": "Admin",
+          "feature": "Lifecycle",
+          "score": 6
+        },
+        {
+          "id": "REG_WORKFLOW_LIFECYCLE_052",
+          "title": "Admin Apps workflow edits saves deletes restores verifies and cleans up disposable app @workflow @lifecycle @recycle [surface: Admin] [feature: Workflow Lifecycle] [precondition: ALLOW_DATA_WRITE=true and admin user can manage apps] [input: open Apps, create disposable app, select row, edit label, save, delete, restore from Recycle Bin, verify restored, then cleanup purge] [expected: complete multi-step Apps workflow succeeds and leaves no disposable app behind] [proof: one E2E case covers the full Admin Apps list-view journey]",
+          "displayTitle": "Admin Apps workflow edits saves deletes restores verifies and cleans up disposable app @workflow @lifecycle @recycle",
+          "surface": "Admin",
+          "feature": "Workflow Lifecycle",
+          "score": 5
+        },
+        {
+          "id": "BVT_NAVIGATION_SHELL_059",
+          "title": "Admin Apps list view is ready for smoke navigation [surface: Admin] [feature: Navigation shell] [level: BVT] [precondition: seeded admin user is signed in] [input: open Apps from Admin navigation] [expected: Apps list view and toolbar render] [proof: Admin can reach a critical metadata list view after login]",
+          "displayTitle": "Admin Apps list view is ready for smoke navigation",
+          "surface": "Admin",
+          "feature": "Navigation shell",
+          "score": 5
+        }
+      ],
+      "decision": "Existing REG_LIFECYCLE_051 covers the changed feature area; reuse it instead of duplicating.",
+      "planner": "rules",
+      "graphSource": "gitnexus-mcp",
+      "gitNexus": null,
+      "title": "@regression Verify admin behavior after apps/admin/src/style.css [surface: Admin] [feature: Admin] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open the affected Admin surface. | Navigate to the screen or API path related to apps/admin/src/style.css. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: generated smoke coverage for apps/admin/src/style.css]"
+    },
+    {
+      "id": "AGENT_007",
+      "suite": "list-view-api",
+      "surface": "api",
+      "scenario": "API / Service regression for API / Service",
+      "testCase": "Verify api / service behavior after apps/service/src/admin/routes.ts",
+      "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
+      "steps": "Open the affected API / Service surface. | Navigate to the screen or API path related to apps/service/src/admin/routes.ts. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.",
+      "expected": "The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.",
+      "risk": "High",
+      "sourcePath": "apps/service/src/admin/routes.ts",
+      "surfaceLabel": "API",
+      "feature": "API / Service",
+      "level": "BVT",
+      "tag": "@bvt",
+      "adminScreen": "Apps",
+      "proof": "GitNexus MCP impact checked for apps/service/src/admin/routes.ts",
+      "evidenceName": "agent-agent_007",
+      "action": "reuse",
+      "existingTests": [
+        {
+          "id": "REG_LIFECYCLE_051",
+          "title": "Admin Apps disposable lifecycle creates deletes finds recycle bin entry and purges it @lifecycle @recycle [surface: Admin] [feature: Lifecycle] [precondition: ALLOW_DATA_WRITE=true and admin user can manage apps] [input: create disposable app, search it, open detail, delete, verify Recycle Bin, purge matching entry] [expected: disposable app is created, deleted, visible in Recycle Bin, and removed after purge] [proof: Admin list-view lifecycle is covered without touching seeded data]",
+          "displayTitle": "Admin Apps disposable lifecycle creates deletes finds recycle bin entry and purges it @lifecycle @recycle",
+          "surface": "Admin",
+          "feature": "Lifecycle",
+          "score": 4
+        },
+        {
+          "id": "BVT_PLATFORM_HEALTH_056",
+          "title": "API health endpoint responds [surface: API] [feature: Platform health] [level: BVT] [precondition: local API service is running] [input: GET /health] [expected: health endpoint returns a successful response] [proof: backend service is alive before deeper UI regression]",
+          "displayTitle": "API health endpoint responds",
+          "surface": "API",
+          "feature": "Platform health",
+          "score": 4
+        },
+        {
+          "id": "REG_APP_SCOPE_113",
+          "title": "API lists accessible apps for list-view scoping [surface: API] [feature: App scope] [precondition: valid user credentials exist] [input: GET /api/apps] [expected: at least one accessible app is returned] [proof: list-view API tests can resolve app scope]",
+          "displayTitle": "API lists accessible apps for list-view scoping",
+          "surface": "API",
+          "feature": "App scope",
+          "score": 4
+        }
+      ],
+      "decision": "Existing REG_LIFECYCLE_051 covers the changed feature area; reuse it instead of duplicating.",
+      "planner": "rules",
+      "graphSource": "gitnexus-mcp",
+      "gitNexus": {
+        "path": "apps/service/src/admin/routes.ts",
+        "area": "API / Service",
+        "risk": "High",
+        "tools": [
+          "cypher",
+          "api_impact"
+        ],
+        "neighborhood": "This operation was aborted",
+        "apiImpact": "Error: LadybugDB unavailable for core-platform. Another process may be rebuilding the index. Retry later. (IO exception: Cannot read from file: D:\\core-platform\\.gitnexus\\lbug handle: 2224 numBytesRead: 0 numBytesToRead: 4096 position: 0. Error 33: The process cannot access the file because another process has locked a portion of the file.)"
+      },
+      "title": "@bvt Verify api / service behavior after apps/service/src/admin/routes.ts [surface: API] [feature: API / Service] [level: BVT] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open the affected API / Service surface. | Navigate to the screen or API path related to apps/service/src/admin/routes.ts. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: GitNexus MCP impact checked for apps/service/src/admin/routes.ts]"
+    },
+    {
+      "id": "AGENT_008",
+      "suite": "list-view-api",
+      "surface": "api",
+      "scenario": "API / Service regression for API / Service",
+      "testCase": "Verify api / service behavior after apps/service/src/apps/routes.ts",
+      "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
+      "steps": "Open the affected API / Service surface. | Navigate to the screen or API path related to apps/service/src/apps/routes.ts. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.",
+      "expected": "The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.",
+      "risk": "High",
+      "sourcePath": "apps/service/src/apps/routes.ts",
+      "surfaceLabel": "API",
+      "feature": "API / Service",
+      "level": "BVT",
+      "tag": "@bvt",
+      "adminScreen": "Apps",
+      "proof": "generated smoke coverage for apps/service/src/apps/routes.ts",
+      "evidenceName": "agent-agent_008",
+      "action": "reuse",
+      "existingTests": [
+        {
+          "id": "BVT_PLATFORM_HEALTH_056",
+          "title": "API health endpoint responds [surface: API] [feature: Platform health] [level: BVT] [precondition: local API service is running] [input: GET /health] [expected: health endpoint returns a successful response] [proof: backend service is alive before deeper UI regression]",
+          "displayTitle": "API health endpoint responds",
+          "surface": "API",
+          "feature": "Platform health",
+          "score": 4
+        },
+        {
+          "id": "REG_APP_SCOPE_113",
+          "title": "API lists accessible apps for list-view scoping [surface: API] [feature: App scope] [precondition: valid user credentials exist] [input: GET /api/apps] [expected: at least one accessible app is returned] [proof: list-view API tests can resolve app scope]",
+          "displayTitle": "API lists accessible apps for list-view scoping",
+          "surface": "API",
+          "feature": "App scope",
+          "score": 4
+        },
+        {
+          "id": "REG_OBJECT_SCOPE_114",
+          "title": "API lists objects for selected app [surface: API] [feature: Object scope] [precondition: accessible app exists] [input: GET /api/apps/{appId}/objects] [expected: object metadata list is returned] [proof: list-view object scope can be discovered]",
+          "displayTitle": "API lists objects for selected app",
+          "surface": "API",
+          "feature": "Object scope",
+          "score": 4
+        }
+      ],
+      "decision": "Existing BVT_PLATFORM_HEALTH_056 covers the changed feature area; reuse it instead of duplicating.",
+      "planner": "rules",
+      "graphSource": "gitnexus-mcp",
+      "gitNexus": null,
+      "title": "@bvt Verify api / service behavior after apps/service/src/apps/routes.ts [surface: API] [feature: API / Service] [level: BVT] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open the affected API / Service surface. | Navigate to the screen or API path related to apps/service/src/apps/routes.ts. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: generated smoke coverage for apps/service/src/apps/routes.ts]"
+    },
+    {
+      "id": "AGENT_009",
+      "suite": "keystone-list-view",
+      "surface": "keystone",
+      "scenario": "Keystone / Shockwave regression for Keystone / Shockwave",
+      "testCase": "Verify keystone / shockwave behavior after apps/shockwave/src/App.tsx",
+      "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
+      "steps": "Open the affected Keystone / Shockwave surface. | Navigate to the screen or API path related to apps/shockwave/src/App.tsx. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.",
+      "expected": "The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.",
+      "risk": "Low",
+      "sourcePath": "apps/shockwave/src/App.tsx",
+      "surfaceLabel": "Keystone",
+      "feature": "Keystone / Shockwave",
+      "level": "Regression",
+      "tag": "@regression",
+      "adminScreen": "Apps",
+      "proof": "generated smoke coverage for apps/shockwave/src/App.tsx",
+      "evidenceName": "agent-agent_009",
+      "action": "reuse",
+      "existingTests": [
+        {
+          "id": "BVT_NAVIGATION_SHELL_061",
+          "title": "Keystone object list view is ready for smoke navigation [surface: Keystone] [feature: Navigation shell] [level: BVT] [precondition: seeded Keystone user is signed in] [input: select an accessible app and object tab] [expected: object home list view and toolbar render] [proof: Keystone can reach a critical business object list view after login]",
+          "displayTitle": "Keystone object list view is ready for smoke navigation",
+          "surface": "Keystone",
+          "feature": "Navigation shell",
+          "score": 5
+        },
+        {
+          "id": "REG_RECORD_WORKFLOW_110",
+          "title": "Keystone Account workflow opens app tab searches row opens record returns and refreshes list @workflow [surface: Keystone] [feature: Record workflow] [precondition: CRM Account list view is available] [input: open CRM Account, ensure a row, search by visible token, open row, verify record workspace, return to list and refresh] [expected: search and record navigation remain connected without losing list context] [proof: Keystone list-view to record workflow is covered as one journey]",
+          "displayTitle": "Keystone Account workflow opens app tab searches row opens record returns and refreshes list @workflow",
+          "surface": "Keystone",
+          "feature": "Record workflow",
+          "score": 5
+        },
+        {
+          "id": "REG_LIFECYCLE_051",
+          "title": "Admin Apps disposable lifecycle creates deletes finds recycle bin entry and purges it @lifecycle @recycle [surface: Admin] [feature: Lifecycle] [precondition: ALLOW_DATA_WRITE=true and admin user can manage apps] [input: create disposable app, search it, open detail, delete, verify Recycle Bin, purge matching entry] [expected: disposable app is created, deleted, visible in Recycle Bin, and removed after purge] [proof: Admin list-view lifecycle is covered without touching seeded data]",
+          "displayTitle": "Admin Apps disposable lifecycle creates deletes finds recycle bin entry and purges it @lifecycle @recycle",
+          "surface": "Admin",
+          "feature": "Lifecycle",
+          "score": 4
+        }
+      ],
+      "decision": "Existing BVT_NAVIGATION_SHELL_061 covers the changed feature area; reuse it instead of duplicating.",
+      "planner": "rules",
+      "graphSource": "gitnexus-mcp",
+      "gitNexus": null,
+      "title": "@regression Verify keystone / shockwave behavior after apps/shockwave/src/App.tsx [surface: Keystone] [feature: Keystone / Shockwave] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open the affected Keystone / Shockwave surface. | Navigate to the screen or API path related to apps/shockwave/src/App.tsx. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: generated smoke coverage for apps/shockwave/src/App.tsx]"
+    },
+    {
+      "id": "AGENT_010",
+      "suite": "keystone-list-view",
+      "surface": "keystone",
+      "scenario": "Keystone / Shockwave regression for Keystone / Shockwave",
+      "testCase": "Verify keystone / shockwave behavior after apps/shockwave/src/components/LookupListModal.tsx",
+      "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
+      "steps": "Open the affected Keystone / Shockwave surface. | Navigate to the screen or API path related to apps/shockwave/src/components/LookupListModal.tsx. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.",
+      "expected": "The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.",
+      "risk": "Low",
+      "sourcePath": "apps/shockwave/src/components/LookupListModal.tsx",
+      "surfaceLabel": "Keystone",
+      "feature": "Keystone / Shockwave",
+      "level": "Regression",
+      "tag": "@regression",
+      "adminScreen": "Apps",
+      "proof": "generated smoke coverage for apps/shockwave/src/components/LookupListModal.tsx",
+      "evidenceName": "agent-agent_010",
+      "action": "reuse",
+      "existingTests": [
+        {
+          "id": "BVT_NAVIGATION_SHELL_061",
+          "title": "Keystone object list view is ready for smoke navigation [surface: Keystone] [feature: Navigation shell] [level: BVT] [precondition: seeded Keystone user is signed in] [input: select an accessible app and object tab] [expected: object home list view and toolbar render] [proof: Keystone can reach a critical business object list view after login]",
+          "displayTitle": "Keystone object list view is ready for smoke navigation",
+          "surface": "Keystone",
+          "feature": "Navigation shell",
+          "score": 4
+        },
+        {
+          "id": "BVT_OBJECT_HOME_062",
+          "title": "Keystone Asset object list view loads [surface: Keystone] [feature: Object home] [precondition: seeded Keystone user is signed in] [input: open Asset object tab] [expected: object home list view reaches table, empty, or permission state] [proof: Keystone object list views are covered across seeded apps]",
+          "displayTitle": "Keystone Asset object list view loads",
+          "surface": "Keystone",
+          "feature": "Object home",
+          "score": 4
+        },
+        {
+          "id": "BVT_OBJECT_HOME_064",
+          "title": "Keystone Vendor object list view loads [surface: Keystone] [feature: Object home] [precondition: seeded Keystone user is signed in] [input: open Vendor object tab] [expected: object home list view reaches table, empty, or permission state] [proof: Keystone object list views are covered across seeded apps]",
+          "displayTitle": "Keystone Vendor object list view loads",
+          "surface": "Keystone",
+          "feature": "Object home",
+          "score": 4
+        }
+      ],
+      "decision": "Existing BVT_NAVIGATION_SHELL_061 covers the changed feature area; reuse it instead of duplicating.",
+      "planner": "rules",
+      "graphSource": "gitnexus-mcp",
+      "gitNexus": null,
+      "title": "@regression Verify keystone / shockwave behavior after apps/shockwave/src/components/LookupListModal.tsx [surface: Keystone] [feature: Keystone / Shockwave] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open the affected Keystone / Shockwave surface. | Navigate to the screen or API path related to apps/shockwave/src/components/LookupListModal.tsx. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: generated smoke coverage for apps/shockwave/src/components/LookupListModal.tsx]"
+    },
+    {
+      "id": "AGENT_011",
+      "suite": "keystone-list-view",
+      "surface": "keystone",
+      "scenario": "Keystone / Shockwave regression for Keystone / Shockwave",
+      "testCase": "Verify keystone / shockwave behavior after apps/shockwave/src/utils/recordCreationLayout.ts",
+      "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
+      "steps": "Open the affected Keystone / Shockwave surface. | Navigate to the screen or API path related to apps/shockwave/src/utils/recordCreationLayout.ts. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.",
+      "expected": "The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.",
+      "risk": "Medium",
+      "sourcePath": "apps/shockwave/src/utils/recordCreationLayout.ts",
+      "surfaceLabel": "Keystone",
+      "feature": "Keystone / Shockwave",
+      "level": "Sanity",
+      "tag": "@sanity",
+      "adminScreen": "Apps",
+      "proof": "generated smoke coverage for apps/shockwave/src/utils/recordCreationLayout.ts",
+      "evidenceName": "agent-agent_011",
+      "action": "reuse",
+      "existingTests": [
+        {
+          "id": "BVT_NAVIGATION_SHELL_061",
+          "title": "Keystone object list view is ready for smoke navigation [surface: Keystone] [feature: Navigation shell] [level: BVT] [precondition: seeded Keystone user is signed in] [input: select an accessible app and object tab] [expected: object home list view and toolbar render] [proof: Keystone can reach a critical business object list view after login]",
+          "displayTitle": "Keystone object list view is ready for smoke navigation",
+          "surface": "Keystone",
+          "feature": "Navigation shell",
+          "score": 4
+        },
+        {
+          "id": "BVT_OBJECT_HOME_062",
+          "title": "Keystone Asset object list view loads [surface: Keystone] [feature: Object home] [precondition: seeded Keystone user is signed in] [input: open Asset object tab] [expected: object home list view reaches table, empty, or permission state] [proof: Keystone object list views are covered across seeded apps]",
+          "displayTitle": "Keystone Asset object list view loads",
+          "surface": "Keystone",
+          "feature": "Object home",
+          "score": 4
+        },
+        {
+          "id": "BVT_OBJECT_HOME_064",
+          "title": "Keystone Vendor object list view loads [surface: Keystone] [feature: Object home] [precondition: seeded Keystone user is signed in] [input: open Vendor object tab] [expected: object home list view reaches table, empty, or permission state] [proof: Keystone object list views are covered across seeded apps]",
+          "displayTitle": "Keystone Vendor object list view loads",
+          "surface": "Keystone",
+          "feature": "Object home",
+          "score": 4
+        }
+      ],
+      "decision": "Existing BVT_NAVIGATION_SHELL_061 covers the changed feature area; reuse it instead of duplicating.",
+      "planner": "rules",
+      "graphSource": "gitnexus-mcp",
+      "gitNexus": null,
+      "title": "@sanity Verify keystone / shockwave behavior after apps/shockwave/src/utils/recordCreationLayout.ts [surface: Keystone] [feature: Keystone / Shockwave] [level: Sanity] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open the affected Keystone / Shockwave surface. | Navigate to the screen or API path related to apps/shockwave/src/utils/recordCreationLayout.ts. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: generated smoke coverage for apps/shockwave/src/utils/recordCreationLayout.ts]"
+    },
+    {
+      "id": "AGENT_012",
+      "suite": "list-view-regression",
+      "surface": "admin",
+      "scenario": "Application regression for Application",
+      "testCase": "Verify application behavior after docs/ui/component-catalog.md",
+      "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
+      "steps": "Open the affected Application surface. | Navigate to the screen or API path related to docs/ui/component-catalog.md. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.",
+      "expected": "The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.",
+      "risk": "Low",
+      "sourcePath": "docs/ui/component-catalog.md",
+      "surfaceLabel": "Admin",
+      "feature": "Application",
+      "level": "Regression",
+      "tag": "@regression",
+      "adminScreen": "Apps",
+      "proof": "generated smoke coverage for docs/ui/component-catalog.md",
+      "evidenceName": "agent-agent_012",
+      "action": "reuse",
+      "existingTests": [
+        {
+          "id": "REG_LIFECYCLE_051",
+          "title": "Admin Apps disposable lifecycle creates deletes finds recycle bin entry and purges it @lifecycle @recycle [surface: Admin] [feature: Lifecycle] [precondition: ALLOW_DATA_WRITE=true and admin user can manage apps] [input: create disposable app, search it, open detail, delete, verify Recycle Bin, purge matching entry] [expected: disposable app is created, deleted, visible in Recycle Bin, and removed after purge] [proof: Admin list-view lifecycle is covered without touching seeded data]",
+          "displayTitle": "Admin Apps disposable lifecycle creates deletes finds recycle bin entry and purges it @lifecycle @recycle",
+          "surface": "Admin",
+          "feature": "Lifecycle",
+          "score": 4
+        },
+        {
+          "id": "BVT_TOOLBAR_CONTROLS_041",
+          "title": "Admin Objects toolbar has all primary list-view controls from reference screenshot [surface: Admin] [feature: Toolbar controls] [precondition: Objects list view is open] [input: inspect list selector, pin, selected count, search, New, Delete, refresh, settings, fit columns, CSV, PDF] [expected: every primary toolbar control is present] [proof: reference screenshot toolbar behavior is covered in the list-view suite]",
+          "displayTitle": "Admin Objects toolbar has all primary list-view controls from reference screenshot",
+          "surface": "Admin",
+          "feature": "Toolbar controls",
+          "score": 3
+        },
+        {
+          "id": "REG_COLUMN_SIZING_050",
+          "title": "Admin list view fit columns action keeps table visible [surface: Admin] [feature: Column sizing] [precondition: Objects table mode is visible] [input: click Fit columns] [expected: table remains visible after auto-resize] [proof: toolbar fit-columns control works on Admin tables]",
+          "displayTitle": "Admin list view fit columns action keeps table visible",
+          "surface": "Admin",
+          "feature": "Column sizing",
+          "score": 3
+        }
+      ],
+      "decision": "Existing REG_LIFECYCLE_051 covers the changed feature area; reuse it instead of duplicating.",
+      "planner": "rules",
+      "graphSource": "gitnexus-mcp",
+      "gitNexus": null,
+      "title": "@regression Verify application behavior after docs/ui/component-catalog.md [surface: Admin] [feature: Application] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open the affected Application surface. | Navigate to the screen or API path related to docs/ui/component-catalog.md. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: generated smoke coverage for docs/ui/component-catalog.md]"
+    },
+    {
+      "id": "AGENT_013",
+      "suite": "list-view-regression",
+      "surface": "admin",
+      "scenario": "Shared UI regression for Shared UI",
+      "testCase": "Verify shared ui behavior after packages/ui/src/index.tsx",
+      "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
+      "steps": "Open the affected Shared UI surface. | Navigate to the screen or API path related to packages/ui/src/index.tsx. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.",
+      "expected": "The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.",
+      "risk": "Low",
+      "sourcePath": "packages/ui/src/index.tsx",
+      "surfaceLabel": "Admin",
+      "feature": "Shared UI",
+      "level": "Regression",
+      "tag": "@regression",
+      "adminScreen": "Apps",
+      "proof": "generated smoke coverage for packages/ui/src/index.tsx",
+      "evidenceName": "agent-agent_013",
+      "action": "reuse",
+      "existingTests": [
+        {
+          "id": "REG_LIFECYCLE_051",
+          "title": "Admin Apps disposable lifecycle creates deletes finds recycle bin entry and purges it @lifecycle @recycle [surface: Admin] [feature: Lifecycle] [precondition: ALLOW_DATA_WRITE=true and admin user can manage apps] [input: create disposable app, search it, open detail, delete, verify Recycle Bin, purge matching entry] [expected: disposable app is created, deleted, visible in Recycle Bin, and removed after purge] [proof: Admin list-view lifecycle is covered without touching seeded data]",
+          "displayTitle": "Admin Apps disposable lifecycle creates deletes finds recycle bin entry and purges it @lifecycle @recycle",
+          "surface": "Admin",
+          "feature": "Lifecycle",
+          "score": 4
+        },
+        {
+          "id": "BVT_TOOLBAR_CONTROLS_041",
+          "title": "Admin Objects toolbar has all primary list-view controls from reference screenshot [surface: Admin] [feature: Toolbar controls] [precondition: Objects list view is open] [input: inspect list selector, pin, selected count, search, New, Delete, refresh, settings, fit columns, CSV, PDF] [expected: every primary toolbar control is present] [proof: reference screenshot toolbar behavior is covered in the list-view suite]",
+          "displayTitle": "Admin Objects toolbar has all primary list-view controls from reference screenshot",
+          "surface": "Admin",
+          "feature": "Toolbar controls",
+          "score": 3
+        },
+        {
+          "id": "REG_COLUMN_SIZING_050",
+          "title": "Admin list view fit columns action keeps table visible [surface: Admin] [feature: Column sizing] [precondition: Objects table mode is visible] [input: click Fit columns] [expected: table remains visible after auto-resize] [proof: toolbar fit-columns control works on Admin tables]",
+          "displayTitle": "Admin list view fit columns action keeps table visible",
+          "surface": "Admin",
+          "feature": "Column sizing",
+          "score": 3
+        }
+      ],
+      "decision": "Existing REG_LIFECYCLE_051 covers the changed feature area; reuse it instead of duplicating.",
+      "planner": "rules",
+      "graphSource": "gitnexus-mcp",
+      "gitNexus": null,
+      "title": "@regression Verify shared ui behavior after packages/ui/src/index.tsx [surface: Admin] [feature: Shared UI] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open the affected Shared UI surface. | Navigate to the screen or API path related to packages/ui/src/index.tsx. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: generated smoke coverage for packages/ui/src/index.tsx]"
+    }
+  ]
+}

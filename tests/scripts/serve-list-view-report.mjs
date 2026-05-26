@@ -1210,7 +1210,7 @@ const ensureGitNexusNativeServer = async () => {
   if (probe.ok) return { ok: true, alreadyRunning: true };
   const gitNexus = tryGitNexusGraph();
   if (!gitNexus.available) return { ok: false, error: "GitNexus CLI is not available." };
-  const runtimeRoot = path.join(appRoot, ".runtime");
+  const runtimeRoot = path.join(repoRoot, ".runtime");
   mkdirSync(runtimeRoot, { recursive: true });
   const outLog = path.join(runtimeRoot, "gitnexus-serve.out.log");
   const errLog = path.join(runtimeRoot, "gitnexus-serve.err.log");
@@ -1232,6 +1232,216 @@ const ensureGitNexusNativeServer = async () => {
   writeFileSync(outLog, "GitNexus native server started by dashboard.\n", "utf8");
   writeFileSync(errLog, "", "utf8");
   return { ok: true, started: true, pid: child.pid };
+};
+
+const parseMcpSseJson = (text) => {
+  const dataLines = String(text || "")
+    .split(/\r?\n/)
+    .filter((line) => line.startsWith("data:"))
+    .map((line) => line.replace(/^data:\s?/, ""));
+  const payload = dataLines.join("\n").trim() || String(text || "").trim();
+  if (!payload) return {};
+  return JSON.parse(payload);
+};
+
+const mcpResultText = (payload) => {
+  const content = payload?.result?.content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((item) => item?.text || "")
+    .filter(Boolean)
+    .join("\n")
+    .trim();
+};
+
+const gitNexusMcpPost = async (body, sessionId = "", timeoutMs = 45_000) => {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(`http://${gitNexusHost}:${gitNexusPort}/api/mcp`, {
+      method: "POST",
+      headers: {
+        accept: "application/json, text/event-stream",
+        "content-type": "application/json",
+        ...(sessionId ? { "mcp-session-id": sessionId } : {})
+      },
+      body: JSON.stringify(body),
+      signal: controller.signal
+    });
+    const text = await response.text();
+    const payload = parseMcpSseJson(text);
+    if (!response.ok || payload?.error) {
+      throw new Error(payload?.error?.message || text || `GitNexus MCP failed with HTTP ${response.status}`);
+    }
+    return {
+      payload,
+      sessionId: response.headers.get("mcp-session-id") || sessionId
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+};
+
+const createGitNexusMcpSession = async () => {
+  await ensureGitNexusNativeServer();
+  const initialized = await gitNexusMcpPost({
+    jsonrpc: "2.0",
+    id: 1,
+    method: "initialize",
+    params: {
+      protocolVersion: "2025-03-26",
+      capabilities: {},
+      clientInfo: { name: "core-platform-test-agent", version: "1.0.0" }
+    }
+  });
+  return {
+    sessionId: initialized.sessionId,
+    nextId: 2,
+    serverInfo: initialized.payload?.result?.serverInfo || null
+  };
+};
+
+const callGitNexusMcpTool = async (session, name, args = {}, timeoutMs = 8_000) => {
+  let lastResult = null;
+  for (let attempt = 0; attempt < 1; attempt += 1) {
+    const requestId = session.nextId++;
+    const { payload } = await gitNexusMcpPost({
+      jsonrpc: "2.0",
+      id: requestId,
+      method: "tools/call",
+      params: { name, arguments: args }
+    }, session.sessionId, timeoutMs);
+    lastResult = {
+      payload,
+      text: mcpResultText(payload).slice(0, 14_000)
+    };
+    if (!isGitNexusStoreBusy(lastResult.text)) return lastResult;
+    await wait(400 * (attempt + 1));
+  }
+  return lastResult;
+};
+
+const parseGitNexusRepos = (text) => {
+  const match = String(text || "").match(/\[[\s\S]*?\]/);
+  if (!match) return [];
+  try {
+    return JSON.parse(match[0]);
+  } catch {
+    return [];
+  }
+};
+
+const chooseGitNexusRepo = (repos) => {
+  const normalizedAppRoot = appRoot.toLowerCase().replace(/\\/g, "/");
+  return repos.find((repo) => String(repo.path || "").toLowerCase().replace(/\\/g, "/") === normalizedAppRoot)
+    || repos.find((repo) => repo.name === "core-platform")
+    || repos[0]
+    || { name: "core-platform" };
+};
+
+const compactMcpSummary = (text) => String(text || "")
+  .replace(/\r/g, "")
+  .replace(/\n{3,}/g, "\n\n")
+  .slice(0, 10_000);
+
+const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const isGitNexusStoreBusy = (text) => /LadybugDB unavailable|process has locked|Error 33|rebuilding the index/i.test(String(text || ""));
+const isGitNexusToolFailure = (text) => !String(text || "").trim() || /LadybugDB unavailable|process has locked|Error 33|rebuilding the index|operation was aborted|^Error:/i.test(String(text || "").trim());
+
+const cypherString = (value) => JSON.stringify(String(value || "").replace(/\\/g, "/"));
+
+const buildGitNexusAgentContext = async (scan) => {
+  const availability = tryGitNexusGraph();
+  if (!availability.available) {
+    return {
+      available: false,
+      source: "unavailable",
+      note: availability.note,
+      error: "GitNexus CLI is not available."
+    };
+  }
+
+  try {
+    const session = await createGitNexusMcpSession();
+    const reposResult = await callGitNexusMcpTool(session, "list_repos", {}, 30_000);
+    const repos = parseGitNexusRepos(reposResult.text);
+    const repo = chooseGitNexusRepo(repos);
+    const repoName = repo.name || "core-platform";
+    const detect = await callGitNexusMcpTool(session, "detect_changes", {
+      scope: "compare",
+      base_ref: scan.baseRef,
+      repo: repoName
+    }, 8_000).catch((error) => ({ text: "", error: error.message }));
+
+    const files = [];
+    const priorityChanges = [...scan.changedFiles]
+      .sort((left, right) => (right.risk === "High" ? 1 : 0) - (left.risk === "High" ? 1 : 0))
+      .slice(0, 3);
+    for (const change of priorityChanges) {
+      const details = {
+        path: change.path,
+        area: change.area,
+        risk: change.risk,
+        tools: []
+      };
+      const filePath = cypherString(change.path);
+      const neighborhoodQuery = [
+        `MATCH (f:File {filePath: ${filePath}})-[r:CodeRelation]-(n)`,
+        "RETURN labels(n) AS labels, n.name AS name, n.filePath AS filePath, r.type AS relation",
+        "LIMIT 30"
+      ].join(" ");
+      const neighbors = await callGitNexusMcpTool(session, "cypher", {
+        repo: repoName,
+        query: neighborhoodQuery
+      }, 4_000).catch((error) => ({ text: "", error: error.message }));
+      details.neighborhood = compactMcpSummary(neighbors.text || neighbors.error || "");
+      details.tools.push("cypher");
+
+      if (/routes?|api|service|server|controller|handler/i.test(change.path)) {
+        const apiImpact = await callGitNexusMcpTool(session, "api_impact", {
+          repo: repoName,
+          file: change.path
+        }, 5_000).catch((error) => ({ text: "", error: error.message }));
+        details.apiImpact = compactMcpSummary(apiImpact.text || apiImpact.error || "");
+        details.tools.push("api_impact");
+      }
+
+      files.push(details);
+    }
+
+    const toolTexts = [
+      detect.text || detect.error || "",
+      ...files.flatMap((file) => [file.neighborhood || "", file.apiImpact || "", file.executionFlows || ""])
+    ];
+    const busyCount = toolTexts.filter(isGitNexusStoreBusy).length;
+    const usableCount = toolTexts.filter((text) => !isGitNexusToolFailure(text)).length;
+    const graphUsable = usableCount > 0 || (files.length === 0 && !isGitNexusStoreBusy(detect.text || detect.error || ""));
+
+    return {
+      available: graphUsable,
+      connected: true,
+      source: "gitnexus-mcp",
+      serverInfo: session.serverInfo,
+      repo: repoName,
+      repoPath: repo.path || appRoot,
+      indexedAt: repo.indexedAt || "",
+      indexedCommit: repo.lastCommit || "",
+      staleness: repo.staleness || null,
+      error: graphUsable ? "" : "GitNexus MCP connected, but the local graph store is locked or rebuilding. Reindex/graph load should finish before graph-aware generation.",
+      busyToolCalls: busyCount,
+      generatedAt: new Date().toISOString(),
+      detectChanges: compactMcpSummary(detect.text || detect.error || ""),
+      files
+    };
+  } catch (error) {
+    return {
+      available: false,
+      source: "gitnexus-mcp",
+      note: "GitNexus MCP enrichment failed; agent fell back to git diff and inventory matching.",
+      error: error instanceof Error ? error.message : "GitNexus MCP enrichment failed."
+    };
+  }
 };
 
 const buildAgentGraph = (baseRef = "auto") => {
@@ -1342,6 +1552,141 @@ const scenarioForChange = (change, index) => {
 const tagForRisk = (risk) => (risk === "High" ? "@bvt" : risk === "Medium" ? "@sanity" : "@regression");
 const levelForTag = (tag) => (tag === "@bvt" ? "BVT" : tag === "@sanity" ? "Sanity" : "Regression");
 
+const routeLikeChange = (change, graphContext) =>
+  /routes?|api|service|server|controller|handler/i.test(change.path)
+  || Boolean(graphContext?.apiImpact && !isGitNexusToolFailure(graphContext.apiImpact));
+
+const securityLikeChange = (change) => /auth|permission|access|role|policy|security/i.test(change.path);
+const validationLikeChange = (change) => /validation|schema|field|form|modal|constraint|input/i.test(change.path);
+const mutationLikeChange = (change) => /create|update|edit|delete|bulk|recycle|restore|purge|workflow|lifecycle|mutation|routes?/i.test(change.path);
+const uiLikeChange = (change) => /apps\/admin|apps\/shockwave|packages\/ui|component|hook|page|layout|modal|panel|view|screen/i.test(change.path.replace(/\\/g, "/"));
+
+const graphEvidenceForScenario = (graphContext) => {
+  if (!hasUsableGitNexusFileContext(graphContext)) return "";
+  const evidence = [];
+  if (graphContext?.apiImpact && !isGitNexusToolFailure(graphContext.apiImpact)) evidence.push("api_impact");
+  if (graphContext?.neighborhood && !isGitNexusToolFailure(graphContext.neighborhood)) evidence.push("file_neighbors");
+  if (graphContext?.executionFlows && !isGitNexusToolFailure(graphContext.executionFlows)) evidence.push("execution_flows");
+  return evidence.join(", ");
+};
+
+const inferFeatureForChange = (change) => {
+  const normalized = change.path.replace(/\\/g, "/").toLowerCase();
+  if (securityLikeChange(change)) return "Security";
+  if (validationLikeChange(change)) return "Validation";
+  if (/export|csv|pdf/.test(normalized)) return "Export";
+  if (/search|filter/.test(normalized)) return "Search and filters";
+  if (/workflow|flow|lifecycle/.test(normalized)) return "Workflow";
+  if (/route|api|service/.test(normalized)) return "API contract";
+  if (/record|object|field|metadata/.test(normalized)) return "Metadata and records";
+  if (/layout|style|component|panel|modal/.test(normalized)) return "Application UI";
+  return change.area || "Application";
+};
+
+const applicationScenarioTemplates = (change, index, graphContext, gitNexusContext) => {
+  const base = scenarioForChange(change, index);
+  const feature = inferFeatureForChange(change);
+  const graphEvidence = graphEvidenceForScenario(graphContext);
+  const graphSource = graphEvidence
+    ? gitNexusContext?.source || "gitnexus-mcp"
+    : gitNexusContext?.connected
+      ? "gitnexus-mcp-busy"
+      : "git-diff";
+  const surface =
+    routeLikeChange(change, graphContext)
+      ? "api"
+      : change.surface === "keystone" || change.surface === "admin"
+        ? change.surface
+        : uiLikeChange(change)
+          ? "admin"
+          : "api";
+  const surfaceLabel = surface === "api" ? "API" : surface === "keystone" ? "Keystone" : "Admin";
+  const common = {
+    ...base,
+    surface,
+    surfaceLabel,
+    feature,
+    adminScreen: /object|field|metadata/i.test(change.path) ? "Objects" : /role|permission|access/i.test(change.path) ? "Permissions" : "Apps",
+    graphSource,
+    graphEvidence,
+    gitNexus: graphContext || null,
+    safeDataPolicy: "seeded-or-disposable-data",
+    resetRequired: false
+  };
+  const templates = [];
+  const pushTemplate = (patch) => {
+    templates.push({
+      ...common,
+      ...patch,
+      id: `AGENT_${String(index + 1).padStart(3, "0")}_${String(templates.length + 1).padStart(2, "0")}`,
+      suite: surface === "api" ? "list-view-api" : surface === "keystone" ? "keystone-list-view" : "admin-list-view",
+      sourcePath: change.path
+    });
+  };
+
+  if (change.risk === "High" || securityLikeChange(change) || routeLikeChange(change, graphContext)) {
+    pushTemplate({
+      scenarioFamily: "BVT",
+      level: "BVT",
+      tag: "@bvt",
+      testCase: `BVT verifies ${feature.toLowerCase()} remains reachable after ${path.basename(change.path)}`,
+      steps: surface === "api"
+        ? `Authenticate through the API. | Exercise the route family related to ${change.path}. | Assert a valid authenticated response.`
+        : `Sign in to ${surfaceLabel}. | Open the impacted application shell or screen related to ${change.path}. | Assert the shell renders without auth, permission, or crash failures.`,
+      expected: "The critical impacted surface remains reachable and authenticated behavior is intact.",
+      proof: graphEvidence ? `GitNexus MCP evidence (${graphEvidence}) identifies this as critical impact.` : `Critical smoke coverage for ${change.path}.`
+    });
+  }
+
+  pushTemplate({
+    scenarioFamily: "Sanity",
+    level: "Sanity",
+    tag: "@sanity",
+    testCase: `Sanity verifies ${feature.toLowerCase()} happy path after ${path.basename(change.path)}`,
+    steps: `Open the impacted ${surfaceLabel} feature. | Exercise the primary user or API path related to ${change.path}. | Capture evidence after the happy path completes.`,
+    expected: "The changed feature completes its primary path and leaves the page/API response in a valid state.",
+    proof: graphEvidence ? `GitNexus MCP evidence (${graphEvidence}) links the change to this feature path.` : `Focused sanity coverage for ${change.path}.`
+  });
+
+  if (validationLikeChange(change) || securityLikeChange(change) || routeLikeChange(change, graphContext)) {
+    pushTemplate({
+      scenarioFamily: securityLikeChange(change) ? "Security" : "Validation",
+      level: securityLikeChange(change) ? "BVT" : "Sanity",
+      tag: securityLikeChange(change) ? "@bvt" : "@sanity",
+      testCase: `${securityLikeChange(change) ? "Security" : "Validation"} checks guarded behavior after ${path.basename(change.path)}`,
+      steps: `Open the impacted ${surfaceLabel} feature. | Submit one invalid or unauthorized edge-case input. | Verify the app/API rejects it visibly without leaking data.`,
+      expected: "Invalid or unauthorized input is rejected with a safe error state and no crash.",
+      proof: graphEvidence ? `GitNexus MCP evidence (${graphEvidence}) indicates guarded logic impact.` : `Guarded behavior coverage for ${change.path}.`
+    });
+  }
+
+  if (mutationLikeChange(change)) {
+    pushTemplate({
+      scenarioFamily: "Mutation",
+      level: "Regression",
+      tag: "@regression",
+      resetRequired: true,
+      testCase: `Regression verifies guarded write flow after ${path.basename(change.path)}`,
+      precondition: "ALLOW_DATA_WRITE=true, seeded test data exists, and reset runs after generated scenarios.",
+      steps: `Use seeded or disposable test data. | Exercise create, edit, delete, restore, or bulk behavior related to ${change.path}. | Verify cleanup or reset restores seeded state.`,
+      expected: "The write flow works on seeded/disposable data and the reset path can restore the local dataset.",
+      proof: graphEvidence ? `GitNexus MCP evidence (${graphEvidence}) identifies mutation or lifecycle impact.` : `Guarded mutation regression coverage for ${change.path}.`
+    });
+  }
+
+  pushTemplate({
+    scenarioFamily: "Regression",
+    level: "Regression",
+    tag: "@regression",
+    testCase: `Regression protects downstream ${feature.toLowerCase()} behavior after ${path.basename(change.path)}`,
+    steps: `Open a downstream ${surfaceLabel} workflow connected to ${change.path}. | Run search, navigation, refresh, settings, or API readback behavior. | Verify the workflow remains stable.`,
+    expected: "Connected downstream behavior remains stable after the code change.",
+    proof: graphEvidence ? `GitNexus MCP evidence (${graphEvidence}) provides downstream relationship context.` : `Downstream regression coverage for ${change.path}.`
+  });
+
+  return templates.slice(0, 5);
+};
+
 const tokenize = (value) =>
   String(value || "")
     .toLowerCase()
@@ -1400,7 +1745,7 @@ const parseGeminiJson = (payload) => {
   return JSON.parse(cleaned);
 };
 
-const callGeminiPlanner = async (scan, inventoryRows) => {
+const callGeminiPlanner = async (scan, inventoryRows, gitNexusContext = null) => {
   const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || "";
   if (!apiKey) return null;
 
@@ -1424,8 +1769,14 @@ const callGeminiPlanner = async (scan, inventoryRows) => {
     "Analyze changed code and existing tests. Return JSON only.",
     "Rules:",
     "- Compare changed business logic, UI behavior, validation, permissions, API behavior, and workflows.",
+    "- When GitNexus MCP context is available, treat it as the primary source for execution flows, route consumers, business logic links, and blast radius.",
     "- Do not duplicate tests. If an existing test is enough, action must be reuse and include existingTestIds.",
     "- Generate only when missing coverage is clear.",
+    "- This is application-wide coverage, not list-view-only coverage. Consider Admin, Keystone/Shockwave, API/service, metadata, shared UI, permissions, records, workflows, and business logic.",
+    "- Prefer multiple scenario families for a single impacted feature when GitNexus shows different route, UI, workflow, or security blast radius.",
+    "- Generate API-level tests when route handlers, response shape, middleware, or API consumers changed.",
+    "- Generate UI-level tests when GitNexus shows an affected screen, component, hook, or process not covered by existing tests.",
+    "- Write/destructive scenarios must use seeded or disposable test data and require reset after completion.",
     "- Classify every decision as exactly one testing level: BVT, Sanity, or Regression.",
     "- BVT is for critical smoke/build verification. Sanity is for important focused behavior. Regression is for broader existing behavior and lower-risk changes.",
     "- Tags must be exactly @bvt, @sanity, or @regression.",
@@ -1435,15 +1786,19 @@ const callGeminiPlanner = async (scan, inventoryRows) => {
       baselineCommit: scan.baseRef,
       headCommit: scan.headCommit,
       changedFiles,
+      gitNexusContext,
       existingTests
     })
   ].join("\n");
 
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 25_000);
   const response = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(geminiModel)}:generateContent?key=${encodeURIComponent(apiKey)}`,
     {
       method: "POST",
       headers: { "content-type": "application/json" },
+      signal: controller.signal,
       body: JSON.stringify({
         contents: [{ role: "user", parts: [{ text: prompt }] }],
         tools: [{ google_search: {} }],
@@ -1480,7 +1835,7 @@ const callGeminiPlanner = async (scan, inventoryRows) => {
         }
       })
     }
-  );
+  ).finally(() => clearTimeout(timer));
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
     throw new Error(payload?.error?.message || `Gemini planner failed with HTTP ${response.status}`);
@@ -1510,6 +1865,12 @@ const latestGeneratedArtifact = () => {
 const specTitle = (scenario) =>
   `${scenario.tag || tagForRisk(scenario.risk)} ${scenario.testCase} [surface: ${scenario.surfaceLabel || scenario.surface}] [feature: ${scenario.feature}] [level: ${scenario.level || "Regression"}] [precondition: ${scenario.precondition}] [input: ${scenario.steps}] [expected: ${scenario.expected}] [proof: ${scenario.proof}]`;
 
+const hasUsableGitNexusFileContext = (context) => Boolean(context) && [
+  context.neighborhood,
+  context.apiImpact,
+  context.executionFlows
+].some((text) => !isGitNexusToolFailure(text));
+
 const generateAgentSpecSource = (scenarios) => {
   const cases = JSON.stringify(scenarios.filter((scenario) => scenario.action === "generate"), null, 2);
   return `import { expect, test } from "@playwright/test";
@@ -1529,6 +1890,7 @@ test.describe("AI generated change-impact smoke tests", () => {
   for (const generatedCase of generatedCases) {
     test(generatedCase.title, async ({ page, request }, testInfo) => {
       test.skip(!hasCredentials(), "Seeded test credentials are not configured.");
+      test.skip(Boolean(generatedCase.resetRequired) && process.env.ALLOW_DATA_WRITE !== "true", "Guarded write scenarios require ALLOW_DATA_WRITE=true and reset-enabled runs.");
 
       if (generatedCase.surface === "api") {
         const token = await apiLogin(request);
@@ -1560,9 +1922,10 @@ test.describe("AI generated change-impact smoke tests", () => {
 const generateAgentScenarios = async (baseRef = "origin/main") => {
   const scan = scanChangedFiles(baseRef);
   const inventoryRows = readInventory().rows || [];
+  const gitNexusContext = await buildGitNexusAgentContext(scan);
   let geminiPlan = null;
   try {
-    geminiPlan = await callGeminiPlanner(scan, inventoryRows);
+    geminiPlan = await callGeminiPlanner(scan, inventoryRows, gitNexusContext);
   } catch (error) {
     geminiPlan = {
       model: geminiModel,
@@ -1571,59 +1934,57 @@ const generateAgentScenarios = async (baseRef = "origin/main") => {
     };
   }
   const decisionByPath = new Map((geminiPlan?.decisions || []).map((decision) => [decision.sourcePath, decision]));
-  const scenarios = scan.changedFiles.map((change, index) => {
-    const scenario = scenarioForChange(change, index);
+  const graphContextByPath = new Map((gitNexusContext?.files || []).map((file) => [file.path, file]));
+  const scenarios = scan.changedFiles.flatMap((change, index) => {
     const modelDecision = decisionByPath.get(change.path) || null;
-    const surface =
-      scenario.surface === "api" || scenario.surface === "keystone" || scenario.surface === "admin"
-        ? scenario.surface
-        : /api|route|server|backend|service|schema|migration/i.test(change.path)
-          ? "api"
-          : /keystone|object-home|launcher|tab/i.test(change.path)
-            ? "keystone"
-          : "admin";
-    const feature = scenario.scenario.replace(/\s+regression[\s\S]*$/i, "") || scenario.area || "Change Impact";
-    const tag = modelDecision?.tag || tagForRisk(change.risk);
-    const level = modelDecision?.level || levelForTag(tag);
-    const draft = {
-      ...scenario,
-      surface,
-      surfaceLabel: surface === "api" ? "API" : surface === "keystone" ? "Keystone" : "Admin",
-      feature: modelDecision?.feature || feature,
-      level,
-      tag,
-      testCase: modelDecision?.testCase || scenario.testCase,
-      steps: modelDecision?.steps || scenario.steps,
-      expected: modelDecision?.expected || scenario.expected,
-      adminScreen: modelDecision?.adminScreen || (/object/i.test(change.path) ? "Objects" : /role|permission|access/i.test(change.path) ? "Permissions" : "Apps"),
-      proof: modelDecision?.proof || `generated smoke coverage for ${change.path}`,
-      evidenceName: `agent-${scenario.id.toLowerCase()}`
-    };
-    const modelExistingTests = Array.isArray(modelDecision?.existingTestIds)
-      ? modelDecision.existingTestIds
-          .map((id) => inventoryRows.find((row) => row.id === id))
-          .filter(Boolean)
-          .map((row) => ({
-            id: row.id,
-            title: row.title,
-            displayTitle: row.displayTitle,
-            surface: row.surface,
-            feature: row.feature,
-            score: 99
-          }))
-      : [];
-    const existingTests = modelExistingTests.length > 0 ? modelExistingTests : existingCoverageForScenario(draft, inventoryRows);
-    const action = modelDecision?.action === "generate" ? "generate" : existingTests.length > 0 ? "reuse" : "generate";
-    return {
-      ...draft,
-      action,
-      existingTests,
-      decision: modelDecision?.reason || (existingTests.length > 0
-        ? `Existing ${existingTests[0].id} covers the changed feature area; reuse it instead of duplicating.`
-        : `No close existing coverage found; generate a new ${tag} test.`),
-      planner: geminiPlan?.decisions?.length ? "gemini" : "rules",
-      title: specTitle(draft)
-    };
+    const graphContext = graphContextByPath.get(change.path) || null;
+    return applicationScenarioTemplates(change, index, graphContext, gitNexusContext).map((template) => {
+      const tag = modelDecision?.tag && template.scenarioFamily === "Sanity" ? modelDecision.tag : template.tag;
+      const level = modelDecision?.level && template.scenarioFamily === "Sanity" ? modelDecision.level : template.level || levelForTag(tag);
+      const draft = {
+        ...template,
+        feature: template.scenarioFamily === "Sanity" ? modelDecision?.feature || template.feature : template.feature,
+        level,
+        tag,
+        testCase: template.scenarioFamily === "Sanity" ? modelDecision?.testCase || template.testCase : template.testCase,
+        steps: template.scenarioFamily === "Sanity" ? modelDecision?.steps || template.steps : template.steps,
+        expected: template.scenarioFamily === "Sanity" ? modelDecision?.expected || template.expected : template.expected,
+        adminScreen: modelDecision?.adminScreen || template.adminScreen,
+        evidenceName: `agent-${template.id.toLowerCase()}`
+      };
+      const modelExistingTests = Array.isArray(modelDecision?.existingTestIds) && template.scenarioFamily === "Sanity"
+        ? modelDecision.existingTestIds
+            .map((id) => inventoryRows.find((row) => row.id === id))
+            .filter(Boolean)
+            .map((row) => ({
+              id: row.id,
+              title: row.title,
+              displayTitle: row.displayTitle,
+              surface: row.surface,
+              feature: row.feature,
+              score: 99
+            }))
+        : [];
+      const existingTests = modelExistingTests.length > 0 ? modelExistingTests : existingCoverageForScenario(draft, inventoryRows);
+      const action = modelDecision?.action === "generate" && template.scenarioFamily === "Sanity"
+        ? "generate"
+        : existingTests.length > 0
+          ? "reuse"
+          : "generate";
+      return {
+        ...draft,
+        action,
+        existingTests,
+        coverageDecision: action === "reuse" ? "reuse-existing" : "generate-new",
+        decision: modelDecision?.reason && template.scenarioFamily === "Sanity"
+          ? modelDecision.reason
+          : existingTests.length > 0
+            ? `Existing ${existingTests[0].id} covers this ${draft.scenarioFamily} scenario; reuse it instead of duplicating.`
+            : `No close existing coverage found; generate a new ${draft.tag} ${draft.scenarioFamily} test.`,
+        planner: geminiPlan?.decisions?.length ? "gemini" : "rules",
+        title: specTitle(draft)
+      };
+    });
   });
   mkdirSync(generatedRoot, { recursive: true });
   mkdirSync(generatedSpecRoot, { recursive: true });
@@ -1632,6 +1993,7 @@ const generateAgentScenarios = async (baseRef = "origin/main") => {
   const specRelativePath = path.relative(repoRoot, specPath).replace(/\\/g, "/");
   const generatedCount = scenarios.filter((scenario) => scenario.action === "generate").length;
   const reusedCount = scenarios.filter((scenario) => scenario.action === "reuse").length;
+  const resetRequiredCount = scenarios.filter((scenario) => scenario.resetRequired).length;
   const artifact = {
     generatedAt: new Date().toISOString(),
     baseRef: scan.baseRef,
@@ -1642,14 +2004,27 @@ const generateAgentScenarios = async (baseRef = "origin/main") => {
       provider: geminiPlan?.decisions?.length ? "gemini" : "rules",
       model: geminiPlan?.model || "",
       error: geminiPlan?.error || "",
-      groundingMetadata: geminiPlan?.groundingMetadata || null
+      groundingMetadata: geminiPlan?.groundingMetadata || null,
+      gitNexus: {
+        source: gitNexusContext?.source || "none",
+        available: Boolean(gitNexusContext?.available),
+        connected: Boolean(gitNexusContext?.connected || gitNexusContext?.available),
+        repo: gitNexusContext?.repo || "",
+        indexedCommit: gitNexusContext?.indexedCommit || "",
+        staleness: gitNexusContext?.staleness || null,
+        error: gitNexusContext?.error || ""
+      }
     },
     appRoot,
+    gitNexusContext,
     spec: generatedCount > 0 ? specRelativePath : "",
+    requiresReset: resetRequiredCount > 0,
     summary: {
       changedFiles: scan.changedFiles.length,
+      scenarioCount: scenarios.length,
       generated: generatedCount,
-      reused: reusedCount
+      reused: reusedCount,
+      resetRequired: resetRequiredCount
     },
     scenarios
   };
@@ -1670,8 +2045,10 @@ const generateAgentScenarios = async (baseRef = "origin/main") => {
         from: scan.baseRef,
         to: scan.headCommit,
         changedFiles: scan.changedFiles.length,
+        scenarios: scenarios.length,
         generated: generatedCount,
         reused: reusedCount,
+        resetRequired: resetRequiredCount,
         artifact: path.relative(repoRoot, outputPath).replace(/\\/g, "/")
       },
       ...(state.history || [])
@@ -1695,6 +2072,31 @@ const markAgentArtifactSuccessful = (artifact, status = "passed") => {
     lastArtifact: artifact.outputPath || readAgentState().lastArtifact || "",
     lastSpec: artifact.spec || readAgentState().lastSpec || ""
   });
+};
+
+const resetCorePlatformSeedData = () => {
+  const commands = [
+    { command: "powershell", args: ["-ExecutionPolicy", "Bypass", "-File", "scripts/stop-all.ps1"] },
+    { command: "powershell", args: ["-ExecutionPolicy", "Bypass", "-File", "scripts/reset-db.ps1", "-SkipSeedAdmin", "-SkipMetadataLoad", "-SkipSeedTestRolesGroups"] },
+    { command: process.platform === "win32" ? "cmd.exe" : "npm", args: process.platform === "win32" ? ["/d", "/s", "/c", "npm.cmd", "run", "seed:industry-suite"] : ["run", "seed:industry-suite"] }
+  ];
+  const output = [];
+  for (const item of commands) {
+    const result = spawnSync(item.command, item.args, {
+      cwd: appRoot,
+      encoding: "utf8",
+      timeout: 10 * 60_000,
+      windowsHide: true
+    });
+    output.push(`> ${item.command} ${item.args.join(" ")}`);
+    if (result.stdout) output.push(result.stdout.trim());
+    if (result.stderr) output.push(result.stderr.trim());
+    if (result.error) throw result.error;
+    if (result.status !== 0) {
+      throw new Error(output.concat(`Reset command exited ${result.status}.`).filter(Boolean).join("\n"));
+    }
+  }
+  return output.filter(Boolean).join("\n").slice(-12_000);
 };
 
 const readInventory = () => {
@@ -1977,6 +2379,7 @@ const runAgentGeneratedScenarios = async (request, response) => {
   }
 
   const headed = Boolean(body.headed);
+  const resetAfterRun = Boolean(body.reset || artifact.requiresReset);
   const reusableTitles = Array.from(
     new Set(
       artifact.scenarios
@@ -2037,7 +2440,7 @@ const runAgentGeneratedScenarios = async (request, response) => {
   runState.surface = "agent";
   runState.scenario = scenarioLabel;
   runState.selectedTestCount = runMode === "reuse" ? reusableTitles.length : artifact.scenarios.filter((scenario) => scenario.action === "generate").length;
-  runState.reset = false;
+  runState.reset = resetAfterRun;
   runState.headed = headed;
   runState.stopRequested = false;
   runState.startedAt = new Date().toISOString();
@@ -2050,7 +2453,11 @@ const runAgentGeneratedScenarios = async (request, response) => {
       : `Starting AI generated scenario run (${runState.selectedTestCount} case(s))...`
   );
 
-  const childEnv = { ...process.env, LIST_VIEW_REGRESSION_HEADED: headed ? "1" : "0" };
+  const childEnv = {
+    ...process.env,
+    LIST_VIEW_REGRESSION_HEADED: headed ? "1" : "0",
+    ALLOW_DATA_WRITE: resetAfterRun ? "true" : process.env.ALLOW_DATA_WRITE || ""
+  };
   try {
     currentProcess = spawn(runCommand, runArgs, {
       cwd: repoRoot,
@@ -2083,6 +2490,16 @@ const runAgentGeneratedScenarios = async (request, response) => {
     runState.running = false;
     runState.finishedAt = new Date().toISOString();
     runState.exitCode = runState.stopRequested ? code ?? 130 : code ?? 1;
+    if (!runState.stopRequested && resetAfterRun) {
+      pushLog("Resetting Core Platform seeded data after AI generated scenario run...");
+      try {
+        const resetOutput = resetCorePlatformSeedData();
+        pushLog(`Seed reset completed.${resetOutput ? `\n${resetOutput}` : ""}`);
+      } catch (error) {
+        runState.exitCode = 1;
+        pushLog(`Seed reset failed: ${error instanceof Error ? error.message : "Unknown reset failure."}`);
+      }
+    }
     if (!runState.stopRequested && runState.exitCode === 0) {
       markAgentArtifactSuccessful(artifact, "passed");
     } else {

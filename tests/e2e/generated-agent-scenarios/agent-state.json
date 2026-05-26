@@ -7,12 +7,48 @@
   "lastPulledCommit": "",
   "lastGraphCommit": "b7678da66217f13b23948c24ea156088e33e2bfb",
   "lastScheduledRunAt": null,
-  "lastRunStatus": null,
-  "updatedAt": "2026-05-26T10:44:06.637Z",
-  "lastArtifact": "tests/e2e/generated-agent-scenarios/agent-scenarios-1779715234397.json",
+  "lastRunStatus": "generated",
+  "updatedAt": "2026-05-26T12:08:31.519Z",
+  "lastArtifact": "tests/e2e/generated-agent-scenarios/agent-scenarios-1779797311519.json",
   "lastSpec": "",
   "lastGraph": "tests/e2e/generated-agent-scenarios/graph/graph-summary-1779792246927.json",
   "history": [
+    {
+      "generatedAt": "2026-05-26T12:08:31.519Z",
+      "from": "0add972a1ea3f3c1b4864397eed8def7a9a753ef",
+      "to": "8aca2867e4a0efd422444c029734e0513d652bae",
+      "changedFiles": 13,
+      "generated": 0,
+      "reused": 13,
+      "artifact": "tests/e2e/generated-agent-scenarios/agent-scenarios-1779797311519.json"
+    },
+    {
+      "generatedAt": "2026-05-26T12:06:17.015Z",
+      "from": "0add972a1ea3f3c1b4864397eed8def7a9a753ef",
+      "to": "8aca2867e4a0efd422444c029734e0513d652bae",
+      "changedFiles": 13,
+      "generated": 0,
+      "reused": 13,
+      "artifact": "tests/e2e/generated-agent-scenarios/agent-scenarios-1779797177015.json"
+    },
+    {
+      "generatedAt": "2026-05-26T11:47:12.048Z",
+      "from": "0add972a1ea3f3c1b4864397eed8def7a9a753ef",
+      "to": "8aca2867e4a0efd422444c029734e0513d652bae",
+      "changedFiles": 13,
+      "generated": 0,
+      "reused": 13,
+      "artifact": "tests/e2e/generated-agent-scenarios/agent-scenarios-1779796032047.json"
+    },
+    {
+      "generatedAt": "2026-05-26T11:43:43.347Z",
+      "from": "0add972a1ea3f3c1b4864397eed8def7a9a753ef",
+      "to": "8aca2867e4a0efd422444c029734e0513d652bae",
+      "changedFiles": 13,
+      "generated": 0,
+      "reused": 13,
+      "artifact": "tests/e2e/generated-agent-scenarios/agent-scenarios-1779795823347.json"
+    },
     {
       "generatedAt": "2026-05-25T13:20:34.397Z",
       "from": "201c4461bf09b496619dbfc8d3a48b2ae65d7729",

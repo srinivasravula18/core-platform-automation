@@ -24,7 +24,6 @@ const navItems = [
 
 const formatDate = (value) => value ? new Date(value).toLocaleString() : "-";
 const categoryLevels = ["BVT", "Sanity", "Regression"];
-const appSurfaces = new Set(["admin", "keystone"]);
 const summarizeScenario = (status) => {
   if (status?.selectedTestCount > 0) return `${status.selectedTestCount} selected test cases`;
   const scenario = String(status?.scenario || "").trim();
@@ -148,7 +147,6 @@ function App() {
   const resultRows = Array.isArray(data.results.rows) ? data.results.rows : [];
   const rowsForCategory = (level) => rows.filter((row) =>
     String(row.testingLevel || "").toLowerCase() === String(level).toLowerCase()
-    && appSurfaces.has(String(row.surface || "").toLowerCase())
     && row.title
   );
   const categoryCounts = useMemo(() => Object.fromEntries(categoryLevels.map((level) => [level, rowsForCategory(level).length])), [rows]);
@@ -264,12 +262,12 @@ function App() {
     }
   };
 
-  const runAgentGenerated = async () => {
+  const runAgentGenerated = async (reset = false) => {
     setAgent((previous) => ({ ...previous, busy: true, error: "" }));
     try {
       const run = await api("/api/agent/run", {
         method: "POST",
-        body: JSON.stringify({ baseRef: agent.baseRef, headed })
+        body: JSON.stringify({ baseRef: agent.baseRef, headed, reset })
       });
       setAgent((previous) => ({ ...previous, generated: run.artifact || previous.generated, busy: false }));
       await data.refreshLive();
@@ -478,7 +476,7 @@ function App() {
                 className="secondary category-run"
                 onClick={() => runCategory(level)}
                 disabled={data.status.running || categoryCounts[level] === 0}
-                title={`Run ${level} cases across Admin and Keystone`}
+                title={`Run ${level} cases across Admin, Keystone, and API`}
               >
                 <Play size={16} /> {level} {categoryCounts[level] || 0}
               </button>
@@ -640,7 +638,8 @@ function AgentPanel({
         <button className="secondary" onClick={syncAgentMain} disabled={agent.busy || running}><RefreshCw size={16} /> Sync Main</button>
         <button onClick={runAgentScan} disabled={agent.busy || running}><Search size={16} /> Scan Changes</button>
         <button onClick={runAgentGenerate} disabled={agent.busy || running}><Bot size={16} /> Generate Specs</button>
-        <button onClick={runAgentGenerated} disabled={agent.busy || running || generatedCount === 0}><Play size={16} /> Run Generated</button>
+        <button onClick={() => runAgentGenerated(false)} disabled={agent.busy || running || generatedCount === 0}><Play size={16} /> Run Generated</button>
+        <button className="secondary" onClick={() => runAgentGenerated(true)} disabled={agent.busy || running || generatedCount === 0}><RefreshCw size={16} /> Run Generated With Reset</button>
       </div>
       <div className="agent-controls">
         <label>Branch <input value={agent.branchName} onChange={(event) => setAgent((previous) => ({ ...previous, branchName: event.target.value }))} /></label>
@@ -649,7 +648,9 @@ function AgentPanel({
       </div>
       {agent.generated?.spec ? <p className="muted">Spec: <code>{agent.generated.spec}</code></p> : null}
       {agent.generated?.outputPath ? <p className="muted">Manifest: <code>{agent.generated.outputPath}</code></p> : null}
+      {agent.generated?.requiresReset ? <p className="muted">Reset required: guarded write scenarios will run with <code>ALLOW_DATA_WRITE=true</code> and restore seeded data after completion.</p> : null}
       {graph.outputPath ? <p className="muted">Graph: <code>{graph.outputPath}</code></p> : null}
+      {agent.generated?.planner?.gitNexus ? <p className={agent.generated.planner.gitNexus.available ? "pass" : agent.generated.planner.gitNexus.connected ? "muted" : "danger-text"}>GitNexus MCP: {agent.generated.planner.gitNexus.available ? `graph context loaded from ${agent.generated.planner.gitNexus.repo}` : agent.generated.planner.gitNexus.connected ? agent.generated.planner.gitNexus.error || "connected, graph store is busy" : agent.generated.planner.gitNexus.error || "not available"}</p> : null}
       {graph.gitNexus?.note ? <p className="muted">GitNexus: {graph.gitNexus.note}</p> : null}
       {agent.gitNexus?.ok ? <p className="pass">GitNexus index is current. {agent.gitNexus.analyzedAt ? `Updated ${formatDate(agent.gitNexus.analyzedAt)}.` : ""}</p> : null}
       {agent.gitNexus?.output ? <pre className="logs compact-log">{agent.gitNexus.output}</pre> : null}
@@ -673,7 +674,7 @@ function AgentPanel({
     {graph.nodes ? <DataTable title={`Graph Impact Nodes (${graph.nodes?.length || 0})`} rows={graph.nodes || []} columns={[["path", "Path"], ["area", "Area"], ["surface", "Surface"], ["risk", "Risk"], ["reason", "Reason"]]} /> : null}
     {graph.commits ? <DataTable title={`Main Commit Range (${graph.commits?.length || 0})`} rows={graph.commits || []} columns={[["commit", "Commit"], ["message", "Message"]]} /> : null}
     {agent.scan ? <DataTable title={`Changed Files (${agent.scan.changedFiles?.length || 0})`} rows={agent.scan.changedFiles || []} columns={[["path", "Path"], ["area", "Area"], ["risk", "Risk"], ["reason", "Reason"]]} /> : null}
-    {agent.generated ? <DataTable title={`Generated Runnable Scenarios (${generatedCount})`} rows={agent.generated.scenarios || []} columns={[["id", "ID"], ["surfaceLabel", "Surface"], ["feature", "Feature"], ["level", "Testing"], ["tag", "Tag"], ["action", "Action"], ["testCase", "Test Case"], ["risk", "Risk"], ["sourcePath", "Source"]]} /> : null}
+    {agent.generated ? <DataTable title={`Generated Runnable Scenarios (${generatedCount})`} rows={agent.generated.scenarios || []} columns={[["id", "ID"], ["scenarioFamily", "Family"], ["surfaceLabel", "Surface"], ["feature", "Feature"], ["level", "Testing"], ["tag", "Tag"], ["action", "Action"], ["coverageDecision", "Coverage"], ["testCase", "Test Case"], ["risk", "Risk"], ["graphSource", "Graph"], ["graphEvidence", "Evidence"], ["sourcePath", "Source"]]} /> : null}
   </section>;
 }
 
