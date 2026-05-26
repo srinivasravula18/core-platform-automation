@@ -1065,6 +1065,35 @@ const syncMainBranch = ({ pull = true } = {}) => {
   };
 };
 
+const syncMainBranchAndReindex = ({ pull = true } = {}) => {
+  const sync = syncMainBranch({ pull });
+  let gitNexus = null;
+  try {
+    gitNexus = runGitNexusAnalyze();
+    writeAgentState({
+      lastGraphCommit: sync.after?.headCommit || sync.after?.remoteMainCommit || "",
+      lastGitNexusReindexAt: gitNexus.analyzedAt || new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    });
+  } catch (error) {
+    gitNexus = {
+      ok: false,
+      available: tryGitNexusGraph().available,
+      error: error instanceof Error ? error.message : "GitNexus reindex failed after main sync.",
+      analyzedAt: new Date().toISOString()
+    };
+    writeAgentState({
+      lastGitNexusReindexError: gitNexus.error,
+      updatedAt: new Date().toISOString()
+    });
+  }
+  return {
+    ...sync,
+    gitNexus,
+    graphReady: Boolean(gitNexus?.ok)
+  };
+};
+
 const resolveAgentBaseRef = (baseRef = "") => {
   const requested = String(baseRef || "").trim();
   if (requested && requested !== "auto") return requested;
@@ -2972,7 +3001,7 @@ const server = createServer(async (request, response) => {
   if (request.method === "POST" && url.pathname === "/api/agent/sync/main") {
     try {
       const body = await readRequestJson(request);
-      sendJson(response, 200, syncMainBranch({ pull: body.pull !== false }));
+      sendJson(response, 200, syncMainBranchAndReindex({ pull: body.pull !== false }));
     } catch (error) {
       sendJson(response, 500, { error: error instanceof Error ? error.message : "Agent main sync failed." });
     }

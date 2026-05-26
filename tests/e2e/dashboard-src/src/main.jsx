@@ -314,7 +314,7 @@ function App() {
     setAgent((previous) => ({ ...previous, busy: true, error: "" }));
     try {
       const sync = await api("/api/agent/sync/main", { method: "POST", body: JSON.stringify({ pull: true }) });
-      setAgent((previous) => ({ ...previous, sync: sync.after || sync, busy: false }));
+      setAgent((previous) => ({ ...previous, sync: sync.after || sync, gitNexus: sync.gitNexus || previous.gitNexus, busy: false }));
       await refreshAgentOps();
     } catch (error) {
       setAgent((previous) => ({ ...previous, error: error.message, busy: false }));
@@ -653,6 +653,7 @@ function AgentPanel({
       {agent.generated?.planner?.gitNexus ? <p className={agent.generated.planner.gitNexus.available ? "pass" : agent.generated.planner.gitNexus.connected ? "muted" : "danger-text"}>GitNexus MCP: {agent.generated.planner.gitNexus.available ? `graph context loaded from ${agent.generated.planner.gitNexus.repo}` : agent.generated.planner.gitNexus.connected ? agent.generated.planner.gitNexus.error || "connected, graph store is busy" : agent.generated.planner.gitNexus.error || "not available"}</p> : null}
       {graph.gitNexus?.note ? <p className="muted">GitNexus: {graph.gitNexus.note}</p> : null}
       {agent.gitNexus?.ok ? <p className="pass">GitNexus index is current. {agent.gitNexus.analyzedAt ? `Updated ${formatDate(agent.gitNexus.analyzedAt)}.` : ""}</p> : null}
+      {agent.gitNexus && agent.gitNexus.ok === false ? <p className="danger-text">GitNexus reindex failed after Sync Main: {agent.gitNexus.error || agent.gitNexus.message || "unknown error"}</p> : null}
       {agent.gitNexus?.output ? <pre className="logs compact-log">{agent.gitNexus.output}</pre> : null}
       {sync.pullBlocked ? <p className="danger-text">Main pull is blocked because the target app repo has local changes. Fetch still completed, so remote changes are visible.</p> : null}
       {agent.commit ? <p className="pass">Committed on {agent.commit.branchName}{agent.commit.pushed ? " and pushed" : ""}.</p> : null}
