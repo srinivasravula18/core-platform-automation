@@ -32,12 +32,16 @@ const recordedMetaRoot = path.resolve(repoRoot, "tests", "e2e", "recorded-scenar
 const recordedDraftRoot = path.resolve(recordedMetaRoot, "drafts");
 const recordedMetadataPath = path.join(recordedMetaRoot, "scenarios.json");
 const agentStatePath = path.join(generatedRoot, "agent-state.json");
+const agentSchedulerConfigPath = path.join(generatedRoot, "scheduler-config.json");
+const agentGraphRoot = path.join(generatedRoot, "graph");
 const appRoot = path.resolve(process.env.CORE_PLATFORM_ROOT || "D:\\core-platform");
 const geminiModel = process.env.GEMINI_MODEL || "gemini-3.5-flash";
 const resultsJsonPath = path.join(reportRoot, "list-view-regression-results.json");
 const storageStatePath = path.join(repoRoot, "tests", "e2e", ".storage", "list-view.json");
 const port = Number(process.env.LIST_VIEW_REPORT_PORT || process.argv[2] || 5372);
 const host = process.env.LIST_VIEW_REPORT_HOST || "127.0.0.1";
+const gitNexusHost = process.env.GITNEXUS_HOST || "127.0.0.1";
+const gitNexusPort = Number(process.env.GITNEXUS_PORT || 4747);
 
 const allowedSurfaces = new Set(["all", "admin", "keystone", "api"]);
 const recordableSurfaces = new Map([
@@ -115,6 +119,7 @@ let currentProcess = null;
 let recorderProcess = null;
 let cachedInventory = null;
 let cachedInventoryAt = 0;
+let schedulerTimer = null;
 const recordState = {
   recording: false,
   surface: "",
@@ -180,6 +185,58 @@ const sendBuffer = (response, status, body, contentType, filename) => {
   response.writeHead(status, headers);
   response.end(body);
 };
+
+const proxyGitNexus = (request, response, url) => {
+  const upstreamPath = `${url.pathname.replace(/^\/gitnexus/, "") || "/"}${url.search}`;
+  const upstream = httpRequest(
+    {
+      hostname: gitNexusHost,
+      port: gitNexusPort,
+      path: upstreamPath,
+      method: request.method,
+      headers: { ...request.headers, host: `${gitNexusHost}:${gitNexusPort}` }
+    },
+    (upstreamResponse) => {
+      const headers = { ...upstreamResponse.headers };
+      delete headers["content-security-policy"];
+      response.writeHead(upstreamResponse.statusCode || 502, headers);
+      upstreamResponse.on("error", () => {
+        if (!response.destroyed) response.destroy();
+      });
+      upstreamResponse.pipe(response);
+    }
+  );
+  upstream.on("error", (error) => {
+    if (response.headersSent || response.writableEnded) {
+      if (!response.destroyed) response.destroy();
+      return;
+    }
+    sendText(response, 502, `GitNexus graph service is not available through the dashboard proxy. ${error.message}`);
+  });
+  request.on("aborted", () => {
+    upstream.destroy();
+  });
+  response.on("close", () => {
+    upstream.destroy();
+  });
+  request.pipe(upstream);
+};
+
+const gitNexusApiPrefixes = [
+  "/api/repos",
+  "/api/repo",
+  "/api/graph",
+  "/api/query",
+  "/api/search",
+  "/api/grep",
+  "/api/file",
+  "/api/analyze",
+  "/api/embed",
+  "/api/heartbeat",
+  "/api/mcp"
+];
+
+const isGitNexusApiPath = (pathname) => gitNexusApiPrefixes.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`));
 
 const pushRecorderLog = (chunk) => {
   const text = String(chunk).replace(/\r\n/g, "\n");
@@ -869,46 +926,170 @@ const currentGitBranch = (cwd) => runGit(cwd, ["branch", "--show-current"]) || "
 
 const readAgentState = () => {
   if (!existsSync(agentStatePath)) {
-    return { baselineCommit: "", updatedAt: null, history: [] };
+    return {
+      targetRepo: appRoot,
+      trackedBranch: "main",
+      baselineCommit: "",
+      lastSuccessfulAgentCommit: "",
+      lastSeenMainCommit: "",
+      lastPulledCommit: "",
+      lastGraphCommit: "",
+      lastScheduledRunAt: null,
+      updatedAt: null,
+      history: []
+    };
   }
   try {
     const parsed = JSON.parse(readFileSync(agentStatePath, "utf8"));
     return {
+      targetRepo: parsed.targetRepo || appRoot,
+      trackedBranch: parsed.trackedBranch || "main",
       baselineCommit: parsed.baselineCommit || "",
+      lastSuccessfulAgentCommit: parsed.lastSuccessfulAgentCommit || parsed.baselineCommit || "",
+      lastSeenMainCommit: parsed.lastSeenMainCommit || "",
+      lastPulledCommit: parsed.lastPulledCommit || "",
+      lastGraphCommit: parsed.lastGraphCommit || "",
+      lastScheduledRunAt: parsed.lastScheduledRunAt || null,
+      lastRunStatus: parsed.lastRunStatus || null,
       updatedAt: parsed.updatedAt || null,
+      lastArtifact: parsed.lastArtifact || "",
+      lastSpec: parsed.lastSpec || "",
+      lastGraph: parsed.lastGraph || "",
       history: Array.isArray(parsed.history) ? parsed.history : []
     };
   } catch {
-    return { baselineCommit: "", updatedAt: null, history: [] };
+    return {
+      targetRepo: appRoot,
+      trackedBranch: "main",
+      baselineCommit: "",
+      lastSuccessfulAgentCommit: "",
+      lastSeenMainCommit: "",
+      lastPulledCommit: "",
+      lastGraphCommit: "",
+      lastScheduledRunAt: null,
+      updatedAt: null,
+      history: []
+    };
   }
 };
 
 const writeAgentState = (nextState) => {
   mkdirSync(generatedRoot, { recursive: true });
-  writeFileSync(agentStatePath, JSON.stringify(nextState, null, 2), "utf8");
-  return nextState;
+  const merged = {
+    targetRepo: appRoot,
+    trackedBranch: "main",
+    ...readAgentState(),
+    ...nextState
+  };
+  writeFileSync(agentStatePath, JSON.stringify(merged, null, 2), "utf8");
+  return merged;
 };
 
 const currentAppCommit = () => runGit(appRoot, ["rev-parse", "HEAD"]);
+
+const gitOutputOrEmpty = (cwd, args, timeout = 120_000) => {
+  try {
+    return runGit(cwd, args, timeout);
+  } catch {
+    return "";
+  }
+};
+
+const appWorktreeStatus = () => {
+  if (!existsSync(path.join(appRoot, ".git"))) {
+    return { exists: false, clean: false, status: "", branch: "", headCommit: "" };
+  }
+  const status = gitOutputOrEmpty(appRoot, ["status", "--short"]);
+  return {
+    exists: true,
+    clean: !status,
+    status,
+    branch: gitOutputOrEmpty(appRoot, ["branch", "--show-current"]) || "main",
+    headCommit: gitOutputOrEmpty(appRoot, ["rev-parse", "HEAD"])
+  };
+};
+
+const appMainSyncStatus = () => {
+  const worktree = appWorktreeStatus();
+  const state = readAgentState();
+  const remoteMainCommit = gitOutputOrEmpty(appRoot, ["rev-parse", "origin/main"]);
+  const behindCount = remoteMainCommit && worktree.headCommit
+    ? Number(gitOutputOrEmpty(appRoot, ["rev-list", "--count", `${worktree.headCommit}..origin/main`]) || 0)
+    : 0;
+  return {
+    appRoot,
+    trackedBranch: "main",
+    remote: "origin/main",
+    ...worktree,
+    remoteMainCommit,
+    behindCount,
+    hasRemoteChanges: behindCount > 0,
+    pullBlocked: behindCount > 0 && !worktree.clean,
+    lastSeenMainCommit: state.lastSeenMainCommit || "",
+    lastPulledCommit: state.lastPulledCommit || "",
+    lastSuccessfulAgentCommit: state.lastSuccessfulAgentCommit || state.baselineCommit || "",
+    updatedAt: state.updatedAt || null
+  };
+};
+
+const syncMainBranch = ({ pull = true } = {}) => {
+  if (!existsSync(path.join(appRoot, ".git"))) {
+    throw new Error(`Application repo was not found at ${appRoot}.`);
+  }
+  const before = appMainSyncStatus();
+  runGit(appRoot, ["fetch", "origin", "main"], 180_000);
+  const afterFetch = appMainSyncStatus();
+  let pulled = false;
+  let blockedReason = "";
+  if (pull && afterFetch.hasRemoteChanges) {
+    if (!afterFetch.clean) {
+      blockedReason = "Local app repo has uncommitted changes. Fetched origin/main, but skipped pull.";
+    } else {
+      runGit(appRoot, ["pull", "--ff-only", "origin", "main"], 180_000);
+      pulled = true;
+    }
+  }
+  const after = appMainSyncStatus();
+  writeAgentState({
+    lastSeenMainCommit: after.remoteMainCommit || after.headCommit,
+    lastPulledCommit: pulled ? after.headCommit : readAgentState().lastPulledCommit || "",
+    updatedAt: new Date().toISOString()
+  });
+  return {
+    ok: true,
+    before,
+    after,
+    pulled,
+    blockedReason,
+    changed: before.remoteMainCommit !== after.remoteMainCommit || before.headCommit !== after.headCommit
+  };
+};
 
 const resolveAgentBaseRef = (baseRef = "") => {
   const requested = String(baseRef || "").trim();
   if (requested && requested !== "auto") return requested;
   const state = readAgentState();
-  return state.baselineCommit || "HEAD~1";
+  return state.lastSuccessfulAgentCommit || state.baselineCommit || "HEAD~1";
 };
 
-const scanChangedFiles = (baseRef = "auto") => {
+const scanChangedFiles = (baseRef = "auto", targetRef = "auto") => {
   if (!existsSync(path.join(appRoot, ".git"))) {
     throw new Error(`Application repo was not found at ${appRoot}.`);
   }
   const resolvedBaseRef = resolveAgentBaseRef(baseRef);
-  const headCommit = currentAppCommit();
+  const requestedTargetRef = String(targetRef || "auto").trim() || "auto";
+  const sync = appMainSyncStatus();
+  const resolvedTargetRef = requestedTargetRef === "auto"
+    ? sync.remoteMainCommit && sync.remoteMainCommit !== sync.headCommit
+      ? "origin/main"
+      : "HEAD"
+    : requestedTargetRef;
+  const headCommit = runGit(appRoot, ["rev-parse", resolvedTargetRef]);
   let output = "";
   try {
-    output = runGit(appRoot, ["diff", "--name-status", `${resolvedBaseRef}...HEAD`]);
+    output = runGit(appRoot, ["diff", "--name-status", `${resolvedBaseRef}...${resolvedTargetRef}`]);
   } catch {
-    output = runGit(appRoot, ["diff", "--name-status", resolvedBaseRef]);
+    output = runGit(appRoot, ["diff", "--name-status", resolvedBaseRef, resolvedTargetRef]);
   }
   const changedFiles = output
     .split(/\r?\n/)
@@ -938,12 +1119,190 @@ const scanChangedFiles = (baseRef = "auto") => {
     appRoot,
     requestedBaseRef: baseRef,
     baseRef: resolvedBaseRef,
+    requestedTargetRef,
+    targetRef: resolvedTargetRef,
     headCommit,
     previousBaselineCommit: readAgentState().baselineCommit || "",
     scannedAt: new Date().toISOString(),
     summary,
     changedFiles
   };
+};
+
+const tryGitNexusGraph = () => {
+  const candidates = process.platform === "win32"
+    ? [
+        path.join(process.env.APPDATA || "", "npm", "gitnexus.cmd"),
+        path.join("C:\\Users\\bdevi\\AppData\\Roaming\\npm", "gitnexus.cmd"),
+        "gitnexus.cmd",
+        "gitnexus"
+      ]
+    : ["gitnexus"];
+  for (const command of candidates) {
+    if (path.isAbsolute(command) && !existsSync(command)) continue;
+    const result = process.platform === "win32"
+      ? spawnSync("cmd.exe", ["/d", "/s", "/c", command, "--help"], {
+          cwd: appRoot,
+          encoding: "utf8",
+          timeout: 20_000,
+          windowsHide: true
+        })
+      : spawnSync(command, ["--help"], {
+      cwd: appRoot,
+      encoding: "utf8",
+      timeout: 20_000,
+      windowsHide: true
+    });
+    if (!result.error && result.status === 0) {
+      return {
+        available: true,
+        command,
+        note: "GitNexus CLI is available. Reindex refreshes the local knowledge graph; the dashboard renders the current commit impact graph."
+      };
+    }
+  }
+  return {
+    available: false,
+    command: "",
+    note: "GitNexus CLI was not found on PATH, so the graph falls back to git diff, commit log, and path dependency heuristics."
+  };
+};
+
+const runGitNexusAnalyze = () => {
+  const gitNexus = tryGitNexusGraph();
+  if (!gitNexus.available) {
+    return {
+      ok: false,
+      available: false,
+      message: "GitNexus CLI is not installed on PATH. Install it with npm install -g gitnexus, then run Analyze Graph again."
+    };
+  }
+  const analyzeArgs = ["analyze", appRoot, "--index-only", "--worker-timeout", "120", "--max-file-size", "256"];
+  const result = process.platform === "win32"
+    ? spawnSync("cmd.exe", ["/d", "/s", "/c", gitNexus.command, ...analyzeArgs], {
+        cwd: appRoot,
+        encoding: "utf8",
+        timeout: 10 * 60_000,
+        windowsHide: true
+      })
+    : spawnSync(gitNexus.command, analyzeArgs, {
+        cwd: appRoot,
+        encoding: "utf8",
+        timeout: 10 * 60_000,
+        windowsHide: true
+      });
+  const output = `${result.stdout || ""}\n${result.stderr || ""}`.trim();
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    throw new Error(output || `GitNexus analyze exited ${result.status}`);
+  }
+  return {
+    ok: true,
+    available: true,
+    command: `${gitNexus.command} ${analyzeArgs.join(" ")}`,
+    output: output.slice(-12_000),
+    analyzedAt: new Date().toISOString()
+  };
+};
+
+const ensureGitNexusNativeServer = async () => {
+  const probe = await probeHttp("GitNexus", gitNexusPort, "/api/repos");
+  if (probe.ok) return { ok: true, alreadyRunning: true };
+  const gitNexus = tryGitNexusGraph();
+  if (!gitNexus.available) return { ok: false, error: "GitNexus CLI is not available." };
+  const runtimeRoot = path.join(appRoot, ".runtime");
+  mkdirSync(runtimeRoot, { recursive: true });
+  const outLog = path.join(runtimeRoot, "gitnexus-serve.out.log");
+  const errLog = path.join(runtimeRoot, "gitnexus-serve.err.log");
+  const args = ["serve", "--host", gitNexusHost, "--port", String(gitNexusPort)];
+  const child = process.platform === "win32"
+    ? spawn("cmd.exe", ["/d", "/s", "/c", gitNexus.command, ...args], {
+        cwd: appRoot,
+        detached: true,
+        windowsHide: true,
+        stdio: ["ignore", "ignore", "ignore"]
+      })
+    : spawn(gitNexus.command, args, {
+        cwd: appRoot,
+        detached: true,
+        stdio: ["ignore", "ignore", "ignore"]
+      });
+  child.unref();
+  writeFileSync(path.join(runtimeRoot, "gitnexus-serve.pid"), String(child.pid || ""), "utf8");
+  writeFileSync(outLog, "GitNexus native server started by dashboard.\n", "utf8");
+  writeFileSync(errLog, "", "utf8");
+  return { ok: true, started: true, pid: child.pid };
+};
+
+const buildAgentGraph = (baseRef = "auto") => {
+  const scan = scanChangedFiles(baseRef, "auto");
+  const graphTargetRef = scan.targetRef || "HEAD";
+  const commitLog = gitOutputOrEmpty(appRoot, [
+    "log",
+    "--oneline",
+    "--decorate=short",
+    "--max-count=25",
+    `${scan.baseRef}..${graphTargetRef}`
+  ]);
+  const impactedNodes = scan.changedFiles.map((change) => ({
+    id: change.path,
+    label: path.basename(change.path),
+    path: change.path,
+    area: change.area,
+    surface: change.surface,
+    suite: change.suite,
+    risk: change.risk,
+    reason: change.reason,
+    dependsOn: scan.changedFiles
+      .filter((candidate) => candidate.path !== change.path && candidate.area === change.area)
+      .slice(0, 6)
+      .map((candidate) => candidate.path)
+  }));
+  const graph = {
+    generatedAt: new Date().toISOString(),
+    appRoot,
+    baseRef: scan.baseRef,
+    targetRef: graphTargetRef,
+    headCommit: scan.headCommit,
+    previousBaselineCommit: scan.previousBaselineCommit,
+    summary: scan.summary,
+    gitNexus: tryGitNexusGraph(),
+    commits: commitLog
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .map((line) => {
+        const [commit, ...rest] = line.split(/\s+/);
+        return { commit, message: rest.join(" ") };
+      }),
+    nodes: impactedNodes,
+    edges: impactedNodes.flatMap((node) => node.dependsOn.map((target) => ({ source: node.id, target, type: "same-area" })))
+  };
+  mkdirSync(agentGraphRoot, { recursive: true });
+  const graphPath = path.join(agentGraphRoot, `graph-summary-${Date.now()}.json`);
+  writeFileSync(graphPath, JSON.stringify(graph, null, 2), "utf8");
+  writeAgentState({
+    lastGraphCommit: scan.headCommit,
+    lastGraph: path.relative(repoRoot, graphPath).replace(/\\/g, "/"),
+    updatedAt: graph.generatedAt
+  });
+  return {
+    ...graph,
+    outputPath: path.relative(repoRoot, graphPath).replace(/\\/g, "/")
+  };
+};
+
+const latestAgentGraph = () => {
+  if (!existsSync(agentGraphRoot)) return null;
+  const files = readdirSync(agentGraphRoot)
+    .filter((item) => /^graph-summary-\d+\.json$/.test(item))
+    .map((item) => {
+      const fullPath = path.join(agentGraphRoot, item);
+      return { fullPath, mtimeMs: statSync(fullPath).mtimeMs };
+    })
+    .sort((a, b) => b.mtimeMs - a.mtimeMs);
+  if (files.length === 0) return null;
+  const payload = JSON.parse(readFileSync(files[0].fullPath, "utf8"));
+  return { ...payload, outputPath: path.relative(repoRoot, files[0].fullPath).replace(/\\/g, "/") };
 };
 
 const scenarioForChange = (change, index) => {
@@ -1022,12 +1381,12 @@ const existingCoverageForScenario = (scenario, inventoryRows) => {
   }));
 };
 
-const changedFileDiff = (baseRef, filePath) => {
+const changedFileDiff = (baseRef, filePath, targetRef = "HEAD") => {
   try {
-    return runGit(appRoot, ["diff", "--unified=80", `${baseRef}...HEAD`, "--", filePath], 60_000).slice(0, 18_000);
+    return runGit(appRoot, ["diff", "--unified=80", `${baseRef}...${targetRef}`, "--", filePath], 60_000).slice(0, 18_000);
   } catch {
     try {
-      return runGit(appRoot, ["diff", "--unified=80", baseRef, "--", filePath], 60_000).slice(0, 18_000);
+      return runGit(appRoot, ["diff", "--unified=80", baseRef, targetRef, "--", filePath], 60_000).slice(0, 18_000);
     } catch {
       return "";
     }
@@ -1047,7 +1406,7 @@ const callGeminiPlanner = async (scan, inventoryRows) => {
 
   const changedFiles = scan.changedFiles.map((change) => ({
     ...change,
-    diff: changedFileDiff(scan.baseRef, change.path)
+    diff: changedFileDiff(scan.baseRef, change.path, scan.targetRef || "HEAD")
   }));
   const existingTests = inventoryRows.slice(0, 180).map((row) => ({
     id: row.id,
@@ -1301,10 +1660,10 @@ const generateAgentScenarios = async (baseRef = "origin/main") => {
   writeFileSync(outputPath, JSON.stringify(artifact, null, 2), "utf8");
   const state = readAgentState();
   writeAgentState({
-    baselineCommit: scan.headCommit,
     updatedAt: artifact.generatedAt,
     lastArtifact: path.relative(repoRoot, outputPath).replace(/\\/g, "/"),
     lastSpec: artifact.spec,
+    lastRunStatus: "generated",
     history: [
       {
         generatedAt: artifact.generatedAt,
@@ -1324,6 +1683,18 @@ const generateAgentScenarios = async (baseRef = "origin/main") => {
     ...artifact,
     outputPath: path.relative(repoRoot, outputPath).replace(/\\/g, "/")
   };
+};
+
+const markAgentArtifactSuccessful = (artifact, status = "passed") => {
+  if (!artifact?.headCommit) return;
+  writeAgentState({
+    baselineCommit: artifact.headCommit,
+    lastSuccessfulAgentCommit: artifact.headCommit,
+    lastRunStatus: status,
+    updatedAt: new Date().toISOString(),
+    lastArtifact: artifact.outputPath || readAgentState().lastArtifact || "",
+    lastSpec: artifact.spec || readAgentState().lastSpec || ""
+  });
 };
 
 const readInventory = () => {
@@ -1712,6 +2083,11 @@ const runAgentGeneratedScenarios = async (request, response) => {
     runState.running = false;
     runState.finishedAt = new Date().toISOString();
     runState.exitCode = runState.stopRequested ? code ?? 130 : code ?? 1;
+    if (!runState.stopRequested && runState.exitCode === 0) {
+      markAgentArtifactSuccessful(artifact, "passed");
+    } else {
+      writeAgentState({ lastRunStatus: runState.stopRequested ? "stopped" : "failed", updatedAt: new Date().toISOString() });
+    }
     pushLog(
       runState.stopRequested
         ? `AI generated scenarios stopped with exit code ${runState.exitCode}.`
@@ -1721,6 +2097,168 @@ const runAgentGeneratedScenarios = async (request, response) => {
   });
 
   sendJson(response, 202, { ok: true, artifact, state: runState });
+};
+
+const defaultSchedulerConfig = () => ({
+  enabled: false,
+  pollMinutes: Number(process.env.AGENT_MAIN_POLL_MINUTES || 15),
+  dailyTime: process.env.AGENT_DAILY_FULL_RUN_TIME || "",
+  runAfterMainChange: true,
+  autoPull: true,
+  scope: "complete",
+  headed: false,
+  reset: false
+});
+
+const readSchedulerConfig = () => {
+  if (!existsSync(agentSchedulerConfigPath)) return defaultSchedulerConfig();
+  try {
+    const parsed = JSON.parse(readFileSync(agentSchedulerConfigPath, "utf8"));
+    return {
+      ...defaultSchedulerConfig(),
+      ...parsed,
+      pollMinutes: Math.max(1, Number(parsed.pollMinutes || defaultSchedulerConfig().pollMinutes)),
+      scope: ["complete", "bvt", "sanity", "regression"].includes(parsed.scope) ? parsed.scope : "complete"
+    };
+  } catch {
+    return defaultSchedulerConfig();
+  }
+};
+
+const writeSchedulerConfig = (config) => {
+  mkdirSync(generatedRoot, { recursive: true });
+  const next = {
+    ...readSchedulerConfig(),
+    ...config,
+    pollMinutes: Math.max(1, Number(config.pollMinutes || readSchedulerConfig().pollMinutes || 15)),
+    scope: ["complete", "bvt", "sanity", "regression"].includes(config.scope) ? config.scope : readSchedulerConfig().scope
+  };
+  writeFileSync(agentSchedulerConfigPath, JSON.stringify(next, null, 2), "utf8");
+  configureScheduler();
+  return next;
+};
+
+const schedulerStatus = () => ({
+  config: readSchedulerConfig(),
+  running: Boolean(runState.running),
+  currentRun: runState,
+  sync: appMainSyncStatus(),
+  state: readAgentState()
+});
+
+const runCompleteSuiteFromScheduler = ({ reason = "manual", scope = "complete", headed = false, reset = false } = {}) => {
+  if (runState.running || currentProcess) {
+    return { queued: false, started: false, reason: "A test run is already in progress." };
+  }
+
+  const args = [
+    "-ExecutionPolicy",
+    "Bypass",
+    "-File",
+    "tests/scripts/run-list-view-regression.ps1",
+    "-Surface",
+    "all"
+  ];
+  const scopePattern = {
+    bvt: "@bvt",
+    sanity: "@sanity",
+    regression: "@regression"
+  }[scope];
+  if (scopePattern) args.push("-Scenario", scopePattern);
+  if (!reset) args.push("-SkipReset");
+  if (headed) args.push("-Headed");
+
+  runState.running = true;
+  runState.command = `powershell ${args.join(" ")}`;
+  runState.surface = "all";
+  runState.scenario = scope === "complete" ? "Scheduled complete test run" : `Scheduled ${scope} test run`;
+  runState.selectedTestCount = 0;
+  runState.reset = Boolean(reset);
+  runState.headed = Boolean(headed);
+  runState.stopRequested = false;
+  runState.startedAt = new Date().toISOString();
+  runState.finishedAt = null;
+  runState.exitCode = null;
+  runState.logs = [];
+  pushLog(`Starting ${runState.scenario} (${reason}).`);
+
+  currentProcess = spawn("powershell", args, {
+    cwd: repoRoot,
+    env: { ...process.env, LIST_VIEW_REGRESSION_HEADED: headed ? "1" : "0" },
+    windowsHide: true,
+    shell: false,
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  currentProcess.stdout.on("data", pushLog);
+  currentProcess.stderr.on("data", pushLog);
+  currentProcess.on("error", (error) => {
+    pushLog(`Scheduled test run failed to start: ${error.message}`);
+    runState.running = false;
+    runState.finishedAt = new Date().toISOString();
+    runState.exitCode = 1;
+    currentProcess = null;
+  });
+  currentProcess.on("exit", (code) => {
+    runState.running = false;
+    runState.finishedAt = new Date().toISOString();
+    runState.exitCode = runState.stopRequested ? code ?? 130 : code ?? 1;
+    writeAgentState({
+      lastScheduledRunAt: runState.finishedAt,
+      lastRunStatus: runState.exitCode === 0 ? "passed" : runState.stopRequested ? "stopped" : "failed",
+      updatedAt: runState.finishedAt
+    });
+    pushLog(
+      runState.stopRequested
+        ? `Scheduled test run stopped with exit code ${runState.exitCode}.`
+        : `Scheduled test run finished with exit code ${runState.exitCode}.`
+    );
+    currentProcess = null;
+  });
+
+  writeAgentState({ lastScheduledRunAt: runState.startedAt, lastRunStatus: "running", updatedAt: runState.startedAt });
+  return { queued: false, started: true, state: runState };
+};
+
+const schedulerTick = () => {
+  const config = readSchedulerConfig();
+  if (!config.enabled || runState.running || currentProcess) return;
+  try {
+    const before = appMainSyncStatus();
+    const sync = syncMainBranch({ pull: config.autoPull });
+    const shouldRunForMain = config.runAfterMainChange && sync.after.remoteMainCommit && sync.after.remoteMainCommit !== before.remoteMainCommit;
+    const now = new Date();
+    const todayKey = now.toISOString().slice(0, 10);
+    const state = readAgentState();
+    const dailyDue =
+      config.dailyTime &&
+      !String(state.lastScheduledRunAt || "").startsWith(todayKey) &&
+      now.toTimeString().slice(0, 5) >= config.dailyTime;
+    if (shouldRunForMain || dailyDue) {
+      buildAgentGraph("auto");
+      runCompleteSuiteFromScheduler({
+        reason: shouldRunForMain ? "main branch changed" : "daily schedule",
+        scope: config.scope,
+        headed: config.headed,
+        reset: config.reset
+      });
+    }
+  } catch (error) {
+    writeAgentState({
+      lastRunStatus: `scheduler-error: ${error instanceof Error ? error.message : "unknown error"}`,
+      updatedAt: new Date().toISOString()
+    });
+  }
+};
+
+const configureScheduler = () => {
+  if (schedulerTimer) {
+    clearInterval(schedulerTimer);
+    schedulerTimer = null;
+  }
+  const config = readSchedulerConfig();
+  if (!config.enabled) return;
+  schedulerTimer = setInterval(schedulerTick, Math.max(1, Number(config.pollMinutes || 15)) * 60 * 1000);
+  schedulerTimer.unref?.();
 };
 
 const startRecording = async (request, response) => {
@@ -1900,6 +2438,16 @@ const stopListViewSuite = async (_request, response) => {
 const server = createServer(async (request, response) => {
   const url = new URL(request.url || "/", `http://${host}:${port}`);
 
+  if (url.pathname === "/gitnexus" || url.pathname.startsWith("/gitnexus/")) {
+    proxyGitNexus(request, response, url);
+    return;
+  }
+
+  if (isGitNexusApiPath(url.pathname)) {
+    proxyGitNexus(request, response, url);
+    return;
+  }
+
   if (request.method === "GET" && url.pathname === "/api/status") {
     sendJson(response, 200, runState);
     return;
@@ -1995,6 +2543,91 @@ const server = createServer(async (request, response) => {
     return;
   }
 
+  if (request.method === "GET" && url.pathname === "/api/agent/sync/status") {
+    try {
+      sendJson(response, 200, appMainSyncStatus());
+    } catch (error) {
+      sendJson(response, 500, { error: error instanceof Error ? error.message : "Agent sync status failed." });
+    }
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/agent/sync/main") {
+    try {
+      const body = await readRequestJson(request);
+      sendJson(response, 200, syncMainBranch({ pull: body.pull !== false }));
+    } catch (error) {
+      sendJson(response, 500, { error: error instanceof Error ? error.message : "Agent main sync failed." });
+    }
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/agent/graph") {
+    try {
+      sendJson(response, 200, latestAgentGraph() || { nodes: [], edges: [], commits: [], summary: { total: 0 }, gitNexus: tryGitNexusGraph() });
+    } catch (error) {
+      sendJson(response, 500, { error: error instanceof Error ? error.message : "Agent graph read failed." });
+    }
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/agent/graph/analyze") {
+    try {
+      const body = await readRequestJson(request);
+      sendJson(response, 200, buildAgentGraph(String(body.baseRef || "auto").trim() || "auto"));
+    } catch (error) {
+      sendJson(response, 500, { error: error instanceof Error ? error.message : "Agent graph analysis failed." });
+    }
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/agent/graph/reindex") {
+    try {
+      const result = runGitNexusAnalyze();
+      sendJson(response, result.ok ? 200 : 409, {
+        ...result,
+        error: result.ok ? "" : result.message || "GitNexus CLI is not available."
+      });
+    } catch (error) {
+      sendJson(response, 500, { error: error instanceof Error ? error.message : "GitNexus reindex failed." });
+    }
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/agent/scheduler/status") {
+    try {
+      sendJson(response, 200, schedulerStatus());
+    } catch (error) {
+      sendJson(response, 500, { error: error instanceof Error ? error.message : "Scheduler status failed." });
+    }
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/agent/scheduler/config") {
+    try {
+      const body = await readRequestJson(request);
+      sendJson(response, 200, { ok: true, config: writeSchedulerConfig(body) });
+    } catch (error) {
+      sendJson(response, 500, { error: error instanceof Error ? error.message : "Scheduler config update failed." });
+    }
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/agent/scheduler/run-now") {
+    try {
+      const body = await readRequestJson(request);
+      sendJson(response, 202, runCompleteSuiteFromScheduler({
+        reason: "manual dashboard request",
+        scope: body.scope || readSchedulerConfig().scope,
+        headed: Boolean(body.headed ?? readSchedulerConfig().headed),
+        reset: Boolean(body.reset ?? readSchedulerConfig().reset)
+      }));
+    } catch (error) {
+      sendJson(response, 500, { error: error instanceof Error ? error.message : "Scheduled run failed to start." });
+    }
+    return;
+  }
+
   if (request.method === "POST" && url.pathname === "/api/agent/scan") {
     try {
       const body = await readRequestJson(request);
@@ -2081,6 +2714,14 @@ const server = createServer(async (request, response) => {
     return;
   }
 
+  if (url.pathname.startsWith("/assets/")) {
+    const localAssetPath = resolveSafePath(environmentRoot, url.pathname);
+    if (!localAssetPath || !existsSync(localAssetPath)) {
+      proxyGitNexus(request, response, url);
+      return;
+    }
+  }
+
   const dashboardPath = url.pathname === "/" ? "/index.html" : url.pathname;
   const targetPath = resolveSafePath(environmentRoot, dashboardPath);
   if (!targetPath) {
@@ -2091,6 +2732,10 @@ const server = createServer(async (request, response) => {
 });
 
 server.listen(port, host, () => {
+  configureScheduler();
+  ensureGitNexusNativeServer().catch((error) => {
+    console.error(`GitNexus native server start failed: ${error instanceof Error ? error.message : "unknown error"}`);
+  });
   console.log(`List-view test environment: http://${host}:${port}/`);
   console.log(`Report URL: http://${host}:${port}/report`);
   console.log(`Serving reports from: ${reportRoot}`);

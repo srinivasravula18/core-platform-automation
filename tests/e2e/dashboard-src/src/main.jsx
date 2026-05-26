@@ -18,6 +18,7 @@ const navItems = [
   { id: "reports", label: "Reports", icon: FileBarChart },
   { id: "bugs", label: "Bugs", icon: Bug },
   { id: "agent", label: "AI Agent", icon: Bot },
+  { id: "gitnexus", label: "GitNexus", icon: GitBranch },
   { id: "settings", label: "Settings", icon: Settings }
 ];
 
@@ -121,10 +122,13 @@ function App() {
   const [reset, setReset] = useState(false);
   const [agent, setAgent] = useState({
     baseRef: "auto",
-    branchName: "main",
+    branchName: "agent/generated-tests",
     push: true,
     scan: null,
     generated: null,
+    sync: null,
+    graph: null,
+    scheduler: null,
     commit: null,
     busy: false,
     error: ""
@@ -288,6 +292,85 @@ function App() {
     }
   };
 
+  const refreshAgentOps = async () => {
+    try {
+      const [sync, graph, scheduler] = await Promise.all([
+        api("/api/agent/sync/status"),
+        api("/api/agent/graph"),
+        api("/api/agent/scheduler/status")
+      ]);
+      setAgent((previous) => ({ ...previous, sync, graph, scheduler }));
+    } catch (error) {
+      setAgent((previous) => ({ ...previous, error: error.message }));
+    }
+  };
+
+  useEffect(() => {
+    if (active !== "agent" && active !== "gitnexus") return;
+    refreshAgentOps();
+    const id = window.setInterval(refreshAgentOps, 5000);
+    return () => window.clearInterval(id);
+  }, [active]);
+
+  const syncAgentMain = async () => {
+    setAgent((previous) => ({ ...previous, busy: true, error: "" }));
+    try {
+      const sync = await api("/api/agent/sync/main", { method: "POST", body: JSON.stringify({ pull: true }) });
+      setAgent((previous) => ({ ...previous, sync: sync.after || sync, busy: false }));
+      await refreshAgentOps();
+    } catch (error) {
+      setAgent((previous) => ({ ...previous, error: error.message, busy: false }));
+    }
+  };
+
+  const analyzeAgentGraph = async () => {
+    setAgent((previous) => ({ ...previous, busy: true, error: "" }));
+    try {
+      const graph = await api("/api/agent/graph/analyze", { method: "POST", body: JSON.stringify({ baseRef: agent.baseRef }) });
+      setAgent((previous) => ({ ...previous, graph, busy: false }));
+    } catch (error) {
+      setAgent((previous) => ({ ...previous, error: error.message, busy: false }));
+    }
+  };
+
+  const reindexGitNexus = async () => {
+    setAgent((previous) => ({ ...previous, busy: true, error: "" }));
+    try {
+      const gitNexus = await api("/api/agent/graph/reindex", { method: "POST", body: "{}" });
+      const graph = await api("/api/agent/graph/analyze", { method: "POST", body: JSON.stringify({ baseRef: agent.baseRef }) });
+      setAgent((previous) => ({ ...previous, gitNexus, graph, busy: false }));
+    } catch (error) {
+      setAgent((previous) => ({ ...previous, error: error.message, busy: false }));
+    }
+  };
+
+  const saveScheduler = async (config) => {
+    setAgent((previous) => ({ ...previous, busy: true, error: "" }));
+    try {
+      const scheduler = await api("/api/agent/scheduler/config", { method: "POST", body: JSON.stringify(config) });
+      setAgent((previous) => ({ ...previous, scheduler, busy: false }));
+      await refreshAgentOps();
+    } catch (error) {
+      setAgent((previous) => ({ ...previous, error: error.message, busy: false }));
+    }
+  };
+
+  const runScheduledNow = async () => {
+    setAgent((previous) => ({ ...previous, busy: true, error: "" }));
+    try {
+      await api("/api/agent/scheduler/run-now", {
+        method: "POST",
+        body: JSON.stringify(agent.scheduler?.config || {})
+      });
+      setAgent((previous) => ({ ...previous, busy: false }));
+      await data.refreshLive();
+      await refreshAgentOps();
+      setActive("execution");
+    } catch (error) {
+      setAgent((previous) => ({ ...previous, error: error.message, busy: false }));
+    }
+  };
+
   const renderSection = () => {
     if (active === "suites") return <SuitesPanel framework={data.framework} onOpen={openSuiteCases} onRun={(suite) => runSuite(suite.surface, suite.grep || "")} />;
     if (active === "scenarios") return <ScenariosPanel framework={data.framework} setScenarioFilter={setScenarioFilter} setActive={setActive} />;
@@ -327,6 +410,14 @@ function App() {
     if (active === "execution") return <ExecutionPanel status={data.status} stopRun={stopRun} />;
     if (active === "reports") return <ReportsPanel results={data.results} />;
     if (active === "bugs") return <BugsPanel failedRows={failedRows} />;
+    if (active === "gitnexus") return (
+      <GitNexusPanel
+        agent={agent}
+        analyzeAgentGraph={analyzeAgentGraph}
+        reindexGitNexus={reindexGitNexus}
+        running={data.status.running}
+      />
+    );
     if (active === "agent") return (
       <AgentPanel
         agent={agent}
@@ -335,6 +426,9 @@ function App() {
         runAgentGenerate={runAgentGenerate}
         runAgentGenerated={runAgentGenerated}
         commitAgentGenerated={commitAgentGenerated}
+        syncAgentMain={syncAgentMain}
+        saveScheduler={saveScheduler}
+        runScheduledNow={runScheduledNow}
         running={data.status.running}
       />
     );
@@ -514,13 +608,36 @@ function BugsPanel({ failedRows }) {
   return <section className="panel"><DataTable title={`Bug Report (${failedRows.length})`} rows={failedRows} columns={[["id", "ID"], ["surface", "Surface"], ["featureArea", "Feature"], ["bugReport", "Bug Summary"], ["actualResult", "Actual Result"]]} /></section>;
 }
 
-function AgentPanel({ agent, setAgent, runAgentScan, runAgentGenerate, runAgentGenerated, commitAgentGenerated, running }) {
+function AgentPanel({
+  agent,
+  setAgent,
+  runAgentScan,
+  runAgentGenerate,
+  runAgentGenerated,
+  commitAgentGenerated,
+  syncAgentMain,
+  saveScheduler,
+  runScheduledNow,
+  running
+}) {
   const generatedCount = agent.generated?.scenarios?.length || 0;
+  const sync = agent.sync || agent.scheduler?.sync || {};
+  const graph = agent.graph || {};
+  const schedulerConfig = agent.scheduler?.config || {};
+  const updateScheduler = (patch) => saveScheduler({ ...schedulerConfig, ...patch });
   return <section className="section-stack">
     <div className="panel">
-      <div className="section-heading"><div><h2>AI Test Agent</h2><span>Scan changes, generate specs, run, then commit</span></div><GitBranch size={20} /></div>
+      <div className="section-heading"><div><h2>AI Test Agent</h2><span>Sync main, graph changes, generate specs, run, then commit</span></div><GitBranch size={20} /></div>
+      <div className="metric-grid compact agent-metrics">
+        <Metric label="Target repo" value={sync.appRoot || "D:\\core-platform"} />
+        <Metric label="Branch" value={sync.branch || "main"} />
+        <Metric label="Remote changes" value={sync.behindCount || 0} tone={sync.hasRemoteChanges ? "running" : ""} />
+        <Metric label="Worktree" value={sync.clean === false ? "Dirty" : "Clean"} tone={sync.clean === false ? "fail" : "pass"} />
+        <Metric label="Scheduler" value={schedulerConfig.enabled ? "On" : "Off"} />
+      </div>
       <div className="agent-controls">
         <label>Base ref <input value={agent.baseRef} onChange={(event) => setAgent((previous) => ({ ...previous, baseRef: event.target.value }))} /></label>
+        <button className="secondary" onClick={syncAgentMain} disabled={agent.busy || running}><RefreshCw size={16} /> Sync Main</button>
         <button onClick={runAgentScan} disabled={agent.busy || running}><Search size={16} /> Scan Changes</button>
         <button onClick={runAgentGenerate} disabled={agent.busy || running}><Bot size={16} /> Generate Specs</button>
         <button onClick={runAgentGenerated} disabled={agent.busy || running || generatedCount === 0}><Play size={16} /> Run Generated</button>
@@ -532,11 +649,50 @@ function AgentPanel({ agent, setAgent, runAgentScan, runAgentGenerate, runAgentG
       </div>
       {agent.generated?.spec ? <p className="muted">Spec: <code>{agent.generated.spec}</code></p> : null}
       {agent.generated?.outputPath ? <p className="muted">Manifest: <code>{agent.generated.outputPath}</code></p> : null}
+      {graph.outputPath ? <p className="muted">Graph: <code>{graph.outputPath}</code></p> : null}
+      {graph.gitNexus?.note ? <p className="muted">GitNexus: {graph.gitNexus.note}</p> : null}
+      {agent.gitNexus?.ok ? <p className="pass">GitNexus index is current. {agent.gitNexus.analyzedAt ? `Updated ${formatDate(agent.gitNexus.analyzedAt)}.` : ""}</p> : null}
+      {agent.gitNexus?.output ? <pre className="logs compact-log">{agent.gitNexus.output}</pre> : null}
+      {sync.pullBlocked ? <p className="danger-text">Main pull is blocked because the target app repo has local changes. Fetch still completed, so remote changes are visible.</p> : null}
       {agent.commit ? <p className="pass">Committed on {agent.commit.branchName}{agent.commit.pushed ? " and pushed" : ""}.</p> : null}
       {agent.error ? <p className="danger-text">{agent.error}</p> : null}
     </div>
+    <div className="panel">
+      <div className="section-heading"><div><h2>Automatic Main Pull and Schedule</h2><span>Poll main and run complete suites without overlapping active runs</span></div></div>
+      <div className="agent-controls">
+        <label><input type="checkbox" checked={Boolean(schedulerConfig.enabled)} onChange={(event) => updateScheduler({ enabled: event.target.checked })} /> Enabled</label>
+        <label><input type="checkbox" checked={schedulerConfig.autoPull !== false} onChange={(event) => updateScheduler({ autoPull: event.target.checked })} /> Auto pull clean repo</label>
+        <label><input type="checkbox" checked={schedulerConfig.runAfterMainChange !== false} onChange={(event) => updateScheduler({ runAfterMainChange: event.target.checked })} /> Run after main changes</label>
+        <label>Poll minutes <input type="number" min="1" value={schedulerConfig.pollMinutes || 15} onChange={(event) => updateScheduler({ pollMinutes: Number(event.target.value || 15) })} /></label>
+        <label>Daily time <input type="time" value={schedulerConfig.dailyTime || ""} onChange={(event) => updateScheduler({ dailyTime: event.target.value })} /></label>
+        <label>Scope <select value={schedulerConfig.scope || "complete"} onChange={(event) => updateScheduler({ scope: event.target.value })}><option value="complete">Complete</option><option value="bvt">BVT</option><option value="sanity">Sanity</option><option value="regression">Regression</option></select></label>
+        <button onClick={runScheduledNow} disabled={agent.busy || running}><Play size={16} /> Run Complete Now</button>
+      </div>
+      <p className="muted">Last successful checkpoint: <code>{agent.scheduler?.state?.lastSuccessfulAgentCommit || agent.scheduler?.state?.baselineCommit || "not set"}</code></p>
+    </div>
+    {graph.nodes ? <DataTable title={`Graph Impact Nodes (${graph.nodes?.length || 0})`} rows={graph.nodes || []} columns={[["path", "Path"], ["area", "Area"], ["surface", "Surface"], ["risk", "Risk"], ["reason", "Reason"]]} /> : null}
+    {graph.commits ? <DataTable title={`Main Commit Range (${graph.commits?.length || 0})`} rows={graph.commits || []} columns={[["commit", "Commit"], ["message", "Message"]]} /> : null}
     {agent.scan ? <DataTable title={`Changed Files (${agent.scan.changedFiles?.length || 0})`} rows={agent.scan.changedFiles || []} columns={[["path", "Path"], ["area", "Area"], ["risk", "Risk"], ["reason", "Reason"]]} /> : null}
     {agent.generated ? <DataTable title={`Generated Runnable Scenarios (${generatedCount})`} rows={agent.generated.scenarios || []} columns={[["id", "ID"], ["surfaceLabel", "Surface"], ["feature", "Feature"], ["level", "Testing"], ["tag", "Tag"], ["action", "Action"], ["testCase", "Test Case"], ["risk", "Risk"], ["sourcePath", "Source"]]} /> : null}
+  </section>;
+}
+
+function GitNexusPanel({ agent, analyzeAgentGraph, reindexGitNexus, running }) {
+  const graph = agent.graph || {};
+  const gitNexusUrl = `/gitnexus/?server=${encodeURIComponent(window.location.origin)}&project=${encodeURIComponent("core-platform")}`;
+  return <section className="section-stack">
+    <div className="panel">
+      <div className="section-heading"><div><h2>GitNexus</h2><span>Native indexed code graph for Core Platform</span></div><GitBranch size={20} /></div>
+      <div className="agent-controls">
+        <button className="secondary" onClick={analyzeAgentGraph} disabled={agent.busy || running}><GitBranch size={16} /> Analyze Graph</button>
+        <button className="secondary" onClick={reindexGitNexus} disabled={agent.busy || running}><Waypoints size={16} /> GitNexus Reindex</button>
+      </div>
+      {agent.gitNexus?.ok ? <p className="pass">GitNexus index is current. {agent.gitNexus.analyzedAt ? `Updated ${formatDate(agent.gitNexus.analyzedAt)}.` : ""}</p> : null}
+      {graph.gitNexus?.note ? <p className="muted">GitNexus: {graph.gitNexus.note}</p> : null}
+      {graph.outputPath ? <p className="muted">Latest impact summary: <code>{graph.outputPath}</code></p> : null}
+      {agent.error ? <p className="danger-text">{agent.error}</p> : null}
+      <iframe className="gitnexus-frame" title="GitNexus native code graph" src={gitNexusUrl} />
+    </div>
   </section>;
 }
 

@@ -265,6 +265,121 @@ code {
   color: var(--text);
 }
 .inline-actions input { width: min(360px, 50vw); }
+.agent-controls input[type="number"] { width: 86px; }
+.agent-controls input[type="time"] { width: 132px; }
+.agent-metrics { margin-bottom: 12px; }
+.graph-panel { padding-bottom: 10px; }
+.gitnexus-native-panel { min-height: min(78dvh, 920px); }
+.gitnexus-frame {
+  display: block;
+  width: 100%;
+  height: min(72dvh, 820px);
+  min-height: 620px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #05050b;
+}
+.graph-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.graph-toolbar input { width: min(520px, 100%); }
+.graph-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 280px;
+  gap: 12px;
+  align-items: stretch;
+}
+.graph-wrap {
+  width: 100%;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background:
+    radial-gradient(circle at 1px 1px, color-mix(in srgb, var(--muted), transparent 70%) 1px, transparent 0) 0 0 / 18px 18px,
+    var(--panel-2);
+}
+.graph-wrap svg {
+  display: block;
+  min-width: 980px;
+  width: 100%;
+  height: auto;
+}
+.graph-lane {
+  fill: color-mix(in srgb, var(--panel), transparent 18%);
+  stroke: var(--border);
+}
+.graph-lane-label {
+  fill: var(--muted);
+  font-size: 13px;
+  font-weight: 800;
+}
+.graph-edge {
+  fill: none;
+  stroke: color-mix(in srgb, var(--accent), var(--muted) 35%);
+  stroke-width: 2;
+  opacity: .72;
+}
+marker path { fill: color-mix(in srgb, var(--accent), var(--muted) 35%); }
+.graph-node rect {
+  fill: var(--panel);
+  stroke: var(--border);
+  stroke-width: 1.5;
+  cursor: pointer;
+}
+.graph-node.high rect { stroke: var(--danger); }
+.graph-node.medium rect { stroke: var(--accent); }
+.graph-node.low rect { stroke: var(--accent-2); }
+.graph-node.selected rect {
+  stroke-width: 3;
+  filter: drop-shadow(0 8px 14px rgba(0, 0, 0, .22));
+}
+.graph-node-title {
+  fill: var(--text);
+  font-size: 13px;
+  font-weight: 900;
+}
+.graph-node-meta {
+  fill: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+}
+.graph-node-path {
+  fill: var(--muted);
+  font-size: 10px;
+}
+.graph-detail {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-2);
+  padding: 12px;
+  overflow: auto;
+}
+.graph-detail h3 {
+  margin: 0 0 10px;
+  font-size: 15px;
+}
+.graph-detail strong,
+.graph-detail span,
+.graph-detail small {
+  display: block;
+  margin-bottom: 8px;
+  overflow-wrap: anywhere;
+}
+.graph-detail span,
+.graph-detail small {
+  color: var(--muted);
+}
+.graph-detail p {
+  margin-top: 10px;
+}
+.compact-log {
+  min-height: 80px;
+  max-height: 180px;
+  margin-top: 10px;
+}
 .recorder-grid {
   display: grid;
   grid-template-columns: minmax(260px, 420px) minmax(0, 1fr);
@@ -363,6 +478,7 @@ th { position: sticky; top: 0; background: var(--panel-2); z-index: 1; }
   .topbar { align-items: stretch; flex-direction: column; }
   .topbar-actions { justify-content: flex-start; }
   .metric-grid, .service-grid, .card-grid, .builder-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .graph-layout { grid-template-columns: 1fr; }
   .report-card-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .recorder-grid { grid-template-columns: 1fr; }
 }

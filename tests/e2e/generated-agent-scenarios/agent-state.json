@@ -1,8 +1,17 @@
 {
+  "targetRepo": "D:\\core-platform",
+  "trackedBranch": "main",
   "baselineCommit": "0add972a1ea3f3c1b4864397eed8def7a9a753ef",
-  "updatedAt": "2026-05-25T13:20:34.397Z",
+  "lastSuccessfulAgentCommit": "0add972a1ea3f3c1b4864397eed8def7a9a753ef",
+  "lastSeenMainCommit": "",
+  "lastPulledCommit": "",
+  "lastGraphCommit": "b7678da66217f13b23948c24ea156088e33e2bfb",
+  "lastScheduledRunAt": null,
+  "lastRunStatus": null,
+  "updatedAt": "2026-05-26T10:44:06.637Z",
   "lastArtifact": "tests/e2e/generated-agent-scenarios/agent-scenarios-1779715234397.json",
   "lastSpec": "",
+  "lastGraph": "tests/e2e/generated-agent-scenarios/graph/graph-summary-1779792246927.json",
   "history": [
     {
       "generatedAt": "2026-05-25T13:20:34.397Z",

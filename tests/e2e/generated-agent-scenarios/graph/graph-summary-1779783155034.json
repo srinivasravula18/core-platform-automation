@@ -1,0 +1,306 @@
+{
+  "generatedAt": "2026-05-26T08:12:35.026Z",
+  "appRoot": "D:\\core-platform",
+  "baseRef": "0add972a1ea3f3c1b4864397eed8def7a9a753ef",
+  "targetRef": "origin/main",
+  "headCommit": "b7678da66217f13b23948c24ea156088e33e2bfb",
+  "previousBaselineCommit": "0add972a1ea3f3c1b4864397eed8def7a9a753ef",
+  "summary": {
+    "total": 9,
+    "byArea": {
+      "Admin": 5,
+      "API / Service": 2,
+      "Application": 1,
+      "Shared UI": 1
+    },
+    "byRisk": {
+      "High": 4,
+      "Low": 5
+    }
+  },
+  "gitNexus": {
+    "available": false,
+    "command": "",
+    "note": "GitNexus CLI was not found on PATH, so the graph falls back to git diff, commit log, and path dependency heuristics."
+  },
+  "commits": [
+    {
+      "commit": "b7678da",
+      "message": "(origin/main, origin/HEAD) Stop preselecting principal in new access record modal"
+    },
+    {
+      "commit": "e8f358e",
+      "message": "Align access record create validation with modal summary card"
+    },
+    {
+      "commit": "01dfc4b",
+      "message": "Allow saving object access-log flags while system logging is off"
+    },
+    {
+      "commit": "87c7a57",
+      "message": "Fix layout editor save/cancel dirty state reset"
+    },
+    {
+      "commit": "f2c3952",
+      "message": "Adjusted add section button"
+    },
+    {
+      "commit": "8ebb71e",
+      "message": "Stabilize admin layout designer header styling"
+    },
+    {
+      "commit": "a18a3eb",
+      "message": "Refine admin layout designer toolbar and compact placed field cards"
+    },
+    {
+      "commit": "5aecea8",
+      "message": "Improved UI for sections in layouts"
+    },
+    {
+      "commit": "66d0501",
+      "message": "removed reset button and added cxancel button for layouts"
+    }
+  ],
+  "nodes": [
+    {
+      "id": "apps/admin/src/components/AdminCreateAccessRecordModal.tsx",
+      "label": "AdminCreateAccessRecordModal.tsx",
+      "path": "apps/admin/src/components/AdminCreateAccessRecordModal.tsx",
+      "area": "Admin",
+      "surface": "admin",
+      "suite": "admin-list-view",
+      "risk": "High",
+      "reason": "Touches authorization, validation, destructive flow, schema, or backend route behavior.",
+      "dependsOn": [
+        "apps/admin/src/components/AdminObjectHomePanel.tsx",
+        "apps/admin/src/hooks/useAdminAccessControls.ts",
+        "apps/admin/src/main.tsx",
+        "apps/admin/src/style.css"
+      ]
+    },
+    {
+      "id": "apps/admin/src/components/AdminObjectHomePanel.tsx",
+      "label": "AdminObjectHomePanel.tsx",
+      "path": "apps/admin/src/components/AdminObjectHomePanel.tsx",
+      "area": "Admin",
+      "surface": "admin",
+      "suite": "admin-list-view",
+      "risk": "Low",
+      "reason": "Change is outside the main E2E risk keywords.",
+      "dependsOn": [
+        "apps/admin/src/components/AdminCreateAccessRecordModal.tsx",
+        "apps/admin/src/hooks/useAdminAccessControls.ts",
+        "apps/admin/src/main.tsx",
+        "apps/admin/src/style.css"
+      ]
+    },
+    {
+      "id": "apps/admin/src/hooks/useAdminAccessControls.ts",
+      "label": "useAdminAccessControls.ts",
+      "path": "apps/admin/src/hooks/useAdminAccessControls.ts",
+      "area": "Admin",
+      "surface": "admin",
+      "suite": "admin-list-view",
+      "risk": "High",
+      "reason": "Touches authorization, validation, destructive flow, schema, or backend route behavior.",
+      "dependsOn": [
+        "apps/admin/src/components/AdminCreateAccessRecordModal.tsx",
+        "apps/admin/src/components/AdminObjectHomePanel.tsx",
+        "apps/admin/src/main.tsx",
+        "apps/admin/src/style.css"
+      ]
+    },
+    {
+      "id": "apps/admin/src/main.tsx",
+      "label": "main.tsx",
+      "path": "apps/admin/src/main.tsx",
+      "area": "Admin",
+      "surface": "admin",
+      "suite": "admin-list-view",
+      "risk": "Low",
+      "reason": "Change is outside the main E2E risk keywords.",
+      "dependsOn": [
+        "apps/admin/src/components/AdminCreateAccessRecordModal.tsx",
+        "apps/admin/src/components/AdminObjectHomePanel.tsx",
+        "apps/admin/src/hooks/useAdminAccessControls.ts",
+        "apps/admin/src/style.css"
+      ]
+    },
+    {
+      "id": "apps/admin/src/style.css",
+      "label": "style.css",
+      "path": "apps/admin/src/style.css",
+      "area": "Admin",
+      "surface": "admin",
+      "suite": "admin-list-view",
+      "risk": "Low",
+      "reason": "Change is outside the main E2E risk keywords.",
+      "dependsOn": [
+        "apps/admin/src/components/AdminCreateAccessRecordModal.tsx",
+        "apps/admin/src/components/AdminObjectHomePanel.tsx",
+        "apps/admin/src/hooks/useAdminAccessControls.ts",
+        "apps/admin/src/main.tsx"
+      ]
+    },
+    {
+      "id": "apps/service/src/admin/routes.ts",
+      "label": "routes.ts",
+      "path": "apps/service/src/admin/routes.ts",
+      "area": "API / Service",
+      "surface": "api",
+      "suite": "list-view-api",
+      "risk": "High",
+      "reason": "Touches authorization, validation, destructive flow, schema, or backend route behavior.",
+      "dependsOn": [
+        "apps/service/src/apps/routes.ts"
+      ]
+    },
+    {
+      "id": "apps/service/src/apps/routes.ts",
+      "label": "routes.ts",
+      "path": "apps/service/src/apps/routes.ts",
+      "area": "API / Service",
+      "surface": "api",
+      "suite": "list-view-api",
+      "risk": "High",
+      "reason": "Touches authorization, validation, destructive flow, schema, or backend route behavior.",
+      "dependsOn": [
+        "apps/service/src/admin/routes.ts"
+      ]
+    },
+    {
+      "id": "docs/ui/component-catalog.md",
+      "label": "component-catalog.md",
+      "path": "docs/ui/component-catalog.md",
+      "area": "Application",
+      "surface": "all",
+      "suite": "list-view-regression",
+      "risk": "Low",
+      "reason": "Change is outside the main E2E risk keywords.",
+      "dependsOn": []
+    },
+    {
+      "id": "packages/ui/src/index.tsx",
+      "label": "index.tsx",
+      "path": "packages/ui/src/index.tsx",
+      "area": "Shared UI",
+      "surface": "all",
+      "suite": "list-view-regression",
+      "risk": "Low",
+      "reason": "Change is outside the main E2E risk keywords.",
+      "dependsOn": []
+    }
+  ],
+  "edges": [
+    {
+      "source": "apps/admin/src/components/AdminCreateAccessRecordModal.tsx",
+      "target": "apps/admin/src/components/AdminObjectHomePanel.tsx",
+      "type": "same-area"
+    },
+    {
+      "source": "apps/admin/src/components/AdminCreateAccessRecordModal.tsx",
+      "target": "apps/admin/src/hooks/useAdminAccessControls.ts",
+      "type": "same-area"
+    },
+    {
+      "source": "apps/admin/src/components/AdminCreateAccessRecordModal.tsx",
+      "target": "apps/admin/src/main.tsx",
+      "type": "same-area"
+    },
+    {
+      "source": "apps/admin/src/components/AdminCreateAccessRecordModal.tsx",
+      "target": "apps/admin/src/style.css",
+      "type": "same-area"
+    },
+    {
+      "source": "apps/admin/src/components/AdminObjectHomePanel.tsx",
+      "target": "apps/admin/src/components/AdminCreateAccessRecordModal.tsx",
+      "type": "same-area"
+    },
+    {
+      "source": "apps/admin/src/components/AdminObjectHomePanel.tsx",
+      "target": "apps/admin/src/hooks/useAdminAccessControls.ts",
+      "type": "same-area"
+    },
+    {
+      "source": "apps/admin/src/components/AdminObjectHomePanel.tsx",
+      "target": "apps/admin/src/main.tsx",
+      "type": "same-area"
+    },
+    {
+      "source": "apps/admin/src/components/AdminObjectHomePanel.tsx",
+      "target": "apps/admin/src/style.css",
+      "type": "same-area"
+    },
+    {
+      "source": "apps/admin/src/hooks/useAdminAccessControls.ts",
+      "target": "apps/admin/src/components/AdminCreateAccessRecordModal.tsx",
+      "type": "same-area"
+    },
+    {
+      "source": "apps/admin/src/hooks/useAdminAccessControls.ts",
+      "target": "apps/admin/src/components/AdminObjectHomePanel.tsx",
+      "type": "same-area"
+    },
+    {
+      "source": "apps/admin/src/hooks/useAdminAccessControls.ts",
+      "target": "apps/admin/src/main.tsx",
+      "type": "same-area"
+    },
+    {
+      "source": "apps/admin/src/hooks/useAdminAccessControls.ts",
+      "target": "apps/admin/src/style.css",
+      "type": "same-area"
+    },
+    {
+      "source": "apps/admin/src/main.tsx",
+      "target": "apps/admin/src/components/AdminCreateAccessRecordModal.tsx",
+      "type": "same-area"
+    },
+    {
+      "source": "apps/admin/src/main.tsx",
+      "target": "apps/admin/src/components/AdminObjectHomePanel.tsx",
+      "type": "same-area"
+    },
+    {
+      "source": "apps/admin/src/main.tsx",
+      "target": "apps/admin/src/hooks/useAdminAccessControls.ts",
+      "type": "same-area"
+    },
+    {
+      "source": "apps/admin/src/main.tsx",
+      "target": "apps/admin/src/style.css",
+      "type": "same-area"
+    },
+    {
+      "source": "apps/admin/src/style.css",
+      "target": "apps/admin/src/components/AdminCreateAccessRecordModal.tsx",
+      "type": "same-area"
+    },
+    {
+      "source": "apps/admin/src/style.css",
+      "target": "apps/admin/src/components/AdminObjectHomePanel.tsx",
+      "type": "same-area"
+    },
+    {
+      "source": "apps/admin/src/style.css",
+      "target": "apps/admin/src/hooks/useAdminAccessControls.ts",
+      "type": "same-area"
+    },
+    {
+      "source": "apps/admin/src/style.css",
+      "target": "apps/admin/src/main.tsx",
+      "type": "same-area"
+    },
+    {
+      "source": "apps/service/src/admin/routes.ts",
+      "target": "apps/service/src/apps/routes.ts",
+      "type": "same-area"
+    },
+    {
+      "source": "apps/service/src/apps/routes.ts",
+      "target": "apps/service/src/admin/routes.ts",
+      "type": "same-area"
+    }
+  ]
+}
