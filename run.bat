@@ -23,15 +23,34 @@ if "%CORE_PLATFORM_ROOT%"=="" set "CORE_PLATFORM_ROOT=D:\core-platform"
 
 if not exist "%CORE_PLATFORM_ROOT%\scripts\start-all.ps1" (
   echo.
-  echo ERROR: Core Platform app repo was not found at:
+  echo Core Platform app repo was not found at:
   echo   %CORE_PLATFORM_ROOT%
   echo.
-  echo Set CORE_PLATFORM_ROOT in .env, then run this file again.
-  echo Example:
-  echo   CORE_PLATFORM_ROOT=D:\core-platform
+  echo Paste the full path to your core-platform repo.
+  echo Example: D:\core-platform
+  echo.
+  set /p "CORE_PLATFORM_ROOT=Core Platform path: "
+)
+
+set "CORE_PLATFORM_ROOT=%CORE_PLATFORM_ROOT:"=%"
+
+if not exist "%CORE_PLATFORM_ROOT%\scripts\start-all.ps1" (
+  echo.
+  echo ERROR: This path is not a valid Core Platform repo:
+  echo   %CORE_PLATFORM_ROOT%
+  echo.
+  echo It must contain:
+  echo   scripts\start-all.ps1
   echo.
   pause
   exit /b 1
+)
+
+findstr /b /c:"CORE_PLATFORM_ROOT=" ".env" >nul 2>nul
+if errorlevel 1 (
+  echo CORE_PLATFORM_ROOT=%CORE_PLATFORM_ROOT%>>".env"
+) else (
+  powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$p = '.env'; $v = 'CORE_PLATFORM_ROOT=' + $env:CORE_PLATFORM_ROOT; (Get-Content $p) -replace '^CORE_PLATFORM_ROOT=.*$', $v | Set-Content $p"
 )
 
 where node.exe >nul 2>nul
