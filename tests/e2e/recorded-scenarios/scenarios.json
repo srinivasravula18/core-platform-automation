@@ -1,6 +1,17 @@
 {
-  "updatedAt": "2026-05-25T11:13:25.741Z",
+  "updatedAt": "2026-05-25T13:19:08.871Z",
   "scenarios": [
+    {
+      "id": "admin-login-page",
+      "name": "login_page",
+      "surface": "admin",
+      "surfaceLabel": "Admin",
+      "url": "http://localhost:5002",
+      "spec": "tests/e2e/list-view-regression/recorded-scenarios/recorded-admin-login-page.spec.ts",
+      "title": "Admin login_page recorded flow [surface: Admin] [feature: Recorded Flow] [precondition: local authenticated user can open Admin] [input: replay recorded user flow] [expected: recorded flow completes without Playwright action failure] [proof: saved Codegen flow can be replayed for regression]",
+      "createdAt": "2026-05-25T13:19:08.871Z",
+      "updatedAt": "2026-05-25T13:19:08.871Z"
+    },
     {
       "id": "admin-test-3",
       "name": "test_3",

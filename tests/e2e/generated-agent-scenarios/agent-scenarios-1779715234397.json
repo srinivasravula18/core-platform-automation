@@ -1,0 +1,1149 @@
+{
+  "generatedAt": "2026-05-25T13:20:34.397Z",
+  "baseRef": "201c4461bf09b496619dbfc8d3a48b2ae65d7729",
+  "requestedBaseRef": "auto",
+  "previousBaselineCommit": "201c4461bf09b496619dbfc8d3a48b2ae65d7729",
+  "headCommit": "0add972a1ea3f3c1b4864397eed8def7a9a753ef",
+  "planner": {
+    "provider": "rules",
+    "model": "gemini-3.5-flash",
+    "error": "API Key not found. Please pass a valid API key.",
+    "groundingMetadata": null
+  },
+  "appRoot": "D:\\core-platform",
+  "spec": "",
+  "summary": {
+    "changedFiles": 23,
+    "generated": 0,
+    "reused": 23
+  },
+  "scenarios": [
+    {
+      "id": "AGENT_001",
+      "suite": "admin-list-view",
+      "surface": "admin",
+      "scenario": "Admin regression for Admin",
+      "testCase": "Verify admin behavior after apps/admin/src/components/AdminFieldModal.tsx",
+      "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
+      "steps": "Open the affected Admin surface. | Navigate to the screen or API path related to apps/admin/src/components/AdminFieldModal.tsx. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.",
+      "expected": "The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.",
+      "risk": "Low",
+      "sourcePath": "apps/admin/src/components/AdminFieldModal.tsx",
+      "surfaceLabel": "Admin",
+      "feature": "Admin",
+      "level": "Regression",
+      "tag": "@regression",
+      "adminScreen": "Apps",
+      "proof": "generated smoke coverage for apps/admin/src/components/AdminFieldModal.tsx",
+      "evidenceName": "agent-agent_001",
+      "action": "reuse",
+      "existingTests": [
+        {
+          "id": "REG_LIFECYCLE_051",
+          "title": "Admin Apps disposable lifecycle creates deletes finds recycle bin entry and purges it @lifecycle @recycle [surface: Admin] [feature: Lifecycle] [precondition: ALLOW_DATA_WRITE=true and admin user can manage apps] [input: create disposable app, search it, open detail, delete, verify Recycle Bin, purge matching entry] [expected: disposable app is created, deleted, visible in Recycle Bin, and removed after purge] [proof: Admin list-view lifecycle is covered without touching seeded data]",
+          "displayTitle": "Admin Apps disposable lifecycle creates deletes finds recycle bin entry and purges it @lifecycle @recycle",
+          "surface": "Admin",
+          "feature": "Lifecycle",
+          "score": 6
+        },
+        {
+          "id": "REG_WORKFLOW_LIFECYCLE_052",
+          "title": "Admin Apps workflow edits saves deletes restores verifies and cleans up disposable app @workflow @lifecycle @recycle [surface: Admin] [feature: Workflow Lifecycle] [precondition: ALLOW_DATA_WRITE=true and admin user can manage apps] [input: open Apps, create disposable app, select row, edit label, save, delete, restore from Recycle Bin, verify restored, then cleanup purge] [expected: complete multi-step Apps workflow succeeds and leaves no disposable app behind] [proof: one E2E case covers the full Admin Apps list-view journey]",
+          "displayTitle": "Admin Apps workflow edits saves deletes restores verifies and cleans up disposable app @workflow @lifecycle @recycle",
+          "surface": "Admin",
+          "feature": "Workflow Lifecycle",
+          "score": 5
+        },
+        {
+          "id": "BVT_LIST_VIEW_SHELL_001",
+          "title": "Admin Apps list view loads [surface: Admin] [feature: List view shell] [precondition: seeded admin user is signed in] [input: open Apps from Admin navigation] [expected: list view table, empty state, or permission/error state renders without crashing] [proof: every Admin list-view surface stays reachable]",
+          "displayTitle": "Admin Apps list view loads",
+          "surface": "Admin",
+          "feature": "List view shell",
+          "score": 4
+        }
+      ],
+      "decision": "Existing REG_LIFECYCLE_051 covers the changed feature area; reuse it instead of duplicating.",
+      "planner": "rules",
+      "title": "@regression Verify admin behavior after apps/admin/src/components/AdminFieldModal.tsx [surface: Admin] [feature: Admin] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open the affected Admin surface. | Navigate to the screen or API path related to apps/admin/src/components/AdminFieldModal.tsx. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: generated smoke coverage for apps/admin/src/components/AdminFieldModal.tsx]"
+    },
+    {
+      "id": "AGENT_002",
+      "suite": "admin-list-view",
+      "surface": "admin",
+      "scenario": "Admin regression for Admin",
+      "testCase": "Verify admin behavior after apps/admin/src/components/AdminObjectHomePanel.tsx",
+      "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
+      "steps": "Open the affected Admin surface. | Navigate to the screen or API path related to apps/admin/src/components/AdminObjectHomePanel.tsx. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.",
+      "expected": "The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.",
+      "risk": "Low",
+      "sourcePath": "apps/admin/src/components/AdminObjectHomePanel.tsx",
+      "surfaceLabel": "Admin",
+      "feature": "Admin",
+      "level": "Regression",
+      "tag": "@regression",
+      "adminScreen": "Objects",
+      "proof": "generated smoke coverage for apps/admin/src/components/AdminObjectHomePanel.tsx",
+      "evidenceName": "agent-agent_002",
+      "action": "reuse",
+      "existingTests": [
+        {
+          "id": "REG_LIFECYCLE_051",
+          "title": "Admin Apps disposable lifecycle creates deletes finds recycle bin entry and purges it @lifecycle @recycle [surface: Admin] [feature: Lifecycle] [precondition: ALLOW_DATA_WRITE=true and admin user can manage apps] [input: create disposable app, search it, open detail, delete, verify Recycle Bin, purge matching entry] [expected: disposable app is created, deleted, visible in Recycle Bin, and removed after purge] [proof: Admin list-view lifecycle is covered without touching seeded data]",
+          "displayTitle": "Admin Apps disposable lifecycle creates deletes finds recycle bin entry and purges it @lifecycle @recycle",
+          "surface": "Admin",
+          "feature": "Lifecycle",
+          "score": 6
+        },
+        {
+          "id": "REG_WORKFLOW_LIFECYCLE_052",
+          "title": "Admin Apps workflow edits saves deletes restores verifies and cleans up disposable app @workflow @lifecycle @recycle [surface: Admin] [feature: Workflow Lifecycle] [precondition: ALLOW_DATA_WRITE=true and admin user can manage apps] [input: open Apps, create disposable app, select row, edit label, save, delete, restore from Recycle Bin, verify restored, then cleanup purge] [expected: complete multi-step Apps workflow succeeds and leaves no disposable app behind] [proof: one E2E case covers the full Admin Apps list-view journey]",
+          "displayTitle": "Admin Apps workflow edits saves deletes restores verifies and cleans up disposable app @workflow @lifecycle @recycle",
+          "surface": "Admin",
+          "feature": "Workflow Lifecycle",
+          "score": 5
+        },
+        {
+          "id": "BVT_LIST_VIEW_SHELL_001",
+          "title": "Admin Apps list view loads [surface: Admin] [feature: List view shell] [precondition: seeded admin user is signed in] [input: open Apps from Admin navigation] [expected: list view table, empty state, or permission/error state renders without crashing] [proof: every Admin list-view surface stays reachable]",
+          "displayTitle": "Admin Apps list view loads",
+          "surface": "Admin",
+          "feature": "List view shell",
+          "score": 4
+        }
+      ],
+      "decision": "Existing REG_LIFECYCLE_051 covers the changed feature area; reuse it instead of duplicating.",
+      "planner": "rules",
+      "title": "@regression Verify admin behavior after apps/admin/src/components/AdminObjectHomePanel.tsx [surface: Admin] [feature: Admin] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open the affected Admin surface. | Navigate to the screen or API path related to apps/admin/src/components/AdminObjectHomePanel.tsx. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: generated smoke coverage for apps/admin/src/components/AdminObjectHomePanel.tsx]"
+    },
+    {
+      "id": "AGENT_003",
+      "suite": "admin-list-view",
+      "surface": "admin",
+      "scenario": "Admin regression for Admin",
+      "testCase": "Verify admin behavior after apps/admin/src/components/AdminTopbar.tsx",
+      "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
+      "steps": "Open the affected Admin surface. | Navigate to the screen or API path related to apps/admin/src/components/AdminTopbar.tsx. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.",
+      "expected": "The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.",
+      "risk": "Low",
+      "sourcePath": "apps/admin/src/components/AdminTopbar.tsx",
+      "surfaceLabel": "Admin",
+      "feature": "Admin",
+      "level": "Regression",
+      "tag": "@regression",
+      "adminScreen": "Apps",
+      "proof": "generated smoke coverage for apps/admin/src/components/AdminTopbar.tsx",
+      "evidenceName": "agent-agent_003",
+      "action": "reuse",
+      "existingTests": [
+        {
+          "id": "REG_LIFECYCLE_051",
+          "title": "Admin Apps disposable lifecycle creates deletes finds recycle bin entry and purges it @lifecycle @recycle [surface: Admin] [feature: Lifecycle] [precondition: ALLOW_DATA_WRITE=true and admin user can manage apps] [input: create disposable app, search it, open detail, delete, verify Recycle Bin, purge matching entry] [expected: disposable app is created, deleted, visible in Recycle Bin, and removed after purge] [proof: Admin list-view lifecycle is covered without touching seeded data]",
+          "displayTitle": "Admin Apps disposable lifecycle creates deletes finds recycle bin entry and purges it @lifecycle @recycle",
+          "surface": "Admin",
+          "feature": "Lifecycle",
+          "score": 6
+        },
+        {
+          "id": "REG_WORKFLOW_LIFECYCLE_052",
+          "title": "Admin Apps workflow edits saves deletes restores verifies and cleans up disposable app @workflow @lifecycle @recycle [surface: Admin] [feature: Workflow Lifecycle] [precondition: ALLOW_DATA_WRITE=true and admin user can manage apps] [input: open Apps, create disposable app, select row, edit label, save, delete, restore from Recycle Bin, verify restored, then cleanup purge] [expected: complete multi-step Apps workflow succeeds and leaves no disposable app behind] [proof: one E2E case covers the full Admin Apps list-view journey]",
+          "displayTitle": "Admin Apps workflow edits saves deletes restores verifies and cleans up disposable app @workflow @lifecycle @recycle",
+          "surface": "Admin",
+          "feature": "Workflow Lifecycle",
+          "score": 5
+        },
+        {
+          "id": "BVT_LIST_VIEW_SHELL_001",
+          "title": "Admin Apps list view loads [surface: Admin] [feature: List view shell] [precondition: seeded admin user is signed in] [input: open Apps from Admin navigation] [expected: list view table, empty state, or permission/error state renders without crashing] [proof: every Admin list-view surface stays reachable]",
+          "displayTitle": "Admin Apps list view loads",
+          "surface": "Admin",
+          "feature": "List view shell",
+          "score": 4
+        }
+      ],
+      "decision": "Existing REG_LIFECYCLE_051 covers the changed feature area; reuse it instead of duplicating.",
+      "planner": "rules",
+      "title": "@regression Verify admin behavior after apps/admin/src/components/AdminTopbar.tsx [surface: Admin] [feature: Admin] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open the affected Admin surface. | Navigate to the screen or API path related to apps/admin/src/components/AdminTopbar.tsx. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: generated smoke coverage for apps/admin/src/components/AdminTopbar.tsx]"
+    },
+    {
+      "id": "AGENT_004",
+      "suite": "admin-list-view",
+      "surface": "admin",
+      "scenario": "Admin regression for Admin",
+      "testCase": "Verify admin behavior after apps/admin/src/main.tsx",
+      "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
+      "steps": "Open the affected Admin surface. | Navigate to the screen or API path related to apps/admin/src/main.tsx. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.",
+      "expected": "The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.",
+      "risk": "Low",
+      "sourcePath": "apps/admin/src/main.tsx",
+      "surfaceLabel": "Admin",
+      "feature": "Admin",
+      "level": "Regression",
+      "tag": "@regression",
+      "adminScreen": "Apps",
+      "proof": "generated smoke coverage for apps/admin/src/main.tsx",
+      "evidenceName": "agent-agent_004",
+      "action": "reuse",
+      "existingTests": [
+        {
+          "id": "REG_LIFECYCLE_051",
+          "title": "Admin Apps disposable lifecycle creates deletes finds recycle bin entry and purges it @lifecycle @recycle [surface: Admin] [feature: Lifecycle] [precondition: ALLOW_DATA_WRITE=true and admin user can manage apps] [input: create disposable app, search it, open detail, delete, verify Recycle Bin, purge matching entry] [expected: disposable app is created, deleted, visible in Recycle Bin, and removed after purge] [proof: Admin list-view lifecycle is covered without touching seeded data]",
+          "displayTitle": "Admin Apps disposable lifecycle creates deletes finds recycle bin entry and purges it @lifecycle @recycle",
+          "surface": "Admin",
+          "feature": "Lifecycle",
+          "score": 6
+        },
+        {
+          "id": "REG_WORKFLOW_LIFECYCLE_052",
+          "title": "Admin Apps workflow edits saves deletes restores verifies and cleans up disposable app @workflow @lifecycle @recycle [surface: Admin] [feature: Workflow Lifecycle] [precondition: ALLOW_DATA_WRITE=true and admin user can manage apps] [input: open Apps, create disposable app, select row, edit label, save, delete, restore from Recycle Bin, verify restored, then cleanup purge] [expected: complete multi-step Apps workflow succeeds and leaves no disposable app behind] [proof: one E2E case covers the full Admin Apps list-view journey]",
+          "displayTitle": "Admin Apps workflow edits saves deletes restores verifies and cleans up disposable app @workflow @lifecycle @recycle",
+          "surface": "Admin",
+          "feature": "Workflow Lifecycle",
+          "score": 5
+        },
+        {
+          "id": "BVT_LIST_VIEW_SHELL_001",
+          "title": "Admin Apps list view loads [surface: Admin] [feature: List view shell] [precondition: seeded admin user is signed in] [input: open Apps from Admin navigation] [expected: list view table, empty state, or permission/error state renders without crashing] [proof: every Admin list-view surface stays reachable]",
+          "displayTitle": "Admin Apps list view loads",
+          "surface": "Admin",
+          "feature": "List view shell",
+          "score": 4
+        }
+      ],
+      "decision": "Existing REG_LIFECYCLE_051 covers the changed feature area; reuse it instead of duplicating.",
+      "planner": "rules",
+      "title": "@regression Verify admin behavior after apps/admin/src/main.tsx [surface: Admin] [feature: Admin] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open the affected Admin surface. | Navigate to the screen or API path related to apps/admin/src/main.tsx. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: generated smoke coverage for apps/admin/src/main.tsx]"
+    },
+    {
+      "id": "AGENT_005",
+      "suite": "admin-list-view",
+      "surface": "admin",
+      "scenario": "Validation regression for Admin",
+      "testCase": "Verify validation behavior after apps/admin/src/picklistValidation.ts",
+      "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
+      "steps": "Open the affected Admin surface. | Navigate to the screen or API path related to apps/admin/src/picklistValidation.ts. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.",
+      "expected": "The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.",
+      "risk": "High",
+      "sourcePath": "apps/admin/src/picklistValidation.ts",
+      "surfaceLabel": "Admin",
+      "feature": "Validation",
+      "level": "BVT",
+      "tag": "@bvt",
+      "adminScreen": "Apps",
+      "proof": "generated smoke coverage for apps/admin/src/picklistValidation.ts",
+      "evidenceName": "agent-agent_005",
+      "action": "reuse",
+      "existingTests": [
+        {
+          "id": "REG_LIFECYCLE_051",
+          "title": "Admin Apps disposable lifecycle creates deletes finds recycle bin entry and purges it @lifecycle @recycle [surface: Admin] [feature: Lifecycle] [precondition: ALLOW_DATA_WRITE=true and admin user can manage apps] [input: create disposable app, search it, open detail, delete, verify Recycle Bin, purge matching entry] [expected: disposable app is created, deleted, visible in Recycle Bin, and removed after purge] [proof: Admin list-view lifecycle is covered without touching seeded data]",
+          "displayTitle": "Admin Apps disposable lifecycle creates deletes finds recycle bin entry and purges it @lifecycle @recycle",
+          "surface": "Admin",
+          "feature": "Lifecycle",
+          "score": 6
+        },
+        {
+          "id": "REG_WORKFLOW_LIFECYCLE_052",
+          "title": "Admin Apps workflow edits saves deletes restores verifies and cleans up disposable app @workflow @lifecycle @recycle [surface: Admin] [feature: Workflow Lifecycle] [precondition: ALLOW_DATA_WRITE=true and admin user can manage apps] [input: open Apps, create disposable app, select row, edit label, save, delete, restore from Recycle Bin, verify restored, then cleanup purge] [expected: complete multi-step Apps workflow succeeds and leaves no disposable app behind] [proof: one E2E case covers the full Admin Apps list-view journey]",
+          "displayTitle": "Admin Apps workflow edits saves deletes restores verifies and cleans up disposable app @workflow @lifecycle @recycle",
+          "surface": "Admin",
+          "feature": "Workflow Lifecycle",
+          "score": 5
+        },
+        {
+          "id": "BVT_LIST_VIEW_SHELL_001",
+          "title": "Admin Apps list view loads [surface: Admin] [feature: List view shell] [precondition: seeded admin user is signed in] [input: open Apps from Admin navigation] [expected: list view table, empty state, or permission/error state renders without crashing] [proof: every Admin list-view surface stays reachable]",
+          "displayTitle": "Admin Apps list view loads",
+          "surface": "Admin",
+          "feature": "List view shell",
+          "score": 4
+        }
+      ],
+      "decision": "Existing REG_LIFECYCLE_051 covers the changed feature area; reuse it instead of duplicating.",
+      "planner": "rules",
+      "title": "@bvt Verify validation behavior after apps/admin/src/picklistValidation.ts [surface: Admin] [feature: Validation] [level: BVT] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open the affected Admin surface. | Navigate to the screen or API path related to apps/admin/src/picklistValidation.ts. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: generated smoke coverage for apps/admin/src/picklistValidation.ts]"
+    },
+    {
+      "id": "AGENT_006",
+      "suite": "admin-list-view",
+      "surface": "admin",
+      "scenario": "Admin regression for Admin",
+      "testCase": "Verify admin behavior after apps/admin/src/style.css",
+      "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
+      "steps": "Open the affected Admin surface. | Navigate to the screen or API path related to apps/admin/src/style.css. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.",
+      "expected": "The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.",
+      "risk": "Low",
+      "sourcePath": "apps/admin/src/style.css",
+      "surfaceLabel": "Admin",
+      "feature": "Admin",
+      "level": "Regression",
+      "tag": "@regression",
+      "adminScreen": "Apps",
+      "proof": "generated smoke coverage for apps/admin/src/style.css",
+      "evidenceName": "agent-agent_006",
+      "action": "reuse",
+      "existingTests": [
+        {
+          "id": "REG_LIFECYCLE_051",
+          "title": "Admin Apps disposable lifecycle creates deletes finds recycle bin entry and purges it @lifecycle @recycle [surface: Admin] [feature: Lifecycle] [precondition: ALLOW_DATA_WRITE=true and admin user can manage apps] [input: create disposable app, search it, open detail, delete, verify Recycle Bin, purge matching entry] [expected: disposable app is created, deleted, visible in Recycle Bin, and removed after purge] [proof: Admin list-view lifecycle is covered without touching seeded data]",
+          "displayTitle": "Admin Apps disposable lifecycle creates deletes finds recycle bin entry and purges it @lifecycle @recycle",
+          "surface": "Admin",
+          "feature": "Lifecycle",
+          "score": 6
+        },
+        {
+          "id": "REG_WORKFLOW_LIFECYCLE_052",
+          "title": "Admin Apps workflow edits saves deletes restores verifies and cleans up disposable app @workflow @lifecycle @recycle [surface: Admin] [feature: Workflow Lifecycle] [precondition: ALLOW_DATA_WRITE=true and admin user can manage apps] [input: open Apps, create disposable app, select row, edit label, save, delete, restore from Recycle Bin, verify restored, then cleanup purge] [expected: complete multi-step Apps workflow succeeds and leaves no disposable app behind] [proof: one E2E case covers the full Admin Apps list-view journey]",
+          "displayTitle": "Admin Apps workflow edits saves deletes restores verifies and cleans up disposable app @workflow @lifecycle @recycle",
+          "surface": "Admin",
+          "feature": "Workflow Lifecycle",
+          "score": 5
+        },
+        {
+          "id": "BVT_LIST_VIEW_SHELL_001",
+          "title": "Admin Apps list view loads [surface: Admin] [feature: List view shell] [precondition: seeded admin user is signed in] [input: open Apps from Admin navigation] [expected: list view table, empty state, or permission/error state renders without crashing] [proof: every Admin list-view surface stays reachable]",
+          "displayTitle": "Admin Apps list view loads",
+          "surface": "Admin",
+          "feature": "List view shell",
+          "score": 4
+        }
+      ],
+      "decision": "Existing REG_LIFECYCLE_051 covers the changed feature area; reuse it instead of duplicating.",
+      "planner": "rules",
+      "title": "@regression Verify admin behavior after apps/admin/src/style.css [surface: Admin] [feature: Admin] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open the affected Admin surface. | Navigate to the screen or API path related to apps/admin/src/style.css. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: generated smoke coverage for apps/admin/src/style.css]"
+    },
+    {
+      "id": "AGENT_007",
+      "suite": "list-view-api",
+      "surface": "api",
+      "scenario": "API / Service regression for API / Service",
+      "testCase": "Verify api / service behavior after apps/service/src/admin/routes.ts",
+      "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
+      "steps": "Open the affected API / Service surface. | Navigate to the screen or API path related to apps/service/src/admin/routes.ts. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.",
+      "expected": "The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.",
+      "risk": "High",
+      "sourcePath": "apps/service/src/admin/routes.ts",
+      "surfaceLabel": "API",
+      "feature": "API / Service",
+      "level": "BVT",
+      "tag": "@bvt",
+      "adminScreen": "Apps",
+      "proof": "generated smoke coverage for apps/service/src/admin/routes.ts",
+      "evidenceName": "agent-agent_007",
+      "action": "reuse",
+      "existingTests": [
+        {
+          "id": "REG_LIFECYCLE_051",
+          "title": "Admin Apps disposable lifecycle creates deletes finds recycle bin entry and purges it @lifecycle @recycle [surface: Admin] [feature: Lifecycle] [precondition: ALLOW_DATA_WRITE=true and admin user can manage apps] [input: create disposable app, search it, open detail, delete, verify Recycle Bin, purge matching entry] [expected: disposable app is created, deleted, visible in Recycle Bin, and removed after purge] [proof: Admin list-view lifecycle is covered without touching seeded data]",
+          "displayTitle": "Admin Apps disposable lifecycle creates deletes finds recycle bin entry and purges it @lifecycle @recycle",
+          "surface": "Admin",
+          "feature": "Lifecycle",
+          "score": 4
+        },
+        {
+          "id": "REG_APP_SCOPE_107",
+          "title": "API lists accessible apps for list-view scoping [surface: API] [feature: App scope] [precondition: valid user credentials exist] [input: GET /api/apps] [expected: at least one accessible app is returned] [proof: list-view API tests can resolve app scope]",
+          "displayTitle": "API lists accessible apps for list-view scoping",
+          "surface": "API",
+          "feature": "App scope",
+          "score": 4
+        },
+        {
+          "id": "REG_OBJECT_SCOPE_108",
+          "title": "API lists objects for selected app [surface: API] [feature: Object scope] [precondition: accessible app exists] [input: GET /api/apps/{appId}/objects] [expected: object metadata list is returned] [proof: list-view object scope can be discovered]",
+          "displayTitle": "API lists objects for selected app",
+          "surface": "API",
+          "feature": "Object scope",
+          "score": 4
+        }
+      ],
+      "decision": "Existing REG_LIFECYCLE_051 covers the changed feature area; reuse it instead of duplicating.",
+      "planner": "rules",
+      "title": "@bvt Verify api / service behavior after apps/service/src/admin/routes.ts [surface: API] [feature: API / Service] [level: BVT] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open the affected API / Service surface. | Navigate to the screen or API path related to apps/service/src/admin/routes.ts. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: generated smoke coverage for apps/service/src/admin/routes.ts]"
+    },
+    {
+      "id": "AGENT_008",
+      "suite": "keystone-list-view",
+      "surface": "keystone",
+      "scenario": "Keystone / Shockwave regression for Keystone / Shockwave",
+      "testCase": "Verify keystone / shockwave behavior after apps/shockwave/src/components/ShockwaveTopbar.tsx",
+      "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
+      "steps": "Open the affected Keystone / Shockwave surface. | Navigate to the screen or API path related to apps/shockwave/src/components/ShockwaveTopbar.tsx. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.",
+      "expected": "The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.",
+      "risk": "Low",
+      "sourcePath": "apps/shockwave/src/components/ShockwaveTopbar.tsx",
+      "surfaceLabel": "Keystone",
+      "feature": "Keystone / Shockwave",
+      "level": "Regression",
+      "tag": "@regression",
+      "adminScreen": "Apps",
+      "proof": "generated smoke coverage for apps/shockwave/src/components/ShockwaveTopbar.tsx",
+      "evidenceName": "agent-agent_008",
+      "action": "reuse",
+      "existingTests": [
+        {
+          "id": "BVT_OBJECT_HOME_056",
+          "title": "Keystone Asset object list view loads [surface: Keystone] [feature: Object home] [precondition: seeded Keystone user is signed in] [input: open Asset object tab] [expected: object home list view reaches table, empty, or permission state] [proof: Keystone object list views are covered across seeded apps]",
+          "displayTitle": "Keystone Asset object list view loads",
+          "surface": "Keystone",
+          "feature": "Object home",
+          "score": 4
+        },
+        {
+          "id": "BVT_OBJECT_HOME_058",
+          "title": "Keystone Vendor object list view loads [surface: Keystone] [feature: Object home] [precondition: seeded Keystone user is signed in] [input: open Vendor object tab] [expected: object home list view reaches table, empty, or permission state] [proof: Keystone object list views are covered across seeded apps]",
+          "displayTitle": "Keystone Vendor object list view loads",
+          "surface": "Keystone",
+          "feature": "Object home",
+          "score": 4
+        },
+        {
+          "id": "BVT_OBJECT_HOME_060",
+          "title": "Keystone Site object list view loads [surface: Keystone] [feature: Object home] [precondition: seeded Keystone user is signed in] [input: open Site object tab] [expected: object home list view reaches table, empty, or permission state] [proof: Keystone object list views are covered across seeded apps]",
+          "displayTitle": "Keystone Site object list view loads",
+          "surface": "Keystone",
+          "feature": "Object home",
+          "score": 4
+        }
+      ],
+      "decision": "Existing BVT_OBJECT_HOME_056 covers the changed feature area; reuse it instead of duplicating.",
+      "planner": "rules",
+      "title": "@regression Verify keystone / shockwave behavior after apps/shockwave/src/components/ShockwaveTopbar.tsx [surface: Keystone] [feature: Keystone / Shockwave] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open the affected Keystone / Shockwave surface. | Navigate to the screen or API path related to apps/shockwave/src/components/ShockwaveTopbar.tsx. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: generated smoke coverage for apps/shockwave/src/components/ShockwaveTopbar.tsx]"
+    },
+    {
+      "id": "AGENT_009",
+      "suite": "list-view-regression",
+      "surface": "admin",
+      "scenario": "Application regression for Application",
+      "testCase": "Verify application behavior after docs/README.md",
+      "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
+      "steps": "Open the affected Application surface. | Navigate to the screen or API path related to docs/README.md. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.",
+      "expected": "The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.",
+      "risk": "Low",
+      "sourcePath": "docs/README.md",
+      "surfaceLabel": "Admin",
+      "feature": "Application",
+      "level": "Regression",
+      "tag": "@regression",
+      "adminScreen": "Apps",
+      "proof": "generated smoke coverage for docs/README.md",
+      "evidenceName": "agent-agent_009",
+      "action": "reuse",
+      "existingTests": [
+        {
+          "id": "REG_LIFECYCLE_051",
+          "title": "Admin Apps disposable lifecycle creates deletes finds recycle bin entry and purges it @lifecycle @recycle [surface: Admin] [feature: Lifecycle] [precondition: ALLOW_DATA_WRITE=true and admin user can manage apps] [input: create disposable app, search it, open detail, delete, verify Recycle Bin, purge matching entry] [expected: disposable app is created, deleted, visible in Recycle Bin, and removed after purge] [proof: Admin list-view lifecycle is covered without touching seeded data]",
+          "displayTitle": "Admin Apps disposable lifecycle creates deletes finds recycle bin entry and purges it @lifecycle @recycle",
+          "surface": "Admin",
+          "feature": "Lifecycle",
+          "score": 4
+        },
+        {
+          "id": "BVT_TOOLBAR_CONTROLS_041",
+          "title": "Admin Objects toolbar has all primary list-view controls from reference screenshot [surface: Admin] [feature: Toolbar controls] [precondition: Objects list view is open] [input: inspect list selector, pin, selected count, search, New, Delete, refresh, settings, fit columns, CSV, PDF] [expected: every primary toolbar control is present] [proof: reference screenshot toolbar behavior is covered in the list-view suite]",
+          "displayTitle": "Admin Objects toolbar has all primary list-view controls from reference screenshot",
+          "surface": "Admin",
+          "feature": "Toolbar controls",
+          "score": 3
+        },
+        {
+          "id": "REG_COLUMN_SIZING_050",
+          "title": "Admin list view fit columns action keeps table visible [surface: Admin] [feature: Column sizing] [precondition: Objects table mode is visible] [input: click Fit columns] [expected: table remains visible after auto-resize] [proof: toolbar fit-columns control works on Admin tables]",
+          "displayTitle": "Admin list view fit columns action keeps table visible",
+          "surface": "Admin",
+          "feature": "Column sizing",
+          "score": 3
+        }
+      ],
+      "decision": "Existing REG_LIFECYCLE_051 covers the changed feature area; reuse it instead of duplicating.",
+      "planner": "rules",
+      "title": "@regression Verify application behavior after docs/README.md [surface: Admin] [feature: Application] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open the affected Application surface. | Navigate to the screen or API path related to docs/README.md. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: generated smoke coverage for docs/README.md]"
+    },
+    {
+      "id": "AGENT_010",
+      "suite": "list-view-regression",
+      "surface": "admin",
+      "scenario": "Application regression for Application",
+      "testCase": "Verify application behavior after docs/overview/README.md",
+      "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
+      "steps": "Open the affected Application surface. | Navigate to the screen or API path related to docs/overview/README.md. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.",
+      "expected": "The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.",
+      "risk": "Low",
+      "sourcePath": "docs/overview/README.md",
+      "surfaceLabel": "Admin",
+      "feature": "Application",
+      "level": "Regression",
+      "tag": "@regression",
+      "adminScreen": "Apps",
+      "proof": "generated smoke coverage for docs/overview/README.md",
+      "evidenceName": "agent-agent_010",
+      "action": "reuse",
+      "existingTests": [
+        {
+          "id": "REG_LIFECYCLE_051",
+          "title": "Admin Apps disposable lifecycle creates deletes finds recycle bin entry and purges it @lifecycle @recycle [surface: Admin] [feature: Lifecycle] [precondition: ALLOW_DATA_WRITE=true and admin user can manage apps] [input: create disposable app, search it, open detail, delete, verify Recycle Bin, purge matching entry] [expected: disposable app is created, deleted, visible in Recycle Bin, and removed after purge] [proof: Admin list-view lifecycle is covered without touching seeded data]",
+          "displayTitle": "Admin Apps disposable lifecycle creates deletes finds recycle bin entry and purges it @lifecycle @recycle",
+          "surface": "Admin",
+          "feature": "Lifecycle",
+          "score": 4
+        },
+        {
+          "id": "BVT_TOOLBAR_CONTROLS_041",
+          "title": "Admin Objects toolbar has all primary list-view controls from reference screenshot [surface: Admin] [feature: Toolbar controls] [precondition: Objects list view is open] [input: inspect list selector, pin, selected count, search, New, Delete, refresh, settings, fit columns, CSV, PDF] [expected: every primary toolbar control is present] [proof: reference screenshot toolbar behavior is covered in the list-view suite]",
+          "displayTitle": "Admin Objects toolbar has all primary list-view controls from reference screenshot",
+          "surface": "Admin",
+          "feature": "Toolbar controls",
+          "score": 3
+        },
+        {
+          "id": "REG_COLUMN_SIZING_050",
+          "title": "Admin list view fit columns action keeps table visible [surface: Admin] [feature: Column sizing] [precondition: Objects table mode is visible] [input: click Fit columns] [expected: table remains visible after auto-resize] [proof: toolbar fit-columns control works on Admin tables]",
+          "displayTitle": "Admin list view fit columns action keeps table visible",
+          "surface": "Admin",
+          "feature": "Column sizing",
+          "score": 3
+        }
+      ],
+      "decision": "Existing REG_LIFECYCLE_051 covers the changed feature area; reuse it instead of duplicating.",
+      "planner": "rules",
+      "title": "@regression Verify application behavior after docs/overview/README.md [surface: Admin] [feature: Application] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open the affected Application surface. | Navigate to the screen or API path related to docs/overview/README.md. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: generated smoke coverage for docs/overview/README.md]"
+    },
+    {
+      "id": "AGENT_011",
+      "suite": "list-view-regression",
+      "surface": "admin",
+      "scenario": "Application regression for Application",
+      "testCase": "Verify application behavior after docs/overview/admin-components.md",
+      "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
+      "steps": "Open the affected Application surface. | Navigate to the screen or API path related to docs/overview/admin-components.md. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.",
+      "expected": "The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.",
+      "risk": "Low",
+      "sourcePath": "docs/overview/admin-components.md",
+      "surfaceLabel": "Admin",
+      "feature": "Application",
+      "level": "Regression",
+      "tag": "@regression",
+      "adminScreen": "Apps",
+      "proof": "generated smoke coverage for docs/overview/admin-components.md",
+      "evidenceName": "agent-agent_011",
+      "action": "reuse",
+      "existingTests": [
+        {
+          "id": "REG_LIFECYCLE_051",
+          "title": "Admin Apps disposable lifecycle creates deletes finds recycle bin entry and purges it @lifecycle @recycle [surface: Admin] [feature: Lifecycle] [precondition: ALLOW_DATA_WRITE=true and admin user can manage apps] [input: create disposable app, search it, open detail, delete, verify Recycle Bin, purge matching entry] [expected: disposable app is created, deleted, visible in Recycle Bin, and removed after purge] [proof: Admin list-view lifecycle is covered without touching seeded data]",
+          "displayTitle": "Admin Apps disposable lifecycle creates deletes finds recycle bin entry and purges it @lifecycle @recycle",
+          "surface": "Admin",
+          "feature": "Lifecycle",
+          "score": 5
+        },
+        {
+          "id": "BVT_TOOLBAR_CONTROLS_041",
+          "title": "Admin Objects toolbar has all primary list-view controls from reference screenshot [surface: Admin] [feature: Toolbar controls] [precondition: Objects list view is open] [input: inspect list selector, pin, selected count, search, New, Delete, refresh, settings, fit columns, CSV, PDF] [expected: every primary toolbar control is present] [proof: reference screenshot toolbar behavior is covered in the list-view suite]",
+          "displayTitle": "Admin Objects toolbar has all primary list-view controls from reference screenshot",
+          "surface": "Admin",
+          "feature": "Toolbar controls",
+          "score": 4
+        },
+        {
+          "id": "REG_COLUMN_SIZING_050",
+          "title": "Admin list view fit columns action keeps table visible [surface: Admin] [feature: Column sizing] [precondition: Objects table mode is visible] [input: click Fit columns] [expected: table remains visible after auto-resize] [proof: toolbar fit-columns control works on Admin tables]",
+          "displayTitle": "Admin list view fit columns action keeps table visible",
+          "surface": "Admin",
+          "feature": "Column sizing",
+          "score": 4
+        }
+      ],
+      "decision": "Existing REG_LIFECYCLE_051 covers the changed feature area; reuse it instead of duplicating.",
+      "planner": "rules",
+      "title": "@regression Verify application behavior after docs/overview/admin-components.md [surface: Admin] [feature: Application] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open the affected Application surface. | Navigate to the screen or API path related to docs/overview/admin-components.md. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: generated smoke coverage for docs/overview/admin-components.md]"
+    },
+    {
+      "id": "AGENT_012",
+      "suite": "list-view-regression",
+      "surface": "admin",
+      "scenario": "Application regression for Application",
+      "testCase": "Verify application behavior after docs/product/admin-handbook.md",
+      "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
+      "steps": "Open the affected Application surface. | Navigate to the screen or API path related to docs/product/admin-handbook.md. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.",
+      "expected": "The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.",
+      "risk": "Low",
+      "sourcePath": "docs/product/admin-handbook.md",
+      "surfaceLabel": "Admin",
+      "feature": "Application",
+      "level": "Regression",
+      "tag": "@regression",
+      "adminScreen": "Apps",
+      "proof": "generated smoke coverage for docs/product/admin-handbook.md",
+      "evidenceName": "agent-agent_012",
+      "action": "reuse",
+      "existingTests": [
+        {
+          "id": "REG_LIFECYCLE_051",
+          "title": "Admin Apps disposable lifecycle creates deletes finds recycle bin entry and purges it @lifecycle @recycle [surface: Admin] [feature: Lifecycle] [precondition: ALLOW_DATA_WRITE=true and admin user can manage apps] [input: create disposable app, search it, open detail, delete, verify Recycle Bin, purge matching entry] [expected: disposable app is created, deleted, visible in Recycle Bin, and removed after purge] [proof: Admin list-view lifecycle is covered without touching seeded data]",
+          "displayTitle": "Admin Apps disposable lifecycle creates deletes finds recycle bin entry and purges it @lifecycle @recycle",
+          "surface": "Admin",
+          "feature": "Lifecycle",
+          "score": 5
+        },
+        {
+          "id": "BVT_TOOLBAR_CONTROLS_041",
+          "title": "Admin Objects toolbar has all primary list-view controls from reference screenshot [surface: Admin] [feature: Toolbar controls] [precondition: Objects list view is open] [input: inspect list selector, pin, selected count, search, New, Delete, refresh, settings, fit columns, CSV, PDF] [expected: every primary toolbar control is present] [proof: reference screenshot toolbar behavior is covered in the list-view suite]",
+          "displayTitle": "Admin Objects toolbar has all primary list-view controls from reference screenshot",
+          "surface": "Admin",
+          "feature": "Toolbar controls",
+          "score": 4
+        },
+        {
+          "id": "REG_COLUMN_SIZING_050",
+          "title": "Admin list view fit columns action keeps table visible [surface: Admin] [feature: Column sizing] [precondition: Objects table mode is visible] [input: click Fit columns] [expected: table remains visible after auto-resize] [proof: toolbar fit-columns control works on Admin tables]",
+          "displayTitle": "Admin list view fit columns action keeps table visible",
+          "surface": "Admin",
+          "feature": "Column sizing",
+          "score": 4
+        }
+      ],
+      "decision": "Existing REG_LIFECYCLE_051 covers the changed feature area; reuse it instead of duplicating.",
+      "planner": "rules",
+      "title": "@regression Verify application behavior after docs/product/admin-handbook.md [surface: Admin] [feature: Application] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open the affected Application surface. | Navigate to the screen or API path related to docs/product/admin-handbook.md. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: generated smoke coverage for docs/product/admin-handbook.md]"
+    },
+    {
+      "id": "AGENT_013",
+      "suite": "list-view-regression",
+      "surface": "admin",
+      "scenario": "Application regression for Application",
+      "testCase": "Verify application behavior after docs/product/component-inventory.md",
+      "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
+      "steps": "Open the affected Application surface. | Navigate to the screen or API path related to docs/product/component-inventory.md. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.",
+      "expected": "The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.",
+      "risk": "Low",
+      "sourcePath": "docs/product/component-inventory.md",
+      "surfaceLabel": "Admin",
+      "feature": "Application",
+      "level": "Regression",
+      "tag": "@regression",
+      "adminScreen": "Apps",
+      "proof": "generated smoke coverage for docs/product/component-inventory.md",
+      "evidenceName": "agent-agent_013",
+      "action": "reuse",
+      "existingTests": [
+        {
+          "id": "REG_LIFECYCLE_051",
+          "title": "Admin Apps disposable lifecycle creates deletes finds recycle bin entry and purges it @lifecycle @recycle [surface: Admin] [feature: Lifecycle] [precondition: ALLOW_DATA_WRITE=true and admin user can manage apps] [input: create disposable app, search it, open detail, delete, verify Recycle Bin, purge matching entry] [expected: disposable app is created, deleted, visible in Recycle Bin, and removed after purge] [proof: Admin list-view lifecycle is covered without touching seeded data]",
+          "displayTitle": "Admin Apps disposable lifecycle creates deletes finds recycle bin entry and purges it @lifecycle @recycle",
+          "surface": "Admin",
+          "feature": "Lifecycle",
+          "score": 4
+        },
+        {
+          "id": "BVT_TOOLBAR_CONTROLS_041",
+          "title": "Admin Objects toolbar has all primary list-view controls from reference screenshot [surface: Admin] [feature: Toolbar controls] [precondition: Objects list view is open] [input: inspect list selector, pin, selected count, search, New, Delete, refresh, settings, fit columns, CSV, PDF] [expected: every primary toolbar control is present] [proof: reference screenshot toolbar behavior is covered in the list-view suite]",
+          "displayTitle": "Admin Objects toolbar has all primary list-view controls from reference screenshot",
+          "surface": "Admin",
+          "feature": "Toolbar controls",
+          "score": 3
+        },
+        {
+          "id": "REG_COLUMN_SIZING_050",
+          "title": "Admin list view fit columns action keeps table visible [surface: Admin] [feature: Column sizing] [precondition: Objects table mode is visible] [input: click Fit columns] [expected: table remains visible after auto-resize] [proof: toolbar fit-columns control works on Admin tables]",
+          "displayTitle": "Admin list view fit columns action keeps table visible",
+          "surface": "Admin",
+          "feature": "Column sizing",
+          "score": 3
+        }
+      ],
+      "decision": "Existing REG_LIFECYCLE_051 covers the changed feature area; reuse it instead of duplicating.",
+      "planner": "rules",
+      "title": "@regression Verify application behavior after docs/product/component-inventory.md [surface: Admin] [feature: Application] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open the affected Application surface. | Navigate to the screen or API path related to docs/product/component-inventory.md. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: generated smoke coverage for docs/product/component-inventory.md]"
+    },
+    {
+      "id": "AGENT_014",
+      "suite": "list-view-regression",
+      "surface": "keystone",
+      "scenario": "Application regression for Application",
+      "testCase": "Verify application behavior after docs/product/keystone-handbook.md",
+      "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
+      "steps": "Open the affected Application surface. | Navigate to the screen or API path related to docs/product/keystone-handbook.md. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.",
+      "expected": "The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.",
+      "risk": "Low",
+      "sourcePath": "docs/product/keystone-handbook.md",
+      "surfaceLabel": "Keystone",
+      "feature": "Application",
+      "level": "Regression",
+      "tag": "@regression",
+      "adminScreen": "Apps",
+      "proof": "generated smoke coverage for docs/product/keystone-handbook.md",
+      "evidenceName": "agent-agent_014",
+      "action": "reuse",
+      "existingTests": [
+        {
+          "id": "BVT_TOOLBAR_CONTROLS_080",
+          "title": "Keystone primary toolbar has all reference list-view controls [surface: Keystone] [feature: Toolbar controls] [precondition: seeded object list view is open] [input: inspect list selector, pin, selected count, search, New, Delete, refresh, settings, fit columns, CSV, PDF] [expected: every primary list-view toolbar control is present] [proof: reference screenshot toolbar behavior is covered in Keystone]",
+          "displayTitle": "Keystone primary toolbar has all reference list-view controls",
+          "surface": "Keystone",
+          "feature": "Toolbar controls",
+          "score": 4
+        },
+        {
+          "id": "SAN_SELECTION_081",
+          "title": "Keystone selection count changes after selecting rows [surface: Keystone] [feature: Selection] [precondition: object list view has at least one row] [input: select all rows] [expected: selected-count text changes and Delete is available or disabled by permission] [proof: row selection and bulk action affordance are connected]",
+          "displayTitle": "Keystone selection count changes after selecting rows",
+          "surface": "Keystone",
+          "feature": "Selection",
+          "score": 4
+        },
+        {
+          "id": "SAN_SEARCH_EMPTY_STATE_084",
+          "title": "Keystone search no-match state recovers after clearing query [surface: Keystone] [feature: Search empty state] [precondition: object list view is open] [input: type an unlikely query then clear it] [expected: no-match state appears without breaking the toolbar and table state recovers] [proof: list-view search handles empty-result and recovery paths]",
+          "displayTitle": "Keystone search no-match state recovers after clearing query",
+          "surface": "Keystone",
+          "feature": "Search empty state",
+          "score": 4
+        }
+      ],
+      "decision": "Existing BVT_TOOLBAR_CONTROLS_080 covers the changed feature area; reuse it instead of duplicating.",
+      "planner": "rules",
+      "title": "@regression Verify application behavior after docs/product/keystone-handbook.md [surface: Keystone] [feature: Application] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open the affected Application surface. | Navigate to the screen or API path related to docs/product/keystone-handbook.md. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: generated smoke coverage for docs/product/keystone-handbook.md]"
+    },
+    {
+      "id": "AGENT_015",
+      "suite": "list-view-regression",
+      "surface": "admin",
+      "scenario": "Application regression for Application",
+      "testCase": "Verify application behavior after docs/product/platform-map.md",
+      "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
+      "steps": "Open the affected Application surface. | Navigate to the screen or API path related to docs/product/platform-map.md. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.",
+      "expected": "The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.",
+      "risk": "Medium",
+      "sourcePath": "docs/product/platform-map.md",
+      "surfaceLabel": "Admin",
+      "feature": "Application",
+      "level": "Sanity",
+      "tag": "@sanity",
+      "adminScreen": "Apps",
+      "proof": "generated smoke coverage for docs/product/platform-map.md",
+      "evidenceName": "agent-agent_015",
+      "action": "reuse",
+      "existingTests": [
+        {
+          "id": "REG_LIFECYCLE_051",
+          "title": "Admin Apps disposable lifecycle creates deletes finds recycle bin entry and purges it @lifecycle @recycle [surface: Admin] [feature: Lifecycle] [precondition: ALLOW_DATA_WRITE=true and admin user can manage apps] [input: create disposable app, search it, open detail, delete, verify Recycle Bin, purge matching entry] [expected: disposable app is created, deleted, visible in Recycle Bin, and removed after purge] [proof: Admin list-view lifecycle is covered without touching seeded data]",
+          "displayTitle": "Admin Apps disposable lifecycle creates deletes finds recycle bin entry and purges it @lifecycle @recycle",
+          "surface": "Admin",
+          "feature": "Lifecycle",
+          "score": 4
+        },
+        {
+          "id": "BVT_TOOLBAR_CONTROLS_041",
+          "title": "Admin Objects toolbar has all primary list-view controls from reference screenshot [surface: Admin] [feature: Toolbar controls] [precondition: Objects list view is open] [input: inspect list selector, pin, selected count, search, New, Delete, refresh, settings, fit columns, CSV, PDF] [expected: every primary toolbar control is present] [proof: reference screenshot toolbar behavior is covered in the list-view suite]",
+          "displayTitle": "Admin Objects toolbar has all primary list-view controls from reference screenshot",
+          "surface": "Admin",
+          "feature": "Toolbar controls",
+          "score": 3
+        },
+        {
+          "id": "REG_COLUMN_SIZING_050",
+          "title": "Admin list view fit columns action keeps table visible [surface: Admin] [feature: Column sizing] [precondition: Objects table mode is visible] [input: click Fit columns] [expected: table remains visible after auto-resize] [proof: toolbar fit-columns control works on Admin tables]",
+          "displayTitle": "Admin list view fit columns action keeps table visible",
+          "surface": "Admin",
+          "feature": "Column sizing",
+          "score": 3
+        }
+      ],
+      "decision": "Existing REG_LIFECYCLE_051 covers the changed feature area; reuse it instead of duplicating.",
+      "planner": "rules",
+      "title": "@sanity Verify application behavior after docs/product/platform-map.md [surface: Admin] [feature: Application] [level: Sanity] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open the affected Application surface. | Navigate to the screen or API path related to docs/product/platform-map.md. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: generated smoke coverage for docs/product/platform-map.md]"
+    },
+    {
+      "id": "AGENT_016",
+      "suite": "list-view-regression",
+      "surface": "admin",
+      "scenario": "Workflow regression for Application",
+      "testCase": "Verify workflow behavior after docs/product/workflows/end-to-end-application-setup.md",
+      "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
+      "steps": "Open the affected Application surface. | Navigate to the screen or API path related to docs/product/workflows/end-to-end-application-setup.md. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.",
+      "expected": "The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.",
+      "risk": "Medium",
+      "sourcePath": "docs/product/workflows/end-to-end-application-setup.md",
+      "surfaceLabel": "Admin",
+      "feature": "Workflow",
+      "level": "Sanity",
+      "tag": "@sanity",
+      "adminScreen": "Apps",
+      "proof": "generated smoke coverage for docs/product/workflows/end-to-end-application-setup.md",
+      "evidenceName": "agent-agent_016",
+      "action": "reuse",
+      "existingTests": [
+        {
+          "id": "REG_LIFECYCLE_051",
+          "title": "Admin Apps disposable lifecycle creates deletes finds recycle bin entry and purges it @lifecycle @recycle [surface: Admin] [feature: Lifecycle] [precondition: ALLOW_DATA_WRITE=true and admin user can manage apps] [input: create disposable app, search it, open detail, delete, verify Recycle Bin, purge matching entry] [expected: disposable app is created, deleted, visible in Recycle Bin, and removed after purge] [proof: Admin list-view lifecycle is covered without touching seeded data]",
+          "displayTitle": "Admin Apps disposable lifecycle creates deletes finds recycle bin entry and purges it @lifecycle @recycle",
+          "surface": "Admin",
+          "feature": "Lifecycle",
+          "score": 4
+        },
+        {
+          "id": "REG_WORKFLOW_LIFECYCLE_052",
+          "title": "Admin Apps workflow edits saves deletes restores verifies and cleans up disposable app @workflow @lifecycle @recycle [surface: Admin] [feature: Workflow Lifecycle] [precondition: ALLOW_DATA_WRITE=true and admin user can manage apps] [input: open Apps, create disposable app, select row, edit label, save, delete, restore from Recycle Bin, verify restored, then cleanup purge] [expected: complete multi-step Apps workflow succeeds and leaves no disposable app behind] [proof: one E2E case covers the full Admin Apps list-view journey]",
+          "displayTitle": "Admin Apps workflow edits saves deletes restores verifies and cleans up disposable app @workflow @lifecycle @recycle",
+          "surface": "Admin",
+          "feature": "Workflow Lifecycle",
+          "score": 4
+        },
+        {
+          "id": "REG_RECYCLE_BIN_WORKFLOW_055",
+          "title": "Admin Recycle Bin workflow searches changes settings fits columns and verifies export actions @workflow @recycle [surface: Admin] [feature: Recycle Bin workflow] [precondition: Admin Recycle Bin is available] [input: open Recycle Bin, search edge text, open settings, inspect columns, close, fit columns, verify export buttons] [expected: Recycle Bin list-view controls remain stable across search settings and sizing actions] [proof: Admin Recycle Bin list-view workflow is covered without requiring destructive data]",
+          "displayTitle": "Admin Recycle Bin workflow searches changes settings fits columns and verifies export actions @workflow @recycle",
+          "surface": "Admin",
+          "feature": "Recycle Bin workflow",
+          "score": 4
+        }
+      ],
+      "decision": "Existing REG_LIFECYCLE_051 covers the changed feature area; reuse it instead of duplicating.",
+      "planner": "rules",
+      "title": "@sanity Verify workflow behavior after docs/product/workflows/end-to-end-application-setup.md [surface: Admin] [feature: Workflow] [level: Sanity] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open the affected Application surface. | Navigate to the screen or API path related to docs/product/workflows/end-to-end-application-setup.md. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: generated smoke coverage for docs/product/workflows/end-to-end-application-setup.md]"
+    },
+    {
+      "id": "AGENT_017",
+      "suite": "list-view-regression",
+      "surface": "admin",
+      "scenario": "Search regression for Shared List View",
+      "testCase": "Verify search behavior after docs/product/workflows/list-views-and-search.md",
+      "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
+      "steps": "Open the affected Shared List View surface. | Navigate to the screen or API path related to docs/product/workflows/list-views-and-search.md. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.",
+      "expected": "The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.",
+      "risk": "Medium",
+      "sourcePath": "docs/product/workflows/list-views-and-search.md",
+      "surfaceLabel": "Admin",
+      "feature": "Search",
+      "level": "Sanity",
+      "tag": "@sanity",
+      "adminScreen": "Apps",
+      "proof": "generated smoke coverage for docs/product/workflows/list-views-and-search.md",
+      "evidenceName": "agent-agent_017",
+      "action": "reuse",
+      "existingTests": [
+        {
+          "id": "REG_LIFECYCLE_051",
+          "title": "Admin Apps disposable lifecycle creates deletes finds recycle bin entry and purges it @lifecycle @recycle [surface: Admin] [feature: Lifecycle] [precondition: ALLOW_DATA_WRITE=true and admin user can manage apps] [input: create disposable app, search it, open detail, delete, verify Recycle Bin, purge matching entry] [expected: disposable app is created, deleted, visible in Recycle Bin, and removed after purge] [proof: Admin list-view lifecycle is covered without touching seeded data]",
+          "displayTitle": "Admin Apps disposable lifecycle creates deletes finds recycle bin entry and purges it @lifecycle @recycle",
+          "surface": "Admin",
+          "feature": "Lifecycle",
+          "score": 7
+        },
+        {
+          "id": "REG_OBJECT_DRILLDOWN_WORKFLOW_053",
+          "title": "Admin Objects workflow searches opens detail validates nested Fields list and returns to parent @workflow [surface: Admin] [feature: Object drilldown workflow] [precondition: seeded Object metadata exists] [input: open Objects, search Asset, open row, switch to Fields, inspect embedded list-view controls, search field, close record tab] [expected: parent object and nested Fields list views both remain usable] [proof: Admin metadata list-view drilldown is covered as one connected journey]",
+          "displayTitle": "Admin Objects workflow searches opens detail validates nested Fields list and returns to parent @workflow",
+          "surface": "Admin",
+          "feature": "Object drilldown workflow",
+          "score": 6
+        },
+        {
+          "id": "REG_RECYCLE_BIN_WORKFLOW_055",
+          "title": "Admin Recycle Bin workflow searches changes settings fits columns and verifies export actions @workflow @recycle [surface: Admin] [feature: Recycle Bin workflow] [precondition: Admin Recycle Bin is available] [input: open Recycle Bin, search edge text, open settings, inspect columns, close, fit columns, verify export buttons] [expected: Recycle Bin list-view controls remain stable across search settings and sizing actions] [proof: Admin Recycle Bin list-view workflow is covered without requiring destructive data]",
+          "displayTitle": "Admin Recycle Bin workflow searches changes settings fits columns and verifies export actions @workflow @recycle",
+          "surface": "Admin",
+          "feature": "Recycle Bin workflow",
+          "score": 6
+        }
+      ],
+      "decision": "Existing REG_LIFECYCLE_051 covers the changed feature area; reuse it instead of duplicating.",
+      "planner": "rules",
+      "title": "@sanity Verify search behavior after docs/product/workflows/list-views-and-search.md [surface: Admin] [feature: Search] [level: Sanity] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open the affected Shared List View surface. | Navigate to the screen or API path related to docs/product/workflows/list-views-and-search.md. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: generated smoke coverage for docs/product/workflows/list-views-and-search.md]"
+    },
+    {
+      "id": "AGENT_018",
+      "suite": "list-view-regression",
+      "surface": "admin",
+      "scenario": "Workflow regression for Application",
+      "testCase": "Verify workflow behavior after docs/product/workflows/operations-recovery-and-observability.md",
+      "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
+      "steps": "Open the affected Application surface. | Navigate to the screen or API path related to docs/product/workflows/operations-recovery-and-observability.md. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.",
+      "expected": "The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.",
+      "risk": "Medium",
+      "sourcePath": "docs/product/workflows/operations-recovery-and-observability.md",
+      "surfaceLabel": "Admin",
+      "feature": "Workflow",
+      "level": "Sanity",
+      "tag": "@sanity",
+      "adminScreen": "Apps",
+      "proof": "generated smoke coverage for docs/product/workflows/operations-recovery-and-observability.md",
+      "evidenceName": "agent-agent_018",
+      "action": "reuse",
+      "existingTests": [
+        {
+          "id": "REG_LIFECYCLE_051",
+          "title": "Admin Apps disposable lifecycle creates deletes finds recycle bin entry and purges it @lifecycle @recycle [surface: Admin] [feature: Lifecycle] [precondition: ALLOW_DATA_WRITE=true and admin user can manage apps] [input: create disposable app, search it, open detail, delete, verify Recycle Bin, purge matching entry] [expected: disposable app is created, deleted, visible in Recycle Bin, and removed after purge] [proof: Admin list-view lifecycle is covered without touching seeded data]",
+          "displayTitle": "Admin Apps disposable lifecycle creates deletes finds recycle bin entry and purges it @lifecycle @recycle",
+          "surface": "Admin",
+          "feature": "Lifecycle",
+          "score": 5
+        },
+        {
+          "id": "REG_WORKFLOW_LIFECYCLE_052",
+          "title": "Admin Apps workflow edits saves deletes restores verifies and cleans up disposable app @workflow @lifecycle @recycle [surface: Admin] [feature: Workflow Lifecycle] [precondition: ALLOW_DATA_WRITE=true and admin user can manage apps] [input: open Apps, create disposable app, select row, edit label, save, delete, restore from Recycle Bin, verify restored, then cleanup purge] [expected: complete multi-step Apps workflow succeeds and leaves no disposable app behind] [proof: one E2E case covers the full Admin Apps list-view journey]",
+          "displayTitle": "Admin Apps workflow edits saves deletes restores verifies and cleans up disposable app @workflow @lifecycle @recycle",
+          "surface": "Admin",
+          "feature": "Workflow Lifecycle",
+          "score": 5
+        },
+        {
+          "id": "REG_RECYCLE_BIN_WORKFLOW_055",
+          "title": "Admin Recycle Bin workflow searches changes settings fits columns and verifies export actions @workflow @recycle [surface: Admin] [feature: Recycle Bin workflow] [precondition: Admin Recycle Bin is available] [input: open Recycle Bin, search edge text, open settings, inspect columns, close, fit columns, verify export buttons] [expected: Recycle Bin list-view controls remain stable across search settings and sizing actions] [proof: Admin Recycle Bin list-view workflow is covered without requiring destructive data]",
+          "displayTitle": "Admin Recycle Bin workflow searches changes settings fits columns and verifies export actions @workflow @recycle",
+          "surface": "Admin",
+          "feature": "Recycle Bin workflow",
+          "score": 5
+        }
+      ],
+      "decision": "Existing REG_LIFECYCLE_051 covers the changed feature area; reuse it instead of duplicating.",
+      "planner": "rules",
+      "title": "@sanity Verify workflow behavior after docs/product/workflows/operations-recovery-and-observability.md [surface: Admin] [feature: Workflow] [level: Sanity] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open the affected Application surface. | Navigate to the screen or API path related to docs/product/workflows/operations-recovery-and-observability.md. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: generated smoke coverage for docs/product/workflows/operations-recovery-and-observability.md]"
+    },
+    {
+      "id": "AGENT_019",
+      "suite": "list-view-regression",
+      "surface": "admin",
+      "scenario": "Workflow regression for Application",
+      "testCase": "Verify workflow behavior after docs/product/workflows/record-operations.md",
+      "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
+      "steps": "Open the affected Application surface. | Navigate to the screen or API path related to docs/product/workflows/record-operations.md. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.",
+      "expected": "The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.",
+      "risk": "Medium",
+      "sourcePath": "docs/product/workflows/record-operations.md",
+      "surfaceLabel": "Admin",
+      "feature": "Workflow",
+      "level": "Sanity",
+      "tag": "@sanity",
+      "adminScreen": "Apps",
+      "proof": "generated smoke coverage for docs/product/workflows/record-operations.md",
+      "evidenceName": "agent-agent_019",
+      "action": "reuse",
+      "existingTests": [
+        {
+          "id": "REG_LIFECYCLE_051",
+          "title": "Admin Apps disposable lifecycle creates deletes finds recycle bin entry and purges it @lifecycle @recycle [surface: Admin] [feature: Lifecycle] [precondition: ALLOW_DATA_WRITE=true and admin user can manage apps] [input: create disposable app, search it, open detail, delete, verify Recycle Bin, purge matching entry] [expected: disposable app is created, deleted, visible in Recycle Bin, and removed after purge] [proof: Admin list-view lifecycle is covered without touching seeded data]",
+          "displayTitle": "Admin Apps disposable lifecycle creates deletes finds recycle bin entry and purges it @lifecycle @recycle",
+          "surface": "Admin",
+          "feature": "Lifecycle",
+          "score": 4
+        },
+        {
+          "id": "REG_WORKFLOW_LIFECYCLE_052",
+          "title": "Admin Apps workflow edits saves deletes restores verifies and cleans up disposable app @workflow @lifecycle @recycle [surface: Admin] [feature: Workflow Lifecycle] [precondition: ALLOW_DATA_WRITE=true and admin user can manage apps] [input: open Apps, create disposable app, select row, edit label, save, delete, restore from Recycle Bin, verify restored, then cleanup purge] [expected: complete multi-step Apps workflow succeeds and leaves no disposable app behind] [proof: one E2E case covers the full Admin Apps list-view journey]",
+          "displayTitle": "Admin Apps workflow edits saves deletes restores verifies and cleans up disposable app @workflow @lifecycle @recycle",
+          "surface": "Admin",
+          "feature": "Workflow Lifecycle",
+          "score": 4
+        },
+        {
+          "id": "REG_OBJECT_DRILLDOWN_WORKFLOW_053",
+          "title": "Admin Objects workflow searches opens detail validates nested Fields list and returns to parent @workflow [surface: Admin] [feature: Object drilldown workflow] [precondition: seeded Object metadata exists] [input: open Objects, search Asset, open row, switch to Fields, inspect embedded list-view controls, search field, close record tab] [expected: parent object and nested Fields list views both remain usable] [proof: Admin metadata list-view drilldown is covered as one connected journey]",
+          "displayTitle": "Admin Objects workflow searches opens detail validates nested Fields list and returns to parent @workflow",
+          "surface": "Admin",
+          "feature": "Object drilldown workflow",
+          "score": 4
+        }
+      ],
+      "decision": "Existing REG_LIFECYCLE_051 covers the changed feature area; reuse it instead of duplicating.",
+      "planner": "rules",
+      "title": "@sanity Verify workflow behavior after docs/product/workflows/record-operations.md [surface: Admin] [feature: Workflow] [level: Sanity] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open the affected Application surface. | Navigate to the screen or API path related to docs/product/workflows/record-operations.md. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: generated smoke coverage for docs/product/workflows/record-operations.md]"
+    },
+    {
+      "id": "AGENT_020",
+      "suite": "list-view-regression",
+      "surface": "admin",
+      "scenario": "Application regression for Application",
+      "testCase": "Verify application behavior after docs/requirements/requirements-cleaned-prompt.txt",
+      "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
+      "steps": "Open the affected Application surface. | Navigate to the screen or API path related to docs/requirements/requirements-cleaned-prompt.txt. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.",
+      "expected": "The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.",
+      "risk": "Low",
+      "sourcePath": "docs/requirements/requirements-cleaned-prompt.txt",
+      "surfaceLabel": "Admin",
+      "feature": "Application",
+      "level": "Regression",
+      "tag": "@regression",
+      "adminScreen": "Apps",
+      "proof": "generated smoke coverage for docs/requirements/requirements-cleaned-prompt.txt",
+      "evidenceName": "agent-agent_020",
+      "action": "reuse",
+      "existingTests": [
+        {
+          "id": "REG_LIFECYCLE_051",
+          "title": "Admin Apps disposable lifecycle creates deletes finds recycle bin entry and purges it @lifecycle @recycle [surface: Admin] [feature: Lifecycle] [precondition: ALLOW_DATA_WRITE=true and admin user can manage apps] [input: create disposable app, search it, open detail, delete, verify Recycle Bin, purge matching entry] [expected: disposable app is created, deleted, visible in Recycle Bin, and removed after purge] [proof: Admin list-view lifecycle is covered without touching seeded data]",
+          "displayTitle": "Admin Apps disposable lifecycle creates deletes finds recycle bin entry and purges it @lifecycle @recycle",
+          "surface": "Admin",
+          "feature": "Lifecycle",
+          "score": 4
+        },
+        {
+          "id": "BVT_TOOLBAR_CONTROLS_041",
+          "title": "Admin Objects toolbar has all primary list-view controls from reference screenshot [surface: Admin] [feature: Toolbar controls] [precondition: Objects list view is open] [input: inspect list selector, pin, selected count, search, New, Delete, refresh, settings, fit columns, CSV, PDF] [expected: every primary toolbar control is present] [proof: reference screenshot toolbar behavior is covered in the list-view suite]",
+          "displayTitle": "Admin Objects toolbar has all primary list-view controls from reference screenshot",
+          "surface": "Admin",
+          "feature": "Toolbar controls",
+          "score": 3
+        },
+        {
+          "id": "REG_COLUMN_SIZING_050",
+          "title": "Admin list view fit columns action keeps table visible [surface: Admin] [feature: Column sizing] [precondition: Objects table mode is visible] [input: click Fit columns] [expected: table remains visible after auto-resize] [proof: toolbar fit-columns control works on Admin tables]",
+          "displayTitle": "Admin list view fit columns action keeps table visible",
+          "surface": "Admin",
+          "feature": "Column sizing",
+          "score": 3
+        }
+      ],
+      "decision": "Existing REG_LIFECYCLE_051 covers the changed feature area; reuse it instead of duplicating.",
+      "planner": "rules",
+      "title": "@regression Verify application behavior after docs/requirements/requirements-cleaned-prompt.txt [surface: Admin] [feature: Application] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open the affected Application surface. | Navigate to the screen or API path related to docs/requirements/requirements-cleaned-prompt.txt. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: generated smoke coverage for docs/requirements/requirements-cleaned-prompt.txt]"
+    },
+    {
+      "id": "AGENT_021",
+      "suite": "list-view-regression",
+      "surface": "admin",
+      "scenario": "Security regression for Application",
+      "testCase": "Verify security behavior after docs/security/access-and-permissions.md",
+      "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
+      "steps": "Open the affected Application surface. | Navigate to the screen or API path related to docs/security/access-and-permissions.md. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.",
+      "expected": "The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.",
+      "risk": "High",
+      "sourcePath": "docs/security/access-and-permissions.md",
+      "surfaceLabel": "Admin",
+      "feature": "Security",
+      "level": "BVT",
+      "tag": "@bvt",
+      "adminScreen": "Permissions",
+      "proof": "generated smoke coverage for docs/security/access-and-permissions.md",
+      "evidenceName": "agent-agent_021",
+      "action": "reuse",
+      "existingTests": [
+        {
+          "id": "REG_LIFECYCLE_051",
+          "title": "Admin Apps disposable lifecycle creates deletes finds recycle bin entry and purges it @lifecycle @recycle [surface: Admin] [feature: Lifecycle] [precondition: ALLOW_DATA_WRITE=true and admin user can manage apps] [input: create disposable app, search it, open detail, delete, verify Recycle Bin, purge matching entry] [expected: disposable app is created, deleted, visible in Recycle Bin, and removed after purge] [proof: Admin list-view lifecycle is covered without touching seeded data]",
+          "displayTitle": "Admin Apps disposable lifecycle creates deletes finds recycle bin entry and purges it @lifecycle @recycle",
+          "surface": "Admin",
+          "feature": "Lifecycle",
+          "score": 5
+        },
+        {
+          "id": "REG_TOOLBAR_CONTROLS_023",
+          "title": "Admin Permissions toolbar exposes screenshot controls [surface: Admin] [feature: Toolbar controls] [precondition: Permissions list view is open] [input: inspect list selector, pin, count, search, actions, refresh, settings, fit, and exports] [expected: toolbar controls are visible or intentionally disabled by state] [proof: highlighted list-view toolbar controls are regression checked]",
+          "displayTitle": "Admin Permissions toolbar exposes screenshot controls",
+          "surface": "Admin",
+          "feature": "Toolbar controls",
+          "score": 4
+        },
+        {
+          "id": "SAN_SEARCH_024",
+          "title": "Admin Permissions search handles text and symbols [surface: Admin] [feature: Search] [precondition: Permissions list view is open] [input: search normal text and special characters] [expected: list view remains stable and can be cleared] [proof: Admin search input handles edge-case user input]",
+          "displayTitle": "Admin Permissions search handles text and symbols",
+          "surface": "Admin",
+          "feature": "Search",
+          "score": 4
+        }
+      ],
+      "decision": "Existing REG_LIFECYCLE_051 covers the changed feature area; reuse it instead of duplicating.",
+      "planner": "rules",
+      "title": "@bvt Verify security behavior after docs/security/access-and-permissions.md [surface: Admin] [feature: Security] [level: BVT] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open the affected Application surface. | Navigate to the screen or API path related to docs/security/access-and-permissions.md. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: generated smoke coverage for docs/security/access-and-permissions.md]"
+    },
+    {
+      "id": "AGENT_022",
+      "suite": "list-view-regression",
+      "surface": "admin",
+      "scenario": "Application regression for Application",
+      "testCase": "Verify application behavior after docs/ui/component-catalog.md",
+      "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
+      "steps": "Open the affected Application surface. | Navigate to the screen or API path related to docs/ui/component-catalog.md. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.",
+      "expected": "The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.",
+      "risk": "Low",
+      "sourcePath": "docs/ui/component-catalog.md",
+      "surfaceLabel": "Admin",
+      "feature": "Application",
+      "level": "Regression",
+      "tag": "@regression",
+      "adminScreen": "Apps",
+      "proof": "generated smoke coverage for docs/ui/component-catalog.md",
+      "evidenceName": "agent-agent_022",
+      "action": "reuse",
+      "existingTests": [
+        {
+          "id": "REG_LIFECYCLE_051",
+          "title": "Admin Apps disposable lifecycle creates deletes finds recycle bin entry and purges it @lifecycle @recycle [surface: Admin] [feature: Lifecycle] [precondition: ALLOW_DATA_WRITE=true and admin user can manage apps] [input: create disposable app, search it, open detail, delete, verify Recycle Bin, purge matching entry] [expected: disposable app is created, deleted, visible in Recycle Bin, and removed after purge] [proof: Admin list-view lifecycle is covered without touching seeded data]",
+          "displayTitle": "Admin Apps disposable lifecycle creates deletes finds recycle bin entry and purges it @lifecycle @recycle",
+          "surface": "Admin",
+          "feature": "Lifecycle",
+          "score": 4
+        },
+        {
+          "id": "BVT_TOOLBAR_CONTROLS_041",
+          "title": "Admin Objects toolbar has all primary list-view controls from reference screenshot [surface: Admin] [feature: Toolbar controls] [precondition: Objects list view is open] [input: inspect list selector, pin, selected count, search, New, Delete, refresh, settings, fit columns, CSV, PDF] [expected: every primary toolbar control is present] [proof: reference screenshot toolbar behavior is covered in the list-view suite]",
+          "displayTitle": "Admin Objects toolbar has all primary list-view controls from reference screenshot",
+          "surface": "Admin",
+          "feature": "Toolbar controls",
+          "score": 3
+        },
+        {
+          "id": "REG_COLUMN_SIZING_050",
+          "title": "Admin list view fit columns action keeps table visible [surface: Admin] [feature: Column sizing] [precondition: Objects table mode is visible] [input: click Fit columns] [expected: table remains visible after auto-resize] [proof: toolbar fit-columns control works on Admin tables]",
+          "displayTitle": "Admin list view fit columns action keeps table visible",
+          "surface": "Admin",
+          "feature": "Column sizing",
+          "score": 3
+        }
+      ],
+      "decision": "Existing REG_LIFECYCLE_051 covers the changed feature area; reuse it instead of duplicating.",
+      "planner": "rules",
+      "title": "@regression Verify application behavior after docs/ui/component-catalog.md [surface: Admin] [feature: Application] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open the affected Application surface. | Navigate to the screen or API path related to docs/ui/component-catalog.md. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: generated smoke coverage for docs/ui/component-catalog.md]"
+    },
+    {
+      "id": "AGENT_023",
+      "suite": "list-view-regression",
+      "surface": "admin",
+      "scenario": "Application regression for Application",
+      "testCase": "Verify application behavior after packages/shared/src/documentation.ts",
+      "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
+      "steps": "Open the affected Application surface. | Navigate to the screen or API path related to packages/shared/src/documentation.ts. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.",
+      "expected": "The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.",
+      "risk": "Low",
+      "sourcePath": "packages/shared/src/documentation.ts",
+      "surfaceLabel": "Admin",
+      "feature": "Application",
+      "level": "Regression",
+      "tag": "@regression",
+      "adminScreen": "Apps",
+      "proof": "generated smoke coverage for packages/shared/src/documentation.ts",
+      "evidenceName": "agent-agent_023",
+      "action": "reuse",
+      "existingTests": [
+        {
+          "id": "REG_LIFECYCLE_051",
+          "title": "Admin Apps disposable lifecycle creates deletes finds recycle bin entry and purges it @lifecycle @recycle [surface: Admin] [feature: Lifecycle] [precondition: ALLOW_DATA_WRITE=true and admin user can manage apps] [input: create disposable app, search it, open detail, delete, verify Recycle Bin, purge matching entry] [expected: disposable app is created, deleted, visible in Recycle Bin, and removed after purge] [proof: Admin list-view lifecycle is covered without touching seeded data]",
+          "displayTitle": "Admin Apps disposable lifecycle creates deletes finds recycle bin entry and purges it @lifecycle @recycle",
+          "surface": "Admin",
+          "feature": "Lifecycle",
+          "score": 4
+        },
+        {
+          "id": "BVT_TOOLBAR_CONTROLS_041",
+          "title": "Admin Objects toolbar has all primary list-view controls from reference screenshot [surface: Admin] [feature: Toolbar controls] [precondition: Objects list view is open] [input: inspect list selector, pin, selected count, search, New, Delete, refresh, settings, fit columns, CSV, PDF] [expected: every primary toolbar control is present] [proof: reference screenshot toolbar behavior is covered in the list-view suite]",
+          "displayTitle": "Admin Objects toolbar has all primary list-view controls from reference screenshot",
+          "surface": "Admin",
+          "feature": "Toolbar controls",
+          "score": 3
+        },
+        {
+          "id": "REG_COLUMN_SIZING_050",
+          "title": "Admin list view fit columns action keeps table visible [surface: Admin] [feature: Column sizing] [precondition: Objects table mode is visible] [input: click Fit columns] [expected: table remains visible after auto-resize] [proof: toolbar fit-columns control works on Admin tables]",
+          "displayTitle": "Admin list view fit columns action keeps table visible",
+          "surface": "Admin",
+          "feature": "Column sizing",
+          "score": 3
+        }
+      ],
+      "decision": "Existing REG_LIFECYCLE_051 covers the changed feature area; reuse it instead of duplicating.",
+      "planner": "rules",
+      "title": "@regression Verify application behavior after packages/shared/src/documentation.ts [surface: Admin] [feature: Application] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open the affected Application surface. | Navigate to the screen or API path related to packages/shared/src/documentation.ts. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: generated smoke coverage for packages/shared/src/documentation.ts]"
+    }
+  ]
+}

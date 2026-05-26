@@ -1,9 +1,18 @@
 {
-  "baselineCommit": "201c4461bf09b496619dbfc8d3a48b2ae65d7729",
-  "updatedAt": "2026-05-25T12:15:35.686Z",
-  "lastArtifact": "tests/e2e/generated-agent-scenarios/agent-scenarios-1779711335686.json",
+  "baselineCommit": "0add972a1ea3f3c1b4864397eed8def7a9a753ef",
+  "updatedAt": "2026-05-25T13:20:34.397Z",
+  "lastArtifact": "tests/e2e/generated-agent-scenarios/agent-scenarios-1779715234397.json",
   "lastSpec": "",
   "history": [
+    {
+      "generatedAt": "2026-05-25T13:20:34.397Z",
+      "from": "201c4461bf09b496619dbfc8d3a48b2ae65d7729",
+      "to": "0add972a1ea3f3c1b4864397eed8def7a9a753ef",
+      "changedFiles": 23,
+      "generated": 0,
+      "reused": 23,
+      "artifact": "tests/e2e/generated-agent-scenarios/agent-scenarios-1779715234397.json"
+    },
     {
       "generatedAt": "2026-05-25T12:15:35.686Z",
       "from": "201c4461bf09b496619dbfc8d3a48b2ae65d7729",
