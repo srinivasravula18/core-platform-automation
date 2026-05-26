@@ -267,7 +267,7 @@ function App() {
     try {
       const run = await api("/api/agent/run", {
         method: "POST",
-        body: JSON.stringify({ baseRef: agent.baseRef, headed, reset })
+        body: JSON.stringify({ baseRef: agent.baseRef, headed, reset, artifactPath: agent.generated?.outputPath })
       });
       setAgent((previous) => ({ ...previous, generated: run.artifact || previous.generated, busy: false }));
       await data.refreshLive();

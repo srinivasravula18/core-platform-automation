@@ -1891,6 +1891,77 @@ const latestGeneratedArtifact = () => {
   return { ...payload, outputPath: path.relative(repoRoot, files[0].fullPath).replace(/\\/g, "/") };
 };
 
+const readGeneratedArtifactByPath = (artifactPath) => {
+  const requested = String(artifactPath || "").trim();
+  if (!requested) return null;
+  const normalized = requested.replace(/\\/g, "/").replace(/^\/+/, "");
+  const fullPath = path.resolve(repoRoot, normalized);
+  if (fullPath !== repoRoot && !fullPath.startsWith(`${repoRoot}${path.sep}`)) {
+    throw new Error("Generated artifact path is outside the automation repo.");
+  }
+  if (!fullPath.startsWith(generatedRoot + path.sep) || !/^agent-scenarios-\d+\.json$/.test(path.basename(fullPath))) {
+    throw new Error("Generated artifact path is not an agent scenario manifest.");
+  }
+  if (!existsSync(fullPath)) {
+    throw new Error("Generated artifact was not found. Generate scenarios again.");
+  }
+  const payload = JSON.parse(readFileSync(fullPath, "utf8"));
+  return { ...payload, outputPath: path.relative(repoRoot, fullPath).replace(/\\/g, "/") };
+};
+
+const ensureAgentRunnableSpec = (artifact) => {
+  if (!artifact?.scenarios?.length) return artifact;
+  if (artifact.spec) {
+    const existingSpec = path.resolve(repoRoot, artifact.spec);
+    if (existsSync(existingSpec)) return artifact;
+  }
+  mkdirSync(generatedSpecRoot, { recursive: true });
+  const timestamp = Date.now();
+  const specPath = path.join(generatedSpecRoot, `agent-generated-${timestamp}.spec.ts`);
+  const specRelativePath = path.relative(repoRoot, specPath).replace(/\\/g, "/");
+  writeFileSync(specPath, generateAgentSpecSource(artifact.scenarios), "utf8");
+  if (artifact.outputPath) {
+    const artifactFullPath = path.resolve(repoRoot, artifact.outputPath);
+    if (artifactFullPath.startsWith(generatedRoot + path.sep) && existsSync(artifactFullPath)) {
+      const updatedArtifact = { ...artifact, spec: specRelativePath };
+      writeFileSync(artifactFullPath, JSON.stringify(updatedArtifact, null, 2), "utf8");
+      return updatedArtifact;
+    }
+  }
+  return { ...artifact, spec: specRelativePath };
+};
+
+const readGeneratedAgentInventoryRows = (startIndex = 0) => {
+  const artifact = latestGeneratedArtifact();
+  if (!artifact?.scenarios?.length) return [];
+  return artifact.scenarios.map((scenario, index) => {
+    const level = scenario.level || levelForTag(scenario.tag || "");
+    const identity = caseIdentity(scenario.feature || scenario.scenarioFamily || "AI Agent", level, startIndex + index);
+    return {
+      id: scenario.id || identity.id,
+      tags: `${identity.tags} ${scenario.tag || categoryTag(level)} @agent-generated @${String(scenario.scenarioFamily || "agent").toLowerCase()}`.trim(),
+      testingLevel: level,
+      location: artifact.spec || artifact.outputPath || "",
+      spec: artifact.spec || "",
+      surface: scenario.surfaceLabel || inferSurface("", scenario.title || ""),
+      feature: scenario.feature || scenario.scenarioFamily || "AI Agent",
+      title: scenario.title || specTitle(scenario),
+      displayTitle: scenario.testCase || cleanTitle(scenario.title || ""),
+      precondition: scenario.precondition || "",
+      input: scenario.steps || "",
+      expected: scenario.expected || "",
+      proof: scenario.proof || "",
+      source: "agent",
+      action: scenario.action || "",
+      scenarioFamily: scenario.scenarioFamily || "",
+      coverageDecision: scenario.coverageDecision || "",
+      graphSource: scenario.graphSource || "",
+      graphEvidence: scenario.graphEvidence || "",
+      sourcePath: scenario.sourcePath || ""
+    };
+  });
+};
+
 const specTitle = (scenario) =>
   `${scenario.tag || tagForRisk(scenario.risk)} ${scenario.testCase} [surface: ${scenario.surfaceLabel || scenario.surface}] [feature: ${scenario.feature}] [level: ${scenario.level || "Regression"}] [precondition: ${scenario.precondition}] [input: ${scenario.steps}] [expected: ${scenario.expected}] [proof: ${scenario.proof}]`;
 
@@ -1901,7 +1972,7 @@ const hasUsableGitNexusFileContext = (context) => Boolean(context) && [
 ].some((text) => !isGitNexusToolFailure(text));
 
 const generateAgentSpecSource = (scenarios) => {
-  const cases = JSON.stringify(scenarios.filter((scenario) => scenario.action === "generate"), null, 2);
+  const cases = JSON.stringify(scenarios, null, 2);
   return `import { expect, test } from "@playwright/test";
 import {
   apiLogin,
@@ -1921,12 +1992,34 @@ test.describe("AI generated change-impact smoke tests", () => {
       test.skip(!hasCredentials(), "Seeded test credentials are not configured.");
       test.skip(Boolean(generatedCase.resetRequired) && process.env.ALLOW_DATA_WRITE !== "true", "Guarded write scenarios require ALLOW_DATA_WRITE=true and reset-enabled runs.");
 
+      if (generatedCase.action === "reuse") {
+        testInfo.annotations.push({
+          type: "agent-reuse",
+          description: (generatedCase.existingTests || []).map((item) => item.id || item.title).join(", ")
+        });
+      }
+      const evidencePayload = {
+        id: generatedCase.id,
+        family: generatedCase.scenarioFamily,
+        action: generatedCase.action,
+        reused: (generatedCase.existingTests || []).map((item) => item.id),
+        graph: generatedCase.graphSource,
+        evidence: generatedCase.graphEvidence
+      };
+
       if (generatedCase.surface === "api") {
         const token = await apiLogin(request);
         const response = await request.get("/api/apps", {
           headers: { Authorization: \`Bearer \${token}\` }
         });
         expect(response.ok(), await response.text()).toBeTruthy();
+        const screenshotPath = testInfo.outputPath(\`\${generatedCase.evidenceName}-api-evidence.png\`);
+        await page.setContent(\`<!doctype html><html><body style="font-family:Arial;padding:24px;background:#0f172a;color:#e5eefc"><h1>\${generatedCase.testCase}</h1><pre>\${JSON.stringify(evidencePayload, null, 2).replace(/[<>&]/g, (char) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" }[char] || char))}</pre></body></html>\`);
+        await page.screenshot({ fullPage: true, path: screenshotPath });
+        await testInfo.attach(\`screenshot-\${generatedCase.evidenceName}\`, {
+          path: screenshotPath,
+          contentType: "image/png"
+        });
         return;
       }
 
@@ -2046,7 +2139,7 @@ const generateAgentScenarios = async (baseRef = "origin/main") => {
     },
     appRoot,
     gitNexusContext,
-    spec: generatedCount > 0 ? specRelativePath : "",
+    spec: scenarios.length > 0 ? specRelativePath : "",
     requiresReset: resetRequiredCount > 0,
     summary: {
       changedFiles: scan.changedFiles.length,
@@ -2058,7 +2151,7 @@ const generateAgentScenarios = async (baseRef = "origin/main") => {
     scenarios
   };
   const outputPath = path.join(generatedRoot, `agent-scenarios-${timestamp}.json`);
-  if (generatedCount > 0) {
+  if (scenarios.length > 0) {
     writeFileSync(specPath, generateAgentSpecSource(scenarios), "utf8");
   }
   writeFileSync(outputPath, JSON.stringify(artifact, null, 2), "utf8");
@@ -2190,6 +2283,13 @@ const readInventory = () => {
         proof: row.proof || ""
       });
     }
+  }
+  const existingInventoryKeys = new Set(rows.map((row) => `${row.title}::${row.spec}`));
+  for (const generatedRow of readGeneratedAgentInventoryRows(rows.length)) {
+    const key = `${generatedRow.title}::${generatedRow.spec}`;
+    if (existingInventoryKeys.has(key)) continue;
+    existingInventoryKeys.add(key);
+    rows.push(generatedRow);
   }
   cachedInventory = {
     updatedAt: new Date().toISOString(),
@@ -2398,7 +2498,7 @@ const runAgentGeneratedScenarios = async (request, response) => {
     return;
   }
 
-  let artifact = latestGeneratedArtifact();
+  let artifact = readGeneratedArtifactByPath(body.artifactPath || body.outputPath) || latestGeneratedArtifact();
   if (!artifact) {
     artifact = await generateAgentScenarios(String(body.baseRef || "auto").trim() || "auto");
   }
@@ -2406,6 +2506,7 @@ const runAgentGeneratedScenarios = async (request, response) => {
     sendJson(response, 409, { error: "No changed files were found, so there are no generated agent scenarios to run." });
     return;
   }
+  artifact = ensureAgentRunnableSpec(artifact);
 
   const headed = Boolean(body.headed);
   const resetAfterRun = Boolean(body.reset || artifact.requiresReset);
@@ -2468,7 +2569,7 @@ const runAgentGeneratedScenarios = async (request, response) => {
   runState.command = commandLabel;
   runState.surface = "agent";
   runState.scenario = scenarioLabel;
-  runState.selectedTestCount = runMode === "reuse" ? reusableTitles.length : artifact.scenarios.filter((scenario) => scenario.action === "generate").length;
+  runState.selectedTestCount = artifact.scenarios.length;
   runState.reset = resetAfterRun;
   runState.headed = headed;
   runState.stopRequested = false;
@@ -2478,8 +2579,8 @@ const runAgentGeneratedScenarios = async (request, response) => {
   runState.logs = [];
   pushLog(
     runMode === "reuse"
-      ? `Starting AI agent reused existing coverage run (${reusableTitles.length} case(s))...`
-      : `Starting AI generated scenario run (${runState.selectedTestCount} case(s))...`
+      ? `Starting AI agent reused existing coverage run (${reusableTitles.length} existing case(s) for ${artifact.scenarios.length} agent scenario(s))...`
+      : `Starting AI generated scenario run (${artifact.scenarios.length} agent scenario(s), ${artifact.summary?.generated || 0} new, ${artifact.summary?.reused || 0} reused)...`
   );
 
   const childEnv = {
