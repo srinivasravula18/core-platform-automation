@@ -1,26 +1,57 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
-  Bot, Bug, CheckSquare, ClipboardList, FileBarChart, GitBranch,
+  Bot, Bug, CheckSquare, ChevronDown, ChevronRight, ClipboardList, FileBarChart, GitBranch,
   Download, LayoutDashboard, Moon, PanelLeftClose, PanelLeftOpen, Play, Radio, RefreshCw, Save, Search, Settings, Square, Sun,
   TestTube2, Video, Waypoints, XCircle
 } from "lucide-react";
 import "./styles.css";
 
-const navItems = [
-  { id: "overview", label: "Overview", icon: LayoutDashboard },
-  { id: "suites", label: "Suites", icon: TestTube2 },
-  { id: "scenarios", label: "Scenarios", icon: Waypoints },
-  { id: "recorder", label: "Recorder", icon: Radio },
-  { id: "inventory", label: "Inventory", icon: ClipboardList },
-  { id: "builder", label: "Case Builder", icon: CheckSquare },
-  { id: "execution", label: "Execution", icon: Play },
-  { id: "reports", label: "Reports", icon: FileBarChart },
-  { id: "bugs", label: "Bugs", icon: Bug },
-  { id: "agent", label: "AI Agent", icon: Bot },
-  { id: "gitnexus", label: "GitNexus", icon: GitBranch },
-  { id: "settings", label: "Settings", icon: Settings }
+const navGroups = [
+  {
+    id: "dashboard",
+    label: "Dashboard",
+    items: [
+      { id: "overview", label: "Overview", icon: LayoutDashboard }
+    ]
+  },
+  {
+    id: "test-management",
+    label: "Test Management",
+    items: [
+      { id: "suites", label: "Suites", icon: TestTube2 },
+      { id: "scenarios", label: "Scenarios", icon: Waypoints },
+      { id: "inventory", label: "Inventory", icon: ClipboardList }
+    ]
+  },
+  {
+    id: "execution",
+    label: "Execution",
+    items: [
+      { id: "recorder", label: "Recorder", icon: Radio },
+      { id: "execution", label: "Execution", icon: Play },
+      { id: "reports", label: "Reports", icon: FileBarChart },
+      { id: "bugs", label: "Bugs", icon: Bug }
+    ]
+  },
+  {
+    id: "automation",
+    label: "Automation",
+    items: [
+      { id: "agent", label: "AI Agent", icon: Bot },
+      { id: "gitnexus", label: "GitNexus", icon: GitBranch }
+    ]
+  },
+  {
+    id: "configuration",
+    label: "Configuration",
+    items: [
+      { id: "settings", label: "Settings", icon: Settings }
+    ]
+  }
 ];
+const navItems = navGroups.flatMap((group) => group.items);
+const defaultOpenNavGroups = Object.fromEntries(navGroups.map((group) => [group.id, true]));
 
 const formatDate = (value) => value ? new Date(value).toLocaleString() : "-";
 const categoryLevels = ["BVT", "Sanity", "Regression"];
@@ -32,17 +63,178 @@ const summarizeScenario = (status) => {
   return scenario;
 };
 const normalizeSurface = (value) => String(value || "").toLowerCase().replace(/[^a-z]/g, "");
+const safeRegex = (value) => {
+  try {
+    return new RegExp(String(value || ""), "i");
+  } catch {
+    return null;
+  }
+};
 const suiteMatchesRow = (suite, row) => {
   if (!suite) return true;
   const suiteId = String(suite.id || "").toLowerCase();
   const suiteSurface = normalizeSurface(suite.surface);
   const rowSurface = normalizeSurface(row.surface);
+  const rowText = [row.title, row.tags, row.spec, row.surface, row.feature, row.displayTitle]
+    .join(" ")
+    .toLowerCase();
+  const suiteGrep = String(suite.grep || "").trim();
+  if (suiteGrep) {
+    const regex = safeRegex(suiteGrep);
+    if (regex) return regex.test(rowText);
+    return rowText.includes(suiteGrep.toLowerCase());
+  }
+  if (suiteId === "admin-side-navbar") {
+    return /from side nav|seed api contract is reachable|table\/search remains stable|seed readiness verifies all admin table anchors/i.test(rowText);
+  }
   if (suiteId === "list-view-regression" || suiteSurface === "all") return true;
   if (suiteId.includes("admin") || suiteSurface === "admin") return rowSurface === "admin";
   if (suiteId.includes("keystone") || suiteSurface === "keystone") return rowSurface === "keystone";
   if (suiteId.includes("api") || suiteSurface === "api") return rowSurface === "api";
   return rowSurface === suiteSurface;
 };
+
+const stepChain = (steps) => steps.filter(Boolean).join(" -> ");
+
+const normalizeStepText = (value) =>
+  String(value || "")
+    .replace(/\s*\|\s*/g, " -> ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+const stripBracketMeta = (value) =>
+  String(value || "").replace(/\s*\[(surface|feature|level|priority|testdata|test data|automation|precondition|input|expected|proof):[^\]]+\]/gi, "");
+
+const isAlreadyExpandedStep = (value) => {
+  const lower = normalizeStepText(value).toLowerCase();
+  return /^open (admin|keystone)?\s*application\b/.test(lower) || lower.startsWith("open application ->");
+};
+
+const isVagueStepText = (value) => {
+  const lower = normalizeStepText(value).toLowerCase();
+  if (!lower) return true;
+  if (lower === "execute test steps." || /^attempt .+ as each role\.?$/.test(lower)) return true;
+  return [
+    "exercise the",
+    "exercise create",
+    "changed behavior",
+    "affected ",
+    "impacted ",
+    "primary user or api path",
+    "screen or api path",
+    "route family related",
+    "downstream",
+    "open or call"
+  ].some((phrase) => lower.includes(phrase));
+};
+
+const adminScreenForSteps = (row) => {
+  const text = [row.feature, row.displayTitle, row.title, row.spec].join(" ").toLowerCase();
+  if (/permission|access|role|group|user|security/.test(text)) return "Permissions or Access Records";
+  if (/object|field|metadata/.test(text)) return "Objects";
+  if (/recycle|restore|purge/.test(text)) return "Recycle Bin";
+  if (/app/.test(text)) return "Apps";
+  return row.feature || "the target screen";
+};
+
+const uiActionForSteps = (row) => {
+  const text = [row.feature, row.displayTitle, row.title, row.spec, row.input].join(" ").toLowerCase();
+  const target = String(row.feature || "record").toLowerCase();
+  if (/create|new|add/.test(text)) return `click New, fill the ${target} test details, and save`;
+  if (/edit|update|patch/.test(text)) return `open the test row, change the ${target} details, and save`;
+  if (/delete|remove|purge/.test(text)) return "select the test row, click Delete, and confirm";
+  if (/restore|recycle/.test(text)) return "open Recycle Bin, restore the test row, and verify it returns";
+  if (/search|filter/.test(text)) return "type the search or filter value and verify the matching rows";
+  if (/setting|column|sharing|preference|hierarchy/.test(text)) return "open Settings, change the requested option, and apply it";
+  if (/export|csv|pdf/.test(text)) return "click the export action and verify the downloaded file";
+  if (/toolbar|refresh|fit|pin|count/.test(text)) return "use the toolbar control named in the test and verify the table state";
+  if (/navigation|row opens|detail/.test(text)) return "open a row from the list and verify the detail view";
+  if (/invalid|reject|unauthorized|auth|permission|security/.test(text)) return "submit the restricted or invalid action and verify it is blocked";
+  return `perform the ${row.feature || "feature"} action named in the test case`;
+};
+
+const readableStepsForRow = (row) => {
+  const raw = normalizeStepText(row.input);
+  if (isAlreadyExpandedStep(raw)) return raw;
+
+  const surface = normalizeSurface(row.surface);
+  const cleanTitle = stripBracketMeta([row.displayTitle, row.title].join(" "));
+  const text = [cleanTitle, row.spec, row.feature, row.surface, raw].join(" ").toLowerCase();
+  const isApi = surface === "api" || /api|routes?|service|endpoint|^get |^post |^patch |^delete |\/api\//i.test(text);
+  const isKeystone = surface === "keystone" || /keystone|shockwave/.test(text);
+  const isAdmin = surface === "admin" || /admin/.test(text);
+  const isPermissionAccess = /permission|access record|access-control|effective-access|role|group|grant/.test(text);
+  const isInvalid = /reject|invalid|unauthorized|requires valid authentication|not found|missing|duplicate|inactive/.test(text);
+  const isDownstream = /downstream|effective-access|grant|check/.test(text);
+
+  if (isApi && isPermissionAccess && isInvalid) {
+    return stepChain([
+      "Open application",
+      "authenticate with seeded admin API credentials",
+      `send the invalid or unauthorized ${row.feature || "security"} request from the test case`,
+      "verify the expected 400, 401, 403, or 404 response",
+      "confirm protected permission data is unchanged"
+    ]);
+  }
+  if (isApi && isPermissionAccess && isDownstream) {
+    return stepChain([
+      "Open application",
+      "authenticate with seeded admin API credentials",
+      "create the role, group, user, permission, or grant setup required by the test",
+      "request the downstream effective-access check",
+      "verify the allowed or blocked access decision",
+      "delete the disposable security data"
+    ]);
+  }
+  if (isApi && isPermissionAccess && isVagueStepText(raw)) {
+    return stepChain([
+      "Open application",
+      "authenticate with seeded admin API credentials",
+      "create the test permission or access record",
+      "list and read back the created record",
+      "update, grant, or check it as required by the test",
+      "delete the disposable record and verify cleanup"
+    ]);
+  }
+  if (isApi) {
+    return stepChain([
+      "Open application",
+      "authenticate through the API with seeded credentials",
+      isVagueStepText(raw) ? `call the ${row.feature || "target"} endpoint or route named in the test` : raw,
+      "verify the response status and body",
+      "capture API evidence"
+    ]);
+  }
+  if (isKeystone) {
+    return stepChain([
+      "Open Keystone application",
+      "fill the login details",
+      "click Login",
+      "select the seeded app and tab",
+      isVagueStepText(raw) ? uiActionForSteps(row) : raw,
+      "verify the record or table state"
+    ]);
+  }
+  if (isAdmin || isPermissionAccess) {
+    return stepChain([
+      "Open Admin application",
+      "fill the login details",
+      "click Login",
+      isVagueStepText(raw) ? `navigate to ${adminScreenForSteps(row)} from the sidebar` : raw,
+      isVagueStepText(raw) ? uiActionForSteps(row) : "",
+      "verify the page or table result"
+    ]);
+  }
+  return stepChain([
+    "Open application",
+    "sign in with seeded test credentials",
+    isVagueStepText(raw) ? `navigate to the ${row.feature || "target"} screen` : raw,
+    isVagueStepText(raw) ? uiActionForSteps(row) : "",
+    "verify the expected result and capture evidence"
+  ]);
+};
+
+const withReadableSteps = (row) => ({ ...row, input: readableStepsForRow(row) });
 
 const api = async (path, options) => {
   const response = await fetch(path, {
@@ -112,6 +304,13 @@ function App() {
   const [active, setActive] = useState("overview");
   const [theme, setTheme] = useState(() => localStorage.getItem("qa-theme") || "system");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem("qa-sidebar") === "collapsed");
+  const [openNavGroups, setOpenNavGroups] = useState(() => {
+    try {
+      return { ...defaultOpenNavGroups, ...JSON.parse(localStorage.getItem("qa-nav-groups") || "{}") };
+    } catch {
+      return defaultOpenNavGroups;
+    }
+  });
   const [filter, setFilter] = useState("");
   const [inventoryContext, setInventoryContext] = useState(null);
   const [selectedTests, setSelectedTests] = useState(new Set());
@@ -143,7 +342,24 @@ function App() {
     localStorage.setItem("qa-sidebar", sidebarCollapsed ? "collapsed" : "expanded");
   }, [sidebarCollapsed]);
 
-  const rows = Array.isArray(data.inventory.rows) ? data.inventory.rows : [];
+  useEffect(() => {
+    localStorage.setItem("qa-nav-groups", JSON.stringify(openNavGroups));
+  }, [openNavGroups]);
+
+  useEffect(() => {
+    const activeGroup = navGroups.find((group) => group.items.some((item) => item.id === active));
+    if (!activeGroup || openNavGroups[activeGroup.id]) return;
+    setOpenNavGroups((previous) => ({ ...previous, [activeGroup.id]: true }));
+  }, [active, openNavGroups]);
+
+  const toggleNavGroup = (groupId) => {
+    setOpenNavGroups((previous) => ({ ...previous, [groupId]: !previous[groupId] }));
+  };
+
+  const rows = useMemo(
+    () => (Array.isArray(data.inventory.rows) ? data.inventory.rows : []).map(withReadableSteps),
+    [data.inventory.rows]
+  );
   const resultRows = Array.isArray(data.results.rows) ? data.results.rows : [];
   const rowsForCategory = (level) => rows.filter((row) =>
     String(row.testingLevel || "").toLowerCase() === String(level).toLowerCase()
@@ -168,10 +384,10 @@ function App() {
   const failedRows = resultRows.filter((row) => row.status === "FAIL");
   const counts = data.results.counts || {};
 
-  const runSuite = async (nextSurface = surface, scenario = scenarioFilter, tests = []) => {
+  const runSuite = async (nextSurface = surface, scenario = scenarioFilter, tests = [], headedOverride = headed) => {
     await api("/api/run", {
       method: "POST",
-      body: JSON.stringify({ surface: nextSurface, scenario, tests, reset, headed })
+      body: JSON.stringify({ surface: nextSurface, scenario, tests, reset, headed: headedOverride })
     });
     await data.refreshLive();
     setActive("execution");
@@ -370,7 +586,7 @@ function App() {
   };
 
   const renderSection = () => {
-    if (active === "suites") return <SuitesPanel framework={data.framework} onOpen={openSuiteCases} onRun={(suite) => runSuite(suite.surface, suite.grep || "")} />;
+    if (active === "suites") return <SuitesPanel framework={data.framework} running={data.status.running} onOpen={openSuiteCases} onRun={(suite, runHeaded) => runSuite(suite.surface, suite.grep || "", [], runHeaded)} />;
     if (active === "scenarios") return <ScenariosPanel framework={data.framework} setScenarioFilter={setScenarioFilter} setActive={setActive} />;
     if (active === "recorder") return (
       <RecorderPanel
@@ -404,7 +620,6 @@ function App() {
         running={data.status.running}
       />
     );
-    if (active === "builder") return <BuilderPanel framework={data.framework} />;
     if (active === "execution") return <ExecutionPanel status={data.status} stopRun={stopRun} />;
     if (active === "reports") return <ReportsPanel results={data.results} />;
     if (active === "bugs") return <BugsPanel failedRows={failedRows} />;
@@ -450,9 +665,32 @@ function App() {
           </button>
         </div>
         <nav aria-label="Framework sections">
-          {navItems.map((item) => {
-            const Icon = item.icon;
-            return <button key={item.id} className={active === item.id ? "nav-active" : ""} onClick={() => setActive(item.id)} title={item.label}><Icon size={17} /><span>{item.label}</span></button>;
+          {navGroups.map((group) => {
+            const isOpen = sidebarCollapsed || openNavGroups[group.id];
+            return (
+              <section className="nav-group" key={group.id}>
+                {!sidebarCollapsed ? (
+                  <button
+                    type="button"
+                    className="nav-group-toggle"
+                    onClick={() => toggleNavGroup(group.id)}
+                    aria-expanded={isOpen}
+                    title={group.label}
+                  >
+                    {isOpen ? <ChevronDown className="nav-chevron" size={15} /> : <ChevronRight className="nav-chevron" size={15} />}
+                    <span>{group.label}</span>
+                  </button>
+                ) : null}
+                {isOpen ? (
+                  <div className="nav-items">
+                    {group.items.map((item) => {
+                      const Icon = item.icon;
+                      return <button key={item.id} className={active === item.id ? "nav-active" : ""} onClick={() => setActive(item.id)} title={item.label}><Icon size={17} /><span>{item.label}</span></button>;
+                    })}
+                  </div>
+                ) : null}
+              </section>
+            );
           })}
         </nav>
       </aside>
@@ -507,7 +745,7 @@ function OverviewPanel({ counts, framework, inventory, status, services, results
     <div className="metric-grid compact">
       <Metric label="Pending" value={counts.PENDING || 0} tone="pending" /><Metric label="Running" value={counts.RUNNING || 0} tone="running" /><Metric label="Passed" value={counts.PASS || 0} tone="pass" /><Metric label="Failed" value={counts.FAIL || 0} tone="fail" /><Metric label="Skipped" value={counts.SKIP || 0} tone="skip" />
     </div>
-    <DataTable title="Latest Results" rows={(results.rows || []).slice(0, 12)} columns={[["id", "ID"], ["surface", "Surface"], ["featureArea", "Feature"], ["testCaseTitle", "Test Case"], ["status", "Status"]]} />
+    <DataTable title={`Latest Results (${results.total || results.rows?.length || 0})`} rows={results.rows || []} columns={[["id", "ID"], ["surface", "Surface"], ["featureArea", "Feature"], ["testCaseTitle", "Test Case"], ["status", "Status"]]} />
   </section>;
 }
 
@@ -515,8 +753,8 @@ function ServicesPanel({ services }) {
   return <section className="panel"><div className="section-heading"><h2>Local Services</h2><span>Updated {formatDate(services.updatedAt)}</span></div><div className="service-grid">{(services.services || []).map((service) => <article key={service.name} className="service-card"><span>{service.name}</span><strong>:{service.port}</strong><p className={service.up ? "pass" : "fail"}>{service.up ? `up ${service.statusCode}` : service.error || "down"}</p></article>)}</div></section>;
 }
 
-function SuitesPanel({ framework, onOpen, onRun }) {
-  return <section className="card-grid">{(framework?.suites || []).map((suite) => <article key={suite.id} className="panel suite-card" onClick={() => onOpen(suite)}><div className="section-heading"><h2>{suite.label}</h2><span>{suite.surface}</span></div><p>{suite.description}</p><div className="tag-row">{(suite.tags || []).map((tag) => <span key={tag}>{tag}</span>)}</div><div className="inline-actions"><button onClick={(event) => { event.stopPropagation(); onOpen(suite); }}><Search size={16} /> View Cases</button><button className="secondary" onClick={(event) => { event.stopPropagation(); onRun(suite); }}><Play size={16} /> Run Suite</button></div></article>)}</section>;
+function SuitesPanel({ framework, running, onOpen, onRun }) {
+  return <section className="card-grid">{(framework?.suites || []).map((suite) => <article key={suite.id} className="panel suite-card" onClick={() => onOpen(suite)}><div className="section-heading"><h2>{suite.label}</h2><span>{suite.surface}</span></div><p>{suite.description}</p><div className="tag-row">{(suite.tags || []).map((tag) => <span key={tag}>{tag}</span>)}</div><div className="inline-actions"><button onClick={(event) => { event.stopPropagation(); onOpen(suite); }}><Search size={16} /> View Cases</button><button className="secondary" disabled={running} onClick={(event) => { event.stopPropagation(); onRun(suite, false); }}><Play size={16} /> Run Headless</button><button className="secondary" disabled={running} onClick={(event) => { event.stopPropagation(); onRun(suite, true); }}><Video size={16} /> Run Headed</button></div></article>)}</section>;
 }
 
 function ScenariosPanel({ framework, setScenarioFilter, setActive }) {
@@ -562,11 +800,7 @@ function RecorderPanel({ recorder, setRecorder, recording, recordedScenarios, st
 }
 
 function InventoryPanel({ rows, filter, setFilter, selectedTests, toggleSelected, selectVisible, selectAll, clearSelected, refresh, context, clearContext, backToSuites, runSelected, running }) {
-  return <section className="panel"><div className="section-heading toolbar-heading"><div><h2>{context ? `${context.label} Test Cases` : "Selectable Test Inventory"}</h2><span>{rows.length} visible cases · {selectedTests.size} selected</span></div><div className="inline-actions">{context ? <button className="secondary" onClick={backToSuites}>Back</button> : null}<input value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="Filter by tag, surface, feature, case, step" />{context ? <button className="secondary" onClick={clearContext}>All Cases</button> : null}<button onClick={runSelected} disabled={running || selectedTests.size === 0}><Play size={16} /> Run Selected {selectedTests.size}</button><a className="secondary" href="/api/inventory.xlsx?refresh=1"><Download size={16} /> Excel</a><button className="secondary" onClick={refresh}><RefreshCw size={16} /> Refresh</button><button className="secondary" onClick={selectAll}>Select All</button><button className="secondary" onClick={selectVisible}>Select Visible</button><button className="secondary" onClick={clearSelected}>Clear</button></div></div><DataTable rows={rows} columns={[["select", "Select"], ["id", "ID"], ["tags", "Tags"], ["testingLevel", "Category"], ["surface", "Surface"], ["feature", "Scenario"], ["displayTitle", "Test Case"], ["input", "Test Steps"], ["expected", "Expected Result"], ["proof", "What It Proves"]]} renderCell={(row, key) => key === "select" ? <input type="checkbox" checked={selectedTests.has(row.title)} onChange={() => toggleSelected(row.title)} /> : null} /></section>;
-}
-
-function BuilderPanel({ framework }) {
-  return <section className="panel builder"><div className="section-heading"><h2>Case Builder Standard</h2><span>Suite - Scenario - Case - Steps</span></div><div className="builder-grid">{(framework?.caseFormat || []).map((item) => <article key={item.key}><strong>{item.label}</strong><p>{item.description}</p></article>)}</div></section>;
+  return <section className="panel inventory-panel"><div className="section-heading toolbar-heading"><div><h2>{context ? `${context.label} Test Cases` : "Selectable Test Inventory"}</h2><span>{rows.length} visible cases · {selectedTests.size} selected</span></div><div className="inline-actions">{context ? <button className="secondary" onClick={backToSuites}>Back</button> : null}<input value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="Filter by tag, surface, feature, case, step" />{context ? <button className="secondary" onClick={clearContext}>All Cases</button> : null}<button onClick={runSelected} disabled={running || selectedTests.size === 0}><Play size={16} /> Run Selected {selectedTests.size}</button><a className="secondary" href="/api/inventory.xlsx?refresh=1"><Download size={16} /> Excel</a><button className="secondary" onClick={refresh}><RefreshCw size={16} /> Refresh</button><button className="secondary" onClick={selectAll}>Select All</button><button className="secondary" onClick={selectVisible}>Select Visible</button><button className="secondary" onClick={clearSelected}>Clear</button></div></div><DataTable rows={rows} columns={[["select", "Select"], ["id", "ID"], ["tags", "Tags"], ["testingLevel", "Category"], ["surface", "Surface"], ["feature", "Scenario"], ["displayTitle", "Test Case"], ["input", "Test Steps"], ["expected", "Expected Result"], ["proof", "What It Proves"]]} renderCell={(row, key) => key === "select" ? <input type="checkbox" checked={selectedTests.has(row.title)} onChange={() => toggleSelected(row.title)} /> : null} /></section>;
 }
 
 function ExecutionPanel({ status, stopRun }) {
@@ -575,12 +809,13 @@ function ExecutionPanel({ status, stopRun }) {
 
 function ReportsPanel({ results }) {
   const counts = results.counts || {};
+  const report = results.report || {};
   const links = [
-    ["HTML Report", "/report/list-view-regression-results.html"],
+    ["HTML Report", report.html || "/report/list-view-regression-results.html"],
     ["Test Cases Excel", "/api/inventory.xlsx?refresh=1"],
-    ["CSV", "/report/list-view-regression-results.csv"],
-    ["JSON", "/report/list-view-regression-results.json"],
-    ["PDF", "/report/list-view-regression-results.pdf"]
+    ["CSV", report.csv || "/report/list-view-regression-results.csv"],
+    ["JSON", report.json || "/report/list-view-regression-results.json"],
+    ["PDF", report.pdf || "/report/list-view-regression-results.pdf"]
   ];
   return <section className="section-stack">
     <div className="metric-grid compact">
@@ -592,7 +827,7 @@ function ReportsPanel({ results }) {
     </div>
     <section className="panel">
       <div className="section-heading">
-        <div><h2>Report Exports</h2><span>{results.updatedAt ? `Updated ${formatDate(results.updatedAt)}` : "Waiting for first run"}</span></div>
+        <div><h2>Report Exports</h2><span>{results.updatedAt ? `${report.label || "Latest report"} updated ${formatDate(results.updatedAt)}` : "Waiting for first run"}</span></div>
       </div>
       <div className="report-card-grid">
         {links.map(([label, href]) => <a key={href} href={href} target="_blank" rel="noreferrer">{label}</a>)}

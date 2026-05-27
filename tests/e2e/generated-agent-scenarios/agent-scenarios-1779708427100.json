@@ -19,7 +19,7 @@
       "scenario": "Admin regression for Admin",
       "testCase": "Verify admin behavior after apps/admin/src/components/AdminObjectHomePanel.tsx",
       "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
-      "steps": "Open the affected Admin surface. | Navigate to the screen or API path related to apps/admin/src/components/AdminObjectHomePanel.tsx. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.",
+      "steps": "Open Admin application -> fill the login details -> click Login -> navigate to Objects from the sidebar -> perform the Admin action named in the test case -> verify the page or table result",
       "expected": "The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.",
       "risk": "Low",
       "sourcePath": "apps/admin/src/components/AdminObjectHomePanel.tsx",
@@ -58,7 +58,7 @@
         }
       ],
       "decision": "Existing REG_LIFECYCLE_051 covers the changed feature area; reuse it instead of duplicating.",
-      "title": "@regression Verify admin behavior after apps/admin/src/components/AdminObjectHomePanel.tsx [surface: Admin] [feature: Admin] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open the affected Admin surface. | Navigate to the screen or API path related to apps/admin/src/components/AdminObjectHomePanel.tsx. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: generated smoke coverage for apps/admin/src/components/AdminObjectHomePanel.tsx]"
+      "title": "@regression Verify admin behavior after apps/admin/src/components/AdminObjectHomePanel.tsx [surface: Admin] [feature: Admin] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open Admin application -> fill the login details -> click Login -> navigate to Objects from the sidebar -> perform the Admin action named in the test case -> verify the page or table result] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: generated smoke coverage for apps/admin/src/components/AdminObjectHomePanel.tsx]"
     },
     {
       "id": "AGENT_002",
@@ -67,7 +67,7 @@
       "scenario": "Admin regression for Admin",
       "testCase": "Verify admin behavior after apps/admin/src/components/AdminObjectsPanel.tsx",
       "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
-      "steps": "Open the affected Admin surface. | Navigate to the screen or API path related to apps/admin/src/components/AdminObjectsPanel.tsx. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.",
+      "steps": "Open Admin application -> fill the login details -> click Login -> navigate to Objects from the sidebar -> perform the Admin action named in the test case -> verify the page or table result",
       "expected": "The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.",
       "risk": "Low",
       "sourcePath": "apps/admin/src/components/AdminObjectsPanel.tsx",
@@ -106,7 +106,7 @@
         }
       ],
       "decision": "Existing REG_LIFECYCLE_051 covers the changed feature area; reuse it instead of duplicating.",
-      "title": "@regression Verify admin behavior after apps/admin/src/components/AdminObjectsPanel.tsx [surface: Admin] [feature: Admin] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open the affected Admin surface. | Navigate to the screen or API path related to apps/admin/src/components/AdminObjectsPanel.tsx. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: generated smoke coverage for apps/admin/src/components/AdminObjectsPanel.tsx]"
+      "title": "@regression Verify admin behavior after apps/admin/src/components/AdminObjectsPanel.tsx [surface: Admin] [feature: Admin] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open Admin application -> fill the login details -> click Login -> navigate to Objects from the sidebar -> perform the Admin action named in the test case -> verify the page or table result] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: generated smoke coverage for apps/admin/src/components/AdminObjectsPanel.tsx]"
     },
     {
       "id": "AGENT_003",
@@ -115,7 +115,7 @@
       "scenario": "Admin regression for Admin",
       "testCase": "Verify admin behavior after apps/admin/src/style.css",
       "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
-      "steps": "Open the affected Admin surface. | Navigate to the screen or API path related to apps/admin/src/style.css. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.",
+      "steps": "Open Admin application -> fill the login details -> click Login -> navigate to Apps from the sidebar -> perform the Admin action named in the test case -> verify the page or table result",
       "expected": "The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.",
       "risk": "Low",
       "sourcePath": "apps/admin/src/style.css",
@@ -154,7 +154,7 @@
         }
       ],
       "decision": "Existing REG_LIFECYCLE_051 covers the changed feature area; reuse it instead of duplicating.",
-      "title": "@regression Verify admin behavior after apps/admin/src/style.css [surface: Admin] [feature: Admin] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open the affected Admin surface. | Navigate to the screen or API path related to apps/admin/src/style.css. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: generated smoke coverage for apps/admin/src/style.css]"
+      "title": "@regression Verify admin behavior after apps/admin/src/style.css [surface: Admin] [feature: Admin] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open Admin application -> fill the login details -> click Login -> navigate to Apps from the sidebar -> perform the Admin action named in the test case -> verify the page or table result] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: generated smoke coverage for apps/admin/src/style.css]"
     }
   ]
 }

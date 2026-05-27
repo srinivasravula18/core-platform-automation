@@ -5,13 +5,13 @@
   "lastSuccessfulAgentCommit": "0add972a1ea3f3c1b4864397eed8def7a9a753ef",
   "lastSeenMainCommit": "95758ccea0b8c244924a4454fed6cb73ed484c77",
   "lastPulledCommit": "95758ccea0b8c244924a4454fed6cb73ed484c77",
-  "lastGraphCommit": "95758ccea0b8c244924a4454fed6cb73ed484c77",
+  "lastGraphCommit": "b83b135e8d233f21dd6f52ad47837effec41367c",
   "lastScheduledRunAt": null,
   "lastRunStatus": "generated",
-  "updatedAt": "2026-05-26T13:16:08.786Z",
+  "updatedAt": "2026-05-27T09:48:25.873Z",
   "lastArtifact": "tests/e2e/generated-agent-scenarios/agent-scenarios-1779801368786.json",
   "lastSpec": "tests/e2e/list-view-regression/generated-agent-scenarios/agent-generated-1779801368786.spec.ts",
-  "lastGraph": "tests/e2e/generated-agent-scenarios/graph/graph-summary-1779792246927.json",
+  "lastGraph": "tests/e2e/generated-agent-scenarios/graph/graph-summary-1779875306211.json",
   "history": [
     {
       "generatedAt": "2026-05-26T13:16:08.786Z",

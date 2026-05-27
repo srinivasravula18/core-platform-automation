@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from '../../helpers/singleBrowserTest';
 import { attachEvidence } from '../helpers';
 
 test.setTimeout(300_000);

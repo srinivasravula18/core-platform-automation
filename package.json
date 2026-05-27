@@ -26,6 +26,10 @@
     "test:ui:list-view:search": "powershell -ExecutionPolicy Bypass -File .\\tests\\scripts\\run-list-view-regression.ps1 -Surface all -SkipReset -Scenario \"Search|Search navigation|Search empty state\"",
     "test:ui:list-view:api": "powershell -ExecutionPolicy Bypass -File .\\tests\\scripts\\run-list-view-regression.ps1 -Surface api -SkipReset",
     "test:ui:list-view:list": "npx playwright test --list -c tests/e2e/playwright.list-view-regression.config.ts",
+    "test:ui:admin-depthwise:list": "npx playwright test --list -c tests/e2e/playwright.admin-depthwise.config.ts",
+    "test:ui:admin-depthwise": "npx playwright test -c tests/e2e/playwright.admin-depthwise.config.ts --grep \"@admin-depthwise\"",
+    "test:ui:admin-depthwise:keystone": "npx playwright test -c tests/e2e/playwright.admin-depthwise.config.ts --grep \"@keystone-depthwise\"",
+    "test:ui:admin-depthwise:screen": "npx playwright test -c tests/e2e/playwright.admin-depthwise.config.ts --grep",
     "stop:all": "powershell -ExecutionPolicy Bypass -File .\\tests\\scripts\\stop-all.ps1"
   },
   "devDependencies": {

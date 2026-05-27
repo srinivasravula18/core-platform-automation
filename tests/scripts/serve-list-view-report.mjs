@@ -37,13 +37,45 @@ const agentGraphRoot = path.join(generatedRoot, "graph");
 const appRoot = path.resolve(process.env.CORE_PLATFORM_ROOT || "D:\\core-platform");
 const geminiModel = process.env.GEMINI_MODEL || "gemini-3.5-flash";
 const resultsJsonPath = path.join(reportRoot, "list-view-regression-results.json");
+const resultReportSources = [
+  {
+    id: "list-view-regression",
+    label: "List View Regression",
+    root: reportRoot,
+    html: "/report/list-view-regression-results.html",
+    csv: "/report/list-view-regression-results.csv",
+    json: "/report/list-view-regression-results.json",
+    pdf: "/report/list-view-regression-results.pdf",
+    jsonPath: resultsJsonPath
+  },
+  {
+    id: "admin-depthwise",
+    label: "Admin Depthwise",
+    root: path.resolve(repoRoot, "tests", "e2e", "reports", "admin-depthwise"),
+    html: "/report/admin-depthwise/admin-depthwise-results.html",
+    csv: "/report/admin-depthwise/admin-depthwise-results.csv",
+    json: "/report/admin-depthwise/admin-depthwise-results.json",
+    pdf: "/report/admin-depthwise/admin-depthwise-results.pdf",
+    jsonPath: path.resolve(repoRoot, "tests", "e2e", "reports", "admin-depthwise", "admin-depthwise-results.json")
+  }
+];
 const storageStatePath = path.join(repoRoot, "tests", "e2e", ".storage", "list-view.json");
 const port = Number(process.env.LIST_VIEW_REPORT_PORT || process.argv[2] || 5372);
 const host = process.env.LIST_VIEW_REPORT_HOST || "127.0.0.1";
 const gitNexusHost = process.env.GITNEXUS_HOST || "127.0.0.1";
 const gitNexusPort = Number(process.env.GITNEXUS_PORT || 4747);
 
-const allowedSurfaces = new Set(["all", "admin", "keystone", "api"]);
+const allowedSurfaces = new Set([
+  "all",
+  "admin",
+  "keystone",
+  "api",
+  "admin-depthwise",
+  "admin-objects",
+  "admin-sidebar",
+  "keystone-depthwise",
+  "permissions-access"
+]);
 const recordableSurfaces = new Map([
   ["admin", { label: "Admin", url: process.env.ADMIN_BASE_URL || "http://localhost:5002" }],
   ["keystone", { label: "Keystone", url: process.env.TEST_BASE_URL || process.env.TEST_UI_URL || "http://localhost:5003" }]
@@ -74,11 +106,44 @@ const frameworkRegistry = {
       tags: ["shockwave", "records", "list-view"]
     },
     {
-      id: "list-view-api",
-      label: "List View API",
-      surface: "api",
-      description: "Backend list-view metadata, query, export, validation, security, and bulk-action contract tests.",
-      tags: ["api", "contract", "security"]
+      id: "admin-depthwise",
+      label: "Admin Depthwise",
+      surface: "admin-depthwise",
+      grep: "@admin-depthwise",
+      description: "Admin side-nav screens, object metadata subtables, search, toolbar, and UI workflow coverage.",
+      tags: ["admin", "depthwise", "ui"]
+    },
+    {
+      id: "admin-objects-depthwise",
+      label: "Admin Objects Depthwise",
+      surface: "admin-objects",
+      grep: "@admin-screen:Objects",
+      description: "Objects-only UI matrix across seeded objects and object detail options.",
+      tags: ["objects", "metadata", "ui"]
+    },
+    {
+      id: "admin-side-navbar",
+      label: "Admin Side Navbar",
+      surface: "admin-sidebar",
+      grep: "from side nav|table/search remains stable|Seed readiness verifies all Admin table anchors",
+      description: "Every Admin side-nav option from Apps to Recycle Bin with UI, table, search, and screenshot evidence.",
+      tags: ["admin", "side-nav", "17-options"]
+    },
+    {
+      id: "keystone-depthwise",
+      label: "Keystone Depthwise",
+      surface: "keystone-depthwise",
+      grep: "@keystone-depthwise",
+      description: "Separate Keystone UI coverage for seeded apps, tabs, object screens, and list-view workflows.",
+      tags: ["keystone", "ui", "depthwise"]
+    },
+    {
+      id: "permissions-access-security",
+      label: "Permissions / Access UI",
+      surface: "permissions-access",
+      grep: "@permissions-ui",
+      description: "Permissions, roles, groups, users, and access-record UI flows with toolbar, search, and create-panel checks.",
+      tags: ["permissions", "access-records", "ui"]
     }
   ],
   scenarios: [
@@ -89,8 +154,7 @@ const frameworkRegistry = {
     { id: "navigation", suiteId: "list-view-regression", label: "Row navigation", grep: "Record navigation|Metadata boundary|Embedded list view|row opens|row can be selected", description: "Row selection, record navigation, and embedded list views." },
     { id: "lifecycle", suiteId: "list-view-regression", label: "Lifecycle and recycle bin", grep: "@lifecycle|@recycle|Bulk delete", description: "Safe disposable create, delete, recycle-bin, and cleanup flows." },
     { id: "workflow", suiteId: "list-view-regression", label: "Multi-step workflows", grep: "@workflow", description: "Connected user journeys that prove end-to-end task continuity." },
-    { id: "exports", suiteId: "list-view-regression", label: "Exports", grep: "Export|CSV|PDF", description: "CSV and PDF exports from UI and API paths." },
-    { id: "api-security", suiteId: "list-view-api", label: "API, validation, security", grep: "Security|Validation|Failure state|API", description: "Backend boundaries, invalid input, and permission-sensitive paths." }
+    { id: "exports", suiteId: "list-view-regression", label: "Exports", grep: "Export|CSV|PDF", description: "CSV and PDF exports from the UI." }
   ],
   caseFormat: [
     { key: "suite", label: "Test Suite", description: "A runnable surface or module such as Admin, Keystone, API, or a feature pack." },
@@ -170,6 +234,11 @@ const sendJson = (response, status, body) => {
 
 const sendText = (response, status, body) => {
   response.writeHead(status, { "content-type": "text/plain; charset=utf-8" });
+  response.end(body);
+};
+
+const sendHtml = (response, status, body) => {
+  response.writeHead(status, { "content-type": "text/html; charset=utf-8" });
   response.end(body);
 };
 
@@ -353,17 +422,71 @@ const readRequestJson = async (request) =>
     request.on("error", reject);
   });
 
+const emptyResults = (updatedAt = null) => ({
+  runStatus: "not_started",
+  updatedAt,
+  total: 0,
+  counts: { PENDING: 0, RUNNING: 0, PASS: 0, FAIL: 0, SKIP: 0 },
+  rows: []
+});
+
+const latestResultReport = () =>
+  resultReportSources
+    .filter((source) => existsSync(source.jsonPath))
+    .map((source) => {
+      const stats = statSync(source.jsonPath);
+      let payloadUpdatedAt = "";
+      try {
+        payloadUpdatedAt = JSON.parse(readFileSync(source.jsonPath, "utf8"))?.updatedAt || "";
+      } catch {
+        payloadUpdatedAt = "";
+      }
+      return {
+        ...source,
+        mtimeMs: stats.mtimeMs,
+        updatedAtMs: payloadUpdatedAt ? Date.parse(payloadUpdatedAt) || 0 : 0
+      };
+    })
+    .sort((a, b) => Math.max(b.updatedAtMs, b.mtimeMs) - Math.max(a.updatedAtMs, a.mtimeMs))[0];
+
+const countsForResultRows = (rows) =>
+  rows.reduce(
+    (acc, row) => {
+      if (acc[row.status] !== undefined) acc[row.status] += 1;
+      return acc;
+    },
+    { PENDING: 0, RUNNING: 0, PASS: 0, FAIL: 0, SKIP: 0 }
+  );
+
+const omitNotRunRowsAfterCompletion = (payload) => {
+  if (runState.running) return payload;
+  const rows = Array.isArray(payload.rows) ? payload.rows : [];
+  const executedRows = rows.filter((row) => row?.status !== "PENDING");
+  if (executedRows.length === rows.length) return payload;
+  return {
+    ...payload,
+    runStatus: payload.runStatus === "running" ? "interrupted" : payload.runStatus,
+    total: executedRows.length,
+    counts: countsForResultRows(executedRows),
+    rows: executedRows
+  };
+};
+
 const readResults = () => {
-  if (!existsSync(resultsJsonPath)) {
-    return {
-      runStatus: "not_started",
-      updatedAt: null,
-      total: 0,
-      counts: { PENDING: 0, RUNNING: 0, PASS: 0, FAIL: 0, SKIP: 0 },
-      rows: []
-    };
+  const source = latestResultReport();
+  if (!source) {
+    return emptyResults();
   }
-  const payload = JSON.parse(readFileSync(resultsJsonPath, "utf8"));
+  const payload = JSON.parse(readFileSync(source.jsonPath, "utf8"));
+  const report = {
+    id: source.id,
+    label: source.label,
+    html: "/report/latest",
+    sourceHtml: source.html,
+    csv: source.csv,
+    json: source.json,
+    pdf: source.pdf
+  };
   const rows = Array.isArray(payload.rows) ? payload.rows : [];
   const hasStaleRunningRows = !runState.running && rows.some((row) => row?.status === "RUNNING");
   if (hasStaleRunningRows) {
@@ -378,36 +501,115 @@ const readResults = () => {
           }
         : row
     );
-    const counts = normalizedRows.reduce(
-      (acc, row) => {
-        if (acc[row.status] !== undefined) acc[row.status] += 1;
-        return acc;
-      },
-      { PENDING: 0, RUNNING: 0, PASS: 0, FAIL: 0, SKIP: 0 }
-    );
     const normalizedPayload = {
       ...payload,
+      report,
       runStatus: runState.stopRequested ? "stopped" : "interrupted",
-      counts,
+      counts: countsForResultRows(normalizedRows),
       rows: normalizedRows
     };
-    writeFileSync(resultsJsonPath, JSON.stringify(normalizedPayload, null, 2), "utf8");
-    return normalizedPayload;
+    const completedPayload = omitNotRunRowsAfterCompletion(normalizedPayload);
+    writeFileSync(source.jsonPath, JSON.stringify(completedPayload, null, 2), "utf8");
+    return completedPayload;
   }
   const isDiscoveryOnlyResult =
     !runState.running &&
     rows.length > 0 &&
     rows.every((row) => row?.status === "PENDING" && /^not run\.?$/i.test(String(row?.actualResult || "")));
   if (isDiscoveryOnlyResult) {
-    return {
-      runStatus: "not_started",
-      updatedAt: payload.updatedAt ?? null,
-      total: 0,
-      counts: { PENDING: 0, RUNNING: 0, PASS: 0, FAIL: 0, SKIP: 0 },
-      rows: []
-    };
+    return { ...emptyResults(payload.updatedAt ?? null), report };
   }
-  return payload;
+  const completedPayload = omitNotRunRowsAfterCompletion({ ...payload, report });
+  if (!runState.running && Array.isArray(payload.rows) && completedPayload.rows?.length !== payload.rows.length) {
+    writeFileSync(source.jsonPath, JSON.stringify(completedPayload, null, 2), "utf8");
+  }
+  return completedPayload;
+};
+
+const renderLatestResultsHtml = () => {
+  const payload = readResults();
+  const counts = payload.counts || {};
+  const report = payload.report || {};
+  const assetBase = report.id === "admin-depthwise" ? "/report/admin-depthwise/" : "/report/";
+  const rows = Array.isArray(payload.rows) ? payload.rows : [];
+  const rowHtml = rows.map((row) => {
+    const screenshots = Array.isArray(row.screenshotPaths)
+      ? row.screenshotPaths.map((shot, index) => {
+          const href = `${assetBase}${String(shot || "").replace(/\\/g, "/")}`;
+          return `<a href="${xmlEscape(href)}">View ${index + 1}</a>`;
+        }).join("<br>")
+      : "";
+    return `<tr>
+      <td>${xmlEscape(row.id || "")}</td>
+      <td>${xmlEscape(row.surface || "")}</td>
+      <td>${xmlEscape(row.featureArea || "")}</td>
+      <td>${xmlEscape(row.testCaseTitle || "")}</td>
+      <td>${xmlEscape(row.expectedResult || "")}</td>
+      <td>${xmlEscape(row.actualResult || "")}</td>
+      <td><span class="status ${xmlEscape(row.status || "")}">${xmlEscape(row.status || "")}</span></td>
+      <td>${screenshots}</td>
+    </tr>`;
+  }).join("\n");
+  return `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${xmlEscape(report.label || "Latest")} Results</title>
+  <style>
+    body { margin: 0; padding: 18px; background: #f4f6f8; color: #142033; font-family: Inter, Segoe UI, Arial, sans-serif; }
+    header { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; margin-bottom: 16px; }
+    h1 { margin: 0 0 6px; font-size: 28px; }
+    p { margin: 0; color: #657386; }
+    nav { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+    a { color: #2563eb; font-weight: 700; text-decoration: none; }
+    nav a { border: 1px solid #d9e0ea; background: white; border-radius: 7px; padding: 8px 12px; color: #142033; }
+    .summary { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; margin-bottom: 14px; }
+    .metric { border: 1px solid #d9e0ea; border-radius: 8px; background: white; padding: 12px; }
+    .metric span { display: block; color: #657386; font-size: 12px; margin-bottom: 6px; }
+    .metric strong { font-size: 22px; }
+    .table-wrap { border: 1px solid #d9e0ea; border-radius: 8px; background: white; overflow: auto; max-height: calc(100dvh - 190px); }
+    table { width: 100%; min-width: 1100px; border-collapse: collapse; }
+    th, td { border-bottom: 1px solid #d9e0ea; padding: 9px 10px; text-align: left; vertical-align: top; font-size: 12px; line-height: 1.45; }
+    th { position: sticky; top: 0; background: #f8fafc; color: #657386; text-transform: uppercase; font-size: 11px; }
+    .status { display: inline-flex; min-width: 62px; justify-content: center; border-radius: 999px; padding: 4px 8px; font-weight: 800; }
+    .PASS { background: #dcfce7; color: #0f7a35; }
+    .FAIL { background: #fee2e2; color: #b42318; }
+    .SKIP { background: #e2e8f0; color: #64748b; }
+    .RUNNING { background: #dbeafe; color: #1d4ed8; }
+    .PENDING { background: #eef0f4; color: #6b7280; }
+    @media (max-width: 900px) { header { flex-direction: column; } .summary { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>${xmlEscape(report.label || "Latest")} Results</h1>
+      <p>Run status: ${xmlEscape(payload.runStatus || "-")} | Total cases: ${xmlEscape(payload.total || rows.length)} | Updated: ${xmlEscape(payload.updatedAt ? new Date(payload.updatedAt).toLocaleString() : "-")}</p>
+    </div>
+    <nav>
+      <a href="/">Dashboard</a>
+      ${report.csv ? `<a href="${xmlEscape(report.csv)}">CSV</a>` : ""}
+      ${report.json ? `<a href="${xmlEscape(report.json)}">JSON</a>` : ""}
+      ${report.pdf ? `<a href="${xmlEscape(report.pdf)}">PDF</a>` : ""}
+      ${report.sourceHtml ? `<a href="${xmlEscape(report.sourceHtml)}">Raw HTML</a>` : ""}
+    </nav>
+  </header>
+  <section class="summary">
+    <article class="metric"><span>Total</span><strong>${xmlEscape(payload.total || rows.length)}</strong></article>
+    <article class="metric"><span>Passed</span><strong>${xmlEscape(counts.PASS || 0)}</strong></article>
+    <article class="metric"><span>Failed</span><strong>${xmlEscape(counts.FAIL || 0)}</strong></article>
+    <article class="metric"><span>Skipped</span><strong>${xmlEscape(counts.SKIP || 0)}</strong></article>
+    <article class="metric"><span>Running</span><strong>${xmlEscape(counts.RUNNING || 0)}</strong></article>
+  </section>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>ID</th><th>Surface</th><th>Feature</th><th>Test Case</th><th>Expected</th><th>Actual</th><th>Status</th><th>Evidence</th></tr></thead>
+      <tbody>${rowHtml || `<tr><td colspan="8">No latest result rows.</td></tr>`}</tbody>
+    </table>
+  </div>
+</body>
+</html>`;
 };
 
 const readFramework = () => ({
@@ -447,12 +649,14 @@ const slugify = (value) =>
     .slice(0, 80);
 
 const escapeJsString = (value) => String(value || "").replace(/\\/g, "\\\\").replace(/`/g, "\\`").replace(/\$/g, "\\$");
+const recordedSingleBrowserImportPattern =
+  /import\s+\{\s*test\s*(,\s*expect\s*)?\}\s+from\s+['"](?:@playwright\/test|\.\.\/\.\.\/helpers\/singleBrowserTest)['"];?/;
 
 const addRecordedEvidenceHooks = (source) => {
   let nextSource = source;
   if (!/attachEvidence/.test(nextSource)) {
     nextSource = nextSource.replace(
-      /import\s+\{\s*test\s*(,\s*expect\s*)?\}\s+from\s+['"]@playwright\/test['"];?/,
+      recordedSingleBrowserImportPattern,
       (match) => `${match}\nimport { attachEvidence } from '../helpers';`
     );
   }
@@ -610,7 +814,7 @@ const finalizeRecordedScenario = (name) => {
   } else if (/test\.describe\(/.test(finalSource)) {
     finalSource += `\n\ntest(\`${escapeJsString(title)}\`, async ({ page }) => {\n  await page.goto('${recordState.url}');\n});\n`;
   } else {
-    finalSource = `import { test } from '@playwright/test';\n\ntest(\`${escapeJsString(title)}\`, async ({ page }) => {\n  await page.goto('${recordState.url}');\n});\n`;
+    finalSource = `import { test } from '../../helpers/singleBrowserTest';\n\ntest(\`${escapeJsString(title)}\`, async ({ page }) => {\n  await page.goto('${recordState.url}');\n});\n`;
   }
   finalSource = addRecordedEvidenceHooks(finalSource);
   writeFileSync(finalPath, finalSource, "utf8");
@@ -666,6 +870,230 @@ const caseIdentity = (feature, level, index) => {
     id,
     tags: `@case-${id} ${categoryTag(level)}`,
     testingLevel: level
+  };
+};
+
+const stepChain = (steps) => steps.filter(Boolean).join(" -> ");
+
+const normalizeStepSeparators = (steps) =>
+  String(steps || "")
+    .replace(/\s*\|\s*/g, " -> ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+const stripBracketMeta = (value) =>
+  String(value || "").replace(/\s*\[(surface|feature|level|priority|testdata|test data|automation|precondition|input|expected|proof):[^\]]+\]/gi, "");
+
+const isVagueStepText = (steps) => {
+  const lower = normalizeStepSeparators(steps).toLowerCase();
+  if (!lower) return true;
+  if (lower === "execute test steps." || /^attempt .+ as each role\.?$/.test(lower)) return true;
+  return [
+    "exercise the",
+    "exercise create",
+    "changed behavior",
+    "affected ",
+    "impacted ",
+    "primary user or api path",
+    "screen or api path",
+    "route family related",
+    "downstream",
+    "open or call"
+  ].some((phrase) => lower.includes(phrase));
+};
+
+const adminScreenForSteps = (feature, title, spec = "") => {
+  const text = `${feature} ${title} ${spec}`.toLowerCase();
+  if (/permission|access|role|group|user|security/.test(text)) return "Permissions or Access Records";
+  if (/object|field|metadata/.test(text)) return "Objects";
+  if (/recycle|restore|purge/.test(text)) return "Recycle Bin";
+  if (/app/.test(text)) return "Apps";
+  return feature || "the target screen";
+};
+
+const uiActionForSteps = (feature, title, spec = "") => {
+  const text = `${feature} ${title} ${spec}`.toLowerCase();
+  const target = String(feature || "record").toLowerCase();
+  if (/create|new|add/.test(text)) return `click New, fill the ${target} test details, and save`;
+  if (/edit|update|patch/.test(text)) return `open the test row, change the ${target} details, and save`;
+  if (/delete|remove|purge/.test(text)) return "select the test row, click Delete, and confirm";
+  if (/restore|recycle/.test(text)) return "open Recycle Bin, restore the test row, and verify it returns";
+  if (/search|filter/.test(text)) return "type the search or filter value and verify the matching rows";
+  if (/setting|column|sharing|preference|hierarchy/.test(text)) return "open Settings, change the requested option, and apply it";
+  if (/export|csv|pdf/.test(text)) return "click the export action and verify the downloaded file";
+  if (/toolbar|refresh|fit|pin|count/.test(text)) return "use the toolbar control named in the test and verify the table state";
+  if (/navigation|row opens|detail/.test(text)) return "open a row from the list and verify the detail view";
+  if (/invalid|reject|unauthorized|auth|permission|security/.test(text)) return "submit the restricted or invalid action and verify it is blocked";
+  return `perform the ${feature || "feature"} action named in the test case`;
+};
+
+const expandSpecificSteps = ({ raw, title, spec, feature, surface }) => {
+  const steps = normalizeStepSeparators(raw);
+  const lower = steps.toLowerCase();
+  if (/^open (admin|keystone)?\s*application\b/.test(lower) || lower.startsWith("open application ->")) return steps;
+
+  const cleanTitle = stripBracketMeta(title);
+  const text = `${cleanTitle} ${spec} ${feature} ${surface}`.toLowerCase();
+  const isApi = surface === "API" || /api|routes?|service|endpoint/.test(text);
+  const isKeystone = surface === "Keystone" || /keystone|shockwave/.test(text);
+  const isAdmin = surface === "Admin" || /admin|permission|access|role|group|user|security/.test(text);
+
+  if (isApi) {
+    return stepChain([
+      "Open application",
+      "authenticate through the API with seeded credentials",
+      steps,
+      "verify the response status and body",
+      "capture API evidence"
+    ]);
+  }
+  if (isKeystone) {
+    return stepChain([
+      "Open Keystone application",
+      "fill the login details",
+      "click Login",
+      "select the seeded app and tab",
+      steps,
+      "verify the record or table state"
+    ]);
+  }
+  if (isAdmin) {
+    return stepChain([
+      "Open Admin application",
+      "fill the login details",
+      "click Login",
+      steps,
+      "verify the page or table result"
+    ]);
+  }
+  return stepChain([
+    "Open application",
+    "sign in with seeded test credentials",
+    steps,
+    "verify the expected result and capture evidence"
+  ]);
+};
+
+const readableTestSteps = ({ raw = "", title = "", spec = "", feature = "List View", surface = "Application" } = {}) => {
+  if (raw && !isVagueStepText(raw)) return expandSpecificSteps({ raw, title, spec, feature, surface });
+
+  const cleanTitle = stripBracketMeta(title);
+  const text = `${cleanTitle} ${spec} ${feature} ${surface}`.toLowerCase();
+  const isApi = surface === "API" || /api|routes?|service|endpoint/.test(text);
+  const isAdmin = surface === "Admin" || /admin/.test(text);
+  const isKeystone = surface === "Keystone" || /keystone|shockwave/.test(text);
+  const isPermissionAccess = /permission|access record|access-control|effective-access|role|group|grant/.test(text);
+  const isInvalid = /reject|invalid|unauthorized|requires valid authentication|not found|missing|duplicate|inactive/.test(text);
+  const isDownstream = /downstream|effective-access|grant|check/.test(text);
+
+  if (isApi && isPermissionAccess && isInvalid) {
+    return stepChain([
+      "Open application",
+      "authenticate with seeded admin API credentials",
+      `send the invalid or unauthorized ${feature} request from the test case`,
+      "verify the expected 400, 401, 403, or 404 response",
+      "confirm protected permission data is unchanged"
+    ]);
+  }
+  if (isApi && isPermissionAccess && isDownstream) {
+    return stepChain([
+      "Open application",
+      "authenticate with seeded admin API credentials",
+      "create the role, group, user, permission, or grant setup required by the test",
+      "request the downstream effective-access check",
+      "verify the allowed or blocked access decision",
+      "delete the disposable security data"
+    ]);
+  }
+  if (isApi && isPermissionAccess) {
+    return stepChain([
+      "Open application",
+      "authenticate with seeded admin API credentials",
+      "create the test permission or access record",
+      "list and read back the created record",
+      "update, grant, or check it as required by the test",
+      "delete the disposable record and verify cleanup"
+    ]);
+  }
+  if (isApi) {
+    return stepChain([
+      "Open application",
+      "authenticate through the API with seeded credentials",
+      `call the ${feature} endpoint or route named in the test`,
+      "verify the response status and body",
+      "capture API evidence"
+    ]);
+  }
+  if (isKeystone) {
+    return stepChain([
+      "Open Keystone application",
+      "fill the login details",
+      "click Login",
+      "select the seeded app and tab",
+      "open the list view",
+      uiActionForSteps(feature, cleanTitle, spec),
+      "verify the record or table state"
+    ]);
+  }
+  if (isAdmin || isPermissionAccess) {
+    return stepChain([
+      "Open Admin application",
+      "fill the login details",
+      "click Login",
+      `navigate to ${adminScreenForSteps(feature, cleanTitle, spec)} from the sidebar`,
+      uiActionForSteps(feature, cleanTitle, spec),
+      "verify the page or table result"
+    ]);
+  }
+  return stepChain([
+    "Open application",
+    "sign in with seeded test credentials",
+    `navigate to the ${feature || "target"} screen`,
+    uiActionForSteps(feature, cleanTitle, spec),
+    "verify the expected result and capture evidence"
+  ]);
+};
+
+const defaultCaseNarrative = (title, spec, feature, surface) => {
+  const lowerTitle = String(title || "").toLowerCase();
+  const lowerSpec = String(spec || "").toLowerCase();
+  if (lowerSpec.includes("permissions-access-records")) {
+    if (lowerTitle.includes("reject") || lowerTitle.includes("invalid") || lowerTitle.includes("requires valid authentication") || lowerTitle.includes("not found")) {
+      return {
+        precondition: "Seeded admin credentials exist and protected permission/access APIs are available.",
+        input: readableTestSteps({ title, spec, feature, surface }),
+        expected: "The API returns the configured problem response/status without mutating protected data or leaking unauthorized access.",
+        proof: "Security and validation boundaries for permissions, access records, roles/groups, grants, and effective access remain enforced."
+      };
+    }
+    if (lowerTitle.includes("ui exposes")) {
+      return {
+        precondition: "Seeded admin user is signed in.",
+        input: readableTestSteps({ title, spec, feature, surface: "Admin" }),
+        expected: "The Admin security surface renders without authentication failure, crash, or permission leakage.",
+        proof: "The UI entry point for permissions/access records is reachable and protected."
+      };
+    }
+    return {
+      precondition: "Seeded security metadata exists and write scenarios run only when ALLOW_DATA_WRITE=true.",
+      input: readableTestSteps({ title, spec, feature, surface }),
+      expected: "The requested security operation returns the expected status/body and cleanup leaves no stale permission or access data.",
+      proof: "Permissions, access records, grants, and downstream access enforcement remain connected end to end."
+    };
+  }
+  if (lowerSpec.includes("admin-depthwise")) {
+    return {
+      precondition: "seed:industry-suite data is loaded and a seeded admin user is signed in.",
+      input: readableTestSteps({ title, spec, feature, surface }),
+      expected: "The screen/API renders or responds without auth failure, crash, or server error.",
+      proof: "Admin depthwise coverage stays connected from side-nav UI through metadata APIs and Keystone runtime terminals."
+    };
+  }
+  return {
+    precondition: "",
+    input: "",
+    expected: "",
+    proof: ""
   };
 };
 
@@ -1566,12 +1994,12 @@ const scenarioForChange = (change, index) => {
     scenario: `${feature} regression for ${change.area}`,
     testCase: `Verify ${feature.toLowerCase()} behavior after ${change.path}`,
     precondition: "Core Platform local stack is available and seeded test credentials can sign in.",
-    steps: [
-      `Open the affected ${change.area} surface.`,
-      `Navigate to the screen or API path related to ${change.path}.`,
-      "Exercise the changed behavior with seeded data and one edge-case input.",
-      "Capture evidence and assert no crash, permission leak, or invalid state."
-    ].join(" | "),
+    steps: readableTestSteps({
+      title: `Verify ${feature.toLowerCase()} behavior after ${change.path}`,
+      spec: change.path,
+      feature,
+      surface: change.surface === "api" ? "API" : change.surface === "keystone" ? "Keystone" : "Admin"
+    }),
     expected: "The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.",
     risk: change.risk,
     sourcePath: change.path
@@ -1659,9 +2087,12 @@ const applicationScenarioTemplates = (change, index, graphContext, gitNexusConte
       level: "BVT",
       tag: "@bvt",
       testCase: `BVT verifies ${feature.toLowerCase()} remains reachable after ${path.basename(change.path)}`,
-      steps: surface === "api"
-        ? `Authenticate through the API. | Exercise the route family related to ${change.path}. | Assert a valid authenticated response.`
-        : `Sign in to ${surfaceLabel}. | Open the impacted application shell or screen related to ${change.path}. | Assert the shell renders without auth, permission, or crash failures.`,
+      steps: readableTestSteps({
+        title: `BVT verifies ${feature.toLowerCase()} remains reachable after ${path.basename(change.path)}`,
+        spec: change.path,
+        feature,
+        surface: surface === "api" ? "API" : surface === "keystone" ? "Keystone" : "Admin"
+      }),
       expected: "The critical impacted surface remains reachable and authenticated behavior is intact.",
       proof: graphEvidence ? `GitNexus MCP evidence (${graphEvidence}) identifies this as critical impact.` : `Critical smoke coverage for ${change.path}.`
     });
@@ -1672,7 +2103,12 @@ const applicationScenarioTemplates = (change, index, graphContext, gitNexusConte
     level: "Sanity",
     tag: "@sanity",
     testCase: `Sanity verifies ${feature.toLowerCase()} happy path after ${path.basename(change.path)}`,
-    steps: `Open the impacted ${surfaceLabel} feature. | Exercise the primary user or API path related to ${change.path}. | Capture evidence after the happy path completes.`,
+    steps: readableTestSteps({
+      title: `Sanity verifies ${feature.toLowerCase()} happy path after ${path.basename(change.path)}`,
+      spec: change.path,
+      feature,
+      surface: surface === "api" ? "API" : surface === "keystone" ? "Keystone" : "Admin"
+    }),
     expected: "The changed feature completes its primary path and leaves the page/API response in a valid state.",
     proof: graphEvidence ? `GitNexus MCP evidence (${graphEvidence}) links the change to this feature path.` : `Focused sanity coverage for ${change.path}.`
   });
@@ -1683,7 +2119,12 @@ const applicationScenarioTemplates = (change, index, graphContext, gitNexusConte
       level: securityLikeChange(change) ? "BVT" : "Sanity",
       tag: securityLikeChange(change) ? "@bvt" : "@sanity",
       testCase: `${securityLikeChange(change) ? "Security" : "Validation"} checks guarded behavior after ${path.basename(change.path)}`,
-      steps: `Open the impacted ${surfaceLabel} feature. | Submit one invalid or unauthorized edge-case input. | Verify the app/API rejects it visibly without leaking data.`,
+      steps: readableTestSteps({
+        title: `${securityLikeChange(change) ? "Security" : "Validation"} checks guarded behavior after ${path.basename(change.path)} invalid unauthorized reject`,
+        spec: change.path,
+        feature,
+        surface: surface === "api" ? "API" : surface === "keystone" ? "Keystone" : "Admin"
+      }),
       expected: "Invalid or unauthorized input is rejected with a safe error state and no crash.",
       proof: graphEvidence ? `GitNexus MCP evidence (${graphEvidence}) indicates guarded logic impact.` : `Guarded behavior coverage for ${change.path}.`
     });
@@ -1697,7 +2138,12 @@ const applicationScenarioTemplates = (change, index, graphContext, gitNexusConte
       resetRequired: true,
       testCase: `Regression verifies guarded write flow after ${path.basename(change.path)}`,
       precondition: "ALLOW_DATA_WRITE=true, seeded test data exists, and reset runs after generated scenarios.",
-      steps: `Use seeded or disposable test data. | Exercise create, edit, delete, restore, or bulk behavior related to ${change.path}. | Verify cleanup or reset restores seeded state.`,
+      steps: readableTestSteps({
+        title: `Regression verifies guarded create update delete restore flow after ${path.basename(change.path)}`,
+        spec: change.path,
+        feature,
+        surface: surface === "api" ? "API" : surface === "keystone" ? "Keystone" : "Admin"
+      }),
       expected: "The write flow works on seeded/disposable data and the reset path can restore the local dataset.",
       proof: graphEvidence ? `GitNexus MCP evidence (${graphEvidence}) identifies mutation or lifecycle impact.` : `Guarded mutation regression coverage for ${change.path}.`
     });
@@ -1708,7 +2154,12 @@ const applicationScenarioTemplates = (change, index, graphContext, gitNexusConte
     level: "Regression",
     tag: "@regression",
     testCase: `Regression protects downstream ${feature.toLowerCase()} behavior after ${path.basename(change.path)}`,
-    steps: `Open a downstream ${surfaceLabel} workflow connected to ${change.path}. | Run search, navigation, refresh, settings, or API readback behavior. | Verify the workflow remains stable.`,
+    steps: readableTestSteps({
+      title: `Regression protects downstream ${feature.toLowerCase()} search navigation refresh settings readback after ${path.basename(change.path)}`,
+      spec: change.path,
+      feature,
+      surface: surface === "api" ? "API" : surface === "keystone" ? "Keystone" : "Admin"
+    }),
     expected: "Connected downstream behavior remains stable after the code change.",
     proof: graphEvidence ? `GitNexus MCP evidence (${graphEvidence}) provides downstream relationship context.` : `Downstream regression coverage for ${change.path}.`
   });
@@ -1948,7 +2399,13 @@ const readGeneratedAgentInventoryRows = (startIndex = 0) => {
       title: scenario.title || specTitle(scenario),
       displayTitle: scenario.testCase || cleanTitle(scenario.title || ""),
       precondition: scenario.precondition || "",
-      input: scenario.steps || "",
+      input: readableTestSteps({
+        raw: scenario.steps || "",
+        title: scenario.testCase || scenario.title || "",
+        spec: scenario.sourcePath || artifact.spec || "",
+        feature: scenario.feature || scenario.scenarioFamily || "AI Agent",
+        surface: scenario.surfaceLabel || scenario.surface || inferSurface("", scenario.title || "")
+      }),
       expected: scenario.expected || "",
       proof: scenario.proof || "",
       source: "agent",
@@ -1973,7 +2430,7 @@ const hasUsableGitNexusFileContext = (context) => Boolean(context) && [
 
 const generateAgentSpecSource = (scenarios) => {
   const cases = JSON.stringify(scenarios, null, 2);
-  return `import { expect, test } from "@playwright/test";
+  return `import { expect, test } from "../../helpers/singleBrowserTest";
 import {
   apiLogin,
   attachEvidence,
@@ -2069,7 +2526,13 @@ const generateAgentScenarios = async (baseRef = "origin/main") => {
         level,
         tag,
         testCase: template.scenarioFamily === "Sanity" ? modelDecision?.testCase || template.testCase : template.testCase,
-        steps: template.scenarioFamily === "Sanity" ? modelDecision?.steps || template.steps : template.steps,
+        steps: readableTestSteps({
+          raw: template.scenarioFamily === "Sanity" ? modelDecision?.steps || template.steps : template.steps,
+          title: template.scenarioFamily === "Sanity" ? modelDecision?.testCase || template.testCase : template.testCase,
+          spec: template.sourcePath,
+          feature: template.scenarioFamily === "Sanity" ? modelDecision?.feature || template.feature : template.feature,
+          surface: template.surface === "api" ? "API" : template.surface === "keystone" ? "Keystone" : "Admin"
+        }),
         expected: template.scenarioFamily === "Sanity" ? modelDecision?.expected || template.expected : template.expected,
         adminScreen: modelDecision?.adminScreen || template.adminScreen,
         evidenceName: `agent-${template.id.toLowerCase()}`
@@ -2227,14 +2690,24 @@ const readInventory = () => {
     return cachedInventory;
   }
 
-  const config = "tests/e2e/playwright.list-view-regression.config.ts";
-  const result = spawnSync("cmd", ["/c", "npx.cmd", "playwright", "test", "--list", "-c", config, "--reporter=list"], {
-    cwd: repoRoot,
-    encoding: "utf8",
-    timeout: 120_000,
-    windowsHide: true
-  });
-  const output = `${result.stdout || ""}\n${result.stderr || ""}`;
+  const configs = [
+    "tests/e2e/playwright.list-view-regression.config.ts",
+    "tests/e2e/playwright.admin-depthwise.config.ts"
+  ];
+  const outputs = [];
+  const errors = [];
+  for (const config of configs) {
+    const result = spawnSync("cmd", ["/c", "npx.cmd", "playwright", "test", "--list", "-c", config, "--reporter=list"], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      timeout: 120_000,
+      windowsHide: true
+    });
+    outputs.push(`${result.stdout || ""}\n${result.stderr || ""}`);
+    if (result.error) errors.push(result.error.message);
+    if (result.status && result.status !== 0) errors.push(`${config} exited ${result.status}`);
+  }
+  const output = outputs.join("\n");
   const rows = [];
   for (const line of output.split(/\r?\n/)) {
     const marker = " › ";
@@ -2248,6 +2721,7 @@ const readInventory = () => {
     const feature = parseMeta(title, "feature") || "List View";
     const level = inferTestingLevel(parseMeta(title, "level"), title);
     const identity = caseIdentity(feature, level, rows.length);
+    const fallbackNarrative = defaultCaseNarrative(title, spec, feature, surface);
     rows.push({
       id: identity.id,
       tags: identity.tags,
@@ -2258,10 +2732,16 @@ const readInventory = () => {
       feature,
       title,
       displayTitle: cleanTitle(title),
-      precondition: parseMeta(title, "precondition"),
-      input: parseMeta(title, "input"),
-      expected: parseMeta(title, "expected"),
-      proof: parseMeta(title, "proof")
+      precondition: parseMeta(title, "precondition") || fallbackNarrative.precondition,
+      input: readableTestSteps({
+        raw: parseMeta(title, "input") || fallbackNarrative.input,
+        title,
+        spec,
+        feature,
+        surface
+      }),
+      expected: parseMeta(title, "expected") || fallbackNarrative.expected,
+      proof: parseMeta(title, "proof") || fallbackNarrative.proof
     });
   }
   if (rows.length === 0 && existsSync(resultsJsonPath)) {
@@ -2278,24 +2758,31 @@ const readInventory = () => {
         title: row.testCaseTitle || "",
         displayTitle: row.testCaseTitle || "",
         precondition: row.precondition || "",
-        input: row.inputAction || "",
+        input: readableTestSteps({
+          raw: row.inputAction || "",
+          title: row.testCaseTitle || "",
+          feature: row.featureArea || "",
+          surface: row.surface || ""
+        }),
         expected: row.expectedResult || "",
         proof: row.proof || ""
       });
     }
   }
   const existingInventoryKeys = new Set(rows.map((row) => `${row.title}::${row.spec}`));
-  for (const generatedRow of readGeneratedAgentInventoryRows(rows.length)) {
-    const key = `${generatedRow.title}::${generatedRow.spec}`;
-    if (existingInventoryKeys.has(key)) continue;
-    existingInventoryKeys.add(key);
-    rows.push(generatedRow);
+  if (process.env.INCLUDE_GENERATED_AGENT_INVENTORY === "true") {
+    for (const generatedRow of readGeneratedAgentInventoryRows(rows.length)) {
+      const key = `${generatedRow.title}::${generatedRow.spec}`;
+      if (existingInventoryKeys.has(key)) continue;
+      existingInventoryKeys.add(key);
+      rows.push(generatedRow);
+    }
   }
   cachedInventory = {
     updatedAt: new Date().toISOString(),
     total: rows.length,
     rows,
-    error: result.error ? result.error.message : result.status === 0 ? "" : output.slice(-1000)
+    error: errors.length === 0 ? "" : `${errors.join("; ")}\n${output.slice(-1000)}`
   };
   cachedInventoryAt = now;
   return cachedInventory;
@@ -2329,6 +2816,124 @@ const runListViewSuite = async (request, response) => {
   const scenario = selectedTests.length > 0
     ? selectedTests.map(escapeRegex).join("|")
     : String(body.scenario || "").trim();
+  const adminDepthwiseSurfaces = new Set(["admin-depthwise", "admin-objects", "admin-sidebar", "keystone-depthwise"]);
+  if (adminDepthwiseSurfaces.has(surface)) {
+    const args = [
+      "playwright",
+      "test",
+      "-c",
+      "tests/e2e/playwright.admin-depthwise.config.ts",
+      "--workers=1"
+    ];
+    if (scenario) args.push("-g", scenario);
+    if (headed) args.push("--headed");
+
+    runState.running = true;
+    runState.command = `npx ${args.join(" ")}`;
+    runState.surface = surface;
+    runState.scenario = scenario;
+    runState.selectedTestCount = selectedTests.length;
+    runState.reset = reset;
+    runState.headed = headed;
+    runState.stopRequested = false;
+    runState.startedAt = new Date().toISOString();
+    runState.finishedAt = null;
+    runState.exitCode = null;
+    runState.logs = [];
+    pushLog(`Starting ${surface} run${scenario ? ` with scenario filter ${scenario}` : ""}...`);
+
+    const runCommand = process.platform === "win32" ? "cmd.exe" : "npx";
+    const runArgs = process.platform === "win32" ? ["/d", "/s", "/c", "npx.cmd", ...args] : args;
+    currentProcess = spawn(runCommand, runArgs, {
+      cwd: repoRoot,
+      windowsHide: true,
+      shell: false,
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+
+    currentProcess.stdout.on("data", pushLog);
+    currentProcess.stderr.on("data", pushLog);
+    currentProcess.on("error", (error) => {
+      pushLog(`Failed to start test process: ${error.message}`);
+      runState.running = false;
+      runState.finishedAt = new Date().toISOString();
+      runState.exitCode = 1;
+      currentProcess = null;
+    });
+    currentProcess.on("exit", (code) => {
+      runState.running = false;
+      runState.finishedAt = new Date().toISOString();
+      runState.exitCode = runState.stopRequested ? code ?? 130 : code ?? 1;
+      pushLog(
+        runState.stopRequested
+          ? `Test process stopped with exit code ${runState.exitCode}.`
+          : `Test process finished with exit code ${runState.exitCode}.`
+      );
+      currentProcess = null;
+    });
+
+    sendJson(response, 202, { ok: true, state: runState });
+    return;
+  }
+  if (surface === "permissions-access") {
+    const args = [
+      "playwright",
+      "test",
+      "tests/e2e/list-view-regression/permissions-access-records.spec.ts",
+      "-c",
+      "tests/e2e/playwright.list-view-regression.config.ts",
+      "--workers=1"
+    ];
+    if (scenario) args.push("-g", scenario);
+    if (headed) args.push("--headed");
+
+    runState.running = true;
+    runState.command = `npx ${args.join(" ")}`;
+    runState.surface = surface;
+    runState.scenario = scenario;
+    runState.selectedTestCount = selectedTests.length;
+    runState.reset = reset;
+    runState.headed = headed;
+    runState.stopRequested = false;
+    runState.startedAt = new Date().toISOString();
+    runState.finishedAt = null;
+    runState.exitCode = null;
+    runState.logs = [];
+    pushLog(`Starting permissions/access security run${scenario ? ` with scenario filter ${scenario}` : ""}...`);
+
+    const runCommand = process.platform === "win32" ? "cmd.exe" : "npx";
+    const runArgs = process.platform === "win32" ? ["/d", "/s", "/c", "npx.cmd", ...args] : args;
+    currentProcess = spawn(runCommand, runArgs, {
+      cwd: repoRoot,
+      windowsHide: true,
+      shell: false,
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+
+    currentProcess.stdout.on("data", pushLog);
+    currentProcess.stderr.on("data", pushLog);
+    currentProcess.on("error", (error) => {
+      pushLog(`Failed to start test process: ${error.message}`);
+      runState.running = false;
+      runState.finishedAt = new Date().toISOString();
+      runState.exitCode = 1;
+      currentProcess = null;
+    });
+    currentProcess.on("exit", (code) => {
+      runState.running = false;
+      runState.finishedAt = new Date().toISOString();
+      runState.exitCode = runState.stopRequested ? code ?? 130 : code ?? 1;
+      pushLog(
+        runState.stopRequested
+          ? `Test process stopped with exit code ${runState.exitCode}.`
+          : `Test process finished with exit code ${runState.exitCode}.`
+      );
+      currentProcess = null;
+    });
+
+    sendJson(response, 202, { ok: true, state: runState });
+    return;
+  }
   const args = [
     "-ExecutionPolicy",
     "Bypass",
@@ -3246,13 +3851,23 @@ const server = createServer(async (request, response) => {
   }
 
   if (url.pathname === "/report" || url.pathname === "/report/") {
-    response.writeHead(302, { location: "/report/list-view-regression-results.html" });
+    response.writeHead(302, { location: "/report/latest" });
     response.end();
     return;
   }
 
+  if (url.pathname === "/report/latest" || url.pathname === "/report/latest.html") {
+    sendHtml(response, 200, renderLatestResultsHtml());
+    return;
+  }
+
   if (url.pathname.startsWith("/report/")) {
-    const targetPath = resolveSafePath(reportRoot, url.pathname.replace(/^\/report/, ""));
+    const namedReport = resultReportSources.find((source) =>
+      source.id !== "list-view-regression" && url.pathname.startsWith(`/report/${source.id}/`)
+    );
+    const targetPath = namedReport
+      ? resolveSafePath(namedReport.root, url.pathname.replace(`/report/${namedReport.id}`, ""))
+      : resolveSafePath(reportRoot, url.pathname.replace(/^\/report/, ""));
     if (!targetPath) {
       sendText(response, 403, "Forbidden.");
       return;

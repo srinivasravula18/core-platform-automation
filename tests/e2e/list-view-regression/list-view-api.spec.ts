@@ -1,4 +1,4 @@
-import { expect, request as playwrightRequest, test, type APIRequestContext } from "@playwright/test";
+import { expect, request as playwrightRequest, test, type APIRequestContext } from "../helpers/singleBrowserTest";
 import {
   apiLogin,
   authHeaders,

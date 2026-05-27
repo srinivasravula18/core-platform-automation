@@ -76,16 +76,37 @@ export const loginToKeystone = async (page: Page) => {
 
 export const apiLogin = async (request: APIRequestContext) => {
   if (cachedApiToken) return cachedApiToken;
-  const response = await request.post("/auth/login", {
-    data: { username: TEST_USERNAME, password: TEST_PASSWORD }
-  });
-  const bodyText = await response.text();
-  expect(response.ok(), bodyText).toBeTruthy();
-  const payload = JSON.parse(bodyText) as { access_token?: string; token?: string };
-  const token = payload.access_token ?? payload.token ?? "";
-  expect(token).toBeTruthy();
-  cachedApiToken = token;
-  return token;
+  const stateToken = await request
+    .storageState()
+    .then((state) => {
+      const now = Math.floor(Date.now() / 1000);
+      return state.cookies.find(
+        (cookie) => cookie.name === "cp_access_token" && (!cookie.expires || cookie.expires > now)
+      )?.value;
+    })
+    .catch(() => "");
+  if (stateToken) {
+    cachedApiToken = stateToken;
+    return stateToken;
+  }
+  let lastBodyText = "";
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const response = await request.post("/auth/login", {
+      data: { username: TEST_USERNAME, password: TEST_PASSWORD }
+    });
+    lastBodyText = await response.text();
+    if (response.ok()) {
+      const payload = JSON.parse(lastBodyText) as { access_token?: string; token?: string };
+      const token = payload.access_token ?? payload.token ?? "";
+      expect(token).toBeTruthy();
+      cachedApiToken = token;
+      return token;
+    }
+    if (response.status() !== 429) break;
+    await new Promise((resolve) => setTimeout(resolve, 2_000 * (attempt + 1)));
+  }
+  expect(false, lastBodyText).toBeTruthy();
+  return "";
 };
 
 export const authHeaders = (token: string) => ({

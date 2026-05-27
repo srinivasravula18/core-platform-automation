@@ -25,7 +25,7 @@
       "scenario": "Security regression for Admin",
       "testCase": "Verify security behavior after apps/admin/src/components/AdminCreateAccessRecordModal.tsx",
       "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
-      "steps": "Open the affected Admin surface. | Navigate to the screen or API path related to apps/admin/src/components/AdminCreateAccessRecordModal.tsx. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.",
+      "steps": "Open Admin application -> fill the login details -> click Login -> navigate to Permissions or Access Records from the sidebar -> click New, fill the security test details, and save -> verify the page or table result",
       "expected": "The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.",
       "risk": "High",
       "sourcePath": "apps/admin/src/components/AdminCreateAccessRecordModal.tsx",
@@ -65,7 +65,7 @@
       ],
       "decision": "Existing REG_LIFECYCLE_051 covers the changed feature area; reuse it instead of duplicating.",
       "planner": "rules",
-      "title": "@bvt Verify security behavior after apps/admin/src/components/AdminCreateAccessRecordModal.tsx [surface: Admin] [feature: Security] [level: BVT] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open the affected Admin surface. | Navigate to the screen or API path related to apps/admin/src/components/AdminCreateAccessRecordModal.tsx. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: generated smoke coverage for apps/admin/src/components/AdminCreateAccessRecordModal.tsx]"
+      "title": "@bvt Verify security behavior after apps/admin/src/components/AdminCreateAccessRecordModal.tsx [surface: Admin] [feature: Security] [level: BVT] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open Admin application -> fill the login details -> click Login -> navigate to Permissions or Access Records from the sidebar -> click New, fill the security test details, and save -> verify the page or table result] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: generated smoke coverage for apps/admin/src/components/AdminCreateAccessRecordModal.tsx]"
     },
     {
       "id": "AGENT_002",
@@ -74,7 +74,7 @@
       "scenario": "Admin regression for Admin",
       "testCase": "Verify admin behavior after apps/admin/src/components/AdminFieldModal.tsx",
       "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
-      "steps": "Open the affected Admin surface. | Navigate to the screen or API path related to apps/admin/src/components/AdminFieldModal.tsx. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.",
+      "steps": "Open Admin application -> fill the login details -> click Login -> navigate to Objects from the sidebar -> perform the Admin action named in the test case -> verify the page or table result",
       "expected": "The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.",
       "risk": "Low",
       "sourcePath": "apps/admin/src/components/AdminFieldModal.tsx",
@@ -114,7 +114,7 @@
       ],
       "decision": "Existing REG_LIFECYCLE_051 covers the changed feature area; reuse it instead of duplicating.",
       "planner": "rules",
-      "title": "@regression Verify admin behavior after apps/admin/src/components/AdminFieldModal.tsx [surface: Admin] [feature: Admin] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open the affected Admin surface. | Navigate to the screen or API path related to apps/admin/src/components/AdminFieldModal.tsx. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: generated smoke coverage for apps/admin/src/components/AdminFieldModal.tsx]"
+      "title": "@regression Verify admin behavior after apps/admin/src/components/AdminFieldModal.tsx [surface: Admin] [feature: Admin] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open Admin application -> fill the login details -> click Login -> navigate to Objects from the sidebar -> perform the Admin action named in the test case -> verify the page or table result] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: generated smoke coverage for apps/admin/src/components/AdminFieldModal.tsx]"
     },
     {
       "id": "AGENT_003",
@@ -123,7 +123,7 @@
       "scenario": "Admin regression for Admin",
       "testCase": "Verify admin behavior after apps/admin/src/components/AdminObjectHomePanel.tsx",
       "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
-      "steps": "Open the affected Admin surface. | Navigate to the screen or API path related to apps/admin/src/components/AdminObjectHomePanel.tsx. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.",
+      "steps": "Open Admin application -> fill the login details -> click Login -> navigate to Objects from the sidebar -> perform the Admin action named in the test case -> verify the page or table result",
       "expected": "The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.",
       "risk": "Low",
       "sourcePath": "apps/admin/src/components/AdminObjectHomePanel.tsx",
@@ -163,7 +163,7 @@
       ],
       "decision": "Existing REG_LIFECYCLE_051 covers the changed feature area; reuse it instead of duplicating.",
       "planner": "rules",
-      "title": "@regression Verify admin behavior after apps/admin/src/components/AdminObjectHomePanel.tsx [surface: Admin] [feature: Admin] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open the affected Admin surface. | Navigate to the screen or API path related to apps/admin/src/components/AdminObjectHomePanel.tsx. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: generated smoke coverage for apps/admin/src/components/AdminObjectHomePanel.tsx]"
+      "title": "@regression Verify admin behavior after apps/admin/src/components/AdminObjectHomePanel.tsx [surface: Admin] [feature: Admin] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open Admin application -> fill the login details -> click Login -> navigate to Objects from the sidebar -> perform the Admin action named in the test case -> verify the page or table result] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: generated smoke coverage for apps/admin/src/components/AdminObjectHomePanel.tsx]"
     },
     {
       "id": "AGENT_004",
@@ -172,7 +172,7 @@
       "scenario": "Security regression for Admin",
       "testCase": "Verify security behavior after apps/admin/src/hooks/useAdminAccessControls.ts",
       "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
-      "steps": "Open the affected Admin surface. | Navigate to the screen or API path related to apps/admin/src/hooks/useAdminAccessControls.ts. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.",
+      "steps": "Open Admin application -> fill the login details -> click Login -> navigate to Permissions or Access Records from the sidebar -> submit the restricted or invalid action and verify it is blocked -> verify the page or table result",
       "expected": "The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.",
       "risk": "High",
       "sourcePath": "apps/admin/src/hooks/useAdminAccessControls.ts",
@@ -212,7 +212,7 @@
       ],
       "decision": "Existing REG_LIFECYCLE_051 covers the changed feature area; reuse it instead of duplicating.",
       "planner": "rules",
-      "title": "@bvt Verify security behavior after apps/admin/src/hooks/useAdminAccessControls.ts [surface: Admin] [feature: Security] [level: BVT] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open the affected Admin surface. | Navigate to the screen or API path related to apps/admin/src/hooks/useAdminAccessControls.ts. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: generated smoke coverage for apps/admin/src/hooks/useAdminAccessControls.ts]"
+      "title": "@bvt Verify security behavior after apps/admin/src/hooks/useAdminAccessControls.ts [surface: Admin] [feature: Security] [level: BVT] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open Admin application -> fill the login details -> click Login -> navigate to Permissions or Access Records from the sidebar -> submit the restricted or invalid action and verify it is blocked -> verify the page or table result] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: generated smoke coverage for apps/admin/src/hooks/useAdminAccessControls.ts]"
     },
     {
       "id": "AGENT_005",
@@ -221,7 +221,7 @@
       "scenario": "Admin regression for Admin",
       "testCase": "Verify admin behavior after apps/admin/src/main.tsx",
       "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
-      "steps": "Open the affected Admin surface. | Navigate to the screen or API path related to apps/admin/src/main.tsx. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.",
+      "steps": "Open Admin application -> fill the login details -> click Login -> navigate to Apps from the sidebar -> perform the Admin action named in the test case -> verify the page or table result",
       "expected": "The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.",
       "risk": "Low",
       "sourcePath": "apps/admin/src/main.tsx",
@@ -261,7 +261,7 @@
       ],
       "decision": "Existing REG_LIFECYCLE_051 covers the changed feature area; reuse it instead of duplicating.",
       "planner": "rules",
-      "title": "@regression Verify admin behavior after apps/admin/src/main.tsx [surface: Admin] [feature: Admin] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open the affected Admin surface. | Navigate to the screen or API path related to apps/admin/src/main.tsx. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: generated smoke coverage for apps/admin/src/main.tsx]"
+      "title": "@regression Verify admin behavior after apps/admin/src/main.tsx [surface: Admin] [feature: Admin] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open Admin application -> fill the login details -> click Login -> navigate to Apps from the sidebar -> perform the Admin action named in the test case -> verify the page or table result] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: generated smoke coverage for apps/admin/src/main.tsx]"
     },
     {
       "id": "AGENT_006",
@@ -270,7 +270,7 @@
       "scenario": "Admin regression for Admin",
       "testCase": "Verify admin behavior after apps/admin/src/style.css",
       "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
-      "steps": "Open the affected Admin surface. | Navigate to the screen or API path related to apps/admin/src/style.css. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.",
+      "steps": "Open Admin application -> fill the login details -> click Login -> navigate to Apps from the sidebar -> perform the Admin action named in the test case -> verify the page or table result",
       "expected": "The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.",
       "risk": "Low",
       "sourcePath": "apps/admin/src/style.css",
@@ -310,7 +310,7 @@
       ],
       "decision": "Existing REG_LIFECYCLE_051 covers the changed feature area; reuse it instead of duplicating.",
       "planner": "rules",
-      "title": "@regression Verify admin behavior after apps/admin/src/style.css [surface: Admin] [feature: Admin] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open the affected Admin surface. | Navigate to the screen or API path related to apps/admin/src/style.css. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: generated smoke coverage for apps/admin/src/style.css]"
+      "title": "@regression Verify admin behavior after apps/admin/src/style.css [surface: Admin] [feature: Admin] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open Admin application -> fill the login details -> click Login -> navigate to Apps from the sidebar -> perform the Admin action named in the test case -> verify the page or table result] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: generated smoke coverage for apps/admin/src/style.css]"
     },
     {
       "id": "AGENT_007",
@@ -319,7 +319,7 @@
       "scenario": "API / Service regression for API / Service",
       "testCase": "Verify api / service behavior after apps/service/src/admin/routes.ts",
       "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
-      "steps": "Open the affected API / Service surface. | Navigate to the screen or API path related to apps/service/src/admin/routes.ts. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.",
+      "steps": "Open application -> authenticate through the API with seeded credentials -> call the API / Service endpoint or route named in the test -> verify the response status and body -> capture API evidence",
       "expected": "The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.",
       "risk": "High",
       "sourcePath": "apps/service/src/admin/routes.ts",
@@ -359,7 +359,7 @@
       ],
       "decision": "Existing REG_LIFECYCLE_051 covers the changed feature area; reuse it instead of duplicating.",
       "planner": "rules",
-      "title": "@bvt Verify api / service behavior after apps/service/src/admin/routes.ts [surface: API] [feature: API / Service] [level: BVT] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open the affected API / Service surface. | Navigate to the screen or API path related to apps/service/src/admin/routes.ts. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: generated smoke coverage for apps/service/src/admin/routes.ts]"
+      "title": "@bvt Verify api / service behavior after apps/service/src/admin/routes.ts [surface: API] [feature: API / Service] [level: BVT] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open application -> authenticate through the API with seeded credentials -> call the API / Service endpoint or route named in the test -> verify the response status and body -> capture API evidence] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: generated smoke coverage for apps/service/src/admin/routes.ts]"
     },
     {
       "id": "AGENT_008",
@@ -368,7 +368,7 @@
       "scenario": "API / Service regression for API / Service",
       "testCase": "Verify api / service behavior after apps/service/src/apps/routes.ts",
       "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
-      "steps": "Open the affected API / Service surface. | Navigate to the screen or API path related to apps/service/src/apps/routes.ts. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.",
+      "steps": "Open application -> authenticate through the API with seeded credentials -> call the API / Service endpoint or route named in the test -> verify the response status and body -> capture API evidence",
       "expected": "The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.",
       "risk": "High",
       "sourcePath": "apps/service/src/apps/routes.ts",
@@ -408,7 +408,7 @@
       ],
       "decision": "Existing BVT_PLATFORM_HEALTH_056 covers the changed feature area; reuse it instead of duplicating.",
       "planner": "rules",
-      "title": "@bvt Verify api / service behavior after apps/service/src/apps/routes.ts [surface: API] [feature: API / Service] [level: BVT] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open the affected API / Service surface. | Navigate to the screen or API path related to apps/service/src/apps/routes.ts. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: generated smoke coverage for apps/service/src/apps/routes.ts]"
+      "title": "@bvt Verify api / service behavior after apps/service/src/apps/routes.ts [surface: API] [feature: API / Service] [level: BVT] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open application -> authenticate through the API with seeded credentials -> call the API / Service endpoint or route named in the test -> verify the response status and body -> capture API evidence] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: generated smoke coverage for apps/service/src/apps/routes.ts]"
     },
     {
       "id": "AGENT_009",
@@ -417,7 +417,7 @@
       "scenario": "Keystone / Shockwave regression for Keystone / Shockwave",
       "testCase": "Verify keystone / shockwave behavior after apps/shockwave/src/App.tsx",
       "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
-      "steps": "Open the affected Keystone / Shockwave surface. | Navigate to the screen or API path related to apps/shockwave/src/App.tsx. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.",
+      "steps": "Open Keystone application -> fill the login details -> click Login -> select the seeded app and tab -> open the list view -> perform the Keystone / Shockwave action named in the test case -> verify the record or table state",
       "expected": "The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.",
       "risk": "Low",
       "sourcePath": "apps/shockwave/src/App.tsx",
@@ -457,7 +457,7 @@
       ],
       "decision": "Existing BVT_NAVIGATION_SHELL_061 covers the changed feature area; reuse it instead of duplicating.",
       "planner": "rules",
-      "title": "@regression Verify keystone / shockwave behavior after apps/shockwave/src/App.tsx [surface: Keystone] [feature: Keystone / Shockwave] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open the affected Keystone / Shockwave surface. | Navigate to the screen or API path related to apps/shockwave/src/App.tsx. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: generated smoke coverage for apps/shockwave/src/App.tsx]"
+      "title": "@regression Verify keystone / shockwave behavior after apps/shockwave/src/App.tsx [surface: Keystone] [feature: Keystone / Shockwave] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open Keystone application -> fill the login details -> click Login -> select the seeded app and tab -> open the list view -> perform the Keystone / Shockwave action named in the test case -> verify the record or table state] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: generated smoke coverage for apps/shockwave/src/App.tsx]"
     },
     {
       "id": "AGENT_010",
@@ -466,7 +466,7 @@
       "scenario": "Keystone / Shockwave regression for Keystone / Shockwave",
       "testCase": "Verify keystone / shockwave behavior after apps/shockwave/src/components/LookupListModal.tsx",
       "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
-      "steps": "Open the affected Keystone / Shockwave surface. | Navigate to the screen or API path related to apps/shockwave/src/components/LookupListModal.tsx. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.",
+      "steps": "Open Keystone application -> fill the login details -> click Login -> select the seeded app and tab -> open the list view -> perform the Keystone / Shockwave action named in the test case -> verify the record or table state",
       "expected": "The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.",
       "risk": "Low",
       "sourcePath": "apps/shockwave/src/components/LookupListModal.tsx",
@@ -506,7 +506,7 @@
       ],
       "decision": "Existing BVT_NAVIGATION_SHELL_061 covers the changed feature area; reuse it instead of duplicating.",
       "planner": "rules",
-      "title": "@regression Verify keystone / shockwave behavior after apps/shockwave/src/components/LookupListModal.tsx [surface: Keystone] [feature: Keystone / Shockwave] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open the affected Keystone / Shockwave surface. | Navigate to the screen or API path related to apps/shockwave/src/components/LookupListModal.tsx. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: generated smoke coverage for apps/shockwave/src/components/LookupListModal.tsx]"
+      "title": "@regression Verify keystone / shockwave behavior after apps/shockwave/src/components/LookupListModal.tsx [surface: Keystone] [feature: Keystone / Shockwave] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open Keystone application -> fill the login details -> click Login -> select the seeded app and tab -> open the list view -> perform the Keystone / Shockwave action named in the test case -> verify the record or table state] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: generated smoke coverage for apps/shockwave/src/components/LookupListModal.tsx]"
     },
     {
       "id": "AGENT_011",
@@ -515,7 +515,7 @@
       "scenario": "Keystone / Shockwave regression for Keystone / Shockwave",
       "testCase": "Verify keystone / shockwave behavior after apps/shockwave/src/utils/recordCreationLayout.ts",
       "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
-      "steps": "Open the affected Keystone / Shockwave surface. | Navigate to the screen or API path related to apps/shockwave/src/utils/recordCreationLayout.ts. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.",
+      "steps": "Open Keystone application -> fill the login details -> click Login -> select the seeded app and tab -> open the list view -> perform the Keystone / Shockwave action named in the test case -> verify the record or table state",
       "expected": "The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.",
       "risk": "Medium",
       "sourcePath": "apps/shockwave/src/utils/recordCreationLayout.ts",
@@ -555,7 +555,7 @@
       ],
       "decision": "Existing BVT_NAVIGATION_SHELL_061 covers the changed feature area; reuse it instead of duplicating.",
       "planner": "rules",
-      "title": "@sanity Verify keystone / shockwave behavior after apps/shockwave/src/utils/recordCreationLayout.ts [surface: Keystone] [feature: Keystone / Shockwave] [level: Sanity] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open the affected Keystone / Shockwave surface. | Navigate to the screen or API path related to apps/shockwave/src/utils/recordCreationLayout.ts. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: generated smoke coverage for apps/shockwave/src/utils/recordCreationLayout.ts]"
+      "title": "@sanity Verify keystone / shockwave behavior after apps/shockwave/src/utils/recordCreationLayout.ts [surface: Keystone] [feature: Keystone / Shockwave] [level: Sanity] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open Keystone application -> fill the login details -> click Login -> select the seeded app and tab -> open the list view -> perform the Keystone / Shockwave action named in the test case -> verify the record or table state] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: generated smoke coverage for apps/shockwave/src/utils/recordCreationLayout.ts]"
     },
     {
       "id": "AGENT_012",
@@ -564,7 +564,7 @@
       "scenario": "Application regression for Application",
       "testCase": "Verify application behavior after docs/ui/component-catalog.md",
       "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
-      "steps": "Open the affected Application surface. | Navigate to the screen or API path related to docs/ui/component-catalog.md. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.",
+      "steps": "Open Admin application -> fill the login details -> click Login -> navigate to Apps from the sidebar -> perform the Application action named in the test case -> verify the page or table result",
       "expected": "The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.",
       "risk": "Low",
       "sourcePath": "docs/ui/component-catalog.md",
@@ -604,7 +604,7 @@
       ],
       "decision": "Existing REG_LIFECYCLE_051 covers the changed feature area; reuse it instead of duplicating.",
       "planner": "rules",
-      "title": "@regression Verify application behavior after docs/ui/component-catalog.md [surface: Admin] [feature: Application] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open the affected Application surface. | Navigate to the screen or API path related to docs/ui/component-catalog.md. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: generated smoke coverage for docs/ui/component-catalog.md]"
+      "title": "@regression Verify application behavior after docs/ui/component-catalog.md [surface: Admin] [feature: Application] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open Admin application -> fill the login details -> click Login -> navigate to Apps from the sidebar -> perform the Application action named in the test case -> verify the page or table result] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: generated smoke coverage for docs/ui/component-catalog.md]"
     },
     {
       "id": "AGENT_013",
@@ -613,7 +613,7 @@
       "scenario": "Shared UI regression for Shared UI",
       "testCase": "Verify shared ui behavior after packages/ui/src/index.tsx",
       "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
-      "steps": "Open the affected Shared UI surface. | Navigate to the screen or API path related to packages/ui/src/index.tsx. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.",
+      "steps": "Open Admin application -> fill the login details -> click Login -> navigate to Shared UI from the sidebar -> perform the Shared UI action named in the test case -> verify the page or table result",
       "expected": "The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.",
       "risk": "Low",
       "sourcePath": "packages/ui/src/index.tsx",
@@ -653,7 +653,7 @@
       ],
       "decision": "Existing REG_LIFECYCLE_051 covers the changed feature area; reuse it instead of duplicating.",
       "planner": "rules",
-      "title": "@regression Verify shared ui behavior after packages/ui/src/index.tsx [surface: Admin] [feature: Shared UI] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open the affected Shared UI surface. | Navigate to the screen or API path related to packages/ui/src/index.tsx. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: generated smoke coverage for packages/ui/src/index.tsx]"
+      "title": "@regression Verify shared ui behavior after packages/ui/src/index.tsx [surface: Admin] [feature: Shared UI] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open Admin application -> fill the login details -> click Login -> navigate to Shared UI from the sidebar -> perform the Shared UI action named in the test case -> verify the page or table result] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: generated smoke coverage for packages/ui/src/index.tsx]"
     }
   ]
 }

@@ -195,6 +195,207 @@ const actualResultForStatus = (status: Row["status"], failure = "") => {
   return "Not Run.";
 };
 
+const stepChain = (steps: string[]) => steps.filter(Boolean).join(" -> ");
+
+const normalizeStepSeparators = (steps: string) =>
+  String(steps || "")
+    .replace(/\s*\|\s*/g, " -> ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+const stripBracketMeta = (value: string) =>
+  String(value || "").replace(/\s*\[(surface|feature|level|priority|testdata|test data|automation|precondition|input|expected|proof):[^\]]+\]/gi, "");
+
+const isVagueStepText = (steps: string) => {
+  const lower = normalizeStepSeparators(steps).toLowerCase();
+  if (!lower) return true;
+  if (lower === "execute test steps." || /^attempt .+ as each role\.?$/.test(lower)) return true;
+  return [
+    "exercise the",
+    "exercise create",
+    "changed behavior",
+    "affected ",
+    "impacted ",
+    "primary user or api path",
+    "screen or api path",
+    "route family related",
+    "downstream",
+    "open or call"
+  ].some((phrase) => lower.includes(phrase));
+};
+
+const adminScreenForSteps = (feature: string, scenario: string) => {
+  const text = `${feature} ${scenario}`.toLowerCase();
+  if (/permission|access|role|group|user|security/.test(text)) return "Permissions or Access Records";
+  if (/object|field|metadata/.test(text)) return "Objects";
+  if (/recycle|restore|purge/.test(text)) return "Recycle Bin";
+  if (/app/.test(text)) return "Apps";
+  return feature || "the target screen";
+};
+
+const uiActionForSteps = (feature: string, scenario: string) => {
+  const text = `${feature} ${scenario}`.toLowerCase();
+  const target = String(feature || "record").toLowerCase();
+  if (/create|new|add/.test(text)) return `click New, fill the ${target} test details, and save`;
+  if (/edit|update|patch/.test(text)) return `open the test row, change the ${target} details, and save`;
+  if (/delete|remove|purge/.test(text)) return "select the test row, click Delete, and confirm";
+  if (/restore|recycle/.test(text)) return "open Recycle Bin, restore the test row, and verify it returns";
+  if (/search|filter/.test(text)) return "type the search or filter value and verify the matching rows";
+  if (/setting|column|sharing|preference|hierarchy/.test(text)) return "open Settings, change the requested option, and apply it";
+  if (/export|csv|pdf/.test(text)) return "click the export action and verify the downloaded file";
+  if (/toolbar|refresh|fit|pin|count/.test(text)) return "use the toolbar control named in the test and verify the table state";
+  if (/navigation|row opens|detail/.test(text)) return "open a row from the list and verify the detail view";
+  if (/invalid|reject|unauthorized|auth|permission|security/.test(text)) return "submit the restricted or invalid action and verify it is blocked";
+  return `perform the ${feature || "feature"} action named in the test case`;
+};
+
+const expandSpecificSteps = ({
+  raw,
+  scenario,
+  feature,
+  surface
+}: {
+  raw: string;
+  scenario: string;
+  feature: string;
+  surface: string;
+}) => {
+  const steps = normalizeStepSeparators(raw);
+  const lower = steps.toLowerCase();
+  if (/^open (admin|keystone)?\s*application\b/.test(lower) || lower.startsWith("open application ->")) return steps;
+
+  const cleanScenario = stripBracketMeta(scenario);
+  const text = `${cleanScenario} ${feature} ${surface}`.toLowerCase();
+  const isApi = surface === "API" || /api|routes?|service|endpoint/.test(text);
+  const isKeystone = surface === "Keystone" || /keystone|shockwave/.test(text);
+  const isAdmin = surface === "Admin" || /admin|permission|access|role|group|user|security/.test(text);
+
+  if (isApi) {
+    return stepChain([
+      "Open application",
+      "authenticate through the API with seeded credentials",
+      steps,
+      "verify the response status and body",
+      "capture API evidence"
+    ]);
+  }
+  if (isKeystone) {
+    return stepChain([
+      "Open Keystone application",
+      "fill the login details",
+      "click Login",
+      "select the seeded app and tab",
+      steps,
+      "verify the record or table state"
+    ]);
+  }
+  if (isAdmin) {
+    return stepChain([
+      "Open Admin application",
+      "fill the login details",
+      "click Login",
+      steps,
+      "verify the page or table result"
+    ]);
+  }
+  return stepChain([
+    "Open application",
+    "sign in with seeded test credentials",
+    steps,
+    "verify the expected result and capture evidence"
+  ]);
+};
+
+const readableTestSteps = ({
+  raw = "",
+  scenario = "",
+  feature = "List View",
+  surface = "Application"
+}: {
+  raw?: string;
+  scenario?: string;
+  feature?: string;
+  surface?: string;
+}) => {
+  if (raw && !isVagueStepText(raw)) return expandSpecificSteps({ raw, scenario, feature, surface });
+
+  const cleanScenario = stripBracketMeta(scenario);
+  const text = `${cleanScenario} ${feature} ${surface}`.toLowerCase();
+  const isApi = surface === "API" || /api|routes?|service|endpoint/.test(text);
+  const isAdmin = surface === "Admin" || /admin/.test(text);
+  const isKeystone = surface === "Keystone" || /keystone|shockwave/.test(text);
+  const isPermissionAccess = /permission|access record|access-control|effective-access|role|group|grant/.test(text);
+  const isInvalid = /reject|invalid|unauthorized|requires valid authentication|not found|missing|duplicate|inactive/.test(text);
+  const isDownstream = /downstream|effective-access|grant|check/.test(text);
+
+  if (isApi && isPermissionAccess && isInvalid) {
+    return stepChain([
+      "Open application",
+      "authenticate with seeded admin API credentials",
+      `send the invalid or unauthorized ${feature} request from the test case`,
+      "verify the expected 400, 401, 403, or 404 response",
+      "confirm protected permission data is unchanged"
+    ]);
+  }
+  if (isApi && isPermissionAccess && isDownstream) {
+    return stepChain([
+      "Open application",
+      "authenticate with seeded admin API credentials",
+      "create the role, group, user, permission, or grant setup required by the test",
+      "request the downstream effective-access check",
+      "verify the allowed or blocked access decision",
+      "delete the disposable security data"
+    ]);
+  }
+  if (isApi && isPermissionAccess) {
+    return stepChain([
+      "Open application",
+      "authenticate with seeded admin API credentials",
+      "create the test permission or access record",
+      "list and read back the created record",
+      "update, grant, or check it as required by the test",
+      "delete the disposable record and verify cleanup"
+    ]);
+  }
+  if (isApi) {
+    return stepChain([
+      "Open application",
+      "authenticate through the API with seeded credentials",
+      `call the ${feature} endpoint or route named in the test`,
+      "verify the response status and body",
+      "capture API evidence"
+    ]);
+  }
+  if (isKeystone) {
+    return stepChain([
+      "Open Keystone application",
+      "fill the login details",
+      "click Login",
+      "select the seeded app and tab",
+      "open the list view",
+      uiActionForSteps(feature, cleanScenario),
+      "verify the record or table state"
+    ]);
+  }
+  if (isAdmin || isPermissionAccess) {
+    return stepChain([
+      "Open Admin application",
+      "fill the login details",
+      "click Login",
+      `navigate to ${adminScreenForSteps(feature, cleanScenario)} from the sidebar`,
+      uiActionForSteps(feature, cleanScenario),
+      "verify the page or table result"
+    ]);
+  }
+  return stepChain([
+    "Open application",
+    "sign in with seeded test credentials",
+    `navigate to the ${feature || "target"} screen`,
+    uiActionForSteps(feature, cleanScenario),
+    "verify the expected result and capture evidence"
+  ]);
+};
+
 const resolveMeta = (test: TestCase): Required<MetaFields> => {
   const fromAnnotations: MetaFields = {
     surface: getAnnotation(test, "surface"),
@@ -303,7 +504,7 @@ const buildDefaultMeta = (scenario: string): MetaFields => {
       testData: "",
       automation: "Automated",
       precondition: "Test environment ready.",
-      input: "Execute test steps.",
+      input: readableTestSteps({ scenario, feature: "Application", surface }),
       expected: "Behavior matches requirements.",
       proof: "Automated UI verification."
     };
@@ -317,7 +518,7 @@ const buildDefaultMeta = (scenario: string): MetaFields => {
     testData: "",
     automation: "Automated",
     precondition: "User is authenticated and an app/tab is loaded.",
-    input: `Attempt ${niceFeature} as each role.`,
+    input: readableTestSteps({ scenario, feature: niceFeature, surface }),
     expected: "Allowed roles can perform the action; disallowed roles are blocked or hidden.",
     proof: "RBAC enforcement matches the access matrix."
   };
@@ -353,7 +554,12 @@ export default class TableReport implements Reporter {
       featureArea,
       scenario,
       precondition: meta.precondition,
-      inputAction: meta.input,
+      inputAction: readableTestSteps({
+        raw: meta.input,
+        scenario,
+        feature: featureArea,
+        surface: meta.surface
+      }),
       testData: meta.testData || defaultTestData(meta.surface),
       expectedResult: meta.expected,
       actualResult: actualResultForStatus(status),
@@ -442,14 +648,15 @@ export default class TableReport implements Reporter {
     fs.mkdirSync(this.outputFolder, { recursive: true });
     fs.mkdirSync(this.assetsDir, { recursive: true });
 
-    const counts = this.rows.reduce(
+    const reportRows = writePdf ? this.rows.filter((row) => row.status !== "PENDING") : this.rows;
+    const counts = reportRows.reduce(
       (acc, row) => {
         acc[row.status] += 1;
         return acc;
       },
       { PENDING: 0, RUNNING: 0, PASS: 0, FAIL: 0, SKIP: 0 } as Record<Row["status"], number>
     );
-    const htmlRows = this.rows
+    const htmlRows = reportRows
       .map((row) => {
         const screenshotCell = row.screenshotPaths?.length
           ? row.screenshotPaths
@@ -672,7 +879,7 @@ export default class TableReport implements Reporter {
       <div>
         <p class="eyebrow">Core Platform QA</p>
         <h1>Automated Test Results</h1>
-        <p class="run-meta">Run status: ${sanitize(runStatus)} | Total cases: ${this.rows.length} | Updated: ${sanitize(new Date().toLocaleString())}</p>
+        <p class="run-meta">Run status: ${sanitize(runStatus)} | Total cases: ${reportRows.length} | Updated: ${sanitize(new Date().toLocaleString())}</p>
       </div>
       <nav class="report-actions" aria-label="Report exports">
         <a href="/">Back to Dashboard</a>
@@ -681,7 +888,7 @@ export default class TableReport implements Reporter {
       </nav>
     </header>
     <section class="summary" aria-label="Result summary">
-      <article class="metric"><span>Total</span><strong>${this.rows.length}</strong></article>
+      <article class="metric"><span>Total</span><strong>${reportRows.length}</strong></article>
       <article class="metric"><span>Pending</span><strong class="PENDING">${counts.PENDING}</strong></article>
       <article class="metric"><span>Running</span><strong class="RUNNING">${counts.RUNNING}</strong></article>
       <article class="metric"><span>Passed</span><strong class="PASS">${counts.PASS}</strong></article>
@@ -750,7 +957,7 @@ ${htmlRows}
       "Bug Report",
       "Screenshot"
     ];
-    const csvRows = this.rows.map((row) =>
+    const csvRows = reportRows.map((row) =>
       [
         row.id,
         row.tags,
@@ -783,9 +990,9 @@ ${htmlRows}
         {
           runStatus,
           updatedAt: new Date().toISOString(),
-          total: this.rows.length,
+          total: reportRows.length,
           counts,
-          rows: this.rows
+          rows: reportRows
         },
         null,
         2

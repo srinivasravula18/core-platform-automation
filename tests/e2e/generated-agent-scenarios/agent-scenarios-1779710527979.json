@@ -25,7 +25,7 @@
       "scenario": "Admin regression for Admin",
       "testCase": "Verify admin behavior after apps/admin/src/components/AdminCreateObjectModal.tsx",
       "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
-      "steps": "Open the affected Admin surface. | Navigate to the screen or API path related to apps/admin/src/components/AdminCreateObjectModal.tsx. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.",
+      "steps": "Open Admin application -> fill the login details -> click Login -> navigate to Objects from the sidebar -> click New, fill the admin test details, and save -> verify the page or table result",
       "expected": "The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.",
       "risk": "Low",
       "sourcePath": "apps/admin/src/components/AdminCreateObjectModal.tsx",
@@ -65,7 +65,7 @@
       ],
       "decision": "Existing REG_LIFECYCLE_051 covers the changed feature area; reuse it instead of duplicating.",
       "planner": "rules",
-      "title": "@regression Verify admin behavior after apps/admin/src/components/AdminCreateObjectModal.tsx [surface: Admin] [feature: Admin] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open the affected Admin surface. | Navigate to the screen or API path related to apps/admin/src/components/AdminCreateObjectModal.tsx. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: generated smoke coverage for apps/admin/src/components/AdminCreateObjectModal.tsx]"
+      "title": "@regression Verify admin behavior after apps/admin/src/components/AdminCreateObjectModal.tsx [surface: Admin] [feature: Admin] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open Admin application -> fill the login details -> click Login -> navigate to Objects from the sidebar -> click New, fill the admin test details, and save -> verify the page or table result] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: generated smoke coverage for apps/admin/src/components/AdminCreateObjectModal.tsx]"
     },
     {
       "id": "AGENT_002",
@@ -74,7 +74,7 @@
       "scenario": "Admin regression for Admin",
       "testCase": "Verify admin behavior after apps/admin/src/components/AdminObjectHomePanel.tsx",
       "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
-      "steps": "Open the affected Admin surface. | Navigate to the screen or API path related to apps/admin/src/components/AdminObjectHomePanel.tsx. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.",
+      "steps": "Open Admin application -> fill the login details -> click Login -> navigate to Objects from the sidebar -> perform the Admin action named in the test case -> verify the page or table result",
       "expected": "The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.",
       "risk": "Low",
       "sourcePath": "apps/admin/src/components/AdminObjectHomePanel.tsx",
@@ -114,7 +114,7 @@
       ],
       "decision": "Existing REG_LIFECYCLE_051 covers the changed feature area; reuse it instead of duplicating.",
       "planner": "rules",
-      "title": "@regression Verify admin behavior after apps/admin/src/components/AdminObjectHomePanel.tsx [surface: Admin] [feature: Admin] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open the affected Admin surface. | Navigate to the screen or API path related to apps/admin/src/components/AdminObjectHomePanel.tsx. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: generated smoke coverage for apps/admin/src/components/AdminObjectHomePanel.tsx]"
+      "title": "@regression Verify admin behavior after apps/admin/src/components/AdminObjectHomePanel.tsx [surface: Admin] [feature: Admin] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open Admin application -> fill the login details -> click Login -> navigate to Objects from the sidebar -> perform the Admin action named in the test case -> verify the page or table result] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: generated smoke coverage for apps/admin/src/components/AdminObjectHomePanel.tsx]"
     },
     {
       "id": "AGENT_003",
@@ -123,7 +123,7 @@
       "scenario": "Application regression for Application",
       "testCase": "Verify application behavior after docs/ui/component-catalog.md",
       "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
-      "steps": "Open the affected Application surface. | Navigate to the screen or API path related to docs/ui/component-catalog.md. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.",
+      "steps": "Open Admin application -> fill the login details -> click Login -> navigate to Apps from the sidebar -> perform the Application action named in the test case -> verify the page or table result",
       "expected": "The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.",
       "risk": "Low",
       "sourcePath": "docs/ui/component-catalog.md",
@@ -163,7 +163,7 @@
       ],
       "decision": "Existing REG_LIFECYCLE_051 covers the changed feature area; reuse it instead of duplicating.",
       "planner": "rules",
-      "title": "@regression Verify application behavior after docs/ui/component-catalog.md [surface: Admin] [feature: Application] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open the affected Application surface. | Navigate to the screen or API path related to docs/ui/component-catalog.md. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: generated smoke coverage for docs/ui/component-catalog.md]"
+      "title": "@regression Verify application behavior after docs/ui/component-catalog.md [surface: Admin] [feature: Application] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open Admin application -> fill the login details -> click Login -> navigate to Apps from the sidebar -> perform the Application action named in the test case -> verify the page or table result] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: generated smoke coverage for docs/ui/component-catalog.md]"
     },
     {
       "id": "AGENT_004",
@@ -172,7 +172,7 @@
       "scenario": "Shared UI regression for Shared UI",
       "testCase": "Verify shared ui behavior after packages/ui/src/DocumentationCenter.tsx",
       "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
-      "steps": "Open the affected Shared UI surface. | Navigate to the screen or API path related to packages/ui/src/DocumentationCenter.tsx. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.",
+      "steps": "Open Admin application -> fill the login details -> click Login -> navigate to Shared UI from the sidebar -> perform the Shared UI action named in the test case -> verify the page or table result",
       "expected": "The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.",
       "risk": "Low",
       "sourcePath": "packages/ui/src/DocumentationCenter.tsx",
@@ -212,7 +212,7 @@
       ],
       "decision": "Existing REG_LIFECYCLE_051 covers the changed feature area; reuse it instead of duplicating.",
       "planner": "rules",
-      "title": "@regression Verify shared ui behavior after packages/ui/src/DocumentationCenter.tsx [surface: Admin] [feature: Shared UI] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open the affected Shared UI surface. | Navigate to the screen or API path related to packages/ui/src/DocumentationCenter.tsx. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: generated smoke coverage for packages/ui/src/DocumentationCenter.tsx]"
+      "title": "@regression Verify shared ui behavior after packages/ui/src/DocumentationCenter.tsx [surface: Admin] [feature: Shared UI] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open Admin application -> fill the login details -> click Login -> navigate to Shared UI from the sidebar -> perform the Shared UI action named in the test case -> verify the page or table result] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: generated smoke coverage for packages/ui/src/DocumentationCenter.tsx]"
     },
     {
       "id": "AGENT_005",
@@ -221,7 +221,7 @@
       "scenario": "Shared UI regression for Shared UI",
       "testCase": "Verify shared ui behavior after packages/ui/src/index.tsx",
       "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
-      "steps": "Open the affected Shared UI surface. | Navigate to the screen or API path related to packages/ui/src/index.tsx. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.",
+      "steps": "Open Admin application -> fill the login details -> click Login -> navigate to Shared UI from the sidebar -> perform the Shared UI action named in the test case -> verify the page or table result",
       "expected": "The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.",
       "risk": "Low",
       "sourcePath": "packages/ui/src/index.tsx",
@@ -261,7 +261,7 @@
       ],
       "decision": "Existing REG_LIFECYCLE_051 covers the changed feature area; reuse it instead of duplicating.",
       "planner": "rules",
-      "title": "@regression Verify shared ui behavior after packages/ui/src/index.tsx [surface: Admin] [feature: Shared UI] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open the affected Shared UI surface. | Navigate to the screen or API path related to packages/ui/src/index.tsx. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: generated smoke coverage for packages/ui/src/index.tsx]"
+      "title": "@regression Verify shared ui behavior after packages/ui/src/index.tsx [surface: Admin] [feature: Shared UI] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open Admin application -> fill the login details -> click Login -> navigate to Shared UI from the sidebar -> perform the Shared UI action named in the test case -> verify the page or table result] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: generated smoke coverage for packages/ui/src/index.tsx]"
     },
     {
       "id": "AGENT_006",
@@ -270,7 +270,7 @@
       "scenario": "Application regression for Application",
       "testCase": "Verify application behavior after reset-metadata-start.bat",
       "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
-      "steps": "Open the affected Application surface. | Navigate to the screen or API path related to reset-metadata-start.bat. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.",
+      "steps": "Open Admin application -> fill the login details -> click Login -> navigate to Objects from the sidebar -> perform the Application action named in the test case -> verify the page or table result",
       "expected": "The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.",
       "risk": "Low",
       "sourcePath": "reset-metadata-start.bat",
@@ -310,7 +310,7 @@
       ],
       "decision": "Existing REG_LIFECYCLE_051 covers the changed feature area; reuse it instead of duplicating.",
       "planner": "rules",
-      "title": "@regression Verify application behavior after reset-metadata-start.bat [surface: Admin] [feature: Application] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open the affected Application surface. | Navigate to the screen or API path related to reset-metadata-start.bat. | Exercise the changed behavior with seeded data and one edge-case input. | Capture evidence and assert no crash, permission leak, or invalid state.] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: generated smoke coverage for reset-metadata-start.bat]"
+      "title": "@regression Verify application behavior after reset-metadata-start.bat [surface: Admin] [feature: Application] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open Admin application -> fill the login details -> click Login -> navigate to Objects from the sidebar -> perform the Application action named in the test case -> verify the page or table result] [expected: The changed behavior works as intended, existing list-view contracts remain stable, and any invalid input is handled visibly.] [proof: generated smoke coverage for reset-metadata-start.bat]"
     }
   ]
 }

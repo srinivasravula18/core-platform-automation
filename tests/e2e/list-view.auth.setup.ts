@@ -32,6 +32,23 @@ const originsForApps = () =>
     (origin) => ({ origin, localStorage: [] })
   );
 
+const existingAccessToken = (storagePath: string) => {
+  if (!fs.existsSync(storagePath)) return "";
+  try {
+    const state = JSON.parse(fs.readFileSync(storagePath, "utf8")) as {
+      cookies?: Array<{ name?: string; value?: string; expires?: number }>;
+    };
+    const now = Math.floor(Date.now() / 1000);
+    return (
+      state.cookies?.find(
+        (cookie) => cookie.name === ACCESS_COOKIE_NAME && cookie.value && (!cookie.expires || cookie.expires > now)
+      )?.value ?? ""
+    );
+  } catch {
+    return "";
+  }
+};
+
 const ensureCookieForHost = (
   cookies: Array<{
     name: string;
@@ -78,6 +95,8 @@ const globalSetup = async (_config: FullConfig) => {
   const storageDir = path.join(__dirname, ".storage");
   ensureDir(storageDir);
   const storagePath = path.join(storageDir, "list-view.json");
+  const reusableToken = existingAccessToken(storagePath);
+  if (reusableToken) return;
 
   const api = await request.newContext({ baseURL: serviceBaseUrl });
   try {

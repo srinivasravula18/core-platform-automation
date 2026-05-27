@@ -92,7 +92,7 @@
       "scenario": "Security regression for Admin",
       "testCase": "BVT verifies security remains reachable after AdminCreateAccessRecordModal.tsx",
       "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
-      "steps": "Sign in to Admin. | Open the impacted application shell or screen related to apps/admin/src/components/AdminCreateAccessRecordModal.tsx. | Assert the shell renders without auth, permission, or crash failures.",
+      "steps": "Open Admin application -> fill the login details -> click Login -> navigate to Permissions or Access Records from the sidebar -> click New, fill the security test details, and save -> verify the page or table result",
       "expected": "The critical impacted surface remains reachable and authenticated behavior is intact.",
       "risk": "High",
       "sourcePath": "apps/admin/src/components/AdminCreateAccessRecordModal.tsx",
@@ -147,7 +147,7 @@
       "coverageDecision": "reuse-existing",
       "decision": "Existing BVT_NAVIGATION_SHELL_059 covers this BVT scenario; reuse it instead of duplicating.",
       "planner": "rules",
-      "title": "@bvt BVT verifies security remains reachable after AdminCreateAccessRecordModal.tsx [surface: Admin] [feature: Security] [level: BVT] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Sign in to Admin. | Open the impacted application shell or screen related to apps/admin/src/components/AdminCreateAccessRecordModal.tsx. | Assert the shell renders without auth, permission, or crash failures.] [expected: The critical impacted surface remains reachable and authenticated behavior is intact.] [proof: Critical smoke coverage for apps/admin/src/components/AdminCreateAccessRecordModal.tsx.]"
+      "title": "@bvt BVT verifies security remains reachable after AdminCreateAccessRecordModal.tsx [surface: Admin] [feature: Security] [level: BVT] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open Admin application -> fill the login details -> click Login -> navigate to Permissions or Access Records from the sidebar -> click New, fill the security test details, and save -> verify the page or table result] [expected: The critical impacted surface remains reachable and authenticated behavior is intact.] [proof: Critical smoke coverage for apps/admin/src/components/AdminCreateAccessRecordModal.tsx.]"
     },
     {
       "id": "AGENT_001_02",
@@ -156,7 +156,7 @@
       "scenario": "Security regression for Admin",
       "testCase": "Sanity verifies security happy path after AdminCreateAccessRecordModal.tsx",
       "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
-      "steps": "Open the impacted Admin feature. | Exercise the primary user or API path related to apps/admin/src/components/AdminCreateAccessRecordModal.tsx. | Capture evidence after the happy path completes.",
+      "steps": "Open Admin application -> fill the login details -> click Login -> navigate to Permissions or Access Records from the sidebar -> click New, fill the security test details, and save -> verify the page or table result",
       "expected": "The changed feature completes its primary path and leaves the page/API response in a valid state.",
       "risk": "High",
       "sourcePath": "apps/admin/src/components/AdminCreateAccessRecordModal.tsx",
@@ -211,7 +211,7 @@
       "coverageDecision": "reuse-existing",
       "decision": "Existing REG_LIFECYCLE_051 covers this Sanity scenario; reuse it instead of duplicating.",
       "planner": "rules",
-      "title": "@sanity Sanity verifies security happy path after AdminCreateAccessRecordModal.tsx [surface: Admin] [feature: Security] [level: Sanity] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open the impacted Admin feature. | Exercise the primary user or API path related to apps/admin/src/components/AdminCreateAccessRecordModal.tsx. | Capture evidence after the happy path completes.] [expected: The changed feature completes its primary path and leaves the page/API response in a valid state.] [proof: Focused sanity coverage for apps/admin/src/components/AdminCreateAccessRecordModal.tsx.]"
+      "title": "@sanity Sanity verifies security happy path after AdminCreateAccessRecordModal.tsx [surface: Admin] [feature: Security] [level: Sanity] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open Admin application -> fill the login details -> click Login -> navigate to Permissions or Access Records from the sidebar -> click New, fill the security test details, and save -> verify the page or table result] [expected: The changed feature completes its primary path and leaves the page/API response in a valid state.] [proof: Focused sanity coverage for apps/admin/src/components/AdminCreateAccessRecordModal.tsx.]"
     },
     {
       "id": "AGENT_001_03",
@@ -220,7 +220,7 @@
       "scenario": "Security regression for Admin",
       "testCase": "Security checks guarded behavior after AdminCreateAccessRecordModal.tsx",
       "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
-      "steps": "Open the impacted Admin feature. | Submit one invalid or unauthorized edge-case input. | Verify the app/API rejects it visibly without leaking data.",
+      "steps": "Open Admin application -> fill the login details -> click Login -> navigate to Permissions or Access Records from the sidebar -> click New, fill the security test details, and save -> verify the page or table result",
       "expected": "Invalid or unauthorized input is rejected with a safe error state and no crash.",
       "risk": "High",
       "sourcePath": "apps/admin/src/components/AdminCreateAccessRecordModal.tsx",
@@ -275,7 +275,7 @@
       "coverageDecision": "reuse-existing",
       "decision": "Existing REG_LIFECYCLE_051 covers this Security scenario; reuse it instead of duplicating.",
       "planner": "rules",
-      "title": "@bvt Security checks guarded behavior after AdminCreateAccessRecordModal.tsx [surface: Admin] [feature: Security] [level: BVT] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open the impacted Admin feature. | Submit one invalid or unauthorized edge-case input. | Verify the app/API rejects it visibly without leaking data.] [expected: Invalid or unauthorized input is rejected with a safe error state and no crash.] [proof: Guarded behavior coverage for apps/admin/src/components/AdminCreateAccessRecordModal.tsx.]"
+      "title": "@bvt Security checks guarded behavior after AdminCreateAccessRecordModal.tsx [surface: Admin] [feature: Security] [level: BVT] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open Admin application -> fill the login details -> click Login -> navigate to Permissions or Access Records from the sidebar -> click New, fill the security test details, and save -> verify the page or table result] [expected: Invalid or unauthorized input is rejected with a safe error state and no crash.] [proof: Guarded behavior coverage for apps/admin/src/components/AdminCreateAccessRecordModal.tsx.]"
     },
     {
       "id": "AGENT_001_04",
@@ -284,7 +284,7 @@
       "scenario": "Security regression for Admin",
       "testCase": "Regression verifies guarded write flow after AdminCreateAccessRecordModal.tsx",
       "precondition": "ALLOW_DATA_WRITE=true, seeded test data exists, and reset runs after generated scenarios.",
-      "steps": "Use seeded or disposable test data. | Exercise create, edit, delete, restore, or bulk behavior related to apps/admin/src/components/AdminCreateAccessRecordModal.tsx. | Verify cleanup or reset restores seeded state.",
+      "steps": "Open Admin application -> fill the login details -> click Login -> navigate to Permissions or Access Records from the sidebar -> click New, fill the security test details, and save -> verify the page or table result",
       "expected": "The write flow works on seeded/disposable data and the reset path can restore the local dataset.",
       "risk": "High",
       "sourcePath": "apps/admin/src/components/AdminCreateAccessRecordModal.tsx",
@@ -339,7 +339,7 @@
       "coverageDecision": "reuse-existing",
       "decision": "Existing REG_LIFECYCLE_051 covers this Mutation scenario; reuse it instead of duplicating.",
       "planner": "rules",
-      "title": "@regression Regression verifies guarded write flow after AdminCreateAccessRecordModal.tsx [surface: Admin] [feature: Security] [level: Regression] [precondition: ALLOW_DATA_WRITE=true, seeded test data exists, and reset runs after generated scenarios.] [input: Use seeded or disposable test data. | Exercise create, edit, delete, restore, or bulk behavior related to apps/admin/src/components/AdminCreateAccessRecordModal.tsx. | Verify cleanup or reset restores seeded state.] [expected: The write flow works on seeded/disposable data and the reset path can restore the local dataset.] [proof: Guarded mutation regression coverage for apps/admin/src/components/AdminCreateAccessRecordModal.tsx.]"
+      "title": "@regression Regression verifies guarded write flow after AdminCreateAccessRecordModal.tsx [surface: Admin] [feature: Security] [level: Regression] [precondition: ALLOW_DATA_WRITE=true, seeded test data exists, and reset runs after generated scenarios.] [input: Open Admin application -> fill the login details -> click Login -> navigate to Permissions or Access Records from the sidebar -> click New, fill the security test details, and save -> verify the page or table result] [expected: The write flow works on seeded/disposable data and the reset path can restore the local dataset.] [proof: Guarded mutation regression coverage for apps/admin/src/components/AdminCreateAccessRecordModal.tsx.]"
     },
     {
       "id": "AGENT_001_05",
@@ -348,7 +348,7 @@
       "scenario": "Security regression for Admin",
       "testCase": "Regression protects downstream security behavior after AdminCreateAccessRecordModal.tsx",
       "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
-      "steps": "Open a downstream Admin workflow connected to apps/admin/src/components/AdminCreateAccessRecordModal.tsx. | Run search, navigation, refresh, settings, or API readback behavior. | Verify the workflow remains stable.",
+      "steps": "Open Admin application -> fill the login details -> click Login -> navigate to Permissions or Access Records from the sidebar -> click New, fill the security test details, and save -> verify the page or table result",
       "expected": "Connected downstream behavior remains stable after the code change.",
       "risk": "High",
       "sourcePath": "apps/admin/src/components/AdminCreateAccessRecordModal.tsx",
@@ -403,7 +403,7 @@
       "coverageDecision": "reuse-existing",
       "decision": "Existing REG_TOOLBAR_CONTROLS_002 covers this Regression scenario; reuse it instead of duplicating.",
       "planner": "rules",
-      "title": "@regression Regression protects downstream security behavior after AdminCreateAccessRecordModal.tsx [surface: Admin] [feature: Security] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open a downstream Admin workflow connected to apps/admin/src/components/AdminCreateAccessRecordModal.tsx. | Run search, navigation, refresh, settings, or API readback behavior. | Verify the workflow remains stable.] [expected: Connected downstream behavior remains stable after the code change.] [proof: Downstream regression coverage for apps/admin/src/components/AdminCreateAccessRecordModal.tsx.]"
+      "title": "@regression Regression protects downstream security behavior after AdminCreateAccessRecordModal.tsx [surface: Admin] [feature: Security] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open Admin application -> fill the login details -> click Login -> navigate to Permissions or Access Records from the sidebar -> click New, fill the security test details, and save -> verify the page or table result] [expected: Connected downstream behavior remains stable after the code change.] [proof: Downstream regression coverage for apps/admin/src/components/AdminCreateAccessRecordModal.tsx.]"
     },
     {
       "id": "AGENT_002_01",
@@ -412,7 +412,7 @@
       "scenario": "Admin regression for Admin",
       "testCase": "Sanity verifies validation happy path after AdminFieldModal.tsx",
       "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
-      "steps": "Open the impacted Admin feature. | Exercise the primary user or API path related to apps/admin/src/components/AdminFieldModal.tsx. | Capture evidence after the happy path completes.",
+      "steps": "Open Admin application -> fill the login details -> click Login -> navigate to Objects from the sidebar -> perform the Validation action named in the test case -> verify the page or table result",
       "expected": "The changed feature completes its primary path and leaves the page/API response in a valid state.",
       "risk": "Low",
       "sourcePath": "apps/admin/src/components/AdminFieldModal.tsx",
@@ -459,7 +459,7 @@
       "coverageDecision": "reuse-existing",
       "decision": "Existing REG_LIFECYCLE_051 covers this Sanity scenario; reuse it instead of duplicating.",
       "planner": "rules",
-      "title": "@sanity Sanity verifies validation happy path after AdminFieldModal.tsx [surface: Admin] [feature: Validation] [level: Sanity] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open the impacted Admin feature. | Exercise the primary user or API path related to apps/admin/src/components/AdminFieldModal.tsx. | Capture evidence after the happy path completes.] [expected: The changed feature completes its primary path and leaves the page/API response in a valid state.] [proof: Focused sanity coverage for apps/admin/src/components/AdminFieldModal.tsx.]"
+      "title": "@sanity Sanity verifies validation happy path after AdminFieldModal.tsx [surface: Admin] [feature: Validation] [level: Sanity] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open Admin application -> fill the login details -> click Login -> navigate to Objects from the sidebar -> perform the Validation action named in the test case -> verify the page or table result] [expected: The changed feature completes its primary path and leaves the page/API response in a valid state.] [proof: Focused sanity coverage for apps/admin/src/components/AdminFieldModal.tsx.]"
     },
     {
       "id": "AGENT_002_02",
@@ -468,7 +468,7 @@
       "scenario": "Admin regression for Admin",
       "testCase": "Validation checks guarded behavior after AdminFieldModal.tsx",
       "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
-      "steps": "Open the impacted Admin feature. | Submit one invalid or unauthorized edge-case input. | Verify the app/API rejects it visibly without leaking data.",
+      "steps": "Open Admin application -> fill the login details -> click Login -> navigate to Objects from the sidebar -> perform the Validation action named in the test case -> verify the page or table result",
       "expected": "Invalid or unauthorized input is rejected with a safe error state and no crash.",
       "risk": "Low",
       "sourcePath": "apps/admin/src/components/AdminFieldModal.tsx",
@@ -515,7 +515,7 @@
       "coverageDecision": "reuse-existing",
       "decision": "Existing REG_LIFECYCLE_051 covers this Validation scenario; reuse it instead of duplicating.",
       "planner": "rules",
-      "title": "@sanity Validation checks guarded behavior after AdminFieldModal.tsx [surface: Admin] [feature: Validation] [level: Sanity] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open the impacted Admin feature. | Submit one invalid or unauthorized edge-case input. | Verify the app/API rejects it visibly without leaking data.] [expected: Invalid or unauthorized input is rejected with a safe error state and no crash.] [proof: Guarded behavior coverage for apps/admin/src/components/AdminFieldModal.tsx.]"
+      "title": "@sanity Validation checks guarded behavior after AdminFieldModal.tsx [surface: Admin] [feature: Validation] [level: Sanity] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open Admin application -> fill the login details -> click Login -> navigate to Objects from the sidebar -> perform the Validation action named in the test case -> verify the page or table result] [expected: Invalid or unauthorized input is rejected with a safe error state and no crash.] [proof: Guarded behavior coverage for apps/admin/src/components/AdminFieldModal.tsx.]"
     },
     {
       "id": "AGENT_002_03",
@@ -524,7 +524,7 @@
       "scenario": "Admin regression for Admin",
       "testCase": "Regression protects downstream validation behavior after AdminFieldModal.tsx",
       "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
-      "steps": "Open a downstream Admin workflow connected to apps/admin/src/components/AdminFieldModal.tsx. | Run search, navigation, refresh, settings, or API readback behavior. | Verify the workflow remains stable.",
+      "steps": "Open Admin application -> fill the login details -> click Login -> navigate to Objects from the sidebar -> perform the Validation action named in the test case -> verify the page or table result",
       "expected": "Connected downstream behavior remains stable after the code change.",
       "risk": "Low",
       "sourcePath": "apps/admin/src/components/AdminFieldModal.tsx",
@@ -571,7 +571,7 @@
       "coverageDecision": "reuse-existing",
       "decision": "Existing REG_TOOLBAR_CONTROLS_002 covers this Regression scenario; reuse it instead of duplicating.",
       "planner": "rules",
-      "title": "@regression Regression protects downstream validation behavior after AdminFieldModal.tsx [surface: Admin] [feature: Validation] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open a downstream Admin workflow connected to apps/admin/src/components/AdminFieldModal.tsx. | Run search, navigation, refresh, settings, or API readback behavior. | Verify the workflow remains stable.] [expected: Connected downstream behavior remains stable after the code change.] [proof: Downstream regression coverage for apps/admin/src/components/AdminFieldModal.tsx.]"
+      "title": "@regression Regression protects downstream validation behavior after AdminFieldModal.tsx [surface: Admin] [feature: Validation] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open Admin application -> fill the login details -> click Login -> navigate to Objects from the sidebar -> perform the Validation action named in the test case -> verify the page or table result] [expected: Connected downstream behavior remains stable after the code change.] [proof: Downstream regression coverage for apps/admin/src/components/AdminFieldModal.tsx.]"
     },
     {
       "id": "AGENT_003_01",
@@ -580,7 +580,7 @@
       "scenario": "Admin regression for Admin",
       "testCase": "Sanity verifies metadata and records happy path after AdminObjectHomePanel.tsx",
       "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
-      "steps": "Open the impacted Admin feature. | Exercise the primary user or API path related to apps/admin/src/components/AdminObjectHomePanel.tsx. | Capture evidence after the happy path completes.",
+      "steps": "Open Admin application -> fill the login details -> click Login -> navigate to Objects from the sidebar -> perform the Metadata and records action named in the test case -> verify the page or table result",
       "expected": "The changed feature completes its primary path and leaves the page/API response in a valid state.",
       "risk": "Low",
       "sourcePath": "apps/admin/src/components/AdminObjectHomePanel.tsx",
@@ -627,7 +627,7 @@
       "coverageDecision": "reuse-existing",
       "decision": "Existing BVT_NAVIGATION_SHELL_059 covers this Sanity scenario; reuse it instead of duplicating.",
       "planner": "rules",
-      "title": "@sanity Sanity verifies metadata and records happy path after AdminObjectHomePanel.tsx [surface: Admin] [feature: Metadata and records] [level: Sanity] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open the impacted Admin feature. | Exercise the primary user or API path related to apps/admin/src/components/AdminObjectHomePanel.tsx. | Capture evidence after the happy path completes.] [expected: The changed feature completes its primary path and leaves the page/API response in a valid state.] [proof: Focused sanity coverage for apps/admin/src/components/AdminObjectHomePanel.tsx.]"
+      "title": "@sanity Sanity verifies metadata and records happy path after AdminObjectHomePanel.tsx [surface: Admin] [feature: Metadata and records] [level: Sanity] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open Admin application -> fill the login details -> click Login -> navigate to Objects from the sidebar -> perform the Metadata and records action named in the test case -> verify the page or table result] [expected: The changed feature completes its primary path and leaves the page/API response in a valid state.] [proof: Focused sanity coverage for apps/admin/src/components/AdminObjectHomePanel.tsx.]"
     },
     {
       "id": "AGENT_003_02",
@@ -636,7 +636,7 @@
       "scenario": "Admin regression for Admin",
       "testCase": "Regression protects downstream metadata and records behavior after AdminObjectHomePanel.tsx",
       "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
-      "steps": "Open a downstream Admin workflow connected to apps/admin/src/components/AdminObjectHomePanel.tsx. | Run search, navigation, refresh, settings, or API readback behavior. | Verify the workflow remains stable.",
+      "steps": "Open Admin application -> fill the login details -> click Login -> navigate to Objects from the sidebar -> perform the Metadata and records action named in the test case -> verify the page or table result",
       "expected": "Connected downstream behavior remains stable after the code change.",
       "risk": "Low",
       "sourcePath": "apps/admin/src/components/AdminObjectHomePanel.tsx",
@@ -683,7 +683,7 @@
       "coverageDecision": "reuse-existing",
       "decision": "Existing BVT_NAVIGATION_SHELL_059 covers this Regression scenario; reuse it instead of duplicating.",
       "planner": "rules",
-      "title": "@regression Regression protects downstream metadata and records behavior after AdminObjectHomePanel.tsx [surface: Admin] [feature: Metadata and records] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open a downstream Admin workflow connected to apps/admin/src/components/AdminObjectHomePanel.tsx. | Run search, navigation, refresh, settings, or API readback behavior. | Verify the workflow remains stable.] [expected: Connected downstream behavior remains stable after the code change.] [proof: Downstream regression coverage for apps/admin/src/components/AdminObjectHomePanel.tsx.]"
+      "title": "@regression Regression protects downstream metadata and records behavior after AdminObjectHomePanel.tsx [surface: Admin] [feature: Metadata and records] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open Admin application -> fill the login details -> click Login -> navigate to Objects from the sidebar -> perform the Metadata and records action named in the test case -> verify the page or table result] [expected: Connected downstream behavior remains stable after the code change.] [proof: Downstream regression coverage for apps/admin/src/components/AdminObjectHomePanel.tsx.]"
     },
     {
       "id": "AGENT_004_01",
@@ -692,7 +692,7 @@
       "scenario": "Security regression for Admin",
       "testCase": "BVT verifies security remains reachable after useAdminAccessControls.ts",
       "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
-      "steps": "Sign in to Admin. | Open the impacted application shell or screen related to apps/admin/src/hooks/useAdminAccessControls.ts. | Assert the shell renders without auth, permission, or crash failures.",
+      "steps": "Open Admin application -> fill the login details -> click Login -> navigate to Permissions or Access Records from the sidebar -> submit the restricted or invalid action and verify it is blocked -> verify the page or table result",
       "expected": "The critical impacted surface remains reachable and authenticated behavior is intact.",
       "risk": "High",
       "sourcePath": "apps/admin/src/hooks/useAdminAccessControls.ts",
@@ -747,7 +747,7 @@
       "coverageDecision": "reuse-existing",
       "decision": "Existing BVT_NAVIGATION_SHELL_059 covers this BVT scenario; reuse it instead of duplicating.",
       "planner": "rules",
-      "title": "@bvt BVT verifies security remains reachable after useAdminAccessControls.ts [surface: Admin] [feature: Security] [level: BVT] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Sign in to Admin. | Open the impacted application shell or screen related to apps/admin/src/hooks/useAdminAccessControls.ts. | Assert the shell renders without auth, permission, or crash failures.] [expected: The critical impacted surface remains reachable and authenticated behavior is intact.] [proof: Critical smoke coverage for apps/admin/src/hooks/useAdminAccessControls.ts.]"
+      "title": "@bvt BVT verifies security remains reachable after useAdminAccessControls.ts [surface: Admin] [feature: Security] [level: BVT] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open Admin application -> fill the login details -> click Login -> navigate to Permissions or Access Records from the sidebar -> submit the restricted or invalid action and verify it is blocked -> verify the page or table result] [expected: The critical impacted surface remains reachable and authenticated behavior is intact.] [proof: Critical smoke coverage for apps/admin/src/hooks/useAdminAccessControls.ts.]"
     },
     {
       "id": "AGENT_004_02",
@@ -756,7 +756,7 @@
       "scenario": "Security regression for Admin",
       "testCase": "Sanity verifies security happy path after useAdminAccessControls.ts",
       "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
-      "steps": "Open the impacted Admin feature. | Exercise the primary user or API path related to apps/admin/src/hooks/useAdminAccessControls.ts. | Capture evidence after the happy path completes.",
+      "steps": "Open Admin application -> fill the login details -> click Login -> navigate to Permissions or Access Records from the sidebar -> submit the restricted or invalid action and verify it is blocked -> verify the page or table result",
       "expected": "The changed feature completes its primary path and leaves the page/API response in a valid state.",
       "risk": "High",
       "sourcePath": "apps/admin/src/hooks/useAdminAccessControls.ts",
@@ -811,7 +811,7 @@
       "coverageDecision": "reuse-existing",
       "decision": "Existing REG_LIFECYCLE_051 covers this Sanity scenario; reuse it instead of duplicating.",
       "planner": "rules",
-      "title": "@sanity Sanity verifies security happy path after useAdminAccessControls.ts [surface: Admin] [feature: Security] [level: Sanity] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open the impacted Admin feature. | Exercise the primary user or API path related to apps/admin/src/hooks/useAdminAccessControls.ts. | Capture evidence after the happy path completes.] [expected: The changed feature completes its primary path and leaves the page/API response in a valid state.] [proof: Focused sanity coverage for apps/admin/src/hooks/useAdminAccessControls.ts.]"
+      "title": "@sanity Sanity verifies security happy path after useAdminAccessControls.ts [surface: Admin] [feature: Security] [level: Sanity] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open Admin application -> fill the login details -> click Login -> navigate to Permissions or Access Records from the sidebar -> submit the restricted or invalid action and verify it is blocked -> verify the page or table result] [expected: The changed feature completes its primary path and leaves the page/API response in a valid state.] [proof: Focused sanity coverage for apps/admin/src/hooks/useAdminAccessControls.ts.]"
     },
     {
       "id": "AGENT_004_03",
@@ -820,7 +820,7 @@
       "scenario": "Security regression for Admin",
       "testCase": "Security checks guarded behavior after useAdminAccessControls.ts",
       "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
-      "steps": "Open the impacted Admin feature. | Submit one invalid or unauthorized edge-case input. | Verify the app/API rejects it visibly without leaking data.",
+      "steps": "Open Admin application -> fill the login details -> click Login -> navigate to Permissions or Access Records from the sidebar -> submit the restricted or invalid action and verify it is blocked -> verify the page or table result",
       "expected": "Invalid or unauthorized input is rejected with a safe error state and no crash.",
       "risk": "High",
       "sourcePath": "apps/admin/src/hooks/useAdminAccessControls.ts",
@@ -875,7 +875,7 @@
       "coverageDecision": "reuse-existing",
       "decision": "Existing REG_LIFECYCLE_051 covers this Security scenario; reuse it instead of duplicating.",
       "planner": "rules",
-      "title": "@bvt Security checks guarded behavior after useAdminAccessControls.ts [surface: Admin] [feature: Security] [level: BVT] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open the impacted Admin feature. | Submit one invalid or unauthorized edge-case input. | Verify the app/API rejects it visibly without leaking data.] [expected: Invalid or unauthorized input is rejected with a safe error state and no crash.] [proof: Guarded behavior coverage for apps/admin/src/hooks/useAdminAccessControls.ts.]"
+      "title": "@bvt Security checks guarded behavior after useAdminAccessControls.ts [surface: Admin] [feature: Security] [level: BVT] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open Admin application -> fill the login details -> click Login -> navigate to Permissions or Access Records from the sidebar -> submit the restricted or invalid action and verify it is blocked -> verify the page or table result] [expected: Invalid or unauthorized input is rejected with a safe error state and no crash.] [proof: Guarded behavior coverage for apps/admin/src/hooks/useAdminAccessControls.ts.]"
     },
     {
       "id": "AGENT_004_04",
@@ -884,7 +884,7 @@
       "scenario": "Security regression for Admin",
       "testCase": "Regression protects downstream security behavior after useAdminAccessControls.ts",
       "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
-      "steps": "Open a downstream Admin workflow connected to apps/admin/src/hooks/useAdminAccessControls.ts. | Run search, navigation, refresh, settings, or API readback behavior. | Verify the workflow remains stable.",
+      "steps": "Open Admin application -> fill the login details -> click Login -> navigate to Permissions or Access Records from the sidebar -> submit the restricted or invalid action and verify it is blocked -> verify the page or table result",
       "expected": "Connected downstream behavior remains stable after the code change.",
       "risk": "High",
       "sourcePath": "apps/admin/src/hooks/useAdminAccessControls.ts",
@@ -939,7 +939,7 @@
       "coverageDecision": "reuse-existing",
       "decision": "Existing REG_TOOLBAR_CONTROLS_002 covers this Regression scenario; reuse it instead of duplicating.",
       "planner": "rules",
-      "title": "@regression Regression protects downstream security behavior after useAdminAccessControls.ts [surface: Admin] [feature: Security] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open a downstream Admin workflow connected to apps/admin/src/hooks/useAdminAccessControls.ts. | Run search, navigation, refresh, settings, or API readback behavior. | Verify the workflow remains stable.] [expected: Connected downstream behavior remains stable after the code change.] [proof: Downstream regression coverage for apps/admin/src/hooks/useAdminAccessControls.ts.]"
+      "title": "@regression Regression protects downstream security behavior after useAdminAccessControls.ts [surface: Admin] [feature: Security] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open Admin application -> fill the login details -> click Login -> navigate to Permissions or Access Records from the sidebar -> submit the restricted or invalid action and verify it is blocked -> verify the page or table result] [expected: Connected downstream behavior remains stable after the code change.] [proof: Downstream regression coverage for apps/admin/src/hooks/useAdminAccessControls.ts.]"
     },
     {
       "id": "AGENT_005_01",
@@ -948,7 +948,7 @@
       "scenario": "Admin regression for Admin",
       "testCase": "Sanity verifies admin happy path after main.tsx",
       "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
-      "steps": "Open the impacted Admin feature. | Exercise the primary user or API path related to apps/admin/src/main.tsx. | Capture evidence after the happy path completes.",
+      "steps": "Open Admin application -> fill the login details -> click Login -> navigate to Apps from the sidebar -> perform the Admin action named in the test case -> verify the page or table result",
       "expected": "The changed feature completes its primary path and leaves the page/API response in a valid state.",
       "risk": "Low",
       "sourcePath": "apps/admin/src/main.tsx",
@@ -995,7 +995,7 @@
       "coverageDecision": "reuse-existing",
       "decision": "Existing REG_LIFECYCLE_051 covers this Sanity scenario; reuse it instead of duplicating.",
       "planner": "rules",
-      "title": "@sanity Sanity verifies admin happy path after main.tsx [surface: Admin] [feature: Admin] [level: Sanity] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open the impacted Admin feature. | Exercise the primary user or API path related to apps/admin/src/main.tsx. | Capture evidence after the happy path completes.] [expected: The changed feature completes its primary path and leaves the page/API response in a valid state.] [proof: Focused sanity coverage for apps/admin/src/main.tsx.]"
+      "title": "@sanity Sanity verifies admin happy path after main.tsx [surface: Admin] [feature: Admin] [level: Sanity] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open Admin application -> fill the login details -> click Login -> navigate to Apps from the sidebar -> perform the Admin action named in the test case -> verify the page or table result] [expected: The changed feature completes its primary path and leaves the page/API response in a valid state.] [proof: Focused sanity coverage for apps/admin/src/main.tsx.]"
     },
     {
       "id": "AGENT_005_02",
@@ -1004,7 +1004,7 @@
       "scenario": "Admin regression for Admin",
       "testCase": "Regression protects downstream admin behavior after main.tsx",
       "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
-      "steps": "Open a downstream Admin workflow connected to apps/admin/src/main.tsx. | Run search, navigation, refresh, settings, or API readback behavior. | Verify the workflow remains stable.",
+      "steps": "Open Admin application -> fill the login details -> click Login -> navigate to Apps from the sidebar -> perform the Admin action named in the test case -> verify the page or table result",
       "expected": "Connected downstream behavior remains stable after the code change.",
       "risk": "Low",
       "sourcePath": "apps/admin/src/main.tsx",
@@ -1051,7 +1051,7 @@
       "coverageDecision": "reuse-existing",
       "decision": "Existing REG_TOOLBAR_CONTROLS_002 covers this Regression scenario; reuse it instead of duplicating.",
       "planner": "rules",
-      "title": "@regression Regression protects downstream admin behavior after main.tsx [surface: Admin] [feature: Admin] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open a downstream Admin workflow connected to apps/admin/src/main.tsx. | Run search, navigation, refresh, settings, or API readback behavior. | Verify the workflow remains stable.] [expected: Connected downstream behavior remains stable after the code change.] [proof: Downstream regression coverage for apps/admin/src/main.tsx.]"
+      "title": "@regression Regression protects downstream admin behavior after main.tsx [surface: Admin] [feature: Admin] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open Admin application -> fill the login details -> click Login -> navigate to Apps from the sidebar -> perform the Admin action named in the test case -> verify the page or table result] [expected: Connected downstream behavior remains stable after the code change.] [proof: Downstream regression coverage for apps/admin/src/main.tsx.]"
     },
     {
       "id": "AGENT_006_01",
@@ -1060,7 +1060,7 @@
       "scenario": "Admin regression for Admin",
       "testCase": "Sanity verifies application ui happy path after style.css",
       "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
-      "steps": "Open the impacted Admin feature. | Exercise the primary user or API path related to apps/admin/src/style.css. | Capture evidence after the happy path completes.",
+      "steps": "Open Admin application -> fill the login details -> click Login -> navigate to Apps from the sidebar -> perform the Application UI action named in the test case -> verify the page or table result",
       "expected": "The changed feature completes its primary path and leaves the page/API response in a valid state.",
       "risk": "Low",
       "sourcePath": "apps/admin/src/style.css",
@@ -1107,7 +1107,7 @@
       "coverageDecision": "reuse-existing",
       "decision": "Existing REG_LIFECYCLE_051 covers this Sanity scenario; reuse it instead of duplicating.",
       "planner": "rules",
-      "title": "@sanity Sanity verifies application ui happy path after style.css [surface: Admin] [feature: Application UI] [level: Sanity] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open the impacted Admin feature. | Exercise the primary user or API path related to apps/admin/src/style.css. | Capture evidence after the happy path completes.] [expected: The changed feature completes its primary path and leaves the page/API response in a valid state.] [proof: Focused sanity coverage for apps/admin/src/style.css.]"
+      "title": "@sanity Sanity verifies application ui happy path after style.css [surface: Admin] [feature: Application UI] [level: Sanity] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open Admin application -> fill the login details -> click Login -> navigate to Apps from the sidebar -> perform the Application UI action named in the test case -> verify the page or table result] [expected: The changed feature completes its primary path and leaves the page/API response in a valid state.] [proof: Focused sanity coverage for apps/admin/src/style.css.]"
     },
     {
       "id": "AGENT_006_02",
@@ -1116,7 +1116,7 @@
       "scenario": "Admin regression for Admin",
       "testCase": "Regression protects downstream application ui behavior after style.css",
       "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
-      "steps": "Open a downstream Admin workflow connected to apps/admin/src/style.css. | Run search, navigation, refresh, settings, or API readback behavior. | Verify the workflow remains stable.",
+      "steps": "Open Admin application -> fill the login details -> click Login -> navigate to Apps from the sidebar -> perform the Application UI action named in the test case -> verify the page or table result",
       "expected": "Connected downstream behavior remains stable after the code change.",
       "risk": "Low",
       "sourcePath": "apps/admin/src/style.css",
@@ -1163,7 +1163,7 @@
       "coverageDecision": "reuse-existing",
       "decision": "Existing REG_TOOLBAR_CONTROLS_002 covers this Regression scenario; reuse it instead of duplicating.",
       "planner": "rules",
-      "title": "@regression Regression protects downstream application ui behavior after style.css [surface: Admin] [feature: Application UI] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open a downstream Admin workflow connected to apps/admin/src/style.css. | Run search, navigation, refresh, settings, or API readback behavior. | Verify the workflow remains stable.] [expected: Connected downstream behavior remains stable after the code change.] [proof: Downstream regression coverage for apps/admin/src/style.css.]"
+      "title": "@regression Regression protects downstream application ui behavior after style.css [surface: Admin] [feature: Application UI] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open Admin application -> fill the login details -> click Login -> navigate to Apps from the sidebar -> perform the Application UI action named in the test case -> verify the page or table result] [expected: Connected downstream behavior remains stable after the code change.] [proof: Downstream regression coverage for apps/admin/src/style.css.]"
     },
     {
       "id": "AGENT_007_01",
@@ -1172,7 +1172,7 @@
       "scenario": "API / Service regression for API / Service",
       "testCase": "BVT verifies api contract remains reachable after routes.ts",
       "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
-      "steps": "Authenticate through the API. | Exercise the route family related to apps/service/src/admin/routes.ts. | Assert a valid authenticated response.",
+      "steps": "Open application -> authenticate through the API with seeded credentials -> call the API contract endpoint or route named in the test -> verify the response status and body -> capture API evidence",
       "expected": "The critical impacted surface remains reachable and authenticated behavior is intact.",
       "risk": "High",
       "sourcePath": "apps/service/src/admin/routes.ts",
@@ -1229,7 +1229,7 @@
       "coverageDecision": "reuse-existing",
       "decision": "Existing BVT_PLATFORM_HEALTH_056 covers this BVT scenario; reuse it instead of duplicating.",
       "planner": "rules",
-      "title": "@bvt BVT verifies api contract remains reachable after routes.ts [surface: API] [feature: API contract] [level: BVT] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Authenticate through the API. | Exercise the route family related to apps/service/src/admin/routes.ts. | Assert a valid authenticated response.] [expected: The critical impacted surface remains reachable and authenticated behavior is intact.] [proof: Critical smoke coverage for apps/service/src/admin/routes.ts.]"
+      "title": "@bvt BVT verifies api contract remains reachable after routes.ts [surface: API] [feature: API contract] [level: BVT] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open application -> authenticate through the API with seeded credentials -> call the API contract endpoint or route named in the test -> verify the response status and body -> capture API evidence] [expected: The critical impacted surface remains reachable and authenticated behavior is intact.] [proof: Critical smoke coverage for apps/service/src/admin/routes.ts.]"
     },
     {
       "id": "AGENT_007_02",
@@ -1238,7 +1238,7 @@
       "scenario": "API / Service regression for API / Service",
       "testCase": "Sanity verifies api contract happy path after routes.ts",
       "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
-      "steps": "Open the impacted API feature. | Exercise the primary user or API path related to apps/service/src/admin/routes.ts. | Capture evidence after the happy path completes.",
+      "steps": "Open application -> authenticate through the API with seeded credentials -> call the API contract endpoint or route named in the test -> verify the response status and body -> capture API evidence",
       "expected": "The changed feature completes its primary path and leaves the page/API response in a valid state.",
       "risk": "High",
       "sourcePath": "apps/service/src/admin/routes.ts",
@@ -1295,7 +1295,7 @@
       "coverageDecision": "reuse-existing",
       "decision": "Existing BVT_PLATFORM_HEALTH_056 covers this Sanity scenario; reuse it instead of duplicating.",
       "planner": "rules",
-      "title": "@sanity Sanity verifies api contract happy path after routes.ts [surface: API] [feature: API contract] [level: Sanity] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open the impacted API feature. | Exercise the primary user or API path related to apps/service/src/admin/routes.ts. | Capture evidence after the happy path completes.] [expected: The changed feature completes its primary path and leaves the page/API response in a valid state.] [proof: Focused sanity coverage for apps/service/src/admin/routes.ts.]"
+      "title": "@sanity Sanity verifies api contract happy path after routes.ts [surface: API] [feature: API contract] [level: Sanity] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open application -> authenticate through the API with seeded credentials -> call the API contract endpoint or route named in the test -> verify the response status and body -> capture API evidence] [expected: The changed feature completes its primary path and leaves the page/API response in a valid state.] [proof: Focused sanity coverage for apps/service/src/admin/routes.ts.]"
     },
     {
       "id": "AGENT_007_03",
@@ -1304,7 +1304,7 @@
       "scenario": "API / Service regression for API / Service",
       "testCase": "Validation checks guarded behavior after routes.ts",
       "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
-      "steps": "Open the impacted API feature. | Submit one invalid or unauthorized edge-case input. | Verify the app/API rejects it visibly without leaking data.",
+      "steps": "Open application -> authenticate through the API with seeded credentials -> call the API contract endpoint or route named in the test -> verify the response status and body -> capture API evidence",
       "expected": "Invalid or unauthorized input is rejected with a safe error state and no crash.",
       "risk": "High",
       "sourcePath": "apps/service/src/admin/routes.ts",
@@ -1361,7 +1361,7 @@
       "coverageDecision": "reuse-existing",
       "decision": "Existing BVT_PLATFORM_HEALTH_056 covers this Validation scenario; reuse it instead of duplicating.",
       "planner": "rules",
-      "title": "@sanity Validation checks guarded behavior after routes.ts [surface: API] [feature: API contract] [level: Sanity] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open the impacted API feature. | Submit one invalid or unauthorized edge-case input. | Verify the app/API rejects it visibly without leaking data.] [expected: Invalid or unauthorized input is rejected with a safe error state and no crash.] [proof: Guarded behavior coverage for apps/service/src/admin/routes.ts.]"
+      "title": "@sanity Validation checks guarded behavior after routes.ts [surface: API] [feature: API contract] [level: Sanity] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open application -> authenticate through the API with seeded credentials -> call the API contract endpoint or route named in the test -> verify the response status and body -> capture API evidence] [expected: Invalid or unauthorized input is rejected with a safe error state and no crash.] [proof: Guarded behavior coverage for apps/service/src/admin/routes.ts.]"
     },
     {
       "id": "AGENT_007_04",
@@ -1370,7 +1370,7 @@
       "scenario": "API / Service regression for API / Service",
       "testCase": "Regression verifies guarded write flow after routes.ts",
       "precondition": "ALLOW_DATA_WRITE=true, seeded test data exists, and reset runs after generated scenarios.",
-      "steps": "Use seeded or disposable test data. | Exercise create, edit, delete, restore, or bulk behavior related to apps/service/src/admin/routes.ts. | Verify cleanup or reset restores seeded state.",
+      "steps": "Open application -> authenticate through the API with seeded credentials -> call the API contract endpoint or route named in the test -> verify the response status and body -> capture API evidence",
       "expected": "The write flow works on seeded/disposable data and the reset path can restore the local dataset.",
       "risk": "High",
       "sourcePath": "apps/service/src/admin/routes.ts",
@@ -1427,7 +1427,7 @@
       "coverageDecision": "reuse-existing",
       "decision": "Existing BVT_PLATFORM_HEALTH_056 covers this Mutation scenario; reuse it instead of duplicating.",
       "planner": "rules",
-      "title": "@regression Regression verifies guarded write flow after routes.ts [surface: API] [feature: API contract] [level: Regression] [precondition: ALLOW_DATA_WRITE=true, seeded test data exists, and reset runs after generated scenarios.] [input: Use seeded or disposable test data. | Exercise create, edit, delete, restore, or bulk behavior related to apps/service/src/admin/routes.ts. | Verify cleanup or reset restores seeded state.] [expected: The write flow works on seeded/disposable data and the reset path can restore the local dataset.] [proof: Guarded mutation regression coverage for apps/service/src/admin/routes.ts.]"
+      "title": "@regression Regression verifies guarded write flow after routes.ts [surface: API] [feature: API contract] [level: Regression] [precondition: ALLOW_DATA_WRITE=true, seeded test data exists, and reset runs after generated scenarios.] [input: Open application -> authenticate through the API with seeded credentials -> call the API contract endpoint or route named in the test -> verify the response status and body -> capture API evidence] [expected: The write flow works on seeded/disposable data and the reset path can restore the local dataset.] [proof: Guarded mutation regression coverage for apps/service/src/admin/routes.ts.]"
     },
     {
       "id": "AGENT_007_05",
@@ -1436,7 +1436,7 @@
       "scenario": "API / Service regression for API / Service",
       "testCase": "Regression protects downstream api contract behavior after routes.ts",
       "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
-      "steps": "Open a downstream API workflow connected to apps/service/src/admin/routes.ts. | Run search, navigation, refresh, settings, or API readback behavior. | Verify the workflow remains stable.",
+      "steps": "Open application -> authenticate through the API with seeded credentials -> call the API contract endpoint or route named in the test -> verify the response status and body -> capture API evidence",
       "expected": "Connected downstream behavior remains stable after the code change.",
       "risk": "High",
       "sourcePath": "apps/service/src/admin/routes.ts",
@@ -1493,7 +1493,7 @@
       "coverageDecision": "reuse-existing",
       "decision": "Existing BVT_PLATFORM_HEALTH_056 covers this Regression scenario; reuse it instead of duplicating.",
       "planner": "rules",
-      "title": "@regression Regression protects downstream api contract behavior after routes.ts [surface: API] [feature: API contract] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open a downstream API workflow connected to apps/service/src/admin/routes.ts. | Run search, navigation, refresh, settings, or API readback behavior. | Verify the workflow remains stable.] [expected: Connected downstream behavior remains stable after the code change.] [proof: Downstream regression coverage for apps/service/src/admin/routes.ts.]"
+      "title": "@regression Regression protects downstream api contract behavior after routes.ts [surface: API] [feature: API contract] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open application -> authenticate through the API with seeded credentials -> call the API contract endpoint or route named in the test -> verify the response status and body -> capture API evidence] [expected: Connected downstream behavior remains stable after the code change.] [proof: Downstream regression coverage for apps/service/src/admin/routes.ts.]"
     },
     {
       "id": "AGENT_008_01",
@@ -1502,7 +1502,7 @@
       "scenario": "API / Service regression for API / Service",
       "testCase": "BVT verifies api contract remains reachable after routes.ts",
       "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
-      "steps": "Authenticate through the API. | Exercise the route family related to apps/service/src/apps/routes.ts. | Assert a valid authenticated response.",
+      "steps": "Open application -> authenticate through the API with seeded credentials -> call the API contract endpoint or route named in the test -> verify the response status and body -> capture API evidence",
       "expected": "The critical impacted surface remains reachable and authenticated behavior is intact.",
       "risk": "High",
       "sourcePath": "apps/service/src/apps/routes.ts",
@@ -1549,7 +1549,7 @@
       "coverageDecision": "reuse-existing",
       "decision": "Existing BVT_PLATFORM_HEALTH_056 covers this BVT scenario; reuse it instead of duplicating.",
       "planner": "rules",
-      "title": "@bvt BVT verifies api contract remains reachable after routes.ts [surface: API] [feature: API contract] [level: BVT] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Authenticate through the API. | Exercise the route family related to apps/service/src/apps/routes.ts. | Assert a valid authenticated response.] [expected: The critical impacted surface remains reachable and authenticated behavior is intact.] [proof: Critical smoke coverage for apps/service/src/apps/routes.ts.]"
+      "title": "@bvt BVT verifies api contract remains reachable after routes.ts [surface: API] [feature: API contract] [level: BVT] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open application -> authenticate through the API with seeded credentials -> call the API contract endpoint or route named in the test -> verify the response status and body -> capture API evidence] [expected: The critical impacted surface remains reachable and authenticated behavior is intact.] [proof: Critical smoke coverage for apps/service/src/apps/routes.ts.]"
     },
     {
       "id": "AGENT_008_02",
@@ -1558,7 +1558,7 @@
       "scenario": "API / Service regression for API / Service",
       "testCase": "Sanity verifies api contract happy path after routes.ts",
       "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
-      "steps": "Open the impacted API feature. | Exercise the primary user or API path related to apps/service/src/apps/routes.ts. | Capture evidence after the happy path completes.",
+      "steps": "Open application -> authenticate through the API with seeded credentials -> call the API contract endpoint or route named in the test -> verify the response status and body -> capture API evidence",
       "expected": "The changed feature completes its primary path and leaves the page/API response in a valid state.",
       "risk": "High",
       "sourcePath": "apps/service/src/apps/routes.ts",
@@ -1605,7 +1605,7 @@
       "coverageDecision": "reuse-existing",
       "decision": "Existing BVT_PLATFORM_HEALTH_056 covers this Sanity scenario; reuse it instead of duplicating.",
       "planner": "rules",
-      "title": "@sanity Sanity verifies api contract happy path after routes.ts [surface: API] [feature: API contract] [level: Sanity] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open the impacted API feature. | Exercise the primary user or API path related to apps/service/src/apps/routes.ts. | Capture evidence after the happy path completes.] [expected: The changed feature completes its primary path and leaves the page/API response in a valid state.] [proof: Focused sanity coverage for apps/service/src/apps/routes.ts.]"
+      "title": "@sanity Sanity verifies api contract happy path after routes.ts [surface: API] [feature: API contract] [level: Sanity] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open application -> authenticate through the API with seeded credentials -> call the API contract endpoint or route named in the test -> verify the response status and body -> capture API evidence] [expected: The changed feature completes its primary path and leaves the page/API response in a valid state.] [proof: Focused sanity coverage for apps/service/src/apps/routes.ts.]"
     },
     {
       "id": "AGENT_008_03",
@@ -1614,7 +1614,7 @@
       "scenario": "API / Service regression for API / Service",
       "testCase": "Validation checks guarded behavior after routes.ts",
       "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
-      "steps": "Open the impacted API feature. | Submit one invalid or unauthorized edge-case input. | Verify the app/API rejects it visibly without leaking data.",
+      "steps": "Open application -> authenticate through the API with seeded credentials -> call the API contract endpoint or route named in the test -> verify the response status and body -> capture API evidence",
       "expected": "Invalid or unauthorized input is rejected with a safe error state and no crash.",
       "risk": "High",
       "sourcePath": "apps/service/src/apps/routes.ts",
@@ -1661,7 +1661,7 @@
       "coverageDecision": "reuse-existing",
       "decision": "Existing BVT_PLATFORM_HEALTH_056 covers this Validation scenario; reuse it instead of duplicating.",
       "planner": "rules",
-      "title": "@sanity Validation checks guarded behavior after routes.ts [surface: API] [feature: API contract] [level: Sanity] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open the impacted API feature. | Submit one invalid or unauthorized edge-case input. | Verify the app/API rejects it visibly without leaking data.] [expected: Invalid or unauthorized input is rejected with a safe error state and no crash.] [proof: Guarded behavior coverage for apps/service/src/apps/routes.ts.]"
+      "title": "@sanity Validation checks guarded behavior after routes.ts [surface: API] [feature: API contract] [level: Sanity] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open application -> authenticate through the API with seeded credentials -> call the API contract endpoint or route named in the test -> verify the response status and body -> capture API evidence] [expected: Invalid or unauthorized input is rejected with a safe error state and no crash.] [proof: Guarded behavior coverage for apps/service/src/apps/routes.ts.]"
     },
     {
       "id": "AGENT_008_04",
@@ -1670,7 +1670,7 @@
       "scenario": "API / Service regression for API / Service",
       "testCase": "Regression verifies guarded write flow after routes.ts",
       "precondition": "ALLOW_DATA_WRITE=true, seeded test data exists, and reset runs after generated scenarios.",
-      "steps": "Use seeded or disposable test data. | Exercise create, edit, delete, restore, or bulk behavior related to apps/service/src/apps/routes.ts. | Verify cleanup or reset restores seeded state.",
+      "steps": "Open application -> authenticate through the API with seeded credentials -> call the API contract endpoint or route named in the test -> verify the response status and body -> capture API evidence",
       "expected": "The write flow works on seeded/disposable data and the reset path can restore the local dataset.",
       "risk": "High",
       "sourcePath": "apps/service/src/apps/routes.ts",
@@ -1717,7 +1717,7 @@
       "coverageDecision": "reuse-existing",
       "decision": "Existing BVT_PLATFORM_HEALTH_056 covers this Mutation scenario; reuse it instead of duplicating.",
       "planner": "rules",
-      "title": "@regression Regression verifies guarded write flow after routes.ts [surface: API] [feature: API contract] [level: Regression] [precondition: ALLOW_DATA_WRITE=true, seeded test data exists, and reset runs after generated scenarios.] [input: Use seeded or disposable test data. | Exercise create, edit, delete, restore, or bulk behavior related to apps/service/src/apps/routes.ts. | Verify cleanup or reset restores seeded state.] [expected: The write flow works on seeded/disposable data and the reset path can restore the local dataset.] [proof: Guarded mutation regression coverage for apps/service/src/apps/routes.ts.]"
+      "title": "@regression Regression verifies guarded write flow after routes.ts [surface: API] [feature: API contract] [level: Regression] [precondition: ALLOW_DATA_WRITE=true, seeded test data exists, and reset runs after generated scenarios.] [input: Open application -> authenticate through the API with seeded credentials -> call the API contract endpoint or route named in the test -> verify the response status and body -> capture API evidence] [expected: The write flow works on seeded/disposable data and the reset path can restore the local dataset.] [proof: Guarded mutation regression coverage for apps/service/src/apps/routes.ts.]"
     },
     {
       "id": "AGENT_008_05",
@@ -1726,7 +1726,7 @@
       "scenario": "API / Service regression for API / Service",
       "testCase": "Regression protects downstream api contract behavior after routes.ts",
       "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
-      "steps": "Open a downstream API workflow connected to apps/service/src/apps/routes.ts. | Run search, navigation, refresh, settings, or API readback behavior. | Verify the workflow remains stable.",
+      "steps": "Open application -> authenticate through the API with seeded credentials -> call the API contract endpoint or route named in the test -> verify the response status and body -> capture API evidence",
       "expected": "Connected downstream behavior remains stable after the code change.",
       "risk": "High",
       "sourcePath": "apps/service/src/apps/routes.ts",
@@ -1773,7 +1773,7 @@
       "coverageDecision": "reuse-existing",
       "decision": "Existing BVT_PLATFORM_HEALTH_056 covers this Regression scenario; reuse it instead of duplicating.",
       "planner": "rules",
-      "title": "@regression Regression protects downstream api contract behavior after routes.ts [surface: API] [feature: API contract] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open a downstream API workflow connected to apps/service/src/apps/routes.ts. | Run search, navigation, refresh, settings, or API readback behavior. | Verify the workflow remains stable.] [expected: Connected downstream behavior remains stable after the code change.] [proof: Downstream regression coverage for apps/service/src/apps/routes.ts.]"
+      "title": "@regression Regression protects downstream api contract behavior after routes.ts [surface: API] [feature: API contract] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open application -> authenticate through the API with seeded credentials -> call the API contract endpoint or route named in the test -> verify the response status and body -> capture API evidence] [expected: Connected downstream behavior remains stable after the code change.] [proof: Downstream regression coverage for apps/service/src/apps/routes.ts.]"
     },
     {
       "id": "AGENT_009_01",
@@ -1782,7 +1782,7 @@
       "scenario": "Keystone / Shockwave regression for Keystone / Shockwave",
       "testCase": "Sanity verifies keystone / shockwave happy path after App.tsx",
       "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
-      "steps": "Open the impacted Keystone feature. | Exercise the primary user or API path related to apps/shockwave/src/App.tsx. | Capture evidence after the happy path completes.",
+      "steps": "Open Keystone application -> fill the login details -> click Login -> select the seeded app and tab -> open the list view -> perform the Keystone / Shockwave action named in the test case -> verify the record or table state",
       "expected": "The changed feature completes its primary path and leaves the page/API response in a valid state.",
       "risk": "Low",
       "sourcePath": "apps/shockwave/src/App.tsx",
@@ -1829,7 +1829,7 @@
       "coverageDecision": "reuse-existing",
       "decision": "Existing BVT_NAVIGATION_SHELL_061 covers this Sanity scenario; reuse it instead of duplicating.",
       "planner": "rules",
-      "title": "@sanity Sanity verifies keystone / shockwave happy path after App.tsx [surface: Keystone] [feature: Keystone / Shockwave] [level: Sanity] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open the impacted Keystone feature. | Exercise the primary user or API path related to apps/shockwave/src/App.tsx. | Capture evidence after the happy path completes.] [expected: The changed feature completes its primary path and leaves the page/API response in a valid state.] [proof: Focused sanity coverage for apps/shockwave/src/App.tsx.]"
+      "title": "@sanity Sanity verifies keystone / shockwave happy path after App.tsx [surface: Keystone] [feature: Keystone / Shockwave] [level: Sanity] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open Keystone application -> fill the login details -> click Login -> select the seeded app and tab -> open the list view -> perform the Keystone / Shockwave action named in the test case -> verify the record or table state] [expected: The changed feature completes its primary path and leaves the page/API response in a valid state.] [proof: Focused sanity coverage for apps/shockwave/src/App.tsx.]"
     },
     {
       "id": "AGENT_009_02",
@@ -1838,7 +1838,7 @@
       "scenario": "Keystone / Shockwave regression for Keystone / Shockwave",
       "testCase": "Regression protects downstream keystone / shockwave behavior after App.tsx",
       "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
-      "steps": "Open a downstream Keystone workflow connected to apps/shockwave/src/App.tsx. | Run search, navigation, refresh, settings, or API readback behavior. | Verify the workflow remains stable.",
+      "steps": "Open Keystone application -> fill the login details -> click Login -> select the seeded app and tab -> open the list view -> perform the Keystone / Shockwave action named in the test case -> verify the record or table state",
       "expected": "Connected downstream behavior remains stable after the code change.",
       "risk": "Low",
       "sourcePath": "apps/shockwave/src/App.tsx",
@@ -1885,7 +1885,7 @@
       "coverageDecision": "reuse-existing",
       "decision": "Existing BVT_AUTHENTICATION_060 covers this Regression scenario; reuse it instead of duplicating.",
       "planner": "rules",
-      "title": "@regression Regression protects downstream keystone / shockwave behavior after App.tsx [surface: Keystone] [feature: Keystone / Shockwave] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open a downstream Keystone workflow connected to apps/shockwave/src/App.tsx. | Run search, navigation, refresh, settings, or API readback behavior. | Verify the workflow remains stable.] [expected: Connected downstream behavior remains stable after the code change.] [proof: Downstream regression coverage for apps/shockwave/src/App.tsx.]"
+      "title": "@regression Regression protects downstream keystone / shockwave behavior after App.tsx [surface: Keystone] [feature: Keystone / Shockwave] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open Keystone application -> fill the login details -> click Login -> select the seeded app and tab -> open the list view -> perform the Keystone / Shockwave action named in the test case -> verify the record or table state] [expected: Connected downstream behavior remains stable after the code change.] [proof: Downstream regression coverage for apps/shockwave/src/App.tsx.]"
     },
     {
       "id": "AGENT_010_01",
@@ -1894,7 +1894,7 @@
       "scenario": "Keystone / Shockwave regression for Keystone / Shockwave",
       "testCase": "Sanity verifies validation happy path after LookupListModal.tsx",
       "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
-      "steps": "Open the impacted Keystone feature. | Exercise the primary user or API path related to apps/shockwave/src/components/LookupListModal.tsx. | Capture evidence after the happy path completes.",
+      "steps": "Open Keystone application -> fill the login details -> click Login -> select the seeded app and tab -> open the list view -> perform the Validation action named in the test case -> verify the record or table state",
       "expected": "The changed feature completes its primary path and leaves the page/API response in a valid state.",
       "risk": "Low",
       "sourcePath": "apps/shockwave/src/components/LookupListModal.tsx",
@@ -1941,7 +1941,7 @@
       "coverageDecision": "reuse-existing",
       "decision": "Existing REG_INLINE_EDIT_103 covers this Sanity scenario; reuse it instead of duplicating.",
       "planner": "rules",
-      "title": "@sanity Sanity verifies validation happy path after LookupListModal.tsx [surface: Keystone] [feature: Validation] [level: Sanity] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open the impacted Keystone feature. | Exercise the primary user or API path related to apps/shockwave/src/components/LookupListModal.tsx. | Capture evidence after the happy path completes.] [expected: The changed feature completes its primary path and leaves the page/API response in a valid state.] [proof: Focused sanity coverage for apps/shockwave/src/components/LookupListModal.tsx.]"
+      "title": "@sanity Sanity verifies validation happy path after LookupListModal.tsx [surface: Keystone] [feature: Validation] [level: Sanity] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open Keystone application -> fill the login details -> click Login -> select the seeded app and tab -> open the list view -> perform the Validation action named in the test case -> verify the record or table state] [expected: The changed feature completes its primary path and leaves the page/API response in a valid state.] [proof: Focused sanity coverage for apps/shockwave/src/components/LookupListModal.tsx.]"
     },
     {
       "id": "AGENT_010_02",
@@ -1950,7 +1950,7 @@
       "scenario": "Keystone / Shockwave regression for Keystone / Shockwave",
       "testCase": "Validation checks guarded behavior after LookupListModal.tsx",
       "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
-      "steps": "Open the impacted Keystone feature. | Submit one invalid or unauthorized edge-case input. | Verify the app/API rejects it visibly without leaking data.",
+      "steps": "Open Keystone application -> fill the login details -> click Login -> select the seeded app and tab -> open the list view -> perform the Validation action named in the test case -> verify the record or table state",
       "expected": "Invalid or unauthorized input is rejected with a safe error state and no crash.",
       "risk": "Low",
       "sourcePath": "apps/shockwave/src/components/LookupListModal.tsx",
@@ -1997,7 +1997,7 @@
       "coverageDecision": "reuse-existing",
       "decision": "Existing BVT_NAVIGATION_SHELL_061 covers this Validation scenario; reuse it instead of duplicating.",
       "planner": "rules",
-      "title": "@sanity Validation checks guarded behavior after LookupListModal.tsx [surface: Keystone] [feature: Validation] [level: Sanity] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open the impacted Keystone feature. | Submit one invalid or unauthorized edge-case input. | Verify the app/API rejects it visibly without leaking data.] [expected: Invalid or unauthorized input is rejected with a safe error state and no crash.] [proof: Guarded behavior coverage for apps/shockwave/src/components/LookupListModal.tsx.]"
+      "title": "@sanity Validation checks guarded behavior after LookupListModal.tsx [surface: Keystone] [feature: Validation] [level: Sanity] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open Keystone application -> fill the login details -> click Login -> select the seeded app and tab -> open the list view -> perform the Validation action named in the test case -> verify the record or table state] [expected: Invalid or unauthorized input is rejected with a safe error state and no crash.] [proof: Guarded behavior coverage for apps/shockwave/src/components/LookupListModal.tsx.]"
     },
     {
       "id": "AGENT_010_03",
@@ -2006,7 +2006,7 @@
       "scenario": "Keystone / Shockwave regression for Keystone / Shockwave",
       "testCase": "Regression protects downstream validation behavior after LookupListModal.tsx",
       "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
-      "steps": "Open a downstream Keystone workflow connected to apps/shockwave/src/components/LookupListModal.tsx. | Run search, navigation, refresh, settings, or API readback behavior. | Verify the workflow remains stable.",
+      "steps": "Open Keystone application -> fill the login details -> click Login -> select the seeded app and tab -> open the list view -> perform the Validation action named in the test case -> verify the record or table state",
       "expected": "Connected downstream behavior remains stable after the code change.",
       "risk": "Low",
       "sourcePath": "apps/shockwave/src/components/LookupListModal.tsx",
@@ -2053,7 +2053,7 @@
       "coverageDecision": "reuse-existing",
       "decision": "Existing BVT_AUTHENTICATION_060 covers this Regression scenario; reuse it instead of duplicating.",
       "planner": "rules",
-      "title": "@regression Regression protects downstream validation behavior after LookupListModal.tsx [surface: Keystone] [feature: Validation] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open a downstream Keystone workflow connected to apps/shockwave/src/components/LookupListModal.tsx. | Run search, navigation, refresh, settings, or API readback behavior. | Verify the workflow remains stable.] [expected: Connected downstream behavior remains stable after the code change.] [proof: Downstream regression coverage for apps/shockwave/src/components/LookupListModal.tsx.]"
+      "title": "@regression Regression protects downstream validation behavior after LookupListModal.tsx [surface: Keystone] [feature: Validation] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open Keystone application -> fill the login details -> click Login -> select the seeded app and tab -> open the list view -> perform the Validation action named in the test case -> verify the record or table state] [expected: Connected downstream behavior remains stable after the code change.] [proof: Downstream regression coverage for apps/shockwave/src/components/LookupListModal.tsx.]"
     },
     {
       "id": "AGENT_011_01",
@@ -2062,7 +2062,7 @@
       "scenario": "Keystone / Shockwave regression for Keystone / Shockwave",
       "testCase": "Sanity verifies metadata and records happy path after recordCreationLayout.ts",
       "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
-      "steps": "Open the impacted Keystone feature. | Exercise the primary user or API path related to apps/shockwave/src/utils/recordCreationLayout.ts. | Capture evidence after the happy path completes.",
+      "steps": "Open Keystone application -> fill the login details -> click Login -> select the seeded app and tab -> open the list view -> perform the Metadata and records action named in the test case -> verify the record or table state",
       "expected": "The changed feature completes its primary path and leaves the page/API response in a valid state.",
       "risk": "Medium",
       "sourcePath": "apps/shockwave/src/utils/recordCreationLayout.ts",
@@ -2109,7 +2109,7 @@
       "coverageDecision": "reuse-existing",
       "decision": "Existing REG_INLINE_EDIT_103 covers this Sanity scenario; reuse it instead of duplicating.",
       "planner": "rules",
-      "title": "@sanity Sanity verifies metadata and records happy path after recordCreationLayout.ts [surface: Keystone] [feature: Metadata and records] [level: Sanity] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open the impacted Keystone feature. | Exercise the primary user or API path related to apps/shockwave/src/utils/recordCreationLayout.ts. | Capture evidence after the happy path completes.] [expected: The changed feature completes its primary path and leaves the page/API response in a valid state.] [proof: Focused sanity coverage for apps/shockwave/src/utils/recordCreationLayout.ts.]"
+      "title": "@sanity Sanity verifies metadata and records happy path after recordCreationLayout.ts [surface: Keystone] [feature: Metadata and records] [level: Sanity] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open Keystone application -> fill the login details -> click Login -> select the seeded app and tab -> open the list view -> perform the Metadata and records action named in the test case -> verify the record or table state] [expected: The changed feature completes its primary path and leaves the page/API response in a valid state.] [proof: Focused sanity coverage for apps/shockwave/src/utils/recordCreationLayout.ts.]"
     },
     {
       "id": "AGENT_011_02",
@@ -2118,7 +2118,7 @@
       "scenario": "Keystone / Shockwave regression for Keystone / Shockwave",
       "testCase": "Regression protects downstream metadata and records behavior after recordCreationLayout.ts",
       "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
-      "steps": "Open a downstream Keystone workflow connected to apps/shockwave/src/utils/recordCreationLayout.ts. | Run search, navigation, refresh, settings, or API readback behavior. | Verify the workflow remains stable.",
+      "steps": "Open Keystone application -> fill the login details -> click Login -> select the seeded app and tab -> open the list view -> perform the Metadata and records action named in the test case -> verify the record or table state",
       "expected": "Connected downstream behavior remains stable after the code change.",
       "risk": "Medium",
       "sourcePath": "apps/shockwave/src/utils/recordCreationLayout.ts",
@@ -2165,7 +2165,7 @@
       "coverageDecision": "reuse-existing",
       "decision": "Existing BVT_NAVIGATION_SHELL_059 covers this Regression scenario; reuse it instead of duplicating.",
       "planner": "rules",
-      "title": "@regression Regression protects downstream metadata and records behavior after recordCreationLayout.ts [surface: Keystone] [feature: Metadata and records] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open a downstream Keystone workflow connected to apps/shockwave/src/utils/recordCreationLayout.ts. | Run search, navigation, refresh, settings, or API readback behavior. | Verify the workflow remains stable.] [expected: Connected downstream behavior remains stable after the code change.] [proof: Downstream regression coverage for apps/shockwave/src/utils/recordCreationLayout.ts.]"
+      "title": "@regression Regression protects downstream metadata and records behavior after recordCreationLayout.ts [surface: Keystone] [feature: Metadata and records] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open Keystone application -> fill the login details -> click Login -> select the seeded app and tab -> open the list view -> perform the Metadata and records action named in the test case -> verify the record or table state] [expected: Connected downstream behavior remains stable after the code change.] [proof: Downstream regression coverage for apps/shockwave/src/utils/recordCreationLayout.ts.]"
     },
     {
       "id": "AGENT_012_01",
@@ -2174,7 +2174,7 @@
       "scenario": "Application regression for Application",
       "testCase": "Sanity verifies application ui happy path after component-catalog.md",
       "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
-      "steps": "Open the impacted Admin feature. | Exercise the primary user or API path related to docs/ui/component-catalog.md. | Capture evidence after the happy path completes.",
+      "steps": "Open Admin application -> fill the login details -> click Login -> navigate to Apps from the sidebar -> perform the Application UI action named in the test case -> verify the page or table result",
       "expected": "The changed feature completes its primary path and leaves the page/API response in a valid state.",
       "risk": "Low",
       "sourcePath": "docs/ui/component-catalog.md",
@@ -2221,7 +2221,7 @@
       "coverageDecision": "reuse-existing",
       "decision": "Existing REG_COLUMN_SIZING_050 covers this Sanity scenario; reuse it instead of duplicating.",
       "planner": "rules",
-      "title": "@sanity Sanity verifies application ui happy path after component-catalog.md [surface: Admin] [feature: Application UI] [level: Sanity] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open the impacted Admin feature. | Exercise the primary user or API path related to docs/ui/component-catalog.md. | Capture evidence after the happy path completes.] [expected: The changed feature completes its primary path and leaves the page/API response in a valid state.] [proof: Focused sanity coverage for docs/ui/component-catalog.md.]"
+      "title": "@sanity Sanity verifies application ui happy path after component-catalog.md [surface: Admin] [feature: Application UI] [level: Sanity] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open Admin application -> fill the login details -> click Login -> navigate to Apps from the sidebar -> perform the Application UI action named in the test case -> verify the page or table result] [expected: The changed feature completes its primary path and leaves the page/API response in a valid state.] [proof: Focused sanity coverage for docs/ui/component-catalog.md.]"
     },
     {
       "id": "AGENT_012_02",
@@ -2230,7 +2230,7 @@
       "scenario": "Application regression for Application",
       "testCase": "Regression protects downstream application ui behavior after component-catalog.md",
       "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
-      "steps": "Open a downstream Admin workflow connected to docs/ui/component-catalog.md. | Run search, navigation, refresh, settings, or API readback behavior. | Verify the workflow remains stable.",
+      "steps": "Open Admin application -> fill the login details -> click Login -> navigate to Apps from the sidebar -> perform the Application UI action named in the test case -> verify the page or table result",
       "expected": "Connected downstream behavior remains stable after the code change.",
       "risk": "Low",
       "sourcePath": "docs/ui/component-catalog.md",
@@ -2277,7 +2277,7 @@
       "coverageDecision": "reuse-existing",
       "decision": "Existing BVT_AUTHENTICATION_058 covers this Regression scenario; reuse it instead of duplicating.",
       "planner": "rules",
-      "title": "@regression Regression protects downstream application ui behavior after component-catalog.md [surface: Admin] [feature: Application UI] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open a downstream Admin workflow connected to docs/ui/component-catalog.md. | Run search, navigation, refresh, settings, or API readback behavior. | Verify the workflow remains stable.] [expected: Connected downstream behavior remains stable after the code change.] [proof: Downstream regression coverage for docs/ui/component-catalog.md.]"
+      "title": "@regression Regression protects downstream application ui behavior after component-catalog.md [surface: Admin] [feature: Application UI] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open Admin application -> fill the login details -> click Login -> navigate to Apps from the sidebar -> perform the Application UI action named in the test case -> verify the page or table result] [expected: Connected downstream behavior remains stable after the code change.] [proof: Downstream regression coverage for docs/ui/component-catalog.md.]"
     },
     {
       "id": "AGENT_013_01",
@@ -2286,7 +2286,7 @@
       "scenario": "Shared UI regression for Shared UI",
       "testCase": "Sanity verifies shared ui happy path after index.tsx",
       "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
-      "steps": "Open the impacted Admin feature. | Exercise the primary user or API path related to packages/ui/src/index.tsx. | Capture evidence after the happy path completes.",
+      "steps": "Open Admin application -> fill the login details -> click Login -> navigate to Apps from the sidebar -> perform the Shared UI action named in the test case -> verify the page or table result",
       "expected": "The changed feature completes its primary path and leaves the page/API response in a valid state.",
       "risk": "Low",
       "sourcePath": "packages/ui/src/index.tsx",
@@ -2333,7 +2333,7 @@
       "coverageDecision": "reuse-existing",
       "decision": "Existing REG_COLUMN_SIZING_050 covers this Sanity scenario; reuse it instead of duplicating.",
       "planner": "rules",
-      "title": "@sanity Sanity verifies shared ui happy path after index.tsx [surface: Admin] [feature: Shared UI] [level: Sanity] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open the impacted Admin feature. | Exercise the primary user or API path related to packages/ui/src/index.tsx. | Capture evidence after the happy path completes.] [expected: The changed feature completes its primary path and leaves the page/API response in a valid state.] [proof: Focused sanity coverage for packages/ui/src/index.tsx.]"
+      "title": "@sanity Sanity verifies shared ui happy path after index.tsx [surface: Admin] [feature: Shared UI] [level: Sanity] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open Admin application -> fill the login details -> click Login -> navigate to Apps from the sidebar -> perform the Shared UI action named in the test case -> verify the page or table result] [expected: The changed feature completes its primary path and leaves the page/API response in a valid state.] [proof: Focused sanity coverage for packages/ui/src/index.tsx.]"
     },
     {
       "id": "AGENT_013_02",
@@ -2342,7 +2342,7 @@
       "scenario": "Shared UI regression for Shared UI",
       "testCase": "Regression protects downstream shared ui behavior after index.tsx",
       "precondition": "Core Platform local stack is available and seeded test credentials can sign in.",
-      "steps": "Open a downstream Admin workflow connected to packages/ui/src/index.tsx. | Run search, navigation, refresh, settings, or API readback behavior. | Verify the workflow remains stable.",
+      "steps": "Open Admin application -> fill the login details -> click Login -> navigate to Shared UI from the sidebar -> perform the Shared UI action named in the test case -> verify the page or table result",
       "expected": "Connected downstream behavior remains stable after the code change.",
       "risk": "Low",
       "sourcePath": "packages/ui/src/index.tsx",
@@ -2389,7 +2389,7 @@
       "coverageDecision": "reuse-existing",
       "decision": "Existing REG_TOOLBAR_CONTROLS_002 covers this Regression scenario; reuse it instead of duplicating.",
       "planner": "rules",
-      "title": "@regression Regression protects downstream shared ui behavior after index.tsx [surface: Admin] [feature: Shared UI] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open a downstream Admin workflow connected to packages/ui/src/index.tsx. | Run search, navigation, refresh, settings, or API readback behavior. | Verify the workflow remains stable.] [expected: Connected downstream behavior remains stable after the code change.] [proof: Downstream regression coverage for packages/ui/src/index.tsx.]"
+      "title": "@regression Regression protects downstream shared ui behavior after index.tsx [surface: Admin] [feature: Shared UI] [level: Regression] [precondition: Core Platform local stack is available and seeded test credentials can sign in.] [input: Open Admin application -> fill the login details -> click Login -> navigate to Shared UI from the sidebar -> perform the Shared UI action named in the test case -> verify the page or table result] [expected: Connected downstream behavior remains stable after the code change.] [proof: Downstream regression coverage for packages/ui/src/index.tsx.]"
     }
   ]
 }
