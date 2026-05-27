@@ -1,14 +1,10 @@
 import { expect, test } from "../helpers/singleBrowserTest";
 import {
-  allowWrites,
-  apiLogin,
   attachEvidence,
-  authHeaders,
   clickRefresh,
   closeModal,
   hasCredentials,
   loginToAdmin,
-  loginToKeystone,
   openAdminScreen,
   openListViewSettings,
   searchWithinListView,
@@ -250,150 +246,6 @@ test.describe("Admin list-view regression", () => {
       await fit.click();
     }
     await expect(main.getByRole("table").first()).toBeVisible();
-  });
-
-  test("Admin Apps disposable lifecycle creates deletes finds recycle bin entry and purges it @lifecycle @recycle [surface: Admin] [feature: Lifecycle] [precondition: ALLOW_DATA_WRITE=true and admin user can manage apps] [input: create disposable app, search it, open detail, delete, verify Recycle Bin, purge matching entry] [expected: disposable app is created, deleted, visible in Recycle Bin, and removed after purge] [proof: Admin list-view lifecycle is covered without touching seeded data]", async ({
-    page
-  }, testInfo) => {
-    test.skip(!allowWrites(), "Write-enabled disposable lifecycle coverage is disabled.");
-    const stamp = Date.now().toString(36);
-    const label = `LV Auto App ${stamp}`;
-    const apiName = `lv_auto_app_${stamp}`;
-    const prefix = `z${stamp.slice(-2)}`.slice(0, 3).toLowerCase();
-
-    const apps = await openAdminScreen(page, "Apps");
-    await expectListRegionReady(apps);
-    await attachEvidence(page, testInfo, "admin-app-lifecycle-before-create");
-
-    await apps.getByRole("button", { name: /^new$/i }).click();
-    await expect(page.getByRole("heading", { name: /^new app$/i })).toBeVisible();
-    await page.locator("#create-app-label").fill(label);
-    await expect(page.locator("#create-app-api")).toHaveValue(apiName);
-    await page.locator("#create-app-prefix").fill(prefix);
-    await attachEvidence(page, testInfo, "admin-app-lifecycle-create-form");
-    await page.getByRole("button", { name: /^create$/i }).click();
-    await expect(page.getByText(/app created successfully/i).first()).toBeVisible({ timeout: 15_000 });
-    await attachEvidence(page, testInfo, "admin-app-lifecycle-after-create");
-
-    const appsList = await openAdminScreen(page, "Apps");
-    const appsTab = page.locator(".admin-apps-primary-tabs").getByRole("button", { name: /^apps$/i }).first();
-    if (await appsTab.isVisible().catch(() => false)) {
-      await appsTab.click();
-    }
-    await expectListRegionReady(appsList);
-    const search = await searchWithinListView(appsList, label);
-    const createdRow = appsList.locator("table tbody tr").filter({ hasText: label }).first();
-    await expect(createdRow).toBeVisible();
-    await attachEvidence(page, testInfo, "admin-app-lifecycle-search-created");
-    await createdRow.click();
-    await expect(page.getByText(/App Details/i).first()).toBeVisible();
-    await page.getByRole("button", { name: /^delete$/i }).last().click();
-    await expect(page.getByRole("heading", { name: /^delete app$/i })).toBeVisible();
-    await attachEvidence(page, testInfo, "admin-app-lifecycle-delete-confirm");
-    await page.getByRole("button", { name: /^delete$/i }).last().click();
-    await expect(page.getByText(/app deleted successfully/i).first()).toBeVisible({ timeout: 15_000 });
-
-    const recycle = await openAdminScreen(page, "Recycle Bin");
-    await expectListRegionReady(recycle);
-    const recycleSearch = await searchWithinListView(recycle, label);
-    const recycleRow = recycle.locator("table tbody tr").filter({ hasText: label }).first();
-    await expect(recycleRow).toBeVisible({ timeout: 15_000 });
-    await attachEvidence(page, testInfo, "admin-app-lifecycle-recycle-bin-entry");
-
-    const purge = recycleRow.getByRole("button", { name: /^purge$/i }).first();
-    if (await purge.isVisible().catch(() => false)) {
-      await purge.click();
-    } else {
-      const rowCheckbox = recycleRow.locator("input[type='checkbox']").first();
-      await rowCheckbox.check({ force: true });
-      await recycle.getByRole("button", { name: /^purge/i }).first().click();
-    }
-    await expect(page.getByRole("heading", { name: /confirm purge/i })).toBeVisible();
-    await attachEvidence(page, testInfo, "admin-app-lifecycle-purge-confirm");
-    await page.getByRole("button", { name: /^purge$/i }).last().click();
-    await recycleSearch.fill(label);
-    await page.waitForTimeout(500);
-    await expect(recycle.locator("table tbody tr").filter({ hasText: label }).first()).toBeHidden({ timeout: 15_000 });
-  });
-
-  test("Admin Apps workflow edits saves deletes restores verifies and cleans up disposable app @workflow @lifecycle @recycle [surface: Admin] [feature: Workflow Lifecycle] [precondition: ALLOW_DATA_WRITE=true and admin user can manage apps] [input: open Apps, create disposable app, select row, edit label, save, delete, restore from Recycle Bin, verify restored, then cleanup purge] [expected: complete multi-step Apps workflow succeeds and leaves no disposable app behind] [proof: one E2E case covers the full Admin Apps list-view journey]", async ({
-    page
-  }, testInfo) => {
-    test.skip(!allowWrites(), "Write-enabled disposable workflow coverage is disabled.");
-    const stamp = Date.now().toString(36);
-    const label = `LV Flow App ${stamp}`;
-    const editedLabel = `${label} Edited`;
-    const apiName = `lv_flow_app_${stamp}`;
-    const prefix = `y${stamp.slice(-2)}`.slice(0, 3).toLowerCase();
-
-    const apps = await openAdminScreen(page, "Apps");
-    await expectListRegionReady(apps);
-    await apps.getByRole("button", { name: /^new$/i }).click();
-    await page.locator("#create-app-label").fill(label);
-    await page.locator("#create-app-prefix").fill(prefix);
-    await attachEvidence(page, testInfo, "admin-app-workflow-create");
-    await page.getByRole("button", { name: /^create$/i }).click();
-    await expect(page.getByText(/app created successfully/i).first()).toBeVisible({ timeout: 15_000 });
-
-    const appsAfterCreate = await openAdminScreen(page, "Apps");
-    const appsTab = page.locator(".admin-apps-primary-tabs").getByRole("button", { name: /^apps$/i }).first();
-    if (await appsTab.isVisible().catch(() => false)) {
-      await appsTab.click();
-    }
-    await expectListRegionReady(appsAfterCreate);
-    const search = await searchWithinListView(appsAfterCreate, label);
-    const row = appsAfterCreate.locator("table tbody tr").filter({ hasText: label }).first();
-    await expect(row).toBeVisible();
-    await attachEvidence(page, testInfo, "admin-app-workflow-select-row");
-    await row.click();
-
-    await page.getByRole("button", { name: /^edit$/i }).click();
-    await expect(page.getByRole("heading", { name: /^edit app$/i })).toBeVisible();
-    await page.locator("#edit-app-label").fill(editedLabel);
-    await attachEvidence(page, testInfo, "admin-app-workflow-edit");
-    await page.getByRole("button", { name: /^save$/i }).click();
-    await expect(page.getByText(/app updated successfully|saved/i).first()).toBeVisible({ timeout: 15_000 });
-    await expect(page.locator(".object-settings").getByText(editedLabel).first()).toBeVisible();
-
-    await page.getByRole("button", { name: /^delete$/i }).last().click();
-    await expect(page.getByRole("heading", { name: /^delete app$/i })).toBeVisible();
-    await attachEvidence(page, testInfo, "admin-app-workflow-delete");
-    await page.getByRole("button", { name: /^delete$/i }).last().click();
-    await expect(page.getByText(/app deleted successfully/i).first()).toBeVisible({ timeout: 15_000 });
-
-    const recycle = await openAdminScreen(page, "Recycle Bin");
-    await expectListRegionReady(recycle);
-    const recycleSearch = await searchWithinListView(recycle, editedLabel);
-    const recycleRow = recycle.locator("table tbody tr").filter({ hasText: editedLabel }).first();
-    await expect(recycleRow).toBeVisible({ timeout: 15_000 });
-    await attachEvidence(page, testInfo, "admin-app-workflow-recycle-before-restore");
-    await recycleRow.getByRole("button", { name: /^restore$/i }).first().click();
-    await expect(page.getByRole("heading", { name: /confirm restore/i })).toBeVisible();
-    await page.getByRole("button", { name: /^restore$/i }).last().click();
-    await expect(recycle.locator("table tbody tr").filter({ hasText: editedLabel }).first()).toBeHidden({ timeout: 15_000 });
-
-    const appsAfterRestore = await openAdminScreen(page, "Apps");
-    const restoredAppsTab = page.locator(".admin-apps-primary-tabs").getByRole("button", { name: /^apps$/i }).first();
-    if (await restoredAppsTab.isVisible().catch(() => false)) {
-      await restoredAppsTab.click();
-    }
-    await expectListRegionReady(appsAfterRestore);
-    await search.fill("");
-    await searchWithinListView(appsAfterRestore, editedLabel);
-    const restoredRow = appsAfterRestore.locator("table tbody tr").filter({ hasText: editedLabel }).first();
-    await expect(restoredRow).toBeVisible({ timeout: 15_000 });
-    await attachEvidence(page, testInfo, "admin-app-workflow-restored");
-
-    await restoredRow.click();
-    await page.getByRole("button", { name: /^delete$/i }).last().click();
-    await page.getByRole("button", { name: /^delete$/i }).last().click();
-    const cleanupRecycle = await openAdminScreen(page, "Recycle Bin");
-    await searchWithinListView(cleanupRecycle, editedLabel);
-    const cleanupRow = cleanupRecycle.locator("table tbody tr").filter({ hasText: editedLabel }).first();
-    await expect(cleanupRow).toBeVisible({ timeout: 15_000 });
-    await cleanupRow.getByRole("button", { name: /^purge$/i }).first().click();
-    await page.getByRole("button", { name: /^purge$/i }).last().click();
-    await expect(cleanupRecycle.locator("table tbody tr").filter({ hasText: editedLabel }).first()).toBeHidden({ timeout: 15_000 });
   });
 
   test("Admin Objects workflow searches opens detail validates nested Fields list and returns to parent @workflow [surface: Admin] [feature: Object drilldown workflow] [precondition: seeded Object metadata exists] [input: open Objects, search Asset, open row, switch to Fields, inspect embedded list-view controls, search field, close record tab] [expected: parent object and nested Fields list views both remain usable] [proof: Admin metadata list-view drilldown is covered as one connected journey]", async ({

@@ -74,7 +74,9 @@ const allowedSurfaces = new Set([
   "admin-objects",
   "admin-sidebar",
   "keystone-depthwise",
-  "permissions-access"
+  "permissions-access",
+  "metadata-lifecycle",
+  "security-lifecycle"
 ]);
 const recordableSurfaces = new Map([
   ["admin", { label: "Admin", url: process.env.ADMIN_BASE_URL || "http://localhost:5002" }],
@@ -88,14 +90,14 @@ const frameworkRegistry = {
       id: "list-view-regression",
       label: "List View Regression",
       surface: "all",
-      description: "Full Admin, Keystone/Shockwave, and API list-view regression coverage.",
+      description: "List-view shell, toolbar, search, settings, navigation, exports, and recycle-bin coverage only.",
       tags: ["bvt", "sanity", "regression", "e2e"]
     },
     {
       id: "admin-list-view",
       label: "Admin List View",
       surface: "admin",
-      description: "Metadata administration list views, settings, lifecycle, recycle bin, and workflow coverage.",
+      description: "Admin list-view shell, toolbar, settings, search, row navigation, and recycle-bin coverage.",
       tags: ["admin", "metadata", "list-view"]
     },
     {
@@ -144,6 +146,22 @@ const frameworkRegistry = {
       grep: "@permissions-ui",
       description: "Permissions, roles, groups, users, and access-record UI flows with toolbar, search, and create-panel checks.",
       tags: ["permissions", "access-records", "ui"]
+    },
+    {
+      id: "admin-metadata-lifecycle",
+      label: "Admin Metadata Lifecycle",
+      surface: "metadata-lifecycle",
+      grep: "@metadata-lifecycle",
+      description: "Page-specific Admin to Keystone lifecycle flows for Apps, Objects, and Tabs.",
+      tags: ["metadata", "objects", "keystone"]
+    },
+    {
+      id: "admin-security-lifecycle",
+      label: "Admin Security Lifecycle",
+      surface: "security-lifecycle",
+      grep: "@security-lifecycle",
+      description: "Page-specific Roles and Groups lifecycle flows scoped to disposable Admin metadata.",
+      tags: ["security", "roles", "groups"]
     }
   ],
   scenarios: [
@@ -152,8 +170,10 @@ const frameworkRegistry = {
     { id: "settings", suiteId: "list-view-regression", label: "Settings", grep: "Settings modal|Filters|Columns|Sharing|Preferences|Hierarchy", description: "List-view configuration panels and validation." },
     { id: "table-ops", suiteId: "list-view-regression", label: "Table operations", grep: "Column resize|Column sizing|Sorting|View modes", description: "Resize, fit, sort, and view mode transitions." },
     { id: "navigation", suiteId: "list-view-regression", label: "Row navigation", grep: "Record navigation|Metadata boundary|Embedded list view|row opens|row can be selected", description: "Row selection, record navigation, and embedded list views." },
-    { id: "lifecycle", suiteId: "list-view-regression", label: "Lifecycle and recycle bin", grep: "@lifecycle|@recycle|Bulk delete", description: "Safe disposable create, delete, recycle-bin, and cleanup flows." },
-    { id: "workflow", suiteId: "list-view-regression", label: "Multi-step workflows", grep: "@workflow", description: "Connected user journeys that prove end-to-end task continuity." },
+    { id: "lifecycle", suiteId: "list-view-regression", label: "List-view recycle flows", grep: "@lifecycle|@recycle|Bulk delete", description: "Safe list-view create, delete, recycle-bin, and cleanup flows." },
+    { id: "workflow", suiteId: "list-view-regression", label: "List-view workflows", grep: "@workflow", description: "Connected list-view journeys that prove table, settings, and navigation continuity." },
+    { id: "metadata-lifecycle", suiteId: "admin-metadata-lifecycle", label: "Metadata lifecycle", grep: "@metadata-lifecycle", description: "Admin app/object/tab mutations verified in Keystone." },
+    { id: "security-lifecycle", suiteId: "admin-security-lifecycle", label: "Security lifecycle", grep: "@security-lifecycle", description: "Roles and groups created, edited, searched, and deleted through Admin UI." },
     { id: "exports", suiteId: "list-view-regression", label: "Exports", grep: "Export|CSV|PDF", description: "CSV and PDF exports from the UI." }
   ],
   caseFormat: [
@@ -2841,6 +2861,76 @@ const runListViewSuite = async (request, response) => {
     runState.exitCode = null;
     runState.logs = [];
     pushLog(`Starting ${surface} run${scenario ? ` with scenario filter ${scenario}` : ""}...`);
+
+    const runCommand = process.platform === "win32" ? "cmd.exe" : "npx";
+    const runArgs = process.platform === "win32" ? ["/d", "/s", "/c", "npx.cmd", ...args] : args;
+    currentProcess = spawn(runCommand, runArgs, {
+      cwd: repoRoot,
+      windowsHide: true,
+      shell: false,
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+
+    currentProcess.stdout.on("data", pushLog);
+    currentProcess.stderr.on("data", pushLog);
+    currentProcess.on("error", (error) => {
+      pushLog(`Failed to start test process: ${error.message}`);
+      runState.running = false;
+      runState.finishedAt = new Date().toISOString();
+      runState.exitCode = 1;
+      currentProcess = null;
+    });
+    currentProcess.on("exit", (code) => {
+      runState.running = false;
+      runState.finishedAt = new Date().toISOString();
+      runState.exitCode = runState.stopRequested ? code ?? 130 : code ?? 1;
+      pushLog(
+        runState.stopRequested
+          ? `Test process stopped with exit code ${runState.exitCode}.`
+          : `Test process finished with exit code ${runState.exitCode}.`
+      );
+      currentProcess = null;
+    });
+
+    sendJson(response, 202, { ok: true, state: runState });
+    return;
+  }
+  const lifecycleSurfaceSpecs = {
+    "metadata-lifecycle": {
+      label: "metadata lifecycle",
+      spec: "tests/e2e/list-view-regression/admin-metadata-lifecycle.spec.ts"
+    },
+    "security-lifecycle": {
+      label: "security lifecycle",
+      spec: "tests/e2e/list-view-regression/admin-security-lifecycle.spec.ts"
+    }
+  };
+  if (lifecycleSurfaceSpecs[surface]) {
+    const lifecycle = lifecycleSurfaceSpecs[surface];
+    const args = [
+      "playwright",
+      "test",
+      lifecycle.spec,
+      "-c",
+      "tests/e2e/playwright.list-view-regression.config.ts",
+      "--workers=1"
+    ];
+    if (scenario) args.push("-g", scenario);
+    if (headed) args.push("--headed");
+
+    runState.running = true;
+    runState.command = `npx ${args.join(" ")}`;
+    runState.surface = surface;
+    runState.scenario = scenario;
+    runState.selectedTestCount = selectedTests.length;
+    runState.reset = reset;
+    runState.headed = headed;
+    runState.stopRequested = false;
+    runState.startedAt = new Date().toISOString();
+    runState.finishedAt = null;
+    runState.exitCode = null;
+    runState.logs = [];
+    pushLog(`Starting ${lifecycle.label} run${scenario ? ` with scenario filter ${scenario}` : ""}...`);
 
     const runCommand = process.platform === "win32" ? "cmd.exe" : "npx";
     const runArgs = process.platform === "win32" ? ["/d", "/s", "/c", "npx.cmd", ...args] : args;

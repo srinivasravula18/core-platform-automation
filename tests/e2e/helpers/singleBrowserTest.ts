@@ -13,6 +13,7 @@ type SingleBrowserFixtures = {
 
 type SingleBrowserWorkerFixtures = {
   sharedContext: BrowserContext;
+  sharedPage: Page;
 };
 
 export const test = base.extend<SingleBrowserFixtures, SingleBrowserWorkerFixtures>({
@@ -32,10 +33,16 @@ export const test = base.extend<SingleBrowserFixtures, SingleBrowserWorkerFixtur
   context: async ({ sharedContext }, use) => {
     await use(sharedContext);
   },
-  page: async ({ context }, use) => {
-    const page = await context.newPage();
-    await use(page);
-    await page.close();
+  sharedPage: [
+    async ({ sharedContext }, use) => {
+      const page = await sharedContext.newPage();
+      await use(page);
+      await page.close();
+    },
+    { scope: "worker" }
+  ],
+  page: async ({ sharedPage }, use) => {
+    await use(sharedPage);
   }
 });
 
