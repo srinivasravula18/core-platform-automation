@@ -120,7 +120,7 @@ echo.
 echo Reindexing GitNexus knowledge graph for:
 echo   %CORE_PLATFORM_ROOT%
 echo.
-call %GITNEXUS_CMD% analyze "%CORE_PLATFORM_ROOT%" --index-only --worker-timeout 120 --max-file-size 256
+call %GITNEXUS_CMD% analyze "%CORE_PLATFORM_ROOT%" --index-only --force --worker-timeout 600 --max-file-size 32768
 if errorlevel 1 (
   echo.
   echo ERROR: GitNexus reindex failed. The agent needs a current graph before generating tests.

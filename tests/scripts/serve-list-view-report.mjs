@@ -1206,7 +1206,7 @@ const runGitNexusAnalyze = () => {
       message: "GitNexus CLI is not installed on PATH. Install it with npm install -g gitnexus, then run Analyze Graph again."
     };
   }
-  const analyzeArgs = ["analyze", appRoot, "--index-only", "--worker-timeout", "120", "--max-file-size", "256"];
+  const analyzeArgs = ["analyze", appRoot, "--index-only", "--force", "--worker-timeout", "600", "--max-file-size", "32768"];
   const result = process.platform === "win32"
     ? spawnSync("cmd.exe", ["/d", "/s", "/c", gitNexus.command, ...analyzeArgs], {
         cwd: appRoot,
