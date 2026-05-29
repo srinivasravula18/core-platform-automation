@@ -290,7 +290,7 @@ test.describe("Admin Object detail seeded subtables depthwise coverage", () => {
     }
 
     if (process.env.INCLUDE_RUNTIME_API_DEPTHWISE === "true") {
-      test(`Admin Object ${target.label} metadata reaches Keystone runtime describe, list views, records, access, search, and recycle endpoints @admin-depthwise @admin-screen:Objects @object:${target.apiName} @runtime-terminal [surface: API] [feature: Object Runtime Terminals] [level: Regression] [testData: seed:industry-suite ${target.label}] [precondition: seeded ${target.label} object exists under ${target.appLabel}] [input: call GitNexus-connected runtime terminal endpoints for ${target.label}] [expected: runtime APIs accept seeded metadata and enforce access without server errors] [proof: Admin Object ${target.label} changes have downstream Keystone terminal coverage]`, async ({
+      test(`Admin Object ${target.label} metadata reaches Keystone runtime describe, list views, records, access, search, and recycle endpoints @admin-depthwise @admin-screen:Objects @object:${target.apiName} @runtime-terminal [surface: API] [feature: Object Runtime Terminals] [level: Regression] [testData: seed:industry-suite ${target.label}] [precondition: seeded ${target.label} object exists under ${target.appLabel}] [input: call downstream runtime terminal endpoints for ${target.label}] [expected: runtime APIs accept seeded metadata and enforce access without server errors] [proof: Admin Object ${target.label} changes have downstream Keystone terminal coverage]`, async ({
       page,
       request
     }, testInfo) => {

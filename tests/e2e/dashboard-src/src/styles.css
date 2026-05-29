@@ -288,16 +288,6 @@ code {
 .agent-controls input[type="time"] { width: 132px; }
 .agent-metrics { margin-bottom: 12px; }
 .graph-panel { padding-bottom: 10px; }
-.gitnexus-native-panel { min-height: min(78dvh, 920px); }
-.gitnexus-frame {
-  display: block;
-  width: 100%;
-  height: min(72dvh, 820px);
-  min-height: 620px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: #05050b;
-}
 .graph-toolbar {
   display: flex;
   flex-wrap: wrap;
