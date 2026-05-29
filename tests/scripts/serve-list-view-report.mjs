@@ -85,94 +85,187 @@ const frameworkRegistry = {
   hierarchy: ["Test Suite", "Test Scenario", "Test Case", "Test Steps", "Evidence", "Bug Report"],
   suites: [
     {
-      id: "list-view-regression",
-      label: "List View Regression",
+      id: "admin-keystone-nav-bvt",
+      label: "Admin + Keystone Nav BVT 206",
       surface: "all",
-      description: "List-view shell, toolbar, search, settings, navigation, exports, and recycle-bin coverage only.",
-      tags: ["bvt", "sanity", "regression", "e2e"]
+      grep: "@admin-keystone-nav-bvt-206",
+      description: "Read-only BVT sweep across every Admin sidebar section and sampled Keystone apps/tabs.",
+      tags: ["admin", "keystone", "navigation-ui", "bvt"]
     },
     {
-      id: "admin-list-view",
-      label: "Admin List View",
-      surface: "admin",
-      description: "Admin list-view shell, toolbar, settings, search, row navigation, and recycle-bin coverage.",
-      tags: ["admin", "metadata", "list-view"]
+      id: "app-hierarchy-bvt",
+      label: "App Hierarchy BVT 110",
+      surface: "all",
+      grep: "@app-hierarchy-bvt-110",
+      description: "App Hierarchy page BVT with tree rendering, toggle stability, legacy app history route observation, and page health.",
+      tags: ["app-hierarchy", "core-ui", "bvt"]
     },
     {
-      id: "keystone-list-view",
-      label: "Keystone / Shockwave List View",
-      surface: "keystone",
-      description: "Business object list views, toolbar behavior, navigation, edits, exports, and recycle-bin flows.",
-      tags: ["shockwave", "records", "list-view"]
+      id: "search-results-bvt",
+      label: "Search Results BVT 120",
+      surface: "all",
+      grep: "@search-results-bvt-120",
+      description: "Admin Search Results BVT with global search, grouped metadata results, section counts, and result table coverage.",
+      tags: ["search-results", "core-ui", "bvt"]
     },
     {
-      id: "admin-depthwise",
-      label: "Admin Depthwise",
-      surface: "admin-depthwise",
-      grep: "@admin-depthwise",
-      description: "Admin side-nav screens, object metadata subtables, search, toolbar, and UI workflow coverage.",
-      tags: ["admin", "depthwise", "ui"]
+      id: "admin-agent-bvt",
+      label: "Agent BVT 125",
+      surface: "all",
+      grep: "@admin-agent-bvt-125",
+      description: "Admin Agent BVT with chat, developer mode, prompt tabs, audit/history tabs, provider failure observation, and page health.",
+      tags: ["agent", "agent-ui", "bvt"]
     },
     {
-      id: "admin-objects-depthwise",
-      label: "Admin Objects Depthwise",
-      surface: "admin-objects",
-      grep: "@admin-screen:Objects",
-      description: "Objects-only UI matrix across seeded objects and object detail options.",
-      tags: ["objects", "metadata", "ui"]
+      id: "keystone-core-reflection-bvt",
+      label: "Keystone Core Reflection BVT 105",
+      surface: "all",
+      grep: "@keystone-core-reflection-bvt-105",
+      description: "Keystone verification BVT confirming Admin core pages remain stable and guarded outside business object search.",
+      tags: ["keystone", "core-reflection-ui", "bvt"]
     },
     {
-      id: "admin-side-navbar",
-      label: "Admin Side Navbar",
-      surface: "admin-sidebar",
-      grep: "from side nav|table/search remains stable|Seed readiness verifies all Admin table anchors",
-      description: "Every Admin side-nav option from Apps to Recycle Bin with UI, table, search, and screenshot evidence.",
-      tags: ["admin", "side-nav", "17-options"]
+      id: "access-records-bvt",
+      label: "Access Records BVT 152",
+      surface: "all",
+      grep: "@access-records-bvt-130",
+      description: "Access Records page BVT with Admin CRUD, permission controls, cleanup, and Keystone runtime verification.",
+      tags: ["access-records", "permissions-ui", "bvt"]
     },
     {
-      id: "keystone-depthwise",
-      label: "Keystone Depthwise",
-      surface: "keystone-depthwise",
-      grep: "@keystone-depthwise",
-      description: "Separate Keystone UI coverage for seeded apps, tabs, object screens, and list-view workflows.",
-      tags: ["keystone", "ui", "depthwise"]
+      id: "admin-tabs-bvt",
+      label: "Admin Tabs BVT 102",
+      surface: "all",
+      grep: "@tabs-bvt-102",
+      description: "Tabs metadata CRUD flow with Keystone propagation and disposable metadata cleanup.",
+      tags: ["tabs", "metadata-lifecycle", "bvt"]
     },
     {
-      id: "permissions-access-security",
-      label: "Permissions / Access UI",
-      surface: "permissions-access",
-      grep: "@permissions-ui",
-      description: "Permissions, roles, groups, users, and access-record UI flows with toolbar, search, and create-panel checks.",
-      tags: ["permissions", "access-records", "ui"]
+      id: "flows-bvt",
+      label: "Flows BVT 101",
+      surface: "all",
+      grep: "@flows-bvt-101",
+      description: "Flows page BVT with page analysis, CRUD, Admin search, Keystone stability, and cleanup.",
+      tags: ["flows", "flows-ui", "bvt"]
     },
     {
-      id: "admin-metadata-lifecycle",
-      label: "Admin Metadata Lifecycle",
-      surface: "metadata-lifecycle",
-      grep: "@metadata-lifecycle",
-      description: "Page-specific Admin to Keystone lifecycle flows for Apps, Objects, Tabs, and Object detail metadata.",
-      tags: ["metadata", "objects", "keystone"]
+      id: "groups-bvt",
+      label: "Groups BVT 124",
+      surface: "all",
+      grep: "@groups-bvt-124",
+      description: "Groups CRUD, membership, audit log, Admin search, Keystone exclusion, and cleanup BVT.",
+      tags: ["groups", "groups-ui", "bvt"]
     },
     {
-      id: "admin-security-lifecycle",
-      label: "Admin Security Lifecycle",
-      surface: "security-lifecycle",
-      grep: "@security-lifecycle",
-      description: "Page-specific Roles, Groups, Access Records, and Permission Grants lifecycle flows with backend and Keystone checks.",
-      tags: ["security", "roles", "groups", "access-records", "permissions"]
+      id: "objects-bvt",
+      label: "Objects BVT 135",
+      surface: "all",
+      grep: "@objects-bvt-135",
+      description: "Objects page BVT with object metadata UI, CRUD path, Keystone reflection, and cleanup.",
+      tags: ["objects", "objects-ui", "bvt"]
+    },
+    {
+      id: "permissions-bvt",
+      label: "Permissions BVT 138",
+      surface: "all",
+      grep: "@permissions-bvt-135",
+      description: "Permissions page focused BVT with seeded permissions, grant controls, restricted behavior, and Keystone stability.",
+      tags: ["permissions", "permissions-ui", "bvt"]
+    },
+    {
+      id: "roles-bvt",
+      label: "Roles BVT 101",
+      surface: "all",
+      grep: "@roles-bvt-101",
+      description: "Roles CRUD, detail, users surface, audit/search, Keystone exclusion, and cleanup BVT.",
+      tags: ["roles", "roles-ui", "bvt"]
+    },
+    {
+      id: "sharing-settings-bvt",
+      label: "Sharing Settings BVT 171",
+      surface: "all",
+      grep: "@sharing-settings-bvt-132",
+      description: "Sharing Settings page BVT with rules, create/edit controls, validation, Keystone stability, and cleanup.",
+      tags: ["sharing-settings", "sharing-settings-ui", "bvt"]
+    },
+    {
+      id: "system-settings-bvt",
+      label: "System Settings BVT 110",
+      surface: "all",
+      grep: "@system-settings-bvt-110",
+      description: "System Settings page BVT with setting search, editable value update/revert, refresh, and page health.",
+      tags: ["system-settings", "system-settings-ui", "bvt"]
+    },
+    {
+      id: "email-logs-bvt",
+      label: "Email Logs BVT 105",
+      surface: "all",
+      grep: "@email-logs-bvt-105",
+      description: "Email Logs page BVT with read-only log list, toolbar, search, exports, and empty-state coverage.",
+      tags: ["email-logs", "email-logs-ui", "bvt"]
+    },
+    {
+      id: "scheduled-jobs-bvt",
+      label: "Scheduled Jobs BVT 125",
+      surface: "all",
+      grep: "@scheduled-jobs-bvt-125",
+      description: "Scheduled Jobs page BVT with list checks, create, update, run/audit tabs, delete, and cleanup.",
+      tags: ["scheduled-jobs", "scheduled-jobs-ui", "bvt"]
+    },
+    {
+      id: "audit-logs-bvt",
+      label: "Audit Logs BVT 105",
+      surface: "all",
+      grep: "@audit-logs-bvt-105",
+      description: "Audit Logs page BVT with read-only audit list, search, exports, columns, and page health.",
+      tags: ["audit-logs", "audit-logs-ui", "bvt"]
+    },
+    {
+      id: "recycle-bin-bvt",
+      label: "Recycle Bin BVT 125",
+      surface: "all",
+      grep: "@recycle-bin-bvt-125",
+      description: "Recycle Bin page BVT with deleted metadata visibility, restore confirmation, restore, and cleanup.",
+      tags: ["recycle-bin", "recycle-bin-ui", "bvt"]
+    },
+    {
+      id: "keystone-admin-other-reflection-bvt",
+      label: "Keystone Other Reflection BVT 105",
+      surface: "all",
+      grep: "@keystone-admin-other-reflection-bvt-105",
+      description: "Keystone verification BVT confirming Admin operational pages stay outside business object search.",
+      tags: ["keystone", "reflection-ui", "bvt"]
+    },
+    {
+      id: "users-bvt",
+      label: "Users BVT 101",
+      surface: "all",
+      grep: "@users-bvt-101",
+      description: "Users page BVT with list/detail/search/access surfaces and Keystone stability checks.",
+      tags: ["users", "users-ui", "bvt"]
     }
   ],
   scenarios: [
-    { id: "shell-toolbar", suiteId: "list-view-regression", label: "Shell and toolbar", grep: "List view shell|Object home|Toolbar controls|primary toolbar", description: "Core page load and toolbar controls." },
-    { id: "search", suiteId: "list-view-regression", label: "Search", grep: "Search|Search navigation|Search empty state", description: "Search input, matching rows, empty states, and recovery." },
-    { id: "settings", suiteId: "list-view-regression", label: "Settings", grep: "Settings modal|Filters|Columns|Sharing|Preferences|Hierarchy", description: "List-view configuration panels and validation." },
-    { id: "table-ops", suiteId: "list-view-regression", label: "Table operations", grep: "Column resize|Column sizing|Sorting|View modes", description: "Resize, fit, sort, and view mode transitions." },
-    { id: "navigation", suiteId: "list-view-regression", label: "Row navigation", grep: "Record navigation|Metadata boundary|Embedded list view|row opens|row can be selected", description: "Row selection, record navigation, and embedded list views." },
-    { id: "lifecycle", suiteId: "list-view-regression", label: "List-view recycle flows", grep: "@lifecycle|@recycle|Bulk delete", description: "Safe list-view create, delete, recycle-bin, and cleanup flows." },
-    { id: "workflow", suiteId: "list-view-regression", label: "List-view workflows", grep: "@workflow", description: "Connected list-view journeys that prove table, settings, and navigation continuity." },
-    { id: "metadata-lifecycle", suiteId: "admin-metadata-lifecycle", label: "Metadata lifecycle", grep: "@metadata-lifecycle", description: "Admin app/object/tab mutations plus Object detail functional metadata verified in Keystone." },
-    { id: "security-lifecycle", suiteId: "admin-security-lifecycle", label: "Security lifecycle", grep: "@security-lifecycle", description: "Roles, groups, access records, and permission grants are exercised through Admin UI with backend/Keystone verification." },
-    { id: "exports", suiteId: "list-view-regression", label: "Exports", grep: "Export|CSV|PDF", description: "CSV and PDF exports from the UI." }
+    { id: "admin-keystone-nav-bvt", suiteId: "admin-keystone-nav-bvt", label: "Admin + Keystone Nav BVT 206", grep: "@admin-keystone-nav-bvt-206", description: "Run the Admin side-nav plus Keystone apps/tabs BVT." },
+    { id: "app-hierarchy-bvt", suiteId: "app-hierarchy-bvt", label: "App Hierarchy BVT 110", grep: "@app-hierarchy-bvt-110", description: "Run the App Hierarchy page BVT." },
+    { id: "search-results-bvt", suiteId: "search-results-bvt", label: "Search Results BVT 120", grep: "@search-results-bvt-120", description: "Run the Admin Search Results BVT." },
+    { id: "admin-agent-bvt", suiteId: "admin-agent-bvt", label: "Agent BVT 125", grep: "@admin-agent-bvt-125", description: "Run the Admin Agent BVT." },
+    { id: "keystone-core-reflection-bvt", suiteId: "keystone-core-reflection-bvt", label: "Keystone Core Reflection BVT 105", grep: "@keystone-core-reflection-bvt-105", description: "Run the Keystone core reflection BVT." },
+    { id: "access-records-bvt", suiteId: "access-records-bvt", label: "Access Records BVT 152", grep: "@access-records-bvt-130", description: "Run the Access Records BVT evidence flow." },
+    { id: "admin-tabs-bvt", suiteId: "admin-tabs-bvt", label: "Admin Tabs BVT 102", grep: "@tabs-bvt-102", description: "Run the Tabs metadata propagation BVT." },
+    { id: "flows-bvt", suiteId: "flows-bvt", label: "Flows BVT 101", grep: "@flows-bvt-101", description: "Run the Flows page BVT." },
+    { id: "groups-bvt", suiteId: "groups-bvt", label: "Groups BVT 124", grep: "@groups-bvt-124", description: "Run the Groups page BVT." },
+    { id: "objects-bvt", suiteId: "objects-bvt", label: "Objects BVT 135", grep: "@objects-bvt-135", description: "Run the Objects page BVT." },
+    { id: "permissions-bvt", suiteId: "permissions-bvt", label: "Permissions BVT 138", grep: "@permissions-bvt-135", description: "Run the Permissions page BVT." },
+    { id: "roles-bvt", suiteId: "roles-bvt", label: "Roles BVT 101", grep: "@roles-bvt-101", description: "Run the Roles page BVT." },
+    { id: "sharing-settings-bvt", suiteId: "sharing-settings-bvt", label: "Sharing Settings BVT 171", grep: "@sharing-settings-bvt-132", description: "Run the Sharing Settings page BVT." },
+    { id: "system-settings-bvt", suiteId: "system-settings-bvt", label: "System Settings BVT 110", grep: "@system-settings-bvt-110", description: "Run the System Settings page BVT." },
+    { id: "email-logs-bvt", suiteId: "email-logs-bvt", label: "Email Logs BVT 105", grep: "@email-logs-bvt-105", description: "Run the Email Logs page BVT." },
+    { id: "scheduled-jobs-bvt", suiteId: "scheduled-jobs-bvt", label: "Scheduled Jobs BVT 125", grep: "@scheduled-jobs-bvt-125", description: "Run the Scheduled Jobs page BVT." },
+    { id: "audit-logs-bvt", suiteId: "audit-logs-bvt", label: "Audit Logs BVT 105", grep: "@audit-logs-bvt-105", description: "Run the Audit Logs page BVT." },
+    { id: "recycle-bin-bvt", suiteId: "recycle-bin-bvt", label: "Recycle Bin BVT 125", grep: "@recycle-bin-bvt-125", description: "Run the Recycle Bin page BVT." },
+    { id: "keystone-admin-other-reflection-bvt", suiteId: "keystone-admin-other-reflection-bvt", label: "Keystone Other Reflection BVT 105", grep: "@keystone-admin-other-reflection-bvt-105", description: "Run the Keystone Admin Other reflection BVT." },
+    { id: "users-bvt", suiteId: "users-bvt", label: "Users BVT 101", grep: "@users-bvt-101", description: "Run the Users page BVT." }
   ],
   caseFormat: [
     { key: "suite", label: "Test Suite", description: "A runnable surface or module such as Admin, Keystone, API, or a feature pack." },
@@ -182,6 +275,36 @@ const frameworkRegistry = {
     { key: "evidence", label: "Evidence", description: "Screenshots, assertions, logs, and generated bug summaries for failed cases." }
   ]
 };
+const adminSidebarSuiteOrder = [
+  "admin-keystone-nav-bvt",
+  "app-hierarchy-bvt",
+  "search-results-bvt",
+  "admin-agent-bvt",
+  "objects-bvt",
+  "admin-tabs-bvt",
+  "flows-bvt",
+  "roles-bvt",
+  "groups-bvt",
+  "users-bvt",
+  "permissions-bvt",
+  "access-records-bvt",
+  "sharing-settings-bvt",
+  "system-settings-bvt",
+  "email-logs-bvt",
+  "scheduled-jobs-bvt",
+  "audit-logs-bvt",
+  "recycle-bin-bvt",
+  "keystone-core-reflection-bvt",
+  "keystone-admin-other-reflection-bvt"
+];
+const adminSidebarSuiteRank = new Map(adminSidebarSuiteOrder.map((id, index) => [id, index]));
+const compareAdminSidebarSuites = (left, right) =>
+  (adminSidebarSuiteRank.get(left.id) ?? 999) - (adminSidebarSuiteRank.get(right.id) ?? 999);
+
+frameworkRegistry.suites.sort(compareAdminSidebarSuites);
+frameworkRegistry.scenarios.sort((left, right) =>
+  (adminSidebarSuiteRank.get(left.suiteId) ?? 999) - (adminSidebarSuiteRank.get(right.suiteId) ?? 999)
+);
 const maxLogLines = 2000;
 const runState = {
   running: false,
@@ -839,6 +962,234 @@ const caseIdentity = (feature, level, index) => {
     testingLevel: level
   };
 };
+
+const visibleBvtInventoryRows = {
+  "admin-keystone-nav-bvt-206.spec.ts": {
+    id: "ADMIN_KEYSTONE_NAV_BVT_206",
+    tags: "@admin-keystone-nav-bvt-206 @navigation-ui @bvt",
+    testingLevel: "BVT",
+    surface: "Admin + Keystone",
+    feature: "Admin Side Nav + Keystone Apps/Tabs",
+    input:
+      "Run 206 checkpoints -> open Admin 5002 -> login -> verify all 18 sidebar sections from Core, Metadata, Security, and Other -> for each section verify nav item, page open, no crash, expected content, controls, and list/page content -> open Keystone 5003 -> login -> verify runtime shell -> open each seeded app -> verify app opens, content remains stable, and tabs launcher opens -> open 32 sampled tabs across AUTO Platform QA 528A, Core Platform, Operations Hub, Revenue Hub, CRM, LIMS, HR, and ELIMS -> verify each tab opens and runtime content remains visible",
+    expected:
+      "All Admin sidebar sections and sampled Keystone apps/tabs remain reachable, render without crash states, expose interactive controls, and keep runtime content visible.",
+    proof: "Automates the 206-check manual Admin side-nav and Keystone apps/tabs BVT evidence sweep."
+  },
+  "app-hierarchy-bvt-110.spec.ts": {
+    id: "APP_HIERARCHY_BVT_110",
+    tags: "@app-hierarchy-bvt-110 @app-hierarchy-ui @bvt",
+    testingLevel: "BVT",
+    surface: "Admin",
+    feature: "App Hierarchy",
+    input:
+      "Run 110 checkpoints -> open Admin application -> login -> open App Hierarchy -> verify hierarchy heading, tree nodes, toggle behavior, legacy app history route handling, Core nav visibility, reload, and console health",
+    expected: "App Hierarchy BVT validates parent-child app tree rendering and stable Core navigation behavior.",
+    proof: "Automates the 110-check App Hierarchy BVT."
+  },
+  "search-results-bvt-120.spec.ts": {
+    id: "SEARCH_RESULTS_BVT_120",
+    tags: "@search-results-bvt-120 @search-results-ui @bvt",
+    testingLevel: "BVT",
+    surface: "Admin",
+    feature: "Search Results",
+    input:
+      "Run 120 checkpoints -> open Admin application -> login -> open Search Results -> verify empty state -> run global searches -> verify metadata result groups, section counts, columns, Back to section, and console health",
+    expected: "Search Results BVT validates Admin metadata global search and grouped result rendering.",
+    proof: "Automates the 120-check Search Results BVT."
+  },
+  "admin-agent-bvt-125.spec.ts": {
+    id: "ADMIN_AGENT_BVT_125",
+    tags: "@admin-agent-bvt-125 @admin-agent-ui @bvt",
+    testingLevel: "BVT",
+    surface: "Admin",
+    feature: "Agent",
+    input:
+      "Run 125 checkpoints -> open Admin application -> login -> open Agent -> verify chat, developer mode, message entry, send control, provider failure state, prompt tabs, audit log tab, history tab, and page health",
+    expected: "Agent BVT validates the Admin Agent workspace and records provider configuration failure when the API key is invalid.",
+    proof: "Automates the 125-check Agent BVT."
+  },
+  "keystone-core-reflection-bvt-105.spec.ts": {
+    id: "KEYSTONE_CORE_REFLECTION_BVT_105",
+    tags: "@keystone-core-reflection-bvt-105 @keystone-reflection-ui @bvt",
+    testingLevel: "BVT",
+    surface: "Admin + Keystone",
+    feature: "Keystone Core Reflection",
+    input:
+      "Run 105 checkpoints -> verify App Hierarchy, Search Results, and Agent open in Admin -> login to Keystone 5003 -> search Admin core page terms -> verify Keystone remains healthy and direct object routes are guarded",
+    expected: "Keystone Core Reflection BVT confirms Admin Core pages do not leak as business objects in Keystone.",
+    proof: "Automates the 105-check Keystone Core reflection BVT."
+  },
+  "access-records-bvt-130.spec.ts": {
+    id: "ACCESS_RECORDS_BVT_152",
+    tags: "@access-records-bvt-152 @access-records-bvt-130 @permissions-ui @bvt",
+    testingLevel: "BVT",
+    surface: "Admin + Keystone",
+    feature: "Access Records",
+    input:
+      "Run 152 checkpoints -> open Admin application -> login -> open Access Records -> verify page, toolbar, seeded rows, create modal, detail view, permission controls -> create AUTO Case/test_role access record -> update object and attachment permissions -> save -> verify detail/list state -> delete disposable record -> open Keystone 5003 -> verify target app remains usable and access-record metadata is not shown as business data",
+    expected:
+      "Access Records page supports list, create, update, delete, cleanup, and Keystone runtime remains usable without exposing Admin-only metadata.",
+    proof: "Automates the 152-check Access Records BVT with Admin CRUD and Keystone reflection evidence."
+  },
+  "admin-tabs-bvt-102.spec.ts": {
+    id: "ADMIN_TABS_BVT_102",
+    tags: "@tabs-bvt-102 @metadata-lifecycle @bvt",
+    testingLevel: "BVT",
+    surface: "Admin + Keystone",
+    feature: "Tabs",
+    input:
+      "Run 102 checkpoints -> open Admin application -> login -> open Tabs -> verify page, toolbar, create flow, detail/list state -> create a disposable tab -> verify it appears in Keystone 5003 -> update if applicable -> delete and clean up the disposable tab",
+    expected: "Tabs metadata created through Admin is reflected in Keystone and cleanup removes the disposable tab.",
+    proof: "Validates Admin Tabs CRUD propagation into Keystone."
+  },
+  "flows-bvt-101.spec.ts": {
+    id: "FLOWS_BVT_101",
+    tags: "@flows-bvt-101 @flows-ui @bvt",
+    testingLevel: "BVT",
+    surface: "Admin + Keystone",
+    feature: "Flows",
+    input:
+      "Run 101 checkpoints -> open Admin application -> login -> open Flows -> verify page, toolbar, seeded records, create panel, detail controls -> create disposable inactive flow -> update flow details -> verify Admin list/search -> check Keystone 5003 runtime remains usable -> delete disposable flow",
+    expected: "Flows page CRUD works in Admin and Keystone remains stable after the metadata operation.",
+    proof: "Automates the 101-check Flows BVT and validates cleanup."
+  },
+  "groups-bvt-124.spec.ts": {
+    id: "GROUPS_BVT_124",
+    tags: "@groups-bvt-124 @groups-ui @bvt",
+    testingLevel: "BVT",
+    surface: "Admin + Keystone",
+    feature: "Groups",
+    input:
+      "Run 124 checkpoints -> open Admin application -> login -> open Groups -> verify page, toolbar, seeded groups, create modal, details, users subpage, audit log -> create disposable group -> add and remove admin user -> update group -> verify Admin search -> verify Keystone 5003 remains usable and excludes Admin group metadata -> delete disposable group",
+    expected: "Groups CRUD, membership, audit, search, and cleanup pass; Keystone correctly excludes Admin-only group metadata.",
+    proof: "Automates the 124-check Groups BVT."
+  },
+  "objects-bvt-135.spec.ts": {
+    id: "OBJECTS_BVT_135",
+    tags: "@objects-bvt-135 @objects-ui @bvt",
+    testingLevel: "BVT",
+    surface: "Admin + Keystone",
+    feature: "Objects",
+    input:
+      "Run 135 checkpoints -> open Admin application -> login -> open Objects -> verify page, toolbar, seeded objects, create wizard, detail/list controls -> perform disposable object CRUD where supported -> verify expected Admin state and Keystone 5003 reflection -> clean up created metadata",
+    expected: "Objects page BVT validates object metadata UI, CRUD path, Keystone reflection, and cleanup.",
+    proof: "Automates the 135-check Objects BVT."
+  },
+  "permissions-bvt-135.spec.ts": {
+    id: "PERMISSIONS_BVT_138",
+    tags: "@permissions-bvt-135 @permissions-ui @bvt",
+    testingLevel: "BVT",
+    surface: "Admin + Keystone",
+    feature: "Permissions",
+    input:
+      "Run 138 checkpoints -> open Admin application -> login -> open Permissions -> verify page, toolbar, seeded permissions, details, grant controls, restricted delete behavior -> perform safe permission/grant operations -> verify Admin result -> verify Keystone 5003 remains usable and does not expose Admin-only permission metadata as business data",
+    expected: "Permissions page behavior and supported operations pass, with unsupported direct metadata delete blocked as expected.",
+    proof: "Automates the focused Permissions BVT checkpoints."
+  },
+  "roles-bvt-101.spec.ts": {
+    id: "ROLES_BVT_101",
+    tags: "@roles-bvt-101 @roles-ui @bvt",
+    testingLevel: "BVT",
+    surface: "Admin + Keystone",
+    feature: "Roles",
+    input:
+      "Run 101 checkpoints -> open Admin application -> login -> open Roles -> verify page, toolbar, seeded roles, create modal, details, users subpage, audit log -> create disposable role -> update role -> verify Admin search -> verify Keystone 5003 remains usable and excludes Admin role metadata -> delete disposable role",
+    expected: "Roles CRUD, detail, user membership surface, audit/search, Keystone exclusion, and cleanup pass.",
+    proof: "Automates the 101-check Roles BVT."
+  },
+  "sharing-settings-bvt-132.spec.ts": {
+    id: "SHARING_SETTINGS_BVT_171",
+    tags: "@sharing-settings-bvt-171 @sharing-settings-bvt-132 @sharing-settings-ui @bvt",
+    testingLevel: "BVT",
+    surface: "Admin + Keystone",
+    feature: "Sharing Settings",
+    input:
+      "Run 171 checkpoints -> open Admin application -> login -> open Sharing Settings -> verify page, toolbar, seeded rules, create/edit controls, detail state, validation, and cleanup -> verify Keystone 5003 remains usable after sharing metadata operations",
+    expected: "Sharing Settings BVT validates page analysis, metadata operations, Keystone stability, and cleanup.",
+    proof: "Automates the expanded Sharing Settings BVT checkpoints."
+  },
+  "system-settings-bvt-110.spec.ts": {
+    id: "SYSTEM_SETTINGS_BVT_110",
+    tags: "@system-settings-bvt-110 @system-settings-ui @bvt",
+    testingLevel: "BVT",
+    surface: "Admin",
+    feature: "System Settings",
+    input:
+      "Run 110 checkpoints -> open Admin application -> login -> open System Settings -> verify heading, description, search, labels, refresh -> update and revert End-user app name -> verify page and console health",
+    expected: "System Settings BVT validates searchable global platform settings and supported update/revert behavior.",
+    proof: "Automates the 110-check System Settings BVT."
+  },
+  "email-logs-bvt-105.spec.ts": {
+    id: "EMAIL_LOGS_BVT_105",
+    tags: "@email-logs-bvt-105 @email-logs-ui @bvt",
+    testingLevel: "BVT",
+    surface: "Admin",
+    feature: "Email Logs",
+    input:
+      "Run 105 checkpoints -> open Admin application -> login -> open Email Logs -> verify read-only toolbar, columns, search, exports, empty state, and console health",
+    expected: "Email Logs BVT validates the operational log list remains readable and intentionally read-only.",
+    proof: "Automates the 105-check Email Logs BVT."
+  },
+  "scheduled-jobs-bvt-125.spec.ts": {
+    id: "SCHEDULED_JOBS_BVT_125",
+    tags: "@scheduled-jobs-bvt-125 @scheduled-jobs-ui @bvt",
+    testingLevel: "BVT",
+    surface: "Admin",
+    feature: "Scheduled Jobs",
+    input:
+      "Run 125 checkpoints -> open Admin application -> login -> open Scheduled Jobs -> verify metrics, list columns, seeded jobs, search -> create disabled disposable job -> update -> inspect Runs and Audit Log tabs -> delete and cleanup",
+    expected: "Scheduled Jobs BVT validates scheduler metadata CRUD, tab surfaces, search, and cleanup.",
+    proof: "Automates the 125-check Scheduled Jobs BVT."
+  },
+  "audit-logs-bvt-105.spec.ts": {
+    id: "AUDIT_LOGS_BVT_105",
+    tags: "@audit-logs-bvt-105 @audit-logs-ui @bvt",
+    testingLevel: "BVT",
+    surface: "Admin",
+    feature: "Audit Logs",
+    input:
+      "Run 105 checkpoints -> open Admin application -> login -> open Audit Logs -> verify read-only audit table, columns, search terms, export controls, refresh, and console health",
+    expected: "Audit Logs BVT validates field-level audit entries are visible, searchable, exportable, and read-only.",
+    proof: "Automates the 105-check Audit Logs BVT."
+  },
+  "recycle-bin-bvt-125.spec.ts": {
+    id: "RECYCLE_BIN_BVT_125",
+    tags: "@recycle-bin-bvt-125 @recycle-bin-ui @bvt",
+    testingLevel: "BVT",
+    surface: "Admin",
+    feature: "Recycle Bin",
+    input:
+      "Run 125 checkpoints -> create and delete disposable scheduled job -> open Recycle Bin -> verify deleted record, columns, actions, restore confirmation cancel, restore, scheduled job reappearance, and cleanup delete",
+    expected: "Recycle Bin BVT validates recoverable metadata deletes, restore behavior, and cleanup.",
+    proof: "Automates the 125-check Recycle Bin BVT."
+  },
+  "keystone-admin-other-reflection-bvt-105.spec.ts": {
+    id: "KEYSTONE_ADMIN_OTHER_REFLECTION_BVT_105",
+    tags: "@keystone-admin-other-reflection-bvt-105 @keystone-reflection-ui @bvt",
+    testingLevel: "BVT",
+    surface: "Admin + Keystone",
+    feature: "Keystone Admin Other Reflection",
+    input:
+      "Run 105 checkpoints -> verify Admin Other pages open -> login to Keystone 5003 -> search Admin operational page names and metadata object names -> verify Keystone remains healthy and guarded from Admin operational metadata",
+    expected: "Keystone reflection BVT confirms Admin operational pages do not leak into Keystone business-object global search.",
+    proof: "Automates the 105-check Keystone Admin Other reflection BVT."
+  },
+  "users-bvt-101.spec.ts": {
+    id: "USERS_BVT_101",
+    tags: "@users-bvt-101 @users-ui @bvt",
+    testingLevel: "BVT",
+    surface: "Admin + Keystone",
+    feature: "Users",
+    input:
+      "Run 101 checkpoints -> open Admin application -> login -> open Users -> verify page, toolbar, seeded users, detail panel, role/group access surfaces, search, and supported user lifecycle controls -> verify Keystone 5003 remains usable after Admin user checks",
+    expected: "Users page BVT validates list/detail/search/access surfaces and Keystone stability.",
+    proof: "Automates the 101-check Users BVT."
+  }
+};
+
+const titleTags = (title) =>
+  Array.from(new Set(String(title || "").match(/@[A-Za-z0-9:_-]+/g) || [])).join(" ");
 
 const stepChain = (steps) => steps.filter(Boolean).join(" -> ");
 
@@ -2282,6 +2633,29 @@ const readInventory = () => {
     return cachedInventory;
   }
 
+  const visibleInventorySpecs = new Set([
+    "admin-keystone-nav-bvt-206.spec.ts",
+    "app-hierarchy-bvt-110.spec.ts",
+    "search-results-bvt-120.spec.ts",
+    "admin-agent-bvt-125.spec.ts",
+    "keystone-core-reflection-bvt-105.spec.ts",
+    "access-records-bvt-130.spec.ts",
+    "admin-tabs-bvt-102.spec.ts",
+    "flows-bvt-101.spec.ts",
+    "groups-bvt-124.spec.ts",
+    "objects-bvt-135.spec.ts",
+    "permissions-bvt-135.spec.ts",
+    "roles-bvt-101.spec.ts",
+    "sharing-settings-bvt-132.spec.ts",
+    "system-settings-bvt-110.spec.ts",
+    "email-logs-bvt-105.spec.ts",
+    "scheduled-jobs-bvt-125.spec.ts",
+    "audit-logs-bvt-105.spec.ts",
+    "recycle-bin-bvt-125.spec.ts",
+    "keystone-admin-other-reflection-bvt-105.spec.ts",
+    "users-bvt-101.spec.ts"
+  ]);
+
   const configs = [
     "tests/e2e/playwright.list-view-regression.config.ts",
     "tests/e2e/playwright.admin-depthwise.config.ts"
@@ -2309,10 +2683,15 @@ const readInventory = () => {
     const parts = trimmed.split(marker);
     const title = parts[parts.length - 1].trim();
     const spec = location.replace(/:\d+:\d+$/, "");
-    const surface = inferSurface(spec, title);
-    const feature = parseMeta(title, "feature") || "List View";
-    const level = inferTestingLevel(parseMeta(title, "level"), title);
-    const identity = caseIdentity(feature, level, rows.length);
+    const specName = path.basename(spec);
+    if (!visibleInventorySpecs.has(specName)) continue;
+    const override = visibleBvtInventoryRows[specName] || {};
+    const surface = override.surface || inferSurface(spec, title);
+    const feature = override.feature || parseMeta(title, "feature") || "List View";
+    const level = override.testingLevel || inferTestingLevel(parseMeta(title, "level"), title);
+    const identity = override.id
+      ? { id: override.id, tags: override.tags || titleTags(title) || `@case-${override.id} ${categoryTag(level)}`, testingLevel: level }
+      : caseIdentity(feature, level, rows.length);
     const fallbackNarrative = defaultCaseNarrative(title, spec, feature, surface);
     rows.push({
       id: identity.id,
@@ -2324,16 +2703,16 @@ const readInventory = () => {
       feature,
       title,
       displayTitle: cleanTitle(title),
-      precondition: parseMeta(title, "precondition") || fallbackNarrative.precondition,
-      input: readableTestSteps({
+      precondition: override.precondition || parseMeta(title, "precondition") || fallbackNarrative.precondition,
+      input: override.input || readableTestSteps({
         raw: parseMeta(title, "input") || fallbackNarrative.input,
         title,
         spec,
         feature,
         surface
       }),
-      expected: parseMeta(title, "expected") || fallbackNarrative.expected,
-      proof: parseMeta(title, "proof") || fallbackNarrative.proof
+      expected: override.expected || parseMeta(title, "expected") || fallbackNarrative.expected,
+      proof: override.proof || parseMeta(title, "proof") || fallbackNarrative.proof
     });
   }
   if (rows.length === 0 && existsSync(resultsJsonPath)) {
