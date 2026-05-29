@@ -61,7 +61,6 @@ Full reset runs call the Core Platform database reset and seed scripts. Make sur
 
 - `GEMINI_API_KEY` for AI-agent scenario planning and generation.
 - `GEMINI_MODEL` to override the default Gemini model.
-- GitNexus tooling if you want the dashboard's optional code graph/proxy features.
 
 ## Folder Relationship
 

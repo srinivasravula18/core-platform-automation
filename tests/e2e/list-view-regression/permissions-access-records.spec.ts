@@ -1215,7 +1215,7 @@ test.describe("Permissions and access records E2E coverage", () => {
   ];
 
   for (const downstreamCase of downstreamCases) {
-    test(`GitNexus downstream effective-access edge keeps ${downstreamCase.name} guarded [surface: API] [feature: Effective Access] @regression @edge`, async ({
+    test(`Downstream effective-access edge keeps ${downstreamCase.name} guarded [surface: API] [feature: Effective Access] @regression @edge`, async ({
       request
     }) => {
       const ctx = await resolveContext(request);

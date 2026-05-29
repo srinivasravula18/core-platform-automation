@@ -62,8 +62,6 @@ const resultReportSources = [
 const storageStatePath = path.join(repoRoot, "tests", "e2e", ".storage", "list-view.json");
 const port = Number(process.env.LIST_VIEW_REPORT_PORT || process.argv[2] || 5372);
 const host = process.env.LIST_VIEW_REPORT_HOST || "127.0.0.1";
-const gitNexusHost = process.env.GITNEXUS_HOST || "127.0.0.1";
-const gitNexusPort = Number(process.env.GITNEXUS_PORT || 4747);
 
 const allowedSurfaces = new Set([
   "all",
@@ -152,7 +150,7 @@ const frameworkRegistry = {
       label: "Admin Metadata Lifecycle",
       surface: "metadata-lifecycle",
       grep: "@metadata-lifecycle",
-      description: "Page-specific Admin to Keystone lifecycle flows for Apps, Objects, and Tabs.",
+      description: "Page-specific Admin to Keystone lifecycle flows for Apps, Objects, Tabs, and Object detail metadata.",
       tags: ["metadata", "objects", "keystone"]
     },
     {
@@ -160,8 +158,8 @@ const frameworkRegistry = {
       label: "Admin Security Lifecycle",
       surface: "security-lifecycle",
       grep: "@security-lifecycle",
-      description: "Page-specific Roles and Groups lifecycle flows scoped to disposable Admin metadata.",
-      tags: ["security", "roles", "groups"]
+      description: "Page-specific Roles, Groups, Access Records, and Permission Grants lifecycle flows with backend and Keystone checks.",
+      tags: ["security", "roles", "groups", "access-records", "permissions"]
     }
   ],
   scenarios: [
@@ -172,8 +170,8 @@ const frameworkRegistry = {
     { id: "navigation", suiteId: "list-view-regression", label: "Row navigation", grep: "Record navigation|Metadata boundary|Embedded list view|row opens|row can be selected", description: "Row selection, record navigation, and embedded list views." },
     { id: "lifecycle", suiteId: "list-view-regression", label: "List-view recycle flows", grep: "@lifecycle|@recycle|Bulk delete", description: "Safe list-view create, delete, recycle-bin, and cleanup flows." },
     { id: "workflow", suiteId: "list-view-regression", label: "List-view workflows", grep: "@workflow", description: "Connected list-view journeys that prove table, settings, and navigation continuity." },
-    { id: "metadata-lifecycle", suiteId: "admin-metadata-lifecycle", label: "Metadata lifecycle", grep: "@metadata-lifecycle", description: "Admin app/object/tab mutations verified in Keystone." },
-    { id: "security-lifecycle", suiteId: "admin-security-lifecycle", label: "Security lifecycle", grep: "@security-lifecycle", description: "Roles and groups created, edited, searched, and deleted through Admin UI." },
+    { id: "metadata-lifecycle", suiteId: "admin-metadata-lifecycle", label: "Metadata lifecycle", grep: "@metadata-lifecycle", description: "Admin app/object/tab mutations plus Object detail functional metadata verified in Keystone." },
+    { id: "security-lifecycle", suiteId: "admin-security-lifecycle", label: "Security lifecycle", grep: "@security-lifecycle", description: "Roles, groups, access records, and permission grants are exercised through Admin UI with backend/Keystone verification." },
     { id: "exports", suiteId: "list-view-regression", label: "Exports", grep: "Export|CSV|PDF", description: "CSV and PDF exports from the UI." }
   ],
   caseFormat: [
@@ -275,57 +273,6 @@ const sendBuffer = (response, status, body, contentType, filename) => {
   response.end(body);
 };
 
-const proxyGitNexus = (request, response, url) => {
-  const upstreamPath = `${url.pathname.replace(/^\/gitnexus/, "") || "/"}${url.search}`;
-  const upstream = httpRequest(
-    {
-      hostname: gitNexusHost,
-      port: gitNexusPort,
-      path: upstreamPath,
-      method: request.method,
-      headers: { ...request.headers, host: `${gitNexusHost}:${gitNexusPort}` }
-    },
-    (upstreamResponse) => {
-      const headers = { ...upstreamResponse.headers };
-      delete headers["content-security-policy"];
-      response.writeHead(upstreamResponse.statusCode || 502, headers);
-      upstreamResponse.on("error", () => {
-        if (!response.destroyed) response.destroy();
-      });
-      upstreamResponse.pipe(response);
-    }
-  );
-  upstream.on("error", (error) => {
-    if (response.headersSent || response.writableEnded) {
-      if (!response.destroyed) response.destroy();
-      return;
-    }
-    sendText(response, 502, `GitNexus graph service is not available through the dashboard proxy. ${error.message}`);
-  });
-  request.on("aborted", () => {
-    upstream.destroy();
-  });
-  response.on("close", () => {
-    upstream.destroy();
-  });
-  request.pipe(upstream);
-};
-
-const gitNexusApiPrefixes = [
-  "/api/repos",
-  "/api/repo",
-  "/api/graph",
-  "/api/query",
-  "/api/search",
-  "/api/grep",
-  "/api/file",
-  "/api/analyze",
-  "/api/embed",
-  "/api/heartbeat",
-  "/api/mcp"
-];
-
-const isGitNexusApiPath = (pathname) => gitNexusApiPrefixes.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`));
 
 const pushRecorderLog = (chunk) => {
   const text = String(chunk).replace(/\r\n/g, "\n");
@@ -1513,34 +1460,7 @@ const syncMainBranch = ({ pull = true } = {}) => {
   };
 };
 
-const syncMainBranchAndReindex = ({ pull = true } = {}) => {
-  const sync = syncMainBranch({ pull });
-  let gitNexus = null;
-  try {
-    gitNexus = runGitNexusAnalyze();
-    writeAgentState({
-      lastGraphCommit: sync.after?.headCommit || sync.after?.remoteMainCommit || "",
-      lastGitNexusReindexAt: gitNexus.analyzedAt || new Date().toISOString(),
-      updatedAt: new Date().toISOString()
-    });
-  } catch (error) {
-    gitNexus = {
-      ok: false,
-      available: tryGitNexusGraph().available,
-      error: error instanceof Error ? error.message : "GitNexus reindex failed after main sync.",
-      analyzedAt: new Date().toISOString()
-    };
-    writeAgentState({
-      lastGitNexusReindexError: gitNexus.error,
-      updatedAt: new Date().toISOString()
-    });
-  }
-  return {
-    ...sync,
-    gitNexus,
-    graphReady: Boolean(gitNexus?.ok)
-  };
-};
+const syncMainBranchAndReindex = ({ pull = true } = {}) => syncMainBranch({ pull });
 
 const resolveAgentBaseRef = (baseRef = "") => {
   const requested = String(baseRef || "").trim();
@@ -1606,321 +1526,6 @@ const scanChangedFiles = (baseRef = "auto", targetRef = "auto") => {
   };
 };
 
-const tryGitNexusGraph = () => {
-  const candidates = process.platform === "win32"
-    ? [
-        path.join(process.env.APPDATA || "", "npm", "gitnexus.cmd"),
-        path.join("C:\\Users\\bdevi\\AppData\\Roaming\\npm", "gitnexus.cmd"),
-        "gitnexus.cmd",
-        "gitnexus"
-      ]
-    : ["gitnexus"];
-  for (const command of candidates) {
-    if (path.isAbsolute(command) && !existsSync(command)) continue;
-    const result = process.platform === "win32"
-      ? spawnSync("cmd.exe", ["/d", "/s", "/c", command, "--help"], {
-          cwd: appRoot,
-          encoding: "utf8",
-          timeout: 20_000,
-          windowsHide: true
-        })
-      : spawnSync(command, ["--help"], {
-      cwd: appRoot,
-      encoding: "utf8",
-      timeout: 20_000,
-      windowsHide: true
-    });
-    if (!result.error && result.status === 0) {
-      return {
-        available: true,
-        command,
-        note: "GitNexus CLI is available. Reindex refreshes the local knowledge graph; the dashboard renders the current commit impact graph."
-      };
-    }
-  }
-  return {
-    available: false,
-    command: "",
-    note: "GitNexus CLI was not found on PATH, so the graph falls back to git diff, commit log, and path dependency heuristics."
-  };
-};
-
-const runGitNexusAnalyze = () => {
-  const gitNexus = tryGitNexusGraph();
-  if (!gitNexus.available) {
-    return {
-      ok: false,
-      available: false,
-      message: "GitNexus CLI is not installed on PATH. Install it with npm install -g gitnexus, then run Analyze Graph again."
-    };
-  }
-  const analyzeArgs = ["analyze", appRoot, "--index-only", "--force", "--worker-timeout", "600", "--max-file-size", "32768"];
-  const result = process.platform === "win32"
-    ? spawnSync("cmd.exe", ["/d", "/s", "/c", gitNexus.command, ...analyzeArgs], {
-        cwd: appRoot,
-        encoding: "utf8",
-        timeout: 10 * 60_000,
-        windowsHide: true
-      })
-    : spawnSync(gitNexus.command, analyzeArgs, {
-        cwd: appRoot,
-        encoding: "utf8",
-        timeout: 10 * 60_000,
-        windowsHide: true
-      });
-  const output = `${result.stdout || ""}\n${result.stderr || ""}`.trim();
-  if (result.error) throw result.error;
-  if (result.status !== 0) {
-    throw new Error(output || `GitNexus analyze exited ${result.status}`);
-  }
-  return {
-    ok: true,
-    available: true,
-    command: `${gitNexus.command} ${analyzeArgs.join(" ")}`,
-    output: output.slice(-12_000),
-    analyzedAt: new Date().toISOString()
-  };
-};
-
-const ensureGitNexusNativeServer = async () => {
-  const probe = await probeHttp("GitNexus", gitNexusPort, "/api/repos");
-  if (probe.ok) return { ok: true, alreadyRunning: true };
-  const gitNexus = tryGitNexusGraph();
-  if (!gitNexus.available) return { ok: false, error: "GitNexus CLI is not available." };
-  const runtimeRoot = path.join(repoRoot, ".runtime");
-  mkdirSync(runtimeRoot, { recursive: true });
-  const outLog = path.join(runtimeRoot, "gitnexus-serve.out.log");
-  const errLog = path.join(runtimeRoot, "gitnexus-serve.err.log");
-  const args = ["serve", "--host", gitNexusHost, "--port", String(gitNexusPort)];
-  const child = process.platform === "win32"
-    ? spawn("cmd.exe", ["/d", "/s", "/c", gitNexus.command, ...args], {
-        cwd: appRoot,
-        detached: true,
-        windowsHide: true,
-        stdio: ["ignore", "ignore", "ignore"]
-      })
-    : spawn(gitNexus.command, args, {
-        cwd: appRoot,
-        detached: true,
-        stdio: ["ignore", "ignore", "ignore"]
-      });
-  child.unref();
-  writeFileSync(path.join(runtimeRoot, "gitnexus-serve.pid"), String(child.pid || ""), "utf8");
-  writeFileSync(outLog, "GitNexus native server started by dashboard.\n", "utf8");
-  writeFileSync(errLog, "", "utf8");
-  return { ok: true, started: true, pid: child.pid };
-};
-
-const parseMcpSseJson = (text) => {
-  const dataLines = String(text || "")
-    .split(/\r?\n/)
-    .filter((line) => line.startsWith("data:"))
-    .map((line) => line.replace(/^data:\s?/, ""));
-  const payload = dataLines.join("\n").trim() || String(text || "").trim();
-  if (!payload) return {};
-  return JSON.parse(payload);
-};
-
-const mcpResultText = (payload) => {
-  const content = payload?.result?.content;
-  if (!Array.isArray(content)) return "";
-  return content
-    .map((item) => item?.text || "")
-    .filter(Boolean)
-    .join("\n")
-    .trim();
-};
-
-const gitNexusMcpPost = async (body, sessionId = "", timeoutMs = 45_000) => {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const response = await fetch(`http://${gitNexusHost}:${gitNexusPort}/api/mcp`, {
-      method: "POST",
-      headers: {
-        accept: "application/json, text/event-stream",
-        "content-type": "application/json",
-        ...(sessionId ? { "mcp-session-id": sessionId } : {})
-      },
-      body: JSON.stringify(body),
-      signal: controller.signal
-    });
-    const text = await response.text();
-    const payload = parseMcpSseJson(text);
-    if (!response.ok || payload?.error) {
-      throw new Error(payload?.error?.message || text || `GitNexus MCP failed with HTTP ${response.status}`);
-    }
-    return {
-      payload,
-      sessionId: response.headers.get("mcp-session-id") || sessionId
-    };
-  } finally {
-    clearTimeout(timer);
-  }
-};
-
-const createGitNexusMcpSession = async () => {
-  await ensureGitNexusNativeServer();
-  const initialized = await gitNexusMcpPost({
-    jsonrpc: "2.0",
-    id: 1,
-    method: "initialize",
-    params: {
-      protocolVersion: "2025-03-26",
-      capabilities: {},
-      clientInfo: { name: "core-platform-test-agent", version: "1.0.0" }
-    }
-  });
-  return {
-    sessionId: initialized.sessionId,
-    nextId: 2,
-    serverInfo: initialized.payload?.result?.serverInfo || null
-  };
-};
-
-const callGitNexusMcpTool = async (session, name, args = {}, timeoutMs = 8_000) => {
-  let lastResult = null;
-  for (let attempt = 0; attempt < 1; attempt += 1) {
-    const requestId = session.nextId++;
-    const { payload } = await gitNexusMcpPost({
-      jsonrpc: "2.0",
-      id: requestId,
-      method: "tools/call",
-      params: { name, arguments: args }
-    }, session.sessionId, timeoutMs);
-    lastResult = {
-      payload,
-      text: mcpResultText(payload).slice(0, 14_000)
-    };
-    if (!isGitNexusStoreBusy(lastResult.text)) return lastResult;
-    await wait(400 * (attempt + 1));
-  }
-  return lastResult;
-};
-
-const parseGitNexusRepos = (text) => {
-  const match = String(text || "").match(/\[[\s\S]*?\]/);
-  if (!match) return [];
-  try {
-    return JSON.parse(match[0]);
-  } catch {
-    return [];
-  }
-};
-
-const chooseGitNexusRepo = (repos) => {
-  const normalizedAppRoot = appRoot.toLowerCase().replace(/\\/g, "/");
-  return repos.find((repo) => String(repo.path || "").toLowerCase().replace(/\\/g, "/") === normalizedAppRoot)
-    || repos.find((repo) => repo.name === "core-platform")
-    || repos[0]
-    || { name: "core-platform" };
-};
-
-const compactMcpSummary = (text) => String(text || "")
-  .replace(/\r/g, "")
-  .replace(/\n{3,}/g, "\n\n")
-  .slice(0, 10_000);
-
-const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
-const isGitNexusStoreBusy = (text) => /LadybugDB unavailable|process has locked|Error 33|rebuilding the index/i.test(String(text || ""));
-const isGitNexusToolFailure = (text) => !String(text || "").trim() || /LadybugDB unavailable|process has locked|Error 33|rebuilding the index|operation was aborted|^Error:/i.test(String(text || "").trim());
-
-const cypherString = (value) => JSON.stringify(String(value || "").replace(/\\/g, "/"));
-
-const buildGitNexusAgentContext = async (scan) => {
-  const availability = tryGitNexusGraph();
-  if (!availability.available) {
-    return {
-      available: false,
-      source: "unavailable",
-      note: availability.note,
-      error: "GitNexus CLI is not available."
-    };
-  }
-
-  try {
-    const session = await createGitNexusMcpSession();
-    const reposResult = await callGitNexusMcpTool(session, "list_repos", {}, 30_000);
-    const repos = parseGitNexusRepos(reposResult.text);
-    const repo = chooseGitNexusRepo(repos);
-    const repoName = repo.name || "core-platform";
-    const detect = await callGitNexusMcpTool(session, "detect_changes", {
-      scope: "compare",
-      base_ref: scan.baseRef,
-      repo: repoName
-    }, 8_000).catch((error) => ({ text: "", error: error.message }));
-
-    const files = [];
-    const priorityChanges = [...scan.changedFiles]
-      .sort((left, right) => (right.risk === "High" ? 1 : 0) - (left.risk === "High" ? 1 : 0))
-      .slice(0, 3);
-    for (const change of priorityChanges) {
-      const details = {
-        path: change.path,
-        area: change.area,
-        risk: change.risk,
-        tools: []
-      };
-      const filePath = cypherString(change.path);
-      const neighborhoodQuery = [
-        `MATCH (f:File {filePath: ${filePath}})-[r:CodeRelation]-(n)`,
-        "RETURN labels(n) AS labels, n.name AS name, n.filePath AS filePath, r.type AS relation",
-        "LIMIT 30"
-      ].join(" ");
-      const neighbors = await callGitNexusMcpTool(session, "cypher", {
-        repo: repoName,
-        query: neighborhoodQuery
-      }, 4_000).catch((error) => ({ text: "", error: error.message }));
-      details.neighborhood = compactMcpSummary(neighbors.text || neighbors.error || "");
-      details.tools.push("cypher");
-
-      if (/routes?|api|service|server|controller|handler/i.test(change.path)) {
-        const apiImpact = await callGitNexusMcpTool(session, "api_impact", {
-          repo: repoName,
-          file: change.path
-        }, 5_000).catch((error) => ({ text: "", error: error.message }));
-        details.apiImpact = compactMcpSummary(apiImpact.text || apiImpact.error || "");
-        details.tools.push("api_impact");
-      }
-
-      files.push(details);
-    }
-
-    const toolTexts = [
-      detect.text || detect.error || "",
-      ...files.flatMap((file) => [file.neighborhood || "", file.apiImpact || "", file.executionFlows || ""])
-    ];
-    const busyCount = toolTexts.filter(isGitNexusStoreBusy).length;
-    const usableCount = toolTexts.filter((text) => !isGitNexusToolFailure(text)).length;
-    const graphUsable = usableCount > 0 || (files.length === 0 && !isGitNexusStoreBusy(detect.text || detect.error || ""));
-
-    return {
-      available: graphUsable,
-      connected: true,
-      source: "gitnexus-mcp",
-      serverInfo: session.serverInfo,
-      repo: repoName,
-      repoPath: repo.path || appRoot,
-      indexedAt: repo.indexedAt || "",
-      indexedCommit: repo.lastCommit || "",
-      staleness: repo.staleness || null,
-      error: graphUsable ? "" : "GitNexus MCP connected, but the local graph store is locked or rebuilding. Reindex/graph load should finish before graph-aware generation.",
-      busyToolCalls: busyCount,
-      generatedAt: new Date().toISOString(),
-      detectChanges: compactMcpSummary(detect.text || detect.error || ""),
-      files
-    };
-  } catch (error) {
-    return {
-      available: false,
-      source: "gitnexus-mcp",
-      note: "GitNexus MCP enrichment failed; agent fell back to git diff and inventory matching.",
-      error: error instanceof Error ? error.message : "GitNexus MCP enrichment failed."
-    };
-  }
-};
-
 const buildAgentGraph = (baseRef = "auto") => {
   const scan = scanChangedFiles(baseRef, "auto");
   const graphTargetRef = scan.targetRef || "HEAD";
@@ -1953,7 +1558,6 @@ const buildAgentGraph = (baseRef = "auto") => {
     headCommit: scan.headCommit,
     previousBaselineCommit: scan.previousBaselineCommit,
     summary: scan.summary,
-    gitNexus: tryGitNexusGraph(),
     commits: commitLog
       .split(/\r?\n/)
       .filter(Boolean)
@@ -2031,21 +1635,14 @@ const levelForTag = (tag) => (tag === "@bvt" ? "BVT" : tag === "@sanity" ? "Sani
 
 const routeLikeChange = (change, graphContext) =>
   /routes?|api|service|server|controller|handler/i.test(change.path)
-  || Boolean(graphContext?.apiImpact && !isGitNexusToolFailure(graphContext.apiImpact));
+  ;
 
 const securityLikeChange = (change) => /auth|permission|access|role|policy|security/i.test(change.path);
 const validationLikeChange = (change) => /validation|schema|field|form|modal|constraint|input/i.test(change.path);
 const mutationLikeChange = (change) => /create|update|edit|delete|bulk|recycle|restore|purge|workflow|lifecycle|mutation|routes?/i.test(change.path);
 const uiLikeChange = (change) => /apps\/admin|apps\/shockwave|packages\/ui|component|hook|page|layout|modal|panel|view|screen/i.test(change.path.replace(/\\/g, "/"));
 
-const graphEvidenceForScenario = (graphContext) => {
-  if (!hasUsableGitNexusFileContext(graphContext)) return "";
-  const evidence = [];
-  if (graphContext?.apiImpact && !isGitNexusToolFailure(graphContext.apiImpact)) evidence.push("api_impact");
-  if (graphContext?.neighborhood && !isGitNexusToolFailure(graphContext.neighborhood)) evidence.push("file_neighbors");
-  if (graphContext?.executionFlows && !isGitNexusToolFailure(graphContext.executionFlows)) evidence.push("execution_flows");
-  return evidence.join(", ");
-};
+const graphEvidenceForScenario = (graphContext) => graphContext?.reason ? "git-diff" : "";
 
 const inferFeatureForChange = (change) => {
   const normalized = change.path.replace(/\\/g, "/").toLowerCase();
@@ -2060,15 +1657,11 @@ const inferFeatureForChange = (change) => {
   return change.area || "Application";
 };
 
-const applicationScenarioTemplates = (change, index, graphContext, gitNexusContext) => {
+const applicationScenarioTemplates = (change, index, graphContext) => {
   const base = scenarioForChange(change, index);
   const feature = inferFeatureForChange(change);
   const graphEvidence = graphEvidenceForScenario(graphContext);
-  const graphSource = graphEvidence
-    ? gitNexusContext?.source || "gitnexus-mcp"
-    : gitNexusContext?.connected
-      ? "gitnexus-mcp-busy"
-      : "git-diff";
+  const graphSource = graphEvidence ? "git-diff" : "rules";
   const surface =
     routeLikeChange(change, graphContext)
       ? "api"
@@ -2086,7 +1679,6 @@ const applicationScenarioTemplates = (change, index, graphContext, gitNexusConte
     adminScreen: /object|field|metadata/i.test(change.path) ? "Objects" : /role|permission|access/i.test(change.path) ? "Permissions" : "Apps",
     graphSource,
     graphEvidence,
-    gitNexus: graphContext || null,
     safeDataPolicy: "seeded-or-disposable-data",
     resetRequired: false
   };
@@ -2114,7 +1706,7 @@ const applicationScenarioTemplates = (change, index, graphContext, gitNexusConte
         surface: surface === "api" ? "API" : surface === "keystone" ? "Keystone" : "Admin"
       }),
       expected: "The critical impacted surface remains reachable and authenticated behavior is intact.",
-      proof: graphEvidence ? `GitNexus MCP evidence (${graphEvidence}) identifies this as critical impact.` : `Critical smoke coverage for ${change.path}.`
+      proof: graphEvidence ? `Graph evidence (${graphEvidence}) identifies this as critical impact.` : `Critical smoke coverage for ${change.path}.`
     });
   }
 
@@ -2130,7 +1722,7 @@ const applicationScenarioTemplates = (change, index, graphContext, gitNexusConte
       surface: surface === "api" ? "API" : surface === "keystone" ? "Keystone" : "Admin"
     }),
     expected: "The changed feature completes its primary path and leaves the page/API response in a valid state.",
-    proof: graphEvidence ? `GitNexus MCP evidence (${graphEvidence}) links the change to this feature path.` : `Focused sanity coverage for ${change.path}.`
+    proof: graphEvidence ? `Graph evidence (${graphEvidence}) links the change to this feature path.` : `Focused sanity coverage for ${change.path}.`
   });
 
   if (validationLikeChange(change) || securityLikeChange(change) || routeLikeChange(change, graphContext)) {
@@ -2146,7 +1738,7 @@ const applicationScenarioTemplates = (change, index, graphContext, gitNexusConte
         surface: surface === "api" ? "API" : surface === "keystone" ? "Keystone" : "Admin"
       }),
       expected: "Invalid or unauthorized input is rejected with a safe error state and no crash.",
-      proof: graphEvidence ? `GitNexus MCP evidence (${graphEvidence}) indicates guarded logic impact.` : `Guarded behavior coverage for ${change.path}.`
+      proof: graphEvidence ? `Graph evidence (${graphEvidence}) indicates guarded logic impact.` : `Guarded behavior coverage for ${change.path}.`
     });
   }
 
@@ -2165,7 +1757,7 @@ const applicationScenarioTemplates = (change, index, graphContext, gitNexusConte
         surface: surface === "api" ? "API" : surface === "keystone" ? "Keystone" : "Admin"
       }),
       expected: "The write flow works on seeded/disposable data and the reset path can restore the local dataset.",
-      proof: graphEvidence ? `GitNexus MCP evidence (${graphEvidence}) identifies mutation or lifecycle impact.` : `Guarded mutation regression coverage for ${change.path}.`
+      proof: graphEvidence ? `Graph evidence (${graphEvidence}) identifies mutation or lifecycle impact.` : `Guarded mutation regression coverage for ${change.path}.`
     });
   }
 
@@ -2181,7 +1773,7 @@ const applicationScenarioTemplates = (change, index, graphContext, gitNexusConte
       surface: surface === "api" ? "API" : surface === "keystone" ? "Keystone" : "Admin"
     }),
     expected: "Connected downstream behavior remains stable after the code change.",
-    proof: graphEvidence ? `GitNexus MCP evidence (${graphEvidence}) provides downstream relationship context.` : `Downstream regression coverage for ${change.path}.`
+    proof: graphEvidence ? `Graph evidence (${graphEvidence}) provides downstream relationship context.` : `Downstream regression coverage for ${change.path}.`
   });
 
   return templates.slice(0, 5);
@@ -2245,7 +1837,7 @@ const parseGeminiJson = (payload) => {
   return JSON.parse(cleaned);
 };
 
-const callGeminiPlanner = async (scan, inventoryRows, gitNexusContext = null) => {
+const callGeminiPlanner = async (scan, inventoryRows) => {
   const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || "";
   if (!apiKey) return null;
 
@@ -2269,13 +1861,10 @@ const callGeminiPlanner = async (scan, inventoryRows, gitNexusContext = null) =>
     "Analyze changed code and existing tests. Return JSON only.",
     "Rules:",
     "- Compare changed business logic, UI behavior, validation, permissions, API behavior, and workflows.",
-    "- When GitNexus MCP context is available, treat it as the primary source for execution flows, route consumers, business logic links, and blast radius.",
     "- Do not duplicate tests. If an existing test is enough, action must be reuse and include existingTestIds.",
     "- Generate only when missing coverage is clear.",
     "- This is application-wide coverage, not list-view-only coverage. Consider Admin, Keystone/Shockwave, API/service, metadata, shared UI, permissions, records, workflows, and business logic.",
-    "- Prefer multiple scenario families for a single impacted feature when GitNexus shows different route, UI, workflow, or security blast radius.",
     "- Generate API-level tests when route handlers, response shape, middleware, or API consumers changed.",
-    "- Generate UI-level tests when GitNexus shows an affected screen, component, hook, or process not covered by existing tests.",
     "- Write/destructive scenarios must use seeded or disposable test data and require reset after completion.",
     "- Classify every decision as exactly one testing level: BVT, Sanity, or Regression.",
     "- BVT is for critical smoke/build verification. Sanity is for important focused behavior. Regression is for broader existing behavior and lower-risk changes.",
@@ -2286,7 +1875,6 @@ const callGeminiPlanner = async (scan, inventoryRows, gitNexusContext = null) =>
       baselineCommit: scan.baseRef,
       headCommit: scan.headCommit,
       changedFiles,
-      gitNexusContext,
       existingTests
     })
   ].join("\n");
@@ -2442,11 +2030,6 @@ const readGeneratedAgentInventoryRows = (startIndex = 0) => {
 const specTitle = (scenario) =>
   `${scenario.tag || tagForRisk(scenario.risk)} ${scenario.testCase} [surface: ${scenario.surfaceLabel || scenario.surface}] [feature: ${scenario.feature}] [level: ${scenario.level || "Regression"}] [precondition: ${scenario.precondition}] [input: ${scenario.steps}] [expected: ${scenario.expected}] [proof: ${scenario.proof}]`;
 
-const hasUsableGitNexusFileContext = (context) => Boolean(context) && [
-  context.neighborhood,
-  context.apiImpact,
-  context.executionFlows
-].some((text) => !isGitNexusToolFailure(text));
 
 const generateAgentSpecSource = (scenarios) => {
   const cases = JSON.stringify(scenarios, null, 2);
@@ -2521,10 +2104,9 @@ test.describe("AI generated change-impact smoke tests", () => {
 const generateAgentScenarios = async (baseRef = "origin/main") => {
   const scan = scanChangedFiles(baseRef);
   const inventoryRows = readInventory().rows || [];
-  const gitNexusContext = await buildGitNexusAgentContext(scan);
   let geminiPlan = null;
   try {
-    geminiPlan = await callGeminiPlanner(scan, inventoryRows, gitNexusContext);
+    geminiPlan = await callGeminiPlanner(scan, inventoryRows);
   } catch (error) {
     geminiPlan = {
       model: geminiModel,
@@ -2533,11 +2115,11 @@ const generateAgentScenarios = async (baseRef = "origin/main") => {
     };
   }
   const decisionByPath = new Map((geminiPlan?.decisions || []).map((decision) => [decision.sourcePath, decision]));
-  const graphContextByPath = new Map((gitNexusContext?.files || []).map((file) => [file.path, file]));
+  const graphContextByPath = new Map(scan.changedFiles.map((file) => [file.path, file]));
   const scenarios = scan.changedFiles.flatMap((change, index) => {
     const modelDecision = decisionByPath.get(change.path) || null;
     const graphContext = graphContextByPath.get(change.path) || null;
-    return applicationScenarioTemplates(change, index, graphContext, gitNexusContext).map((template) => {
+    return applicationScenarioTemplates(change, index, graphContext).map((template) => {
       const tag = modelDecision?.tag && template.scenarioFamily === "Sanity" ? modelDecision.tag : template.tag;
       const level = modelDecision?.level && template.scenarioFamily === "Sanity" ? modelDecision.level : template.level || levelForTag(tag);
       const draft = {
@@ -2610,18 +2192,8 @@ const generateAgentScenarios = async (baseRef = "origin/main") => {
       model: geminiPlan?.model || "",
       error: geminiPlan?.error || "",
       groundingMetadata: geminiPlan?.groundingMetadata || null,
-      gitNexus: {
-        source: gitNexusContext?.source || "none",
-        available: Boolean(gitNexusContext?.available),
-        connected: Boolean(gitNexusContext?.connected || gitNexusContext?.available),
-        repo: gitNexusContext?.repo || "",
-        indexedCommit: gitNexusContext?.indexedCommit || "",
-        staleness: gitNexusContext?.staleness || null,
-        error: gitNexusContext?.error || ""
-      }
     },
     appRoot,
-    gitNexusContext,
     spec: scenarios.length > 0 ? specRelativePath : "",
     requiresReset: resetRequiredCount > 0,
     summary: {
@@ -2836,22 +2408,46 @@ const runListViewSuite = async (request, response) => {
   const scenario = selectedTests.length > 0
     ? selectedTests.map(escapeRegex).join("|")
     : String(body.scenario || "").trim();
-  const adminDepthwiseSurfaces = new Set(["admin-depthwise", "admin-objects", "admin-sidebar", "keystone-depthwise"]);
-  if (adminDepthwiseSurfaces.has(surface)) {
+  const depthwiseSurfaceSpecs = {
+    "admin-depthwise": {
+      label: "admin depthwise",
+      specs: [],
+      grep: "@admin-depthwise"
+    },
+    "admin-objects": {
+      label: "admin objects depthwise",
+      specs: ["tests/e2e/admin-depthwise/admin-object-detail-depthwise.spec.ts"],
+      grep: "@admin-screen:Objects"
+    },
+    "admin-sidebar": {
+      label: "admin side navbar",
+      specs: ["tests/e2e/admin-depthwise/admin-sidebar-depthwise.spec.ts"],
+      grep: "@admin-depthwise"
+    },
+    "keystone-depthwise": {
+      label: "keystone depthwise",
+      specs: ["tests/e2e/admin-depthwise/keystone-depthwise.spec.ts"],
+      grep: "@keystone-depthwise"
+    }
+  };
+  if (depthwiseSurfaceSpecs[surface]) {
+    const suite = depthwiseSurfaceSpecs[surface];
+    const effectiveScenario = scenario || suite.grep;
     const args = [
       "playwright",
       "test",
+      ...suite.specs,
       "-c",
       "tests/e2e/playwright.admin-depthwise.config.ts",
       "--workers=1"
     ];
-    if (scenario) args.push("-g", scenario);
+    if (effectiveScenario) args.push("-g", effectiveScenario);
     if (headed) args.push("--headed");
 
     runState.running = true;
     runState.command = `npx ${args.join(" ")}`;
     runState.surface = surface;
-    runState.scenario = scenario;
+    runState.scenario = effectiveScenario;
     runState.selectedTestCount = selectedTests.length;
     runState.reset = reset;
     runState.headed = headed;
@@ -2860,7 +2456,7 @@ const runListViewSuite = async (request, response) => {
     runState.finishedAt = null;
     runState.exitCode = null;
     runState.logs = [];
-    pushLog(`Starting ${surface} run${scenario ? ` with scenario filter ${scenario}` : ""}...`);
+    pushLog(`Starting ${suite.label} run${effectiveScenario ? ` with scenario filter ${effectiveScenario}` : ""}...`);
 
     const runCommand = process.platform === "win32" ? "cmd.exe" : "npx";
     const runArgs = process.platform === "win32" ? ["/d", "/s", "/c", "npx.cmd", ...args] : args;
@@ -2898,19 +2494,27 @@ const runListViewSuite = async (request, response) => {
   const lifecycleSurfaceSpecs = {
     "metadata-lifecycle": {
       label: "metadata lifecycle",
-      spec: "tests/e2e/list-view-regression/admin-metadata-lifecycle.spec.ts"
+      spec: [
+        "tests/e2e/list-view-regression/admin-metadata-lifecycle.spec.ts",
+        "tests/e2e/list-view-regression/admin-object-detail-functional-lifecycle.spec.ts"
+      ]
     },
     "security-lifecycle": {
       label: "security lifecycle",
-      spec: "tests/e2e/list-view-regression/admin-security-lifecycle.spec.ts"
+      spec: [
+        "tests/e2e/list-view-regression/admin-security-lifecycle.spec.ts",
+        "tests/e2e/list-view-regression/admin-access-records-lifecycle.spec.ts",
+        "tests/e2e/list-view-regression/admin-permissions-grants-lifecycle.spec.ts"
+      ]
     }
   };
   if (lifecycleSurfaceSpecs[surface]) {
     const lifecycle = lifecycleSurfaceSpecs[surface];
+    const lifecycleSpecs = Array.isArray(lifecycle.spec) ? lifecycle.spec : [lifecycle.spec];
     const args = [
       "playwright",
       "test",
-      lifecycle.spec,
+      ...lifecycleSpecs,
       "-c",
       "tests/e2e/playwright.list-view-regression.config.ts",
       "--workers=1"
@@ -3680,15 +3284,6 @@ const stopListViewSuite = async (_request, response) => {
 const server = createServer(async (request, response) => {
   const url = new URL(request.url || "/", `http://${host}:${port}`);
 
-  if (url.pathname === "/gitnexus" || url.pathname.startsWith("/gitnexus/")) {
-    proxyGitNexus(request, response, url);
-    return;
-  }
-
-  if (isGitNexusApiPath(url.pathname)) {
-    proxyGitNexus(request, response, url);
-    return;
-  }
 
   if (request.method === "GET" && url.pathname === "/api/status") {
     sendJson(response, 200, runState);
@@ -3806,7 +3401,7 @@ const server = createServer(async (request, response) => {
 
   if (request.method === "GET" && url.pathname === "/api/agent/graph") {
     try {
-      sendJson(response, 200, latestAgentGraph() || { nodes: [], edges: [], commits: [], summary: { total: 0 }, gitNexus: tryGitNexusGraph() });
+      sendJson(response, 200, latestAgentGraph() || { nodes: [], edges: [], commits: [], summary: { total: 0 } });
     } catch (error) {
       sendJson(response, 500, { error: error instanceof Error ? error.message : "Agent graph read failed." });
     }
@@ -3823,18 +3418,6 @@ const server = createServer(async (request, response) => {
     return;
   }
 
-  if (request.method === "POST" && url.pathname === "/api/agent/graph/reindex") {
-    try {
-      const result = runGitNexusAnalyze();
-      sendJson(response, result.ok ? 200 : 409, {
-        ...result,
-        error: result.ok ? "" : result.message || "GitNexus CLI is not available."
-      });
-    } catch (error) {
-      sendJson(response, 500, { error: error instanceof Error ? error.message : "GitNexus reindex failed." });
-    }
-    return;
-  }
 
   if (request.method === "GET" && url.pathname === "/api/agent/scheduler/status") {
     try {
@@ -3966,13 +3549,6 @@ const server = createServer(async (request, response) => {
     return;
   }
 
-  if (url.pathname.startsWith("/assets/")) {
-    const localAssetPath = resolveSafePath(environmentRoot, url.pathname);
-    if (!localAssetPath || !existsSync(localAssetPath)) {
-      proxyGitNexus(request, response, url);
-      return;
-    }
-  }
 
   const dashboardPath = url.pathname === "/" ? "/index.html" : url.pathname;
   const targetPath = resolveSafePath(environmentRoot, dashboardPath);
@@ -3985,9 +3561,6 @@ const server = createServer(async (request, response) => {
 
 server.listen(port, host, () => {
   configureScheduler();
-  ensureGitNexusNativeServer().catch((error) => {
-    console.error(`GitNexus native server start failed: ${error instanceof Error ? error.message : "unknown error"}`);
-  });
   console.log(`List-view test environment: http://${host}:${port}/`);
   console.log(`Report URL: http://${host}:${port}/report`);
   console.log(`Serving reports from: ${reportRoot}`);

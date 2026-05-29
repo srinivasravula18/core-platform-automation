@@ -38,8 +38,7 @@ const navGroups = [
     id: "automation",
     label: "Automation",
     items: [
-      { id: "agent", label: "AI Agent", icon: Bot },
-      { id: "gitnexus", label: "GitNexus", icon: GitBranch }
+      { id: "agent", label: "AI Agent", icon: Bot }
     ]
   },
   {
@@ -520,7 +519,7 @@ function App() {
   };
 
   useEffect(() => {
-    if (active !== "agent" && active !== "gitnexus") return;
+    if (active !== "agent") return;
     refreshAgentOps();
     const id = window.setInterval(refreshAgentOps, 5000);
     return () => window.clearInterval(id);
@@ -530,29 +529,8 @@ function App() {
     setAgent((previous) => ({ ...previous, busy: true, error: "" }));
     try {
       const sync = await api("/api/agent/sync/main", { method: "POST", body: JSON.stringify({ pull: true }) });
-      setAgent((previous) => ({ ...previous, sync: sync.after || sync, gitNexus: sync.gitNexus || previous.gitNexus, busy: false }));
+      setAgent((previous) => ({ ...previous, sync: sync.after || sync, busy: false }));
       await refreshAgentOps();
-    } catch (error) {
-      setAgent((previous) => ({ ...previous, error: error.message, busy: false }));
-    }
-  };
-
-  const analyzeAgentGraph = async () => {
-    setAgent((previous) => ({ ...previous, busy: true, error: "" }));
-    try {
-      const graph = await api("/api/agent/graph/analyze", { method: "POST", body: JSON.stringify({ baseRef: agent.baseRef }) });
-      setAgent((previous) => ({ ...previous, graph, busy: false }));
-    } catch (error) {
-      setAgent((previous) => ({ ...previous, error: error.message, busy: false }));
-    }
-  };
-
-  const reindexGitNexus = async () => {
-    setAgent((previous) => ({ ...previous, busy: true, error: "" }));
-    try {
-      const gitNexus = await api("/api/agent/graph/reindex", { method: "POST", body: "{}" });
-      const graph = await api("/api/agent/graph/analyze", { method: "POST", body: JSON.stringify({ baseRef: agent.baseRef }) });
-      setAgent((previous) => ({ ...previous, gitNexus, graph, busy: false }));
     } catch (error) {
       setAgent((previous) => ({ ...previous, error: error.message, busy: false }));
     }
@@ -623,14 +601,6 @@ function App() {
     if (active === "execution") return <ExecutionPanel status={data.status} stopRun={stopRun} />;
     if (active === "reports") return <ReportsPanel results={data.results} />;
     if (active === "bugs") return <BugsPanel failedRows={failedRows} />;
-    if (active === "gitnexus") return (
-      <GitNexusPanel
-        agent={agent}
-        analyzeAgentGraph={analyzeAgentGraph}
-        reindexGitNexus={reindexGitNexus}
-        running={data.status.running}
-      />
-    );
     if (active === "agent") return (
       <AgentPanel
         agent={agent}
@@ -885,11 +855,6 @@ function AgentPanel({
       {agent.generated?.outputPath ? <p className="muted">Manifest: <code>{agent.generated.outputPath}</code></p> : null}
       {agent.generated?.requiresReset ? <p className="muted">Reset required: guarded write scenarios will run with <code>ALLOW_DATA_WRITE=true</code> and restore seeded data after completion.</p> : null}
       {graph.outputPath ? <p className="muted">Graph: <code>{graph.outputPath}</code></p> : null}
-      {agent.generated?.planner?.gitNexus ? <p className={agent.generated.planner.gitNexus.available ? "pass" : agent.generated.planner.gitNexus.connected ? "muted" : "danger-text"}>GitNexus MCP: {agent.generated.planner.gitNexus.available ? `graph context loaded from ${agent.generated.planner.gitNexus.repo}` : agent.generated.planner.gitNexus.connected ? agent.generated.planner.gitNexus.error || "connected, graph store is busy" : agent.generated.planner.gitNexus.error || "not available"}</p> : null}
-      {graph.gitNexus?.note ? <p className="muted">GitNexus: {graph.gitNexus.note}</p> : null}
-      {agent.gitNexus?.ok ? <p className="pass">GitNexus index is current. {agent.gitNexus.analyzedAt ? `Updated ${formatDate(agent.gitNexus.analyzedAt)}.` : ""}</p> : null}
-      {agent.gitNexus && agent.gitNexus.ok === false ? <p className="danger-text">GitNexus reindex failed after Sync Main: {agent.gitNexus.error || agent.gitNexus.message || "unknown error"}</p> : null}
-      {agent.gitNexus?.output ? <pre className="logs compact-log">{agent.gitNexus.output}</pre> : null}
       {sync.pullBlocked ? <p className="danger-text">Main pull is blocked because the target app repo has local changes. Fetch still completed, so remote changes are visible.</p> : null}
       {agent.commit ? <p className="pass">Committed on {agent.commit.branchName}{agent.commit.pushed ? " and pushed" : ""}.</p> : null}
       {agent.error ? <p className="danger-text">{agent.error}</p> : null}
@@ -911,25 +876,6 @@ function AgentPanel({
     {graph.commits ? <DataTable title={`Main Commit Range (${graph.commits?.length || 0})`} rows={graph.commits || []} columns={[["commit", "Commit"], ["message", "Message"]]} /> : null}
     {agent.scan ? <DataTable title={`Changed Files (${agent.scan.changedFiles?.length || 0})`} rows={agent.scan.changedFiles || []} columns={[["path", "Path"], ["area", "Area"], ["risk", "Risk"], ["reason", "Reason"]]} /> : null}
     {agent.generated ? <DataTable title={`Generated Runnable Scenarios (${generatedCount})`} rows={agent.generated.scenarios || []} columns={[["id", "ID"], ["scenarioFamily", "Family"], ["surfaceLabel", "Surface"], ["feature", "Feature"], ["level", "Testing"], ["tag", "Tag"], ["action", "Action"], ["coverageDecision", "Coverage"], ["testCase", "Test Case"], ["risk", "Risk"], ["graphSource", "Graph"], ["graphEvidence", "Evidence"], ["sourcePath", "Source"]]} /> : null}
-  </section>;
-}
-
-function GitNexusPanel({ agent, analyzeAgentGraph, reindexGitNexus, running }) {
-  const graph = agent.graph || {};
-  const gitNexusUrl = `/gitnexus/?server=${encodeURIComponent(window.location.origin)}&project=${encodeURIComponent("core-platform")}`;
-  return <section className="section-stack">
-    <div className="panel">
-      <div className="section-heading"><div><h2>GitNexus</h2><span>Native indexed code graph for Core Platform</span></div><GitBranch size={20} /></div>
-      <div className="agent-controls">
-        <button className="secondary" onClick={analyzeAgentGraph} disabled={agent.busy || running}><GitBranch size={16} /> Analyze Graph</button>
-        <button className="secondary" onClick={reindexGitNexus} disabled={agent.busy || running}><Waypoints size={16} /> GitNexus Reindex</button>
-      </div>
-      {agent.gitNexus?.ok ? <p className="pass">GitNexus index is current. {agent.gitNexus.analyzedAt ? `Updated ${formatDate(agent.gitNexus.analyzedAt)}.` : ""}</p> : null}
-      {graph.gitNexus?.note ? <p className="muted">GitNexus: {graph.gitNexus.note}</p> : null}
-      {graph.outputPath ? <p className="muted">Latest impact summary: <code>{graph.outputPath}</code></p> : null}
-      {agent.error ? <p className="danger-text">{agent.error}</p> : null}
-      <iframe className="gitnexus-frame" title="GitNexus native code graph" src={gitNexusUrl} />
-    </div>
   </section>;
 }
 

@@ -4,7 +4,7 @@
 
 Build a dedicated Playwright suite for permissions and access records inside the existing list-view regression framework. The suite must cover Admin UI creation/edit/delete, API contract validation, effective permission enforcement in Keystone business records, and negative security cases.
 
-This plan is grounded in the current GitNexus index for `D:\core-platform`, indexed on 2026-05-27. GitNexus shows the permission/access surface connects these areas:
+This plan is grounded in the current Core Platform permission/access implementation. The permission/access surface connects these areas:
 
 - Admin access-record and access-control routes: `apps/service/src/admin/routes.access.ts`
 - Permission metadata and grants API: `apps/service/src/permissions/routes.ts`
@@ -15,8 +15,6 @@ This plan is grounded in the current GitNexus index for `D:\core-platform`, inde
 - Keystone app/object/list/record APIs: `apps/service/src/apps/routes.ts`, `apps/service/src/list-views/routes.ts`, `apps/service/src/records/routes.ts`
 - User access APIs: `apps/service/src/users/routes.ts`
 - Downstream access users: exports, flows, search, recycle bin, files, data import, scheduler record jobs
-
-## GitNexus Connection Map
 
 ## Admin Action to Enforcement Model
 
@@ -33,7 +31,7 @@ Required Admin workflows:
 - Admin edits object permissions -> `permissions_json` changes persist after reload -> field, attachment, `view_all`, and `modify_all` rules remain intact -> downstream read/update/delete/create checks change accordingly.
 - Admin deletes an access record -> list row disappears and detail clears -> `GET /admin/access-records/:id` returns `404` -> downstream access falls back to denied, empty, or permission-denied state.
 - Admin creates or patches access control -> `meta.access_control` row is created/upserted -> allow/deny is visible from list query -> app/tab/list-view permission gates use the new effect.
-- Admin creates permission metadata and grants -> permission/grant rows exist -> `POST /api/permissions/check` returns the expected allow/deny reason -> GitNexus-connected routes keep respecting that result.
+- Admin creates permission metadata and grants -> permission/grant rows exist -> `POST /api/permissions/check` returns the expected allow/deny reason -> downstream routes keep respecting that result.
 - Admin changes role/group membership -> effective principals change -> inherited role/group access appears or disappears without creating a direct user access record.
 
 ### Admin Configuration Surface
@@ -92,7 +90,7 @@ Primary symbols:
 
 ### Enforcement Surface
 
-GitNexus shows `checkPermission` is called by:
+`checkPermission` is called by:
 
 - `apps/service/src/apps/routes.ts`: app and tab visibility
 - `apps/service/src/list-views/routes.ts`: list-view manage/query behavior
@@ -102,7 +100,7 @@ GitNexus shows `checkPermission` is called by:
 - `apps/service/src/data-import/service.ts`: import queue access
 - `apps/service/src/admin/routes.ts`: scheduler/admin permission gates
 
-GitNexus shows `evaluateAccess` is called by:
+`evaluateAccess` is called by:
 
 - `apps/service/src/apps/routes.ts`: object visibility and scoped object filtering
 - `apps/service/src/list-views/routes.ts` and `utils.ts`: list/read policies
@@ -217,7 +215,7 @@ Tags: `@regression @security @keystone`
 
 Tags: `@regression @security`
 
-These are required because GitNexus shows `checkPermission` and `evaluateAccess` feed them:
+These are required because `checkPermission` and `evaluateAccess` feed them:
 
 - List views: `/api/apps/:appId/objects/:object/list-views/query`
 - Records: `/api/apps/:appId/objects/:object/records` and `/:id`
@@ -331,7 +329,7 @@ npm run test:ui:list-view:full
 
 ## Acceptance Criteria
 
-- All GitNexus-connected routes above have at least one positive or negative test.
+- All downstream routes above have at least one positive or negative test.
 - Access-record CRUD is covered through API and Admin UI.
 - Permission metadata/grants are covered through API.
 - Keystone object/list/record visibility changes when access changes.
@@ -339,20 +337,3 @@ npm run test:ui:list-view:full
 - Write tests skip when `ALLOW_DATA_WRITE` is not true.
 - All created role/group/user assignments/access rows are cleaned up or isolated behind reset.
 - Screenshots and API evidence are attached for every scenario.
-
-## GitNexus Follow-Up Before Implementation
-
-Before writing the spec, run these GitNexus checks again after reindex:
-
-```text
-list_repos
-route_map(repo="core-platform")
-context(registerAdminAccessRoutes)
-context(registerPermissionRoutes)
-context(checkPermission in apps/service/src/permissions/evaluator.ts)
-context(evaluateAccess in apps/service/src/access/evaluator.ts)
-impact(target="checkPermission", direction="upstream", includeTests=true)
-impact(target="evaluateAccess", direction="upstream", includeTests=true)
-```
-
-If GitNexus reports degraded FTS indexes, still use `route_map`, `context`, and `cypher` as the source of truth, then rebuild the index before generating or refreshing tests.

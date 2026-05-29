@@ -71,40 +71,6 @@ if errorlevel 1 (
   exit /b 1
 )
 
-set "GITNEXUS_CMD=gitnexus.cmd"
-call gitnexus.cmd --version >nul 2>nul
-if errorlevel 1 (
-  set "GITNEXUS_CMD=gitnexus"
-  call gitnexus --version >nul 2>nul
-)
-if errorlevel 1 (
-  echo.
-  echo GitNexus CLI was not found. Installing globally with npm...
-  call npm.cmd install -g gitnexus
-  if errorlevel 1 (
-    echo.
-    echo ERROR: GitNexus install failed.
-    echo You can also install it manually:
-    echo   npm install -g gitnexus
-    pause
-    exit /b 1
-  )
-)
-
-set "GITNEXUS_CMD=gitnexus.cmd"
-call gitnexus.cmd --version >nul 2>nul
-if errorlevel 1 (
-  call gitnexus --version >nul 2>nul
-  if not errorlevel 1 set "GITNEXUS_CMD=gitnexus"
-)
-if errorlevel 1 (
-  echo.
-  echo ERROR: GitNexus is still not available on PATH after install.
-  echo Close this terminal, reopen it, and run run.bat again.
-  pause
-  exit /b 1
-)
-
 if not exist "node_modules" (
   echo Installing dashboard dependencies...
   call npm.cmd install
@@ -114,19 +80,6 @@ if not exist "node_modules" (
     pause
     exit /b 1
   )
-)
-
-echo.
-echo Reindexing GitNexus knowledge graph for:
-echo   %CORE_PLATFORM_ROOT%
-echo.
-call %GITNEXUS_CMD% analyze "%CORE_PLATFORM_ROOT%" --index-only --force --worker-timeout 600 --max-file-size 32768
-if errorlevel 1 (
-  echo.
-  echo ERROR: GitNexus reindex failed. The agent needs a current graph before generating tests.
-  echo Check the GitNexus output above, then run this file again.
-  pause
-  exit /b 1
 )
 
 echo.
