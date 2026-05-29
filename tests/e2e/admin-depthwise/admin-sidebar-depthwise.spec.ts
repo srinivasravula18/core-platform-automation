@@ -151,6 +151,7 @@ const adminSurfaces: AdminSurface[] = [
   {
     label: "System Settings",
     tag: "system-settings",
+    listLike: false,
     search: "system",
     apiProbe: async (request, fixtures) =>
       okJson(

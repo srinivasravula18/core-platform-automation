@@ -21,6 +21,41 @@ type ApiTab = {
   app_id?: string | null;
   object_app_id?: string | null;
 };
+type ApiUser = { id: string; username?: string; name?: string; email?: string };
+type ApiRoleOrGroup = { id: string; name?: string; app_id?: string };
+type ApiAccessRecord = {
+  id: string;
+  object_id: string;
+  principal_type: "user" | "role" | "group";
+  principal_id: string;
+  permissions_json?: {
+    object?: {
+      read?: boolean;
+      create?: boolean;
+      update?: boolean;
+      delete?: boolean;
+      view_all?: boolean;
+      modify_all?: boolean;
+    };
+    attachments?: Record<string, boolean | undefined>;
+    fields?: Record<string, Record<string, boolean | undefined>>;
+  };
+};
+type ApiPermission = {
+  id: string;
+  resource_type: string;
+  resource_id?: string | null;
+  action: string;
+  scope_json?: unknown;
+};
+type ApiPermissionGrant = {
+  id: string;
+  permission_id: string;
+  principal_type: "user" | "role" | "group";
+  principal_id: string;
+  effect?: "allow" | "deny";
+  source?: "metadata" | "runtime";
+};
 
 export type CreatedAdminApp = {
   id: string;
@@ -41,6 +76,11 @@ export type CreatedAdminTab = {
   id: string;
   label: string;
   apiName: string;
+};
+
+export type CreatedSecurityPrincipal = {
+  id: string;
+  name: string;
 };
 
 export const uniqueStamp = () => Date.now().toString(36);
@@ -84,6 +124,152 @@ export const findTabByLabel = async (request: APIRequestContext, appId: string, 
     await request.get(`/api/apps/${appId}/tabs`, { headers: authHeaders(token) })
   );
   return items.find((item) => String(item.label ?? "").trim().toLowerCase() === label.trim().toLowerCase()) ?? null;
+};
+
+export const currentApiUser = async (request: APIRequestContext) => {
+  const token = await apiLogin(request);
+  const response = await request.get("/api/users/me", { headers: authHeaders(token) });
+  expect(response.ok(), await response.text()).toBeTruthy();
+  return (await response.json()) as ApiUser;
+};
+
+export const findAdminRoleOrGroupByName = async (
+  request: APIRequestContext,
+  type: "roles" | "groups",
+  appId: string,
+  name: string
+) => {
+  const token = await apiLogin(request);
+  const headers = authHeaders(token);
+  const readItems = async (query: string) => {
+    const response = await request.get(`/admin/${type}${query}`, { headers });
+    if (!response.ok()) return [];
+    return ((await response.json()) as { items?: ApiRoleOrGroup[] }).items ?? [];
+  };
+  const scoped = await readItems(`?app_id=${encodeURIComponent(appId)}`);
+  return (
+    scoped.find((item) => String(item.name ?? "").trim() === name) ??
+    (await readItems(`?q=${encodeURIComponent(name)}`)).find((item) => String(item.name ?? "").trim() === name) ??
+    null
+  );
+};
+
+export const deleteAdminRoleOrGroupByName = async (
+  request: APIRequestContext,
+  type: "roles" | "groups",
+  appId: string,
+  names: string[]
+) => {
+  const token = await apiLogin(request);
+  const headers = authHeaders(token);
+  const scopedResponse = await request.get(`/admin/${type}?app_id=${encodeURIComponent(appId)}`, { headers });
+  const scopedItems = scopedResponse.ok()
+    ? ((await scopedResponse.json()) as { items?: ApiRoleOrGroup[] }).items ?? []
+    : [];
+  for (const name of names) {
+    const queryResponse = await request.get(`/admin/${type}?q=${encodeURIComponent(name)}`, { headers });
+    const queryItems = queryResponse.ok()
+      ? ((await queryResponse.json()) as { items?: ApiRoleOrGroup[] }).items ?? []
+      : [];
+    const ids = new Set(
+      [...scopedItems, ...queryItems]
+        .filter((candidate) => String(candidate.name ?? "").trim() === name)
+        .map((candidate) => candidate.id)
+        .filter(Boolean)
+    );
+    for (const id of ids) {
+      await request.delete(`/admin/${type}/${id}`, { headers }).catch(() => null);
+    }
+  }
+};
+
+export const findAccessRecord = async (
+  request: APIRequestContext,
+  input: { objectId: string; principalType: "user" | "role" | "group"; principalId: string }
+) => {
+  const token = await apiLogin(request);
+  const params = new URLSearchParams({
+    object_id: input.objectId,
+    principal_type: input.principalType,
+    principal_id: input.principalId
+  });
+  const response = await request.get(`/admin/access-records?${params.toString()}`, {
+    headers: authHeaders(token)
+  });
+  if (!response.ok()) return null;
+  const items = ((await response.json()) as { items?: ApiAccessRecord[] }).items ?? [];
+  return (
+    items.find(
+      (item) =>
+        item.object_id === input.objectId &&
+        item.principal_type === input.principalType &&
+        item.principal_id === input.principalId
+    ) ?? null
+  );
+};
+
+export const waitForAccessRecord = async (
+  request: APIRequestContext,
+  input: { objectId: string; principalType: "user" | "role" | "group"; principalId: string }
+) =>
+  expect
+    .poll(async () => findAccessRecord(request, input), { timeout: 20_000 })
+    .not.toBeNull()
+    .then(async () => {
+      const record = await findAccessRecord(request, input);
+      expect(record).toBeTruthy();
+      return record as ApiAccessRecord;
+    });
+
+export const getAccessRecordById = async (request: APIRequestContext, id: string) => {
+  const token = await apiLogin(request);
+  const response = await request.get(`/admin/access-records/${id}`, { headers: authHeaders(token) });
+  if (response.status() === 404) return null;
+  expect(response.ok(), await response.text()).toBeTruthy();
+  return (await response.json()) as ApiAccessRecord;
+};
+
+export const deleteAccessRecordById = async (request: APIRequestContext, id?: string) => {
+  if (!id) return;
+  const token = await apiLogin(request);
+  await request.delete(`/admin/access-records/${id}`, { headers: authHeaders(token) }).catch(() => null);
+};
+
+export const findGrantablePermission = async (request: APIRequestContext) => {
+  const token = await apiLogin(request);
+  const response = await request.get("/api/permissions", { headers: authHeaders(token) });
+  expect(response.ok(), await response.text()).toBeTruthy();
+  const permissions = ((await response.json()) as { items?: ApiPermission[] }).items ?? [];
+  return (
+    permissions.find((permission) => permission.resource_type === "permission" && permission.action === "manage") ??
+    permissions.find((permission) => permission.resource_type === "object" && permission.action === "read") ??
+    permissions[0] ??
+    null
+  );
+};
+
+export const listPermissionGrants = async (request: APIRequestContext, permissionId: string) => {
+  const token = await apiLogin(request);
+  const response = await request.get(`/api/permissions/${permissionId}/grants`, {
+    headers: authHeaders(token)
+  });
+  expect(response.ok(), await response.text()).toBeTruthy();
+  return ((await response.json()) as { items?: ApiPermissionGrant[] }).items ?? [];
+};
+
+export const deletePermissionGrantById = async (
+  request: APIRequestContext,
+  permissionId: string,
+  grantId?: string,
+  source: "metadata" | "runtime" = "runtime"
+) => {
+  if (!permissionId || !grantId) return;
+  const token = await apiLogin(request);
+  const path =
+    source === "metadata"
+      ? `/api/permissions/${permissionId}/metadata-grants/${grantId}`
+      : `/api/permissions/${permissionId}/grants/${grantId}`;
+  await request.delete(path, { headers: authHeaders(token) }).catch(() => null);
 };
 
 const waitForAppByLabel = async (request: APIRequestContext, label: string) =>
@@ -136,6 +322,27 @@ export const openAdminListScreen = async (page: Page, screen: string) => {
   }
   await expectListRegionReady(main);
   return main;
+};
+
+export const selectAdminAppContext = async (page: Page, appLabel: string) => {
+  const current = page.locator(".nav-selected-app").first();
+  const currentLabel = (await current.textContent().catch(() => "")) ?? "";
+  if ((await current.isVisible().catch(() => false)) && currentLabel.includes(appLabel)) {
+    return;
+  }
+  const launcherButton = page.getByRole("button", { name: /^apps$/i }).first();
+  await expect(launcherButton).toBeVisible();
+  await launcherButton.click();
+  const panel = page.locator(".launcher-panel").filter({ hasText: /^Apps/i }).first();
+  await expect(panel).toBeVisible();
+  const search = panel.locator(".launcher-search").first();
+  if (await search.isVisible().catch(() => false)) {
+    await search.fill(appLabel);
+  }
+  const item = panel.locator(".launcher-list button").filter({ hasText: new RegExp(escapeRegex(appLabel), "i") }).first();
+  await expect(item).toBeVisible({ timeout: 20_000 });
+  await item.click();
+  await expect(page.locator(".nav-selected-app").first()).toContainText(appLabel, { timeout: 20_000 });
 };
 
 export const openAdminRowByLabel = async (page: Page, screen: string, label: string) => {
@@ -236,6 +443,64 @@ export const createAdminObjectTabViaUi = async (
   await expect(page.getByText(/tab created successfully/i).first()).toBeVisible({ timeout: 20_000 });
   const tab = await waitForTabByLabel(request, app.id, input.label);
   return { id: tab.id, label: input.label, apiName };
+};
+
+export const createAdminRoleViaUi = async (
+  page: Page,
+  request: APIRequestContext,
+  app: CreatedAdminApp,
+  input: { name: string; description: string },
+  testInfo?: TestInfo
+): Promise<CreatedSecurityPrincipal> => {
+  await loginToAdmin(page);
+  await selectAdminAppContext(page, app.label);
+  const roles = await openAdminListScreen(page, "Roles");
+  await roles.getByRole("button", { name: /^new$/i }).click();
+  await expect(page.getByRole("heading", { name: /^new role$/i })).toBeVisible();
+  const appSelect = page.locator("#create-role-app");
+  if (await appSelect.isVisible().catch(() => false)) {
+    await selectOptionContainingText(appSelect, app.label);
+  }
+  await page.locator("#create-role-name").fill(input.name);
+  await page.locator("#create-role-desc").fill(input.description);
+  if (testInfo) await attachEvidence(page, testInfo, "admin-role-create-form");
+  await page.getByRole("button", { name: /^create$/i }).click();
+  await expect(page.getByText(/role created successfully/i).first()).toBeVisible({ timeout: 20_000 });
+  const role = await expect
+    .poll(async () => findAdminRoleOrGroupByName(request, "roles", app.id, input.name), { timeout: 20_000 })
+    .not.toBeNull()
+    .then(async () => findAdminRoleOrGroupByName(request, "roles", app.id, input.name));
+  expect(role).toBeTruthy();
+  return { id: (role as ApiRoleOrGroup).id, name: input.name };
+};
+
+export const createAdminGroupViaUi = async (
+  page: Page,
+  request: APIRequestContext,
+  app: CreatedAdminApp,
+  input: { name: string; description: string },
+  testInfo?: TestInfo
+): Promise<CreatedSecurityPrincipal> => {
+  await loginToAdmin(page);
+  await selectAdminAppContext(page, app.label);
+  const groups = await openAdminListScreen(page, "Groups");
+  await groups.getByRole("button", { name: /^new$/i }).click();
+  await expect(page.getByRole("heading", { name: /^new group$/i })).toBeVisible();
+  const appSelect = page.locator("#create-group-app");
+  if (await appSelect.isVisible().catch(() => false)) {
+    await selectOptionContainingText(appSelect, app.label);
+  }
+  await page.locator("#create-group-name").fill(input.name);
+  await page.locator("#create-group-desc").fill(input.description);
+  if (testInfo) await attachEvidence(page, testInfo, "admin-group-create-form");
+  await page.getByRole("button", { name: /^create$/i }).click();
+  await expect(page.getByText(/group created successfully/i).first()).toBeVisible({ timeout: 20_000 });
+  const group = await expect
+    .poll(async () => findAdminRoleOrGroupByName(request, "groups", app.id, input.name), { timeout: 20_000 })
+    .not.toBeNull()
+    .then(async () => findAdminRoleOrGroupByName(request, "groups", app.id, input.name));
+  expect(group).toBeTruthy();
+  return { id: (group as ApiRoleOrGroup).id, name: input.name };
 };
 
 export const updateAdminObjectDetailsViaUi = async (

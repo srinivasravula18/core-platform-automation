@@ -1,0 +1,11 @@
+- generic [ref=e4] [box=308,185,409,310]:
+  - generic [ref=e5] [box=442,190,140,67]:
+    - paragraph [ref=e6] [box=442,190,140,19]: Admin
+    - heading "App Workspace" [level=1] [ref=e7] [box=442,217,140,32]
+  - heading "Sign in" [level=2] [ref=e8] [box=488,265,48,26]
+  - generic [ref=e9] [box=337,291,350,199]:
+    - generic [ref=e10] [box=337,291,350,26]: Email or Username
+    - textbox "Email or Username" [ref=e11] [box=337,327,350,36]
+    - generic [ref=e12] [box=337,373,350,26]: Password
+    - textbox "Password" [ref=e13] [box=337,408,350,36]
+    - button "Sign in" [ref=e14] [cursor=pointer] [box=337,454,350,36]
