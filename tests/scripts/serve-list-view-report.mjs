@@ -686,11 +686,22 @@ const renderLatestResultsHtml = () => {
       : screenshots
         ? `<div class="evidence-grid">${screenshots}</div>`
         : `<span class="muted">No screenshots yet</span>`;
+    const steps = Array.isArray(row.steps)
+      ? `<details class="step-details"><summary>${row.steps.length} step details</summary><div class="step-list">${row.steps.map((step, index) => `
+        <article class="step-card">
+          <strong>${index + 1}. ${xmlEscape(step.section || "")}</strong>
+          <span><b>Action</b>${xmlEscape(step.action || "")}</span>
+          <span><b>Test Data</b>${xmlEscape(step.testData || "")}</span>
+          <span><b>Expected Behavior</b>${xmlEscape(step.expectedBehavior || "")}</span>
+          <span><b>Verify</b>${xmlEscape(step.verify || "")}</span>
+          <em>${xmlEscape(step.result || "")}</em>
+        </article>`).join("")}</div></details>`
+      : "";
     return `<tr class="result-row ${xmlEscape(row.status || "")}">
       <td><code class="case-id" title="${xmlEscape(row.id || "")}">${xmlEscape(row.id || "")}</code></td>
       <td><span class="pill">${xmlEscape(row.surface || "")}</span></td>
       <td>${xmlEscape(row.featureArea || "")}</td>
-      <td><strong>${xmlEscape(row.testCaseTitle || "")}</strong></td>
+      <td><strong>${xmlEscape(row.testCaseTitle || "")}</strong>${steps}</td>
       <td>${xmlEscape(row.expectedResult || "")}</td>
       <td>${xmlEscape(row.actualResult || "")}</td>
       <td><span class="status ${xmlEscape(row.status || "")}">${xmlEscape(row.status || "")}</span></td>
@@ -740,6 +751,13 @@ const renderLatestResultsHtml = () => {
     .thumb { display: grid; gap: 7px; color: var(--ink); background: #f8fbff; border: 1px solid var(--line); border-radius: 12px; padding: 8px; transition: transform .15s ease, box-shadow .15s ease; }
     .thumb img { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; border: 1px solid #dbe4ef; border-radius: 9px; background: #f8fafc; }
     .thumb span { font-size: 12px; color: var(--muted); font-weight: 900; }
+    .step-details { margin-top: 10px; }
+    .step-details summary { cursor: pointer; color: var(--blue); font-weight: 900; }
+    .step-list { display: grid; gap: 8px; margin-top: 10px; max-height: 420px; overflow: auto; }
+    .step-card { display: grid; gap: 5px; padding: 10px; border: 1px solid var(--line); border-radius: 12px; background: #f8fbff; }
+    .step-card span { display: grid; grid-template-columns: 140px minmax(0, 1fr); gap: 8px; color: var(--muted); }
+    .step-card b { color: var(--ink); }
+    .step-card em { justify-self: start; color: var(--green); font-style: normal; font-weight: 900; }
     @media (max-width: 1000px) { .page { padding: 14px; } header { grid-template-columns: 1fr; } nav { justify-content: flex-start; } .summary { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
   </style>
 </head>
@@ -1273,8 +1291,56 @@ const normalizeStepSeparators = (steps) =>
     .replace(/\s+/g, " ")
     .trim();
 
+const structuredStepsFromText = ({ input, surface, feature, expected, testData = "" }) => {
+  const parts = normalizeStepSeparators(input)
+    .split(/\s*->\s*/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  const source = parts.length > 0 ? parts : [input || "Execute the test case"];
+  return source.map((action, index) => ({
+    section: index === 0 ? surface || "Application" : `${surface || "Application"} > ${feature || "Feature"}`,
+    action,
+    testData: testData || "Seeded credentials and seeded application data resolved at runtime.",
+    expectedBehavior: expected || "The UI/API behaves as expected.",
+    verify:
+      index === source.length - 1
+        ? expected || "Verify the final UI/API state."
+        : `Verify "${action}" completes and the next state is reachable.`,
+    result: "Pending"
+  }));
+};
+
 const stripBracketMeta = (value) =>
   String(value || "").replace(/\s*\[(surface|feature|level|priority|testdata|test data|automation|precondition|input|expected|proof):[^\]]+\]/gi, "");
+
+const extractSeedDataFromSpec = (specPath) => {
+  const candidate = String(specPath || "");
+  const absolute = candidate.includes("/") || candidate.includes("\\")
+    ? path.resolve(repoRoot, candidate)
+    : path.resolve(repoRoot, "tests", "e2e", "list-view-regression", candidate);
+  if (!absolute.startsWith(repoRoot) || !existsSync(absolute)) return "";
+  const source = readFileSync(absolute, "utf8");
+  const names = [
+    "targetAppLabel",
+    "targetAppId",
+    "targetObjectLabel",
+    "targetObjectApiName",
+    "APP_ID",
+    "AUTO_CASE_OBJECT_ID",
+    "TEST_ROLE_ID",
+    "CHECKPOINT_TARGET",
+    "CHECK_TARGET"
+  ];
+  const values = [];
+  for (const name of names) {
+    const match = new RegExp(`(?:const|let)\\s+${name}\\s*=\\s*(?:process\\.env\\.[A-Z0-9_]+\\s*\\|\\|\\s*)?["']([^"']+)["']|(?:const|let)\\s+${name}\\s*=\\s*(\\d+)`).exec(source);
+    if (match) values.push(`${name}: ${match[1] || match[2]}`);
+  }
+  const dynamicNames = Array.from(source.matchAll(/const\s+(\w*(?:label|name|apiName|prefix|stamp)\w*)\s*=\s*`([^`]+)`/gi))
+    .slice(0, 8)
+    .map((match) => `${match[1]}: ${match[2].replace(/\$\{[^}]+\}/g, "<runtime>")}`);
+  return [...values, ...dynamicNames].join("; ");
+};
 
 const isVagueStepText = (steps) => {
   const lower = normalizeStepSeparators(steps).toLowerCase();
@@ -2767,6 +2833,15 @@ const readInventory = () => {
       ? { id: override.id, tags: override.tags || titleTags(title) || `@case-${override.id} ${categoryTag(level)}`, testingLevel: level }
       : caseIdentity(feature, level, rows.length);
     const fallbackNarrative = defaultCaseNarrative(title, spec, feature, surface);
+    const input = override.input || readableTestSteps({
+      raw: parseMeta(title, "input") || fallbackNarrative.input,
+      title,
+      spec,
+      feature,
+      surface
+    });
+    const expected = override.expected || parseMeta(title, "expected") || fallbackNarrative.expected;
+    const testData = override.testData || parseMeta(title, "testdata") || extractSeedDataFromSpec(spec);
     rows.push({
       id: identity.id,
       tags: identity.tags,
@@ -2778,20 +2853,23 @@ const readInventory = () => {
       title,
       displayTitle: cleanTitle(title),
       precondition: override.precondition || parseMeta(title, "precondition") || fallbackNarrative.precondition,
-      input: override.input || readableTestSteps({
-        raw: parseMeta(title, "input") || fallbackNarrative.input,
-        title,
-        spec,
-        feature,
-        surface
-      }),
-      expected: override.expected || parseMeta(title, "expected") || fallbackNarrative.expected,
-      proof: override.proof || parseMeta(title, "proof") || fallbackNarrative.proof
+      input,
+      expected,
+      proof: override.proof || parseMeta(title, "proof") || fallbackNarrative.proof,
+      testData,
+      steps: structuredStepsFromText({ input, surface, feature, expected, testData })
     });
   }
   if (rows.length === 0 && existsSync(resultsJsonPath)) {
     const previous = readResults();
     for (const row of previous.rows ?? []) {
+      const input = readableTestSteps({
+        raw: row.inputAction || "",
+        title: row.testCaseTitle || "",
+        feature: row.featureArea || "",
+        surface: row.surface || ""
+      });
+      const expected = row.expectedResult || "";
       rows.push({
         id: row.id,
         tags: row.tags || `@case-${row.id} ${categoryTag(row.testingLevel || "Regression")}`,
@@ -2803,14 +2881,10 @@ const readInventory = () => {
         title: row.testCaseTitle || "",
         displayTitle: row.testCaseTitle || "",
         precondition: row.precondition || "",
-        input: readableTestSteps({
-          raw: row.inputAction || "",
-          title: row.testCaseTitle || "",
-          feature: row.featureArea || "",
-          surface: row.surface || ""
-        }),
-        expected: row.expectedResult || "",
-        proof: row.proof || ""
+        input,
+        expected,
+        proof: row.proof || "",
+        steps: row.steps || structuredStepsFromText({ input, surface: row.surface || "", feature: row.featureArea || "", expected, testData: row.testData || "" })
       });
     }
   }

@@ -31,6 +31,16 @@ type Row = {
   bugReport?: string;
   screenshotPaths?: string[];
   evidenceNotes?: string[];
+  steps?: StepDetail[];
+};
+
+type StepDetail = {
+  section: string;
+  action: string;
+  testData: string;
+  expectedBehavior: string;
+  verify: string;
+  result: "Pending" | "Running" | "Passed" | "Failed" | "Skipped";
 };
 
 type ReporterOptions = {
@@ -187,12 +197,93 @@ const defaultTestData = (surface: string) => {
   return "Seeded local test data.";
 };
 
+const extractSeedDataFromTest = (test: TestCase) => {
+  const file = test.location?.file;
+  if (!file || !fs.existsSync(file)) return "";
+  const source = fs.readFileSync(file, "utf8");
+  const names = [
+    "targetAppLabel",
+    "targetAppId",
+    "targetObjectLabel",
+    "targetObjectApiName",
+    "APP_ID",
+    "AUTO_CASE_OBJECT_ID",
+    "TEST_ROLE_ID",
+    "CHECKPOINT_TARGET",
+    "CHECK_TARGET"
+  ];
+  const values: string[] = [];
+  for (const name of names) {
+    const match = new RegExp(`(?:const|let)\\s+${name}\\s*=\\s*(?:process\\.env\\.[A-Z0-9_]+\\s*\\|\\|\\s*)?["']([^"']+)["']|(?:const|let)\\s+${name}\\s*=\\s*(\\d+)`).exec(source);
+    if (match) values.push(`${name}: ${match[1] || match[2]}`);
+  }
+  const dynamicNames = Array.from(source.matchAll(/const\s+(\w*(?:label|name|apiName|prefix|stamp)\w*)\s*=\s*`([^`]+)`/gi))
+    .slice(0, 8)
+    .map((match) => `${match[1]}: ${match[2].replace(/\$\{[^}]+\}/g, "<runtime>")}`);
+  return [...values, ...dynamicNames].join("; ");
+};
+
 const actualResultForStatus = (status: Row["status"], failure = "") => {
   if (status === "PASS") return "As expected.";
   if (status === "FAIL") return failure || "Defect raised.";
   if (status === "SKIP") return "Skipped or blocked by precondition.";
   if (status === "RUNNING") return "Execution in progress.";
   return "Not Run.";
+};
+
+const stepResultForStatus = (status: Row["status"]): StepDetail["result"] => {
+  if (status === "PASS") return "Passed";
+  if (status === "FAIL") return "Failed";
+  if (status === "SKIP") return "Skipped";
+  if (status === "RUNNING") return "Running";
+  return "Pending";
+};
+
+const structuredStepsFromText = (
+  input: string,
+  row: Pick<Row, "surface" | "featureArea" | "testData" | "expectedResult" | "status">
+): StepDetail[] => {
+  const parts = normalizeStepSeparators(input)
+    .split(/\s*->\s*/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  const source = parts.length > 0 ? parts : [input || "Execute the test case"];
+  return source.map((action, index) => ({
+    section: index === 0 ? row.surface || "Application" : `${row.surface || "Application"} > ${row.featureArea || "Feature"}`,
+    action,
+    testData: row.testData || defaultTestData(row.surface),
+    expectedBehavior: row.expectedResult || "The UI/API behaves as expected.",
+    verify:
+      index === source.length - 1
+        ? row.expectedResult || "Verify the final UI/API state."
+        : `Verify "${action}" completes and the next state is reachable.`,
+    result: stepResultForStatus(row.status)
+  }));
+};
+
+const collectResultSteps = (
+  result: TestResult,
+  row: Pick<Row, "surface" | "featureArea" | "testData" | "expectedResult" | "status" | "inputAction">
+): StepDetail[] => {
+  const rawSteps = ((result as unknown as { steps?: Array<{ title?: string; category?: string; error?: unknown; steps?: unknown[] }> }).steps ?? []);
+  const flattened: Array<{ title: string; error?: unknown }> = [];
+  const walk = (steps: typeof rawSteps) => {
+    for (const step of steps) {
+      const title = String(step.title || "").trim();
+      if (title && !/^beforeEach|afterEach|fixture:/i.test(title)) flattened.push({ title, error: step.error });
+      if (Array.isArray(step.steps)) walk(step.steps as typeof rawSteps);
+    }
+  };
+  walk(rawSteps);
+  if (flattened.length === 0) return structuredStepsFromText(row.inputAction, row);
+  return flattened.map((step, index) => ({
+    section: `${row.surface || "Application"} > ${row.featureArea || "Feature"}`,
+    action: step.title.replace(/^BVT-\d+:\s*/i, ""),
+    testData: row.testData || defaultTestData(row.surface),
+    expectedBehavior: row.expectedResult || "The UI/API behaves as expected.",
+    verify: `Verify ${step.title.replace(/^BVT-\d+:\s*/i, "")}.`,
+    result: step.error ? "Failed" : stepResultForStatus(row.status === "RUNNING" ? "RUNNING" : row.status)
+  }));
 };
 
 const stepChain = (steps: string[]) => steps.filter(Boolean).join(" -> ");
@@ -545,7 +636,7 @@ export default class TableReport implements Reporter {
     const level = normalizeTestingLevel(meta.level, scenario);
     const featureArea = meta.feature || "List View";
     const id = `${levelCode(level)}_${moduleCode(featureArea)}_${String(index + 1).padStart(3, "0")}`;
-    return {
+    const row: Row = {
       id,
       tags: `@case-${id} ${categoryTag(level)}`,
       moduleSuite: `${meta.surface || "Application"} / ${featureArea}`,
@@ -560,7 +651,7 @@ export default class TableReport implements Reporter {
         feature: featureArea,
         surface: meta.surface
       }),
-      testData: meta.testData || defaultTestData(meta.surface),
+      testData: meta.testData || extractSeedDataFromTest(test) || defaultTestData(meta.surface),
       expectedResult: meta.expected,
       actualResult: actualResultForStatus(status),
       proof: meta.proof,
@@ -569,6 +660,8 @@ export default class TableReport implements Reporter {
       testingLevel: level,
       automationStatus: normalizeAutomationStatus(meta.automation)
     };
+    row.steps = structuredStepsFromText(row.inputAction, row);
+    return row;
   }
 
   onBegin(config: FullConfig, suite: Suite) {
@@ -594,6 +687,7 @@ export default class TableReport implements Reporter {
     if (!row) return;
     row.status = "RUNNING";
     row.actualResult = actualResultForStatus("RUNNING");
+    row.steps = structuredStepsFromText(row.inputAction, row);
     this.writeOutputs("running", false);
   }
 
@@ -626,6 +720,7 @@ export default class TableReport implements Reporter {
     const failureSummary = summarizeFailure(result);
     row.status = normalizedStatus;
     row.actualResult = actualResultForStatus(normalizedStatus, failureSummary);
+    row.steps = collectResultSteps(result, row);
     row.screenshotPaths = screenshotPaths.length > 0 ? screenshotPaths : undefined;
     row.evidenceNotes =
       screenshotPaths.length > 0

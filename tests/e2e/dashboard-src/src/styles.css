@@ -247,6 +247,14 @@ textarea { min-height: 76px; resize: vertical; line-height: 1.45; }
 .running { color: var(--running); }
 .muted { color: var(--muted); }
 .skip { color: var(--skip); }
+.step-details { min-width: 360px; max-width: 680px; }
+.step-details summary { cursor: pointer; color: var(--accent); font-weight: 900; }
+.step-list { display: grid; gap: 8px; margin-top: 10px; max-height: 430px; overflow: auto; padding-right: 4px; }
+.step-card { display: grid; gap: 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel-2); padding: 10px; }
+.step-card strong { overflow-wrap: anywhere; }
+.step-card dl { display: grid; grid-template-columns: 132px minmax(0, 1fr); gap: 6px 10px; margin: 0; }
+.step-card dt { color: var(--text); font-weight: 800; }
+.step-card dd { margin: 0; color: var(--muted); overflow-wrap: anywhere; }
 .service-grid, .card-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
 .suite-card { cursor: pointer; transition: border-color .15s ease, transform .15s ease; }
 .suite-card:hover { border-color: var(--accent); transform: translateY(-1px); }
@@ -406,16 +414,76 @@ marker path { fill: color-mix(in srgb, var(--accent), var(--muted) 35%); }
 @media (min-width: 681px) {
   .inventory-panel > .table-panel .table-wrap { max-height: min(72dvh, calc(100dvh - 226px)); }
 }
-table { width: 100%; min-width: min(1100px, calc(100dvw - 32px)); border-collapse: collapse; }
+table { width: 100%; min-width: min(1100px, calc(100dvw - 32px)); border-collapse: collapse; table-layout: auto; }
 th, td {
   border-bottom: 1px solid var(--border);
   padding: 10px 12px;
   text-align: left;
   vertical-align: top;
   font-size: 13px;
+  overflow-wrap: break-word;
+  word-break: normal;
+}
+th { position: sticky; top: 0; background: var(--panel-2); z-index: 1; white-space: nowrap; }
+.inventory-panel table {
+  min-width: 1860px;
+  table-layout: fixed;
+}
+.inventory-panel th,
+.inventory-panel td {
+  line-height: 1.45;
+}
+.inventory-panel th:nth-child(1),
+.inventory-panel td:nth-child(1) {
+  width: 56px;
+  text-align: center;
+}
+.inventory-panel th:nth-child(2),
+.inventory-panel td:nth-child(2) {
+  width: 76px;
+}
+.inventory-panel th:nth-child(3),
+.inventory-panel td:nth-child(3) {
+  width: 150px;
+}
+.inventory-panel th:nth-child(4),
+.inventory-panel td:nth-child(4) {
+  width: 96px;
+}
+.inventory-panel th:nth-child(5),
+.inventory-panel td:nth-child(5) {
+  width: 120px;
+}
+.inventory-panel th:nth-child(6),
+.inventory-panel td:nth-child(6) {
+  width: 160px;
+}
+.inventory-panel th:nth-child(7),
+.inventory-panel td:nth-child(7) {
+  width: 250px;
+}
+.inventory-panel th:nth-child(8),
+.inventory-panel td:nth-child(8) {
+  width: 360px;
+}
+.inventory-panel th:nth-child(9),
+.inventory-panel td:nth-child(9) {
+  width: 290px;
+}
+.inventory-panel th:nth-child(10),
+.inventory-panel td:nth-child(10) {
+  width: 300px;
+}
+.inventory-panel td:nth-child(3),
+.inventory-panel td:nth-child(4),
+.inventory-panel td:nth-child(5),
+.inventory-panel td:nth-child(6) {
   overflow-wrap: anywhere;
 }
-th { position: sticky; top: 0; background: var(--panel-2); z-index: 1; }
+.inventory-panel input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+}
 .empty { color: var(--muted); text-align: center; }
 .logs {
   min-height: 220px;

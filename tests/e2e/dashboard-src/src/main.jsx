@@ -235,6 +235,24 @@ const readableStepsForRow = (row) => {
 
 const withReadableSteps = (row) => ({ ...row, input: readableStepsForRow(row) });
 
+const structuredStepsForRow = (row) => {
+  if (Array.isArray(row.steps) && row.steps.length > 0) return row.steps;
+  const input = normalizeStepText(row.input || row.inputAction || "");
+  const parts = input.split(/\s*->\s*/).map((part) => part.trim()).filter(Boolean);
+  const source = parts.length > 0 ? parts : [input || "Execute the test case"];
+  const expected = row.expected || row.expectedResult || "The UI/API behaves as expected.";
+  const feature = row.feature || row.featureArea || "Feature";
+  const surface = row.surface || "Application";
+  return source.map((action, index) => ({
+    section: index === 0 ? surface : `${surface} > ${feature}`,
+    action,
+    testData: row.testData || "Seeded credentials and seeded application data resolved at runtime.",
+    expectedBehavior: expected,
+    verify: index === source.length - 1 ? expected : `Verify "${action}" completes and the next state is reachable.`,
+    result: row.status || "Pending"
+  }));
+};
+
 const api = async (path, options) => {
   const response = await fetch(path, {
     cache: "no-store",
@@ -372,7 +390,7 @@ function App() {
       : rows;
     if (!needle) return contextRows;
     return contextRows.filter((row) =>
-      [row.id, row.tags, row.testingLevel, row.surface, row.feature, row.displayTitle, row.precondition, row.input, row.expected, row.proof]
+      [row.id, row.tags, row.testingLevel, row.surface, row.feature, row.displayTitle, row.precondition, row.input, row.expected, row.proof, JSON.stringify(structuredStepsForRow(row))]
         .join(" ")
         .toLowerCase()
         .includes(needle)
@@ -770,7 +788,7 @@ function RecorderPanel({ recorder, setRecorder, recording, recordedScenarios, st
 }
 
 function InventoryPanel({ rows, filter, setFilter, selectedTests, toggleSelected, selectVisible, selectAll, clearSelected, refresh, context, clearContext, backToSuites, runSelected, running }) {
-  return <section className="panel inventory-panel"><div className="section-heading toolbar-heading"><div><h2>{context ? `${context.label} Test Cases` : "Selectable Test Inventory"}</h2><span>{rows.length} visible cases · {selectedTests.size} selected</span></div><div className="inline-actions">{context ? <button className="secondary" onClick={backToSuites}>Back</button> : null}<input value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="Filter by tag, surface, feature, case, step" />{context ? <button className="secondary" onClick={clearContext}>All Cases</button> : null}<button onClick={runSelected} disabled={running || selectedTests.size === 0}><Play size={16} /> Run Selected {selectedTests.size}</button><a className="secondary" href="/api/inventory.xlsx?refresh=1"><Download size={16} /> Excel</a><button className="secondary" onClick={refresh}><RefreshCw size={16} /> Refresh</button><button className="secondary" onClick={selectAll}>Select All</button><button className="secondary" onClick={selectVisible}>Select Visible</button><button className="secondary" onClick={clearSelected}>Clear</button></div></div><DataTable rows={rows} columns={[["select", "Select"], ["id", "ID"], ["tags", "Tags"], ["testingLevel", "Category"], ["surface", "Surface"], ["feature", "Scenario"], ["displayTitle", "Test Case"], ["input", "Test Steps"], ["expected", "Expected Result"], ["proof", "What It Proves"]]} renderCell={(row, key) => key === "select" ? <input type="checkbox" checked={selectedTests.has(row.title)} onChange={() => toggleSelected(row.title)} /> : null} /></section>;
+  return <section className="panel inventory-panel"><div className="section-heading toolbar-heading"><div><h2>{context ? `${context.label} Test Cases` : "Selectable Test Inventory"}</h2><span>{rows.length} visible cases · {selectedTests.size} selected</span></div><div className="inline-actions">{context ? <button className="secondary" onClick={backToSuites}>Back</button> : null}<input value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="Filter by tag, surface, feature, case, step" />{context ? <button className="secondary" onClick={clearContext}>All Cases</button> : null}<button onClick={runSelected} disabled={running || selectedTests.size === 0}><Play size={16} /> Run Selected {selectedTests.size}</button><a className="secondary" href="/api/inventory.xlsx?refresh=1"><Download size={16} /> Excel</a><button className="secondary" onClick={refresh}><RefreshCw size={16} /> Refresh</button><button className="secondary" onClick={selectAll}>Select All</button><button className="secondary" onClick={selectVisible}>Select Visible</button><button className="secondary" onClick={clearSelected}>Clear</button></div></div><DataTable rows={rows} columns={[["select", "Select"], ["id", "ID"], ["tags", "Tags"], ["testingLevel", "Category"], ["surface", "Surface"], ["feature", "Scenario"], ["displayTitle", "Test Case"], ["steps", "Step Details"], ["expected", "Expected Result"], ["proof", "What It Proves"]]} renderCell={(row, key) => key === "select" ? <input type="checkbox" checked={selectedTests.has(row.title)} onChange={() => toggleSelected(row.title)} /> : key === "steps" ? <StepDetails steps={structuredStepsForRow(row)} /> : null} /></section>;
 }
 
 function ExecutionPanel({ status, stopRun }) {
@@ -803,7 +821,7 @@ function ReportsPanel({ results }) {
         {links.map(([label, href]) => <a key={href} href={href} target="_blank" rel="noreferrer">{label}</a>)}
       </div>
     </section>
-    <DataTable title={`Report Rows (${results.total || 0})`} rows={results.rows || []} columns={[["id", "ID"], ["tags", "Tags"], ["moduleSuite", "Module / Suite"], ["testCaseTitle", "Test Case"], ["expectedResult", "Expected"], ["actualResult", "Actual"], ["status", "Status"], ["automationStatus", "Automation"]]} />
+    <DataTable title={`Report Rows (${results.total || 0})`} rows={results.rows || []} columns={[["id", "ID"], ["tags", "Tags"], ["moduleSuite", "Module / Suite"], ["testCaseTitle", "Test Case"], ["steps", "Step Details"], ["expectedResult", "Expected"], ["actualResult", "Actual"], ["status", "Status"], ["automationStatus", "Automation"]]} renderCell={(row, key) => key === "steps" ? <StepDetails steps={structuredStepsForRow(row)} /> : null} />
   </section>;
 }
 
@@ -889,6 +907,12 @@ function Metric({ label, value, tone = "" }) {
 
 function DataTable({ title, rows, columns, renderCell }) {
   return <section className="panel table-panel">{title ? <div className="section-heading"><h2>{title}</h2></div> : null}<div className="table-wrap"><table><thead><tr>{columns.map(([, label]) => <th key={label}>{label}</th>)}</tr></thead><tbody>{rows.length === 0 ? <tr><td colSpan={columns.length} className="empty">No rows available.</td></tr> : rows.map((row, index) => <tr key={row.id || row.title || row.path || index}>{columns.map(([key]) => { const custom = renderCell?.(row, key); return <td key={key}>{custom ?? String(row[key] ?? "")}</td>; })}</tr>)}</tbody></table></div></section>;
+}
+
+function StepDetails({ steps }) {
+  const safeSteps = Array.isArray(steps) ? steps : [];
+  if (safeSteps.length === 0) return <span className="muted">No step details.</span>;
+  return <details className="step-details"><summary>{safeSteps.length} steps with data</summary><div className="step-list">{safeSteps.map((step, index) => <article className="step-card" key={`${step.action}-${index}`}><strong>{index + 1}. {step.section}</strong><dl><dt>Action</dt><dd>{step.action}</dd><dt>Seed/Test Data</dt><dd>{step.testData}</dd><dt>Expected Behavior</dt><dd>{step.expectedBehavior}</dd><dt>Verify</dt><dd>{step.verify}</dd><dt>Result</dt><dd>{step.result}</dd></dl></article>)}</div></details>;
 }
 
 createRoot(document.getElementById("root")).render(<App />);
