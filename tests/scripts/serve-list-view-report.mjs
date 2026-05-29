@@ -37,6 +37,7 @@ const agentGraphRoot = path.join(generatedRoot, "graph");
 const appRoot = path.resolve(process.env.CORE_PLATFORM_ROOT || "D:\\core-platform");
 const geminiModel = process.env.GEMINI_MODEL || "gemini-3.5-flash";
 const resultsJsonPath = path.join(reportRoot, "list-view-regression-results.json");
+const listViewArtifactsRoot = path.resolve(repoRoot, "evidences", "playwright-artifacts-core-platform-list-view");
 const resultReportSources = [
   {
     id: "list-view-regression",
@@ -562,6 +563,41 @@ const omitNotRunRowsAfterCompletion = (payload) => {
   };
 };
 
+const collectPngFiles = (root) => {
+  if (!existsSync(root)) return [];
+  const files = [];
+  const walk = (dir) => {
+    for (const item of readdirSync(dir, { withFileTypes: true })) {
+      const fullPath = path.join(dir, item.name);
+      if (item.isDirectory()) {
+        walk(fullPath);
+      } else if (item.isFile() && item.name.toLowerCase().endsWith(".png")) {
+        files.push(fullPath);
+      }
+    }
+  };
+  walk(root);
+  return files.sort((a, b) => statSync(a).mtimeMs - statSync(b).mtimeMs);
+};
+
+const liveEvidencePaths = () => {
+  if (!runState.running || !existsSync(listViewArtifactsRoot)) return [];
+  const startedAtMs = runState.startedAt ? Date.parse(runState.startedAt) || 0 : 0;
+  const dirs = readdirSync(listViewArtifactsRoot, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && !entry.name.startsWith("."))
+    .map((entry) => {
+      const fullPath = path.join(listViewArtifactsRoot, entry.name);
+      return { fullPath, mtimeMs: statSync(fullPath).mtimeMs };
+    })
+    .filter((entry) => !startedAtMs || entry.mtimeMs >= startedAtMs - 60_000)
+    .sort((a, b) => b.mtimeMs - a.mtimeMs);
+  const activeDir = dirs[0]?.fullPath;
+  if (!activeDir) return [];
+  return collectPngFiles(activeDir).map((filePath) =>
+    `/evidence/list-view/${path.relative(listViewArtifactsRoot, filePath).replace(/\\/g, "/")}`
+  );
+};
+
 const readResults = () => {
   const source = latestResultReport();
   if (!source) {
@@ -610,6 +646,17 @@ const readResults = () => {
     return { ...emptyResults(payload.updatedAt ?? null), report };
   }
   const completedPayload = omitNotRunRowsAfterCompletion({ ...payload, report });
+  const liveShots = liveEvidencePaths();
+  if (liveShots.length > 0) {
+    const rowsWithLiveEvidence = (completedPayload.rows || []).map((row) =>
+      row?.status === "RUNNING" ? { ...row, liveScreenshotPaths: liveShots } : row
+    );
+    return {
+      ...completedPayload,
+      updatedAt: new Date().toISOString(),
+      rows: rowsWithLiveEvidence
+    };
+  }
   if (!runState.running && Array.isArray(payload.rows) && completedPayload.rows?.length !== payload.rows.length) {
     writeFileSync(source.jsonPath, JSON.stringify(completedPayload, null, 2), "utf8");
   }
@@ -626,18 +673,28 @@ const renderLatestResultsHtml = () => {
     const screenshots = Array.isArray(row.screenshotPaths)
       ? row.screenshotPaths.map((shot, index) => {
           const href = `${assetBase}${String(shot || "").replace(/\\/g, "/")}`;
-          return `<a href="${xmlEscape(href)}">View ${index + 1}</a>`;
-        }).join("<br>")
+          return `<a class="thumb" href="${xmlEscape(href)}" target="_blank" rel="noreferrer"><img src="${xmlEscape(href)}" alt="Evidence ${index + 1}"><span>Shot ${index + 1}</span></a>`;
+        }).join("")
       : "";
-    return `<tr>
-      <td>${xmlEscape(row.id || "")}</td>
-      <td>${xmlEscape(row.surface || "")}</td>
+    const liveScreenshots = Array.isArray(row.liveScreenshotPaths)
+      ? row.liveScreenshotPaths.map((href, index) =>
+          `<a class="thumb" href="${xmlEscape(href)}" target="_blank" rel="noreferrer"><img src="${xmlEscape(href)}" alt="Live evidence ${index + 1}"><span>Live ${index + 1}</span></a>`
+        ).join("")
+      : "";
+    const evidence = liveScreenshots
+      ? `<div class="evidence-grid">${liveScreenshots}</div>`
+      : screenshots
+        ? `<div class="evidence-grid">${screenshots}</div>`
+        : `<span class="muted">No screenshots yet</span>`;
+    return `<tr class="result-row ${xmlEscape(row.status || "")}">
+      <td><code class="case-id" title="${xmlEscape(row.id || "")}">${xmlEscape(row.id || "")}</code></td>
+      <td><span class="pill">${xmlEscape(row.surface || "")}</span></td>
       <td>${xmlEscape(row.featureArea || "")}</td>
-      <td>${xmlEscape(row.testCaseTitle || "")}</td>
+      <td><strong>${xmlEscape(row.testCaseTitle || "")}</strong></td>
       <td>${xmlEscape(row.expectedResult || "")}</td>
       <td>${xmlEscape(row.actualResult || "")}</td>
       <td><span class="status ${xmlEscape(row.status || "")}">${xmlEscape(row.status || "")}</span></td>
-      <td>${screenshots}</td>
+      <td class="evidence-cell">${evidence}</td>
     </tr>`;
   }).join("\n");
   return `<!doctype html>
@@ -645,33 +702,49 @@ const renderLatestResultsHtml = () => {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  ${runState.running ? `<meta http-equiv="refresh" content="5">` : ""}
   <title>${xmlEscape(report.label || "Latest")} Results</title>
   <style>
-    body { margin: 0; padding: 18px; background: #f4f6f8; color: #142033; font-family: Inter, Segoe UI, Arial, sans-serif; }
-    header { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; margin-bottom: 16px; }
-    h1 { margin: 0 0 6px; font-size: 28px; }
-    p { margin: 0; color: #657386; }
-    nav { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
-    a { color: #2563eb; font-weight: 700; text-decoration: none; }
-    nav a { border: 1px solid #d9e0ea; background: white; border-radius: 7px; padding: 8px 12px; color: #142033; }
-    .summary { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; margin-bottom: 14px; }
-    .metric { border: 1px solid #d9e0ea; border-radius: 8px; background: white; padding: 12px; }
-    .metric span { display: block; color: #657386; font-size: 12px; margin-bottom: 6px; }
-    .metric strong { font-size: 22px; }
-    .table-wrap { border: 1px solid #d9e0ea; border-radius: 8px; background: white; overflow: auto; max-height: calc(100dvh - 190px); }
-    table { width: 100%; min-width: 1100px; border-collapse: collapse; }
-    th, td { border-bottom: 1px solid #d9e0ea; padding: 9px 10px; text-align: left; vertical-align: top; font-size: 12px; line-height: 1.45; }
-    th { position: sticky; top: 0; background: #f8fafc; color: #657386; text-transform: uppercase; font-size: 11px; }
-    .status { display: inline-flex; min-width: 62px; justify-content: center; border-radius: 999px; padding: 4px 8px; font-weight: 800; }
-    .PASS { background: #dcfce7; color: #0f7a35; }
-    .FAIL { background: #fee2e2; color: #b42318; }
+    :root { color-scheme: light; --bg:#eef3f8; --panel:#ffffff; --ink:#102033; --muted:#617188; --line:#d8e1ec; --blue:#2563eb; --green:#0f8a4b; --red:#c03221; --amber:#b7791f; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; background: radial-gradient(circle at top left, #dbeafe 0, transparent 330px), var(--bg); color: var(--ink); font-family: Inter, Segoe UI, Arial, sans-serif; }
+    .page { padding: 24px; display: grid; gap: 18px; }
+    header { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 18px; align-items: start; padding: 20px; background: rgba(255,255,255,.82); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 16px 50px rgba(15, 23, 42, .08); backdrop-filter: blur(12px); }
+    h1 { margin: 0 0 8px; font-size: clamp(26px, 3vw, 42px); letter-spacing: 0; }
+    p { margin: 0; color: var(--muted); font-size: 15px; }
+    nav { display: flex; flex-wrap: wrap; gap: 10px; justify-content: flex-end; }
+    a { color: var(--blue); font-weight: 800; text-decoration: none; }
+    nav a { border: 1px solid var(--line); background: #fff; border-radius: 12px; padding: 11px 14px; color: var(--ink); box-shadow: 0 6px 20px rgba(15, 23, 42, .05); }
+    nav a:hover, .thumb:hover { transform: translateY(-1px); box-shadow: 0 10px 26px rgba(37, 99, 235, .14); }
+    .summary { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; }
+    .metric { border: 1px solid var(--line); border-radius: 16px; background: var(--panel); padding: 16px; box-shadow: 0 10px 30px rgba(15, 23, 42, .06); }
+    .metric span { display: block; color: var(--muted); font-size: 12px; font-weight: 700; text-transform: uppercase; margin-bottom: 8px; }
+    .metric strong { font-size: 30px; letter-spacing: 0; }
+    .table-wrap { border: 1px solid var(--line); border-radius: 18px; background: var(--panel); overflow: auto; max-height: calc(100dvh - 245px); box-shadow: 0 18px 55px rgba(15, 23, 42, .08); }
+    table { width: 100%; min-width: 1320px; border-collapse: separate; border-spacing: 0; }
+    th, td { border-bottom: 1px solid var(--line); padding: 14px; text-align: left; vertical-align: top; font-size: 13px; line-height: 1.45; }
+    th { position: sticky; top: 0; z-index: 2; background: #f8fbff; color: var(--muted); text-transform: uppercase; font-size: 11px; letter-spacing: .04em; }
+    tr:last-child td { border-bottom: 0; }
+    code { display: inline-block; color: #0f172a; background: #f1f5f9; border: 1px solid #e2e8f0; border-radius: 8px; padding: 5px 7px; font-family: Consolas, ui-monospace, monospace; }
+    .case-id { max-width: 190px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; vertical-align: top; }
+    .pill { display: inline-flex; border: 1px solid #bfdbfe; background: #eff6ff; color: #1d4ed8; border-radius: 999px; padding: 4px 9px; font-weight: 800; }
+    .muted { color: var(--muted); }
+    .status { display: inline-flex; min-width: 76px; justify-content: center; border-radius: 999px; padding: 7px 10px; font-weight: 900; letter-spacing: .02em; }
+    .PASS { background: #dcfce7; color: var(--green); }
+    .FAIL { background: #fee2e2; color: var(--red); }
     .SKIP { background: #e2e8f0; color: #64748b; }
     .RUNNING { background: #dbeafe; color: #1d4ed8; }
     .PENDING { background: #eef0f4; color: #6b7280; }
-    @media (max-width: 900px) { header { flex-direction: column; } .summary { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+    .evidence-cell { min-width: 460px; }
+    .evidence-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(145px, 1fr)); gap: 10px; min-width: 420px; max-width: 760px; max-height: 520px; overflow: auto; padding-right: 4px; }
+    .thumb { display: grid; gap: 7px; color: var(--ink); background: #f8fbff; border: 1px solid var(--line); border-radius: 12px; padding: 8px; transition: transform .15s ease, box-shadow .15s ease; }
+    .thumb img { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; border: 1px solid #dbe4ef; border-radius: 9px; background: #f8fafc; }
+    .thumb span { font-size: 12px; color: var(--muted); font-weight: 900; }
+    @media (max-width: 1000px) { .page { padding: 14px; } header { grid-template-columns: 1fr; } nav { justify-content: flex-start; } .summary { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
   </style>
 </head>
 <body>
+<div class="page">
   <header>
     <div>
       <h1>${xmlEscape(report.label || "Latest")} Results</h1>
@@ -698,6 +771,7 @@ const renderLatestResultsHtml = () => {
       <tbody>${rowHtml || `<tr><td colspan="8">No latest result rows.</td></tr>`}</tbody>
     </table>
   </div>
+</div>
 </body>
 </html>`;
 };
@@ -3920,6 +3994,16 @@ const server = createServer(async (request, response) => {
     const targetPath = namedReport
       ? resolveSafePath(namedReport.root, url.pathname.replace(`/report/${namedReport.id}`, ""))
       : resolveSafePath(reportRoot, url.pathname.replace(/^\/report/, ""));
+    if (!targetPath) {
+      sendText(response, 403, "Forbidden.");
+      return;
+    }
+    serveFile(response, targetPath);
+    return;
+  }
+
+  if (url.pathname.startsWith("/evidence/list-view/")) {
+    const targetPath = resolveSafePath(listViewArtifactsRoot, url.pathname.replace(/^\/evidence\/list-view/, ""));
     if (!targetPath) {
       sendText(response, 403, "Forbidden.");
       return;

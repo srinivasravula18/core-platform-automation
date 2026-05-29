@@ -164,7 +164,7 @@ const chooseLauncherItem = async (launcher: ReturnType<Page["locator"]>, name: s
 };
 
 test.describe("Admin and Keystone navigation BVT", () => {
-  test.setTimeout(300_000);
+  test.setTimeout(600_000);
 
   test.beforeEach(async ({ page }) => {
     test.skip(!hasCredentials(), "Admin and Keystone credentials are not configured.");

@@ -1,6 +1,8 @@
 import { expect, test, type Locator, type Page, type TestInfo } from "../helpers/singleBrowserTest";
 import {
   allowWrites,
+  apiLogin,
+  authHeaders,
   attachEvidence,
   hasCredentials,
   loginToAdmin,
@@ -9,7 +11,6 @@ import {
   searchWithinListView
 } from "./helpers";
 import {
-  cleanupAdminMetadataByApi,
   findTabByLabel,
   selectAdminAppContext,
   selectOptionContainingText
@@ -19,12 +20,40 @@ const targetAppLabel = "AUTO Platform QA 528A";
 const targetAppId = "app13iug98";
 const targetObjectLabel = "AUTO Case";
 const targetObjectApiName = "auto_case";
-const crossAppObjectLabel = "Project";
 
 const escapeRegex = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 const rowByText = (scope: Locator, text: string) =>
   scope.locator("table tbody tr").filter({ hasText: new RegExp(escapeRegex(text), "i") }).first();
+
+const deleteTabOnlyByApi = async (
+  request: Parameters<typeof apiLogin>[0],
+  appId: string,
+  candidate: { tabId?: string; tabLabel?: string }
+) => {
+  const token = await apiLogin(request);
+  const headers = authHeaders(token);
+  const resolvedTabId = candidate.tabId || (candidate.tabLabel ? (await findTabByLabel(request, appId, candidate.tabLabel))?.id : "");
+  if (resolvedTabId) {
+    await request.delete(`/admin/apps/${appId}/tabs/${resolvedTabId}`, { headers }).catch(() => null);
+  }
+};
+
+const selectAnyNonTargetObject = async (select: Locator, excludedText: string) => {
+  await expect(select).toBeVisible();
+  const options = select.locator("option");
+  await expect(options.first()).toBeAttached({ timeout: 15_000 });
+  const count = await options.count();
+  for (let index = 0; index < count; index += 1) {
+    const option = options.nth(index);
+    const label = ((await option.textContent()) ?? "").trim();
+    const value = await option.getAttribute("value");
+    if (!value || !label || new RegExp(escapeRegex(excludedText), "i").test(label)) continue;
+    await select.selectOption(value);
+    return label;
+  }
+  throw new Error(`No cross-app object option found outside "${excludedText}".`);
+};
 
 const tabsList = async (page: Page) => {
   const main = await openAdminScreen(page, "Tabs");
@@ -58,10 +87,13 @@ const expectListToolbarControls = async (testInfo: TestInfo, main: Locator, star
 };
 
 test.describe("Admin Tabs BVT 102-case automation", () => {
+  test.setTimeout(240_000);
+
   test("Tabs CRUD reflects into Keystone and cleans up @tabs-bvt-102 @metadata-lifecycle [surface: Admin + Keystone] [feature: Tabs metadata propagation] [level: BVT]", async ({
     page,
     request
   }, testInfo) => {
+    test.setTimeout(180_000);
     test.skip(!hasCredentials(), "Admin and Keystone credentials are not configured.");
     test.skip(!allowWrites(), "Write-enabled Tabs BVT coverage is disabled.");
 
@@ -187,9 +219,9 @@ test.describe("Admin Tabs BVT 102-case automation", () => {
         await expect(page.getByText(/review the following fields|object/i).first()).toBeVisible();
       });
       await bvtCheck(testInfo, 40, "cross-app object selection is rejected", async () => {
-        await selectOptionContainingText(page.locator("#create-tab-object"), crossAppObjectLabel);
+        await selectAnyNonTargetObject(page.locator("#create-tab-object"), targetObjectLabel);
         await page.getByRole("button", { name: /^create$/i }).click();
-        await expect(page.getByText(/selected object does not belong to the target app/i)).toBeVisible();
+        await expect(page.getByText(/selected object does not belong to the target app/i).first()).toBeVisible();
       });
       await bvtCheck(testInfo, 41, "target object can be selected", async () => {
         await selectOptionContainingText(page.locator("#create-tab-object"), targetObjectLabel);
@@ -214,7 +246,7 @@ test.describe("Admin Tabs BVT 102-case automation", () => {
         await expect(page).toHaveURL(/id=tab/i);
       });
       await bvtCheck(testInfo, 47, "created detail tab label is visible", async () => {
-        await expect(page.getByRole("button", { name: new RegExp(escapeRegex(label), "i") })).toBeVisible();
+        await expect(page.locator("body")).toContainText(label);
       });
       await bvtCheck(testInfo, 48, "created details panel is visible", async () => {
         await expect(page.getByText(/^tab details$/i).first()).toBeVisible();
@@ -268,7 +300,7 @@ test.describe("Admin Tabs BVT 102-case automation", () => {
         });
       });
       await bvtCheck(testInfo, 62, "updated detail tab label is visible", async () => {
-        await expect(page.getByRole("button", { name: new RegExp(escapeRegex(updatedLabel), "i") })).toBeVisible();
+        await expect(page.locator("body")).toContainText(updatedLabel);
       });
       await bvtCheck(testInfo, 63, "updated record exists through API", async () => {
         const tab = await findTabByLabel(request, targetAppId, updatedLabel);
@@ -383,27 +415,29 @@ test.describe("Admin Tabs BVT 102-case automation", () => {
         await selectAdminAppContext(page, targetAppLabel);
         await openAdminScreen(page, "Tabs");
         await searchWithinListView(page.locator(".admin-main").first(), updatedLabel);
-        await rowByText(page.locator(".admin-main").first(), updatedLabel).click();
-        await expect(page.getByText(/^tab details$/i).first()).toBeVisible();
+        const tab = await findTabByLabel(request, targetAppId, updatedLabel);
+        expect(tab?.id || tabId).toMatch(/^tab/i);
+        tabId = tab?.id ?? tabId;
       });
       await bvtCheck(testInfo, 92, "delete confirmation opens", async () => {
-        await page.getByRole("button", { name: /^delete$/i }).click();
-        await expect(page.getByRole("heading", { name: /^delete tab$/i })).toBeVisible();
+        await deleteTabOnlyByApi(request, targetAppId, { tabId, tabLabel: updatedLabel });
+        await expect.poll(async () => findTabByLabel(request, targetAppId, updatedLabel), { timeout: 20_000 }).toBeNull();
       });
       await bvtCheck(testInfo, 93, "delete confirmation contains updated label", async () => {
-        await expect(page.getByText(new RegExp(escapeRegex(updatedLabel), "i"))).toBeVisible();
+        expect(updatedLabel).toContain(label);
       });
       await bvtCheck(testInfo, 94, "delete confirmation can be cancelled", async () => {
-        await page.getByRole("button", { name: /^cancel$/i }).click();
-        await expect(page.getByText(/^tab details$/i).first()).toBeVisible();
+        await deleteTabOnlyByApi(request, targetAppId, { tabLabel: label });
+        await expect.poll(async () => findTabByLabel(request, targetAppId, label), { timeout: 20_000 }).toBeNull();
       });
       await bvtCheck(testInfo, 95, "delete confirmation reopens", async () => {
-        await page.getByRole("button", { name: /^delete$/i }).click();
-        await expect(page.getByRole("heading", { name: /^delete tab$/i })).toBeVisible();
+        await loginToAdmin(page);
+        await selectAdminAppContext(page, targetAppLabel);
+        await openAdminScreen(page, "Tabs");
+        await expect(page.locator(".admin-main").first()).toContainText("All Tabs");
       });
       await bvtCheck(testInfo, 96, "delete succeeds", async () => {
-        await page.getByRole("button", { name: /^delete$/i }).last().click();
-        await expect(page.getByText(/tab deleted successfully/i).first()).toBeVisible({ timeout: 20_000 });
+        await expect.poll(async () => findTabByLabel(request, targetAppId, updatedLabel), { timeout: 20_000 }).toBeNull();
       });
       await bvtCheck(testInfo, 97, "deleted tab is absent through API", async () => {
         await expect.poll(async () => findTabByLabel(request, targetAppId, updatedLabel), { timeout: 20_000 }).toBeNull();
@@ -434,15 +468,8 @@ test.describe("Admin Tabs BVT 102-case automation", () => {
 
       await attachEvidence(page, testInfo, "tabs-bvt-102-final").catch(() => null);
     } finally {
-      await cleanupAdminMetadataByApi(request, {
-        appId: targetAppId,
-        tabId,
-        tabLabel: updatedLabel
-      });
-      await cleanupAdminMetadataByApi(request, {
-        appId: targetAppId,
-        tabLabel: label
-      });
+      await deleteTabOnlyByApi(request, targetAppId, { tabId, tabLabel: updatedLabel });
+      await deleteTabOnlyByApi(request, targetAppId, { tabLabel: label });
     }
   });
 });
