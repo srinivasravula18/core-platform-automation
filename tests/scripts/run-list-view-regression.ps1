@@ -132,6 +132,7 @@ try {
     Pop-Location
   }
 } finally {
+  & (Join-Path $automationRoot "tests\scripts\move-generated-app-artifacts.ps1") -AppRoot $appRootPath -AutomationRoot $automationRoot
   # Keep application services running for developer inspection; use the app repo stop command when done.
 }
 

@@ -4,11 +4,16 @@ node_modules/
 .runtime/
 reports/
 tests/e2e/.storage/
+tests/e2e/permissions/
+tests/e2e/rbac/
 tests/e2e/reports/
 tests/e2e/recorded-scenarios/drafts/
+tests/fixtures/
+tests/screenshots/
 test-results/
 playwright-report/
 evidences/
+seeds/metadata/.generated/
 *.log
 *.yml
 *.yaml
