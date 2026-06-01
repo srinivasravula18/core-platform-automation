@@ -39,11 +39,7 @@ const escapeRegex = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$
 let adminSessionReady = false;
 let keystoneSessionReady = false;
 
-const visible = async (locator: Locator, timeout = 750) =>
-  locator
-    .waitFor({ state: "visible", timeout })
-    .then(() => true)
-    .catch(() => false);
+const visible = async (locator: Locator) => locator.isVisible().catch(() => false);
 
 const closeTransientUi = async (page: Page) => {
   await page
@@ -61,6 +57,7 @@ const closeTransientUi = async (page: Page) => {
       document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     })
     .catch(() => null);
+  await page.keyboard.press("Escape").catch(() => null);
 };
 
 const ensureAdminSession = async (page: Page) => {
@@ -216,6 +213,163 @@ const editInlineCell = async (row: Locator, cellIndex: number, value: string) =>
   await editor.press("Enter");
 };
 
+const openListViewActionMenu = async (page: Page, region: Locator) => {
+  const settingsItem = page.locator("button.view-menu-item").filter({ hasText: /^settings$/i }).first();
+  if (await settingsItem.isVisible().catch(() => false)) return;
+  await closeTransientUi(page);
+  if (await settingsItem.isVisible().catch(() => false)) return;
+  const actionsButton = region.getByRole("button", { name: /list view actions/i }).first();
+  await expect(actionsButton).toBeVisible();
+  await actionsButton.click();
+  await expect(settingsItem).toBeVisible();
+};
+
+const chooseListViewAction = async (page: Page, region: Locator, action: string) => {
+  await openListViewActionMenu(page, region);
+  const menuItem = page
+    .locator("button.view-menu-item")
+    .filter({ hasText: new RegExp(`^${escapeRegex(action)}$`, "i") })
+    .first();
+  await expect(menuItem).toBeVisible();
+  await menuItem.click();
+};
+
+const quickActionNameInput = (page: Page) =>
+  page.locator("#list-view-quick-action-name, [role='dialog'] input, dialog input, .modal input").first();
+
+const selectedListViewText = async (region: Locator) =>
+  region.locator(".list-view-picker-trigger, select#list-view").first().evaluate((element) => {
+    if (element instanceof HTMLSelectElement) {
+      return element.options[element.selectedIndex]?.textContent?.trim() || "";
+    }
+    return element.textContent?.trim() || "";
+  });
+
+const expectSelectedListView = async (region: Locator, name: string) => {
+  await expect.poll(() => selectedListViewText(region)).toContain(name);
+};
+
+const createListViewViaActions = async (page: Page, region: Locator, name: string) => {
+  await chooseListViewAction(page, region, "New");
+  await expect(page.getByRole("heading", { name: /^new list view$/i })).toBeVisible();
+  await quickActionNameInput(page).fill(name);
+  await page.getByRole("button", { name: /^create$/i }).click();
+  await expectSelectedListView(region, name);
+};
+
+const renameCurrentListViewViaActions = async (page: Page, region: Locator, name: string) => {
+  await chooseListViewAction(page, region, "Rename");
+  await expect(page.getByRole("heading", { name: /^rename list view$/i })).toBeVisible();
+  await quickActionNameInput(page).fill(name);
+  await page.getByRole("button", { name: /^rename$/i }).click();
+  await expectSelectedListView(region, name);
+};
+
+const cloneCurrentListViewViaActions = async (page: Page, region: Locator, name: string) => {
+  await chooseListViewAction(page, region, "Clone");
+  await expect(page.getByRole("heading", { name: /^clone list view$/i })).toBeVisible();
+  await quickActionNameInput(page).fill(name);
+  await page.getByRole("button", { name: /^clone$/i }).click();
+  await expectSelectedListView(region, name);
+};
+
+const selectListViewByName = async (page: Page, region: Locator, name: string) => {
+  const selected = await selectedListViewText(region).catch(() => "");
+  if (selected.includes(name)) return;
+  const nativeSelector = region.locator("select#list-view").first();
+  if (await nativeSelector.isVisible().catch(() => false)) {
+    await nativeSelector.selectOption({ label: name });
+    await expectSelectedListView(region, name);
+    return;
+  }
+  const trigger = region.locator(".list-view-picker-trigger").first();
+  await expect(trigger).toBeVisible();
+  await trigger.click();
+  await page
+    .locator("button, [role='option']")
+    .filter({ hasText: new RegExp(`^${escapeRegex(name)}$`, "i") })
+    .first()
+    .click();
+  await expectSelectedListView(region, name);
+};
+
+const deleteCurrentListViewViaActions = async (page: Page, region: Locator, name: string) => {
+  await chooseListViewAction(page, region, "Delete");
+  await expect(page.getByRole("heading", { name: /^delete list view$/i })).toBeVisible();
+  await expect(page.getByText(new RegExp(escapeRegex(name), "i")).first()).toBeVisible();
+  await page.getByRole("button", { name: /^delete$/i }).last().click();
+  await expect.poll(() => selectedListViewText(region)).not.toContain(name);
+};
+
+const deleteListViewByName = async (page: Page, region: Locator, name: string) => {
+  await closeTransientUi(page);
+  const selected = await selectedListViewText(region).catch(() => "");
+  if (!selected.includes(name)) {
+    const trigger = region.locator(".list-view-picker-trigger").first();
+    if (await trigger.isVisible().catch(() => false)) {
+      await trigger.click();
+    }
+    const option = page
+      .locator("[role='option'], button")
+      .filter({ hasText: new RegExp(`^${escapeRegex(name)}$`, "i") })
+      .first();
+    if (!(await option.isVisible().catch(() => false))) {
+      await closeTransientUi(page);
+      return;
+    }
+    await option.click();
+    await expectSelectedListView(region, name);
+  }
+  await deleteCurrentListViewViaActions(page, region, name);
+};
+
+const clickSettingsPanel = async (page: Page, name: string) => {
+  const button = page.getByRole("button", { name: new RegExp(`^${escapeRegex(name)}$`, "i") }).first();
+  await expect(button).toBeVisible();
+  await button.click();
+};
+
+const exerciseDisposableListViewSettings = async (
+  page: Page,
+  region: Locator,
+  columnLabel: string,
+  testInfo: TestInfo,
+  evidencePrefix: string
+) => {
+  await chooseListViewAction(page, region, "Settings");
+  await expect(page.getByRole("heading", { name: /list view settings/i })).toBeVisible();
+
+  await clickSettingsPanel(page, "Filters");
+  await page.getByRole("button", { name: /add filter/i }).click();
+  await expect(page.getByRole("button", { name: /save filters/i }).first()).toBeVisible();
+  await page.getByRole("button", { name: /clear all/i }).click();
+
+  await clickSettingsPanel(page, "Sharing");
+  await expect(page.getByLabel(/sharing scope/i)).toBeVisible();
+
+  await clickSettingsPanel(page, "Preferences");
+  await page.getByRole("button", { name: /add sort field/i }).first().click();
+  await expect(page.getByRole("radio", { name: /descending/i }).first()).toBeVisible();
+
+  const hierarchy = page.getByRole("button", { name: /^hierarchy$/i }).first();
+  if (await hierarchy.isVisible().catch(() => false)) {
+    await hierarchy.click();
+    await expect(page.getByRole("heading", { name: /list view settings/i })).toBeVisible();
+  }
+
+  await clickSettingsPanel(page, "Columns");
+  await page.getByRole("button", { name: /selected columns/i }).click();
+  const labelInput = page.locator(".column-editor .column-label").first();
+  await expect(labelInput).toBeVisible();
+  await labelInput.fill(columnLabel);
+  await expect(labelInput).toHaveValue(columnLabel);
+  await expect(page.getByRole("button", { name: /save columns/i }).first()).toBeEnabled();
+  await attachEvidence(page, testInfo, `${evidencePrefix}-settings-columns`).catch(() => null);
+
+  await closeModal(page);
+  await expectListRegionReady(region);
+};
+
 test.describe("Complete List View E2E CRUD workflows @complete-list-view-atomic", () => {
   test.beforeEach(() => {
     test.skip(!hasCredentials(), "Admin and Keystone credentials are not configured.");
@@ -313,6 +467,33 @@ test.describe("Complete List View E2E CRUD workflows @complete-list-view-atomic"
     await expectListRegionReady(apps);
   });
 
+  test("CLV-ADM-LVA-004 Admin Apps list-view actions create rename configure clone and delete disposable views @complete-list-view-atomic [surface: Admin] [feature: List View Actions CRUD + Settings] [level: Regression] [input: create custom Apps list view from actions, rename it, edit settings panels, clone it, delete clone and original] [expected: Admin list-view metadata completes action CRUD without touching default views] [proof: disposable Admin list views are created, configured, cloned, and removed through list-view actions]", async ({
+    page
+  }, testInfo: TestInfo) => {
+    requireWriteMode();
+    const apps = await openAdminApps(page);
+    const stamp = uniqueStamp();
+    const baseName = `E2E Admin View ${stamp}`;
+    const renamedName = `${baseName} Renamed`;
+    const cloneName = `${baseName} Clone`;
+
+    try {
+      await selectListViewByName(page, apps, "All Apps");
+      await closeTransientUi(page);
+
+      await createListViewViaActions(page, apps, baseName);
+      await renameCurrentListViewViaActions(page, apps, renamedName);
+      await exerciseDisposableListViewSettings(page, apps, "E2E App Name", testInfo, "admin-list-view-actions");
+      await cloneCurrentListViewViaActions(page, apps, cloneName);
+      await deleteCurrentListViewViaActions(page, apps, cloneName);
+      await deleteListViewByName(page, apps, renamedName);
+    } finally {
+      await deleteListViewByName(page, apps, cloneName).catch(() => null);
+      await deleteListViewByName(page, apps, renamedName).catch(() => null);
+      await deleteListViewByName(page, apps, baseName).catch(() => null);
+    }
+  });
+
   test("CLV-KEY-CRUD-001 Keystone Account list-view creates searches inline-edits and deletes disposable record @complete-list-view-atomic [surface: Keystone] [feature: Account CRUD] [level: BVT] [input: create Account from list, search it, inline edit account number, delete selected row] [expected: Account CRUD is completed from the list view and deleted record leaves active search results] [proof: real Keystone list-view record CRUD]", async ({
     page,
     request
@@ -350,6 +531,34 @@ test.describe("Complete List View E2E CRUD workflows @complete-list-view-atomic"
       recordId = "";
     } finally {
       await cleanupKeystoneRecord(request, appId, objectApiName, recordId);
+    }
+  });
+
+  test("CLV-KEY-LVA-003 Keystone Account list-view actions create rename configure clone and delete disposable views @complete-list-view-atomic [surface: Keystone] [feature: List View Actions CRUD + Settings] [level: Regression] [input: create custom Account list view from actions, rename it, edit settings panels, clone it, delete clone and original] [expected: Keystone list-view metadata completes action CRUD without refreshing the browser or mutating default All Accounts] [proof: disposable Keystone list views are created, configured, cloned, and removed through list-view actions]", async ({
+    page
+  }, testInfo: TestInfo) => {
+    requireWriteMode();
+    const accounts = await openKeystoneAccounts(page);
+    await expectKeystoneListActionsReady(page);
+    const stamp = uniqueStamp();
+    const baseName = `E2E Key View ${stamp}`;
+    const renamedName = `${baseName} Renamed`;
+    const cloneName = `${baseName} Clone`;
+
+    try {
+      await selectListViewByName(page, accounts, "All Accounts");
+      await closeTransientUi(page);
+
+      await createListViewViaActions(page, accounts, baseName);
+      await renameCurrentListViewViaActions(page, accounts, renamedName);
+      await exerciseDisposableListViewSettings(page, accounts, "E2E Account Name", testInfo, "keystone-list-view-actions");
+      await cloneCurrentListViewViaActions(page, accounts, cloneName);
+      await deleteCurrentListViewViaActions(page, accounts, cloneName);
+      await deleteListViewByName(page, accounts, renamedName);
+    } finally {
+      await deleteListViewByName(page, accounts, cloneName).catch(() => null);
+      await deleteListViewByName(page, accounts, renamedName).catch(() => null);
+      await deleteListViewByName(page, accounts, baseName).catch(() => null);
     }
   });
 
