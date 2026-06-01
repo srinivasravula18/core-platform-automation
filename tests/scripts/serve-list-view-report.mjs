@@ -250,6 +250,14 @@ const frameworkRegistry = {
       grep: "@users-bvt-101",
       description: "Users page BVT with list/detail/search/access surfaces and Keystone stability checks.",
       tags: ["users", "users-ui", "bvt"]
+    },
+    {
+      id: "complete-list-view-e2e",
+      label: "Complete List View CRUD E2E",
+      surface: "all",
+      grep: "@complete-list-view-atomic",
+      description: "Admin and Keystone list-view E2E cases focused on unique CRUD, selection, settings, and recycle-bin workflows.",
+      tags: ["admin", "keystone", "list-view", "crud", "settings", "bvt"]
     }
   ],
   scenarios: [
@@ -283,6 +291,7 @@ const frameworkRegistry = {
   ]
 };
 const adminSidebarSuiteOrder = [
+  "complete-list-view-e2e",
   "admin-keystone-nav-bvt",
   "app-hierarchy-bvt",
   "search-results-bvt",
@@ -1137,7 +1146,7 @@ const renderLatestResultsHtml = () => {
       ? `<span class="evidence-count">${evidenceCount} shot${evidenceCount === 1 ? "" : "s"}</span>`
       : `<span class="muted">No screenshots</span>`;
     const steps = Array.isArray(row.steps)
-      ? `<details class="step-details" open><summary>${row.steps.length} step details</summary><div class="step-list">${row.steps.map((step, index) => `
+      ? `<details class="step-details"><summary>${row.steps.length} step details</summary><div class="step-list">${row.steps.map((step, index) => `
         <article class="step-card">
           <strong>${index + 1}. ${xmlEscape(step.section || "")}</strong>
           <span><b>Step</b>${xmlEscape(step.step || String(index + 1))}</span>
@@ -1153,52 +1162,66 @@ const renderLatestResultsHtml = () => {
         </article>`).join("")}</div></details>`
       : "";
     const directUrl = row.directUrl
-      ? `<a href="${xmlEscape(row.directUrl)}" target="_blank" rel="noreferrer">${xmlEscape(row.directUrl)}</a>`
-      : `<span class="muted">No URL captured</span>`;
-    return `<tr class="result-row ${xmlEscape(row.status || "")}">
-      <td><code class="case-id" title="${xmlEscape(row.id || "")}">${xmlEscape(row.id || "")}</code></td>
-      <td><span class="pill">${xmlEscape(row.surface || "")}</span></td>
-      <td>${xmlEscape(row.featureArea || "")}</td>
-      <td><strong>${xmlEscape(row.testCaseTitle || "")}</strong></td>
-      <td>${xmlEscape(row.executionSource || "Automated data")}</td>
-      <td>${xmlEscape(row.requestedBy || "")}</td>
-      <td>${xmlEscape(row.performedBy || "")}</td>
-      <td>${xmlEscape(row.fieldsUpdated || "")}</td>
-      <td>${xmlEscape(row.inputDataSummary || row.testData || "")}</td>
-      <td>${xmlEscape(row.expectedResult || "")}</td>
-      <td>${xmlEscape(row.actualResult || "")}</td>
-      <td>${directUrl}</td>
-      <td><span class="status ${xmlEscape(row.status || "")}">${xmlEscape(row.status || "")}</span></td>
-      <td class="evidence-cell">${evidenceSummary}</td>
-    </tr>
-    <tr class="detail-row ${xmlEscape(row.status || "")}">
-      <td colspan="14">
-        <section class="case-detail-panel">
-          <div class="case-detail-head">
-            <div>
-              <span class="detail-eyebrow">Step details and evidence</span>
-              <h2>${xmlEscape(row.testCaseTitle || row.id || "Test case")}</h2>
-            </div>
-            <span class="status ${xmlEscape(row.status || "")}">${xmlEscape(row.status || "")}</span>
+      ? `<a class="page-url-link" href="${xmlEscape(row.directUrl)}" target="_blank" rel="noreferrer">${xmlEscape(row.directUrl)}</a>`
+      : `<span class="muted">No page URL captured</span>`;
+    return `<article class="result-card ${xmlEscape(row.status || "")}">
+      <div class="result-card-head">
+        <div class="case-title-block">
+          <div class="case-meta-line">
+            <code class="case-id" title="${xmlEscape(row.id || "")}">${xmlEscape(row.id || "")}</code>
+            <span class="pill">${xmlEscape(row.surface || "")}</span>
+            <span class="muted">${xmlEscape(row.featureArea || "")}</span>
           </div>
-          <section class="evidence-panel">
-            <div class="detail-subhead">
-              <h3>Evidence</h3>
-              <span>${evidenceCount > 0 ? `${evidenceCount} screenshot${evidenceCount === 1 ? "" : "s"} captured` : "No screenshots captured"}</span>
-            </div>
-            ${evidence}
-          </section>
-          ${steps || `<span class="muted">No step details captured.</span>`}
+          <h2>${xmlEscape(row.testCaseTitle || row.id || "Test case")}</h2>
+          <div class="page-url-row">
+            <span>Page URL</span>
+            ${directUrl}
+          </div>
+        </div>
+        <div class="status-stack">
+          <span class="status ${xmlEscape(row.status || "")}">${xmlEscape(row.status || "")}</span>
+          ${evidenceSummary}
+        </div>
+      </div>
+
+      <div class="info-grid">
+        <section class="info-panel">
+          <h3>Execution</h3>
+          <dl>
+            <dt>Input Source</dt><dd>${xmlEscape(row.executionSource || "Automated data")}</dd>
+            <dt>Requested By</dt><dd>${xmlEscape(row.requestedBy || "-")}</dd>
+            <dt>Performed By</dt><dd>${xmlEscape(row.performedBy || "-")}</dd>
+            <dt>Fields Updated</dt><dd>${xmlEscape(row.fieldsUpdated || "-")}</dd>
+          </dl>
         </section>
-      </td>
-    </tr>`;
+        <section class="info-panel">
+          <h3>Data</h3>
+          <dl>
+            <dt>Input Data</dt><dd>${xmlEscape(row.inputDataSummary || row.testData || "-")}</dd>
+            <dt>Page URL</dt><dd>${directUrl}</dd>
+          </dl>
+        </section>
+        <section class="info-panel outcome-panel">
+          <h3>Outcome</h3>
+          <dl>
+            <dt>Expected</dt><dd>${xmlEscape(row.expectedResult || "-")}</dd>
+            <dt>Actual</dt><dd>${xmlEscape(row.actualResult || "-")}</dd>
+          </dl>
+        </section>
+      </div>
+
+      <details class="evidence-details">
+        <summary>${evidenceCount > 0 ? `View ${evidenceCount} screenshot${evidenceCount === 1 ? "" : "s"}` : "Evidence"}</summary>
+        <section class="evidence-panel">${evidence}</section>
+      </details>
+      ${steps || `<span class="muted">No step details captured.</span>`}
+    </article>`;
   }).join("\n");
   return `<!doctype html>
 <html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  ${runState.running ? `<meta http-equiv="refresh" content="5">` : ""}
   <title>${xmlEscape(report.label || "Latest")} Results</title>
   <style>
     :root { color-scheme: light; --bg:#eef3f8; --panel:#ffffff; --ink:#102033; --muted:#617188; --line:#d8e1ec; --blue:#2563eb; --green:#0f8a4b; --red:#c03221; --amber:#b7791f; }
@@ -1212,29 +1235,29 @@ const renderLatestResultsHtml = () => {
     a { color: var(--blue); font-weight: 800; text-decoration: none; }
     nav a { border: 1px solid var(--line); background: #fff; border-radius: 12px; padding: 11px 14px; color: var(--ink); box-shadow: 0 6px 20px rgba(15, 23, 42, .05); }
     nav a:hover, .thumb:hover { transform: translateY(-1px); box-shadow: 0 10px 26px rgba(37, 99, 235, .14); }
+    .live-line { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+    .live-pill { display: inline-flex; align-items: center; border: 1px solid #bfdbfe; background: #eff6ff; color: #1d4ed8; border-radius: 999px; padding: 3px 8px; font-size: 12px; font-weight: 900; }
+    .live-pill.idle { border-color: #d8e1ec; background: #f8fafc; color: var(--muted); }
     .summary { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; }
     .metric { border: 1px solid var(--line); border-radius: 16px; background: var(--panel); padding: 16px; box-shadow: 0 10px 30px rgba(15, 23, 42, .06); }
     .metric span { display: block; color: var(--muted); font-size: 12px; font-weight: 700; text-transform: uppercase; margin-bottom: 8px; }
     .metric strong { font-size: 30px; letter-spacing: 0; }
-    .table-wrap { border: 1px solid var(--line); border-radius: 18px; background: var(--panel); overflow: auto; max-height: calc(100dvh - 245px); box-shadow: 0 18px 55px rgba(15, 23, 42, .08); }
-    table { width: 100%; min-width: 2100px; border-collapse: separate; border-spacing: 0; table-layout: fixed; }
-    th, td { border-bottom: 1px solid var(--line); padding: 14px; text-align: left; vertical-align: top; font-size: 13px; line-height: 1.45; }
-    th { position: sticky; top: 0; z-index: 2; background: #f8fbff; color: var(--muted); text-transform: uppercase; font-size: 11px; letter-spacing: .04em; }
-    tr:last-child td { border-bottom: 0; }
-    th:nth-child(1), td:nth-child(1) { width: 210px; }
-    th:nth-child(2), td:nth-child(2) { width: 110px; }
-    th:nth-child(3), td:nth-child(3) { width: 120px; }
-    th:nth-child(4), td:nth-child(4) { width: 300px; }
-    th:nth-child(5), td:nth-child(5) { width: 150px; }
-    th:nth-child(6), td:nth-child(6),
-    th:nth-child(7), td:nth-child(7) { width: 135px; }
-    th:nth-child(8), td:nth-child(8) { width: 160px; }
-    th:nth-child(9), td:nth-child(9) { width: 260px; }
-    th:nth-child(10), td:nth-child(10) { width: 260px; }
-    th:nth-child(11), td:nth-child(11) { width: 290px; }
-    th:nth-child(12), td:nth-child(12) { width: 160px; }
-    th:nth-child(13), td:nth-child(13) { width: 110px; }
-    th:nth-child(14), td:nth-child(14) { width: 260px; }
+    .results-list { display: grid; gap: 16px; }
+    .empty-state { border: 1px solid var(--line); border-radius: 16px; background: var(--panel); padding: 18px; color: var(--muted); }
+    .result-card { display: grid; gap: 14px; border: 1px solid var(--line); border-radius: 18px; background: var(--panel); padding: 16px; box-shadow: 0 18px 55px rgba(15, 23, 42, .08); }
+    .result-card.PASS { border-left: 6px solid var(--green); }
+    .result-card.FAIL { border-left: 6px solid var(--red); }
+    .result-card.SKIP { border-left: 6px solid #64748b; }
+    .result-card.RUNNING { border-left: 6px solid var(--blue); }
+    .result-card.PENDING { border-left: 6px solid #94a3b8; }
+    .result-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
+    .case-title-block { display: grid; gap: 8px; min-width: 0; }
+    .case-meta-line { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+    .case-title-block h2 { margin: 0; font-size: 20px; line-height: 1.28; overflow-wrap: anywhere; }
+    .page-url-row { display: grid; grid-template-columns: 78px minmax(0, 1fr); gap: 8px; align-items: start; border: 1px solid #dbeafe; border-radius: 10px; background: #f8fbff; padding: 8px 10px; max-width: 100%; }
+    .page-url-row span { color: var(--muted); font-size: 12px; font-weight: 900; text-transform: uppercase; }
+    .page-url-link { display: inline-block; max-width: 100%; overflow-wrap: anywhere; word-break: break-word; }
+    .status-stack { display: grid; justify-items: end; gap: 8px; flex: none; }
     code { display: inline-block; color: #0f172a; background: #f1f5f9; border: 1px solid #e2e8f0; border-radius: 8px; padding: 5px 7px; font-family: Consolas, ui-monospace, monospace; }
     .case-id { max-width: 190px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; vertical-align: top; }
     .pill { display: inline-flex; border: 1px solid #bfdbfe; background: #eff6ff; color: #1d4ed8; border-radius: 999px; padding: 4px 9px; font-weight: 800; }
@@ -1245,30 +1268,30 @@ const renderLatestResultsHtml = () => {
     .SKIP { background: #e2e8f0; color: #64748b; }
     .RUNNING { background: #dbeafe; color: #1d4ed8; }
     .PENDING { background: #eef0f4; color: #6b7280; }
-    .evidence-cell { min-width: 160px; }
     .evidence-count { display: inline-flex; align-items: center; justify-content: center; min-width: 78px; border: 1px solid #bfdbfe; background: #eff6ff; color: #1d4ed8; border-radius: 999px; padding: 5px 9px; font-weight: 900; }
-    .detail-subhead { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
-    .detail-subhead h3 { margin: 0; font-size: 15px; }
-    .detail-subhead span { color: var(--muted); font-size: 12px; font-weight: 800; }
+    .info-grid { display: grid; grid-template-columns: minmax(260px, .9fr) minmax(280px, 1fr) minmax(320px, 1.15fr); gap: 12px; align-items: stretch; }
+    .info-panel { border: 1px solid var(--line); border-radius: 14px; background: #f8fbff; padding: 12px; }
+    .info-panel h3 { margin: 0 0 10px; font-size: 14px; }
+    .info-panel dl { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 8px 10px; margin: 0; }
+    .info-panel dt { color: var(--ink); font-weight: 900; }
+    .info-panel dd { margin: 0; color: var(--muted); overflow-wrap: anywhere; }
+    .outcome-panel { background: #fff; }
+    details { border: 1px solid var(--line); border-radius: 14px; background: #fff; padding: 12px; }
+    details summary { cursor: pointer; color: var(--blue); font-weight: 900; }
     .evidence-panel { border: 1px solid var(--line); border-radius: 12px; background: #f8fbff; padding: 12px; }
     .evidence-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 14px; min-width: 0; max-width: none; max-height: none; overflow: visible; padding-right: 0; }
     .thumb { display: grid; gap: 8px; color: var(--ink); background: #fff; border: 1px solid var(--line); border-radius: 12px; padding: 10px; transition: transform .15s ease, box-shadow .15s ease; }
     .thumb img { width: 100%; height: auto; max-height: 360px; aspect-ratio: 16 / 9; object-fit: contain; border: 1px solid #dbe4ef; border-radius: 9px; background: #f8fafc; }
     .thumb span { font-size: 12px; color: var(--muted); font-weight: 900; }
-    .detail-row td { padding: 0 14px 18px; background: color-mix(in srgb, var(--blue), transparent 96%); }
-    .case-detail-panel { display: grid; gap: 14px; border: 1px solid #cfe0f5; border-radius: 14px; background: #ffffff; padding: 16px; box-shadow: inset 4px 0 0 var(--blue); }
-    .case-detail-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
-    .case-detail-head h2 { margin: 2px 0 0; font-size: 18px; line-height: 1.25; overflow-wrap: anywhere; }
-    .detail-eyebrow { color: var(--muted); text-transform: uppercase; font-size: 11px; font-weight: 900; letter-spacing: .04em; }
     .step-details { margin-top: 0; }
-    .step-details summary { cursor: pointer; color: var(--blue); font-weight: 900; margin-bottom: 10px; }
     .step-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(520px, 1fr)); gap: 12px; margin-top: 10px; overflow: visible; }
     .step-card { display: grid; gap: 8px; align-content: start; padding: 14px; border: 1px solid var(--line); border-radius: 12px; background: #f8fbff; }
     .step-card strong { overflow-wrap: anywhere; }
     .step-card span { display: grid; grid-template-columns: 150px minmax(0, 1fr); gap: 10px; color: var(--muted); overflow-wrap: anywhere; }
     .step-card b { color: var(--ink); }
     .step-card em { justify-self: start; color: var(--green); font-style: normal; font-weight: 900; }
-    @media (max-width: 1000px) { .page { padding: 14px; } header { grid-template-columns: 1fr; } nav { justify-content: flex-start; } .summary { grid-template-columns: repeat(2, minmax(0, 1fr)); } .evidence-grid, .step-list { grid-template-columns: minmax(0, 1fr); } .step-card span { grid-template-columns: 1fr; } }
+    @media (max-width: 1000px) { .page { padding: 14px; } header { grid-template-columns: 1fr; } nav { justify-content: flex-start; } .summary, .info-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .evidence-grid, .step-list { grid-template-columns: minmax(0, 1fr); } .step-card span { grid-template-columns: 1fr; } }
+    @media (max-width: 680px) { .summary, .info-grid { grid-template-columns: 1fr; } .result-card-head { flex-direction: column; } .status-stack { justify-items: start; } .info-panel dl, .page-url-row { grid-template-columns: 1fr; } }
   </style>
 </head>
 <body>
@@ -1276,7 +1299,12 @@ const renderLatestResultsHtml = () => {
   <header>
     <div>
       <h1>${xmlEscape(report.label || "Latest")} Results</h1>
-      <p>Run status: ${xmlEscape(payload.runStatus || "-")} | Total cases: ${xmlEscape(payload.total || rows.length)} | Updated: ${xmlEscape(payload.updatedAt ? new Date(payload.updatedAt).toLocaleString() : "-")}</p>
+      <p class="live-line">
+        <span>Run status: <strong id="live-run-status">${xmlEscape(payload.runStatus || "-")}</strong></span>
+        <span>| Total cases: ${xmlEscape(payload.total || rows.length)}</span>
+        <span>| Updated: ${xmlEscape(payload.updatedAt ? new Date(payload.updatedAt).toLocaleString() : "-")}</span>
+        <span id="live-run-pill" class="live-pill ${runState.running ? "" : "idle"}">${runState.running ? "Running in background" : "Idle"}</span>
+      </p>
     </div>
     <nav>
       <a href="/">Dashboard</a>
@@ -1293,13 +1321,41 @@ const renderLatestResultsHtml = () => {
     <article class="metric"><span>Skipped</span><strong>${xmlEscape(counts.SKIP || 0)}</strong></article>
     <article class="metric"><span>Running</span><strong>${xmlEscape(counts.RUNNING || 0)}</strong></article>
   </section>
-  <div class="table-wrap">
-    <table>
-      <thead><tr><th>ID</th><th>Surface</th><th>Feature</th><th>Test Case</th><th>Input Source</th><th>Requested By</th><th>Performed By</th><th>Fields Updated</th><th>Input Data</th><th>Expected</th><th>Actual</th><th>Direct URL</th><th>Status</th><th>Evidence</th></tr></thead>
-      <tbody>${rowHtml || `<tr><td colspan="14">No latest result rows.</td></tr>`}</tbody>
-    </table>
-  </div>
+  <section class="results-list" aria-label="Test case results">
+    ${rowHtml || `<div class="empty-state">No latest result rows.</div>`}
+  </section>
 </div>
+<script>
+(() => {
+  const statusText = document.getElementById("live-run-status");
+  const pill = document.getElementById("live-run-pill");
+  const render = (state) => {
+    if (!statusText || !pill) return;
+    const running = Boolean(state && state.running);
+    const exitCode = state && state.exitCode;
+    statusText.textContent = running ? "running" : exitCode == null ? "idle" : "completed";
+    pill.textContent = running
+      ? "Running in background"
+      : exitCode == null
+        ? "Idle"
+        : "Run finished. Refresh when ready.";
+    pill.className = running ? "live-pill" : "live-pill idle";
+  };
+  const poll = async () => {
+    try {
+      const response = await fetch("/api/status", { cache: "no-store" });
+      if (response.ok) render(await response.json());
+    } catch {
+      if (pill) {
+        pill.textContent = "Live status unavailable";
+        pill.className = "live-pill idle";
+      }
+    }
+  };
+  window.setInterval(poll, 5000);
+  poll();
+})();
+</script>
 </body>
 </html>`;
 };
@@ -2269,6 +2325,13 @@ const inferSurface = (spec, title) => {
 };
 
 const cleanTitle = (title) => title.replace(/\s*\[[^\]]+\]/g, "").trim();
+const uniqueInventoryTitle = (title) =>
+  cleanTitle(title)
+    .replace(/^CLV-[A-Z]+-[A-Z]+-\d+\s+/, "")
+    .replace(/\s+@[A-Za-z0-9:_-]+/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
 
 const classifyChangedFile = (filePath) => {
   const normalized = filePath.replace(/\\/g, "/").toLowerCase();
@@ -3303,7 +3366,8 @@ const readInventory = () => {
     "audit-logs-bvt-105.spec.ts",
     "recycle-bin-bvt-125.spec.ts",
     "keystone-admin-other-reflection-bvt-105.spec.ts",
-    "users-bvt-101.spec.ts"
+    "users-bvt-101.spec.ts",
+    "complete-list-view-atomic.spec.ts"
   ]);
 
   const configs = [
@@ -3325,6 +3389,7 @@ const readInventory = () => {
   }
   const output = outputs.join("\n");
   const rows = [];
+  const seenInventoryRows = new Set();
   for (const line of output.split(/\r?\n/)) {
     const marker = " › ";
     if (!line.includes(marker) || !/\.(spec|test)\.ts:\d+:\d+/.test(line)) continue;
@@ -3335,6 +3400,9 @@ const readInventory = () => {
     const spec = location.replace(/:\d+:\d+$/, "");
     const specName = path.basename(spec);
     if (!visibleInventorySpecs.has(specName)) continue;
+    const inventoryKey = `${specName}::${uniqueInventoryTitle(title)}`;
+    if (seenInventoryRows.has(inventoryKey)) continue;
+    seenInventoryRows.add(inventoryKey);
     const override = visibleBvtInventoryRows[specName] || {};
     const surface = override.surface || inferSurface(spec, title);
     const feature = override.feature || parseMeta(title, "feature") || "List View";
