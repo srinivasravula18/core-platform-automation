@@ -2,8 +2,8 @@ import React, { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   Bot, Bug, CheckSquare, ChevronDown, ChevronRight, ClipboardList, FileBarChart, GitBranch,
-  Download, LayoutDashboard, Moon, PanelLeftClose, PanelLeftOpen, Play, Radio, RefreshCw, Save, Search, Settings, Square, Sun,
-  TestTube2, Video, Waypoints, XCircle
+  Database, Download, FileSpreadsheet, LayoutDashboard, Moon, PanelLeftClose, PanelLeftOpen, Play, Plus, Radio, RefreshCw, Save, Search, Settings, Square, Sun,
+  TestTube2, Trash2, Upload, Video, Waypoints, XCircle
 } from "lucide-react";
 import "./styles.css";
 
@@ -265,6 +265,39 @@ const api = async (path, options) => {
   return payload;
 };
 
+const fileToBase64 = (file) =>
+  new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || "").split(",").pop() || "");
+    reader.onerror = () => reject(reader.error || new Error("Unable to read file."));
+    reader.readAsDataURL(file);
+  });
+
+const downloadFile = async (url, fallbackName) => {
+  const response = await fetch(url, { cache: "no-store" });
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    let message = text;
+    try {
+      message = JSON.parse(text).error || message;
+    } catch {
+      // Keep the raw response text when it is not JSON.
+    }
+    throw new Error(message || `Download failed with ${response.status}.`);
+  }
+  const blob = await response.blob();
+  const disposition = response.headers.get("content-disposition") || "";
+  const filename = /filename="?([^"]+)"?/i.exec(disposition)?.[1] || fallbackName;
+  const objectUrl = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = objectUrl;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
+};
+
 const useDashboardData = () => {
   const [framework, setFramework] = useState(null);
   const [services, setServices] = useState({ services: [] });
@@ -349,6 +382,20 @@ function App() {
     error: ""
   });
   const [recorder, setRecorder] = useState({ name: "", busy: false, error: "" });
+  const [runDialog, setRunDialog] = useState({
+    open: false,
+    suites: [],
+    surface: "all",
+    scenario: "",
+    tests: [],
+    headed: false,
+    requestedBy: "",
+    mappings: {},
+    datasets: [],
+    loadingDatasets: false,
+    busy: false,
+    error: ""
+  });
 
   useEffect(() => {
     localStorage.setItem("qa-theme", theme);
@@ -401,19 +448,69 @@ function App() {
   const failedRows = resultRows.filter((row) => row.status === "FAIL");
   const counts = data.results.counts || {};
 
-  const runSuite = async (nextSurface = surface, scenario = scenarioFilter, tests = [], headedOverride = headed) => {
+  const refreshRunDatasets = async () => {
+    setRunDialog((previous) => ({ ...previous, loadingDatasets: true, error: "" }));
+    try {
+      const payload = await api("/api/test-data/datasets");
+      setRunDialog((previous) => ({ ...previous, datasets: payload.datasets || [], loadingDatasets: false }));
+    } catch (error) {
+      const message = error.message === "Failed to fetch"
+        ? "Unable to load saved datasets. Refresh after the dashboard server restarts."
+        : error.message;
+      setRunDialog((previous) => ({ ...previous, error: message, loadingDatasets: false }));
+    }
+  };
+
+  useEffect(() => {
+    if (!runDialog.open) return;
+    refreshRunDatasets();
+  }, [runDialog.open]);
+
+  const mappingDefaults = (suites) => Object.fromEntries((suites || []).map((suite) => [
+    suite.id,
+    { suiteId: suite.id, mode: "automated", datasetId: "", versionId: "", datasetName: "", file: null, uploading: false, downloadingTemplate: false, error: "" }
+  ]));
+
+  const openRunDialog = ({ suites = [], nextSurface = surface, scenario = scenarioFilter, tests = [], headedOverride = headed }) => {
+    const safeSuites = suites.filter(Boolean);
+    setRunDialog({
+      open: true,
+      suites: safeSuites,
+      surface: nextSurface,
+      scenario,
+      tests,
+      headed: headedOverride,
+      requestedBy: "",
+      mappings: mappingDefaults(safeSuites),
+      datasets: runDialog.datasets || [],
+      loadingDatasets: false,
+      busy: false,
+      error: ""
+    });
+  };
+
+  const startRun = async ({ nextSurface = surface, scenario = scenarioFilter, tests = [], headedOverride = headed, requestedBy = "", testDataMappings = [] }) => {
     await api("/api/run", {
       method: "POST",
-      body: JSON.stringify({ surface: nextSurface, scenario, tests, reset, headed: headedOverride })
+      body: JSON.stringify({ surface: nextSurface, scenario, tests, reset, headed: headedOverride, requestedBy, testDataMappings })
     });
     await data.refreshLive();
     setActive("execution");
   };
 
+  const runSuite = (nextSurface = surface, scenario = scenarioFilter, tests = [], headedOverride = headed, suites = []) => {
+    const inferredSuites = suites.length
+      ? suites
+      : inventoryContext
+        ? [inventoryContext]
+        : (data.framework?.suites || []).filter((suite) => scenario && suite.grep === scenario).slice(0, 1);
+    openRunDialog({ suites: inferredSuites, nextSurface, scenario, tests, headedOverride });
+  };
+
   const runCategory = async (level) => {
     const tests = rowsForCategory(level).map((row) => row.title);
     if (tests.length === 0) return;
-    await runSuite("all", "", tests);
+    runSuite("all", "", tests, headed, data.framework?.suites || []);
   };
 
   const openSuiteCases = (suite) => {
@@ -582,8 +679,12 @@ function App() {
   };
 
   const renderSection = () => {
-    if (active === "suites") return <SuitesPanel framework={data.framework} running={data.status.running} onOpen={openSuiteCases} onRun={(suite, runHeaded) => runSuite(suite.surface, suite.grep || "", [], runHeaded)} />;
-    if (active === "scenarios") return <ScenariosPanel framework={data.framework} setScenarioFilter={setScenarioFilter} setActive={setActive} />;
+    if (active === "suites") return <SuitesPanel framework={data.framework} running={data.status.running} onOpen={openSuiteCases} onRun={(suite, runHeaded) => runSuite(suite.surface, suite.grep || "", [], runHeaded, [suite])} />;
+    if (active === "scenarios") return <ScenariosPanel framework={data.framework} running={data.status.running} onRun={(scenario) => {
+      const suite = (data.framework?.suites || []).find((item) => item.id === scenario.suiteId);
+      setScenarioFilter(scenario.grep || "");
+      runSuite(suite?.surface || "all", scenario.grep || "", [], headed, suite ? [suite] : []);
+    }} />;
     if (active === "recorder") return (
       <RecorderPanel
         recorder={recorder}
@@ -612,7 +713,7 @@ function App() {
         context={inventoryContext}
         clearContext={() => setInventoryContext(null)}
         backToSuites={() => setActive("suites")}
-        runSelected={() => runSuite(surface, "", selectedTitles)}
+        runSelected={() => runSuite(surface, "", selectedTitles, headed, inventoryContext ? [inventoryContext] : [])}
         running={data.status.running}
       />
     );
@@ -707,7 +808,7 @@ function App() {
                 <Play size={16} /> {level} {categoryCounts[level] || 0}
               </button>
             ))}
-            <button onClick={() => runSuite(surface, "", selectedTitles)} disabled={data.status.running || selectedTitles.length === 0}><CheckSquare size={16} /> Run Selected {selectedTitles.length}</button>
+            <button onClick={() => runSuite(surface, "", selectedTitles, headed, inventoryContext ? [inventoryContext] : [])} disabled={data.status.running || selectedTitles.length === 0}><CheckSquare size={16} /> Run Selected {selectedTitles.length}</button>
             <button className="danger" onClick={stopRun} disabled={!data.status.running}><XCircle size={16} /> Stop</button>
             <button className="icon-button" onClick={() => setTheme(theme === "dark" ? "light" : "dark")} aria-label="Toggle theme">{theme === "dark" ? <Sun size={18} /> : <Moon size={18} />}</button>
           </div>
@@ -715,8 +816,246 @@ function App() {
         {data.error ? <div className="notice danger-text">{data.error}</div> : null}
         {renderSection()}
       </main>
+      <RunSetupDialog
+        state={runDialog}
+        setState={setRunDialog}
+        framework={data.framework}
+        running={data.status.running}
+        refreshDatasets={refreshRunDatasets}
+        startRun={startRun}
+      />
     </div>
   );
+}
+
+function RunSetupDialog({ state, setState, framework, running, refreshDatasets, startRun }) {
+  const [suiteFilter, setSuiteFilter] = useState("");
+  const [showSuitePicker, setShowSuitePicker] = useState(false);
+  if (!state.open) return null;
+  const suites = Array.isArray(state.suites) ? state.suites : [];
+  const allSuites = framework?.suites || [];
+  const selectedSuiteIds = new Set(suites.map((suite) => suite.id));
+  const availableSuites = allSuites.filter((suite) => !selectedSuiteIds.has(suite.id));
+  const suiteNeedle = suiteFilter.trim().toLowerCase();
+  const filteredAvailableSuites = availableSuites.filter((suite) =>
+    !suiteNeedle ||
+    [suite.label, suite.id, suite.surface, ...(suite.tags || [])].join(" ").toLowerCase().includes(suiteNeedle)
+  );
+  const updateMapping = (suiteId, patch) => {
+    setState((previous) => ({
+      ...previous,
+      mappings: {
+        ...previous.mappings,
+        [suiteId]: {
+          suiteId,
+          mode: "automated",
+          datasetId: "",
+          versionId: "",
+          datasetName: "",
+          file: null,
+          uploading: false,
+          downloadingTemplate: false,
+          error: "",
+          ...(previous.mappings[suiteId] || {}),
+          ...patch
+        }
+      }
+    }));
+  };
+  const close = () => setState((previous) => ({ ...previous, open: false, busy: false, error: "" }));
+  const addSuiteById = (suiteId) => {
+    const suite = allSuites.find((item) => item.id === suiteId);
+    if (!suite) return;
+    setState((previous) => ({
+      ...previous,
+      suites: [...previous.suites, suite],
+      mappings: {
+        ...previous.mappings,
+        [suite.id]: { suiteId: suite.id, mode: "automated", datasetId: "", versionId: "", datasetName: "", file: null, uploading: false, downloadingTemplate: false, error: "" }
+      }
+    }));
+    setSuiteFilter("");
+    setShowSuitePicker(false);
+  };
+  const removeSuite = (suiteId) => {
+    setState((previous) => {
+      const nextMappings = { ...previous.mappings };
+      delete nextMappings[suiteId];
+      return { ...previous, suites: previous.suites.filter((suite) => suite.id !== suiteId), mappings: nextMappings };
+    });
+  };
+  const downloadTemplate = async (suite) => {
+    updateMapping(suite.id, { downloadingTemplate: true, error: "" });
+    try {
+      await downloadFile(
+        `/api/test-data/template.xlsx?suiteId=${encodeURIComponent(suite.id)}`,
+        `${suite.id || "suite"}-manual-test-data-template.xlsx`
+      );
+      updateMapping(suite.id, { downloadingTemplate: false, error: "" });
+    } catch (error) {
+      const message = error.message === "Failed to fetch"
+        ? "Template download failed because the dashboard server is not reachable. Restart the test dashboard and try again."
+        : error.message;
+      updateMapping(suite.id, { downloadingTemplate: false, error: message });
+    }
+  };
+  const uploadDataset = async (suite) => {
+    const mapping = state.mappings[suite.id] || {};
+    if (!mapping.file) {
+      updateMapping(suite.id, { error: "Choose an Excel file first." });
+      return;
+    }
+    updateMapping(suite.id, { uploading: true, error: "" });
+    try {
+      const contentBase64 = await fileToBase64(mapping.file);
+      const saved = await api("/api/test-data/datasets", {
+        method: "POST",
+        body: JSON.stringify({
+          suiteId: suite.id,
+          datasetName: mapping.datasetName || `${suite.label} manual data`,
+          requestedBy: state.requestedBy,
+          fileName: mapping.file.name,
+          contentBase64
+        })
+      });
+      setState((previous) => {
+        const datasets = [
+          saved.dataset,
+          ...(previous.datasets || []).filter((dataset) => dataset.id !== saved.dataset.id)
+        ];
+        return {
+          ...previous,
+          datasets,
+          mappings: {
+            ...previous.mappings,
+            [suite.id]: {
+              ...(previous.mappings[suite.id] || {}),
+              mode: "dataset",
+              datasetId: saved.dataset.id,
+              versionId: saved.version.id,
+              datasetName: saved.dataset.name,
+              file: null,
+              uploading: false,
+              error: ""
+            }
+          }
+        };
+      });
+    } catch (error) {
+      updateMapping(suite.id, { uploading: false, error: error.message });
+    }
+  };
+  const submit = async () => {
+    const mappings = suites.map((suite) => state.mappings[suite.id] || { suiteId: suite.id, mode: "automated" });
+    const usesManual = mappings.some((mapping) => mapping.mode === "dataset");
+    if (usesManual && !state.requestedBy.trim()) {
+      setState((previous) => ({ ...previous, error: "Requested by is required for saved Excel data runs." }));
+      return;
+    }
+    const missingDataset = mappings.find((mapping) => mapping.mode === "dataset" && !mapping.datasetId);
+    if (missingDataset) {
+      setState((previous) => ({ ...previous, error: "Select a saved dataset for every manual suite." }));
+      return;
+    }
+    setState((previous) => ({ ...previous, busy: true, error: "" }));
+    try {
+      await startRun({
+        nextSurface: state.surface,
+        scenario: state.scenario,
+        tests: state.tests,
+        headedOverride: state.headed,
+        requestedBy: state.requestedBy,
+        testDataMappings: mappings.map((mapping) => ({
+          suiteId: mapping.suiteId,
+          mode: mapping.mode === "dataset" ? "dataset" : "automated",
+          datasetId: mapping.datasetId || "",
+          versionId: mapping.versionId || ""
+        }))
+      });
+      close();
+    } catch (error) {
+      setState((previous) => ({ ...previous, busy: false, error: error.message }));
+    }
+  };
+
+  return <div className="modal-backdrop" role="dialog" aria-modal="true">
+    <section className="run-modal panel">
+      <div className="section-heading run-modal-heading">
+        <div>
+          <h2>Run Setup</h2>
+          <span>{state.tests.length ? `${state.tests.length} selected cases` : state.scenario || state.surface}</span>
+        </div>
+        <button type="button" className="icon-button" onClick={close} aria-label="Close"><XCircle size={18} /></button>
+      </div>
+      <div className="run-modal-grid run-modal-primary">
+        <label className="requested-by-field">Requested by <input value={state.requestedBy} onChange={(event) => setState((previous) => ({ ...previous, requestedBy: event.target.value, error: "" }))} placeholder="Name or team" /></label>
+        <label>Mode <select value={state.headed ? "headed" : "headless"} onChange={(event) => setState((previous) => ({ ...previous, headed: event.target.value === "headed" }))}><option value="headless">Headless</option><option value="headed">Headed</option></select></label>
+        {availableSuites.length ? (
+          <div className="add-suite-control">
+            <span className="field-label">Add suite</span>
+            <button type="button" className="secondary add-suite-trigger" onClick={() => setShowSuitePicker((value) => !value)}><Plus size={16} /> Add Suite</button>
+          </div>
+        ) : null}
+      </div>
+      {showSuitePicker && availableSuites.length ? (
+        <div className="suite-picker">
+          <input value={suiteFilter} onChange={(event) => setSuiteFilter(event.target.value)} placeholder="Search suites" autoFocus />
+          <div className="suite-picker-list">
+            {filteredAvailableSuites.length ? filteredAvailableSuites.map((suite) => (
+              <button type="button" className="suite-picker-option" key={suite.id} onClick={() => addSuiteById(suite.id)}>
+                <strong>{suite.label}</strong>
+                <span>{suite.surface || "all"} · {suite.id}</span>
+              </button>
+            )) : <div className="empty">No matching suites.</div>}
+          </div>
+        </div>
+      ) : null}
+      {state.error ? <p className="run-modal-error danger-text">{state.error}</p> : null}
+      <div className="suite-data-list">
+        {suites.length === 0 ? <div className="notice">No suite mapping selected. The run will use automated test data.</div> : suites.map((suite) => {
+          const mapping = state.mappings[suite.id] || { suiteId: suite.id, mode: "automated" };
+          const suiteDatasets = (state.datasets || []).filter((dataset) => dataset.suiteId === suite.id);
+          const selectedDataset = suiteDatasets.find((dataset) => dataset.id === mapping.datasetId);
+          return <article className="suite-data-row" key={suite.id}>
+            <div className="suite-data-head">
+              <div><strong>{suite.label}</strong><span>{suite.id}</span></div>
+              <div className="inline-actions">
+                <button type="button" className="secondary" onClick={() => downloadTemplate(suite)} disabled={mapping.downloadingTemplate}><FileSpreadsheet size={16} /> {mapping.downloadingTemplate ? "Downloading" : "Template"}</button>
+                <button type="button" className="secondary" onClick={() => removeSuite(suite.id)}><Trash2 size={16} /> Remove</button>
+              </div>
+            </div>
+            <div className="run-modal-grid suite-run-controls">
+              <label>Data source <select value={mapping.mode || "automated"} onChange={(event) => updateMapping(suite.id, { mode: event.target.value, error: "" })}><option value="automated">Automated data</option><option value="dataset">Saved Excel dataset</option></select></label>
+              {mapping.mode === "dataset" ? <>
+                <label>Saved dataset <select value={mapping.datasetId || ""} onChange={(event) => {
+                  const dataset = suiteDatasets.find((item) => item.id === event.target.value);
+                  updateMapping(suite.id, { datasetId: dataset?.id || "", versionId: dataset?.latestVersionId || "", datasetName: dataset?.name || "", error: "" });
+                }}><option value="">Select dataset</option>{suiteDatasets.map((dataset) => <option key={dataset.id} value={dataset.id}>{dataset.name}</option>)}</select></label>
+                <label>Version <select value={mapping.versionId || ""} onChange={(event) => updateMapping(suite.id, { versionId: event.target.value, error: "" })}><option value="">Latest version</option>{(selectedDataset?.versions || []).map((version) => <option key={version.id} value={version.id}>{formatDate(version.uploadedAt)} · {version.rowCount} rows</option>)}</select></label>
+              </> : null}
+              {mapping.mode === "dataset" && suiteDatasets.length === 0 ? <p className="inline-note">No saved Excel datasets for this suite.</p> : null}
+            </div>
+            <div className="excel-upload-card">
+              <label>Dataset name <input value={mapping.datasetName || ""} onChange={(event) => updateMapping(suite.id, { datasetName: event.target.value, error: "" })} placeholder={`${suite.label} manual data`} /></label>
+              <label className="file-picker">
+                <span>Upload Excel</span>
+                <input type="file" accept=".xlsx" onChange={(event) => updateMapping(suite.id, { file: event.target.files?.[0] || null, error: "" })} />
+                <b>Choose .xlsx</b>
+                <em>{mapping.file?.name || "No file selected"}</em>
+              </label>
+              <button type="button" className="secondary save-excel-button" onClick={() => uploadDataset(suite)} disabled={mapping.uploading}><Upload size={16} /> {mapping.uploading ? "Saving" : "Save Excel"}</button>
+            </div>
+            {mapping.error ? <p className="danger-text">{mapping.error}</p> : null}
+          </article>;
+        })}
+      </div>
+      <div className="modal-actions">
+        <button type="button" className="secondary" onClick={refreshDatasets} disabled={state.loadingDatasets}><Database size={16} /> {state.loadingDatasets ? "Refreshing" : "Refresh Datasets"}</button>
+        <button type="button" className="secondary" onClick={close}>Cancel</button>
+        <button type="button" onClick={submit} disabled={running || state.busy}><Play size={16} /> {state.busy ? "Starting" : "Run"}</button>
+      </div>
+    </section>
+  </div>;
 }
 
 function OverviewPanel({ counts, framework, inventory, status, services, results }) {
@@ -745,8 +1084,8 @@ function SuitesPanel({ framework, running, onOpen, onRun }) {
   return <section className="card-grid">{(framework?.suites || []).map((suite) => <article key={suite.id} className="panel suite-card" onClick={() => onOpen(suite)}><div className="section-heading"><h2>{suite.label}</h2><span>{suite.surface}</span></div><p>{suite.description}</p><div className="tag-row">{(suite.tags || []).map((tag) => <span key={tag}>{tag}</span>)}</div><div className="inline-actions"><button onClick={(event) => { event.stopPropagation(); onOpen(suite); }}><Search size={16} /> View Cases</button><button className="secondary" disabled={running} onClick={(event) => { event.stopPropagation(); onRun(suite, false); }}><Play size={16} /> Run Headless</button><button className="secondary" disabled={running} onClick={(event) => { event.stopPropagation(); onRun(suite, true); }}><Video size={16} /> Run Headed</button></div></article>)}</section>;
 }
 
-function ScenariosPanel({ framework, setScenarioFilter, setActive }) {
-  return <section className="card-grid">{(framework?.scenarios || []).map((scenario) => <article key={scenario.id} className="panel"><div className="section-heading"><h2>{scenario.label}</h2><span>{scenario.suiteId}</span></div><p>{scenario.description}</p><code>{scenario.grep || "No grep filter"}</code><button onClick={() => { setScenarioFilter(scenario.grep || ""); setActive("execution"); }}><Search size={16} /> Use Filter</button></article>)}</section>;
+function ScenariosPanel({ framework, running, onRun }) {
+  return <section className="card-grid">{(framework?.scenarios || []).map((scenario) => <article key={scenario.id} className="panel"><div className="section-heading"><h2>{scenario.label}</h2><span>{scenario.suiteId}</span></div><p>{scenario.description}</p><code>{scenario.grep || "No grep filter"}</code><button onClick={() => onRun(scenario)} disabled={running}><Play size={16} /> Run Scenario</button></article>)}</section>;
 }
 
 function RecorderPanel({ recorder, setRecorder, recording, recordedScenarios, startRecording, stopRecording, runRecordedScenario, stopRun, running, status }) {
@@ -821,7 +1160,7 @@ function ReportsPanel({ results }) {
         {links.map(([label, href]) => <a key={href} href={href} target="_blank" rel="noreferrer">{label}</a>)}
       </div>
     </section>
-    <DataTable title={`Report Rows (${results.total || 0})`} rows={results.rows || []} columns={[["id", "ID"], ["tags", "Tags"], ["moduleSuite", "Module / Suite"], ["testCaseTitle", "Test Case"], ["steps", "Step Details"], ["expectedResult", "Expected"], ["actualResult", "Actual"], ["status", "Status"], ["automationStatus", "Automation"]]} renderCell={(row, key) => key === "steps" ? <StepDetails steps={structuredStepsForRow(row)} /> : null} />
+    <DataTable className="report-rows-panel" title={`Report Rows (${results.total || 0})`} rows={results.rows || []} columns={[["id", "ID"], ["tags", "Tags"], ["moduleSuite", "Module / Suite"], ["testCaseTitle", "Test Case"], ["steps", "Step Details"], ["executionSource", "Input Source"], ["requestedBy", "Requested By"], ["performedBy", "Performed By"], ["fieldsUpdated", "Fields Updated"], ["inputDataSummary", "Input Data"], ["expectedResult", "Expected"], ["actualResult", "Actual"], ["directUrl", "Direct URL"], ["status", "Status"], ["automationStatus", "Automation"]]} renderCell={(row, key) => key === "steps" ? <StepDetails steps={structuredStepsForRow(row)} /> : key === "directUrl" && row.directUrl ? <a href={row.directUrl} target="_blank" rel="noreferrer">Open URL</a> : null} />
   </section>;
 }
 
@@ -905,14 +1244,15 @@ function Metric({ label, value, tone = "" }) {
   return <article className={`metric ${tone}`}><span>{label}</span><strong>{value}</strong></article>;
 }
 
-function DataTable({ title, rows, columns, renderCell }) {
-  return <section className="panel table-panel">{title ? <div className="section-heading"><h2>{title}</h2></div> : null}<div className="table-wrap"><table><thead><tr>{columns.map(([, label]) => <th key={label}>{label}</th>)}</tr></thead><tbody>{rows.length === 0 ? <tr><td colSpan={columns.length} className="empty">No rows available.</td></tr> : rows.map((row, index) => <tr key={row.id || row.title || row.path || index}>{columns.map(([key]) => { const custom = renderCell?.(row, key); return <td key={key}>{custom ?? String(row[key] ?? "")}</td>; })}</tr>)}</tbody></table></div></section>;
+function DataTable({ title, rows, columns, renderCell, className = "" }) {
+  return <section className={`panel table-panel ${className}`.trim()}>{title ? <div className="section-heading"><h2>{title}</h2></div> : null}<div className="table-wrap"><table><thead><tr>{columns.map(([, label]) => <th key={label}>{label}</th>)}</tr></thead><tbody>{rows.length === 0 ? <tr><td colSpan={columns.length} className="empty">No rows available.</td></tr> : rows.map((row, index) => <tr key={row.id || row.title || row.path || index}>{columns.map(([key]) => { const custom = renderCell?.(row, key); return <td key={key}>{custom ?? String(row[key] ?? "")}</td>; })}</tr>)}</tbody></table></div></section>;
 }
 
 function StepDetails({ steps }) {
   const safeSteps = Array.isArray(steps) ? steps : [];
   if (safeSteps.length === 0) return <span className="muted">No step details.</span>;
-  return <details className="step-details"><summary>{safeSteps.length} steps with data</summary><div className="step-list">{safeSteps.map((step, index) => <article className="step-card" key={`${step.action}-${index}`}><strong>{index + 1}. {step.section}</strong><dl><dt>Action</dt><dd>{step.action}</dd><dt>Seed/Test Data</dt><dd>{step.testData}</dd><dt>Expected Behavior</dt><dd>{step.expectedBehavior}</dd><dt>Verify</dt><dd>{step.verify}</dd><dt>Result</dt><dd>{step.result}</dd></dl></article>)}</div></details>;
+  const visibleSteps = safeSteps.slice(0, 20);
+  return <details className="step-details"><summary>{safeSteps.length} step details</summary><div className="step-list">{visibleSteps.map((step, index) => <article className="step-card" key={`${step.action || step.actionDone}-${index}`}><strong>{index + 1}. {step.section}</strong><dl><dt>Step</dt><dd>{step.step || index + 1}</dd><dt>Outcome</dt><dd>{step.outcome || step.result}</dd><dt>Action Done</dt><dd>{step.actionDone || step.action}</dd><dt>Fields Updated</dt><dd>{step.fieldsUpdated || "-"}</dd><dt>Input Data</dt><dd>{step.inputData || step.testData}</dd><dt>Input Source</dt><dd>{step.inputDataSource || "-"}</dd><dt>Expected Result</dt><dd>{step.expectedResult || step.expectedBehavior}</dd><dt>Direct URL</dt><dd>{step.directUrl ? <a href={step.directUrl} target="_blank" rel="noreferrer">Open URL</a> : "-"}</dd><dt>Result</dt><dd>{step.result}</dd></dl></article>)}{safeSteps.length > visibleSteps.length ? <p className="step-summary-note">Showing first {visibleSteps.length} of {safeSteps.length} details. Open the exported report for the full run log.</p> : null}</div></details>;
 }
 
 createRoot(document.getElementById("root")).render(<App />);

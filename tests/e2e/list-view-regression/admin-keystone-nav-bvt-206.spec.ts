@@ -99,6 +99,27 @@ const expectListOrContent = async (page: Page) => {
   expect(text.length).toBeGreaterThan(20);
 };
 
+const waitForVisibleLoadingIndicatorsToSettle = async (page: Page, scopeSelector = "body") => {
+  const loadingIndicators = page.locator(
+    `${scopeSelector} .loading, ${scopeSelector} .spinner, ${scopeSelector} .list-view-loading, ${scopeSelector} [aria-busy="true"], ${scopeSelector} [data-loading="true"]`
+  );
+
+  await expect
+    .poll(
+      async () => {
+        const count = await loadingIndicators.count().catch(() => 0);
+        for (let index = 0; index < count; index += 1) {
+          if (await loadingIndicators.nth(index).isVisible().catch(() => false)) {
+            return "loading";
+          }
+        }
+        return "settled";
+      },
+      { timeout: 10_000 }
+    )
+    .toBe("settled");
+};
+
 const waitForAdminSurfaceReady = async (page: Page) => {
   const main = page.locator(".admin-main").first();
   await expect(main).toBeVisible({ timeout: 20_000 });
@@ -110,7 +131,7 @@ const waitForAdminSurfaceReady = async (page: Page) => {
       await expect(main).toContainText(/\S/, { timeout: 20_000 });
     });
   await page.waitForLoadState("networkidle", { timeout: 10_000 }).catch(() => null);
-  await expect(main).not.toContainText(/loading/i, { timeout: 10_000 });
+  await waitForVisibleLoadingIndicatorsToSettle(page, ".admin-main");
 };
 
 const waitForKeystoneSurfaceReady = async (page: Page) => {
@@ -121,7 +142,7 @@ const waitForKeystoneSurfaceReady = async (page: Page) => {
     .waitFor({ state: "visible", timeout: 20_000 })
     .catch(() => null);
   await page.waitForLoadState("networkidle", { timeout: 10_000 }).catch(() => null);
-  await expect(page.locator("body")).not.toContainText(/loading/i, { timeout: 10_000 });
+  await waitForVisibleLoadingIndicatorsToSettle(page);
 };
 
 const openAdminSection = async (page: Page, section: (typeof adminSections)[number]) => {

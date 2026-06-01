@@ -37,12 +37,29 @@ $defaultUrl = "http://127.0.0.1:$Port/"
 try {
   $existingHealth = Invoke-WebRequest -UseBasicParsing "http://127.0.0.1:$Port/api/status" -TimeoutSec 2
   if ($existingHealth.StatusCode -eq 200) {
-    Write-Host "List-view test environment already running."
-    Write-Host "Open: $defaultUrl"
-    if (-not $NoOpen -and -not $env:CI) {
-      Start-Process $defaultUrl
+    $hasCurrentApi = $false
+    try {
+      $featureHealth = Invoke-WebRequest -UseBasicParsing "http://127.0.0.1:$Port/api/test-data/datasets" -TimeoutSec 2
+      $hasCurrentApi = $featureHealth.StatusCode -eq 200
+    } catch {
+      $hasCurrentApi = $false
     }
-    exit 0
+
+    if ($hasCurrentApi) {
+      Write-Host "List-view test environment already running."
+      Write-Host "Open: $defaultUrl"
+      if (-not $NoOpen -and -not $env:CI) {
+        Start-Process $defaultUrl
+      }
+      exit 0
+    }
+
+    Write-Host "Existing dashboard on port $Port is stale. Restarting it..."
+    foreach ($processId in Get-ListeningProcessIdsByPort -Port $Port) {
+      if (Test-ProcessCommandLineMatch -ProcessId $processId -Patterns @("serve-list-view-report.mjs")) {
+        Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue
+      }
+    }
   }
 } catch {
   # No dashboard is responding on the preferred port yet.

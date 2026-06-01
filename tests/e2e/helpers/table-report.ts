@@ -28,19 +28,42 @@ type Row = {
   priority: "High" | "Medium" | "Low";
   testingLevel: "BVT" | "Sanity" | "Regression";
   automationStatus: "Automated" | "Manual" | "Planned";
+  executionSource: string;
+  requestedBy: string;
+  performedBy: string;
+  directUrl: string;
+  inputDataSummary: string;
+  fieldsUpdated: string;
   bugReport?: string;
   screenshotPaths?: string[];
   evidenceNotes?: string[];
   steps?: StepDetail[];
+  manualDataRows?: ManualRow[];
 };
 
 type StepDetail = {
   section: string;
+  step?: string;
+  outcome?: string;
   action: string;
+  actionDone?: string;
+  fieldsUpdated?: string;
   testData: string;
+  inputData?: string;
+  inputDataSource?: string;
   expectedBehavior: string;
+  expectedResult?: string;
   verify: string;
+  directUrl?: string;
   result: "Pending" | "Running" | "Passed" | "Failed" | "Skipped";
+};
+
+type ManualRow = {
+  target?: string;
+  action?: string;
+  inputValue?: string;
+  expectedValue?: string;
+  notes?: string;
 };
 
 type ReporterOptions = {
@@ -64,10 +87,11 @@ type MetaFields = {
 };
 
 const sanitize = (value: string) =>
-  value
+  String(value)
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 
 const csvCell = (value: string) => `"${String(value).replace(/"/g, '""')}"`;
 
@@ -197,6 +221,66 @@ const defaultTestData = (surface: string) => {
   return "Seeded local test data.";
 };
 
+const normalizeManualKey = (value: string) =>
+  String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "");
+
+const loadManualContext = () => {
+  const contextPath = process.env.MANUAL_TEST_DATA_CONTEXT || "";
+  if (!contextPath || !fs.existsSync(contextPath)) return null;
+  try {
+    return JSON.parse(fs.readFileSync(contextPath, "utf8")) as {
+      mode?: string;
+      requestedBy?: string;
+      performedBy?: string;
+      byCaseId?: Record<string, { rows?: ManualRow[]; inputDataSummary?: string; fieldsUpdated?: string[]; dataset?: { datasetName?: string } }>;
+      byTitle?: Record<string, { rows?: ManualRow[]; inputDataSummary?: string; fieldsUpdated?: string[]; dataset?: { datasetName?: string } }>;
+      mappings?: Array<{ mode?: string; datasetName?: string }>;
+    };
+  } catch {
+    return null;
+  }
+};
+
+const manualContext = loadManualContext();
+
+const summarizeManualRows = (rows: ManualRow[] = []) =>
+  rows
+    .map((row) => {
+      const target = row.target || row.action || "";
+      const value = row.inputValue || row.expectedValue || "";
+      return target && value ? `${target}: ${value}` : target || value;
+    })
+    .filter(Boolean)
+    .join("; ");
+
+const manualInfoForRow = (row: Pick<Row, "id" | "testCaseTitle">) => {
+  const caseData =
+    manualContext?.byCaseId?.[row.id] ||
+    manualContext?.byTitle?.[normalizeManualKey(row.testCaseTitle)] ||
+    null;
+  const manualRows = caseData?.rows || [];
+  const isManual = manualContext?.mode === "manual" && Boolean(caseData);
+  const datasetName =
+    caseData?.dataset?.datasetName ||
+    (isManual ? manualContext?.mappings?.find((mapping) => mapping.mode === "dataset")?.datasetName : "") ||
+    "";
+  const fieldsUpdated = Array.from(new Set(manualRows.map((item) => item.target).filter(Boolean))).join(", ");
+  return {
+    executionSource: isManual
+      ? datasetName
+        ? `Saved Excel dataset: ${datasetName}`
+        : "Saved Excel dataset"
+      : "Automated data",
+    requestedBy: isManual ? manualContext?.requestedBy || "" : "",
+    performedBy: isManual ? manualContext?.performedBy || manualContext?.requestedBy || "Manual requester" : "Automation user",
+    manualDataRows: manualRows,
+    fieldsUpdated,
+    inputDataSummary: caseData?.inputDataSummary || summarizeManualRows(manualRows)
+  };
+};
+
 const extractSeedDataFromTest = (test: TestCase) => {
   const file = test.location?.file;
   if (!file || !fs.existsSync(file)) return "";
@@ -241,7 +325,7 @@ const stepResultForStatus = (status: Row["status"]): StepDetail["result"] => {
 
 const structuredStepsFromText = (
   input: string,
-  row: Pick<Row, "surface" | "featureArea" | "testData" | "expectedResult" | "status">
+  row: Pick<Row, "surface" | "featureArea" | "testData" | "expectedResult" | "status" | "executionSource" | "requestedBy" | "fieldsUpdated" | "inputDataSummary" | "directUrl">
 ): StepDetail[] => {
   const parts = normalizeStepSeparators(input)
     .split(/\s*->\s*/)
@@ -250,20 +334,28 @@ const structuredStepsFromText = (
   const source = parts.length > 0 ? parts : [input || "Execute the test case"];
   return source.map((action, index) => ({
     section: index === 0 ? row.surface || "Application" : `${row.surface || "Application"} > ${row.featureArea || "Feature"}`,
+    step: String(index + 1),
+    outcome: stepResultForStatus(row.status),
     action,
+    actionDone: `${action}${row.fieldsUpdated ? `; fields updated: ${row.fieldsUpdated}` : ""}${row.requestedBy ? `; requested by: ${row.requestedBy}` : ""}`,
+    fieldsUpdated: row.fieldsUpdated,
     testData: row.testData || defaultTestData(row.surface),
+    inputData: row.inputDataSummary || row.testData || defaultTestData(row.surface),
+    inputDataSource: row.executionSource,
     expectedBehavior: row.expectedResult || "The UI/API behaves as expected.",
+    expectedResult: row.expectedResult || "The UI/API behaves as expected.",
     verify:
       index === source.length - 1
         ? row.expectedResult || "Verify the final UI/API state."
         : `Verify "${action}" completes and the next state is reachable.`,
+    directUrl: row.directUrl,
     result: stepResultForStatus(row.status)
   }));
 };
 
 const collectResultSteps = (
   result: TestResult,
-  row: Pick<Row, "surface" | "featureArea" | "testData" | "expectedResult" | "status" | "inputAction">
+  row: Pick<Row, "surface" | "featureArea" | "testData" | "expectedResult" | "status" | "inputAction" | "executionSource" | "requestedBy" | "fieldsUpdated" | "inputDataSummary" | "directUrl" | "manualDataRows">
 ): StepDetail[] => {
   const rawSteps = ((result as unknown as { steps?: Array<{ title?: string; category?: string; error?: unknown; steps?: unknown[] }> }).steps ?? []);
   const flattened: Array<{ title: string; error?: unknown }> = [];
@@ -278,10 +370,18 @@ const collectResultSteps = (
   if (flattened.length === 0) return structuredStepsFromText(row.inputAction, row);
   return flattened.map((step, index) => ({
     section: `${row.surface || "Application"} > ${row.featureArea || "Feature"}`,
+    step: String(index + 1),
+    outcome: step.error ? "Failed" : stepResultForStatus(row.status === "RUNNING" ? "RUNNING" : row.status),
     action: step.title.replace(/^BVT-\d+:\s*/i, ""),
+    actionDone: `${step.title.replace(/^BVT-\d+:\s*/i, "")}${row.fieldsUpdated ? `; fields updated: ${row.fieldsUpdated}` : ""}${row.requestedBy ? `; requested by: ${row.requestedBy}` : ""}`,
+    fieldsUpdated: row.fieldsUpdated,
     testData: row.testData || defaultTestData(row.surface),
+    inputData: row.inputDataSummary || summarizeManualRows(row.manualDataRows || []) || row.testData || defaultTestData(row.surface),
+    inputDataSource: row.executionSource,
     expectedBehavior: row.expectedResult || "The UI/API behaves as expected.",
+    expectedResult: row.expectedResult || "The UI/API behaves as expected.",
     verify: `Verify ${step.title.replace(/^BVT-\d+:\s*/i, "")}.`,
+    directUrl: row.directUrl,
     result: step.error ? "Failed" : stepResultForStatus(row.status === "RUNNING" ? "RUNNING" : row.status)
   }));
 };
@@ -658,8 +758,24 @@ export default class TableReport implements Reporter {
       status,
       priority: normalizePriority(meta.priority, level, scenario),
       testingLevel: level,
-      automationStatus: normalizeAutomationStatus(meta.automation)
+      automationStatus: normalizeAutomationStatus(meta.automation),
+      executionSource: "Automated data",
+      requestedBy: "",
+      performedBy: "Automation user",
+      directUrl: "",
+      inputDataSummary: "",
+      fieldsUpdated: ""
     };
+    const manualInfo = manualInfoForRow(row);
+    row.executionSource = manualInfo.executionSource;
+    row.requestedBy = manualInfo.requestedBy;
+    row.performedBy = manualInfo.performedBy;
+    row.manualDataRows = manualInfo.manualDataRows;
+    row.fieldsUpdated = manualInfo.fieldsUpdated;
+    row.inputDataSummary = manualInfo.inputDataSummary || row.testData;
+    if (manualInfo.inputDataSummary) {
+      row.testData = manualInfo.inputDataSummary;
+    }
     row.steps = structuredStepsFromText(row.inputAction, row);
     return row;
   }
@@ -715,11 +831,20 @@ export default class TableReport implements Reporter {
       fs.copyFileSync(screenshot.path, dest);
       screenshotPaths.push(path.relative(this.outputFolder, dest).replace(/\\/g, "/"));
     });
+    const directUrlAttachment = [...result.attachments]
+      .reverse()
+      .find((attachment) => String(attachment.name || "").toLowerCase().startsWith("direct-url"));
+    const directUrl = directUrlAttachment?.body
+      ? Buffer.isBuffer(directUrlAttachment.body)
+        ? directUrlAttachment.body.toString("utf8")
+        : String(directUrlAttachment.body)
+      : "";
 
     const normalizedStatus = normalizeStatus(result.status);
     const failureSummary = summarizeFailure(result);
     row.status = normalizedStatus;
     row.actualResult = actualResultForStatus(normalizedStatus, failureSummary);
+    row.directUrl = directUrl.trim();
     row.steps = collectResultSteps(result, row);
     row.screenshotPaths = screenshotPaths.length > 0 ? screenshotPaths : undefined;
     row.evidenceNotes =
@@ -774,6 +899,11 @@ export default class TableReport implements Reporter {
   <td>${sanitize(row.precondition)}</td>
   <td>${sanitize(row.inputAction)}</td>
   <td>${sanitize(row.testData)}</td>
+  <td>${sanitize(row.executionSource)}</td>
+  <td>${sanitize(row.requestedBy)}</td>
+  <td>${sanitize(row.performedBy)}</td>
+  <td>${sanitize(row.fieldsUpdated)}</td>
+  <td>${row.directUrl ? `<a class="evidence-link" href="${sanitize(row.directUrl)}" target="_blank" rel="noreferrer">${sanitize(row.directUrl)}</a>` : ""}</td>
   <td>${sanitize(row.expectedResult)}</td>
   <td>${sanitize(row.actualResult)}</td>
   <td>${sanitize(row.proof)}</td>
@@ -1008,6 +1138,11 @@ export default class TableReport implements Reporter {
               <th>Pre-conditions</th>
               <th>Test Steps</th>
               <th>Test Data</th>
+              <th>Input Source</th>
+              <th>Requested By</th>
+              <th>Performed By</th>
+              <th>Fields Updated</th>
+              <th>Direct URL</th>
               <th>Expected Result</th>
               <th>Actual Result</th>
               <th>What this test proves</th>
@@ -1042,6 +1177,11 @@ ${htmlRows}
       "Pre-conditions",
       "Test Steps",
       "Test Data",
+      "Input Source",
+      "Requested By",
+      "Performed By",
+      "Fields Updated",
+      "Direct URL",
       "Expected Result",
       "Actual Result",
       "What this test proves",
@@ -1063,6 +1203,11 @@ ${htmlRows}
         row.precondition,
         row.inputAction,
         row.testData,
+        row.executionSource,
+        row.requestedBy,
+        row.performedBy,
+        row.fieldsUpdated,
+        row.directUrl,
         row.expectedResult,
         row.actualResult,
         row.proof,

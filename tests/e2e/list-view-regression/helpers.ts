@@ -5,6 +5,7 @@ import {
   installSessionMarkerFromCookies,
   maybeSubmitLogin
 } from "../helpers/sessionAuth";
+import { manualFieldValueMap, manualValueForTargets } from "../helpers/manualTestData";
 
 export const adminBaseUrl = process.env.ADMIN_BASE_URL || "http://localhost:5002";
 export const keystoneBaseUrl =
@@ -26,6 +27,10 @@ export const attachEvidence = async (page: Page, testInfo: TestInfo, name: strin
   await testInfo.attach(`screenshot-${name}`, {
     path: screenshotPath,
     contentType: "image/png"
+  });
+  await testInfo.attach(`direct-url-${name}`, {
+    body: page.url(),
+    contentType: "text/plain"
   });
 };
 
@@ -142,12 +147,13 @@ export const expectListToolbar = async (region: Locator) => {
 };
 
 export const searchWithinListView = async (region: Locator, query: string) => {
+  const effectiveQuery = manualValueForTargets(["search", "query", "filter"], query);
   const search = region
     .locator(".list-view-search input, input[aria-label*='search' i], input[placeholder*='search' i]")
     .first();
   await expect(search).toBeVisible();
-  await search.fill(query);
-  await expect(search).toHaveValue(query);
+  await search.fill(effectiveQuery);
+  await expect(search).toHaveValue(effectiveQuery);
   const loading = region.locator("[aria-busy='true'], .loading, .spinner, .list-view-loading").first();
   if (await loading.isVisible({ timeout: 500 }).catch(() => false)) {
     await expect(loading).toBeHidden({ timeout: 15_000 });
@@ -213,19 +219,23 @@ export const selectKeystoneAppAndTab = async (
   preferredApps: string[] = ["Operations Hub", "CRM", "LIMS", "HR", "Core Platform"],
   preferredTabs: string[] = ["Asset", "Account", "Vendor", "Site", "Project", "Sample", "Contact"]
 ) => {
+  const manualApp = manualValueForTargets(["app", "application"], "");
+  const manualTab = manualValueForTargets(["tab", "object"], "");
+  const effectiveApps = manualApp ? [manualApp, ...preferredApps] : preferredApps;
+  const effectiveTabs = manualTab ? [manualTab, ...preferredTabs] : preferredTabs;
   const appsButton = page.getByRole("button", { name: /apps/i });
   await expect(appsButton).toBeVisible();
   await appsButton.click();
   const appsPanel = page.locator(".launcher:not(.tabs-picker) .launcher-panel");
   await expect(appsPanel).toBeVisible();
-  const appLabel = await selectLauncherItem(appsPanel, preferredApps);
+  const appLabel = await selectLauncherItem(appsPanel, effectiveApps);
 
   const tabsButton = page.getByRole("button", { name: /tabs/i });
   await expect(tabsButton).toBeVisible();
   await tabsButton.click();
   const tabsPanel = page.locator(".launcher.tabs-picker .launcher-panel");
   await expect(tabsPanel).toBeVisible();
-  const tabLabel = await selectLauncherItem(tabsPanel, preferredTabs);
+  const tabLabel = await selectLauncherItem(tabsPanel, effectiveTabs);
 
   const objectHome = page.locator(".object-home").first();
   await expect(objectHome).toBeVisible();
@@ -274,6 +284,7 @@ export const createDisposableRecordViaUiContext = async (page: Page, request: AP
   };
   const label = `LV Regression ${Date.now()}`;
   const payload: Record<string, unknown> = { name: label };
+  const manualFields = manualFieldValueMap();
   const reserved = new Set(["id", "created_by", "created_at", "modified_by", "modified_at"]);
   const keyField = (describe.object?.key_fields ?? []).find((field) => field && !reserved.has(field));
   if (keyField && keyField !== "name") {
@@ -296,6 +307,10 @@ export const createDisposableRecordViaUiContext = async (page: Page, request: AP
       payload[field.api_name] = assignedDisplayField ? `LV ${field.api_name}` : label;
       assignedDisplayField = true;
     }
+  }
+  for (const [field, value] of Object.entries(manualFields)) {
+    if (!field || reserved.has(field) || value === "") continue;
+    payload[field] = value;
   }
   const createRes = await request.post(`/api/apps/${appId}/objects/${objectApiName}/records`, {
     headers: authHeaders(token),

@@ -3,6 +3,7 @@ import { createReadStream, existsSync, mkdirSync, readFileSync, readdirSync, sta
 import { createServer, request as httpRequest } from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import ExcelJS from "exceljs";
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(scriptDir, "..", "..");
@@ -38,6 +39,11 @@ const appRoot = path.resolve(process.env.CORE_PLATFORM_ROOT || "D:\\core-platfor
 const geminiModel = process.env.GEMINI_MODEL || "gemini-3.5-flash";
 const resultsJsonPath = path.join(reportRoot, "list-view-regression-results.json");
 const listViewArtifactsRoot = path.resolve(repoRoot, "evidences", "playwright-artifacts-core-platform-list-view");
+const manualTestDataRoot = path.resolve(repoRoot, ".runtime", "manual-test-data");
+const manualTestDataFilesRoot = path.join(manualTestDataRoot, "files");
+const manualTestDataParsedRoot = path.join(manualTestDataRoot, "parsed");
+const manualTestDataRunRoot = path.join(manualTestDataRoot, "run-contexts");
+const manualTestDataMetadataPath = path.join(manualTestDataRoot, "datasets.json");
 const resultReportSources = [
   {
     id: "list-view-regression",
@@ -313,6 +319,9 @@ const runState = {
   surface: "",
   scenario: "",
   selectedTestCount: 0,
+  testDataMode: "automated",
+  requestedBy: "",
+  mappedSuiteCount: 0,
   reset: false,
   headed: false,
   stopRequested: false,
@@ -492,9 +501,10 @@ const resolveSafePath = (root, requestPath) => {
 const readRequestJson = async (request) =>
   new Promise((resolve, reject) => {
     let body = "";
+    const maxBytes = 12 * 1024 * 1024;
     request.on("data", (chunk) => {
       body += chunk;
-      if (body.length > 200_000) {
+      if (body.length > maxBytes) {
         reject(new Error("Request body too large."));
         request.destroy();
       }
@@ -512,6 +522,438 @@ const readRequestJson = async (request) =>
     });
     request.on("error", reject);
   });
+
+const normalizeKey = (value) =>
+  String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "");
+
+const safeSegment = (value, fallback = "item") => {
+  const cleaned = String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 90);
+  return cleaned || fallback;
+};
+
+const safeFileName = (value, fallback = "manual-test-data.xlsx") => {
+  const ext = path.extname(String(value || "")).toLowerCase() || ".xlsx";
+  const base = safeSegment(path.basename(String(value || ""), ext), "manual-test-data");
+  return `${base}${ext === ".xlsx" ? ext : ".xlsx"}`;
+};
+
+const readJsonFile = (filePath, fallback) => {
+  if (!existsSync(filePath)) return fallback;
+  try {
+    return JSON.parse(readFileSync(filePath, "utf8"));
+  } catch {
+    return fallback;
+  }
+};
+
+const writeJsonFile = (filePath, payload) => {
+  mkdirSync(path.dirname(filePath), { recursive: true });
+  writeFileSync(filePath, JSON.stringify(payload, null, 2), "utf8");
+};
+
+const resolveManualDataPath = (relativePath) => {
+  const target = path.resolve(manualTestDataRoot, String(relativePath || ""));
+  if (target !== manualTestDataRoot && !target.startsWith(`${manualTestDataRoot}${path.sep}`)) {
+    return null;
+  }
+  return target;
+};
+
+const publicDataset = (dataset) => ({
+  id: dataset.id,
+  suiteId: dataset.suiteId,
+  suiteLabel: dataset.suiteLabel,
+  name: dataset.name,
+  createdAt: dataset.createdAt,
+  updatedAt: dataset.updatedAt,
+  requestedBy: dataset.requestedBy || "",
+  latestVersionId: dataset.latestVersionId || dataset.versions?.at(-1)?.id || "",
+  versions: (dataset.versions || []).map((version) => ({
+    id: version.id,
+    uploadedAt: version.uploadedAt,
+    requestedBy: version.requestedBy || "",
+    fileName: version.fileName,
+    rowCount: version.rowCount || 0,
+    caseCount: version.caseCount || 0
+  }))
+});
+
+const readManualDatasetState = () => {
+  const state = readJsonFile(manualTestDataMetadataPath, { updatedAt: null, datasets: [] });
+  return {
+    updatedAt: state.updatedAt || null,
+    datasets: Array.isArray(state.datasets) ? state.datasets : []
+  };
+};
+
+const writeManualDatasetState = (state) => {
+  writeJsonFile(manualTestDataMetadataPath, {
+    updatedAt: new Date().toISOString(),
+    datasets: Array.isArray(state.datasets) ? state.datasets : []
+  });
+};
+
+const suiteById = (suiteId) =>
+  frameworkRegistry.suites.find((suite) => String(suite.id) === String(suiteId));
+
+const safeRegexForManualData = (value) => {
+  try {
+    return new RegExp(String(value || ""), "i");
+  } catch {
+    return null;
+  }
+};
+
+const suiteMatchesInventoryRow = (suite, row) => {
+  if (!suite) return true;
+  const suiteId = String(suite.id || "").toLowerCase();
+  const suiteSurface = normalizeKey(suite.surface);
+  const rowSurface = normalizeKey(row.surface);
+  const rowText = [row.title, row.tags, row.spec, row.surface, row.feature, row.displayTitle]
+    .join(" ")
+    .toLowerCase();
+  const suiteGrep = String(suite.grep || "").trim();
+  if (suiteGrep) {
+    const regex = safeRegexForManualData(suiteGrep);
+    if (regex) return regex.test(rowText);
+    return rowText.includes(suiteGrep.toLowerCase());
+  }
+  if (suiteId === "list-view-regression" || suiteSurface === "all") return true;
+  if (suiteId.includes("admin") || suiteSurface === "admin") return rowSurface === "admin";
+  if (suiteId.includes("keystone") || suiteSurface === "keystone") return rowSurface === "keystone";
+  if (suiteId.includes("api") || suiteSurface === "api") return rowSurface === "api";
+  return rowSurface === suiteSurface;
+};
+
+const manualTemplateHeaders = [
+  "Suite ID",
+  "Suite Label",
+  "Case ID",
+  "Case Title",
+  "Step Number",
+  "Action To Perform",
+  "Target Field/API Path",
+  "Input Value",
+  "Expected Value",
+  "Run Row",
+  "Notes"
+];
+const manualTemplateColumnWidths = [24, 34, 20, 48, 12, 56, 28, 34, 44, 12, 34];
+
+const buildManualTemplateWorkbook = async (suiteId) => {
+  const suite = suiteById(suiteId);
+  const inventoryRows = readInventory().rows || [];
+  const rows = inventoryRows
+    .filter((row) => suiteMatchesInventoryRow(suite, row))
+    .flatMap((row) => {
+      const steps = Array.isArray(row.steps) && row.steps.length > 0
+        ? row.steps
+        : [{ action: row.input || "", expectedBehavior: row.expected || "" }];
+      return steps.map((step, index) => [
+        suite?.id || "",
+        suite?.label || "Selected suite",
+        row.id || "",
+        row.displayTitle || row.title || "",
+        String(index + 1),
+        step.action || row.input || "",
+        "",
+        "",
+        step.expectedBehavior || row.expected || "",
+        "Yes",
+        ""
+      ]);
+    });
+  const workbook = new ExcelJS.Workbook();
+  const worksheet = workbook.addWorksheet("Manual Test Data");
+  worksheet.columns = manualTemplateHeaders.map((header, index) => ({ header, width: manualTemplateColumnWidths[index] || 24 }));
+  worksheet.views = [{ state: "frozen", ySplit: 1 }];
+  worksheet.getRow(1).font = { bold: true, color: { argb: "FFFFFFFF" } };
+  worksheet.getRow(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF2563EB" } };
+  for (const row of rows) worksheet.addRow(row);
+  return Buffer.from(await workbook.xlsx.writeBuffer());
+};
+
+const cellValue = (row, aliases) => {
+  const entries = Object.entries(row);
+  for (const alias of aliases) {
+    const wanted = normalizeKey(alias);
+    const match = entries.find(([key]) => normalizeKey(key) === wanted);
+    if (match) return String(match[1] ?? "").trim();
+  }
+  return "";
+};
+
+const normalizeManualRows = (rows) =>
+  rows
+    .map((row, index) => ({
+      suiteId: cellValue(row, ["Suite ID", "Suite"]),
+      suiteLabel: cellValue(row, ["Suite Label"]),
+      caseId: cellValue(row, ["Case ID", "Test Case ID"]),
+      caseTitle: cellValue(row, ["Case Title", "Test Case"]),
+      stepNumber: cellValue(row, ["Step Number", "Step"]),
+      action: cellValue(row, ["Action To Perform", "Action", "Action Done"]),
+      target: cellValue(row, ["Target Field/API Path", "Target Field", "API Path", "Field"]),
+      inputValue: cellValue(row, ["Input Value", "Input Data", "Value"]),
+      expectedValue: cellValue(row, ["Expected Value", "Expected Result", "Expected"]),
+      runRow: cellValue(row, ["Run Row", "Run", "Enabled"]),
+      notes: cellValue(row, ["Notes"]),
+      sourceRowNumber: index + 2
+    }))
+    .filter((row) => {
+      const runFlag = row.runRow.toLowerCase();
+      if (["no", "n", "false", "0", "skip"].includes(runFlag)) return false;
+      return Boolean(row.caseId || row.caseTitle || row.action || row.target || row.inputValue || row.expectedValue);
+    });
+
+const summarizeManualRows = (rows) =>
+  rows
+    .map((row) => {
+      const target = row.target || row.action || `row ${row.sourceRowNumber}`;
+      const value = row.inputValue || row.expectedValue || "";
+      return value ? `${target}: ${value}` : target;
+    })
+    .filter(Boolean)
+    .join("; ");
+
+const indexManualRows = (rows) => {
+  const byCaseId = {};
+  const byTitle = {};
+  for (const row of rows) {
+    const keys = [
+      row.caseId ? ["byCaseId", row.caseId] : null,
+      row.caseTitle ? ["byTitle", normalizeKey(row.caseTitle)] : null
+    ].filter(Boolean);
+    for (const [bucket, key] of keys) {
+      const target = bucket === "byCaseId" ? byCaseId : byTitle;
+      target[key] ||= {
+        caseId: row.caseId,
+        caseTitle: row.caseTitle,
+        rows: [],
+        fieldsUpdated: [],
+        inputDataSummary: ""
+      };
+      target[key].rows.push(row);
+      if (row.target) target[key].fieldsUpdated.push(row.target);
+      target[key].inputDataSummary = summarizeManualRows(target[key].rows);
+    }
+  }
+  return { byCaseId, byTitle };
+};
+
+const excelCellText = (value) => {
+  if (value == null) return "";
+  if (value instanceof Date) return value.toISOString();
+  if (typeof value !== "object") return String(value);
+  if ("text" in value) return String(value.text ?? "");
+  if ("result" in value) return excelCellText(value.result);
+  if ("richText" in value && Array.isArray(value.richText)) {
+    return value.richText.map((part) => part.text || "").join("");
+  }
+  if ("hyperlink" in value && "text" in value) return String(value.text || value.hyperlink || "");
+  return String(value);
+};
+
+const parseManualWorkbook = async (buffer, fileName) => {
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(buffer);
+  const worksheet = workbook.worksheets[0];
+  if (!worksheet) throw new Error("Excel file does not contain any worksheets.");
+  const headers = [];
+  worksheet.getRow(1).eachCell({ includeEmpty: true }, (cell, columnNumber) => {
+    headers[columnNumber - 1] = excelCellText(cell.value).trim();
+  });
+  const rawRows = [];
+  worksheet.eachRow({ includeEmpty: false }, (row, rowNumber) => {
+    if (rowNumber === 1) return;
+    const item = {};
+    headers.forEach((header, index) => {
+      if (!header) return;
+      item[header] = excelCellText(row.getCell(index + 1).value).trim();
+    });
+    rawRows.push(item);
+  });
+  const rows = normalizeManualRows(rawRows);
+  if (rows.length === 0) {
+    throw new Error("Excel file does not contain any enabled manual test data rows.");
+  }
+  const indexed = indexManualRows(rows);
+  return {
+    sourceFileName: fileName,
+    parsedAt: new Date().toISOString(),
+    rowCount: rows.length,
+    caseCount: Object.keys(indexed.byCaseId).length || Object.keys(indexed.byTitle).length,
+    rows,
+    ...indexed
+  };
+};
+
+const saveManualDataset = async ({ suiteId, datasetName, requestedBy, fileName, contentBase64 }) => {
+  const suite = suiteById(suiteId);
+  if (!suite) throw new Error("A valid suite is required before uploading manual test data.");
+  if (!String(fileName || "").toLowerCase().endsWith(".xlsx")) {
+    throw new Error("Only .xlsx manual test data files are supported.");
+  }
+  const cleanName = String(datasetName || "").trim() || `${suite.label} manual data`;
+  const cleanRequestedBy = String(requestedBy || "").trim();
+  const rawBase64 = String(contentBase64 || "").replace(/^data:[^;]+;base64,/i, "");
+  const buffer = Buffer.from(rawBase64, "base64");
+  if (!buffer.length || buffer.length > 10 * 1024 * 1024) {
+    throw new Error("Excel file is empty or larger than 10 MB.");
+  }
+  const parsed = await parseManualWorkbook(buffer, fileName);
+  const wrongSuiteRows = parsed.rows.filter((row) => row.suiteId && row.suiteId !== suite.id);
+  if (wrongSuiteRows.length > 0) {
+    throw new Error(`Excel contains rows for another suite: ${wrongSuiteRows[0].suiteId}.`);
+  }
+
+  const state = readManualDatasetState();
+  const now = new Date().toISOString();
+  let dataset = state.datasets.find(
+    (item) => item.suiteId === suite.id && normalizeKey(item.name) === normalizeKey(cleanName)
+  );
+  if (!dataset) {
+    const baseId = `${safeSegment(suite.id)}-${safeSegment(cleanName, "dataset")}`;
+    let datasetId = baseId;
+    let suffix = 2;
+    while (state.datasets.some((item) => item.id === datasetId)) {
+      datasetId = `${baseId}-${suffix}`;
+      suffix += 1;
+    }
+    dataset = {
+      id: datasetId,
+      suiteId: suite.id,
+      suiteLabel: suite.label,
+      name: cleanName,
+      requestedBy: cleanRequestedBy,
+      createdAt: now,
+      updatedAt: now,
+      latestVersionId: "",
+      versions: []
+    };
+    state.datasets.push(dataset);
+  }
+
+  const versionId = `${Date.now()}`;
+  const savedFileName = `${versionId}-${safeFileName(fileName)}`;
+  const filePath = path.join(manualTestDataFilesRoot, safeSegment(suite.id), dataset.id, savedFileName);
+  const parsedPath = path.join(manualTestDataParsedRoot, safeSegment(suite.id), dataset.id, `${versionId}.json`);
+  mkdirSync(path.dirname(filePath), { recursive: true });
+  writeFileSync(filePath, buffer);
+  writeJsonFile(parsedPath, parsed);
+
+  const version = {
+    id: versionId,
+    uploadedAt: now,
+    requestedBy: cleanRequestedBy,
+    fileName: safeFileName(fileName),
+    filePath: path.relative(manualTestDataRoot, filePath).replace(/\\/g, "/"),
+    parsedPath: path.relative(manualTestDataRoot, parsedPath).replace(/\\/g, "/"),
+    rowCount: parsed.rowCount,
+    caseCount: parsed.caseCount
+  };
+  dataset.versions ||= [];
+  dataset.versions.push(version);
+  dataset.latestVersionId = versionId;
+  dataset.updatedAt = now;
+  dataset.requestedBy = cleanRequestedBy || dataset.requestedBy || "";
+  writeManualDatasetState(state);
+  return { dataset: publicDataset(dataset), version, parsed };
+};
+
+const readManualDatasetVersion = (datasetId, versionId) => {
+  const state = readManualDatasetState();
+  const dataset = state.datasets.find((item) => item.id === datasetId);
+  if (!dataset) return null;
+  const effectiveVersionId = versionId || dataset.latestVersionId || dataset.versions?.at(-1)?.id || "";
+  const version = (dataset.versions || []).find((item) => item.id === effectiveVersionId);
+  if (!version) return null;
+  const parsedPath = resolveManualDataPath(version.parsedPath);
+  const filePath = resolveManualDataPath(version.filePath);
+  if (!parsedPath || !filePath) return null;
+  return {
+    dataset,
+    version,
+    parsed: readJsonFile(parsedPath, null),
+    filePath
+  };
+};
+
+const buildRunTestDataContext = (body) => {
+  const requestedBy = String(body.requestedBy || "").trim();
+  const requestedMappings = Array.isArray(body.testDataMappings) ? body.testDataMappings : [];
+  const mappings = [];
+  const bySuiteId = {};
+  const byCaseId = {};
+  const byTitle = {};
+
+  for (const mapping of requestedMappings) {
+    const suiteId = String(mapping.suiteId || "").trim();
+    const mode = String(mapping.mode || "automated").toLowerCase();
+    const suite = suiteById(suiteId);
+    if (!suite) continue;
+    if (mode !== "dataset") {
+      mappings.push({ suiteId: suite.id, suiteLabel: suite.label, mode: "automated" });
+      continue;
+    }
+    const loaded = readManualDatasetVersion(String(mapping.datasetId || ""), String(mapping.versionId || ""));
+    if (!loaded?.parsed) {
+      throw new Error(`Saved manual dataset for ${suite.label} was not found or cannot be read.`);
+    }
+    const datasetSummary = {
+      suiteId: suite.id,
+      suiteLabel: suite.label,
+      mode: "dataset",
+      datasetId: loaded.dataset.id,
+      datasetName: loaded.dataset.name,
+      versionId: loaded.version.id,
+      fileName: loaded.version.fileName,
+      uploadedAt: loaded.version.uploadedAt,
+      requestedBy: requestedBy || loaded.version.requestedBy || loaded.dataset.requestedBy || "",
+      rowCount: loaded.parsed.rowCount || 0,
+      caseCount: loaded.parsed.caseCount || 0,
+      rows: loaded.parsed.rows || [],
+      byCaseId: loaded.parsed.byCaseId || {},
+      byTitle: loaded.parsed.byTitle || {}
+    };
+    mappings.push(datasetSummary);
+    bySuiteId[suite.id] = datasetSummary;
+    for (const [caseId, caseData] of Object.entries(datasetSummary.byCaseId)) {
+      byCaseId[caseId] = { ...caseData, dataset: datasetSummary };
+    }
+    for (const [titleKey, caseData] of Object.entries(datasetSummary.byTitle)) {
+      byTitle[titleKey] = { ...caseData, dataset: datasetSummary };
+    }
+  }
+
+  const manualMappings = mappings.filter((mapping) => mapping.mode === "dataset");
+  const mode = manualMappings.length > 0 ? "manual" : "automated";
+  const runId = `run-${Date.now()}`;
+  const context = {
+    runId,
+    createdAt: new Date().toISOString(),
+    mode,
+    requestedBy,
+    performedBy: mode === "manual" ? requestedBy || "Manual requester" : "Automation user",
+    mappings,
+    bySuiteId,
+    byCaseId,
+    byTitle
+  };
+  mkdirSync(manualTestDataRunRoot, { recursive: true });
+  const contextPath = path.join(manualTestDataRunRoot, `${runId}.json`);
+  writeJsonFile(contextPath, context);
+  return {
+    ...context,
+    path: contextPath,
+    mappedSuiteCount: manualMappings.length
+  };
+};
 
 const emptyResults = (updatedAt = null) => ({
   runStatus: "not_started",
@@ -686,26 +1128,69 @@ const renderLatestResultsHtml = () => {
       : screenshots
         ? `<div class="evidence-grid">${screenshots}</div>`
         : `<span class="muted">No screenshots yet</span>`;
+    const evidenceCount = Array.isArray(row.liveScreenshotPaths) && row.liveScreenshotPaths.length > 0
+      ? row.liveScreenshotPaths.length
+      : Array.isArray(row.screenshotPaths)
+        ? row.screenshotPaths.length
+        : 0;
+    const evidenceSummary = evidenceCount > 0
+      ? `<span class="evidence-count">${evidenceCount} shot${evidenceCount === 1 ? "" : "s"}</span>`
+      : `<span class="muted">No screenshots</span>`;
     const steps = Array.isArray(row.steps)
-      ? `<details class="step-details"><summary>${row.steps.length} step details</summary><div class="step-list">${row.steps.map((step, index) => `
+      ? `<details class="step-details" open><summary>${row.steps.length} step details</summary><div class="step-list">${row.steps.map((step, index) => `
         <article class="step-card">
           <strong>${index + 1}. ${xmlEscape(step.section || "")}</strong>
-          <span><b>Action</b>${xmlEscape(step.action || "")}</span>
-          <span><b>Test Data</b>${xmlEscape(step.testData || "")}</span>
-          <span><b>Expected Behavior</b>${xmlEscape(step.expectedBehavior || "")}</span>
+          <span><b>Step</b>${xmlEscape(step.step || String(index + 1))}</span>
+          <span><b>Outcome</b>${xmlEscape(step.outcome || step.result || "")}</span>
+          <span><b>Action Done</b>${xmlEscape(step.actionDone || step.action || "")}</span>
+          <span><b>Fields Updated</b>${xmlEscape(step.fieldsUpdated || "")}</span>
+          <span><b>Input Data</b>${xmlEscape(step.inputData || step.testData || "")}</span>
+          <span><b>Input Source</b>${xmlEscape(step.inputDataSource || row.executionSource || "")}</span>
+          <span><b>Expected Result</b>${xmlEscape(step.expectedResult || step.expectedBehavior || "")}</span>
           <span><b>Verify</b>${xmlEscape(step.verify || "")}</span>
+          ${step.directUrl ? `<span><b>Direct URL</b><a href="${xmlEscape(step.directUrl)}" target="_blank" rel="noreferrer">${xmlEscape(step.directUrl)}</a></span>` : ""}
           <em>${xmlEscape(step.result || "")}</em>
         </article>`).join("")}</div></details>`
       : "";
+    const directUrl = row.directUrl
+      ? `<a href="${xmlEscape(row.directUrl)}" target="_blank" rel="noreferrer">${xmlEscape(row.directUrl)}</a>`
+      : `<span class="muted">No URL captured</span>`;
     return `<tr class="result-row ${xmlEscape(row.status || "")}">
       <td><code class="case-id" title="${xmlEscape(row.id || "")}">${xmlEscape(row.id || "")}</code></td>
       <td><span class="pill">${xmlEscape(row.surface || "")}</span></td>
       <td>${xmlEscape(row.featureArea || "")}</td>
-      <td><strong>${xmlEscape(row.testCaseTitle || "")}</strong>${steps}</td>
+      <td><strong>${xmlEscape(row.testCaseTitle || "")}</strong></td>
+      <td>${xmlEscape(row.executionSource || "Automated data")}</td>
+      <td>${xmlEscape(row.requestedBy || "")}</td>
+      <td>${xmlEscape(row.performedBy || "")}</td>
+      <td>${xmlEscape(row.fieldsUpdated || "")}</td>
+      <td>${xmlEscape(row.inputDataSummary || row.testData || "")}</td>
       <td>${xmlEscape(row.expectedResult || "")}</td>
       <td>${xmlEscape(row.actualResult || "")}</td>
+      <td>${directUrl}</td>
       <td><span class="status ${xmlEscape(row.status || "")}">${xmlEscape(row.status || "")}</span></td>
-      <td class="evidence-cell">${evidence}</td>
+      <td class="evidence-cell">${evidenceSummary}</td>
+    </tr>
+    <tr class="detail-row ${xmlEscape(row.status || "")}">
+      <td colspan="14">
+        <section class="case-detail-panel">
+          <div class="case-detail-head">
+            <div>
+              <span class="detail-eyebrow">Step details and evidence</span>
+              <h2>${xmlEscape(row.testCaseTitle || row.id || "Test case")}</h2>
+            </div>
+            <span class="status ${xmlEscape(row.status || "")}">${xmlEscape(row.status || "")}</span>
+          </div>
+          <section class="evidence-panel">
+            <div class="detail-subhead">
+              <h3>Evidence</h3>
+              <span>${evidenceCount > 0 ? `${evidenceCount} screenshot${evidenceCount === 1 ? "" : "s"} captured` : "No screenshots captured"}</span>
+            </div>
+            ${evidence}
+          </section>
+          ${steps || `<span class="muted">No step details captured.</span>`}
+        </section>
+      </td>
     </tr>`;
   }).join("\n");
   return `<!doctype html>
@@ -732,10 +1217,24 @@ const renderLatestResultsHtml = () => {
     .metric span { display: block; color: var(--muted); font-size: 12px; font-weight: 700; text-transform: uppercase; margin-bottom: 8px; }
     .metric strong { font-size: 30px; letter-spacing: 0; }
     .table-wrap { border: 1px solid var(--line); border-radius: 18px; background: var(--panel); overflow: auto; max-height: calc(100dvh - 245px); box-shadow: 0 18px 55px rgba(15, 23, 42, .08); }
-    table { width: 100%; min-width: 1320px; border-collapse: separate; border-spacing: 0; }
+    table { width: 100%; min-width: 2100px; border-collapse: separate; border-spacing: 0; table-layout: fixed; }
     th, td { border-bottom: 1px solid var(--line); padding: 14px; text-align: left; vertical-align: top; font-size: 13px; line-height: 1.45; }
     th { position: sticky; top: 0; z-index: 2; background: #f8fbff; color: var(--muted); text-transform: uppercase; font-size: 11px; letter-spacing: .04em; }
     tr:last-child td { border-bottom: 0; }
+    th:nth-child(1), td:nth-child(1) { width: 210px; }
+    th:nth-child(2), td:nth-child(2) { width: 110px; }
+    th:nth-child(3), td:nth-child(3) { width: 120px; }
+    th:nth-child(4), td:nth-child(4) { width: 300px; }
+    th:nth-child(5), td:nth-child(5) { width: 150px; }
+    th:nth-child(6), td:nth-child(6),
+    th:nth-child(7), td:nth-child(7) { width: 135px; }
+    th:nth-child(8), td:nth-child(8) { width: 160px; }
+    th:nth-child(9), td:nth-child(9) { width: 260px; }
+    th:nth-child(10), td:nth-child(10) { width: 260px; }
+    th:nth-child(11), td:nth-child(11) { width: 290px; }
+    th:nth-child(12), td:nth-child(12) { width: 160px; }
+    th:nth-child(13), td:nth-child(13) { width: 110px; }
+    th:nth-child(14), td:nth-child(14) { width: 260px; }
     code { display: inline-block; color: #0f172a; background: #f1f5f9; border: 1px solid #e2e8f0; border-radius: 8px; padding: 5px 7px; font-family: Consolas, ui-monospace, monospace; }
     .case-id { max-width: 190px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; vertical-align: top; }
     .pill { display: inline-flex; border: 1px solid #bfdbfe; background: #eff6ff; color: #1d4ed8; border-radius: 999px; padding: 4px 9px; font-weight: 800; }
@@ -746,19 +1245,30 @@ const renderLatestResultsHtml = () => {
     .SKIP { background: #e2e8f0; color: #64748b; }
     .RUNNING { background: #dbeafe; color: #1d4ed8; }
     .PENDING { background: #eef0f4; color: #6b7280; }
-    .evidence-cell { min-width: 460px; }
-    .evidence-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(145px, 1fr)); gap: 10px; min-width: 420px; max-width: 760px; max-height: 520px; overflow: auto; padding-right: 4px; }
-    .thumb { display: grid; gap: 7px; color: var(--ink); background: #f8fbff; border: 1px solid var(--line); border-radius: 12px; padding: 8px; transition: transform .15s ease, box-shadow .15s ease; }
-    .thumb img { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; border: 1px solid #dbe4ef; border-radius: 9px; background: #f8fafc; }
+    .evidence-cell { min-width: 160px; }
+    .evidence-count { display: inline-flex; align-items: center; justify-content: center; min-width: 78px; border: 1px solid #bfdbfe; background: #eff6ff; color: #1d4ed8; border-radius: 999px; padding: 5px 9px; font-weight: 900; }
+    .detail-subhead { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+    .detail-subhead h3 { margin: 0; font-size: 15px; }
+    .detail-subhead span { color: var(--muted); font-size: 12px; font-weight: 800; }
+    .evidence-panel { border: 1px solid var(--line); border-radius: 12px; background: #f8fbff; padding: 12px; }
+    .evidence-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 14px; min-width: 0; max-width: none; max-height: none; overflow: visible; padding-right: 0; }
+    .thumb { display: grid; gap: 8px; color: var(--ink); background: #fff; border: 1px solid var(--line); border-radius: 12px; padding: 10px; transition: transform .15s ease, box-shadow .15s ease; }
+    .thumb img { width: 100%; height: auto; max-height: 360px; aspect-ratio: 16 / 9; object-fit: contain; border: 1px solid #dbe4ef; border-radius: 9px; background: #f8fafc; }
     .thumb span { font-size: 12px; color: var(--muted); font-weight: 900; }
-    .step-details { margin-top: 10px; }
-    .step-details summary { cursor: pointer; color: var(--blue); font-weight: 900; }
-    .step-list { display: grid; gap: 8px; margin-top: 10px; max-height: 420px; overflow: auto; }
-    .step-card { display: grid; gap: 5px; padding: 10px; border: 1px solid var(--line); border-radius: 12px; background: #f8fbff; }
-    .step-card span { display: grid; grid-template-columns: 140px minmax(0, 1fr); gap: 8px; color: var(--muted); }
+    .detail-row td { padding: 0 14px 18px; background: color-mix(in srgb, var(--blue), transparent 96%); }
+    .case-detail-panel { display: grid; gap: 14px; border: 1px solid #cfe0f5; border-radius: 14px; background: #ffffff; padding: 16px; box-shadow: inset 4px 0 0 var(--blue); }
+    .case-detail-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+    .case-detail-head h2 { margin: 2px 0 0; font-size: 18px; line-height: 1.25; overflow-wrap: anywhere; }
+    .detail-eyebrow { color: var(--muted); text-transform: uppercase; font-size: 11px; font-weight: 900; letter-spacing: .04em; }
+    .step-details { margin-top: 0; }
+    .step-details summary { cursor: pointer; color: var(--blue); font-weight: 900; margin-bottom: 10px; }
+    .step-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(520px, 1fr)); gap: 12px; margin-top: 10px; overflow: visible; }
+    .step-card { display: grid; gap: 8px; align-content: start; padding: 14px; border: 1px solid var(--line); border-radius: 12px; background: #f8fbff; }
+    .step-card strong { overflow-wrap: anywhere; }
+    .step-card span { display: grid; grid-template-columns: 150px minmax(0, 1fr); gap: 10px; color: var(--muted); overflow-wrap: anywhere; }
     .step-card b { color: var(--ink); }
     .step-card em { justify-self: start; color: var(--green); font-style: normal; font-weight: 900; }
-    @media (max-width: 1000px) { .page { padding: 14px; } header { grid-template-columns: 1fr; } nav { justify-content: flex-start; } .summary { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+    @media (max-width: 1000px) { .page { padding: 14px; } header { grid-template-columns: 1fr; } nav { justify-content: flex-start; } .summary { grid-template-columns: repeat(2, minmax(0, 1fr)); } .evidence-grid, .step-list { grid-template-columns: minmax(0, 1fr); } .step-card span { grid-template-columns: 1fr; } }
   </style>
 </head>
 <body>
@@ -785,8 +1295,8 @@ const renderLatestResultsHtml = () => {
   </section>
   <div class="table-wrap">
     <table>
-      <thead><tr><th>ID</th><th>Surface</th><th>Feature</th><th>Test Case</th><th>Expected</th><th>Actual</th><th>Status</th><th>Evidence</th></tr></thead>
-      <tbody>${rowHtml || `<tr><td colspan="8">No latest result rows.</td></tr>`}</tbody>
+      <thead><tr><th>ID</th><th>Surface</th><th>Feature</th><th>Test Case</th><th>Input Source</th><th>Requested By</th><th>Performed By</th><th>Fields Updated</th><th>Input Data</th><th>Expected</th><th>Actual</th><th>Direct URL</th><th>Status</th><th>Evidence</th></tr></thead>
+      <tbody>${rowHtml || `<tr><td colspan="14">No latest result rows.</td></tr>`}</tbody>
     </table>
   </div>
 </div>
@@ -2935,6 +3445,30 @@ const runListViewSuite = async (request, response) => {
   const scenario = selectedTests.length > 0
     ? selectedTests.map(escapeRegex).join("|")
     : String(body.scenario || "").trim();
+  let testDataContext;
+  try {
+    testDataContext = buildRunTestDataContext(body);
+  } catch (error) {
+    sendJson(response, 400, { error: error instanceof Error ? error.message : "Invalid manual test data selection." });
+    return;
+  }
+  const childEnv = {
+    ...process.env,
+    MANUAL_TEST_DATA_CONTEXT: testDataContext.path,
+    TEST_DATA_MODE: testDataContext.mode,
+    TEST_REQUESTED_BY: testDataContext.requestedBy || "",
+    TEST_PERFORMED_BY: testDataContext.performedBy || "Automation user"
+  };
+  const pushTestDataLog = () => {
+    pushLog(
+      testDataContext.mode === "manual"
+        ? `Using saved Excel test data for ${testDataContext.mappedSuiteCount} suite(s). Requested by: ${testDataContext.requestedBy || "not provided"}.`
+        : "Using automated seeded test data."
+    );
+  };
+  runState.testDataMode = testDataContext.mode;
+  runState.requestedBy = testDataContext.requestedBy || "";
+  runState.mappedSuiteCount = testDataContext.mappedSuiteCount;
   const depthwiseSurfaceSpecs = {
     "admin-depthwise": {
       label: "admin depthwise",
@@ -2984,11 +3518,13 @@ const runListViewSuite = async (request, response) => {
     runState.exitCode = null;
     runState.logs = [];
     pushLog(`Starting ${suite.label} run${effectiveScenario ? ` with scenario filter ${effectiveScenario}` : ""}...`);
+    pushTestDataLog();
 
     const runCommand = process.platform === "win32" ? "cmd.exe" : "npx";
     const runArgs = process.platform === "win32" ? ["/d", "/s", "/c", "npx.cmd", ...args] : args;
     currentProcess = spawn(runCommand, runArgs, {
       cwd: repoRoot,
+      env: childEnv,
       windowsHide: true,
       shell: false,
       stdio: ["ignore", "pipe", "pipe"]
@@ -3062,11 +3598,13 @@ const runListViewSuite = async (request, response) => {
     runState.exitCode = null;
     runState.logs = [];
     pushLog(`Starting ${lifecycle.label} run${scenario ? ` with scenario filter ${scenario}` : ""}...`);
+    pushTestDataLog();
 
     const runCommand = process.platform === "win32" ? "cmd.exe" : "npx";
     const runArgs = process.platform === "win32" ? ["/d", "/s", "/c", "npx.cmd", ...args] : args;
     currentProcess = spawn(runCommand, runArgs, {
       cwd: repoRoot,
+      env: childEnv,
       windowsHide: true,
       shell: false,
       stdio: ["ignore", "pipe", "pipe"]
@@ -3121,11 +3659,13 @@ const runListViewSuite = async (request, response) => {
     runState.exitCode = null;
     runState.logs = [];
     pushLog(`Starting permissions/access security run${scenario ? ` with scenario filter ${scenario}` : ""}...`);
+    pushTestDataLog();
 
     const runCommand = process.platform === "win32" ? "cmd.exe" : "npx";
     const runArgs = process.platform === "win32" ? ["/d", "/s", "/c", "npx.cmd", ...args] : args;
     currentProcess = spawn(runCommand, runArgs, {
       cwd: repoRoot,
+      env: childEnv,
       windowsHide: true,
       shell: false,
       stdio: ["ignore", "pipe", "pipe"]
@@ -3184,9 +3724,11 @@ const runListViewSuite = async (request, response) => {
       selectedTests.length > 0 ? ` for ${selectedTests.length} selected test case(s)` : scenario ? ` with scenario filter ${scenario}` : ""
     }...`
   );
+  pushTestDataLog();
 
   currentProcess = spawn("powershell", args, {
     cwd: repoRoot,
+    env: childEnv,
     windowsHide: true,
     shell: false
   });
@@ -3865,6 +4407,82 @@ const server = createServer(async (request, response) => {
     } catch (error) {
       sendJson(response, 500, { error: error instanceof Error ? error.message : "Failed to export inventory workbook." });
     }
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/test-data/template.xlsx") {
+    try {
+      const suiteId = String(url.searchParams.get("suiteId") || "").trim();
+      const suite = suiteId ? suiteById(suiteId) : null;
+      sendBuffer(
+        response,
+        200,
+        await buildManualTemplateWorkbook(suiteId),
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        `${safeSegment(suite?.label || "core-platform")}-manual-test-data-template.xlsx`
+      );
+    } catch (error) {
+      sendJson(response, 500, { error: error instanceof Error ? error.message : "Failed to build manual test data template." });
+    }
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/test-data/datasets") {
+    try {
+      const suiteId = String(url.searchParams.get("suiteId") || "").trim();
+      const state = readManualDatasetState();
+      const datasets = state.datasets
+        .filter((dataset) => !suiteId || dataset.suiteId === suiteId)
+        .map(publicDataset)
+        .sort((left, right) => String(right.updatedAt || "").localeCompare(String(left.updatedAt || "")));
+      sendJson(response, 200, { updatedAt: state.updatedAt, datasets });
+    } catch (error) {
+      sendJson(response, 500, { error: error instanceof Error ? error.message : "Failed to list manual datasets." });
+    }
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/test-data/datasets") {
+    try {
+      const body = await readRequestJson(request);
+      const saved = await saveManualDataset(body);
+      sendJson(response, 201, {
+        ok: true,
+        dataset: saved.dataset,
+        version: {
+          id: saved.version.id,
+          uploadedAt: saved.version.uploadedAt,
+          fileName: saved.version.fileName,
+          rowCount: saved.version.rowCount,
+          caseCount: saved.version.caseCount,
+          requestedBy: saved.version.requestedBy || ""
+        },
+        summary: {
+          rowCount: saved.parsed.rowCount,
+          caseCount: saved.parsed.caseCount
+        }
+      });
+    } catch (error) {
+      sendJson(response, 400, { error: error instanceof Error ? error.message : "Failed to save manual dataset." });
+    }
+    return;
+  }
+
+  const datasetFileMatch = /^\/api\/test-data\/datasets\/([^/]+)\/versions\/([^/]+)\/file$/.exec(url.pathname);
+  if (request.method === "GET" && datasetFileMatch) {
+    const [, datasetId, versionId] = datasetFileMatch.map(decodeURIComponent);
+    const loaded = readManualDatasetVersion(datasetId, versionId);
+    if (!loaded || !existsSync(loaded.filePath)) {
+      sendJson(response, 404, { error: "Manual dataset file was not found." });
+      return;
+    }
+    sendBuffer(
+      response,
+      200,
+      readFileSync(loaded.filePath),
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      loaded.version.fileName || "manual-test-data.xlsx"
+    );
     return;
   }
 
