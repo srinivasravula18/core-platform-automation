@@ -878,6 +878,8 @@ export default class TableReport implements Reporter {
     );
     const htmlRows = reportRows
       .map((row) => {
+        const cell = (content: string, className = "") =>
+          `<td${className ? ` class="${className}"` : ""}><div class="cell-content">${content}</div></td>`;
         const screenshotCell = row.screenshotPaths?.length
           ? row.screenshotPaths
               .map(
@@ -890,29 +892,29 @@ export default class TableReport implements Reporter {
           ? `<div>${row.evidenceNotes.map((note) => sanitize(note)).join("<br/>")}</div>`
           : "";
         return `<tr>
-  <td>${sanitize(row.id)}</td>
-  <td><span class="tag-list">${sanitize(row.tags)}</span></td>
-  <td>${sanitize(row.moduleSuite)}</td>
-  <td>${sanitize(row.testCaseTitle)}</td>
-  <td>${sanitize(row.surface)}</td>
-  <td>${sanitize(row.featureArea)}</td>
-  <td>${sanitize(row.precondition)}</td>
-  <td>${sanitize(row.inputAction)}</td>
-  <td>${sanitize(row.testData)}</td>
-  <td>${sanitize(row.executionSource)}</td>
-  <td>${sanitize(row.requestedBy)}</td>
-  <td>${sanitize(row.performedBy)}</td>
-  <td>${sanitize(row.fieldsUpdated)}</td>
-  <td>${row.directUrl ? `<a class="evidence-link" href="${sanitize(row.directUrl)}" target="_blank" rel="noreferrer">${sanitize(row.directUrl)}</a>` : ""}</td>
-  <td>${sanitize(row.expectedResult)}</td>
-  <td>${sanitize(row.actualResult)}</td>
-  <td>${sanitize(row.proof)}</td>
-  <td><span class="status ${row.status}">${row.status}</span></td>
-  <td>${sanitize(row.priority)}</td>
-  <td>${sanitize(row.testingLevel)}</td>
-  <td>${sanitize(row.automationStatus)}</td>
-  <td>${sanitize(row.bugReport ?? "")}</td>
-  <td>${evidenceNotes}${screenshotCell}</td>
+  ${cell(sanitize(row.id), "case-id-cell")}
+  ${cell(`<span class="tag-list">${sanitize(row.tags)}</span>`)}
+  ${cell(sanitize(row.moduleSuite))}
+  ${cell(sanitize(row.testCaseTitle))}
+  ${cell(sanitize(row.surface))}
+  ${cell(sanitize(row.featureArea))}
+  ${cell(sanitize(row.precondition))}
+  ${cell(sanitize(row.inputAction))}
+  ${cell(sanitize(row.testData))}
+  ${cell(sanitize(row.executionSource))}
+  ${cell(sanitize(row.requestedBy))}
+  ${cell(sanitize(row.performedBy))}
+  ${cell(sanitize(row.fieldsUpdated))}
+  ${cell(row.directUrl ? `<a class="evidence-link" href="${sanitize(row.directUrl)}" target="_blank" rel="noreferrer">${sanitize(row.directUrl)}</a>` : "")}
+  ${cell(sanitize(row.expectedResult))}
+  ${cell(sanitize(row.actualResult))}
+  ${cell(sanitize(row.proof))}
+  ${cell(`<span class="status ${row.status}">${row.status}</span>`, "status-cell")}
+  ${cell(sanitize(row.priority))}
+  ${cell(sanitize(row.testingLevel))}
+  ${cell(sanitize(row.automationStatus))}
+  ${cell(sanitize(row.bugReport ?? ""))}
+  ${cell(`${evidenceNotes}${screenshotCell}`, "screenshot-cell")}
 </tr>`;
       })
       .join("\n");
@@ -927,13 +929,14 @@ export default class TableReport implements Reporter {
   <style>
     :root {
       color-scheme: light;
-      --bg: #f4f6f8;
+      --bg: #f7f7f5;
       --panel: #ffffff;
-      --panel-2: #f8fafc;
-      --border: #d9e0ea;
-      --text: #142033;
-      --muted: #657386;
-      --accent: #2563eb;
+      --panel-2: #fbfbfa;
+      --border: #e6e4df;
+      --border-strong: #d8d5ce;
+      --text: #1f1f1d;
+      --muted: #6f6b63;
+      --accent: #2f66d0;
       --pass: #0f7a35;
       --fail: #b42318;
       --pending: #6b7280;
@@ -950,14 +953,14 @@ export default class TableReport implements Reporter {
       max-width: 100dvw;
       max-height: 100dvh;
       overflow: auto;
-      padding: 16px;
+      padding: 18px 20px 24px;
     }
     .hero {
       display: flex;
       justify-content: space-between;
       gap: 16px;
       align-items: flex-start;
-      margin-bottom: 14px;
+      margin-bottom: 18px;
     }
     .eyebrow {
       margin: 0 0 4px;
@@ -973,42 +976,50 @@ export default class TableReport implements Reporter {
     .report-actions a {
       display: inline-flex;
       align-items: center;
-      min-height: 36px;
-      padding: 8px 12px;
-      border-radius: 7px;
+      min-height: 34px;
+      padding: 7px 12px;
+      border-radius: 6px;
       border: 1px solid var(--border);
       background: var(--panel);
       color: var(--text);
       text-decoration: none;
-      font-weight: 700;
+      font-size: 13px;
+      font-weight: 650;
+      box-shadow: 0 1px 1px rgba(15, 23, 42, 0.03);
+    }
+    .report-actions a:hover {
+      background: #f1f1ef;
+      border-color: var(--border-strong);
     }
     .summary {
       display: grid;
       grid-template-columns: repeat(6, minmax(0, 1fr));
-      gap: 10px;
-      margin-bottom: 14px;
+      gap: 12px;
+      margin-bottom: 18px;
     }
     .metric {
-      min-height: 76px;
-      padding: 12px;
+      min-height: 78px;
+      padding: 13px 14px;
       border: 1px solid var(--border);
-      border-radius: 8px;
+      border-radius: 7px;
       background: var(--panel);
+      box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
     }
     .metric span { display: block; color: var(--muted); font-size: 12px; margin-bottom: 7px; }
     .metric strong { font-size: 22px; overflow-wrap: anywhere; }
     .table-card {
       border: 1px solid var(--border);
-      border-radius: 8px;
+      border-radius: 7px;
       background: var(--panel);
       overflow: hidden;
+      box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
     }
     .table-head {
       display: flex;
       justify-content: space-between;
       gap: 12px;
       align-items: center;
-      padding: 12px 14px;
+      padding: 12px 16px;
       border-bottom: 1px solid var(--border);
       background: var(--panel);
     }
@@ -1016,41 +1027,118 @@ export default class TableReport implements Reporter {
     .table-head span { color: var(--muted); font-size: 13px; }
     .table-wrap {
       max-width: 100%;
-      max-height: calc(100dvh - 220px);
+      max-height: calc(100dvh - 236px);
       overflow: auto;
+      scrollbar-gutter: stable;
+      background: var(--panel);
+    }
+    .table-wrap::-webkit-scrollbar { width: 12px; height: 12px; }
+    .table-wrap::-webkit-scrollbar-track { background: #f1f1ef; }
+    .table-wrap::-webkit-scrollbar-thumb {
+      background: #c7c3bb;
+      border: 3px solid #f1f1ef;
+      border-radius: 999px;
     }
     table {
-      width: 100%;
-      min-width: min(1500px, calc(100dvw - 34px));
+      width: max-content;
+      min-width: 3600px;
       border-collapse: collapse;
+      table-layout: fixed;
     }
     th, td {
       border-bottom: 1px solid var(--border);
-      padding: 9px 10px;
+      padding: 0;
       text-align: left;
       vertical-align: top;
       font-size: 12px;
-      line-height: 1.45;
-      overflow-wrap: anywhere;
+      line-height: 1.42;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      overflow-wrap: normal;
+      word-break: normal;
+      background: var(--panel);
     }
     th {
+      padding: 8px 10px;
       position: sticky;
       top: 0;
-      z-index: 1;
+      z-index: 3;
       background: var(--panel-2);
       color: var(--muted);
       font-size: 11px;
       text-transform: uppercase;
       letter-spacing: 0;
+      font-weight: 700;
+      white-space: nowrap;
+      box-shadow: inset 0 -1px 0 var(--border-strong);
     }
+    td {
+      white-space: normal;
+    }
+    .cell-content {
+      max-height: 92px;
+      overflow: auto;
+      padding: 9px 10px;
+    }
+    .cell-content::-webkit-scrollbar { width: 7px; height: 7px; }
+    .cell-content::-webkit-scrollbar-thumb {
+      background: #d6d2ca;
+      border-radius: 999px;
+    }
+    .case-id-cell .cell-content,
+    .status-cell .cell-content {
+      max-height: none;
+      overflow: visible;
+    }
+    th:first-child,
+    td:first-child {
+      position: sticky;
+      left: 0;
+      z-index: 2;
+      background: var(--panel);
+      box-shadow: inset -1px 0 0 var(--border), inset 0 -1px 0 var(--border);
+    }
+    th:first-child {
+      z-index: 4;
+      background: var(--panel-2);
+    }
+    tbody tr:nth-child(even) td { background: #fcfcfb; }
+    tbody tr:nth-child(even) td:first-child { background: #fcfcfb; }
     tr:hover td { background: color-mix(in srgb, var(--accent), transparent 96%); }
+    tr:hover td:first-child { background: color-mix(in srgb, var(--accent), transparent 96%); }
+    td:nth-child(2),
+    td:nth-child(4),
+    td:nth-child(7),
+    td:nth-child(8),
+    td:nth-child(9),
+    td:nth-child(14),
+    td:nth-child(15),
+    td:nth-child(16),
+    td:nth-child(17),
+    td:nth-child(22),
+    td:nth-child(23) {
+      overflow-wrap: anywhere;
+    }
+    td:nth-child(1),
+    td:nth-child(5),
+    td:nth-child(6),
+    td:nth-child(10),
+    td:nth-child(11),
+    td:nth-child(12),
+    td:nth-child(13),
+    td:nth-child(18),
+    td:nth-child(19),
+    td:nth-child(20),
+    td:nth-child(21) {
+      white-space: nowrap;
+    }
     .status {
       display: inline-flex;
       align-items: center;
       justify-content: center;
-      min-width: 70px;
+      min-width: 62px;
       border-radius: 999px;
-      padding: 4px 8px;
+      padding: 3px 8px;
       font-weight: 800;
       font-size: 11px;
     }
@@ -1058,14 +1146,14 @@ export default class TableReport implements Reporter {
       display: inline-flex;
       max-width: 220px;
       color: var(--accent);
-      font-weight: 800;
+      font-weight: 750;
       overflow-wrap: anywhere;
     }
-    .PENDING { background: #eef0f4; color: var(--pending); }
-    .RUNNING { background: #dbeafe; color: var(--running); }
-    .PASS { background: #dcfce7; color: var(--pass); }
-    .FAIL { background: #fee2e2; color: var(--fail); }
-    .SKIP { background: #e2e8f0; color: var(--skip); }
+    .PENDING { background: #f1f1ef; color: var(--pending); }
+    .RUNNING { background: #e8f0ff; color: var(--running); }
+    .PASS { background: #dbf3e2; color: var(--pass); }
+    .FAIL { background: #fde2df; color: var(--fail); }
+    .SKIP { background: #eceff3; color: var(--skip); }
     .evidence-link {
       display: inline-flex;
       margin-bottom: 6px;
@@ -1075,12 +1163,12 @@ export default class TableReport implements Reporter {
     }
     .evidence-shot {
       display: block;
-      width: min(220px, 28dvw);
+      width: 92px;
       max-width: 100%;
-      max-height: 140px;
+      max-height: 58px;
       object-fit: contain;
       border: 1px solid var(--border);
-      border-radius: 7px;
+      border-radius: 6px;
       background: var(--panel-2);
     }
     @media (max-width: 900px) {
@@ -1089,7 +1177,7 @@ export default class TableReport implements Reporter {
       .report-actions { justify-content: flex-start; }
       .summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .table-wrap { max-height: calc(100dvh - 300px); }
-      table { min-width: min(1100px, calc(100dvw - 20px)); }
+      table { min-width: 3000px; }
     }
     @media print {
       html, body, .report-shell { height: auto; max-height: none; overflow: visible; }
@@ -1127,6 +1215,31 @@ export default class TableReport implements Reporter {
       </div>
       <div class="table-wrap">
         <table>
+          <colgroup>
+            <col style="width: 140px" />
+            <col style="width: 210px" />
+            <col style="width: 170px" />
+            <col style="width: 320px" />
+            <col style="width: 120px" />
+            <col style="width: 150px" />
+            <col style="width: 240px" />
+            <col style="width: 360px" />
+            <col style="width: 300px" />
+            <col style="width: 150px" />
+            <col style="width: 140px" />
+            <col style="width: 150px" />
+            <col style="width: 150px" />
+            <col style="width: 240px" />
+            <col style="width: 260px" />
+            <col style="width: 210px" />
+            <col style="width: 260px" />
+            <col style="width: 120px" />
+            <col style="width: 110px" />
+            <col style="width: 130px" />
+            <col style="width: 150px" />
+            <col style="width: 260px" />
+            <col style="width: 240px" />
+          </colgroup>
           <thead>
             <tr>
               <th>Test Case ID</th>
