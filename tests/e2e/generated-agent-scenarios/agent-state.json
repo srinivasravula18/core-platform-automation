@@ -1,0 +1,27 @@
+{
+  "targetRepo": "D:\\core-platform",
+  "trackedBranch": "main",
+  "baselineCommit": "",
+  "lastSuccessfulAgentCommit": "",
+  "lastSeenMainCommit": "",
+  "lastPulledCommit": "",
+  "lastGraphCommit": "",
+  "lastScheduledRunAt": null,
+  "updatedAt": "2026-05-29T14:13:54.683Z",
+  "history": [
+    {
+      "generatedAt": "2026-05-29T14:13:54.683Z",
+      "from": "HEAD~1",
+      "to": "415c727ac9d05a24c3b4490ae39a206ef4b3faff",
+      "changedFiles": 6,
+      "scenarios": 16,
+      "generated": 2,
+      "reused": 14,
+      "resetRequired": 2,
+      "artifact": "tests/e2e/generated-agent-scenarios/agent-scenarios-1780064034682.json"
+    }
+  ],
+  "lastArtifact": "tests/e2e/generated-agent-scenarios/agent-scenarios-1780064034682.json",
+  "lastSpec": "tests/e2e/list-view-regression/generated-agent-scenarios/agent-generated-1780064034682.spec.ts",
+  "lastRunStatus": "generated"
+}
