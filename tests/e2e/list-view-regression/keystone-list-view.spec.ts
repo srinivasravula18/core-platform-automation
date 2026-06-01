@@ -120,7 +120,7 @@ test.describe("Keystone list-view regression", () => {
     const search = await searchWithinListView(objectHome, "test");
     await expectListRegionReady(objectHome);
     await search.fill("'%_[]*?\\\"");
-    await page.waitForTimeout(300);
+    await expect(search).toHaveValue("'%_[]*?\\\"");
     await expectListRegionReady(objectHome);
     await search.fill("");
     await expectListRegionReady(objectHome);

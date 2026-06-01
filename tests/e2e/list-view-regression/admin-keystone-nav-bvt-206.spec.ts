@@ -110,7 +110,7 @@ const waitForAdminSurfaceReady = async (page: Page) => {
       await expect(main).toContainText(/\S/, { timeout: 20_000 });
     });
   await page.waitForLoadState("networkidle", { timeout: 10_000 }).catch(() => null);
-  await page.waitForTimeout(750);
+  await expect(main).not.toContainText(/loading/i, { timeout: 10_000 });
 };
 
 const waitForKeystoneSurfaceReady = async (page: Page) => {
@@ -121,7 +121,7 @@ const waitForKeystoneSurfaceReady = async (page: Page) => {
     .waitFor({ state: "visible", timeout: 20_000 })
     .catch(() => null);
   await page.waitForLoadState("networkidle", { timeout: 10_000 }).catch(() => null);
-  await page.waitForTimeout(750);
+  await expect(page.locator("body")).not.toContainText(/loading/i, { timeout: 10_000 });
 };
 
 const openAdminSection = async (page: Page, section: (typeof adminSections)[number]) => {

@@ -27,7 +27,8 @@ const searchKeystone = async (page: Page, value: string) => {
   await expect(input).toBeVisible();
   await input.fill(value);
   await input.press("Enter");
-  await page.waitForTimeout(500);
+  await expect(input).toHaveValue(value);
+  await expect(page.locator("main, .object-home, table, .empty-state, [role='alert']").first()).toBeVisible({ timeout: 15_000 });
 };
 
 const pad = async (page: Page, checkpoints: string[]) => {

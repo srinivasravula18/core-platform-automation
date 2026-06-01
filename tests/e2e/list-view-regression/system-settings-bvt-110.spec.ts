@@ -27,7 +27,8 @@ const searchSettings = async (page: Page, value: string) => {
   const search = main(page).getByRole("searchbox", { name: /search settings/i }).first();
   await expect(search).toBeVisible();
   await search.fill(value);
-  await page.waitForTimeout(250);
+  await expect(search).toHaveValue(value);
+  await expect(main(page).locator("table, .empty-state, [role='alert']").first()).toBeVisible({ timeout: 15_000 });
 };
 
 const pad = async (page: Page, checkpoints: string[]) => {

@@ -27,7 +27,8 @@ const search = async (page: Page, value: string) => {
   const input = main(page).getByRole("searchbox", { name: /search results/i }).first();
   await expect(input).toBeVisible();
   await input.fill(value);
-  await page.waitForTimeout(350);
+  await expect(input).toHaveValue(value);
+  await expect(main(page).locator("table, .empty-state, [role='alert']").first()).toBeVisible({ timeout: 15_000 });
 };
 
 const createAndDeleteJob = async (page: Page, name: string, checkpoints: string[]) => {

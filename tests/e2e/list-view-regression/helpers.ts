@@ -147,7 +147,12 @@ export const searchWithinListView = async (region: Locator, query: string) => {
     .first();
   await expect(search).toBeVisible();
   await search.fill(query);
-  await new Promise((resolve) => setTimeout(resolve, 350));
+  await expect(search).toHaveValue(query);
+  const loading = region.locator("[aria-busy='true'], .loading, .spinner, .list-view-loading").first();
+  if (await loading.isVisible({ timeout: 500 }).catch(() => false)) {
+    await expect(loading).toBeHidden({ timeout: 15_000 });
+  }
+  await expectListRegionReady(region);
   return search;
 };
 

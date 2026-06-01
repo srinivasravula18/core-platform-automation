@@ -46,7 +46,8 @@ const searchGroups = async (page: Page, query: string) => {
   const search = page.locator(".admin-main").getByRole("searchbox", { name: /search results/i }).first();
   await expect(search).toBeVisible();
   await search.fill(query);
-  await page.waitForTimeout(500);
+  await expect(search).toHaveValue(query);
+  await expect(page.locator(".admin-main").locator("table, .empty-state, [role='alert']").first()).toBeVisible({ timeout: 15_000 });
 };
 
 const openGroupFromList = async (page: Page, groupName: string) => {

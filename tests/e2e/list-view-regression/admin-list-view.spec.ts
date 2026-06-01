@@ -84,7 +84,7 @@ test.describe("Admin list-view regression", () => {
       const search = await searchWithinListView(main, "asset");
       await expectListRegionReady(main);
       await search.fill("'%_[]*?\\\"");
-      await page.waitForTimeout(300);
+      await expect(search).toHaveValue("'%_[]*?\\\"");
       await expectListRegionReady(main);
       await search.fill("");
       await expectListRegionReady(main);

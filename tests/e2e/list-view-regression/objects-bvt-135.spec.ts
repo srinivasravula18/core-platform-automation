@@ -314,7 +314,9 @@ test.describe("Objects page BVT", () => {
 
     await addCheck(checks, "Object create Step 1 validation succeeds", async () => {
       await page.getByRole("button", { name: /^Next$/ }).click();
-      await page.waitForTimeout(1_000);
+      await expect(page.locator("body")).toContainText(/Step 2|Record naming|Unable to validate object details/i, {
+        timeout: 15_000
+      });
       return !(await bodyText(page)).includes("Unable to validate object details. 500 Internal Server Error");
     }, async () => {
       const current = await bodyText(page);
@@ -329,7 +331,7 @@ test.describe("Objects page BVT", () => {
     await addCheck(checks, "Create wizard can be cancelled", async () => {
       const cancel = page.getByRole("button", { name: /^Cancel$/ }).last();
       if (await cancel.isVisible().catch(() => false)) await cancel.click();
-      await page.waitForTimeout(500);
+      await expect(page.locator("body")).not.toContainText("New Object", { timeout: 10_000 });
       return !(await bodyText(page)).includes("New Object");
     });
 
