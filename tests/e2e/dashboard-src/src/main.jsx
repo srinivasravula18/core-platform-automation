@@ -723,7 +723,7 @@ function App() {
       />
     );
     if (active === "execution") return <ExecutionPanel status={data.status} stopRun={stopRun} />;
-    if (active === "reports") return <ReportsPanel results={data.results} />;
+    if (active === "reports") return <ReportsPanel results={data.results} testPlan={data.testPlan} />;
     if (active === "bugs") return <BugsPanel failedRows={failedRows} />;
     if (active === "agent") return (
       <AgentPanel
@@ -1750,23 +1750,28 @@ function ExecutionPanel({ status, stopRun }) {
   return <section className="section-stack"><div className="metric-grid execution-metrics"><Metric label="Status" value={status.running ? "Running" : "Idle"} /><Metric label="Surface" value={status.surface || "-"} /><Metric label="Scenario" value={summarizeScenario(status)} /><Metric label="Selected" value={status.selectedTestCount || 0} /><Metric label="Exit Code" value={status.exitCode ?? "-"} /></div><div className="panel"><div className="section-heading"><h2>Live Output</h2><button className="danger" onClick={stopRun} disabled={!status.running}><Square size={16} /> Stop Run</button></div><pre className="logs">{(status.logs || []).join("\n") || "No run started."}</pre></div></section>;
 }
 
-function ReportsPanel({ results }) {
+function ReportsPanel({ results, testPlan }) {
   const counts = results.counts || {};
+  const planCounts = testPlan?.counts || {};
   const report = results.report || {};
+  const latestTotal = planCounts.total || results.total || results.rows?.length || 0;
+  const latestPassed = planCounts.PASS ?? counts.PASS ?? 0;
+  const latestFailed = planCounts.FAIL ?? counts.FAIL ?? 0;
   const links = [
-    ["HTML Report", report.html || "/report/list-view-regression-results.html"],
+    ["HTML Report", "/report/latest"],
     ["Test Cases Excel", "/api/inventory.xlsx?refresh=1"],
     ["CSV", report.csv || "/report/list-view-regression-results.csv"],
     ["JSON", report.json || "/report/list-view-regression-results.json"],
-    ["PDF", report.pdf || "/report/list-view-regression-results.pdf"]
+    ["PDF", report.pdf || "/report/list-view-regression-results.pdf"],
+    ["Raw HTML", report.sourceHtml || "/report/list-view-regression-results.html"]
   ];
   return <section className="section-stack">
     <div className="metric-grid compact">
-      <Metric label="Total" value={results.total || results.rows?.length || 0} />
-      <Metric label="Passed" value={counts.PASS || 0} tone="pass" />
-      <Metric label="Failed" value={counts.FAIL || 0} tone="fail" />
-      <Metric label="Running" value={counts.RUNNING || 0} tone="running" />
-      <Metric label="Skipped" value={counts.SKIP || 0} tone="skip" />
+      <Metric label="Total" value={latestTotal} />
+      <Metric label="Passed" value={latestPassed} tone="pass" />
+      <Metric label="Failed" value={latestFailed} tone="fail" />
+      <Metric label="Running" value={planCounts.RUNNING ?? counts.RUNNING ?? 0} tone="running" />
+      <Metric label="Skipped" value={planCounts.SKIP ?? counts.SKIP ?? 0} tone="skip" />
     </div>
     <section className="panel">
       <div className="section-heading">
@@ -1776,7 +1781,21 @@ function ReportsPanel({ results }) {
         {links.map(([label, href]) => <a key={href} href={href} target="_blank" rel="noreferrer">{label}</a>)}
       </div>
     </section>
-    <DataTable className="report-rows-panel" title={`Report Rows (${results.total || 0})`} rows={results.rows || []} columns={[["id", "ID"], ["tags", "Tags"], ["moduleSuite", "Module / Suite"], ["testCaseTitle", "Test Case"], ["steps", "Step Details"], ["executionSource", "Input Source"], ["requestedBy", "Requested By"], ["performedBy", "Performed By"], ["fieldsUpdated", "Fields Updated"], ["inputDataSummary", "Input Data"], ["expectedResult", "Expected"], ["actualResult", "Actual"], ["directUrl", "Direct URL"], ["status", "Status"], ["automationStatus", "Automation"]]} renderCell={(row, key) => key === "steps" ? <StepDetails steps={structuredStepsForRow(row)} /> : key === "directUrl" && row.directUrl ? <a href={row.directUrl} target="_blank" rel="noreferrer">Open URL</a> : null} />
+    <section className="panel latest-report-panel">
+      <div className="section-heading">
+        <div>
+          <h2>Latest Test Plan Report</h2>
+          <span>Open the curated MISC V1 report with test-case rows, step-level expected results, outcomes, and per-step evidence screenshots.</span>
+        </div>
+        <button type="button" className="primary-link" onClick={() => window.open("/report/latest", "_blank", "noopener,noreferrer")}>Open Latest Report</button>
+      </div>
+      <div className="latest-report-summary">
+        <Metric label="Plan" value="MISC V1" />
+        <Metric label="Test Cases" value={latestTotal} />
+        <Metric label="Passed" value={latestPassed} tone="pass" />
+        <Metric label="Failed" value={latestFailed} tone="fail" />
+      </div>
+    </section>
   </section>;
 }
 

@@ -526,6 +526,34 @@ th { position: sticky; top: 0; background: var(--panel-2); z-index: 1; white-spa
 .report-rows-panel td:nth-child(14),
 .report-rows-panel th:nth-child(15),
 .report-rows-panel td:nth-child(15) { width: 110px; }
+.latest-report-panel .section-heading {
+  align-items: center;
+}
+.primary-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 42px;
+  border-radius: 8px;
+  background: var(--accent) !important;
+  border-color: var(--accent) !important;
+  color: #fff !important;
+  padding: 0 16px;
+  font-weight: 900;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.primary-link:hover,
+.primary-link:focus-visible {
+  background: color-mix(in srgb, var(--accent), #000 10%) !important;
+  border-color: color-mix(in srgb, var(--accent), #000 10%) !important;
+  color: #fff !important;
+}
+.latest-report-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(140px, 1fr));
+  gap: 12px;
+}
 .test-plan-panel .metric-grid.compact {
   grid-template-columns: repeat(5, minmax(110px, 1fr));
 }
