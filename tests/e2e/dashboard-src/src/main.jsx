@@ -21,6 +21,7 @@ const navGroups = [
     items: [
       { id: "suites", label: "Suites", icon: TestTube2 },
       { id: "scenarios", label: "Scenarios", icon: Waypoints },
+      { id: "test-plans", label: "Test Plans", icon: GitBranch },
       { id: "inventory", label: "Inventory", icon: ClipboardList }
     ]
   },
@@ -304,17 +305,20 @@ const useDashboardData = () => {
   const [status, setStatus] = useState({});
   const [results, setResults] = useState({ counts: {}, rows: [] });
   const [inventory, setInventory] = useState({ rows: [] });
+  const [testPlan, setTestPlan] = useState({ plans: [], counts: {} });
   const [recording, setRecording] = useState({});
   const [recordedScenarios, setRecordedScenarios] = useState({ scenarios: [] });
   const [error, setError] = useState("");
 
   const refreshStatic = async (forceInventory = false) => {
-    const [frameworkPayload, inventoryPayload] = await Promise.all([
+    const [frameworkPayload, inventoryPayload, testPlanPayload] = await Promise.all([
       api("/api/framework"),
-      api(`/api/inventory${forceInventory ? "?refresh=1" : ""}`)
+      api(`/api/inventory${forceInventory ? "?refresh=1" : ""}`),
+      api("/api/test-plan")
     ]);
     setFramework(frameworkPayload);
     setInventory(inventoryPayload);
+    setTestPlan(testPlanPayload);
   };
 
   const refreshLive = async () => {
@@ -346,7 +350,7 @@ const useDashboardData = () => {
     return () => window.clearInterval(id);
   }, []);
 
-  return { framework, services, status, results, inventory, recording, recordedScenarios, error, refreshStatic, refreshLive };
+  return { framework, services, status, results, inventory, testPlan, recording, recordedScenarios, error, refreshStatic, refreshLive };
 };
 
 function App() {
@@ -685,6 +689,7 @@ function App() {
       setScenarioFilter(scenario.grep || "");
       runSuite(suite?.surface || "all", scenario.grep || "", [], headed, suite ? [suite] : []);
     }} />;
+    if (active === "test-plans") return <TestPlansPanel testPlan={data.testPlan} running={data.status.running} onRunAutomation={() => runSuite("all", "@complete-list-view-atomic", [], headed, (data.framework?.suites || []).filter((suite) => suite.id === "complete-list-view-e2e"))} />;
     if (active === "recorder") return (
       <RecorderPanel
         recorder={recorder}
@@ -1124,6 +1129,428 @@ function RecorderPanel({ recorder, setRecorder, recording, recordedScenarios, st
       }}
     />
   </section>;
+}
+
+function TestPlansPanel({ testPlan, running, onRunAutomation }) {
+  const plans = Array.isArray(testPlan?.plans) ? testPlan.plans : [];
+  const counts = testPlan?.counts || {};
+  const plan = plans[0] || null;
+  const suites = useMemo(() => collectPlanSuites(plan), [plan]);
+  const suiteGroups = useMemo(() => groupPlanSuites(suites), [suites]);
+  const [planView, setPlanView] = useState("list");
+  const [selectedSuiteId, setSelectedSuiteId] = useState("");
+  const [activeTab, setActiveTab] = useState("Execute");
+  const [selectedCaseId, setSelectedCaseId] = useState("");
+  const [notice, setNotice] = useState("");
+  const [openSuiteGroups, setOpenSuiteGroups] = useState({});
+  const [isProductOpen, setIsProductOpen] = useState(true);
+  const selectedSuite = suites.find((suite) => suite.id === selectedSuiteId) || suites[0] || null;
+  const selectedCases = selectedSuite?.cases || [];
+  const selectedCase = selectedCases.find((caseItem) => caseItem.id === selectedCaseId) || null;
+  const passRate = counts.total ? Math.round(((counts.PASS || 0) / counts.total) * 100) : 0;
+
+  useEffect(() => {
+    if (!selectedSuiteId && suites[0]?.id) setSelectedSuiteId(suites[0].id);
+  }, [selectedSuiteId, suites]);
+
+  useEffect(() => {
+    setOpenSuiteGroups((previous) => {
+      const next = { ...previous };
+      for (const group of suiteGroups) {
+        if (next[group.label] === undefined) next[group.label] = true;
+        for (const folder of group.folders) {
+          const key = `${group.label}/${folder.label}`;
+          if (next[key] === undefined) next[key] = true;
+        }
+      }
+      return next;
+    });
+  }, [suiteGroups]);
+
+  if (planView === "list") {
+    return <AzurePlanList plans={plans} counts={counts} testPlan={testPlan} notice={notice} setNotice={setNotice} onOpenPlan={() => setPlanView("detail")} />;
+  }
+
+  return <section className="azure-test-plan-workspace">
+    <aside className="azure-plan-sidebar">
+      <div className="azure-plan-title">
+        <div>
+          <h2>{plan?.label || "Test Plan"}</h2>
+          <span>{plan?.product || "Core Platform"} · {plan?.version || "Automation"}</span>
+        </div>
+        <button className="icon-button" title="Plan actions" aria-label="Plan actions" onClick={() => setNotice("Plan actions opened. This automation workspace currently has one active plan.")}><ChevronDown size={16} /></button>
+      </div>
+      {notice ? <p className="azure-inline-notice">{notice}</p> : null}
+      <div className="azure-plan-stats">
+        <span>{counts.total || 0} test points</span>
+        <strong>{passRate}% passed</strong>
+        <a href="/report/latest" target="_blank" rel="noreferrer">View report</a>
+      </div>
+      <div className="azure-suite-heading">
+        <h3>Test Suites</h3>
+        <div className="azure-suite-tools">
+          <button title="Show suites" onClick={() => setNotice(`${suites.length} suites are available in this automation plan.`)}><ClipboardList size={15} /></button>
+          <button title="Add suite" onClick={() => setNotice("Suite creation will be enabled when a second automation plan is added.")}><Plus size={15} /></button>
+          <button title="Delete suite" onClick={() => setNotice("Default automation suites are protected and cannot be deleted from this view.")}><Trash2 size={15} /></button>
+        </div>
+      </div>
+      <label className="azure-suite-filter">
+        <Search size={15} />
+        <input placeholder="Filter suites by name" />
+      </label>
+      <div className="azure-suite-list" role="tree">
+        {suites.length === 0 ? <p className="empty">No suites available.</p> : (
+          <section className="azure-suite-plan-root">
+            <button
+              className="azure-suite-product-title"
+              onClick={() => setIsProductOpen((previous) => !previous)}
+              aria-expanded={isProductOpen}
+            >
+              {isProductOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+              <span>{plan?.product || "Core Platform"}</span>
+              <strong>{counts.total || 0}</strong>
+            </button>
+            {isProductOpen ? suiteGroups.map((group) => (
+              <section className="azure-suite-group" key={group.label}>
+            <button
+              className="azure-suite-group-title"
+              onClick={() => setOpenSuiteGroups((previous) => ({ ...previous, [group.label]: !previous[group.label] }))}
+            >
+              {openSuiteGroups[group.label] ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+              <span>{group.label}</span>
+              <strong>{group.total}</strong>
+            </button>
+                {openSuiteGroups[group.label] ? group.folders.map((folder) => {
+              const folderKey = `${group.label}/${folder.label}`;
+              return <section className="azure-suite-folder" key={folderKey}>
+                <button
+                  className="azure-suite-folder-title"
+                  onClick={() => setOpenSuiteGroups((previous) => ({ ...previous, [folderKey]: !previous[folderKey] }))}
+                >
+                  {openSuiteGroups[folderKey] ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+                  <span>{folder.label}</span>
+                  <strong>{folder.total}</strong>
+                </button>
+                {openSuiteGroups[folderKey] ? folder.suites.flatMap((suite) =>
+                  suite.cases.map((caseItem) => (
+                    <button
+                      key={`${suite.id}/${caseItem.id}`}
+                      className={`azure-suite-case ${selectedSuite?.id === suite.id && selectedCaseId === caseItem.id ? "selected" : ""}`}
+                      onClick={() => {
+                        setSelectedSuiteId(suite.id);
+                        setSelectedCaseId(caseItem.id);
+                      }}
+                    >
+                      <span>{caseItem.title.replace(/\s*\([^)]+\)\s*$/, "")}</span>
+                      <strong>{caseItem.id}</strong>
+                    </button>
+                  ))
+                ) : null}
+              </section>;
+            }) : null}
+              </section>
+            )) : null}
+          </section>
+        )}
+      </div>
+    </aside>
+    <section className="azure-plan-main">
+      {selectedCase ? (
+        <AzureRunResultView
+          cases={selectedCases}
+          selectedCase={selectedCase}
+          suite={selectedSuite}
+          testPlan={testPlan}
+          onBack={() => setSelectedCaseId("")}
+          onSelectCase={(caseItem) => setSelectedCaseId(caseItem.id)}
+          setNotice={setNotice}
+        />
+      ) : (
+        <>
+          <div className="azure-main-heading">
+            <div>
+              <h2><button className="azure-back-link" onClick={() => setPlanView("list")}>Back to Test Plans</button>{plan?.label || "Test Plan"} <span>(ID: {plan?.suiteId || plan?.id || "automation"})</span></h2>
+              <small>{testPlan?.updatedAt ? `Updated ${formatDate(testPlan.updatedAt)}` : "Waiting for first run"}</small>
+            </div>
+            <div className="azure-main-actions">
+              <span className={`outcome-badge ${String(testPlan?.runStatus || "").toLowerCase()}`}>{testPlan?.runStatus || "not-run"}</span>
+              <button onClick={onRunAutomation} disabled={running}><Play size={16} /> Run automation</button>
+            </div>
+          </div>
+          <div className="azure-tabs" role="tablist">
+            {["Define", "Execute", "Chart", "Export"].map((tab) => (
+              <button key={tab} className={activeTab === tab ? "active" : ""} onClick={() => setActiveTab(tab)}>{tab}</button>
+            ))}
+          </div>
+          {notice ? <p className="azure-inline-notice main">{notice}</p> : null}
+          {activeTab === "Execute" ? <AzureExecuteTab cases={selectedCases} suite={selectedSuite} running={running} onRunAutomation={onRunAutomation} setNotice={setNotice} onOpenCase={(caseItem) => setSelectedCaseId(caseItem.id)} /> : null}
+          {activeTab === "Define" ? <AzureDefineTab cases={selectedCases} suite={selectedSuite} setNotice={setNotice} /> : null}
+          {activeTab === "Chart" ? <AzureChartTab counts={counts} /> : null}
+          {activeTab === "Export" ? <AzureExportTab /> : null}
+        </>
+      )}
+    </section>
+  </section>;
+}
+
+function AzurePlanList({ plans, counts, testPlan, notice, setNotice, onOpenPlan }) {
+  const plan = plans[0] || {};
+  const [scope, setScope] = useState("All");
+  const [filter, setFilter] = useState("");
+  const [filterState, setFilterState] = useState({
+    state: "Active",
+    area: plan.product || "Core Platform",
+    iteration: plan.version || "MISC v1",
+    assignedTo: "Automation"
+  });
+  const cycleFilter = (key, values) => {
+    const currentIndex = values.indexOf(filterState[key]);
+    setFilterState((previous) => ({ ...previous, [key]: values[(currentIndex + 1) % values.length] }));
+  };
+  const planTitle = plan.label || "Regression Plan";
+  const visible = !filter.trim() || planTitle.toLowerCase().includes(filter.trim().toLowerCase());
+  return <section className="azure-plan-list-page">
+    <div className="azure-plan-list-heading">
+      <h2>Test Plans</h2>
+      <button onClick={() => setNotice("New Test Plan is available after adding another automation suite family. Current workspace has one active plan.")}><Plus size={16} /> New Test Plan</button>
+    </div>
+    <div className="azure-plan-list-tabs">
+      {["Mine", "All"].map((tab) => <button key={tab} className={scope === tab ? "active" : ""} onClick={() => setScope(tab)}>{tab}</button>)}
+    </div>
+    <div className="azure-plan-filter-bar">
+      <label><Search size={15} /><input placeholder="Filter by title" value={filter} onChange={(event) => setFilter(event.target.value)} /></label>
+      <button className="secondary" onClick={() => cycleFilter("state", ["Active", "Passed", "All"])}>State: {filterState.state} <ChevronDown size={14} /></button>
+      <button className="secondary" onClick={() => cycleFilter("area", [plan.product || "Core Platform", "All"])}>Area Path: {filterState.area} <ChevronDown size={14} /></button>
+      <button className="secondary" onClick={() => cycleFilter("iteration", [plan.version || "MISC v1", "All"])}>Iteration: {filterState.iteration} <ChevronDown size={14} /></button>
+      <button className="secondary" onClick={() => cycleFilter("assignedTo", ["Automation", "All"])}>Assigned To: {filterState.assignedTo} <ChevronDown size={14} /></button>
+    </div>
+    {notice ? <p className="azure-inline-notice">{notice}</p> : null}
+    <div className="azure-plan-list-table">
+      <div className="azure-plan-list-row header"><span>Title</span><span>Test Plan ID</span><span>State</span><span>Area Path</span><span>Iteration</span><span>Assigned To</span><span /></div>
+      {visible ? (
+        <button className="azure-plan-list-row" onClick={onOpenPlan}>
+          <span><ClipboardList size={15} /> {planTitle}</span>
+          <span>{plan.suiteId || plan.id || "complete-list-view-e2e"}</span>
+          <span>{filterState.state === "Passed" ? "Passed" : "Active"}</span>
+          <span>{plan.product || "Core Platform"}</span>
+          <span>{plan.version || "MISC v1"}</span>
+          <span><span className="azure-avatar">QA</span> Automation</span>
+          <span>{counts.PASS || 0}/{counts.total || 0} passed</span>
+        </button>
+      ) : <p className="empty">No test plans match this filter.</p>}
+    </div>
+    <p className="azure-plan-list-footnote">Showing {scope.toLowerCase()} plans · Latest run: {testPlan?.runStatus || "not-run"} · Updated {formatDate(testPlan?.updatedAt)}</p>
+  </section>;
+}
+
+function collectPlanSuites(plan) {
+  const suites = [];
+  const walk = (node, path = []) => {
+    if (!node) return;
+    const nextPath = node.label ? [...path, node.label] : path;
+    const cases = Array.isArray(node.cases) ? node.cases : [];
+    if (cases.length > 0) {
+      const rawSuitePath = nextPath.slice(1);
+      const productLabel = String(plan?.product || "").trim().toLowerCase();
+      const suitePath =
+        productLabel && String(rawSuitePath[0] || "").trim().toLowerCase() === productLabel
+          ? rawSuitePath.slice(1)
+          : rawSuitePath;
+      suites.push({
+        id: node.id,
+        label: node.label,
+        path: suitePath,
+        folderLabel: suitePath[1] || "General",
+        caseLabel: suitePath.slice(2).join(" / ") || node.label,
+        cases
+      });
+    }
+    (node.children || []).forEach((child) => walk(child, nextPath));
+  };
+  walk(plan);
+  return suites;
+}
+
+function groupPlanSuites(suites) {
+  const groups = new Map();
+  for (const suite of suites) {
+    const label = suite.path[0] || "Other";
+    const existing = groups.get(label) || { label, suites: [], total: 0 };
+    existing.suites.push(suite);
+    existing.total += suite.cases.length;
+    groups.set(label, existing);
+  }
+  return [...groups.values()].map((group) => {
+    const folderMap = new Map();
+    for (const suite of group.suites) {
+      const folder = folderMap.get(suite.folderLabel) || { label: suite.folderLabel, suites: [], total: 0 };
+      folder.suites.push(suite);
+      folder.total += suite.cases.length;
+      folderMap.set(folder.label, folder);
+    }
+    return { ...group, folders: [...folderMap.values()] };
+  });
+}
+
+function AzureExecuteTab({ cases, suite, running, onRunAutomation, setNotice, onOpenCase }) {
+  const [selectedIds, setSelectedIds] = useState(new Set());
+  const toggleCase = (id) => {
+    setSelectedIds((previous) => {
+      const next = new Set(previous);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  };
+  const allSelected = cases.length > 0 && cases.every((caseItem) => selectedIds.has(caseItem.id));
+  return <div className="azure-tab-panel">
+    <div className="azure-grid-heading">
+      <h3>Test Points ({cases.length} items)</h3>
+      <div className="azure-grid-actions">
+        <button className="secondary" onClick={() => setNotice(`${selectedIds.size || cases.length} test point outcome(s) already come from the latest automation run.`)}><CheckSquare size={16} /> Mark outcome</button>
+        <button onClick={onRunAutomation} disabled={running}><Play size={16} /> Run for web application</button>
+      </div>
+    </div>
+    <div className="azure-test-points">
+      <div className="azure-test-row header"><span><input type="checkbox" checked={allSelected} onChange={(event) => setSelectedIds(event.target.checked ? new Set(cases.map((caseItem) => caseItem.id)) : new Set())} /></span><strong>Title</strong><strong>Outcome</strong></div>
+      {cases.length === 0 ? <p className="empty">No test points in this suite.</p> : cases.map((caseItem, index) => {
+        const outcome = String(caseItem.outcome || "PENDING").toUpperCase();
+        return <article key={caseItem.id} className={`azure-test-row ${index === 1 ? "selected" : ""}`} onClick={() => onOpenCase?.(caseItem)}>
+          <span><input type="checkbox" checked={selectedIds.has(caseItem.id)} onClick={(event) => event.stopPropagation()} onChange={() => toggleCase(caseItem.id)} /></span>
+          <div>
+            <strong>{caseItem.title} ({caseItem.id})</strong>
+            <small>{suite?.path?.join(" / ") || "Automation suite"}</small>
+          </div>
+          <span className={`azure-outcome ${outcome.toLowerCase()}`}>{outcome}</span>
+        </article>;
+      })}
+    </div>
+  </div>;
+}
+
+function AzureRunResultView({ cases, selectedCase, suite, testPlan, onBack, onSelectCase, setNotice }) {
+  const outcome = String(selectedCase.outcome || "PENDING").toUpperCase();
+  const outcomeLabel = outcome === "PASS" ? "passed" : outcome === "FAIL" ? "failed" : outcome.toLowerCase();
+  const [activeResultTab, setActiveResultTab] = useState("Summary");
+  const [showImages, setShowImages] = useState(false);
+  const resultTitle = selectedCase.resultRef?.title || selectedCase.title;
+  const attachments = [
+    ["Latest HTML report", testPlan?.report?.html || "/report/latest"],
+    ["JSON result payload", testPlan?.report?.json || "/report/list-view-regression-results.json"]
+  ];
+  const steps = [
+    { label: "Resolve automation context", action: suite?.path?.join(" / ") || "Automation suite", expected: "Target suite and test point are available.", outcome },
+    { label: "Run Playwright test", action: resultTitle, expected: selectedCase.expected, outcome },
+    { label: "Collect result evidence", action: selectedCase.actual || "Captured in latest run.", expected: "Result is linked to report artifacts.", outcome }
+  ];
+
+  return <div className="azure-result-workspace">
+    <aside className="azure-result-list">
+      <div className="azure-result-list-title">
+        <button className="secondary" onClick={onBack}>Back</button>
+        <strong>Run · {testPlan?.runStatus || "latest automation"}</strong>
+      </div>
+      <label className="azure-suite-filter">
+        <Search size={15} />
+        <input placeholder="Search by test case ID" />
+      </label>
+      <div className="azure-result-items">
+        {cases.map((caseItem) => {
+          const itemOutcome = String(caseItem.outcome || "PENDING").toUpperCase();
+          return <button key={caseItem.id} className={caseItem.id === selectedCase.id ? "selected" : ""} onClick={() => onSelectCase(caseItem)}>
+            <span className={`azure-status-dot ${itemOutcome.toLowerCase()}`} />
+            <span>{caseItem.title}</span>
+            <small>{caseItem.id}</small>
+          </button>;
+        })}
+      </div>
+    </aside>
+    <section className="azure-result-detail">
+      <div className="azure-result-header">
+        <span className={`outcome-badge ${outcome.toLowerCase()}`}>{outcome}</span>
+        <div>
+          <h2>{selectedCase.title} ({selectedCase.id})</h2>
+          <small>{suite?.path?.join(" / ") || "Automation suite"}</small>
+        </div>
+        <button onClick={() => setNotice(`Bug draft prepared for ${selectedCase.id}. Review it from the Bugs section after triage.`)}><Bug size={16} /> Create bug</button>
+      </div>
+      <div className="azure-result-tabs">
+        {["Summary", "Attachments"].map((tab) => (
+          <button key={tab} className={activeResultTab === tab ? "active" : ""} onClick={() => setActiveResultTab(tab)}>
+            {tab}{tab === "Attachments" ? <span>{attachments.length}</span> : null}
+          </button>
+        ))}
+      </div>
+      {activeResultTab === "Summary" ? <div className="azure-summary-grid">
+        <article>
+          <h3>Summary</h3>
+          <dl>
+            <dt>Run by</dt><dd>Automation</dd>
+            <dt>Pipeline run tested</dt><dd>{testPlan?.runStatus || "Latest local run"}</dd>
+            <dt>Configuration</dt><dd>Playwright · Chromium</dd>
+            <dt>Completed time</dt><dd>{formatDate(testPlan?.updatedAt)}</dd>
+            <dt>Test suite</dt><dd>{suite?.path?.join(" / ") || "-"}</dd>
+            <dt>Test case</dt><dd>{selectedCase.id}</dd>
+          </dl>
+        </article>
+        <article>
+          <h3>Analysis</h3>
+          <dl>
+            <dt>Analysis owner</dt><dd>Automation</dd>
+            <dt>Comment</dt><dd>{selectedCase.actual || "No analysis note captured."}</dd>
+          </dl>
+        </article>
+      </div> : <div className="azure-attachment-list">{attachments.map(([label, href]) => <a key={href} href={href} target="_blank" rel="noreferrer">{label}</a>)}</div>}
+      <article className="azure-linked-work">
+        <div><h3>Linked work items</h3><span>No work items linked</span></div>
+        <button className="secondary" onClick={() => setNotice(`Work item link action opened for ${selectedCase.id}.`)}><Plus size={16} /> Add</button>
+      </article>
+      <section className="azure-steps-panel">
+        <div className="azure-steps-heading">
+          <strong><span className={`azure-status-dot ${outcome.toLowerCase()}`} /> Test {outcomeLabel}</strong>
+          <span>Completed {formatDate(testPlan?.updatedAt)}</span>
+          <label><input type="checkbox" checked={showImages} onChange={(event) => setShowImages(event.target.checked)} /> Show images</label>
+        </div>
+        {showImages ? <div className="azure-image-placeholder">Image evidence is available from the attached Playwright report links.</div> : null}
+        <div className="azure-step-table">
+          <div className="azure-step-row header"><span>Step</span><span>Outcome</span><span>Action</span><span>Expected Result</span></div>
+          {steps.map((step, index) => <div key={step.label} className="azure-step-row">
+            <span>{index + 1}</span>
+            <span className={`azure-outcome ${step.outcome.toLowerCase()}`}>{step.outcome}</span>
+            <span>{step.action}</span>
+            <span>{step.expected}</span>
+          </div>)}
+          <div className="azure-attachments">
+            <strong>Attachments</strong>
+            {attachments.map(([label, href]) => <a key={href} href={href} target="_blank" rel="noreferrer">{label}</a>)}
+          </div>
+        </div>
+      </section>
+    </section>
+  </div>;
+}
+
+function AzureDefineTab({ cases, suite, setNotice }) {
+  return <div className="azure-tab-panel">
+    <div className="azure-grid-heading"><h3>{suite?.label || "Suite"} definitions</h3><button onClick={() => setNotice("New automated case draft flow will open here when authoring is enabled.")}><Plus size={16} /> New automated case</button></div>
+    <div className="azure-define-list">
+      {cases.map((caseItem) => <article key={caseItem.id}><strong>{caseItem.id}</strong><span>{caseItem.title}</span><small>{caseItem.expected}</small></article>)}
+    </div>
+  </div>;
+}
+
+function AzureChartTab({ counts }) {
+  const rows = [["Passed", counts.PASS || 0, "pass"], ["Failed", counts.FAIL || 0, "fail"], ["Blocked", counts.BLOCKED || 0, "skip"], ["Pending", counts.PENDING || 0, "pending"]];
+  const total = Math.max(1, counts.total || 0);
+  return <div className="azure-tab-panel azure-chart-panel">{rows.map(([label, value, tone]) => <div key={label}><span>{label}</span><strong>{value}</strong><i className={tone} style={{ width: `${Math.max(4, (value / total) * 100)}%` }} /></div>)}</div>;
+}
+
+function AzureExportTab() {
+  return <div className="azure-tab-panel azure-export-panel">
+    <a href="/report/latest" target="_blank" rel="noreferrer">HTML report</a>
+    <a href="/report/list-view-regression-results.csv" target="_blank" rel="noreferrer">CSV</a>
+    <a href="/report/list-view-regression-results.json" target="_blank" rel="noreferrer">JSON</a>
+    <a href="/api/inventory.xlsx?refresh=1" target="_blank" rel="noreferrer">Excel inventory</a>
+  </div>;
 }
 
 function InventoryPanel({ rows, filter, setFilter, selectedTests, toggleSelected, selectVisible, selectAll, clearSelected, refresh, context, clearContext, backToSuites, runSelected, running }) {

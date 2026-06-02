@@ -321,6 +321,85 @@ frameworkRegistry.suites.sort(compareAdminSidebarSuites);
 frameworkRegistry.scenarios.sort((left, right) =>
   (adminSidebarSuiteRank.get(left.suiteId) ?? 999) - (adminSidebarSuiteRank.get(right.suiteId) ?? 999)
 );
+
+const completeListViewTestPlan = {
+  id: "complete-list-view-regression",
+  label: "MISC v1",
+  product: "Core Platform",
+  version: "MISC v1",
+  suiteId: "complete-list-view-e2e",
+  children: [
+    {
+      id: "core-platform",
+      label: "Core Platform",
+      children: [
+        {
+          id: "admin",
+          label: "Admin",
+          children: [
+            {
+              id: "admin-apps",
+              label: "Apps",
+              cases: [
+                {
+                  id: "TC-001",
+                  title: "Admin can create a new app",
+                  expected: "New app appears in the Apps list",
+                  matcher: "CLV-ADM-CRUD-001"
+                },
+                {
+                  id: "TC-002",
+                  title: "Admin can create a new list view",
+                  expected: "New list view appears under the app",
+                  matcher: "CLV-ADM-LVA-004"
+                },
+                {
+                  id: "TC-003",
+                  title: "Admin can delete an existing app",
+                  expected: "App removed from the Apps list",
+                  matcher: "CLV-ADM-CRUD-001"
+                },
+                {
+                  id: "TC-004",
+                  title: "Admin can search for an app by name",
+                  expected: "Matching app appears in search results",
+                  matcher: "CLV-ADM-CRUD-001"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          id: "keystone",
+          label: "Keystone",
+          children: [
+            {
+              id: "keystone-apps",
+              label: "Apps",
+              cases: [
+                {
+                  id: "TC-005",
+                  title: "App created in Admin is visible in Keystone",
+                  expected: "New app appears in Keystone app list",
+                  matcher: "CLV-ADM-CRUD-001",
+                  dependsOn: ["TC-001"]
+                },
+                {
+                  id: "TC-006",
+                  title: "List view created in Admin is visible in Keystone",
+                  expected: "New list view appears under correct app",
+                  matcher: "CLV-ADM-KEY-LV-005",
+                  dependsOn: ["TC-002"]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+};
+
 const maxLogLines = 2000;
 const runState = {
   running: false,
@@ -1366,6 +1445,86 @@ const readFramework = () => ({
     ? readdirSync(generatedRoot).filter((item) => item.endsWith(".json")).length
     : 0
 });
+
+const normalizedPlanStatus = (status) => {
+  const value = String(status || "").trim().toUpperCase();
+  if (["PASS", "FAIL", "SKIP", "RUNNING", "PENDING"].includes(value)) return value;
+  if (value === "PASSED") return "PASS";
+  if (value === "FAILED") return "FAIL";
+  if (value === "SKIPPED") return "SKIP";
+  return "PENDING";
+};
+
+const planResultText = (row) =>
+  [
+    row?.id,
+    row?.tags,
+    row?.moduleSuite,
+    row?.surface,
+    row?.featureArea,
+    row?.testCaseTitle,
+    row?.expectedResult,
+    row?.actualResult,
+    row?.proof,
+    row?.automationStatus
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+
+const resolveCompleteListViewTestPlan = () => {
+  const results = readResults();
+  const rows = Array.isArray(results.rows) ? results.rows : [];
+  const caseStatus = new Map();
+  const counts = { total: 0, PASS: 0, FAIL: 0, BLOCKED: 0, PENDING: 0, RUNNING: 0, SKIP: 0 };
+
+  const findMatchingRow = (caseDef) => {
+    const matcher = String(caseDef.matcher || caseDef.id || "").trim().toLowerCase();
+    if (!matcher) return null;
+    return rows.find((row) => planResultText(row).includes(matcher)) || null;
+  };
+
+  const resolveCase = (caseDef) => {
+    const blockedBy = (caseDef.dependsOn || []).filter((dependencyId) => caseStatus.get(dependencyId) !== "PASS");
+    const matchedRow = findMatchingRow(caseDef);
+    const rowStatus = normalizedPlanStatus(matchedRow?.status);
+    const outcome = blockedBy.length > 0 ? "BLOCKED" : matchedRow ? rowStatus : "PENDING";
+    caseStatus.set(caseDef.id, outcome);
+    counts.total += 1;
+    counts[outcome] = (counts[outcome] || 0) + 1;
+    return {
+      ...caseDef,
+      outcome,
+      actual: blockedBy.length > 0
+        ? `Blocked by ${blockedBy.join(", ")}`
+        : matchedRow?.actualResult || (matchedRow ? "Captured in latest run." : "(captured at runtime)"),
+      blockedBy,
+      resultRef: matchedRow
+        ? {
+            id: matchedRow.id,
+            status: matchedRow.status,
+            title: matchedRow.testCaseTitle,
+            directUrl: matchedRow.directUrl || "",
+            updatedAt: results.updatedAt || ""
+          }
+        : null
+    };
+  };
+
+  const resolveNode = (node) => ({
+    ...node,
+    cases: Array.isArray(node.cases) ? node.cases.map(resolveCase) : undefined,
+    children: Array.isArray(node.children) ? node.children.map(resolveNode) : undefined
+  });
+
+  return {
+    updatedAt: results.updatedAt || new Date().toISOString(),
+    runStatus: results.runStatus || "not-run",
+    report: results.report || null,
+    counts,
+    plans: [resolveNode(completeListViewTestPlan)]
+  };
+};
 
 const readRecordedMetadata = () => {
   if (!existsSync(recordedMetadataPath)) {
@@ -4434,6 +4593,15 @@ const server = createServer(async (request, response) => {
 
   if (request.method === "GET" && url.pathname === "/api/framework") {
     sendJson(response, 200, readFramework());
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/test-plan") {
+    try {
+      sendJson(response, 200, resolveCompleteListViewTestPlan());
+    } catch (error) {
+      sendJson(response, 500, { error: error instanceof Error ? error.message : "Failed to read test plan." });
+    }
     return;
   }
 

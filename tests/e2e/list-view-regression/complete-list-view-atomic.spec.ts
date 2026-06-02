@@ -36,6 +36,11 @@ const safeApiName = (value: string) =>
 
 const escapeRegex = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
+type ApiApp = { id: string; label?: string; api_name?: string };
+type ApiObject = { api_name: string; label?: string };
+type ListView = { id: string; name: string };
+type AccountListViewApiContext = { token: string; appId: string; objectApiName: string };
+
 let adminSessionReady = false;
 let keystoneSessionReady = false;
 
@@ -152,6 +157,65 @@ const cleanupKeystoneRecord = async (
   await request
     .delete(`/api/apps/${appId}/objects/${objectApiName}/records/${recordId}`, { headers: authHeaders(token) })
     .catch(() => null);
+};
+
+const resolveAccountListViewApiContext = async (request: APIRequestContext): Promise<AccountListViewApiContext> => {
+  const token = await apiLogin(request);
+  const appsRes = await request.get("/api/apps", { headers: authHeaders(token) });
+  expect(appsRes.ok(), await appsRes.text()).toBeTruthy();
+  const apps = ((await appsRes.json()) as { items?: ApiApp[] }).items ?? [];
+  expect(apps.length).toBeGreaterThan(0);
+  const prioritizedApps = [...apps].sort((left, right) => {
+    const leftText = [left.id, left.label, left.api_name].join(" ").toLowerCase();
+    const rightText = [right.id, right.label, right.api_name].join(" ").toLowerCase();
+    const leftScore = /crm|app0000006/.test(leftText) ? 0 : 1;
+    const rightScore = /crm|app0000006/.test(rightText) ? 0 : 1;
+    return leftScore - rightScore;
+  });
+
+  for (const app of prioritizedApps) {
+    const objectsRes = await request.get(`/api/apps/${app.id}/objects`, { headers: authHeaders(token) });
+    if (!objectsRes.ok()) continue;
+    const objects = ((await objectsRes.json()) as { items?: ApiObject[] }).items ?? [];
+    const accountObject = objects.find((object) => object.api_name === "account") ??
+      objects.find((object) => /account/i.test([object.api_name, object.label].join(" ")));
+    if (accountObject?.api_name) {
+      return { token, appId: app.id, objectApiName: accountObject.api_name };
+    }
+  }
+
+  throw new Error("No accessible Account object was found for cross-surface list-view verification.");
+};
+
+const createAccountListViewViaApi = async (
+  request: APIRequestContext,
+  ctx: AccountListViewApiContext,
+  name: string
+): Promise<ListView> => {
+  const response = await request.post(`/api/apps/${ctx.appId}/objects/${ctx.objectApiName}/list-views`, {
+    headers: authHeaders(ctx.token),
+    data: {
+      name,
+      filters_json: { logic: "AND", filters: [] },
+      columns_json: ["id", "name"],
+      sharing_json: { scope: "private" },
+      sort_json: [{ field: "name", direction: "asc" }],
+      view_json: { mode: "table", created_by: "admin-metadata-api" }
+    }
+  });
+  expect(response.ok(), await response.text()).toBeTruthy();
+  return (await response.json()) as ListView;
+};
+
+const deleteAccountListViewViaApi = async (
+  request: APIRequestContext,
+  ctx: AccountListViewApiContext,
+  listViewId: string
+) => {
+  if (!listViewId) return;
+  await request.delete(`/api/apps/${ctx.appId}/objects/${ctx.objectApiName}/list-views/${listViewId}`, {
+    headers: authHeaders(ctx.token)
+  }).catch(() => null);
 };
 
 const createKeystoneAccountViaListView = async (page: Page, label: string, accountNumber: string) => {
@@ -491,6 +555,33 @@ test.describe("Complete List View E2E CRUD workflows @complete-list-view-atomic"
       await deleteListViewByName(page, apps, cloneName).catch(() => null);
       await deleteListViewByName(page, apps, renamedName).catch(() => null);
       await deleteListViewByName(page, apps, baseName).catch(() => null);
+    }
+  });
+
+  test("CLV-ADM-KEY-LV-005 Admin-created Account list view is visible in Keystone @complete-list-view-atomic [surface: Admin + Keystone] [feature: List View Cross-Surface Visibility] [level: Regression] [input: create Account list view through Admin metadata API, open Keystone Account, select the list view, verify selection, delete it] [expected: Admin-created list-view metadata is selectable in Keystone under the Account object] [proof: list-view metadata created outside Keystone UI appears in Keystone runtime picker]", async ({
+    page,
+    request
+  }, testInfo: TestInfo) => {
+    requireWriteMode();
+    const ctx = await resolveAccountListViewApiContext(request);
+    const name = `E2E Admin API View ${uniqueStamp()}`;
+    let listViewId = "";
+
+    try {
+      const created = await createAccountListViewViaApi(request, ctx, name);
+      listViewId = created.id;
+      expect(created.name).toBe(name);
+
+      const accounts = await openKeystoneAccounts(page);
+      await expectKeystoneListActionsReady(page);
+      const activeContext = await activeKeystoneRecordContext(page);
+      expect(activeContext.appId).toBe(ctx.appId);
+      expect(activeContext.objectApiName).toBe(ctx.objectApiName);
+      await selectListViewByName(page, accounts, name);
+      await expectSelectedListView(accounts, name);
+      await attachEvidence(page, testInfo, "admin-created-list-view-visible-in-keystone").catch(() => null);
+    } finally {
+      await deleteAccountListViewViaApi(request, ctx, listViewId);
     }
   });
 
