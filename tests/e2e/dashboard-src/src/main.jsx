@@ -1231,21 +1231,19 @@ function TestPlansPanel({ testPlan, running, onRunAutomation }) {
                   <span>{folder.label}</span>
                   <strong>{folder.total}</strong>
                 </button>
-                {openSuiteGroups[folderKey] ? folder.suites.flatMap((suite) =>
-                  suite.cases.map((caseItem) => (
-                    <button
-                      key={`${suite.id}/${caseItem.id}`}
-                      className={`azure-suite-case ${selectedSuite?.id === suite.id && selectedCaseId === caseItem.id ? "selected" : ""}`}
-                      onClick={() => {
-                        setSelectedSuiteId(suite.id);
-                        setSelectedCaseId(caseItem.id);
-                      }}
-                    >
-                      <span>{caseItem.title.replace(/\s*\([^)]+\)\s*$/, "")}</span>
-                      <strong>{caseItem.id}</strong>
-                    </button>
-                  ))
-                ) : null}
+                {openSuiteGroups[folderKey] ? folder.suites.map((suite) => (
+                  <button
+                    key={suite.id}
+                    className={`azure-suite-case ${selectedSuite?.id === suite.id && !selectedCaseId ? "selected" : ""}`}
+                    onClick={() => {
+                      setSelectedSuiteId(suite.id);
+                      setSelectedCaseId("");
+                    }}
+                  >
+                    <span>{suite.summaryLabel}</span>
+                    <strong>{suite.cases.length}</strong>
+                  </button>
+                )) : null}
               </section>;
             }) : null}
               </section>
@@ -1362,6 +1360,7 @@ function collectPlanSuites(plan) {
         path: suitePath,
         folderLabel: suitePath[1] || "General",
         caseLabel: suitePath.slice(2).join(" / ") || node.label,
+        summaryLabel: `${suitePath[0] || "Automation"} ${node.label} workflows`,
         cases
       });
     }
