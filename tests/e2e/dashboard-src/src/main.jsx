@@ -1440,40 +1440,40 @@ function planStepRowsForCase(caseItem, suite) {
   const suitePath = suite?.path?.join(" / ") || "Apps";
   const rowsByCase = {
     "TC-001": [
-      ["Open Admin", "Admin application is loaded and the user is authenticated."],
-      ["Go to Apps list", "Apps list page is visible with list-view controls available."],
-      ["Create a disposable app", "New app is saved successfully."],
-      ["Search and verify app appears", "New app appears in the Apps list."]
+      ["Open Admin", "URL contains admin route, login completes, user menu is visible, and Apps page heading/table is visible."],
+      ["Go to Apps list", "Apps list table is visible, New button is enabled, and existing app rows or empty-table state are loaded."],
+      ["Create a disposable app", "Save confirmation appears and created app name is returned in the Apps list/table response."],
+      ["Search and verify app appears", "Search text equals created app name and exactly one matching row contains the created app name."]
     ],
     "TC-002": [
-      ["Open Admin", "Admin application is loaded and the user is authenticated."],
-      ["Go to Apps list-view actions", "List-view action controls are available."],
-      ["Create a disposable custom list view", "New list view is saved successfully."],
-      ["Verify the list view is available", "New list view appears under the app."]
+      ["Open Admin", "URL contains admin route, login completes, user menu is visible, and Apps page heading/table is visible."],
+      ["Go to Apps list-view actions", "List-view selector is visible, action menu opens, and create/settings options are enabled."],
+      ["Create a disposable custom list view", "Save confirmation appears and new list-view label is selected or available in the list-view selector."],
+      ["Verify the list view is available", "Selected list-view name equals created list-view name and Apps table remains loaded without page error."]
     ],
     "TC-003": [
-      ["Open Admin", "Admin application is loaded and the user is authenticated."],
-      ["Find the disposable app", "Disposable app row is found in the Apps list."],
-      ["Delete the app", "Delete confirmation completes successfully."],
-      ["Search again and verify it is removed", "App removed from the Apps list."]
+      ["Open Admin", "URL contains admin route, login completes, user menu is visible, and Apps page heading/table is visible."],
+      ["Find the disposable app", "Search/filter value matches disposable app name and target row is visible before delete."],
+      ["Delete the app", "Delete confirmation is accepted and success state is shown, with no blocking validation error."],
+      ["Search again and verify it is removed", "Same app name search returns no active row in Apps list after delete."]
     ],
     "TC-004": [
-      ["Open Admin", "Admin application is loaded and the user is authenticated."],
-      ["Go to Apps list", "Apps list page is visible."],
-      ["Enter app name in search", "Search request filters the Apps list."],
-      ["Verify matching app row is shown", "Matching app appears in search results."]
+      ["Open Admin", "URL contains admin route, login completes, user menu is visible, and Apps page heading/table is visible."],
+      ["Go to Apps list", "Apps list table is visible and search input is enabled."],
+      ["Enter app name in search", "Search input value equals requested app name and table refresh/filter completes."],
+      ["Verify matching app row is shown", "At least one visible row contains requested app name, and unrelated app names are not shown as matches."]
     ],
     "TC-005": [
       ["Complete TC-001", "Admin-created app exists before Keystone validation starts."],
-      ["Open Keystone", "Keystone application is loaded and the user is authenticated."],
-      ["Open app launcher/list", "Keystone app list is visible."],
-      ["Verify Admin-created app is visible", "New app appears in Keystone app list."]
+      ["Open Keystone", "URL contains Keystone route, login completes, user menu is visible, and runtime shell is loaded."],
+      ["Open app launcher/list", "Keystone app launcher/list opens without error and loaded app names are visible."],
+      ["Verify Admin-created app is visible", "Admin-created app name appears in Keystone app list and can be selected."]
     ],
     "TC-006": [
       ["Complete TC-002", "Admin-created list view exists before Keystone validation starts."],
-      ["Open Keystone", "Keystone application is loaded and the user is authenticated."],
-      ["Select the relevant app/tab", "Correct app and tab are opened in Keystone."],
-      ["Verify Admin-created list view is selectable", "New list view appears under correct app."]
+      ["Open Keystone", "URL contains Keystone route, login completes, user menu is visible, and runtime shell is loaded."],
+      ["Select the relevant app/tab", "Correct app and tab are opened in Keystone and list-view selector is visible."],
+      ["Verify Admin-created list view is selectable", "Admin-created list-view name appears in the selector under the correct app/tab."]
     ]
   };
   const rows = rowsByCase[caseItem.id] || [[caseItem.title, caseItem.expected]];
@@ -1486,7 +1486,31 @@ function planStepRowsForCase(caseItem, suite) {
 
 function toVerifyExpected(value) {
   const text = String(value || "the expected result is reached.").trim();
-  return /^verify\b/i.test(text) ? text : `Verify ${text.charAt(0).toLowerCase()}${text.slice(1)}`;
+  return /^verify\b/i.test(text) ? text : `Verify ${text}`;
+}
+
+function individualCaseTitle(caseItem) {
+  const titles = {
+    "TC-001": "Verify Admin can create a new app",
+    "TC-002": "Verify Admin can create a new list view",
+    "TC-003": "Verify Admin can delete an existing app",
+    "TC-004": "Verify Admin can search for an app by name",
+    "TC-005": "Verify Admin-created app is visible in Keystone",
+    "TC-006": "Verify Admin-created list view is visible in Keystone"
+  };
+  return titles[caseItem.id] || caseItem.title;
+}
+
+function scenarioTitle(caseItem, suite) {
+  const titles = {
+    "TC-001": "Admin Apps Create App BVT",
+    "TC-002": "Admin Apps Create List View BVT",
+    "TC-003": "Admin Apps Delete App BVT",
+    "TC-004": "Admin Apps Search App BVT",
+    "TC-005": "Keystone Apps View Created App BVT",
+    "TC-006": "Keystone Apps View List View BVT"
+  };
+  return titles[caseItem.id] || `${suite?.path?.join(" ") || "Apps"} ${caseItem.title.replace(/\s*\([^)]+\)\s*$/, "")}`;
 }
 
 function TestCasePlanBlock({ caseItem, outcome }) {
@@ -1611,24 +1635,24 @@ function AzureRunResultView({ cases, selectedCase, suite, testPlan, onBack, onSe
 function AzureDefineTab({ cases, suite, setNotice }) {
   return <div className="azure-tab-panel">
     <div className="azure-grid-heading"><h3>{suite?.label || "Suite"} definitions</h3><button onClick={() => setNotice("New automated case draft flow will open here when authoring is enabled.")}><Plus size={16} /> New automated case</button></div>
-    <div className="azure-define-list">
-      {cases.map((caseItem) => <article key={caseItem.id} className="azure-define-case">
-        <strong>{caseItem.id}</strong>
-        <div>
-          <span>{caseItem.title}</span>
-          <small>{toVerifyExpected(caseItem.expected)}</small>
-          <div className="azure-define-step-table">
-            <div className="azure-define-step-row header"><b>Step</b><b>Action</b><b>Expected Result</b></div>
-            {planStepRowsForCase(caseItem, suite).map((step) => (
-              <div className="azure-define-step-row" key={step.step}>
-                <b>{step.step}</b>
-                <span>{step.action}</span>
-                <span>{toVerifyExpected(step.expected)}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      </article>)}
+    <div className="azure-define-scenario-table">
+      <div className="azure-define-scenario-row header">
+        <strong>ID</strong>
+        <strong>Test Scenario</strong>
+        <strong>Testing Type</strong>
+        <strong>Test Steps</strong>
+        <strong>Expected Result</strong>
+      </div>
+      {cases.length === 0 ? <p className="empty">No definitions in this suite.</p> : cases.map((caseItem, caseIndex) => {
+        const steps = planStepRowsForCase(caseItem, suite);
+        return <article key={`define-${caseItem.id}`} className={`azure-define-scenario-row ${caseIndex === 1 ? "selected" : ""}`}>
+          <strong>{caseItem.id}</strong>
+          <span>{individualCaseTitle(caseItem)}</span>
+          <span>BVT</span>
+          <ol>{steps.map((step) => <li key={step.step}>{step.action}</li>)}</ol>
+          <ol>{steps.map((step) => <li key={step.step}>{toVerifyExpected(step.expected)}</li>)}</ol>
+        </article>;
+      })}
     </div>
   </div>;
 }

@@ -1119,6 +1119,51 @@ th { position: sticky; top: 0; background: var(--panel-2); z-index: 1; white-spa
 .azure-run-step-row strong {
   overflow-wrap: anywhere;
 }
+.azure-define-run-step-row {
+  grid-template-columns: 90px minmax(420px, 1fr) minmax(420px, 1fr);
+}
+.azure-define-scenario-table {
+  display: grid;
+  border: 1px solid var(--azure-border);
+  border-radius: 4px;
+  overflow: auto;
+}
+.azure-define-scenario-row {
+  display: grid;
+  grid-template-columns: 70px minmax(190px, .78fr) 96px minmax(300px, 1fr) minmax(380px, 1.1fr);
+  gap: 8px;
+  align-items: start;
+  min-width: 1120px;
+  border-bottom: 1px solid var(--azure-border-soft);
+  background: var(--azure-panel);
+  padding: 10px 12px;
+  font-size: 13px;
+}
+.azure-define-scenario-row:last-child {
+  border-bottom: 0;
+}
+.azure-define-scenario-row.header {
+  min-height: 38px;
+  background: var(--azure-panel-2);
+  color: var(--azure-muted);
+  font-size: 12px;
+  font-weight: 900;
+}
+.azure-define-scenario-row.selected {
+  box-shadow: inset 3px 0 0 var(--azure-selected-border);
+  background: var(--azure-selected-bg);
+}
+.azure-define-scenario-row span,
+.azure-define-scenario-row strong,
+.azure-define-scenario-row li {
+  overflow-wrap: anywhere;
+}
+.azure-define-scenario-row ol {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding-left: 18px;
+}
 .azure-case-plan-card {
   display: grid;
   grid-template-columns: 28px minmax(0, 1fr);
