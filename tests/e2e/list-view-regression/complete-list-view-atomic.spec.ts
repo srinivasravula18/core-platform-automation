@@ -450,6 +450,11 @@ test.describe("Complete List View E2E CRUD workflows @complete-list-view-atomic"
     let appId = "";
 
     try {
+      const initialApps = await openAdminApps(page);
+      await attachEvidence(page, testInfo, "admin-apps-open").catch(() => null);
+      await expectListRegionReady(initialApps);
+      await attachEvidence(page, testInfo, "admin-apps-list-ready").catch(() => null);
+
       const app = await createAdminAppViaUi(
         page,
         request,
@@ -460,7 +465,9 @@ test.describe("Complete List View E2E CRUD workflows @complete-list-view-atomic"
 
       await openAdminApps(page);
       await searchWithinListView(page.locator(".admin-main").first(), label);
+      await attachEvidence(page, testInfo, "admin-app-crud-search-input").catch(() => null);
       await expect(rowForText(page.locator(".admin-main").first(), label)).toBeVisible();
+      await attachEvidence(page, testInfo, "admin-app-crud-search-result").catch(() => null);
 
       await openAdminRowByLabel(page, "Apps", label);
       await page.getByRole("button", { name: /^edit$/i }).click();
@@ -469,14 +476,24 @@ test.describe("Complete List View E2E CRUD workflows @complete-list-view-atomic"
       await expect(page.getByText(/app saved successfully|app updated successfully/i).first()).toBeVisible();
       await attachEvidence(page, testInfo, "admin-app-crud-edited").catch(() => null);
 
+      await ensureKeystoneSession(page);
+      await attachEvidence(page, testInfo, "admin-app-crud-keystone-open").catch(() => null);
       await expectKeystoneAppVisible(page, editedLabel, testInfo, "admin-app-crud-keystone-visible");
+      await attachEvidence(page, testInfo, "admin-app-crud-keystone-launcher-open").catch(() => null);
 
       await ensureAdminSession(page);
       await openAdminRowByLabel(page, "Apps", editedLabel);
+      await attachEvidence(page, testInfo, "admin-app-crud-delete-target-visible").catch(() => null);
       await page.getByRole("button", { name: /^delete$/i }).last().click();
       await expect(page.getByRole("heading", { name: /^delete app$/i })).toBeVisible();
       await page.getByRole("button", { name: /^delete$/i }).last().click();
       await expect(page.getByText(/app deleted successfully/i).first()).toBeVisible();
+      await attachEvidence(page, testInfo, "admin-app-crud-delete-confirmed").catch(() => null);
+
+      const postDeleteApps = await openAdminApps(page);
+      await searchWithinListView(postDeleteApps, editedLabel);
+      await expect(rowsForText(postDeleteApps, editedLabel)).toHaveCount(0);
+      await attachEvidence(page, testInfo, "admin-app-crud-admin-hidden").catch(() => null);
 
       await expectKeystoneAppHidden(page, editedLabel, testInfo, "admin-app-crud-keystone-hidden");
       appId = "";
@@ -542,10 +559,13 @@ test.describe("Complete List View E2E CRUD workflows @complete-list-view-atomic"
     const cloneName = `${baseName} Clone`;
 
     try {
+      await attachEvidence(page, testInfo, "admin-list-view-actions-open-admin").catch(() => null);
       await selectListViewByName(page, apps, "All Apps");
       await closeTransientUi(page);
+      await attachEvidence(page, testInfo, "admin-list-view-actions-ready").catch(() => null);
 
       await createListViewViaActions(page, apps, baseName);
+      await attachEvidence(page, testInfo, "admin-list-view-actions-created").catch(() => null);
       await renameCurrentListViewViaActions(page, apps, renamedName);
       await exerciseDisposableListViewSettings(page, apps, "E2E App Name", testInfo, "admin-list-view-actions");
       await cloneCurrentListViewViaActions(page, apps, cloneName);
@@ -573,12 +593,15 @@ test.describe("Complete List View E2E CRUD workflows @complete-list-view-atomic"
       expect(created.name).toBe(name);
 
       const accounts = await openKeystoneAccounts(page);
+      await attachEvidence(page, testInfo, "admin-created-list-view-keystone-open").catch(() => null);
       await expectKeystoneListActionsReady(page);
       const activeContext = await activeKeystoneRecordContext(page);
       expect(activeContext.appId).toBe(ctx.appId);
       expect(activeContext.objectApiName).toBe(ctx.objectApiName);
+      await attachEvidence(page, testInfo, "admin-created-list-view-keystone-list-ready").catch(() => null);
       await selectListViewByName(page, accounts, name);
       await expectSelectedListView(accounts, name);
+      await attachEvidence(page, testInfo, "admin-created-list-view-admin-created").catch(() => null);
       await attachEvidence(page, testInfo, "admin-created-list-view-visible-in-keystone").catch(() => null);
     } finally {
       await deleteAccountListViewViaApi(request, ctx, listViewId);

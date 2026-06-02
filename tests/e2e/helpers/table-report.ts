@@ -36,9 +36,16 @@ type Row = {
   fieldsUpdated: string;
   bugReport?: string;
   screenshotPaths?: string[];
+  screenshotEvidence?: ScreenshotEvidence[];
   evidenceNotes?: string[];
   steps?: StepDetail[];
   manualDataRows?: ManualRow[];
+};
+
+type ScreenshotEvidence = {
+  name: string;
+  path: string;
+  attachmentName: string;
 };
 
 type StepDetail = {
@@ -817,6 +824,7 @@ export default class TableReport implements Reporter {
     }
 
     const screenshotPaths: string[] = [];
+    const screenshotEvidence: ScreenshotEvidence[] = [];
     const screenshots = result.attachments.filter((att) => {
       const name = (att.name || "").toLowerCase();
       if (name.includes("screenshot")) return true;
@@ -829,7 +837,15 @@ export default class TableReport implements Reporter {
       const filename = `shot_${row.id}_${String(index + 1).padStart(2, "0")}${ext}`;
       const dest = path.join(this.assetsDir, filename);
       fs.copyFileSync(screenshot.path, dest);
-      screenshotPaths.push(path.relative(this.outputFolder, dest).replace(/\\/g, "/"));
+      const relativePath = path.relative(this.outputFolder, dest).replace(/\\/g, "/");
+      const attachmentName = String(screenshot.name || `screenshot-${index + 1}`);
+      const evidenceName = attachmentName.replace(/^screenshot[-_]?/i, "") || attachmentName;
+      screenshotPaths.push(relativePath);
+      screenshotEvidence.push({
+        name: evidenceName,
+        path: relativePath,
+        attachmentName
+      });
     });
     const directUrlAttachment = [...result.attachments]
       .reverse()
@@ -847,6 +863,7 @@ export default class TableReport implements Reporter {
     row.directUrl = directUrl.trim();
     row.steps = collectResultSteps(result, row);
     row.screenshotPaths = screenshotPaths.length > 0 ? screenshotPaths : undefined;
+    row.screenshotEvidence = screenshotEvidence.length > 0 ? screenshotEvidence : undefined;
     row.evidenceNotes =
       screenshotPaths.length > 0
         ? [`Screenshot evidence captured after execution for ${row.id}.`]

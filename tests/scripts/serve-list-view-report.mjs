@@ -345,25 +345,53 @@ const completeListViewTestPlan = {
                   id: "TC-001",
                   title: "Admin can create a new app",
                   expected: "New app appears in the Apps list",
-                  matcher: "CLV-ADM-CRUD-001"
+                  matcher: "CLV-ADM-CRUD-001",
+                  evidenceMatchers: ["admin-app-create-form"],
+                  stepEvidenceMatchers: [
+                    ["admin-apps-open"],
+                    ["admin-apps-list-ready"],
+                    ["admin-app-create-form"],
+                    ["admin-app-crud-search-result"]
+                  ]
                 },
                 {
                   id: "TC-002",
                   title: "Admin can create a new list view",
                   expected: "New list view appears under the app",
-                  matcher: "CLV-ADM-LVA-004"
+                  matcher: "CLV-ADM-LVA-004",
+                  evidenceMatchers: ["admin-list-view-actions-settings-columns"],
+                  stepEvidenceMatchers: [
+                    ["admin-list-view-actions-open-admin"],
+                    ["admin-list-view-actions-ready"],
+                    ["admin-list-view-actions-created"],
+                    ["admin-list-view-actions-settings-columns"]
+                  ]
                 },
                 {
                   id: "TC-003",
                   title: "Admin can delete an existing app",
                   expected: "App removed from the Apps list",
-                  matcher: "CLV-ADM-CRUD-001"
+                  matcher: "CLV-ADM-CRUD-001",
+                  evidenceMatchers: ["admin-app-crud-delete-confirmed"],
+                  stepEvidenceMatchers: [
+                    ["admin-apps-open"],
+                    ["admin-app-crud-delete-target-visible"],
+                    ["admin-app-crud-delete-confirmed"],
+                    ["admin-app-crud-admin-hidden"]
+                  ]
                 },
                 {
                   id: "TC-004",
                   title: "Admin can search for an app by name",
                   expected: "Matching app appears in search results",
-                  matcher: "CLV-ADM-CRUD-001"
+                  matcher: "CLV-ADM-CRUD-001",
+                  evidenceMatchers: ["admin-app-crud-search-result"],
+                  stepEvidenceMatchers: [
+                    ["admin-apps-open"],
+                    ["admin-apps-list-ready"],
+                    ["admin-app-crud-search-input"],
+                    ["admin-app-crud-search-result"]
+                  ]
                 }
               ]
             }
@@ -382,6 +410,13 @@ const completeListViewTestPlan = {
                   title: "App created in Admin is visible in Keystone",
                   expected: "New app appears in Keystone app list",
                   matcher: "CLV-ADM-CRUD-001",
+                  evidenceMatchers: ["admin-app-crud-keystone-visible"],
+                  stepEvidenceMatchers: [
+                    ["admin-app-crud-search-result"],
+                    ["admin-app-crud-keystone-open"],
+                    ["admin-app-crud-keystone-launcher-open"],
+                    ["admin-app-crud-keystone-visible"]
+                  ],
                   dependsOn: ["TC-001"]
                 },
                 {
@@ -389,6 +424,13 @@ const completeListViewTestPlan = {
                   title: "List view created in Admin is visible in Keystone",
                   expected: "New list view appears under correct app",
                   matcher: "CLV-ADM-KEY-LV-005",
+                  evidenceMatchers: ["admin-created-list-view-visible-in-keystone"],
+                  stepEvidenceMatchers: [
+                    ["admin-created-list-view-admin-created"],
+                    ["admin-created-list-view-keystone-open"],
+                    ["admin-created-list-view-keystone-list-ready"],
+                    ["admin-created-list-view-visible-in-keystone"]
+                  ],
                   dependsOn: ["TC-002"]
                 }
               ]
@@ -1277,6 +1319,84 @@ const listViewReportMatchRow = (caseItem, rows) => {
   return rows.find((row) => planResultText(row).includes(matcher)) || null;
 };
 
+const normalizeEvidenceName = (value) =>
+  String(value || "")
+    .toLowerCase()
+    .replace(/^screenshot[-_]?/, "")
+    .replace(/\\/g, "/")
+    .replace(/[^a-z0-9/-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+
+const legacyEvidenceNameByPath = (row, shotPath, index) => {
+  const rowId = String(row?.id || "");
+  if (rowId === "BVT_APPS_CRUD_001") {
+    return [
+      "admin-app-create-form",
+      "admin-app-crud-edited",
+      "admin-app-crud-keystone-visible",
+      "admin-app-crud-keystone-hidden",
+      "admin-app-crud-keystone-hidden"
+    ][index] || "";
+  }
+  if (rowId === "REG_LIST_VIEW_ACTIONS_CRUD_SETTINGS_004") {
+    return ["admin-list-view-actions-settings-columns", "admin-list-view-actions-settings-columns"][index] || "";
+  }
+  if (rowId === "REG_LIST_VIEW_CROSS_SURFACE_VISIBILITY_005") {
+    return ["admin-created-list-view-visible-in-keystone", "admin-created-list-view-visible-in-keystone"][index] || "";
+  }
+  return normalizeEvidenceName(shotPath);
+};
+
+const evidenceItemsForResultRow = (resultRow, assetBase) => {
+  if (!resultRow) return [];
+  return Array.isArray(resultRow.screenshotEvidence) && resultRow.screenshotEvidence.length > 0
+    ? resultRow.screenshotEvidence.map((item, index) => ({
+        name: item.name || item.attachmentName || `Evidence ${index + 1}`,
+        normalizedName: normalizeEvidenceName(item.name || item.attachmentName),
+        href: `${assetBase}${String(item.path || "").replace(/\\/g, "/")}`
+      }))
+    : Array.isArray(resultRow.screenshotPaths)
+      ? resultRow.screenshotPaths.map((shot, index) => {
+          const name = legacyEvidenceNameByPath(resultRow, shot, index);
+          return {
+            name,
+            normalizedName: normalizeEvidenceName(name),
+            href: `${assetBase}${String(shot || "").replace(/\\/g, "/")}`
+          };
+        })
+      : [];
+};
+
+const matchEvidenceItems = (evidenceItems, rawMatchers) => {
+  const matchers = (rawMatchers || []).map(normalizeEvidenceName).filter(Boolean);
+  if (matchers.length === 0) return [];
+  const matched = evidenceItems.filter((item) =>
+    item.normalizedName &&
+    matchers.some((matcher) => item.normalizedName.includes(matcher) || matcher.includes(item.normalizedName))
+  );
+  const seen = new Set();
+  return matched.filter((item) => {
+    if (!item.href || seen.has(item.href)) return false;
+    seen.add(item.href);
+    return true;
+  });
+};
+
+const evidenceForReportCase = (caseItem, resultRow, assetBase) =>
+  matchEvidenceItems(evidenceItemsForResultRow(resultRow, assetBase), caseItem.evidenceMatchers);
+
+const stepEvidenceForReportCase = (caseItem, resultRow, assetBase, steps) => {
+  const evidenceItems = evidenceItemsForResultRow(resultRow, assetBase);
+  return steps.map((_, index) => {
+    const configuredMatchers = caseItem.stepEvidenceMatchers?.[index] || [];
+    const matched = matchEvidenceItems(evidenceItems, configuredMatchers);
+    return {
+      stepNumber: index + 1,
+      items: matched
+    };
+  });
+};
+
 const formatDuration = (payload) => {
   const explicit = payload.duration || payload.totalExecutionTime || payload.executionTime || payload.elapsed || "";
   if (explicit) return String(explicit);
@@ -1396,16 +1516,17 @@ const renderLatestResultsHtml = () => {
   const matchedCases = planCases.map((caseItem) => {
     const resultRow = listViewReportMatchRow(caseItem, rows);
     const status = normalizedPlanStatus(resultRow?.status);
-    const screenshots = Array.isArray(resultRow?.screenshotPaths)
-      ? resultRow.screenshotPaths.map((shot) => `${assetBase}${String(shot || "").replace(/\\/g, "/")}`)
-      : [];
+    const evidence = evidenceForReportCase(caseItem, resultRow, assetBase);
+    const steps = listViewReportStepRowsForCase(caseItem, caseItem.suitePath);
+    const stepEvidence = stepEvidenceForReportCase(caseItem, resultRow, assetBase, steps);
     return {
       ...caseItem,
       resultRow,
       status,
       actual: resultRow?.actualResult || (resultRow ? "As expected." : "(captured at runtime)"),
-      screenshots,
-      steps: listViewReportStepRowsForCase(caseItem, caseItem.suitePath)
+      evidence,
+      stepEvidence,
+      steps
     };
   });
   const executedCases = matchedCases.filter((caseItem) => caseItem.status !== "PENDING");
@@ -1419,9 +1540,14 @@ const renderLatestResultsHtml = () => {
   const firstFailed = matchedCases.find((caseItem) => caseItem.status === "FAIL");
   const caseRowsHtml = matchedCases.map((caseItem) => {
     const outcome = caseItem.status === "PASS" ? "Passed" : caseItem.status === "FAIL" ? "Failed" : caseItem.status;
-    const evidenceLinks = caseItem.screenshots.length > 0
-      ? caseItem.screenshots.map((href, index) => `<a href="${xmlEscape(href)}" target="_blank" rel="noreferrer">View ${xmlEscape(String(index + 1))}</a>`).join("")
-      : "-";
+    const evidenceLinks = caseItem.stepEvidence.length > 0
+      ? `<ol class="step-evidence-list">${caseItem.stepEvidence.map((step) => {
+          const links = step.items.length > 0
+            ? step.items.map((item, index) => `<a href="${xmlEscape(item.href)}" title="${xmlEscape(item.name)}" target="_blank" rel="noreferrer">Step ${xmlEscape(String(step.stepNumber))}${step.items.length > 1 ? `.${xmlEscape(String(index + 1))}` : ""}</a>`).join("")
+            : `<span class="muted">Step ${xmlEscape(String(step.stepNumber))}: no screenshot</span>`;
+          return `<li>${links}</li>`;
+        }).join("")}</ol>`
+      : `<span class="muted">No matched evidence</span>`;
     return `<article class="scenario-row">
       <strong>${xmlEscape(caseItem.id)}</strong>
       <span>${xmlEscape(listViewReportCaseTitle(caseItem))}</span>
@@ -1658,6 +1784,15 @@ const renderLatestResultsHtml = () => {
       display: flex;
       flex-wrap: wrap;
       gap: 8px;
+    }
+    .step-evidence-list {
+      display: grid;
+      gap: 6px;
+      margin: 0;
+      padding-left: 18px;
+    }
+    .step-evidence-list li {
+      min-height: 26px;
     }
     .inline-evidence a {
       border: 1px solid var(--line);
