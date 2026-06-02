@@ -1141,7 +1141,13 @@ function TestPlansPanel({ testPlan, running, onRunAutomation }) {
   const [selectedSuiteId, setSelectedSuiteId] = useState("");
   const [activeTab, setActiveTab] = useState("Execute");
   const [selectedCaseId, setSelectedCaseId] = useState("");
-  const [notice, setNotice] = useState("");
+  const [sidebarNotice, setSidebarNotice] = useState("");
+  const [mainNotice, setMainNotice] = useState("");
+
+  useEffect(() => {
+    setSidebarNotice("");
+    setMainNotice("");
+  }, [selectedSuiteId, selectedCaseId, activeTab, planView]);
   const [openSuiteGroups, setOpenSuiteGroups] = useState({});
   const [isProductOpen, setIsProductOpen] = useState(true);
   const selectedSuite = suites.find((suite) => suite.id === selectedSuiteId) || suites[0] || null;
@@ -1168,7 +1174,7 @@ function TestPlansPanel({ testPlan, running, onRunAutomation }) {
   }, [suiteGroups]);
 
   if (planView === "list") {
-    return <AzurePlanList plans={plans} counts={counts} testPlan={testPlan} notice={notice} setNotice={setNotice} onOpenPlan={() => setPlanView("detail")} />;
+    return <AzurePlanList plans={plans} counts={counts} testPlan={testPlan} notice={mainNotice} setNotice={setMainNotice} onOpenPlan={() => setPlanView("detail")} />;
   }
 
   return <section className="azure-test-plan-workspace">
@@ -1178,9 +1184,9 @@ function TestPlansPanel({ testPlan, running, onRunAutomation }) {
           <h2>{plan?.label || "Test Plan"}</h2>
           <span>{plan?.product || "Core Platform"} · {plan?.version || "Automation"}</span>
         </div>
-        <button className="icon-button" title="Plan actions" aria-label="Plan actions" onClick={() => setNotice("Plan actions opened. This automation workspace currently has one active plan.")}><ChevronDown size={16} /></button>
+        <button className="icon-button" title="Plan actions" aria-label="Plan actions" onClick={() => setSidebarNotice("Plan actions opened. This automation workspace currently has one active plan.")}><ChevronDown size={16} /></button>
       </div>
-      {notice ? <p className="azure-inline-notice">{notice}</p> : null}
+      {sidebarNotice ? <p className="azure-inline-notice">{sidebarNotice}</p> : null}
       <div className="azure-plan-stats">
         <span>{counts.total || 0} test points</span>
         <strong>{passRate}% passed</strong>
@@ -1189,9 +1195,9 @@ function TestPlansPanel({ testPlan, running, onRunAutomation }) {
       <div className="azure-suite-heading">
         <h3>Test Suites</h3>
         <div className="azure-suite-tools">
-          <button title="Show suites" onClick={() => setNotice(`${suites.length} suites are available in this automation plan.`)}><ClipboardList size={15} /></button>
-          <button title="Add suite" onClick={() => setNotice("Suite creation will be enabled when a second automation plan is added.")}><Plus size={15} /></button>
-          <button title="Delete suite" onClick={() => setNotice("Default automation suites are protected and cannot be deleted from this view.")}><Trash2 size={15} /></button>
+          <button title="Show suites" onClick={() => setSidebarNotice(`${suites.length} suites are available in this automation plan.`)}><ClipboardList size={15} /></button>
+          <button title="Add suite" onClick={() => setSidebarNotice("Suite creation will be enabled when a second automation plan is added.")}><Plus size={15} /></button>
+          <button title="Delete suite" onClick={() => setSidebarNotice("Default automation suites are protected and cannot be deleted from this view.")}><Trash2 size={15} /></button>
         </div>
       </div>
       <label className="azure-suite-filter">
@@ -1261,7 +1267,7 @@ function TestPlansPanel({ testPlan, running, onRunAutomation }) {
           testPlan={testPlan}
           onBack={() => setSelectedCaseId("")}
           onSelectCase={(caseItem) => setSelectedCaseId(caseItem.id)}
-          setNotice={setNotice}
+          setNotice={setMainNotice}
         />
       ) : (
         <>
@@ -1280,9 +1286,9 @@ function TestPlansPanel({ testPlan, running, onRunAutomation }) {
               <button key={tab} className={activeTab === tab ? "active" : ""} onClick={() => setActiveTab(tab)}>{tab}</button>
             ))}
           </div>
-          {notice ? <p className="azure-inline-notice main">{notice}</p> : null}
-          {activeTab === "Execute" ? <AzureExecuteTab cases={selectedCases} suite={selectedSuite} running={running} onRunAutomation={onRunAutomation} setNotice={setNotice} onOpenCase={(caseItem) => setSelectedCaseId(caseItem.id)} /> : null}
-          {activeTab === "Define" ? <AzureDefineTab cases={selectedCases} suite={selectedSuite} setNotice={setNotice} /> : null}
+          {mainNotice ? <p className="azure-inline-notice main">{mainNotice}</p> : null}
+          {activeTab === "Execute" ? <AzureExecuteTab cases={selectedCases} suite={selectedSuite} running={running} onRunAutomation={onRunAutomation} setNotice={setMainNotice} onOpenCase={(caseItem) => setSelectedCaseId(caseItem.id)} /> : null}
+          {activeTab === "Define" ? <AzureDefineTab cases={selectedCases} suite={selectedSuite} setNotice={setMainNotice} /> : null}
           {activeTab === "Chart" ? <AzureChartTab counts={counts} /> : null}
           {activeTab === "Export" ? <AzureExportTab /> : null}
         </>
@@ -1403,26 +1409,96 @@ function AzureExecuteTab({ cases, suite, running, onRunAutomation, setNotice, on
   const allSelected = cases.length > 0 && cases.every((caseItem) => selectedIds.has(caseItem.id));
   return <div className="azure-tab-panel">
     <div className="azure-grid-heading">
-      <h3>Test Points ({cases.length} items)</h3>
+      <h3>Test passed</h3>
       <div className="azure-grid-actions">
         <button className="secondary" onClick={() => setNotice(`${selectedIds.size || cases.length} test point outcome(s) already come from the latest automation run.`)}><CheckSquare size={16} /> Mark outcome</button>
         <button onClick={onRunAutomation} disabled={running}><Play size={16} /> Run for web application</button>
       </div>
     </div>
-    <div className="azure-test-points">
-      <div className="azure-test-row header"><span><input type="checkbox" checked={allSelected} onChange={(event) => setSelectedIds(event.target.checked ? new Set(cases.map((caseItem) => caseItem.id)) : new Set())} /></span><strong>Title</strong><strong>Outcome</strong></div>
-      {cases.length === 0 ? <p className="empty">No test points in this suite.</p> : cases.map((caseItem, index) => {
+    <div className="azure-test-points azure-run-step-table">
+      <div className="azure-run-step-row header">
+        <strong>Step</strong>
+        <strong>Outcome</strong>
+        <strong>Action</strong>
+        <strong>Expected Result</strong>
+      </div>
+      {cases.length === 0 ? <p className="empty">No test points in this suite.</p> : cases.flatMap((caseItem, caseIndex) => {
         const outcome = String(caseItem.outcome || "PENDING").toUpperCase();
-        return <article key={caseItem.id} className={`azure-test-row ${index === 1 ? "selected" : ""}`} onClick={() => onOpenCase?.(caseItem)}>
-          <span><input type="checkbox" checked={selectedIds.has(caseItem.id)} onClick={(event) => event.stopPropagation()} onChange={() => toggleCase(caseItem.id)} /></span>
-          <div>
-            <strong>{caseItem.title} ({caseItem.id})</strong>
-            <small>{suite?.path?.join(" / ") || "Automation suite"}</small>
-          </div>
-          <span className={`azure-outcome ${outcome.toLowerCase()}`}>{outcome}</span>
-        </article>;
+        const normalizedOutcome = outcome === "PASS" ? "Passed" : outcome === "FAIL" ? "Failed" : outcome;
+        return planStepRowsForCase(caseItem, suite).map((step, stepIndex) => <article key={`${caseItem.id}-${stepIndex}`} className={`azure-run-step-row ${caseIndex === 1 && stepIndex === 0 ? "selected" : ""}`} onClick={() => onOpenCase?.(caseItem)}>
+          <strong>{step.step}</strong>
+          <span className={`azure-outcome ${outcome.toLowerCase()}`}>{normalizedOutcome}</span>
+          <span>{step.action}</span>
+          <span>{toVerifyExpected(step.expected)}</span>
+        </article>);
       })}
     </div>
+  </div>;
+}
+
+function planStepRowsForCase(caseItem, suite) {
+  const suitePath = suite?.path?.join(" / ") || "Apps";
+  const rowsByCase = {
+    "TC-001": [
+      ["Open Admin", "Admin application is loaded and the user is authenticated."],
+      ["Go to Apps list", "Apps list page is visible with list-view controls available."],
+      ["Create a disposable app", "New app is saved successfully."],
+      ["Search and verify app appears", "New app appears in the Apps list."]
+    ],
+    "TC-002": [
+      ["Open Admin", "Admin application is loaded and the user is authenticated."],
+      ["Go to Apps list-view actions", "List-view action controls are available."],
+      ["Create a disposable custom list view", "New list view is saved successfully."],
+      ["Verify the list view is available", "New list view appears under the app."]
+    ],
+    "TC-003": [
+      ["Open Admin", "Admin application is loaded and the user is authenticated."],
+      ["Find the disposable app", "Disposable app row is found in the Apps list."],
+      ["Delete the app", "Delete confirmation completes successfully."],
+      ["Search again and verify it is removed", "App removed from the Apps list."]
+    ],
+    "TC-004": [
+      ["Open Admin", "Admin application is loaded and the user is authenticated."],
+      ["Go to Apps list", "Apps list page is visible."],
+      ["Enter app name in search", "Search request filters the Apps list."],
+      ["Verify matching app row is shown", "Matching app appears in search results."]
+    ],
+    "TC-005": [
+      ["Complete TC-001", "Admin-created app exists before Keystone validation starts."],
+      ["Open Keystone", "Keystone application is loaded and the user is authenticated."],
+      ["Open app launcher/list", "Keystone app list is visible."],
+      ["Verify Admin-created app is visible", "New app appears in Keystone app list."]
+    ],
+    "TC-006": [
+      ["Complete TC-002", "Admin-created list view exists before Keystone validation starts."],
+      ["Open Keystone", "Keystone application is loaded and the user is authenticated."],
+      ["Select the relevant app/tab", "Correct app and tab are opened in Keystone."],
+      ["Verify Admin-created list view is selectable", "New list view appears under correct app."]
+    ]
+  };
+  const rows = rowsByCase[caseItem.id] || [[caseItem.title, caseItem.expected]];
+  return rows.map(([action, expected], index) => ({
+    step: `${caseItem.id}.${index + 1}`,
+    action: `${action} (${suitePath})`,
+    expected
+  }));
+}
+
+function toVerifyExpected(value) {
+  const text = String(value || "the expected result is reached.").trim();
+  return /^verify\b/i.test(text) ? text : `Verify ${text.charAt(0).toLowerCase()}${text.slice(1)}`;
+}
+
+function TestCasePlanBlock({ caseItem, outcome }) {
+  const normalizedOutcome = outcome === "PASS" ? "pass" : outcome === "FAIL" ? "fail" : outcome.toLowerCase();
+  return <div className="azure-case-plan-block">
+    <h4><span aria-hidden="true">🧪</span> {caseItem.id}</h4>
+    <dl>
+      <dt>Title</dt><dd>{caseItem.title.replace(/\s*\([^)]+\)\s*$/, "")}</dd>
+      <dt>Expected</dt><dd>{caseItem.expected || "Expected result is defined in the automation plan."}</dd>
+      <dt>Actual</dt><dd>{caseItem.actual || "(captured at runtime)"}</dd>
+      <dt>Outcome</dt><dd><span className={`azure-outcome ${outcome.toLowerCase()}`}>{normalizedOutcome}</span></dd>
+    </dl>
   </div>;
 }
 
@@ -1437,9 +1513,9 @@ function AzureRunResultView({ cases, selectedCase, suite, testPlan, onBack, onSe
     ["JSON result payload", testPlan?.report?.json || "/report/list-view-regression-results.json"]
   ];
   const steps = [
-    { label: "Resolve automation context", action: suite?.path?.join(" / ") || "Automation suite", expected: "Target suite and test point are available.", outcome },
-    { label: "Run Playwright test", action: resultTitle, expected: selectedCase.expected, outcome },
-    { label: "Collect result evidence", action: selectedCase.actual || "Captured in latest run.", expected: "Result is linked to report artifacts.", outcome }
+    { label: "Resolve automation context", testSteps: `Open ${suite?.path?.join(" / ") || "automation suite"} and select ${selectedCase.id}.`, actual: "Target suite and test point are available in the automation plan.", expected: "Developers can identify the exact automation scope before execution.", outcome },
+    { label: "Execute automated validation", testSteps: resultTitle, actual: selectedCase.actual || "Captured from latest Playwright automation run.", expected: selectedCase.expected, outcome },
+    { label: "Review evidence and outcome", testSteps: "Open attached report artifacts and confirm the recorded status.", actual: `${outcome} result linked with latest report evidence.`, expected: "Result can be reviewed from report artifacts without rerunning manually.", outcome }
   ];
 
   return <div className="azure-result-workspace">
@@ -1470,7 +1546,6 @@ function AzureRunResultView({ cases, selectedCase, suite, testPlan, onBack, onSe
           <h2>{selectedCase.title} ({selectedCase.id})</h2>
           <small>{suite?.path?.join(" / ") || "Automation suite"}</small>
         </div>
-        <button onClick={() => setNotice(`Bug draft prepared for ${selectedCase.id}. Review it from the Bugs section after triage.`)}><Bug size={16} /> Create bug</button>
       </div>
       <div className="azure-result-tabs">
         {["Summary", "Attachments"].map((tab) => (
@@ -1479,7 +1554,11 @@ function AzureRunResultView({ cases, selectedCase, suite, testPlan, onBack, onSe
           </button>
         ))}
       </div>
-      {activeResultTab === "Summary" ? <div className="azure-summary-grid">
+      {activeResultTab === "Summary" ? <>
+      <article className="azure-case-plan-card azure-case-plan-card-detail">
+        <TestCasePlanBlock caseItem={selectedCase} outcome={outcome} />
+      </article>
+      <div className="azure-summary-grid">
         <article>
           <h3>Summary</h3>
           <dl>
@@ -1498,7 +1577,8 @@ function AzureRunResultView({ cases, selectedCase, suite, testPlan, onBack, onSe
             <dt>Comment</dt><dd>{selectedCase.actual || "No analysis note captured."}</dd>
           </dl>
         </article>
-      </div> : <div className="azure-attachment-list">{attachments.map(([label, href]) => <a key={href} href={href} target="_blank" rel="noreferrer">{label}</a>)}</div>}
+      </div>
+      </> : <div className="azure-attachment-list">{attachments.map(([label, href]) => <a key={href} href={href} target="_blank" rel="noreferrer">{label}</a>)}</div>}
       <article className="azure-linked-work">
         <div><h3>Linked work items</h3><span>No work items linked</span></div>
         <button className="secondary" onClick={() => setNotice(`Work item link action opened for ${selectedCase.id}.`)}><Plus size={16} /> Add</button>
@@ -1514,9 +1594,9 @@ function AzureRunResultView({ cases, selectedCase, suite, testPlan, onBack, onSe
           <div className="azure-step-row header"><span>Step</span><span>Outcome</span><span>Action</span><span>Expected Result</span></div>
           {steps.map((step, index) => <div key={step.label} className="azure-step-row">
             <span>{index + 1}</span>
-            <span className={`azure-outcome ${step.outcome.toLowerCase()}`}>{step.outcome}</span>
-            <span>{step.action}</span>
-            <span>{step.expected}</span>
+            <span className={`azure-outcome ${step.outcome.toLowerCase()}`}>{step.outcome === "PASS" ? "Passed" : step.outcome === "FAIL" ? "Failed" : step.outcome}</span>
+            <span>{step.testSteps}</span>
+            <span>{toVerifyExpected(step.expected)}</span>
           </div>)}
           <div className="azure-attachments">
             <strong>Attachments</strong>
@@ -1532,7 +1612,23 @@ function AzureDefineTab({ cases, suite, setNotice }) {
   return <div className="azure-tab-panel">
     <div className="azure-grid-heading"><h3>{suite?.label || "Suite"} definitions</h3><button onClick={() => setNotice("New automated case draft flow will open here when authoring is enabled.")}><Plus size={16} /> New automated case</button></div>
     <div className="azure-define-list">
-      {cases.map((caseItem) => <article key={caseItem.id}><strong>{caseItem.id}</strong><span>{caseItem.title}</span><small>{caseItem.expected}</small></article>)}
+      {cases.map((caseItem) => <article key={caseItem.id} className="azure-define-case">
+        <strong>{caseItem.id}</strong>
+        <div>
+          <span>{caseItem.title}</span>
+          <small>{toVerifyExpected(caseItem.expected)}</small>
+          <div className="azure-define-step-table">
+            <div className="azure-define-step-row header"><b>Step</b><b>Action</b><b>Expected Result</b></div>
+            {planStepRowsForCase(caseItem, suite).map((step) => (
+              <div className="azure-define-step-row" key={step.step}>
+                <b>{step.step}</b>
+                <span>{step.action}</span>
+                <span>{toVerifyExpected(step.expected)}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </article>)}
     </div>
   </div>;
 }
@@ -1544,12 +1640,76 @@ function AzureChartTab({ counts }) {
 }
 
 function AzureExportTab() {
-  return <div className="azure-tab-panel azure-export-panel">
-    <a href="/report/latest" target="_blank" rel="noreferrer">HTML report</a>
-    <a href="/report/list-view-regression-results.csv" target="_blank" rel="noreferrer">CSV</a>
-    <a href="/report/list-view-regression-results.json" target="_blank" rel="noreferrer">JSON</a>
-    <a href="/api/inventory.xlsx?refresh=1" target="_blank" rel="noreferrer">Excel inventory</a>
-  </div>;
+  const exports = [
+    {
+      title: "Latest HTML Report",
+      description: "Interactive visual report from the latest automation run with steps, outcomes, and screenshots.",
+      badge: "HTML",
+      url: "/report/latest",
+      icon: FileBarChart,
+      color: "#ef4444"
+    },
+    {
+      title: "CSV Dataset",
+      description: "Tabular flat data containing all test points, paths, and status fields suitable for custom integrations.",
+      badge: "CSV",
+      url: "/report/list-view-regression-results.csv",
+      icon: Database,
+      color: "#3b82f6"
+    },
+    {
+      title: "JSON Result Payload",
+      description: "Full detailed structured test plan result payload containing metadata, configurations, and step history.",
+      badge: "JSON",
+      url: "/report/list-view-regression-results.json",
+      icon: Database,
+      color: "#a855f7"
+    },
+    {
+      title: "Excel Case Inventory",
+      description: "Exportable spreadsheet containing the full list of automated cases and templates for manual uploads.",
+      badge: "XLSX",
+      url: "/api/inventory.xlsx?refresh=1",
+      icon: FileSpreadsheet,
+      color: "#10b981"
+    }
+  ];
+
+  return (
+    <div className="azure-tab-panel azure-export-panel">
+      <div className="azure-export-grid">
+        {exports.map((item, index) => {
+          const Icon = item.icon;
+          return (
+            <a
+              key={index}
+              href={item.url}
+              target="_blank"
+              rel="noreferrer"
+              className="azure-export-card"
+            >
+              <div className="azure-export-card-header">
+                <div className="azure-export-icon-wrapper" style={{ backgroundColor: `${item.color}15`, color: item.color }}>
+                  <Icon size={22} />
+                </div>
+                <span className="azure-export-badge">{item.badge}</span>
+              </div>
+              <div className="azure-export-card-body">
+                <h3>{item.title}</h3>
+                <p>{item.description}</p>
+              </div>
+              <div className="azure-export-card-footer">
+                <span className="azure-export-action">
+                  <span>Download</span>
+                  <Download size={14} />
+                </span>
+              </div>
+            </a>
+          );
+        })}
+      </div>
+    </div>
+  );
 }
 
 function InventoryPanel({ rows, filter, setFilter, selectedTests, toggleSelected, selectVisible, selectAll, clearSelected, refresh, context, clearContext, backToSuites, runSelected, running }) {

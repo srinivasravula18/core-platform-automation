@@ -735,8 +735,8 @@ th { position: sticky; top: 0; background: var(--panel-2); z-index: 1; white-spa
   color: var(--azure-text);
 }
 .azure-plan-sidebar {
-  display: grid;
-  grid-template-rows: auto auto auto auto minmax(0, 1fr);
+  display: flex;
+  flex-direction: column;
   border-right: 1px solid var(--azure-border);
   background: var(--azure-panel);
   min-width: 0;
@@ -799,12 +799,12 @@ th { position: sticky; top: 0; background: var(--panel-2); z-index: 1; white-spa
   color: var(--azure-muted);
 }
 .azure-suite-tools button {
-  background: transparent;
-  border: none;
-  color: var(--azure-muted);
+  background: transparent !important;
+  border: none !important;
+  color: var(--azure-muted) !important;
   cursor: pointer;
   padding: 4px;
-  min-height: auto;
+  min-height: auto !important;
   border-radius: 4px;
   display: inline-flex;
   align-items: center;
@@ -812,8 +812,8 @@ th { position: sticky; top: 0; background: var(--panel-2); z-index: 1; white-spa
   transition: background 0.15s, color 0.15s;
 }
 .azure-suite-tools button:hover {
-  background: var(--azure-panel-3);
-  color: var(--azure-text);
+  background: var(--azure-panel-3) !important;
+  color: var(--azure-text) !important;
 }
 .azure-suite-filter {
   display: grid;
@@ -841,6 +841,8 @@ th { position: sticky; top: 0; background: var(--panel-2); z-index: 1; white-spa
   outline: none;
 }
 .azure-suite-list {
+  flex: 1 1 0%;
+  min-height: 0;
   overflow: auto;
   padding-bottom: 12px;
 }
@@ -998,18 +1000,18 @@ th { position: sticky; top: 0; background: var(--panel-2); z-index: 1; white-spa
   padding: 0 16px;
 }
 .azure-tabs button {
-  border: 0;
-  border-bottom: 2px solid transparent;
-  border-radius: 0;
-  background: transparent;
-  color: var(--azure-text);
+  border: 0 !important;
+  border-bottom: 2px solid transparent !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  color: var(--azure-text) !important;
   padding: 10px 8px 8px;
   font-weight: 700;
   font-size: 13px;
 }
 .azure-tabs button.active {
-  border-bottom-color: var(--azure-accent);
-  color: var(--azure-accent);
+  border-bottom-color: var(--azure-accent) !important;
+  color: var(--azure-accent) !important;
 }
 .azure-tab-panel {
   min-height: 0;
@@ -1028,17 +1030,151 @@ th { position: sticky; top: 0; background: var(--panel-2); z-index: 1; white-spa
 .azure-test-points {
   border: 1px solid var(--azure-border);
   border-radius: 3px;
-  overflow: hidden;
+  overflow: auto;
+}
+.azure-case-block-list {
+  display: grid;
+  border: 0;
+  gap: 10px;
+}
+.azure-case-plan-table {
+  display: grid;
+  border: 1px solid var(--azure-border);
+  border-radius: 4px;
+  overflow: auto;
+}
+.azure-case-plan-row {
+  display: grid;
+  grid-template-columns: 38px 120px minmax(240px, 1fr) minmax(260px, 1fr) minmax(220px, .8fr) 110px;
+  gap: 12px;
+  align-items: start;
+  min-width: 980px;
+  min-height: 48px;
+  border-bottom: 1px solid var(--azure-border-soft);
+  background: var(--azure-panel);
+  padding: 10px 12px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.azure-case-plan-row:last-child {
+  border-bottom: 0;
+}
+.azure-case-plan-row.header {
+  min-height: 38px;
+  background: var(--azure-panel-2);
+  color: var(--azure-muted);
+  cursor: default;
+  font-size: 12px;
+  font-weight: 900;
+}
+.azure-case-plan-row.selected {
+  box-shadow: inset 3px 0 0 var(--azure-selected-border);
+  background: var(--azure-selected-bg);
+}
+.azure-case-plan-row:not(.header):hover {
+  background: var(--azure-panel-3);
+}
+.azure-case-plan-row span,
+.azure-case-plan-row strong {
+  overflow-wrap: anywhere;
+}
+.azure-run-step-table {
+  display: grid;
+  border: 1px solid var(--azure-border);
+  border-radius: 4px;
+  overflow: auto;
+}
+.azure-run-step-row {
+  display: grid;
+  grid-template-columns: 90px 140px minmax(360px, 1fr) minmax(360px, 1fr);
+  gap: 14px;
+  align-items: start;
+  min-width: 980px;
+  min-height: 44px;
+  border-bottom: 1px solid var(--azure-border-soft);
+  background: var(--azure-panel);
+  padding: 10px 12px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.azure-run-step-row:last-child {
+  border-bottom: 0;
+}
+.azure-run-step-row.header {
+  min-height: 36px;
+  background: var(--azure-panel-2);
+  color: var(--azure-muted);
+  cursor: default;
+  font-size: 12px;
+  font-weight: 900;
+}
+.azure-run-step-row.selected {
+  box-shadow: inset 3px 0 0 var(--azure-selected-border);
+  background: var(--azure-selected-bg);
+}
+.azure-run-step-row:not(.header):hover {
+  background: var(--azure-panel-3);
+}
+.azure-run-step-row span,
+.azure-run-step-row strong {
+  overflow-wrap: anywhere;
+}
+.azure-case-plan-card {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+  border: 1px solid var(--azure-border);
+  border-radius: 4px;
+  background: var(--azure-panel);
+  padding: 12px;
+  cursor: pointer;
+}
+.azure-case-plan-card.selected,
+.azure-case-plan-card:hover {
+  background: var(--azure-panel-3);
+  box-shadow: inset 3px 0 0 var(--azure-selected-border);
+}
+.azure-case-plan-card-detail {
+  grid-template-columns: minmax(0, 1fr);
+  margin-bottom: 14px;
+  cursor: default;
+}
+.azure-case-plan-select {
+  padding-top: 4px;
+}
+.azure-case-plan-block {
+  min-width: 0;
+}
+.azure-case-plan-block h4 {
+  margin: 0 0 8px;
+  font-size: 15px;
+  font-weight: 900;
+}
+.azure-case-plan-block dl {
+  display: grid;
+  grid-template-columns: 86px minmax(0, 1fr);
+  gap: 7px 12px;
+  margin: 0;
+}
+.azure-case-plan-block dt {
+  color: var(--azure-muted);
+  font-weight: 900;
+}
+.azure-case-plan-block dd {
+  margin: 0;
+  overflow-wrap: anywhere;
 }
 .azure-test-row {
   display: grid;
-  grid-template-columns: 38px minmax(0, 1fr) 150px;
-  gap: 10px;
-  align-items: center;
-  min-height: 38px;
+  grid-template-columns: 150px minmax(280px, 1.1fr) minmax(240px, .9fr) minmax(280px, 1fr);
+  gap: 14px;
+  align-items: start;
+  min-height: 48px;
+  min-width: 980px;
   border-bottom: 1px solid var(--azure-border-soft);
   background: var(--azure-panel);
-  padding: 7px 10px;
+  padding: 10px 12px;
   cursor: pointer;
   font-size: 13px;
 }
@@ -1046,10 +1182,12 @@ th { position: sticky; top: 0; background: var(--panel-2); z-index: 1; white-spa
   border-bottom: 0;
 }
 .azure-test-row.header {
-  min-height: 34px;
+  min-height: 36px;
   background: var(--azure-panel-2);
   color: var(--azure-muted);
   font-size: 12px;
+  align-items: center;
+  cursor: default;
 }
 .azure-test-row.selected {
   box-shadow: inset 3px 0 0 var(--azure-selected-border);
@@ -1061,6 +1199,19 @@ th { position: sticky; top: 0; background: var(--panel-2); z-index: 1; white-spa
 .azure-test-row input[type="checkbox"] {
   width: 16px;
   height: 16px;
+}
+.azure-case-id-cell {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--azure-text);
+}
+.azure-step-cell,
+.azure-result-cell,
+.azure-expected-cell {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
 }
 .azure-test-row strong,
 .azure-test-row small {
@@ -1095,12 +1246,41 @@ th { position: sticky; top: 0; background: var(--panel-2); z-index: 1; white-spa
   grid-template-columns: 82px minmax(0, 1fr);
   gap: 8px 12px;
   border: 1px solid var(--azure-border);
-  border-radius: 8px;
+  border-radius: 4px;
   padding: 10px 12px;
 }
 .azure-define-list small {
-  grid-column: 2;
+  display: block;
   color: var(--azure-muted);
+  margin-top: 4px;
+}
+.azure-define-step-table {
+  display: grid;
+  margin-top: 12px;
+  border: 1px solid var(--azure-border-soft);
+  border-radius: 4px;
+  overflow: auto;
+}
+.azure-define-step-row {
+  display: grid;
+  grid-template-columns: 90px minmax(280px, 1fr) minmax(320px, 1fr);
+  gap: 12px;
+  min-width: 760px;
+  border-bottom: 1px solid var(--azure-border-soft);
+  padding: 8px 10px;
+  font-size: 12px;
+}
+.azure-define-step-row:last-child {
+  border-bottom: 0;
+}
+.azure-define-step-row.header {
+  background: var(--azure-panel-2);
+  color: var(--azure-muted);
+  font-weight: 900;
+}
+.azure-define-step-row span,
+.azure-define-step-row b {
+  overflow-wrap: anywhere;
 }
 .azure-chart-panel {
   display: grid;
@@ -1123,9 +1303,90 @@ th { position: sticky; top: 0; background: var(--panel-2); z-index: 1; white-spa
 .azure-chart-panel i.fail { background: var(--fail); }
 .azure-chart-panel i.skip { background: var(--skip); }
 .azure-export-panel {
+  padding: 16px 20px;
+}
+.azure-export-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 16px;
+  width: 100%;
+}
+.azure-export-card {
+  display: flex !important;
+  flex-direction: column;
+  justify-content: space-between;
+  background: var(--azure-panel-2) !important;
+  border: 1px solid var(--azure-border) !important;
+  border-radius: 8px !important;
+  padding: 20px !important;
+  color: var(--azure-text) !important;
+  text-decoration: none !important;
+  font-weight: normal !important;
+  cursor: pointer !important;
+  transition: all 0.2s ease !important;
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.02) !important;
+  align-items: stretch !important;
+  gap: 0 !important;
+}
+.azure-export-card:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.08) !important;
+  border-color: var(--azure-selected-border) !important;
+  background: var(--azure-panel-3) !important;
+}
+.azure-export-card-header {
   display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+}
+.azure-export-icon-wrapper {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 8px;
+}
+.azure-export-badge {
+  font-size: 11px;
+  font-weight: 800;
+  padding: 3px 8px;
+  background: var(--azure-panel-3);
+  border: 1px solid var(--azure-border-soft);
+  border-radius: 999px;
+  color: var(--azure-muted);
+  text-transform: uppercase;
+}
+.azure-export-card-body h3 {
+  margin: 0 0 8px;
+  font-size: 16px;
+  font-weight: 800;
+  color: var(--azure-text);
+}
+.azure-export-card-body p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--azure-muted);
+}
+.azure-export-card-footer {
+  margin-top: 20px;
+  display: flex;
+  justify-content: flex-end;
+  border-top: 1px solid var(--azure-border-soft);
+  padding-top: 12px;
+}
+.azure-export-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--azure-selected-border);
+  transition: color 0.15s ease;
+}
+.azure-export-card:hover .azure-export-action {
+  color: var(--accent);
 }
 .azure-plan-list-page {
   display: grid;
@@ -1151,16 +1412,16 @@ th { position: sticky; top: 0; background: var(--panel-2); z-index: 1; white-spa
   gap: 6px;
 }
 .azure-plan-list-tabs button {
-  border: 0;
-  border-bottom: 2px solid transparent;
-  border-radius: 0;
-  background: transparent;
-  color: var(--text);
+  border: 0 !important;
+  border-bottom: 2px solid transparent !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  color: var(--text) !important;
   padding: 6px 4px;
 }
 .azure-plan-list-tabs button.active {
-  border-bottom-color: var(--accent);
-  color: var(--accent);
+  border-bottom-color: var(--accent) !important;
+  color: var(--accent) !important;
 }
 .azure-plan-filter-bar {
   display: grid;
@@ -1255,7 +1516,7 @@ th { position: sticky; top: 0; background: var(--panel-2); z-index: 1; white-spa
 }
 .azure-result-workspace {
   display: grid;
-  grid-template-columns: minmax(230px, 300px) minmax(0, 1fr);
+  grid-template-columns: minmax(260px, 320px) minmax(0, 1fr);
   min-height: 0;
   overflow: hidden;
   color: var(--azure-text);
@@ -1264,7 +1525,7 @@ th { position: sticky; top: 0; background: var(--panel-2); z-index: 1; white-spa
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr);
   border-right: 1px solid var(--azure-border);
-  background: var(--azure-panel);
+  background: var(--azure-panel-2);
   min-width: 0;
 }
 .azure-result-list-title {
@@ -1286,21 +1547,27 @@ th { position: sticky; top: 0; background: var(--panel-2); z-index: 1; white-spa
   gap: 8px;
   align-items: start;
   width: 100%;
-  min-height: 46px;
+  min-height: 54px;
   justify-content: stretch;
-  border: 0;
-  border-left: 3px solid transparent;
-  border-radius: 0;
-  background: transparent;
-  color: var(--azure-text);
-  padding: 8px 10px;
+  border: 0 !important;
+  border-bottom: 1px solid var(--azure-border-soft) !important;
+  border-left: 3px solid transparent !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  color: var(--azure-text) !important;
+  padding: 10px 12px;
   text-align: left;
   font-size: 12px;
+  transition: background 0.15s ease, color 0.15s ease, border-left-color 0.15s ease;
 }
 .azure-result-items button.selected {
-  border-left-color: var(--azure-selected-border);
-  background: var(--azure-selected-bg);
-  color: var(--azure-text);
+  border-left-color: var(--azure-selected-border) !important;
+  background: var(--azure-panel) !important;
+  color: var(--azure-text) !important;
+  box-shadow: inset 0 0 0 1px var(--azure-border) !important;
+}
+.azure-result-items button:hover {
+  background: var(--azure-panel-3) !important;
 }
 .azure-result-items button span:not(.azure-status-dot),
 .azure-result-items button small {
@@ -1309,7 +1576,7 @@ th { position: sticky; top: 0; background: var(--panel-2); z-index: 1; white-spa
 }
 .azure-result-items button small {
   grid-column: 2;
-  color: var(--azure-muted);
+  color: var(--azure-muted) !important;
 }
 .azure-status-dot {
   display: inline-block;
@@ -1330,14 +1597,14 @@ th { position: sticky; top: 0; background: var(--panel-2); z-index: 1; white-spa
   min-width: 0;
   overflow: auto;
   background: var(--azure-panel);
-  padding: 0 14px 14px;
+  padding: 0 16px 16px;
 }
 .azure-result-header {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   gap: 12px;
   align-items: center;
-  min-height: 56px;
+  min-height: 68px;
   border-bottom: 1px solid var(--azure-border);
 }
 .azure-result-header h2 {
@@ -1354,17 +1621,17 @@ th { position: sticky; top: 0; background: var(--panel-2); z-index: 1; white-spa
   margin: 0 0 14px;
 }
 .azure-result-tabs button {
-  border: 0;
-  border-bottom: 2px solid transparent;
-  border-radius: 0;
-  background: transparent;
-  color: var(--azure-text);
+  border: 0 !important;
+  border-bottom: 2px solid transparent !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  color: var(--azure-text) !important;
   padding: 9px 8px 7px;
   font-size: 12px;
 }
 .azure-result-tabs button.active {
-  border-bottom-color: var(--azure-accent);
-  color: var(--azure-accent);
+  border-bottom-color: var(--azure-accent) !important;
+  color: var(--azure-accent) !important;
 }
 .azure-result-tabs span {
   display: inline-flex;
@@ -1465,26 +1732,36 @@ th { position: sticky; top: 0; background: var(--panel-2); z-index: 1; white-spa
   font-size: 12px;
 }
 .azure-step-table {
-  min-width: 820px;
+  min-width: 980px;
+  overflow: auto;
 }
 .azure-step-row {
   display: grid;
-  grid-template-columns: 64px 120px minmax(260px, 1fr) minmax(300px, 1fr);
-  gap: 12px;
+  grid-template-columns: 70px 130px minmax(360px, 1fr) minmax(360px, 1fr);
+  gap: 14px;
   align-items: start;
-  min-height: 42px;
+  min-height: 52px;
   border-bottom: 1px solid var(--azure-border-soft);
-  padding: 8px 12px;
-  font-size: 12px;
+  padding: 10px 14px;
+  font-size: 13px;
 }
 .azure-step-row.header {
-  min-height: 34px;
+  min-height: 38px;
   background: var(--azure-panel-2);
   color: var(--azure-muted);
   font-weight: 800;
+  font-size: 12px;
 }
 .azure-step-row span {
   overflow-wrap: anywhere;
+}
+.azure-step-row strong,
+.azure-step-row small {
+  display: block;
+}
+.azure-step-row small {
+  color: var(--azure-muted);
+  margin-top: 4px;
 }
 .azure-attachments {
   display: grid;
@@ -1537,6 +1814,20 @@ th { position: sticky; top: 0; background: var(--panel-2); z-index: 1; white-spa
   font-weight: 700;
 }
 .danger-text { color: var(--danger); }
+
+.azure-inline-notice {
+  margin: 4px 12px 10px;
+  border: 1px solid var(--azure-border);
+  border-radius: 3px;
+  background: var(--azure-accent-soft);
+  color: var(--azure-text);
+  padding: 8px 12px;
+  font-size: 12px;
+  line-height: 1.4;
+}
+.azure-inline-notice.main {
+  margin: 12px 16px 4px;
+}
 
 .modal-backdrop {
   position: fixed;
@@ -1838,7 +2129,7 @@ th { position: sticky; top: 0; background: var(--panel-2); z-index: 1; white-spa
     flex-direction: column;
   }
   .azure-test-row {
-    grid-template-columns: 30px minmax(0, 1fr) 92px;
+    grid-template-columns: 128px minmax(220px, 1fr) minmax(200px, 1fr) minmax(220px, 1fr);
     padding: 8px;
   }
   .azure-tab-panel {
