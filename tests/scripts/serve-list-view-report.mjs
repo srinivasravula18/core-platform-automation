@@ -1409,12 +1409,25 @@ const formatDuration = (payload) => {
   return minutes > 0 ? `${minutes}m ${rest}s` : `${rest}s`;
 };
 
-const renderLatestResultsHtml = () => {
+const casePdfHref = (caseId) => `/report/case/${encodeURIComponent(String(caseId || "").trim())}.pdf`;
+
+const renderLatestResultsHtml = (options = {}) => {
+  const selectedCaseId = String(options.selectedCaseId || "").trim();
   const payload = readResults();
   const counts = payload.counts || {};
   const report = payload.report || {};
   const assetBase = report.id === "admin-depthwise" ? "/report/admin-depthwise/" : "/report/";
-  const rows = Array.isArray(payload.rows) ? payload.rows : [];
+  const allRows = Array.isArray(payload.rows) ? payload.rows : [];
+  const matchesSelectedCase = (row) => {
+    if (!selectedCaseId) return true;
+    const selected = selectedCaseId.toLowerCase();
+    return [
+      row?.id,
+      row?.testCaseTitle,
+      row?.scenario
+    ].some((value) => String(value || "").toLowerCase().includes(selected));
+  };
+  const rows = selectedCaseId ? allRows.filter(matchesSelectedCase) : allRows;
   const rowHtml = rows.map((row) => {
     const screenshots = Array.isArray(row.screenshotPaths)
       ? row.screenshotPaths.map((shot, index) => {
@@ -1459,6 +1472,9 @@ const renderLatestResultsHtml = () => {
     const directUrl = row.directUrl
       ? `<a class="page-url-link" href="${xmlEscape(row.directUrl)}" target="_blank" rel="noreferrer">${xmlEscape(row.directUrl)}</a>`
       : `<span class="muted">No page URL captured</span>`;
+    const selectedPdfLink = row.id
+      ? `<a class="case-pdf-link" href="${xmlEscape(casePdfHref(row.id))}" target="_blank" rel="noreferrer">Selected PDF</a>`
+      : "";
     return `<article class="result-card ${xmlEscape(row.status || "")}">
       <div class="result-card-head">
         <div class="case-title-block">
@@ -1476,6 +1492,7 @@ const renderLatestResultsHtml = () => {
         <div class="status-stack">
           <span class="status ${xmlEscape(row.status || "")}">${xmlEscape(row.status || "")}</span>
           ${evidenceSummary}
+          ${selectedPdfLink}
         </div>
       </div>
 
@@ -1529,16 +1546,28 @@ const renderLatestResultsHtml = () => {
       steps
     };
   });
-  const executedCases = matchedCases.filter((caseItem) => caseItem.status !== "PENDING");
+  const visibleCases = selectedCaseId
+    ? matchedCases.filter((caseItem) => {
+        const selected = selectedCaseId.toLowerCase();
+        return [
+          caseItem.id,
+          listViewReportCaseTitle(caseItem),
+          caseItem.resultRow?.id,
+          caseItem.resultRow?.testCaseTitle,
+          caseItem.resultRow?.scenario
+        ].some((value) => String(value || "").toLowerCase().includes(selected));
+      })
+    : matchedCases;
+  const executedCases = visibleCases.filter((caseItem) => caseItem.status !== "PENDING");
   const reportCounts = {
-    total: executedCases.length || matchedCases.length,
-    passed: matchedCases.filter((caseItem) => caseItem.status === "PASS").length,
-    failed: matchedCases.filter((caseItem) => caseItem.status === "FAIL").length,
-    skipped: matchedCases.filter((caseItem) => caseItem.status === "SKIP").length,
-    pending: matchedCases.filter((caseItem) => caseItem.status === "PENDING").length
+    total: executedCases.length || visibleCases.length,
+    passed: visibleCases.filter((caseItem) => caseItem.status === "PASS").length,
+    failed: visibleCases.filter((caseItem) => caseItem.status === "FAIL").length,
+    skipped: visibleCases.filter((caseItem) => caseItem.status === "SKIP").length,
+    pending: visibleCases.filter((caseItem) => caseItem.status === "PENDING").length
   };
-  const firstFailed = matchedCases.find((caseItem) => caseItem.status === "FAIL");
-  const caseRowsHtml = matchedCases.map((caseItem) => {
+  const firstFailed = visibleCases.find((caseItem) => caseItem.status === "FAIL");
+  const caseRowsHtml = visibleCases.map((caseItem) => {
     const outcome = caseItem.status === "PASS" ? "Passed" : caseItem.status === "FAIL" ? "Failed" : caseItem.status;
     const evidenceLinks = caseItem.stepEvidence.length > 0
       ? `<ol class="step-evidence-list">${caseItem.stepEvidence.map((step) => {
@@ -1555,9 +1584,12 @@ const renderLatestResultsHtml = () => {
       <ol>${caseItem.steps.map((step) => `<li>${xmlEscape(step.action)}</li>`).join("")}</ol>
       <ol>${caseItem.steps.map((step) => `<li>${xmlEscape(step.expected)}</li>`).join("")}</ol>
       <span class="outcome-label ${xmlEscape(caseItem.status)}">${xmlEscape(outcome)}</span>
-      <span class="inline-evidence">${evidenceLinks}</span>
+      <span class="inline-evidence">${evidenceLinks}<a href="${xmlEscape(casePdfHref(caseItem.id))}" target="_blank" rel="noreferrer">Selected PDF</a></span>
     </article>`;
   }).join("");
+  const reportTitle = selectedCaseId
+    ? `${report.label || "Latest"} Selected Report`
+    : `${report.label || "Latest"} Results`;
   const finalReportHtml = `
   <section class="run-summary-split">
     <article>
@@ -1587,7 +1619,7 @@ const renderLatestResultsHtml = () => {
     <article class="pending"><span>Pending</span><strong>${xmlEscape(reportCounts.pending)}</strong></article>
   </section>
   <section class="count-grid type-counts">
-    <article class="bvt"><span>BVT</span><strong>${xmlEscape(matchedCases.length)}</strong></article>
+    <article class="bvt"><span>BVT</span><strong>${xmlEscape(visibleCases.length)}</strong></article>
     <article class="sanity"><span>Sanity</span><strong>0</strong></article>
     <article class="regression"><span>Regression</span><strong>0</strong></article>
   </section>
@@ -1611,7 +1643,7 @@ const renderLatestResultsHtml = () => {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>${xmlEscape(report.label || "Latest")} Results</title>
+  <title>${xmlEscape(reportTitle)}</title>
   <style>
     :root {
       color-scheme: light;
@@ -1801,6 +1833,19 @@ const renderLatestResultsHtml = () => {
       padding: 4px 8px;
       font-size: 12px;
     }
+    .case-pdf-link {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 32px;
+      border: 1px solid var(--brand);
+      border-radius: 4px;
+      background: var(--brand-soft);
+      color: var(--brand);
+      padding: 6px 10px;
+      font-size: 12px;
+      font-weight: 900;
+    }
     .results-list { display: grid; gap: 16px; }
     .empty-state { border: 1px solid var(--line); border-radius: 4px; background: var(--panel); padding: 16px; color: var(--muted); }
     .result-card { display: grid; gap: 16px; border: 1px solid var(--line); border-radius: 4px; background: var(--panel); padding: 16px; box-shadow: 0 8px 24px rgba(31, 41, 51, .05); }
@@ -1857,10 +1902,11 @@ const renderLatestResultsHtml = () => {
 <div class="page">
   <header>
     <div>
-      <h1>${xmlEscape(report.label || "Latest")} Results</h1>
+      <h1>${xmlEscape(reportTitle)}</h1>
       <p class="live-line">
         <span>Run status: <strong>${xmlEscape(payload.runStatus || "-")}</strong></span>
         <span>| Total cases: ${xmlEscape(reportCounts.total)}</span>
+        ${selectedCaseId ? `<span>| Selected: ${xmlEscape(selectedCaseId)}</span>` : ""}
         <span>| Updated: ${xmlEscape(payload.updatedAt ? new Date(payload.updatedAt).toLocaleString() : "-")}</span>
       </p>
     </div>
@@ -1907,6 +1953,29 @@ const renderLatestResultsHtml = () => {
 </script>
 </body>
 </html>`;
+};
+
+const buildPdfBufferFromHtml = async (html) => {
+  const { chromium } = await import("playwright");
+  const browser = await chromium.launch();
+  try {
+    const page = await browser.newPage({ viewport: { width: 1440, height: 1024 } });
+    await page.setContent(html, { waitUntil: "networkidle" });
+    await page.emulateMedia({ media: "print" });
+    return await page.pdf({
+      format: "A4",
+      landscape: true,
+      printBackground: true,
+      margin: {
+        top: "10mm",
+        right: "10mm",
+        bottom: "10mm",
+        left: "10mm"
+      }
+    });
+  } finally {
+    await browser.close();
+  }
 };
 
 const readFramework = () => ({
@@ -5381,7 +5450,30 @@ const server = createServer(async (request, response) => {
   }
 
   if (url.pathname === "/report/latest" || url.pathname === "/report/latest.html") {
-    sendHtml(response, 200, renderLatestResultsHtml());
+    sendHtml(response, 200, renderLatestResultsHtml({ selectedCaseId: url.searchParams.get("case") || "" }));
+    return;
+  }
+
+  const selectedCasePdfMatch = /^\/report\/case\/([^/]+)\.pdf$/.exec(url.pathname);
+  if (selectedCasePdfMatch) {
+    const selectedCaseId = decodeURIComponent(selectedCasePdfMatch[1] || "").trim();
+    if (!selectedCaseId) {
+      sendText(response, 400, "A test case ID is required.");
+      return;
+    }
+    try {
+      const html = renderLatestResultsHtml({ selectedCaseId });
+      const pdf = await buildPdfBufferFromHtml(html);
+      sendBuffer(
+        response,
+        200,
+        pdf,
+        "application/pdf",
+        `${safeSegment(selectedCaseId)}-report.pdf`
+      );
+    } catch (error) {
+      sendText(response, 500, error instanceof Error ? error.message : "Unable to build selected report PDF.");
+    }
     return;
   }
 

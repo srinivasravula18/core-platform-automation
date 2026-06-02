@@ -1539,6 +1539,7 @@ function AzureRunResultView({ cases, selectedCase, suite, testPlan, onBack, onSe
   const [showImages, setShowImages] = useState(false);
   const resultTitle = selectedCase.resultRef?.title || selectedCase.title;
   const attachments = [
+    ["Selected case PDF", `/report/case/${encodeURIComponent(selectedCase.id)}.pdf`],
     ["Latest HTML report", testPlan?.report?.html || "/report/latest"],
     ["JSON result payload", testPlan?.report?.json || "/report/list-view-regression-results.json"]
   ];
@@ -1754,9 +1755,23 @@ function ReportsPanel({ results, testPlan }) {
   const counts = results.counts || {};
   const planCounts = testPlan?.counts || {};
   const report = results.report || {};
+  const [selectedReportCase, setSelectedReportCase] = useState("");
   const latestTotal = planCounts.total || results.total || results.rows?.length || 0;
   const latestPassed = planCounts.PASS ?? counts.PASS ?? 0;
   const latestFailed = planCounts.FAIL ?? counts.FAIL ?? 0;
+  const planCaseOptions = (Array.isArray(testPlan?.plans) ? testPlan.plans : [])
+    .flatMap((plan) => Array.isArray(plan.suites) ? plan.suites : [])
+    .flatMap((suite) => Array.isArray(suite.cases) ? suite.cases : []);
+  const resultCaseOptions = Array.isArray(results.rows) ? results.rows : [];
+  const caseOptions = (planCaseOptions.length > 0 ? planCaseOptions : resultCaseOptions)
+    .map((caseItem) => ({
+      id: caseItem.id || caseItem.caseId || "",
+      title: caseItem.title || caseItem.testCaseTitle || caseItem.scenario || caseItem.id || "Test case"
+    }))
+    .filter((caseItem) => caseItem.id);
+  const selectedCaseId = selectedReportCase || caseOptions[0]?.id || "";
+  const selectedPdfHref = selectedCaseId ? `/report/case/${encodeURIComponent(selectedCaseId)}.pdf` : "";
+  const selectedHtmlHref = selectedCaseId ? `/report/latest?case=${encodeURIComponent(selectedCaseId)}` : "/report/latest";
   const links = [
     ["HTML Report", "/report/latest"],
     ["Test Cases Excel", "/api/inventory.xlsx?refresh=1"],
@@ -1788,6 +1803,20 @@ function ReportsPanel({ results, testPlan }) {
           <span>Open the curated MISC V1 report with test-case rows, step-level expected results, outcomes, and per-step evidence screenshots.</span>
         </div>
         <button type="button" className="primary-link" onClick={() => window.open("/report/latest", "_blank", "noopener,noreferrer")}>Open Latest Report</button>
+      </div>
+      <div className="individual-report-actions" aria-label="Individual test case report">
+        <label>
+          <span>Individual Test Case</span>
+          <select value={selectedCaseId} onChange={(event) => setSelectedReportCase(event.target.value)} disabled={caseOptions.length === 0}>
+            {caseOptions.length === 0
+              ? <option value="">No test cases available</option>
+              : caseOptions.map((caseItem) => <option key={caseItem.id} value={caseItem.id}>{caseItem.id} - {caseItem.title}</option>)}
+          </select>
+        </label>
+        <div className="individual-report-buttons">
+          <a className="secondary" href={selectedHtmlHref} target="_blank" rel="noreferrer">View Selected Report</a>
+          <a className="primary-link" href={selectedPdfHref || undefined} target="_blank" rel="noreferrer" aria-disabled={!selectedPdfHref}>Download Selected PDF</a>
+        </div>
       </div>
       <div className="latest-report-summary">
         <Metric label="Plan" value="MISC V1" />

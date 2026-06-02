@@ -936,6 +936,74 @@ export default class TableReport implements Reporter {
       })
       .join("\n");
 
+    const pdfCaseCards = reportRows
+      .map((row, index) => {
+        const notes = row.evidenceNotes?.length
+          ? row.evidenceNotes.map((note) => `<li>${sanitize(note)}</li>`).join("")
+          : "<li>No evidence note was captured for this test.</li>";
+        const steps = row.steps?.length
+          ? row.steps.map((step, stepIndex) => `<li>
+              <strong>${stepIndex + 1}. ${sanitize(step.section || step.step || "Step")}</strong>
+              <span>${sanitize(step.actionDone || step.action || "")}</span>
+              <em>${sanitize(step.expectedResult || step.expectedBehavior || step.verify || "")}</em>
+              <b>${sanitize(step.result || step.outcome || row.status)}</b>
+            </li>`).join("")
+          : `<li><strong>1. Test action</strong><span>${sanitize(row.inputAction)}</span><em>${sanitize(row.expectedResult)}</em><b>${sanitize(row.status)}</b></li>`;
+        const screenshots = row.screenshotPaths?.length
+          ? row.screenshotPaths.map((screenshotPath, shotIndex) => `<figure>
+              <img src="${sanitize(screenshotPath)}" alt="Evidence ${shotIndex + 1} for ${sanitize(row.id)}" />
+              <figcaption>Evidence ${shotIndex + 1}</figcaption>
+            </figure>`).join("")
+          : `<p class="pdf-muted">No screenshot evidence was attached.</p>`;
+        return `<article class="pdf-case-card">
+          <header class="pdf-case-header">
+            <div>
+              <p class="pdf-eyebrow">Test Case ${index + 1}</p>
+              <h2>${sanitize(row.testCaseTitle)}</h2>
+              <p>${sanitize(row.id)} | ${sanitize(row.moduleSuite)} | ${sanitize(row.surface)} / ${sanitize(row.featureArea)}</p>
+            </div>
+            <span class="status ${row.status}">${row.status}</span>
+          </header>
+          <section class="pdf-meta-grid">
+            <div><span>Testing Level</span><strong>${sanitize(row.testingLevel)}</strong></div>
+            <div><span>Priority</span><strong>${sanitize(row.priority)}</strong></div>
+            <div><span>Automation</span><strong>${sanitize(row.automationStatus)}</strong></div>
+            <div><span>Performed By</span><strong>${sanitize(row.performedBy || "-")}</strong></div>
+          </section>
+          <section class="pdf-two-column">
+            <div>
+              <h3>Expected Result</h3>
+              <p>${sanitize(row.expectedResult || "-")}</p>
+            </div>
+            <div>
+              <h3>Actual Result</h3>
+              <p>${sanitize(row.actualResult || "-")}</p>
+            </div>
+          </section>
+          <section class="pdf-two-column">
+            <div>
+              <h3>Pre-conditions</h3>
+              <p>${sanitize(row.precondition || "-")}</p>
+            </div>
+            <div>
+              <h3>Test Data</h3>
+              <p>${sanitize(row.testData || row.inputDataSummary || "-")}</p>
+            </div>
+          </section>
+          <section>
+            <h3>Step Review</h3>
+            <ol class="pdf-step-list">${steps}</ol>
+          </section>
+          <section>
+            <h3>Evidence</h3>
+            <ul class="pdf-note-list">${notes}</ul>
+            <div class="pdf-evidence-grid">${screenshots}</div>
+          </section>
+          ${row.bugReport ? `<section class="pdf-bug"><h3>Failure Summary</h3><p>${sanitize(row.bugReport)}</p></section>` : ""}
+        </article>`;
+      })
+      .join("\n");
+
     const html = `<!doctype html>
 <html>
 <head>
@@ -995,7 +1063,7 @@ export default class TableReport implements Reporter {
       align-items: center;
       min-height: 34px;
       padding: 7px 12px;
-      border-radius: 6px;
+      border-radius: 4px;
       border: 1px solid var(--border);
       background: var(--panel);
       color: var(--text);
@@ -1018,7 +1086,7 @@ export default class TableReport implements Reporter {
       min-height: 78px;
       padding: 13px 14px;
       border: 1px solid var(--border);
-      border-radius: 7px;
+      border-radius: 4px;
       background: var(--panel);
       box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
     }
@@ -1026,7 +1094,7 @@ export default class TableReport implements Reporter {
     .metric strong { font-size: 22px; overflow-wrap: anywhere; }
     .table-card {
       border: 1px solid var(--border);
-      border-radius: 7px;
+      border-radius: 4px;
       background: var(--panel);
       overflow: hidden;
       box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
@@ -1185,8 +1253,129 @@ export default class TableReport implements Reporter {
       max-height: 58px;
       object-fit: contain;
       border: 1px solid var(--border);
-      border-radius: 6px;
+      border-radius: 4px;
       background: var(--panel-2);
+    }
+    .pdf-case-list { display: none; }
+    .pdf-case-card {
+      break-inside: avoid;
+      page-break-inside: avoid;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      background: var(--panel);
+      padding: 16px;
+      margin: 0 0 16px;
+    }
+    .pdf-case-header {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      align-items: flex-start;
+      padding-bottom: 12px;
+      border-bottom: 1px solid var(--border);
+    }
+    .pdf-case-header h2 { margin: 0 0 4px; font-size: 18px; line-height: 1.2; }
+    .pdf-case-header p { margin: 0; color: var(--muted); }
+    .pdf-eyebrow {
+      margin: 0 0 4px;
+      color: var(--accent);
+      font-size: 11px;
+      font-weight: 800;
+      text-transform: uppercase;
+    }
+    .pdf-meta-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 8px;
+      margin: 12px 0;
+    }
+    .pdf-meta-grid div,
+    .pdf-two-column > div,
+    .pdf-bug {
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      background: var(--panel-2);
+      padding: 12px;
+    }
+    .pdf-meta-grid span {
+      display: block;
+      color: var(--muted);
+      font-size: 10px;
+      font-weight: 800;
+      text-transform: uppercase;
+      margin-bottom: 4px;
+    }
+    .pdf-meta-grid strong { font-size: 12px; }
+    .pdf-two-column {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+      margin: 0 0 12px;
+    }
+    .pdf-case-card h3 {
+      margin: 0 0 8px;
+      font-size: 12px;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    .pdf-case-card p {
+      margin: 0;
+      font-size: 12px;
+      line-height: 1.45;
+      overflow-wrap: anywhere;
+    }
+    .pdf-step-list,
+    .pdf-note-list {
+      display: grid;
+      gap: 8px;
+      margin: 0 0 12px;
+      padding-left: 20px;
+    }
+    .pdf-step-list li {
+      break-inside: avoid;
+      padding: 8px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      background: #fff;
+    }
+    .pdf-step-list strong,
+    .pdf-step-list span,
+    .pdf-step-list em,
+    .pdf-step-list b {
+      display: block;
+      margin-bottom: 4px;
+      font-size: 11px;
+      font-style: normal;
+      overflow-wrap: anywhere;
+    }
+    .pdf-step-list b { color: var(--text); margin-bottom: 0; }
+    .pdf-evidence-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+    }
+    .pdf-evidence-grid figure {
+      margin: 0;
+      break-inside: avoid;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 8px;
+      background: #fff;
+    }
+    .pdf-evidence-grid img {
+      display: block;
+      width: 100%;
+      max-height: 150px;
+      object-fit: contain;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      background: var(--panel-2);
+    }
+    .pdf-evidence-grid figcaption,
+    .pdf-muted {
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 10px;
     }
     @media (max-width: 900px) {
       .report-shell { padding: 10px; }
@@ -1196,8 +1385,14 @@ export default class TableReport implements Reporter {
       .table-wrap { max-height: calc(100dvh - 300px); }
       table { min-width: 3000px; }
     }
+    @page { size: A4 landscape; margin: 10mm; }
     @media print {
-      html, body, .report-shell { height: auto; max-height: none; overflow: visible; }
+      html, body, .report-shell { height: auto; max-height: none; overflow: visible; background: #fff; }
+      .report-shell { width: auto; max-width: none; padding: 0; overflow: visible; }
+      .hero { border-bottom: 2px solid var(--border-strong); padding-bottom: 12px; margin-bottom: 12px; }
+      .summary { margin-bottom: 12px; }
+      .table-card { display: none; }
+      .pdf-case-list { display: grid; gap: 16px; }
       .table-wrap { max-height: none; overflow: visible; }
       .report-actions { display: none; }
     }
@@ -1289,6 +1484,9 @@ ${htmlRows}
           </tbody>
         </table>
       </div>
+    </section>
+    <section class="pdf-case-list" aria-label="Individual PDF test case reports">
+      ${pdfCaseCards}
     </section>
   </main>
 </body>

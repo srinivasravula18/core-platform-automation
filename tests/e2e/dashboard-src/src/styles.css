@@ -534,7 +534,7 @@ th { position: sticky; top: 0; background: var(--panel-2); z-index: 1; white-spa
   align-items: center;
   justify-content: center;
   min-height: 42px;
-  border-radius: 8px;
+  border-radius: 4px;
   background: var(--accent) !important;
   border-color: var(--accent) !important;
   color: #fff !important;
@@ -548,6 +548,35 @@ th { position: sticky; top: 0; background: var(--panel-2); z-index: 1; white-spa
   background: color-mix(in srgb, var(--accent), #000 10%) !important;
   border-color: color-mix(in srgb, var(--accent), #000 10%) !important;
   color: #fff !important;
+}
+.individual-report-actions {
+  display: grid;
+  grid-template-columns: minmax(320px, 1fr) auto;
+  gap: 12px;
+  align-items: end;
+  margin-bottom: 12px;
+}
+.individual-report-actions label {
+  display: grid;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 800;
+}
+.individual-report-actions select {
+  width: 100%;
+  min-height: 42px;
+  border-radius: 4px;
+}
+.individual-report-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.individual-report-buttons a {
+  min-height: 42px;
+  border-radius: 4px;
 }
 .latest-report-summary {
   display: grid;
