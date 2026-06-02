@@ -253,10 +253,10 @@ const frameworkRegistry = {
     },
     {
       id: "complete-list-view-e2e",
-      label: "Complete List View CRUD E2E",
+      label: "List View CRUD & Settings E2E",
       surface: "all",
       grep: "@complete-list-view-atomic",
-      description: "Admin and Keystone list-view E2E cases focused on unique CRUD, selection, settings, and recycle-bin workflows.",
+      description: "Admin and Keystone list-view workflows covering record CRUD, list-view actions, settings panels, selection guards, and recycle-bin validation.",
       tags: ["admin", "keystone", "list-view", "crud", "settings", "bvt"]
     }
   ],
