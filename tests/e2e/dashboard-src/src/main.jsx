@@ -1,8 +1,8 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
-  Bot, Bug, CheckSquare, ChevronDown, ChevronRight, ClipboardList, FileBarChart, GitBranch,
-  Database, Download, FileSpreadsheet, LayoutDashboard, Moon, PanelLeftClose, PanelLeftOpen, Play, Plus, Radio, RefreshCw, Save, Search, Settings, Square, Sun,
+  Bot, Bug, CheckSquare, ChevronDown, ChevronRight, ClipboardList, FileBarChart, FileText, Folder, FolderOpen, GitBranch,
+  Database, Download, FileSpreadsheet, Layers, LayoutDashboard, Moon, PanelLeftClose, PanelLeftOpen, Play, Plus, Radio, RefreshCw, Save, Search, Settings, Square, Sun,
   TestTube2, Trash2, Upload, Video, Waypoints, XCircle
 } from "lucide-react";
 import "./styles.css";
@@ -1212,8 +1212,8 @@ function TestPlansPanel({ testPlan, running, onRunAutomation }) {
               onClick={() => setIsProductOpen((previous) => !previous)}
               aria-expanded={isProductOpen}
             >
-              {isProductOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-              <span>{plan?.product || "Core Platform"}</span>
+              {isProductOpen ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+              <span><Layers size={15} style={{ verticalAlign: "-2px", marginRight: 6, opacity: 0.7 }} />{plan?.product || "Core Platform"}</span>
               <strong>{counts.total || 0}</strong>
             </button>
             {isProductOpen ? suiteGroups.map((group) => (
@@ -1228,16 +1228,17 @@ function TestPlansPanel({ testPlan, running, onRunAutomation }) {
             </button>
                 {openSuiteGroups[group.label] ? group.folders.map((folder) => {
               const folderKey = `${group.label}/${folder.label}`;
+              const isFolderOpen = openSuiteGroups[folderKey];
               return <section className="azure-suite-folder" key={folderKey}>
                 <button
                   className="azure-suite-folder-title"
                   onClick={() => setOpenSuiteGroups((previous) => ({ ...previous, [folderKey]: !previous[folderKey] }))}
                 >
-                  {openSuiteGroups[folderKey] ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+                  {isFolderOpen ? <FolderOpen size={14} style={{ opacity: 0.65 }} /> : <Folder size={14} style={{ opacity: 0.5 }} />}
                   <span>{folder.label}</span>
                   <strong>{folder.total}</strong>
                 </button>
-                {openSuiteGroups[folderKey] ? folder.suites.map((suite) => (
+                {isFolderOpen ? folder.suites.map((suite) => (
                   <button
                     key={suite.id}
                     className={`azure-suite-case ${selectedSuite?.id === suite.id && !selectedCaseId ? "selected" : ""}`}
@@ -1246,7 +1247,7 @@ function TestPlansPanel({ testPlan, running, onRunAutomation }) {
                       setSelectedCaseId("");
                     }}
                   >
-                    <span>{suite.summaryLabel}</span>
+                    <span><FileText size={13} style={{ verticalAlign: "-2px", marginRight: 6, opacity: 0.45 }} />{suite.summaryLabel}</span>
                     <strong>{suite.cases.length}</strong>
                   </button>
                 )) : null}
@@ -1304,7 +1305,7 @@ function AzurePlanList({ plans, counts, testPlan, notice, setNotice, onOpenPlan 
   const [filterState, setFilterState] = useState({
     state: "Active",
     area: plan.product || "Core Platform",
-    iteration: plan.version || "MISC v1",
+    iteration: plan.version || "MISC V1",
     assignedTo: "Automation"
   });
   const cycleFilter = (key, values) => {
@@ -1325,7 +1326,7 @@ function AzurePlanList({ plans, counts, testPlan, notice, setNotice, onOpenPlan 
       <label><Search size={15} /><input placeholder="Filter by title" value={filter} onChange={(event) => setFilter(event.target.value)} /></label>
       <button className="secondary" onClick={() => cycleFilter("state", ["Active", "Passed", "All"])}>State: {filterState.state} <ChevronDown size={14} /></button>
       <button className="secondary" onClick={() => cycleFilter("area", [plan.product || "Core Platform", "All"])}>Area Path: {filterState.area} <ChevronDown size={14} /></button>
-      <button className="secondary" onClick={() => cycleFilter("iteration", [plan.version || "MISC v1", "All"])}>Iteration: {filterState.iteration} <ChevronDown size={14} /></button>
+      <button className="secondary" onClick={() => cycleFilter("iteration", [plan.version || "MISC V1", "All"])}>Iteration: {filterState.iteration} <ChevronDown size={14} /></button>
       <button className="secondary" onClick={() => cycleFilter("assignedTo", ["Automation", "All"])}>Assigned To: {filterState.assignedTo} <ChevronDown size={14} /></button>
     </div>
     {notice ? <p className="azure-inline-notice">{notice}</p> : null}
@@ -1337,7 +1338,7 @@ function AzurePlanList({ plans, counts, testPlan, notice, setNotice, onOpenPlan 
           <span>{plan.suiteId || plan.id || "complete-list-view-e2e"}</span>
           <span>{filterState.state === "Passed" ? "Passed" : "Active"}</span>
           <span>{plan.product || "Core Platform"}</span>
-          <span>{plan.version || "MISC v1"}</span>
+          <span>{plan.version || "MISC V1"}</span>
           <span><span className="azure-avatar">QA</span> Automation</span>
           <span>{counts.PASS || 0}/{counts.total || 0} passed</span>
         </button>
@@ -1415,22 +1416,27 @@ function AzureExecuteTab({ cases, suite, running, onRunAutomation, setNotice, on
         <button onClick={onRunAutomation} disabled={running}><Play size={16} /> Run for web application</button>
       </div>
     </div>
-    <div className="azure-test-points azure-run-step-table">
-      <div className="azure-run-step-row header">
-        <strong>Step</strong>
-        <strong>Outcome</strong>
-        <strong>Action</strong>
+    <div className="azure-execute-scenario-table">
+      <div className="azure-execute-scenario-row header">
+        <strong>ID</strong>
+        <strong>Test Scenario</strong>
+        <strong>Testing Type</strong>
+        <strong>Test Steps</strong>
         <strong>Expected Result</strong>
+        <strong>Outcome</strong>
       </div>
-      {cases.length === 0 ? <p className="empty">No test points in this suite.</p> : cases.flatMap((caseItem, caseIndex) => {
+      {cases.length === 0 ? <p className="empty">No test points in this suite.</p> : cases.map((caseItem, caseIndex) => {
         const outcome = String(caseItem.outcome || "PENDING").toUpperCase();
         const normalizedOutcome = outcome === "PASS" ? "Passed" : outcome === "FAIL" ? "Failed" : outcome;
-        return planStepRowsForCase(caseItem, suite).map((step, stepIndex) => <article key={`${caseItem.id}-${stepIndex}`} className={`azure-run-step-row ${caseIndex === 1 && stepIndex === 0 ? "selected" : ""}`} onClick={() => onOpenCase?.(caseItem)}>
-          <strong>{step.step}</strong>
+        const steps = planStepRowsForCase(caseItem, suite);
+        return <article key={caseItem.id} className={`azure-execute-scenario-row ${caseIndex === 1 ? "selected" : ""}`} onClick={() => onOpenCase?.(caseItem)}>
+          <strong>{caseItem.id}</strong>
+          <span>{individualCaseTitle(caseItem)}</span>
+          <span>BVT</span>
+          <ol>{steps.map((step) => <li key={step.step}>{step.action}</li>)}</ol>
+          <ol>{steps.map((step) => <li key={step.step}>{toVerifyExpected(step.expected)}</li>)}</ol>
           <span className={`azure-outcome ${outcome.toLowerCase()}`}>{normalizedOutcome}</span>
-          <span>{step.action}</span>
-          <span>{toVerifyExpected(step.expected)}</span>
-        </article>);
+        </article>;
       })}
     </div>
   </div>;

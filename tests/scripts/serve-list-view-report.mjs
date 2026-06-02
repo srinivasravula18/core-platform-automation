@@ -324,9 +324,9 @@ frameworkRegistry.scenarios.sort((left, right) =>
 
 const completeListViewTestPlan = {
   id: "complete-list-view-regression",
-  label: "MISC v1",
+  label: "MISC V1",
   product: "Core Platform",
-  version: "MISC v1",
+  version: "MISC V1",
   suiteId: "complete-list-view-e2e",
   children: [
     {
@@ -1193,6 +1193,102 @@ const readResults = () => {
   return completedPayload;
 };
 
+const listViewReportStepRowsForCase = (caseItem, suitePath = "Admin / Apps") => {
+  const rowsByCase = {
+    "TC-001": [
+      ["Open Admin", "URL contains admin route, login completes, user menu is visible, and Apps page heading/table is visible."],
+      ["Go to Apps list", "Apps list table is visible, New button is enabled, and existing app rows or empty-table state are loaded."],
+      ["Create a disposable app", "Save confirmation appears and created app name is returned in the Apps list/table response."],
+      ["Search and verify app appears", "Search text equals created app name and exactly one matching row contains the created app name."]
+    ],
+    "TC-002": [
+      ["Open Admin", "URL contains admin route, login completes, user menu is visible, and Apps page heading/table is visible."],
+      ["Go to Apps list-view actions", "List-view selector is visible, action menu opens, and create/settings options are enabled."],
+      ["Create a disposable custom list view", "Save confirmation appears and new list-view label is selected or available in the list-view selector."],
+      ["Verify the list view is available", "Selected list-view name equals created list-view name and Apps table remains loaded without page error."]
+    ],
+    "TC-003": [
+      ["Open Admin", "URL contains admin route, login completes, user menu is visible, and Apps page heading/table is visible."],
+      ["Find the disposable app", "Search/filter value matches disposable app name and target row is visible before delete."],
+      ["Delete the app", "Delete confirmation is accepted and success state is shown, with no blocking validation error."],
+      ["Search again and verify it is removed", "Same app name search returns no active row in Apps list after delete."]
+    ],
+    "TC-004": [
+      ["Open Admin", "URL contains admin route, login completes, user menu is visible, and Apps page heading/table is visible."],
+      ["Go to Apps list", "Apps list table is visible and search input is enabled."],
+      ["Enter app name in search", "Search input value equals requested app name and table refresh/filter completes."],
+      ["Verify matching app row is shown", "At least one visible row contains requested app name, and unrelated app names are not shown as matches."]
+    ],
+    "TC-005": [
+      ["Complete TC-001", "Admin-created app exists before Keystone validation starts."],
+      ["Open Keystone", "URL contains Keystone route, login completes, user menu is visible, and runtime shell is loaded."],
+      ["Open app launcher/list", "Keystone app launcher/list opens without error and loaded app names are visible."],
+      ["Verify Admin-created app is visible", "Admin-created app name appears in Keystone app list and can be selected."]
+    ],
+    "TC-006": [
+      ["Complete TC-002", "Admin-created list view exists before Keystone validation starts."],
+      ["Open Keystone", "URL contains Keystone route, login completes, user menu is visible, and runtime shell is loaded."],
+      ["Select the relevant app/tab", "Correct app and tab are opened in Keystone and list-view selector is visible."],
+      ["Verify Admin-created list view is selectable", "Admin-created list-view name appears in the selector under the correct app/tab."]
+    ]
+  };
+  const rows = rowsByCase[caseItem.id] || [[caseItem.title, caseItem.expected]];
+  return rows.map(([action, expected], index) => ({
+    step: index + 1,
+    action: `${action} (${suitePath})`,
+    expected: toVerifyExpectedText(expected)
+  }));
+};
+
+const toVerifyExpectedText = (value) => {
+  const text = String(value || "the expected result is reached.").trim();
+  return /^verify\b/i.test(text) ? text : `Verify ${text}`;
+};
+
+const listViewReportCaseTitle = (caseItem) => ({
+  "TC-001": "Verify Admin can create a new app",
+  "TC-002": "Verify Admin can create a new list view",
+  "TC-003": "Verify Admin can delete an existing app",
+  "TC-004": "Verify Admin can search for an app by name",
+  "TC-005": "Verify Admin-created app is visible in Keystone",
+  "TC-006": "Verify Admin-created list view is visible in Keystone"
+}[caseItem.id] || caseItem.title || caseItem.id);
+
+const listViewReportCases = () => {
+  const cases = [];
+  const walk = (node, pathParts = []) => {
+    if (!node) return;
+    const nextPath = node.label ? [...pathParts, node.label] : pathParts;
+    if (Array.isArray(node.cases)) {
+      const pathWithoutPlan = nextPath.filter((item) => !["MISC V1", "MISC v1", "Core Platform"].includes(item));
+      for (const caseItem of node.cases) {
+        cases.push({ ...caseItem, suitePath: pathWithoutPlan.join(" / ") || "Admin / Apps" });
+      }
+    }
+    (node.children || []).forEach((child) => walk(child, nextPath));
+  };
+  walk(completeListViewTestPlan);
+  return cases;
+};
+
+const listViewReportMatchRow = (caseItem, rows) => {
+  const matcher = String(caseItem.matcher || caseItem.id || "").trim().toLowerCase();
+  if (!matcher) return null;
+  return rows.find((row) => planResultText(row).includes(matcher)) || null;
+};
+
+const formatDuration = (payload) => {
+  const explicit = payload.duration || payload.totalExecutionTime || payload.executionTime || payload.elapsed || "";
+  if (explicit) return String(explicit);
+  const started = runState.startedAt ? Date.parse(runState.startedAt) : 0;
+  const finished = runState.finishedAt ? Date.parse(runState.finishedAt) : 0;
+  if (!started || !finished || finished < started) return "-";
+  const seconds = Math.round((finished - started) / 1000);
+  const minutes = Math.floor(seconds / 60);
+  const rest = seconds % 60;
+  return minutes > 0 ? `${minutes}m ${rest}s` : `${rest}s`;
+};
+
 const renderLatestResultsHtml = () => {
   const payload = readResults();
   const counts = payload.counts || {};
@@ -1296,6 +1392,94 @@ const renderLatestResultsHtml = () => {
       ${steps || `<span class="muted">No step details captured.</span>`}
     </article>`;
   }).join("\n");
+  const planCases = listViewReportCases();
+  const matchedCases = planCases.map((caseItem) => {
+    const resultRow = listViewReportMatchRow(caseItem, rows);
+    const status = normalizedPlanStatus(resultRow?.status);
+    const screenshots = Array.isArray(resultRow?.screenshotPaths)
+      ? resultRow.screenshotPaths.map((shot) => `${assetBase}${String(shot || "").replace(/\\/g, "/")}`)
+      : [];
+    return {
+      ...caseItem,
+      resultRow,
+      status,
+      actual: resultRow?.actualResult || (resultRow ? "As expected." : "(captured at runtime)"),
+      screenshots,
+      steps: listViewReportStepRowsForCase(caseItem, caseItem.suitePath)
+    };
+  });
+  const executedCases = matchedCases.filter((caseItem) => caseItem.status !== "PENDING");
+  const reportCounts = {
+    total: executedCases.length || matchedCases.length,
+    passed: matchedCases.filter((caseItem) => caseItem.status === "PASS").length,
+    failed: matchedCases.filter((caseItem) => caseItem.status === "FAIL").length,
+    skipped: matchedCases.filter((caseItem) => caseItem.status === "SKIP").length,
+    pending: matchedCases.filter((caseItem) => caseItem.status === "PENDING").length
+  };
+  const firstFailed = matchedCases.find((caseItem) => caseItem.status === "FAIL");
+  const caseRowsHtml = matchedCases.map((caseItem) => {
+    const outcome = caseItem.status === "PASS" ? "Passed" : caseItem.status === "FAIL" ? "Failed" : caseItem.status;
+    const evidenceLinks = caseItem.screenshots.length > 0
+      ? caseItem.screenshots.map((href, index) => `<a href="${xmlEscape(href)}" target="_blank" rel="noreferrer">View ${xmlEscape(String(index + 1))}</a>`).join("")
+      : "-";
+    return `<article class="scenario-row">
+      <strong>${xmlEscape(caseItem.id)}</strong>
+      <span>${xmlEscape(listViewReportCaseTitle(caseItem))}</span>
+      <span>BVT</span>
+      <ol>${caseItem.steps.map((step) => `<li>${xmlEscape(step.action)}</li>`).join("")}</ol>
+      <ol>${caseItem.steps.map((step) => `<li>${xmlEscape(step.expected)}</li>`).join("")}</ol>
+      <span class="outcome-label ${xmlEscape(caseItem.status)}">${xmlEscape(outcome)}</span>
+      <span class="inline-evidence">${evidenceLinks}</span>
+    </article>`;
+  }).join("");
+  const finalReportHtml = `
+  <section class="run-summary-split">
+    <article>
+      <h2>Run Summary</h2>
+      <dl>
+        <dt>Test Plan</dt><dd>MISC V1</dd>
+        <dt>Test Suite</dt><dd>Core Platform / Admin / Keystone / Apps</dd>
+        <dt>Run Status</dt><dd>${xmlEscape(payload.runStatus || "-")}</dd>
+        <dt>Run By</dt><dd>Automation</dd>
+      </dl>
+    </article>
+    <article>
+      <h2>Execution Summary</h2>
+      <dl>
+        <dt>Configuration</dt><dd>Playwright / Chromium</dd>
+        <dt>Completed Time</dt><dd>${xmlEscape(payload.updatedAt ? new Date(payload.updatedAt).toLocaleString() : "-")}</dd>
+        <dt>Total Execution Time</dt><dd>${xmlEscape(formatDuration(payload))}</dd>
+        <dt>Evidence Folder</dt><dd>evidences/playwright-artifacts-core-platform-list-view</dd>
+      </dl>
+    </article>
+  </section>
+  <section class="count-grid">
+    <article class="total"><span>Total Test Cases Run</span><strong>${xmlEscape(reportCounts.total)}</strong></article>
+    <article class="pass"><span>Passed</span><strong>${xmlEscape(reportCounts.passed)}</strong></article>
+    <article class="fail"><span>Failed</span><strong>${xmlEscape(reportCounts.failed)}</strong></article>
+    <article class="skip"><span>Skipped</span><strong>${xmlEscape(reportCounts.skipped)}</strong></article>
+    <article class="pending"><span>Pending</span><strong>${xmlEscape(reportCounts.pending)}</strong></article>
+  </section>
+  <section class="count-grid type-counts">
+    <article class="bvt"><span>BVT</span><strong>${xmlEscape(matchedCases.length)}</strong></article>
+    <article class="sanity"><span>Sanity</span><strong>0</strong></article>
+    <article class="regression"><span>Regression</span><strong>0</strong></article>
+  </section>
+  <section class="report-table">
+    <h2>Test Cases</h2>
+    <div class="scenario-row header"><strong>ID</strong><strong>Test Scenario</strong><strong>Testing Type</strong><strong>Test Steps</strong><strong>Expected Result</strong><strong>Outcome</strong><strong>Evidence</strong></div>
+    ${caseRowsHtml || `<div class="empty-state">No test cases available.</div>`}
+  </section>
+  <section class="failure-details">
+    <h2>Failure Details</h2>
+    <dl>
+      <dt>Failed Test Case</dt><dd>${xmlEscape(firstFailed?.id || "-")}</dd>
+      <dt>Failed Step</dt><dd>${xmlEscape(firstFailed ? "See Test Cases table evidence" : "-")}</dd>
+      <dt>Actual Result</dt><dd>${xmlEscape(firstFailed?.actual || "-")}</dd>
+      <dt>Error Message</dt><dd>${xmlEscape(firstFailed?.resultRow?.error || firstFailed?.actual || "-")}</dd>
+      <dt>Failed Location</dt><dd>${xmlEscape(firstFailed?.resultRow?.directUrl || firstFailed?.resultRow?.location || "-")}</dd>
+    </dl>
+  </section>`;
   return `<!doctype html>
 <html>
 <head>
@@ -1321,6 +1505,138 @@ const renderLatestResultsHtml = () => {
     .metric { border: 1px solid var(--line); border-radius: 16px; background: var(--panel); padding: 16px; box-shadow: 0 10px 30px rgba(15, 23, 42, .06); }
     .metric span { display: block; color: var(--muted); font-size: 12px; font-weight: 700; text-transform: uppercase; margin-bottom: 8px; }
     .metric strong { font-size: 30px; letter-spacing: 0; }
+    .run-summary-split article,
+    .count-grid article,
+    .report-table,
+    .failure-details {
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: var(--panel);
+      box-shadow: 0 10px 30px rgba(15, 23, 42, .06);
+    }
+    .run-summary-split {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+    }
+    .run-summary-split article,
+    .failure-details {
+      padding: 16px;
+    }
+    .run-summary-split dl,
+    .failure-details dl {
+      display: grid;
+      grid-template-columns: 180px minmax(0, 1fr);
+      gap: 8px 14px;
+      margin: 0;
+    }
+    .run-summary-split dt,
+    .failure-details dt {
+      color: var(--muted);
+      font-weight: 900;
+    }
+    .run-summary-split dd,
+    .failure-details dd {
+      margin: 0;
+      overflow-wrap: anywhere;
+    }
+    .run-summary-split h2,
+    .report-table h2,
+    .failure-details h2 {
+      margin: 0 0 12px;
+      font-size: 18px;
+    }
+    .count-grid {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 12px;
+    }
+    .count-grid.type-counts {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+    .count-grid article { padding: 14px; border-left: 6px solid #94a3b8; }
+    .count-grid article.total { background: #eff6ff; border-left-color: #2563eb; }
+    .count-grid article.pass,
+    .count-grid article.bvt { background: #ecfdf3; border-left-color: var(--green); }
+    .count-grid article.fail { background: #fef2f2; border-left-color: var(--red); }
+    .count-grid article.skip { background: #f8fafc; border-left-color: #64748b; }
+    .count-grid article.pending { background: #fffbeb; border-left-color: var(--amber); }
+    .count-grid article.sanity { background: #f5f3ff; border-left-color: #7c3aed; }
+    .count-grid article.regression { background: #eef2ff; border-left-color: #4f46e5; }
+    .count-grid span {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 900;
+      text-transform: uppercase;
+      margin-bottom: 8px;
+    }
+    .count-grid strong { font-size: 26px; }
+    .report-table {
+      overflow: auto;
+      padding: 0;
+    }
+    .report-table h2 {
+      padding: 16px 16px 0;
+    }
+    .scenario-row {
+      display: grid;
+      gap: 10px;
+      align-items: start;
+      border-bottom: 1px solid var(--line);
+      padding: 12px 16px;
+      min-width: 1240px;
+      font-size: 13px;
+    }
+    .scenario-row {
+      grid-template-columns: 74px minmax(220px, .8fr) 96px minmax(320px, 1fr) minmax(420px, 1.2fr) 76px 120px;
+    }
+    .scenario-row.header {
+      background: #f1f5f9;
+      color: var(--muted);
+      font-weight: 900;
+      min-height: 38px;
+    }
+    .scenario-row:last-child {
+      border-bottom: 0;
+    }
+    .scenario-row ol {
+      display: grid;
+      gap: 6px;
+      margin: 0;
+      padding-left: 18px;
+    }
+    .scenario-row span,
+    .scenario-row li {
+      overflow-wrap: anywhere;
+    }
+    .outcome-label {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 82px;
+      border-radius: 999px;
+      padding: 7px 10px;
+      font-weight: 900;
+      background: #e2e8f0;
+      color: #475569;
+    }
+    .outcome-label.PASS { background: #dcfce7; color: var(--green); }
+    .outcome-label.FAIL { background: #fee2e2; color: var(--red); }
+    .outcome-label.SKIP { background: #e2e8f0; color: #64748b; }
+    .outcome-label.PENDING { background: #fef3c7; color: var(--amber); }
+    .inline-evidence {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    .inline-evidence a {
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: #f8fafc;
+      padding: 5px 7px;
+      font-size: 12px;
+    }
     .results-list { display: grid; gap: 16px; }
     .empty-state { border: 1px solid var(--line); border-radius: 16px; background: var(--panel); padding: 18px; color: var(--muted); }
     .result-card { display: grid; gap: 14px; border: 1px solid var(--line); border-radius: 18px; background: var(--panel); padding: 16px; box-shadow: 0 18px 55px rgba(15, 23, 42, .08); }
@@ -1379,10 +1695,9 @@ const renderLatestResultsHtml = () => {
     <div>
       <h1>${xmlEscape(report.label || "Latest")} Results</h1>
       <p class="live-line">
-        <span>Run status: <strong id="live-run-status">${xmlEscape(payload.runStatus || "-")}</strong></span>
-        <span>| Total cases: ${xmlEscape(payload.total || rows.length)}</span>
+        <span>Run status: <strong>${xmlEscape(payload.runStatus || "-")}</strong></span>
+        <span>| Total cases: ${xmlEscape(reportCounts.total)}</span>
         <span>| Updated: ${xmlEscape(payload.updatedAt ? new Date(payload.updatedAt).toLocaleString() : "-")}</span>
-        <span id="live-run-pill" class="live-pill ${runState.running ? "" : "idle"}">${runState.running ? "Running in background" : "Idle"}</span>
       </p>
     </div>
     <nav>
@@ -1393,16 +1708,7 @@ const renderLatestResultsHtml = () => {
       ${report.sourceHtml ? `<a href="${xmlEscape(report.sourceHtml)}">Raw HTML</a>` : ""}
     </nav>
   </header>
-  <section class="summary">
-    <article class="metric"><span>Total</span><strong>${xmlEscape(payload.total || rows.length)}</strong></article>
-    <article class="metric"><span>Passed</span><strong>${xmlEscape(counts.PASS || 0)}</strong></article>
-    <article class="metric"><span>Failed</span><strong>${xmlEscape(counts.FAIL || 0)}</strong></article>
-    <article class="metric"><span>Skipped</span><strong>${xmlEscape(counts.SKIP || 0)}</strong></article>
-    <article class="metric"><span>Running</span><strong>${xmlEscape(counts.RUNNING || 0)}</strong></article>
-  </section>
-  <section class="results-list" aria-label="Test case results">
-    ${rowHtml || `<div class="empty-state">No latest result rows.</div>`}
-  </section>
+  ${finalReportHtml}
 </div>
 <script>
 (() => {
