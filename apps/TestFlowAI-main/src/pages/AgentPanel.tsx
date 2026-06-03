@@ -7,7 +7,7 @@ const casualGreetingPattern = /^(hi+|h+i+|hlo+|hello+|hey+|good\s+(morning|after
 const identityQuestionPattern = /\b(who\s+are\s+you|what\s+can\s+you\s+do|help|your\s+purpose)\b/i;
 const qaIntentPattern = /\b(test|testing|qa|quality|playwright|selenium|cypress|automation|automate|script|test\s*case|test\s*plan|test\s*suite|scenario|regression|smoke|sanity|bug|defect|application|website|web\s*app|url|api|login|checkout|workflow|flow|requirements?)\b/i;
 const abusivePattern = /\b(fuck|shit|asshole|bastard|bitch|stupid|idiot|moron|dumb)\b/i;
-const domainPattern = /\b((?:https?:\/\/)?(?:www\.)?[a-z0-9-]+(?:\.[a-z0-9-]+)+(?:\/[^\s]*)?)/i;
+const domainPattern = /\b((?:https?:\/\/)?(?:(?:www\.)?[a-z0-9-]+(?:\.[a-z0-9-]+)+|(?:\d{1,3}\.){3}\d{1,3})(?::\d{2,5})?(?:\/[^\s]*)?)/i;
 
 function extractTargetUrl(message: string) {
   const match = message.match(domainPattern);
@@ -199,6 +199,16 @@ export default function AgentPanel() {
     });
   };
 
+  const setAllCaseEvidence = (captureEvidence: boolean) => {
+    setRunData((prev: any) => {
+      if (!prev?.generated_cases) return prev;
+      return {
+        ...prev,
+        generated_cases: prev.generated_cases.map((testCase: any) => ({ ...testCase, captureEvidence }))
+      };
+    });
+  };
+
   const reworkGeneratedCase = async (caseIndex: number) => {
     const currentCase = runData?.generated_cases?.[caseIndex];
     if (!currentCase || isReworkingCase) return;
@@ -373,6 +383,15 @@ export default function AgentPanel() {
            
            {activeTab === 'cases' && runData?.generated_cases?.length > 0 && (
              <div className="flex items-center gap-2">
+               <label className="flex items-center gap-2 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-1.5 text-sm text-[var(--text-primary)]">
+                 <input
+                   type="checkbox"
+                   checked={runData.generated_cases.every((testCase: any) => testCase.captureEvidence !== false)}
+                   onChange={(e) => setAllCaseEvidence(e.target.checked)}
+                   className="accent-[var(--accent)]"
+                 />
+                 Screenshots for all
+               </label>
                {runData.status === 'review_required' && (
                  <button onClick={continueAgentFlow} disabled={isGenerating} className="flex items-center gap-2 bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors disabled:opacity-50">
                    <Send className="w-4 h-4" /> Continue Agent Flow
@@ -409,7 +428,18 @@ export default function AgentPanel() {
             <div className="grid grid-cols-1 gap-4">
               {runData.generated_cases.map((c: any, i: number) => (
                 <div key={i} className="bg-[var(--bg-primary)] border border-[var(--border)] p-4 rounded-lg shadow-sm flex flex-col">
-                  <div className="font-semibold text-sm text-[var(--text-primary)] mb-2">{c.title}</div>
+                  <div className="mb-2 flex items-start justify-between gap-3">
+                    <div className="font-semibold text-sm text-[var(--text-primary)]">{c.title}</div>
+                    <label className="flex shrink-0 items-center gap-1.5 text-[10px] font-medium uppercase tracking-wider text-[var(--text-muted)]">
+                      <input
+                        type="checkbox"
+                        checked={c.captureEvidence !== false}
+                        onChange={(e) => updateGeneratedCase(i, { captureEvidence: e.target.checked })}
+                        className="accent-[var(--accent)]"
+                      />
+                      Evidence
+                    </label>
+                  </div>
                   <div className="text-xs text-[var(--text-muted)] mb-3">{c.description}</div>
                   {c.tags?.length > 0 && (
                     <div className="mb-3 flex flex-wrap gap-1.5">
@@ -547,7 +577,7 @@ export default function AgentPanel() {
               {runData.evidence_screenshots.map((shot: any, i: number) => (
                 <div key={i} className="bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg overflow-hidden">
                   <div className="px-4 py-3 border-b border-[var(--border)] flex flex-col gap-1">
-                    <div className="text-sm font-semibold text-[var(--text-primary)]">{shot.title || 'Playwright screenshot evidence'}</div>
+                    <div className="text-sm font-semibold text-[var(--text-primary)]">Evidence: {shot.title || 'Playwright screenshot evidence'}</div>
                     <div className="text-xs text-[var(--text-muted)] break-all">{shot.url}</div>
                   </div>
                   <img src={shot.screenshotUrl} alt={shot.title || 'Playwright screenshot evidence'} className="w-full bg-black object-contain" />

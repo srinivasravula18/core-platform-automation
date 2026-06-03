@@ -82,7 +82,7 @@ function normalizeTargetUrl(url: string) {
   return `https://${trimmed}`;
 }
 
-const domainPattern = /\b((?:https?:\/\/)?(?:www\.)?[a-z0-9-]+(?:\.[a-z0-9-]+)+(?:\/[^\s]*)?)/i;
+const domainPattern = /\b((?:https?:\/\/)?(?:(?:www\.)?[a-z0-9-]+(?:\.[a-z0-9-]+)+|(?:\d{1,3}\.){3}\d{1,3})(?::\d{2,5})?(?:\/[^\s]*)?)/i;
 
 function extractTargetUrl(message: string) {
   const match = message.match(domainPattern);
@@ -90,29 +90,40 @@ function extractTargetUrl(message: string) {
   return normalizeTargetUrl(match[1].replace(/[),.;!?]+$/, ''));
 }
 
-async function capturePlaywrightEvidence(targetUrl: string, runId: string) {
+async function capturePlaywrightEvidence(targetUrl: string, runId: string, testCases: any[] = []) {
   const normalizedUrl = normalizeTargetUrl(targetUrl);
   if (!normalizedUrl) return [];
 
   const evidenceDir = path.resolve(process.cwd(), 'evidence');
   await fs.mkdir(evidenceDir, { recursive: true });
 
-  const filename = `${runId}-target-page.png`;
-  const screenshotPath = path.join(evidenceDir, filename);
+  const selectedCases = testCases.filter((testCase) => testCase?.captureEvidence !== false);
+  const casesToCapture = selectedCases.length ? selectedCases : [{ title: 'Target base URL evidence' }];
   const browser = await chromium.launch({ headless: true });
 
   try {
-    const page = await browser.newPage({ viewport: { width: 1365, height: 768 } });
-    const response = await page.goto(normalizedUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
-    await page.screenshot({ path: screenshotPath, fullPage: true });
+    const evidence = [];
 
-    return [{
-      title: 'Target base URL evidence',
-      url: normalizedUrl,
-      screenshotUrl: `/evidence/${filename}`,
-      status: response?.status() || null,
-      capturedAt: new Date().toISOString(),
-    }];
+    for (let index = 0; index < casesToCapture.length; index += 1) {
+      const testCase = casesToCapture[index];
+      const page = await browser.newPage({ viewport: { width: 1365, height: 768 } });
+      const filename = `${runId}-case-${index + 1}.png`;
+      const screenshotPath = path.join(evidenceDir, filename);
+      const response = await page.goto(normalizedUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      await page.screenshot({ path: screenshotPath, fullPage: true });
+      await page.close();
+
+      evidence.push({
+        title: testCase?.title || `Test case ${index + 1}`,
+        testCaseIndex: index,
+        url: normalizedUrl,
+        screenshotUrl: `/evidence/${filename}`,
+        status: response?.status() || null,
+        capturedAt: new Date().toISOString(),
+      });
+    }
+
+    return evidence;
   } finally {
     await browser.close();
   }
@@ -245,7 +256,7 @@ async function runPostCaseAgentFlow(run: any, model: any, testCases: any, target
 
   run.messages.push({ agent: 'EvidenceAgent', status: 'running' });
   if (targetUrl) {
-    const evidence = await capturePlaywrightEvidence(targetUrl, run.id);
+    const evidence = await capturePlaywrightEvidence(targetUrl, run.id, testCases?.test_cases || run.generated_cases || []);
     run.evidence_screenshots = evidence as any;
     run.messages.push({ agent: 'EvidenceAgent', status: 'completed', output: evidence });
   } else {
@@ -617,7 +628,7 @@ async function startServer() {
         schema: testCasesSchema,
         prompt: `You are a senior QA engineer. Generate exactly ${testCaseCount} comprehensive test cases covering positive and negative scenarios for these flows: ${JSON.stringify(flows)}. Each test case must include automation tags in @ format, for example @bvt, @sanity, @regression, @smoke, @ui, @positive, @negative. Each test case must include a steps array with 3-6 ordered rows. Each row must have a clear action and expected result suitable for a report table.`
       });
-      newRun.generated_cases = testCases.test_cases as any;
+      newRun.generated_cases = (testCases.test_cases as any[]).map((testCase) => ({ ...testCase, captureEvidence: true }));
       newRun.messages.push({ agent: 'TestGenerationAgent', status: 'completed', output: testCases });
 
       if (flowMode === 'review_cases') {
