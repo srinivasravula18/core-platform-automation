@@ -7,7 +7,62 @@ import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { z } from 'zod';
 import { randomUUID } from 'crypto';
 
-dotenv.config({ path: ['.env.local', '.env'] });
+dotenv.config({ path: [path.resolve(process.cwd(), '.env.local'), path.resolve(process.cwd(), '.env')] });
+
+function getGeminiApiKey() {
+  const key = (
+    process.env.GEMINI_API_KEY ||
+    process.env.GOOGLE_GENERATIVE_AI_API_KEY ||
+    process.env.GOOGLE_API_KEY ||
+    ''
+  ).trim();
+
+  if (!key) {
+    throw new Error('Gemini API key is missing. Set GEMINI_API_KEY or GOOGLE_GENERATIVE_AI_API_KEY in .env.local.');
+  }
+
+  if (key === 'MY_GEMINI_API_KEY' || key.includes('MY_GEMINI_API_KEY')) {
+    throw new Error('Gemini API key is still the placeholder value. Replace it with a real Google AI Studio API key.');
+  }
+
+  if (key.startsWith('AQ.') || key.startsWith('ya29.')) {
+    throw new Error('GEMINI_API_KEY contains an OAuth/access token, not a Gemini API key. Create an API key in Google AI Studio and put that key in .env.local.');
+  }
+
+  return key;
+}
+
+function createGeminiModel() {
+  const google = createGoogleGenerativeAI({ apiKey: getGeminiApiKey() });
+  return google(db.settings?.geminiModel || 'gemini-2.5-flash');
+}
+
+const casualGreetingPattern = /^(hi+|h+i+|hlo+|hello+|hey+|good\s+(morning|afternoon|evening)|thanks?|thank\s+you|ok(?:ay)?)\b[\s!.?]*$/i;
+const identityQuestionPattern = /\b(who\s+are\s+you|what\s+can\s+you\s+do|help|your\s+purpose)\b/i;
+const qaIntentPattern = /\b(test|testing|qa|quality|playwright|selenium|cypress|automation|automate|script|test\s*case|test\s*plan|test\s*suite|scenario|regression|smoke|sanity|bug|defect|application|website|web\s*app|url|api|login|checkout|workflow|flow|requirements?)\b/i;
+const abusivePattern = /\b(fuck|shit|asshole|bastard|bitch|stupid|idiot|moron|dumb)\b/i;
+
+function getAgentGuardrailResponse(message: string) {
+  const normalized = message.trim();
+
+  if (abusivePattern.test(normalized)) {
+    return 'Please keep the conversation professional. I can help with QA tasks such as test planning, test case generation, and Playwright automation when the request is stated respectfully.';
+  }
+
+  if (casualGreetingPattern.test(normalized)) {
+    return 'Hello. I am the QA Assistant. Please provide the application URL or describe the feature you want tested, and I will generate the QA workflow.';
+  }
+
+  if (identityQuestionPattern.test(normalized)) {
+    return 'I am a QA-focused assistant. I can help generate test plans, test cases, suites, and Playwright scripts for application testing workflows.';
+  }
+
+  if (!qaIntentPattern.test(normalized) && !/https?:\/\/[^\s]+/i.test(normalized)) {
+    return 'This assistant is scoped to QA and test automation. Please ask about an application, feature, test case, test plan, defect, or automation script.';
+  }
+
+  return null;
+}
 
 // In-Memory Database Simulation
 const db = {
@@ -411,13 +466,9 @@ async function startServer() {
 
   app.post('/api/agent/action', async (req, res) => {
     const { taskType, prompt } = req.body;
-    if (!process.env.GEMINI_API_KEY) {
-      return res.status(500).json({ error: 'System AI Configuration Missing (GEMINI_API_KEY)' });
-    }
 
     try {
-      const google = createGoogleGenerativeAI({ apiKey: process.env.GEMINI_API_KEY });
-      const model = google(db.settings?.geminiModel || 'gemini-2.5-flash');
+      const model = createGeminiModel();
       
       let schema;
       let systemPrompt = "";
@@ -491,9 +542,10 @@ async function startServer() {
   // AI Agent API (A2A Orchestrator Simulation)
   app.post('/api/agent/start', async (req, res) => {
     const { app_url, provider, prompt } = req.body;
-    
-    if (!process.env.GEMINI_API_KEY) {
-      return res.status(500).json({ error: 'System AI Configuration Missing (GEMINI_API_KEY)' });
+    const guardrailResponse = getAgentGuardrailResponse(prompt || app_url || '');
+
+    if (guardrailResponse) {
+      return res.json({ chat_response: guardrailResponse });
     }
 
     const taskId = randomUUID();
@@ -516,8 +568,7 @@ async function startServer() {
     res.json({ task_id: taskId });
 
     try {
-      const google = createGoogleGenerativeAI({ apiKey: process.env.GEMINI_API_KEY });
-      const model = google(db.settings?.geminiModel || 'gemini-2.5-flash');
+      const model = createGeminiModel();
 
       // 1. ApplicationInspector Agent
       newRun.messages.push({ agent: 'ApplicationInspector', status: 'running' });

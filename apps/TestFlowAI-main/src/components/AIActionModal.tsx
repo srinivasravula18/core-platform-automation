@@ -1,6 +1,7 @@
-import { useState, useRef, useEffect } from 'react';
+import { useCallback, useState } from 'react';
 import { Mic, Send, Bot, Loader2, Sparkles, Check, X, RefreshCw } from 'lucide-react';
 import { Modal } from './Modal';
+import { useSpeechToText } from '@/src/lib/useSpeechToText';
 
 interface AIActionModalProps {
   isOpen: boolean;
@@ -12,43 +13,25 @@ interface AIActionModalProps {
 
 export function AIActionModal({ isOpen, onClose, taskType, onApprove, title }: AIActionModalProps) {
   const [input, setInput] = useState('');
-  const [isListening, setIsListening] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
   const [generatedData, setGeneratedData] = useState<any>(null);
-  const recognitionRef = useRef<any>(null);
 
-  useEffect(() => {
-    if (typeof window !== 'undefined' && ('SpeechRecognition' in window || 'webkitSpeechRecognition' in window)) {
-      const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-      if (SpeechRecognition) {
-        recognitionRef.current = new SpeechRecognition();
-        recognitionRef.current.continuous = false;
-        recognitionRef.current.interimResults = false;
-        recognitionRef.current.onresult = (event: any) => {
-          const transcript = event.results[event.results.length - 1][0].transcript;
-          setInput((prev) => prev + (prev ? ' ' : '') + transcript);
-        };
-        recognitionRef.current.onend = () => setIsListening(false);
-      }
-    }
+  const appendSpeechTranscript = useCallback((transcript: string) => {
+    setInput((prev) => prev + (prev.trim() ? ' ' : '') + transcript);
   }, []);
 
-  const toggleListen = () => {
-    if (isListening) {
-      recognitionRef.current?.stop();
-      setIsListening(false);
-    } else {
-      try {
-        recognitionRef.current?.start();
-        setIsListening(true);
-      } catch (e) {
-        console.error("Microphone access error:", e);
-      }
-    }
-  };
+  const {
+    error: speechError,
+    interimTranscript,
+    isListening,
+    isSupported: isSpeechSupported,
+    stopListening,
+    toggleListening,
+  } = useSpeechToText({ onTranscript: appendSpeechTranscript });
 
   const handleGenerate = async () => {
     if (!input.trim() || isGenerating) return;
+    stopListening();
     setIsGenerating(true);
     try {
       const res = await fetch('/api/agent/action', {
@@ -76,6 +59,7 @@ export function AIActionModal({ isOpen, onClose, taskType, onApprove, title }: A
   }
 
   const handleClose = () => {
+    stopListening();
     handleReset();
     onClose();
   }
@@ -109,8 +93,9 @@ export function AIActionModal({ isOpen, onClose, taskType, onApprove, title }: A
               />
               <div className="absolute right-1.5 flex items-center gap-1">
                 <button 
-                  onClick={toggleListen} 
-                  disabled={isGenerating}
+                  onClick={toggleListening} 
+                  disabled={isGenerating || !isSpeechSupported}
+                  title={isSpeechSupported ? (isListening ? 'Stop voice input' : 'Start voice input') : 'Voice input is not supported in this browser'}
                   className={`p-1.5 flex items-center justify-center rounded-full transition-colors ${isListening ? 'bg-red-500/20 text-red-500' : 'text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-primary)]'}`}
                 >
                   <Mic className="w-4 h-4" />
@@ -124,6 +109,11 @@ export function AIActionModal({ isOpen, onClose, taskType, onApprove, title }: A
                 </button>
               </div>
             </div>
+            {(isListening || interimTranscript || speechError) && (
+              <p className={`mt-2 text-xs ${speechError ? 'text-red-400' : 'text-[var(--text-muted)]'}`}>
+                {speechError || (interimTranscript ? `Listening: ${interimTranscript}` : 'Listening...')}
+              </p>
+            )}
           </div>
         ) : (
           <div className="bg-[var(--bg-secondary)] p-4 rounded-xl border border-[var(--border)]">

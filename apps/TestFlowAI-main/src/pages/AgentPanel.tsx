@@ -1,6 +1,34 @@
-import { useState, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Bot, Save, Download, Loader2, Plus, CheckCircle2, Mic, Send } from 'lucide-react';
 import { cn } from '@/src/lib/utils';
+import { useSpeechToText } from '@/src/lib/useSpeechToText';
+
+const casualGreetingPattern = /^(hi+|h+i+|hlo+|hello+|hey+|good\s+(morning|afternoon|evening)|thanks?|thank\s+you|ok(?:ay)?)\b[\s!.?]*$/i;
+const identityQuestionPattern = /\b(who\s+are\s+you|what\s+can\s+you\s+do|help|your\s+purpose)\b/i;
+const qaIntentPattern = /\b(test|testing|qa|quality|playwright|selenium|cypress|automation|automate|script|test\s*case|test\s*plan|test\s*suite|scenario|regression|smoke|sanity|bug|defect|application|website|web\s*app|url|api|login|checkout|workflow|flow|requirements?)\b/i;
+const abusivePattern = /\b(fuck|shit|asshole|bastard|bitch|stupid|idiot|moron|dumb)\b/i;
+
+function getGuardrailResponse(message: string) {
+  const normalized = message.trim();
+
+  if (abusivePattern.test(normalized)) {
+    return 'Please keep the conversation professional. I can help with QA tasks such as test planning, test case generation, and Playwright automation when the request is stated respectfully.';
+  }
+
+  if (casualGreetingPattern.test(normalized)) {
+    return 'Hello. I am the QA Assistant. Please provide the application URL or describe the feature you want tested, and I will generate the QA workflow.';
+  }
+
+  if (identityQuestionPattern.test(normalized)) {
+    return 'I am a QA-focused assistant. I can help generate test plans, test cases, suites, and Playwright scripts for application testing workflows.';
+  }
+
+  if (!qaIntentPattern.test(normalized) && !/https?:\/\/[^\s]+/i.test(normalized)) {
+    return 'This assistant is scoped to QA and test automation. Please ask about an application, feature, test case, test plan, defect, or automation script.';
+  }
+
+  return null;
+}
 
 export default function AgentPanel() {
   const [input, setInput] = useState('');
@@ -8,51 +36,36 @@ export default function AgentPanel() {
   const [runData, setRunData] = useState<any>(null);
   const [isGenerating, setIsGenerating] = useState(false);
   const [activeTab, setActiveTab] = useState<'cases' | 'code'>('cases');
-  const [isListening, setIsListening] = useState(false);
   
   const [messages, setMessages] = useState<{role: 'user' | 'agent' | 'system', content: string}[]>([
     { role: 'agent', content: 'Hi! I am the AI Test Agent. I can help you generate test cases and Playwright scripts. Tell me what application you want to test and any specific requirements.' }
   ]);
 
-  const recognitionRef = useRef<any>(null);
-
-  useEffect(() => {
-    if (typeof window !== 'undefined' && ('SpeechRecognition' in window || 'webkitSpeechRecognition' in window)) {
-      const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-      recognitionRef.current = new SpeechRecognition();
-      recognitionRef.current.continuous = false;
-      recognitionRef.current.interimResults = false;
-
-      recognitionRef.current.onresult = (event: any) => {
-        const transcript = event.results[0][0].transcript;
-        setInput((prev) => prev + (prev ? ' ' : '') + transcript);
-      };
-
-      recognitionRef.current.onend = () => {
-        setIsListening(false);
-      };
-    }
+  const appendSpeechTranscript = useCallback((transcript: string) => {
+    setInput((prev) => prev + (prev.trim() ? ' ' : '') + transcript);
   }, []);
 
-  const toggleListen = () => {
-    if (isListening) {
-      recognitionRef.current?.stop();
-      setIsListening(false);
-    } else {
-      try {
-        recognitionRef.current?.start();
-        setIsListening(true);
-      } catch (e) {
-        console.error("Microphone access error:", e);
-      }
-    }
-  };
+  const {
+    error: speechError,
+    interimTranscript,
+    isListening,
+    isSupported: isSpeechSupported,
+    stopListening,
+    toggleListening,
+  } = useSpeechToText({ onTranscript: appendSpeechTranscript });
 
   const sendMessage = async () => {
     if (!input.trim() || isGenerating) return;
+    stopListening();
     const userMessage = input;
     setInput('');
     setMessages(prev => [...prev, { role: 'user', content: userMessage }]);
+
+    const guardrailResponse = getGuardrailResponse(userMessage);
+    if (guardrailResponse) {
+      setMessages(prev => [...prev, { role: 'agent', content: guardrailResponse }]);
+      return;
+    }
     
     // Extract URL if provided
     const urlMatch = userMessage.match(/https?:\/\/[^\s]+/);
@@ -67,7 +80,10 @@ export default function AgentPanel() {
         body: JSON.stringify({ app_url: appUrl, provider: 'gemini', prompt: userMessage })
       });
       const data = await res.json();
-      if (data.task_id) {
+      if (data.chat_response) {
+        setMessages(prev => [...prev, { role: 'agent', content: data.chat_response }]);
+        setIsGenerating(false);
+      } else if (data.task_id) {
         setTaskId(data.task_id);
         setMessages(prev => [...prev, { role: 'system', content: `Started Job: ${data.task_id.substring(0,8)}... Orchestrating A2A workflow.` }]);
       } else {
@@ -157,8 +173,9 @@ export default function AgentPanel() {
               />
               <div className="absolute right-1.5 flex items-center gap-1">
                 <button 
-                  onClick={toggleListen} 
-                  disabled={isGenerating}
+                  onClick={toggleListening} 
+                  disabled={isGenerating || !isSpeechSupported}
+                  title={isSpeechSupported ? (isListening ? 'Stop voice input' : 'Start voice input') : 'Voice input is not supported in this browser'}
                   className={`p-1.5 flex items-center justify-center rounded-full transition-colors ${isListening ? 'bg-red-500/20 text-red-500' : 'text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-primary)]'}`}
                 >
                   <Mic className="w-4 h-4" />
@@ -172,6 +189,11 @@ export default function AgentPanel() {
                 </button>
               </div>
             </div>
+            {(isListening || interimTranscript || speechError) && (
+              <p className={`mt-2 text-xs ${speechError ? 'text-red-400' : 'text-[var(--text-muted)]'}`}>
+                {speechError || (interimTranscript ? `Listening: ${interimTranscript}` : 'Listening...')}
+              </p>
+            )}
           </div>
         </div>
 
