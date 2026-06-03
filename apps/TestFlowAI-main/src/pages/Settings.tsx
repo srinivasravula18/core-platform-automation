@@ -88,6 +88,7 @@ export default function Settings() {
                 className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]"
               >
                 <option value="gemini-2.5-flash">gemini-2.5-flash</option>
+                <option value="gemini-3.5-flash">gemini-3.5-flash</option>
                 <option value="gemini-2.5-pro">gemini-2.5-pro</option>
               </select>
             </div>

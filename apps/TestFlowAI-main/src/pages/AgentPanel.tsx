@@ -7,6 +7,14 @@ const casualGreetingPattern = /^(hi+|h+i+|hlo+|hello+|hey+|good\s+(morning|after
 const identityQuestionPattern = /\b(who\s+are\s+you|what\s+can\s+you\s+do|help|your\s+purpose)\b/i;
 const qaIntentPattern = /\b(test|testing|qa|quality|playwright|selenium|cypress|automation|automate|script|test\s*case|test\s*plan|test\s*suite|scenario|regression|smoke|sanity|bug|defect|application|website|web\s*app|url|api|login|checkout|workflow|flow|requirements?)\b/i;
 const abusivePattern = /\b(fuck|shit|asshole|bastard|bitch|stupid|idiot|moron|dumb)\b/i;
+const domainPattern = /\b((?:https?:\/\/)?(?:www\.)?[a-z0-9-]+(?:\.[a-z0-9-]+)+(?:\/[^\s]*)?)/i;
+
+function extractTargetUrl(message: string) {
+  const match = message.match(domainPattern);
+  if (!match) return '';
+  const rawUrl = match[1].replace(/[),.;!?]+$/, '');
+  return /^https?:\/\//i.test(rawUrl) ? rawUrl : `https://${rawUrl}`;
+}
 
 function getGuardrailResponse(message: string) {
   const normalized = message.trim();
@@ -23,7 +31,7 @@ function getGuardrailResponse(message: string) {
     return 'I am a QA-focused assistant. I can help generate test plans, test cases, suites, and Playwright scripts for application testing workflows.';
   }
 
-  if (!qaIntentPattern.test(normalized) && !/https?:\/\/[^\s]+/i.test(normalized)) {
+  if (!qaIntentPattern.test(normalized) && !extractTargetUrl(normalized)) {
     return 'This assistant is scoped to QA and test automation. Please ask about an application, feature, test case, test plan, defect, or automation script.';
   }
 
@@ -35,7 +43,12 @@ export default function AgentPanel() {
   const [taskId, setTaskId] = useState<string | null>(null);
   const [runData, setRunData] = useState<any>(null);
   const [isGenerating, setIsGenerating] = useState(false);
-  const [activeTab, setActiveTab] = useState<'cases' | 'code'>('cases');
+  const [isReworkingCase, setIsReworkingCase] = useState(false);
+  const [activeTab, setActiveTab] = useState<'cases' | 'code' | 'evidence'>('cases');
+  const [testCaseCount, setTestCaseCount] = useState(3);
+  const [flowMode, setFlowMode] = useState<'review_cases' | 'complete'>('review_cases');
+  const [editingCaseIndex, setEditingCaseIndex] = useState<number | null>(null);
+  const [caseFeedback, setCaseFeedback] = useState('');
   
   const [messages, setMessages] = useState<{role: 'user' | 'agent' | 'system', content: string}[]>([
     { role: 'agent', content: 'Hi! I am the AI Test Agent. I can help you generate test cases and Playwright scripts. Tell me what application you want to test and any specific requirements.' }
@@ -67,9 +80,7 @@ export default function AgentPanel() {
       return;
     }
     
-    // Extract URL if provided
-    const urlMatch = userMessage.match(/https?:\/\/[^\s]+/);
-    const appUrl = urlMatch ? urlMatch[0] : '';
+    const appUrl = extractTargetUrl(userMessage);
     
     setIsGenerating(true);
     setRunData(null);
@@ -77,7 +88,7 @@ export default function AgentPanel() {
       const res = await fetch('/api/agent/start', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ app_url: appUrl, provider: 'gemini', prompt: userMessage })
+        body: JSON.stringify({ app_url: appUrl, provider: 'gemini', prompt: userMessage, testCaseCount, flowMode })
       });
       const data = await res.json();
       if (data.chat_response) {
@@ -104,12 +115,15 @@ export default function AgentPanel() {
           .then(r => r.json())
           .then(data => {
             setRunData(data);
-            if (data.status === 'completed' || data.status === 'failed') {
+            if (data.status === 'completed' || data.status === 'failed' || data.status === 'review_required') {
               setIsGenerating(false);
               clearInterval(interval);
               
               if (data.status === 'completed') {
                   setMessages(prev => [...prev, { role: 'agent', content: 'Finished! I have generated the test cases and Playwright scripts. Check the tabs on the right.' }]);
+              } else if (data.status === 'review_required') {
+                  setActiveTab('cases');
+                  setMessages(prev => [...prev, { role: 'agent', content: 'Test cases are ready for review. Edit anything needed, then click Continue Agent Flow.' }]);
               } else {
                   const failure = data.messages?.findLast?.((message: any) => message.status === 'failed')?.output;
                   setMessages(prev => [...prev, { role: 'agent', content: failure ? `Task failed: ${failure}` : 'Task failed. Check the server console for details.' }]);
@@ -132,11 +146,91 @@ export default function AgentPanel() {
     alert('Cases saved successfully to Test Cases module!');
   };
 
+  const continueAgentFlow = async () => {
+    if (!taskId || !runData?.generated_cases?.length || isGenerating) return;
+    setIsGenerating(true);
+    setRunData((prev: any) => prev ? { ...prev, status: 'running' } : prev);
+    setMessages(prev => [...prev, { role: 'system', content: 'Continuing agent flow with reviewed test cases.' }]);
+
+    try {
+      const res = await fetch('/api/agent/continue', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ taskId, cases: runData.generated_cases }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to continue agent flow');
+    } catch (err: any) {
+      setIsGenerating(false);
+      alert(err.message || 'Failed to continue agent flow.');
+    }
+  };
+
+  const updateGeneratedCase = (caseIndex: number, updates: any) => {
+    setRunData((prev: any) => {
+      if (!prev?.generated_cases) return prev;
+      const generatedCases = [...prev.generated_cases];
+      generatedCases[caseIndex] = { ...generatedCases[caseIndex], ...updates };
+      return { ...prev, generated_cases: generatedCases };
+    });
+  };
+
+  const updateGeneratedCaseStep = (caseIndex: number, stepIndex: number, updates: any) => {
+    const currentCase = runData?.generated_cases?.[caseIndex];
+    if (!currentCase) return;
+    const steps = [...(currentCase.steps || [])];
+    steps[stepIndex] = { ...steps[stepIndex], ...updates };
+    updateGeneratedCase(caseIndex, { steps });
+  };
+
+  const addGeneratedCaseStep = (caseIndex: number) => {
+    const currentCase = runData?.generated_cases?.[caseIndex];
+    if (!currentCase) return;
+    updateGeneratedCase(caseIndex, {
+      steps: [...(currentCase.steps || []), { action: '', expected: '' }]
+    });
+  };
+
+  const removeGeneratedCaseStep = (caseIndex: number, stepIndex: number) => {
+    const currentCase = runData?.generated_cases?.[caseIndex];
+    if (!currentCase) return;
+    updateGeneratedCase(caseIndex, {
+      steps: (currentCase.steps || []).filter((_: any, index: number) => index !== stepIndex)
+    });
+  };
+
+  const reworkGeneratedCase = async (caseIndex: number) => {
+    const currentCase = runData?.generated_cases?.[caseIndex];
+    if (!currentCase || isReworkingCase) return;
+
+    setIsReworkingCase(true);
+    try {
+      const res = await fetch('/api/agent/rework-case', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          testCase: currentCase,
+          feedback: caseFeedback,
+          targetUrl: runData?.app_url,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to rework test case');
+      updateGeneratedCase(caseIndex, data);
+      setCaseFeedback('');
+    } catch (err: any) {
+      alert(err.message || 'Failed to rework test case.');
+    } finally {
+      setIsReworkingCase(false);
+    }
+  };
+
   const getAgentStatusIcon = (agentName: string) => {
     const msg = runData?.messages?.filter((m: any) => m.agent === agentName).pop();
     if (!msg) return <div className="w-4 h-4 rounded-full border-2 border-[var(--border)]" />;
     if (msg.status === 'running') return <Loader2 className="w-4 h-4 text-[var(--accent)] animate-spin" />;
     if (msg.status === 'completed') return <CheckCircle2 className="w-4 h-4 text-emerald-500" />;
+    if (msg.status === 'skipped' || msg.status === 'review_required') return <div className="w-4 h-4 rounded-full bg-slate-500" />;
     return <div className="w-4 h-4 rounded-full bg-red-500" />;
   };
 
@@ -162,6 +256,48 @@ export default function AgentPanel() {
           </div>
           
           <div className="p-3 border-t border-[var(--border)] bg-[var(--bg-primary)]">
+            <div className="mb-3 flex items-center justify-between gap-3 text-xs text-[var(--text-muted)]">
+              <div>
+                <span>Test cases</span>
+                <div className="mt-1 flex rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] overflow-hidden">
+                  {[3, 5, 8].map((count) => (
+                    <button
+                      key={count}
+                      type="button"
+                      onClick={() => setTestCaseCount(count)}
+                      disabled={isGenerating}
+                      className={cn(
+                        "px-3 py-1.5 text-xs font-medium transition-colors",
+                        testCaseCount === count ? "bg-[var(--accent)] text-white" : "text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+                      )}
+                    >
+                      {count}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <span>Flow</span>
+                <div className="mt-1 flex rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] overflow-hidden">
+                  <button
+                    type="button"
+                    onClick={() => setFlowMode('review_cases')}
+                    disabled={isGenerating}
+                    className={cn("px-3 py-1.5 text-xs font-medium transition-colors", flowMode === 'review_cases' ? "bg-[var(--accent)] text-white" : "text-[var(--text-muted)] hover:text-[var(--text-primary)]")}
+                  >
+                    Review
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setFlowMode('complete')}
+                    disabled={isGenerating}
+                    className={cn("px-3 py-1.5 text-xs font-medium transition-colors", flowMode === 'complete' ? "bg-[var(--accent)] text-white" : "text-[var(--text-muted)] hover:text-[var(--text-primary)]")}
+                  >
+                    Complete
+                  </button>
+                </div>
+              </div>
+            </div>
             <div className="relative flex items-center">
               <input 
                 value={input}
@@ -201,7 +337,7 @@ export default function AgentPanel() {
         <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl p-5 shadow-sm flex-1">
            <h3 className="text-xs font-semibold tracking-wider text-[var(--text-muted)] uppercase mb-4">A2A Agent Flow</h3>
            <div className="space-y-4 relative before:absolute before:inset-0 before:ml-2 before:-translate-x-px md:before:mx-auto md:before:translate-x-0 before:h-full before:w-0.5 before:bg-gradient-to-b before:from-transparent before:via-[var(--border)] before:to-transparent">
-              {['ApplicationInspector', 'TestGenerationAgent', 'PlaywrightAgent'].map((agent, i) => (
+              {['ApplicationInspector', 'TestGenerationAgent', 'PlaywrightAgent', 'EvidenceAgent'].map((agent, i) => (
                 <div key={agent} className="relative flex items-center gap-3 bg-[var(--bg-secondary)] p-3 rounded-lg border border-[var(--border)] z-10 w-full mb-4">
                    {getAgentStatusIcon(agent)}
                    <span className="text-sm font-medium text-[var(--text-primary)]">{agent}</span>
@@ -227,12 +363,25 @@ export default function AgentPanel() {
              >
                Playwright Scripts
              </button>
+             <button 
+               onClick={() => setActiveTab('evidence')}
+               className={cn("py-4 text-sm font-medium border-b-2 transition-colors", activeTab === 'evidence' ? "border-[var(--accent)] text-[var(--accent)]" : "border-transparent text-[var(--text-muted)] hover:text-[var(--text-primary)]")}
+             >
+               Evidence
+             </button>
            </div>
            
            {activeTab === 'cases' && runData?.generated_cases?.length > 0 && (
-             <button onClick={saveCases} className="flex items-center gap-2 bg-[var(--bg-secondary)] border border-[var(--border)] hover:bg-[var(--border)] text-[var(--text-primary)] px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
-               <Save className="w-4 h-4" /> Save All
-             </button>
+             <div className="flex items-center gap-2">
+               {runData.status === 'review_required' && (
+                 <button onClick={continueAgentFlow} disabled={isGenerating} className="flex items-center gap-2 bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors disabled:opacity-50">
+                   <Send className="w-4 h-4" /> Continue Agent Flow
+                 </button>
+               )}
+               <button onClick={saveCases} className="flex items-center gap-2 bg-[var(--bg-secondary)] border border-[var(--border)] hover:bg-[var(--border)] text-[var(--text-primary)] px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
+                 <Save className="w-4 h-4" /> Save All
+               </button>
+             </div>
            )}
            {activeTab === 'code' && runData?.playwright_scripts?.length > 0 && (
              <button className="flex items-center gap-2 bg-[var(--bg-secondary)] border border-[var(--border)] hover:bg-[var(--border)] text-[var(--text-primary)] px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
@@ -257,19 +406,122 @@ export default function AgentPanel() {
           )}
 
           {activeTab === 'cases' && runData?.generated_cases?.length > 0 && (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 gap-4">
               {runData.generated_cases.map((c: any, i: number) => (
                 <div key={i} className="bg-[var(--bg-primary)] border border-[var(--border)] p-4 rounded-lg shadow-sm flex flex-col">
                   <div className="font-semibold text-sm text-[var(--text-primary)] mb-2">{c.title}</div>
-                  <div className="text-xs text-[var(--text-muted)] mb-3 flex-1">{c.description}</div>
+                  <div className="text-xs text-[var(--text-muted)] mb-3">{c.description}</div>
+                  {c.tags?.length > 0 && (
+                    <div className="mb-3 flex flex-wrap gap-1.5">
+                      {c.tags.map((tag: string, tagIndex: number) => (
+                        <span key={tagIndex} className="rounded border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-0.5 text-[10px] font-semibold text-[var(--text-muted)]">
+                          {tag.startsWith('@') ? tag : `@${tag}`}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  {c.steps?.length > 0 && (
+                    <div className="mb-4 overflow-hidden rounded-md border border-[var(--border)]">
+                      <div className="grid grid-cols-2 bg-[var(--bg-secondary)] text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+                        <div className="px-3 py-2 border-r border-[var(--border)]">Test Steps</div>
+                        <div className="px-3 py-2">Expected Result</div>
+                      </div>
+                      {c.steps.map((step: any, stepIndex: number) => (
+                        <div key={stepIndex} className="grid grid-cols-2 text-xs border-t border-[var(--border)]">
+                          <div className="px-3 py-2 border-r border-[var(--border)] text-[var(--text-primary)]">
+                            {stepIndex + 1}. {step.action}
+                          </div>
+                          <div className="px-3 py-2 text-[var(--text-muted)]">
+                            {stepIndex + 1}. {step.expected}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                   <div className="flex items-center justify-between mt-auto">
                     <span className="bg-[var(--bg-secondary)] border border-[var(--border)] px-2 py-0.5 rounded text-[10px] uppercase font-bold tracking-wider text-[var(--text-muted)]">
                       {c.priority}
                     </span>
-                    <button className="flex items-center gap-1 text-xs text-[var(--accent)] hover:underline">
+                    <button onClick={() => setEditingCaseIndex(editingCaseIndex === i ? null : i)} className="flex items-center gap-1 text-xs text-[var(--accent)] hover:underline">
                       <Plus className="w-3 h-3" /> Edit
                     </button>
                   </div>
+                  {editingCaseIndex === i && (
+                    <div className="mt-4 pt-4 border-t border-[var(--border)] space-y-3">
+                      <input
+                        value={c.title || ''}
+                        onChange={(e) => updateGeneratedCase(i, { title: e.target.value })}
+                        className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-xs outline-none focus:border-[var(--accent)] text-[var(--text-primary)]"
+                        placeholder="Test case title"
+                      />
+                      <textarea
+                        value={c.description || ''}
+                        onChange={(e) => updateGeneratedCase(i, { description: e.target.value })}
+                        className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-xs outline-none focus:border-[var(--accent)] text-[var(--text-primary)] h-20"
+                        placeholder="Description"
+                      />
+                      <div className="grid grid-cols-2 gap-2">
+                        <select
+                          value={c.priority || 'Medium'}
+                          onChange={(e) => updateGeneratedCase(i, { priority: e.target.value })}
+                          className="bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-xs outline-none focus:border-[var(--accent)] text-[var(--text-primary)]"
+                        >
+                          <option>Low</option>
+                          <option>Medium</option>
+                          <option>High</option>
+                          <option>Critical</option>
+                        </select>
+                        <input
+                          value={Array.isArray(c.tags) ? c.tags.join(', ') : c.tags || ''}
+                          onChange={(e) => updateGeneratedCase(i, { tags: e.target.value.split(',').map((tag) => tag.trim()).filter(Boolean) })}
+                          className="bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-xs outline-none focus:border-[var(--accent)] text-[var(--text-primary)]"
+                          placeholder="Tags"
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        {(c.steps || []).map((step: any, stepIndex: number) => (
+                          <div key={stepIndex} className="grid grid-cols-[1fr_1fr_auto] gap-2">
+                            <input
+                              value={step.action || ''}
+                              onChange={(e) => updateGeneratedCaseStep(i, stepIndex, { action: e.target.value })}
+                              className="bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-xs outline-none focus:border-[var(--accent)] text-[var(--text-primary)]"
+                              placeholder={`Step ${stepIndex + 1}`}
+                            />
+                            <input
+                              value={step.expected || ''}
+                              onChange={(e) => updateGeneratedCaseStep(i, stepIndex, { expected: e.target.value })}
+                              className="bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-xs outline-none focus:border-[var(--accent)] text-[var(--text-primary)]"
+                              placeholder="Expected result"
+                            />
+                            <button onClick={() => removeGeneratedCaseStep(i, stepIndex)} className="px-2 text-xs text-red-400 hover:text-red-300">
+                              Remove
+                            </button>
+                          </div>
+                        ))}
+                        <button onClick={() => addGeneratedCaseStep(i)} className="text-xs text-[var(--accent)] hover:underline">
+                          Add step
+                        </button>
+                      </div>
+                      <textarea
+                        value={caseFeedback}
+                        onChange={(e) => setCaseFeedback(e.target.value)}
+                        className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-xs outline-none focus:border-[var(--accent)] text-[var(--text-primary)] h-16"
+                        placeholder="Feedback for AI rework, e.g. add negative validation and contact form checks..."
+                      />
+                      <div className="flex justify-end gap-2">
+                        <button onClick={() => setEditingCaseIndex(null)} className="px-3 py-1.5 text-xs text-[var(--text-muted)] hover:text-[var(--text-primary)]">
+                          Done
+                        </button>
+                        <button
+                          onClick={() => reworkGeneratedCase(i)}
+                          disabled={isReworkingCase}
+                          className="px-3 py-1.5 bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white text-xs font-medium rounded-md disabled:opacity-50"
+                        >
+                          {isReworkingCase ? 'Reworking...' : 'Rework with AI'}
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
@@ -288,6 +540,27 @@ export default function AgentPanel() {
 
           {activeTab === 'code' && runData?.status === 'completed' && (!runData?.playwright_scripts?.length) && (
              <div className="text-sm text-[var(--text-muted)] text-center mt-10">No scripts generated.</div>
+          )}
+
+          {activeTab === 'evidence' && runData?.evidence_screenshots?.length > 0 && (
+            <div className="space-y-4">
+              {runData.evidence_screenshots.map((shot: any, i: number) => (
+                <div key={i} className="bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg overflow-hidden">
+                  <div className="px-4 py-3 border-b border-[var(--border)] flex flex-col gap-1">
+                    <div className="text-sm font-semibold text-[var(--text-primary)]">{shot.title || 'Playwright screenshot evidence'}</div>
+                    <div className="text-xs text-[var(--text-muted)] break-all">{shot.url}</div>
+                  </div>
+                  <img src={shot.screenshotUrl} alt={shot.title || 'Playwright screenshot evidence'} className="w-full bg-black object-contain" />
+                  <div className="px-4 py-2 text-xs text-[var(--text-muted)] border-t border-[var(--border)]">
+                    HTTP {shot.status || 'unknown'} captured at {shot.capturedAt ? new Date(shot.capturedAt).toLocaleString() : 'unknown time'}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {activeTab === 'evidence' && runData?.status === 'completed' && (!runData?.evidence_screenshots?.length) && (
+             <div className="text-sm text-[var(--text-muted)] text-center mt-10">No Playwright evidence screenshots captured. Add a URL in chat or Settings &gt; Playwright Target Base URL.</div>
           )}
         </div>
       </div>

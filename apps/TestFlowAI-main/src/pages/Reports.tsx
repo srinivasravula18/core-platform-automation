@@ -188,7 +188,7 @@ const SCREENSHOT_PRESETS: Record<string, { title: string; url: string; contentHt
           </div>
         </div>
         <div className="text-[10px] text-emerald-500/60 border-t border-emerald-500/10 pt-2 text-right">
-          Authorized with gnanasampathbatchu2003@gmail.com
+          Authorized account
         </div>
       </div>
     )
@@ -231,31 +231,19 @@ export default function Reports() {
   const [newReportName, setNewReportName] = useState('');
   const [newReportPlan, setNewReportPlan] = useState('');
   const [newReportSuite, setNewReportSuite] = useState('');
-  const [newReportRequestedBy, setNewReportRequestedBy] = useState('Senior QA Auditor');
-  const [newReportTime, setNewReportTime] = useState('2m 10s');
+  const [newReportRequestedBy, setNewReportRequestedBy] = useState('');
+  const [newReportTime, setNewReportTime] = useState('');
   const [newReportStatus, setNewReportStatus] = useState<'Passed' | 'Failed'>('Passed');
   const [newReportFailureReason, setNewReportFailureReason] = useState('');
-  const [newReportTargetUrl, setNewReportTargetUrl] = useState('https://testflow.ai');
-  const [newReportSteps, setNewReportSteps] = useState<Step[]>([
-    { step: '1', action: 'Load entry index web app suite', expected: 'Status page reports standard HTTP 200', outcome: 'Pass', reason: '', screenshot: 'login_success' }
-  ]);
+  const [newReportTargetUrl, setNewReportTargetUrl] = useState('');
+  const [newReportSteps, setNewReportSteps] = useState<Step[]>([]);
 
   // Evidence screenshot lightbox State
   const [lightboxKey, setLightboxKey] = useState<string | null>(null);
   const [showInlineScreenshots, setShowInlineScreenshots] = useState(true);
   
   // Active step & screenshot for inline expanded browser mockup
-  const [activeStep, setActiveStep] = useState<{ reportId: string; step: Step } | null>({
-    reportId: 'REP-827F',
-    step: {
-      step: '3',
-      action: 'Submit credentials to payment gateway',
-      expected: 'Charge secure iframe responds within 5000ms.',
-      outcome: 'Fail',
-      reason: 'Wait for payment iframe timed out. Endpoint returned HTTP 504 Gateway Timeout.',
-      screenshot: 'payment_iframe_error'
-    }
-  });
+  const [activeStep, setActiveStep] = useState<{ reportId: string; step: Step } | null>(null);
 
   const handleDownloadPdf = async (reportId: string) => {
     try {
@@ -305,10 +293,10 @@ export default function Reports() {
 
     const reportPayload = {
       name: newReportName,
-      planName: newReportPlan || 'Adhoc Plan Context',
-      suiteName: newReportSuite || 'Default Suite Context',
-      requestedBy: newReportRequestedBy || 'System Auditor',
-      executionTime: newReportTime || '1m 20s',
+      planName: newReportPlan,
+      suiteName: newReportSuite,
+      requestedBy: newReportRequestedBy,
+      executionTime: newReportTime,
       totalExecutions: newReportSteps.length,
       status: newReportStatus,
       failureReason: newReportStatus === 'Failed' ? newReportFailureReason : '',
@@ -332,10 +320,8 @@ export default function Reports() {
           setNewReportSuite('');
           setNewReportStatus('Passed');
           setNewReportFailureReason('');
-          setNewReportTargetUrl('https://testflow.ai');
-          setNewReportSteps([
-            { step: '1', action: 'Load entry index web app suite', expected: 'Status page reports standard HTTP 200', outcome: 'Pass', reason: '', screenshot: 'login_success' }
-          ]);
+          setNewReportTargetUrl('');
+          setNewReportSteps([]);
         }
       })
       .catch(console.error);
@@ -363,7 +349,7 @@ export default function Reports() {
       expected: '',
       outcome: 'Pass',
       reason: '',
-      screenshot: 'login_success'
+      screenshot: ''
     }]);
   };
 
@@ -391,6 +377,21 @@ export default function Reports() {
     if (statusFilter === 'Failed') return matchesSearch && r.status === 'Failed';
     return matchesSearch;
   });
+  const totalReportSteps = reports.reduce((total, report) => total + (report.steps?.length || report.totalExecutions || 0), 0);
+  const passedReportSteps = reports.reduce((total, report) => {
+    const steps = report.steps || [];
+    if (steps.length > 0) return total + steps.filter(step => step.outcome === 'Pass').length;
+    return total + (report.status === 'Passed' ? (report.totalExecutions || 0) : 0);
+  }, 0);
+  const failedReportSteps = reports.reduce((total, report) => {
+    const steps = report.steps || [];
+    if (steps.length > 0) return total + steps.filter(step => step.outcome === 'Fail').length;
+    return total + (report.status === 'Failed' ? 1 : 0);
+  }, 0);
+  const requestedBySummary = reports.find(report => report.requestedBy)?.requestedBy || 'No reports logged';
+  const executionDurationSummary = reports.length > 0
+    ? reports.map(report => report.executionTime).filter(Boolean).join(', ') || 'Not specified'
+    : 'No reports logged';
 
   return (
     <div className="max-w-7xl mx-auto min-h-screen flex flex-col pb-12 px-4 md:px-0">
@@ -416,28 +417,28 @@ export default function Reports() {
             <span className="block text-[10px] font-bold text-[var(--text-muted)] uppercase tracking-wider">Requested By</span>
             <span className="block text-sm font-semibold truncate text-[var(--text-primary)] mt-1 flex items-center gap-1.5">
               <User className="w-3.5 h-3.5 text-[var(--accent)]" />
-              <span className="text-xs">gnanasampathbatchu2003@gmail.com</span>
+              <span className="text-xs truncate">{requestedBySummary}</span>
             </span>
           </div>
           <div className="bg-[var(--bg-card)] border border-[var(--border)] p-3 rounded-lg shadow-inner">
             <span className="block text-[10px] font-bold text-[var(--text-muted)] uppercase tracking-wider">Overall Execution Duration</span>
             <span className="block text-sm font-semibold text-[var(--text-primary)] mt-1 flex items-center gap-1.5">
               <Clock className="w-3.5 h-3.5 text-blue-500 animate-pulse" />
-              <span className="text-xs">5m 45s (For all suites)</span>
+              <span className="text-xs truncate">{executionDurationSummary}</span>
             </span>
           </div>
           <div className="bg-[var(--bg-card)] border border-[var(--border)] p-3 rounded-lg shadow-inner">
             <span className="block text-[10px] font-bold text-[var(--text-muted)] uppercase tracking-wider">Total Executed Cases (Steps)</span>
             <span className="block text-xs font-semibold text-[var(--text-primary)] mt-1">
-              9 Verification Steps in 3 Scenarios
+              {totalReportSteps} Verification Steps in {reports.length} Scenarios
             </span>
           </div>
           <div className="bg-[var(--bg-card)] border border-[var(--border)] p-3 rounded-lg shadow-inner">
             <span className="block text-[10px] font-bold text-[var(--text-muted)] uppercase tracking-wider">Combined Summary Metric</span>
             <span className="block text-xs font-semibold mt-1 flex items-center gap-2">
-              <span className="text-emerald-500 font-bold">8 Passed</span>
+              <span className="text-emerald-500 font-bold">{passedReportSteps} Passed</span>
               <span className="text-slate-400 font-bold">•</span>
-              <span className="text-red-500 font-bold">1 Failed</span>
+              <span className="text-red-500 font-bold">{failedReportSteps} Failed</span>
             </span>
           </div>
         </div>
@@ -494,7 +495,13 @@ export default function Reports() {
               </tr>
             </thead>
             <tbody className="divide-y divide-[var(--border)] font-sans">
-              {filteredReports.map((r, rIdx) => {
+              {filteredReports.length === 0 ? (
+                <tr>
+                  <td colSpan={7} className="py-12 px-4 text-center text-sm text-[var(--text-muted)]">
+                    No test reports found.
+                  </td>
+                </tr>
+              ) : filteredReports.map((r, rIdx) => {
                 return (
                   <React.Fragment key={r.id}>
                     {/* Scenario header / Main row */}
@@ -514,7 +521,7 @@ export default function Reports() {
                         </div>
                         <div className="text-[10px] text-slate-500 mt-1.5 leading-relaxed font-mono">
                           Plan: {r.planName}<br />
-                          Requested: <span className="font-semibold text-slate-700 dark:text-slate-300">{r.requestedBy || 'gnanasampathbatchu2003@gmail.com'}</span><br />
+                          Requested: <span className="font-semibold text-slate-700 dark:text-slate-300">{r.requestedBy || 'Not specified'}</span><br />
                           Duration: <span className="font-semibold text-slate-700 dark:text-slate-300">{r.executionTime || '1m 20s'}</span><br />
                           Logged: {r.date}
                         </div>
@@ -640,7 +647,7 @@ export default function Reports() {
                                 <span className="w-2.5 h-2.5 rounded-full bg-yellow-500/90"></span>
                                 <span className="w-2.5 h-2.5 rounded-full bg-emerald-500/90"></span>
                                 <span className="ml-[18px] font-mono text-[10px] text-slate-400 bg-slate-950 px-3.5 py-0.5 rounded border border-slate-850 truncate max-w-md">
-                                  {SCREENSHOT_PRESETS[activeStep.step.screenshot]?.url || activeStep.step.screenshot || 'https://sandbox.testflow.ai'}
+                                  {SCREENSHOT_PRESETS[activeStep.step.screenshot]?.url || activeStep.step.screenshot || 'No screenshot URL'}
                                 </span>
                               </div>
                               <span className="text-[9px] text-emerald-400 font-extrabold bg-emerald-950/30 border border-emerald-500/25 px-2 py-0.5 rounded flex items-center gap-1 font-mono">
@@ -882,16 +889,14 @@ export default function Reports() {
                             </select>
                         </div>
                         <div>
-                           <label className="block text-[11px] font-medium text-[var(--text-muted)] pb-1">Evidence Console Preset</label>
-                           <select 
+                           <label className="block text-[11px] font-medium text-[var(--text-muted)] pb-1">Evidence URL or Path</label>
+                           <input
+                             type="text"
                              value={st.screenshot} 
                              onChange={(e) => updateFormStep(i, { screenshot: e.target.value })} 
+                             placeholder="Enter screenshot URL or path"
                              className="w-full bg-[var(--bg-primary)] border border-[var(--border)] rounded px-2 py-1.5 text-xs outline-none focus:border-[var(--accent)] text-[var(--text-primary)]"
-                           >
-                             {Object.entries(SCREENSHOT_PRESETS).map(([key, v]) => (
-                               <option key={key} value={key}>{v.title}</option>
-                             ))}
-                           </select>
+                           />
                         </div>
                         <div>
                            <label className="block text-[11px] font-medium text-[var(--text-muted)] pb-1">Outcome Detail (Optional)</label>

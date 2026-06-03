@@ -165,7 +165,7 @@ const SCREENSHOT_PRESETS: Record<string, { title: string; url: string; contentHt
           </div>
         </div>
         <div className="text-[10px] text-emerald-500/60 border-t border-emerald-500/10 pt-2 text-right">
-          Authorized with gnanasampathbatchu2003@gmail.com
+          Authorized account
         </div>
       </div>
     )
@@ -201,10 +201,10 @@ export default function TestRuns() {
   const [newRunName, setNewRunName] = useState('');
   
   // Custom execution configuration fields
-  const [newRunSuite, setNewRunSuite] = useState('System Sanity Suite');
-  const [newRunRequester, setNewRunRequester] = useState('gnanasampathbatchu2003@gmail.com');
-  const [newRunExecutionTime, setNewRunExecutionTime] = useState('1m 35s');
-  const [newRunTargetUrl, setNewRunTargetUrl] = useState('https://testflow.ai');
+  const [newRunSuite, setNewRunSuite] = useState('');
+  const [newRunRequester, setNewRunRequester] = useState('');
+  const [newRunExecutionTime, setNewRunExecutionTime] = useState('');
+  const [newRunTargetUrl, setNewRunTargetUrl] = useState('');
   
   const [selectedRun, setSelectedRun] = useState<any | null>(null);
   const [showInlineScreenshots, setShowInlineScreenshots] = useState(true);
@@ -235,10 +235,10 @@ export default function TestRuns() {
 
   const openNewModal = () => {
     setNewRunName('');
-    setNewRunSuite('System Sanity Suite');
-    setNewRunRequester('gnanasampathbatchu2003@gmail.com');
-    setNewRunExecutionTime('1m 35s');
-    setNewRunTargetUrl('https://testflow.ai');
+    setNewRunSuite('');
+    setNewRunRequester('');
+    setNewRunExecutionTime('');
+    setNewRunTargetUrl('');
     setIsRunModalOpen(true);
   };
 
@@ -286,9 +286,9 @@ export default function TestRuns() {
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({ 
         name: data.name,
-        suiteName: 'AI Generated Flowscape Suite',
-        requestedBy: 'gnanasampathbatchu2003@gmail.com',
-        executionTime: '2m 10s'
+        suiteName: data.suiteName || '',
+        requestedBy: data.requestedBy || '',
+        executionTime: data.executionTime || ''
       })
     }).then(() => fetchRuns());
   };
@@ -387,7 +387,7 @@ export default function TestRuns() {
                   <div className="mt-2 flex flex-col gap-1 text-xs text-[var(--text-muted)]">
                     <div className="flex items-center gap-1.5 truncate">
                       <Layers className="w-3.5 h-3.5 text-[var(--text-muted)] leading-none" />
-                      <span className="truncate">{r.suiteName || 'System Sanity Suite'}</span>
+                      <span className="truncate">{r.suiteName || 'No suite assigned'}</span>
                     </div>
                     <div className="flex items-center gap-1.5 font-mono text-[11px] text-slate-400 mt-1">
                       <span>Cases: {r.progress || `${r.passed || 0}/${r.totalExecutions || 3} passed`}</span>
@@ -460,13 +460,13 @@ export default function TestRuns() {
                   </div>
                   <div className="bg-[var(--bg-card)] border border-[var(--border)] p-3 rounded-lg shadow-sm">
                     <span className="block text-[11px] font-medium text-[var(--text-muted)] uppercase tracking-wider">Target Test Suite</span>
-                    <span className="block text-sm font-semibold truncate text-[var(--text-primary)] mt-1">{selectedRun.suiteName || 'System Sanity Suite'}</span>
+                    <span className="block text-sm font-semibold truncate text-[var(--text-primary)] mt-1">{selectedRun.suiteName || 'No suite assigned'}</span>
                   </div>
                   <div className="bg-[var(--bg-card)] border border-[var(--border)] p-3 rounded-lg shadow-sm">
                     <span className="block text-[11px] font-medium text-[var(--text-muted)] uppercase tracking-wider">Requested By</span>
                     <span className="block text-sm font-semibold text-[var(--text-primary)] mt-1 flex items-center gap-1 max-w-full truncate">
                        <User className="w-3 h-3 text-slate-400 shrink-0" />
-                       <span className="truncate">{selectedRun.requestedBy || 'gnanasampathbatchu2003@gmail.com'}</span>
+                       <span className="truncate">{selectedRun.requestedBy || 'Not specified'}</span>
                     </span>
                   </div>
                 </div>
@@ -521,11 +521,13 @@ export default function TestRuns() {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-[var(--border)] font-sans">
-                      {(selectedRun.steps || [
-                        { step: '1', action: 'POST to /api/auth/token', expected: 'Return HTTP 200 with JWT bearer token', outcome: 'Pass', reason: '', screenshot: 'api_auth_token' },
-                        { step: '2', action: 'GET /api/users/profile with JWT token', expected: 'Return active user credentials details', outcome: 'Pass', reason: '', screenshot: 'api_user_profile' },
-                        { step: '3', action: 'GET /api/billing/history', expected: 'Return invoice history list payload', outcome: 'Pass', reason: '', screenshot: 'api_billing_history' }
-                      ]).map((stepItem: any, sIdx: number) => {
+                      {(selectedRun.steps || []).length === 0 ? (
+                        <tr>
+                          <td colSpan={5} className="py-10 px-4 text-center text-sm text-[var(--text-muted)]">
+                            No verification steps recorded for this run.
+                          </td>
+                        </tr>
+                      ) : (selectedRun.steps || []).map((stepItem: any, sIdx: number) => {
                         const scoreIsFail = stepItem.outcome === 'Fail';
                         const scoreIsSkip = stepItem.outcome === 'Skipped';
                         
@@ -642,15 +644,13 @@ export default function TestRuns() {
           <div className="grid grid-cols-2 gap-4">
              <div>
                 <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Target Test Suite</label>
-                <select 
+                <input 
+                  type="text"
                   value={newRunSuite} 
                   onChange={(e) => setNewRunSuite(e.target.value)} 
+                  placeholder="Enter suite name"
                   className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]"
-                >
-                  <option value="System Sanity Suite">System Sanity Suite</option>
-                  <option value="Regression Suite v3">Regression Suite v3</option>
-                  <option value="Integration Flowsuite">Integration Flowsuite</option>
-                </select>
+                />
              </div>
              <div>
                 <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Requested By</label>

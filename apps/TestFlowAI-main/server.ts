@@ -1,13 +1,18 @@
 import express from 'express';
 import path from 'path';
 import dotenv from 'dotenv';
+import fs from 'fs/promises';
 import { createServer as createViteServer } from 'vite';
 import { generateObject } from 'ai';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
+import { chromium } from 'playwright';
 import { z } from 'zod';
 import { randomUUID } from 'crypto';
 
-dotenv.config({ path: [path.resolve(process.cwd(), '.env.local'), path.resolve(process.cwd(), '.env')] });
+dotenv.config({
+  path: [path.resolve(process.cwd(), '.env.local'), path.resolve(process.cwd(), '.env')],
+  override: true,
+});
 
 function getGeminiApiKey() {
   const key = (
@@ -15,7 +20,7 @@ function getGeminiApiKey() {
     process.env.GOOGLE_GENERATIVE_AI_API_KEY ||
     process.env.GOOGLE_API_KEY ||
     ''
-  ).trim();
+  ).trim().replace(/^['"]|['"]$/g, '');
 
   if (!key) {
     throw new Error('Gemini API key is missing. Set GEMINI_API_KEY or GOOGLE_GENERATIVE_AI_API_KEY in .env.local.');
@@ -25,16 +30,92 @@ function getGeminiApiKey() {
     throw new Error('Gemini API key is still the placeholder value. Replace it with a real Google AI Studio API key.');
   }
 
-  if (key.startsWith('AQ.') || key.startsWith('ya29.')) {
-    throw new Error('GEMINI_API_KEY contains an OAuth/access token, not a Gemini API key. Create an API key in Google AI Studio and put that key in .env.local.');
-  }
-
   return key;
 }
 
+function getGeminiKeyStatus() {
+  const rawKey = (
+    process.env.GEMINI_API_KEY ||
+    process.env.GOOGLE_GENERATIVE_AI_API_KEY ||
+    process.env.GOOGLE_API_KEY ||
+    ''
+  ).trim();
+  const key = rawKey.trim().replace(/^['"]|['"]$/g, '');
+
+  return {
+    configured: Boolean(key),
+    length: key.length,
+    prefix: key ? `${key.slice(0, 6)}...` : '',
+    source:
+      process.env.GEMINI_API_KEY ? 'GEMINI_API_KEY' :
+      process.env.GOOGLE_GENERATIVE_AI_API_KEY ? 'GOOGLE_GENERATIVE_AI_API_KEY' :
+      process.env.GOOGLE_API_KEY ? 'GOOGLE_API_KEY' :
+      'none',
+    looksLikeGeminiApiKey: key.startsWith('AIza'),
+    looksLikeServiceAccountBoundKey: key.startsWith('AQ.'),
+    looksLikeOAuthToken: key.startsWith('ya29.'),
+  };
+}
+
 function createGeminiModel() {
-  const google = createGoogleGenerativeAI({ apiKey: getGeminiApiKey() });
+  const apiKey = getGeminiApiKey();
+  process.env.GOOGLE_GENERATIVE_AI_API_KEY = apiKey;
+  const google = createGoogleGenerativeAI({ apiKey });
   return google(db.settings?.geminiModel || 'gemini-2.5-flash');
+}
+
+function getAIErrorMessage(err: any) {
+  const responseBody = typeof err?.responseBody === 'string' ? err.responseBody : '';
+  const message = err?.message || 'AI generation failed.';
+
+  if (message.includes('API Key not found') || responseBody.includes('API_KEY_INVALID')) {
+    return 'Google rejected the configured Gemini API key. The local app is reading a key, but generativelanguage.googleapis.com says it is invalid. Create/copy a fresh Google AI Studio API key and replace GEMINI_API_KEY in .env.local.';
+  }
+
+  return message;
+}
+
+function normalizeTargetUrl(url: string) {
+  const trimmed = url.trim();
+  if (!trimmed) return '';
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  return `https://${trimmed}`;
+}
+
+const domainPattern = /\b((?:https?:\/\/)?(?:www\.)?[a-z0-9-]+(?:\.[a-z0-9-]+)+(?:\/[^\s]*)?)/i;
+
+function extractTargetUrl(message: string) {
+  const match = message.match(domainPattern);
+  if (!match) return '';
+  return normalizeTargetUrl(match[1].replace(/[),.;!?]+$/, ''));
+}
+
+async function capturePlaywrightEvidence(targetUrl: string, runId: string) {
+  const normalizedUrl = normalizeTargetUrl(targetUrl);
+  if (!normalizedUrl) return [];
+
+  const evidenceDir = path.resolve(process.cwd(), 'evidence');
+  await fs.mkdir(evidenceDir, { recursive: true });
+
+  const filename = `${runId}-target-page.png`;
+  const screenshotPath = path.join(evidenceDir, filename);
+  const browser = await chromium.launch({ headless: true });
+
+  try {
+    const page = await browser.newPage({ viewport: { width: 1365, height: 768 } });
+    const response = await page.goto(normalizedUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await page.screenshot({ path: screenshotPath, fullPage: true });
+
+    return [{
+      title: 'Target base URL evidence',
+      url: normalizedUrl,
+      screenshotUrl: `/evidence/${filename}`,
+      status: response?.status() || null,
+      capturedAt: new Date().toISOString(),
+    }];
+  } finally {
+    await browser.close();
+  }
 }
 
 const casualGreetingPattern = /^(hi+|h+i+|hlo+|hello+|hey+|good\s+(morning|afternoon|evening)|thanks?|thank\s+you|ok(?:ay)?)\b[\s!.?]*$/i;
@@ -57,7 +138,7 @@ function getAgentGuardrailResponse(message: string) {
     return 'I am a QA-focused assistant. I can help generate test plans, test cases, suites, and Playwright scripts for application testing workflows.';
   }
 
-  if (!qaIntentPattern.test(normalized) && !/https?:\/\/[^\s]+/i.test(normalized)) {
+  if (!qaIntentPattern.test(normalized) && !extractTargetUrl(normalized)) {
     return 'This assistant is scoped to QA and test automation. Please ask about an application, feature, test case, test plan, defect, or automation script.';
   }
 
@@ -69,62 +150,7 @@ const db = {
   plans: [] as any[],
   suites: [] as any[],
   cases: [] as any[],
-  runs: [
-    {
-      id: 'RUN-A8F2',
-      name: 'Sprint 20 Regression - Auth & Checkout Flow',
-      suiteName: 'Regression Suite v3',
-      requestedBy: 'gnanasampathbatchu2003@gmail.com',
-      executionTime: '3m 42s',
-      status: 'Completed',
-      progress: '3 passed, 1 skipped',
-      date: '2026-06-03',
-      totalExecutions: 4,
-      passed: 3,
-      failed: 1,
-      steps: [
-        { step: '1', action: 'Open login page & enter credentials', expected: 'User welcome dashboard loaded.', outcome: 'Pass', reason: '', screenshot: 'login_success' },
-        { step: '2', action: 'Navigate to cart & click checkout', expected: 'Shipping address form displays.', outcome: 'Pass', reason: '', screenshot: 'checkout_address' },
-        { step: '3', action: 'Submit credentials to payment gateway', expected: 'Charge secure iframe responds within 5000ms.', outcome: 'Fail', reason: 'Wait for payment iframe timed out. Endpoint returned HTTP 504 Gateway Timeout.', screenshot: 'payment_iframe_error' },
-        { step: '4', action: 'Verify receipt shows in account history', expected: 'New order appears top of list.', outcome: 'Skipped', reason: 'Skipped due to previous step failure.', screenshot: 'skipped_step' }
-      ]
-    },
-    {
-      id: 'RUN-BC81',
-      name: 'API Integration Sanity Run',
-      suiteName: 'System Sanity Suite',
-      requestedBy: 'gnanasampathbatchu2003@gmail.com',
-      executionTime: '48s',
-      status: 'Completed',
-      progress: '3 passed',
-      date: '2026-06-03',
-      totalExecutions: 3,
-      passed: 3,
-      failed: 0,
-      steps: [
-        { step: '1', action: 'POST to /api/auth/token', expected: 'Return HTTP 200 with JWT bearer token', outcome: 'Pass', reason: '', screenshot: 'api_auth_token' },
-        { step: '2', action: 'GET /api/users/profile with JWT token', expected: 'Return active user credentials details matching database', outcome: 'Pass', reason: '', screenshot: 'api_user_profile' },
-        { step: '3', action: 'GET /api/billing/history', expected: 'Return invoice history list payload', outcome: 'Pass', reason: '', screenshot: 'api_billing_history' }
-      ]
-    },
-    {
-      id: 'RUN-EE90',
-      name: 'Google Sheets Sync Sanity Check',
-      suiteName: 'Integration Flowsuite',
-      requestedBy: 'gnanasampathbatchu2003@gmail.com',
-      executionTime: '1m 15s',
-      status: 'Completed',
-      progress: '2 passed',
-      date: '2026-06-03',
-      totalExecutions: 2,
-      passed: 2,
-      failed: 0,
-      steps: [
-        { step: '1', action: 'Grant Google Sheets access scope', expected: 'Access granted token stored securely', outcome: 'Pass', reason: '', screenshot: 'sheets_auth_granted' },
-        { step: '2', action: 'Execute Export QA Data to Google Sheet', expected: 'Sheets API responds 200 and spreadsheet is created', outcome: 'Pass', reason: '', screenshot: 'sheets_sync_success' }
-      ]
-    }
-  ] as any[],
+  runs: [] as any[],
   defects: [] as any[],
   agentRuns: [] as any[],
   recentActivity: [] as any[],
@@ -132,59 +158,7 @@ const db = {
     geminiModel: 'gemini-2.5-flash',
     playwrightUrl: ''
   },
-  reports: [
-    {
-      id: 'REP-827F',
-      name: 'Sprint 20 Regression - Auth & Checkout Flow',
-      planName: 'Auth & Payments Validation Plan',
-      suiteName: 'Regression Suite v3',
-      requestedBy: 'gnanasampathbatchu2003@gmail.com',
-      executionTime: '3m 42s',
-      totalExecutions: 4,
-      status: 'Failed',
-      failureReason: 'Timeout of 30000ms exceeded on Step 3 while waiting for the secure Payment Gateway iframe to load.',
-      date: '2016-06-03',
-      steps: [
-        { step: '1', action: 'Open login page & enter credentials', expected: 'User welcome dashboard loaded.', outcome: 'Pass', reason: '', screenshot: 'login_success' },
-        { step: '2', action: 'Navigate to cart & click checkout', expected: 'Shipping address form displays.', outcome: 'Pass', reason: '', screenshot: 'checkout_address' },
-        { step: '3', action: 'Submit credentials to payment gateway', expected: 'Charge secure iframe responds within 5000ms.', outcome: 'Fail', reason: 'Wait for payment iframe timed out. Endpoint returned HTTP 504 Gateway Timeout.', screenshot: 'payment_iframe_error' },
-        { step: '4', action: 'Verify receipt shows in account history', expected: 'New order appears top of list.', outcome: 'Skipped', reason: 'Skipped due to previous step failure.', screenshot: 'skipped_step' }
-      ]
-    },
-    {
-      id: 'REP-104A',
-      name: 'API Integration Sanity Run',
-      planName: 'Core API Integration Testing',
-      suiteName: 'System Sanity Suite',
-      requestedBy: 'gnanasampathbatchu2003@gmail.com',
-      executionTime: '48s',
-      totalExecutions: 3,
-      status: 'Passed',
-      failureReason: '',
-      date: '2026-06-02',
-      steps: [
-        { step: '1', action: 'POST to /api/auth/token', expected: 'Return HTTP 200 with JWT bearer token', outcome: 'Pass', reason: '', screenshot: 'api_auth_token' },
-        { step: '2', action: 'GET /api/users/profile with JWT token', expected: 'Return active user credentials details matching database', outcome: 'Pass', reason: '', screenshot: 'api_user_profile' },
-        { step: '3', action: 'GET /api/billing/history', expected: 'Return invoice history list payload', outcome: 'Pass', reason: '', screenshot: 'api_billing_history' }
-      ]
-    },
-    {
-      id: 'REP-409B',
-      name: 'Google Sheets Sync Sanity Check',
-      planName: 'Google Workspace Connection Plan',
-      suiteName: 'Integration Flowsuite',
-      requestedBy: 'gnanasampathbatchu2003@gmail.com',
-      executionTime: '1m 15s',
-      totalExecutions: 2,
-      status: 'Passed',
-      failureReason: '',
-      date: '2026-06-03',
-      steps: [
-        { step: '1', action: 'Grant Google Sheets access scope', expected: 'Access granted token stored securely', outcome: 'Pass', reason: '', screenshot: 'sheets_auth_granted' },
-        { step: '2', action: 'Execute Export QA Data to Google Sheet', expected: 'Sheets API responds 200 and spreadsheet is created', outcome: 'Pass', reason: '', screenshot: 'sheets_sync_success' }
-      ]
-    }
-  ] as any[]
+  reports: [] as any[]
 };
 
 function addActivity(message: string) {
@@ -226,15 +200,80 @@ const playwrightScriptsSchema = z.object({
   }))
 });
 
+function normalizeCaseSteps(steps: any[] = []) {
+  return steps
+    .map((step) => ({
+      action: String(step?.action || '').trim(),
+      expected: String(step?.expected || '').trim(),
+    }))
+    .filter((step) => step.action || step.expected);
+}
+
+function normalizeCaseTags(tags: any[] = []) {
+  return tags
+    .map((tag) => String(tag || '').trim().toLowerCase())
+    .filter(Boolean)
+    .map((tag) => {
+      const normalized = tag.replace(/^#+/, '').replace(/^@+/, '').replace(/\s+/g, '-');
+      return normalized ? `@${normalized}` : '';
+    })
+    .filter(Boolean);
+}
+
+function buildCaseDescription(testCase: any) {
+  const baseDescription = String(testCase?.description || '').trim();
+  const steps = normalizeCaseSteps(testCase?.steps);
+
+  if (!steps.length) return baseDescription;
+
+  const stepLines = steps.map((step, index) => {
+    return `${index + 1}. ${step.action}\n   Expected: ${step.expected}`;
+  });
+
+  return [baseDescription, 'Test Steps:', ...stepLines].filter(Boolean).join('\n\n');
+}
+
+async function runPostCaseAgentFlow(run: any, model: any, testCases: any, targetUrl: string) {
+  run.messages.push({ agent: 'PlaywrightAgent', status: 'running' });
+  const { object: scripts } = await generateObject({
+    model,
+    schema: playwrightScriptsSchema,
+    prompt: `You are a Playwright automation expert. Convert these reviewed test cases into production-quality Playwright TypeScript scripts. Use this baseURL in the scripts when provided: ${targetUrl || 'not provided'}. Test cases: ${JSON.stringify(testCases)}`
+  });
+  run.playwright_scripts = scripts.scripts as any;
+  run.messages.push({ agent: 'PlaywrightAgent', status: 'completed', output: scripts });
+
+  run.messages.push({ agent: 'EvidenceAgent', status: 'running' });
+  if (targetUrl) {
+    const evidence = await capturePlaywrightEvidence(targetUrl, run.id);
+    run.evidence_screenshots = evidence as any;
+    run.messages.push({ agent: 'EvidenceAgent', status: 'completed', output: evidence });
+  } else {
+    run.messages.push({ agent: 'EvidenceAgent', status: 'skipped', output: 'No target URL was provided in chat or Settings > Playwright Target Base URL.' });
+  }
+
+  run.status = 'completed';
+}
+
 async function startServer() {
   const app = express();
   const PORT = 3000;
 
   app.use(express.json());
+  app.use('/evidence', express.static(path.resolve(process.cwd(), 'evidence')));
 
   // API Routes
   app.get('/api/settings', (req, res) => {
     res.json(db.settings);
+  });
+
+  app.get('/api/ai/health', (req, res) => {
+    res.json({
+      gemini: getGeminiKeyStatus(),
+      model: db.settings?.geminiModel || 'gemini-2.5-flash',
+      cwd: process.cwd(),
+      checkedAt: new Date().toISOString(),
+    });
   });
 
   // Screenshot Engine Endpoint for Target URL Screenshots
@@ -244,23 +283,6 @@ async function startServer() {
       return res.status(400).send('Missing url query parameter');
     }
 
-    // Default presets check
-    const presets: Record<string, string> = {
-      login_success: 'https://images.unsplash.com/photo-1555066931-4365d14bab8c?w=1280&q=80',
-      checkout_address: 'https://images.unsplash.com/photo-1563013544-824ae1d704d3?w=1280&q=80',
-      payment_iframe_error: 'https://images.unsplash.com/photo-1590283603385-17ffb3a7f29f?w=1285&q=80',
-      skipped_step: 'https://images.unsplash.com/photo-1451187580459-43490279c0fa?w=1280&q=80',
-      api_auth_token: 'https://images.unsplash.com/photo-1526374965328-7f61d4dc18c5?w=1280&q=80',
-      api_user_profile: 'https://images.unsplash.com/photo-1507238691740-187a5b1d37b8?w=1280&q=80',
-      api_billing_history: 'https://images.unsplash.com/photo-1554224155-8d04cb21cd6c?w=1280&q=80',
-      sheets_auth_granted: 'https://images.unsplash.com/photo-1581091226825-a6a2a5aee158?w=1280&q=80',
-      sheets_sync_success: 'https://images.unsplash.com/photo-1460925895917-afdab827c52f?w=1280&q=80'
-    };
-
-    if (presets[targetUrlRaw]) {
-      return res.redirect(presets[targetUrlRaw]);
-    }
-
     // Normalize target url
     let targetUrl = targetUrlRaw;
     if (!/^https?:\/\//i.test(targetUrl)) {
@@ -268,13 +290,11 @@ async function startServer() {
     }
 
     try {
-      // Use premium public headless browser screenshot engine redirect
-      // Thum.io offers beautiful on-the-fly live screenshots with standard viewport cropping
       const screenshotServiceUrl = `https://image.thum.io/get/width/1280/crop/800/maxAge/12/${targetUrl}`;
       res.redirect(screenshotServiceUrl);
     } catch (error) {
       console.error("Screenshot redirection error:", error);
-      res.redirect('https://images.unsplash.com/photo-1531403009284-440f080d1e12?w=800&auto=format&fit=crop');
+      res.status(500).send('Screenshot capture failed');
     }
   });
 
@@ -363,7 +383,7 @@ async function startServer() {
     // If targetUrl exists, map step screenshots to the targetUrl if they aren't presets
     const processedSteps = (r.steps || []).map((st: any) => {
       let stepScreenshot = st.screenshot;
-      if (targetUrl && (!stepScreenshot || stepScreenshot === 'login_success')) {
+      if (targetUrl && !stepScreenshot) {
         stepScreenshot = targetUrl;
       }
       return { ...st, screenshot: stepScreenshot };
@@ -372,11 +392,11 @@ async function startServer() {
     const newReport = {
       id: reportId,
       name: name,
-      planName: r.planName || 'Adhoc Plan',
-      suiteName: r.suiteName || 'Adhoc Suite',
-      requestedBy: r.requestedBy || 'QA Engineer',
-      executionTime: r.executionTime || '1m 20s',
-      totalExecutions: r.totalExecutions || (processedSteps.length || 1),
+      planName: r.planName || '',
+      suiteName: r.suiteName || '',
+      requestedBy: r.requestedBy || '',
+      executionTime: r.executionTime || '',
+      totalExecutions: r.totalExecutions || processedSteps.length,
       status: r.status || 'Passed',
       failureReason: r.failureReason || '',
       date: r.date || new Date().toISOString().split('T')[0],
@@ -421,8 +441,8 @@ async function startServer() {
     const title = c.title || 'New Case';
     db.cases.unshift({
        id: `TC-${Math.random().toString(36).substring(2,6).toUpperCase()}`,
-       title: title, description: c.description,
-       status: 'Draft', tags: c.tags || [], type: c.type || 'Manual', priority: c.priority || 'Medium',
+       title: title, description: buildCaseDescription(c), steps: normalizeCaseSteps(c.steps),
+       status: 'Draft', tags: normalizeCaseTags(c.tags || []), type: c.type || 'Manual', priority: c.priority || 'Medium',
        createdBy: c.createdBy || 'User', createdAt: new Date()
     });
     addActivity(`Created Case: ${title}`);
@@ -432,26 +452,29 @@ async function startServer() {
   app.post('/api/runs', (req, res) => {
     const name = req.body.name || 'New Run';
     const runId = `RUN-${Math.random().toString(36).substring(2,6).toUpperCase()}`;
-    const targetUrl = req.body.targetUrl || db.settings.playwrightUrl || 'https://testflow.ai';
+    const targetUrl = normalizeTargetUrl(req.body.targetUrl || db.settings.playwrightUrl || '');
+    const steps = targetUrl ? [
+      { step: '1', action: `Load target webpage address URL: ${targetUrl}`, expected: 'Page responds successfully.', outcome: 'Pass', reason: '', screenshot: targetUrl },
+      { step: '2', action: 'Verify primary page layout renders', expected: 'Core page content is visible.', outcome: 'Pass', reason: '', screenshot: targetUrl },
+      { step: '3', action: 'Capture responsive viewport evidence', expected: 'Screenshot evidence is available for review.', outcome: 'Pass', reason: '', screenshot: targetUrl }
+    ] : [];
+    const passed = steps.filter((step: any) => step.outcome === 'Pass').length;
+    const failed = steps.filter((step: any) => step.outcome === 'Fail').length;
     
     const newRun = { 
       id: runId, 
       name: name, 
       suiteName: req.body.suiteName || 'Playwright Verification Suite',
-      requestedBy: req.body.requestedBy || 'gnanasampathbatchu2003@gmail.com',
-      executionTime: req.body.executionTime || '1m 12s',
+      requestedBy: req.body.requestedBy || '',
+      executionTime: req.body.executionTime || '',
       status: 'Completed', 
-      progress: '3 passed',
+      progress: `${passed} passed`,
       date: new Date().toISOString().split('T')[0],
-      totalExecutions: 3,
-      passed: 3,
-      failed: 0,
+      totalExecutions: steps.length,
+      passed,
+      failed,
       targetUrl: targetUrl,
-      steps: [
-        { step: '1', action: `Load target webpage address URL: ${targetUrl}`, expected: 'Page responds with HTTP status 200 OK.', outcome: 'Pass', reason: '', screenshot: targetUrl },
-        { step: '2', action: 'Verify primary document body element layout structure', expected: 'All core layout landmarks and widgets are visible.', outcome: 'Pass', reason: '', screenshot: targetUrl },
-        { step: '3', action: 'Assert standard responsive scale verification boundaries', expected: 'No clipping, overflow, or broken layout grids detected.', outcome: 'Pass', reason: '', screenshot: targetUrl }
-      ]
+      steps
     };
     db.runs.unshift(newRun);
     addActivity(`Started Run: ${name}`);
@@ -508,9 +531,13 @@ async function startServer() {
            description: z.string(),
            tags: z.array(z.string()),
            type: z.enum(['Manual', 'Automated']),
-           priority: z.enum(['Low', 'Medium', 'High', 'Critical'])
+           priority: z.enum(['Low', 'Medium', 'High', 'Critical']),
+           steps: z.array(z.object({
+             action: z.string(),
+             expected: z.string()
+           }))
          });
-         systemPrompt = `Generate a Test Case based on the prompt. Provide title, description, type, priority, and tags (e.g. Smoke, Regression, UI, Positive, Negative). Prompt: ${prompt}`;
+         systemPrompt = `Generate a Test Case based on the prompt. Provide title, description, type, priority, automation tags, and 3-6 ordered steps. Tags must use @ format, for example @bvt, @sanity, @regression, @smoke, @ui, @positive, @negative. Each step must include action and expected result for report display. Prompt: ${prompt}`;
       } else if (taskType === 'run') {
          schema = z.object({
            name: z.string(),
@@ -535,30 +562,34 @@ async function startServer() {
       res.json(object);
     } catch (err: any) {
       console.error(err);
-      res.status(500).json({ error: err.message });
+      res.status(500).json({ error: getAIErrorMessage(err) });
     }
   });
 
   // AI Agent API (A2A Orchestrator Simulation)
   app.post('/api/agent/start', async (req, res) => {
     const { app_url, provider, prompt } = req.body;
+    const testCaseCount = Math.min(10, Math.max(1, Number(req.body.testCaseCount) || 3));
+    const flowMode = req.body.flowMode === 'review_cases' ? 'review_cases' : 'complete';
     const guardrailResponse = getAgentGuardrailResponse(prompt || app_url || '');
 
     if (guardrailResponse) {
       return res.json({ chat_response: guardrailResponse });
     }
 
+    const targetUrl = normalizeTargetUrl(app_url || extractTargetUrl(prompt || '') || db.settings.playwrightUrl || '');
     const taskId = randomUUID();
     
     const newRun = {
       id: taskId,
-      app_url: app_url || '',
+      app_url: targetUrl,
       provider,
       prompt: prompt || '',
       status: 'running',
       messages: [] as any[],
       generated_cases: [],
       playwright_scripts: [],
+      evidence_screenshots: [],
       created_at: new Date()
     };
     
@@ -575,7 +606,7 @@ async function startServer() {
       const { object: flows } = await generateObject({
         model,
         schema: appFlowsSchema,
-        prompt: `You are an expert web application analyst. Given this context: ${app_url ? `URL: ${app_url}` : ''} ${prompt ? `Requirements: ${prompt}` : ''}. Identify the top 3-5 user-facing flows and pages. Be concise.`
+        prompt: `You are an expert web application analyst. Use this Playwright target base URL when available: ${targetUrl || 'not provided'}. Given this context: ${prompt ? `Requirements: ${prompt}` : ''}. Identify the top 3-5 user-facing flows and pages. Be concise.`
       });
       newRun.messages.push({ agent: 'ApplicationInspector', status: 'completed', output: flows });
 
@@ -584,26 +615,76 @@ async function startServer() {
       const { object: testCases } = await generateObject({
         model,
         schema: testCasesSchema,
-        prompt: `You are a senior QA engineer. Generate 3-5 comprehensive test cases covering positive and negative scenarios for these flows: ${JSON.stringify(flows)}`
+        prompt: `You are a senior QA engineer. Generate exactly ${testCaseCount} comprehensive test cases covering positive and negative scenarios for these flows: ${JSON.stringify(flows)}. Each test case must include automation tags in @ format, for example @bvt, @sanity, @regression, @smoke, @ui, @positive, @negative. Each test case must include a steps array with 3-6 ordered rows. Each row must have a clear action and expected result suitable for a report table.`
       });
       newRun.generated_cases = testCases.test_cases as any;
       newRun.messages.push({ agent: 'TestGenerationAgent', status: 'completed', output: testCases });
 
-      // 3. PlaywrightAgent
-      newRun.messages.push({ agent: 'PlaywrightAgent', status: 'running' });
-      const { object: scripts } = await generateObject({
-        model,
-        schema: playwrightScriptsSchema,
-        prompt: `You are a Playwright automation expert. Convert these test cases into production-quality Playwright TypeScript scripts: ${JSON.stringify(testCases)}`
-      });
-      newRun.playwright_scripts = scripts.scripts as any;
-      newRun.messages.push({ agent: 'PlaywrightAgent', status: 'completed', output: scripts });
+      if (flowMode === 'review_cases') {
+        newRun.status = 'review_required';
+        newRun.messages.push({ agent: 'System', status: 'review_required', output: 'Review and edit generated test cases, then continue the agent flow.' });
+        return;
+      }
 
-      newRun.status = 'completed';
+      await runPostCaseAgentFlow(newRun, model, testCases, targetUrl);
     } catch (err: any) {
       console.error("AI Gen Error:", err);
       newRun.status = 'failed';
-      newRun.messages.push({ agent: 'System', status: 'failed', output: err.message });
+      newRun.messages.push({ agent: 'System', status: 'failed', output: getAIErrorMessage(err) });
+    }
+  });
+
+  app.post('/api/agent/continue', async (req, res) => {
+    const { taskId, cases } = req.body;
+    const run = db.agentRuns.find((item) => item.id === taskId);
+
+    if (!run) return res.status(404).json({ error: 'Run not found' });
+    if (!Array.isArray(cases) || cases.length === 0) {
+      return res.status(400).json({ error: 'Reviewed cases are required to continue.' });
+    }
+
+    run.status = 'running';
+    run.generated_cases = cases;
+    run.playwright_scripts = [];
+    run.evidence_screenshots = [];
+    res.json({ success: true });
+
+    try {
+      const model = createGeminiModel();
+      await runPostCaseAgentFlow(run, model, { test_cases: cases }, run.app_url || '');
+    } catch (err: any) {
+      console.error("AI Continue Error:", err);
+      run.status = 'failed';
+      run.messages.push({ agent: 'System', status: 'failed', output: getAIErrorMessage(err) });
+    }
+  });
+
+  app.post('/api/agent/rework-case', async (req, res) => {
+    try {
+      const model = createGeminiModel();
+      const { testCase, feedback, targetUrl } = req.body;
+
+      const { object } = await generateObject({
+        model,
+        schema: z.object({
+          title: z.string(),
+          description: z.string(),
+          preconditions: z.string(),
+          tags: z.array(z.string()),
+          priority: z.enum(['Low', 'Medium', 'High', 'Critical']),
+          type: z.enum(['Manual', 'Automated', 'Both']),
+          steps: z.array(z.object({
+            action: z.string(),
+            expected: z.string(),
+          })),
+        }),
+        prompt: `Rework this QA test case based on the reviewer feedback. Keep it practical, detailed, and report-ready. Include 3-6 ordered steps, each with action and expected result. Keep or improve automation tags using @ format, for example @bvt, @sanity, @regression, @smoke, @ui, @positive, @negative. Target URL: ${targetUrl || 'not provided'}. Current case: ${JSON.stringify(testCase)}. Feedback: ${feedback || 'Improve clarity and coverage.'}`,
+      });
+
+      res.json(object);
+    } catch (err: any) {
+      console.error("AI Rework Error:", err);
+      res.status(500).json({ error: getAIErrorMessage(err) });
     }
   });
 
@@ -615,8 +696,10 @@ async function startServer() {
         db.cases.unshift({
           id: `TC-${Math.random().toString(36).substring(2, 6).toUpperCase()}`,
           title: c.title,
+          description: buildCaseDescription(c),
+          steps: normalizeCaseSteps(c.steps),
           status: 'Draft',
-          tags: c.tags,
+          tags: normalizeCaseTags(c.tags || []),
           type: c.type,
           priority: c.priority
         });

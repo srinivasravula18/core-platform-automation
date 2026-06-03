@@ -136,7 +136,7 @@ export default function TestCases() {
         </div>
       </div>
 
-      <Modal isOpen={isCaseModalOpen} onClose={() => setIsCaseModalOpen(false)} title={selectedCaseId ? "Edit Test Case" : "Create New Test Case"}>
+      <Modal isOpen={isCaseModalOpen} onClose={() => setIsCaseModalOpen(false)} title={selectedCaseId ? "Edit Test Case" : "Create New Test Case"} size="xl">
         <div className="space-y-4 max-h-[70vh] overflow-y-auto px-1">
           <div className="grid grid-cols-2 gap-4">
              <div>
@@ -164,7 +164,7 @@ export default function TestCases() {
           </div>
           <div>
             <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Description (Steps, Ex. Results)</label>
-            <textarea value={formData.description} onChange={(e) => setFormData({...formData, description: e.target.value})} placeholder="Preconditions, test steps..." className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)] h-20" />
+            <textarea value={formData.description} onChange={(e) => setFormData({...formData, description: e.target.value})} placeholder="Preconditions, test steps..." className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)] h-24 resize-y" />
           </div>
           <div>
             <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Created By</label>
