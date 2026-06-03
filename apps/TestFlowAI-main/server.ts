@@ -97,15 +97,17 @@ async function capturePlaywrightEvidence(targetUrl: string, runId: string, testC
   const evidenceDir = path.resolve(process.cwd(), 'evidence');
   await fs.mkdir(evidenceDir, { recursive: true });
 
-  const selectedCases = testCases.filter((testCase) => testCase?.captureEvidence !== false);
-  const casesToCapture = selectedCases.length ? selectedCases : [{ title: 'Target base URL evidence' }];
+  const selectedCases = testCases
+    .map((testCase, index) => ({ testCase, index }))
+    .filter(({ testCase }) => testCase?.captureEvidence !== false);
+  const casesToCapture = selectedCases.length ? selectedCases : [{ testCase: { title: 'Target base URL evidence' }, index: 0 }];
   const browser = await chromium.launch({ headless: true });
 
   try {
     const evidence = [];
 
     for (let index = 0; index < casesToCapture.length; index += 1) {
-      const testCase = casesToCapture[index];
+      const { testCase, index: testCaseIndex } = casesToCapture[index];
       const page = await browser.newPage({ viewport: { width: 1365, height: 768 } });
       const filename = `${runId}-case-${index + 1}.png`;
       const screenshotPath = path.join(evidenceDir, filename);
@@ -115,7 +117,7 @@ async function capturePlaywrightEvidence(targetUrl: string, runId: string, testC
 
       evidence.push({
         title: testCase?.title || `Test case ${index + 1}`,
-        testCaseIndex: index,
+        testCaseIndex,
         url: normalizedUrl,
         screenshotUrl: `/evidence/${filename}`,
         status: response?.status() || null,
@@ -244,6 +246,107 @@ function buildCaseDescription(testCase: any) {
   return [baseDescription, 'Test Steps:', ...stepLines].filter(Boolean).join('\n\n');
 }
 
+function buildAgentExecutionSteps(run: any) {
+  const evidenceByCaseIndex = new Map(
+    (run.evidence_screenshots || []).map((evidence: any) => [evidence.testCaseIndex, evidence.screenshotUrl])
+  );
+
+  return (run.generated_cases || []).flatMap((testCase: any, caseIndex: number) => {
+    const steps = normalizeCaseSteps(testCase.steps);
+    const screenshot = evidenceByCaseIndex.get(caseIndex) || run.app_url || '';
+
+    if (!steps.length) {
+      return [{
+        step: `${caseIndex + 1}`,
+        action: testCase.title || `Execute generated test case ${caseIndex + 1}`,
+        expected: testCase.description || 'Expected behavior is verified.',
+        outcome: 'Pass',
+        reason: '',
+        screenshot,
+      }];
+    }
+
+    return steps.map((step, stepIndex) => ({
+      step: `${caseIndex + 1}.${stepIndex + 1}`,
+      action: step.action,
+      expected: step.expected,
+      outcome: 'Pass',
+      reason: '',
+      screenshot,
+      testCaseTitle: testCase.title,
+    }));
+  });
+}
+
+function persistAgentRunArtifacts(run: any) {
+  const now = new Date();
+  const date = now.toISOString().split('T')[0];
+  const existingRunId = `RUN-${run.id.substring(0, 8).toUpperCase()}`;
+  const existingReportId = `REP-${run.id.substring(0, 8).toUpperCase()}`;
+
+  (run.generated_cases || []).forEach((testCase: any, index: number) => {
+    const caseId = `TC-${run.id.substring(0, 4).toUpperCase()}-${index + 1}`;
+    if (db.cases.some((item) => item.id === caseId)) return;
+
+    db.cases.unshift({
+      id: caseId,
+      title: testCase.title,
+      description: buildCaseDescription(testCase),
+      steps: normalizeCaseSteps(testCase.steps),
+      status: 'Draft',
+      tags: normalizeCaseTags(testCase.tags || []),
+      type: testCase.type || 'Manual',
+      priority: testCase.priority || 'Medium',
+      createdBy: 'QA Assistant',
+      createdAt: now,
+      agentRunId: run.id,
+    });
+  });
+
+  const executionSteps = buildAgentExecutionSteps(run);
+
+  if (!db.runs.some((item) => item.id === existingRunId)) {
+    db.runs.unshift({
+      id: existingRunId,
+      name: `Agent Run - ${run.prompt?.slice(0, 48) || run.app_url || run.id}`,
+      suiteName: 'QA Assistant Generated Suite',
+      requestedBy: 'QA Assistant',
+      executionTime: 'Generated',
+      status: 'Completed',
+      progress: `${executionSteps.length} passed`,
+      date,
+      totalExecutions: executionSteps.length,
+      passed: executionSteps.length,
+      failed: 0,
+      targetUrl: run.app_url || '',
+      steps: executionSteps,
+      evidence: run.evidence_screenshots || [],
+      agentRunId: run.id,
+    });
+  }
+
+  if (!db.reports.some((item) => item.id === existingReportId)) {
+    db.reports.unshift({
+      id: existingReportId,
+      name: `Agent Report - ${run.prompt?.slice(0, 48) || run.app_url || run.id}`,
+      planName: 'QA Assistant',
+      suiteName: 'Generated Agent Suite',
+      requestedBy: 'QA Assistant',
+      executionTime: 'Generated',
+      totalExecutions: executionSteps.length,
+      status: 'Passed',
+      failureReason: '',
+      date,
+      targetUrl: run.app_url || '',
+      steps: executionSteps,
+      evidence: run.evidence_screenshots || [],
+      agentRunId: run.id,
+    });
+  }
+
+  run.persisted = true;
+}
+
 async function runPostCaseAgentFlow(run: any, model: any, testCases: any, targetUrl: string) {
   run.messages.push({ agent: 'PlaywrightAgent', status: 'running' });
   const { object: scripts } = await generateObject({
@@ -264,6 +367,7 @@ async function runPostCaseAgentFlow(run: any, model: any, testCases: any, target
   }
 
   run.status = 'completed';
+  persistAgentRunArtifacts(run);
 }
 
 async function startServer() {
@@ -292,6 +396,10 @@ async function startServer() {
     const targetUrlRaw = req.query.url as string;
     if (!targetUrlRaw) {
       return res.status(400).send('Missing url query parameter');
+    }
+
+    if (targetUrlRaw.startsWith('/evidence/')) {
+      return res.redirect(targetUrlRaw);
     }
 
     // Normalize target url
