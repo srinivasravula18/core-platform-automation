@@ -1,0 +1,6 @@
+{
+  "name": "TestFlowAI",
+  "description": "AI-powered QA and test automation platform with human-in-the-loop validation and production-grade async execution.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

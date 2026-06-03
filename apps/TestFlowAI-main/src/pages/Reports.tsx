@@ -1,0 +1,931 @@
+import React, { useState, useEffect } from 'react';
+import { Search, Filter, ShieldCheck, ShieldAlert, Sparkles, Plus, Clock, FileSpreadsheet, Layers, User, Calendar, Trash2, Eye, EyeOff, AlertTriangle, PlayCircle, ExternalLink, Activity } from 'lucide-react';
+import { cn } from '@/src/lib/utils';
+import html2canvas from 'html2canvas';
+import { Modal } from '@/src/components/Modal';
+
+interface Step {
+  step: string;
+  action: string;
+  expected: string;
+  outcome: 'Pass' | 'Fail' | 'Skipped';
+  reason?: string;
+  screenshot: string;
+}
+
+interface Report {
+  id: string;
+  name: string;
+  planName: string;
+  suiteName: string;
+  requestedBy: string;
+  executionTime: string;
+  totalExecutions: number;
+  status: 'Passed' | 'Failed' | 'Skipped';
+  failureReason?: string;
+  date: string;
+  steps: Step[];
+}
+
+// Preset visual screens to render for screenshot evidence
+const SCREENSHOT_PRESETS: Record<string, { title: string; url: string; contentHtml: React.ReactNode }> = {
+  login_success: {
+    title: "Login Screen (Success Code 200)",
+    url: "https://auth.testflow.ai/login?state=callback",
+    contentHtml: (
+      <div className="bg-emerald-950/20 text-emerald-400 p-4 rounded border border-emerald-500/20 font-mono text-xs h-full flex flex-col justify-between">
+        <div>
+          <div className="flex items-center gap-1.5 text-emerald-500 font-bold mb-2">
+            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+            AUTH CODE ACCESS GRANTED
+          </div>
+          <p className="text-slate-400 text-[11px] mb-2 font-sans">Redirecting to active console endpoint...</p>
+          <div className="bg-emerald-950/40 p-2 rounded text-emerald-300 border border-emerald-500/10 mb-2 text-[11px]">
+            TOKEN_TYPE: Bearer<br />
+            EXPIRES_IN: 3600s<br />
+            SCOPE: sheets.write profiles.read
+          </div>
+        </div>
+        <div className="text-[10px] text-emerald-500/60 flex justify-between border-t border-emerald-500/10 pt-2 font-sans">
+          <span>Client: TestFlowAI Auth Engine</span>
+          <span>Latency: 114ms</span>
+        </div>
+      </div>
+    )
+  },
+  checkout_address: {
+    title: "Checkout System (Address Form Verification)",
+    url: "https://store.testflow.ai/checkout/shipping",
+    contentHtml: (
+      <div className="bg-slate-900 border border-slate-800 p-4 rounded text-slate-300 font-sans text-xs h-full flex flex-col justify-between">
+        <div>
+          <div className="flex justify-between items-center pb-2 border-b border-slate-800 mb-2">
+            <span className="font-semibold text-slate-200">Shipping Information</span>
+            <span className="text-[10px] bg-slate-800 text-slate-400 px-1.5 py-0.5 rounded">Address OK</span>
+          </div>
+          <div className="space-y-1.5">
+            <div className="bg-slate-850 p-1.5 rounded text-[11px] border border-slate-800 text-slate-300">
+              <span className="text-slate-400 font-semibold mr-1.5">Recipient:</span> J. Doe
+            </div>
+            <div className="bg-slate-850 p-1.5 rounded text-[11px] border border-slate-800 text-slate-300">
+              <span className="text-slate-400 font-semibold mr-1.5">Address:</span> 1600 Amphitheatre Pkwy, Mountain View, CA 94043
+            </div>
+          </div>
+        </div>
+        <div className="text-[10px] text-slate-500 text-right pt-2 font-mono">
+          DOM: FormValidated = true
+        </div>
+      </div>
+    )
+  },
+  payment_iframe_error: {
+    title: "Secure Payment Iframe (Gateway Refused - Timeout Error)",
+    url: "https://gateway.stripe-api.net/secure-frame/charges",
+    contentHtml: (
+      <div className="bg-red-950/20 text-red-400 p-4 rounded border border-red-500/20 font-mono text-xs h-full flex flex-col justify-between">
+        <div>
+          <div className="flex items-center gap-1.5 text-red-500 font-bold mb-2">
+            <AlertTriangle className="w-4 h-4 text-red-500" />
+            GATEWAY_TIMEOUT_STATUS_504
+          </div>
+          <p className="text-slate-400 text-[11px] mb-2 leading-relaxed font-sans">The server took too long to resolve the iframe contents from Stripe payment endpoints.</p>
+          <div className="bg-red-950/40 p-2 rounded text-red-300 border border-red-500/10 text-[10px]">
+            ERR_CONNECTION_TIMED_OUT (30000ms duration limit exceeded)<br />
+            API_VERSION: 2026-06-03
+          </div>
+        </div>
+        <div className="text-[10px] text-red-500/70 border-t border-red-500/10 pt-2 flex justify-between font-sans">
+          <span>Stripe Integration Bridge</span>
+          <span>Retry: count=3 [failed]</span>
+        </div>
+      </div>
+    )
+  },
+  skipped_step: {
+    title: "Skipped Action (Awaiting Previous Dependency)",
+    url: "https://store.testflow.ai/checkout/verify",
+    contentHtml: (
+      <div className="bg-slate-950/30 text-slate-400 p-4 rounded border border-slate-800 font-mono text-xs h-full flex flex-col justify-center items-center text-center">
+        <Activity className="w-8 h-8 mb-2 opacity-30 text-slate-500" />
+        <div className="font-semibold text-xs text-slate-500">STEP UNEXECUTED</div>
+        <p className="text-[10px] text-slate-500 max-w-[200px] mt-1 font-sans">This step was skipped automatically because a preceding verification failed.</p>
+      </div>
+    )
+  },
+  api_auth_token: {
+    title: "API Gate Token Handshake (JWT Issued)",
+    url: "https://api.testflow.ai/v1/auth/token",
+    contentHtml: (
+      <div className="bg-emerald-950/20 text-emerald-400 p-4 rounded border border-emerald-500/20 font-mono text-xs h-full flex flex-col justify-between">
+        <div>
+          <div className="text-[10px] bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2 py-0.5 rounded w-max mb-2 font-sans font-medium">HTTP 200 OK</div>
+          <p className="font-mono text-[10px] text-emerald-300 break-all leading-tight">
+            {"{"} "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIi...JWT_TOKEN_SECRET_VALIDATED" {"}"}
+          </p>
+        </div>
+        <div className="text-[10px] text-emerald-500/60 text-right pt-2 font-sans border-t border-emerald-500/10 mt-2">
+          Payload matches expected schema
+        </div>
+      </div>
+    )
+  },
+  api_user_profile: {
+    title: "Account Profile Endpoint Request",
+    url: "https://api.testflow.ai/v1/users/profile",
+    contentHtml: (
+      <div className="bg-slate-900 border border-slate-800 p-4 rounded text-slate-300 font-mono text-[11px] h-full flex flex-col justify-between">
+        <div>
+          <div className="text-[10px] bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2 py-0.5 rounded w-max mb-2 font-sans font-semibold">HTTP 200 OK</div>
+          <pre className="text-slate-300 font-mono leading-tight text-left">
+{`{
+  "id": "USR-88220",
+  "name": "Integration User",
+  "status": "active",
+  "registered": "2026-06-03"
+}`}
+          </pre>
+        </div>
+        <div className="text-[10px] text-slate-500 pt-2 font-sans text-right">
+          Verifications passes: 3/3
+        </div>
+      </div>
+    )
+  },
+  api_billing_history: {
+    title: "Billing Records Schema Validation",
+    url: "https://api.testflow.ai/v1/billing/history",
+    contentHtml: (
+      <div className="bg-slate-900 border border-slate-800 p-4 rounded text-slate-300 font-mono text-[11px] h-full flex flex-col justify-between">
+        <div>
+          <div className="text-[10px] bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2 py-0.5 rounded w-max mb-2 font-sans font-semibold">HTTP 200 OK</div>
+          <pre className="text-slate-300 font-mono leading-tight text-left">
+{`{
+  "invoices": [],
+  "limit": 100,
+  "total": 0
+}`}
+          </pre>
+        </div>
+        <div className="text-[10px] text-slate-500 pt-2 font-sans text-right">
+          Assert: IsArray(invoices) is true
+        </div>
+      </div>
+    )
+  },
+  sheets_auth_granted: {
+    title: "Google Consent Handshake (Access Scope Auth)",
+    url: "https://accounts.google.com/o/oauth2/v2/auth?client_id=123",
+    contentHtml: (
+      <div className="bg-emerald-950/20 text-emerald-400 p-4 rounded border border-emerald-500/20 font-mono text-xs h-full flex flex-col justify-between">
+        <div>
+          <div className="flex items-center gap-1.5 text-emerald-500 font-bold mb-2">
+            <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+            OAUTH CLOUD ACCESS GRANTED
+          </div>
+          <div className="bg-emerald-950/40 p-2 rounded text-emerald-300 border border-emerald-500/10 text-[10px]">
+            SCOPE: sheets.readonly, sheets.write<br />
+            PROJECT_ID: gen-lang-client-0842639110
+          </div>
+        </div>
+        <div className="text-[10px] text-emerald-500/60 border-t border-emerald-500/10 pt-2 text-right">
+          Authorized with gnanasampathbatchu2003@gmail.com
+        </div>
+      </div>
+    )
+  },
+  sheets_sync_success: {
+    title: "Spreadsheet Creation Response (ID Sync)",
+    url: "https://sheets.googleapis.com/v4/spreadsheets",
+    contentHtml: (
+      <div className="bg-emerald-950/20 text-emerald-400 p-4 rounded border border-emerald-500/20 font-mono text-xs h-full flex flex-col justify-between">
+        <div>
+          <div className="text-[10px] bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2 py-0.5 rounded w-max mb-2 font-sans">HTTP 200 OK</div>
+          <p className="text-slate-400 text-[10px] font-sans">Spreadsheet initialized successfully:</p>
+          <div className="bg-slate-900 p-1.5 rounded text-emerald-300 border border-emerald-500/10 text-[10px] max-w-full truncate font-mono mt-1">
+            SpreadsheetID: 1x7W...3J09uW_A
+          </div>
+        </div>
+        <div className="text-[10px] text-emerald-500/60 border-t border-emerald-500/10 pt-2 flex justify-between font-sans">
+          <span>Google Sheets v4 API</span>
+          <span>Verified!</span>
+        </div>
+      </div>
+    )
+  }
+};
+
+export default function Reports() {
+  const [reports, setReports] = useState<Report[]>([]);
+  const [plans, setPlans] = useState<any[]>([]);
+  const [suites, setSuites] = useState<any[]>([]);
+  
+  const [loading, setLoading] = useState(true);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [statusFilter, setStatusFilter] = useState<string>('All');
+
+  // Modal forms
+  const [isNewReportModalOpen, setIsNewReportModalOpen] = useState(false);
+  const [selectedReport, setSelectedReport] = useState<Report | null>(null);
+  
+  // Custom Create Report structures
+  const [newReportName, setNewReportName] = useState('');
+  const [newReportPlan, setNewReportPlan] = useState('');
+  const [newReportSuite, setNewReportSuite] = useState('');
+  const [newReportRequestedBy, setNewReportRequestedBy] = useState('Senior QA Auditor');
+  const [newReportTime, setNewReportTime] = useState('2m 10s');
+  const [newReportStatus, setNewReportStatus] = useState<'Passed' | 'Failed'>('Passed');
+  const [newReportFailureReason, setNewReportFailureReason] = useState('');
+  const [newReportTargetUrl, setNewReportTargetUrl] = useState('https://testflow.ai');
+  const [newReportSteps, setNewReportSteps] = useState<Step[]>([
+    { step: '1', action: 'Load entry index web app suite', expected: 'Status page reports standard HTTP 200', outcome: 'Pass', reason: '', screenshot: 'login_success' }
+  ]);
+
+  // Evidence screenshot lightbox State
+  const [lightboxKey, setLightboxKey] = useState<string | null>(null);
+  const [showInlineScreenshots, setShowInlineScreenshots] = useState(true);
+  
+  // Active step & screenshot for inline expanded browser mockup
+  const [activeStep, setActiveStep] = useState<{ reportId: string; step: Step } | null>({
+    reportId: 'REP-827F',
+    step: {
+      step: '3',
+      action: 'Submit credentials to payment gateway',
+      expected: 'Charge secure iframe responds within 5000ms.',
+      outcome: 'Fail',
+      reason: 'Wait for payment iframe timed out. Endpoint returned HTTP 504 Gateway Timeout.',
+      screenshot: 'payment_iframe_error'
+    }
+  });
+
+  const handleDownloadPdf = async (reportId: string) => {
+    try {
+      const element = document.getElementById(`row-container-${reportId}`);
+      if (!element) return;
+      const canvas = await html2canvas(element);
+      const dataUrl = canvas.toDataURL('image/png');
+      const a = document.createElement('a');
+      a.href = dataUrl;
+      a.download = `evidence-${reportId}.png`;
+      a.click();
+    } catch (e) {
+      console.error(e);
+      window.print();
+    }
+  };
+
+  const fetchReports = () => {
+    setLoading(true);
+    fetch('/api/reports')
+      .then(r => r.json())
+      .then(data => {
+        setReports(data);
+        if (data.length > 0 && !selectedReport) {
+          setSelectedReport(data[0]);
+        }
+        setLoading(false);
+      })
+      .catch(err => {
+        console.error(err);
+        setLoading(false);
+      });
+  };
+
+  const fetchDataConfigs = () => {
+    fetch('/api/plans').then(r => r.json()).then(data => setPlans(data)).catch(console.error);
+    fetch('/api/suites').then(r => r.json()).then(data => setSuites(data)).catch(console.error);
+  };
+
+  useEffect(() => {
+    fetchReports();
+    fetchDataConfigs();
+  }, []);
+
+  const handleCreateReport = () => {
+    if (!newReportName.trim()) return;
+
+    const reportPayload = {
+      name: newReportName,
+      planName: newReportPlan || 'Adhoc Plan Context',
+      suiteName: newReportSuite || 'Default Suite Context',
+      requestedBy: newReportRequestedBy || 'System Auditor',
+      executionTime: newReportTime || '1m 20s',
+      totalExecutions: newReportSteps.length,
+      status: newReportStatus,
+      failureReason: newReportStatus === 'Failed' ? newReportFailureReason : '',
+      targetUrl: newReportTargetUrl,
+      steps: newReportSteps
+    };
+
+    fetch('/api/reports', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(reportPayload)
+    })
+      .then(r => r.json())
+      .then(rsp => {
+        if (rsp.success) {
+          setIsNewReportModalOpen(false);
+          fetchReports();
+          // Reset form fields
+          setNewReportName('');
+          setNewReportPlan('');
+          setNewReportSuite('');
+          setNewReportStatus('Passed');
+          setNewReportFailureReason('');
+          setNewReportTargetUrl('https://testflow.ai');
+          setNewReportSteps([
+            { step: '1', action: 'Load entry index web app suite', expected: 'Status page reports standard HTTP 200', outcome: 'Pass', reason: '', screenshot: 'login_success' }
+          ]);
+        }
+      })
+      .catch(console.error);
+  };
+
+  const handleDeleteReport = (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (confirm('Are you sure you want to delete this test report entry?')) {
+      fetch(`/api/reports/${id}`, { method: 'DELETE' })
+        .then(() => {
+          if (selectedReport?.id === id) {
+            setSelectedReport(null);
+          }
+          fetchReports();
+        })
+        .catch(console.error);
+    }
+  };
+
+  const addFormStep = () => {
+    const nextIdx = (newReportSteps.length + 1).toString();
+    setNewReportSteps([...newReportSteps, {
+      step: nextIdx,
+      action: '',
+      expected: '',
+      outcome: 'Pass',
+      reason: '',
+      screenshot: 'login_success'
+    }]);
+  };
+
+  const updateFormStep = (index: number, updatedFields: Partial<Step>) => {
+    const stepsCopy = [...newReportSteps];
+    stepsCopy[index] = { ...stepsCopy[index], ...updatedFields };
+    setNewReportSteps(stepsCopy);
+  };
+
+  const removeFormStep = (index: number) => {
+    if (newReportSteps.length <= 1) return;
+    const filtered = newReportSteps.filter((_, i) => i !== index);
+    // re-index steps
+    const reindexed = filtered.map((st, i) => ({ ...st, step: (i + 1).toString() }));
+    setNewReportSteps(reindexed);
+  };
+
+  const filteredReports = reports.filter(r => {
+    const matchesSearch = r.name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                          r.planName?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                          r.suiteName?.toLowerCase().includes(searchTerm.toLowerCase());
+    
+    if (statusFilter === 'All') return matchesSearch;
+    if (statusFilter === 'Passed') return matchesSearch && r.status === 'Passed';
+    if (statusFilter === 'Failed') return matchesSearch && r.status === 'Failed';
+    return matchesSearch;
+  });
+
+  return (
+    <div className="max-w-7xl mx-auto min-h-screen flex flex-col pb-12 px-4 md:px-0">
+      {/* Header Info */}
+      <div className="flex items-center justify-between mb-5 flex-shrink-0">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight text-[var(--text-primary)]">Test Reports</h1>
+          <p className="text-sm text-[var(--text-muted)] mt-1">Audit verification results, step checklists, and screenshot evidence payloads.</p>
+        </div>
+        <div>
+          <button onClick={() => setIsNewReportModalOpen(true)} className="flex items-center gap-2 bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white px-4 py-2 rounded-md text-sm font-medium transition-colors">
+            <Plus className="w-4 h-4" /> Log Manual Report
+          </button>
+        </div>
+      </div>
+
+      {/* Main Widescreen Interface as requested by 2nd image */}
+      <div className="flex-shrink-0 flex flex-col bg-[var(--bg-card)] border border-[var(--border)] rounded-xl shadow-sm overflow-hidden mb-6">
+        
+        {/* Statistics Executive Summary Row */}
+        <div className="p-5 border-b border-[var(--border)] bg-[var(--bg-secondary)]/30 grid grid-cols-1 md:grid-cols-4 gap-4 text-left">
+          <div className="bg-[var(--bg-card)] border border-[var(--border)] p-3 rounded-lg shadow-inner">
+            <span className="block text-[10px] font-bold text-[var(--text-muted)] uppercase tracking-wider">Requested By</span>
+            <span className="block text-sm font-semibold truncate text-[var(--text-primary)] mt-1 flex items-center gap-1.5">
+              <User className="w-3.5 h-3.5 text-[var(--accent)]" />
+              <span className="text-xs">gnanasampathbatchu2003@gmail.com</span>
+            </span>
+          </div>
+          <div className="bg-[var(--bg-card)] border border-[var(--border)] p-3 rounded-lg shadow-inner">
+            <span className="block text-[10px] font-bold text-[var(--text-muted)] uppercase tracking-wider">Overall Execution Duration</span>
+            <span className="block text-sm font-semibold text-[var(--text-primary)] mt-1 flex items-center gap-1.5">
+              <Clock className="w-3.5 h-3.5 text-blue-500 animate-pulse" />
+              <span className="text-xs">5m 45s (For all suites)</span>
+            </span>
+          </div>
+          <div className="bg-[var(--bg-card)] border border-[var(--border)] p-3 rounded-lg shadow-inner">
+            <span className="block text-[10px] font-bold text-[var(--text-muted)] uppercase tracking-wider">Total Executed Cases (Steps)</span>
+            <span className="block text-xs font-semibold text-[var(--text-primary)] mt-1">
+              9 Verification Steps in 3 Scenarios
+            </span>
+          </div>
+          <div className="bg-[var(--bg-card)] border border-[var(--border)] p-3 rounded-lg shadow-inner">
+            <span className="block text-[10px] font-bold text-[var(--text-muted)] uppercase tracking-wider">Combined Summary Metric</span>
+            <span className="block text-xs font-semibold mt-1 flex items-center gap-2">
+              <span className="text-emerald-500 font-bold">8 Passed</span>
+              <span className="text-slate-400 font-bold">•</span>
+              <span className="text-red-500 font-bold">1 Failed</span>
+            </span>
+          </div>
+        </div>
+
+        {/* Filter controls */}
+        <div className="p-4 border-b border-[var(--border)] flex flex-wrap gap-3 items-center justify-between">
+          <div className="flex items-center gap-3 flex-1 max-w-md">
+            <div className="relative flex-1">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--text-muted)]" />
+              <input 
+                type="text" 
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                placeholder="Search test scenario, plan, or steps..." 
+                className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md pl-9 pr-3 py-1.5 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)] placeholder-[var(--text-muted)] transition-colors"
+              />
+            </div>
+            
+            <div className="flex bg-[var(--bg-secondary)] p-1 rounded-md text-xs border border-[var(--border)]">
+              {['All', 'Passed', 'Failed'].map((tab) => (
+                <button
+                  key={tab}
+                  onClick={() => setStatusFilter(tab)}
+                  className={cn(
+                    "py-1 px-3 rounded text-center font-medium transition-colors",
+                    statusFilter === tab 
+                      ? "bg-[var(--bg-card)] text-[var(--text-primary)] shadow-sm font-semibold"
+                      : "text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+                  )}
+                >
+                  {tab}
+                </button>
+              ))}
+            </div>
+          </div>
+          
+          <div className="text-xs font-mono text-slate-500">
+            Click step buttons under <strong className="text-slate-600 dark:text-slate-300">Evidence</strong> to display real screen evidence inline
+          </div>
+        </div>
+
+        {/* Main Table Styled search similar to Image 2 */}
+        <div className="w-full overflow-x-auto overflow-y-visible">
+          <table className="w-full text-left text-sm border-collapse min-w-[900px]">
+            <thead className="bg-[var(--bg-secondary)] text-[var(--text-muted)] text-[11px] uppercase tracking-wider font-semibold border-b border-[var(--border)]">
+              <tr>
+                <th className="py-3 px-4 w-16">ID</th>
+                <th className="py-3 px-4 w-1/5">Test Scenario</th>
+                <th className="py-3 px-4 w-32">Testing Type</th>
+                <th className="py-3 px-4 w-1/4">Test Steps</th>
+                <th className="py-3 px-4 w-1/4">Expected Result</th>
+                <th className="py-3 px-4 w-24 text-center">Outcome</th>
+                <th className="py-3 px-4 w-40 text-left">Evidence (Screenshots)</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-[var(--border)] font-sans">
+              {filteredReports.map((r, rIdx) => {
+                return (
+                  <React.Fragment key={r.id}>
+                    {/* Scenario header / Main row */}
+                    <tr id={`row-container-${r.id}`} className={cn(
+                      "hover:bg-[var(--bg-secondary)]/40 transition-colors align-top text-left",
+                      activeStep?.reportId === r.id ? "bg-[var(--bg-secondary)]/10" : ""
+                    )}>
+                      {/* ID column */}
+                      <td className="py-4 px-4 font-bold font-mono text-xs text-slate-950 dark:text-slate-100">
+                        {`TC-00${rIdx + 1}`}
+                      </td>
+                      
+                      {/* Test Scenario description with Plan and Date */}
+                      <td className="py-4 px-4">
+                        <div className="font-semibold text-xs text-slate-900 dark:text-slate-100 leading-normal max-w-xs whitespace-normal">
+                          {r.name}
+                        </div>
+                        <div className="text-[10px] text-slate-500 mt-1.5 leading-relaxed font-mono">
+                          Plan: {r.planName}<br />
+                          Requested: <span className="font-semibold text-slate-700 dark:text-slate-300">{r.requestedBy || 'gnanasampathbatchu2003@gmail.com'}</span><br />
+                          Duration: <span className="font-semibold text-slate-700 dark:text-slate-300">{r.executionTime || '1m 20s'}</span><br />
+                          Logged: {r.date}
+                        </div>
+                      </td>
+                      
+                      {/* Testing Type */}
+                      <td className="py-4 px-4 text-xs font-mono text-slate-600 dark:text-slate-400">
+                        <span className="bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-bold px-1.5 py-0.5 rounded text-[10px]">
+                          {r.suiteName?.includes('Regression') ? 'Regression' : r.suiteName?.includes('Sanity') ? 'Sanity' : 'BVT'}
+                        </span>
+                      </td>
+                      
+                      {/* Test steps numbered list block */}
+                      <td className="py-4 px-4 border-l border-[var(--border)]">
+                        <div className="space-y-2.5">
+                          {r.steps?.map((stepItemSum, stepIdx) => (
+                            <div key={stepIdx} className="text-[11px] text-slate-700 dark:text-slate-300 leading-normal min-h-[26px] flex items-start gap-1 pb-1.5 border-b border-dashed border-slate-100 dark:border-slate-800/40 last:border-0 last:pb-0">
+                              <span className="font-bold text-slate-400 shrink-0 select-none">{stepIdx + 1}.</span>
+                              <span className="whitespace-normal break-words">{stepItemSum.action}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </td>
+                      
+                      {/* Expected result numbered list block corresponding to steps */}
+                      <td className="py-4 px-4 border-l border-[var(--border)]">
+                        <div className="space-y-2.5">
+                          {r.steps?.map((stepItemSum, stepIdx) => (
+                            <div key={stepIdx} className="text-[11px] text-slate-500 dark:text-slate-400 leading-normal min-h-[26px] flex items-start gap-1 pb-1.5 border-b border-dashed border-slate-100 dark:border-slate-800/40 last:border-0 last:pb-0">
+                              <span className="font-bold text-slate-400 shrink-0 select-none">{stepIdx + 1}.</span>
+                              <span className="whitespace-normal break-words">{stepItemSum.expected}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </td>
+                      
+                      {/* Outcome Badge Status */}
+                      <td className="py-4 px-4 text-center border-l border-[var(--border)]">
+                        <span className={cn(
+                          "inline-flex px-2 py-0.5 rounded text-[11px] font-bold border leading-none tracking-wide",
+                          r.status === 'Passed' 
+                            ? "bg-emerald-500/10 text-emerald-600 border-emerald-500/20" 
+                            : "bg-red-500/10 text-red-650 border-red-500/20"
+                        )}>
+                          {r.status === 'Passed' ? 'Passed' : 'Failed'}
+                        </span>
+                        
+                        {r.status === 'Failed' && r.failureReason && (
+                          <span className="block text-[9px] text-red-400 font-mono mt-1 w-24 mx-auto truncate text-center" title={r.failureReason}>
+                            {r.failureReason}
+                          </span>
+                        )}
+                      </td>
+                      
+                      {/* Evidence Step-triggering buttons Column */}
+                      <td className="py-4 px-4 border-l border-[var(--border)]">
+                        <div className="flex flex-col gap-2.5 min-w-[124px]">
+                          {r.steps?.map((stepItemSum, stepIdx) => (
+                            <div key={stepIdx} className="text-[11px] min-h-[26px] flex items-center border-b border-dashed border-slate-100 dark:border-slate-800/40 last:border-0 pb-1.5 last:pb-0">
+                              <span className="text-slate-400 font-bold shrink-0 w-4 select-none">{stepIdx + 1}.</span>
+                              {stepItemSum.screenshot ? (
+                                <button
+                                  type="button"
+                                  onClick={() => setActiveStep({ reportId: r.id, step: stepItemSum })}
+                                  className={cn(
+                                    "px-2 py-0.5 rounded text-[10px] font-bold border transition-all flex items-center gap-1 hover:scale-[1.02]",
+                                    activeStep?.reportId === r.id && activeStep?.step.step === stepItemSum.step
+                                      ? "bg-[var(--accent)] text-white border-[var(--accent)] shadow"
+                                      : "bg-[var(--bg-secondary)] hover:bg-[var(--border)] border-[var(--border)] text-[var(--text-primary)]"
+                                  )}
+                                >
+                                  Step {stepItemSum.step}
+                                </button>
+                              ) : (
+                                <span className="text-slate-400 italic text-[10px]">No capture</span>
+                              )}
+                            </div>
+                          ))}
+                          
+                          {/* Selected PDF trigger buttons */}
+                          <div className="flex gap-1.5 mt-3">
+                            <button
+                              type="button"
+                              onClick={() => handleDownloadPdf(r.id)}
+                              className="flex-1 px-2 py-1 bg-slate-50 hover:bg-slate-100 dark:bg-slate-900 dark:hover:bg-slate-800 text-slate-800 dark:text-slate-200 border border-slate-200 dark:border-slate-800 font-bold text-[10px] rounded shadow-sm text-center transition-all flex items-center justify-center gap-1 hover:shadow"
+                            >
+                              Selected PDF
+                            </button>
+                            <button
+                              type="button"
+                              onClick={(e) => handleDeleteReport(r.id, e)}
+                              className="px-2 py-1 bg-red-50 hover:bg-red-100 dark:bg-red-950/20 text-red-650 border border-red-200 dark:border-red-900/30 rounded font-bold transition-all shadow-sm flex items-center justify-center"
+                              title="Delete Report Entry"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </div>
+                      </td>
+                    </tr>
+
+                    {/* Inline browser screen expander row when a step is active */}
+                    {activeStep?.reportId === r.id && (
+                      <tr className="bg-[var(--bg-secondary)]/15">
+                        <td colSpan={7} className="px-6 py-5 border-b border-[var(--border)]">
+                          {/* Custom Red Banner for Failures exactly as shown in 1st image */}
+                          {activeStep.step.outcome === 'Fail' && activeStep.step.reason && (
+                            <div className="mb-4 p-3 bg-red-950/20 border border-red-500/20 rounded-lg text-xs flex items-start gap-2 max-w-4xl mx-auto shadow-inner text-left">
+                              <AlertTriangle className="w-4 h-4 text-red-500 shrink-0 mt-0.5" />
+                              <div>
+                                <span className="font-extrabold text-red-500 block text-[10px] uppercase tracking-wider">REPORT FAILURE REASON</span>
+                                <p className="text-red-400 font-mono text-[11px] mt-1 leading-relaxed">{activeStep.step.reason}</p>
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Beautiful simulated browser sandbox exactly as image 1 */}
+                          <div className="max-w-4xl mx-auto bg-slate-950 border border-slate-850 rounded-lg overflow-hidden shadow-2xl flex flex-col font-sans mb-1 text-left">
+                            {/* Browser Header Controls */}
+                            <div className="bg-slate-900 border-b border-slate-850 px-3.5 py-2 flex items-center justify-between">
+                              <div className="flex items-center gap-1.5">
+                                <span className="w-2.5 h-2.5 rounded-full bg-red-500/90"></span>
+                                <span className="w-2.5 h-2.5 rounded-full bg-yellow-500/90"></span>
+                                <span className="w-2.5 h-2.5 rounded-full bg-emerald-500/90"></span>
+                                <span className="ml-[18px] font-mono text-[10px] text-slate-400 bg-slate-950 px-3.5 py-0.5 rounded border border-slate-850 truncate max-w-md">
+                                  {SCREENSHOT_PRESETS[activeStep.step.screenshot]?.url || activeStep.step.screenshot || 'https://sandbox.testflow.ai'}
+                                </span>
+                              </div>
+                              <span className="text-[9px] text-emerald-400 font-extrabold bg-emerald-950/30 border border-emerald-500/25 px-2 py-0.5 rounded flex items-center gap-1 font-mono">
+                                <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse mr-0.5"></span>
+                                PLAYWRIGHT SCREENSHOT ENGINE
+                              </span>
+                            </div>
+                            
+                            {/* Browser Contents Viewport - Raw automated screenshot */}
+                            <div className="p-0 bg-slate-950 overflow-hidden min-h-[160px] transition-all flex items-center justify-center">
+                              {activeStep.step.screenshot ? (
+                                <img
+                                  src={`/api/screenshot?url=${encodeURIComponent(activeStep.step.screenshot)}`}
+                                  alt={SCREENSHOT_PRESETS[activeStep.step.screenshot]?.title || `Live Verification of ${activeStep.step.screenshot}`}
+                                  className="w-full h-auto max-h-[420px] object-cover object-top border-0 bg-slate-100 dark:bg-slate-900"
+                                  referrerPolicy="no-referrer"
+                                  onError={(e) => {
+                                    e.currentTarget.src = "https://images.unsplash.com/photo-1541560052-5e137f229371?w=1280&q=80";
+                                  }}
+                                />
+                              ) : (
+                                <div className="p-8 text-center text-slate-500 font-mono text-xs">No screenshot path loaded for this execution step.</div>
+                              )}
+                            </div>
+                            
+                            {/* Browser Footer Metadata bar */}
+                            <div className="bg-slate-900 border-t border-slate-850 px-4 py-1.5 flex justify-between items-center text-[10px] text-slate-500 font-medium">
+                              <span className="font-bold text-slate-300">
+                                {SCREENSHOT_PRESETS[activeStep.step.screenshot]?.title || `Automated live screen of ${activeStep.step.screenshot}`}
+                              </span>
+                              <span className="font-mono text-slate-400">
+                                Step {activeStep.step.step} Evidence Screenshot
+                              </span>
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Lightbox Modal for Screenshots Evidence */}
+      {lightboxKey && (
+        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-md flex items-center justify-center z-50 p-6" onClick={() => setLightboxKey(null)}>
+          <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl w-full max-w-3xl overflow-hidden shadow-2xl flex flex-col" onClick={(e) => e.stopPropagation()}>
+            {/* Browser chrome header bar simulation */}
+            <div className="bg-[var(--bg-secondary)] px-4 py-3 border-b border-[var(--border)] flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className="w-3 h-3 rounded-full bg-red-500/80"></span>
+                <span className="w-3 h-3 rounded-full bg-yellow-500/80"></span>
+                <span className="w-3 h-3 rounded-full bg-emerald-500/80"></span>
+                <span className="ml-4 font-mono text-xs text-[var(--text-muted)] font-medium max-w-md truncate bg-[var(--bg-primary)] px-3 py-1 rounded shadow-inner border border-[var(--border)]">
+                   {SCREENSHOT_PRESETS[lightboxKey]?.url || lightboxKey}
+                </span>
+              </div>
+              <button onClick={() => setLightboxKey(null)} className="text-xs font-semibold text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors px-2 py-1 bg-[var(--bg-primary)] border border-[var(--border)] rounded">
+                Close View [ESC]
+              </button>
+            </div>
+            {/* Browser body canvas content context */}
+            <div className="p-0 bg-slate-900 overflow-hidden h-[450px] flex items-center justify-center">
+              <img
+                src={`/api/screenshot?url=${encodeURIComponent(lightboxKey)}`}
+                alt={SCREENSHOT_PRESETS[lightboxKey]?.title || `Captured URL View: ${lightboxKey}`}
+                className="w-full h-full object-contain"
+                referrerPolicy="no-referrer"
+                onError={(e) => {
+                  e.currentTarget.src = "https://images.unsplash.com/photo-1541560052-5e137f229371?w=1280&q=80";
+                }}
+              />
+            </div>
+            {/* Footer labels */}
+            <div className="bg-[var(--bg-secondary)] px-5 py-3.5 border-t border-[var(--border)] flex justify-between items-center text-xs">
+              <span className="font-bold text-[var(--text-primary)]">{SCREENSHOT_PRESETS[lightboxKey]?.title || `Automated live capture of ${lightboxKey}`}</span>
+              <span className="text-[var(--text-muted)] font-mono">Evidence Trace Payload OK</span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Manual Report Modal Layout */}
+      <Modal isOpen={isNewReportModalOpen} onClose={() => setIsNewReportModalOpen(false)} title="Log Manual Run Audit Report">
+        <div className="space-y-4 max-h-[72vh] overflow-y-auto px-1 text-left">
+          
+          <div className="grid grid-cols-2 gap-4">
+             <div>
+                <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Report / Run Name</label>
+                <input 
+                  type="text" 
+                  value={newReportName} 
+                  onChange={(e) => setNewReportName(e.target.value)} 
+                  placeholder="e.g. Master Branch Deployment Verification" 
+                  className="w-full bg-[var(--bg-primary)] border border-[var(--border)] rounded px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]" 
+                />
+             </div>
+             <div>
+                <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Execution Duration</label>
+                <input 
+                  type="text" 
+                  value={newReportTime} 
+                  onChange={(e) => setNewReportTime(e.target.value)} 
+                  placeholder="e.g. 1m 45s" 
+                  className="w-full bg-[var(--bg-primary)] border border-[var(--border)] rounded px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]" 
+                />
+             </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+             <div>
+                <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Testing Plan context</label>
+                <select 
+                  value={newReportPlan} 
+                  onChange={(e) => setNewReportPlan(e.target.value)} 
+                  className="w-full bg-[var(--bg-primary)] border border-[var(--border)] rounded px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]"
+                >
+                  <option value="">-- Choose Plan Scope --</option>
+                  {plans.map(p => (
+                    <option key={p.id} value={p.name}>{p.name}</option>
+                  ))}
+                </select>
+             </div>
+             <div>
+                <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Execution Category</label>
+                <select 
+                  value={newReportSuite} 
+                  onChange={(e) => setNewReportSuite(e.target.value)} 
+                  className="w-full bg-[var(--bg-primary)] border border-[var(--border)] rounded px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]"
+                >
+                  <option value="">-- Choose Category --</option>
+                  {suites.map(s => (
+                    <option key={s.id} value={s.name}>{s.name}</option>
+                  ))}
+                </select>
+             </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+             <div>
+                <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Requested By</label>
+                <input 
+                  type="text" 
+                  value={newReportRequestedBy} 
+                  onChange={(e) => setNewReportRequestedBy(e.target.value)} 
+                  className="w-full bg-[var(--bg-primary)] border border-[var(--border)] rounded px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]" 
+                />
+             </div>
+             <div>
+                <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Overall Status</label>
+                <select 
+                  value={newReportStatus} 
+                  onChange={(e) => setNewReportStatus(e.target.value as any)} 
+                  className="w-full bg-[var(--bg-primary)] border border-[var(--border)] rounded px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]"
+                >
+                  <option value="Passed">Passed</option>
+                  <option value="Failed">Failed</option>
+                </select>
+             </div>
+          </div>
+
+          <div>
+             <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Target URL to Test (Real-Time Screenshot Engine Target)</label>
+             <input 
+               type="url" 
+               value={newReportTargetUrl} 
+               onChange={(e) => setNewReportTargetUrl(e.target.value)} 
+               placeholder="e.g. https://google.com or https://example.com" 
+               className="w-full bg-[var(--bg-primary)] border border-[var(--border)] rounded px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]" 
+             />
+          </div>
+
+          {newReportStatus === 'Failed' && (
+            <div>
+               <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Overall Failure Description</label>
+               <input 
+                 type="text" 
+                 value={newReportFailureReason} 
+                 onChange={(e) => setNewReportFailureReason(e.target.value)} 
+                 placeholder="e.g. Expected outcome match failed on stage checkout iframe load" 
+                 className="w-full bg-[var(--bg-primary)] border border-[var(--border)] rounded px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]" 
+               />
+            </div>
+          )}
+
+          <div className="border-t border-[var(--border)] pt-4 mt-2">
+             <div className="flex items-center justify-between mb-3">
+                <span className="text-xs font-bold uppercase text-[var(--text-muted)] tracking-wider">Verification Steps ({newReportSteps.length})</span>
+                <button type="button" onClick={addFormStep} className="text-xs font-semibold text-[var(--accent)] hover:text-[var(--accent-hover)] transition-colors flex items-center gap-1.5">
+                  <Plus className="w-3.5 h-3.5" /> Append Step
+                </button>
+             </div>
+
+             <div className="space-y-4 max-h-[30vh] overflow-y-auto pr-1">
+                {newReportSteps.map((st, i) => (
+                  <div key={i} className="p-3 rounded bg-[var(--bg-secondary)] border border-[var(--border)] relative space-y-3 text-left">
+                     <button type="button" onClick={() => removeFormStep(i)} className="absolute top-2 right-2 text-[var(--text-muted)] hover:text-red-500 transition-colors p-1" title="Remove Step">
+                        <Trash2 className="w-3.5 h-3.5" />
+                     </button>
+                     <span className="inline-block text-[10px] font-mono font-bold bg-[var(--bg-primary)] px-2 py-0.5 rounded border border-[var(--border)]">Step {st.step}</span>
+                     
+                     <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        <div>
+                           <label className="block text-[11px] font-medium text-[var(--text-muted)] pb-1">Action / Input details</label>
+                           <input 
+                             type="text" 
+                             value={st.action} 
+                             onChange={(e) => updateFormStep(i, { action: e.target.value })} 
+                             placeholder="e.g. Select payment and submit form"
+                             className="w-full bg-[var(--bg-primary)] border border-[var(--border)] rounded px-2 py-1.5 text-xs outline-none focus:border-[var(--accent)] text-[var(--text-primary)]" 
+                           />
+                        </div>
+                        <div>
+                           <label className="block text-[11px] font-medium text-[var(--text-muted)] pb-1">Expected Outcome</label>
+                           <input 
+                             type="text" 
+                             value={st.expected} 
+                             onChange={(e) => updateFormStep(i, { expected: e.target.value })} 
+                             placeholder="e.g. Form displays 200 OK success toast"
+                             className="w-full bg-[var(--bg-primary)] border border-[var(--border)] rounded px-2 py-1.5 text-xs outline-none focus:border-[var(--accent)] text-[var(--text-primary)]" 
+                           />
+                        </div>
+                     </div>
+
+                     <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                        <div>
+                           <label className="block text-[11px] font-medium text-[var(--text-muted)] pb-1">Step outcome</label>
+                            <select 
+                              value={st.outcome} 
+                              onChange={(e) => updateFormStep(i, { outcome: e.target.value as any })} 
+                              className="w-full bg-[var(--bg-primary)] border border-[var(--border)] rounded px-2 py-1.5 text-xs outline-none focus:border-[var(--accent)] text-[var(--text-primary)]"
+                            >
+                              <option value="Pass">Pass</option>
+                              <option value="Fail">Fail</option>
+                              <option value="Skipped">Skipped</option>
+                            </select>
+                        </div>
+                        <div>
+                           <label className="block text-[11px] font-medium text-[var(--text-muted)] pb-1">Evidence Console Preset</label>
+                           <select 
+                             value={st.screenshot} 
+                             onChange={(e) => updateFormStep(i, { screenshot: e.target.value })} 
+                             className="w-full bg-[var(--bg-primary)] border border-[var(--border)] rounded px-2 py-1.5 text-xs outline-none focus:border-[var(--accent)] text-[var(--text-primary)]"
+                           >
+                             {Object.entries(SCREENSHOT_PRESETS).map(([key, v]) => (
+                               <option key={key} value={key}>{v.title}</option>
+                             ))}
+                           </select>
+                        </div>
+                        <div>
+                           <label className="block text-[11px] font-medium text-[var(--text-muted)] pb-1">Outcome Detail (Optional)</label>
+                           <input 
+                             type="text" 
+                             value={st.reason || ''} 
+                             onChange={(e) => updateFormStep(i, { reason: e.target.value })} 
+                             placeholder="Reason of error/warning"
+                             className="w-full bg-[var(--bg-primary)] border border-[var(--border)] rounded px-2 py-1.5 text-xs outline-none focus:border-[var(--accent)] text-[var(--text-primary)]" 
+                           />
+                        </div>
+                     </div>
+                  </div>
+                ))}
+             </div>
+          </div>
+
+          <div className="pt-3 flex justify-end gap-3 border-t border-[var(--border)] bg-[var(--bg-card)]">
+            <button type="button" onClick={() => setIsNewReportModalOpen(false)} className="px-4 py-2 border border-[var(--border)] text-xs font-semibold text-[var(--text-muted)] hover:text-[var(--text-primary)] rounded transition-all">
+               Cancel
+            </button>
+            <button 
+              type="button" 
+              onClick={handleCreateReport} 
+              disabled={!newReportName.trim()}
+              className="px-4 py-2 bg-[var(--accent)] text-white text-xs font-semibold rounded hover:bg-[var(--accent-hover)] transition-all disabled:opacity-50"
+            >
+               Save Verification Report
+            </button>
+          </div>
+          
+        </div>
+      </Modal>
+
+    </div>
+  );
+}
