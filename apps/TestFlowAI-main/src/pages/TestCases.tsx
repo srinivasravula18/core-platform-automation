@@ -1,21 +1,49 @@
 import { useEffect, useState, useRef } from 'react';
-import { Search, Filter, MoreHorizontal, Plus, Camera, Sparkles } from 'lucide-react';
+import { useSearchParams } from 'react-router-dom';
+import { Search, Filter, MoreHorizontal, Plus, Sparkles } from 'lucide-react';
 import { cn } from '@/src/lib/utils';
-import html2canvas from 'html2canvas';
 import { Modal } from '@/src/components/Modal';
 import { AIActionModal } from '@/src/components/AIActionModal';
+import { FolderSelect } from '@/src/components/FolderSelect';
+
+const CASE_STATUSES = ['Draft', 'Under Review', 'Approved', 'Automated', 'Deprecated'];
+
+function getCaseStatusBadgeClass(status: string) {
+  switch (status) {
+    case 'Under Review':
+      return 'bg-sky-500/10 text-sky-400 border-sky-500/20';
+    case 'Approved':
+      return 'bg-[var(--accent)]/10 text-[var(--accent)] border-[var(--accent)]/20';
+    case 'Automated':
+      return 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20';
+    case 'Deprecated':
+      return 'bg-slate-500/10 text-slate-400 border-slate-500/20';
+    default:
+      return 'bg-slate-500/10 text-slate-300 border-slate-500/20';
+  }
+}
 
 export default function TestCases() {
+  const [searchParams] = useSearchParams();
   const [cases, setCases] = useState<any[]>([]);
   const [plans, setPlans] = useState<any[]>([]);
   const [suites, setSuites] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [searchTerm, setSearchTerm] = useState(searchParams.get('search') || '');
+  const [statusFilter, setStatusFilter] = useState('All');
+  const [isFilterOpen, setIsFilterOpen] = useState(false);
   const [isCaseModalOpen, setIsCaseModalOpen] = useState(false);
   const [isAICaseModalOpen, setIsAICaseModalOpen] = useState(false);
   const emptyStep = { action: '', expected: '' };
-  const [formData, setFormData] = useState({ title: '', description: '', testPlanId: '', testSuiteId: '', createdBy: 'Admin', tags: '', type: 'Manual', priority: 'Medium', steps: [emptyStep] });
+  const [formData, setFormData] = useState({ title: '', description: '', testPlanId: '', testSuiteId: '', createdBy: 'Admin', tags: '', type: 'Manual', priority: 'Medium', status: 'Draft', folderId: '', captureEvidenceOnManualRun: true, steps: [emptyStep] });
 
   const [selectedCaseId, setSelectedCaseId] = useState<string | null>(null);
+  const stepEditorRef = useRef<HTMLDivElement | null>(null);
+
+  const resizeTextArea = (textarea: HTMLTextAreaElement) => {
+    textarea.style.height = 'auto';
+    textarea.style.height = `${textarea.scrollHeight}px`;
+  };
 
   const fetchCases = () => {
     fetch('/api/cases')
@@ -44,9 +72,22 @@ export default function TestCases() {
     fetchSuites();
   }, []);
 
+  useEffect(() => {
+    setSearchTerm(searchParams.get('search') || '');
+  }, [searchParams]);
+
+  useEffect(() => {
+    if (!isCaseModalOpen) return;
+    requestAnimationFrame(() => {
+      stepEditorRef.current
+        ?.querySelectorAll<HTMLTextAreaElement>('textarea[data-auto-size="true"]')
+        .forEach(resizeTextArea);
+    });
+  }, [isCaseModalOpen, formData.steps, formData.description]);
+
   const openNewModal = () => {
     setSelectedCaseId(null);
-    setFormData({ title: '', description: '', testPlanId: '', testSuiteId: '', createdBy: 'Admin', tags: '', type: 'Manual', priority: 'Medium', steps: [emptyStep] });
+    setFormData({ title: '', description: '', testPlanId: '', testSuiteId: '', createdBy: 'Admin', tags: '', type: 'Manual', priority: 'Medium', status: 'Draft', folderId: '', captureEvidenceOnManualRun: true, steps: [emptyStep] });
     setIsCaseModalOpen(true);
   };
 
@@ -57,7 +98,9 @@ export default function TestCases() {
       testPlanId: testCase.testPlanId || '', testSuiteId: testCase.testSuiteId || '',
       createdBy: testCase.createdBy || 'Admin', 
       tags: Array.isArray(testCase.tags) ? testCase.tags.join(', ') : testCase.tags || '', 
-      type: testCase.type || 'Manual', priority: testCase.priority || 'Medium',
+      type: testCase.type || 'Manual', priority: testCase.priority || 'Medium', status: testCase.status || 'Draft',
+      folderId: testCase.folderId || '',
+      captureEvidenceOnManualRun: testCase.captureEvidenceOnManualRun !== false,
       steps: Array.isArray(testCase.steps) && testCase.steps.length > 0 ? testCase.steps : [emptyStep]
     });
     setIsCaseModalOpen(true);
@@ -137,19 +180,24 @@ export default function TestCases() {
     }).then(() => fetchCases());
   };
 
-  const captureEvidence = async (caseId: string) => {
-    try {
-      const canvas = await html2canvas(document.body);
-      const dataUrl = canvas.toDataURL('image/png');
-      const a = document.createElement('a');
-      a.href = dataUrl;
-      a.download = `evidence-${caseId}.png`;
-      a.click();
-    } catch (e) {
-      console.error(e);
-      alert('Failed to capture screen.');
-    }
+  const resolvePlanId = (testCase: any) => {
+    if (testCase.testPlanId) return testCase.testPlanId;
+    const linkedSuite = suites.find((suite) => suite.id === testCase.testSuiteId || (testCase.agentRunId && suite.agentRunId === testCase.agentRunId));
+    if (linkedSuite?.testPlanId) return linkedSuite.testPlanId;
+    return plans.find((plan) => testCase.agentRunId && plan.agentRunId === testCase.agentRunId)?.id || '';
   };
+  const resolveSuiteId = (testCase: any) => {
+    if (testCase.testSuiteId) return testCase.testSuiteId;
+    return suites.find((suite) => testCase.agentRunId && suite.agentRunId === testCase.agentRunId)?.id || '';
+  };
+  const getPlanName = (testCase: any) => plans.find((plan) => plan.id === resolvePlanId(testCase))?.name || 'None';
+  const getSuiteName = (testCase: any) => suites.find((suite) => suite.id === resolveSuiteId(testCase))?.name || 'None';
+  const filteredCases = cases.filter((testCase) => {
+    const query = searchTerm.toLowerCase();
+    const matchesSearch = !query || `${testCase.id || ''} ${testCase.title || ''} ${testCase.description || ''} ${(testCase.tags || []).join(' ')}`.toLowerCase().includes(query);
+    const matchesStatus = statusFilter === 'All' || (testCase.status || 'Draft') === statusFilter;
+    return matchesSearch && matchesStatus;
+  });
 
   return (
     <div className="max-w-7xl mx-auto h-full flex flex-col">
@@ -190,6 +238,10 @@ export default function TestCases() {
                 </select>
              </div>
           </div>
+          <FolderSelect
+            value={formData.folderId}
+            onChange={(folderId) => setFormData({ ...formData, folderId })}
+          />
           <div>
             <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Title</label>
             <input type="text" value={formData.title} onChange={(e) => setFormData({...formData, title: e.target.value})} placeholder="e.g., Login with valid credentials" className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]" />
@@ -203,34 +255,56 @@ export default function TestCases() {
               <label className="block text-sm font-medium text-[var(--text-muted)]">Test Steps & Expected Results</label>
               <button onClick={addFormStep} type="button" className="text-xs text-[var(--accent)] hover:underline">Add Step</button>
             </div>
-            <div className="rounded-md border border-[var(--border)] overflow-hidden">
-              <div className="grid grid-cols-[1fr_1fr_72px] bg-[var(--bg-secondary)] text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
-                <div className="px-3 py-2 border-r border-[var(--border)]">Test Step</div>
-                <div className="px-3 py-2 border-r border-[var(--border)]">Expected Result</div>
-                <div className="px-3 py-2">Action</div>
-              </div>
+            <div ref={stepEditorRef} className="space-y-3">
               {formData.steps.map((step, index) => (
-                <div key={index} className="grid grid-cols-[1fr_1fr_72px] border-t border-[var(--border)]">
-                  <textarea
-                    value={step.action}
-                    onChange={(e) => updateFormStep(index, { action: e.target.value })}
-                    placeholder={`${index + 1}. Enter test step...`}
-                    className="min-h-16 resize-y bg-[var(--bg-secondary)] border-0 border-r border-[var(--border)] px-3 py-2 text-sm outline-none focus:bg-[var(--bg-primary)] text-[var(--text-primary)]"
-                  />
-                  <textarea
-                    value={step.expected}
-                    onChange={(e) => updateFormStep(index, { expected: e.target.value })}
-                    placeholder={`${index + 1}. Enter expected result...`}
-                    className="min-h-16 resize-y bg-[var(--bg-secondary)] border-0 border-r border-[var(--border)] px-3 py-2 text-sm outline-none focus:bg-[var(--bg-primary)] text-[var(--text-primary)]"
-                  />
-                  <button
-                    onClick={() => removeFormStep(index)}
-                    type="button"
-                    className="text-xs text-red-400 hover:text-red-300 disabled:opacity-40"
-                    disabled={formData.steps.length === 1 && !step.action && !step.expected}
-                  >
-                    Remove
-                  </button>
+                <div key={index} className="rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)]/50 overflow-hidden">
+                  <div className="flex items-center justify-between gap-3 border-b border-[var(--border)] px-3 py-2">
+                    <span className="font-mono text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+                      Step {index + 1}
+                    </span>
+                    <button
+                      onClick={() => removeFormStep(index)}
+                      type="button"
+                      className="text-xs text-red-400 hover:text-red-300 disabled:opacity-40"
+                      disabled={formData.steps.length === 1 && !step.action && !step.expected}
+                    >
+                      Remove
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-1 gap-3 p-3 md:grid-cols-2">
+                    <div>
+                      <label className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+                        Test Step
+                      </label>
+                      <textarea
+                        data-auto-size="true"
+                        value={step.action}
+                        onChange={(e) => {
+                          updateFormStep(index, { action: e.target.value });
+                          resizeTextArea(e.currentTarget);
+                        }}
+                        onInput={(e) => resizeTextArea(e.currentTarget)}
+                        placeholder={`${index + 1}. Enter test step...`}
+                        className="min-h-[132px] w-full resize-none overflow-hidden rounded-md border border-[var(--border)] bg-[var(--bg-primary)] px-3 py-2 text-sm leading-6 text-[var(--text-primary)] outline-none transition-colors focus:border-[var(--accent)]"
+                      />
+                    </div>
+                    <div>
+                      <label className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+                        Expected Result
+                      </label>
+                      <textarea
+                        data-auto-size="true"
+                        value={step.expected}
+                        onChange={(e) => {
+                          updateFormStep(index, { expected: e.target.value });
+                          resizeTextArea(e.currentTarget);
+                        }}
+                        onInput={(e) => resizeTextArea(e.currentTarget)}
+                        placeholder={`${index + 1}. Enter expected result...`}
+                        className="min-h-[132px] w-full resize-none overflow-hidden rounded-md border border-[var(--border)] bg-[var(--bg-primary)] px-3 py-2 text-sm leading-6 text-[var(--text-primary)] outline-none transition-colors focus:border-[var(--accent)]"
+                      />
+                    </div>
+                  </div>
                 </div>
               ))}
             </div>
@@ -248,6 +322,16 @@ export default function TestCases() {
                  </select>
              </div>
              <div>
+                 <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Status</label>
+                 <select value={formData.status} onChange={(e) => setFormData({...formData, status: e.target.value})} className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]">
+                    {CASE_STATUSES.map((status) => (
+                      <option key={status} value={status}>{status}</option>
+                    ))}
+                 </select>
+             </div>
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+             <div>
                  <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Priority</label>
                  <select value={formData.priority} onChange={(e) => setFormData({...formData, priority: e.target.value})} className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]">
                     <option>Low</option>
@@ -261,6 +345,20 @@ export default function TestCases() {
             <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Tags (Smoke, Positive, etc.)</label>
             <input type="text" value={formData.tags} onChange={(e) => setFormData({...formData, tags: e.target.value})} placeholder="Comma separated..." className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]" />
           </div>
+          <label className="flex items-start gap-3 rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)]/50 p-3 text-left">
+            <input
+              type="checkbox"
+              checked={formData.captureEvidenceOnManualRun}
+              onChange={(e) => setFormData({ ...formData, captureEvidenceOnManualRun: e.target.checked })}
+              className="mt-1 rounded border-[var(--border)] text-[var(--accent)] focus:ring-[var(--accent)]"
+            />
+            <span>
+              <span className="block text-sm font-semibold text-[var(--text-primary)]">Capture snapshot evidence during manual test run</span>
+              <span className="mt-1 block text-xs leading-5 text-[var(--text-muted)]">
+                When this case is selected in a manual run, each step will include screenshot evidence from the run target URL.
+              </span>
+            </span>
+          </label>
           <div className="pt-2 flex justify-between items-center bg-[var(--bg-card)] mt-2">
             <div>
               {selectedCaseId && (
@@ -291,13 +389,26 @@ export default function TestCases() {
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--text-muted)]" />
             <input 
               type="text" 
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
               placeholder="Search cases..." 
               className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md pl-9 pr-4 py-1.5 text-sm outline-none focus:border-[var(--accent)]"
             />
           </div>
-          <button className="flex items-center gap-2 border border-[var(--border)] bg-[var(--bg-secondary)] hover:bg-[var(--border)] text-[var(--text-primary)] px-3 py-1.5 rounded-md text-sm transition-colors">
-            <Filter className="w-4 h-4" /> Filters
-          </button>
+          <div className="relative">
+            <button onClick={() => setIsFilterOpen(!isFilterOpen)} className="flex items-center gap-2 border border-[var(--border)] bg-[var(--bg-secondary)] hover:bg-[var(--border)] text-[var(--text-primary)] px-3 py-1.5 rounded-md text-sm transition-colors">
+              <Filter className="w-4 h-4" /> {statusFilter === 'All' ? 'Filters' : statusFilter}
+            </button>
+            {isFilterOpen && (
+              <div className="absolute left-0 top-10 z-20 w-44 overflow-hidden rounded-md border border-[var(--border)] bg-[var(--bg-card)] shadow-xl">
+                {['All', ...CASE_STATUSES].map((status) => (
+                  <button key={status} onClick={() => { setStatusFilter(status); setIsFilterOpen(false); }} className="block w-full px-3 py-2 text-left text-sm hover:bg-[var(--bg-secondary)]">
+                    {status}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
         
         <div className="flex-1 overflow-auto">
@@ -306,30 +417,51 @@ export default function TestCases() {
               <tr className="text-[var(--text-muted)]">
                 <th className="font-medium py-3 px-4 w-24">ID</th>
                 <th className="font-medium py-3 px-4">Title</th>
+                <th className="font-medium py-3 px-4">Test Plan</th>
+                <th className="font-medium py-3 px-4">Test Suite</th>
                 <th className="font-medium py-3 px-4 w-32">Status</th>
+                <th className="font-medium py-3 px-4">Evidence</th>
                 <th className="font-medium py-3 px-4">Tags</th>
                 <th className="font-medium py-3 px-4 w-24 text-right">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-[var(--border)]">
               {loading && (
-                <tr><td colSpan={5} className="py-8 text-center text-[var(--text-muted)]">Loading test cases...</td></tr>
+                <tr><td colSpan={8} className="py-8 text-center text-[var(--text-muted)]">Loading test cases...</td></tr>
               )}
-              {!loading && cases.length === 0 && (
-                <tr><td colSpan={5} className="py-8 text-center text-[var(--text-muted)]">No test cases found.</td></tr>
+              {!loading && filteredCases.length === 0 && (
+                <tr><td colSpan={8} className="py-8 text-center text-[var(--text-muted)]">No test cases found.</td></tr>
               )}
-              {cases.map((tc) => (
+              {filteredCases.map((tc) => (
                 <tr key={tc.id} onClick={() => openEditModal(tc)} className="hover:bg-[var(--bg-secondary)] transition-colors cursor-pointer">
                   <td className="py-3 px-4 font-mono text-xs text-[var(--text-muted)]">{tc.id}</td>
-                  <td className="py-3 px-4 font-medium">{tc.title}</td>
+                  <td className="py-3 px-4 font-medium max-w-sm truncate">{tc.title}</td>
+                  <td className="py-3 px-4">
+                    <span className="inline-block max-w-[220px] truncate text-[var(--text-muted)]" title={getPlanName(tc)}>
+                      {getPlanName(tc)}
+                    </span>
+                  </td>
+                  <td className="py-3 px-4">
+                    <span className="inline-block max-w-[220px] truncate text-[var(--text-muted)]" title={getSuiteName(tc)}>
+                      {getSuiteName(tc)}
+                    </span>
+                  </td>
                   <td className="py-3 px-4">
                     <span className={cn(
                       "inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium border",
-                      tc.status === 'Passed' ? 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20' : 
-                      tc.status === 'Draft' ? 'bg-slate-500/10 text-slate-500 border-slate-500/20 text-[var(--text-primary)]' :
-                      'bg-[var(--accent)]/10 text-[var(--accent)] border-[var(--accent)]/20'
+                      getCaseStatusBadgeClass(tc.status || 'Draft')
                     )}>
-                      {tc.status}
+                      {tc.status || 'Draft'}
+                    </span>
+                  </td>
+                  <td className="py-3 px-4">
+                    <span className={cn(
+                      "inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium",
+                      tc.captureEvidenceOnManualRun !== false
+                        ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-400"
+                        : "border-slate-500/20 bg-slate-500/10 text-slate-400"
+                    )}>
+                      {tc.captureEvidenceOnManualRun !== false ? 'Snapshot On' : 'Snapshot Off'}
                     </span>
                   </td>
                   <td className="py-3 px-4">
@@ -340,10 +472,14 @@ export default function TestCases() {
                     </div>
                   </td>
                   <td className="py-3 px-4 text-right flex gap-1 justify-end">
-                    <button onClick={(e) => { e.stopPropagation(); captureEvidence(tc.id); }} title="Capture Evidence" className="p-1 rounded hover:bg-[var(--bg-primary)] text-[var(--accent)] transition-colors border border-transparent hover:border-[var(--accent)]">
-                      <Camera className="w-4 h-4" />
-                    </button>
-                    <button onClick={(e) => e.stopPropagation()} className="p-1 rounded hover:bg-[var(--border)] text-[var(--text-muted)] transition-colors">
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        openEditModal(tc);
+                      }}
+                      title="Edit test case"
+                      className="p-1 rounded hover:bg-[var(--border)] text-[var(--text-muted)] transition-colors"
+                    >
                       <MoreHorizontal className="w-4 h-4" />
                     </button>
                   </td>

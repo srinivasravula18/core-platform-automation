@@ -3,6 +3,7 @@ import { Search, Filter, ShieldCheck, ShieldAlert, Sparkles, Plus, Clock, FileSp
 import { cn } from '@/src/lib/utils';
 import html2canvas from 'html2canvas';
 import { Modal } from '@/src/components/Modal';
+import { FolderSelect } from '@/src/components/FolderSelect';
 
 interface Step {
   step: string;
@@ -236,6 +237,7 @@ export default function Reports() {
   const [newReportStatus, setNewReportStatus] = useState<'Passed' | 'Failed'>('Passed');
   const [newReportFailureReason, setNewReportFailureReason] = useState('');
   const [newReportTargetUrl, setNewReportTargetUrl] = useState('');
+  const [newReportFolderId, setNewReportFolderId] = useState('');
   const [newReportSteps, setNewReportSteps] = useState<Step[]>([]);
 
   // Evidence screenshot lightbox State
@@ -301,6 +303,7 @@ export default function Reports() {
       status: newReportStatus,
       failureReason: newReportStatus === 'Failed' ? newReportFailureReason : '',
       targetUrl: newReportTargetUrl,
+      folderId: newReportFolderId,
       steps: newReportSteps
     };
 
@@ -321,6 +324,7 @@ export default function Reports() {
           setNewReportStatus('Passed');
           setNewReportFailureReason('');
           setNewReportTargetUrl('');
+          setNewReportFolderId('');
           setNewReportSteps([]);
         }
       })
@@ -394,7 +398,7 @@ export default function Reports() {
     : 'No reports logged';
 
   return (
-    <div className="max-w-7xl mx-auto min-h-screen flex flex-col pb-12 px-4 md:px-0">
+    <div className="mx-auto flex min-h-screen max-w-[1680px] flex-col px-4 pb-12">
       {/* Header Info */}
       <div className="flex items-center justify-between mb-5 flex-shrink-0">
         <div>
@@ -481,17 +485,17 @@ export default function Reports() {
         </div>
 
         {/* Main Table Styled search similar to Image 2 */}
-        <div className="w-full overflow-x-auto overflow-y-visible">
-          <table className="w-full text-left text-sm border-collapse min-w-[900px]">
+        <div className="h-[calc(100vh-320px)] min-h-[360px] w-full overflow-x-auto overflow-y-auto rounded-b-xl">
+          <table className="w-full min-w-[1180px] table-fixed border-collapse text-left text-sm">
             <thead className="bg-[var(--bg-secondary)] text-[var(--text-muted)] text-[11px] uppercase tracking-wider font-semibold border-b border-[var(--border)]">
               <tr>
-                <th className="py-3 px-4 w-16">ID</th>
-                <th className="py-3 px-4 w-1/5">Test Scenario</th>
-                <th className="py-3 px-4 w-32">Testing Type</th>
-                <th className="py-3 px-4 w-1/4">Test Steps</th>
-                <th className="py-3 px-4 w-1/4">Expected Result</th>
-                <th className="py-3 px-4 w-24 text-center">Outcome</th>
-                <th className="py-3 px-4 w-40 text-left">Evidence (Screenshots)</th>
+                <th className="w-16 px-4 py-3">ID</th>
+                <th className="w-[280px] px-4 py-3">Test Scenario</th>
+                <th className="w-24 px-4 py-3">Type</th>
+                <th className="w-[360px] px-4 py-3">Test Steps</th>
+                <th className="w-[420px] px-4 py-3">Expected Result</th>
+                <th className="w-28 px-4 py-3 text-center">Outcome</th>
+                <th className="w-44 px-4 py-3 text-left">Evidence</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-[var(--border)] font-sans">
@@ -515,8 +519,8 @@ export default function Reports() {
                       </td>
                       
                       {/* Test Scenario description with Plan and Date */}
-                      <td className="py-4 px-4">
-                        <div className="font-semibold text-xs text-slate-900 dark:text-slate-100 leading-normal max-w-xs whitespace-normal">
+                      <td className="px-4 py-4">
+                        <div className="text-sm font-semibold leading-5 text-slate-900 dark:text-slate-100">
                           {r.name}
                         </div>
                         <div className="text-[10px] text-slate-500 mt-1.5 leading-relaxed font-mono">
@@ -535,24 +539,24 @@ export default function Reports() {
                       </td>
                       
                       {/* Test steps numbered list block */}
-                      <td className="py-4 px-4 border-l border-[var(--border)]">
-                        <div className="space-y-2.5">
+                      <td className="border-l border-[var(--border)] px-4 py-4">
+                        <div className="custom-scrollbar max-h-[calc(100vh-450px)] space-y-3 overflow-y-auto pr-2">
                           {r.steps?.map((stepItemSum, stepIdx) => (
-                            <div key={stepIdx} className="text-[11px] text-slate-700 dark:text-slate-300 leading-normal min-h-[26px] flex items-start gap-1 pb-1.5 border-b border-dashed border-slate-100 dark:border-slate-800/40 last:border-0 last:pb-0">
-                              <span className="font-bold text-slate-400 shrink-0 select-none">{stepIdx + 1}.</span>
-                              <span className="whitespace-normal break-words">{stepItemSum.action}</span>
+                            <div key={stepIdx} className="flex items-start gap-2 border-b border-dashed border-slate-100 pb-2 text-xs leading-5 text-slate-700 last:border-0 last:pb-0 dark:border-slate-800/40 dark:text-slate-200">
+                              <span className="shrink-0 select-none rounded bg-[var(--bg-secondary)] px-1.5 py-0.5 font-mono text-[10px] font-bold text-slate-400">{stepIdx + 1}</span>
+                              <span className="min-w-0 whitespace-normal break-words">{stepItemSum.action}</span>
                             </div>
                           ))}
                         </div>
                       </td>
                       
                       {/* Expected result numbered list block corresponding to steps */}
-                      <td className="py-4 px-4 border-l border-[var(--border)]">
-                        <div className="space-y-2.5">
+                      <td className="border-l border-[var(--border)] px-4 py-4">
+                        <div className="custom-scrollbar max-h-[calc(100vh-450px)] space-y-3 overflow-y-auto pr-2">
                           {r.steps?.map((stepItemSum, stepIdx) => (
-                            <div key={stepIdx} className="text-[11px] text-slate-500 dark:text-slate-400 leading-normal min-h-[26px] flex items-start gap-1 pb-1.5 border-b border-dashed border-slate-100 dark:border-slate-800/40 last:border-0 last:pb-0">
-                              <span className="font-bold text-slate-400 shrink-0 select-none">{stepIdx + 1}.</span>
-                              <span className="whitespace-normal break-words">{stepItemSum.expected}</span>
+                            <div key={stepIdx} className="flex items-start gap-2 border-b border-dashed border-slate-100 pb-2 text-xs leading-5 text-slate-500 last:border-0 last:pb-0 dark:border-slate-800/40 dark:text-slate-400">
+                              <span className="shrink-0 select-none rounded bg-[var(--bg-secondary)] px-1.5 py-0.5 font-mono text-[10px] font-bold text-slate-400">{stepIdx + 1}</span>
+                              <span className="min-w-0 whitespace-normal break-words">{stepItemSum.expected}</span>
                             </div>
                           ))}
                         </div>
@@ -577,17 +581,17 @@ export default function Reports() {
                       </td>
                       
                       {/* Evidence Step-triggering buttons Column */}
-                      <td className="py-4 px-4 border-l border-[var(--border)]">
-                        <div className="flex flex-col gap-2.5 min-w-[124px]">
+                      <td className="border-l border-[var(--border)] px-4 py-4">
+                        <div className="custom-scrollbar flex max-h-[calc(100vh-450px)] flex-col gap-2 overflow-y-auto pr-2">
                           {r.steps?.map((stepItemSum, stepIdx) => (
-                            <div key={stepIdx} className="text-[11px] min-h-[26px] flex items-center border-b border-dashed border-slate-100 dark:border-slate-800/40 last:border-0 pb-1.5 last:pb-0">
-                              <span className="text-slate-400 font-bold shrink-0 w-4 select-none">{stepIdx + 1}.</span>
+                            <div key={stepIdx} className="flex min-h-[30px] items-center gap-2 border-b border-dashed border-slate-100 pb-1.5 text-[11px] last:border-0 last:pb-0 dark:border-slate-800/40">
+                              <span className="w-5 shrink-0 select-none text-right font-mono font-bold text-slate-400">{stepIdx + 1}</span>
                               {stepItemSum.screenshot ? (
                                 <button
                                   type="button"
                                   onClick={() => setActiveStep({ reportId: r.id, step: stepItemSum })}
                                   className={cn(
-                                    "px-2 py-0.5 rounded text-[10px] font-bold border transition-all flex items-center gap-1 hover:scale-[1.02]",
+                                    "rounded-md border px-2.5 py-1 text-[10px] font-bold transition-all",
                                     activeStep?.reportId === r.id && activeStep?.step.step === stepItemSum.step
                                       ? "bg-[var(--accent)] text-white border-[var(--accent)] shadow"
                                       : "bg-[var(--bg-secondary)] hover:bg-[var(--border)] border-[var(--border)] text-[var(--text-primary)]"
@@ -602,7 +606,7 @@ export default function Reports() {
                           ))}
                           
                           {/* Selected PDF trigger buttons */}
-                          <div className="flex gap-1.5 mt-3">
+                          <div className="mt-3 flex gap-1.5 border-t border-[var(--border)] pt-3">
                             <button
                               type="button"
                               onClick={() => handleDownloadPdf(r.id)}
@@ -624,12 +628,12 @@ export default function Reports() {
                     </tr>
 
                     {/* Inline browser screen expander row when a step is active */}
-                    {activeStep?.reportId === r.id && (
+                    {false && activeStep?.reportId === r.id && (
                       <tr className="bg-[var(--bg-secondary)]/15">
                         <td colSpan={7} className="px-6 py-5 border-b border-[var(--border)]">
                           {/* Custom Red Banner for Failures exactly as shown in 1st image */}
                           {activeStep.step.outcome === 'Fail' && activeStep.step.reason && (
-                            <div className="mb-4 p-3 bg-red-950/20 border border-red-500/20 rounded-lg text-xs flex items-start gap-2 max-w-4xl mx-auto shadow-inner text-left">
+                            <div className="mx-auto mb-4 flex max-w-5xl items-start gap-2 rounded-lg border border-red-500/20 bg-red-950/20 p-3 text-left text-xs shadow-inner">
                               <AlertTriangle className="w-4 h-4 text-red-500 shrink-0 mt-0.5" />
                               <div>
                                 <span className="font-extrabold text-red-500 block text-[10px] uppercase tracking-wider">REPORT FAILURE REASON</span>
@@ -639,30 +643,30 @@ export default function Reports() {
                           )}
 
                           {/* Beautiful simulated browser sandbox exactly as image 1 */}
-                          <div className="max-w-4xl mx-auto bg-slate-950 border border-slate-850 rounded-lg overflow-hidden shadow-2xl flex flex-col font-sans mb-1 text-left">
+                          <div className="mx-auto mb-1 flex max-w-5xl flex-col overflow-hidden rounded-xl border border-slate-800 bg-slate-950 text-left font-sans shadow-2xl">
                             {/* Browser Header Controls */}
-                            <div className="bg-slate-900 border-b border-slate-850 px-3.5 py-2 flex items-center justify-between">
-                              <div className="flex items-center gap-1.5">
+                            <div className="flex items-center justify-between gap-3 border-b border-slate-800 bg-slate-900 px-3.5 py-2">
+                              <div className="flex min-w-0 items-center gap-1.5">
                                 <span className="w-2.5 h-2.5 rounded-full bg-red-500/90"></span>
                                 <span className="w-2.5 h-2.5 rounded-full bg-yellow-500/90"></span>
                                 <span className="w-2.5 h-2.5 rounded-full bg-emerald-500/90"></span>
-                                <span className="ml-[18px] font-mono text-[10px] text-slate-400 bg-slate-950 px-3.5 py-0.5 rounded border border-slate-850 truncate max-w-md">
+                                <span className="ml-3 min-w-0 max-w-2xl truncate rounded border border-slate-800 bg-slate-950 px-3.5 py-0.5 font-mono text-[10px] text-slate-400">
                                   {SCREENSHOT_PRESETS[activeStep.step.screenshot]?.url || activeStep.step.screenshot || 'No screenshot URL'}
                                 </span>
                               </div>
-                              <span className="text-[9px] text-emerald-400 font-extrabold bg-emerald-950/30 border border-emerald-500/25 px-2 py-0.5 rounded flex items-center gap-1 font-mono">
+                              <span className="hidden shrink-0 items-center gap-1 rounded border border-emerald-500/25 bg-emerald-950/30 px-2 py-0.5 font-mono text-[9px] font-extrabold text-emerald-400 sm:flex">
                                 <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse mr-0.5"></span>
                                 PLAYWRIGHT SCREENSHOT ENGINE
                               </span>
                             </div>
                             
                             {/* Browser Contents Viewport - Raw automated screenshot */}
-                            <div className="p-0 bg-slate-950 overflow-hidden min-h-[160px] transition-all flex items-center justify-center">
+                            <div className="flex min-h-[260px] items-center justify-center overflow-hidden bg-slate-100 p-0 transition-all dark:bg-slate-950">
                               {activeStep.step.screenshot ? (
                                 <img
                                   src={`/api/screenshot?url=${encodeURIComponent(activeStep.step.screenshot)}`}
                                   alt={SCREENSHOT_PRESETS[activeStep.step.screenshot]?.title || `Live Verification of ${activeStep.step.screenshot}`}
-                                  className="w-full h-auto max-h-[420px] object-cover object-top border-0 bg-slate-100 dark:bg-slate-900"
+                                  className="max-h-[560px] w-full object-contain object-top"
                                   referrerPolicy="no-referrer"
                                   onError={(e) => {
                                     e.currentTarget.src = "https://images.unsplash.com/photo-1541560052-5e137f229371?w=1280&q=80";
@@ -674,11 +678,11 @@ export default function Reports() {
                             </div>
                             
                             {/* Browser Footer Metadata bar */}
-                            <div className="bg-slate-900 border-t border-slate-850 px-4 py-1.5 flex justify-between items-center text-[10px] text-slate-500 font-medium">
-                              <span className="font-bold text-slate-300">
+                            <div className="flex items-center justify-between gap-4 border-t border-slate-800 bg-slate-900 px-4 py-2 text-[10px] font-medium text-slate-500">
+                              <span className="min-w-0 truncate font-bold text-slate-300">
                                 {SCREENSHOT_PRESETS[activeStep.step.screenshot]?.title || `Automated live screen of ${activeStep.step.screenshot}`}
                               </span>
-                              <span className="font-mono text-slate-400">
+                              <span className="shrink-0 font-mono text-slate-400">
                                 Step {activeStep.step.step} Evidence Screenshot
                               </span>
                             </div>
@@ -693,6 +697,66 @@ export default function Reports() {
           </table>
         </div>
       </div>
+
+      {/* Evidence popup opened from table step buttons */}
+      {activeStep && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-4 backdrop-blur-md" onClick={() => setActiveStep(null)}>
+          <div className="flex max-h-[92vh] w-full max-w-6xl flex-col overflow-hidden rounded-xl border border-slate-800 bg-slate-950 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between gap-3 border-b border-slate-800 bg-slate-900 px-4 py-3">
+              <div className="flex min-w-0 items-center gap-2">
+                <span className="h-3 w-3 rounded-full bg-red-500/80"></span>
+                <span className="h-3 w-3 rounded-full bg-yellow-500/80"></span>
+                <span className="h-3 w-3 rounded-full bg-emerald-500/80"></span>
+                <span className="ml-3 min-w-0 max-w-3xl truncate rounded border border-slate-800 bg-slate-950 px-3 py-1 font-mono text-xs text-slate-400">
+                  {SCREENSHOT_PRESETS[activeStep.step.screenshot]?.url || activeStep.step.screenshot || 'No screenshot URL'}
+                </span>
+              </div>
+              <div className="flex shrink-0 items-center gap-3">
+                <span className="hidden rounded border border-emerald-500/25 bg-emerald-950/30 px-2 py-1 font-mono text-[10px] font-bold text-emerald-400 sm:inline-flex">
+                  PLAYWRIGHT SCREENSHOT ENGINE
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setActiveStep(null)}
+                  className="rounded-md border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs font-semibold text-slate-300 hover:bg-slate-800"
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+
+            {activeStep.step.outcome === 'Fail' && activeStep.step.reason && (
+              <div className="border-b border-red-500/20 bg-red-950/20 px-4 py-3 text-xs text-red-300">
+                <span className="font-bold uppercase tracking-wider text-red-400">Failure reason: </span>
+                <span className="font-mono">{activeStep.step.reason}</span>
+              </div>
+            )}
+
+            <div className="flex min-h-[360px] flex-1 items-center justify-center overflow-auto bg-slate-100 dark:bg-slate-950">
+              {activeStep.step.screenshot ? (
+                <img
+                  src={`/api/screenshot?url=${encodeURIComponent(activeStep.step.screenshot)}`}
+                  alt={SCREENSHOT_PRESETS[activeStep.step.screenshot]?.title || `Live Verification of ${activeStep.step.screenshot}`}
+                  className="max-h-[76vh] w-full object-contain"
+                  referrerPolicy="no-referrer"
+                  onError={(e) => {
+                    e.currentTarget.src = "https://images.unsplash.com/photo-1541560052-5e137f229371?w=1280&q=80";
+                  }}
+                />
+              ) : (
+                <div className="p-10 text-center font-mono text-xs text-slate-500">No screenshot path loaded for this execution step.</div>
+              )}
+            </div>
+
+            <div className="flex items-center justify-between gap-4 border-t border-slate-800 bg-slate-900 px-4 py-3 text-xs">
+              <span className="min-w-0 truncate font-semibold text-slate-200">
+                {SCREENSHOT_PRESETS[activeStep.step.screenshot]?.title || `Automated live screen of ${activeStep.step.screenshot}`}
+              </span>
+              <span className="shrink-0 font-mono text-slate-400">Step {activeStep.step.step} Evidence Screenshot</span>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Lightbox Modal for Screenshots Evidence */}
       {lightboxKey && (
@@ -811,6 +875,11 @@ export default function Reports() {
                 </select>
              </div>
           </div>
+
+          <FolderSelect
+            value={newReportFolderId}
+            onChange={setNewReportFolderId}
+          />
 
           <div>
              <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Target URL to Test (Real-Time Screenshot Engine Target)</label>

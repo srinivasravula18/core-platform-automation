@@ -8,6 +8,9 @@ import { AIActionModal } from '@/src/components/AIActionModal';
 export default function Defects() {
   const [defects, setDefects] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [severityFilter, setSeverityFilter] = useState('All');
+  const [isFilterOpen, setIsFilterOpen] = useState(false);
   const [isDefectModalOpen, setIsDefectModalOpen] = useState(false);
   const [isAIDefectModalOpen, setIsAIDefectModalOpen] = useState(false);
   const [newDefectTitle, setNewDefectTitle] = useState('');
@@ -94,6 +97,13 @@ export default function Defects() {
     }
   };
 
+  const filteredDefects = defects.filter((defect) => {
+    const query = searchTerm.toLowerCase();
+    const matchesSearch = !query || `${defect.id || ''} ${defect.title || ''} ${defect.status || ''} ${defect.severity || ''}`.toLowerCase().includes(query);
+    const matchesSeverity = severityFilter === 'All' || (defect.severity || 'Medium') === severityFilter;
+    return matchesSearch && matchesSeverity;
+  });
+
   return (
     <div className="max-w-7xl mx-auto h-full flex flex-col">
       <div className="flex items-center justify-between mb-6 flex-shrink-0">
@@ -147,13 +157,26 @@ export default function Defects() {
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--text-muted)]" />
             <input 
               type="text" 
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
               placeholder="Search defects..." 
               className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md pl-9 pr-4 py-1.5 text-sm outline-none focus:border-red-500 text-[var(--text-primary)]"
             />
           </div>
-          <button className="flex items-center gap-2 border border-[var(--border)] bg-[var(--bg-secondary)] hover:bg-[var(--border)] text-[var(--text-primary)] px-3 py-1.5 rounded-md text-sm transition-colors">
-            <Filter className="w-4 h-4" /> Filters
-          </button>
+          <div className="relative">
+            <button onClick={() => setIsFilterOpen(!isFilterOpen)} className="flex items-center gap-2 border border-[var(--border)] bg-[var(--bg-secondary)] hover:bg-[var(--border)] text-[var(--text-primary)] px-3 py-1.5 rounded-md text-sm transition-colors">
+              <Filter className="w-4 h-4" /> {severityFilter === 'All' ? 'Filters' : severityFilter}
+            </button>
+            {isFilterOpen && (
+              <div className="absolute left-0 top-10 z-20 w-40 overflow-hidden rounded-md border border-[var(--border)] bg-[var(--bg-card)] shadow-xl">
+                {['All', 'Low', 'Medium', 'High', 'Critical'].map((severity) => (
+                  <button key={severity} onClick={() => { setSeverityFilter(severity); setIsFilterOpen(false); }} className="block w-full px-3 py-2 text-left text-sm hover:bg-[var(--bg-secondary)]">
+                    {severity}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
         
         <div className="flex-1 overflow-auto">
@@ -170,9 +193,9 @@ export default function Defects() {
             <tbody className="divide-y divide-[var(--border)]">
               {loading ? (
                 <tr><td colSpan={5} className="py-8 text-center text-[var(--text-muted)]">Loading defects...</td></tr>
-              ) : defects.length === 0 ? (
+              ) : filteredDefects.length === 0 ? (
                 <tr><td colSpan={5} className="py-8 text-center text-[var(--text-muted)]">No defects found.</td></tr>
-              ) : defects.map((defect) => (
+              ) : filteredDefects.map((defect) => (
                 <tr key={defect.id} onClick={() => openEditModal(defect)} className="hover:bg-[var(--bg-secondary)] transition-colors cursor-pointer">
                   <td className="py-3 px-4 font-mono text-xs text-[var(--text-muted)]">{defect.id}</td>
                   <td className="py-3 px-4 font-medium">{defect.title}</td>
@@ -199,7 +222,14 @@ export default function Defects() {
                     <button onClick={(e) => { e.stopPropagation(); captureEvidence(defect.id); }} title="Capture Evidence" className="p-1 rounded hover:bg-[var(--bg-primary)] text-red-500 transition-colors border border-transparent hover:border-red-500">
                       <Camera className="w-4 h-4" />
                     </button>
-                    <button onClick={(e) => e.stopPropagation()} className="p-1 rounded hover:bg-[var(--border)] text-[var(--text-muted)] transition-colors">
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        openEditModal(defect);
+                      }}
+                      title="Edit defect"
+                      className="p-1 rounded hover:bg-[var(--border)] text-[var(--text-muted)] transition-colors"
+                    >
                       <MoreHorizontal className="w-4 h-4" />
                     </button>
                   </td>

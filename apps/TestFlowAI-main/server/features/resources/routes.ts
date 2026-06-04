@@ -1,5 +1,6 @@
 import type { Express } from 'express';
 import { db, addActivity, persistDataInBackground } from '../../shared/storage';
+import { createFolder, folderHasArtifacts, getFolderPath, resolveFolderPath } from '../../shared/folders';
 import { buildCaseDescription, normalizeCaseSteps, normalizeCaseTags } from '../../shared/testCases';
 import { findSettingsPlaywrightTargetUrl, normalizeTargetUrl } from '../../shared/url';
 
@@ -34,6 +35,9 @@ function createCrudRoutes(app: Express, entityPath: string, entityArrayKey: keyo
 
 export function registerResourceRoutes(app: Express) {
   app.get('/api/plans', (req, res) => res.json(db.plans));
+  app.get('/api/folders', (req, res) => {
+    res.json(db.folders.map((folder: any) => ({ ...folder, path: getFolderPath(folder.id) })));
+  });
   app.get('/api/suites', (req, res) => res.json(db.suites));
   app.get('/api/cases', (req, res) => res.json(db.cases));
   app.get('/api/runs', (req, res) => res.json(db.runs));
@@ -46,6 +50,55 @@ export function registerResourceRoutes(app: Express) {
   createCrudRoutes(app, 'runs', 'runs');
   createCrudRoutes(app, 'defects', 'defects');
   createCrudRoutes(app, 'reports', 'reports');
+
+  app.post('/api/folders', (req, res) => {
+    const folder = createFolder(req.body.name, req.body.parentId || '', {
+      description: req.body.description || '',
+      kind: req.body.kind || 'Feature',
+      createdBy: req.body.createdBy || 'User',
+    });
+    if (!folder) return res.status(400).json({ error: 'Folder name is required' });
+    persistDataInBackground('folder');
+    addActivity(`Created folder: ${getFolderPath(folder.id)}`);
+    res.json({ success: true, folder: { ...folder, path: getFolderPath(folder.id) } });
+  });
+
+  app.post('/api/folders/resolve', (req, res) => {
+    const folder = resolveFolderPath(req.body.path || req.body.name || '', {
+      description: req.body.description || '',
+      kind: req.body.kind || 'Feature',
+      createdBy: req.body.createdBy || 'User',
+    });
+    if (!folder) return res.status(400).json({ error: 'Folder path is required' });
+    persistDataInBackground('folder resolve');
+    res.json({ success: true, folder: { ...folder, path: getFolderPath(folder.id) } });
+  });
+
+  app.put('/api/folders/:id', (req, res) => {
+    const folder = db.folders.find((item: any) => item.id === req.params.id);
+    if (!folder) return res.status(404).json({ error: 'Folder not found' });
+    folder.name = req.body.name || folder.name;
+    folder.parentId = req.body.parentId ?? folder.parentId ?? '';
+    folder.description = req.body.description ?? folder.description ?? '';
+    folder.kind = req.body.kind || folder.kind || 'Feature';
+    folder.updatedAt = new Date();
+    persistDataInBackground('folder update');
+    addActivity(`Updated folder: ${getFolderPath(folder.id)}`);
+    res.json({ success: true, folder: { ...folder, path: getFolderPath(folder.id) } });
+  });
+
+  app.delete('/api/folders/:id', (req, res) => {
+    const index = db.folders.findIndex((item: any) => item.id === req.params.id);
+    if (index === -1) return res.status(404).json({ error: 'Folder not found' });
+    const hasChildFolders = db.folders.some((item: any) => item.parentId === req.params.id);
+    if (hasChildFolders || folderHasArtifacts(req.params.id)) {
+      return res.status(409).json({ error: 'Move or delete child folders and artifacts before deleting this folder.' });
+    }
+    const deleted = db.folders.splice(index, 1)[0];
+    persistDataInBackground('folder delete');
+    addActivity(`Deleted folder: ${deleted.name}`);
+    res.json({ success: true });
+  });
 
   app.post('/api/reports', (req, res) => {
     const r = req.body;
@@ -72,6 +125,7 @@ export function registerResourceRoutes(app: Express) {
       failureReason: r.failureReason || '',
       date: r.date || new Date().toISOString().split('T')[0],
       targetUrl,
+      folderId: r.folderId || '',
       steps: processedSteps
     };
     db.reports.unshift(newReport);
@@ -98,8 +152,9 @@ export function registerResourceRoutes(app: Express) {
       schedule: p.schedule,
       risks: p.risks,
       deliverables: p.deliverables,
-      status: 'Draft',
-      riskLevel: 'Medium',
+      status: p.status || 'Draft',
+      riskLevel: p.riskLevel || 'Medium',
+      folderId: p.folderId || '',
       owner: 'User',
       createdAt: new Date()
     });
@@ -115,11 +170,13 @@ export function registerResourceRoutes(app: Express) {
       id: `TS-${Math.random().toString(36).substring(2,6).toUpperCase()}`,
       name,
       description: s.description,
+      testPlanId: s.testPlanId || '',
       parentSuite: s.parentSuite,
       module: s.module,
       owner: s.owner || 'User',
       priority: s.priority || 'Medium',
       status: s.status || 'Active',
+      folderId: s.folderId || '',
       tags: s.tags || [],
       riskLevel: s.riskLevel || 'Low',
       createdBy: 'User',
@@ -138,10 +195,14 @@ export function registerResourceRoutes(app: Express) {
       title,
       description: buildCaseDescription(c),
       steps: normalizeCaseSteps(c.steps),
-      status: 'Draft',
+      testPlanId: c.testPlanId || '',
+      testSuiteId: c.testSuiteId || '',
+      status: c.status || 'Draft',
       tags: normalizeCaseTags(c.tags || []),
       type: c.type || 'Manual',
       priority: c.priority || 'Medium',
+      captureEvidenceOnManualRun: c.captureEvidenceOnManualRun !== false,
+      folderId: c.folderId || '',
       createdBy: c.createdBy || 'User',
       createdAt: new Date()
     });
@@ -154,11 +215,25 @@ export function registerResourceRoutes(app: Express) {
     const name = req.body.name || 'New Run';
     const runId = `RUN-${Math.random().toString(36).substring(2,6).toUpperCase()}`;
     const targetUrl = normalizeTargetUrl(req.body.targetUrl || findSettingsPlaywrightTargetUrl() || '');
-    const steps = targetUrl ? [
-      { step: '1', action: `Load target webpage address URL: ${targetUrl}`, expected: 'Page responds successfully.', outcome: 'Pass', reason: '', screenshot: targetUrl },
-      { step: '2', action: 'Verify primary page layout renders', expected: 'Core page content is visible.', outcome: 'Pass', reason: '', screenshot: targetUrl },
-      { step: '3', action: 'Capture responsive viewport evidence', expected: 'Screenshot evidence is available for review.', outcome: 'Pass', reason: '', screenshot: targetUrl }
-    ] : [];
+    const selectedCase = db.cases.find((testCase: any) => testCase.id === req.body.testCaseId);
+    const selectedCaseSteps = selectedCase ? normalizeCaseSteps(selectedCase.steps) : [];
+    const shouldCaptureCaseEvidence = Boolean(selectedCase && selectedCase.captureEvidenceOnManualRun !== false && targetUrl);
+    const steps = selectedCaseSteps.length
+      ? selectedCaseSteps.map((step, index) => ({
+          step: `${index + 1}`,
+          action: step.action,
+          expected: step.expected,
+          outcome: 'Pass',
+          reason: '',
+          screenshot: shouldCaptureCaseEvidence ? targetUrl : '',
+          testCaseId: selectedCase.id,
+          testCaseTitle: selectedCase.title,
+        }))
+      : targetUrl ? [
+        { step: '1', action: `Load target webpage address URL: ${targetUrl}`, expected: 'Page responds successfully.', outcome: 'Pass', reason: '', screenshot: targetUrl },
+        { step: '2', action: 'Verify primary page layout renders', expected: 'Core page content is visible.', outcome: 'Pass', reason: '', screenshot: targetUrl },
+        { step: '3', action: 'Capture responsive viewport evidence', expected: 'Screenshot evidence is available for review.', outcome: 'Pass', reason: '', screenshot: targetUrl }
+      ] : [];
     const passed = steps.filter((step: any) => step.outcome === 'Pass').length;
     const failed = steps.filter((step: any) => step.outcome === 'Fail').length;
 
@@ -175,6 +250,10 @@ export function registerResourceRoutes(app: Express) {
       passed,
       failed,
       targetUrl,
+      folderId: req.body.folderId || selectedCase?.folderId || '',
+      testCaseId: selectedCase?.id || '',
+      testCaseTitle: selectedCase?.title || '',
+      captureEvidence: shouldCaptureCaseEvidence,
       steps
     };
     db.runs.unshift(newRun);

@@ -84,7 +84,7 @@ async function fillByDomFallback(page: any, value: string, fieldType: 'username'
   }, { value, fieldType }).catch(() => false);
 }
 
-async function performLoginIfCredentialsProvided(page: any, credentials: any) {
+export async function performLoginIfCredentialsProvided(page: any, credentials: any) {
   if (!credentials?.username || !credentials?.password) {
     return { attempted: false, success: false, reason: 'No credentials provided.' };
   }

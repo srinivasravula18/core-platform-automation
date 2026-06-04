@@ -2,6 +2,7 @@ import path from 'path';
 import fs from 'fs/promises';
 
 export const db = {
+  folders: [] as any[],
   plans: [] as any[],
   suites: [] as any[],
   cases: [] as any[],
@@ -21,6 +22,7 @@ const dataFilePath = path.resolve(process.cwd(), '.testflow-data.json');
 
 function getPersistableDbSnapshot() {
   return {
+    folders: db.folders,
     plans: db.plans,
     suites: db.suites,
     cases: db.cases,
@@ -36,6 +38,7 @@ export async function loadPersistedData() {
   try {
     const raw = await fs.readFile(dataFilePath, 'utf-8');
     const data = JSON.parse(raw);
+    db.folders = Array.isArray(data.folders) ? data.folders : [];
     db.plans = Array.isArray(data.plans) ? data.plans : [];
     db.suites = Array.isArray(data.suites) ? data.suites : [];
     db.cases = Array.isArray(data.cases) ? data.cases : [];

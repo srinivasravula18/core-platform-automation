@@ -9,10 +9,10 @@ interface ModalProps {
   size?: 'md' | 'xl';
 }
 
-export function Modal({ isOpen, onClose, title, children, size = 'md' }: ModalProps) {
+export function Modal({ isOpen, onClose, title, children, size = 'xl' }: ModalProps) {
   if (!isOpen) return null;
 
-  const widthClass = size === 'xl' ? 'max-w-xl' : 'max-w-md';
+  const widthClass = size === 'xl' ? 'max-w-5xl' : 'max-w-md';
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm">

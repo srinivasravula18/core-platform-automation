@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { BrowserRouter, Routes, Route, Link, useLocation } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Link, useLocation, useNavigate } from 'react-router-dom';
 import { LayoutDashboard, TestTube2, Bug, Settings, BrainCircuit, PlayCircle, FolderTree, Sun, Moon, Search, CircleUser, Layers, Menu, ClipboardList, GitBranch } from 'lucide-react';
 import { cn } from '@/src/lib/utils';
 import { useTheme } from '@/src/store/theme';
@@ -14,11 +14,13 @@ import Reports from '@/src/pages/Reports';
 import SettingsPage from '@/src/pages/Settings';
 import AgentPanel from '@/src/pages/AgentPanel';
 import GitAgent from '@/src/pages/GitAgent';
+import TestRepository from '@/src/pages/TestRepository';
 
 function Sidebar({ isOpen }: { isOpen: boolean }) {
   const location = useLocation();
   const navigation = [
     { name: 'Dashboard', href: '/', icon: LayoutDashboard },
+    { name: 'File System', href: '/repository', icon: FolderTree },
     { name: 'Test Plans', href: '/plans', icon: FolderTree },
     { name: 'Test Suites', href: '/suites', icon: Layers },
     { name: 'Test Cases', href: '/cases', icon: TestTube2 },
@@ -75,6 +77,15 @@ function Sidebar({ isOpen }: { isOpen: boolean }) {
 
 function Topbar({ onMenuClick }: { onMenuClick: () => void }) {
   const { theme, toggleTheme } = useTheme();
+  const navigate = useNavigate();
+  const [globalSearch, setGlobalSearch] = useState('');
+
+  const submitGlobalSearch = (event: React.FormEvent) => {
+    event.preventDefault();
+    const query = globalSearch.trim();
+    if (!query) return;
+    navigate(`/cases?search=${encodeURIComponent(query)}`);
+  };
 
   return (
     <div className="h-16 border-b border-[var(--border)] bg-[var(--bg-card)] flex items-center justify-between px-6 flex-shrink-0">
@@ -85,14 +96,16 @@ function Topbar({ onMenuClick }: { onMenuClick: () => void }) {
         >
           <Menu className="w-5 h-5" />
         </button>
-        <div className="relative w-full">
+        <form onSubmit={submitGlobalSearch} className="relative w-full">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--text-muted)]" />
           <input 
             type="text" 
+            value={globalSearch}
+            onChange={(e) => setGlobalSearch(e.target.value)}
             placeholder="Search plans, cases, runs..." 
             className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md pl-10 pr-4 py-1.5 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)] placeholder-[var(--text-muted)] transition-colors"
           />
-        </div>
+        </form>
       </div>
       <div className="flex items-center gap-4">
         <button 
@@ -101,7 +114,7 @@ function Topbar({ onMenuClick }: { onMenuClick: () => void }) {
         >
           {theme === 'dark' ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
         </button>
-        <button className="flex items-center gap-2 p-1 rounded-full hover:bg-[var(--bg-secondary)] transition-colors">
+        <button onClick={() => navigate('/settings')} title="Open settings" className="flex items-center gap-2 p-1 rounded-full hover:bg-[var(--bg-secondary)] transition-colors">
           <CircleUser className="w-8 h-8 text-[var(--text-muted)]" />
         </button>
       </div>
@@ -136,10 +149,13 @@ export default function App() {
       <Shell>
         <Routes>
           <Route path="/" element={<Dashboard />} />
+          <Route path="/repository" element={<TestRepository />} />
           <Route path="/plans" element={<TestPlans />} />
+          <Route path="/plans/:planId" element={<TestPlans />} />
           <Route path="/suites" element={<TestSuites />} />
           <Route path="/cases" element={<TestCases />} />
           <Route path="/runs" element={<TestRuns />} />
+          <Route path="/runs/:runId" element={<TestRuns />} />
           <Route path="/reports" element={<Reports />} />
           <Route path="/defects" element={<Defects />} />
           <Route path="/agent" element={<AgentPanel />} />

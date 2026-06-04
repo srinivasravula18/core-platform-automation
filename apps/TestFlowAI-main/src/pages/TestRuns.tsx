@@ -1,237 +1,126 @@
-import React, { useEffect, useState } from 'react';
-import { Search, Filter, MoreHorizontal, PlayCircle, Camera, Sparkles, User, Clock, ShieldCheck, ShieldAlert, AlertTriangle, Eye, Layers, Calendar, ClipboardList } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import { useNavigate, useParams } from 'react-router-dom';
+import { ArrowDownToLine, ArrowLeft, CheckCircle, Filter, Folder, Lock, MoreHorizontal, PlayCircle, Search, Share2, SlidersHorizontal, Sparkles } from 'lucide-react';
 import { cn } from '@/src/lib/utils';
-import html2canvas from 'html2canvas';
 import { Modal } from '@/src/components/Modal';
 import { AIActionModal } from '@/src/components/AIActionModal';
+import { FolderSelect } from '@/src/components/FolderSelect';
 
-// Preset visual screens to render for screenshot evidence
-const SCREENSHOT_PRESETS: Record<string, { title: string; url: string; contentHtml: React.ReactNode }> = {
-  login_success: {
-    title: "Login Screen (Success Code 200)",
-    url: "https://auth.testflow.ai/login?state=callback",
-    contentHtml: (
-      <div className="bg-emerald-950/20 text-emerald-400 p-4 rounded border border-emerald-500/20 font-mono text-xs h-full flex flex-col justify-between">
-        <div>
-          <div className="flex items-center gap-1.5 text-emerald-500 font-bold mb-2">
-            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-            AUTH CODE ACCESS GRANTED
-          </div>
-          <p className="text-slate-400 text-[11px] mb-2 font-sans">Redirecting to active console endpoint...</p>
-          <div className="bg-emerald-950/40 p-2 rounded text-emerald-300 border border-emerald-500/10 mb-2">
-            TOKEN_TYPE: Bearer<br />
-            EXPIRES_IN: 3600s<br />
-            SCOPE: sheets.write profiles.read
-          </div>
-        </div>
-        <div className="text-[10px] text-emerald-500/60 flex justify-between border-t border-emerald-500/10 pt-2 font-sans">
-          <span>Client: TestFlowAI Auth Engine</span>
-          <span>Latency: 114ms</span>
-        </div>
-      </div>
-    )
-  },
-  checkout_address: {
-    title: "Checkout System (Address Form Verification)",
-    url: "https://store.testflow.ai/checkout/shipping",
-    contentHtml: (
-      <div className="bg-slate-900 border border-slate-850 p-4 rounded text-slate-300 font-sans text-xs h-full flex flex-col justify-between">
-        <div>
-          <div className="flex justify-between items-center pb-2 border-b border-slate-800 mb-2">
-            <span className="font-semibold text-slate-200">Shipping Information</span>
-            <span className="text-[10px] bg-slate-800 text-slate-400 px-1.5 py-0.5 rounded">Address OK</span>
-          </div>
-          <div className="space-y-1.5">
-            <div className="bg-slate-850 p-1.5 rounded text-[11px] border border-slate-800">
-              <span className="text-slate-400">Recipient:</span> J. Doe
-            </div>
-            <div className="bg-slate-850 p-1.5 rounded text-[11px] border border-slate-800">
-              <span className="text-slate-400">Address:</span> 1600 Amphitheatre Pkwy, Mountain View, CA 94043
-            </div>
-          </div>
-        </div>
-        <div className="text-[10px] text-slate-500 text-right pt-2 font-mono">
-          DOM: FormValidated = true
-        </div>
-      </div>
-    )
-  },
-  payment_iframe_error: {
-    title: "Secure Payment Iframe (Gateway Refused - Timeout Error)",
-    url: "https://gateway.stripe-api.net/secure-frame/charges",
-    contentHtml: (
-      <div className="bg-red-950/20 text-red-400 p-4 rounded border border-red-500/20 font-mono text-xs h-full flex flex-col justify-between">
-        <div>
-          <div className="flex items-center gap-1.5 text-red-500 font-bold mb-2">
-            <AlertTriangle className="w-4 h-4 text-red-500" />
-            GATEWAY_TIMEOUT_STATUS_504
-          </div>
-          <p className="text-slate-400 text-[11px] mb-2 leading-relaxed font-sans">The server took too long to resolve the iframe contents from Stripe payment endpoints.</p>
-          <div className="bg-red-950/40 p-2 rounded text-red-300 border border-red-500/10 text-[10px]">
-            ERR_CONNECTION_TIMED_OUT (30000ms duration limit exceeded)<br />
-            API_VERSION: 2026-06-03
-          </div>
-        </div>
-        <div className="text-[10px] text-red-500/70 border-t border-red-500/10 pt-2 flex justify-between font-sans">
-          <span>Stripe Integration Bridge</span>
-          <span>Retry: count=3 [failed]</span>
-        </div>
-      </div>
-    )
-  },
-  skipped_step: {
-    title: "Skipped Action (Awaiting Previous Dependency)",
-    url: "https://store.testflow.ai/checkout/verify",
-    contentHtml: (
-      <div className="bg-slate-950/30 text-slate-400 p-4 rounded border border-slate-800 font-mono text-xs h-full flex flex-col justify-center items-center text-center">
-        <ClipboardList className="w-8 h-8 mb-2 opacity-30 text-slate-500" />
-        <div className="font-semibold text-xs text-slate-500">STEP UNEXECUTED</div>
-        <p className="text-[10px] text-slate-500 max-w-[200px] mt-1 text-center font-sans">This step was skipped automatically because a preceding verification failed.</p>
-      </div>
-    )
-  },
-  api_auth_token: {
-    title: "API Gate Token Handshake (JWT Issued)",
-    url: "https://api.testflow.ai/v1/auth/token",
-    contentHtml: (
-      <div className="bg-emerald-950/20 text-emerald-400 p-4 rounded border border-emerald-500/20 font-mono text-xs h-full flex flex-col justify-between">
-        <div>
-          <div className="text-[10px] bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2 py-0.5 rounded w-max mb-2 font-sans font-medium">HTTP 200 OK</div>
-          <p className="font-mono text-[10px] text-emerald-300 break-all leading-tight">
-            {"{"} "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIi...JWT_TOKEN_SECRET_VALIDATED" {"}"}
-          </p>
-        </div>
-        <div className="text-[10px] text-emerald-500/60 text-right pt-2 font-sans border-t border-emerald-500/10 mt-2">
-          Payload matches expected schema
-        </div>
-      </div>
-    )
-  },
-  api_user_profile: {
-    title: "Account Profile Endpoint Request",
-    url: "https://api.testflow.ai/v1/users/profile",
-    contentHtml: (
-      <div className="bg-slate-900 border border-slate-850 p-4 rounded text-slate-300 font-mono text-[11px] h-full flex flex-col justify-between">
-        <div>
-          <div className="text-[10px] bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2 py-0.5 rounded w-max mb-2 font-sans">HTTP 200 OK</div>
-          <pre className="text-slate-300 font-mono leading-tight">
-{`{
-  "id": "USR-88220",
-  "name": "Integration User",
-  "status": "active"
-}`}
-          </pre>
-        </div>
-        <div className="text-[10px] text-slate-500 pt-2 font-sans text-right">
-          Verifications passes: 3/3
-        </div>
-      </div>
-    )
-  },
-  api_billing_history: {
-    title: "Billing Records Schema Validation",
-    url: "https://api.testflow.ai/v1/billing/history",
-    contentHtml: (
-      <div className="bg-slate-900 border border-slate-850 p-4 rounded text-slate-300 font-mono text-[11px] h-full flex flex-col justify-between">
-        <div>
-          <div className="text-[10px] bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2 py-0.5 rounded w-max mb-2 font-sans">HTTP 200 OK</div>
-          <pre className="text-slate-300 font-mono leading-tight">
-{`{
-  "invoices": [],
-  "limit": 100,
-  "total": 0
-}`}
-          </pre>
-        </div>
-        <div className="text-[10px] text-slate-500 pt-2 font-sans text-right">
-          Assert: IsArray(invoices) is true
-        </div>
-      </div>
-    )
-  },
-  sheets_auth_granted: {
-    title: "Google Consent Handshake (Access Scope Auth)",
-    url: "https://accounts.google.com/o/oauth2/v2/auth?client_id=123",
-    contentHtml: (
-      <div className="bg-emerald-950/20 text-emerald-400 p-4 rounded border border-emerald-500/20 font-mono text-xs h-full flex flex-col justify-between">
-        <div>
-          <div className="flex items-center gap-1.5 text-emerald-500 font-bold mb-2">
-            <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
-            OAUTH CLOUD ACCESS GRANTED
-          </div>
-          <div className="bg-emerald-950/40 p-2 rounded text-emerald-300 border border-emerald-500/10 text-[10px]">
-            SCOPE: sheets.readonly, sheets.write<br />
-            PROJECT_ID: gen-lang-client-0842639110
-          </div>
-        </div>
-        <div className="text-[10px] text-emerald-500/60 border-t border-emerald-500/10 pt-2 text-right">
-          Authorized account
-        </div>
-      </div>
-    )
-  },
-  sheets_sync_success: {
-    title: "Spreadsheet Creation Response (ID Sync)",
-    url: "https://sheets.googleapis.com/v4/spreadsheets",
-    contentHtml: (
-      <div className="bg-emerald-950/20 text-emerald-400 p-4 rounded border border-emerald-500/20 font-mono text-xs h-full flex flex-col justify-between">
-        <div>
-          <div className="text-[10px] bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2 py-0.5 rounded w-max mb-2 font-sans">HTTP 200 OK</div>
-          <p className="text-slate-400 text-[10px] font-sans">Spreadsheet initialized successfully:</p>
-          <div className="bg-slate-900 p-1.5 rounded text-emerald-300 border border-emerald-500/10 text-[10px] max-w-full truncate font-mono mt-1">
-            SpreadsheetID: 1x7W...3J09uW_A
-          </div>
-        </div>
-        <div className="text-[10px] text-emerald-500/60 border-t border-emerald-500/10 pt-2 flex justify-between font-sans">
-          <span>Google Sheets v4 API</span>
-          <span>Verified!</span>
-        </div>
-      </div>
-    )
-  }
-};
+function getRunStats(run: any) {
+  const steps = Array.isArray(run?.steps) ? run.steps : [];
+  const total = Number(run?.totalExecutions) || steps.length || 0;
+  const passed = Number(run?.passed) || steps.filter((step: any) => /pass|passed/i.test(step?.outcome || step?.status || '')).length;
+  const failed = Number(run?.failed) || steps.filter((step: any) => /fail|failed/i.test(step?.outcome || step?.status || '')).length;
+  const blocked = steps.filter((step: any) => /block|blocked/i.test(step?.outcome || step?.status || '')).length;
+  const skipped = steps.filter((step: any) => /skip|skipped/i.test(step?.outcome || step?.status || '')).length;
+  const retest = steps.filter((step: any) => /retest/i.test(step?.outcome || step?.status || '')).length;
+  const untested = Math.max(0, total - passed - failed - blocked - skipped - retest);
+  const completed = total ? Math.round(((passed + failed + blocked + skipped + retest) / total) * 100) : 0;
+
+  return { total, passed, failed, blocked, skipped, retest, untested, completed };
+}
+
+function statusDot(status: string) {
+  if (/pass/i.test(status)) return 'bg-emerald-400';
+  if (/fail/i.test(status)) return 'bg-red-400';
+  if (/block/i.test(status)) return 'bg-indigo-400';
+  if (/skip/i.test(status)) return 'bg-slate-400';
+  return 'bg-slate-500';
+}
 
 export default function TestRuns() {
+  const navigate = useNavigate();
+  const { runId } = useParams();
   const [runs, setRuns] = useState<any[]>([]);
+  const [cases, setCases] = useState<any[]>([]);
+  const [suites, setSuites] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
-  
+  const [runView, setRunView] = useState<'active' | 'closed'>('active');
+  const [selectedView, setSelectedView] = useState('All Runs');
+  const [caseSearchTerm, setCaseSearchTerm] = useState('');
+  const [caseStatusFilter, setCaseStatusFilter] = useState('All');
+  const [isCaseFilterOpen, setIsCaseFilterOpen] = useState(false);
+  const [lockedRunIds, setLockedRunIds] = useState<string[]>([]);
+  const [isViewMenuOpen, setIsViewMenuOpen] = useState(false);
   const [isRunModalOpen, setIsRunModalOpen] = useState(false);
   const [isAIRunModalOpen, setIsAIRunModalOpen] = useState(false);
   const [newRunName, setNewRunName] = useState('');
-  
-  // Custom execution configuration fields
   const [newRunSuite, setNewRunSuite] = useState('');
   const [newRunRequester, setNewRunRequester] = useState('');
   const [newRunExecutionTime, setNewRunExecutionTime] = useState('');
   const [newRunTargetUrl, setNewRunTargetUrl] = useState('');
-  
-  const [selectedRun, setSelectedRun] = useState<any | null>(null);
-  const [showInlineScreenshots, setShowInlineScreenshots] = useState(true);
+  const [newRunCaseId, setNewRunCaseId] = useState('');
+  const [newRunFolderId, setNewRunFolderId] = useState('');
 
-  const fetchRuns = () => {
+  const fetchData = () => {
     setLoading(true);
-    fetch('/api/runs')
-      .then(r => r.json())
-      .then(data => { 
-        setRuns(data); 
-        if (data.length > 0) {
-          setSelectedRun((prev: any) => {
-            const found = data.find((r: any) => r.id === prev?.id);
-            return found || data[0];
-          });
-        }
-        setLoading(false); 
+    Promise.all([
+      fetch('/api/runs').then((r) => r.json()),
+      fetch('/api/cases').then((r) => r.json()),
+      fetch('/api/suites').then((r) => r.json()),
+    ])
+      .then(([runData, caseData, suiteData]) => {
+        setRuns(Array.isArray(runData) ? runData : []);
+        setCases(Array.isArray(caseData) ? caseData : []);
+        setSuites(Array.isArray(suiteData) ? suiteData : []);
+        setLoading(false);
       })
-      .catch(err => {
-        console.error(err);
+      .catch((error) => {
+        console.error(error);
         setLoading(false);
       });
   };
 
   useEffect(() => {
-    fetchRuns();
+    fetchData();
   }, []);
+
+  const selectedRun = runs.find((run) => run.id === runId) || null;
+  const activeRuns = runs.filter((run) => !/completed|closed/i.test(run.status || ''));
+  const closedRuns = runs.filter((run) => /completed|closed/i.test(run.status || ''));
+
+  const filteredRuns = useMemo(() => {
+    const base = runView === 'active' ? activeRuns : closedRuns;
+    return base.filter((run) => {
+      const searchable = `${run.name || ''} ${run.id || ''} ${run.suiteName || ''} ${run.requestedBy || ''}`.toLowerCase();
+      const matchesSearch = searchable.includes(searchTerm.toLowerCase());
+      if (!matchesSearch) return false;
+      if (selectedView === 'Failed Runs') return getRunStats(run).failed > 0;
+      if (selectedView === 'Manual Runs') return !run.agentRunId;
+      if (selectedView === 'Automated Runs') return Boolean(run.agentRunId);
+      if (selectedView === 'My Runs') return Boolean(run.requestedBy);
+      return true;
+    });
+  }, [activeRuns, closedRuns, runView, searchTerm, selectedView]);
+
+  const selectedRunCases = useMemo(() => {
+    if (!selectedRun) return [];
+    const suite = suites.find((item) => item.name === selectedRun.suiteName || item.id === selectedRun.suiteId);
+    const suiteCases = suite ? cases.filter((testCase) => testCase.testSuiteId === suite.id) : [];
+    if (suiteCases.length) return suiteCases;
+    if (selectedRun.agentRunId) return cases.filter((testCase) => testCase.agentRunId === selectedRun.agentRunId);
+    return [];
+  }, [cases, selectedRun, suites]);
+
+  const visibleRunCases = useMemo(() => {
+    const query = caseSearchTerm.toLowerCase();
+    return selectedRunCases.filter((testCase) => {
+      const matchesSearch = !query || `${testCase.id || ''} ${testCase.title || ''}`.toLowerCase().includes(query);
+      const matchesStatus = caseStatusFilter === 'All' || (testCase.status || 'Untested') === caseStatusFilter;
+      return matchesSearch && matchesStatus;
+    });
+  }, [caseSearchTerm, caseStatusFilter, selectedRunCases]);
+
+  const groupedCases = useMemo(() => {
+    const groups = new Map<string, any[]>();
+    selectedRunCases.forEach((testCase) => {
+      const suite = suites.find((item) => item.id === testCase.testSuiteId);
+      const key = suite?.module || suite?.name || 'Unassigned';
+      groups.set(key, [...(groups.get(key) || []), testCase]);
+    });
+    return Array.from(groups.entries());
+  }, [selectedRunCases, suites]);
 
   const openNewModal = () => {
     setNewRunName('');
@@ -239,475 +128,312 @@ export default function TestRuns() {
     setNewRunRequester('');
     setNewRunExecutionTime('');
     setNewRunTargetUrl('');
+    setNewRunCaseId('');
+    setNewRunFolderId('');
     setIsRunModalOpen(true);
   };
 
   const handleSaveRun = () => {
     if (!newRunName.trim()) return;
-    
     fetch('/api/runs', {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ 
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
         name: newRunName,
         suiteName: newRunSuite,
         requestedBy: newRunRequester,
         executionTime: newRunExecutionTime,
-        targetUrl: newRunTargetUrl
+        targetUrl: newRunTargetUrl,
+        testCaseId: newRunCaseId,
+        folderId: newRunFolderId,
+      }),
+    })
+      .then((r) => r.json())
+      .then((rsp) => {
+        setIsRunModalOpen(false);
+        fetchData();
+        if (rsp.run?.id) navigate(`/runs/${rsp.run.id}`);
       })
-    })
-    .then(r => r.json())
-    .then((rsp) => {
-       setIsRunModalOpen(false);
-       fetchRuns();
-       if (rsp.run) {
-         setSelectedRun(rsp.run);
-       }
-    })
-    .catch(console.error);
-  };
-
-  const handleDeleteRun = (id: string, e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (confirm('Are you sure you want to delete this test run?')) {
-      fetch(`/api/runs/${id}`, { method: 'DELETE' })
-        .then(() => {
-          if (selectedRun?.id === id) {
-            setSelectedRun(null);
-          }
-          fetchRuns();
-        });
-    }
+      .catch(console.error);
   };
 
   const handleAIApprove = (data: any) => {
     fetch('/api/runs', {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ 
-        name: data.name,
-        suiteName: data.suiteName || '',
-        requestedBy: data.requestedBy || '',
-        executionTime: data.executionTime || ''
-      })
-    }).then(() => fetchRuns());
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    }).then(() => fetchData());
   };
 
-  const captureEvidence = async (runId: string) => {
-    try {
-      const canvas = await html2canvas(document.body);
-      const dataUrl = canvas.toDataURL('image/png');
-      const a = document.createElement('a');
-      a.href = dataUrl;
-      a.download = `run-evidence-${runId}.png`;
-      a.click();
-    } catch (e) {
-      console.error(e);
-      alert('Failed to capture screen.');
-    }
+  const downloadRunJson = (run: any) => {
+    const blob = new Blob([JSON.stringify(run, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = `${run.id || 'test-run'}.json`;
+    anchor.click();
+    URL.revokeObjectURL(url);
   };
 
-  const filteredRuns = runs.filter(r => 
-    r.name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    r.suiteName?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    r.id?.toLowerCase().includes(searchTerm.toLowerCase())
-  );
+  const shareRun = async (run: any) => {
+    const url = `${window.location.origin}/runs/${run.id}`;
+    await navigator.clipboard?.writeText(url);
+    alert('Run link copied to clipboard.');
+  };
+
+  if (selectedRun) {
+    const stats = getRunStats(selectedRun);
+
+    return (
+      <div className="max-w-7xl mx-auto h-full flex flex-col">
+        <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl flex flex-col flex-1 min-h-0 overflow-hidden">
+          <div className="p-5 border-b border-[var(--border)]">
+            <div className="flex items-center gap-2 text-sm text-[var(--text-muted)] mb-3">
+              <button onClick={() => navigate('/runs')} className="inline-flex items-center gap-1 hover:text-[var(--text-primary)]">
+                <ArrowLeft className="w-4 h-4" /> Test Runs
+              </button>
+              <span>/</span>
+              <span className="font-mono">{selectedRun.id}</span>
+            </div>
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h1 className="text-2xl font-bold tracking-tight">{selectedRun.name}</h1>
+                <div className="mt-3 flex flex-wrap items-center gap-4 text-sm text-[var(--text-muted)]">
+                  <span className="inline-flex items-center gap-1"><PlayCircle className="w-4 h-4" /> {selectedRun.status || 'In Progress'}</span>
+                  <span>{selectedRun.requestedBy || 'Unassigned'}</span>
+                  <span>{selectedRun.date || 'No date'}</span>
+                  <span>{selectedRun.executionTime || '-'}</span>
+                </div>
+              </div>
+              <div className="flex gap-2">
+                <button onClick={() => navigate('/defects')} className="px-3 py-2 rounded-md border border-[var(--border)] text-sm hover:bg-[var(--border)]">Linked Issues</button>
+                <button onClick={() => downloadRunJson(selectedRun)} title="Download run JSON" className="p-2 rounded-md border border-[var(--border)] hover:bg-[var(--border)]"><ArrowDownToLine className="w-4 h-4" /></button>
+                <button onClick={() => shareRun(selectedRun)} title="Copy run link" className="p-2 rounded-md border border-[var(--border)] hover:bg-[var(--border)]"><Share2 className="w-4 h-4" /></button>
+                <button
+                  onClick={() => setLockedRunIds((ids) => ids.includes(selectedRun.id) ? ids.filter((id) => id !== selectedRun.id) : [...ids, selectedRun.id])}
+                  title={lockedRunIds.includes(selectedRun.id) ? 'Unlock run locally' : 'Lock run locally'}
+                  className={cn("p-2 rounded-md border border-[var(--border)] hover:bg-[var(--border)]", lockedRunIds.includes(selectedRun.id) && "text-[var(--accent)]")}
+                >
+                  <Lock className="w-4 h-4" />
+                </button>
+                <button onClick={() => navigate('/reports')} title="Open reports" className="p-2 rounded-md border border-[var(--border)] hover:bg-[var(--border)]"><MoreHorizontal className="w-4 h-4" /></button>
+              </div>
+            </div>
+          </div>
+
+          <div className="h-2 bg-[var(--bg-secondary)] flex">
+            <div className="bg-emerald-400" style={{ width: `${stats.total ? (stats.passed / stats.total) * 100 : 0}%` }} />
+            <div className="bg-red-400" style={{ width: `${stats.total ? (stats.failed / stats.total) * 100 : 0}%` }} />
+            <div className="bg-indigo-400" style={{ width: `${stats.total ? (stats.blocked / stats.total) * 100 : 0}%` }} />
+            <div className="bg-yellow-400" style={{ width: `${stats.total ? (stats.retest / stats.total) * 100 : 0}%` }} />
+            <div className="bg-slate-500" style={{ width: `${stats.total ? (stats.skipped / stats.total) * 100 : 0}%` }} />
+          </div>
+
+          <div className="px-5 py-3 border-b border-[var(--border)] flex flex-wrap gap-4 text-sm">
+            <span>{stats.completed}% Completed</span>
+            <span className="text-emerald-400">Passed {stats.passed}</span>
+            <span className="text-red-400">Failed {stats.failed}</span>
+            <span className="text-indigo-400">Blocked {stats.blocked}</span>
+            <span className="text-yellow-400">Retest {stats.retest}</span>
+            <span className="text-slate-400">Skipped {stats.skipped}</span>
+            <span className="text-[var(--text-muted)]">Untested {stats.untested}</span>
+          </div>
+
+          <div className="p-4 border-b border-[var(--border)] flex items-center justify-between gap-3">
+            <select className="bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm">
+              <option>All Test Cases</option>
+            </select>
+            <div className="flex items-center gap-2">
+              <button onClick={() => setCaseStatusFilter('All')} title="Show all grouped cases" className="p-2 rounded-md border border-[var(--border)] text-[var(--accent)]"><Folder className="w-4 h-4" /></button>
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--text-muted)]" />
+                <input value={caseSearchTerm} onChange={(e) => setCaseSearchTerm(e.target.value)} className="bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md pl-9 pr-4 py-2 text-sm outline-none focus:border-[var(--accent)]" placeholder="Search by Test Case ID or Title" />
+              </div>
+              <div className="relative">
+                <button onClick={() => setIsCaseFilterOpen(!isCaseFilterOpen)} className="flex items-center gap-2 border border-[var(--border)] rounded-md px-3 py-2 text-sm"><Filter className="w-4 h-4" /> {caseStatusFilter === 'All' ? 'Filter' : caseStatusFilter}</button>
+                {isCaseFilterOpen && (
+                  <div className="absolute right-0 top-11 z-20 w-40 overflow-hidden rounded-md border border-[var(--border)] bg-[var(--bg-card)] shadow-xl">
+                    {['All', 'Draft', 'Under Review', 'Approved', 'Automated', 'Deprecated', 'Untested'].map((status) => (
+                      <button key={status} onClick={() => { setCaseStatusFilter(status); setIsCaseFilterOpen(false); }} className="block w-full px-3 py-2 text-left text-sm hover:bg-[var(--bg-secondary)]">
+                        {status}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+
+          <div className="flex-1 min-h-0 overflow-hidden grid grid-cols-[280px_1fr]">
+            <div className="border-r border-[var(--border)] overflow-auto">
+              <div className="px-4 py-3 text-xs font-semibold uppercase text-[var(--text-muted)] border-b border-[var(--border)]">Sort by: Custom</div>
+              {groupedCases.length === 0 ? (
+                <div className="px-4 py-6 text-sm text-[var(--text-muted)]">No linked test cases.</div>
+              ) : groupedCases.map(([group, groupCases]) => (
+                <div key={group} className="px-4 py-3 flex items-center justify-between text-sm">
+                  <span className="inline-flex items-center gap-2"><Folder className="w-4 h-4 text-[var(--accent)]" /> {group}</span>
+                  <span className="text-[var(--text-muted)]">{groupCases.length}</span>
+                </div>
+              ))}
+            </div>
+
+            <div className="overflow-auto">
+              <table className="w-full text-left text-sm whitespace-nowrap">
+                <thead className="sticky top-0 bg-[var(--bg-secondary)] text-[var(--text-muted)] border-b border-[var(--border)]">
+                  <tr>
+                    <th className="px-4 py-3 w-10"><input type="checkbox" /></th>
+                    <th className="px-4 py-3 font-medium">ID</th>
+                    <th className="px-4 py-3 font-medium">Title</th>
+                    <th className="px-4 py-3 font-medium">Configurations</th>
+                    <th className="px-4 py-3 font-medium">Priority</th>
+                    <th className="px-4 py-3 font-medium">Status</th>
+                    <th className="px-4 py-3 w-12"><SlidersHorizontal className="w-4 h-4" /></th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[var(--border)]">
+                  {visibleRunCases.length === 0 ? (
+                    <tr><td colSpan={7} className="px-4 py-8 text-center text-[var(--text-muted)]">No test cases linked to this run.</td></tr>
+                  ) : visibleRunCases.map((testCase) => (
+                    <tr key={testCase.id} className="hover:bg-[var(--bg-secondary)]">
+                      <td className="px-4 py-3"><input type="checkbox" /></td>
+                      <td className="px-4 py-3 font-mono">{testCase.id}</td>
+                      <td className="px-4 py-3 font-medium max-w-md truncate">{testCase.title}</td>
+                      <td className="px-4 py-3 text-[var(--text-muted)]">--</td>
+                      <td className="px-4 py-3">{testCase.priority || '-'}</td>
+                      <td className="px-4 py-3">
+                        <span className="inline-flex items-center gap-2">
+                          <span className={cn('w-2 h-2 rounded-full', statusDot(testCase.status || 'Untested'))} />
+                          {testCase.status || 'Untested'}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3"><button onClick={() => navigate('/cases')} title="Open test cases"><MoreHorizontal className="w-4 h-4 text-[var(--text-muted)]" /></button></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
-    <div className="max-w-7xl mx-auto h-[calc(100vh-140px)] flex flex-col">
-      {/* Header section */}
-      <div className="flex items-center justify-between mb-5 flex-shrink-0">
+    <div className="max-w-7xl mx-auto h-full flex flex-col">
+      <div className="flex items-center justify-between mb-6">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Test Runs</h1>
-          <p className="text-sm text-[var(--text-muted)] mt-1">Monitor active and historical test executions, request details, and screenshot evidence outputs.</p>
-        </div>
-        <div className="flex items-center gap-2">
-          <button onClick={openNewModal} className="flex items-center gap-2 bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white px-4 py-2 rounded-md text-sm font-medium transition-colors">
-            <PlayCircle className="w-4 h-4" /> Execute Run
-          </button>
-          <button onClick={() => setIsAIRunModalOpen(true)} className="flex items-center gap-1.5 bg-[#8b5cf6] hover:bg-[#7c3aed] text-white px-3 py-2 rounded-md text-sm font-medium transition-colors">
-            <Sparkles className="w-4 h-4" /> AI Auto
-          </button>
-        </div>
-      </div>
-
-      {/* Split Layout */}
-      <div className="flex flex-1 min-h-0 gap-6 w-full items-stretch">
-        
-        {/* Left Column: List of Runs */}
-        <div className="w-96 flex flex-col bg-[var(--bg-card)] border border-[var(--border)] rounded-xl shadow-sm min-h-0">
-          <div className="p-4 border-b border-[var(--border)] space-y-3">
-            <div className="relative">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--text-muted)]" />
-              <input 
-                type="text" 
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                placeholder="Search runs..." 
-                className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md pl-9 pr-3 py-1.5 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)] placeholder-[var(--text-muted)] transition-colors"
-              />
-            </div>
-          </div>
-
-          <div className="flex-1 overflow-y-auto divide-y divide-[var(--border)]">
-            {loading ? (
-              <div className="py-12 text-center text-[var(--text-muted)] text-sm">Loading runs...</div>
-            ) : filteredRuns.length === 0 ? (
-              <div className="py-12 text-center text-[var(--text-muted)] text-sm">No test runs found.</div>
-            ) : (
-              filteredRuns.map((r) => (
-                <div
-                  key={r.id}
-                  onClick={() => setSelectedRun(r)}
-                  className={cn(
-                    "p-4 cursor-pointer transition-all border-l-4 text-left relative group",
-                    selectedRun?.id === r.id
-                      ? "bg-[var(--bg-secondary)] border-l-[var(--accent)]"
-                      : "border-l-transparent hover:bg-[var(--bg-secondary)]/50"
-                  )}
-                >
-                  <div className="flex justify-between items-start mb-1">
-                    <span className="font-mono text-[10px] uppercase text-[var(--text-muted)] tracking-wider">
-                      {r.id}
-                    </span>
-                    <span className={cn(
-                      "inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold tracking-wide uppercase",
-                      r.failed === 0
-                        ? "bg-emerald-500/10 text-emerald-500 border border-emerald-500/10"
-                        : "bg-red-500/10 text-red-500 border border-red-500/10"
-                    )}>
-                      {r.failed === 0 ? 'Passed' : 'Failed'}
-                    </span>
-                  </div>
-
-                  <h3 className="font-semibold text-sm text-[var(--text-primary)] leading-snug truncate pr-6">
-                    {r.name}
-                  </h3>
-
-                  <div className="mt-2 flex flex-col gap-1 text-xs text-[var(--text-muted)]">
-                    <div className="flex items-center gap-1.5 truncate">
-                      <Layers className="w-3.5 h-3.5 text-[var(--text-muted)] leading-none" />
-                      <span className="truncate">{r.suiteName || 'No suite assigned'}</span>
-                    </div>
-                    <div className="flex items-center gap-1.5 font-mono text-[11px] text-slate-400 mt-1">
-                      <span>Cases: {r.progress || `${r.passed || 0}/${r.totalExecutions || 3} passed`}</span>
-                    </div>
-                  </div>
-
-                  <div className="mt-3 flex items-center justify-between text-[11px] text-[var(--text-muted)]">
-                    <span>{r.date || '2026-06-03'}</span>
-                    <span className="font-mono text-slate-500 bg-[var(--bg-primary)] px-1.5 py-0.5 rounded text-[10px]">
-                      {r.executionTime}
-                    </span>
-                  </div>
-
-                  {/* Delete button option */}
-                  <button
-                    onClick={(e) => handleDeleteRun(r.id, e)}
-                    className="absolute right-3 top-3 opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-red-500/10 text-[var(--text-muted)] hover:text-red-500 transition-all z-10"
-                    title="Delete Run"
-                  >
-                    <MoreHorizontal className="w-3.5 h-3.5" />
-                  </button>
-                </div>
-              ))
-            )}
-          </div>
-        </div>
-
-        {/* Right Column: Run Details */}
-        <div className="flex-1 flex flex-col bg-[var(--bg-card)] border border-[var(--border)] rounded-xl shadow-sm overflow-hidden min-h-0">
-          {selectedRun ? (
-            <div className="flex flex-col h-full overflow-hidden">
-              
-              {/* Detailed Header Metrics */}
-              <div className="p-5 border-b border-[var(--border)] bg-[var(--bg-secondary)]/30 flex-shrink-0 text-left">
-                <div className="flex items-start justify-between">
-                  <div>
-                    <div className="flex items-center gap-3 mb-1">
-                      <span className="font-mono text-xs text-[var(--text-muted)] bg-[var(--bg-primary)] px-2 py-0.5 rounded border border-[var(--border)] font-medium">
-                        {selectedRun.id}
-                      </span>
-                      <span className="text-xs text-[var(--text-muted)] flex items-center gap-1">
-                        <Calendar className="w-3.5 h-3.5" /> {selectedRun.date || '2026-06-03'}
-                      </span>
-                    </div>
-                    <h2 className="text-xl font-bold tracking-tight text-[var(--text-primary)]">
-                      {selectedRun.name}
-                    </h2>
-                  </div>
-                  <div className="flex gap-2">
-                    <button onClick={() => captureEvidence(selectedRun.id)} title="Capture Page View to PNG" className="flex items-center gap-1 text-[11px] font-semibold text-blue-500 bg-blue-500/10 hover:bg-blue-500/20 px-2.5 py-1.5 rounded border border-blue-500/10 transition-colors">
-                      <Camera className="w-3.5 h-3.5" /> Screen Capture
-                    </button>
-                    <span className={cn(
-                      "inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold border uppercase tracking-wider",
-                      selectedRun.failed === 0 
-                        ? "bg-emerald-500/15 text-emerald-500 border-emerald-500/20" 
-                        : "bg-red-500/15 text-red-500 border-red-500/20"
-                    )}>
-                      {selectedRun.failed === 0 ? <ShieldCheck className="w-4 h-4" /> : <ShieldAlert className="w-4 h-4" />}
-                      {selectedRun.failed === 0 ? 'Passed' : 'Failed'}
-                    </span>
-                  </div>
-                </div>
-
-                {/* Grid stats parameters */}
-                <div className="grid grid-cols-3 gap-4 mt-5">
-                  <div className="bg-[var(--bg-card)] border border-[var(--border)] p-3 rounded-lg shadow-sm">
-                    <span className="block text-[11px] font-medium text-[var(--text-muted)] uppercase tracking-wider">Executed Test Plan</span>
-                    <span className="block text-sm font-semibold truncate text-[var(--text-primary)] mt-1">Core Regression Integration Plan</span>
-                  </div>
-                  <div className="bg-[var(--bg-card)] border border-[var(--border)] p-3 rounded-lg shadow-sm">
-                    <span className="block text-[11px] font-medium text-[var(--text-muted)] uppercase tracking-wider">Target Test Suite</span>
-                    <span className="block text-sm font-semibold truncate text-[var(--text-primary)] mt-1">{selectedRun.suiteName || 'No suite assigned'}</span>
-                  </div>
-                  <div className="bg-[var(--bg-card)] border border-[var(--border)] p-3 rounded-lg shadow-sm">
-                    <span className="block text-[11px] font-medium text-[var(--text-muted)] uppercase tracking-wider">Requested By</span>
-                    <span className="block text-sm font-semibold text-[var(--text-primary)] mt-1 flex items-center gap-1 max-w-full truncate">
-                       <User className="w-3 h-3 text-slate-400 shrink-0" />
-                       <span className="truncate">{selectedRun.requestedBy || 'Not specified'}</span>
-                    </span>
-                  </div>
-                </div>
-
-                {/* Sub KPI cards detail */}
-                <div className="flex items-center gap-4 mt-4 text-xs font-mono">
-                  <div className="flex items-center gap-2 bg-[var(--bg-card)] border border-[var(--border)] px-3 py-1 rounded">
-                     <Clock className="w-3.5 h-3.5 text-blue-500" />
-                     <span className="text-[var(--text-muted)]">Time elapsed:</span>
-                     <span className="font-bold text-[var(--text-primary)]">{selectedRun.executionTime || '1m 24s'}</span>
-                  </div>
-                  <div className="flex items-center gap-2 bg-emerald-500/10 border border-emerald-500/20 text-emerald-500 px-2 py-0.5 rounded">
-                     <span>PASSED:</span>
-                     <span className="font-bold">{selectedRun.passed !== undefined ? selectedRun.passed : 3}</span>
-                  </div>
-                  <div className="flex items-center gap-2 bg-red-500/10 border border-red-500/20 text-red-500 px-2 py-0.5 rounded">
-                     <span>FAILED:</span>
-                     <span className="font-bold">{selectedRun.failed !== undefined ? selectedRun.failed : 0}</span>
-                  </div>
-                  <div className="flex items-center gap-2 bg-slate-500/10 border border-slate-500/20 text-slate-500 px-2 py-0.5 rounded">
-                     <span>TOTAL CASES:</span>
-                     <span className="font-bold">{selectedRun.totalExecutions !== undefined ? selectedRun.totalExecutions : 3}</span>
-                  </div>
-                </div>
-              </div>
-
-              {/* Execution Steps Details Table */}
-              <div className="flex-1 overflow-auto p-5 text-left">
-                <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
-                  <h3 className="text-sm font-semibold">Verification Step Outline</h3>
-                  <label className="flex items-center gap-2 text-xs font-semibold cursor-pointer select-none text-[var(--test-primary)] bg-[var(--bg-secondary)] px-3 py-1.5 rounded-md border border-[var(--border)] hover:border-[var(--accent)] transition-colors">
-                    <input 
-                      type="checkbox" 
-                      id="toggle-screenshots-checkbox-runs"
-                      checked={showInlineScreenshots} 
-                      onChange={(e) => setShowInlineScreenshots(e.target.checked)} 
-                      className="rounded border-[var(--border)] text-[var(--accent)] focus:ring-[var(--accent)] cursor-pointer"
-                    />
-                    <span>Show Real Screenshots Inline (Evidence Trace)</span>
-                  </label>
-                </div>
-                
-                <div className="border border-[var(--border)] rounded-lg overflow-hidden bg-[var(--bg-secondary)]/20 shadow-inner">
-                  <table className="w-full text-left text-sm whitespace-nowrap">
-                    <thead>
-                      <tr className="bg-[var(--bg-secondary)] text-[var(--text-muted)] text-[11px] uppercase tracking-wider border-b border-[var(--border)]">
-                        <th className="py-2.5 px-4 w-12 text-center">Step</th>
-                        <th className="py-2.5 px-4 w-72">Action / Input Parameter</th>
-                        <th className="py-2.5 px-4 w-72">Expected Result</th>
-                        <th className="py-2.5 px-4 w-28 text-center">Outcome</th>
-                        <th className="py-2.5 px-4 text-right">Evidence (Screenshot)</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-[var(--border)] font-sans">
-                      {(selectedRun.steps || []).length === 0 ? (
-                        <tr>
-                          <td colSpan={5} className="py-10 px-4 text-center text-sm text-[var(--text-muted)]">
-                            No verification steps recorded for this run.
-                          </td>
-                        </tr>
-                      ) : (selectedRun.steps || []).map((stepItem: any, sIdx: number) => {
-                        const scoreIsFail = stepItem.outcome === 'Fail';
-                        const scoreIsSkip = stepItem.outcome === 'Skipped';
-                        
-                        return (
-                          <React.Fragment key={sIdx}>
-                            <tr className="hover:bg-[var(--bg-secondary)]/40 hover:text-[var(--text-primary)] transition-colors">
-                              <td className="py-3 px-4 text-center font-mono text-xs text-[var(--text-muted)] font-semibold">
-                                {stepItem.step}
-                              </td>
-                              <td className="py-3 px-4">
-                                <div className="font-medium text-xs break-all whitespace-normal text-[var(--text-primary)] max-w-xs">{stepItem.action}</div>
-                              </td>
-                              <td className="py-3 px-4">
-                                <div className="text-xs break-all whitespace-normal text-[var(--text-muted)] max-w-xs">{stepItem.expected}</div>
-                              </td>
-                              <td className="py-3 px-4 text-center">
-                                <span className={cn(
-                                  "inline-flex px-2 py-0.5 rounded text-[11px] font-mono font-semibold tracking-wider",
-                                  scoreIsFail 
-                                    ? "bg-red-500/10 text-red-500 border border-red-500/20" 
-                                    : scoreIsSkip 
-                                      ? "bg-slate-500/10 text-slate-500 border border-slate-500/20 text-[var(--text-primary)]" 
-                                      : "bg-emerald-500/10 text-emerald-500 border border-emerald-500/20"
-                                )}>
-                                  {stepItem.outcome}
-                                </span>
-                              </td>
-                              <td className="py-3 px-4 text-right">
-                                {stepItem.screenshot ? (
-                                  <span className="text-xs font-mono text-emerald-500 bg-emerald-500/10 px-2 py-1 rounded inline-flex items-center gap-1 leading-none font-semibold">
-                                    <Camera className="w-3 h-3 leading-none shrink-0" /> Live Frame Inline
-                                  </span>
-                                ) : (
-                                  <span className="text-xs text-[var(--text-muted)] italic">No screenshot</span>
-                                )}
-                              </td>
-                            </tr>
-                            {showInlineScreenshots && stepItem.screenshot && (
-                              <tr>
-                                <td colSpan={5} className="bg-[var(--bg-secondary)]/45 px-4 py-4 border-b border-[var(--border)]">
-                                  <div className="max-w-3xl mx-auto bg-slate-950 border border-slate-800 rounded-lg overflow-hidden shadow-md flex flex-col font-sans">
-                                    {/* Simulated Web Browser Chrome */}
-                                    <div className="bg-slate-900 border-b border-slate-800 px-3 py-1.5 flex items-center justify-between">
-                                      <div className="flex items-center gap-1.5">
-                                        <span className="w-2.5 h-2.5 rounded-full bg-red-400/80"></span>
-                                        <span className="w-2.5 h-2.5 rounded-full bg-yellow-400/80"></span>
-                                        <span className="w-2.5 h-2.5 rounded-full bg-emerald-400/80"></span>
-                                        <span className="ml-3 font-mono text-[10px] text-slate-400 truncate max-w-sm bg-slate-950 px-2.5 py-0.5 rounded border border-slate-800">
-                                          {SCREENSHOT_PRESETS[stepItem.screenshot]?.url || stepItem.screenshot}
-                                        </span>
-                                      </div>
-                                      <span className="text-[10px] text-emerald-400 font-bold bg-slate-950 px-2 py-0.5 rounded border border-slate-800/60 flex items-center gap-1">
-                                        <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse mr-0.5"></span>
-                                        PLAYWRIGHT SCREENSHOT ENGINE
-                                      </span>
-                                    </div>
-                                    {/* Browser Rendered Content */}
-                                    <div className="p-0 bg-slate-950 flex items-center justify-center overflow-hidden min-h-[160px]">
-                                      <img 
-                                        src={`/api/screenshot?url=${encodeURIComponent(stepItem.screenshot)}`}
-                                        alt={SCREENSHOT_PRESETS[stepItem.screenshot]?.title || `Captured URL View: ${stepItem.screenshot}`}
-                                        className="w-full h-auto max-h-[420px] object-cover object-top border-0 bg-slate-100 dark:bg-slate-900"
-                                        referrerPolicy="no-referrer"
-                                        onError={(e) => {
-                                          e.currentTarget.src = "https://images.unsplash.com/photo-1541560052-5e137f229371?w=1280&q=80";
-                                        }}
-                                      />
-                                    </div>
-                                    <div className="bg-slate-900/90 border-t border-slate-850 px-3 py-1.5 flex justify-between items-center text-[10px]">
-                                      <span className="font-bold text-slate-300">
-                                        {SCREENSHOT_PRESETS[stepItem.screenshot]?.title || `Automated live screen of ${stepItem.screenshot}`}
-                                      </span>
-                                      <span className="font-mono text-slate-500">Step {stepItem.step} Evidence Snapshot</span>
-                                    </div>
-                                  </div>
-                                </td>
-                              </tr>
-                            )}
-                          </React.Fragment>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-
-            </div>
-          ) : (
-            <div className="flex-1 flex flex-col items-center justify-center p-12 text-[var(--text-muted)] text-center">
-              <ClipboardList className="w-16 h-16 mb-4 opacity-40 text-[var(--accent)]" />
-              <h3 className="text-lg font-semibold text-[var(--text-primary)]">No Active Run Selected</h3>
-              <p className="text-xs max-w-xs mt-1">Select any verified test execution run from search list to check its real-time metrics and inspect screenshots inline.</p>
-            </div>
-          )}
-        </div>
-
-      </div>
-
-      {/* Save Manual Run Modal Layout */}
-      <Modal isOpen={isRunModalOpen} onClose={() => setIsRunModalOpen(false)} title="Execute New Test Run">
-        <div className="space-y-4 text-left">
-          
-          <div>
-            <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Run / Execution Name</label>
-            <input 
-              type="text" 
-              value={newRunName} 
-              onChange={(e) => setNewRunName(e.target.value)} 
-              placeholder="e.g. Sprint 20 Regression Verification Run" 
-              className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]" 
-            />
-          </div>
-
-          <div className="grid grid-cols-2 gap-4">
-             <div>
-                <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Target Test Suite</label>
-                <input 
-                  type="text"
-                  value={newRunSuite} 
-                  onChange={(e) => setNewRunSuite(e.target.value)} 
-                  placeholder="Enter suite name"
-                  className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]"
-                />
-             </div>
-             <div>
-                <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Requested By</label>
-                <input 
-                  type="text" 
-                  value={newRunRequester} 
-                  onChange={(e) => setNewRunRequester(e.target.value)} 
-                  className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]" 
-                />
-             </div>
-          </div>
-
-          <div className="grid grid-cols-2 gap-4">
-             <div>
-                <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Estimated Execution Time</label>
-                <input 
-                  type="text" 
-                  value={newRunExecutionTime} 
-                  onChange={(e) => setNewRunExecutionTime(e.target.value)} 
-                  placeholder="e.g. 1m 35s" 
-                  className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]" 
-                />
-             </div>
-             <div className="flex items-end">
-                <p className="text-[11px] text-[var(--text-muted)] italic leading-snug pb-2">
-                   This execution will automatically output JWT Token, Account Profile endpoint validation traces, and real screenshot evidence.
-                </p>
-             </div>
-          </div>
-
-          <div>
-             <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Target URL to Test (Real-Time Screenshot Engine Target)</label>
-             <input 
-               type="url" 
-               value={newRunTargetUrl} 
-               onChange={(e) => setNewRunTargetUrl(e.target.value)} 
-               placeholder="e.g. https://google.com or https://example.com" 
-               className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]" 
-             />
-          </div>
-
-          <div className="pt-2 flex justify-end gap-3 bg-[var(--bg-card)] mt-2">
-            <button onClick={() => setIsRunModalOpen(false)} className="px-4 py-2 text-sm font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]">Cancel</button>
-            <button onClick={handleSaveRun} disabled={!newRunName.trim()} className="px-4 py-2 bg-[var(--accent)] text-white text-sm font-medium rounded-md hover:bg-[var(--accent-hover)] disabled:opacity-50 transition-colors">
-              Execute New Run
+          <div className="mt-4 flex gap-8 text-sm">
+            <button onClick={() => setRunView('active')} className={cn('pb-2 border-b-2', runView === 'active' ? 'border-[var(--accent)] text-[var(--accent)]' : 'border-transparent text-[var(--text-muted)]')}>
+              Active Runs <span className="ml-2 rounded-full bg-[var(--bg-secondary)] px-2 py-0.5">{activeRuns.length}</span>
             </button>
+            <button onClick={() => setRunView('closed')} className={cn('pb-2 border-b-2', runView === 'closed' ? 'border-[var(--accent)] text-[var(--accent)]' : 'border-transparent text-[var(--text-muted)]')}>
+              Closed Runs <span className="ml-2 rounded-full bg-[var(--bg-secondary)] px-2 py-0.5">{closedRuns.length}</span>
+            </button>
+          </div>
+        </div>
+        <div className="flex gap-2">
+          <button onClick={openNewModal} className="bg-[var(--accent)] text-white px-4 py-2 rounded-md text-sm font-medium">Create Manual Run</button>
+          <button onClick={() => setIsAIRunModalOpen(true)} className="bg-[#8b5cf6] text-white px-3 py-2 rounded-md text-sm font-medium"><Sparkles className="inline w-4 h-4" /></button>
+        </div>
+      </div>
+
+      <Modal isOpen={isRunModalOpen} onClose={() => setIsRunModalOpen(false)} title="Create Manual Run">
+        <div className="space-y-4">
+          <input value={newRunName} onChange={(e) => setNewRunName(e.target.value)} placeholder="Run name" className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm" />
+          <select value={newRunCaseId} onChange={(e) => setNewRunCaseId(e.target.value)} className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm">
+            <option value="">No specific test case</option>
+            {cases.map((testCase) => (
+              <option key={testCase.id} value={testCase.id}>
+                {testCase.title || testCase.id}{testCase.captureEvidenceOnManualRun !== false ? ' - snapshot evidence on' : ' - snapshot evidence off'}
+              </option>
+            ))}
+          </select>
+          <FolderSelect value={newRunFolderId} onChange={setNewRunFolderId} />
+          <input value={newRunSuite} onChange={(e) => setNewRunSuite(e.target.value)} placeholder="Suite name" className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm" />
+          <input value={newRunRequester} onChange={(e) => setNewRunRequester(e.target.value)} placeholder="Requested by" className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm" />
+          <input value={newRunExecutionTime} onChange={(e) => setNewRunExecutionTime(e.target.value)} placeholder="Execution time" className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm" />
+          <input value={newRunTargetUrl} onChange={(e) => setNewRunTargetUrl(e.target.value)} placeholder="Target URL" className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm" />
+          <div className="flex justify-end gap-3">
+            <button onClick={() => setIsRunModalOpen(false)} className="px-4 py-2 text-sm text-[var(--text-muted)]">Cancel</button>
+            <button onClick={handleSaveRun} className="px-4 py-2 bg-[var(--accent)] text-white text-sm rounded-md">Create Run</button>
           </div>
         </div>
       </Modal>
 
-      <AIActionModal 
-        isOpen={isAIRunModalOpen}
-        onClose={() => setIsAIRunModalOpen(false)}
-        taskType="run"
-        onApprove={handleAIApprove}
-        title="AI Auto: Execute New Run"
-      />
+      <AIActionModal isOpen={isAIRunModalOpen} onClose={() => setIsAIRunModalOpen(false)} taskType="run" onApprove={handleAIApprove} title="AI Auto: New Test Run" />
+
+      <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl flex flex-col flex-1 min-h-0 overflow-hidden">
+        <div className="p-4 border-b border-[var(--border)] flex items-center justify-between gap-4">
+          <div className="relative">
+            <button onClick={() => setIsViewMenuOpen(!isViewMenuOpen)} className="w-48 border border-[var(--border)] bg-[var(--bg-secondary)] rounded-md px-3 py-2 text-sm text-left">{selectedView}</button>
+            {isViewMenuOpen && (
+              <div className="absolute top-11 left-0 z-20 w-56 rounded-md border border-[var(--border)] bg-[var(--bg-card)] shadow-xl overflow-hidden">
+                {['All Runs', 'My Runs', 'Failed Runs', 'Manual Runs', 'Automated Runs'].map((view) => (
+                  <button key={view} onClick={() => { setSelectedView(view); setIsViewMenuOpen(false); }} className="block w-full px-4 py-3 text-left text-sm hover:bg-[var(--bg-secondary)]">{view}</button>
+                ))}
+              </div>
+            )}
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--text-muted)]" />
+              <input value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} placeholder="Search by name, tag, build #, or CI #" className="w-96 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md pl-9 pr-4 py-2 text-sm outline-none focus:border-[var(--accent)]" />
+            </div>
+            <button onClick={() => setIsViewMenuOpen(!isViewMenuOpen)} title="Open run view filters" className="p-2 rounded-md border border-[var(--border)]"><Filter className="w-4 h-4" /></button>
+          </div>
+        </div>
+
+        <div className="flex-1 overflow-auto">
+          <table className="w-full text-left text-sm whitespace-nowrap">
+            <thead className="sticky top-0 bg-[var(--bg-secondary)] border-b border-[var(--border)] text-[var(--text-muted)]">
+              <tr>
+                <th className="px-4 py-3 w-10"></th>
+                <th className="px-4 py-3 font-medium">Run</th>
+                <th className="px-4 py-3 font-medium">Tests</th>
+                <th className="px-4 py-3 font-medium">Duration</th>
+                <th className="px-4 py-3 font-medium">Tests Status</th>
+                <th className="px-4 py-3 font-medium">Failure Analysis</th>
+                <th className="px-4 py-3 w-12"></th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-[var(--border)]">
+              {loading ? (
+                <tr><td colSpan={7} className="px-4 py-8 text-center text-[var(--text-muted)]">Loading runs...</td></tr>
+              ) : filteredRuns.length === 0 ? (
+                <tr><td colSpan={7} className="px-4 py-8 text-center text-[var(--text-muted)]">No test runs found.</td></tr>
+              ) : filteredRuns.map((run) => {
+                const stats = getRunStats(run);
+                return (
+                  <tr key={run.id} onClick={() => navigate(`/runs/${run.id}`)} className="hover:bg-[var(--bg-secondary)] cursor-pointer">
+                    <td className="px-4 py-4"><CheckCircle className="w-8 h-8 text-[var(--accent)]" /></td>
+                    <td className="px-4 py-4">
+                      <div className="font-semibold">{run.name}</div>
+                      <div className="text-xs text-[var(--text-muted)]">Assigned to {run.requestedBy || 'Unassigned'}</div>
+                    </td>
+                    <td className="px-4 py-4">{stats.total} Tests</td>
+                    <td className="px-4 py-4">{run.executionTime || '-'}</td>
+                    <td className="px-4 py-4">
+                      <div className="flex gap-2">
+                        <span className="px-2 py-1 rounded bg-emerald-500/10 text-emerald-400">{stats.passed}</span>
+                        <span className="px-2 py-1 rounded bg-red-500/10 text-red-400">{stats.failed}</span>
+                        <span className="px-2 py-1 rounded bg-indigo-500/10 text-indigo-400">{stats.blocked}</span>
+                        <span className="px-2 py-1 rounded bg-[var(--bg-secondary)] text-[var(--text-muted)]">{stats.untested}</span>
+                      </div>
+                    </td>
+                    <td className="px-4 py-4 text-[var(--text-muted)]">{stats.failed ? `${stats.failed} failed` : '-'}</td>
+                    <td className="px-4 py-4">
+                      <button onClick={(event) => { event.stopPropagation(); navigate(`/runs/${run.id}`); }} title="Open run details">
+                        <MoreHorizontal className="w-4 h-4 text-[var(--text-muted)]" />
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
     </div>
   );
 }

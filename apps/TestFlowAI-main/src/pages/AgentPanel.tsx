@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Bot, Save, Download, Loader2, Plus, CheckCircle2, Mic, Send, SplitSquareHorizontal } from 'lucide-react';
+import { Bot, Save, Download, Loader2, Plus, CheckCircle2, Mic, Send, SplitSquareHorizontal, FolderTree } from 'lucide-react';
 import { cn } from '@/src/lib/utils';
 import { useSpeechToText } from '@/src/lib/useSpeechToText';
 
@@ -50,7 +50,11 @@ export default function AgentPanel() {
   const [editingCaseIndex, setEditingCaseIndex] = useState<number | null>(null);
   const [caseFeedback, setCaseFeedback] = useState('');
   const [expandStepCount, setExpandStepCount] = useState(8);
+  const [expandStepTarget, setExpandStepTarget] = useState<'all' | number>('all');
   const [expandingCaseIndex, setExpandingCaseIndex] = useState<number | null>(null);
+  const [folders, setFolders] = useState<any[]>([]);
+  const [selectedFolderId, setSelectedFolderId] = useState('');
+  const [isFolderPickerOpen, setIsFolderPickerOpen] = useState(false);
   
   const [messages, setMessages] = useState<{role: 'user' | 'agent' | 'system', content: string}[]>([
     { role: 'agent', content: 'Hi! I am the AI Test Agent. I can help you generate test cases and Playwright scripts. Tell me what application you want to test and any specific requirements.' }
@@ -68,6 +72,15 @@ export default function AgentPanel() {
     stopListening,
     toggleListening,
   } = useSpeechToText({ onTranscript: appendSpeechTranscript });
+
+  useEffect(() => {
+    fetch('/api/folders')
+      .then((r) => r.json())
+      .then((data) => setFolders(Array.isArray(data) ? data : []))
+      .catch(console.error);
+  }, []);
+
+  const selectedFolder = folders.find((folder) => folder.id === selectedFolderId);
 
   const sendMessage = async () => {
     if (!input.trim() || isGenerating) return;
@@ -90,7 +103,7 @@ export default function AgentPanel() {
       const res = await fetch('/api/agent/start', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ app_url: appUrl, provider: 'gemini', prompt: userMessage, testCaseCount, flowMode })
+        body: JSON.stringify({ app_url: appUrl, provider: 'gemini', prompt: userMessage, testCaseCount, flowMode, folderId: selectedFolderId })
       });
       const data = await res.json();
       if (data.chat_response) {
@@ -143,9 +156,24 @@ export default function AgentPanel() {
     await fetch('/api/agent/save-cases', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ cases: runData.generated_cases })
+      body: JSON.stringify({ cases: runData.generated_cases, taskId })
     });
     alert('Cases saved successfully to Test Cases module!');
+  };
+
+  const downloadPlaywrightScripts = () => {
+    const scripts = runData?.playwright_scripts || [];
+    if (!scripts.length) return;
+    const content = scripts
+      .map((script: any) => `// ${script.filename || script.test_case_title || 'playwright-script'}\n${script.code || ''}`)
+      .join('\n\n');
+    const blob = new Blob([content], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = `playwright-scripts-${runData?.id || 'agent-run'}.ts`;
+    anchor.click();
+    URL.revokeObjectURL(url);
   };
 
   const continueAgentFlow = async () => {
@@ -250,11 +278,19 @@ export default function AgentPanel() {
           testCase: currentCase,
           targetStepCount: expandStepCount,
           targetUrl: runData?.app_url,
+          stepIndex: typeof expandStepTarget === 'number' ? expandStepTarget : null,
         }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to expand test steps');
-      updateGeneratedCase(caseIndex, { steps: data.steps });
+      if (typeof expandStepTarget === 'number') {
+        const steps = [...(currentCase.steps || [])];
+        steps.splice(expandStepTarget, 1, ...(data.steps || []));
+        updateGeneratedCase(caseIndex, { steps });
+        setExpandStepTarget('all');
+      } else {
+        updateGeneratedCase(caseIndex, { steps: data.steps });
+      }
     } catch (err: any) {
       alert(err.message || 'Failed to expand test steps.');
     } finally {
@@ -355,6 +391,43 @@ export default function AgentPanel() {
                 </div>
               </div>
             </div>
+            <div className="mb-3">
+              <button
+                type="button"
+                onClick={() => setIsFolderPickerOpen(!isFolderPickerOpen)}
+                disabled={isGenerating}
+                className="flex w-full items-center justify-between gap-2 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-left text-xs text-[var(--text-primary)] hover:border-[var(--accent)] disabled:opacity-50"
+              >
+                <span className="flex min-w-0 items-center gap-2">
+                  <FolderTree className="h-4 w-4 shrink-0 text-[var(--accent)]" />
+                  <span className="min-w-0 truncate">
+                    {selectedFolder ? selectedFolder.path || selectedFolder.name : 'Auto-create or use @folder in chat'}
+                  </span>
+                </span>
+                <Plus className="h-4 w-4 shrink-0" />
+              </button>
+              {isFolderPickerOpen && (
+                <div className="mt-2 max-h-44 overflow-auto rounded-md border border-[var(--border)] bg-[var(--bg-card)] p-1 shadow-xl">
+                  <button
+                    type="button"
+                    onClick={() => { setSelectedFolderId(''); setIsFolderPickerOpen(false); }}
+                    className="block w-full rounded px-3 py-2 text-left text-xs text-[var(--text-muted)] hover:bg-[var(--bg-secondary)] hover:text-[var(--text-primary)]"
+                  >
+                    Auto-create from prompt
+                  </button>
+                  {folders.map((folder) => (
+                    <button
+                      key={folder.id}
+                      type="button"
+                      onClick={() => { setSelectedFolderId(folder.id); setIsFolderPickerOpen(false); }}
+                      className="block w-full rounded px-3 py-2 text-left text-xs text-[var(--text-primary)] hover:bg-[var(--bg-secondary)]"
+                    >
+                      {folder.path || folder.name}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
             <div className="relative flex items-center">
               <input 
                 value={input}
@@ -437,7 +510,7 @@ export default function AgentPanel() {
              </div>
            )}
            {activeTab === 'code' && runData?.playwright_scripts?.length > 0 && (
-             <button className="flex items-center gap-2 bg-[var(--bg-secondary)] border border-[var(--border)] hover:bg-[var(--border)] text-[var(--text-primary)] px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
+             <button onClick={downloadPlaywrightScripts} className="flex items-center gap-2 bg-[var(--bg-secondary)] border border-[var(--border)] hover:bg-[var(--border)] text-[var(--text-primary)] px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
                <Download className="w-4 h-4" /> Download
              </button>
            )}
@@ -545,7 +618,20 @@ export default function AgentPanel() {
                       <div className="space-y-2">
                         <div className="flex flex-wrap items-center justify-between gap-2">
                           <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">Test steps</div>
-                          <div className="flex items-center gap-2">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <label className="flex items-center gap-2 text-xs text-[var(--text-muted)]">
+                              Target
+                              <select
+                                value={expandStepTarget}
+                                onChange={(e) => setExpandStepTarget(e.target.value === 'all' ? 'all' : Number(e.target.value))}
+                                className="bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-2 py-1 text-xs outline-none focus:border-[var(--accent)] text-[var(--text-primary)]"
+                              >
+                                <option value="all">All steps</option>
+                                {(c.steps || []).map((_: any, stepIndex: number) => (
+                                  <option key={stepIndex} value={stepIndex}>Step {stepIndex + 1}</option>
+                                ))}
+                              </select>
+                            </label>
                             <label className="flex items-center gap-2 text-xs text-[var(--text-muted)]">
                               Expand to
                               <select
@@ -569,7 +655,13 @@ export default function AgentPanel() {
                           </div>
                         </div>
                         {(c.steps || []).map((step: any, stepIndex: number) => (
-                          <div key={stepIndex} className="grid grid-cols-1 gap-2 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] p-2 lg:grid-cols-[1fr_1fr_auto] lg:items-start">
+                          <div
+                            key={stepIndex}
+                            className={cn(
+                              "grid grid-cols-1 gap-2 rounded-md border bg-[var(--bg-secondary)] p-2 lg:grid-cols-[1fr_1fr_auto] lg:items-start",
+                              expandStepTarget === stepIndex ? "border-[var(--accent)]" : "border-[var(--border)]"
+                            )}
+                          >
                             <textarea
                               value={step.action || ''}
                               onChange={(e) => updateGeneratedCaseStep(i, stepIndex, { action: e.target.value })}
@@ -617,11 +709,14 @@ export default function AgentPanel() {
           )}
 
           {activeTab === 'code' && runData?.playwright_scripts?.map((script: any, i: number) => (
-             <div key={i} className="mb-6 rounded-lg overflow-hidden border border-[var(--border)]">
-               <div className="bg-[#1e293b] px-4 py-2 flex items-center justify-between text-xs text-slate-300 border-b border-slate-700">
-                 <span className="font-mono">{script.filename}</span>
+             <div key={i} className="mb-5 overflow-hidden rounded-xl border border-[var(--border)] bg-slate-950 shadow-sm">
+               <div className="flex items-center justify-between gap-3 border-b border-slate-800 bg-slate-900 px-4 py-3 text-xs text-slate-300">
+                 <span className="min-w-0 truncate font-mono font-semibold">{script.filename}</span>
+                 <span className="shrink-0 rounded border border-slate-700 px-2 py-0.5 text-[10px] uppercase tracking-wider text-slate-400">
+                   Playwright
+                 </span>
                </div>
-               <pre className="custom-scrollbar p-4 bg-[#0f172a] text-slate-300 text-sm overflow-x-auto font-mono">
+               <pre className="custom-scrollbar max-h-[520px] overflow-y-auto whitespace-pre-wrap break-words bg-slate-950 p-4 font-mono text-[13px] leading-6 text-slate-200">
                  <code>{script.code}</code>
                </pre>
              </div>
