@@ -205,10 +205,13 @@ export default function TestPlans() {
 
       <Modal isOpen={isPlanModalOpen} onClose={() => setIsPlanModalOpen(false)} title={selectedPlanId ? "Edit Test Plan" : "Create New Test Plan"}>
         <div className="space-y-4 max-h-[70vh] overflow-y-auto px-1">
-          <FolderSelect
-            value={formData.folderId}
-            onChange={(folderId) => setFormData({ ...formData, folderId })}
-          />
+          <div className="sticky top-0 z-20 border-b border-[var(--border)] bg-[var(--bg-card)] pb-4">
+            <FolderSelect
+              value={formData.folderId}
+              onChange={(folderId) => setFormData({ ...formData, folderId })}
+              label="Repository Folder"
+            />
+          </div>
           <div>
             <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Plan Name (e.g. Release 2.4)</label>
             <input 

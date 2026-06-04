@@ -8,6 +8,7 @@ export const db = {
   cases: [] as any[],
   runs: [] as any[],
   defects: [] as any[],
+  scripts: [] as any[],
   agentRuns: [] as any[],
   recentActivity: [] as any[],
   settings: {
@@ -28,6 +29,7 @@ function getPersistableDbSnapshot() {
     cases: db.cases,
     runs: db.runs,
     defects: db.defects,
+    scripts: db.scripts,
     agentRuns: db.agentRuns,
     recentActivity: db.recentActivity,
     reports: db.reports,
@@ -44,10 +46,14 @@ export async function loadPersistedData() {
     db.cases = Array.isArray(data.cases) ? data.cases : [];
     db.runs = Array.isArray(data.runs) ? data.runs : [];
     db.defects = Array.isArray(data.defects) ? data.defects : [];
+    db.scripts = Array.isArray(data.scripts) ? data.scripts : [];
     db.agentRuns = Array.isArray(data.agentRuns) ? data.agentRuns : [];
     db.recentActivity = Array.isArray(data.recentActivity) ? data.recentActivity : [];
     db.reports = Array.isArray(data.reports) ? data.reports : [];
-  } catch {
+  } catch (error: any) {
+    if (error?.code !== 'ENOENT') {
+      console.error(`Failed to load persisted data from ${dataFilePath}:`, error);
+    }
     // Missing data file is valid on first run.
   }
 }
@@ -82,6 +88,6 @@ export function persistDataInBackground(reason: string) {
 
 export function addActivity(message: string) {
   db.recentActivity.unshift({ message, time: 'Just now' });
-  if (db.recentActivity.length > 10) db.recentActivity.pop();
+  if (db.recentActivity.length > 6) db.recentActivity.length = 6;
   persistDataInBackground('activity log');
 }

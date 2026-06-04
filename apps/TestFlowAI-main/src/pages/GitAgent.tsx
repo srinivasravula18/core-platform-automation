@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { BrainCircuit, FileCode2, GitBranch, Loader2, RefreshCw, Search, Sparkles } from 'lucide-react';
+import { BrainCircuit, Code2, FileCode2, GitBranch, Loader2, RefreshCw, Search, Sparkles } from 'lucide-react';
 
 type GitStatus = {
   repoPath: string;
@@ -225,6 +225,53 @@ export default function GitAgent() {
           </div>
         </section>
       </div>
+
+      <section className="rounded-xl border border-[var(--border)] bg-[var(--bg-card)] overflow-hidden">
+        <div className="flex items-center justify-between border-b border-[var(--border)] px-4 py-3">
+          <div>
+            <h2 className="text-sm font-semibold">Generated Playwright Scripts</h2>
+            <p className="text-xs text-[var(--text-muted)] mt-1">
+              {generation?.scripts?.length || 0} script(s) created with current vs new impact.
+            </p>
+          </div>
+          <Code2 className="w-4 h-4 text-[var(--accent)]" />
+        </div>
+        <div className="max-h-[620px] overflow-auto p-4 space-y-4">
+          {!generation?.scripts?.length && (
+            <div className="py-12 text-center text-sm text-[var(--text-muted)]">Generate test cases to create Playwright script drafts.</div>
+          )}
+          {generation?.scripts?.map((script: any) => (
+            <article key={script.id || script.filename} className="rounded-lg border border-[var(--border)] bg-[var(--bg-primary)] overflow-hidden">
+              <div className="flex items-start justify-between gap-3 border-b border-[var(--border)] px-4 py-3">
+                <div className="min-w-0">
+                  <h3 className="truncate text-sm font-semibold">{script.filename}</h3>
+                  <p className="mt-1 truncate text-xs text-[var(--text-muted)]">{script.sourcePath}</p>
+                </div>
+                <span className="shrink-0 rounded border border-[var(--border)] px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+                  {script.impact?.status || (script.currentScript ? 'Updated Coverage' : 'New Coverage')}
+                </span>
+              </div>
+              <div className="grid grid-cols-1 xl:grid-cols-2">
+                <div className="border-b border-[var(--border)] xl:border-b-0 xl:border-r">
+                  <div className="bg-[var(--bg-secondary)] px-4 py-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">Current Script</div>
+                  {script.currentScript ? (
+                    <pre className="max-h-80 overflow-auto whitespace-pre-wrap p-4 text-xs leading-relaxed text-[var(--text-muted)]"><code>{script.currentScript.code || '// Existing script has no saved code.'}</code></pre>
+                  ) : (
+                    <div className="p-4 text-sm text-[var(--text-muted)]">No current script is linked to this changed source path.</div>
+                  )}
+                </div>
+                <div>
+                  <div className="bg-[var(--bg-secondary)] px-4 py-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">New Generated Script</div>
+                  <pre className="max-h-80 overflow-auto whitespace-pre-wrap p-4 text-xs leading-relaxed"><code>{script.code}</code></pre>
+                </div>
+              </div>
+              <div className="border-t border-[var(--border)] px-4 py-3 text-xs text-[var(--text-muted)]">
+                {script.impact?.summary || 'Review the generated script before promoting it into the active automation suite.'}
+              </div>
+            </article>
+          ))}
+        </div>
+      </section>
     </div>
   );
 }

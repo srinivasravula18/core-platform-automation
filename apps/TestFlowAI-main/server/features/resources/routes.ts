@@ -1,8 +1,11 @@
 import type { Express } from 'express';
+import { generateObject } from 'ai';
+import { z } from 'zod';
 import { db, addActivity, persistDataInBackground } from '../../shared/storage';
 import { createFolder, folderHasArtifacts, getFolderPath, resolveFolderPath } from '../../shared/folders';
 import { buildCaseDescription, normalizeCaseSteps, normalizeCaseTags } from '../../shared/testCases';
 import { findSettingsPlaywrightTargetUrl, normalizeTargetUrl } from '../../shared/url';
+import { createGeminiModel, getAIErrorMessage } from '../../shared/ai';
 
 function createCrudRoutes(app: Express, entityPath: string, entityArrayKey: keyof typeof db) {
   app.put(`/api/${entityPath}/:id`, (req, res) => {
@@ -33,6 +36,48 @@ function createCrudRoutes(app: Express, entityPath: string, entityArrayKey: keyo
   });
 }
 
+const aiCaseActionSchema = z.object({
+  summary: z.string(),
+  operations: z.array(z.object({
+    action: z.enum(['update', 'create', 'delete']),
+    id: z.string().optional(),
+    title: z.string().optional(),
+    description: z.string().optional(),
+    steps: z.array(z.object({
+      action: z.string(),
+      expected: z.string(),
+    })).optional(),
+    tags: z.array(z.string()).optional(),
+    priority: z.enum(['Low', 'Medium', 'High', 'Critical']).optional(),
+    type: z.enum(['Manual', 'Automated', 'Both']).optional(),
+    status: z.enum(['Draft', 'Under Review', 'Approved', 'Automated', 'Deprecated']).optional(),
+    testPlanId: z.string().optional(),
+    testSuiteId: z.string().optional(),
+    folderId: z.string().optional(),
+  })).min(1),
+});
+
+function sanitizeCasePayload(payload: any, fallback: any = {}) {
+  const steps = normalizeCaseSteps(payload.steps || fallback.steps || []);
+  const tags = normalizeCaseTags(payload.tags || fallback.tags || []);
+  return {
+    title: String(payload.title || fallback.title || 'AI Updated Test Case').trim(),
+    description: buildCaseDescription({
+      description: payload.description ?? fallback.description ?? '',
+      steps,
+    }),
+    steps,
+    tags,
+    priority: payload.priority || fallback.priority || 'Medium',
+    type: payload.type || fallback.type || 'Manual',
+    status: payload.status || fallback.status || 'Draft',
+    testPlanId: payload.testPlanId ?? fallback.testPlanId ?? '',
+    testSuiteId: payload.testSuiteId ?? fallback.testSuiteId ?? '',
+    folderId: payload.folderId ?? fallback.folderId ?? '',
+    captureEvidenceOnManualRun: fallback.captureEvidenceOnManualRun !== false,
+  };
+}
+
 export function registerResourceRoutes(app: Express) {
   app.get('/api/plans', (req, res) => res.json(db.plans));
   app.get('/api/folders', (req, res) => {
@@ -42,6 +87,7 @@ export function registerResourceRoutes(app: Express) {
   app.get('/api/cases', (req, res) => res.json(db.cases));
   app.get('/api/runs', (req, res) => res.json(db.runs));
   app.get('/api/defects', (req, res) => res.json(db.defects));
+  app.get('/api/scripts', (req, res) => res.json(db.scripts));
   app.get('/api/reports', (req, res) => res.json(db.reports));
 
   createCrudRoutes(app, 'plans', 'plans');
@@ -49,6 +95,7 @@ export function registerResourceRoutes(app: Express) {
   createCrudRoutes(app, 'cases', 'cases');
   createCrudRoutes(app, 'runs', 'runs');
   createCrudRoutes(app, 'defects', 'defects');
+  createCrudRoutes(app, 'scripts', 'scripts');
   createCrudRoutes(app, 'reports', 'reports');
 
   app.post('/api/folders', (req, res) => {
@@ -209,6 +256,90 @@ export function registerResourceRoutes(app: Express) {
     persistDataInBackground('case');
     addActivity(`Created Case: ${title}`);
     res.json({ success: true });
+  });
+
+  app.post('/api/cases/ai-action', async (req, res) => {
+    try {
+      const instruction = String(req.body?.instruction || '').trim();
+      const caseIds = Array.isArray(req.body?.caseIds) ? req.body.caseIds.map(String) : [];
+      if (!instruction) return res.status(400).json({ error: 'Instruction is required.' });
+      if (!caseIds.length) return res.status(400).json({ error: 'Select one or more test cases first.' });
+
+      const selectedCases = db.cases.filter((testCase: any) => caseIds.includes(testCase.id));
+      if (!selectedCases.length) return res.status(404).json({ error: 'Selected test cases were not found.' });
+
+      const model = createGeminiModel();
+      const { object } = await generateObject({
+        model,
+        schema: aiCaseActionSchema,
+        prompt: `You are a senior QA test repository assistant.
+Apply this user instruction to the selected test cases:
+"${instruction}"
+
+Selected test cases:
+${JSON.stringify(selectedCases.map((testCase: any) => ({
+  id: testCase.id,
+  title: testCase.title,
+  description: testCase.description,
+  steps: normalizeCaseSteps(testCase.steps),
+  tags: testCase.tags,
+  priority: testCase.priority,
+  type: testCase.type,
+  status: testCase.status,
+  testPlanId: testCase.testPlanId,
+  testSuiteId: testCase.testSuiteId,
+  folderId: testCase.folderId,
+})), null, 2)}
+
+Rules:
+- Return only structured operations.
+- Use update for rewriting, expanding, retagging, changing priority/status, or improving selected cases.
+- Use create when the user asks to merge, split into a new case, derive a new scenario, or create a replacement.
+- Use delete only if the user clearly asks to remove/delete originals; for "merge", prefer create a merged case and set original cases to Deprecated unless the user asks to delete.
+- Preserve testPlanId, testSuiteId, and folderId unless the instruction asks to move or relink.
+- Every created or updated case must include clear ordered steps with expected results.
+- Do not invent app credentials or URLs unless they already exist in the selected cases.`,
+      });
+
+      const results: any[] = [];
+      for (const operation of object.operations) {
+        if (operation.action === 'update') {
+          const existing = db.cases.find((testCase: any) => testCase.id === operation.id);
+          if (!existing) continue;
+          const payload = sanitizeCasePayload(operation, existing);
+          Object.assign(existing, payload, { updatedAt: new Date(), aiModifiedAt: new Date(), aiInstruction: instruction });
+          results.push({ action: 'update', id: existing.id, title: existing.title });
+        }
+
+        if (operation.action === 'create') {
+          const fallback = selectedCases[0] || {};
+          const payload = sanitizeCasePayload(operation, fallback);
+          const newCase = {
+            id: `TC-AI-${Math.random().toString(36).substring(2, 6).toUpperCase()}`,
+            ...payload,
+            createdBy: 'AI Assistant',
+            createdAt: new Date(),
+            aiInstruction: instruction,
+            sourceCaseIds: caseIds,
+          };
+          db.cases.unshift(newCase);
+          results.push({ action: 'create', id: newCase.id, title: newCase.title });
+        }
+
+        if (operation.action === 'delete') {
+          const index = db.cases.findIndex((testCase: any) => testCase.id === operation.id);
+          if (index < 0) continue;
+          const deleted = db.cases.splice(index, 1)[0];
+          results.push({ action: 'delete', id: deleted.id, title: deleted.title });
+        }
+      }
+
+      persistDataInBackground('AI case action');
+      addActivity(`AI updated ${results.length} test case artifact(s): ${object.summary}`);
+      res.json({ success: true, summary: object.summary, results });
+    } catch (error: any) {
+      res.status(500).json({ error: getAIErrorMessage(error) || error?.message || 'Failed to apply AI case action.' });
+    }
   });
 
   app.post('/api/runs', (req, res) => {

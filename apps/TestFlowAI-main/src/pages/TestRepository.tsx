@@ -79,18 +79,10 @@ export default function TestRepository() {
       fetch('/api/cases').then((r) => r.json()),
       fetch('/api/runs').then((r) => r.json()),
       fetch('/api/reports').then((r) => r.json()),
+      fetch('/api/scripts').then((r) => r.json()),
       fetch('/api/agent-runs').then((r) => r.json()),
     ])
-      .then(([folderData, plans, suites, cases, runs, reports, agentRuns]) => {
-        const scripts = (Array.isArray(agentRuns) ? agentRuns : []).flatMap((run: any) =>
-          (run.playwright_scripts || []).map((script: any, index: number) => ({
-            id: `${run.id}-script-${index + 1}`,
-            name: script.filename || script.test_case_title || `Script ${index + 1}`,
-            title: script.test_case_title || script.filename || `Script ${index + 1}`,
-            folderId: run.folderId || '',
-            status: 'Generated',
-          }))
-        );
+      .then(([folderData, plans, suites, cases, runs, reports, scripts, agentRuns]) => {
         const evidence = (Array.isArray(agentRuns) ? agentRuns : []).flatMap((run: any) =>
           (run.evidence_screenshots || []).map((shot: any, index: number) => ({
             id: `${run.id}-evidence-${index + 1}`,
@@ -101,7 +93,7 @@ export default function TestRepository() {
           }))
         );
         setFolders(Array.isArray(folderData) ? folderData : []);
-        setArtifacts({ plans, suites, cases, runs, reports, scripts, evidence });
+        setArtifacts({ plans, suites, cases, runs, reports, scripts: Array.isArray(scripts) ? scripts : [], evidence });
       })
       .catch(console.error);
   };

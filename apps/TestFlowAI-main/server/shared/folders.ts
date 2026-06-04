@@ -1,7 +1,7 @@
 import { randomUUID } from 'crypto';
 import { db } from './storage';
 
-const artifactKeys = ['plans', 'suites', 'cases', 'runs', 'reports', 'agentRuns'] as const;
+const artifactKeys = ['plans', 'suites', 'cases', 'runs', 'reports', 'scripts', 'agentRuns'] as const;
 
 function normalizeFolderName(name: string) {
   return String(name || '').trim().replace(/\s+/g, ' ');

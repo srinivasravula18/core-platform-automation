@@ -4,13 +4,14 @@ import { PlayCircle, Target, TestTube2, ShieldAlert, Sparkles } from 'lucide-rea
 import { useNavigate } from 'react-router-dom';
 import { Modal } from '@/src/components/Modal';
 import { AIActionModal } from '@/src/components/AIActionModal';
+import { FolderSelect } from '@/src/components/FolderSelect';
 
 export default function Dashboard() {
   const [stats, setStats] = useState<any>(null);
   const [isPlanModalOpen, setIsPlanModalOpen] = useState(false);
   const [isAIPlanModalOpen, setIsAIPlanModalOpen] = useState(false);
   const [formData, setFormData] = useState({ 
-    name: '', scope: '', objectives: '', inScope: '', outOfScope: '', strategy: '', testTypes: '', environments: '', roles: '', entryExit: '', schedule: '', risks: '', deliverables: ''
+    name: '', scope: '', objectives: '', inScope: '', outOfScope: '', strategy: '', testTypes: '', environments: '', roles: '', entryExit: '', schedule: '', risks: '', deliverables: '', folderId: ''
   });
   const navigate = useNavigate();
 
@@ -43,7 +44,7 @@ export default function Dashboard() {
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify(formData)
     }).then(() => {
-       setFormData({ name: '', scope: '', objectives: '', inScope: '', outOfScope: '', strategy: '', testTypes: '', environments: '', roles: '', entryExit: '', schedule: '', risks: '', deliverables: '' });
+       setFormData({ name: '', scope: '', objectives: '', inScope: '', outOfScope: '', strategy: '', testTypes: '', environments: '', roles: '', entryExit: '', schedule: '', risks: '', deliverables: '', folderId: '' });
        setIsPlanModalOpen(false);
        fetchStats();
     });
@@ -76,6 +77,13 @@ export default function Dashboard() {
 
       <Modal isOpen={isPlanModalOpen} onClose={() => setIsPlanModalOpen(false)} title="Create New Test Plan">
         <div className="space-y-4 max-h-[70vh] overflow-y-auto px-1">
+          <div className="sticky top-0 z-20 border-b border-[var(--border)] bg-[var(--bg-card)] pb-4">
+            <FolderSelect
+              value={formData.folderId}
+              onChange={(folderId) => setFormData({ ...formData, folderId })}
+              label="Repository Folder"
+            />
+          </div>
           <div>
             <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Plan Name (e.g. Release 2.4)</label>
             <input 
@@ -191,7 +199,7 @@ export default function Dashboard() {
         ))}
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
         {/* Chart View */}
         <div className="lg:col-span-2 p-5 rounded-xl border border-[var(--border)] bg-[var(--bg-card)] shadow-sm">
           <h2 className="text-base font-semibold mb-6">Execution Trend (Last 5 Days)</h2>
@@ -210,15 +218,15 @@ export default function Dashboard() {
         </div>
 
         {/* Recent Activity */}
-        <div className="p-5 rounded-xl border border-[var(--border)] bg-[var(--bg-card)] shadow-sm flex flex-col">
+        <div className="p-5 rounded-xl border border-[var(--border)] bg-[var(--bg-card)] shadow-sm flex h-[344px] min-h-0 flex-col">
           <h2 className="text-base font-semibold mb-4">Recent Activity</h2>
-          <div className="flex-1 overflow-auto space-y-4">
+          <div className="min-h-0 flex-1 space-y-4 overflow-y-auto pr-2">
             {!stats?.recentActivity ? (
               <div className="text-sm text-[var(--text-muted)]">Loading activity...</div>
             ) : stats.recentActivity.length === 0 ? (
               <div className="text-sm text-[var(--text-muted)]">No recent activity.</div>
             ) : (
-              stats.recentActivity.map((act: any, i: number) => (
+              stats.recentActivity.slice(0, 6).map((act: any, i: number) => (
                 <div key={i} className="flex flex-col border-l-2 border-[var(--accent)] pl-4 py-1">
                   <span className="text-sm text-[var(--text-primary)] font-medium">{act.message}</span>
                   <span className="text-xs text-[var(--text-muted)] mt-1">{act.time}</span>

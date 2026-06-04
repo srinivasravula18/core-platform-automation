@@ -76,7 +76,7 @@ export default function AgentPanel() {
   useEffect(() => {
     fetch('/api/folders')
       .then((r) => r.json())
-      .then((data) => setFolders(Array.isArray(data) ? data : []))
+      .then((folderData) => setFolders(Array.isArray(folderData) ? folderData : []))
       .catch(console.error);
   }, []);
 
@@ -103,7 +103,14 @@ export default function AgentPanel() {
       const res = await fetch('/api/agent/start', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ app_url: appUrl, provider: 'gemini', prompt: userMessage, testCaseCount, flowMode, folderId: selectedFolderId })
+        body: JSON.stringify({
+          app_url: appUrl,
+          provider: 'gemini',
+          prompt: userMessage,
+          testCaseCount,
+          flowMode,
+          folderId: selectedFolderId,
+        })
       });
       const data = await res.json();
       if (data.chat_response) {

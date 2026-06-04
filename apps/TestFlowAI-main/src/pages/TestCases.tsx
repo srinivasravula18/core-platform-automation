@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Search, Filter, MoreHorizontal, Plus, Sparkles } from 'lucide-react';
+import { Search, Filter, MoreHorizontal, Plus, Sparkles, Loader2 } from 'lucide-react';
 import { cn } from '@/src/lib/utils';
 import { Modal } from '@/src/components/Modal';
 import { AIActionModal } from '@/src/components/AIActionModal';
@@ -36,6 +36,10 @@ export default function TestCases() {
   const [isFilterOpen, setIsFilterOpen] = useState(false);
   const [isCaseModalOpen, setIsCaseModalOpen] = useState(false);
   const [isAICaseModalOpen, setIsAICaseModalOpen] = useState(false);
+  const [selectedCaseIds, setSelectedCaseIds] = useState<string[]>([]);
+  const [caseAIInstruction, setCaseAIInstruction] = useState('');
+  const [isCaseAIWorking, setIsCaseAIWorking] = useState(false);
+  const [caseAIMessage, setCaseAIMessage] = useState('');
   const emptyStep = { action: '', expected: '' };
   const [formData, setFormData] = useState({ title: '', description: '', testPlanId: '', testSuiteId: '', createdBy: 'Admin', tags: '', type: 'Manual', priority: 'Medium', status: 'Draft', folderId: '', captureEvidenceOnManualRun: true, steps: [emptyStep] });
 
@@ -188,6 +192,39 @@ export default function TestCases() {
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({ ...data, tags, steps })
     }).then(() => fetchCases());
+  };
+
+  const toggleSelectedCase = (caseId: string) => {
+    setSelectedCaseIds((prev) => prev.includes(caseId) ? prev.filter((id) => id !== caseId) : [...prev, caseId]);
+  };
+
+  const toggleAllVisibleCases = () => {
+    const visibleIds = filteredCases.map((testCase) => testCase.id);
+    const allVisibleSelected = visibleIds.length > 0 && visibleIds.every((id) => selectedCaseIds.includes(id));
+    setSelectedCaseIds((prev) => allVisibleSelected ? prev.filter((id) => !visibleIds.includes(id)) : Array.from(new Set([...prev, ...visibleIds])));
+  };
+
+  const runSelectedCaseAIAction = async () => {
+    if (!selectedCaseIds.length || !caseAIInstruction.trim() || isCaseAIWorking) return;
+    setIsCaseAIWorking(true);
+    setCaseAIMessage('');
+    try {
+      const response = await fetch('/api/cases/ai-action', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ caseIds: selectedCaseIds, instruction: caseAIInstruction }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Failed to apply AI action.');
+      setCaseAIMessage(data.summary || `Updated ${data.results?.length || 0} artifact(s).`);
+      setCaseAIInstruction('');
+      setSelectedCaseIds([]);
+      fetchCases();
+    } catch (error: any) {
+      setCaseAIMessage(error.message || 'Failed to apply AI action.');
+    } finally {
+      setIsCaseAIWorking(false);
+    }
   };
 
   const resolvePlanId = (testCase: any) => {
@@ -394,7 +431,8 @@ export default function TestCases() {
       />
 
       <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl flex flex-col flex-1 min-h-0 shadow-sm">
-        <div className="p-4 border-b border-[var(--border)] flex gap-3 h-[68px] flex-shrink-0 items-center">
+        <div className="p-4 border-b border-[var(--border)] flex flex-col gap-3 flex-shrink-0">
+          <div className="flex gap-3 items-center">
           <div className="relative flex-1 max-w-sm">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--text-muted)]" />
             <input 
@@ -419,12 +457,66 @@ export default function TestCases() {
               </div>
             )}
           </div>
+          </div>
+          {selectedCaseIds.length > 0 && (
+            <div className="rounded-lg border border-[var(--accent)]/30 bg-[var(--accent)]/10 p-3">
+              <div className="mb-2 flex items-center justify-between gap-3">
+                <div className="text-sm font-semibold text-[var(--text-primary)]">
+                  {selectedCaseIds.length} case{selectedCaseIds.length === 1 ? '' : 's'} selected
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedCaseIds([]);
+                    setCaseAIInstruction('');
+                    setCaseAIMessage('');
+                  }}
+                  className="text-xs font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+                >
+                  Clear
+                </button>
+              </div>
+              <div className="flex flex-col gap-2 lg:flex-row">
+                <input
+                  value={caseAIInstruction}
+                  onChange={(event) => setCaseAIInstruction(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') runSelectedCaseAIAction();
+                  }}
+                  placeholder="Ask AI to merge, expand, rewrite, retag, reprioritize, split, or improve the selected cases..."
+                  className="min-w-0 flex-1 rounded-md border border-[var(--border)] bg-[var(--bg-primary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
+                  disabled={isCaseAIWorking}
+                />
+                <button
+                  type="button"
+                  onClick={runSelectedCaseAIAction}
+                  disabled={!caseAIInstruction.trim() || isCaseAIWorking}
+                  className="inline-flex items-center justify-center gap-2 rounded-md bg-[#8b5cf6] px-4 py-2 text-sm font-medium text-white hover:bg-[#7c3aed] disabled:opacity-50"
+                >
+                  {isCaseAIWorking ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
+                  Apply AI
+                </button>
+              </div>
+              {caseAIMessage && (
+                <div className="mt-2 text-xs text-[var(--text-muted)]">{caseAIMessage}</div>
+              )}
+            </div>
+          )}
         </div>
         
         <div className="flex-1 overflow-auto">
           <table className="w-full text-left text-sm whitespace-nowrap">
             <thead className="sticky top-0 bg-[var(--bg-secondary)] border-b border-[var(--border)] z-10">
               <tr className="text-[var(--text-muted)]">
+                <th className="font-medium py-3 px-4 w-10">
+                  <input
+                    type="checkbox"
+                    checked={filteredCases.length > 0 && filteredCases.every((testCase) => selectedCaseIds.includes(testCase.id))}
+                    onChange={toggleAllVisibleCases}
+                    className="rounded border-[var(--border)] text-[var(--accent)] focus:ring-[var(--accent)]"
+                    title="Select all visible cases"
+                  />
+                </th>
                 <th className="font-medium py-3 px-4 w-24">ID</th>
                 <th className="font-medium py-3 px-4">Title</th>
                 <th className="font-medium py-3 px-4">Folder</th>
@@ -438,13 +530,26 @@ export default function TestCases() {
             </thead>
             <tbody className="divide-y divide-[var(--border)]">
               {loading && (
-                <tr><td colSpan={9} className="py-8 text-center text-[var(--text-muted)]">Loading test cases...</td></tr>
+                <tr><td colSpan={10} className="py-8 text-center text-[var(--text-muted)]">Loading test cases...</td></tr>
               )}
               {!loading && filteredCases.length === 0 && (
-                <tr><td colSpan={9} className="py-8 text-center text-[var(--text-muted)]">No test cases found.</td></tr>
+                <tr><td colSpan={10} className="py-8 text-center text-[var(--text-muted)]">No test cases found.</td></tr>
               )}
               {filteredCases.map((tc) => (
                 <tr key={tc.id} onClick={() => openEditModal(tc)} className="hover:bg-[var(--bg-secondary)] transition-colors cursor-pointer">
+                  <td className="py-3 px-4">
+                    <input
+                      type="checkbox"
+                      checked={selectedCaseIds.includes(tc.id)}
+                      onChange={(event) => {
+                        event.stopPropagation();
+                        toggleSelectedCase(tc.id);
+                      }}
+                      onClick={(event) => event.stopPropagation()}
+                      className="rounded border-[var(--border)] text-[var(--accent)] focus:ring-[var(--accent)]"
+                      title={`Select ${tc.title}`}
+                    />
+                  </td>
                   <td className="py-3 px-4 font-mono text-xs text-[var(--text-muted)]">{tc.id}</td>
                   <td className="py-3 px-4 font-medium max-w-sm truncate">{tc.title}</td>
                   <td className="py-3 px-4">

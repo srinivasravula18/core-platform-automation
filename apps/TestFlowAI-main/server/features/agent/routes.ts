@@ -89,6 +89,72 @@ User request: ${prompt || 'not provided'}`,
   }
 }
 
+function buildSelectedQaContext(input: { testPlanId?: string; testSuiteId?: string; testCaseId?: string }) {
+  const selectedPlan = input.testPlanId ? db.plans.find((item: any) => item.id === input.testPlanId) : null;
+  const selectedSuite = input.testSuiteId ? db.suites.find((item: any) => item.id === input.testSuiteId) : null;
+  const selectedCase = input.testCaseId ? db.cases.find((item: any) => item.id === input.testCaseId) : null;
+  const planSuites = selectedPlan ? db.suites.filter((suite: any) => suite.testPlanId === selectedPlan.id) : [];
+  const suiteCases = selectedSuite ? db.cases.filter((testCase: any) => testCase.testSuiteId === selectedSuite.id) : [];
+  const planCases = selectedPlan ? db.cases.filter((testCase: any) =>
+    testCase.testPlanId === selectedPlan.id || planSuites.some((suite: any) => suite.id === testCase.testSuiteId)
+  ) : [];
+
+  const context = {
+    selectedPlan: selectedPlan ? {
+      id: selectedPlan.id,
+      name: selectedPlan.name,
+      scope: selectedPlan.scope,
+      objectives: selectedPlan.objectives,
+      strategy: selectedPlan.strategy,
+      testTypes: selectedPlan.testTypes,
+      environments: selectedPlan.environments,
+      status: selectedPlan.status,
+      riskLevel: selectedPlan.riskLevel,
+    } : null,
+    selectedSuite: selectedSuite ? {
+      id: selectedSuite.id,
+      name: selectedSuite.name,
+      description: selectedSuite.description,
+      module: selectedSuite.module,
+      priority: selectedSuite.priority,
+      status: selectedSuite.status,
+      tags: selectedSuite.tags,
+    } : null,
+    selectedCase: selectedCase ? {
+      id: selectedCase.id,
+      title: selectedCase.title,
+      description: selectedCase.description,
+      steps: normalizeCaseSteps(selectedCase.steps || []),
+      type: selectedCase.type,
+      priority: selectedCase.priority,
+      status: selectedCase.status,
+      tags: selectedCase.tags,
+    } : null,
+    relatedSuites: planSuites.slice(0, 10).map((suite: any) => ({
+      id: suite.id,
+      name: suite.name,
+      module: suite.module,
+      status: suite.status,
+    })),
+    relatedCases: (selectedCase ? [selectedCase] : selectedSuite ? suiteCases : planCases).slice(0, 12).map((testCase: any) => ({
+      id: testCase.id,
+      title: testCase.title,
+      priority: testCase.priority,
+      status: testCase.status,
+      steps: normalizeCaseSteps(testCase.steps || []).slice(0, 8),
+    })),
+  };
+
+  const hasContext = Boolean(context.selectedPlan || context.selectedSuite || context.selectedCase);
+  return {
+    context,
+    hasContext,
+    promptText: hasContext
+      ? `Selected QA repository context. Treat this as the scope boundary and source of truth. If a test case is selected, rework, expand, automate, or generate adjacent coverage for that case instead of inventing unrelated scenarios. If a suite is selected, keep generated cases inside that suite/module. If a plan is selected, align scope, risks, environments, and test types to the plan. Context: ${JSON.stringify(context)}`
+      : 'No existing test plan, suite, or case was selected. Generate from the user request and inspected app context.',
+  };
+}
+
 function getAgentGuardrailResponse(message: string) {
   const normalized = String(message || '').trim();
 
@@ -113,11 +179,11 @@ function getAgentGuardrailResponse(message: string) {
 
 function persistAgentCaseArtifacts(run: any) {
   const now = new Date();
-  const planId = `PLAN-${run.id.substring(0, 8).toUpperCase()}`;
-  const suiteId = `SUITE-${run.id.substring(0, 8).toUpperCase()}`;
+  const planId = run.testPlanId || `PLAN-${run.id.substring(0, 8).toUpperCase()}`;
+  const suiteId = run.testSuiteId || `SUITE-${run.id.substring(0, 8).toUpperCase()}`;
   const baseName = run.artifactName || buildFallbackArtifactName(run.prompt || '', run.app_url || '');
 
-  if (!db.plans.some((item) => item.id === planId)) {
+  if (!run.testPlanId && !db.plans.some((item) => item.id === planId)) {
     db.plans.unshift({
       id: planId,
       name: `Agent Plan - ${baseName}`,
@@ -143,7 +209,7 @@ function persistAgentCaseArtifacts(run: any) {
     }
   }
 
-  if (!db.suites.some((item) => item.id === suiteId)) {
+  if (!run.testSuiteId && !db.suites.some((item) => item.id === suiteId)) {
     db.suites.unshift({
       id: suiteId,
       name: `Agent Suite - ${baseName}`,
@@ -191,6 +257,40 @@ function persistAgentCaseArtifacts(run: any) {
   persistDataInBackground('agent case artifacts');
 }
 
+function persistAgentScripts(run: any) {
+  const scripts = Array.isArray(run.playwright_scripts) ? run.playwright_scripts : [];
+  const now = new Date();
+  const baseName = run.artifactName || buildFallbackArtifactName(run.prompt || '', run.app_url || '');
+
+  scripts.forEach((script: any, index: number) => {
+    const scriptId = `SCR-${run.id.substring(0, 8).toUpperCase()}-${index + 1}`;
+    const scriptPayload = {
+      id: scriptId,
+      name: script.filename || script.test_case_title || `Agent Script - ${baseName} - ${index + 1}`,
+      filename: script.filename || `agent-script-${run.id.substring(0, 8)}-${index + 1}.spec.ts`,
+      title: script.test_case_title || script.filename || `Agent Script - ${index + 1}`,
+      code: script.code || '',
+      language: 'typescript',
+      framework: 'playwright',
+      status: 'Generated',
+      folderId: run.folderId || '',
+      agentRunId: run.id,
+      targetUrl: run.app_url || '',
+      createdBy: 'QA Assistant',
+      createdAt: script.createdAt || now,
+      updatedAt: now,
+    };
+    const existingIndex = db.scripts.findIndex((item: any) => item.id === scriptId);
+    if (existingIndex >= 0) {
+      db.scripts[existingIndex] = { ...db.scripts[existingIndex], ...scriptPayload };
+    } else {
+      db.scripts.unshift(scriptPayload);
+    }
+  });
+
+  persistDataInBackground('agent scripts');
+}
+
 function persistAgentRunArtifacts(run: any) {
   const now = new Date();
   const date = now.toISOString().split('T')[0];
@@ -199,6 +299,7 @@ function persistAgentRunArtifacts(run: any) {
   const baseName = run.artifactName || buildFallbackArtifactName(run.prompt || '', run.app_url || '');
 
   persistAgentCaseArtifacts(run);
+  persistAgentScripts(run);
 
   const executionSteps = buildAgentExecutionSteps(run);
 
@@ -260,17 +361,22 @@ async function runPostCaseAgentFlow(run: any, model: any, testCases: any, target
   run.messages.push({ agent: 'PlaywrightAgent', status: 'running' });
   const credentialContext = buildCredentialContext(run.credentials || {});
   const inspectionContext = run.inspection_context || null;
+  const selectedQaContextText = run.selectedQaContext
+    ? `Selected QA repository context for this automation scope: ${JSON.stringify(run.selectedQaContext)}`
+    : 'No selected QA repository context was provided for this automation scope.';
   const { object: scripts } = await generateObject({
     model,
     schema: playwrightScriptsSchema,
     prompt: `You are a Playwright automation expert. Convert these reviewed test cases into production-quality Playwright TypeScript scripts.
 Use this baseURL in the scripts when provided: ${targetUrl || 'not provided'}.
 ${credentialContext}
-Use this browser inspection context as the source of truth for reachable pages, visible labels, forms, navigation actions, tables/lists, and final URL: ${JSON.stringify(inspectionContext)}.
+${selectedQaContextText}
+Use this browser inspection context as the source of truth for reachable pages, visible labels, forms, navigation actions, tables/lists, buttons, links and final URL: ${JSON.stringify(inspectionContext)}.
 For authenticated flows, fill the username/email and password fields before clicking submit. Then follow the same user-requested path discovered by the inspector and assert the exact inspected target state using visible text, headings, tables, lists, forms, or URL changes. Do not invent unrelated pages or menu names that are not present in the inspection context or test case steps.
 Test cases: ${JSON.stringify(testCases)}`
   });
   run.playwright_scripts = scripts.scripts as any;
+  persistAgentScripts(run);
   run.messages.push({ agent: 'PlaywrightAgent', status: 'completed', output: scripts });
 
   run.messages.push({ agent: 'EvidenceAgent', status: 'running' });
@@ -387,6 +493,11 @@ export function registerAgentRoutes(app: Express) {
 
     const targetUrl = resolveAgentTargetUrl(prompt || '', app_url || '');
     const credentials = resolveAgentCredentials(prompt || '', targetUrl);
+    const selectedQaContext = buildSelectedQaContext({
+      testPlanId: req.body.testPlanId,
+      testSuiteId: req.body.testSuiteId,
+      testCaseId: req.body.testCaseId,
+    });
     const folder = resolveFolderForAgent({
       folderId: req.body.folderId,
       folderMention: req.body.folderMention,
@@ -408,6 +519,10 @@ export function registerAgentRoutes(app: Express) {
       inspection_context: null as any,
       folderId: folder?.id || '',
       folderPath: folder ? getFolderPath(folder.id) : 'Uncategorized',
+      selectedQaContext: selectedQaContext.context,
+      testPlanId: req.body.testPlanId || '',
+      testSuiteId: req.body.testSuiteId || '',
+      testCaseId: req.body.testCaseId || '',
       credentials,
       artifactName: buildFallbackArtifactName(prompt || '', targetUrl),
       created_at: new Date()
@@ -415,7 +530,7 @@ export function registerAgentRoutes(app: Express) {
     newRun.messages.push({
       agent: 'System',
       status: 'completed',
-      output: `Resolved target: ${targetUrl || 'none'}. Repository folder: ${folder ? getFolderPath(folder.id) : 'Uncategorized'}. Credentials: ${credentials.username && credentials.password ? `${credentials.source || 'provided'} for ${(credentials as any).siteName || credentials.username}` : 'none'}.`,
+      output: `Resolved target: ${targetUrl || 'none'}. Repository folder: ${folder ? getFolderPath(folder.id) : 'Uncategorized'}. QA scope: ${selectedQaContext.hasContext ? 'selected plan/suite/case context' : 'prompt only'}. Credentials: ${credentials.username && credentials.password ? `${credentials.source || 'provided'} for ${(credentials as any).siteName || credentials.username}` : 'none'}.`,
     });
 
     db.agentRuns.unshift(newRun);
@@ -446,6 +561,7 @@ export function registerAgentRoutes(app: Express) {
 User prompt: ${prompt || 'not provided'}.
 Playwright target URL: ${targetUrl || 'not provided'}.
 ${credentialContext}
+${selectedQaContext.promptText}
 Browser inspection result: ${JSON.stringify(inspectionContext)}.
 Use the inspection result as the source of truth for reachable pages, post-login state, visible navigation, forms, tables, list-like regions, and assertion targets. Do not invent unrelated admin pages or menu names. If the inspector reached the requested goal, at least one @bvt test case must cover that exact inspected end-to-end path, including any login and navigation actions recorded in actionsTaken. If the inspector was partial or blocked, generate cases for the reachable context and include clear preconditions/steps that show what needs to be verified next.
 For authenticated flows, steps must explicitly say to enter username/email "${credentials.username || '<provided username>'}" and password "${credentials.password || '<provided password>'}", click the relevant sign-in/login control, and then continue to the user-requested inspected target. When the request involves verifying data views, include steps that verify the visible table/list/grid container, headers, rows or empty-state, and absence of loading/error state using the labels found by inspection.

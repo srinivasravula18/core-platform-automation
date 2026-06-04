@@ -210,6 +210,83 @@ function buildGitAgentScenarioTemplates(change: any, index: number) {
   }));
 }
 
+function toSpecName(value: string) {
+  return String(value || 'git-change')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 72) || 'git-change';
+}
+
+function escapeScriptString(value: string) {
+  return String(value || '').replace(/\\/g, '\\\\').replace(/`/g, '\\`').replace(/\$\{/g, '\\${');
+}
+
+function buildPlaywrightScript(testCase: any) {
+  const title = escapeScriptString(testCase.title || 'Git change coverage');
+  const sourcePath = escapeScriptString(testCase.sourcePath || '');
+  const steps = Array.isArray(testCase.steps) ? testCase.steps : [];
+  const body = steps
+    .map((step: any, index: number) => {
+      const action = escapeScriptString(step?.action || `Execute step ${index + 1}`);
+      const expected = escapeScriptString(step?.expected || 'Expected behavior is observed.');
+      return [
+        `  await test.step(\`${index + 1}. ${action}\`, async () => {`,
+        `    // Expected: ${expected}`,
+        index === 0 && testCase.surface !== 'api'
+          ? `    // Navigate and authenticate using the configured website credentials before exercising this path.`
+          : `    // Implement selectors/assertions for this impacted path. Source: ${sourcePath}`,
+        `  });`,
+      ].join('\n');
+    })
+    .join('\n\n');
+
+  return [
+    `import { test, expect } from '@playwright/test';`,
+    ``,
+    `test.describe('Git change coverage: ${escapeScriptString(testCase.feature || testCase.area || 'Application')}', () => {`,
+    `  test('${title}', async ({ page, request }) => {`,
+    body || `  // Add generated test steps before execution.`,
+    `  });`,
+    `});`,
+    ``,
+  ].join('\n');
+}
+
+function buildGitAgentScripts(testCases: any[]) {
+  return testCases.map((testCase: any, index: number) => {
+    const filename = `${toSpecName(testCase.title || testCase.id)}.spec.ts`;
+    const matchingScripts = db.scripts.filter((script: any) => script?.sourcePath === testCase.sourcePath || script?.gitSourcePath === testCase.sourcePath);
+    const currentScript = matchingScripts[0] || null;
+    const code = buildPlaywrightScript(testCase);
+    return {
+      id: `GIT-SCRIPT-${testCase.id || index + 1}`,
+      filename,
+      title: testCase.title,
+      testCaseId: testCase.id,
+      sourcePath: testCase.sourcePath,
+      gitSourcePath: testCase.sourcePath,
+      code,
+      currentScript: currentScript
+        ? {
+            id: currentScript.id,
+            filename: currentScript.filename || currentScript.name || 'existing-script.spec.ts',
+            title: currentScript.title || currentScript.name || 'Existing script',
+            code: currentScript.code || '',
+            updatedAt: currentScript.updatedAt || currentScript.createdAt || '',
+          }
+        : null,
+      impact: {
+        status: currentScript ? 'Updated Coverage' : 'New Coverage',
+        summary: currentScript
+          ? 'Existing script coverage was found for this changed source path. Review the new draft against the current script before replacing it.'
+          : 'No existing script coverage was found for this changed source path. The generated script is a new draft.',
+      },
+    };
+  });
+}
+
 function summarizeChangedFiles(changedFiles: any[]) {
   return changedFiles.reduce((acc: any, item: any) => {
     acc.total += 1;
@@ -409,11 +486,40 @@ function persistGitAgentArtifacts(generation: any) {
       sourcePath: testCase.sourcePath,
     });
   });
+
+  (generation.scripts || []).forEach((script: any, index: number) => {
+    const scriptId = `SCR-GIT-${stamp}-${String(index + 1).padStart(3, '0')}`;
+    const scriptPayload = {
+      id: scriptId,
+      name: script.filename || script.title || `Git Agent Script - ${index + 1}`,
+      filename: script.filename || `git-agent-script-${stamp}-${index + 1}.spec.ts`,
+      title: script.title || script.filename || `Git Agent Script - ${index + 1}`,
+      code: script.code || '',
+      language: 'typescript',
+      framework: 'playwright',
+      status: 'Draft',
+      folderId: '',
+      gitAgentRunId: generation.id,
+      sourcePath: script.sourcePath || '',
+      gitSourcePath: script.gitSourcePath || script.sourcePath || '',
+      impact: script.impact || null,
+      createdBy: 'Git Agent',
+      createdAt: now,
+      updatedAt: now,
+    };
+    const existingIndex = db.scripts.findIndex((item: any) => item.id === scriptId);
+    if (existingIndex >= 0) {
+      db.scripts[existingIndex] = { ...db.scripts[existingIndex], ...scriptPayload };
+    } else {
+      db.scripts.unshift(scriptPayload);
+    }
+  });
 }
 
 export async function generateGitAgentCases(baseRef = 'auto') {
   const scan = scanGitAgentChanges(baseRef);
   const templates = scan.changedFiles.flatMap((change: any, index: number) => buildGitAgentScenarioTemplates(change, index));
+  const scripts = buildGitAgentScripts(templates);
   const groupedSuites = templates.reduce((acc: any, testCase: any) => {
     acc[testCase.area] = acc[testCase.area] || [];
     acc[testCase.area].push(testCase);
@@ -435,6 +541,7 @@ export async function generateGitAgentCases(baseRef = 'auto') {
     changedFiles: scan.changedFiles,
     suites: groupedSuites,
     testCases: templates,
+    scripts,
   };
 
   persistGitAgentArtifacts(generation);
@@ -447,9 +554,12 @@ export async function generateGitAgentCases(baseRef = 'auto') {
       baseRef: generation.baseRef,
       headCommit: generation.headCommit,
       summary: generation.summary,
+      changedFiles: generation.changedFiles,
+      testCases: generation.testCases,
+      scripts: generation.scripts,
     },
   });
-  addActivity(`Git Agent generated ${templates.length} draft test cases from ${scan.changedFiles.length} changed files.`);
+  addActivity(`Git Agent generated ${templates.length} draft test cases and ${scripts.length} Playwright scripts from ${scan.changedFiles.length} changed files.`);
   persistDataInBackground('git agent artifacts');
   return generation;
 }
