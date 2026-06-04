@@ -10,6 +10,8 @@ const artifactConfig = [
   { key: 'cases', label: 'Cases', icon: TestTube2 },
   { key: 'runs', label: 'Runs', icon: PlayCircle },
   { key: 'reports', label: 'Reports', icon: ClipboardList },
+  { key: 'scripts', label: 'Scripts', icon: FileText },
+  { key: 'evidence', label: 'Evidence', icon: ClipboardList },
 ] as const;
 
 function buildTree(folders: any[]) {
@@ -63,9 +65,10 @@ function FolderTreeItem({ node, selectedId, onSelect, depth = 0 }: { key?: strin
 
 export default function TestRepository() {
   const [folders, setFolders] = useState<any[]>([]);
-  const [artifacts, setArtifacts] = useState<Record<string, any[]>>({ plans: [], suites: [], cases: [], runs: [], reports: [] });
+  const [artifacts, setArtifacts] = useState<Record<string, any[]>>({ plans: [], suites: [], cases: [], runs: [], reports: [], scripts: [], evidence: [] });
   const [selectedFolderId, setSelectedFolderId] = useState('');
-  const [newFolderPath, setNewFolderPath] = useState('');
+  const [newRootFolderName, setNewRootFolderName] = useState('');
+  const [newSubfolderName, setNewSubfolderName] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
 
   const fetchData = () => {
@@ -76,10 +79,29 @@ export default function TestRepository() {
       fetch('/api/cases').then((r) => r.json()),
       fetch('/api/runs').then((r) => r.json()),
       fetch('/api/reports').then((r) => r.json()),
+      fetch('/api/agent-runs').then((r) => r.json()),
     ])
-      .then(([folderData, plans, suites, cases, runs, reports]) => {
+      .then(([folderData, plans, suites, cases, runs, reports, agentRuns]) => {
+        const scripts = (Array.isArray(agentRuns) ? agentRuns : []).flatMap((run: any) =>
+          (run.playwright_scripts || []).map((script: any, index: number) => ({
+            id: `${run.id}-script-${index + 1}`,
+            name: script.filename || script.test_case_title || `Script ${index + 1}`,
+            title: script.test_case_title || script.filename || `Script ${index + 1}`,
+            folderId: run.folderId || '',
+            status: 'Generated',
+          }))
+        );
+        const evidence = (Array.isArray(agentRuns) ? agentRuns : []).flatMap((run: any) =>
+          (run.evidence_screenshots || []).map((shot: any, index: number) => ({
+            id: `${run.id}-evidence-${index + 1}`,
+            name: shot.title || shot.screenshotUrl || `Evidence ${index + 1}`,
+            title: shot.title || shot.screenshotUrl || `Evidence ${index + 1}`,
+            folderId: run.folderId || '',
+            status: shot.status ? `HTTP ${shot.status}` : 'Captured',
+          }))
+        );
         setFolders(Array.isArray(folderData) ? folderData : []);
-        setArtifacts({ plans, suites, cases, runs, reports });
+        setArtifacts({ plans, suites, cases, runs, reports, scripts, evidence });
       })
       .catch(console.error);
   };
@@ -88,19 +110,14 @@ export default function TestRepository() {
     fetchData();
   }, []);
 
+  useEffect(() => {
+    if (!selectedFolderId && folders.length > 0) {
+      setSelectedFolderId(folders[0].id);
+    }
+  }, [folders, selectedFolderId]);
+
   const selectedFolder = folders.find((folder) => folder.id === selectedFolderId) || null;
   const tree = useMemo(() => buildTree(folders), [folders]);
-  const folderCounts = useMemo(() => {
-    const counts: Record<string, number> = {};
-    for (const config of artifactConfig) {
-      for (const item of artifacts[config.key] || []) {
-        const folderId = item.folderId || '';
-        counts[folderId] = (counts[folderId] || 0) + 1;
-      }
-    }
-    return counts;
-  }, [artifacts]);
-
   const visibleItems = (key: string) => {
     const query = searchTerm.toLowerCase();
     return (artifacts[key] || []).filter((item) => {
@@ -110,18 +127,34 @@ export default function TestRepository() {
     });
   };
 
-  const createFolder = async () => {
-    const path = newFolderPath.trim();
-    if (!path) return;
-    const res = await fetch('/api/folders/resolve', {
+  const createRootFolder = async () => {
+    const name = newRootFolderName.trim();
+    if (!name) return;
+    const res = await fetch('/api/folders', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ path }),
+      body: JSON.stringify({ name }),
     });
     const data = await res.json();
     if (data.folder?.id) {
       setSelectedFolderId(data.folder.id);
-      setNewFolderPath('');
+      setNewRootFolderName('');
+      fetchData();
+    }
+  };
+
+  const createSubfolder = async () => {
+    const name = newSubfolderName.trim();
+    if (!name) return;
+    const res = await fetch('/api/folders', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, parentId: selectedFolderId }),
+    });
+    const data = await res.json();
+    if (data.folder?.id) {
+      setSelectedFolderId(data.folder.id);
+      setNewSubfolderName('');
       fetchData();
     }
   };
@@ -139,52 +172,70 @@ export default function TestRepository() {
   };
 
   return (
-    <div className="mx-auto flex h-full max-w-7xl flex-col gap-5">
-      <div className="flex items-center justify-between">
+    <div className="mx-auto flex h-full min-h-0 max-w-7xl flex-col gap-5 overflow-hidden">
+      <div className="flex flex-shrink-0 items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Test Repository</h1>
           <p className="mt-1 text-sm text-[var(--text-muted)]">Organize plans, suites, cases, runs, reports, scripts, and evidence by app or feature folders.</p>
         </div>
       </div>
 
-      <div className="grid min-h-0 flex-1 grid-cols-1 gap-5 lg:grid-cols-[320px_1fr]">
-        <aside className="flex min-h-0 flex-col rounded-xl border border-[var(--border)] bg-[var(--bg-card)]">
-          <div className="border-b border-[var(--border)] p-4">
-            <div className="flex gap-2">
+      <div className="grid min-h-0 flex-1 grid-cols-1 gap-5 overflow-hidden lg:grid-cols-[340px_minmax(0,1fr)]">
+        <aside className="flex min-h-0 flex-col overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--bg-card)]">
+          <div className="space-y-4 border-b border-[var(--border)] p-4">
+            <div>
+              <div className="mb-2 text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">Create New Folder</div>
+              <div className="flex gap-2">
+                <input
+                  value={newRootFolderName}
+                  onChange={(e) => setNewRootFolderName(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && createRootFolder()}
+                  placeholder="Folder name"
+                  className="min-w-0 flex-1 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
+                />
+                <button onClick={createRootFolder} disabled={!newRootFolderName.trim()} className="inline-flex items-center gap-2 rounded-md bg-[var(--accent)] px-3 py-2 text-sm font-medium text-white disabled:opacity-50" title="Create root folder">
+                  <FolderPlus className="h-4 w-4" />
+                  New
+                </button>
+              </div>
+            </div>
+            <div>
+              <div className="mb-2 text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">Create Subfolder</div>
+              <div className="mb-2 truncate text-xs text-[var(--text-muted)]">
+                Parent: <span className="text-[var(--text-primary)]">{selectedFolder ? selectedFolder.path : 'Root folder'}</span>
+              </div>
+              <div className="flex gap-2">
               <input
-                value={newFolderPath}
-                onChange={(e) => setNewFolderPath(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && createFolder()}
-                placeholder="App / Module / Feature"
+                value={newSubfolderName}
+                onChange={(e) => setNewSubfolderName(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && createSubfolder()}
+                placeholder="Subfolder name"
                 className="min-w-0 flex-1 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
               />
-              <button onClick={createFolder} disabled={!newFolderPath.trim()} className="rounded-md bg-[var(--accent)] p-2 text-white disabled:opacity-50" title="Create folder path">
+              <button onClick={createSubfolder} disabled={!newSubfolderName.trim()} className="inline-flex items-center gap-2 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm font-medium text-[var(--text-primary)] hover:border-[var(--accent)] disabled:opacity-50" title="Create subfolder">
                 <FolderPlus className="h-4 w-4" />
+                Add
               </button>
+              </div>
             </div>
           </div>
           <div className="min-h-0 flex-1 overflow-auto p-3">
-            <button
-              onClick={() => setSelectedFolderId('')}
-              className={cn(
-                'mb-2 flex w-full items-center justify-between rounded-md px-2 py-2 text-sm',
-                !selectedFolderId ? 'bg-[var(--accent)]/10 text-[var(--accent)]' : 'text-[var(--text-muted)] hover:bg-[var(--bg-secondary)]'
-              )}
-            >
-              <span>Uncategorized</span>
-              <span className="text-xs">{folderCounts[''] || 0}</span>
-            </button>
             {tree.map((node) => (
               <FolderTreeItem key={node.id} node={node} selectedId={selectedFolderId} onSelect={setSelectedFolderId} />
             ))}
+            {tree.length === 0 && (
+              <div className="rounded-md border border-dashed border-[var(--border)] px-3 py-6 text-center text-sm text-[var(--text-muted)]">
+                Create a folder to start organizing test assets.
+              </div>
+            )}
           </div>
         </aside>
 
-        <section className="min-h-0 rounded-xl border border-[var(--border)] bg-[var(--bg-card)]">
-          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--border)] p-4">
+        <section className="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--bg-card)]">
+          <div className="flex flex-shrink-0 flex-wrap items-center justify-between gap-3 border-b border-[var(--border)] p-4">
             <div className="min-w-0">
               <div className="text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">Current Folder</div>
-              <h2 className="truncate text-lg font-semibold">{selectedFolder ? selectedFolder.path : 'Uncategorized'}</h2>
+              <h2 className="truncate text-lg font-semibold">{selectedFolder ? selectedFolder.path : 'No folder selected'}</h2>
             </div>
             <div className="flex items-center gap-2">
               <div className="relative">
@@ -193,7 +244,7 @@ export default function TestRepository() {
                   value={searchTerm}
                   onChange={(e) => setSearchTerm(e.target.value)}
                   placeholder="Search in folder..."
-                  className="w-72 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] py-2 pl-9 pr-3 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
+                  className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] py-2 pl-9 pr-3 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)] sm:w-72"
                 />
               </div>
               {selectedFolder && (
@@ -204,7 +255,7 @@ export default function TestRepository() {
             </div>
           </div>
 
-          <div className="grid max-h-[calc(100vh-250px)] gap-4 overflow-auto p-4">
+          <div className="grid min-h-0 flex-1 auto-rows-max gap-4 overflow-y-auto overflow-x-hidden p-4">
             {artifactConfig.map((config) => {
               const items = visibleItems(config.key);
               const Icon = config.icon;
@@ -219,10 +270,10 @@ export default function TestRepository() {
                   </div>
                   <div className="divide-y divide-[var(--border)]">
                     {items.length ? items.slice(0, 8).map((item) => (
-                      <div key={item.id} className="grid grid-cols-[110px_1fr_auto] gap-3 px-4 py-3 text-sm">
-                        <span className="font-mono text-xs text-[var(--text-muted)]">{item.id}</span>
-                        <span className="min-w-0 truncate font-medium text-[var(--text-primary)]">{item.name || item.title || 'Untitled'}</span>
-                        <span className="text-xs text-[var(--text-muted)]">{item.status || item.date || item.type || ''}</span>
+                      <div key={item.id} className="grid min-w-0 grid-cols-[96px_minmax(0,1fr)_88px] gap-3 px-4 py-3 text-sm sm:grid-cols-[140px_minmax(0,1fr)_110px]">
+                        <span className="min-w-0 truncate font-mono text-xs text-[var(--text-muted)]" title={item.id}>{item.id}</span>
+                        <span className="min-w-0 truncate font-medium text-[var(--text-primary)]" title={item.name || item.title || 'Untitled'}>{item.name || item.title || 'Untitled'}</span>
+                        <span className="min-w-0 truncate text-right text-xs text-[var(--text-muted)]" title={item.status || item.date || item.type || ''}>{item.status || item.date || item.type || ''}</span>
                       </div>
                     )) : (
                       <div className="px-4 py-6 text-center text-sm text-[var(--text-muted)]">No {config.label.toLowerCase()} in this folder.</div>

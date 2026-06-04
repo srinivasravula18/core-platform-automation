@@ -5,6 +5,7 @@ import { cn } from '@/src/lib/utils';
 import { Modal } from '@/src/components/Modal';
 import { AIActionModal } from '@/src/components/AIActionModal';
 import { FolderSelect } from '@/src/components/FolderSelect';
+import { FolderBadge } from '@/src/components/FolderBadge';
 
 function getRunStats(run: any) {
   const steps = Array.isArray(run?.steps) ? run.steps : [];
@@ -34,6 +35,7 @@ export default function TestRuns() {
   const [runs, setRuns] = useState<any[]>([]);
   const [cases, setCases] = useState<any[]>([]);
   const [suites, setSuites] = useState<any[]>([]);
+  const [folders, setFolders] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [runView, setRunView] = useState<'active' | 'closed'>('active');
@@ -59,11 +61,13 @@ export default function TestRuns() {
       fetch('/api/runs').then((r) => r.json()),
       fetch('/api/cases').then((r) => r.json()),
       fetch('/api/suites').then((r) => r.json()),
+      fetch('/api/folders').then((r) => r.json()),
     ])
-      .then(([runData, caseData, suiteData]) => {
+      .then(([runData, caseData, suiteData, folderData]) => {
         setRuns(Array.isArray(runData) ? runData : []);
         setCases(Array.isArray(caseData) ? caseData : []);
         setSuites(Array.isArray(suiteData) ? suiteData : []);
+        setFolders(Array.isArray(folderData) ? folderData : []);
         setLoading(false);
       })
       .catch((error) => {
@@ -203,6 +207,7 @@ export default function TestRuns() {
                   <span>{selectedRun.requestedBy || 'Unassigned'}</span>
                   <span>{selectedRun.date || 'No date'}</span>
                   <span>{selectedRun.executionTime || '-'}</span>
+                  <FolderBadge folders={folders} folderId={selectedRun.folderId} />
                 </div>
               </div>
               <div className="flex gap-2">
@@ -390,6 +395,7 @@ export default function TestRuns() {
               <tr>
                 <th className="px-4 py-3 w-10"></th>
                 <th className="px-4 py-3 font-medium">Run</th>
+                <th className="px-4 py-3 font-medium">Folder</th>
                 <th className="px-4 py-3 font-medium">Tests</th>
                 <th className="px-4 py-3 font-medium">Duration</th>
                 <th className="px-4 py-3 font-medium">Tests Status</th>
@@ -399,9 +405,9 @@ export default function TestRuns() {
             </thead>
             <tbody className="divide-y divide-[var(--border)]">
               {loading ? (
-                <tr><td colSpan={7} className="px-4 py-8 text-center text-[var(--text-muted)]">Loading runs...</td></tr>
+                <tr><td colSpan={8} className="px-4 py-8 text-center text-[var(--text-muted)]">Loading runs...</td></tr>
               ) : filteredRuns.length === 0 ? (
-                <tr><td colSpan={7} className="px-4 py-8 text-center text-[var(--text-muted)]">No test runs found.</td></tr>
+                <tr><td colSpan={8} className="px-4 py-8 text-center text-[var(--text-muted)]">No test runs found.</td></tr>
               ) : filteredRuns.map((run) => {
                 const stats = getRunStats(run);
                 return (
@@ -410,6 +416,9 @@ export default function TestRuns() {
                     <td className="px-4 py-4">
                       <div className="font-semibold">{run.name}</div>
                       <div className="text-xs text-[var(--text-muted)]">Assigned to {run.requestedBy || 'Unassigned'}</div>
+                    </td>
+                    <td className="px-4 py-4">
+                      <FolderBadge folders={folders} folderId={run.folderId} />
                     </td>
                     <td className="px-4 py-4">{stats.total} Tests</td>
                     <td className="px-4 py-4">{run.executionTime || '-'}</td>

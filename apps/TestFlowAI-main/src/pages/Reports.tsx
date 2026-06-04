@@ -4,6 +4,7 @@ import { cn } from '@/src/lib/utils';
 import html2canvas from 'html2canvas';
 import { Modal } from '@/src/components/Modal';
 import { FolderSelect } from '@/src/components/FolderSelect';
+import { FolderBadge } from '@/src/components/FolderBadge';
 
 interface Step {
   step: string;
@@ -17,6 +18,7 @@ interface Step {
 interface Report {
   id: string;
   name: string;
+  folderId?: string;
   planName: string;
   suiteName: string;
   requestedBy: string;
@@ -219,6 +221,7 @@ export default function Reports() {
   const [reports, setReports] = useState<Report[]>([]);
   const [plans, setPlans] = useState<any[]>([]);
   const [suites, setSuites] = useState<any[]>([]);
+  const [folders, setFolders] = useState<any[]>([]);
   
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
@@ -283,6 +286,7 @@ export default function Reports() {
   const fetchDataConfigs = () => {
     fetch('/api/plans').then(r => r.json()).then(data => setPlans(data)).catch(console.error);
     fetch('/api/suites').then(r => r.json()).then(data => setSuites(data)).catch(console.error);
+    fetch('/api/folders').then(r => r.json()).then(data => setFolders(Array.isArray(data) ? data : [])).catch(console.error);
   };
 
   useEffect(() => {
@@ -522,6 +526,9 @@ export default function Reports() {
                       <td className="px-4 py-4">
                         <div className="text-sm font-semibold leading-5 text-slate-900 dark:text-slate-100">
                           {r.name}
+                        </div>
+                        <div className="mt-2">
+                          <FolderBadge folders={folders} folderId={r.folderId} />
                         </div>
                         <div className="text-[10px] text-slate-500 mt-1.5 leading-relaxed font-mono">
                           Plan: {r.planName}<br />

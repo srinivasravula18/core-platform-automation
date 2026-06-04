@@ -4,11 +4,13 @@ import { cn } from '@/src/lib/utils';
 import { Modal } from '@/src/components/Modal';
 import { AIActionModal } from '@/src/components/AIActionModal';
 import { FolderSelect } from '@/src/components/FolderSelect';
+import { FolderBadge } from '@/src/components/FolderBadge';
 
 export default function TestSuites() {
   const [suites, setSuites] = useState<any[]>([]);
   const [plans, setPlans] = useState<any[]>([]);
   const [cases, setCases] = useState<any[]>([]);
+  const [folders, setFolders] = useState<any[]>([]);
   const [expandedSuiteIds, setExpandedSuiteIds] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
@@ -41,10 +43,18 @@ export default function TestSuites() {
       .catch(console.error);
   };
 
+  const fetchFolders = () => {
+    fetch('/api/folders')
+      .then(r => r.json())
+      .then(data => setFolders(Array.isArray(data) ? data : []))
+      .catch(console.error);
+  };
+
   useEffect(() => {
     fetchSuites();
     fetchPlans();
     fetchCases();
+    fetchFolders();
   }, []);
 
   const openNewModal = () => {
@@ -272,6 +282,7 @@ export default function TestSuites() {
               <tr className="text-[var(--text-muted)]">
                 <th className="font-medium py-3 px-4 w-24">ID</th>
                 <th className="font-medium py-3 px-4">Name</th>
+                <th className="font-medium py-3 px-4">Folder</th>
                 <th className="font-medium py-3 px-4">Parent Test Plan</th>
                 <th className="font-medium py-3 px-4 w-32">Module</th>
                 <th className="font-medium py-3 px-4">Tags</th>
@@ -280,9 +291,9 @@ export default function TestSuites() {
             </thead>
             <tbody className="divide-y divide-[var(--border)]">
               {loading ? (
-                <tr><td colSpan={6} className="py-8 text-center text-[var(--text-muted)]">Loading suites...</td></tr>
+                <tr><td colSpan={7} className="py-8 text-center text-[var(--text-muted)]">Loading suites...</td></tr>
               ) : filteredSuites.length === 0 ? (
-                <tr><td colSpan={6} className="py-8 text-center text-[var(--text-muted)]">No suites found.</td></tr>
+                <tr><td colSpan={7} className="py-8 text-center text-[var(--text-muted)]">No suites found.</td></tr>
               ) : filteredSuites.map((suite) => {
                 const suiteCases = getSuiteCases(suite.id);
                 const isExpanded = expandedSuiteIds.includes(suite.id);
@@ -305,9 +316,12 @@ export default function TestSuites() {
                             <span className="block text-xs text-[var(--text-muted)] font-normal truncate max-w-[240px]">{suite.description}</span>
                             <span className="block text-xs text-[var(--text-muted)]">{suiteCases.length} related cases</span>
                           </button>
-                        </div>
-                      </td>
-                      <td className="py-3 px-4">
+                      </div>
+                    </td>
+                    <td className="py-3 px-4">
+                      <FolderBadge folders={folders} folderId={suite.folderId} />
+                    </td>
+                    <td className="py-3 px-4">
                         <span className="inline-block max-w-[240px] truncate text-[var(--text-muted)]" title={getPlanName(suite.testPlanId)}>
                           {getPlanName(suite.testPlanId)}
                         </span>

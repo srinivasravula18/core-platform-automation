@@ -5,6 +5,7 @@ import { cn } from '@/src/lib/utils';
 import { Modal } from '@/src/components/Modal';
 import { AIActionModal } from '@/src/components/AIActionModal';
 import { FolderSelect } from '@/src/components/FolderSelect';
+import { FolderBadge } from '@/src/components/FolderBadge';
 
 const PLAN_STATUSES = ['Draft', 'Under Review', 'Approved', 'In Progress', 'Completed', 'Blocked', 'Cancelled', 'Archived'];
 const PLAN_RISK_LEVELS = ['Low', 'Medium', 'High'];
@@ -49,6 +50,7 @@ export default function TestPlans() {
   const [cases, setCases] = useState<any[]>([]);
   const [runs, setRuns] = useState<any[]>([]);
   const [reports, setReports] = useState<any[]>([]);
+  const [folders, setFolders] = useState<any[]>([]);
   const [activeDetailTab, setActiveDetailTab] = useState<'suites' | 'cases' | 'sessions'>('suites');
   const [openActionPlanId, setOpenActionPlanId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -76,12 +78,14 @@ export default function TestPlans() {
       fetch('/api/cases').then(r => r.json()),
       fetch('/api/runs').then(r => r.json()),
       fetch('/api/reports').then(r => r.json()),
+      fetch('/api/folders').then(r => r.json()),
     ])
-      .then(([suiteData, caseData, runData, reportData]) => {
+      .then(([suiteData, caseData, runData, reportData, folderData]) => {
         setSuites(Array.isArray(suiteData) ? suiteData : []);
         setCases(Array.isArray(caseData) ? caseData : []);
         setRuns(Array.isArray(runData) ? runData : []);
         setReports(Array.isArray(reportData) ? reportData : []);
+        setFolders(Array.isArray(folderData) ? folderData : []);
       })
       .catch(console.error);
   };
@@ -353,6 +357,7 @@ export default function TestPlans() {
                 <div className="mt-2 flex flex-wrap items-center gap-3 text-sm text-[var(--text-muted)]">
                   <span>Status: <span className={cn("ml-1 inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium border", getStatusBadgeClass(selectedDetailPlan.status || 'Draft'))}>{selectedDetailPlan.status || 'Draft'}</span></span>
                   <span>Risk: <span className={cn("ml-1 inline-flex items-center px-2 py-0.5 rounded text-xs font-bold uppercase tracking-wider", getRiskBadgeClass(selectedDetailPlan.riskLevel || 'Medium'))}>{selectedDetailPlan.riskLevel || 'Medium'}</span></span>
+                  <FolderBadge folders={folders} folderId={selectedDetailPlan.folderId} />
                   <span>{getPlanSuites(selectedDetailPlan.id).length} suites</span>
                   <span>{getPlanCases(selectedDetailPlan.id).length} cases</span>
                 </div>
@@ -504,6 +509,7 @@ export default function TestPlans() {
               <tr className="text-[var(--text-muted)]">
                 <th className="font-medium py-3 px-4 w-24">ID</th>
                 <th className="font-medium py-3 px-4">Name</th>
+                <th className="font-medium py-3 px-4">Folder</th>
                 <th className="font-medium py-3 px-4 w-32">Status</th>
                 <th className="font-medium py-3 px-4">Risk Level</th>
                 <th className="font-medium py-3 px-4 w-24 text-right">Actions</th>
@@ -511,9 +517,9 @@ export default function TestPlans() {
             </thead>
             <tbody className="divide-y divide-[var(--border)]">
               {loading ? (
-                <tr><td colSpan={5} className="py-8 text-center text-[var(--text-muted)]">Loading plans...</td></tr>
+                <tr><td colSpan={6} className="py-8 text-center text-[var(--text-muted)]">Loading plans...</td></tr>
               ) : filteredPlans.length === 0 ? (
-                <tr><td colSpan={5} className="py-8 text-center text-[var(--text-muted)]">No plans found.</td></tr>
+                <tr><td colSpan={6} className="py-8 text-center text-[var(--text-muted)]">No plans found.</td></tr>
               ) : filteredPlans.map((plan) => {
                 const planSuites = getPlanSuites(plan.id);
                 const planCases = getPlanCases(plan.id);
@@ -536,6 +542,9 @@ export default function TestPlans() {
                           {planSuites.length} suites / {planCases.length} cases
                         </span>
                       </div>
+                    </td>
+                    <td className="py-3 px-4">
+                      <FolderBadge folders={folders} folderId={plan.folderId} />
                     </td>
                     <td className="py-3 px-4">
                       <span className={cn(

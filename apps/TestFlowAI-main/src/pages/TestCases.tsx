@@ -5,6 +5,7 @@ import { cn } from '@/src/lib/utils';
 import { Modal } from '@/src/components/Modal';
 import { AIActionModal } from '@/src/components/AIActionModal';
 import { FolderSelect } from '@/src/components/FolderSelect';
+import { FolderBadge } from '@/src/components/FolderBadge';
 
 const CASE_STATUSES = ['Draft', 'Under Review', 'Approved', 'Automated', 'Deprecated'];
 
@@ -28,6 +29,7 @@ export default function TestCases() {
   const [cases, setCases] = useState<any[]>([]);
   const [plans, setPlans] = useState<any[]>([]);
   const [suites, setSuites] = useState<any[]>([]);
+  const [folders, setFolders] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState(searchParams.get('search') || '');
   const [statusFilter, setStatusFilter] = useState('All');
@@ -66,10 +68,18 @@ export default function TestCases() {
       .catch(console.error);
   };
 
+  const fetchFolders = () => {
+    fetch('/api/folders')
+      .then(r => r.json())
+      .then(data => setFolders(Array.isArray(data) ? data : []))
+      .catch(console.error);
+  };
+
   useEffect(() => {
     fetchCases();
     fetchPlans();
     fetchSuites();
+    fetchFolders();
   }, []);
 
   useEffect(() => {
@@ -417,6 +427,7 @@ export default function TestCases() {
               <tr className="text-[var(--text-muted)]">
                 <th className="font-medium py-3 px-4 w-24">ID</th>
                 <th className="font-medium py-3 px-4">Title</th>
+                <th className="font-medium py-3 px-4">Folder</th>
                 <th className="font-medium py-3 px-4">Test Plan</th>
                 <th className="font-medium py-3 px-4">Test Suite</th>
                 <th className="font-medium py-3 px-4 w-32">Status</th>
@@ -427,15 +438,18 @@ export default function TestCases() {
             </thead>
             <tbody className="divide-y divide-[var(--border)]">
               {loading && (
-                <tr><td colSpan={8} className="py-8 text-center text-[var(--text-muted)]">Loading test cases...</td></tr>
+                <tr><td colSpan={9} className="py-8 text-center text-[var(--text-muted)]">Loading test cases...</td></tr>
               )}
               {!loading && filteredCases.length === 0 && (
-                <tr><td colSpan={8} className="py-8 text-center text-[var(--text-muted)]">No test cases found.</td></tr>
+                <tr><td colSpan={9} className="py-8 text-center text-[var(--text-muted)]">No test cases found.</td></tr>
               )}
               {filteredCases.map((tc) => (
                 <tr key={tc.id} onClick={() => openEditModal(tc)} className="hover:bg-[var(--bg-secondary)] transition-colors cursor-pointer">
                   <td className="py-3 px-4 font-mono text-xs text-[var(--text-muted)]">{tc.id}</td>
                   <td className="py-3 px-4 font-medium max-w-sm truncate">{tc.title}</td>
+                  <td className="py-3 px-4">
+                    <FolderBadge folders={folders} folderId={tc.folderId} />
+                  </td>
                   <td className="py-3 px-4">
                     <span className="inline-block max-w-[220px] truncate text-[var(--text-muted)]" title={getPlanName(tc)}>
                       {getPlanName(tc)}

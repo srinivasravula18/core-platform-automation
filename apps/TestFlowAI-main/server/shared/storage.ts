@@ -36,7 +36,7 @@ function getPersistableDbSnapshot() {
 
 export async function loadPersistedData() {
   try {
-    const raw = await fs.readFile(dataFilePath, 'utf-8');
+    const raw = (await fs.readFile(dataFilePath, 'utf-8')).replace(/^\uFEFF/, '');
     const data = JSON.parse(raw);
     db.folders = Array.isArray(data.folders) ? data.folders : [];
     db.plans = Array.isArray(data.plans) ? data.plans : [];
