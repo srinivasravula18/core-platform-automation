@@ -23,6 +23,17 @@ export default function Dashboard() {
 
   useEffect(() => {
     fetchStats();
+    const interval = window.setInterval(fetchStats, 10000);
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        fetchStats();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      window.clearInterval(interval);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
   }, []);
 
   const handleNewPlan = () => {
@@ -165,10 +176,10 @@ export default function Dashboard() {
       {/* KPI Cards */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         {[
-          { label: 'Test Plans', val: stats?.plansCount || '-', icon: Target },
-          { label: 'Test Cases', val: stats?.casesCount || '-', icon: TestTube2 },
-          { label: 'Active Runs', val: stats?.runsCount || '-', icon: PlayCircle },
-          { label: 'Open Defects', val: stats?.defectsCount || '-', icon: ShieldAlert },
+          { label: 'Test Plans', val: stats?.plansCount ?? 0, icon: Target },
+          { label: 'Test Cases', val: stats?.casesCount ?? 0, icon: TestTube2 },
+          { label: 'Active Runs', val: stats?.activeRunsCount ?? 0, icon: PlayCircle },
+          { label: 'Open Defects', val: stats?.defectsCount ?? 0, icon: ShieldAlert },
         ].map((k) => (
           <div key={k.label} className="p-4 rounded-xl border border-[var(--border)] bg-[var(--bg-card)] shadow-sm">
             <div className="flex justify-between items-start mb-2">

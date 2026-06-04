@@ -7,3 +7,5 @@ coverage/
 .env*
 !.env.example
 .testflow-settings.json
+.testflow-git-agent-state.json
+.testflow-data.json

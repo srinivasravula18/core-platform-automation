@@ -47,26 +47,18 @@ export default function Settings() {
   };
 
   const updateSiteCredential = (id: string, updates: Partial<SiteCredential>) => {
-    setSiteCredentials(siteCredentials.map((item) => {
-      if (updates.isPlaywrightTarget) {
-        return item.id === id ? { ...item, ...updates } : { ...item, isPlaywrightTarget: false };
-      }
-      return item.id === id ? { ...item, ...updates } : item;
-    }));
+    setSiteCredentials(siteCredentials.map((item) => (
+      item.id === id ? { ...item, ...updates } : item
+    )));
   };
 
   const removeSiteCredential = (id: string) => {
-    const remaining = siteCredentials.filter((item) => item.id !== id);
-    if (!remaining.some((item) => item.isPlaywrightTarget) && remaining[0]) {
-      remaining[0] = { ...remaining[0], isPlaywrightTarget: true };
-    }
-    setSiteCredentials(remaining);
+    setSiteCredentials(siteCredentials.filter((item) => item.id !== id));
   };
 
   const handleSavePreferences = async () => {
     setSaveStatus({ type: 'idle', message: '' });
     try {
-      const selectedTargetId = siteCredentials.find((item) => item.isPlaywrightTarget)?.id || siteCredentials[0]?.id || '';
       const cleanedCredentials = siteCredentials
         .map((item) => ({
           id: item.id,
@@ -74,7 +66,7 @@ export default function Settings() {
           url: item.url.trim(),
           username: item.username.trim(),
           password: item.password.trim(),
-          isPlaywrightTarget: item.id === selectedTargetId,
+          isPlaywrightTarget: Boolean(item.isPlaywrightTarget),
         }))
         .filter((item) => item.url && item.username && item.password);
 
@@ -153,7 +145,7 @@ export default function Settings() {
               <div>
                 <h3 className="text-base font-medium">Website Credentials</h3>
                 <p className="text-sm text-[var(--text-muted)] mt-1">
-                  Save login credentials per website. Mention the website name in chat, or select a row for Playwright.
+                  Save login credentials per website. Mention the website name in chat, or select one or more rows for Playwright.
                 </p>
               </div>
               <button
@@ -217,10 +209,9 @@ export default function Settings() {
                   </div>
                   <label className="mt-5 flex h-10 items-center gap-2 rounded-md border border-[var(--border)] bg-[var(--bg-primary)] px-3 text-xs font-medium text-[var(--text-muted)]">
                     <input
-                      type="radio"
-                      name="playwrightTargetCredential"
+                      type="checkbox"
                       checked={Boolean(credential.isPlaywrightTarget)}
-                      onChange={() => updateSiteCredential(credential.id, { isPlaywrightTarget: true })}
+                      onChange={(e) => updateSiteCredential(credential.id, { isPlaywrightTarget: e.target.checked })}
                       className="accent-[var(--accent)]"
                     />
                     Use for Playwright

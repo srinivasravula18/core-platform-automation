@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Link, useLocation } from 'react-router-dom';
-import { LayoutDashboard, TestTube2, Bug, Settings, BrainCircuit, PlayCircle, FolderTree, Sun, Moon, Search, CircleUser, Layers, Menu, ClipboardList } from 'lucide-react';
+import { LayoutDashboard, TestTube2, Bug, Settings, BrainCircuit, PlayCircle, FolderTree, Sun, Moon, Search, CircleUser, Layers, Menu, ClipboardList, GitBranch } from 'lucide-react';
 import { cn } from '@/src/lib/utils';
 import { useTheme } from '@/src/store/theme';
 
@@ -13,6 +13,7 @@ import Defects from '@/src/pages/Defects';
 import Reports from '@/src/pages/Reports';
 import SettingsPage from '@/src/pages/Settings';
 import AgentPanel from '@/src/pages/AgentPanel';
+import GitAgent from '@/src/pages/GitAgent';
 
 function Sidebar({ isOpen }: { isOpen: boolean }) {
   const location = useLocation();
@@ -25,6 +26,7 @@ function Sidebar({ isOpen }: { isOpen: boolean }) {
     { name: 'Reports', href: '/reports', icon: ClipboardList },
     { name: 'Defects', href: '/defects', icon: Bug },
     { name: 'AI Agent', href: '/agent', icon: BrainCircuit },
+    { name: 'Git Agent', href: '/git-agent', icon: GitBranch },
   ];
 
   return (
@@ -141,6 +143,7 @@ export default function App() {
           <Route path="/reports" element={<Reports />} />
           <Route path="/defects" element={<Defects />} />
           <Route path="/agent" element={<AgentPanel />} />
+          <Route path="/git-agent" element={<GitAgent />} />
           <Route path="/settings" element={<SettingsPage />} />
           <Route path="*" element={
             <div className="flex flex-col items-center justify-center h-full text-[var(--text-muted)]">
