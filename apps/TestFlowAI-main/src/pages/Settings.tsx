@@ -1,12 +1,21 @@
 import { useState, useEffect } from 'react';
 import { useTheme } from '@/src/store/theme';
-import { Moon, Sun, CheckCircle, AlertCircle } from 'lucide-react';
+import { Moon, Sun, CheckCircle, AlertCircle, Plus, Trash2 } from 'lucide-react';
 import { GoogleSheetsIntegration } from '../components/GoogleSheetsIntegration';
+
+type SiteCredential = {
+  id: string;
+  name: string;
+  url: string;
+  username: string;
+  password: string;
+  isPlaywrightTarget?: boolean;
+};
 
 export default function Settings() {
   const { theme, setTheme } = useTheme();
   const [geminiModel, setGeminiModel] = useState('gemini-2.5-flash');
-  const [playwrightUrl, setPlaywrightUrl] = useState('');
+  const [siteCredentials, setSiteCredentials] = useState<SiteCredential[]>([]);
   const [saveStatus, setSaveStatus] = useState<{ type: 'success' | 'error' | 'idle', message: string }>({ type: 'idle', message: '' });
 
   useEffect(() => {
@@ -15,19 +24,64 @@ export default function Settings() {
       .then(data => {
         if (data) {
           if (data.geminiModel) setGeminiModel(data.geminiModel);
-          if (data.playwrightUrl) setPlaywrightUrl(data.playwrightUrl);
+          if (Array.isArray(data.siteCredentials)) {
+            setSiteCredentials(data.siteCredentials.map((item: any) => ({
+              id: item.id || crypto.randomUUID(),
+              name: item.name || '',
+              url: item.url || '',
+              username: item.username || '',
+              password: item.password || '',
+              isPlaywrightTarget: Boolean(item.isPlaywrightTarget),
+            })));
+          }
         }
       })
       .catch(err => console.error("Error loading settings:", err));
   }, []);
 
+  const addSiteCredential = () => {
+    setSiteCredentials([
+      ...siteCredentials,
+      { id: crypto.randomUUID(), name: '', url: '', username: '', password: '', isPlaywrightTarget: siteCredentials.length === 0 }
+    ]);
+  };
+
+  const updateSiteCredential = (id: string, updates: Partial<SiteCredential>) => {
+    setSiteCredentials(siteCredentials.map((item) => {
+      if (updates.isPlaywrightTarget) {
+        return item.id === id ? { ...item, ...updates } : { ...item, isPlaywrightTarget: false };
+      }
+      return item.id === id ? { ...item, ...updates } : item;
+    }));
+  };
+
+  const removeSiteCredential = (id: string) => {
+    const remaining = siteCredentials.filter((item) => item.id !== id);
+    if (!remaining.some((item) => item.isPlaywrightTarget) && remaining[0]) {
+      remaining[0] = { ...remaining[0], isPlaywrightTarget: true };
+    }
+    setSiteCredentials(remaining);
+  };
+
   const handleSavePreferences = async () => {
     setSaveStatus({ type: 'idle', message: '' });
     try {
+      const selectedTargetId = siteCredentials.find((item) => item.isPlaywrightTarget)?.id || siteCredentials[0]?.id || '';
+      const cleanedCredentials = siteCredentials
+        .map((item) => ({
+          id: item.id,
+          name: item.name.trim(),
+          url: item.url.trim(),
+          username: item.username.trim(),
+          password: item.password.trim(),
+          isPlaywrightTarget: item.id === selectedTargetId,
+        }))
+        .filter((item) => item.url && item.username && item.password);
+
       const res = await fetch('/api/settings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ geminiModel, playwrightUrl })
+        body: JSON.stringify({ geminiModel, siteCredentials: cleanedCredentials })
       });
       if (res.ok) {
         setSaveStatus({ type: 'success', message: 'Preferences saved successfully!' });
@@ -92,15 +146,95 @@ export default function Settings() {
                 <option value="gemini-2.5-pro">gemini-2.5-pro</option>
               </select>
             </div>
-            <div>
-              <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Playwright Target Base URL</label>
-              <input 
-                type="url" 
-                value={playwrightUrl}
-                onChange={(e) => setPlaywrightUrl(e.target.value)}
-                placeholder="https://staging.myapp.com" 
-                className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)] relative" 
-              />
+          </div>
+
+          <div className="mt-8">
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <h3 className="text-base font-medium">Website Credentials</h3>
+                <p className="text-sm text-[var(--text-muted)] mt-1">
+                  Save login credentials per website. Mention the website name in chat, or select a row for Playwright.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={addSiteCredential}
+                className="inline-flex items-center gap-2 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm font-medium text-[var(--text-primary)] hover:border-[var(--accent)]"
+              >
+                <Plus className="h-4 w-4" />
+                Add Website
+              </button>
+            </div>
+
+            <div className="mt-4 space-y-3">
+              {siteCredentials.length === 0 && (
+                <div className="rounded-lg border border-dashed border-[var(--border)] bg-[var(--bg-secondary)] px-4 py-5 text-sm text-[var(--text-muted)]">
+                  No website credentials saved yet.
+                </div>
+              )}
+
+              {siteCredentials.map((credential) => (
+                <div key={credential.id} className="grid grid-cols-1 gap-3 rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] p-3 xl:grid-cols-[1fr_1.25fr_1fr_1fr_132px_auto]">
+                  <div>
+                    <label className="block text-xs font-medium mb-1 text-[var(--text-muted)]">Website Name</label>
+                    <input
+                      type="text"
+                      value={credential.name}
+                      onChange={(e) => updateSiteCredential(credential.id, { name: e.target.value })}
+                      placeholder="Keystone Admin"
+                      className="w-full bg-[var(--bg-primary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium mb-1 text-[var(--text-muted)]">Website URL</label>
+                    <input
+                      type="url"
+                      value={credential.url}
+                      onChange={(e) => updateSiteCredential(credential.id, { url: e.target.value })}
+                      placeholder="http://54.205.160.97:5002/"
+                      className="w-full bg-[var(--bg-primary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium mb-1 text-[var(--text-muted)]">Username / Email</label>
+                    <input
+                      type="text"
+                      value={credential.username}
+                      onChange={(e) => updateSiteCredential(credential.id, { username: e.target.value })}
+                      placeholder="admin acc"
+                      className="w-full bg-[var(--bg-primary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium mb-1 text-[var(--text-muted)]">Password</label>
+                    <input
+                      type="password"
+                      value={credential.password}
+                      onChange={(e) => updateSiteCredential(credential.id, { password: e.target.value })}
+                      placeholder="Password"
+                      className="w-full bg-[var(--bg-primary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]"
+                    />
+                  </div>
+                  <label className="mt-5 flex h-10 items-center gap-2 rounded-md border border-[var(--border)] bg-[var(--bg-primary)] px-3 text-xs font-medium text-[var(--text-muted)]">
+                    <input
+                      type="radio"
+                      name="playwrightTargetCredential"
+                      checked={Boolean(credential.isPlaywrightTarget)}
+                      onChange={() => updateSiteCredential(credential.id, { isPlaywrightTarget: true })}
+                      className="accent-[var(--accent)]"
+                    />
+                    Use for Playwright
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => removeSiteCredential(credential.id)}
+                    className="mt-5 inline-flex h-10 w-10 items-center justify-center rounded-md border border-[var(--border)] text-[var(--text-muted)] hover:border-red-400 hover:text-red-400 lg:mt-5"
+                    aria-label="Remove website credentials"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </button>
+                </div>
+              ))}
             </div>
           </div>
 

@@ -12,7 +12,8 @@ export default function TestCases() {
   const [loading, setLoading] = useState(true);
   const [isCaseModalOpen, setIsCaseModalOpen] = useState(false);
   const [isAICaseModalOpen, setIsAICaseModalOpen] = useState(false);
-  const [formData, setFormData] = useState({ title: '', description: '', testPlanId: '', testSuiteId: '', createdBy: 'Admin', tags: '', type: 'Manual', priority: 'Medium' });
+  const emptyStep = { action: '', expected: '' };
+  const [formData, setFormData] = useState({ title: '', description: '', testPlanId: '', testSuiteId: '', createdBy: 'Admin', tags: '', type: 'Manual', priority: 'Medium', steps: [emptyStep] });
 
   const [selectedCaseId, setSelectedCaseId] = useState<string | null>(null);
 
@@ -45,7 +46,7 @@ export default function TestCases() {
 
   const openNewModal = () => {
     setSelectedCaseId(null);
-    setFormData({ title: '', description: '', testPlanId: '', testSuiteId: '', createdBy: 'Admin', tags: '', type: 'Manual', priority: 'Medium' });
+    setFormData({ title: '', description: '', testPlanId: '', testSuiteId: '', createdBy: 'Admin', tags: '', type: 'Manual', priority: 'Medium', steps: [emptyStep] });
     setIsCaseModalOpen(true);
   };
 
@@ -56,7 +57,8 @@ export default function TestCases() {
       testPlanId: testCase.testPlanId || '', testSuiteId: testCase.testSuiteId || '',
       createdBy: testCase.createdBy || 'Admin', 
       tags: Array.isArray(testCase.tags) ? testCase.tags.join(', ') : testCase.tags || '', 
-      type: testCase.type || 'Manual', priority: testCase.priority || 'Medium'
+      type: testCase.type || 'Manual', priority: testCase.priority || 'Medium',
+      steps: Array.isArray(testCase.steps) && testCase.steps.length > 0 ? testCase.steps : [emptyStep]
     });
     setIsCaseModalOpen(true);
   };
@@ -64,12 +66,15 @@ export default function TestCases() {
   const handleSaveCase = () => {
     if (!formData.title.trim()) return;
     const tags = formData.tags.split(',').map(s => s.trim()).filter(Boolean);
+    const steps = formData.steps
+      .map((step) => ({ action: step.action.trim(), expected: step.expected.trim() }))
+      .filter((step) => step.action || step.expected);
     
     if (selectedCaseId) {
       fetch(`/api/cases/${selectedCaseId}`, {
         method: 'PUT',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ ...formData, tags })
+        body: JSON.stringify({ ...formData, tags, steps })
       }).then(() => {
          setIsCaseModalOpen(false);
          fetchCases();
@@ -78,12 +83,27 @@ export default function TestCases() {
       fetch('/api/cases', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ ...formData, tags })
+        body: JSON.stringify({ ...formData, tags, steps })
       }).then(() => {
          setIsCaseModalOpen(false);
          fetchCases();
       });
     }
+  };
+
+  const updateFormStep = (index: number, updates: Partial<{ action: string; expected: string }>) => {
+    const steps = [...formData.steps];
+    steps[index] = { ...steps[index], ...updates };
+    setFormData({ ...formData, steps });
+  };
+
+  const addFormStep = () => {
+    setFormData({ ...formData, steps: [...formData.steps, { action: '', expected: '' }] });
+  };
+
+  const removeFormStep = (index: number) => {
+    const steps = formData.steps.filter((_, stepIndex) => stepIndex !== index);
+    setFormData({ ...formData, steps: steps.length ? steps : [{ action: '', expected: '' }] });
   };
 
   const handleDeleteCase = () => {
@@ -98,10 +118,22 @@ export default function TestCases() {
   };
 
   const handleAIApprove = (data: any) => {
+    const steps = Array.isArray(data.steps)
+      ? data.steps
+          .map((step: any) => ({
+            action: String(step?.action || '').trim(),
+            expected: String(step?.expected || '').trim(),
+          }))
+          .filter((step: { action: string; expected: string }) => step.action || step.expected)
+      : [];
+    const tags = Array.isArray(data.tags)
+      ? data.tags
+      : String(data.tags || '').split(',').map((tag) => tag.trim()).filter(Boolean);
+
     fetch('/api/cases', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify(data)
+      body: JSON.stringify({ ...data, tags, steps })
     }).then(() => fetchCases());
   };
 
@@ -165,6 +197,43 @@ export default function TestCases() {
           <div>
             <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Description (Steps, Ex. Results)</label>
             <textarea value={formData.description} onChange={(e) => setFormData({...formData, description: e.target.value})} placeholder="Preconditions, test steps..." className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)] h-24 resize-y" />
+          </div>
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <label className="block text-sm font-medium text-[var(--text-muted)]">Test Steps & Expected Results</label>
+              <button onClick={addFormStep} type="button" className="text-xs text-[var(--accent)] hover:underline">Add Step</button>
+            </div>
+            <div className="rounded-md border border-[var(--border)] overflow-hidden">
+              <div className="grid grid-cols-[1fr_1fr_72px] bg-[var(--bg-secondary)] text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+                <div className="px-3 py-2 border-r border-[var(--border)]">Test Step</div>
+                <div className="px-3 py-2 border-r border-[var(--border)]">Expected Result</div>
+                <div className="px-3 py-2">Action</div>
+              </div>
+              {formData.steps.map((step, index) => (
+                <div key={index} className="grid grid-cols-[1fr_1fr_72px] border-t border-[var(--border)]">
+                  <textarea
+                    value={step.action}
+                    onChange={(e) => updateFormStep(index, { action: e.target.value })}
+                    placeholder={`${index + 1}. Enter test step...`}
+                    className="min-h-16 resize-y bg-[var(--bg-secondary)] border-0 border-r border-[var(--border)] px-3 py-2 text-sm outline-none focus:bg-[var(--bg-primary)] text-[var(--text-primary)]"
+                  />
+                  <textarea
+                    value={step.expected}
+                    onChange={(e) => updateFormStep(index, { expected: e.target.value })}
+                    placeholder={`${index + 1}. Enter expected result...`}
+                    className="min-h-16 resize-y bg-[var(--bg-secondary)] border-0 border-r border-[var(--border)] px-3 py-2 text-sm outline-none focus:bg-[var(--bg-primary)] text-[var(--text-primary)]"
+                  />
+                  <button
+                    onClick={() => removeFormStep(index)}
+                    type="button"
+                    className="text-xs text-red-400 hover:text-red-300 disabled:opacity-40"
+                    disabled={formData.steps.length === 1 && !step.action && !step.expected}
+                  >
+                    Remove
+                  </button>
+                </div>
+              ))}
+            </div>
           </div>
           <div>
             <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Created By</label>

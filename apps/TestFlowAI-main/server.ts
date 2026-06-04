@@ -82,6 +82,18 @@ function normalizeTargetUrl(url: string) {
   return `https://${trimmed}`;
 }
 
+function getUrlMatchKey(url: string) {
+  const normalized = normalizeTargetUrl(url || '');
+  if (!normalized) return '';
+
+  try {
+    const parsed = new URL(normalized);
+    return `${parsed.protocol}//${parsed.host}`.toLowerCase();
+  } catch {
+    return normalized.replace(/\/+$/, '').toLowerCase();
+  }
+}
+
 const domainPattern = /\b((?:https?:\/\/)?(?:(?:www\.)?[a-z0-9-]+(?:\.[a-z0-9-]+)+|(?:\d{1,3}\.){3}\d{1,3})(?::\d{2,5})?(?:\/[^\s]*)?)/i;
 
 function extractTargetUrl(message: string) {
@@ -90,7 +102,291 @@ function extractTargetUrl(message: string) {
   return normalizeTargetUrl(match[1].replace(/[),.;!?]+$/, ''));
 }
 
-async function capturePlaywrightEvidence(targetUrl: string, runId: string, testCases: any[] = []) {
+function extractCredentials(message: string) {
+  const text = message || '';
+  const usernameMatch =
+    text.match(/\b(?:username|user\s*name|user|login|id)\s*(?:is|:|=)?\s*([^\n,;]+?)(?=\s+(?:and\s+)?(?:password|pass|pwd)\b|[,;.]|$)/i);
+  const passwordMatch =
+    text.match(/\b(?:password|pass|pwd)\s*(?:is|:|=)?\s*([^\n,;]+?)(?=\s+(?:and\s+)?(?:username|user\s*name|user|login|id)\b|[,;.]|$)/i);
+
+  return {
+    username: usernameMatch?.[1]?.trim() || '',
+    password: passwordMatch?.[1]?.trim() || '',
+  };
+}
+
+function buildCredentialContext(credentials: any) {
+  if (!credentials?.username || !credentials?.password) {
+    return 'No login credentials were provided.';
+  }
+
+  return `Use these exact login credentials when a login step is needed: username/email "${credentials.username}" and password "${credentials.password}". Generated test steps and Playwright scripts must explicitly fill these values instead of saying only "valid credentials".`;
+}
+
+function findSettingsCredentials(targetUrl: string) {
+  const targetKey = getUrlMatchKey(targetUrl);
+  if (!targetKey) return { username: '', password: '', source: 'none' };
+
+  const credentials = Array.isArray(db.settings?.siteCredentials) ? db.settings.siteCredentials : [];
+  const match = credentials.find((item: any) => {
+    const siteKey = getUrlMatchKey(item?.url || '');
+    return siteKey && (targetKey === siteKey || targetKey.startsWith(siteKey) || siteKey.startsWith(targetKey));
+  });
+
+  return {
+    username: match?.username?.trim?.() || '',
+    password: match?.password?.trim?.() || '',
+    source: match ? 'settings' : 'none',
+  };
+}
+
+function normalizeLookupText(value: string) {
+  return String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+function findSettingsSiteByName(message: string) {
+  const normalizedMessage = ` ${normalizeLookupText(message)} `;
+  if (!normalizedMessage.trim()) return null;
+
+  const credentials = Array.isArray(db.settings?.siteCredentials) ? db.settings.siteCredentials : [];
+  return credentials.find((item: any) => {
+    const name = normalizeLookupText(item?.name || '');
+    return name && normalizedMessage.includes(` ${name} `);
+  }) || null;
+}
+
+function findSettingsPlaywrightTargetUrl() {
+  const credentials = Array.isArray(db.settings?.siteCredentials) ? db.settings.siteCredentials : [];
+  const selected = credentials.find((item: any) => item?.isPlaywrightTarget && item?.url);
+  if (selected?.url) return normalizeTargetUrl(selected.url);
+
+  if (credentials.length === 1 && credentials[0]?.url) {
+    return normalizeTargetUrl(credentials[0].url);
+  }
+
+  return '';
+}
+
+function resolveAgentTargetUrl(prompt: string, appUrl: string) {
+  const explicitUrl = normalizeTargetUrl(appUrl || extractTargetUrl(prompt || '') || '');
+  if (explicitUrl) return explicitUrl;
+
+  const siteByName = findSettingsSiteByName(prompt || '');
+  if (siteByName?.url) return normalizeTargetUrl(siteByName.url);
+
+  return findSettingsPlaywrightTargetUrl();
+}
+
+function resolveAgentCredentials(prompt: string, targetUrl: string) {
+  const chatCredentials = extractCredentials(prompt || '');
+  if (chatCredentials.username && chatCredentials.password) {
+    return { ...chatCredentials, source: 'chat' };
+  }
+
+  const siteByName = findSettingsSiteByName(prompt || '');
+  if (siteByName?.username && siteByName?.password) {
+    return {
+      username: String(siteByName.username || '').trim(),
+      password: String(siteByName.password || '').trim(),
+      source: 'settings-name',
+      siteName: siteByName.name || '',
+    };
+  }
+
+  return findSettingsCredentials(targetUrl);
+}
+
+async function fillLocator(locator: any, value: string) {
+  try {
+    if (!(await locator.count())) return false;
+    const field = locator.first();
+    await field.waitFor({ state: 'visible', timeout: 5000 });
+    await field.fill(value, { timeout: 5000 });
+    await field.dispatchEvent('input').catch(() => undefined);
+    await field.dispatchEvent('change').catch(() => undefined);
+
+    try {
+      const actualValue = await field.inputValue({ timeout: 1000 });
+      return actualValue === value;
+    } catch {
+      return true;
+    }
+  } catch {
+    return false;
+  }
+}
+
+async function fillFirstAvailable(page: any, selectors: string[], value: string) {
+  if (!value) return false;
+
+  for (const selector of selectors) {
+    if (await fillLocator(page.locator(selector), value)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+async function fillByAccessibleLabel(page: any, labels: RegExp[], value: string) {
+  for (const label of labels) {
+    if (await fillLocator(page.getByLabel(label), value)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+async function fillVisibleInputFallback(page: any, value: string, fieldType: 'username' | 'password') {
+  const selector = fieldType === 'password'
+    ? 'input[type="password"]'
+    : 'input:not([type="hidden"]):not([type="password"]):not([disabled])';
+  const inputs = page.locator(selector);
+  const count = await inputs.count();
+
+  for (let index = 0; index < count; index += 1) {
+    if (await fillLocator(inputs.nth(index), value)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+async function fillByDomFallback(page: any, value: string, fieldType: 'username' | 'password') {
+  if (!value) return false;
+
+  return page.evaluate(({ value, fieldType }) => {
+    const inputs = Array.from(document.querySelectorAll('input')) as HTMLInputElement[];
+    const candidates = inputs.filter((input) => {
+      const type = (input.getAttribute('type') || 'text').toLowerCase();
+      if (input.disabled || input.readOnly || type === 'hidden') return false;
+      return fieldType === 'password' ? type === 'password' : type !== 'password';
+    });
+    const field = candidates[0];
+    if (!field) return false;
+
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+    setter?.call(field, value);
+    field.focus();
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    field.dispatchEvent(new Event('change', { bubbles: true }));
+    field.blur();
+    return field.value === value;
+  }, { value, fieldType }).catch(() => false);
+}
+
+async function performLoginIfCredentialsProvided(page: any, credentials: any) {
+  if (!credentials?.username || !credentials?.password) {
+    return { attempted: false, success: false, reason: 'No credentials provided.' };
+  }
+
+  await page.waitForLoadState('domcontentloaded', { timeout: 10000 }).catch(() => undefined);
+
+  const usernameFilled =
+    await fillByAccessibleLabel(page, [/email\s*or\s*username/i, /username/i, /email/i, /login/i, /user/i], credentials.username) ||
+    await fillFirstAvailable(page, [
+      'input[name="email"]',
+      'input[name="username"]',
+      'input[name="user"]',
+      'input[name="identifier"]',
+      'input[id*="email" i]',
+      'input[id*="user" i]',
+      'input[placeholder*="email" i]',
+      'input[placeholder*="user" i]',
+      'input[aria-label*="email" i]',
+      'input[aria-label*="user" i]',
+      'input[type="email"]',
+      'input[type="text"]',
+    ], credentials.username) ||
+    await fillVisibleInputFallback(page, credentials.username, 'username') ||
+    await fillByDomFallback(page, credentials.username, 'username');
+
+  const passwordFilled =
+    await fillByAccessibleLabel(page, [/password/i, /pass/i], credentials.password) ||
+    await fillFirstAvailable(page, [
+      'input[name="password"]',
+      'input[name="pass"]',
+      'input[id*="password" i]',
+      'input[placeholder*="password" i]',
+      'input[aria-label*="password" i]',
+      'input[type="password"]',
+    ], credentials.password) ||
+    await fillVisibleInputFallback(page, credentials.password, 'password') ||
+    await fillByDomFallback(page, credentials.password, 'password');
+
+  if (!usernameFilled || !passwordFilled) {
+    return {
+      attempted: true,
+      success: false,
+      usernameFilled,
+      passwordFilled,
+      reason: 'Could not populate username or password fields.',
+    };
+  }
+
+  const beforeUrl = page.url();
+  const submitSelectors = [
+    'button[type="submit"]',
+    'input[type="submit"]',
+    'button:has-text("Sign in")',
+    'button:has-text("Login")',
+    'button:has-text("Log in")',
+    'button:has-text("Submit")',
+  ];
+
+  for (const selector of submitSelectors) {
+    try {
+      const locator = page.locator(selector).first();
+      if (await locator.count()) {
+        await locator.click({ timeout: 5000 });
+        await page.waitForLoadState('domcontentloaded', { timeout: 10000 }).catch(() => undefined);
+        await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => undefined);
+        await page.waitForTimeout(1000);
+        const bodyText = await page.locator('body').innerText({ timeout: 3000 }).catch(() => '');
+        const success = page.url() !== beforeUrl || !/sign\s*in|login|404\s+not\s+found/i.test(bodyText);
+        return {
+          attempted: true,
+          success,
+          usernameFilled,
+          passwordFilled,
+          reason: success
+            ? 'Credentials populated and submitted.'
+            : 'Credentials were populated and submitted, but the target app stayed on login or returned an error.',
+          beforeUrl,
+          afterUrl: page.url(),
+        };
+      }
+    } catch {
+      // Try the next submit selector.
+    }
+  }
+
+  try {
+    await page.keyboard.press('Enter');
+    await page.waitForLoadState('domcontentloaded', { timeout: 10000 }).catch(() => undefined);
+    await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => undefined);
+    await page.waitForTimeout(1000);
+    const bodyText = await page.locator('body').innerText({ timeout: 3000 }).catch(() => '');
+    const success = page.url() !== beforeUrl || !/sign\s*in|login|404\s+not\s+found/i.test(bodyText);
+    return {
+      attempted: true,
+      success,
+      usernameFilled,
+      passwordFilled,
+      reason: success
+        ? 'Credentials populated and submitted with Enter key.'
+        : 'Credentials were populated and submitted with Enter key, but the target app stayed on login or returned an error.',
+      beforeUrl,
+      afterUrl: page.url(),
+    };
+  } catch {
+    return { attempted: true, success: false, usernameFilled, passwordFilled, reason: 'Credentials filled, but submit failed.' };
+  }
+}
+
+async function capturePlaywrightEvidence(targetUrl: string, runId: string, testCases: any[] = [], credentials: any = {}) {
   const normalizedUrl = normalizeTargetUrl(targetUrl);
   if (!normalizedUrl) return [];
 
@@ -112,6 +408,7 @@ async function capturePlaywrightEvidence(targetUrl: string, runId: string, testC
       const filename = `${runId}-case-${index + 1}.png`;
       const screenshotPath = path.join(evidenceDir, filename);
       const response = await page.goto(normalizedUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      const loginResult = await performLoginIfCredentialsProvided(page, credentials);
       await page.screenshot({ path: screenshotPath, fullPage: true });
       await page.close();
 
@@ -121,6 +418,7 @@ async function capturePlaywrightEvidence(targetUrl: string, runId: string, testC
         url: normalizedUrl,
         screenshotUrl: `/evidence/${filename}`,
         status: response?.status() || null,
+        login: loginResult,
         capturedAt: new Date().toISOString(),
       });
     }
@@ -169,10 +467,30 @@ const db = {
   recentActivity: [] as any[],
   settings: {
     geminiModel: 'gemini-2.5-flash',
-    playwrightUrl: ''
+    siteCredentials: [] as any[],
   },
   reports: [] as any[]
 };
+
+const settingsFilePath = path.resolve(process.cwd(), '.testflow-settings.json');
+
+async function loadPersistedSettings() {
+  try {
+    const raw = await fs.readFile(settingsFilePath, 'utf-8');
+    const settings = JSON.parse(raw);
+    db.settings = {
+      ...db.settings,
+      ...settings,
+      siteCredentials: Array.isArray(settings.siteCredentials) ? settings.siteCredentials : [],
+    };
+  } catch {
+    // Missing settings file is fine on first run.
+  }
+}
+
+async function savePersistedSettings() {
+  await fs.writeFile(settingsFilePath, JSON.stringify(db.settings, null, 2), 'utf-8');
+}
 
 function addActivity(message: string) {
   db.recentActivity.unshift({ message, time: 'Just now' });
@@ -278,21 +596,56 @@ function buildAgentExecutionSteps(run: any) {
   });
 }
 
-function persistAgentRunArtifacts(run: any) {
+function persistAgentCaseArtifacts(run: any) {
   const now = new Date();
-  const date = now.toISOString().split('T')[0];
-  const existingRunId = `RUN-${run.id.substring(0, 8).toUpperCase()}`;
-  const existingReportId = `REP-${run.id.substring(0, 8).toUpperCase()}`;
+  const planId = `PLAN-${run.id.substring(0, 8).toUpperCase()}`;
+  const suiteId = `SUITE-${run.id.substring(0, 8).toUpperCase()}`;
+  const baseName = run.prompt?.slice(0, 48) || run.app_url || run.id;
+
+  if (!db.plans.some((item) => item.id === planId)) {
+    db.plans.unshift({
+      id: planId,
+      name: `Agent Plan - ${baseName}`,
+      scope: run.app_url || 'Generated from QA Assistant',
+      objectives: 'Validate generated user flows, test cases, automation scripts, and evidence.',
+      strategy: 'AI-assisted functional and UI validation',
+      testTypes: 'Functional, UI, Regression, Sanity',
+      environments: run.app_url || '',
+      roles: 'QA Assistant, PlaywrightAgent, EvidenceAgent',
+      status: 'Draft',
+      createdBy: 'QA Assistant',
+      createdAt: now,
+      agentRunId: run.id,
+    });
+  }
+
+  if (!db.suites.some((item) => item.id === suiteId)) {
+    db.suites.unshift({
+      id: suiteId,
+      name: `Agent Suite - ${baseName}`,
+      description: `Generated suite for ${run.app_url || baseName}`,
+      testPlanId: planId,
+      parentSuite: '',
+      module: 'QA Assistant',
+      owner: 'QA Assistant',
+      tags: ['@agent', '@generated'],
+      priority: 'Medium',
+      status: 'Active',
+      createdBy: 'QA Assistant',
+      createdAt: now,
+      agentRunId: run.id,
+    });
+  }
 
   (run.generated_cases || []).forEach((testCase: any, index: number) => {
     const caseId = `TC-${run.id.substring(0, 4).toUpperCase()}-${index + 1}`;
-    if (db.cases.some((item) => item.id === caseId)) return;
-
-    db.cases.unshift({
+    const casePayload = {
       id: caseId,
       title: testCase.title,
       description: buildCaseDescription(testCase),
       steps: normalizeCaseSteps(testCase.steps),
+      testPlanId: planId,
+      testSuiteId: suiteId,
       status: 'Draft',
       tags: normalizeCaseTags(testCase.tags || []),
       type: testCase.type || 'Manual',
@@ -300,16 +653,31 @@ function persistAgentRunArtifacts(run: any) {
       createdBy: 'QA Assistant',
       createdAt: now,
       agentRunId: run.id,
-    });
+    };
+    const existingIndex = db.cases.findIndex((item) => item.id === caseId);
+    if (existingIndex >= 0) {
+      db.cases[existingIndex] = { ...db.cases[existingIndex], ...casePayload };
+    } else {
+      db.cases.unshift(casePayload);
+    }
   });
+}
+
+function persistAgentRunArtifacts(run: any) {
+  const now = new Date();
+  const date = now.toISOString().split('T')[0];
+  const existingRunId = `RUN-${run.id.substring(0, 8).toUpperCase()}`;
+  const existingReportId = `REP-${run.id.substring(0, 8).toUpperCase()}`;
+  const baseName = run.prompt?.slice(0, 48) || run.app_url || run.id;
+
+  persistAgentCaseArtifacts(run);
 
   const executionSteps = buildAgentExecutionSteps(run);
 
-  if (!db.runs.some((item) => item.id === existingRunId)) {
-    db.runs.unshift({
+  const runPayload = {
       id: existingRunId,
-      name: `Agent Run - ${run.prompt?.slice(0, 48) || run.app_url || run.id}`,
-      suiteName: 'QA Assistant Generated Suite',
+      name: `Agent Run - ${baseName}`,
+      suiteName: `Agent Suite - ${baseName}`,
       requestedBy: 'QA Assistant',
       executionTime: 'Generated',
       status: 'Completed',
@@ -322,15 +690,19 @@ function persistAgentRunArtifacts(run: any) {
       steps: executionSteps,
       evidence: run.evidence_screenshots || [],
       agentRunId: run.id,
-    });
+  };
+  const runIndex = db.runs.findIndex((item) => item.id === existingRunId);
+  if (runIndex >= 0) {
+    db.runs[runIndex] = { ...db.runs[runIndex], ...runPayload };
+  } else {
+    db.runs.unshift(runPayload);
   }
 
-  if (!db.reports.some((item) => item.id === existingReportId)) {
-    db.reports.unshift({
+  const reportPayload = {
       id: existingReportId,
-      name: `Agent Report - ${run.prompt?.slice(0, 48) || run.app_url || run.id}`,
-      planName: 'QA Assistant',
-      suiteName: 'Generated Agent Suite',
+      name: `Agent Report - ${baseName}`,
+      planName: `Agent Plan - ${baseName}`,
+      suiteName: `Agent Suite - ${baseName}`,
       requestedBy: 'QA Assistant',
       executionTime: 'Generated',
       totalExecutions: executionSteps.length,
@@ -341,29 +713,36 @@ function persistAgentRunArtifacts(run: any) {
       steps: executionSteps,
       evidence: run.evidence_screenshots || [],
       agentRunId: run.id,
-    });
+  };
+  const reportIndex = db.reports.findIndex((item) => item.id === existingReportId);
+  if (reportIndex >= 0) {
+    db.reports[reportIndex] = { ...db.reports[reportIndex], ...reportPayload };
+  } else {
+    db.reports.unshift(reportPayload);
   }
 
   run.persisted = true;
+  addActivity(`Agent artifacts saved across Plans, Suites, Cases, Runs, and Reports: ${baseName}`);
 }
 
 async function runPostCaseAgentFlow(run: any, model: any, testCases: any, targetUrl: string) {
   run.messages.push({ agent: 'PlaywrightAgent', status: 'running' });
+  const credentialContext = buildCredentialContext(run.credentials || {});
   const { object: scripts } = await generateObject({
     model,
     schema: playwrightScriptsSchema,
-    prompt: `You are a Playwright automation expert. Convert these reviewed test cases into production-quality Playwright TypeScript scripts. Use this baseURL in the scripts when provided: ${targetUrl || 'not provided'}. Test cases: ${JSON.stringify(testCases)}`
+    prompt: `You are a Playwright automation expert. Convert these reviewed test cases into production-quality Playwright TypeScript scripts. Use this baseURL in the scripts when provided: ${targetUrl || 'not provided'}. ${credentialContext} For authenticated flows, fill the username/email and password fields before clicking submit, then assert that the expected authenticated page or table/list view is visible. Test cases: ${JSON.stringify(testCases)}`
   });
   run.playwright_scripts = scripts.scripts as any;
   run.messages.push({ agent: 'PlaywrightAgent', status: 'completed', output: scripts });
 
   run.messages.push({ agent: 'EvidenceAgent', status: 'running' });
   if (targetUrl) {
-    const evidence = await capturePlaywrightEvidence(targetUrl, run.id, testCases?.test_cases || run.generated_cases || []);
+    const evidence = await capturePlaywrightEvidence(targetUrl, run.id, testCases?.test_cases || run.generated_cases || [], run.credentials || {});
     run.evidence_screenshots = evidence as any;
     run.messages.push({ agent: 'EvidenceAgent', status: 'completed', output: evidence });
   } else {
-    run.messages.push({ agent: 'EvidenceAgent', status: 'skipped', output: 'No target URL was provided in chat or Settings > Playwright Target Base URL.' });
+    run.messages.push({ agent: 'EvidenceAgent', status: 'skipped', output: 'No target URL was provided in chat and no Website Credentials row is selected for Playwright.' });
   }
 
   run.status = 'completed';
@@ -371,6 +750,8 @@ async function runPostCaseAgentFlow(run: any, model: any, testCases: any, target
 }
 
 async function startServer() {
+  await loadPersistedSettings();
+
   const app = express();
   const PORT = 3000;
 
@@ -417,8 +798,22 @@ async function startServer() {
     }
   });
 
-  app.post('/api/settings', (req, res) => {
-    db.settings = { ...db.settings, ...req.body };
+  app.post('/api/settings', async (req, res) => {
+    const siteCredentials = Array.isArray(req.body.siteCredentials)
+      ? req.body.siteCredentials
+          .map((item: any) => ({
+            id: String(item?.id || randomUUID()),
+            name: String(item?.name || '').trim(),
+            url: String(item?.url || '').trim(),
+            username: String(item?.username || '').trim(),
+            password: String(item?.password || '').trim(),
+            isPlaywrightTarget: Boolean(item?.isPlaywrightTarget),
+          }))
+          .filter((item: any) => item.url && item.username && item.password)
+      : db.settings.siteCredentials;
+
+    db.settings = { ...db.settings, ...req.body, siteCredentials };
+    await savePersistedSettings();
     addActivity('Updated settings preferences');
     res.json({ success: true, settings: db.settings });
   });
@@ -571,7 +966,7 @@ async function startServer() {
   app.post('/api/runs', (req, res) => {
     const name = req.body.name || 'New Run';
     const runId = `RUN-${Math.random().toString(36).substring(2,6).toUpperCase()}`;
-    const targetUrl = normalizeTargetUrl(req.body.targetUrl || db.settings.playwrightUrl || '');
+    const targetUrl = normalizeTargetUrl(req.body.targetUrl || findSettingsPlaywrightTargetUrl() || '');
     const steps = targetUrl ? [
       { step: '1', action: `Load target webpage address URL: ${targetUrl}`, expected: 'Page responds successfully.', outcome: 'Pass', reason: '', screenshot: targetUrl },
       { step: '2', action: 'Verify primary page layout renders', expected: 'Core page content is visible.', outcome: 'Pass', reason: '', screenshot: targetUrl },
@@ -696,7 +1091,8 @@ async function startServer() {
       return res.json({ chat_response: guardrailResponse });
     }
 
-    const targetUrl = normalizeTargetUrl(app_url || extractTargetUrl(prompt || '') || db.settings.playwrightUrl || '');
+    const targetUrl = resolveAgentTargetUrl(prompt || '', app_url || '');
+    const credentials = resolveAgentCredentials(prompt || '', targetUrl);
     const taskId = randomUUID();
     
     const newRun = {
@@ -709,8 +1105,14 @@ async function startServer() {
       generated_cases: [],
       playwright_scripts: [],
       evidence_screenshots: [],
+      credentials,
       created_at: new Date()
     };
+    newRun.messages.push({
+      agent: 'System',
+      status: 'completed',
+      output: `Resolved target: ${targetUrl || 'none'}. Credentials: ${credentials.username && credentials.password ? `${credentials.source || 'provided'} for ${(credentials as any).siteName || credentials.username}` : 'none'}.`,
+    });
     
     db.agentRuns.unshift(newRun);
     
@@ -719,13 +1121,14 @@ async function startServer() {
 
     try {
       const model = createGeminiModel();
+      const credentialContext = buildCredentialContext(credentials);
 
       // 1. ApplicationInspector Agent
       newRun.messages.push({ agent: 'ApplicationInspector', status: 'running' });
       const { object: flows } = await generateObject({
         model,
         schema: appFlowsSchema,
-        prompt: `You are an expert web application analyst. Use this Playwright target base URL when available: ${targetUrl || 'not provided'}. Given this context: ${prompt ? `Requirements: ${prompt}` : ''}. Identify the top 3-5 user-facing flows and pages. Be concise.`
+        prompt: `You are an expert web application analyst. Use this Playwright target base URL when available: ${targetUrl || 'not provided'}. ${credentialContext} Given this context: ${prompt ? `Requirements: ${prompt}` : ''}. Identify the top 3-5 user-facing flows and pages. Be concise.`
       });
       newRun.messages.push({ agent: 'ApplicationInspector', status: 'completed', output: flows });
 
@@ -734,10 +1137,11 @@ async function startServer() {
       const { object: testCases } = await generateObject({
         model,
         schema: testCasesSchema,
-        prompt: `You are a senior QA engineer. Generate exactly ${testCaseCount} comprehensive test cases covering positive and negative scenarios for these flows: ${JSON.stringify(flows)}. Each test case must include automation tags in @ format, for example @bvt, @sanity, @regression, @smoke, @ui, @positive, @negative. Each test case must include a steps array with 3-6 ordered rows. Each row must have a clear action and expected result suitable for a report table.`
+        prompt: `You are a senior QA engineer. Generate exactly ${testCaseCount} comprehensive test cases covering positive and negative scenarios for these flows: ${JSON.stringify(flows)}. ${credentialContext} If a test case verifies a valid login or an authenticated page, the steps must explicitly say to enter username/email "${credentials.username || '<provided username>'}" and password "${credentials.password || '<provided password>'}", then click Sign in/Login and verify the target list/table view. Each test case must include automation tags in @ format, for example @bvt, @sanity, @regression, @smoke, @ui, @positive, @negative. Each test case must include a steps array with 3-6 ordered rows. Each row must have a clear action and expected result suitable for a report table.`
       });
       newRun.generated_cases = (testCases.test_cases as any[]).map((testCase) => ({ ...testCase, captureEvidence: true }));
       newRun.messages.push({ agent: 'TestGenerationAgent', status: 'completed', output: testCases });
+      persistAgentCaseArtifacts(newRun);
 
       if (flowMode === 'review_cases') {
         newRun.status = 'review_required';
@@ -766,6 +1170,7 @@ async function startServer() {
     run.generated_cases = cases;
     run.playwright_scripts = [];
     run.evidence_screenshots = [];
+    persistAgentCaseArtifacts(run);
     res.json({ success: true });
 
     try {

@@ -68,7 +68,7 @@ export function AIActionModal({ isOpen, onClose, taskType, onApprove, title }: A
     switch (taskType) {
       case 'plan': return "Include fields like: Name, Scope, Objectives, Environments, Strategy, Roles.";
       case 'suite': return "Include fields like: Name, Description, Module/Feature, Tags, Priority.";
-      case 'case': return "Include fields like: Title, Description (Steps), Priority, Type, Tags.";
+      case 'case': return "Include title, description, priority, @tags, and ordered test steps with expected results.";
       default: return "";
     }
   }

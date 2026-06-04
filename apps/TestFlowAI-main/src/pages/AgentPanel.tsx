@@ -590,6 +590,19 @@ export default function AgentPanel() {
                   <img src={shot.screenshotUrl} alt={shot.title || 'Playwright screenshot evidence'} className="w-full bg-black object-contain" />
                   <div className="px-4 py-2 text-xs text-[var(--text-muted)] border-t border-[var(--border)]">
                     HTTP {shot.status || 'unknown'} captured at {shot.capturedAt ? new Date(shot.capturedAt).toLocaleString() : 'unknown time'}
+                    {shot.login?.attempted && (
+                      <span className={cn("ml-3", shot.login.success ? "text-emerald-500" : "text-amber-400")}>
+                        Login: {shot.login.success ? 'submitted' : shot.login.reason}
+                      </span>
+                    )}
+                    {shot.login?.attempted && (
+                      <span className="ml-3">
+                        Username filled: {shot.login.usernameFilled ? 'yes' : 'no'} | Password filled: {shot.login.passwordFilled ? 'yes' : 'no'}
+                      </span>
+                    )}
+                    {shot.login?.afterUrl && (
+                      <div className="mt-1 break-all">Final URL: {shot.login.afterUrl}</div>
+                    )}
                   </div>
                 </div>
               ))}
@@ -597,7 +610,7 @@ export default function AgentPanel() {
           )}
 
           {activeTab === 'evidence' && runData?.status === 'completed' && (!runData?.evidence_screenshots?.length) && (
-             <div className="text-sm text-[var(--text-muted)] text-center mt-10">No Playwright evidence screenshots captured. Add a URL in chat or Settings &gt; Playwright Target Base URL.</div>
+             <div className="text-sm text-[var(--text-muted)] text-center mt-10">No Playwright evidence screenshots captured. Add a URL in chat or select a Website Credentials row for Playwright in Settings.</div>
           )}
         </div>
       </div>
