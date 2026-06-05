@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { BrowserRouter, Routes, Route, Link, useLocation, useNavigate } from 'react-router-dom';
-import { LayoutDashboard, TestTube2, Bug, Settings, BrainCircuit, PlayCircle, FolderTree, Sun, Moon, Search, CircleUser, Layers, Menu, ClipboardList, GitBranch, Command, MessagesSquare, ChevronDown } from 'lucide-react';
+import { LayoutDashboard, TestTube2, Bug, Settings, BrainCircuit, PlayCircle, FolderTree, Sun, Moon, Search, CircleUser, Layers, Menu, ClipboardList, GitBranch, Command, MessagesSquare, ChevronDown, LogOut } from 'lucide-react';
 import { cn } from '@/src/lib/utils';
 import { useTheme } from '@/src/store/theme';
 import { AIInbox } from '@/src/components/AIInbox';
 import { CommandBar } from '@/src/components/CommandBar';
+import { AuthGate, logout } from '@/src/components/AuthGate';
 
 import AgentConsole from '@/src/pages/AgentConsole';
 import AgentPanel from '@/src/pages/AgentPanel';
@@ -258,6 +259,13 @@ function Topbar({ onMenuClick, onCommandBarOpen }: { onMenuClick: () => void; on
         <button onClick={() => navigate('/settings')} title="Open settings" className="flex items-center gap-2 p-1 rounded-full hover:bg-[var(--bg-secondary)] transition-colors">
           <CircleUser className="w-8 h-8 text-[var(--text-muted)]" />
         </button>
+        <button
+          onClick={logout}
+          title="Sign out"
+          className="p-2 rounded-full hover:bg-[var(--bg-secondary)] text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors"
+        >
+          <LogOut className="w-5 h-5" />
+        </button>
       </div>
     </div>
   );
@@ -318,6 +326,7 @@ function Shell({ children }: { children: React.ReactNode }) {
 
 export default function App() {
   return (
+    <AuthGate>
     <BrowserRouter>
       <Shell>
         <Routes>
@@ -346,5 +355,6 @@ export default function App() {
         </Routes>
       </Shell>
     </BrowserRouter>
+    </AuthGate>
   );
 }

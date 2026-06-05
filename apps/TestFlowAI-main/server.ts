@@ -15,6 +15,7 @@ import { registerControllerRoutes } from './server/features/controller/routes';
 import { registerChatRoutes } from './server/features/chat/routes';
 import { registerPlaywrightRoutes } from './server/features/playwright/routes';
 import { registerSearchRoutes } from './server/features/search/routes';
+import { registerAuthRoutes } from './server/features/auth/routes';
 import { ensureMigrated, isPgEnabled } from './server/db/repository';
 import { runSeedIfEmpty } from './server/db/seed';
 import { hydrateFromPg } from './server/features/credentials/credentialsService';
@@ -50,6 +51,7 @@ async function startServer() {
     res.json({ ok: true, service: 'testflowai-backend' });
   });
 
+  registerAuthRoutes(app);
   registerSettingsRoutes(app);
   registerAiSettingsRoutes(app);
   registerCredentialsRoutes(app);
