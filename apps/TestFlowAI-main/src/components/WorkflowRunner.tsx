@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { cn } from '@/src/lib/utils';
+import { withBasePath } from '@/src/lib/base-path';
 import { CheckCircle2, Circle, Loader2, XCircle, AlertCircle, Play, Ban, FileText, Layers, Bug, TestTube2, PlayCircle, ClipboardList, Bot, FolderTree } from 'lucide-react';
 
 interface SideEffect {
@@ -211,7 +212,7 @@ export function WorkflowRunner({ plan, onExecutePlan, onCancelPlan, onClose, com
                   <div className="rounded bg-red-500/10 p-2 text-[10px] text-red-400 whitespace-pre-wrap">{step.error}</div>
                 )}
                 {step.inboxItemId && (
-                  <a href="/settings" className="block text-[10px] text-[var(--accent)] hover:underline">Inbox item: {step.inboxItemId}</a>
+                  <a href={withBasePath('/settings')} className="block text-[10px] text-[var(--accent)] hover:underline">Inbox item: {step.inboxItemId}</a>
                 )}
                 {step.startedAt && (
                   <div className="text-[10px] text-[var(--text-muted)]">

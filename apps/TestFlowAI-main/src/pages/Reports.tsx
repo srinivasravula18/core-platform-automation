@@ -6,6 +6,7 @@ import html2canvas from 'html2canvas';
 import { Modal } from '@/src/components/Modal';
 import { FolderSelect } from '@/src/components/FolderSelect';
 import { FolderBadge } from '@/src/components/FolderBadge';
+import { withBasePath } from '@/src/lib/base-path';
 
 interface Step {
   step: string;
@@ -680,7 +681,7 @@ export default function Reports() {
                             <div className="flex min-h-[260px] items-center justify-center overflow-hidden bg-slate-100 p-0 transition-all dark:bg-slate-950">
                               {activeStep.step.screenshot ? (
                                 <img
-                                  src={`/api/screenshot?url=${encodeURIComponent(activeStep.step.screenshot)}`}
+                                  src={withBasePath(`/api/screenshot?url=${encodeURIComponent(activeStep.step.screenshot)}`)}
                                   alt={SCREENSHOT_PRESETS[activeStep.step.screenshot]?.title || `Live Verification of ${activeStep.step.screenshot}`}
                                   className="max-h-[560px] w-full object-contain object-top"
                                   referrerPolicy="no-referrer"
@@ -751,7 +752,7 @@ export default function Reports() {
             <div className="flex min-h-[360px] flex-1 items-center justify-center overflow-auto bg-slate-100 dark:bg-slate-950">
               {activeStep.step.screenshot ? (
                 <img
-                  src={`/api/screenshot?url=${encodeURIComponent(activeStep.step.screenshot)}`}
+                  src={withBasePath(`/api/screenshot?url=${encodeURIComponent(activeStep.step.screenshot)}`)}
                   alt={SCREENSHOT_PRESETS[activeStep.step.screenshot]?.title || `Live Verification of ${activeStep.step.screenshot}`}
                   className="max-h-[76vh] w-full object-contain"
                   referrerPolicy="no-referrer"
@@ -795,7 +796,7 @@ export default function Reports() {
             {/* Browser body canvas content context */}
             <div className="p-0 bg-slate-900 overflow-hidden h-[450px] flex items-center justify-center">
               <img
-                src={`/api/screenshot?url=${encodeURIComponent(lightboxKey)}`}
+                src={withBasePath(`/api/screenshot?url=${encodeURIComponent(lightboxKey)}`)}
                 alt={SCREENSHOT_PRESETS[lightboxKey]?.title || `Captured URL View: ${lightboxKey}`}
                 className="w-full h-full object-contain"
                 referrerPolicy="no-referrer"
@@ -1019,7 +1020,6 @@ export default function Reports() {
     </div>
   );
 }
-
 
 
 
