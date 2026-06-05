@@ -1,17 +1,27 @@
 import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import dotenv from 'dotenv';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, '..');
+dotenv.config({
+  path: [path.resolve(rootDir, '.env.local'), path.resolve(rootDir, '.env')],
+  override: true,
+});
 const distDir = path.join(rootDir, 'dist');
+const assetsDir = path.join(distDir, 'assets');
 const port = Number(process.env.FRONTEND_PORT || process.env.PORT || 3000);
 const backendUrl = process.env.VITE_BACKEND_URL || process.env.BACKEND_URL || 'http://localhost:3001';
+const basePath = (process.env.VITE_APP_BASE_PATH || '/').replace(/\/+$/, '') || '/';
 
 const app = express();
 
-app.use(['/api', '/evidence'], async (req, res) => {
-  const target = new URL(req.originalUrl, backendUrl);
+app.use([`${basePath}/api`, `${basePath}/evidence`], async (req, res) => {
+  const upstreamPath = req.originalUrl.startsWith(`${basePath}/api`)
+    ? req.originalUrl.replace(`${basePath}/api`, '/api')
+    : req.originalUrl.replace(`${basePath}/evidence`, '/evidence');
+  const target = new URL(upstreamPath, backendUrl);
   const headers = new Headers();
 
   for (const [name, value] of Object.entries(req.headers)) {
@@ -42,9 +52,13 @@ app.use(['/api', '/evidence'], async (req, res) => {
   }
 });
 
-app.use(express.static(distDir));
+app.use(`${basePath}/assets`, express.static(assetsDir));
 
-app.get('*', (_req, res) => {
+app.get(`${basePath}/`, (_req, res) => {
+  res.sendFile(path.join(distDir, 'index.html'));
+});
+
+app.get(`${basePath}/*`, (_req, res) => {
   res.sendFile(path.join(distDir, 'index.html'));
 });
 

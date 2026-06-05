@@ -6,6 +6,7 @@ import { useTheme } from '@/src/store/theme';
 import { AIInbox } from '@/src/components/AIInbox';
 import { CommandBar } from '@/src/components/CommandBar';
 import { AuthGate, logout } from '@/src/components/AuthGate';
+import { appBasePath } from '@/src/lib/base-path';
 
 import AgentConsole from '@/src/pages/AgentConsole';
 import AgentPanel from '@/src/pages/AgentPanel';
@@ -327,7 +328,7 @@ function Shell({ children }: { children: React.ReactNode }) {
 export default function App() {
   return (
     <AuthGate>
-    <BrowserRouter>
+      <BrowserRouter basename={appBasePath || undefined}>
       <Shell>
         <Routes>
           <Route path="/" element={<AgentConsole />} />
@@ -354,7 +355,7 @@ export default function App() {
           } />
         </Routes>
       </Shell>
-    </BrowserRouter>
+      </BrowserRouter>
     </AuthGate>
   );
 }
