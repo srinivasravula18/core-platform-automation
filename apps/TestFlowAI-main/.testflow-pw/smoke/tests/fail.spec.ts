@@ -1,0 +1,1 @@
+import {test, expect} from "@playwright/test"; test("math fails", async()=>{ expect(1).toBe(2); });

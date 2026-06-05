@@ -67,6 +67,8 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
   const [expandCount, setExpandCount] = useState<Record<number, number>>({});
   const [busy, setBusy] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
+  const [pwRunning, setPwRunning] = useState(false);
+  const [pwResult, setPwResult] = useState<any>(null);
   const activeRef = useRef(true);
   const navigate = useNavigate();
 
@@ -208,6 +210,29 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
       }
     } finally {
       setBusy(null);
+    }
+  };
+
+  const runScripts = async () => {
+    if (!scripts.length || pwRunning) return;
+    setPwRunning(true);
+    setPwResult(null);
+    try {
+      const res = await fetch('/api/playwright/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          scripts: scripts.map((s: any) => ({ filename: s.filename, title: s.title, code: s.code })),
+          baseUrl: targetUrl,
+          runId: `${taskId}-pw`,
+        }),
+      });
+      const data = await res.json();
+      setPwResult(data);
+    } catch (e: any) {
+      setPwResult({ ok: false, error: e?.message || 'Run failed', tests: [] });
+    } finally {
+      setPwRunning(false);
     }
   };
 
@@ -499,9 +524,74 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
 
           {/* SCRIPTS */}
           {tab === 'code' && (
-            <div className="max-h-[28rem] overflow-y-auto pr-1">
+            <div>
+              {scripts.length > 0 && (
+                <div className="mb-2 flex items-center justify-between gap-2">
+                  <span className="text-[11px] text-[var(--text-muted)]">
+                    {pwResult ? `Ran ${pwResult.total ?? 0} test(s)` : 'Drafts — not executed yet.'}
+                  </span>
+                  <button
+                    onClick={runScripts}
+                    disabled={pwRunning}
+                    className="inline-flex items-center gap-1.5 rounded-md bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50"
+                  >
+                    {pwRunning ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <PlayCircle className="h-3.5 w-3.5" />}
+                    {pwRunning ? 'Running…' : 'Run all scripts'}
+                  </button>
+                </div>
+              )}
+
+              {pwResult && (
+                <div
+                  className={cn(
+                    'mb-2 rounded-md border p-2.5',
+                    pwResult.error
+                      ? 'border-red-500/20 bg-red-500/5'
+                      : pwResult.failed > 0
+                        ? 'border-amber-500/20 bg-amber-500/5'
+                        : 'border-emerald-500/20 bg-emerald-500/5',
+                  )}
+                >
+                  {pwResult.error ? (
+                    <div className="text-[11px] text-red-400">
+                      {pwResult.error}
+                      {pwResult.stderrTail && (
+                        <pre className="mt-1.5 max-h-32 overflow-auto whitespace-pre-wrap rounded bg-slate-950 p-2 font-mono text-[10px] text-slate-300">{pwResult.stderrTail}</pre>
+                      )}
+                    </div>
+                  ) : (
+                    <>
+                      <div className="flex flex-wrap items-center gap-2 text-[11px]">
+                        <span className="font-semibold text-emerald-400">{pwResult.passed} passed</span>
+                        <span className={cn('font-semibold', pwResult.failed > 0 ? 'text-red-400' : 'text-[var(--text-muted)]')}>{pwResult.failed} failed</span>
+                        {pwResult.skipped > 0 && <span className="text-[var(--text-muted)]">{pwResult.skipped} skipped</span>}
+                        <span className="text-[var(--text-muted)]">· {((pwResult.durationMs || 0) / 1000).toFixed(1)}s</span>
+                      </div>
+                      <div className="mt-1.5 space-y-1">
+                        {(pwResult.tests || []).map((t: any, i: number) => (
+                          <div key={i} className="flex items-start gap-1.5 text-[11px]">
+                            {t.status === 'passed' ? (
+                              <CheckCircle2 className="mt-0.5 h-3 w-3 shrink-0 text-emerald-400" />
+                            ) : t.status === 'skipped' ? (
+                              <span className="mt-0.5 h-3 w-3 shrink-0 rounded-full border border-slate-400" />
+                            ) : (
+                              <XCircle className="mt-0.5 h-3 w-3 shrink-0 text-red-400" />
+                            )}
+                            <span className="min-w-0 flex-1">
+                              <span className="text-[var(--text-primary)]">{t.title}</span>
+                              {t.error && <span className="mt-0.5 block whitespace-pre-wrap font-mono text-[10px] text-red-400">{t.error}</span>}
+                            </span>
+                            <span className="shrink-0 text-[var(--text-muted)]">{(t.durationMs / 1000).toFixed(1)}s</span>
+                          </div>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
+
               {scripts.length ? (
-                <div className="space-y-1.5">
+                <div className="max-h-[24rem] space-y-1.5 overflow-y-auto pr-1">
                   {scripts.map((s, i) => (
                     <div key={i} className="overflow-hidden rounded-md border border-[var(--border)]">
                       <button
