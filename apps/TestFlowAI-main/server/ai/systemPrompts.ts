@@ -165,7 +165,9 @@ Rules:
 - Suites group related test cases. Choose a module name that is recognizable to the engineering team (e.g. "Checkout", "Auth", "Admin Settings").
 - Tags use @ format (@bvt, @smoke, @regression, @api, @ui, @mobile, etc.). At least one tag is required.
 - Priority reflects business risk: Critical (payments, auth, data loss), High (core flows), Medium (secondary flows), Low (cosmetic).
-- Do not invent an owner name. Use a role or the placeholder "QA Team" if no owner is given.`,
+- Do not invent an owner name. Use a role or the placeholder "QA Team" if no owner is given.
+
+You also organize the test repository when asked: given the folder tree and artifacts, propose folder placements and merges/splits. The folder tree is the source of truth — do not invent folder names. Prefer the smallest change that improves organization, and flag folders left empty for deletion.`,
 
   caseWriter: `You write test cases. Given a user request, the app inspection result, and optional selected case / suite / plan, produce structured test cases that a human can review and a Playwright agent can automate.
 
@@ -175,7 +177,12 @@ Rules:
 - If credentials are needed, reference them by site name (e.g. "log in with the staging credentials for the main app"). Do not embed passwords in steps.
 - Use real labels, URLs, and selectors that the inspection result actually found. Do not invent UI labels.
 - When the inspection result is partial, reflect that in preconditions rather than guessing.
-- Always include at least one positive (happy path) and one negative (validation / error) case when the feature allows it.`,
+- Always include at least one positive (happy path) and one negative (validation / error) case when the feature allows it.
+
+You also handle three related authoring tasks when the task prompt asks for them:
+- REWORK: when given an existing case + human feedback, treat the feedback as the source of truth, change only what it asks, and preserve the rest.
+- EXPAND STEPS: when asked to expand a case (or one step) into N granular sub-steps, keep the original intent/credentials/URL and return exactly the requested number of steps.
+- CODE-CHANGE COVERAGE: when given a git diff + existing cases, propose only the cases needed to cover what changed, and justify each from the diff. Do not duplicate existing coverage.`,
 
   caseReworker: `You rework an existing test case based on human feedback. The human's feedback is the source of truth for what to change. The original case is the starting point.
 
@@ -206,7 +213,9 @@ Rules:
 - Title is a one-line summary of WHAT is broken, not WHY. Example: "Checkout fails on discount code with spaces".
 - Severity reflects user impact: Critical (blocks core flow, no workaround), High (blocks core flow with workaround), Medium (degrades experience), Low (cosmetic).
 - Description includes: steps to reproduce, expected vs actual, suggested area / module, similar past defects if any.
-- Do not invent a fix. If the cause is obvious from the request, mention it as a hypothesis, not a conclusion.`,
+- Do not invent a fix. If the cause is obvious from the request, mention it as a hypothesis, not a conclusion.
+
+You also write executive report narratives when asked: given raw run data (pass/fail counts, failed cases, defect links, time window), produce a short plain-English summary — outcome + headline number first, then top 2-3 concerns with case/run IDs, then suggested next actions. Never invent numbers; use only what the data shows.`,
 
   reportNarrator: `You write an executive-ready report narrative. Given raw run data (pass/fail counts, failed cases, defect links, time window), produce a short human-readable summary.
 
@@ -261,7 +270,8 @@ Rules:
   a) Call the appropriate /api/agent/action endpoint internally and return the result, OR
   b) Ask one clarifying question and then do (a).
 - Prefer (a) when the request is concrete. Prefer a clarifying question when the request is ambiguous.
-- Keep responses short. End with a single next-step suggestion.`,
+- Keep responses short. End with a single next-step suggestion.
+- You also name QA artifacts (plans, suites, cases, runs, defects) when asked: produce a concise Title Case name (4-9 words) mentioning the product and tested workflow, without the raw prompt, credentials, or full URLs.`,
 
   folderOrganizer: `You organize a test repository. Given the existing folder tree, a list of artifacts (plans, suites, cases, scripts), and a target organization goal, propose folder placements and merges / splits.
 
@@ -273,6 +283,40 @@ Rules:
 } as const;
 
 export type AgentName = keyof typeof AGENT_PROMPTS;
+
+/**
+ * Consolidated agent roster. The platform exposes 7 roles; several legacy agents
+ * are aliased onto these so every existing call site keeps working while the UI
+ * and config surface stay small and maintainable.
+ */
+export const CANONICAL_AGENTS: AgentName[] = [
+  'chatAssistant',
+  'caseWriter',
+  'testPlanner',
+  'suiteDesigner',
+  'playwrightCoder',
+  'appInspector',
+  'defectTriage',
+];
+
+export const AGENT_ALIASES: Record<string, AgentName> = {
+  // Authoring tasks → Case Writer
+  caseReworker: 'caseWriter',
+  stepExpander: 'caseWriter',
+  gitWatcher: 'caseWriter',
+  // Naming → Chat Assistant
+  runNamer: 'chatAssistant',
+  namingAgent: 'chatAssistant',
+  // Repository structure → Suite & Folder Organizer
+  folderOrganizer: 'suiteDesigner',
+  // Reporting → Defect & Report Analyst
+  reportNarrator: 'defectTriage',
+};
+
+/** Resolve any agent name (legacy or canonical) to its canonical role. */
+export function canonicalAgent(agent: string): string {
+  return AGENT_ALIASES[agent] || agent;
+}
 
 export function systemPromptFor(agent: AgentName): string {
   const roleMap: Record<AgentName, string> = {

@@ -59,20 +59,13 @@ const PROVIDER_LABELS: Record<Provider, string> = {
 };
 
 const AGENT_LABELS: Record<string, { label: string; description: string }> = {
+  chatAssistant: { label: 'Chat Assistant', description: 'Routes greetings, QA tasks, and names artifacts/runs.' },
+  caseWriter: { label: 'Case Writer', description: 'Writes, reworks, expands cases, and covers code changes.' },
   testPlanner: { label: 'Test Planner', description: 'Drafts a structured test plan from a user request.' },
-  suiteDesigner: { label: 'Suite Designer', description: 'Groups test cases into a suite with module and tags.' },
-  caseWriter: { label: 'Case Writer', description: 'Writes step-by-step test cases that a human reviews.' },
-  caseReworker: { label: 'Case Reworker', description: 'Reworks a test case based on human feedback.' },
-  stepExpander: { label: 'Step Expander', description: 'Expands a step into smaller executable sub-steps.' },
-  runNamer: { label: 'Run Namer', description: 'Names a test run from the user request.' },
-  defectTriage: { label: 'Defect Triage', description: 'Triages a defect from a run failure or free-text report.' },
-  reportNarrator: { label: 'Report Narrator', description: 'Writes an executive narrative from raw run data.' },
+  suiteDesigner: { label: 'Suite & Folder Organizer', description: 'Groups cases into suites and organizes the repository.' },
   playwrightCoder: { label: 'Playwright Coder', description: 'Generates Playwright TypeScript scripts.' },
   appInspector: { label: 'Application Inspector', description: 'Drives a headless browser to inspect a flow.' },
-  gitWatcher: { label: 'Git Watcher', description: 'Proposes test coverage from git changes.' },
-  namingAgent: { label: 'Naming Agent', description: 'Names QA artifacts from a user request.' },
-  chatAssistant: { label: 'Chat Assistant', description: 'Routes greetings, identity questions, and QA tasks.' },
-  folderOrganizer: { label: 'Folder Organizer', description: 'Organizes a test repository into folders.' },
+  defectTriage: { label: 'Defect & Report Analyst', description: 'Triages defects and writes report narratives.' },
 };
 
 export default function Settings() {
@@ -477,20 +470,13 @@ function PromptsSection() {
     setTestOutput('');
     try {
       const taskTypeMap: Record<string, string> = {
+        chatAssistant: 'case',
+        caseWriter: 'case',
         testPlanner: 'plan',
         suiteDesigner: 'suite',
-        caseWriter: 'case',
-        caseReworker: 'case',
-        stepExpander: 'case',
-        runNamer: 'run',
-        defectTriage: 'defect',
-        reportNarrator: 'defect',
         playwrightCoder: 'case',
         appInspector: 'case',
-        gitWatcher: 'case',
-        namingAgent: 'case',
-        chatAssistant: 'case',
-        folderOrganizer: 'suite',
+        defectTriage: 'defect',
       };
       const res = await fetch('/api/agent/action', {
         method: 'POST',

@@ -18,11 +18,17 @@ import {
   Layers,
   Image as ImageIcon,
   Wand2,
+  History,
+  MessageSquare,
 } from 'lucide-react';
 import { cn } from '@/src/lib/utils';
 import { useSpeechToText } from '@/src/lib/useSpeechToText';
 import { WorkflowRunner } from '@/src/components/WorkflowRunner';
 import { DeepRunResult } from '@/src/components/DeepRunResult';
+import { CodeChangeReview } from '@/src/components/CodeChangeReview';
+
+// A request about the git codebase / recent code changes -> AI diff analysis.
+const GIT_RE = /\b(code\s*change|codebase|code\s*base|git\b|repo(sitory)?|diff|commit|pull\s*request|\bpr\b|merged?|recent\s*change|what\s*changed|source\s*code|db\s*change|schema\s*change|api\s*change)\b/i;
 
 // A request needs the deep pipeline (real inspect -> cases -> Playwright scripts
 // -> evidence) when it targets a URL or asks for cases / scripts / automation.
@@ -61,6 +67,7 @@ type Turn =
   | { id: string; role: 'assistant'; kind: 'text'; text: string }
   | { id: string; role: 'assistant'; kind: 'plan'; plan: any }
   | { id: string; role: 'assistant'; kind: 'deeprun'; taskId: string }
+  | { id: string; role: 'assistant'; kind: 'codereview'; analysis: any }
   | { id: string; role: 'assistant'; kind: 'thinking'; label: string };
 
 interface Suggestion {
@@ -71,14 +78,19 @@ interface Suggestion {
 
 const SUGGESTIONS: Suggestion[] = [
   {
-    label: 'Generate test cases',
-    prompt: 'Generate 5 test cases for the login flow of https://example.com',
+    label: 'Generate cases + scripts',
+    prompt: 'Generate 5 test cases for the login flow of https://example.com, then write the Playwright scripts and capture evidence',
     icon: FlaskConical,
   },
   {
     label: 'Draft a test plan',
     prompt: 'Create a regression test plan for the checkout flow',
     icon: ClipboardList,
+  },
+  {
+    label: 'Group into a suite',
+    prompt: 'Create a smoke test suite and group the login and checkout cases into it',
+    icon: Layers,
   },
   {
     label: 'Schedule a run',
@@ -90,6 +102,25 @@ const SUGGESTIONS: Suggestion[] = [
     prompt: 'File a high severity defect: the payment button is unresponsive on mobile',
     icon: Bug,
   },
+  {
+    label: 'Write a report',
+    prompt: 'Generate a stakeholder test report for the latest release',
+    icon: ClipboardList,
+  },
+];
+
+// Capability strip shown on the empty state so the client sees the full scope.
+const CAPABILITIES: { label: string; icon: typeof FlaskConical }[] = [
+  { label: 'Test cases', icon: FlaskConical },
+  { label: 'Playwright scripts', icon: Code2 },
+  { label: 'Evidence', icon: ImageIcon },
+  { label: 'Test plans', icon: ClipboardList },
+  { label: 'Suites', icon: Layers },
+  { label: 'Runs', icon: PlayCircle },
+  { label: 'Defects', icon: Bug },
+  { label: 'Reports', icon: ClipboardList },
+  { label: 'Folders', icon: FolderTree },
+  { label: 'Rework / expand', icon: Wand2 },
 ];
 
 // Where each completed step type lives, so we can offer a "drill in" link.
@@ -110,6 +141,18 @@ let turnCounter = 0;
 function nextId(): string {
   turnCounter += 1;
   return `turn-${turnCounter}-${Math.random().toString(36).slice(2, 7)}`;
+}
+
+const CONV_KEY = 'tfa_active_conversation';
+function makeConversationId(): string {
+  return `CONV-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
+}
+
+interface ConversationMeta {
+  id: string;
+  title: string;
+  turnCount: number;
+  updatedAt: string;
 }
 
 function planIsChatOnly(plan: any): boolean {
@@ -165,10 +208,115 @@ export default function AgentConsole() {
   const [turns, setTurns] = useState<Turn[]>([]);
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
+  const [conversationId, setConversationId] = useState<string>(() => {
+    try {
+      return localStorage.getItem(CONV_KEY) || makeConversationId();
+    } catch {
+      return makeConversationId();
+    }
+  });
+  const [conversations, setConversations] = useState<ConversationMeta[]>([]);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const historyRef = useRef<HTMLDivElement>(null);
+  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const loadedRef = useRef(false);
+
+  // Keep the active conversation id in localStorage so a refresh resumes it.
+  useEffect(() => {
+    try {
+      localStorage.setItem(CONV_KEY, conversationId);
+    } catch {
+      /* ignore */
+    }
+  }, [conversationId]);
+
+  const loadConversations = useCallback(async () => {
+    try {
+      const r = await fetch('/api/chat/conversations?workspaceId=default');
+      const d = await r.json();
+      setConversations(Array.isArray(d.conversations) ? d.conversations : []);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  const loadConversation = useCallback(async (id: string) => {
+    loadedRef.current = false;
+    try {
+      const r = await fetch(`/api/chat/conversations/${id}`);
+      const d = await r.json();
+      // Drop any transient "thinking" turns that may have been persisted.
+      const clean = (Array.isArray(d.turns) ? d.turns : []).filter(
+        (t: Turn) => !(t.role === 'assistant' && t.kind === 'thinking'),
+      );
+      setTurns(clean);
+    } catch {
+      setTurns([]);
+    } finally {
+      loadedRef.current = true;
+    }
+  }, []);
+
+  // Initial load: restore the active conversation + the history list.
+  useEffect(() => {
+    loadConversation(conversationId);
+    loadConversations();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Persist the conversation (debounced) whenever the turns change.
+  useEffect(() => {
+    if (!loadedRef.current) return;
+    const clean = turns.filter((t) => !(t.role === 'assistant' && t.kind === 'thinking'));
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(() => {
+      if (!clean.length) return; // don't persist empty conversations
+      const firstUser = clean.find((t) => t.role === 'user') as { text?: string } | undefined;
+      fetch(`/api/chat/conversations/${conversationId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ workspaceId: 'default', title: firstUser?.text?.slice(0, 80) || 'New chat', turns: clean }),
+      })
+        .then(() => loadConversations())
+        .catch(() => {});
+    }, 700);
+    return () => {
+      if (saveTimer.current) clearTimeout(saveTimer.current);
+    };
+  }, [turns, conversationId, loadConversations]);
+
+  // Close the history dropdown on outside click.
+  useEffect(() => {
+    const onClick = (e: MouseEvent) => {
+      if (historyRef.current && !historyRef.current.contains(e.target as Node)) setHistoryOpen(false);
+    };
+    if (historyOpen) document.addEventListener('mousedown', onClick);
+    return () => document.removeEventListener('mousedown', onClick);
+  }, [historyOpen]);
+
+  const newConversation = useCallback(() => {
+    setConversationId(makeConversationId());
+    setTurns([]);
+    loadedRef.current = true;
+    setHistoryOpen(false);
+  }, []);
+
+  const switchConversation = useCallback(
+    (id: string) => {
+      if (id === conversationId) {
+        setHistoryOpen(false);
+        return;
+      }
+      setConversationId(id);
+      loadConversation(id);
+      setHistoryOpen(false);
+    },
+    [conversationId, loadConversation],
+  );
 
   const appendSpeechTranscript = useCallback((transcript: string) => {
     setInput((prev) => prev + (prev.trim() ? ' ' : '') + transcript);
@@ -209,6 +357,40 @@ export default function AgentConsole() {
         { id: nextId(), role: 'user', text },
         { id: thinkingId, role: 'assistant', kind: 'thinking', label: 'Understanding your request…' },
       ]);
+
+      // Codebase path: analyze recent git changes, reconcile against existing
+      // coverage, propose gap tests. Checked before the deep/URL path.
+      if (GIT_RE.test(text) && !extractTargetUrl(text)) {
+        try {
+          const res = await fetch('/api/git-agent/analyze', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ baseRef: 'auto', workspaceId: 'default' }),
+          });
+          const data = await res.json();
+          if (!res.ok) {
+            replaceTurn(thinkingId, {
+              id: thinkingId,
+              role: 'assistant',
+              kind: 'text',
+              text: data?.error || 'I could not read the codebase. Make sure the Git Agent target repo is available.',
+            });
+          } else {
+            replaceTurn(thinkingId, { id: thinkingId, role: 'assistant', kind: 'codereview', analysis: data });
+          }
+        } catch (err: any) {
+          replaceTurn(thinkingId, {
+            id: thinkingId,
+            role: 'assistant',
+            kind: 'text',
+            text: `Something went wrong analyzing the code changes: ${err?.message || 'unknown error'}.`,
+          });
+        } finally {
+          setBusy(false);
+          inputRef.current?.focus();
+        }
+        return;
+      }
 
       // Deep generation path: cases + Playwright scripts + evidence via the
       // multi-agent pipeline. Used whenever the request targets a URL or asks
@@ -367,7 +549,7 @@ export default function AgentConsole() {
   const isEmpty = turns.length === 0;
 
   return (
-    <div className="mx-auto flex h-full max-w-3xl flex-col">
+    <div className="mx-auto flex h-full max-w-5xl flex-col">
       {/* Header */}
       <div className="mb-2 flex items-center justify-between gap-3">
         <div className="flex items-center gap-2">
@@ -379,14 +561,52 @@ export default function AgentConsole() {
             <p className="text-xs text-[var(--text-muted)]">Tell the AI what to do. It plans, you approve, it runs.</p>
           </div>
         </div>
-        {!isEmpty && (
+        <div className="flex items-center gap-2">
+          <div className="relative" ref={historyRef}>
+            <button
+              onClick={() => { setHistoryOpen((o) => !o); if (!historyOpen) loadConversations(); }}
+              className="inline-flex items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--bg-card)] px-2.5 py-1.5 text-xs font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:border-[var(--accent)] transition-colors"
+            >
+              <History className="h-3.5 w-3.5" /> History
+            </button>
+            {historyOpen && (
+              <div className="absolute right-0 top-full z-50 mt-1 w-72 overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--bg-card)] shadow-xl">
+                <div className="border-b border-[var(--border)] px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+                  Conversations
+                </div>
+                <div className="max-h-80 overflow-y-auto">
+                  {conversations.length === 0 && (
+                    <div className="px-3 py-4 text-center text-xs text-[var(--text-muted)]">No saved conversations yet.</div>
+                  )}
+                  {conversations.map((c) => (
+                    <button
+                      key={c.id}
+                      onClick={() => switchConversation(c.id)}
+                      className={cn(
+                        'flex w-full items-start gap-2 border-b border-[var(--border)] px-3 py-2 text-left last:border-b-0 hover:bg-[var(--bg-secondary)]',
+                        c.id === conversationId && 'bg-[var(--accent)]/5',
+                      )}
+                    >
+                      <MessageSquare className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[var(--text-muted)]" />
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-xs font-medium text-[var(--text-primary)]">{c.title || 'Untitled chat'}</span>
+                        <span className="text-[10px] text-[var(--text-muted)]">
+                          {c.turnCount} message{c.turnCount === 1 ? '' : 's'} · {new Date(c.updatedAt).toLocaleString()}
+                        </span>
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
           <button
-            onClick={() => setTurns([])}
+            onClick={newConversation}
             className="inline-flex items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--bg-card)] px-2.5 py-1.5 text-xs font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:border-[var(--accent)] transition-colors"
           >
-            <RotateCcw className="h-3.5 w-3.5" /> New conversation
+            <RotateCcw className="h-3.5 w-3.5" /> New
           </button>
-        )}
+        </div>
       </div>
 
       {/* Thread */}
@@ -401,7 +621,7 @@ export default function AgentConsole() {
               Describe a testing task in plain language. I&apos;ll turn it into a step-by-step plan, you review and approve,
               and I&apos;ll execute it — generating cases, plans, runs, defects, and reports for you.
             </p>
-            <div className="mt-7 grid w-full max-w-xl grid-cols-1 gap-2 sm:grid-cols-2">
+            <div className="mt-7 grid w-full max-w-5xl grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
               {SUGGESTIONS.map((s) => (
                 <button
                   key={s.label}
@@ -418,6 +638,24 @@ export default function AgentConsole() {
                 </button>
               ))}
             </div>
+
+            <div className="mt-8 w-full max-w-5xl">
+              <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+                Everything the agent can do for you
+              </div>
+              <div className="flex flex-wrap justify-center gap-2">
+                {CAPABILITIES.map((c) => (
+                  <span
+                    key={c.label}
+                    className="inline-flex items-center gap-1.5 rounded-full border border-[var(--border)] bg-[var(--bg-card)] px-3 py-1.5 text-xs font-medium text-[var(--text-primary)]"
+                  >
+                    <c.icon className="h-3.5 w-3.5 text-[var(--accent)]" />
+                    {c.label}
+                  </span>
+                ))}
+              </div>
+            </div>
+
             <div className="mt-6 flex items-center gap-1.5 text-xs text-[var(--text-muted)]">
               <Inbox className="h-3.5 w-3.5" />
               Decisions that need you appear in the AI Inbox (top-right).
@@ -452,6 +690,20 @@ export default function AgentConsole() {
                       </div>
                       <div className="min-w-0 flex-1">
                         <DeepRunResult taskId={turn.taskId} />
+                      </div>
+                    </div>
+                  </div>
+                );
+              }
+              if (turn.kind === 'codereview') {
+                return (
+                  <div key={turn.id} className="flex justify-start">
+                    <div className="flex w-full max-w-[95%] gap-2.5">
+                      <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[var(--accent)]/10 text-[var(--accent)]">
+                        <BrainCircuit className="h-4 w-4" />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <CodeChangeReview analysis={turn.analysis} />
                       </div>
                     </div>
                   </div>

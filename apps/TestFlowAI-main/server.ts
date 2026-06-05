@@ -13,6 +13,7 @@ import { registerScreenshotRoutes } from './server/features/screenshot/routes';
 import { registerCredentialsRoutes } from './server/features/credentials/routes';
 import { registerInboxRoutes } from './server/features/inbox/routes';
 import { registerControllerRoutes } from './server/features/controller/routes';
+import { registerChatRoutes } from './server/features/chat/routes';
 import { ensureMigrated, isPgEnabled } from './server/db/repository';
 import { runSeedIfEmpty } from './server/db/seed';
 import { hydrateFromPg } from './server/features/credentials/credentialsService';
@@ -49,6 +50,7 @@ async function startServer() {
   registerCredentialsRoutes(app);
   registerInboxRoutes(app);
   registerControllerRoutes(app);
+  registerChatRoutes(app);
   registerGitAgentRoutes(app);
   registerAgentRoutes(app);
   registerScreenshotRoutes(app);

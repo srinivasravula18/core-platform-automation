@@ -516,6 +516,33 @@ function persistGitAgentArtifacts(generation: any) {
   });
 }
 
+export const GIT_AGENT_TARGET_REPO = gitAgentTargetRepo;
+
+/**
+ * Returns the actual unified diff (committed + staged + working tree) between the
+ * resolved base ref and HEAD, capped to keep token cost bounded. Used by the AI
+ * code-change analysis so it reasons over real content, not just file names.
+ */
+export function getGitAgentDiff(baseRef = 'auto', maxChars = 16000): string {
+  if (!existsSync(path.join(gitAgentTargetRepo, '.git'))) {
+    throw new Error(`Target repo was not found at ${gitAgentTargetRepo}.`);
+  }
+  const state = readGitAgentState();
+  const resolvedBaseRef = String(baseRef || '').trim() && baseRef !== 'auto'
+    ? String(baseRef).trim()
+    : state.baselineCommit || 'HEAD~1';
+  let committed = '';
+  try {
+    committed = gitOutputOrEmpty(gitAgentTargetRepo, ['diff', '--unified=3', `${resolvedBaseRef}...HEAD`]);
+  } catch {
+    committed = '';
+  }
+  const staged = gitOutputOrEmpty(gitAgentTargetRepo, ['diff', '--cached', '--unified=3']);
+  const working = gitOutputOrEmpty(gitAgentTargetRepo, ['diff', '--unified=3']);
+  const combined = [committed, staged, working].filter(Boolean).join('\n');
+  return combined.length > maxChars ? `${combined.slice(0, maxChars)}\n... [diff truncated]` : combined;
+}
+
 export async function generateGitAgentCases(baseRef = 'auto') {
   const scan = scanGitAgentChanges(baseRef);
   const templates = scan.changedFiles.flatMap((change: any, index: number) => buildGitAgentScenarioTemplates(change, index));

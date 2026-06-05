@@ -1044,6 +1044,79 @@ export const Audit = {
   },
 };
 
+/* ---------- chat conversations (Agent Console history) ---------- */
+
+function ensureChat() {
+  if (!(db as any).chatConversations) (db as any).chatConversations = [];
+}
+
+function mapConversation(r: any, includeTurns = true) {
+  if (!r) return null;
+  return {
+    id: r.id,
+    workspaceId: r.workspace_id,
+    title: r.title || '',
+    ...(includeTurns ? { turns: r.turns || [] } : { turnCount: Array.isArray(r.turns) ? r.turns.length : 0 }),
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+  };
+}
+
+export const ChatConversations = {
+  async list(workspaceId = 'default'): Promise<any[]> {
+    if (!isPgEnabled()) {
+      ensureChat();
+      return (db as any).chatConversations
+        .filter((c: any) => c.workspaceId === workspaceId)
+        .sort((a: any, b: any) => String(b.updatedAt).localeCompare(String(a.updatedAt)))
+        .map((c: any) => ({ id: c.id, workspaceId: c.workspaceId, title: c.title || '', turnCount: (c.turns || []).length, createdAt: c.createdAt, updatedAt: c.updatedAt }));
+    }
+    const rows = await query('SELECT id, workspace_id, title, turns, created_at, updated_at FROM chat_conversations WHERE workspace_id = $1 ORDER BY updated_at DESC LIMIT 100', [workspaceId]);
+    return rows.map((r) => mapConversation(r, false));
+  },
+  async get(id: string): Promise<any | null> {
+    if (!isPgEnabled()) {
+      ensureChat();
+      return (db as any).chatConversations.find((c: any) => c.id === id) || null;
+    }
+    const r = await queryOne('SELECT * FROM chat_conversations WHERE id = $1', [id]);
+    return mapConversation(r, true);
+  },
+  async upsert(c: { id: string; workspaceId?: string; title?: string; turns?: any[] }): Promise<any> {
+    if (!isPgEnabled()) {
+      ensureChat();
+      const idx = (db as any).chatConversations.findIndex((x: any) => x.id === c.id);
+      const now = new Date().toISOString();
+      if (idx >= 0) {
+        (db as any).chatConversations[idx] = { ...(db as any).chatConversations[idx], ...c, updatedAt: now };
+        return (db as any).chatConversations[idx];
+      }
+      const rec = { id: c.id, workspaceId: c.workspaceId || 'default', title: c.title || '', turns: c.turns || [], createdAt: now, updatedAt: now };
+      (db as any).chatConversations.unshift(rec);
+      return rec;
+    }
+    const r = await queryOne(
+      `INSERT INTO chat_conversations (id, workspace_id, title, turns, updated_at)
+       VALUES ($1, $2, $3, $4::jsonb, now())
+       ON CONFLICT (id) DO UPDATE SET
+         title = EXCLUDED.title, turns = EXCLUDED.turns, updated_at = now()
+       RETURNING *`,
+      [c.id, c.workspaceId || 'default', c.title || '', JSON.stringify(c.turns || [])],
+    );
+    return mapConversation(r, true);
+  },
+  async remove(id: string): Promise<boolean> {
+    if (!isPgEnabled()) {
+      ensureChat();
+      const before = (db as any).chatConversations.length;
+      (db as any).chatConversations = (db as any).chatConversations.filter((c: any) => c.id !== id);
+      return (db as any).chatConversations.length < before;
+    }
+    const res = await query('DELETE FROM chat_conversations WHERE id = $1', [id]);
+    return res.length >= 0;
+  },
+};
+
 /* ---------- settings helpers ---------- */
 
 export const Settings = {

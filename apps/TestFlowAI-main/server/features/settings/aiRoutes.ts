@@ -19,11 +19,13 @@ import {
   resetPromptToDefault,
   AGENT_PROMPTS,
 } from '../../ai/promptStore';
-import type { AgentName } from '../../ai/systemPrompts';
+import { type AgentName, CANONICAL_AGENTS } from '../../ai/systemPrompts';
 import { setDailyLimit, getDailyLimit, listUsage, getDailyCost } from '../../ai/costTracker';
 import { recentGuardrailLogs } from '../../ai/guardrails';
 
-const AGENT_NAMES: AgentName[] = Object.keys(AGENT_PROMPTS) as AgentName[];
+// Only the consolidated 7 roles are shown/managed in the UI. Legacy agent keys
+// still resolve (aliased) but are no longer surfaced for editing.
+const AGENT_NAMES: AgentName[] = CANONICAL_AGENTS;
 
 function redactKey(key: string): string {
   if (!key) return '';

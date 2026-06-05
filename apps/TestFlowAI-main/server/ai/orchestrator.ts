@@ -19,6 +19,7 @@ import { AnthropicProvider } from './providers/anthropic';
 import { runGuardrailPipeline, type PipelineInput, type PipelineResult } from './guardrails';
 import { getActivePrompt } from './promptStore';
 import { recordUsage, getDailyCost } from './costTracker';
+import { canonicalAgent } from './systemPrompts';
 import { db } from '../shared/storage';
 
 export interface ProviderCredentials {
@@ -177,11 +178,14 @@ export class AgentOrchestrator {
 }
 
 export async function getOrchestrator(agent: string, opts: { workspaceId?: string; userId?: string } = {}): Promise<AgentOrchestrator> {
-  const provider = resolveProviderForAgent(agent);
-  const model = resolveModelForAgent(agent, provider);
+  // Resolve legacy agent names onto the 7 canonical roles so prompt overrides,
+  // provider/model routing, and usage logging all use one consolidated identity.
+  const canonical = canonicalAgent(agent);
+  const provider = resolveProviderForAgent(canonical);
+  const model = resolveModelForAgent(canonical, provider);
   const base = buildProvider(provider);
   if (model && (base as any).defaultModel !== model) {
     (base as any).defaultModel = model;
   }
-  return new AgentOrchestrator(base, agent, opts.workspaceId || 'default', opts.userId);
+  return new AgentOrchestrator(base, canonical, opts.workspaceId || 'default', opts.userId);
 }

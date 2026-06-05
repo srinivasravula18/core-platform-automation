@@ -348,6 +348,17 @@ CREATE TABLE IF NOT EXISTS settings (
   updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Agent Console chat history (one row per conversation; turns stored as JSON)
+CREATE TABLE IF NOT EXISTS chat_conversations (
+  id            TEXT PRIMARY KEY,
+  workspace_id  TEXT NOT NULL DEFAULT 'default',
+  title         TEXT DEFAULT '',
+  turns         JSONB NOT NULL DEFAULT '[]'::jsonb,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS chat_conversations_ws ON chat_conversations(workspace_id, updated_at DESC);
+
 -- Git Agent multi-repo registry
 CREATE TABLE IF NOT EXISTS git_repositories (
   id              TEXT PRIMARY KEY,
