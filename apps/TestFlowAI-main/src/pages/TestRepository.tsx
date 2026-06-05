@@ -229,7 +229,7 @@ export default function TestRepository() {
               <div className="text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">Current Folder</div>
               <h2 className="truncate text-lg font-semibold">{selectedFolder ? selectedFolder.path : 'No folder selected'}</h2>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <div className="relative">
                 <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--text-muted)]" />
                 <input
@@ -280,3 +280,8 @@ export default function TestRepository() {
     </div>
   );
 }
+
+
+
+
+

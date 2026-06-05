@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Bot, Save, Download, Loader2, Plus, CheckCircle2, Mic, Send, SplitSquareHorizontal, FolderTree } from 'lucide-react';
 import { cn } from '@/src/lib/utils';
 import { useSpeechToText } from '@/src/lib/useSpeechToText';
+import { PlanList, WorkflowRunner } from '@/src/components/WorkflowRunner';
 
 const casualGreetingPattern = /^(hi+|h+i+|hlo+|hello+|hey+|good\s+(morning|afternoon|evening)|thanks?|thank\s+you|ok(?:ay)?)\b[\s!.?]*$/i;
 const identityQuestionPattern = /\b(who\s+are\s+you|what\s+can\s+you\s+do|help|your\s+purpose)\b/i;
@@ -44,7 +45,7 @@ export default function AgentPanel() {
   const [runData, setRunData] = useState<any>(null);
   const [isGenerating, setIsGenerating] = useState(false);
   const [isReworkingCase, setIsReworkingCase] = useState(false);
-  const [activeTab, setActiveTab] = useState<'cases' | 'code' | 'evidence'>('cases');
+  const [activeTab, setActiveTab] = useState<'cases' | 'code' | 'evidence' | 'workflows'>('cases');
   const [testCaseCount, setTestCaseCount] = useState(3);
   const [flowMode, setFlowMode] = useState<'review_cases' | 'complete'>('review_cases');
   const [editingCaseIndex, setEditingCaseIndex] = useState<number | null>(null);
@@ -55,6 +56,7 @@ export default function AgentPanel() {
   const [folders, setFolders] = useState<any[]>([]);
   const [selectedFolderId, setSelectedFolderId] = useState('');
   const [isFolderPickerOpen, setIsFolderPickerOpen] = useState(false);
+  const [plans, setPlans] = useState<any[]>([]);
   
   const [messages, setMessages] = useState<{role: 'user' | 'agent' | 'system', content: string}[]>([
     { role: 'agent', content: 'Hi! I am the AI Test Agent. I can help you generate test cases and Playwright scripts. Tell me what application you want to test and any specific requirements.' }
@@ -77,6 +79,13 @@ export default function AgentPanel() {
     fetch('/api/folders')
       .then((r) => r.json())
       .then((folderData) => setFolders(Array.isArray(folderData) ? folderData : []))
+      .catch(console.error);
+  }, []);
+
+  useEffect(() => {
+    fetch('/api/controller/plans?workspaceId=default')
+      .then((r) => r.json())
+      .then((data) => setPlans(Array.isArray(data?.plans) ? data.plans : []))
       .catch(console.error);
   }, []);
 
@@ -487,16 +496,22 @@ export default function AgentPanel() {
              >
                Playwright Scripts
              </button>
-             <button 
-               onClick={() => setActiveTab('evidence')}
-               className={cn("py-4 text-sm font-medium border-b-2 transition-colors", activeTab === 'evidence' ? "border-[var(--accent)] text-[var(--accent)]" : "border-transparent text-[var(--text-muted)] hover:text-[var(--text-primary)]")}
-             >
-               Evidence
-             </button>
+              <button 
+                onClick={() => setActiveTab('evidence')}
+                className={cn("py-4 text-sm font-medium border-b-2 transition-colors", activeTab === 'evidence' ? "border-[var(--accent)] text-[var(--accent)]" : "border-transparent text-[var(--text-muted)] hover:text-[var(--text-primary)]")}
+              >
+                Evidence
+              </button>
+              <button 
+                onClick={() => setActiveTab('workflows')}
+                className={cn("py-4 text-sm font-medium border-b-2 transition-colors", activeTab === 'workflows' ? "border-[var(--accent)] text-[var(--accent)]" : "border-transparent text-[var(--text-muted)] hover:text-[var(--text-primary)]")}
+              >
+                Workflows
+              </button>
            </div>
            
            {activeTab === 'cases' && runData?.generated_cases?.length > 0 && (
-             <div className="flex items-center gap-2">
+             <div className="flex flex-wrap items-center gap-2">
                <label className="flex items-center gap-2 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-1.5 text-sm text-[var(--text-primary)]">
                  <input
                    type="checkbox"
@@ -766,9 +781,44 @@ export default function AgentPanel() {
           {activeTab === 'evidence' && runData?.status === 'completed' && (!runData?.evidence_screenshots?.length) && (
              <div className="text-sm text-[var(--text-muted)] text-center mt-10">No Playwright evidence screenshots captured. Add a URL in chat or select a Website Credentials row for Playwright in Settings.</div>
           )}
+
+          {activeTab === 'workflows' && (
+            <div className="h-full">
+              <PlanList
+                plans={plans}
+                onExecutePlan={async (planId, opts) => {
+                  try {
+                    const r = await fetch(`/api/controller/plans/${planId}/execute`, {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify(opts || {}),
+                    });
+                    const data = await r.json();
+                    setPlans((prev) => prev.map((p) => (p.id === planId ? data : p)));
+                  } catch (err) {
+                    console.error(err);
+                  }
+                }}
+                onCancelPlan={async (planId) => {
+                  try {
+                    const r = await fetch(`/api/controller/plans/${planId}/cancel`, { method: 'POST' });
+                    const data = await r.json();
+                    setPlans((prev) => prev.map((p) => (p.id === planId ? data : p)));
+                  } catch (err) {
+                    console.error(err);
+                  }
+                }}
+              />
+            </div>
+          )}
         </div>
       </div>
       </div>
     </div>
   );
 }
+
+
+
+
+

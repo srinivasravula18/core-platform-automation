@@ -11,14 +11,15 @@ function slugifyFolderName(name: string) {
   return normalizeFolderName(name).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 }
 
-function getFolderPathParts(folder: any): string[] {
+function getFolderPathParts(folder: any, folderList?: any[]): string[] {
+  const list = folderList || db.folders;
   const parts = [folder?.name || ''];
   let parentId = folder?.parentId || '';
   const visited = new Set<string>();
 
   while (parentId && !visited.has(parentId)) {
     visited.add(parentId);
-    const parent = db.folders.find((item: any) => item.id === parentId);
+    const parent = list.find((item: any) => item.id === parentId);
     if (!parent) break;
     parts.unshift(parent.name || '');
     parentId = parent.parentId || '';
@@ -42,11 +43,12 @@ function inferFolderNameFromPrompt(prompt: string, targetUrl = '') {
   return urlHost ? `${urlHost} / ${feature}` : feature;
 }
 
-export function getFolderPath(folderId: string) {
+export function getFolderPath(folderId: string, folderList?: any[]) {
   if (!folderId) return 'Uncategorized';
-  const folder = db.folders.find((item: any) => item.id === folderId);
+  const list = folderList || db.folders;
+  const folder = list.find((item: any) => item.id === folderId);
   if (!folder) return 'Uncategorized';
-  return getFolderPathParts(folder).join(' / ') || folder.name || 'Uncategorized';
+  return getFolderPathParts(folder, list).join(' / ') || folder.name || 'Uncategorized';
 }
 
 export function createFolder(name: string, parentId = '', extra: any = {}) {

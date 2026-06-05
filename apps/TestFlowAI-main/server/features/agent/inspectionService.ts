@@ -1,10 +1,10 @@
 import path from 'path';
 import fs from 'fs/promises';
 import { chromium } from 'playwright';
-import { generateObject } from 'ai';
 import { z } from 'zod';
 import { normalizeTargetUrl } from '../../shared/url';
 import { performLoginIfCredentialsProvided } from '../evidence/evidenceService';
+import { getOrchestrator } from '../../ai/orchestrator';
 
 const plannerSchema = z.object({
   status: z.enum(['continue', 'satisfied', 'blocked']),
@@ -132,7 +132,7 @@ export async function inspectApplicationFlow(options: {
   targetUrl: string;
   prompt: string;
   credentials: any;
-  model: any;
+  model?: any;
   runId: string;
 }) {
   const normalizedUrl = normalizeTargetUrl(options.targetUrl);
@@ -177,8 +177,8 @@ export async function inspectApplicationFlow(options: {
     let goalStatus: 'satisfied' | 'blocked' | 'partial' = 'partial';
 
     for (let step = 0; step < 8; step += 1) {
-      const { object: decision } = await generateObject({
-        model: options.model,
+      const orchestrator = await getOrchestrator('appInspector');
+      const decisionResult = await orchestrator.generateObject<z.infer<typeof plannerSchema>>({
         schema: plannerSchema,
         prompt: `You are controlling a browser for QA discovery. User request: ${options.prompt}. Current page context: ${JSON.stringify({
           url: lastContext.url,
@@ -190,7 +190,9 @@ export async function inspectApplicationFlow(options: {
           forms: lastContext.forms,
           bodyText: lastContext.bodyText.slice(0, 1800),
         })}. Decide whether the user's requested goal is already satisfied, blocked, or whether one visible action should be clicked next. Only choose an elementId from actions. Do not choose destructive actions such as delete, remove, save, submit data changes, unless the user explicitly asked for that.`,
+        userMessage: options.prompt || 'Inspect the application flow.',
       });
+      const decision = decisionResult.object;
 
       actionsTaken.push({ type: 'planner', step: step + 1, ...decision });
 

@@ -248,7 +248,7 @@ export default function TestRuns() {
             <select className="bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm">
               <option>All Test Cases</option>
             </select>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <button onClick={() => setCaseStatusFilter('All')} title="Show all grouped cases" className="p-2 rounded-md border border-[var(--border)] text-[var(--accent)]"><Folder className="w-4 h-4" /></button>
               <div className="relative">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--text-muted)]" />
@@ -269,8 +269,8 @@ export default function TestRuns() {
             </div>
           </div>
 
-          <div className="flex-1 min-h-0 overflow-hidden grid grid-cols-[280px_1fr]">
-            <div className="border-r border-[var(--border)] overflow-auto">
+          <div className="flex-1 min-h-0 overflow-hidden flex flex-col md:grid md:grid-cols-[280px_1fr]">
+            <div className="md:border-r border-b md:border-b-0 border-[var(--border)] overflow-auto md:max-h-full max-h-48">
               <div className="px-4 py-3 text-xs font-semibold uppercase text-[var(--text-muted)] border-b border-[var(--border)]">Sort by: Custom</div>
               {groupedCases.length === 0 ? (
                 <div className="px-4 py-6 text-sm text-[var(--text-muted)]">No linked test cases.</div>
@@ -380,7 +380,7 @@ export default function TestRuns() {
               </div>
             )}
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <div className="relative">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--text-muted)]" />
               <input value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} placeholder="Search by name, tag, build #, or CI #" className="w-96 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md pl-9 pr-4 py-2 text-sm outline-none focus:border-[var(--accent)]" />
@@ -446,3 +446,8 @@ export default function TestRuns() {
     </div>
   );
 }
+
+
+
+
+

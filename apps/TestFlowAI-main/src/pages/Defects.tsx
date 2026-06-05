@@ -106,12 +106,12 @@ export default function Defects() {
 
   return (
     <div className="max-w-7xl mx-auto h-full flex flex-col">
-      <div className="flex items-center justify-between mb-6 flex-shrink-0">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-6 flex-shrink-0">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Defects</h1>
           <p className="text-sm text-[var(--text-muted)] mt-1">Track issues and bugs discovered during testing.</p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <button onClick={openNewModal} className="flex items-center gap-2 bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-md text-sm font-medium transition-colors">
             <ShieldAlert className="w-4 h-4" /> Log Defect
           </button>
@@ -242,3 +242,8 @@ export default function Defects() {
     </div>
   );
 }
+
+
+
+
+

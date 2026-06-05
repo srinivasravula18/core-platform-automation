@@ -142,12 +142,12 @@ export default function TestSuites() {
 
   return (
     <div className="max-w-7xl mx-auto h-full flex flex-col">
-      <div className="flex items-center justify-between mb-6 flex-shrink-0">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-6 flex-shrink-0">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Test Suites</h1>
           <p className="text-sm text-[var(--text-muted)] mt-1">Group your test cases functionally (e.g. by module or feature).</p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <button onClick={openNewModal} className="flex items-center gap-2 bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white px-4 py-2 rounded-md text-sm font-medium transition-colors">
             <Plus className="w-4 h-4" /> New Suite
           </button>
@@ -180,7 +180,7 @@ export default function TestSuites() {
             <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Description</label>
             <textarea value={formData.description} onChange={(e) => setFormData({...formData, description: e.target.value})} placeholder="Detailed description of coverage..." className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)] h-16" />
           </div>
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
              <div>
                 <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Parent Suite (Optional)</label>
                 <input type="text" value={formData.parentSuite} onChange={(e) => setFormData({...formData, parentSuite: e.target.value})} placeholder="e.g. Master Suite" className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]" />
@@ -190,7 +190,7 @@ export default function TestSuites() {
                 <input type="text" value={formData.module} onChange={(e) => setFormData({...formData, module: e.target.value})} placeholder="e.g., Payments" className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]" />
              </div>
           </div>
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
              <div>
                 <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">QA Owner</label>
                 <input type="text" value={formData.owner} onChange={(e) => setFormData({...formData, owner: e.target.value})} placeholder="e.g. Test Lead" className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]" />
@@ -209,7 +209,7 @@ export default function TestSuites() {
                 </select>
              </div>
           </div>
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
                 <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Priority</label>
                 <select value={formData.priority} onChange={(e) => setFormData({...formData, priority: e.target.value})} className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]">
@@ -389,3 +389,8 @@ export default function TestSuites() {
     </div>
   );
 }
+
+
+
+
+

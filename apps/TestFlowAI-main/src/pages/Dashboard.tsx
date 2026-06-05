@@ -60,12 +60,12 @@ export default function Dashboard() {
 
   return (
     <div className="max-w-6xl mx-auto space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Dashboard</h1>
           <p className="text-sm text-[var(--text-muted)] mt-1">Good morning, see your QA progress at a glance.</p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <button onClick={() => setIsPlanModalOpen(true)} className="bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white px-4 py-2 rounded-md text-sm font-medium transition-colors">
             + New Plan
           </button>
@@ -103,7 +103,7 @@ export default function Dashboard() {
               className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)] h-16" 
             />
           </div>
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
              <div>
                 <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">In-Scope</label>
                 <input type="text" value={formData.inScope} onChange={(e) => setFormData({...formData, inScope: e.target.value})} className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]" />
@@ -113,7 +113,7 @@ export default function Dashboard() {
                 <input type="text" value={formData.outOfScope} onChange={(e) => setFormData({...formData, outOfScope: e.target.value})} className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]" />
              </div>
           </div>
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
              <div>
                 <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Test Strategy</label>
                 <input type="text" value={formData.strategy} onChange={(e) => setFormData({...formData, strategy: e.target.value})} className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]" />
@@ -123,7 +123,7 @@ export default function Dashboard() {
                 <input type="text" value={formData.testTypes} onChange={(e) => setFormData({...formData, testTypes: e.target.value})} placeholder="e.g. Manual, Auto, API" className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]" />
              </div>
           </div>
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
              <div>
                 <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Environments</label>
                 <input 
@@ -145,7 +145,7 @@ export default function Dashboard() {
                 />
              </div>
           </div>
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
              <div>
                 <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Entry/Exit Criteria</label>
                 <input type="text" value={formData.entryExit} onChange={(e) => setFormData({...formData, entryExit: e.target.value})} className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]" />
@@ -155,7 +155,7 @@ export default function Dashboard() {
                 <input type="text" value={formData.schedule} onChange={(e) => setFormData({...formData, schedule: e.target.value})} placeholder="e.g. 2 weeks" className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]" />
              </div>
           </div>
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
              <div>
                 <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Risks & Dependencies</label>
                 <input type="text" value={formData.risks} onChange={(e) => setFormData({...formData, risks: e.target.value})} className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]" />
@@ -240,3 +240,4 @@ export default function Dashboard() {
     </div>
   );
 }
+

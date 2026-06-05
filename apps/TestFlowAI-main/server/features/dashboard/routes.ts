@@ -1,5 +1,5 @@
 import type { Express } from 'express';
-import { db } from '../../shared/storage';
+import { Activity, Cases, Defects, Plans, Reports, Runs, Suites, AgentRuns, isPgEnabled } from '../../db/repository';
 
 function toLocalDateKey(date: Date) {
   const year = date.getFullYear();
@@ -8,8 +8,8 @@ function toLocalDateKey(date: Date) {
   return `${year}-${month}-${day}`;
 }
 
-function buildStatsChartData() {
-  const runDates = (db.runs || [])
+function buildStatsChartData(runs: any[]) {
+  const runDates = (runs || [])
     .map((run: any) => String(run?.date || '').trim())
     .filter((date: string) => /^\d{4}-\d{2}-\d{2}$/.test(date))
     .sort();
@@ -32,7 +32,7 @@ function buildStatsChartData() {
 
   const chartByDate = new Map(days.map((day) => [day.key, day]));
 
-  (db.runs || []).forEach((run: any) => {
+  (runs || []).forEach((run: any) => {
     const runDate = String(run?.date || '').trim();
     const chartRow = chartByDate.get(runDate);
     if (!chartRow) return;
@@ -48,18 +48,31 @@ function buildStatsChartData() {
 }
 
 export function registerDashboardRoutes(app: Express) {
-  app.get('/api/stats', (req, res) => {
-    const activeRunsCount = db.agentRuns.filter((run: any) => ['running', 'review_required'].includes(String(run?.status || ''))).length;
+  app.get('/api/stats', async (req, res) => {
+    const [plans, suites, cases, runs, defects, reports, recentActivity, agentRuns] = await Promise.all([
+      Plans.list(),
+      Suites.list(),
+      Cases.list(),
+      Runs.list(),
+      Defects.list(),
+      Reports.list(),
+      Activity.list('default', 6),
+      AgentRuns.list(),
+    ]);
+    const activeRunsCount = agentRuns.filter((run: any) =>
+      ['running', 'review_required'].includes(String(run?.status || ''))
+    ).length;
+
     res.json({
-      chartData: buildStatsChartData(),
-      plansCount: db.plans.length,
-      suitesCount: db.suites.length,
-      casesCount: db.cases.length,
-      runsCount: db.runs.length,
+      chartData: buildStatsChartData(runs),
+      plansCount: plans.length,
+      suitesCount: suites.length,
+      casesCount: cases.length,
+      runsCount: runs.length,
       activeRunsCount,
-      defectsCount: db.defects.length,
-      reportsCount: db.reports.length,
-      recentActivity: db.recentActivity.slice(0, 6)
+      defectsCount: defects.length,
+      reportsCount: reports.length,
+      recentActivity,
     });
   });
 }

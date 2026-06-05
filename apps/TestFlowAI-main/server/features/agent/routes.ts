@@ -1,20 +1,18 @@
 import type { Express } from 'express';
 import { randomUUID } from 'crypto';
-import { generateObject } from 'ai';
 import { z } from 'zod';
 import { db, addActivity, persistDataInBackground } from '../../shared/storage';
 import { getFolderPath, resolveFolderForAgent } from '../../shared/folders';
-import { createGeminiModel, getAIErrorMessage, getGeminiKeyStatus } from '../../shared/ai';
-import { buildCredentialContext, extractTargetUrl, resolveAgentCredentials, resolveAgentTargetUrl } from '../../shared/url';
+import { getAIErrorMessage, getGeminiKeyStatus } from '../../shared/ai';
+import { buildCredentialContext, resolveAgentTargetUrl } from '../../shared/url';
 import { playwrightScriptsSchema, testCasesSchema } from '../../shared/schemas';
 import { buildAgentExecutionSteps, buildCaseDescription, normalizeCaseSteps, normalizeCaseTags } from '../../shared/testCases';
 import { capturePlaywrightEvidence } from '../evidence/evidenceService';
 import { inspectApplicationFlow } from './inspectionService';
-
-const casualGreetingPattern = /^(hi+|h+i+|hlo+|hello+|hey+|good\s+(morning|afternoon|evening)|thanks?|thank\s+you|ok(?:ay)?)\b[\s!.?]*$/i;
-const identityQuestionPattern = /\b(who\s+are\s+you|what\s+can\s+you\s+do|help|your\s+purpose)\b/i;
-const qaIntentPattern = /\b(test|testing|qa|quality|playwright|selenium|cypress|automation|automate|script|test\s*case|test\s*plan|test\s*suite|scenario|regression|smoke|sanity|bug|defect|application|website|web\s*app|url|api|login|checkout|workflow|flow|requirements?)\b/i;
-const abusivePattern = /\b(fuck|shit|asshole|bastard|bitch|stupid|idiot|moron|dumb)\b/i;
+import { getOrchestrator } from '../../ai/orchestrator';
+import { resolveCredentials, maskPassword } from '../credentials/credentialsService';
+import { pushInboxItem } from '../inbox/routes';
+import { runGuardrailPipeline } from '../../ai/guardrails';
 
 function getAgentPlanStatus(run: any) {
   if (run?.status === 'completed') return 'Completed';
@@ -64,29 +62,6 @@ function buildFallbackArtifactName(prompt: string, targetUrl: string) {
   if (/\bsmoke/.test(source)) scopeParts.push('Smoke');
   const scope = scopeParts.length ? scopeParts.join(' and ') : 'Functional';
   return `${appName.replace(/\b\w/g, (char) => char.toUpperCase())} ${scope} Validation`.replace(/\s+/g, ' ').trim();
-}
-
-async function generateArtifactName(model: any, prompt: string, targetUrl: string) {
-  const fallback = buildFallbackArtifactName(prompt, targetUrl);
-  try {
-    const { object } = await generateObject({
-      model,
-      schema: z.object({
-        name: z.string().min(4).max(80),
-      }),
-      prompt: `Summarize this QA automation request into one professional test artifact name.
-Rules:
-- Return a concise intent-based name, not the raw user prompt.
-- Do not include credentials, filler words, or long URLs.
-- Mention the product/app and tested workflow when clear.
-- 4 to 9 words is ideal.
-Target URL: ${targetUrl || 'not provided'}
-User request: ${prompt || 'not provided'}`,
-    });
-    return String(object.name || fallback).replace(/\s+/g, ' ').trim().slice(0, 80) || fallback;
-  } catch {
-    return fallback;
-  }
 }
 
 function buildSelectedQaContext(input: { testPlanId?: string; testSuiteId?: string; testCaseId?: string }) {
@@ -155,25 +130,15 @@ function buildSelectedQaContext(input: { testPlanId?: string; testSuiteId?: stri
   };
 }
 
-function getAgentGuardrailResponse(message: string) {
-  const normalized = String(message || '').trim();
-
-  if (abusivePattern.test(normalized)) {
-    return 'Please keep the conversation professional. I can help with QA tasks such as test planning, test case generation, and Playwright automation when the request is stated respectfully.';
-  }
-
-  if (casualGreetingPattern.test(normalized)) {
-    return 'Hello. I am the QA Assistant. Please provide the application URL or describe the feature you want tested, and I will generate the QA workflow.';
-  }
-
-  if (identityQuestionPattern.test(normalized)) {
-    return 'I am a QA-focused assistant. I can help generate test plans, test cases, suites, and Playwright scripts for application testing workflows.';
-  }
-
-  if (!qaIntentPattern.test(normalized) && !extractTargetUrl(normalized)) {
-    return 'This assistant is scoped to QA and test automation. Please ask about an application, feature, test case, test plan, defect, or automation script.';
-  }
-
+function getAgentGuardrailResponse(message: string): string | null {
+  // The legacy regex guardrail is replaced by runGuardrailPipeline in guardrails.ts.
+  // Kept here as a safety net for callers that still import it.
+  const pipeline = runGuardrailPipeline({
+    agent: 'chatAssistant',
+    userMessage: message,
+  });
+  if (pipeline.policyVerdict.kind === 'respond') return pipeline.policyVerdict.reply;
+  if (pipeline.policyVerdict.kind === 'reject') return pipeline.policyVerdict.error;
   return null;
 }
 
@@ -364,17 +329,19 @@ async function runPostCaseAgentFlow(run: any, model: any, testCases: any, target
   const selectedQaContextText = run.selectedQaContext
     ? `Selected QA repository context for this automation scope: ${JSON.stringify(run.selectedQaContext)}`
     : 'No selected QA repository context was provided for this automation scope.';
-  const { object: scripts } = await generateObject({
-    model,
-    schema: playwrightScriptsSchema,
-    prompt: `You are a Playwright automation expert. Convert these reviewed test cases into production-quality Playwright TypeScript scripts.
-Use this baseURL in the scripts when provided: ${targetUrl || 'not provided'}.
+
+  const coder = await getOrchestrator('playwrightCoder');
+  const scriptsResult = await coder.generateObject<any>({
+    prompt: `Use this baseURL in the scripts when provided: ${targetUrl || 'not provided'}.
 ${credentialContext}
 ${selectedQaContextText}
 Use this browser inspection context as the source of truth for reachable pages, visible labels, forms, navigation actions, tables/lists, buttons, links and final URL: ${JSON.stringify(inspectionContext)}.
 For authenticated flows, fill the username/email and password fields before clicking submit. Then follow the same user-requested path discovered by the inspector and assert the exact inspected target state using visible text, headings, tables, lists, forms, or URL changes. Do not invent unrelated pages or menu names that are not present in the inspection context or test case steps.
-Test cases: ${JSON.stringify(testCases)}`
+Test cases: ${JSON.stringify(testCases)}`,
+    schema: playwrightScriptsSchema,
+    userMessage: 'Generate Playwright scripts for the inspected flow.',
   });
+  const scripts = scriptsResult.object;
   run.playwright_scripts = scripts.scripts as any;
   persistAgentScripts(run);
   run.messages.push({ agent: 'PlaywrightAgent', status: 'completed', output: scripts });
@@ -413,13 +380,10 @@ export function registerAgentRoutes(app: Express) {
   app.post('/api/agent/action', async (req, res) => {
     const { taskType, prompt } = req.body;
 
-    try {
-      const model = createGeminiModel();
-      let schema;
-      let systemPrompt = '';
-
-      if (taskType === 'plan') {
-        schema = z.object({
+    const agentMap: Record<string, { agent: any; schema: any; pushToInbox?: boolean }> = {
+      plan: {
+        agent: 'testPlanner',
+        schema: z.object({
           name: z.string(),
           scope: z.string(),
           objectives: z.string(),
@@ -432,11 +396,12 @@ export function registerAgentRoutes(app: Express) {
           entryExit: z.string(),
           schedule: z.string(),
           risks: z.string(),
-          deliverables: z.string()
-        });
-        systemPrompt = `Generate a detailed Test Plan based on the prompt. Provide Fields: name, scope, objectives, in-scope, out-of-scope, strategy, test types, environments, roles, entry/exit criteria, schedule, risks, and deliverables. Prompt: ${prompt}`;
-      } else if (taskType === 'suite') {
-        schema = z.object({
+          deliverables: z.string(),
+        }),
+      },
+      suite: {
+        agent: 'suiteDesigner',
+        schema: z.object({
           name: z.string(),
           description: z.string(),
           parentSuite: z.string().optional(),
@@ -444,11 +409,12 @@ export function registerAgentRoutes(app: Express) {
           owner: z.string(),
           tags: z.array(z.string()),
           priority: z.enum(['Low', 'Medium', 'High', 'Critical']),
-          status: z.enum(['Active', 'Draft', 'Deprecated'])
-        });
-        systemPrompt = `Generate a Test Suite based on the prompt. Fields: name, description, parentSuite, module, owner, tags, priority, status. Tags should specify features/platforms etc. Prompt: ${prompt}`;
-      } else if (taskType === 'case') {
-        schema = z.object({
+          status: z.enum(['Active', 'Draft', 'Deprecated']),
+        }),
+      },
+      case: {
+        agent: 'caseWriter',
+        schema: z.object({
           title: z.string(),
           description: z.string(),
           tags: z.array(z.string()),
@@ -456,28 +422,40 @@ export function registerAgentRoutes(app: Express) {
           priority: z.enum(['Low', 'Medium', 'High', 'Critical']),
           steps: z.array(z.object({
             action: z.string(),
-            expected: z.string()
-          }))
-        });
-        systemPrompt = `Generate a Test Case based on the prompt. Provide title, description, type, priority, automation tags, and 3-6 ordered steps. Tags must use @ format, for example @bvt, @sanity, @regression, @smoke, @ui, @positive, @negative. Each step must include action and expected result for report display. Prompt: ${prompt}`;
-      } else if (taskType === 'run') {
-        schema = z.object({ name: z.string() });
-        systemPrompt = `Generate a Test Run name based on the prompt. Provide a short name e.g. 'Sprint 20 Smoke'. Prompt: ${prompt}`;
-      } else if (taskType === 'defect') {
-        schema = z.object({
+            expected: z.string(),
+          })),
+        }),
+      },
+      run: {
+        agent: 'runNamer',
+        schema: z.object({ name: z.string() }),
+      },
+      defect: {
+        agent: 'defectTriage',
+        schema: z.object({
           title: z.string(),
           severity: z.enum(['Low', 'Medium', 'High', 'Critical']),
-        });
-        systemPrompt = `Generate a Defect description and severity based on the prompt. Prompt: ${prompt}`;
-      } else {
-        return res.status(400).json({ error: 'Invalid taskType' });
-      }
+        }),
+      },
+    };
 
-      const { object } = await generateObject({ model, schema, prompt: systemPrompt });
-      res.json(object);
+    const config = agentMap[taskType];
+    if (!config) return res.status(400).json({ error: 'Invalid taskType' });
+
+    try {
+      const ai = await getOrchestrator(config.agent);
+      const result = await ai.generateObject<any>({
+        prompt: String(prompt || ''),
+        schema: config.schema,
+        userMessage: String(prompt || ''),
+      });
+      if ((result as any).shortCircuit) {
+        return res.json({ chat_response: (result as any).shortCircuit });
+      }
+      res.json(result.object);
     } catch (err: any) {
       console.error(err);
-      res.status(500).json({ error: getAIErrorMessage(err) });
+      res.status(err?.status || 500).json({ error: getAIErrorMessage(err) });
     }
   });
 
@@ -485,14 +463,46 @@ export function registerAgentRoutes(app: Express) {
     const { app_url, provider, prompt } = req.body;
     const testCaseCount = Math.min(10, Math.max(1, Number(req.body.testCaseCount) || 3));
     const flowMode = req.body.flowMode === 'review_cases' ? 'review_cases' : 'complete';
-    const guardrailResponse = getAgentGuardrailResponse(prompt || app_url || '');
 
-    if (guardrailResponse) {
-      return res.json({ chat_response: guardrailResponse });
+    // Layered guardrail pipeline. If the pipeline short-circuits (greeting, off-topic, etc.)
+    // we return a chat_response instead of starting a run.
+    const pipeline = runGuardrailPipeline({
+      agent: 'chatAssistant',
+      userMessage: prompt || app_url || '',
+    });
+    if (pipeline.policyVerdict.kind === 'respond') {
+      return res.json({ chat_response: pipeline.policyVerdict.reply });
+    }
+    if (pipeline.policyVerdict.kind === 'reject') {
+      return res.status(pipeline.policyVerdict.code).json({ error: pipeline.policyVerdict.error });
     }
 
     const targetUrl = resolveAgentTargetUrl(prompt || '', app_url || '');
-    const credentials = resolveAgentCredentials(prompt || '', targetUrl);
+
+    // Resolve credentials through the new multi-website, multi-user model.
+    // Fall back to inline credentials if the user pasted them in chat.
+    const resolvedCreds = resolveCredentials({
+      targetUrl,
+      userId: req.body.credentialUserId,
+      role: req.body.credentialRole,
+      websiteId: req.body.websiteId,
+      inline: req.body.inlineCredentials,
+    });
+    const credentials = resolvedCreds || {
+      username: '',
+      password: '',
+      siteName: '',
+      baseUrl: targetUrl,
+      environment: 'unknown',
+      source: 'none' as any,
+    };
+    // Mask passwords in any persisted run record; the live agent gets the real
+    // value from the resolved credential in memory only.
+    const safeCredentialsForLog = {
+      ...credentials,
+      password: credentials.password ? maskPassword(credentials.password) : '',
+    };
+
     const selectedQaContext = buildSelectedQaContext({
       testPlanId: req.body.testPlanId,
       testSuiteId: req.body.testSuiteId,
@@ -523,14 +533,14 @@ export function registerAgentRoutes(app: Express) {
       testPlanId: req.body.testPlanId || '',
       testSuiteId: req.body.testSuiteId || '',
       testCaseId: req.body.testCaseId || '',
-      credentials,
+      credentials: safeCredentialsForLog,
       artifactName: buildFallbackArtifactName(prompt || '', targetUrl),
-      created_at: new Date()
+      created_at: new Date(),
     };
     newRun.messages.push({
       agent: 'System',
       status: 'completed',
-      output: `Resolved target: ${targetUrl || 'none'}. Repository folder: ${folder ? getFolderPath(folder.id) : 'Uncategorized'}. QA scope: ${selectedQaContext.hasContext ? 'selected plan/suite/case context' : 'prompt only'}. Credentials: ${credentials.username && credentials.password ? `${credentials.source || 'provided'} for ${(credentials as any).siteName || credentials.username}` : 'none'}.`,
+      output: `Resolved target: ${targetUrl || 'none'}. Repository folder: ${folder ? getFolderPath(folder.id) : 'Uncategorized'}. QA scope: ${selectedQaContext.hasContext ? 'selected plan/suite/case context' : 'prompt only'}. Credentials: ${credentials.username && credentials.password ? `${(credentials as any).source || 'provided'} for ${(credentials as any).siteName || credentials.username} (role: ${(credentials as any).role || 'default'})` : 'none'}.`,
     });
 
     db.agentRuns.unshift(newRun);
@@ -538,8 +548,15 @@ export function registerAgentRoutes(app: Express) {
     res.json({ task_id: taskId });
 
     try {
-      const model = createGeminiModel();
-      newRun.artifactName = await generateArtifactName(model, prompt || '', targetUrl);
+      const namingAi = await getOrchestrator('namingAgent');
+      const named = await namingAi.generateObject<{ name: string }>({
+        prompt: `User request: ${prompt || 'not provided'}\nTarget URL: ${targetUrl || 'not provided'}`,
+        schema: z.object({ name: z.string().min(4).max(80) }),
+        userMessage: prompt || targetUrl || '',
+      });
+      if (named.object?.name) {
+        newRun.artifactName = String(named.object.name).slice(0, 80);
+      }
       const credentialContext = buildCredentialContext(credentials);
 
       newRun.messages.push({ agent: 'ApplicationInspector', status: 'running' });
@@ -547,29 +564,51 @@ export function registerAgentRoutes(app: Express) {
         targetUrl,
         prompt: prompt || '',
         credentials,
-        model,
+        model: undefined as any,
         runId: taskId,
       });
       newRun.inspection_context = inspectionContext;
       newRun.messages.push({ agent: 'ApplicationInspector', status: 'completed', output: inspectionContext });
 
       newRun.messages.push({ agent: 'TestGenerationAgent', status: 'running' });
-      const { object: testCases } = await generateObject({
-        model,
-        schema: testCasesSchema,
-        prompt: `You are a senior QA engineer. Generate exactly ${testCaseCount} comprehensive test cases from the user's requested QA scope and the browser inspection result.
-User prompt: ${prompt || 'not provided'}.
+      const caseWriter = await getOrchestrator('caseWriter');
+      const caseResult = await caseWriter.generateObject<any>({
+        prompt: `User prompt: ${prompt || 'not provided'}.
 Playwright target URL: ${targetUrl || 'not provided'}.
 ${credentialContext}
 ${selectedQaContext.promptText}
 Browser inspection result: ${JSON.stringify(inspectionContext)}.
+Generate exactly ${testCaseCount} comprehensive test cases.
+
 Use the inspection result as the source of truth for reachable pages, post-login state, visible navigation, forms, tables, list-like regions, and assertion targets. Do not invent unrelated admin pages or menu names. If the inspector reached the requested goal, at least one @bvt test case must cover that exact inspected end-to-end path, including any login and navigation actions recorded in actionsTaken. If the inspector was partial or blocked, generate cases for the reachable context and include clear preconditions/steps that show what needs to be verified next.
+
 For authenticated flows, steps must explicitly say to enter username/email "${credentials.username || '<provided username>'}" and password "${credentials.password || '<provided password>'}", click the relevant sign-in/login control, and then continue to the user-requested inspected target. When the request involves verifying data views, include steps that verify the visible table/list/grid container, headers, rows or empty-state, and absence of loading/error state using the labels found by inspection.
-Each test case must include automation tags in @ format, for example @bvt, @sanity, @regression, @smoke, @ui, @positive, @negative. Each test case must include a steps array with ordered rows. Each row must have a clear action and expected result suitable for a report table.`
+
+Each test case must include automation tags in @ format, for example @bvt, @sanity, @regression, @smoke, @ui, @positive, @negative. Each test case must include a steps array with ordered rows. Each row must have a clear action and expected result suitable for a report table.`,
+        schema: testCasesSchema,
+        userMessage: prompt || '',
       });
+      const testCases = caseResult.object;
       newRun.generated_cases = (testCases.test_cases as any[]).map((testCase) => ({ ...testCase, captureEvidence: true }));
       newRun.messages.push({ agent: 'TestGenerationAgent', status: 'completed', output: testCases });
       persistAgentCaseArtifacts(newRun);
+
+      // Push every generated case to the inbox as a pending decision, so the
+      // human can approve / reject per-case from the inbox instead of just
+      // seeing a "review" button.
+      (newRun.generated_cases || []).forEach((tc: any, idx: number) => {
+        pushInboxItem({
+          workspaceId: 'default',
+          source: 'case',
+          sourceId: `${newRun.id}:${idx}`,
+          title: `Review new test case: ${tc.title || `Case ${idx + 1}`}`,
+          summary: tc.description || '',
+          confidence: 80,
+          proposedBy: 'QA Assistant',
+          payload: { runId: newRun.id, caseIndex: idx, case: tc },
+          links: [{ label: 'Open in Test Cases', href: '/test-cases' }],
+        });
+      });
 
       if (flowMode === 'review_cases') {
         newRun.status = 'review_required';
@@ -578,7 +617,7 @@ Each test case must include automation tags in @ format, for example @bvt, @sani
         return;
       }
 
-      await runPostCaseAgentFlow(newRun, model, testCases, targetUrl);
+      await runPostCaseAgentFlow(newRun, undefined as any, testCases, targetUrl);
     } catch (err: any) {
       console.error('AI Gen Error:', err);
       newRun.status = 'failed';
@@ -589,7 +628,7 @@ Each test case must include automation tags in @ format, for example @bvt, @sani
 
   app.post('/api/agent/continue', async (req, res) => {
     const { taskId, cases } = req.body;
-    const run = db.agentRuns.find((item) => item.id === taskId);
+    const run = db.agentRuns.find((item: any) => item.id === taskId);
 
     if (!run) return res.status(404).json({ error: 'Run not found' });
     if (!Array.isArray(cases) || cases.length === 0) {
@@ -605,8 +644,7 @@ Each test case must include automation tags in @ format, for example @bvt, @sani
     res.json({ success: true });
 
     try {
-      const model = createGeminiModel();
-      await runPostCaseAgentFlow(run, model, { test_cases: cases }, run.app_url || '');
+      await runPostCaseAgentFlow(run, undefined as any, { test_cases: cases }, run.app_url || '');
     } catch (err: any) {
       console.error('AI Continue Error:', err);
       run.status = 'failed';
@@ -617,10 +655,10 @@ Each test case must include automation tags in @ format, for example @bvt, @sani
 
   app.post('/api/agent/rework-case', async (req, res) => {
     try {
-      const model = createGeminiModel();
       const { testCase, feedback, targetUrl } = req.body;
-      const { object } = await generateObject({
-        model,
+      const ai = await getOrchestrator('caseReworker');
+      const result = await ai.generateObject<any>({
+        prompt: `Target URL: ${targetUrl || 'not provided'}. Current case: ${JSON.stringify(testCase)}. Feedback: ${feedback || 'Improve clarity and coverage.'}`,
         schema: z.object({
           title: z.string(),
           description: z.string(),
@@ -633,10 +671,9 @@ Each test case must include automation tags in @ format, for example @bvt, @sani
             expected: z.string(),
           })),
         }),
-        prompt: `Rework this QA test case based on the reviewer feedback. Keep it practical, detailed, and report-ready. Include 3-6 ordered steps, each with action and expected result. Keep or improve automation tags using @ format, for example @bvt, @sanity, @regression, @smoke, @ui, @positive, @negative. Target URL: ${targetUrl || 'not provided'}. Current case: ${JSON.stringify(testCase)}. Feedback: ${feedback || 'Improve clarity and coverage.'}`,
+        userMessage: feedback || 'Rework the case for clarity and coverage.',
       });
-
-      res.json(object);
+      res.json(result.object);
     } catch (err: any) {
       console.error('AI Rework Error:', err);
       res.status(500).json({ error: getAIErrorMessage(err) });
@@ -645,7 +682,6 @@ Each test case must include automation tags in @ format, for example @bvt, @sani
 
   app.post('/api/agent/expand-case-steps', async (req, res) => {
     try {
-      const model = createGeminiModel();
       const { testCase, targetStepCount, targetUrl, stepIndex } = req.body;
       const requestedCount = Math.max(2, Math.min(20, Number(targetStepCount) || 8));
       const normalizedSteps = normalizeCaseSteps(testCase?.steps || []);
@@ -654,18 +690,18 @@ Each test case must include automation tags in @ format, for example @bvt, @sani
       const expansionPrompt = selectedStep
         ? `Break only this selected QA test step into exactly ${requestedCount} smaller executable sub-steps. Preserve the selected step intent and do not expand unrelated test case steps. Return only replacement rows for the selected step. Target URL: ${targetUrl || 'not provided'}. Full test case context: ${JSON.stringify(testCase)}. Selected step ${selectedStepIndex + 1}: ${JSON.stringify(selectedStep)}`
         : `Break this QA test case into exactly ${requestedCount} clear, granular, executable test steps. Preserve the original intent, credentials, target URL, assertions, and coverage. Do not add unrelated scenarios. Each step must have one specific user/system action and one matching expected result. Target URL: ${targetUrl || 'not provided'}. Test case: ${JSON.stringify(testCase)}`;
-      const { object } = await generateObject({
-        model,
+      const ai = await getOrchestrator('stepExpander');
+      const result = await ai.generateObject<any>({
+        prompt: expansionPrompt,
         schema: z.object({
           steps: z.array(z.object({
             action: z.string(),
             expected: z.string(),
           })),
         }),
-        prompt: expansionPrompt,
+        userMessage: `Expand case steps to ${requestedCount}.`,
       });
-
-      const steps = normalizeCaseSteps(object.steps).slice(0, requestedCount);
+      const steps = normalizeCaseSteps(result.object.steps).slice(0, requestedCount);
       res.json({ steps });
     } catch (err: any) {
       console.error('AI Step Expansion Error:', err);

@@ -188,12 +188,12 @@ export default function TestPlans() {
 
   return (
     <div className="max-w-7xl mx-auto h-full flex flex-col">
-      <div className="flex items-center justify-between mb-6 flex-shrink-0">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-6 flex-shrink-0">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Test Plans</h1>
           <p className="text-sm text-[var(--text-muted)] mt-1">Manage your high-level test plans and objectives.</p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <button onClick={openNewModal} className="flex items-center gap-2 bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white px-4 py-2 rounded-md text-sm font-medium transition-colors">
             <Plus className="w-4 h-4" /> New Plan
           </button>
@@ -231,7 +231,7 @@ export default function TestPlans() {
               className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)] h-16" 
             />
           </div>
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
              <div>
                 <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">In-Scope</label>
                 <input type="text" value={formData.inScope} onChange={(e) => setFormData({...formData, inScope: e.target.value})} className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]" />
@@ -241,7 +241,7 @@ export default function TestPlans() {
                 <input type="text" value={formData.outOfScope} onChange={(e) => setFormData({...formData, outOfScope: e.target.value})} className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]" />
              </div>
           </div>
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
              <div>
                 <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Test Strategy</label>
                 <input type="text" value={formData.strategy} onChange={(e) => setFormData({...formData, strategy: e.target.value})} className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]" />
@@ -251,7 +251,7 @@ export default function TestPlans() {
                 <input type="text" value={formData.testTypes} onChange={(e) => setFormData({...formData, testTypes: e.target.value})} placeholder="e.g. Manual, Auto, API" className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]" />
              </div>
           </div>
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
              <div>
                 <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Environments</label>
                 <input 
@@ -273,7 +273,7 @@ export default function TestPlans() {
                 />
              </div>
           </div>
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
              <div>
                 <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Entry/Exit Criteria</label>
                 <input type="text" value={formData.entryExit} onChange={(e) => setFormData({...formData, entryExit: e.target.value})} className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]" />
@@ -283,7 +283,7 @@ export default function TestPlans() {
                 <input type="text" value={formData.schedule} onChange={(e) => setFormData({...formData, schedule: e.target.value})} placeholder="e.g. 2 weeks" className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]" />
              </div>
           </div>
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
              <div>
                 <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Status</label>
                 <select
@@ -309,7 +309,7 @@ export default function TestPlans() {
                 </select>
              </div>
           </div>
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
              <div>
                 <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Risks & Dependencies</label>
                 <input type="text" value={formData.risks} onChange={(e) => setFormData({...formData, risks: e.target.value})} className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]" />
@@ -457,7 +457,7 @@ export default function TestPlans() {
 
             {activeDetailTab === 'sessions' && (
               <div className="space-y-4">
-                <div className="grid grid-cols-3 gap-4">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                   <div className="border border-[var(--border)] rounded-lg p-4 text-center"><div className="text-2xl font-bold text-[var(--accent)]">{getPlanRuns(selectedDetailPlan).filter((run) => run.status !== 'Completed').length}</div><div className="text-sm text-[var(--text-muted)]">Active</div></div>
                   <div className="border border-[var(--border)] rounded-lg p-4 text-center"><div className="text-2xl font-bold text-emerald-400">{getPlanRuns(selectedDetailPlan).filter((run) => run.status === 'Completed').length}</div><div className="text-sm text-[var(--text-muted)]">Closed</div></div>
                   <div className="border border-[var(--border)] rounded-lg p-4 text-center"><div className="text-2xl font-bold">{getPlanRuns(selectedDetailPlan).length}</div><div className="text-sm text-[var(--text-muted)]">Total</div></div>
@@ -539,7 +539,7 @@ export default function TestPlans() {
                   >
                     <td className="py-3 px-4 font-mono text-xs text-[var(--text-muted)]">{plan.id}</td>
                     <td className="py-3 px-4">
-                      <div className="flex items-center gap-2">
+                      <div className="flex flex-wrap items-center gap-2">
                         <span className="font-medium">{plan.name}</span>
                         <span className="text-xs text-[var(--text-muted)]">
                           {planSuites.length} suites / {planCases.length} cases
@@ -615,3 +615,8 @@ export default function TestPlans() {
     </div>
   );
 }
+
+
+
+
+

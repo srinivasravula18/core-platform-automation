@@ -771,7 +771,7 @@ export default function Reports() {
           <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl w-full max-w-3xl overflow-hidden shadow-2xl flex flex-col" onClick={(e) => e.stopPropagation()}>
             {/* Browser chrome header bar simulation */}
             <div className="bg-[var(--bg-secondary)] px-4 py-3 border-b border-[var(--border)] flex items-center justify-between">
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <span className="w-3 h-3 rounded-full bg-red-500/80"></span>
                 <span className="w-3 h-3 rounded-full bg-yellow-500/80"></span>
                 <span className="w-3 h-3 rounded-full bg-emerald-500/80"></span>
@@ -808,7 +808,7 @@ export default function Reports() {
       <Modal isOpen={isNewReportModalOpen} onClose={() => setIsNewReportModalOpen(false)} title="Log Manual Run Audit Report">
         <div className="space-y-4 max-h-[72vh] overflow-y-auto px-1 text-left">
           
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
              <div>
                 <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Report / Run Name</label>
                 <input 
@@ -831,7 +831,7 @@ export default function Reports() {
              </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
              <div>
                 <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Testing Plan context</label>
                 <select 
@@ -860,7 +860,7 @@ export default function Reports() {
              </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
              <div>
                 <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Requested By</label>
                 <input 
@@ -1010,3 +1010,8 @@ export default function Reports() {
     </div>
   );
 }
+
+
+
+
+

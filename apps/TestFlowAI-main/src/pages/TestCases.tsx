@@ -248,12 +248,12 @@ export default function TestCases() {
 
   return (
     <div className="max-w-7xl mx-auto h-full flex flex-col">
-      <div className="flex items-center justify-between mb-6 flex-shrink-0">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-6 flex-shrink-0">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Test Cases</h1>
           <p className="text-sm text-[var(--text-muted)] mt-1">Manage and organize your test repository.</p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <button onClick={openNewModal} className="flex items-center gap-2 bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white px-4 py-2 rounded-md text-sm font-medium transition-colors">
             <Plus className="w-4 h-4" /> New Case
           </button>
@@ -265,7 +265,7 @@ export default function TestCases() {
 
       <Modal isOpen={isCaseModalOpen} onClose={() => setIsCaseModalOpen(false)} title={selectedCaseId ? "Edit Test Case" : "Create New Test Case"} size="xl">
         <div className="space-y-4 max-h-[70vh] overflow-y-auto px-1">
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
              <div>
                 <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Test Plan (Optional)</label>
                 <select value={formData.testPlanId} onChange={(e) => setFormData({...formData, testPlanId: e.target.value})} className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]">
@@ -360,7 +360,7 @@ export default function TestCases() {
             <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Created By</label>
             <input type="text" value={formData.createdBy} onChange={(e) => setFormData({...formData, createdBy: e.target.value})} placeholder="e.g. Admin or user name" className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]" />
           </div>
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
              <div>
                  <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Type</label>
                  <select value={formData.type} onChange={(e) => setFormData({...formData, type: e.target.value})} className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]">
@@ -377,7 +377,7 @@ export default function TestCases() {
                  </select>
              </div>
           </div>
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
              <div>
                  <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Priority</label>
                  <select value={formData.priority} onChange={(e) => setFormData({...formData, priority: e.target.value})} className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]">
@@ -432,7 +432,7 @@ export default function TestCases() {
 
       <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl flex flex-col flex-1 min-h-0 shadow-sm">
         <div className="p-4 border-b border-[var(--border)] flex flex-col gap-3 flex-shrink-0">
-          <div className="flex gap-3 items-center">
+          <div className="flex flex-col sm:flex-row gap-3 items-stretch sm:items-center">
           <div className="relative flex-1 max-w-sm">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--text-muted)]" />
             <input 
@@ -611,3 +611,8 @@ export default function TestCases() {
     </div>
   );
 }
+
+
+
+
+
