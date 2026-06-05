@@ -164,7 +164,7 @@ export default function TestRepository() {
   };
 
   return (
-    <div className="mx-auto flex h-full min-h-0 max-w-7xl flex-col gap-5 overflow-hidden">
+    <div className="app-page-shell flex h-full min-h-0 flex-col gap-5 overflow-hidden">
       <div className="flex flex-shrink-0 items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Test Repository</h1>

@@ -69,7 +69,7 @@ export default function GitAgent() {
   const metricClass = 'rounded-lg border border-[var(--border)] bg-[var(--bg-card)] px-4 py-3';
 
   return (
-    <div className="max-w-7xl mx-auto h-full flex flex-col gap-6">
+    <div className="app-page-shell h-full flex flex-col gap-6">
       <div className="flex items-start justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Git Agent</h1>

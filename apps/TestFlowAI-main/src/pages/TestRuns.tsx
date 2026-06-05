@@ -193,7 +193,7 @@ export default function TestRuns() {
     const stats = getRunStats(selectedRun);
 
     return (
-      <div className="max-w-7xl mx-auto h-full flex flex-col">
+      <div className="app-page-shell h-full flex flex-col">
         <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl flex flex-col flex-1 min-h-0 overflow-hidden">
           <div className="p-5 border-b border-[var(--border)]">
             <div className="flex items-center gap-2 text-sm text-[var(--text-muted)] mb-3">
@@ -328,7 +328,7 @@ export default function TestRuns() {
   }
 
   return (
-    <div className="max-w-7xl mx-auto h-full flex flex-col">
+    <div className="app-page-shell h-full flex flex-col">
       <div className="flex items-center justify-between mb-6">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Test Runs</h1>
@@ -450,7 +450,6 @@ export default function TestRuns() {
     </div>
   );
 }
-
 
 
 

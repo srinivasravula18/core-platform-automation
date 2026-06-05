@@ -175,7 +175,7 @@ export default function TestSuites() {
   });
 
   return (
-    <div className="max-w-7xl mx-auto h-full flex flex-col">
+    <div className="app-page-shell h-full flex flex-col">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-6 flex-shrink-0">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Test Suites</h1>
@@ -484,6 +484,5 @@ export default function TestSuites() {
     </div>
   );
 }
-
 
 

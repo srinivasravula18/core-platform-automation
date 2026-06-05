@@ -73,7 +73,7 @@ export default function Settings() {
   const [tab, setTab] = useState<'appearance' | 'providers' | 'prompts' | 'credentials' | 'cost'>('providers');
 
   return (
-    <div className="mx-auto max-w-7xl space-y-6 px-1 sm:px-0">
+    <div className="app-page-shell space-y-6 px-1 sm:px-0">
       <div>
         <h1 className="text-2xl font-bold tracking-tight">Settings</h1>
         <p className="mt-1 text-sm text-[var(--text-muted)]">AI providers, prompts, credentials, and cost. Set autonomy from the Agent Console chat.</p>
