@@ -49,7 +49,7 @@ function isDeepRequest(text: string): boolean {
 // When a stored website is named, route to the deep pipeline if the request is
 // an actionable QA task on that site (test/check/verify/generate/explore/etc.),
 // but NOT when it is a plain info question ("what is…", "tell me about…").
-const CHAT_Q_RE = /\b(tell me|what(?:'s| is| are| does)|explain|describe|who\s|how (?:do|can) i|why\s|when\s|list (?:the )?|show me (?:the )?(?:cases?|suites?|plans?|runs?|defects?|reports?))\b/i;
+const CHAT_Q_RE = /\b(tell me|what(?:'s| is| are| does)|explain|describe|who\s|how (?:do|can) i|why\s|when\s|(?:list|show me)(?: the)? (?:cases?|suites?|plans?|runs?|defects?|reports?))\b/i;
 const SITE_ACTION_RE = /\b(test|tests|testing|login|log\s*in|sign\s*in|works?|working|does|check|verify|validate|automat\w*|e2e|end[-\s]?to[-\s]?end|flows?|features?|scenarios?|regression|smoke|sanity|click|navigat\w*|search|export|import|filter|sort|submit|create|add|edit|update|delete|remove|upload|download|generate|cases?|coverage|inspect|explore|screenshots?|evidence|buttons?|forms?|dashboards?|modules?|functionality|workflows?|pages?)\b/i;
 function siteActionable(text: string): boolean {
   return !CHAT_Q_RE.test(text || '') && SITE_ACTION_RE.test(text || '');
@@ -88,6 +88,7 @@ type Turn =
   | { id: string; role: 'assistant'; kind: 'deeprun'; taskId: string }
   | { id: string; role: 'assistant'; kind: 'codereview'; analysis: any }
   | { id: string; role: 'assistant'; kind: 'clarify'; plan: any; summary: string; confidence: number }
+  | { id: string; role: 'assistant'; kind: 'folderask'; text: string }
   | { id: string; role: 'assistant'; kind: 'thinking'; label: string };
 
 interface Suggestion {
@@ -257,6 +258,7 @@ export default function AgentConsole() {
   const [conversations, setConversations] = useState<ConversationMeta[]>([]);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [websites, setWebsites] = useState<Array<{ id: string; name: string; baseUrl: string }>>([]);
+  const [pendingDeep, setPendingDeep] = useState<string | null>(null);
   const navigate = useNavigate();
   const location = useLocation();
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -438,22 +440,45 @@ export default function AgentConsole() {
 
       // Deep generation path: cases + Playwright scripts + evidence via the
       // multi-agent pipeline. Triggered by a URL, generation keywords, OR a
-      // request to test a stored website by name (we resolve its URL + the
-      // backend resolves its saved credentials).
-      const site = findWebsiteInText(text, websites);
-      const wantsAppTest = !!site && siteActionable(text);
-      if (isDeepRequest(text) || wantsAppTest) {
+      // request to test a stored website by name. Before preparing, we ask the
+      // user which folder to save the results in (unless one is mentioned).
+      const promptForDeep = pendingDeep || text;
+      const site = findWebsiteInText(promptForDeep, websites);
+      const wantsAppTest = !!site && siteActionable(promptForDeep);
+      const isDeep = pendingDeep ? true : (isDeepRequest(text) || wantsAppTest);
+      if (isDeep) {
+        // Ask for a folder first (only when we haven't already asked).
+        if (!pendingDeep) {
+          const mentionsFolder = /\bfolder\b/i.test(text) || /@\w+/.test(text);
+          if (!mentionsFolder) {
+            setPendingDeep(text);
+            replaceTurn(thinkingId, {
+              id: thinkingId,
+              role: 'assistant',
+              kind: 'folderask',
+              text: 'Before I prepare these, which folder should I save them in? Type a folder name below, or let me auto-generate one.',
+            });
+            setBusy(false);
+            inputRef.current?.focus();
+            return;
+          }
+        }
+        const folderMention = pendingDeep
+          ? (/^(auto|automatic|you\s+decide|any|organi[sz]e)\b/i.test(text.trim()) ? '' : text.trim())
+          : '';
+        setPendingDeep(null);
         try {
           const res = await fetch('/api/agent/start', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              app_url: extractTargetUrl(text) || (site ? site.baseUrl : ''),
+              app_url: extractTargetUrl(promptForDeep) || (site ? site.baseUrl : ''),
               websiteId: site ? site.id : undefined,
               provider: 'gemini',
-              prompt: text,
-              testCaseCount: parseCaseCount(text),
+              prompt: promptForDeep,
+              testCaseCount: parseCaseCount(promptForDeep),
               flowMode: 'review_cases',
+              folderMention: folderMention || undefined,
             }),
           });
           const data = await res.json();
@@ -829,6 +854,28 @@ export default function AgentConsole() {
                             className="inline-flex items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--bg-card)] px-3 py-1.5 text-xs font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:border-[var(--accent)]"
                           >
                             No, I meant something else
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              }
+              if (turn.kind === 'folderask') {
+                return (
+                  <div key={turn.id} className="flex justify-start">
+                    <div className="flex max-w-[90%] gap-2.5">
+                      <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[var(--accent)]/10 text-[var(--accent)]">
+                        <FolderTree className="h-4 w-4" />
+                      </div>
+                      <div className="rounded-2xl rounded-bl-sm border border-[var(--border)] bg-[var(--bg-card)] px-4 py-3 text-sm">
+                        <p className="text-[var(--text-primary)]">{turn.text}</p>
+                        <div className="mt-2.5">
+                          <button
+                            onClick={() => send('auto')}
+                            className="inline-flex items-center gap-1.5 rounded-md bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-white hover:bg-[var(--accent-hover)]"
+                          >
+                            <Sparkles className="h-3.5 w-3.5" /> Auto-generate folder name
                           </button>
                         </div>
                       </div>

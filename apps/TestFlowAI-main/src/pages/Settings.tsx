@@ -644,6 +644,9 @@ type CredRow = {
   url: string;
   username: string;
   password: string;
+  revealedPassword?: string;
+  passwordVisible?: boolean;
+  revealing?: boolean;
   useForPlaywright: boolean;
   saving?: boolean;
 };
@@ -679,6 +682,8 @@ function CredentialsSection() {
             url: w.baseUrl,
             username: user?.username || '',
             password: '',
+            revealedPassword: '',
+            passwordVisible: false,
             useForPlaywright: user ? !String(user.notes || '').includes('no-playwright') : true,
           } as CredRow;
         }),
@@ -699,8 +704,38 @@ function CredentialsSection() {
   const addRow = () =>
     setRows((prev) => [
       ...prev,
-      { key: newKey(), name: '', url: '', username: '', password: '', useForPlaywright: true },
+      { key: newKey(), name: '', url: '', username: '', password: '', revealedPassword: '', passwordVisible: false, useForPlaywright: true },
     ]);
+
+  const togglePasswordVisible = async (key: string) => {
+    const row = rows.find((x) => x.key === key);
+    if (!row) return;
+
+    if (row.passwordVisible) {
+      patch(key, { passwordVisible: false });
+      return;
+    }
+
+    if (!row.userId || row.revealedPassword || row.password) {
+      patch(key, { passwordVisible: true });
+      return;
+    }
+
+    patch(key, { revealing: true });
+    try {
+      const res = await fetch('/api/credentials/reveal', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: row.userId }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Failed to reveal password');
+      patch(key, { revealedPassword: data.password || '', passwordVisible: true, revealing: false });
+    } catch (error: any) {
+      patch(key, { revealing: false });
+      setStatus({ type: 'error', message: error?.message || 'Failed to reveal password' });
+    }
+  };
 
   const saveRow = async (key: string) => {
     const r = rows.find((x) => x.key === key);
@@ -746,7 +781,14 @@ function CredentialsSection() {
         userId = d?.user?.id;
       }
 
-      setRows((prev) => prev.map((x) => (x.key === key ? { ...x, websiteId, userId, password: '', saving: false } : x)));
+      setRows((prev) => prev.map((x) => (x.key === key ? {
+        ...x,
+        websiteId,
+        userId,
+        revealedPassword: x.password ? x.password : x.revealedPassword,
+        password: '',
+        saving: false,
+      } : x)));
       setStatus({ type: 'success', message: 'Saved' });
     } catch {
       setRows((prev) => prev.map((x) => (x.key === key ? { ...x, saving: false } : x)));
@@ -812,7 +854,25 @@ function CredentialsSection() {
               <input value={r.name} onChange={(e) => patch(r.key, { name: e.target.value })} onBlur={() => saveRow(r.key)} placeholder="Website name" className="rounded-md border border-[var(--border)] bg-[var(--bg-primary)] px-2 py-1.5 text-sm outline-none focus:border-[var(--accent)]" />
               <input value={r.url} onChange={(e) => patch(r.key, { url: e.target.value })} onBlur={() => saveRow(r.key)} placeholder="https://app.example.com" className="rounded-md border border-[var(--border)] bg-[var(--bg-primary)] px-2 py-1.5 text-sm outline-none focus:border-[var(--accent)]" />
               <input value={r.username} onChange={(e) => patch(r.key, { username: e.target.value })} onBlur={() => saveRow(r.key)} placeholder="Username / email" className="rounded-md border border-[var(--border)] bg-[var(--bg-primary)] px-2 py-1.5 text-sm outline-none focus:border-[var(--accent)]" />
-              <input type="password" value={r.password} onChange={(e) => patch(r.key, { password: e.target.value })} onBlur={() => saveRow(r.key)} placeholder={r.userId ? 'unchanged' : 'Password'} className="rounded-md border border-[var(--border)] bg-[var(--bg-primary)] px-2 py-1.5 text-sm outline-none focus:border-[var(--accent)]" />
+              <div className="flex min-w-0 rounded-md border border-[var(--border)] bg-[var(--bg-primary)] focus-within:border-[var(--accent)]">
+                <input
+                  type={r.passwordVisible ? 'text' : 'password'}
+                  value={r.password || (r.passwordVisible ? r.revealedPassword || '' : '')}
+                  onChange={(e) => patch(r.key, { password: e.target.value })}
+                  onBlur={() => saveRow(r.key)}
+                  placeholder={r.userId ? 'unchanged' : 'Password'}
+                  className="min-w-0 flex-1 bg-transparent px-2 py-1.5 text-sm outline-none"
+                />
+                <button
+                  type="button"
+                  onClick={() => togglePasswordVisible(r.key)}
+                  disabled={r.revealing}
+                  title={r.passwordVisible ? 'Hide password' : 'Show password'}
+                  className="flex h-9 w-9 shrink-0 items-center justify-center rounded-r-md text-[var(--text-muted)] hover:bg-[var(--bg-secondary)] hover:text-[var(--text-primary)] disabled:opacity-50"
+                >
+                  {r.revealing ? <Loader2 className="h-4 w-4 animate-spin" /> : r.passwordVisible ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                </button>
+              </div>
               <label className="flex items-center justify-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--bg-primary)] px-2 py-1.5 text-xs text-[var(--text-muted)]">
                 <input type="checkbox" checked={r.useForPlaywright} onChange={(e) => { patch(r.key, { useForPlaywright: e.target.checked }); setTimeout(() => saveRow(r.key), 0); }} className="accent-[var(--accent)]" />
                 <span className="hidden sm:inline">Use for Playwright</span>

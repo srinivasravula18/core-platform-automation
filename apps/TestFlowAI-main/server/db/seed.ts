@@ -281,7 +281,25 @@ export async function runSeedIfEmpty(): Promise<{ seeded: boolean; reason?: stri
     status: 'Failed',
     failureReason: '1 of 2 cases failed (TC-CHECKOUT-2: invalid coupon error message)',
     targetUrl: 'https://staging.demo.example.com',
-    steps: [],
+    steps: [
+      {
+        id: 'S1',
+        caseId: 'TC-CHECKOUT-1',
+        action: 'Apply a valid coupon code (SAVE10) at checkout and confirm the order',
+        expected: 'Discount is applied, the order total updates, and the order is confirmed',
+        outcome: 'Pass',
+        duration: '1m 58s',
+      },
+      {
+        id: 'S2',
+        caseId: 'TC-CHECKOUT-2',
+        action: 'Apply a non-existent coupon code (BOGUS123) at checkout',
+        expected: 'A "Coupon not found" message is shown and the total is unchanged',
+        outcome: 'Fail',
+        reason: 'App returned "Coupon expired" instead of "Coupon not found" for a code that does not exist',
+        duration: '2m 14s',
+      },
+    ],
     evidence: [],
     narrative:
       'Nightly regression on the Checkout suite passed 1 of 2 cases. The failure is in TC-CHECKOUT-2: the app returns "Coupon expired" for a non-existent coupon code (BOGUS123), but the test expected "Coupon not found". The behaviour is inconsistent with the Auth suite, which returns a specific "Invalid email or password" message on bad input.\n\nSuggested next actions: 1) Triage DEF-COUPON-MSG with the auth team; 2) Add a regression case for the expired-coupon path explicitly; 3) Re-run the suite after the fix to confirm green.',

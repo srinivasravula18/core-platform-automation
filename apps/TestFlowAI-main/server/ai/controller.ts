@@ -161,6 +161,7 @@ Rules:
 - For explain, params = { topic }.
 - Multi-step requests should produce multiple intents in execution order.
 - If the user request is vague, ask for clarification by returning a single intent with kind="explain" and topic describing what to ask.
+- Required details before creating: a folder needs a name; a test plan needs a name and a scope; a test suite needs a name (and ideally a module); test cases need a scope/target (what feature, flow, or URL to cover). If the user asks to create one of these but DID NOT provide the required detail, do NOT invent a default name or scope. Instead return a single intent with kind="explain" whose topic asks the user for exactly the missing piece(s), e.g. "What should I name the plan, and what is its scope?" or "What should I name the folder?". Only emit the create intent once the required detail is present (in this message or the recent conversation).
 - If the user just wants a chat response, return a single intent with kind="explain" and the topic being a direct answer to their question.
 - Default confidence to 70+ when the intent is clear, 40-69 when ambiguous, <40 when guessing.
 - All params are best-effort. Leave fields empty if unknown; downstream code will fill them in.`;

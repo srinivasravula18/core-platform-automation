@@ -12,6 +12,7 @@ import { inspectApplicationFlow } from './inspectionService';
 import { getOrchestrator } from '../../ai/orchestrator';
 import { resolveCredentials, maskPassword } from '../credentials/credentialsService';
 import { pushInboxItem } from '../inbox/routes';
+import { Plans, Suites, Cases, Runs, Reports, Scripts, Folders } from '../../db/repository';
 import { runGuardrailPipeline } from '../../ai/guardrails';
 
 function getAgentPlanStatus(run: any) {
@@ -142,14 +143,43 @@ function getAgentGuardrailResponse(message: string): string | null {
   return null;
 }
 
-function persistAgentCaseArtifacts(run: any) {
-  const now = new Date();
+// The deep pipeline builds folders in-memory (shared/folders). When Postgres is
+// enabled, the list pages read PG, and case/plan rows carry a folder_id FK -> the
+// folder must exist in PG first. Mirror the in-memory folder chain (ancestors first).
+async function ensureFolderInPg(folderId: string) {
+  if (!folderId) return;
+  const chain: any[] = [];
+  const visited = new Set<string>();
+  let current: any = db.folders.find((f: any) => f.id === folderId);
+  while (current && !visited.has(current.id)) {
+    visited.add(current.id);
+    chain.unshift(current);
+    current = current.parentId ? db.folders.find((f: any) => f.id === current.parentId) : null;
+  }
+  for (const folder of chain) {
+    await Folders.upsert({
+      id: folder.id,
+      name: folder.name,
+      parentId: folder.parentId || null,
+      path: getFolderPath(folder.id),
+      description: folder.description || '',
+      kind: folder.kind || 'Feature',
+      createdBy: folder.createdBy || 'QA Assistant',
+    });
+  }
+}
+
+async function persistAgentCaseArtifacts(run: any) {
   const planId = run.testPlanId || `PLAN-${run.id.substring(0, 8).toUpperCase()}`;
   const suiteId = run.testSuiteId || `SUITE-${run.id.substring(0, 8).toUpperCase()}`;
   const baseName = run.artifactName || buildFallbackArtifactName(run.prompt || '', run.app_url || '');
 
-  if (!run.testPlanId && !db.plans.some((item) => item.id === planId)) {
-    db.plans.unshift({
+  await ensureFolderInPg(run.folderId || '');
+
+  // Plan must exist before the suite (suites.test_plan_id FK) and the suite before
+  // the cases (cases.test_suite_id FK). Only create the ones the run didn't reuse.
+  if (!run.testPlanId) {
+    await Plans.upsert({
       id: planId,
       name: `Agent Plan - ${baseName}`,
       scope: run.app_url || 'Generated from QA Assistant',
@@ -160,22 +190,16 @@ function persistAgentCaseArtifacts(run: any) {
       roles: 'QA Assistant, PlaywrightAgent, EvidenceAgent',
       status: getAgentPlanStatus(run),
       riskLevel: getAgentPlanRiskLevel(run),
-      folderId: run.folderId || '',
+      folderId: run.folderId || null,
       createdBy: 'QA Assistant',
-      createdAt: now,
-      agentRunId: run.id,
+      proposedBy: 'QA Assistant',
+      approvalState: 'approved',
+      sourceRunId: run.id,
     });
-  } else {
-    const existingPlan = db.plans.find((item) => item.id === planId);
-    if (existingPlan) {
-      existingPlan.status = getAgentPlanStatus(run);
-      existingPlan.riskLevel = getAgentPlanRiskLevel(run);
-      existingPlan.updatedAt = now;
-    }
   }
 
-  if (!run.testSuiteId && !db.suites.some((item) => item.id === suiteId)) {
-    db.suites.unshift({
+  if (!run.testSuiteId) {
+    await Suites.upsert({
       id: suiteId,
       name: `Agent Suite - ${baseName}`,
       description: `Generated suite for ${run.app_url || baseName}`,
@@ -186,16 +210,19 @@ function persistAgentCaseArtifacts(run: any) {
       tags: ['@agent', '@generated'],
       priority: 'Medium',
       status: 'Active',
-      folderId: run.folderId || '',
+      folderId: run.folderId || null,
       createdBy: 'QA Assistant',
-      createdAt: now,
-      agentRunId: run.id,
+      proposedBy: 'QA Assistant',
+      approvalState: 'approved',
+      sourceRunId: run.id,
     });
   }
 
-  (run.generated_cases || []).forEach((testCase: any, index: number) => {
+  const cases = run.generated_cases || [];
+  for (let index = 0; index < cases.length; index++) {
+    const testCase = cases[index];
     const caseId = `TC-${run.id.substring(0, 4).toUpperCase()}-${index + 1}`;
-    const casePayload = {
+    await Cases.upsert({
       id: caseId,
       title: testCase.title,
       description: buildCaseDescription(testCase),
@@ -206,30 +233,28 @@ function persistAgentCaseArtifacts(run: any) {
       tags: normalizeCaseTags(testCase.tags || []),
       type: testCase.type || 'Manual',
       priority: testCase.priority || 'Medium',
-      folderId: run.folderId || '',
+      folderId: run.folderId || null,
       createdBy: 'QA Assistant',
-      createdAt: now,
+      proposedBy: 'QA Assistant',
+      approvalState: 'pending_review',
       agentRunId: run.id,
-    };
-    const existingIndex = db.cases.findIndex((item) => item.id === caseId);
-    if (existingIndex >= 0) {
-      db.cases[existingIndex] = { ...db.cases[existingIndex], ...casePayload };
-    } else {
-      db.cases.unshift(casePayload);
-    }
-  });
+      sourceRunId: run.id,
+    });
+  }
 
   persistDataInBackground('agent case artifacts');
 }
 
-function persistAgentScripts(run: any) {
+async function persistAgentScripts(run: any) {
   const scripts = Array.isArray(run.playwright_scripts) ? run.playwright_scripts : [];
-  const now = new Date();
   const baseName = run.artifactName || buildFallbackArtifactName(run.prompt || '', run.app_url || '');
 
-  scripts.forEach((script: any, index: number) => {
+  await ensureFolderInPg(run.folderId || '');
+
+  for (let index = 0; index < scripts.length; index++) {
+    const script = scripts[index];
     const scriptId = `SCR-${run.id.substring(0, 8).toUpperCase()}-${index + 1}`;
-    const scriptPayload = {
+    await Scripts.upsert({
       id: scriptId,
       name: script.filename || script.test_case_title || `Agent Script - ${baseName} - ${index + 1}`,
       filename: script.filename || `agent-script-${run.id.substring(0, 8)}-${index + 1}.spec.ts`,
@@ -238,84 +263,70 @@ function persistAgentScripts(run: any) {
       language: 'typescript',
       framework: 'playwright',
       status: 'Generated',
-      folderId: run.folderId || '',
+      folderId: run.folderId || null,
       agentRunId: run.id,
       targetUrl: run.app_url || '',
       createdBy: 'QA Assistant',
-      createdAt: script.createdAt || now,
-      updatedAt: now,
-    };
-    const existingIndex = db.scripts.findIndex((item: any) => item.id === scriptId);
-    if (existingIndex >= 0) {
-      db.scripts[existingIndex] = { ...db.scripts[existingIndex], ...scriptPayload };
-    } else {
-      db.scripts.unshift(scriptPayload);
-    }
-  });
+    });
+  }
 
   persistDataInBackground('agent scripts');
 }
 
-function persistAgentRunArtifacts(run: any) {
+async function persistAgentRunArtifacts(run: any) {
   const now = new Date();
   const date = now.toISOString().split('T')[0];
   const existingRunId = `RUN-${run.id.substring(0, 8).toUpperCase()}`;
   const existingReportId = `REP-${run.id.substring(0, 8).toUpperCase()}`;
   const baseName = run.artifactName || buildFallbackArtifactName(run.prompt || '', run.app_url || '');
 
-  persistAgentCaseArtifacts(run);
-  persistAgentScripts(run);
+  await persistAgentCaseArtifacts(run);
+  await persistAgentScripts(run);
 
   const executionSteps = buildAgentExecutionSteps(run);
+  const failed = executionSteps.filter((s: any) => /fail/i.test(String(s.outcome || ''))).length;
+  const passed = executionSteps.length - failed;
+  const firstFailure = executionSteps.find((s: any) => /fail/i.test(String(s.outcome || '')));
 
-  const runPayload = {
+  await Runs.upsert({
     id: existingRunId,
     name: `Agent Run - ${baseName}`,
-    suiteName: `Agent Suite - ${baseName}`,
+    suiteId: run.testSuiteId || `SUITE-${run.id.substring(0, 8).toUpperCase()}`,
+    testPlanId: run.testPlanId || `PLAN-${run.id.substring(0, 8).toUpperCase()}`,
     requestedBy: 'QA Assistant',
     executionTime: 'Generated',
     status: 'Completed',
-    progress: `${executionSteps.length} passed`,
+    progress: failed > 0 ? `${passed} passed / ${failed} failed` : `${passed} passed`,
     date,
     totalExecutions: executionSteps.length,
-    passed: executionSteps.length,
-    failed: 0,
+    passed,
+    failed,
     targetUrl: run.app_url || '',
-    folderId: run.folderId || '',
+    folderId: run.folderId || null,
     steps: executionSteps,
     evidence: run.evidence_screenshots || [],
-    agentRunId: run.id,
-  };
-  const runIndex = db.runs.findIndex((item) => item.id === existingRunId);
-  if (runIndex >= 0) {
-    db.runs[runIndex] = { ...db.runs[runIndex], ...runPayload };
-  } else {
-    db.runs.unshift(runPayload);
-  }
+    triggerType: 'agent',
+    proposedBy: 'QA Assistant',
+    approvalState: 'approved',
+  });
 
-  const reportPayload = {
+  await Reports.upsert({
     id: existingReportId,
     name: `Agent Report - ${baseName}`,
+    runId: existingRunId,
     planName: `Agent Plan - ${baseName}`,
     suiteName: `Agent Suite - ${baseName}`,
     requestedBy: 'QA Assistant',
     executionTime: 'Generated',
     totalExecutions: executionSteps.length,
-    status: 'Passed',
-    failureReason: '',
+    status: failed > 0 ? 'Failed' : 'Passed',
+    failureReason: firstFailure ? String(firstFailure.reason || firstFailure.expected || '') : '',
     date,
     targetUrl: run.app_url || '',
-    folderId: run.folderId || '',
+    folderId: run.folderId || null,
     steps: executionSteps,
     evidence: run.evidence_screenshots || [],
-    agentRunId: run.id,
-  };
-  const reportIndex = db.reports.findIndex((item) => item.id === existingReportId);
-  if (reportIndex >= 0) {
-    db.reports[reportIndex] = { ...db.reports[reportIndex], ...reportPayload };
-  } else {
-    db.reports.unshift(reportPayload);
-  }
+  });
 
   run.persisted = true;
   addActivity(`Agent artifacts saved to ${run.folderId ? getFolderPath(run.folderId) : 'Uncategorized'}: ${baseName}`);
@@ -343,7 +354,7 @@ Test cases: ${JSON.stringify(testCases)}`,
   });
   const scripts = scriptsResult.object;
   run.playwright_scripts = scripts.scripts as any;
-  persistAgentScripts(run);
+  await persistAgentScripts(run);
   run.messages.push({ agent: 'PlaywrightAgent', status: 'completed', output: scripts });
 
   run.messages.push({ agent: 'EvidenceAgent', status: 'running' });
@@ -356,7 +367,7 @@ Test cases: ${JSON.stringify(testCases)}`,
   }
 
   run.status = 'completed';
-  persistAgentRunArtifacts(run);
+  await persistAgentRunArtifacts(run);
 }
 
 export function registerAgentRoutes(app: Express) {
@@ -584,14 +595,14 @@ Use the inspection result as the source of truth for reachable pages, post-login
 
 For authenticated flows, steps must explicitly say to enter username/email "${credentials.username || '<provided username>'}" and password "${credentials.password || '<provided password>'}", click the relevant sign-in/login control, and then continue to the user-requested inspected target. When the request involves verifying data views, include steps that verify the visible table/list/grid container, headers, rows or empty-state, and absence of loading/error state using the labels found by inspection.
 
-Each test case must include automation tags in @ format, for example @bvt, @sanity, @regression, @smoke, @ui, @positive, @negative. Each test case must include a steps array with ordered rows. Each row must have a clear action and expected result suitable for a report table.`,
+Each test case must include automation tags in @ format, for example @bvt, @sanity, @regression, @smoke, @ui, @positive, @negative. If the user requested specific tag types (for example "@smoke cases" or "regression coverage"), apply those exact tags to every generated case. Each test case must include a steps array with ordered rows. Each row must have a clear action and expected result suitable for a report table.`,
         schema: testCasesSchema,
         userMessage: prompt || '',
       });
       const testCases = caseResult.object;
       newRun.generated_cases = (testCases.test_cases as any[]).map((testCase) => ({ ...testCase, captureEvidence: true }));
       newRun.messages.push({ agent: 'TestGenerationAgent', status: 'completed', output: testCases });
-      persistAgentCaseArtifacts(newRun);
+      await persistAgentCaseArtifacts(newRun);
 
       // Push every generated case to the inbox as a pending decision, so the
       // human can approve / reject per-case from the inbox instead of just
@@ -639,7 +650,7 @@ Each test case must include automation tags in @ format, for example @bvt, @sani
     run.generated_cases = cases;
     run.playwright_scripts = [];
     run.evidence_screenshots = [];
-    persistAgentCaseArtifacts(run);
+    await persistAgentCaseArtifacts(run);
     persistDataInBackground('continued agent run');
     res.json({ success: true });
 
@@ -709,36 +720,36 @@ Each test case must include automation tags in @ format, for example @bvt, @sani
     }
   });
 
-  app.post('/api/agent/save-cases', (req, res) => {
+  app.post('/api/agent/save-cases', async (req, res) => {
     const { cases, taskId } = req.body;
     const linkedRun = taskId ? db.agentRuns.find((run: any) => run.id === taskId) : null;
     const linkedPlanId = linkedRun ? `PLAN-${linkedRun.id.substring(0, 8).toUpperCase()}` : '';
     const linkedSuiteId = linkedRun ? `SUITE-${linkedRun.id.substring(0, 8).toUpperCase()}` : '';
     if (Array.isArray(cases)) {
-      cases.forEach((c, index) => {
+      // The linked run already created its plan/suite/folder at the review pause;
+      // re-ensure the folder so the FK resolves even if PG was reset since.
+      if (linkedRun) await ensureFolderInPg(linkedRun.folderId || '');
+      for (let index = 0; index < cases.length; index++) {
+        const c = cases[index];
         const caseId = c.id || (linkedRun ? `TC-${linkedRun.id.substring(0, 4).toUpperCase()}-${index + 1}` : `TC-${Math.random().toString(36).substring(2, 6).toUpperCase()}`);
-        const casePayload = {
+        await Cases.upsert({
           id: caseId,
           title: c.title,
           description: buildCaseDescription(c),
           steps: normalizeCaseSteps(c.steps),
-          testPlanId: c.testPlanId || linkedPlanId,
-          testSuiteId: c.testSuiteId || linkedSuiteId,
+          testPlanId: c.testPlanId || linkedPlanId || null,
+          testSuiteId: c.testSuiteId || linkedSuiteId || null,
           status: c.status || 'Draft',
           tags: normalizeCaseTags(c.tags || []),
-          type: c.type,
-          priority: c.priority,
-          folderId: c.folderId || linkedRun?.folderId || '',
+          type: c.type || 'Manual',
+          priority: c.priority || 'Medium',
+          folderId: c.folderId || linkedRun?.folderId || null,
           createdBy: c.createdBy || 'QA Assistant',
-          agentRunId: c.agentRunId || linkedRun?.id || '',
-        };
-        const existingIndex = db.cases.findIndex((item) => item.id === caseId);
-        if (existingIndex >= 0) {
-          db.cases[existingIndex] = { ...db.cases[existingIndex], ...casePayload };
-        } else {
-          db.cases.unshift(casePayload);
-        }
-      });
+          proposedBy: 'QA Assistant',
+          approvalState: 'approved',
+          agentRunId: c.agentRunId || linkedRun?.id || null,
+        });
+      }
       persistDataInBackground('saved generated cases');
     }
     res.json({ success: true });

@@ -115,6 +115,11 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
     const msg = (run?.messages || []).filter((m: any) => m.agent === agent).pop();
     return msg?.status || 'pending';
   };
+  // While the run is working, animate the first not-yet-done stage so the card
+  // never looks frozen between status updates.
+  const activePipelineIdx = isRunning
+    ? PIPELINE.findIndex((p) => agentState(p.key) !== 'completed' && agentState(p.key) !== 'failed')
+    : -1;
 
   /* ---------- local case editing ---------- */
   const patchCase = (i: number, patch: Partial<Case>) => {
@@ -336,25 +341,28 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
       <div className="mb-3 flex flex-wrap items-center gap-1.5">
         {PIPELINE.map((p, i) => {
           const st = agentState(p.key);
+          const isActive = i === activePipelineIdx && st !== 'completed' && st !== 'failed';
+          const effState = isActive ? 'running' : st;
           return (
             <div key={p.key} className="flex items-center gap-1.5">
               <span
                 className={cn(
-                  'inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-[11px] font-medium',
-                  st === 'completed'
+                  'inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-[11px] font-medium transition-colors',
+                  effState === 'completed'
                     ? 'border-emerald-500/20 bg-emerald-500/5 text-emerald-400'
-                    : st === 'running'
+                    : effState === 'running'
                       ? 'border-[var(--accent)]/30 bg-[var(--accent)]/5 text-[var(--accent)]'
-                      : st === 'failed'
+                      : effState === 'failed'
                         ? 'border-red-500/20 bg-red-500/5 text-red-400'
                         : 'border-[var(--border)] text-[var(--text-muted)]',
+                  isActive && 'animate-pulse',
                 )}
               >
-                {st === 'completed' ? (
+                {effState === 'completed' ? (
                   <CheckCircle2 className="h-3 w-3" />
-                ) : st === 'running' ? (
+                ) : effState === 'running' ? (
                   <Loader2 className="h-3 w-3 animate-spin" />
-                ) : st === 'failed' ? (
+                ) : effState === 'failed' ? (
                   <XCircle className="h-3 w-3" />
                 ) : (
                   <span className="h-3 w-3 rounded-full border border-current opacity-40" />
@@ -474,6 +482,11 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
                         {c.priority || 'Med'}
                       </span>
                       <span className="min-w-0 flex-1 truncate text-xs font-medium text-[var(--text-primary)]">{c.title || 'Untitled'}</span>
+                      {(c.tags || []).slice(0, 4).map((t) => (
+                        <span key={t} className="hidden shrink-0 rounded border border-[var(--border)] bg-[var(--bg-card)] px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-[var(--text-muted)] sm:inline">
+                          {String(t).startsWith('@') ? t : `@${t}`}
+                        </span>
+                      ))}
                       <span className="text-[10px] text-[var(--text-muted)]">{(c.steps || []).length} steps</span>
                       <button
                         onClick={() => setEditing(editing === i ? null : i)}
@@ -580,7 +593,14 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
                             placeholder="Tell the AI how to rework this case (e.g. add negative + boundary checks)…"
                             className="h-14 w-full rounded-md border border-[var(--border)] bg-[var(--bg-card)] px-2 py-1.5 text-[11px] text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
                           />
-                          <div className="flex justify-end">
+                          <div className="flex justify-end gap-2">
+                            <button
+                              onClick={() => { setFeedback((p) => ({ ...p, [i]: '' })); setEditing(null); }}
+                              disabled={busy === `rework-${i}`}
+                              className="inline-flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-card)] px-3 py-1.5 text-[11px] font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:border-[var(--accent)] disabled:opacity-50"
+                            >
+                              <XCircle className="h-3 w-3" /> Cancel
+                            </button>
                             <button
                               onClick={() => reworkCase(i)}
                               disabled={busy === `rework-${i}`}
