@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft, Search, Filter, MoreHorizontal, Plus, Sparkles } from 'lucide-react';
+import { useAiSearch } from '@/src/lib/useAiSearch';
 import { cn } from '@/src/lib/utils';
 import { Modal } from '@/src/components/Modal';
 import { AIActionModal } from '@/src/components/AIActionModal';
@@ -55,6 +56,7 @@ export default function TestPlans() {
   const [openActionPlanId, setOpenActionPlanId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
+  const aiSearch = useAiSearch('test plans');
   const [statusFilter, setStatusFilter] = useState('All');
   const [isFilterOpen, setIsFilterOpen] = useState(false);
   const [isPlanModalOpen, setIsPlanModalOpen] = useState(false);
@@ -64,6 +66,7 @@ export default function TestPlans() {
   });
 
   const [selectedPlanId, setSelectedPlanId] = useState<string | null>(null);
+  const inlineSelectClass = "w-full min-w-[140px] rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs font-medium text-[var(--text-primary)] outline-none transition-colors hover:border-[var(--accent)] focus:border-[var(--accent)]";
 
   const fetchPlans = () => {
     fetch('/api/plans')
@@ -174,6 +177,21 @@ export default function TestPlans() {
     });
   };
 
+  const updatePlanInline = async (plan: any, updates: Record<string, any>) => {
+    const res = await fetch(`/api/plans/${plan.id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(updates),
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      alert(data.error || 'Failed to update test plan.');
+      return;
+    }
+    fetchPlans();
+    fetchPlanRelations();
+  };
+
   const getPlanSuites = (planId: string) => suites.filter((suite) => suite.testPlanId === planId);
   const getPlanCases = (planId: string) => cases.filter((testCase) => testCase.testPlanId === planId);
   const selectedDetailPlan = plans.find((plan) => plan.id === planId) || null;
@@ -181,7 +199,9 @@ export default function TestPlans() {
   const getPlanReports = (plan: any) => reports.filter((report) => report.agentRunId === plan?.agentRunId || report.planName === plan?.name);
   const filteredPlans = plans.filter((plan) => {
     const query = searchTerm.toLowerCase();
-    const matchesSearch = !query || `${plan.id || ''} ${plan.name || ''} ${plan.scope || ''} ${plan.objectives || ''}`.toLowerCase().includes(query);
+    const matchesSearch = aiSearch.isAiQuery(searchTerm)
+      ? (aiSearch.matchedIds ? aiSearch.matchedIds.has(plan.id) : true)
+      : (!query || `${plan.id || ''} ${plan.name || ''} ${plan.scope || ''} ${plan.objectives || ''}`.toLowerCase().includes(query));
     const matchesStatus = statusFilter === 'All' || (plan.status || 'Draft') === statusFilter;
     return matchesSearch && matchesStatus;
   });
@@ -485,8 +505,13 @@ export default function TestPlans() {
             <input 
               type="text" 
               value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              placeholder="Search plans..." 
+              onChange={(e) => {
+                const v = e.target.value;
+                setSearchTerm(v);
+                if (aiSearch.isAiQuery(v)) aiSearch.run(v, plans.map((p) => ({ id: p.id, name: p.name, scope: p.scope, objectives: p.objectives, status: p.status, riskLevel: p.riskLevel })));
+                else aiSearch.reset();
+              }}
+              placeholder="Search plans…  or @ai find smartly"
               className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md pl-9 pr-4 py-1.5 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]"
             />
           </div>
@@ -547,23 +572,44 @@ export default function TestPlans() {
                       </div>
                     </td>
                     <td className="py-3 px-4">
-                      <FolderBadge folders={folders} folderId={plan.folderId} />
+                      <select
+                        value={plan.folderId || ''}
+                        onClick={(event) => event.stopPropagation()}
+                        onChange={(event) => updatePlanInline(plan, { folderId: event.target.value })}
+                        className={inlineSelectClass}
+                        title="Update folder"
+                      >
+                        <option value="">Uncategorized</option>
+                        {folders.map((folder) => (
+                          <option key={folder.id} value={folder.id}>{folder.path || folder.name}</option>
+                        ))}
+                      </select>
                     </td>
                     <td className="py-3 px-4">
-                      <span className={cn(
-                        "inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium border",
-                        getStatusBadgeClass(plan.status || 'Draft')
-                      )}>
-                        {plan.status || 'Draft'}
-                      </span>
+                      <select
+                        value={plan.status || 'Draft'}
+                        onClick={(event) => event.stopPropagation()}
+                        onChange={(event) => updatePlanInline(plan, { status: event.target.value })}
+                        className="w-full min-w-[130px] rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs font-medium text-[var(--text-primary)] outline-none transition-colors hover:border-[var(--accent)] focus:border-[var(--accent)]"
+                        title="Update status"
+                      >
+                        {PLAN_STATUSES.map((status) => (
+                          <option key={status} value={status}>{status}</option>
+                        ))}
+                      </select>
                     </td>
                     <td className="py-3 px-4">
-                      <span className={cn(
-                        "inline-flex items-center px-2 py-0.5 rounded text-xs font-bold uppercase tracking-wider",
-                        getRiskBadgeClass(plan.riskLevel || 'Medium')
-                      )}>
-                        {plan.riskLevel || 'Medium'}
-                      </span>
+                      <select
+                        value={plan.riskLevel || 'Medium'}
+                        onClick={(event) => event.stopPropagation()}
+                        onChange={(event) => updatePlanInline(plan, { riskLevel: event.target.value })}
+                        className="w-full min-w-[110px] rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs font-medium text-[var(--text-primary)] outline-none transition-colors hover:border-[var(--accent)] focus:border-[var(--accent)]"
+                        title="Update risk level"
+                      >
+                        {PLAN_RISK_LEVELS.map((riskLevel) => (
+                          <option key={riskLevel} value={riskLevel}>{riskLevel}</option>
+                        ))}
+                      </select>
                     </td>
                     <td className="py-3 px-4 text-right">
                       <div className="relative inline-flex">
@@ -615,7 +661,6 @@ export default function TestPlans() {
     </div>
   );
 }
-
 
 
 

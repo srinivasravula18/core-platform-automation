@@ -14,6 +14,7 @@ import { registerInboxRoutes } from './server/features/inbox/routes';
 import { registerControllerRoutes } from './server/features/controller/routes';
 import { registerChatRoutes } from './server/features/chat/routes';
 import { registerPlaywrightRoutes } from './server/features/playwright/routes';
+import { registerSearchRoutes } from './server/features/search/routes';
 import { ensureMigrated, isPgEnabled } from './server/db/repository';
 import { runSeedIfEmpty } from './server/db/seed';
 import { hydrateFromPg } from './server/features/credentials/credentialsService';
@@ -56,6 +57,7 @@ async function startServer() {
   registerControllerRoutes(app);
   registerChatRoutes(app);
   registerPlaywrightRoutes(app);
+  registerSearchRoutes(app);
   registerGitAgentRoutes(app);
   registerAgentRoutes(app);
   registerScreenshotRoutes(app);

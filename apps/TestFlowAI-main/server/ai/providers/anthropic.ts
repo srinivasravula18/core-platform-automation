@@ -1,11 +1,15 @@
 /**
- * Anthropic provider — direct REST calls to the Messages API.
+ * Anthropic provider — official `@anthropic-ai/sdk` (Messages API).
  *
- * Uses fetch directly so we do not pull in the `@anthropic-ai/sdk` package.
- * Anthropic's Messages API does not support a strict JSON mode, so we
- * instruct the model via the system prompt to return ONLY JSON.
+ * The model is selected by the user in Settings and passed through per call.
+ * The Messages API has no strict JSON mode, so generateObject instructs the
+ * model to return ONLY JSON and then validates against the Zod schema.
+ *
+ * Note: Opus 4.7 / 4.8 reject `temperature` (400), so it is omitted for those
+ * models; older models still receive it.
  */
 
+import Anthropic from '@anthropic-ai/sdk';
 import { z } from 'zod';
 import type {
   AIProvider,
@@ -15,23 +19,34 @@ import type {
   ProviderResponse,
   ProviderName,
 } from './types';
-import { classifyError, DEFAULT_MODELS, estimateCost } from './types';
+import { ProviderError, classifyError, DEFAULT_MODELS, estimateCost } from './types';
 
-const ENDPOINT = 'https://api.anthropic.com/v1/messages';
-const ANTHROPIC_VERSION = '2023-06-01';
+/** Opus 4.7+ remove sampling params; sending `temperature` returns a 400. */
+function acceptsTemperature(model: string): boolean {
+  return !/opus-4-(?:[7-9]|1\d)/i.test(model);
+}
 
 export class AnthropicProvider implements AIProvider {
   readonly name: ProviderName = 'anthropic';
+  private client: Anthropic;
   private apiKey: string;
   private defaultModel: string;
 
   constructor(apiKey: string, defaultModel?: string) {
     this.apiKey = apiKey;
     this.defaultModel = defaultModel || DEFAULT_MODELS.anthropic.default;
+    this.client = new Anthropic({ apiKey });
   }
 
   private modelId(opts: { model?: string }) {
     return opts.model || this.defaultModel;
+  }
+
+  private toProviderError(err: any): ProviderError {
+    if (err instanceof ProviderError) return err;
+    const status = err instanceof Anthropic.APIError ? err.status : undefined;
+    const message = err?.message || String(err);
+    return classifyError('anthropic', status, message);
   }
 
   async health(): Promise<ProviderHealth> {
@@ -40,39 +55,18 @@ export class AnthropicProvider implements AIProvider {
       return { ok: false, provider: 'anthropic', model: this.defaultModel, error: 'ANTHROPIC_API_KEY not set', checkedAt };
     }
     try {
-      const res = await fetch(ENDPOINT, {
-        method: 'POST',
-        headers: {
-          'x-api-key': this.apiKey,
-          'anthropic-version': ANTHROPIC_VERSION,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          model: this.defaultModel,
-          max_tokens: 5,
-          messages: [{ role: 'user', content: 'ping' }],
-        }),
+      await this.client.messages.create({
+        model: this.defaultModel,
+        max_tokens: 5,
+        messages: [{ role: 'user', content: 'ping' }],
       });
-      if (!res.ok) {
-        const body = await res.text();
-        throw classifyError('anthropic', res.status, body);
-      }
       return { ok: true, provider: 'anthropic', model: this.defaultModel, checkedAt };
     } catch (err: any) {
-      return {
-        ok: false,
-        provider: 'anthropic',
-        model: this.defaultModel,
-        error: err?.message || String(err),
-        checkedAt,
-      };
+      return { ok: false, provider: 'anthropic', model: this.defaultModel, error: this.toProviderError(err).message, checkedAt };
     }
   }
 
-  private async callMessages(
-    opts: GenerateTextOptions,
-    jsonMode: boolean,
-  ): Promise<{ content: string; usage?: { input_tokens: number; output_tokens: number } }> {
+  private async callMessages(opts: GenerateTextOptions, jsonMode: boolean) {
     const modelId = this.modelId(opts);
     const systemParts: string[] = [];
     if (opts.system) systemParts.push(opts.system);
@@ -81,55 +75,65 @@ export class AnthropicProvider implements AIProvider {
         'Return ONLY a single JSON object. No markdown, no code fences, no commentary before or after. The JSON must match the schema you have been given.',
       );
     }
-    const body: Record<string, unknown> = {
+    const params: Anthropic.MessageCreateParamsNonStreaming = {
       model: modelId,
       max_tokens: opts.maxTokens ?? 2048,
-      temperature: opts.temperature ?? 0.2,
       messages: [{ role: 'user', content: opts.prompt }],
     };
-    if (systemParts.length > 0) body.system = systemParts.join('\n\n');
-    const res = await fetch(ENDPOINT, {
-      method: 'POST',
-      headers: {
-        'x-api-key': this.apiKey,
-        'anthropic-version': ANTHROPIC_VERSION,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(body),
-      signal: opts.signal,
-    });
-    if (!res.ok) {
-      const errBody = await res.text();
-      throw classifyError('anthropic', res.status, errBody);
+    if (systemParts.length > 0) params.system = systemParts.join('\n\n');
+    if (acceptsTemperature(modelId)) params.temperature = opts.temperature ?? 0.2;
+
+    try {
+      const message = await this.client.messages.create(params, { signal: opts.signal });
+      const text = (message.content || [])
+        .filter((b): b is Anthropic.TextBlock => b.type === 'text')
+        .map((b) => b.text)
+        .join('');
+      const usage = message.usage
+        ? { input_tokens: message.usage.input_tokens, output_tokens: message.usage.output_tokens }
+        : undefined;
+      return { content: text, usage, modelId };
+    } catch (err: any) {
+      throw this.toProviderError(err);
     }
-    const data = (await res.json()) as {
-      content: Array<{ type: string; text?: string }>;
-      usage?: { input_tokens: number; output_tokens: number };
+  }
+
+  private toUsageObj(modelId: string, usage?: { input_tokens: number; output_tokens: number }) {
+    if (!usage) return undefined;
+    const totalTokens = usage.input_tokens + usage.output_tokens;
+    return {
+      inputTokens: usage.input_tokens,
+      outputTokens: usage.output_tokens,
+      totalTokens,
+      costUsd: estimateCost(modelId, { inputTokens: usage.input_tokens, outputTokens: usage.output_tokens, totalTokens }),
     };
-    const text = (data.content || []).filter((b) => b.type === 'text').map((b) => b.text ?? '').join('');
-    return { content: text, usage: data.usage };
+  }
+
+  async *generateTextStream(opts: GenerateTextOptions): AsyncIterable<string> {
+    const modelId = this.modelId(opts);
+    const params: Anthropic.MessageCreateParamsStreaming = {
+      model: modelId,
+      max_tokens: opts.maxTokens ?? 2048,
+      messages: [{ role: 'user', content: opts.prompt }],
+      stream: true,
+    };
+    if (opts.system) params.system = opts.system;
+    if (acceptsTemperature(modelId)) params.temperature = opts.temperature ?? 0.2;
+    const stream = this.client.messages.stream(params, { signal: opts.signal });
+    for await (const event of stream) {
+      if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
+        yield event.delta.text;
+      }
+    }
   }
 
   async generateText(opts: GenerateTextOptions): Promise<ProviderResponse<string>> {
     const start = Date.now();
-    const modelId = this.modelId(opts);
-    const { content, usage } = await this.callMessages(opts, false);
-    const usageObj = usage
-      ? {
-          inputTokens: usage.input_tokens,
-          outputTokens: usage.output_tokens,
-          totalTokens: usage.input_tokens + usage.output_tokens,
-          costUsd: estimateCost(modelId, {
-            inputTokens: usage.input_tokens,
-            outputTokens: usage.output_tokens,
-            totalTokens: usage.input_tokens + usage.output_tokens,
-          }),
-        }
-      : undefined;
+    const { content, usage, modelId } = await this.callMessages(opts, false);
     return {
       object: content,
       text: content,
-      usage: usageObj,
+      usage: this.toUsageObj(modelId, usage),
       model: modelId,
       provider: 'anthropic',
       latencyMs: Date.now() - start,
@@ -138,12 +142,9 @@ export class AnthropicProvider implements AIProvider {
 
   async generateObject<T>(opts: GenerateObjectOptions<unknown>): Promise<ProviderResponse<T>> {
     const start = Date.now();
-    const modelId = this.modelId(opts);
     const schemaZ = opts.schema as z.ZodTypeAny;
-    const jsonHint = opts.system
-      ? `${opts.system}\n\nReturn ONLY a single JSON object matching this schema: ${JSON.stringify(schemaZ._def ?? schemaZ)}`
-      : `Return ONLY a single JSON object matching this schema: ${JSON.stringify(schemaZ._def ?? schemaZ)}`;
-    const { content, usage } = await this.callMessages({ ...opts, system: jsonHint }, true);
+    const jsonHint = `${opts.system ? `${opts.system}\n\n` : ''}Return ONLY a single JSON object matching this schema: ${JSON.stringify(schemaZ._def ?? schemaZ)}`;
+    const { content, usage, modelId } = await this.callMessages({ ...opts, system: jsonHint }, true);
     let parsed: unknown;
     try {
       parsed = JSON.parse(content);
@@ -153,22 +154,10 @@ export class AnthropicProvider implements AIProvider {
       parsed = JSON.parse(match[0]);
     }
     const validated = schemaZ.parse(parsed);
-    const usageObj = usage
-      ? {
-          inputTokens: usage.input_tokens,
-          outputTokens: usage.output_tokens,
-          totalTokens: usage.input_tokens + usage.output_tokens,
-          costUsd: estimateCost(modelId, {
-            inputTokens: usage.input_tokens,
-            outputTokens: usage.output_tokens,
-            totalTokens: usage.input_tokens + usage.output_tokens,
-          }),
-        }
-      : undefined;
     return {
       object: validated as T,
       text: content,
-      usage: usageObj,
+      usage: this.toUsageObj(modelId, usage),
       model: modelId,
       provider: 'anthropic',
       latencyMs: Date.now() - start,

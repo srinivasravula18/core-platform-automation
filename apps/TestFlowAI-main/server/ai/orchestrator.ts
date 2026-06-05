@@ -175,6 +175,35 @@ export class AgentOrchestrator {
     });
     return { text: result.text, usage: result.usage, model: result.model, latencyMs: result.latencyMs, provider: this.provider.name };
   }
+
+  async *streamText(opts: { prompt: string; temperature?: number; maxTokens?: number; userMessage?: string }): AsyncIterable<string> {
+    const pipeline = runGuardrailPipeline({
+      agent: this.agent as any,
+      userMessage: opts.userMessage || opts.prompt,
+      workspaceId: this.workspaceId,
+      userId: this.userId,
+      providerName: this.provider.name,
+      modelName: (this.provider as any).defaultModel,
+    } as PipelineInput);
+    if (pipeline.policyVerdict.kind === 'respond') {
+      yield pipeline.policyVerdict.reply;
+      return;
+    }
+    if (pipeline.policyVerdict.kind === 'reject') {
+      const err: any = new Error(pipeline.policyVerdict.error);
+      err.status = pipeline.policyVerdict.code;
+      throw err;
+    }
+    const system = await this.assembleSystem(pipeline);
+    if (!this.provider.generateTextStream) {
+      const result = await this.provider.generateText({ system, prompt: opts.prompt, temperature: opts.temperature, maxTokens: opts.maxTokens });
+      yield result.text;
+      return;
+    }
+    for await (const delta of this.provider.generateTextStream({ system, prompt: opts.prompt, temperature: opts.temperature, maxTokens: opts.maxTokens })) {
+      if (delta) yield delta;
+    }
+  }
 }
 
 export async function getOrchestrator(agent: string, opts: { workspaceId?: string; userId?: string } = {}): Promise<AgentOrchestrator> {

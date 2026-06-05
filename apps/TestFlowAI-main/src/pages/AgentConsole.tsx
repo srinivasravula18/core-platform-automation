@@ -46,6 +46,25 @@ function isDeepRequest(text: string): boolean {
   return !!extractTargetUrl(text) || DEEP_RE.test(text);
 }
 
+// When a stored website is named, route to the deep pipeline if the request is
+// an actionable QA task on that site (test/check/verify/generate/explore/etc.),
+// but NOT when it is a plain info question ("what is…", "tell me about…").
+const CHAT_Q_RE = /\b(tell me|what(?:'s| is| are| does)|explain|describe|who\s|how (?:do|can) i|why\s|when\s|list (?:the )?|show me (?:the )?(?:cases?|suites?|plans?|runs?|defects?|reports?))\b/i;
+const SITE_ACTION_RE = /\b(test|tests|testing|login|log\s*in|sign\s*in|works?|working|does|check|verify|validate|automat\w*|e2e|end[-\s]?to[-\s]?end|flows?|features?|scenarios?|regression|smoke|sanity|click|navigat\w*|search|export|import|filter|sort|submit|create|add|edit|update|delete|remove|upload|download|generate|cases?|coverage|inspect|explore|screenshots?|evidence|buttons?|forms?|dashboards?|modules?|functionality|workflows?|pages?)\b/i;
+function siteActionable(text: string): boolean {
+  return !CHAT_Q_RE.test(text || '') && SITE_ACTION_RE.test(text || '');
+}
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+// Find a stored website whose name is mentioned in the message (longest match wins).
+function findWebsiteInText(text: string, websites: Array<{ id: string; name: string; baseUrl: string }>): { id: string; name: string; baseUrl: string } | null {
+  const lower = (text || '').toLowerCase();
+  const matches = (websites || []).filter((w) => w?.name && new RegExp(`\\b${escapeRegExp(String(w.name).toLowerCase())}\\b`).test(lower));
+  matches.sort((a, b) => (b.name?.length || 0) - (a.name?.length || 0));
+  return matches[0] || null;
+}
+
 function parseCaseCount(text: string): number {
   const m = text.match(/(\d{1,3})\s*(?:test\s*)?(?:cases?|scenarios?|scripts?)/i);
   if (!m) return 3;
@@ -68,6 +87,7 @@ type Turn =
   | { id: string; role: 'assistant'; kind: 'plan'; plan: any }
   | { id: string; role: 'assistant'; kind: 'deeprun'; taskId: string }
   | { id: string; role: 'assistant'; kind: 'codereview'; analysis: any }
+  | { id: string; role: 'assistant'; kind: 'clarify'; plan: any; summary: string; confidence: number }
   | { id: string; role: 'assistant'; kind: 'thinking'; label: string };
 
 interface Suggestion {
@@ -135,6 +155,8 @@ const KIND_TO_PAGE: Record<string, { label: string; href: string; icon: typeof F
   generate_report: { label: 'Open Reports', href: '/reports', icon: ClipboardList },
   generate_script: { label: 'Open Git Agent', href: '/git-agent', icon: FolderTree },
   create_folder: { label: 'Open File System', href: '/repository', icon: FolderTree },
+  organize_repository: { label: 'Open File System', href: '/repository', icon: FolderTree },
+  move_to_folder: { label: 'Open File System', href: '/repository', icon: FolderTree },
 };
 
 let turnCounter = 0;
@@ -159,6 +181,23 @@ function planIsChatOnly(plan: any): boolean {
   const steps = plan?.steps || [];
   if (!steps.length) return true;
   return steps.every((s: any) => s.intent.kind === 'explain' || s.intent.kind === 'unknown');
+}
+
+// Lowest confidence across the plan's steps — used to decide if we should
+// confirm an ambiguous request with the user before acting.
+function planConfidence(plan: any): number {
+  const steps = plan?.steps || [];
+  if (!steps.length) return 100;
+  return Math.min(...steps.map((s: any) => Number(s.intent?.confidence) || 0));
+}
+const CLARIFY_THRESHOLD = 60;
+
+// Strip markdown / emoji from streamed chat text so it renders as clean plain text.
+function cleanChat(s: string): string {
+  return (s || '')
+    .replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{FE0F}]/gu, '')
+    .replace(/[*_`~#>]+/g, '')
+    .replace(/\n{3,}/g, '\n\n');
 }
 
 // Build a plain-language summary of what the agent actually created.
@@ -217,6 +256,7 @@ export default function AgentConsole() {
   });
   const [conversations, setConversations] = useState<ConversationMeta[]>([]);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [websites, setWebsites] = useState<Array<{ id: string; name: string; baseUrl: string }>>([]);
   const navigate = useNavigate();
   const location = useLocation();
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -265,6 +305,10 @@ export default function AgentConsole() {
   useEffect(() => {
     loadConversation(conversationId);
     loadConversations();
+    fetch('/api/credentials/websites')
+      .then((r) => r.json())
+      .then((d) => setWebsites(Array.isArray(d?.websites) ? d.websites : []))
+      .catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -393,15 +437,19 @@ export default function AgentConsole() {
       }
 
       // Deep generation path: cases + Playwright scripts + evidence via the
-      // multi-agent pipeline. Used whenever the request targets a URL or asks
-      // for cases / scripts / automation.
-      if (isDeepRequest(text)) {
+      // multi-agent pipeline. Triggered by a URL, generation keywords, OR a
+      // request to test a stored website by name (we resolve its URL + the
+      // backend resolves its saved credentials).
+      const site = findWebsiteInText(text, websites);
+      const wantsAppTest = !!site && siteActionable(text);
+      if (isDeepRequest(text) || wantsAppTest) {
         try {
           const res = await fetch('/api/agent/start', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              app_url: extractTargetUrl(text),
+              app_url: extractTargetUrl(text) || (site ? site.baseUrl : ''),
+              websiteId: site ? site.id : undefined,
               provider: 'gemini',
               prompt: text,
               testCaseCount: parseCaseCount(text),
@@ -457,33 +505,56 @@ export default function AgentConsole() {
         }
 
         if (planIsChatOnly(plan)) {
-          // Pure question / chat — fetch a direct answer instead of a workflow card.
-          replaceTurn(thinkingId, { id: thinkingId, role: 'assistant', kind: 'thinking', label: 'Thinking…' });
+          // Pure question / chat — stream the answer token-by-token.
+          const fallbackText = 'I can help you create test plans, cases, runs, defects, and reports. Tell me what you want to do.';
+          replaceTurn(thinkingId, { id: thinkingId, role: 'assistant', kind: 'text', text: '' });
           try {
-            const ans = await fetch('/api/controller/explain', {
+            const ans = await fetch('/api/controller/explain/stream', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ topic: text, workspaceId: 'default' }),
             });
-            const data = await ans.json();
-            replaceTurn(thinkingId, {
-              id: thinkingId,
-              role: 'assistant',
-              kind: 'text',
-              text: data?.answer || plan?.summary || 'I can help you create test plans, cases, runs, defects, and reports. Tell me what you want to do.',
-            });
+            if (!ans.ok || !ans.body) {
+              const data = await fetch('/api/controller/explain', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ topic: text, workspaceId: 'default' }),
+              }).then((r) => r.json()).catch(() => ({}));
+              replaceTurn(thinkingId, { id: thinkingId, role: 'assistant', kind: 'text', text: cleanChat(data?.answer || plan?.summary || fallbackText) });
+            } else {
+              const reader = ans.body.getReader();
+              const decoder = new TextDecoder();
+              let acc = '';
+              for (;;) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                acc += decoder.decode(value, { stream: true });
+                const display = cleanChat(acc);
+                setTurns((prev) => prev.map((t) => (t.id === thinkingId ? { id: thinkingId, role: 'assistant', kind: 'text', text: display } : t)));
+              }
+              if (!acc.trim()) {
+                setTurns((prev) => prev.map((t) => (t.id === thinkingId ? { id: thinkingId, role: 'assistant', kind: 'text', text: fallbackText } : t)));
+              }
+            }
           } catch {
-            replaceTurn(thinkingId, {
-              id: thinkingId,
-              role: 'assistant',
-              kind: 'text',
-              text: plan?.summary || 'I can help you create test plans, cases, runs, defects, and reports. Tell me what you want to do.',
-            });
+            replaceTurn(thinkingId, { id: thinkingId, role: 'assistant', kind: 'text', text: plan?.summary || fallbackText });
           }
           return;
         }
 
-        replaceTurn(thinkingId, { id: thinkingId, role: 'assistant', kind: 'plan', plan });
+        // Ambiguous request: confirm the interpretation before acting.
+        if (planConfidence(plan) < CLARIFY_THRESHOLD) {
+          replaceTurn(thinkingId, {
+            id: thinkingId,
+            role: 'assistant',
+            kind: 'clarify',
+            plan,
+            summary: plan.summary || 'do that',
+            confidence: planConfidence(plan),
+          });
+        } else {
+          replaceTurn(thinkingId, { id: thinkingId, role: 'assistant', kind: 'plan', plan });
+        }
       } catch (err: any) {
         replaceTurn(thinkingId, {
           id: thinkingId,
@@ -545,6 +616,26 @@ export default function AgentConsole() {
     },
     [patchTurn],
   );
+
+  const confirmClarify = useCallback((turnId: string, plan: any) => {
+    setTurns((prev) => prev.map((t) => (t.id === turnId ? { id: turnId, role: 'assistant', kind: 'plan', plan } : t)));
+  }, []);
+
+  const rejectClarify = useCallback((turnId: string) => {
+    setTurns((prev) =>
+      prev.map((t) =>
+        t.id === turnId
+          ? {
+              id: turnId,
+              role: 'assistant',
+              kind: 'text',
+              text: 'No problem. Tell me what you would like to do, and include any details (which app, suite, flow, or URL) so I get it right.',
+            }
+          : t,
+      ),
+    );
+    inputRef.current?.focus();
+  }, []);
 
   const isEmpty = turns.length === 0;
 
@@ -660,6 +751,9 @@ export default function AgentConsole() {
               <Inbox className="h-3.5 w-3.5" />
               Decisions that need you appear in the AI Inbox (top-right).
             </div>
+            <div className="mt-1.5 text-[11px] text-[var(--text-muted)]">
+              Tip: set how much I do on my own — say &ldquo;set autonomy to manual&rdquo;, &ldquo;review&rdquo;, or &ldquo;autonomous&rdquo;.
+            </div>
           </div>
         ) : (
           <div className="space-y-4 py-2">
@@ -704,6 +798,39 @@ export default function AgentConsole() {
                       </div>
                       <div className="min-w-0 flex-1">
                         <CodeChangeReview analysis={turn.analysis} />
+                      </div>
+                    </div>
+                  </div>
+                );
+              }
+              if (turn.kind === 'clarify') {
+                return (
+                  <div key={turn.id} className="flex justify-start">
+                    <div className="flex max-w-[90%] gap-2.5">
+                      <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[var(--accent)]/10 text-[var(--accent)]">
+                        <BrainCircuit className="h-4 w-4" />
+                      </div>
+                      <div className="rounded-2xl rounded-bl-sm border border-amber-500/30 bg-amber-500/5 px-4 py-3 text-sm">
+                        <div className="font-medium text-[var(--text-primary)]">Just so I get it right</div>
+                        <p className="mt-1 text-[var(--text-muted)]">
+                          It looks like you want me to:{' '}
+                          <span className="font-medium text-[var(--text-primary)]">{turn.summary}</span>{' '}
+                          <span className="text-[11px]">({turn.confidence}% sure)</span>. Is that what you meant, or did you mean something else?
+                        </p>
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          <button
+                            onClick={() => confirmClarify(turn.id, turn.plan)}
+                            className="inline-flex items-center gap-1.5 rounded-md bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-white hover:bg-[var(--accent-hover)]"
+                          >
+                            Yes, do that
+                          </button>
+                          <button
+                            onClick={() => rejectClarify(turn.id)}
+                            className="inline-flex items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--bg-card)] px-3 py-1.5 text-xs font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:border-[var(--accent)]"
+                          >
+                            No, I meant something else
+                          </button>
+                        </div>
                       </div>
                     </div>
                   </div>

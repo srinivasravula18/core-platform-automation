@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Search, Filter, ShieldCheck, ShieldAlert, Sparkles, Plus, Clock, FileSpreadsheet, Layers, User, Calendar, Trash2, Eye, EyeOff, AlertTriangle, PlayCircle, ExternalLink, Activity } from 'lucide-react';
 import { cn } from '@/src/lib/utils';
+import { useAiSearch } from '@/src/lib/useAiSearch';
 import html2canvas from 'html2canvas';
 import { Modal } from '@/src/components/Modal';
 import { FolderSelect } from '@/src/components/FolderSelect';
@@ -225,6 +226,7 @@ export default function Reports() {
   
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
+  const aiSearch = useAiSearch('reports');
   const [statusFilter, setStatusFilter] = useState<string>('All');
 
   // Modal forms
@@ -376,9 +378,11 @@ export default function Reports() {
   };
 
   const filteredReports = reports.filter(r => {
-    const matchesSearch = r.name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    const matchesSearch = aiSearch.isAiQuery(searchTerm)
+      ? (aiSearch.matchedIds ? aiSearch.matchedIds.has(r.id) : true)
+      : (r.name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
                           r.planName?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                          r.suiteName?.toLowerCase().includes(searchTerm.toLowerCase());
+                          r.suiteName?.toLowerCase().includes(searchTerm.toLowerCase()));
     
     if (statusFilter === 'All') return matchesSearch;
     if (statusFilter === 'Passed') return matchesSearch && r.status === 'Passed';
@@ -459,8 +463,13 @@ export default function Reports() {
               <input 
                 type="text" 
                 value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                placeholder="Search test scenario, plan, or steps..." 
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setSearchTerm(v);
+                  if (aiSearch.isAiQuery(v)) aiSearch.run(v, reports.map((r) => ({ id: r.id, name: r.name, planName: r.planName, suiteName: r.suiteName, status: r.status })));
+                  else aiSearch.reset();
+                }}
+                placeholder="Search reports…  or @ai find smartly"
                 className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md pl-9 pr-3 py-1.5 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)] placeholder-[var(--text-muted)] transition-colors"
               />
             </div>

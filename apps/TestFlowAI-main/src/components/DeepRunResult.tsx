@@ -69,6 +69,7 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
   const [saved, setSaved] = useState(false);
   const [pwRunning, setPwRunning] = useState(false);
   const [pwResult, setPwResult] = useState<any>(null);
+  const [reportOpen, setReportOpen] = useState(false);
   const activeRef = useRef(true);
   const navigate = useNavigate();
 
@@ -250,6 +251,61 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
     URL.revokeObjectURL(url);
   };
 
+  /* ---------- downloadable test report (CSV / HTML / PDF) ---------- */
+  const resultForCase = (c: Case) => {
+    const tests = pwResult?.tests || [];
+    return tests.find((t: any) => String(t.title || '').trim() === String(c.title || '').trim()) || null;
+  };
+  const reportFilename = (ext: string) =>
+    `test-report-${String(run?.artifactName || 'agent-run').replace(/[^a-z0-9]+/gi, '-').toLowerCase().slice(0, 40)}-${taskId.slice(0, 6)}.${ext}`;
+
+  const buildReportCsv = () => {
+    const esc = (v: any) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+    const header = ['Title', 'Priority', 'Type', 'Tags', 'Steps', 'Result', 'Error'];
+    const rows = list.map((c) => {
+      const r = resultForCase(c);
+      return [c.title, c.priority || '', c.type || 'Manual', (c.tags || []).join(' '), (c.steps || []).length, r ? r.status : 'not run', r?.error || ''];
+    });
+    return [header, ...rows].map((row) => row.map(esc).join(',')).join('\r\n');
+  };
+
+  const buildReportHtml = () => {
+    const esc = (s: any) => String(s ?? '').replace(/[&<>]/g, (m) => (({ '&': '&amp;', '<': '&lt;', '>': '&gt;' } as Record<string, string>)[m]));
+    const summary = pwResult && !pwResult.error
+      ? `${pwResult.passed} passed · ${pwResult.failed} failed · ${pwResult.total} total`
+      : `${list.length} test case(s) — not executed`;
+    const casesHtml = list.map((c, i) => {
+      const r = resultForCase(c);
+      const badge = r ? `<span class="b ${esc(r.status)}">${esc(r.status)}</span>` : '';
+      const steps = (c.steps || []).map((s, si) => `<tr><td>${si + 1}. ${esc(s.action)}</td><td>${esc(s.expected)}</td></tr>`).join('');
+      return `<div class="c"><h3>${i + 1}. ${esc(c.title)} ${badge}</h3><div class="m">${esc(c.priority || 'Medium')} · ${esc(c.type || 'Manual')}${(c.tags || []).length ? ' · ' + (c.tags || []).map(esc).join(', ') : ''}</div>${c.description ? `<p>${esc(c.description)}</p>` : ''}<table><thead><tr><th>Step</th><th>Expected result</th></tr></thead><tbody>${steps || '<tr><td colspan="2">No steps</td></tr>'}</tbody></table>${r?.error ? `<pre class="e">${esc(r.error)}</pre>` : ''}</div>`;
+    }).join('');
+    const evHtml = (evidence || []).map((shot) => `<div class="ev"><div class="m">${esc(shot.title || 'Evidence')} — ${esc(shot.url || '')}</div>${shot.screenshotUrl ? `<img src="${esc(shot.screenshotUrl)}"/>` : ''}</div>`).join('');
+    return `<!doctype html><html><head><meta charset="utf-8"><title>${esc(run?.artifactName || 'Test Report')}</title><style>body{font-family:Arial,Helvetica,sans-serif;margin:28px;color:#111}h1{margin:0;font-size:22px}.s{color:#555;margin:6px 0 18px}.c{border:1px solid #e2e2e2;border-radius:8px;padding:12px 14px;margin:10px 0;page-break-inside:avoid}.c h3{margin:0 0 4px;font-size:15px}.m{color:#666;font-size:12px;margin-bottom:6px}table{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:6px}th,td{border:1px solid #eee;padding:6px 8px;text-align:left;vertical-align:top}th{background:#fafafa}.b{font-size:11px;padding:1px 7px;border-radius:10px;color:#fff}.b.passed{background:#16a34a}.b.failed,.b.timedOut,.b.interrupted{background:#dc2626}.b.skipped{background:#9ca3af}.e{background:#fef2f2;color:#b91c1c;padding:8px;white-space:pre-wrap;font-size:12px;border-radius:6px;margin-top:6px}.ev img{max-width:100%;border:1px solid #ddd;border-radius:6px}h2{margin-top:24px;border-top:1px solid #eee;padding-top:14px}</style></head><body><h1>${esc(run?.artifactName || 'Agent Test Report')}</h1><div class="s">${esc(run?.app_url || 'No target URL')} · ${esc(summary)} · ${new Date().toLocaleString()}</div><h2>Test cases (${list.length})</h2>${casesHtml}${(evidence || []).length ? `<h2>Evidence (${evidence.length})</h2>${evHtml}` : ''}</body></html>`;
+  };
+
+  const downloadFile = (content: string, filename: string, type: string) => {
+    const blob = new Blob([content], { type });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const exportReport = (fmt: 'csv' | 'html' | 'pdf') => {
+    setReportOpen(false);
+    if (fmt === 'csv') return downloadFile('﻿' + buildReportCsv(), reportFilename('csv'), 'text/csv;charset=utf-8');
+    if (fmt === 'html') return downloadFile(buildReportHtml(), reportFilename('html'), 'text/html');
+    const w = window.open('', '_blank');
+    if (!w) return;
+    w.document.write(buildReportHtml());
+    w.document.close();
+    w.focus();
+    setTimeout(() => { try { w.print(); } catch { /* ignore */ } }, 350);
+  };
+
   return (
     <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-card)] p-3">
       {/* Header */}
@@ -362,6 +418,27 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
                   <Plus className="h-3.5 w-3.5" /> Add case
                 </button>
                 <div className="ml-auto flex items-center gap-2">
+                  <div className="relative">
+                    <button
+                      onClick={() => setReportOpen((o) => !o)}
+                      disabled={!list.length}
+                      className="inline-flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2.5 py-1.5 text-xs font-medium text-[var(--text-primary)] hover:border-[var(--accent)] disabled:opacity-50"
+                    >
+                      <Download className="h-3.5 w-3.5" /> Report
+                      <ChevronDown className="h-3 w-3" />
+                    </button>
+                    {reportOpen && (
+                      <>
+                        <div className="fixed inset-0 z-10" onClick={() => setReportOpen(false)} />
+                        <div className="absolute right-0 z-20 mt-1 w-40 overflow-hidden rounded-md border border-[var(--border)] bg-[var(--bg-card)] shadow-lg">
+                          <div className="border-b border-[var(--border)] px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">Download as</div>
+                          <button onClick={() => exportReport('pdf')} className="block w-full px-3 py-2 text-left text-xs hover:bg-[var(--bg-secondary)]">PDF (print)</button>
+                          <button onClick={() => exportReport('html')} className="block w-full px-3 py-2 text-left text-xs hover:bg-[var(--bg-secondary)]">HTML</button>
+                          <button onClick={() => exportReport('csv')} className="block w-full px-3 py-2 text-left text-xs hover:bg-[var(--bg-secondary)]">Excel (CSV)</button>
+                        </div>
+                      </>
+                    )}
+                  </div>
                   <button
                     onClick={saveAll}
                     disabled={busy === 'save' || !list.length}

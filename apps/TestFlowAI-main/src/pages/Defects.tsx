@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Search, Filter, MoreHorizontal, ShieldAlert, Camera, Sparkles } from 'lucide-react';
+import { useAiSearch } from '@/src/lib/useAiSearch';
 import { cn } from '@/src/lib/utils';
 import html2canvas from 'html2canvas';
 import { Modal } from '@/src/components/Modal';
@@ -9,6 +10,7 @@ export default function Defects() {
   const [defects, setDefects] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
+  const aiSearch = useAiSearch('defects');
   const [severityFilter, setSeverityFilter] = useState('All');
   const [isFilterOpen, setIsFilterOpen] = useState(false);
   const [isDefectModalOpen, setIsDefectModalOpen] = useState(false);
@@ -99,7 +101,9 @@ export default function Defects() {
 
   const filteredDefects = defects.filter((defect) => {
     const query = searchTerm.toLowerCase();
-    const matchesSearch = !query || `${defect.id || ''} ${defect.title || ''} ${defect.status || ''} ${defect.severity || ''}`.toLowerCase().includes(query);
+    const matchesSearch = aiSearch.isAiQuery(searchTerm)
+      ? (aiSearch.matchedIds ? aiSearch.matchedIds.has(defect.id) : true)
+      : (!query || `${defect.id || ''} ${defect.title || ''} ${defect.status || ''} ${defect.severity || ''}`.toLowerCase().includes(query));
     const matchesSeverity = severityFilter === 'All' || (defect.severity || 'Medium') === severityFilter;
     return matchesSearch && matchesSeverity;
   });
@@ -158,8 +162,13 @@ export default function Defects() {
             <input 
               type="text" 
               value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              placeholder="Search defects..." 
+              onChange={(e) => {
+                const v = e.target.value;
+                setSearchTerm(v);
+                if (aiSearch.isAiQuery(v)) aiSearch.run(v, defects.map((d) => ({ id: d.id, title: d.title, status: d.status, severity: d.severity, description: d.description, assignedTo: d.assignedTo })));
+                else aiSearch.reset();
+              }}
+              placeholder="Search defects…  or @ai find smartly"
               className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md pl-9 pr-4 py-1.5 text-sm outline-none focus:border-red-500 text-[var(--text-primary)]"
             />
           </div>

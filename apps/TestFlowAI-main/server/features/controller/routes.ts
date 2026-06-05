@@ -1,5 +1,5 @@
 import type { Express } from 'express';
-import { buildPlan, cancelPlan, classifyIntent, executePlan, explainIntent, getPlan, listPlans, getControllerMemory, clearControllerMemory } from '../../ai/controller';
+import { buildPlan, cancelPlan, classifyIntent, executePlan, explainIntent, streamExplain, getPlan, listPlans, getControllerMemory, clearControllerMemory } from '../../ai/controller';
 import { INTENT_LABELS, type IntentKind, type Plan, type PlanStep } from '../../ai/intents';
 
 export function registerControllerRoutes(app: Express) {
@@ -77,6 +77,26 @@ export function registerControllerRoutes(app: Express) {
     const plan = cancelPlan(req.params.id);
     if (!plan) return res.status(404).json({ error: 'Plan not found' });
     res.json(plan);
+  });
+
+  app.post('/api/controller/explain/stream', async (req, res) => {
+    const { topic, workspaceId, userId } = req.body || {};
+    if (!topic || typeof topic !== 'string') {
+      return res.status(400).json({ error: 'topic is required' });
+    }
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.flushHeaders?.();
+    try {
+      for await (const delta of streamExplain(topic, { workspaceId, userId })) {
+        res.write(delta);
+      }
+    } catch (err: any) {
+      res.write(`\n[error] ${err?.message || 'stream failed'}`);
+    } finally {
+      res.end();
+    }
   });
 
   app.post('/api/controller/explain', async (req, res, next) => {

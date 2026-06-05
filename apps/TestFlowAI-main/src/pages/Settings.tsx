@@ -70,13 +70,13 @@ const AGENT_LABELS: Record<string, { label: string; description: string }> = {
 
 export default function Settings() {
   const { theme, setTheme } = useTheme();
-  const [tab, setTab] = useState<'appearance' | 'providers' | 'prompts' | 'credentials' | 'autonomy' | 'cost'>('providers');
+  const [tab, setTab] = useState<'appearance' | 'providers' | 'prompts' | 'credentials' | 'cost'>('providers');
 
   return (
     <div className="mx-auto max-w-7xl space-y-6 px-1 sm:px-0">
       <div>
         <h1 className="text-2xl font-bold tracking-tight">Settings</h1>
-        <p className="mt-1 text-sm text-[var(--text-muted)]">AI providers, prompts, credentials, autonomy, and cost.</p>
+        <p className="mt-1 text-sm text-[var(--text-muted)]">AI providers, prompts, credentials, and cost. Set autonomy from the Agent Console chat.</p>
       </div>
 
       <div className="flex gap-1 overflow-x-auto rounded-lg border border-[var(--border)] bg-[var(--bg-card)] p-1 text-sm">
@@ -84,7 +84,6 @@ export default function Settings() {
           ['providers', 'AI Providers', Bot],
           ['prompts', 'System Prompts', MessageSquare],
           ['credentials', 'Credentials', Globe],
-          ['autonomy', 'Autonomy', Zap],
           ['cost', 'Cost & Logs', Activity],
           ['appearance', 'Appearance', Sun],
         ] as const).map(([key, label, Icon]) => (
@@ -107,7 +106,6 @@ export default function Settings() {
       {tab === 'providers' && <ProvidersSection />}
       {tab === 'prompts' && <PromptsSection />}
       {tab === 'credentials' && <CredentialsSection />}
-      {tab === 'autonomy' && <AutonomySection />}
       {tab === 'cost' && <CostSection />}
     </div>
   );

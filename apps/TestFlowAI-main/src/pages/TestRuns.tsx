@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { ArrowDownToLine, ArrowLeft, CheckCircle, Filter, Folder, Lock, MoreHorizontal, PlayCircle, Search, Share2, SlidersHorizontal, Sparkles } from 'lucide-react';
+import { useAiSearch } from '@/src/lib/useAiSearch';
 import { cn } from '@/src/lib/utils';
 import { Modal } from '@/src/components/Modal';
 import { AIActionModal } from '@/src/components/AIActionModal';
@@ -38,6 +39,7 @@ export default function TestRuns() {
   const [folders, setFolders] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
+  const aiSearch = useAiSearch('test runs');
   const [runView, setRunView] = useState<'active' | 'closed'>('active');
   const [selectedView, setSelectedView] = useState('All Runs');
   const [caseSearchTerm, setCaseSearchTerm] = useState('');
@@ -88,7 +90,9 @@ export default function TestRuns() {
     const base = runView === 'active' ? activeRuns : closedRuns;
     return base.filter((run) => {
       const searchable = `${run.name || ''} ${run.id || ''} ${run.suiteName || ''} ${run.requestedBy || ''}`.toLowerCase();
-      const matchesSearch = searchable.includes(searchTerm.toLowerCase());
+      const matchesSearch = aiSearch.isAiQuery(searchTerm)
+        ? (aiSearch.matchedIds ? aiSearch.matchedIds.has(run.id) : true)
+        : searchable.includes(searchTerm.toLowerCase());
       if (!matchesSearch) return false;
       if (selectedView === 'Failed Runs') return getRunStats(run).failed > 0;
       if (selectedView === 'Manual Runs') return !run.agentRunId;
@@ -96,7 +100,7 @@ export default function TestRuns() {
       if (selectedView === 'My Runs') return Boolean(run.requestedBy);
       return true;
     });
-  }, [activeRuns, closedRuns, runView, searchTerm, selectedView]);
+  }, [activeRuns, closedRuns, runView, searchTerm, selectedView, aiSearch.matchedIds, aiSearch]);
 
   const selectedRunCases = useMemo(() => {
     if (!selectedRun) return [];
@@ -383,7 +387,7 @@ export default function TestRuns() {
           <div className="flex flex-wrap items-center gap-2">
             <div className="relative">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--text-muted)]" />
-              <input value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} placeholder="Search by name, tag, build #, or CI #" className="w-96 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md pl-9 pr-4 py-2 text-sm outline-none focus:border-[var(--accent)]" />
+              <input value={searchTerm} onChange={(e) => { const v = e.target.value; setSearchTerm(v); if (aiSearch.isAiQuery(v)) aiSearch.run(v, runs.map((r) => ({ id: r.id, name: r.name, status: r.status, suiteName: r.suiteName, requestedBy: r.requestedBy, date: r.date }))); else aiSearch.reset(); }} placeholder="Search runs…  or @ai find smartly" className="w-96 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md pl-9 pr-4 py-2 text-sm outline-none focus:border-[var(--accent)]" />
             </div>
             <button onClick={() => setIsViewMenuOpen(!isViewMenuOpen)} title="Open run view filters" className="p-2 rounded-md border border-[var(--border)]"><Filter className="w-4 h-4" /></button>
           </div>

@@ -22,6 +22,8 @@ export type IntentKind =
   | 'triage_defect'
   | 'set_autonomy'
   | 'create_folder'
+  | 'organize_repository'
+  | 'move_to_folder'
   | 'resolve_credentials'
   | 'create_inbox_reminder'
   | 'explain'
@@ -86,6 +88,8 @@ export const INTENT_LABELS: Record<IntentKind, string> = {
   triage_defect: 'Triage defect',
   set_autonomy: 'Change autonomy level',
   create_folder: 'Create folder',
+  organize_repository: 'Organize repository',
+  move_to_folder: 'Move to folder',
   resolve_credentials: 'Resolve credentials',
   create_inbox_reminder: 'Add inbox reminder',
   explain: 'Explain',
@@ -107,6 +111,8 @@ export const AGENT_FOR_INTENT: Record<IntentKind, string> = {
   triage_defect: 'defectTriage',
   set_autonomy: 'chatAssistant',
   create_folder: 'suiteDesigner',
+  organize_repository: 'suiteDesigner',
+  move_to_folder: 'suiteDesigner',
   resolve_credentials: 'chatAssistant',
   create_inbox_reminder: 'chatAssistant',
   explain: 'chatAssistant',

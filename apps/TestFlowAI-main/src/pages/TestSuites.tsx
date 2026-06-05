@@ -1,10 +1,9 @@
 import { Fragment, useEffect, useState } from 'react';
 import { ChevronDown, ChevronRight, Search, Filter, MoreHorizontal, Plus, Sparkles } from 'lucide-react';
-import { cn } from '@/src/lib/utils';
+import { useAiSearch } from '@/src/lib/useAiSearch';
 import { Modal } from '@/src/components/Modal';
 import { AIActionModal } from '@/src/components/AIActionModal';
 import { FolderSelect } from '@/src/components/FolderSelect';
-import { FolderBadge } from '@/src/components/FolderBadge';
 
 export default function TestSuites() {
   const [suites, setSuites] = useState<any[]>([]);
@@ -14,6 +13,7 @@ export default function TestSuites() {
   const [expandedSuiteIds, setExpandedSuiteIds] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
+  const aiSearch = useAiSearch('test suites');
   const [statusFilter, setStatusFilter] = useState('All');
   const [isFilterOpen, setIsFilterOpen] = useState(false);
   const [isSuiteModalOpen, setIsSuiteModalOpen] = useState(false);
@@ -21,6 +21,7 @@ export default function TestSuites() {
   const [formData, setFormData] = useState({ name: '', description: '', testPlanId: '', parentSuite: '', module: '', owner: '', tags: '', priority: 'Medium', status: 'Active', folderId: '' });
 
   const [selectedSuiteId, setSelectedSuiteId] = useState<string | null>(null);
+  const inlineSelectClass = "w-full min-w-[140px] rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs font-medium text-[var(--text-primary)] outline-none transition-colors hover:border-[var(--accent)] focus:border-[var(--accent)]";
 
   const fetchSuites = () => {
     fetch('/api/suites')
@@ -73,6 +74,21 @@ export default function TestSuites() {
     setIsSuiteModalOpen(true);
   };
 
+  const openSubsuiteModal = (parent: any) => {
+    setSelectedSuiteId(null);
+    setFormData({
+      name: '', description: '', testPlanId: parent.testPlanId || '', parentSuite: parent.id,
+      module: parent.module || '', owner: parent.owner || '', tags: '', priority: 'Medium', status: 'Active', folderId: parent.folderId || '',
+    });
+    setIsSuiteModalOpen(true);
+  };
+
+  const getParentName = (parentSuite: string) => {
+    if (!parentSuite) return '';
+    const match = suites.find((s: any) => s.id === parentSuite) || suites.find((s: any) => s.name === parentSuite);
+    return match ? match.name : parentSuite;
+  };
+
   const handleSaveSuite = () => {
     if (!formData.name.trim()) return;
     const tags = formData.tags.split(',').map(s => s.trim()).filter(Boolean);
@@ -123,6 +139,21 @@ export default function TestSuites() {
     });
   };
 
+  const updateSuiteInline = async (suite: any, updates: Record<string, any>) => {
+    const res = await fetch(`/api/suites/${suite.id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(updates),
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      alert(data.error || 'Failed to update test suite.');
+      return;
+    }
+    fetchSuites();
+    fetchCases();
+  };
+
   const toggleSuiteExpanded = (suiteId: string) => {
     setExpandedSuiteIds((current) =>
       current.includes(suiteId)
@@ -131,11 +162,14 @@ export default function TestSuites() {
     );
   };
 
-  const getPlanName = (planId: string) => plans.find((plan) => plan.id === planId)?.name || 'None';
   const getSuiteCases = (suiteId: string) => cases.filter((testCase) => testCase.testSuiteId === suiteId);
+  const moduleOptions = Array.from(new Set(suites.map((suite) => String(suite.module || '').trim()).filter(Boolean))).sort();
+  const tagOptions = Array.from(new Set(suites.flatMap((suite) => Array.isArray(suite.tags) ? suite.tags : []).map((tag) => String(tag).trim()).filter(Boolean))).sort();
   const filteredSuites = suites.filter((suite) => {
     const query = searchTerm.toLowerCase();
-    const matchesSearch = !query || `${suite.id || ''} ${suite.name || ''} ${suite.description || ''} ${suite.module || ''} ${(suite.tags || []).join(' ')}`.toLowerCase().includes(query);
+    const matchesSearch = aiSearch.isAiQuery(searchTerm)
+      ? (aiSearch.matchedIds ? aiSearch.matchedIds.has(suite.id) : true)
+      : (!query || `${suite.id || ''} ${suite.name || ''} ${suite.description || ''} ${suite.module || ''} ${(suite.tags || []).join(' ')}`.toLowerCase().includes(query));
     const matchesStatus = statusFilter === 'All' || (suite.status || 'Active') === statusFilter;
     return matchesSearch && matchesStatus;
   });
@@ -182,8 +216,13 @@ export default function TestSuites() {
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
              <div>
-                <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Parent Suite (Optional)</label>
-                <input type="text" value={formData.parentSuite} onChange={(e) => setFormData({...formData, parentSuite: e.target.value})} placeholder="e.g. Master Suite" className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]" />
+                <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Parent Suite (makes this a subsuite)</label>
+                <select value={formData.parentSuite} onChange={(e) => setFormData({...formData, parentSuite: e.target.value})} className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]">
+                  <option value="">None (top-level suite)</option>
+                  {suites.filter((s: any) => s.id !== selectedSuiteId).map((s: any) => (
+                    <option key={s.id} value={s.id}>{s.name}</option>
+                  ))}
+                </select>
              </div>
              <div>
                 <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Module / Feature</label>
@@ -255,8 +294,13 @@ export default function TestSuites() {
             <input 
               type="text" 
               value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              placeholder="Search suites..." 
+              onChange={(e) => {
+                const v = e.target.value;
+                setSearchTerm(v);
+                if (aiSearch.isAiQuery(v)) aiSearch.run(v, suites.map((s) => ({ id: s.id, name: s.name, description: s.description, module: s.module, tags: s.tags, status: s.status, priority: s.priority })));
+                else aiSearch.reset();
+              }}
+              placeholder="Search suites…  or @ai find smartly"
               className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md pl-9 pr-4 py-1.5 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]"
             />
           </div>
@@ -315,45 +359,96 @@ export default function TestSuites() {
                             <span className="block font-medium hover:text-[var(--accent)] transition-colors">{suite.name}</span>
                             <span className="block text-xs text-[var(--text-muted)] font-normal truncate max-w-[240px]">{suite.description}</span>
                             <span className="block text-xs text-[var(--text-muted)]">{suiteCases.length} related cases</span>
+                            {suite.parentSuite && (
+                              <span className="mt-0.5 block text-[10px] font-medium text-[var(--accent)]">↳ Subsuite of {getParentName(suite.parentSuite)}</span>
+                            )}
                           </button>
                       </div>
                     </td>
                     <td className="py-3 px-4">
-                      <FolderBadge folders={folders} folderId={suite.folderId} />
+                      <select
+                        value={suite.folderId || ''}
+                        onClick={(event) => event.stopPropagation()}
+                        onChange={(event) => updateSuiteInline(suite, { folderId: event.target.value })}
+                        className={inlineSelectClass}
+                        title="Update folder"
+                      >
+                        <option value="">Uncategorized</option>
+                        {folders.map((folder) => (
+                          <option key={folder.id} value={folder.id}>{folder.path || folder.name}</option>
+                        ))}
+                      </select>
                     </td>
                     <td className="py-3 px-4">
-                        <span className="inline-block max-w-[240px] truncate text-[var(--text-muted)]" title={getPlanName(suite.testPlanId)}>
-                          {getPlanName(suite.testPlanId)}
-                        </span>
+                        <select
+                          value={suite.testPlanId || ''}
+                          onClick={(event) => event.stopPropagation()}
+                          onChange={(event) => updateSuiteInline(suite, { testPlanId: event.target.value })}
+                          className={inlineSelectClass}
+                          title="Update parent test plan"
+                        >
+                          <option value="">None</option>
+                          {plans.map((plan) => (
+                            <option key={plan.id} value={plan.id}>{plan.name}</option>
+                          ))}
+                        </select>
                       </td>
                       <td className="py-3 px-4">
-                        <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-[var(--bg-secondary)] border border-[var(--border)]">
-                          {suite.module || '-'}
-                        </span>
+                        <select
+                          value={suite.module || ''}
+                          onClick={(event) => event.stopPropagation()}
+                          onChange={(event) => updateSuiteInline(suite, { module: event.target.value })}
+                          className="w-full min-w-[100px] rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs font-medium text-[var(--text-primary)] outline-none transition-colors hover:border-[var(--accent)] focus:border-[var(--accent)]"
+                          title="Update module"
+                        >
+                          <option value="">-</option>
+                          {moduleOptions.map((module) => (
+                            <option key={module} value={module}>{module}</option>
+                          ))}
+                        </select>
                       </td>
                       <td className="py-3 px-4">
-                        <div className="flex gap-1 flex-wrap">
-                           {suite.tags?.map((tag: string) => (
-                             <span key={tag} className="bg-[var(--bg-primary)] border border-[var(--border)] text-[var(--text-muted)] px-1.5 py-0.5 rounded text-[10px] uppercase font-bold tracking-wider">{tag}</span>
-                           ))}
-                        </div>
+                        <select
+                          value={Array.isArray(suite.tags) && suite.tags.length > 0 ? suite.tags[0] : ''}
+                          onClick={(event) => event.stopPropagation()}
+                          onChange={(event) => updateSuiteInline(suite, { tags: event.target.value ? [event.target.value] : [] })}
+                          className={inlineSelectClass}
+                          title="Update tags"
+                        >
+                          <option value="">No tags</option>
+                          {tagOptions.map((tag) => (
+                            <option key={tag} value={tag}>{tag}</option>
+                          ))}
+                        </select>
                       </td>
                       <td className="py-3 px-4 text-right">
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            openEditModal(suite);
-                          }}
-                          title="Edit suite"
-                          className="p-1 rounded hover:bg-[var(--border)] text-[var(--text-muted)] transition-colors"
-                        >
-                          <MoreHorizontal className="w-4 h-4" />
-                        </button>
+                        <div className="flex items-center justify-end gap-1">
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              openSubsuiteModal(suite);
+                            }}
+                            title="Add subsuite"
+                            className="p-1 rounded hover:bg-[var(--border)] text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors"
+                          >
+                            <Plus className="w-4 h-4" />
+                          </button>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              openEditModal(suite);
+                            }}
+                            title="Edit suite"
+                            className="p-1 rounded hover:bg-[var(--border)] text-[var(--text-muted)] transition-colors"
+                          >
+                            <MoreHorizontal className="w-4 h-4" />
+                          </button>
+                        </div>
                       </td>
                     </tr>
                     {isExpanded && (
                       <tr>
-                        <td colSpan={6} className="bg-[var(--bg-secondary)]/50 px-10 py-4">
+                        <td colSpan={7} className="bg-[var(--bg-secondary)]/50 px-10 py-4">
                           <div className="border border-[var(--border)] rounded-lg bg-[var(--bg-card)] overflow-hidden">
                             <div className="px-4 py-2 border-b border-[var(--border)] text-xs font-bold uppercase tracking-wider text-[var(--text-muted)]">
                               Related Test Cases
@@ -389,8 +484,6 @@ export default function TestSuites() {
     </div>
   );
 }
-
-
 
 
 

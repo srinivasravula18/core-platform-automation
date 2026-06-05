@@ -46,6 +46,45 @@ export function clearControllerMemory() {
   controllerMemory.length = 0;
 }
 
+/**
+ * Compact snapshot of the workspace's recent artifacts (with ids + timestamps)
+ * so the AI can answer questions about previously created work ("the cases you
+ * made 2 days ago") and resolve references to concrete ids for follow-up
+ * actions ("tweak those and rerun").
+ */
+export async function buildWorkspaceContext(): Promise<string> {
+  try {
+    const [cases, suites, plans, runs, scripts, defects] = await Promise.all([
+      Cases.list(), Suites.list(), Plans.list(), Runs.list(), Scripts.list(), Defects.list(),
+    ]);
+    const take = (arr: any[], n = 15) => (Array.isArray(arr) ? arr.slice(0, n) : []);
+    const snapshot = {
+      cases: take(cases).map((c: any) => ({ id: c.id, title: c.title, status: c.status, suiteId: c.testSuiteId, createdAt: c.createdAt })),
+      suites: take(suites).map((s: any) => ({ id: s.id, name: s.name, planId: s.testPlanId, parentSuite: s.parentSuite, createdAt: s.createdAt })),
+      plans: take(plans).map((p: any) => ({ id: p.id, name: p.name, status: p.status, createdAt: p.createdAt })),
+      runs: take(runs).map((r: any) => ({ id: r.id, name: r.name, status: r.status, suiteId: r.suiteId, caseIds: r.caseIds, createdAt: r.createdAt || r.date })),
+      scripts: take(scripts).map((s: any) => ({ id: s.id, filename: s.filename, caseId: s.caseId, createdAt: s.createdAt })),
+      defects: take(defects).map((d: any) => ({ id: d.id, title: d.title, severity: d.severity, status: d.status, createdAt: d.createdAt })),
+    };
+    const json = JSON.stringify(snapshot);
+    return json.length > 7000 ? `${json.slice(0, 7000)}…` : json;
+  } catch {
+    return '{}';
+  }
+}
+
+function recentConversation(): string {
+  return controllerMemory.slice(-10).map((m) => `${m.role}: ${m.content}`).join('\n');
+}
+
+// Only look at conversation history + the workspace DB when the request actually
+// references past work. Plain requests ("generate 5 cases for x.com") skip it.
+const HISTORY_RE = /\b(previous|earlier|before|yesterday|last\s+(night|week|month|time)|days?\s+ago|weeks?\s+ago|recent(?:ly)?|already|those|these|that\s+(one|run|case|suite|plan|script|defect|report)|the\s+(cases?|suites?|scripts?|plans?|runs?|defects?|reports?|tests?)\s+(you|we|i)|you\s+(created|made|generated|wrote|built)|we\s+(talked|discussed|created|made|did)|re-?run|tweak|existing|do\s+you\s+remember|\bremember\b|organi[sz]e|\bfolders?\b|repositor\w*|file\s*system|move\s+\w+\s+(?:to|into|under))\b/i;
+const ID_RE = /\b(TC|SUITE|PLAN|RUN|DEF|SCR|REP)-[A-Z0-9-]+/i;
+function needsHistory(message: string): boolean {
+  return HISTORY_RE.test(message || '') || ID_RE.test(message || '');
+}
+
 const intentSchema = z.object({
   intents: z.array(z.object({
     kind: z.string(),
@@ -74,11 +113,11 @@ const VALID_KINDS: IntentKind[] = [
   'navigate', 'create_plan', 'create_suite', 'create_cases',
   'expand_case_steps', 'rework_case', 'create_run', 'create_defect',
   'generate_script', 'generate_report', 'analyze_run', 'triage_defect',
-  'set_autonomy', 'create_folder', 'resolve_credentials',
-  'create_inbox_reminder', 'explain', 'unknown',
+  'set_autonomy', 'create_folder', 'organize_repository', 'move_to_folder',
+  'resolve_credentials', 'create_inbox_reminder', 'explain', 'unknown',
 ];
 
-function buildPrompt(input: ClassifyInput): string {
+function buildPrompt(input: ClassifyInput, extra: { workspaceContext?: string; conversation?: string } = {}): string {
   const ctx = input.pageContext
     ? `\nCurrent page: ${input.pageContext.path}` +
       (input.pageContext.activeEntity ? `\nFocused entity: ${input.pageContext.activeEntity.type} "${input.pageContext.activeEntity.name || input.pageContext.activeEntity.id}"` : '') +
@@ -86,10 +125,17 @@ function buildPrompt(input: ClassifyInput): string {
       (input.pageContext.selectedFolderId ? `\nSelected folder: ${input.pageContext.selectedFolderId}` : '')
     : '';
 
+  const convoBlock = extra.conversation
+    ? `\nRECENT CONVERSATION (oldest first) — use it for continuity ("the feature we discussed yesterday", "those cases"):\n${extra.conversation}\n`
+    : '';
+  const wsBlock = extra.workspaceContext && extra.workspaceContext !== '{}'
+    ? `\nWORKSPACE CONTEXT — existing artifacts with ids and timestamps (most recent first):\n${extra.workspaceContext}\nWhen the user refers to previously created work ("the test cases / suites / scripts / plan you created 2 days ago", "tweak those and rerun", "the run from yesterday"), resolve the reference to the concrete ids above and put them in the intent params (caseId/caseIds/suiteId/runId/planId). For "rerun", emit a create_run intent reusing the existing suiteId/caseIds. If the referenced item is genuinely not in this context, return a single "explain" intent that names what you can see and asks which item they mean.\n`
+    : '';
+
   return `You are the TestFlowAI Universal AI Controller. The user has asked:
 
 "${input.userMessage}"
-${ctx}
+${ctx}${convoBlock}${wsBlock}
 
 Your job is to break this request into a list of typed intents that the app can execute. The available intent kinds are:
 ${VALID_KINDS.map((k) => `- ${k}: ${INTENT_LABELS[k]}`).join('\n')}
@@ -107,7 +153,9 @@ Rules:
 - For analyze_run, params = { runId, question }.
 - For triage_defect, params = { defectId }.
 - For create_folder, params = { name, parentId, kind }.
-- For set_autonomy, params = { level: "supervised" | "balanced" | "autonomous" }.
+- For organize_repository, params = { goal }. Use this when the user asks to organize / tidy / structure the repository or file system.
+- For move_to_folder, params = { folderName, folderId, caseIds, suiteIds, scriptIds }. Use this to move specific existing artifacts into a folder. Resolve the artifact ids from the WORKSPACE CONTEXT. The folder may be named (folderName, created if missing) or an existing folderId.
+- For set_autonomy, params = { level: "manual" | "review" | "autonomous" }. "manual" = approve every step; "review" = AI runs obvious cases, asks for the rest; "autonomous" = AI runs everything.
 - For resolve_credentials, params = { role, websiteId, baseUrl, targetUrl }.
 - For create_inbox_reminder, params = { title, summary, source, sourceId }.
 - For explain, params = { topic }.
@@ -123,7 +171,11 @@ export async function classifyIntent(input: ClassifyInput): Promise<{ intents: I
     workspaceId: input.workspaceId || 'default',
     userId: input.userId,
   });
-  const prompt = buildPrompt(input);
+  remember(input.userMessage, 'user');
+  const useHistory = needsHistory(input.userMessage);
+  const workspaceContext = useHistory ? await buildWorkspaceContext() : '';
+  const conversation = useHistory ? recentConversation() : '';
+  const prompt = buildPrompt(input, { workspaceContext, conversation });
   const result = await orch.generateObject<z.infer<typeof intentSchema>>({
     prompt,
     schema: intentSchema,
@@ -155,9 +207,11 @@ export async function classifyIntent(input: ClassifyInput): Promise<{ intents: I
     .map((it: any) => toIntentDraft(it))
     .filter((it: IntentDraft | null) => it !== null) as IntentDraft[];
 
+  const summary = String(obj.summary || 'No summary');
+  remember(summary, 'assistant');
   return {
     intents: intents.length ? intents : [fallbackIntent(input.userMessage)],
-    summary: String(obj.summary || 'No summary'),
+    summary,
     reasoning: String(obj.reasoning || 'No reasoning'),
     rawText: JSON.stringify(obj),
   };
@@ -215,6 +269,10 @@ function buildSideEffects(kind: IntentKind, _params: any): SideEffect[] {
       return [{ type: 'create', entity: 'report', label: 'Generate report', requiresApproval: true }];
     case 'create_folder':
       return [{ type: 'create', entity: 'folder', label: 'Create folder', requiresApproval: true }];
+    case 'organize_repository':
+      return [{ type: 'update', entity: 'repository', label: 'Organize repository into folders', requiresApproval: true }];
+    case 'move_to_folder':
+      return [{ type: 'update', entity: 'folder', label: 'Move artifacts to folder', requiresApproval: true }];
     case 'triage_defect':
       return [{ type: 'update', entity: 'defect', label: 'Triage defect', requiresApproval: false }];
     case 'analyze_run':
@@ -247,6 +305,8 @@ function estimateCost(kind: IntentKind): number {
     case 'create_run': return 0.002;
     case 'create_defect': return 0.002;
     case 'create_folder': return 0.001;
+    case 'organize_repository': return 0.01;
+    case 'move_to_folder': return 0.002;
     case 'navigate': return 0;
     case 'explain': return 0.001;
     default: return 0.001;
@@ -544,6 +604,100 @@ Return strict JSON: {"cases": [{title, description, priority, type, tags, steps:
       });
       return { folderId: folder.id, name: folder.name };
     }
+    case 'organize_repository': {
+      const [folders, cases, suites] = await Promise.all([Folders.list(), Cases.list(), Suites.list()]);
+      const orch = await getOrchestrator('suiteDesigner', { workspaceId, userId });
+      const result = await orch.generateObject<any>({
+        prompt: `Organize this QA repository into folders. Goal: ${params.goal || 'group artifacts by feature/module so they are easy to find'}.
+
+Existing folders: ${JSON.stringify(folders.slice(0, 60).map((f: any) => ({ id: f.id, name: f.name })))}
+Suites: ${JSON.stringify(suites.slice(0, 50).map((s: any) => ({ id: s.id, name: s.name, module: s.module })))}
+Cases: ${JSON.stringify(cases.slice(0, 80).map((c: any) => ({ id: c.id, title: c.title, suiteId: c.testSuiteId, tags: c.tags })))}
+
+Reuse existing folders when suitable; only create new ones when needed. Return strict JSON: {"createFolders":[{"name","kind"}],"placements":[{"type":"case"|"suite","id","folderName"}]}.`,
+        schema: z.object({
+          createFolders: z.array(z.object({ name: z.string(), kind: z.string().default('Feature') })).default([]),
+          placements: z.array(z.object({ type: z.string(), id: z.string(), folderName: z.string() })).default([]),
+        }),
+        userMessage: String(params.goal || 'organize repository'),
+      });
+      const proposal = (result as any).object || { createFolders: [], placements: [] };
+      const nameToId = new Map<string, string>(folders.map((f: any) => [String(f.name).toLowerCase(), f.id]));
+      let created = 0;
+      for (const f of proposal.createFolders || []) {
+        const key = String(f.name || '').toLowerCase();
+        if (!key || nameToId.has(key)) continue;
+        const rec = await Folders.upsert({ id: `FLD-${Math.random().toString(36).slice(2, 6).toUpperCase()}`, name: f.name, parentId: '', path: f.name, description: '', kind: f.kind || 'Feature', createdBy: 'AI Controller' });
+        nameToId.set(key, rec.id);
+        created++;
+      }
+      let moved = 0;
+      for (const p of proposal.placements || []) {
+        const folderId = nameToId.get(String(p.folderName || '').toLowerCase());
+        if (!folderId) continue;
+        if (p.type === 'suite') {
+          const s = await Suites.get(String(p.id));
+          if (s) { await Suites.upsert({ ...s, folderId }); moved++; }
+        } else {
+          const c = await Cases.get(String(p.id));
+          if (c) { await Cases.upsert({ ...c, folderId }); moved++; }
+        }
+      }
+      const inbox = await pushInboxItem({
+        workspaceId,
+        source: 'general',
+        sourceId: 'organize',
+        title: `Approve repository organization: ${created} folder(s), ${moved} item(s) filed`,
+        summary: `AI created ${created} folder(s) and filed ${moved} artifact(s) by feature/module.`,
+        confidence: step.intent.confidence,
+        proposedBy: 'AI Controller',
+        payload: { created, moved },
+        links: [{ label: 'Open File System', href: '/repository' }],
+      });
+      step.inboxItemId = inbox.id;
+      return { foldersCreated: created, moved, inboxItemId: inbox.id };
+    }
+    case 'move_to_folder': {
+      let folderId = String(params.folderId || '');
+      const folderName = String(params.folderName || '');
+      if (!folderId) {
+        const folders = await Folders.list();
+        const existing = folders.find((f: any) => String(f.name).toLowerCase() === folderName.toLowerCase());
+        if (existing) {
+          folderId = existing.id;
+        } else if (folderName) {
+          const rec = await Folders.upsert({ id: `FLD-${Math.random().toString(36).slice(2, 6).toUpperCase()}`, name: folderName, parentId: '', path: folderName, description: '', kind: 'Feature', createdBy: 'AI Controller' });
+          folderId = rec.id;
+        }
+      }
+      if (!folderId) throw new Error('A target folder name or id is required to move artifacts');
+      let moved = 0;
+      for (const id of Array.isArray(params.caseIds) ? params.caseIds : []) {
+        const c = await Cases.get(String(id));
+        if (c) { await Cases.upsert({ ...c, folderId }); moved++; }
+      }
+      for (const id of Array.isArray(params.suiteIds) ? params.suiteIds : []) {
+        const s = await Suites.get(String(id));
+        if (s) { await Suites.upsert({ ...s, folderId }); moved++; }
+      }
+      for (const id of Array.isArray(params.scriptIds) ? params.scriptIds : []) {
+        const s = await Scripts.get(String(id));
+        if (s) { await Scripts.upsert({ ...s, folderId }); moved++; }
+      }
+      const inbox = await pushInboxItem({
+        workspaceId,
+        source: 'general',
+        sourceId: folderId,
+        title: `Approve moving ${moved} item(s) to "${folderName || folderId}"`,
+        summary: `AI moved ${moved} artifact(s) into the folder.`,
+        confidence: step.intent.confidence,
+        proposedBy: 'AI Controller',
+        payload: { folderId, moved },
+        links: [{ label: 'Open File System', href: '/repository' }],
+      });
+      step.inboxItemId = inbox.id;
+      return { folderId, moved, inboxItemId: inbox.id };
+    }
     case 'generate_script': {
       const ids: string[] = Array.isArray(params.caseIds)
         ? params.caseIds.map(String)
@@ -742,7 +896,8 @@ Return a short, structured analysis.`,
       return resolved || { error: 'No matching credentials' };
     }
     case 'set_autonomy': {
-      const level = String(params.level || 'supervised');
+      const raw = String(params.level || 'review').toLowerCase();
+      const level = ['manual', 'review', 'autonomous'].includes(raw) ? raw : 'review';
       await Settings.setKV('autonomyLevel', level);
       return { autonomyLevel: level };
     }
@@ -768,18 +923,72 @@ Return a short, structured analysis.`,
   }
 }
 
+/**
+ * Strip markdown / decorative symbols and emojis so console chat answers render
+ * as clean, plain, well-structured text.
+ */
+export function sanitizeAnswer(text: string): string {
+  if (!text) return '';
+  return String(text)
+    // remove emoji and common pictographs / dingbats / arrows
+    .replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2190}-\u{21FF}\u{2B00}-\u{2BFF}\u{FE0F}\u{2022}]/gu, (m) => (m === '•' ? '-' : ''))
+    // drop markdown emphasis / heading / code / blockquote markers
+    .replace(/[*_`~#>]+/g, '')
+    // normalize list bullets to a plain dash
+    .replace(/^\s*[-•]\s+/gm, '- ')
+    // tidy whitespace
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .replace(/[ \t]{2,}/g, ' ')
+    .trim();
+}
+
+function buildExplainPrompt(topic: string, workspaceContext: string, conversation: string): string {
+  return `Answer the user's question for a QA testing assistant.
+
+${conversation ? `RECENT CONVERSATION (oldest first):\n${conversation}\n\n` : ''}${workspaceContext && workspaceContext !== '{}' ? `WORKSPACE CONTEXT — existing artifacts with ids and timestamps (most recent first):\n${workspaceContext}\n\n` : ''}Rules:
+- Use the workspace context and conversation above to answer questions about previously created work (for example "the test cases / suites / scripts / plan you created 2 days ago", "the run from yesterday"). Reference the real ids, titles, and dates from the context — do NOT make up artifacts.
+- If the user wants to act on past work (tweak a case and rerun, etc.), briefly confirm which specific item(s) by id/title, then tell them you can do it.
+- Write clear, well-structured plain text: 2 to 4 short sentences, or a short list using "- " bullets when listing items.
+- Do NOT use markdown, asterisks, hashes, backticks, code fences, emojis, or any decorative special characters.
+- If the request is ambiguous or the referenced work is not in the context, do NOT guess. Name what you can see and ask one short clarifying question (for example: "Did you mean A, or B?").
+- If you do not know, say so plainly.
+
+Question: ${topic}`;
+}
+
 export async function explainIntent(topic: string, options: { workspaceId?: string; userId?: string } = {}): Promise<string> {
   const orch = await getOrchestrator('chatAssistant', options);
+  const useHistory = needsHistory(topic);
+  const workspaceContext = useHistory ? await buildWorkspaceContext() : '';
+  const conversation = useHistory ? recentConversation() : '';
   const { text, shortCircuit } = await orch.generateText({
-    prompt: `Answer this question concisely:
-
-${topic}
-
-Use at most 4 short sentences. If you don't know, say so.`,
+    prompt: buildExplainPrompt(topic, workspaceContext, conversation),
     userMessage: topic,
   });
-  if (shortCircuit) return shortCircuit;
+  if (shortCircuit) return sanitizeAnswer(shortCircuit);
+  const answer = sanitizeAnswer(text) || 'No answer available.';
   remember(topic, 'user');
-  remember(text, 'assistant');
-  return text || 'No answer available.';
+  remember(answer, 'assistant');
+  return answer;
+}
+
+/** Streaming variant of explainIntent — yields text deltas as they arrive. */
+export async function* streamExplain(topic: string, options: { workspaceId?: string; userId?: string } = {}): AsyncGenerator<string> {
+  const orch = await getOrchestrator('chatAssistant', options);
+  const useHistory = needsHistory(topic);
+  const workspaceContext = useHistory ? await buildWorkspaceContext() : '';
+  const conversation = useHistory ? recentConversation() : '';
+  let full = '';
+  try {
+    for await (const delta of orch.streamText({ prompt: buildExplainPrompt(topic, workspaceContext, conversation), userMessage: topic })) {
+      full += delta;
+      yield delta;
+    }
+  } finally {
+    if (full.trim()) {
+      remember(topic, 'user');
+      remember(sanitizeAnswer(full), 'assistant');
+    }
+  }
 }

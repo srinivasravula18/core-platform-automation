@@ -1,28 +1,12 @@
 import { useEffect, useState, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Search, Filter, MoreHorizontal, Plus, Sparkles, Loader2 } from 'lucide-react';
-import { cn } from '@/src/lib/utils';
+import { useAiSearch } from '@/src/lib/useAiSearch';
 import { Modal } from '@/src/components/Modal';
 import { AIActionModal } from '@/src/components/AIActionModal';
 import { FolderSelect } from '@/src/components/FolderSelect';
-import { FolderBadge } from '@/src/components/FolderBadge';
 
 const CASE_STATUSES = ['Draft', 'Under Review', 'Approved', 'Automated', 'Deprecated'];
-
-function getCaseStatusBadgeClass(status: string) {
-  switch (status) {
-    case 'Under Review':
-      return 'bg-sky-500/10 text-sky-400 border-sky-500/20';
-    case 'Approved':
-      return 'bg-[var(--accent)]/10 text-[var(--accent)] border-[var(--accent)]/20';
-    case 'Automated':
-      return 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20';
-    case 'Deprecated':
-      return 'bg-slate-500/10 text-slate-400 border-slate-500/20';
-    default:
-      return 'bg-slate-500/10 text-slate-300 border-slate-500/20';
-  }
-}
 
 export default function TestCases() {
   const [searchParams] = useSearchParams();
@@ -32,6 +16,7 @@ export default function TestCases() {
   const [folders, setFolders] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState(searchParams.get('search') || '');
+  const aiSearch = useAiSearch('test cases');
   const [statusFilter, setStatusFilter] = useState('All');
   const [isFilterOpen, setIsFilterOpen] = useState(false);
   const [isCaseModalOpen, setIsCaseModalOpen] = useState(false);
@@ -42,6 +27,7 @@ export default function TestCases() {
   const [caseAIMessage, setCaseAIMessage] = useState('');
   const emptyStep = { action: '', expected: '' };
   const [formData, setFormData] = useState({ title: '', description: '', testPlanId: '', testSuiteId: '', createdBy: 'Admin', tags: '', type: 'Manual', priority: 'Medium', status: 'Draft', folderId: '', captureEvidenceOnManualRun: true, steps: [emptyStep] });
+  const inlineSelectClass = "w-full min-w-[140px] rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs font-medium text-[var(--text-primary)] outline-none transition-colors hover:border-[var(--accent)] focus:border-[var(--accent)]";
 
   const [selectedCaseId, setSelectedCaseId] = useState<string | null>(null);
   const stepEditorRef = useRef<HTMLDivElement | null>(null);
@@ -194,6 +180,20 @@ export default function TestCases() {
     }).then(() => fetchCases());
   };
 
+  const updateCaseInline = async (testCase: any, updates: Record<string, any>) => {
+    const res = await fetch(`/api/cases/${testCase.id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(updates),
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      alert(data.error || 'Failed to update test case.');
+      return;
+    }
+    fetchCases();
+  };
+
   const toggleSelectedCase = (caseId: string) => {
     setSelectedCaseIds((prev) => prev.includes(caseId) ? prev.filter((id) => id !== caseId) : [...prev, caseId]);
   };
@@ -237,11 +237,12 @@ export default function TestCases() {
     if (testCase.testSuiteId) return testCase.testSuiteId;
     return suites.find((suite) => testCase.agentRunId && suite.agentRunId === testCase.agentRunId)?.id || '';
   };
-  const getPlanName = (testCase: any) => plans.find((plan) => plan.id === resolvePlanId(testCase))?.name || 'None';
-  const getSuiteName = (testCase: any) => suites.find((suite) => suite.id === resolveSuiteId(testCase))?.name || 'None';
+  const tagOptions = Array.from(new Set(cases.flatMap((testCase) => Array.isArray(testCase.tags) ? testCase.tags : []).map((tag) => String(tag).trim()).filter(Boolean))).sort();
   const filteredCases = cases.filter((testCase) => {
     const query = searchTerm.toLowerCase();
-    const matchesSearch = !query || `${testCase.id || ''} ${testCase.title || ''} ${testCase.description || ''} ${(testCase.tags || []).join(' ')}`.toLowerCase().includes(query);
+    const matchesSearch = aiSearch.isAiQuery(searchTerm)
+      ? (aiSearch.matchedIds ? aiSearch.matchedIds.has(testCase.id) : true)
+      : (!query || `${testCase.id || ''} ${testCase.title || ''} ${testCase.description || ''} ${(testCase.tags || []).join(' ')}`.toLowerCase().includes(query));
     const matchesStatus = statusFilter === 'All' || (testCase.status || 'Draft') === statusFilter;
     return matchesSearch && matchesStatus;
   });
@@ -438,8 +439,13 @@ export default function TestCases() {
             <input 
               type="text" 
               value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              placeholder="Search cases..." 
+              onChange={(e) => {
+                const v = e.target.value;
+                setSearchTerm(v);
+                if (aiSearch.isAiQuery(v)) aiSearch.run(v, cases.map((c) => ({ id: c.id, title: c.title, description: c.description, tags: c.tags, status: c.status, priority: c.priority, type: c.type })));
+                else aiSearch.reset();
+              }}
+              placeholder="Search cases…  or @ai find smartly"
               className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md pl-9 pr-4 py-1.5 text-sm outline-none focus:border-[var(--accent)]"
             />
           </div>
@@ -553,42 +559,92 @@ export default function TestCases() {
                   <td className="py-3 px-4 font-mono text-xs text-[var(--text-muted)]">{tc.id}</td>
                   <td className="py-3 px-4 font-medium max-w-sm truncate">{tc.title}</td>
                   <td className="py-3 px-4">
-                    <FolderBadge folders={folders} folderId={tc.folderId} />
+                    <select
+                      value={tc.folderId || ''}
+                      onClick={(event) => event.stopPropagation()}
+                      onChange={(event) => updateCaseInline(tc, { folderId: event.target.value })}
+                      className={inlineSelectClass}
+                      title="Update folder"
+                    >
+                      <option value="">Uncategorized</option>
+                      {folders.map((folder) => (
+                        <option key={folder.id} value={folder.id}>{folder.path || folder.name}</option>
+                      ))}
+                    </select>
                   </td>
                   <td className="py-3 px-4">
-                    <span className="inline-block max-w-[220px] truncate text-[var(--text-muted)]" title={getPlanName(tc)}>
-                      {getPlanName(tc)}
-                    </span>
+                    <select
+                      value={resolvePlanId(tc)}
+                      onClick={(event) => event.stopPropagation()}
+                      onChange={(event) => updateCaseInline(tc, { testPlanId: event.target.value })}
+                      className={inlineSelectClass}
+                      title="Update test plan"
+                    >
+                      <option value="">None</option>
+                      {plans.map((plan) => (
+                        <option key={plan.id} value={plan.id}>{plan.name}</option>
+                      ))}
+                    </select>
                   </td>
                   <td className="py-3 px-4">
-                    <span className="inline-block max-w-[220px] truncate text-[var(--text-muted)]" title={getSuiteName(tc)}>
-                      {getSuiteName(tc)}
-                    </span>
+                    <select
+                      value={resolveSuiteId(tc)}
+                      onClick={(event) => event.stopPropagation()}
+                      onChange={(event) => {
+                        const suiteId = event.target.value;
+                        const selectedSuite = suites.find((suite) => suite.id === suiteId);
+                        updateCaseInline(tc, {
+                          testSuiteId: suiteId,
+                          ...(selectedSuite?.testPlanId ? { testPlanId: selectedSuite.testPlanId } : {}),
+                        });
+                      }}
+                      className={inlineSelectClass}
+                      title="Update test suite"
+                    >
+                      <option value="">None</option>
+                      {suites.map((suite) => (
+                        <option key={suite.id} value={suite.id}>{suite.name}</option>
+                      ))}
+                    </select>
                   </td>
                   <td className="py-3 px-4">
-                    <span className={cn(
-                      "inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium border",
-                      getCaseStatusBadgeClass(tc.status || 'Draft')
-                    )}>
-                      {tc.status || 'Draft'}
-                    </span>
+                    <select
+                      value={tc.status || 'Draft'}
+                      onClick={(event) => event.stopPropagation()}
+                      onChange={(event) => updateCaseInline(tc, { status: event.target.value })}
+                      className="w-full min-w-[120px] rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs font-medium text-[var(--text-primary)] outline-none transition-colors hover:border-[var(--accent)] focus:border-[var(--accent)]"
+                      title="Update status"
+                    >
+                      {CASE_STATUSES.map((status) => (
+                        <option key={status} value={status}>{status}</option>
+                      ))}
+                    </select>
                   </td>
                   <td className="py-3 px-4">
-                    <span className={cn(
-                      "inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium",
-                      tc.captureEvidenceOnManualRun !== false
-                        ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-400"
-                        : "border-slate-500/20 bg-slate-500/10 text-slate-400"
-                    )}>
-                      {tc.captureEvidenceOnManualRun !== false ? 'Snapshot On' : 'Snapshot Off'}
-                    </span>
+                    <select
+                      value={tc.captureEvidenceOnManualRun !== false ? 'on' : 'off'}
+                      onClick={(event) => event.stopPropagation()}
+                      onChange={(event) => updateCaseInline(tc, { captureEvidenceOnManualRun: event.target.value === 'on' })}
+                      className="w-full min-w-[130px] rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs font-medium text-[var(--text-primary)] outline-none transition-colors hover:border-[var(--accent)] focus:border-[var(--accent)]"
+                      title="Update evidence capture"
+                    >
+                      <option value="on">Snapshot On</option>
+                      <option value="off">Snapshot Off</option>
+                    </select>
                   </td>
                   <td className="py-3 px-4">
-                    <div className="flex gap-2">
-                       {tc.tags?.map((tag: string) => (
-                         <span key={tag} className="bg-[var(--bg-primary)] border border-[var(--border)] text-[var(--text-muted)] px-2 py-0.5 rounded-md text-xs">{tag}</span>
-                       ))}
-                    </div>
+                    <select
+                      value={Array.isArray(tc.tags) && tc.tags.length > 0 ? tc.tags[0] : ''}
+                      onClick={(event) => event.stopPropagation()}
+                      onChange={(event) => updateCaseInline(tc, { tags: event.target.value ? [event.target.value] : [] })}
+                      className={inlineSelectClass}
+                      title="Update tags"
+                    >
+                      <option value="">No tags</option>
+                      {tagOptions.map((tag) => (
+                        <option key={tag} value={tag}>{tag}</option>
+                      ))}
+                    </select>
                   </td>
                   <td className="py-3 px-4 text-right flex gap-1 justify-end">
                     <button
@@ -611,8 +667,6 @@ export default function TestCases() {
     </div>
   );
 }
-
-
 
 
 

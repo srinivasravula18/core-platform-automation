@@ -5,7 +5,7 @@
  * while exposing the new unified Provider interface.
  */
 
-import { generateObject, generateText as aiGenerateText } from 'ai';
+import { generateObject, generateText as aiGenerateText, streamText as aiStreamText } from 'ai';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { z } from 'zod';
 import type {
@@ -96,6 +96,19 @@ export class GeminiProvider implements AIProvider {
       const status = err?.statusCode || err?.status;
       throw classifyError('gemini', status, err?.message || String(err));
     }
+  }
+
+  async *generateTextStream(opts: GenerateTextOptions): AsyncIterable<string> {
+    const client = this.client();
+    const { textStream } = aiStreamText({
+      model: client(this.modelId(opts)),
+      system: opts.system,
+      prompt: opts.prompt,
+      temperature: opts.temperature,
+      maxOutputTokens: opts.maxTokens,
+      abortSignal: opts.signal,
+    } as any);
+    for await (const delta of textStream) yield delta as string;
   }
 
   async generateText(opts: GenerateTextOptions): Promise<ProviderResponse<string>> {
