@@ -70,7 +70,7 @@ const AGENT_LABELS: Record<string, { label: string; description: string }> = {
 
 export default function Settings() {
   const { theme, setTheme } = useTheme();
-  const [tab, setTab] = useState<'appearance' | 'providers' | 'prompts' | 'credentials' | 'cost'>('providers');
+  const [tab, setTab] = useState<'appearance' | 'providers' | 'prompts' | 'knowledge' | 'credentials' | 'cost'>('providers');
 
   return (
     <div className="app-page-shell space-y-6 px-1 sm:px-0">
@@ -83,6 +83,7 @@ export default function Settings() {
         {([
           ['providers', 'AI Providers', Bot],
           ['prompts', 'System Prompts', MessageSquare],
+          ['knowledge', 'App Knowledge', Bot],
           ['credentials', 'Credentials', Globe],
           ['cost', 'Cost & Logs', Activity],
           ['appearance', 'Appearance', Sun],
@@ -105,8 +106,139 @@ export default function Settings() {
       )}
       {tab === 'providers' && <ProvidersSection />}
       {tab === 'prompts' && <PromptsSection />}
+      {tab === 'knowledge' && <KnowledgeSection />}
       {tab === 'credentials' && <CredentialsSection />}
       {tab === 'cost' && <CostSection />}
+    </div>
+  );
+}
+
+interface KnowledgePack {
+  id: string;
+  name: string;
+  matchNames?: string[];
+  matchHosts?: string[];
+  websiteIds?: string[];
+  content: string;
+  observations?: string[];
+  updatedAt?: string;
+}
+
+function KnowledgeSection() {
+  const [packs, setPacks] = useState<KnowledgePack[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [editId, setEditId] = useState<string | null>(null);
+  const [draft, setDraft] = useState('');
+  const [busy, setBusy] = useState<string | null>(null);
+  const [status, setStatus] = useState('');
+
+  const load = useCallback(() => {
+    setLoading(true);
+    fetch('/api/knowledge')
+      .then((r) => r.json())
+      .then((d) => setPacks(Array.isArray(d.packs) ? d.packs : []))
+      .catch(() => setPacks([]))
+      .finally(() => setLoading(false));
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const save = async (p: KnowledgePack) => {
+    setBusy(`save-${p.id}`);
+    setStatus('');
+    try {
+      await fetch(`/api/knowledge/${p.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...p, content: draft }),
+      });
+      setStatus('Saved.');
+      setEditId(null);
+      load();
+    } finally { setBusy(null); }
+  };
+
+  const refresh = async (p: KnowledgePack) => {
+    setBusy(`refresh-${p.id}`);
+    setStatus('Reading the latest application source via the Git Agent…');
+    try {
+      const r = await fetch(`/api/knowledge/${p.id}/refresh-from-source`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+      const d = await r.json();
+      if (!r.ok) setStatus(d?.error || 'Refresh failed.');
+      else if (d.added?.length) setStatus(`Added ${d.added.length} new fact(s) from source.`);
+      else setStatus(d.reason || 'No new source changes found.');
+      load();
+    } catch (e: any) { setStatus(e?.message || 'Refresh failed.'); }
+    finally { setBusy(null); }
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-card)] p-6 shadow-sm">
+        <h2 className="text-lg font-medium">App Knowledge</h2>
+        <p className="mt-1 text-sm text-[var(--text-muted)]">
+          Ground-truth context about the apps under test. The agents use this to generate accurate test cases and drive live runs
+          — instead of guessing. Keep it current as features ship: edit it directly, let it auto-grow from live runs, or pull the
+          latest from the application source with the Git Agent.
+        </p>
+        {status && <p className="mt-2 text-xs text-[var(--accent)]">{status}</p>}
+      </div>
+
+      {loading && <p className="text-sm text-[var(--text-muted)]">Loading…</p>}
+      {!loading && packs.length === 0 && (
+        <p className="text-sm text-[var(--text-muted)]">No knowledge packs yet.</p>
+      )}
+
+      {packs.map((p) => (
+        <div key={p.id} className="rounded-xl border border-[var(--border)] bg-[var(--bg-card)] p-5 shadow-sm">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="min-w-0">
+              <h3 className="font-medium text-[var(--text-primary)]">{p.name}</h3>
+              <p className="mt-0.5 text-[11px] text-[var(--text-muted)]">
+                Matches: {(p.matchNames || []).join(', ') || '—'} · {(p.websiteIds || []).length} site(s) · {(p.observations || []).length} auto-observations
+                {p.updatedAt ? ` · updated ${new Date(p.updatedAt).toLocaleDateString()}` : ''}
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => refresh(p)}
+                disabled={busy === `refresh-${p.id}`}
+                className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-1.5 text-xs font-medium text-[var(--text-primary)] hover:border-[var(--accent)] disabled:opacity-50"
+              >
+                {busy === `refresh-${p.id}` ? 'Refreshing…' : 'Refresh from source (Git)'}
+              </button>
+              <button
+                onClick={() => { setEditId(editId === p.id ? null : p.id); setDraft(p.content); }}
+                className="rounded-md bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-white hover:bg-[var(--accent-hover)]"
+              >
+                {editId === p.id ? 'Close' : 'Edit'}
+              </button>
+            </div>
+          </div>
+
+          {editId === p.id ? (
+            <div className="mt-3 space-y-2">
+              <textarea
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                className="h-80 w-full resize-y rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 font-mono text-xs text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
+              />
+              <div className="flex justify-end">
+                <button
+                  onClick={() => save(p)}
+                  disabled={busy === `save-${p.id}`}
+                  className="rounded-md bg-[var(--accent)] px-4 py-1.5 text-xs font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50"
+                >
+                  {busy === `save-${p.id}` ? 'Saving…' : 'Save'}
+                </button>
+              </div>
+            </div>
+          ) : (
+            <pre className="mt-3 max-h-48 overflow-auto whitespace-pre-wrap rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 font-sans text-xs text-[var(--text-muted)]">
+              {p.content.slice(0, 1200)}{p.content.length > 1200 ? '…' : ''}
+            </pre>
+          )}
+        </div>
+      ))}
     </div>
   );
 }

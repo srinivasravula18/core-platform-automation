@@ -10,6 +10,7 @@ import { buildAgentExecutionSteps, buildCaseDescription, normalizeCaseSteps, nor
 import { capturePlaywrightEvidence } from '../evidence/evidenceService';
 import { inspectApplicationFlow } from './inspectionService';
 import { getOrchestrator } from '../../ai/orchestrator';
+import { buildKnowledgeBlock, recordObservation } from '../knowledge/knowledgeService';
 import { resolveCredentials, maskPassword } from '../credentials/credentialsService';
 import { pushInboxItem } from '../inbox/routes';
 import { Plans, Suites, Cases, Runs, Reports, Scripts, Folders } from '../../db/repository';
@@ -341,6 +342,7 @@ async function runPostCaseAgentFlow(run: any, model: any, testCases: any, target
     ? `Selected QA repository context for this automation scope: ${JSON.stringify(run.selectedQaContext)}`
     : 'No selected QA repository context was provided for this automation scope.';
 
+  const coderKnowledge = buildKnowledgeBlock({ targetUrl, text: run.prompt || '' });
   const coder = await getOrchestrator('playwrightCoder');
   const scriptsResult = await coder.generateObject<any>({
     prompt: `Use this baseURL in the scripts when provided: ${targetUrl || 'not provided'}.
@@ -348,7 +350,7 @@ ${credentialContext}
 ${selectedQaContextText}
 Use this browser inspection context as the source of truth for reachable pages, visible labels, forms, navigation actions, tables/lists, buttons, links and final URL: ${JSON.stringify(inspectionContext)}.
 For authenticated flows, fill the username/email and password fields before clicking submit. Then follow the same user-requested path discovered by the inspector and assert the exact inspected target state using visible text, headings, tables, lists, forms, or URL changes. Do not invent unrelated pages or menu names that are not present in the inspection context or test case steps.
-Test cases: ${JSON.stringify(testCases)}`,
+Test cases: ${JSON.stringify(testCases)}${coderKnowledge}`,
     schema: playwrightScriptsSchema,
     userMessage: 'Generate Playwright scripts for the inspected flow.',
   });
@@ -526,6 +528,9 @@ export function registerAgentRoutes(app: Express) {
       targetUrl,
     });
     const taskId = randomUUID();
+    // Ground the whole run in the app-knowledge pack for this target (by stored
+    // website id, the target URL host, or a name in the prompt). Empty if none.
+    const knowledgeBlock = buildKnowledgeBlock({ websiteId: req.body.websiteId, targetUrl, text: prompt || '' });
 
     const newRun = {
       id: taskId,
@@ -577,9 +582,21 @@ export function registerAgentRoutes(app: Express) {
         credentials,
         model: undefined as any,
         runId: taskId,
+        knowledge: knowledgeBlock,
       });
       newRun.inspection_context = inspectionContext;
       newRun.messages.push({ agent: 'ApplicationInspector', status: 'completed', output: inspectionContext });
+
+      // Auto-grow the app knowledge: feed back a compact summary of what the live
+      // inspector actually saw, so the pack keeps up with features added after it was written.
+      try {
+        const ic: any = inspectionContext || {};
+        const nav = (ic.visibleNavigation || []).slice(0, 10).join(', ');
+        const forms = (ic.visibleForms || []).map((f: any) => f?.name || f?.label).filter(Boolean).slice(0, 6).join(', ');
+        const obsNote = `For "${(prompt || '').slice(0, 80)}" the app showed page "${ic.pageSummary || ic.currentUrl || ''}"`
+          + (nav ? `; nav: ${nav}` : '') + (forms ? `; forms: ${forms}` : '') + ` (goal: ${ic.goalStatus || 'unknown'}).`;
+        recordObservation({ websiteId: req.body.websiteId, targetUrl, text: prompt || '' }, obsNote);
+      } catch { /* observation is best-effort */ }
 
       newRun.messages.push({ agent: 'TestGenerationAgent', status: 'running' });
       const caseWriter = await getOrchestrator('caseWriter');
@@ -595,7 +612,7 @@ Use the inspection result as the source of truth for reachable pages, post-login
 
 For authenticated flows, steps must explicitly say to enter username/email "${credentials.username || '<provided username>'}" and password "${credentials.password || '<provided password>'}", click the relevant sign-in/login control, and then continue to the user-requested inspected target. When the request involves verifying data views, include steps that verify the visible table/list/grid container, headers, rows or empty-state, and absence of loading/error state using the labels found by inspection.
 
-Each test case must include automation tags in @ format, for example @bvt, @sanity, @regression, @smoke, @ui, @positive, @negative. If the user requested specific tag types (for example "@smoke cases" or "regression coverage"), apply those exact tags to every generated case. Each test case must include a steps array with ordered rows. Each row must have a clear action and expected result suitable for a report table.`,
+Each test case must include automation tags in @ format, for example @bvt, @sanity, @regression, @smoke, @ui, @positive, @negative. If the user requested specific tag types (for example "@smoke cases" or "regression coverage"), apply those exact tags to every generated case. Each test case must include a steps array with ordered rows. Each row must have a clear action and expected result suitable for a report table.${knowledgeBlock}`,
         schema: testCasesSchema,
         userMessage: prompt || '',
       });

@@ -2,10 +2,19 @@ import React, { useEffect, useState } from 'react';
 import { BrainCircuit, Lock, Loader2 } from 'lucide-react';
 
 const TOKEN_KEY = 'tfa_auth_token';
+const USERNAME_KEY = 'tfa_username';
 
 export function getAuthToken(): string {
   try {
     return localStorage.getItem(TOKEN_KEY) || '';
+  } catch {
+    return '';
+  }
+}
+
+export function getUsername(): string {
+  try {
+    return localStorage.getItem(USERNAME_KEY) || '';
   } catch {
     return '';
   }
@@ -21,6 +30,7 @@ export function logout() {
       }).catch(() => {});
     }
     localStorage.removeItem(TOKEN_KEY);
+    localStorage.removeItem(USERNAME_KEY);
   } catch {
     /* ignore */
   }
@@ -70,6 +80,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
         return;
       }
       localStorage.setItem(TOKEN_KEY, data.token);
+      try { localStorage.setItem(USERNAME_KEY, (data.username || username).trim()); } catch { /* ignore */ }
       setStatus('in');
     } catch {
       setError('Could not reach the server. Please try again.');

@@ -3,9 +3,8 @@ import { BrowserRouter, Routes, Route, Link, useLocation, useNavigate } from 're
 import { LayoutDashboard, TestTube2, Bug, Settings, BrainCircuit, PlayCircle, FolderTree, Sun, Moon, Search, CircleUser, Layers, Menu, ClipboardList, GitBranch, Command, MessagesSquare, ChevronDown, LogOut, Target, ScrollText } from 'lucide-react';
 import { cn } from '@/src/lib/utils';
 import { useTheme } from '@/src/store/theme';
-import { AIInbox } from '@/src/components/AIInbox';
 import { CommandBar } from '@/src/components/CommandBar';
-import { AuthGate, logout } from '@/src/components/AuthGate';
+import { AuthGate, logout, getUsername } from '@/src/components/AuthGate';
 import { appBasePath } from '@/src/lib/base-path';
 
 import AgentConsole from '@/src/pages/AgentConsole';
@@ -120,6 +119,7 @@ function Sidebar({ isOpen }: { isOpen: boolean }) {
 function Topbar({ onMenuClick, onCommandBarOpen }: { onMenuClick: () => void; onCommandBarOpen: () => void }) {
   const { theme, toggleTheme } = useTheme();
   const navigate = useNavigate();
+  const username = getUsername();
   const [globalSearch, setGlobalSearch] = useState('');
   const [searchResults, setSearchResults] = useState<{ intents: any[]; summary: string } | null>(null);
   const [searching, setSearching] = useState(false);
@@ -254,16 +254,16 @@ function Topbar({ onMenuClick, onCommandBarOpen }: { onMenuClick: () => void; on
           <Command className="w-3.5 h-3.5" />
           <span className="hidden md:inline">Cmd+K</span>
         </button>
-        <AIInbox />
         <button
           onClick={toggleTheme}
           className="p-2 rounded-full hover:bg-[var(--bg-secondary)] text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors"
         >
           {theme === 'dark' ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
         </button>
-        <button onClick={() => navigate('/settings')} title="Open settings" className="flex items-center gap-2 p-1 rounded-full hover:bg-[var(--bg-secondary)] transition-colors">
-          <CircleUser className="w-8 h-8 text-[var(--text-muted)]" />
-        </button>
+        <div title={username || 'Signed in'} className="flex items-center gap-2 px-1.5 py-1 text-sm text-[var(--text-primary)]">
+          <CircleUser className="w-7 h-7 text-[var(--text-muted)]" />
+          <span className="hidden sm:inline max-w-[10rem] truncate font-medium">{username || 'User'}</span>
+        </div>
         <button
           onClick={logout}
           title="Sign out"

@@ -9,9 +9,10 @@ import { registerResourceRoutes } from './server/features/resources/routes';
 import { registerAgentRoutes } from './server/features/agent/routes';
 import { registerGitAgentRoutes } from './server/features/git-agent/routes';
 import { registerRequirementRoutes } from './server/features/requirements/routes';
+import { registerKnowledgeRoutes } from './server/features/knowledge/routes';
+import { seedDefaultKnowledgeIfEmpty } from './server/features/knowledge/knowledgeService';
 import { registerScreenshotRoutes } from './server/features/screenshot/routes';
 import { registerCredentialsRoutes } from './server/features/credentials/routes';
-import { registerInboxRoutes } from './server/features/inbox/routes';
 import { registerControllerRoutes } from './server/features/controller/routes';
 import { registerChatRoutes } from './server/features/chat/routes';
 import { registerPlaywrightRoutes } from './server/features/playwright/routes';
@@ -29,6 +30,7 @@ dotenv.config({
 async function startServer() {
   await loadPersistedData();
   await loadPersistedSettings();
+  seedDefaultKnowledgeIfEmpty();
   if (isPgEnabled()) {
     try {
       await ensureMigrated();
@@ -56,13 +58,13 @@ async function startServer() {
   registerSettingsRoutes(app);
   registerAiSettingsRoutes(app);
   registerCredentialsRoutes(app);
-  registerInboxRoutes(app);
   registerControllerRoutes(app);
   registerChatRoutes(app);
   registerPlaywrightRoutes(app);
   registerSearchRoutes(app);
   registerGitAgentRoutes(app);
   registerRequirementRoutes(app);
+  registerKnowledgeRoutes(app);
   registerAgentRoutes(app);
   registerScreenshotRoutes(app);
   registerDashboardRoutes(app);

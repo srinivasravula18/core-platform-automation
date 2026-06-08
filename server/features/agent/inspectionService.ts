@@ -134,6 +134,7 @@ export async function inspectApplicationFlow(options: {
   credentials: any;
   model?: any;
   runId: string;
+  knowledge?: string;
 }) {
   const normalizedUrl = normalizeTargetUrl(options.targetUrl);
   const warnings: string[] = [];
@@ -189,7 +190,7 @@ export async function inspectApplicationFlow(options: {
           listLikeRegions: lastContext.listLikeRegions,
           forms: lastContext.forms,
           bodyText: lastContext.bodyText.slice(0, 1800),
-        })}. Decide whether the user's requested goal is already satisfied, blocked, or whether one visible action should be clicked next. Only choose an elementId from actions. Do not choose destructive actions such as delete, remove, save, submit data changes, unless the user explicitly asked for that.`,
+        })}. Decide whether the user's requested goal is already satisfied, blocked, or whether one visible action should be clicked next. Only choose an elementId from actions. Do not choose destructive actions such as delete, remove, save, submit data changes, unless the user explicitly asked for that.${options.knowledge || ''}`,
         userMessage: options.prompt || 'Inspect the application flow.',
       });
       const decision = decisionResult.object;

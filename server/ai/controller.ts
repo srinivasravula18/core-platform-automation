@@ -25,6 +25,7 @@ import { AGENT_FOR_INTENT, INTENT_LABELS, intentRequiresApproval, type IntentDra
 import { Plans, Suites, Cases, Runs, Defects, Reports, Scripts, Folders } from '../db/repository';
 import { resolveCredentials } from '../features/credentials/credentialsService';
 import { Settings } from '../db/repository';
+import { buildKnowledgeBlock } from '../features/knowledge/knowledgeService';
 
 // The Agent Console is intentionally NOT connected to the AI Inbox. Plans create their
 // artifacts directly (they're shown in the chat and on their pages); nothing is queued for
@@ -173,7 +174,7 @@ Rules:
 - A bare demonstrative is NOT a scope. If the request points at "this/that/the feature", "this page", "this section", "this flow", "it", or similar WITHOUT naming a concrete feature/flow and WITHOUT a URL or app (in this message or the recent conversation), do NOT guess what it refers to and do NOT invent steps. Return a single intent with kind="explain" and a topic that asks which feature/flow/app or URL they mean, e.g. "Which feature should I test — what's its name, and is there a URL or app to run against?". Never fabricate a feature, its steps, or a target.
 - If the user just wants a chat response, return a single intent with kind="explain" and the topic being a direct answer to their question.
 - Default confidence to 70+ when the intent is clear, 40-69 when ambiguous, <40 when guessing.
-- All params are best-effort. Leave fields empty if unknown; downstream code will fill them in.`;
+- All params are best-effort. Leave fields empty if unknown; downstream code will fill them in.${buildKnowledgeBlock({ text: input.userMessage })}`;
 }
 
 export async function classifyIntent(input: ClassifyInput): Promise<{ intents: IntentDraft[]; summary: string; reasoning: string; rawText: string }> {
@@ -481,16 +482,22 @@ async function executeStep(step: PlanStep, plan: Plan): Promise<any> {
       const planId = String(params.planId || '');
       const suiteId = String(params.suiteId || '');
       const folderId = String(params.folderId || '');
+      // The planner may leave params sparse — fall back to the original request so the
+      // case writer (and the knowledge resolver) always have the real intent + target.
+      const scope = String(params.scope || '').trim() || plan.userMessage;
+      const knowledgeText = `${plan.userMessage} ${params.scope || ''} ${params.requirements || ''} ${params.source || ''}`;
       const orch = await getOrchestrator('caseWriter', { workspaceId, userId });
       const { object } = await orch.generateObject<{ cases: any[] }>({
         prompt: `Generate ${count} test cases.
-Scope: ${params.scope || 'not specified'}
+User request (verbatim): ${plan.userMessage}
+Scope: ${scope}
 Requirements: ${params.requirements || 'standard QA coverage'}
 ${planId ? `Plan ID: ${planId}` : ''}
 ${suiteId ? `Suite ID: ${suiteId}` : ''}
 ${folderId ? `Folder ID: ${folderId}` : ''}
 
-Return strict JSON: {"cases": [{title, description, priority, type, tags, steps: [{action, expected}]}]}.`,
+Generate cases that actually cover the user request above; do not default to unrelated login/auth cases unless the request is about login.
+Return strict JSON: {"cases": [{title, description, priority, type, tags, steps: [{action, expected}]}]}.${buildKnowledgeBlock({ text: knowledgeText })}`,
         schema: z.object({ cases: z.array(z.object({ title: z.string(), description: z.string(), priority: z.string(), type: z.string(), tags: z.array(z.string()), steps: z.array(z.object({ action: z.string(), expected: z.string() })) })) }),
         userMessage: String(params.requirements || params.scope || 'generate test cases'),
       });
