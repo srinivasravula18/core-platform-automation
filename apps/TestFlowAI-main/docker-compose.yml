@@ -1,0 +1,20 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: testflowai-postgres
+    environment:
+      POSTGRES_DB: testflowai
+      POSTGRES_USER: postgres
+      POSTGRES_HOST_AUTH_METHOD: trust
+    ports:
+      - "5432:5432"
+    volumes:
+      - testflowai-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d testflowai"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  testflowai-postgres-data:

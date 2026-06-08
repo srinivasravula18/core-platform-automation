@@ -1,0 +1,87 @@
+- generic [ref=e3]:
+  - generic [ref=e4]:
+    - generic [ref=e6]:
+      - img [ref=e7]
+      - text: TestFlowAI
+    - generic [ref=e19]:
+      - link "Dashboard" [ref=e20] [cursor=pointer]:
+        - /url: /
+        - img [ref=e21]
+        - text: Dashboard
+      - link "Test Plans" [ref=e26] [cursor=pointer]:
+        - /url: /plans
+        - img [ref=e27]
+        - text: Test Plans
+      - link "Test Suites" [ref=e32] [cursor=pointer]:
+        - /url: /suites
+        - img [ref=e33]
+        - text: Test Suites
+      - link "Test Cases" [ref=e37] [cursor=pointer]:
+        - /url: /cases
+        - img [ref=e38]
+        - text: Test Cases
+      - link "Test Runs" [ref=e41] [cursor=pointer]:
+        - /url: /runs
+        - img [ref=e42]
+        - text: Test Runs
+      - link "Reports" [ref=e45] [cursor=pointer]:
+        - /url: /reports
+        - img [ref=e46]
+        - text: Reports
+      - link "Defects" [ref=e49] [cursor=pointer]:
+        - /url: /defects
+        - img [ref=e50]
+        - text: Defects
+      - link "AI Agent" [ref=e59] [cursor=pointer]:
+        - /url: /agent
+        - img [ref=e60]
+        - text: AI Agent
+    - link "Settings" [ref=e73] [cursor=pointer]:
+      - /url: /settings
+      - img [ref=e74]
+      - text: Settings
+  - generic [ref=e77]:
+    - generic [ref=e78]:
+      - generic [ref=e79]:
+        - button [ref=e80]:
+          - img [ref=e81]
+        - generic [ref=e82]:
+          - img [ref=e83]
+          - textbox "Search plans, cases, runs..." [ref=e86]
+      - generic [ref=e87]:
+        - button [ref=e88]:
+          - img [ref=e89]
+        - button [ref=e95]:
+          - img [ref=e96]
+    - main [ref=e100]:
+      - generic [ref=e101]:
+        - generic [ref=e102]:
+          - generic [ref=e103]:
+            - heading "Test Cases" [level=1] [ref=e104]
+            - paragraph [ref=e105]: Manage and organize your test repository.
+          - generic [ref=e106]:
+            - button "New Case" [ref=e107]:
+              - img [ref=e108]
+              - text: New Case
+            - button "AI Auto" [ref=e109]:
+              - img [ref=e110]
+              - text: AI Auto
+        - generic [ref=e113]:
+          - generic [ref=e114]:
+            - generic [ref=e115]:
+              - img [ref=e116]
+              - textbox "Search cases..." [ref=e119]
+            - button "Filters" [ref=e120]:
+              - img [ref=e121]
+              - text: Filters
+          - table [ref=e124]:
+            - rowgroup [ref=e125]:
+              - row "ID Title Status Tags Actions" [ref=e126]:
+                - columnheader "ID" [ref=e127]
+                - columnheader "Title" [ref=e128]
+                - columnheader "Status" [ref=e129]
+                - columnheader "Tags" [ref=e130]
+                - columnheader "Actions" [ref=e131]
+            - rowgroup [ref=e132]:
+              - row "No test cases found." [ref=e133]:
+                - cell "No test cases found." [ref=e134]
