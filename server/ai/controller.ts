@@ -23,9 +23,17 @@ import { randomUUID } from 'crypto';
 import { getOrchestrator } from './orchestrator';
 import { AGENT_FOR_INTENT, INTENT_LABELS, intentRequiresApproval, type IntentDraft, type IntentKind, type Plan, type PlanStep, type SideEffect } from './intents';
 import { Plans, Suites, Cases, Runs, Defects, Reports, Scripts, Folders } from '../db/repository';
-import { pushInboxItem } from '../features/inbox/routes';
 import { resolveCredentials } from '../features/credentials/credentialsService';
 import { Settings } from '../db/repository';
+
+// The Agent Console is intentionally NOT connected to the AI Inbox. Plans create their
+// artifacts directly (they're shown in the chat and on their pages); nothing is queued for
+// a separate inbox approval. This local no-op replaces the former inbox hand-off at every
+// executor call site without churning each one — call sites stay unchanged, they just push
+// nothing and get an empty id back (so `step.inboxItemId` stays falsy and no inbox link shows).
+async function pushInboxItem(_item: unknown): Promise<{ id: string }> {
+  return { id: '' };
+}
 
 const planPlans: Map<string, Plan> = new Map();
 const controllerMemory: Array<{ role: 'user' | 'assistant'; content: string; at: string }> = [];
@@ -162,6 +170,7 @@ Rules:
 - Multi-step requests should produce multiple intents in execution order.
 - If the user request is vague, ask for clarification by returning a single intent with kind="explain" and topic describing what to ask.
 - Required details before creating: a folder needs a name; a test plan needs a name and a scope; a test suite needs a name (and ideally a module); test cases need a scope/target (what feature, flow, or URL to cover). If the user asks to create one of these but DID NOT provide the required detail, do NOT invent a default name or scope. Instead return a single intent with kind="explain" whose topic asks the user for exactly the missing piece(s), e.g. "What should I name the plan, and what is its scope?" or "What should I name the folder?". Only emit the create intent once the required detail is present (in this message or the recent conversation).
+- A bare demonstrative is NOT a scope. If the request points at "this/that/the feature", "this page", "this section", "this flow", "it", or similar WITHOUT naming a concrete feature/flow and WITHOUT a URL or app (in this message or the recent conversation), do NOT guess what it refers to and do NOT invent steps. Return a single intent with kind="explain" and a topic that asks which feature/flow/app or URL they mean, e.g. "Which feature should I test — what's its name, and is there a URL or app to run against?". Never fabricate a feature, its steps, or a target.
 - If the user just wants a chat response, return a single intent with kind="explain" and the topic being a direct answer to their question.
 - Default confidence to 70+ when the intent is clear, 40-69 when ambiguous, <40 when guessing.
 - All params are best-effort. Leave fields empty if unknown; downstream code will fill them in.`;
@@ -505,7 +514,16 @@ Return strict JSON: {"cases": [{title, description, priority, type, tags, steps:
           createdBy: 'AI Controller',
           createdAt: new Date(),
         });
-        created.push({ id: rec.id, title: rec.title });
+        created.push({
+          id: rec.id,
+          title: rec.title,
+          description: rec.description || '',
+          steps: rec.steps || [],
+          tags: rec.tags || [],
+          type: rec.type || 'Manual',
+          priority: rec.priority || 'Medium',
+          captureEvidenceOnManualRun: rec.captureEvidenceOnManualRun !== false,
+        });
       }
       const inbox = await pushInboxItem({
         workspaceId,
@@ -518,8 +536,9 @@ Return strict JSON: {"cases": [{title, description, priority, type, tags, steps:
         payload: { caseIds: created.map((c) => c.id), params },
         links: [{ label: 'Open Test Cases', href: '/cases' }],
       });
-      step.inboxItemId = inbox.id;
-      return { caseIds: created.map((c) => c.id), inboxItemId: inbox.id };
+      void inbox;
+      // Return the full cases (with steps) so the Agent Console can render them inline.
+      return { caseIds: created.map((c) => c.id), cases: created };
     }
     case 'create_run': {
       const name = String(params.name || `Run ${new Date().toISOString().slice(0, 16)}`);

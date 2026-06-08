@@ -483,3 +483,130 @@ Fixture: role "QA Reviewer MCP" (`roldptceb4`), user "qa.reviewer.mcp" (`usr1hsv
 | 17 | **Recycle Bin** | Deleted group appears with 28-day `purge_after`; **Restore** returns it to Groups | ✅ delete→restore |
 
 **Overall:** all 17 Admin sidebar sections were driven live via the Playwright MCP; the metadata→Keystone propagation chain (App→Object→Fields→Layout→Tab→Record), the access/permission model (default-deny, read-only grant, impersonation), validations, triggers, audit, concurrency, and recycle/restore were each confirmed against the running stack. Evidence screenshots: `evidence/admin/01..16-*.png`, `evidence/keystone/01..06-*.png`.
+
+---
+
+# 14. DATABASE LAYER — 360° (live-introspected + code-verified)
+
+Engine: **PostgreSQL**, accessed via **Kysely 0.27** (untyped `Kysely<unknown>`) over a custom **adaptive `pg` pool** — no ORM; every query is a raw `sql` template tag (`app.db.executeQuery(sql`...`.compile(app.db))`). Live DB introspected on 2026-06-08 (`core-platform` @ localhost:5432).
+
+## 14.1 Connection & pool (`apps/service/src/db/*`)
+- **Discrete env vars only — NO `DATABASE_URL`/`PG*` parsing**: `DB_HOST`, `DB_PORT`(5432), `DB_USER`/`DB_USERNAME`, `DB_PASSWORD`, `DB_NAME`, `DB_SSL` (`"true"`→`{rejectUnauthorized:false}`), `DB_POOL_MIN/MAX/MAX_CAP`, `DB_POOL_ADAPTIVE`. (`pool-config.ts`)
+- One process-wide `db` singleton, decorated as `app.db` (`index.ts`). Helpers take `app` just to reach `app.db`.
+- **AdaptivePool** auto-resizes: scales up when `waitingCount` is sustained, scales down on low utilization (never below `initialMax`), swapping pools gracefully.
+- **Transactions:** `db.transaction().execute(async trx => …)`; a tx-scoped Fastify is faked via `{...app, db: trx}` so helpers/engines run in-tx. ⚠️ **DDL (DROP/CREATE business table) runs OUTSIDE the metadata tx** in object delete → crash window can orphan tables.
+
+## 14.2 Migrations (`apps/service/src/db/migrate.ts`) — 139 migrations (`0001`→`0132`)
+- Kysely Migrator; history in **`public.kysely_migration`** + `kysely_migration_lock`.
+- ⚠️ **Migrations do NOT run on server boot.** Boot only does `ensureSystemAdminRole` → `ensureBootstrapAdminUser` → `ensureAppImportPermissions` → `startDataImportWorker` → `listen`. Run schema changes via **`npm run migrate`**. (The old "ensureMigrated on boot" memory is stale — superseded.)
+- **Baselining:** a pre-existing DB gets every migration marked applied EXCEPT `0128/0129/0130` (`KEEP_PENDING_WITHOUT_HISTORY`).
+
+## 14.3 The schemas (live counts)
+| Schema | Tables | Purpose |
+|---|---|---|
+| `meta` | 54 | metadata/control plane (all `id varchar(10)` PK, `created_by/at`+`modified_by/at`) |
+| `business` | 48 | one record table per object: `<app_prefix>__<object_api>` |
+| `runtime` | 3 | `flow_session`, `recycle_bin_entry`, `auth_rate_limit_bucket` |
+| `logs` | 97 | per-object audit (`cpl__<obj>_log`), meta audit (`cpl_<table>_log`), access/agent/flow/email/scheduler logs |
+| `public` | 2 | kysely migration bookkeeping |
+| **`papm` / `papm_logs`** | 8 / 8 | ⚠️ **a SECOND metadata-driven app** ("PAPM", PascalCase tables: Initiative, Milestone, Department, Membership, Follower…) sharing the same DB — proof the platform is multi-app at the DB level |
+| `compass`, `public_logs` | 0 / 8 | legacy/empty + mirror logs |
+
+## 14.4 ⚠️ CRITICAL naming distinction (verified live)
+- Business **table name** uses the **app_prefix**: object "Invoice" in app prefix `qz1` → table **`business.qz1__invoice`** (NOT the object's id_prefix).
+- Record **IDs** use the **object's `id_prefix`**: `iqz…` for invoices, `lit…` for line items.
+- So `<app_prefix>__<object_api>` (table) and `<object_id_prefix><7 random>` (record id) are independent prefixes. Both are 3 chars, globally unique.
+
+## 14.5 Live business table anatomy — `business.qz1__invoice`
+System columns (every business table): `id varchar(10) PK`, `app_id varchar(10) NOT NULL`, `record_type_id varchar(10) NULL`, `name text`, `status text`, **`row_version integer NOT NULL DEFAULT 1`**, `created_by/modified_by varchar(10)`, `created_at/modified_at timestamptz DEFAULT now()`. Custom columns added by field type: `tracking_code text`, `amount numeric`, `priority text`, `due_date date`, `document jsonb` (file field → jsonb id array).
+**Indexes (auto-provisioned by schema-manager):** pkey(id); btree `app_id`, `status`, `created_at DESC`, `modified_at DESC`; composite `(app_id,status)`, `(app_id,created_at)`, `(app_id,modified_at)`; **`uidx_…__f__name` UNIQUE on `(app_id, lower(name))`** (case-insensitive name uniqueness **per app**); **GIN trigram** (`gin_trgm_ops`) on text fields (name, tracking_code, priority) for fast ILIKE search.
+
+## 14.6 ⚠️ Foreign-key reality (the load-bearing finding)
+- **Business → meta FKs exist ONLY for `created_by`/`modified_by` → `meta.user_account`** (96 FKs across 48 tables = 48×2).
+- **NO DB FK** on business `app_id`, `record_type_id`, or **any lookup/reference/master_detail column** — relationship columns are plain `varchar(10)` holding the target id. **Referential integrity for relationships is enforced in App Service code, not the DB.** (This is why master-detail cascade delete is application logic, and why metadata can change without DB-level cascade breakage.)
+- **Meta IS properly relational.** Live FK graph highlights: `meta.object` is referenced by **28** child columns (field.object_id, field.**reference_object_id**, tab, layout, list_view, access_record, record_type, validation_rule, trigger_rule, flow, button, email_template, scheduled_job, sharing_rule, …); `meta.app` by 17 (object, tab, role, group, flow, button, file, …); `meta.permission` ← permission_grant(+runtime); `meta.user_account` ← user_role, user_group, manager_id(self), record_share, refresh_token_family, system_setting.updated_by, …; `meta.flow` ← flow_step; `meta.record_type` ← record_type_picklist.
+
+## 14.7 How meta ↔ business ↔ logs connect (joins)
+- **meta→business: by naming convention, not FK.** To touch records you JOIN `meta.object o JOIN meta.app a ON a.id=o.app_id` to get `app_prefix`, then build `business.<app_prefix>__<o.api_name>` dynamically.
+- **business→logs: by `record_key` jsonb**, not FK. Audit rows live in `logs.<app_prefix>__<obj>_log` `{record_key, action, action_at, actor_user_id, field_name, old_value, new_value}`, queried with `record_key @> '{"id":"<recordId>"}'` (GIN-indexed). One row **per changed audited field**.
+- **list-view related columns** build real SQL JOINs on the fly: forward `target.id = left.<field>`, reverse `child.<field> = parent.id`, aliased `j1,j2,…`, depth-capped by `object.list_view_relationship_depth` (clamp 0..10, default 5).
+- **created_by/modified_by → user_account** are the only real cross-schema joins guaranteed by FK.
+
+## 14.8 IDs, row_version, system fields
+- IDs = `<prefix><7 random chars>`. ⚠️ **Three generators**: records use **CSPRNG** `[a-z0-9]`; scheduler/loader use `Math.random` over `[a-z1-9]` (no `0`). `meta.id_prefix.sequence` is **vestigial** (IDs are random, not sequential; the table is a prefix registry).
+- **Optimistic concurrency:** UPDATE `… set row_version=<n+1> where id=? and row_version=<current> returning *`; 0 rows → 409 conflict. Expected version from `If-Match: "rv-<n>"` header; ETag `"rv-<n>"` on GET.
+- System fields (fixed order): id, name, status, created_by, created_at, modified_by, modified_at. `status` defaults `Active`; `name` text/unique/searchable(weight A).
+
+## 14.9 Schema-manager (object/field provisioning)
+- Create object → `ensureBaseTable` (system cols + indexes) + `ensureLogTable` (`logs.<t>_log`). `data_source='meta'` objects (e.g. User) reuse a `meta.*` table — **no business table**.
+- Add field → `ALTER TABLE ADD COLUMN <api> <pgType>` (`mapFieldTypeToColumn`: text→text, currency/number→numeric, date→date, datetime→timestamptz, file/multi_picklist→jsonb, lookup/reference/master_detail→**varchar(10)**) + index (relationship→btree, text→trigram, unique→`uidx_<t>__f__<field>` on `(app_id, lower(col))`).
+- ⚠️ `uidx_…__f__…` naming is load-bearing: the 23505→409 mapper parses the violated field from it. Trigram/composite indexes are best-effort (swallow errors; ILIKE falls back to seq scan if `pg_trgm` missing).
+
+## 14.10 Live data volumes (test-against baseline)
+`meta`: 10 apps, **63 objects, 866 fields**, 48 tabs, 5 roles, 4 groups, **303 users**, **1192 access_records**, 78 permissions, 76 grants, 12 validations, 10 triggers, 4 flows, 6 scheduled jobs, 71 list_views, 306 layouts, 3 record_types, 0 sharing_rules. `business`: **crm__account = 1110** records (scheduled-job created), others small. `logs.cpl_access_log` = **78,390** rows. `runtime.recycle_bin_entry` = 75.
+
+---
+
+# 15. COMPLETE API SURFACE (live, extracted from route registrations)
+
+All `/api/*` and `/admin/*` require `app.authenticate` (JWT bearer or `cp_access` cookie); `/admin/*` additionally requires the `system_admin` role. `/auth/*` and `/health` are public. Errors are RFC-7807; 23505 → 409 with parsed field.
+
+**Auth** (`/auth`): `POST login | refresh | logout | forgot | reset | reverify | impersonation/exchange`, `GET me`.
+
+**Apps/objects/records (runtime, `/api/apps/:appId`)**:
+- `GET /api/apps`, `GET …/objects`, `GET …/tabs`, `GET …/search`, `GET …/lookup`, `GET …/lookup/target`, `GET …/recycle-bin`.
+- Records: `GET|POST …/objects/:object/records`, `GET|PATCH|DELETE …/records/:id`, `GET …/records/:id/access`, `GET|POST …/records/:id/audit[/query|/export]`, `POST …/objects/:object/buttons/:buttonApi/execute`.
+- Files: `GET …/records/:id/files`, `…/files/available`, `POST …/records/:id/files`, `POST …/records/:id/files/link`, `GET /api/files/:fileId/download`, `…/download-pdf`, `DELETE /api/files/:fileId`.
+- List views: `GET|POST …/list-views`, `GET|PATCH|DELETE …/list-views/:id`, `POST …/list-views/:id/clone`, `GET …/lookup-default`, `GET|PUT …/preferences`, `POST …/query`, `POST …/bulk`, `POST …/export`.
+- Flows (runtime, app- and object-scoped): `GET …/flows`, `…/flows/runs`, `…/flows/:flowId`, `POST …/flows/:flowId/execute/{start|next|back|save-exit|cancel|submit|ensure-draft-record}`, `GET …/runs[/:runId]`, `POST …/runs/:runId/resume`.
+- Data import: `POST /api/apps/:appId/data-import/submit`.
+- Exports: `GET /api/export-jobs/:jobId[/download]`.
+- Users (self/dir): `GET /api/users/{me|me/preferences|access|describe|directory|:id}`, `PUT /api/users/me/preferences`.
+- Permissions: `GET /api/permissions[/export]`, `POST /api/permissions[/check]`, `PATCH|DELETE /api/permissions/:id`, grants `GET|POST /:id/grants`, `DELETE /:id/grants/:gid`, metadata-grants `GET|POST /:id/metadata-grants`, `DELETE …/:gid`.
+- Agents: `GET capabilities|prompts|history/sessions[/:id/messages]`, `PATCH prompts`, `POST prompts/reset|respond|voice-preview|realtime/client-secret|audit/query|audit/export`, `DELETE history/sessions/:id`.
+- Recycle bin: `POST /api/recycle-bin/:entryId/restore`, `DELETE /api/recycle-bin/:entryId`.
+- Icons/settings: `GET /api/icons/:iconId/content`, `GET /api/system-settings/:key`.
+
+**Admin metadata (`/admin`)**:
+- Apps: `POST /admin/apps`, `PATCH|DELETE /admin/apps/:appId`.
+- Objects: `POST /admin/apps/:appId/objects`, `GET|PATCH|DELETE /admin/objects/:objectId`, `GET …/describe`.
+- Object sub-resources (each CRUD): `fields`, `layout`/`layouts`, `form`/`forms`, `layout-assignments`, `form-assignments`, `record-types` (+`/picklists/:fieldId`), `validation-rules`, `trigger-rules` (+`/verify`), `buttons`, `email-templates`, `list-view-assignments`, `lookup-list-view-defaults`, `search-page-columns`.
+- Tabs: `POST /admin/apps/:appId/tabs`, `PATCH|DELETE …/tabs/:tabId`.
+- Access/permissions: `/admin/access-records` (CRUD), `/admin/access-control` (CRUD), `/admin/sharing-rules` (CRUD).
+- RBAC: `/admin/roles` (CRUD, `/:id/users` GET/POST/DELETE), `/admin/groups` (same), `/admin/users` (CRUD, `/:id/password`, `/:id/login-as`), `PUT /admin/users/:id/roles|groups`.
+- Flows authoring: `/admin/apps/:appId/flows` & `/admin/objects/:objectId/flows` (+ `/steps[/reorder]`, `/access-grants`), `GET /admin/flows/health`.
+- Scheduler: `/admin/scheduled-jobs` (CRUD, `/pause|/resume|/run-now`, `/runs[/:id/logs]`, `/runs/:id/retry|/cancel`), `GET /admin/scheduled-job-types`, `/admin/scheduler/health`.
+- Settings/logs/icons: `GET|PATCH /admin/system-settings[/:key]`, `GET /admin/audit/meta[/:metaTable/:recordId]`, `GET /admin/{access-logs|record-access-logs|email-logs}`, `/admin/icons` (CRUD + `/upload`).
+- Recycle bin (admin): `GET /admin/recycle-bin`, `POST /admin/recycle-bin/:entryId/restore`, `DELETE …/:entryId`.
+
+**Front-end clients:** `apps/admin/src/api.ts` (~140 fns) and `apps/shockwave/src/api.ts` (~2587 lines) wrap these with `credentials:include`, bearer injection, refresh-on-401-retry; Keystone also dedups in-flight GETs and forces `cache:no-store`.
+
+---
+
+# 16. SUBSYSTEM DEEP REFERENCE (code + DB + live-verified) — condensed
+
+**Flows** — Flow + ordered Steps (author) → `runtime.flow_session` (run). Lifecycle start/next/back/save-exit/cancel/submit; advisory-xact-lock per session; row-lock only for edit-with-record (lease 120s). Step visibility: always / `$flow` **expression eval** (`new Function`, server+client) / field_compare. Backend actions: create/update/delete_record, http_request, custom (ELIMS). ⚠️ **Flow feature-permission removed (migration 0130)** → gated solely by `meta.flow_access_grant`. Draft records via `x-core-platform-flow-draft` header (skips required validation). Seeded flows = CRM (account onboarding/quick-create, opportunity qualification, case triage) + Nodify/ELIMS accession.
+
+**Scheduler** — `meta.scheduled_job` + `scheduled_job_run` + `scheduler_worker_heartbeat`; PM2 `core-platform-scheduler` polls (5s), leases (120s), heartbeats, retries `failed` only. Job types: `system.noop|auth_cleanup|export_cleanup|audit_log_cleanup`, `script.typescript` (worker_threads sandbox), `data.record_create|update` (full validation+trigger lifecycle). ⚠️ **`misfire_policy` is inert** (stored/validated, never branched on). ⚠️ **Cron ANDs DOM∧DOW** (Unix ORs). ⚠️ `run-now`/`retry` execute **in the API process**, skip config re-validation.
+
+**Buttons** — `meta.button`, behaviors `open_ui` (URL/component, client) and `process` (server). `POST …/buttons/:api/execute` needs button `execute` perm + per-record read. ⚠️ **Only `sample_process` is registered**; any other process button → 400.
+
+**Email** — `meta.email_template` (max 3 trigger_events: afterInsert/Update/Delete). Merge tokens `{{record.field}}`, `{{record.rel:obj:field.x}}` (depth-capped, respects masking). `logs.cpl_email_notification_log`. ⚠️ **Recipients are newline-separated**; effective send = template flag AND `system.email.delivery_enabled`; ⚠️ **DNS MX/A precheck** can mark valid mail Failed in restricted-DNS envs.
+
+**Agents (AI)** — **OpenAI** (`gpt-5` text / `gpt-realtime` voice). Tools call the platform's own API via `app.inject` (so permissions/audit apply): shared CRUD/query tools + admin app/object/field/tab tools (no roles/perms/layout tools). Sessions/messages/actions in `logs.cpl_agent_*`. Developer mode = system_admin only (adds git/repo context). ⚠️ **`deleteAgentSession` deletes from wrong table** (`cpl_agent_action` vs `…_action_log`) → action logs leak.
+
+**Data Import** — `POST …/data-import/submit` → `meta.data_import_job` → in-process worker, **resumable per row** (`next_row_index`/`row_results_json`). Needs app `import` permission + email + tracking-record ownership + linked `ready` source file. add/update/add_update with `match_field`; restricted fields never written (but **match field may be `id`**). Results CSV attached + completion/failure email. Admin trigger-bypass requires reauth (`/auth/reverify`, single-use jti).
+
+**Files** — `meta.file` + `meta.file_link` (join) + record field jsonb id-array. Upload validates field-is-file, extension (`file_extensions_json`), category (`file_categories_json`), size (`system.file.max_size_mb`=25), sha256; same-app link only; soft-detach delete; restore reactivates links. ⚠️ Download reads whole file into a Buffer. **Verified live:** uploaded mcp-contract.txt → 201 + checksum + category + listed on record.
+
+**Exports + Bulk** — Sync list-view export (CSV/PDF) needs `feature:export:use` + per-format flag; **row-capped** (csv 10000/pdf 5000), ⚠️ **no size cap, not streamed for CSV**. ⚠️ **Async export pipeline is dead code** (`createExportJob` zero callers). Bulk update/delete: 428 without `expected_row_versions`/`if_unmodified_since`; 409 `stale_version`/`stale_timestamp`/`concurrent_update`; ⚠️ **bulk DELETE bypasses the feature-permission gate** (only update gated).
+
+**List views** — full operator set (eq/ne/lt/lte/gt/gte/in/not_in/between/contains/starts/ends/is_null/date_expr with TODAY/THIS_WEEK/LAST_N_DAYS…), custom logic strings (`"1 AND (2 OR 3)"`), related-field columns (forward/reverse joins, depth-capped), summary/chart/kanban modes, sharing private/public/specific/role/group/user, per-user prefs (default/pinned/last/sort), per-principal feature flags. ⚠️ Table mode does **per-row access eval in a paging loop**; `total_count` omitted on page>1. **Verified live:** sort 200; filter payload shape is `{field,operator,value}` inside a FilterGroup.
+
+**Relationships** — `meta.field type ∈ reference|lookup|master_detail` + `reference_object_id`; stored as unconstrained `varchar(10)`. Related list = filtered child list-view query (FK=parent id), **auto-discovered** (no layout needed). **master_detail cascades delete** (recursive, paged, captures child recycle snapshots); lookup/reference don't. Unlink nulls the FK (blocked for required/read-only/master_detail). **All verified live** (created Line Item master-detail → related list auto-appeared → cascade delete → both parent+child in recycle bin). ⚠️ Seed suites use only `reference` (no master-detail).
+
+**Seeded suites** (domain to test against): Core(site/vendor/asset) → Ops Hub(project/service_request) → LIMS(sample→lab_test→lab_result) + HR(department→employee→leave_request); Revenue Hub → CRM(account→contact/opportunity/case); Nodify CDT(case→order→label/trr/requisition); ELIMS(20 objects: trf/requisition/specimen/aliquot/storage…). Validations: opportunity amount>0/probability 0..1, lab_result value≥0. Triggers: sample/opportunity defaults, "name starts with S → Inactive".
+
+---
+
+*Sections 13–16 reflect both exhaustive code analysis and **live verification** (Playwright MCP against the running apps + direct PostgreSQL introspection of `core-platform`). Every "⚠️" is a code-confirmed gotcha worth a dedicated test.*

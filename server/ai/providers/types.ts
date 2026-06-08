@@ -94,15 +94,18 @@ export function classifyError(provider: ProviderName, status: number | undefined
 }
 
 export const DEFAULT_MODELS: Record<ProviderName, { default: string; alternatives: string[] }> = {
-  gemini: { default: 'gemini-2.5-flash', alternatives: ['gemini-2.5-pro', 'gemini-2.0-flash'] },
+  gemini: { default: 'gemini-2.5-flash', alternatives: ['gemini-3.5-flash', 'gemini-3.1-pro', 'gemini-3.1-flash-lite', 'gemini-2.5-pro', 'gemini-2.5-flash-lite'] },
   openai: { default: 'gpt-5.4-mini', alternatives: ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-nano'] },
   anthropic: { default: 'claude-opus-4-8', alternatives: ['claude-sonnet-4-6', 'claude-haiku-4-5'] },
 };
 
 export const PRICING_PER_1M_TOKENS: Record<string, { input: number; output: number }> = {
+  'gemini-3.5-flash': { input: 0.3, output: 2.5 },
+  'gemini-3.1-pro': { input: 2.0, output: 12.0 },
+  'gemini-3.1-flash-lite': { input: 0.1, output: 0.4 },
   'gemini-2.5-flash': { input: 0.075, output: 0.3 },
   'gemini-2.5-pro': { input: 1.25, output: 5.0 },
-  'gemini-2.0-flash': { input: 0.075, output: 0.3 },
+  'gemini-2.5-flash-lite': { input: 0.1, output: 0.4 },
   'claude-opus-4-8': { input: 5.0, output: 25.0 },
   'claude-sonnet-4-6': { input: 3.0, output: 15.0 },
   'claude-haiku-4-5': { input: 1.0, output: 5.0 },
