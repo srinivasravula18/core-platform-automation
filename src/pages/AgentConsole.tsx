@@ -103,7 +103,7 @@ type Turn =
   | { id: string; role: 'assistant'; kind: 'reqdiscovery'; result: any }
   | { id: string; role: 'assistant'; kind: 'cases'; cases: any[] }
   | { id: string; role: 'assistant'; kind: 'clarify'; plan: any; summary: string; confidence: number }
-  | { id: string; role: 'assistant'; kind: 'folderask'; text: string }
+  | { id: string; role: 'assistant'; kind: 'folderask'; text: string; understanding?: string }
   | { id: string; role: 'assistant'; kind: 'thinking'; label: string };
 
 interface Suggestion {
@@ -513,11 +513,18 @@ export default function AgentConsole() {
           const mentionsFolder = /\bfolder\b/i.test(text) || /@\w+/.test(text);
           if (!mentionsFolder) {
             setPendingDeep(text);
+            const target = site ? `${site.name} (${site.baseUrl})` : targetUrl;
+            const understanding =
+              `Here's what I understood:\n` +
+              `• Target: ${target}\n` +
+              `• Task: ${promptForDeep}\n\n` +
+              `Plan: log in to the target → perform the steps on the live app → verify the result → capture screenshots as evidence.`;
             replaceTurn(thinkingId, {
               id: thinkingId,
               role: 'assistant',
               kind: 'folderask',
-              text: 'Before I prepare these, which folder should I save them in? Type a folder name below, or let me auto-generate one.',
+              understanding,
+              text: 'Look right? Pick a folder for the results (type a name below), or proceed with an auto-named folder.',
             });
             setBusy(false);
             inputRef.current?.focus();
@@ -966,13 +973,33 @@ export default function AgentConsole() {
                         <FolderTree className="h-4 w-4" />
                       </div>
                       <div className="rounded-2xl rounded-bl-sm border border-[var(--border)] bg-[var(--bg-card)] px-4 py-3 text-sm">
+                        {turn.understanding && (
+                          <pre className="mb-2 whitespace-pre-wrap rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 font-sans text-[13px] text-[var(--text-primary)]">
+                            {turn.understanding}
+                          </pre>
+                        )}
                         <p className="text-[var(--text-primary)]">{turn.text}</p>
-                        <div className="mt-2.5">
+                        <div className="mt-2.5 flex flex-wrap gap-2">
                           <button
                             onClick={() => send('auto')}
                             className="inline-flex items-center gap-1.5 rounded-md bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-white hover:bg-[var(--accent-hover)]"
                           >
-                            <Sparkles className="h-3.5 w-3.5" /> Auto-generate folder name
+                            <Sparkles className="h-3.5 w-3.5" /> Proceed (auto folder)
+                          </button>
+                          <button
+                            onClick={() => {
+                              setPendingDeep(null);
+                              replaceTurn(turn.id, {
+                                id: turn.id,
+                                role: 'assistant',
+                                kind: 'text',
+                                text: 'Cancelled. Tell me what to change (target, fields, or steps) and I will re-plan.',
+                              });
+                              inputRef.current?.focus();
+                            }}
+                            className="inline-flex items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--bg-card)] px-3 py-1.5 text-xs font-medium text-[var(--text-muted)] hover:border-[var(--accent)] hover:text-[var(--text-primary)]"
+                          >
+                            Cancel
                           </button>
                         </div>
                       </div>

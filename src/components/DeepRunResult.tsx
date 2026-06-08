@@ -19,6 +19,7 @@ import {
   Send,
   SplitSquareHorizontal,
   Pencil,
+  RotateCcw,
 } from 'lucide-react';
 
 /**
@@ -70,13 +71,17 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
   const [pwRunning, setPwRunning] = useState(false);
   const [pwResult, setPwResult] = useState<any>(null);
   const [reportOpen, setReportOpen] = useState(false);
+  // The run can be retried after a failure; track the live task id internally so
+  // the same card switches to the new run without the parent re-rendering it.
+  const [activeTaskId, setActiveTaskId] = useState(taskId);
+  const [retrying, setRetrying] = useState(false);
   const activeRef = useRef(true);
   const navigate = useNavigate();
 
   const tick = useCallback(async () => {
     if (!activeRef.current) return;
     try {
-      const r = await fetch(`/api/agent-runs/${taskId}`);
+      const r = await fetch(`/api/agent-runs/${activeTaskId}`);
       const data = await r.json();
       if (!activeRef.current) return;
       setRun(data);
@@ -85,7 +90,7 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
       /* keep polling */
     }
     if (activeRef.current) setTimeout(tick, 2000);
-  }, [taskId]);
+  }, [activeTaskId]);
 
   useEffect(() => {
     activeRef.current = true;
@@ -193,7 +198,7 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
       await fetch('/api/agent/save-cases', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ cases: list, taskId }),
+        body: JSON.stringify({ cases: list, taskId: activeTaskId }),
       });
       setSaved(true);
     } finally {
@@ -207,7 +212,7 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
       const res = await fetch('/api/agent/continue', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ taskId, cases: list }),
+        body: JSON.stringify({ taskId: activeTaskId, cases: list }),
       });
       if (res.ok) {
         setRun((prev: any) => (prev ? { ...prev, status: 'running' } : prev));
@@ -216,6 +221,41 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
       }
     } finally {
       setBusy(null);
+    }
+  };
+
+  // Restart a failed run with the same parameters and follow the new task.
+  const retry = async () => {
+    if (retrying) return;
+    setRetrying(true);
+    try {
+      const res = await fetch('/api/agent/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          app_url: run?.app_url || '',
+          websiteId: run?.website_id || run?.websiteId || undefined,
+          provider: 'gemini',
+          prompt: run?.prompt || '',
+          testCaseCount: run?.generated_cases?.length || 3,
+          flowMode: 'review_cases',
+          folderMention: run?.folder_path && run.folder_path !== 'Uncategorized' ? run.folder_path : undefined,
+        }),
+      });
+      const data = await res.json();
+      if (data?.task_id) {
+        // Reset the card and follow the fresh run.
+        setRun(null);
+        setCases(null);
+        setPwResult(null);
+        setEditing(null);
+        setSaved(false);
+        setTab('cases');
+        activeRef.current = true;
+        setActiveTaskId(data.task_id);
+      }
+    } finally {
+      setRetrying(false);
     }
   };
 
@@ -230,7 +270,7 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
         body: JSON.stringify({
           scripts: scripts.map((s: any) => ({ filename: s.filename, title: s.title, code: s.code })),
           baseUrl: targetUrl,
-          runId: `${taskId}-pw`,
+          runId: `${activeTaskId}-pw`,
         }),
       });
       const data = await res.json();
@@ -251,7 +291,7 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `playwright-scripts-${taskId.slice(0, 8)}.ts`;
+    a.download = `playwright-scripts-${activeTaskId.slice(0, 8)}.ts`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -262,7 +302,7 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
     return tests.find((t: any) => String(t.title || '').trim() === String(c.title || '').trim()) || null;
   };
   const reportFilename = (ext: string) =>
-    `test-report-${String(run?.artifactName || 'agent-run').replace(/[^a-z0-9]+/gi, '-').toLowerCase().slice(0, 40)}-${taskId.slice(0, 6)}.${ext}`;
+    `test-report-${String(run?.artifactName || 'agent-run').replace(/[^a-z0-9]+/gi, '-').toLowerCase().slice(0, 40)}-${activeTaskId.slice(0, 6)}.${ext}`;
 
   const buildReportCsv = () => {
     const esc = (v: any) => `"${String(v ?? '').replace(/"/g, '""')}"`;
@@ -377,8 +417,20 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
 
       {failed && (
         <div className="rounded-md bg-red-500/10 p-2 text-xs text-red-400">
-          {(run?.messages || []).findLast?.((m: any) => m.status === 'failed')?.output ||
-            'The pipeline failed. Check the server console for details.'}
+          <div className="whitespace-pre-wrap">
+            {(run?.messages || []).findLast?.((m: any) => m.status === 'failed')?.output ||
+              'The pipeline failed. Check the server console for details.'}
+          </div>
+          <div className="mt-2 flex justify-end">
+            <button
+              onClick={retry}
+              disabled={retrying}
+              className="inline-flex items-center gap-1.5 rounded-md bg-red-500/20 px-3 py-1.5 text-xs font-medium text-red-300 hover:bg-red-500/30 disabled:opacity-50"
+            >
+              {retrying ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RotateCcw className="h-3.5 w-3.5" />}
+              {retrying ? 'Retrying…' : 'Retry'}
+            </button>
+          </div>
         </div>
       )}
 
