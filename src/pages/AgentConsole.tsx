@@ -20,6 +20,7 @@ import {
   Wand2,
   History,
   MessageSquare,
+  Target,
 } from 'lucide-react';
 import { cn } from '@/src/lib/utils';
 import { useSpeechToText } from '@/src/lib/useSpeechToText';
@@ -27,14 +28,20 @@ import { WorkflowRunner } from '@/src/components/WorkflowRunner';
 import { DeepRunResult } from '@/src/components/DeepRunResult';
 import { CodeChangeReview } from '@/src/components/CodeChangeReview';
 import { RequirementDiscoveryResult } from '@/src/components/RequirementDiscoveryResult';
+import { GeneratedCases } from '@/src/components/GeneratedCases';
 
 // A request about the git codebase / recent code changes -> AI diff analysis.
-const GIT_RE = /\b(code\s*change|codebase|code\s*base|git\b|repo(sitory)?|diff|commit|pull\s*request|\bpr\b|merged?|recent\s*change|what\s*changed|source\s*code|db\s*change|schema\s*change|api\s*change)\b/i;
+// Only UNAMBIGUOUS developer/codebase vocabulary triggers this. Ambiguous everyday words
+// that collide with normal TestFlow actions (e.g. "merge these suites", "what changed in my
+// last run") are deliberately excluded so they reach the planner and are understood in context.
+const GIT_RE = /\b(code\s*changes?|codebase|code\s*base|git\b|repositor(?:y|ies)|diff|commit|pull\s*request|source\s*code|db\s*change|schema\s*change|api\s*change)\b/i;
 
 // A requirement-based testing request -> search the target app source, reconcile
-// against existing coverage, propose gap cases. Fires only when no URL/website is
-// given (otherwise the deep live-inspection pipeline is the right tool).
-const REQ_RE = /\b(requirement[-\s]?based|requirement|feature|section|business\s*logic)\b/i;
+// against existing coverage, propose gap cases. This is a heavy, niche pipeline that
+// greps a specific repo, so it must be OPT-IN via an explicit phrase. It deliberately
+// does NOT trigger on the everyday words "feature"/"section"/"business logic" — those
+// belong to the conversational planner, which asks for the target instead of guessing.
+const REQ_RE = /\brequirement[-\s]?based\b|\brequirements?\s+(?:testing|coverage|analysis|traceability|gaps?)\b/i;
 
 // A request needs the deep pipeline (real inspect -> cases -> Playwright scripts
 // -> evidence) when it targets a URL or asks for cases / scripts / automation.
@@ -94,6 +101,7 @@ type Turn =
   | { id: string; role: 'assistant'; kind: 'deeprun'; taskId: string }
   | { id: string; role: 'assistant'; kind: 'codereview'; analysis: any }
   | { id: string; role: 'assistant'; kind: 'reqdiscovery'; result: any }
+  | { id: string; role: 'assistant'; kind: 'cases'; cases: any[] }
   | { id: string; role: 'assistant'; kind: 'clarify'; plan: any; summary: string; confidence: number }
   | { id: string; role: 'assistant'; kind: 'folderask'; text: string }
   | { id: string; role: 'assistant'; kind: 'thinking'; label: string };
@@ -232,9 +240,9 @@ function summarizeResults(plan: any): string {
   const parts = Object.entries(counts)
     .filter(([, n]) => n > 0)
     .map(([k, n]) => `${n} ${n === 1 ? label[k][0] : label[k][1]}`);
-  if (!parts.length) return 'Done — I finished the plan. Anything that needs your sign-off is in the AI Inbox (top-right).';
+  if (!parts.length) return 'Done — I finished the plan.';
   const list = parts.length === 1 ? parts[0] : `${parts.slice(0, -1).join(', ')} and ${parts.slice(-1)}`;
-  return `Done — I created ${list}. They're waiting in your AI Inbox (top-right) for your approval.`;
+  return `Done — I created ${list}. Use the links below to open and edit them.`;
 }
 
 function drillLinksForPlan(plan: any): { label: string; href: string; icon: typeof FlaskConical }[] {
@@ -266,6 +274,9 @@ export default function AgentConsole() {
   const [historyOpen, setHistoryOpen] = useState(false);
   const [websites, setWebsites] = useState<Array<{ id: string; name: string; baseUrl: string }>>([]);
   const [pendingDeep, setPendingDeep] = useState<string | null>(null);
+  // Requirement mode: toggled with Shift+Tab. When on, every message is routed to
+  // the requirement-discovery pipeline regardless of phrasing.
+  const [reqMode, setReqMode] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -416,9 +427,7 @@ export default function AgentConsole() {
       // no URL or stored website is referenced (those want live inspection instead).
       if (
         !pendingDeep &&
-        REQ_RE.test(text) &&
-        !extractTargetUrl(text) &&
-        !findWebsiteInText(text, websites)
+        (reqMode || (REQ_RE.test(text) && !extractTargetUrl(text) && !findWebsiteInText(text, websites)))
       ) {
         try {
           const res = await fetch('/api/requirements/discover', {
@@ -490,9 +499,14 @@ export default function AgentConsole() {
       // request to test a stored website by name. Before preparing, we ask the
       // user which folder to save the results in (unless one is mentioned).
       const promptForDeep = pendingDeep || text;
+      const targetUrl = extractTargetUrl(promptForDeep);
       const site = findWebsiteInText(promptForDeep, websites);
-      const wantsAppTest = !!site && siteActionable(promptForDeep);
-      const isDeep = pendingDeep ? true : (isDeepRequest(text) || wantsAppTest);
+      // The deep pipeline (real inspect -> cases -> Playwright scripts -> evidence) can only
+      // act when there is a concrete target to drive. Require a URL or a known website AND an
+      // actionable QA request. With no target we fall through to the planner, which asks for
+      // the URL instead of kicking off a deep run against nothing.
+      const hasTarget = !!targetUrl || !!site;
+      const isDeep = pendingDeep ? true : (hasTarget && (siteActionable(promptForDeep) || isDeepRequest(promptForDeep)));
       if (isDeep) {
         // Ask for a folder first (only when we haven't already asked).
         if (!pendingDeep) {
@@ -639,7 +653,7 @@ export default function AgentConsole() {
         inputRef.current?.focus();
       }
     },
-    [input, busy, location.pathname, stopListening, replaceTurn],
+    [input, busy, location.pathname, stopListening, replaceTurn, reqMode, pendingDeep, websites],
   );
 
   const executePlan = useCallback(
@@ -661,8 +675,16 @@ export default function AgentConsole() {
         const updated = await res.json();
         patchTurn(turnId, updated);
         if (updated?.status === 'completed') {
+          // Surface any generated test cases inline (with their steps), so the human
+          // reviews/edits them right in the chat — no AI Inbox hand-off.
+          const generatedCases = (updated.steps || [])
+            .filter((s: any) => s.status === 'completed' && Array.isArray(s.result?.cases))
+            .flatMap((s: any) => s.result.cases);
           setTurns((prev) => [
             ...prev,
+            ...(generatedCases.length
+              ? [{ id: nextId(), role: 'assistant' as const, kind: 'cases' as const, cases: generatedCases }]
+              : []),
             { id: nextId(), role: 'assistant', kind: 'text', text: summarizeResults(updated) },
           ]);
         }
@@ -889,6 +911,20 @@ export default function AgentConsole() {
                   </div>
                 );
               }
+              if (turn.kind === 'cases') {
+                return (
+                  <div key={turn.id} className="flex justify-start">
+                    <div className="flex w-full max-w-[95%] gap-2.5">
+                      <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[var(--accent)]/10 text-[var(--accent)]">
+                        <BrainCircuit className="h-4 w-4" />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <GeneratedCases cases={turn.cases} />
+                      </div>
+                    </div>
+                  </div>
+                );
+              }
               if (turn.kind === 'clarify') {
                 return (
                   <div key={turn.id} className="flex justify-start">
@@ -998,19 +1034,46 @@ export default function AgentConsole() {
 
       {/* Composer */}
       <div className="mt-3 shrink-0">
-        <div className="rounded-2xl border border-[var(--border)] bg-[var(--bg-card)] p-2 shadow-sm focus-within:border-[var(--accent)] transition-colors">
+        <div
+          className={cn(
+            'rounded-2xl border bg-[var(--bg-card)] p-2 shadow-sm transition-colors',
+            reqMode
+              ? 'border-[var(--accent)] ring-2 ring-[var(--accent)]/30'
+              : 'border-[var(--border)] focus-within:border-[var(--accent)]',
+          )}
+        >
+          {reqMode && (
+            <div className="mb-1 flex items-center justify-between gap-2 px-1">
+              <span className="inline-flex items-center gap-1.5 rounded-full bg-[var(--accent)]/10 px-2.5 py-1 text-[11px] font-semibold text-[var(--accent)]">
+                <Target className="h-3.5 w-3.5" /> Requirement mode
+              </span>
+              <button
+                onClick={() => setReqMode(false)}
+                className="text-[11px] font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+              >
+                Exit (Shift+Tab)
+              </button>
+            </div>
+          )}
           <textarea
             ref={inputRef}
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => {
+              if (e.key === 'Tab' && e.shiftKey) {
+                e.preventDefault();
+                setReqMode((m) => !m);
+                return;
+              }
               if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
                 void send();
               }
             }}
             rows={1}
-            placeholder="Ask the agent to create cases, plan tests, run a suite, file a defect…"
+            placeholder={reqMode
+              ? 'Requirement mode — name a feature or section to test (e.g. list view, permissions)…'
+              : 'Ask the agent to create cases, plan tests, run a suite, file a defect…'}
             className="max-h-40 min-h-[44px] w-full resize-none bg-transparent px-3 py-2.5 text-sm text-[var(--text-primary)] outline-none placeholder-[var(--text-muted)]"
           />
           <div className="flex items-center justify-between gap-2 px-1">
@@ -1020,7 +1083,9 @@ export default function AgentConsole() {
                   {speechError || (interimTranscript ? `Listening: ${interimTranscript}` : 'Listening…')}
                 </span>
               ) : (
-                <span className="hidden sm:inline">Enter to send · Shift+Enter for a new line</span>
+                <span className="hidden sm:inline">
+                  Enter to send · Shift+Enter for a new line · Shift+Tab for {reqMode ? 'normal' : 'requirement'} mode
+                </span>
               )}
             </div>
             <div className="flex items-center gap-1.5">
