@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { BrowserRouter, Routes, Route, Link, useLocation, useNavigate } from 'react-router-dom';
-import { LayoutDashboard, TestTube2, Bug, Settings, BrainCircuit, PlayCircle, FolderTree, Sun, Moon, Search, CircleUser, Layers, Menu, ClipboardList, GitBranch, Command, MessagesSquare, ChevronDown, LogOut } from 'lucide-react';
+import { LayoutDashboard, TestTube2, Bug, Settings, BrainCircuit, PlayCircle, FolderTree, Sun, Moon, Search, CircleUser, Layers, Menu, ClipboardList, GitBranch, Command, MessagesSquare, ChevronDown, LogOut, Target, ScrollText } from 'lucide-react';
 import { cn } from '@/src/lib/utils';
 import { useTheme } from '@/src/store/theme';
 import { AIInbox } from '@/src/components/AIInbox';
@@ -20,6 +20,8 @@ import Reports from '@/src/pages/Reports';
 import SettingsPage from '@/src/pages/Settings';
 import GitAgent from '@/src/pages/GitAgent';
 import TestRepository from '@/src/pages/TestRepository';
+import Requirements from '@/src/pages/Requirements';
+import Traceability from '@/src/pages/Traceability';
 
 function Sidebar({ isOpen }: { isOpen: boolean }) {
   const location = useLocation();
@@ -45,6 +47,8 @@ function Sidebar({ isOpen }: { isOpen: boolean }) {
     {
       label: 'Quality',
       items: [
+        { name: 'Requirements', href: '/requirements', icon: ScrollText },
+        { name: 'Traceability', href: '/traceability', icon: Target },
         { name: 'Reports', href: '/reports', icon: ClipboardList },
         { name: 'Defects', href: '/defects', icon: Bug },
       ],
@@ -340,6 +344,8 @@ export default function App() {
           <Route path="/cases" element={<TestCases />} />
           <Route path="/runs" element={<TestRuns />} />
           <Route path="/runs/:runId" element={<TestRuns />} />
+          <Route path="/requirements" element={<Requirements />} />
+          <Route path="/traceability" element={<Traceability />} />
           <Route path="/reports" element={<Reports />} />
           <Route path="/defects" element={<Defects />} />
           <Route path="/agent" element={<AgentConsole />} />

@@ -1142,4 +1142,147 @@ export const Settings = {
   },
 };
 
+/* ---------- requirements + traceability links ---------- */
+
+function mapRequirement(r: any) {
+  if (!r) return null;
+  return {
+    id: r.id,
+    title: r.title,
+    description: r.description,
+    featureQuery: r.feature_query,
+    businessRules: r.business_rules || [],
+    dataPopulationNotes: r.data_population_notes,
+    adminBehavior: r.admin_behavior,
+    keystoneBehavior: r.keystone_behavior,
+    metadataRefs: r.metadata_refs || [],
+    sourceFiles: r.source_files || [],
+    coverageStatus: r.coverage_status,
+    status: r.status,
+    folderId: r.folder_id,
+    approvalState: r.approval_state,
+    proposedBy: r.proposed_by,
+    createdBy: r.proposed_by,
+    sourceRunId: r.source_run_id,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+  };
+}
+
+export const Requirements = {
+  async list(): Promise<any[]> {
+    if (!isPgEnabled()) return db.requirements as any[];
+    const rows = await query("SELECT * FROM requirements WHERE deleted_at IS NULL ORDER BY created_at DESC");
+    return rows.map(mapRequirement);
+  },
+  async get(id: string): Promise<any | null> {
+    if (!isPgEnabled()) return (db.requirements as any[]).find((r: any) => r.id === id) || null;
+    const r = await queryOne('SELECT * FROM requirements WHERE id = $1 AND deleted_at IS NULL', [id]);
+    return mapRequirement(r);
+  },
+  async upsert(rq: any): Promise<any> {
+    if (!isPgEnabled()) {
+      const idx = (db.requirements as any[]).findIndex((x: any) => x.id === rq.id);
+      if (idx >= 0) db.requirements[idx] = { ...db.requirements[idx], ...rq };
+      else db.requirements.unshift(rq);
+      return rq;
+    }
+    const id = rq.id || uid('REQ');
+    const row = await queryOne(
+      `INSERT INTO requirements (id, title, description, feature_query, business_rules, data_population_notes, admin_behavior, keystone_behavior, metadata_refs, source_files, coverage_status, status, folder_id, approval_state, proposed_by, source_run_id, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9::jsonb,$10::jsonb,$11,$12,$13,$14,$15,$16, now(), now())
+       ON CONFLICT (id) DO UPDATE SET
+         title=EXCLUDED.title, description=EXCLUDED.description, feature_query=EXCLUDED.feature_query,
+         business_rules=EXCLUDED.business_rules, data_population_notes=EXCLUDED.data_population_notes,
+         admin_behavior=EXCLUDED.admin_behavior, keystone_behavior=EXCLUDED.keystone_behavior,
+         metadata_refs=EXCLUDED.metadata_refs, source_files=EXCLUDED.source_files,
+         coverage_status=EXCLUDED.coverage_status, status=EXCLUDED.status, folder_id=EXCLUDED.folder_id,
+         approval_state=EXCLUDED.approval_state, proposed_by=EXCLUDED.proposed_by,
+         source_run_id=EXCLUDED.source_run_id, updated_at=now()
+       RETURNING *`,
+      [
+        id, rq.title || 'Untitled Requirement', rq.description || '', rq.featureQuery || '',
+        JSON.stringify(rq.businessRules || []), rq.dataPopulationNotes || '',
+        rq.adminBehavior || '', rq.keystoneBehavior || '',
+        JSON.stringify(rq.metadataRefs || []), JSON.stringify(rq.sourceFiles || []),
+        rq.coverageStatus || 'unknown', rq.status || 'Draft', rq.folderId || null,
+        rq.approvalState || 'proposed', rq.proposedBy || rq.createdBy || 'Feature Analyst',
+        rq.sourceRunId || null,
+      ],
+    );
+    return mapRequirement(row);
+  },
+  async remove(id: string): Promise<boolean> {
+    if (!isPgEnabled()) {
+      const before = db.requirements.length;
+      (db as any).requirements = db.requirements.filter((x: any) => x.id !== id);
+      (db as any).requirementLinks = db.requirementLinks.filter((x: any) => x.requirementId !== id);
+      return db.requirements.length < before;
+    }
+    const res = await query('UPDATE requirements SET deleted_at = now() WHERE id = $1 AND deleted_at IS NULL', [id]);
+    return res.length > 0;
+  },
+};
+
+function mapRequirementLink(r: any) {
+  if (!r) return null;
+  return {
+    id: r.id,
+    requirementId: r.requirement_id,
+    caseId: r.case_id,
+    linkType: r.link_type,
+    note: r.note,
+    createdAt: r.created_at,
+  };
+}
+
+export const RequirementLinks = {
+  async list(requirementId?: string): Promise<any[]> {
+    if (!isPgEnabled()) {
+      const all = db.requirementLinks as any[];
+      return requirementId ? all.filter((l) => l.requirementId === requirementId) : all.slice();
+    }
+    const sql = requirementId
+      ? 'SELECT * FROM requirement_case_links WHERE requirement_id = $1 ORDER BY created_at ASC'
+      : 'SELECT * FROM requirement_case_links ORDER BY created_at ASC';
+    const rows = await query(sql, requirementId ? [requirementId] : []);
+    return rows.map(mapRequirementLink);
+  },
+  async upsert(link: any): Promise<any> {
+    if (!isPgEnabled()) {
+      const idx = (db.requirementLinks as any[]).findIndex(
+        (x: any) => x.requirementId === link.requirementId && x.caseId === link.caseId,
+      );
+      if (idx >= 0) {
+        db.requirementLinks[idx] = { ...db.requirementLinks[idx], ...link };
+        return db.requirementLinks[idx];
+      }
+      const rec = { id: link.id || uid('REQL'), createdAt: new Date().toISOString(), ...link };
+      db.requirementLinks.unshift(rec);
+      return rec;
+    }
+    const id = link.id || uid('REQL');
+    const row = await queryOne(
+      `INSERT INTO requirement_case_links (id, requirement_id, case_id, link_type, note)
+       VALUES ($1,$2,$3,$4,$5)
+       ON CONFLICT (requirement_id, case_id) DO UPDATE SET
+         link_type=EXCLUDED.link_type, note=EXCLUDED.note
+       RETURNING *`,
+      [id, link.requirementId, link.caseId, link.linkType || 'existing', link.note || ''],
+    );
+    return mapRequirementLink(row);
+  },
+  async remove(requirementId: string, caseId: string): Promise<boolean> {
+    if (!isPgEnabled()) {
+      const before = db.requirementLinks.length;
+      (db as any).requirementLinks = db.requirementLinks.filter(
+        (x: any) => !(x.requirementId === requirementId && x.caseId === caseId),
+      );
+      return db.requirementLinks.length < before;
+    }
+    const res = await query('DELETE FROM requirement_case_links WHERE requirement_id = $1 AND case_id = $2', [requirementId, caseId]);
+    return res.length > 0;
+  },
+};
+
 export { withTransaction };

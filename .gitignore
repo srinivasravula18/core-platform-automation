@@ -10,3 +10,9 @@ coverage/
 .testflow-settings.json
 .testflow-git-agent-state.json
 .testflow-data.json
+
+# Playwright MCP + browser-automation artifacts
+.playwright-mcp/
+.mcp.json
+evidence/
+e2e/

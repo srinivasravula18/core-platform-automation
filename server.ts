@@ -8,6 +8,7 @@ import { registerDashboardRoutes } from './server/features/dashboard/routes';
 import { registerResourceRoutes } from './server/features/resources/routes';
 import { registerAgentRoutes } from './server/features/agent/routes';
 import { registerGitAgentRoutes } from './server/features/git-agent/routes';
+import { registerRequirementRoutes } from './server/features/requirements/routes';
 import { registerScreenshotRoutes } from './server/features/screenshot/routes';
 import { registerCredentialsRoutes } from './server/features/credentials/routes';
 import { registerInboxRoutes } from './server/features/inbox/routes';
@@ -61,6 +62,7 @@ async function startServer() {
   registerPlaywrightRoutes(app);
   registerSearchRoutes(app);
   registerGitAgentRoutes(app);
+  registerRequirementRoutes(app);
   registerAgentRoutes(app);
   registerScreenshotRoutes(app);
   registerDashboardRoutes(app);

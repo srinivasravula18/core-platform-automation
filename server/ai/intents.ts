@@ -12,6 +12,7 @@ export type IntentKind =
   | 'create_plan'
   | 'create_suite'
   | 'create_cases'
+  | 'discover_requirement'
   | 'expand_case_steps'
   | 'rework_case'
   | 'create_run'
@@ -78,6 +79,7 @@ export const INTENT_LABELS: Record<IntentKind, string> = {
   create_plan: 'Create test plan',
   create_suite: 'Create test suite',
   create_cases: 'Generate test cases',
+  discover_requirement: 'Requirement-based testing',
   expand_case_steps: 'Expand case steps',
   rework_case: 'Rework test case',
   create_run: 'Create test run',
@@ -101,6 +103,7 @@ export const AGENT_FOR_INTENT: Record<IntentKind, string> = {
   create_plan: 'testPlanner',
   create_suite: 'suiteDesigner',
   create_cases: 'caseWriter',
+  discover_requirement: 'featureAnalyst',
   expand_case_steps: 'caseWriter',
   rework_case: 'caseWriter',
   create_run: 'chatAssistant',

@@ -518,6 +518,77 @@ function persistGitAgentArtifacts(generation: any) {
 
 export const GIT_AGENT_TARGET_REPO = gitAgentTargetRepo;
 
+/** Surface a changed/searched file to its core-platform area. Exported for the requirement discovery flow. */
+export { classifyChangedFile };
+
+/**
+ * Search roots in the target repo, grouped by surface, so requirement discovery
+ * reliably looks where business logic, background data population, the Admin and
+ * Keystone apps, and the metadata source of truth actually live.
+ */
+export const CORE_PLATFORM_SEARCH_ROOTS: Record<string, string[]> = {
+  service: ['apps/service/src'],
+  dataPopulation: [
+    'apps/service/src/scheduler',
+    'apps/service/src/exports',
+    'apps/service/src/data-import',
+    'apps/service/src/triggers',
+    'seeds/scripts',
+    'ecosystem.config.cjs',
+  ],
+  admin: ['apps/admin/src'],
+  keystone: ['apps/shockwave/src'],
+  metadata: ['metadata', 'apps/service/src/metadata'],
+};
+
+const ALL_SEARCH_ROOTS = Array.from(new Set(Object.values(CORE_PLATFORM_SEARCH_ROOTS).flat()));
+
+/**
+ * Run `git grep` in the target repo for any of the given patterns, restricted to the
+ * given pathspecs (defaults to all surface roots). Returns the matching tracked files,
+ * each tagged with its core-platform area. Case-insensitive, names-only.
+ */
+export function gitGrep(patterns: string[], pathspecs: string[] = ALL_SEARCH_ROOTS, maxFiles = 60) {
+  if (!existsSync(path.join(gitAgentTargetRepo, '.git'))) {
+    throw new Error(`Target repo was not found at ${gitAgentTargetRepo}.`);
+  }
+  const cleanPatterns = patterns.map((p) => String(p || '').trim()).filter((p) => p.length >= 2);
+  if (!cleanPatterns.length) return [] as Array<{ path: string; area: string; surface: string }>;
+
+  const patternArgs: string[] = [];
+  for (const p of cleanPatterns) patternArgs.push('-e', p);
+  // -l names only, -i case-insensitive, -I skip binary, --or so any pattern matches.
+  const orArgs: string[] = [];
+  cleanPatterns.forEach((p, i) => {
+    if (i > 0) orArgs.push('--or');
+    orArgs.push('-e', p);
+  });
+
+  const out = gitOutputOrEmpty(gitAgentTargetRepo, ['grep', '-l', '-i', '-I', ...orArgs, '--', ...pathspecs], 60000);
+  const files = out.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  const seen = new Set<string>();
+  const results: Array<{ path: string; area: string; surface: string }> = [];
+  for (const file of files) {
+    if (seen.has(file)) continue;
+    seen.add(file);
+    const c = classifyChangedFile(file);
+    results.push({ path: file, area: c.area, surface: c.surface });
+    if (results.length >= maxFiles) break;
+  }
+  return results;
+}
+
+/** Read a tracked file's content at HEAD from the target repo, capped to maxBytes. */
+export function readRepoFile(relPath: string, maxBytes = 6000): string {
+  if (!existsSync(path.join(gitAgentTargetRepo, '.git'))) {
+    throw new Error(`Target repo was not found at ${gitAgentTargetRepo}.`);
+  }
+  const normalized = String(relPath || '').replace(/\\/g, '/').replace(/^\/+/, '');
+  if (!normalized) return '';
+  const content = gitOutputOrEmpty(gitAgentTargetRepo, ['show', `HEAD:${normalized}`], 30000);
+  return content.length > maxBytes ? `${content.slice(0, maxBytes)}\n... [file truncated]` : content;
+}
+
 /**
  * Returns the actual unified diff (committed + staged + working tree) between the
  * resolved base ref and HEAD, capped to keep token cost bounded. Used by the AI

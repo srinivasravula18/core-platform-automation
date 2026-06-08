@@ -26,9 +26,15 @@ import { useSpeechToText } from '@/src/lib/useSpeechToText';
 import { WorkflowRunner } from '@/src/components/WorkflowRunner';
 import { DeepRunResult } from '@/src/components/DeepRunResult';
 import { CodeChangeReview } from '@/src/components/CodeChangeReview';
+import { RequirementDiscoveryResult } from '@/src/components/RequirementDiscoveryResult';
 
 // A request about the git codebase / recent code changes -> AI diff analysis.
 const GIT_RE = /\b(code\s*change|codebase|code\s*base|git\b|repo(sitory)?|diff|commit|pull\s*request|\bpr\b|merged?|recent\s*change|what\s*changed|source\s*code|db\s*change|schema\s*change|api\s*change)\b/i;
+
+// A requirement-based testing request -> search the target app source, reconcile
+// against existing coverage, propose gap cases. Fires only when no URL/website is
+// given (otherwise the deep live-inspection pipeline is the right tool).
+const REQ_RE = /\b(requirement[-\s]?based|requirement|feature|section|business\s*logic)\b/i;
 
 // A request needs the deep pipeline (real inspect -> cases -> Playwright scripts
 // -> evidence) when it targets a URL or asks for cases / scripts / automation.
@@ -87,6 +93,7 @@ type Turn =
   | { id: string; role: 'assistant'; kind: 'plan'; plan: any }
   | { id: string; role: 'assistant'; kind: 'deeprun'; taskId: string }
   | { id: string; role: 'assistant'; kind: 'codereview'; analysis: any }
+  | { id: string; role: 'assistant'; kind: 'reqdiscovery'; result: any }
   | { id: string; role: 'assistant'; kind: 'clarify'; plan: any; summary: string; confidence: number }
   | { id: string; role: 'assistant'; kind: 'folderask'; text: string }
   | { id: string; role: 'assistant'; kind: 'thinking'; label: string };
@@ -403,6 +410,46 @@ export default function AgentConsole() {
         { id: nextId(), role: 'user', text },
         { id: thinkingId, role: 'assistant', kind: 'thinking', label: 'Understanding your request…' },
       ]);
+
+      // Requirement-based testing path: search the target app source for a feature
+      // / section, reconcile against existing coverage, propose gap cases. Only when
+      // no URL or stored website is referenced (those want live inspection instead).
+      if (
+        !pendingDeep &&
+        REQ_RE.test(text) &&
+        !extractTargetUrl(text) &&
+        !findWebsiteInText(text, websites)
+      ) {
+        try {
+          const res = await fetch('/api/requirements/discover', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ query: text, workspaceId: 'default' }),
+          });
+          const data = await res.json();
+          if (!res.ok) {
+            replaceTurn(thinkingId, {
+              id: thinkingId,
+              role: 'assistant',
+              kind: 'text',
+              text: data?.error || 'I could not analyze that feature. Make sure the target repo (D:\\core-platform) is available.',
+            });
+          } else {
+            replaceTurn(thinkingId, { id: thinkingId, role: 'assistant', kind: 'reqdiscovery', result: data });
+          }
+        } catch (err: any) {
+          replaceTurn(thinkingId, {
+            id: thinkingId,
+            role: 'assistant',
+            kind: 'text',
+            text: `Something went wrong analyzing the feature: ${err?.message || 'unknown error'}.`,
+          });
+        } finally {
+          setBusy(false);
+          inputRef.current?.focus();
+        }
+        return;
+      }
 
       // Codebase path: analyze recent git changes, reconcile against existing
       // coverage, propose gap tests. Checked before the deep/URL path.
@@ -823,6 +870,20 @@ export default function AgentConsole() {
                       </div>
                       <div className="min-w-0 flex-1">
                         <CodeChangeReview analysis={turn.analysis} />
+                      </div>
+                    </div>
+                  </div>
+                );
+              }
+              if (turn.kind === 'reqdiscovery') {
+                return (
+                  <div key={turn.id} className="flex justify-start">
+                    <div className="flex w-full max-w-[95%] gap-2.5">
+                      <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[var(--accent)]/10 text-[var(--accent)]">
+                        <BrainCircuit className="h-4 w-4" />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <RequirementDiscoveryResult result={turn.result} />
                       </div>
                     </div>
                   </div>

@@ -17,7 +17,7 @@
  * Re-running this script is safe — it only seeds when the database is empty.
  */
 
-import { Plans, Suites, Cases, Runs, Defects, Reports, Inbox, isPgEnabled } from './repository';
+import { Plans, Suites, Cases, Runs, Defects, Reports, Inbox, Requirements, RequirementLinks, isPgEnabled } from './repository';
 import { isPostgresEnabled, query, queryOne, uid } from './pool';
 import { Activity } from './repository';
 
@@ -332,6 +332,34 @@ export async function runSeedIfEmpty(): Promise<{ seeded: boolean; reason?: stri
     payload: { defectId: 'DEF-COUPON-MSG' },
     links: [{ label: 'Open Defect', href: '/defects' }],
   });
+
+  /* ---------- requirement + traceability links ---------- */
+  await Requirements.upsert({
+    id: 'REQ-AUTH-SIGNIN',
+    title: 'User sign-in authentication',
+    description: 'End users can sign in with valid credentials and are rejected with a clear error on invalid credentials.',
+    featureQuery: 'authentication sign in',
+    businessRules: [
+      'Valid email + password grants a session and redirects to the dashboard.',
+      'Invalid password shows "Invalid email or password" without revealing which field was wrong.',
+      'Access is default-deny until a session is established.',
+    ],
+    dataPopulationNotes: 'Test users are seeded by the service module admin seeders (seed-test-users) before sign-in flows can be exercised.',
+    adminBehavior: 'Admins manage users, roles, and groups that gate downstream access.',
+    keystoneBehavior: 'Keystone (end-user app) presents the sign-in form and the post-login landing page.',
+    metadataRefs: [{ object: 'user', note: 'User identity is part of the access-control source of truth.' }],
+    sourceFiles: [
+      { path: 'apps/service/src/auth', why: 'Authentication routes and session handling.' },
+      { path: 'apps/shockwave/src/App.tsx', why: 'Keystone end-user app shell and sign-in entry.' },
+    ],
+    coverageStatus: 'partial',
+    status: 'Draft',
+    folderId: folderAuth,
+    approvalState: 'proposed',
+    proposedBy: 'Feature Analyst',
+  });
+  await RequirementLinks.upsert({ requirementId: 'REQ-AUTH-SIGNIN', caseId: 'TC-AUTH-1', linkType: 'existing', note: 'Covers the valid sign-in path.' });
+  await RequirementLinks.upsert({ requirementId: 'REQ-AUTH-SIGNIN', caseId: 'TC-AUTH-2', linkType: 'existing', note: 'Covers the invalid-password rejection.' });
 
   /* ---------- git repo ---------- */
   await query(

@@ -34,6 +34,8 @@ export const db: any = {
   auditLog: [] as any[],
   users: [] as any[],
   sessions: [] as any[],
+  requirements: [] as any[],
+  requirementLinks: [] as any[],
 };
 
 const settingsFilePath = path.resolve(process.cwd(), '.testflow-settings.json');
@@ -59,6 +61,8 @@ function getPersistableDbSnapshot() {
     auditLog: db.auditLog,
     users: db.users,
     sessions: db.sessions,
+    requirements: db.requirements,
+    requirementLinks: db.requirementLinks,
   };
 }
 
@@ -84,6 +88,8 @@ export async function loadPersistedData() {
     db.auditLog = Array.isArray(data.auditLog) ? data.auditLog : [];
     db.users = Array.isArray(data.users) ? data.users : [];
     db.sessions = Array.isArray(data.sessions) ? data.sessions : [];
+    db.requirements = Array.isArray(data.requirements) ? data.requirements : [];
+    db.requirementLinks = Array.isArray(data.requirementLinks) ? data.requirementLinks : [];
   } catch (error: any) {
     if (error?.code !== 'ENOENT') {
       console.error(`Failed to load persisted data from ${dataFilePath}:`, error);

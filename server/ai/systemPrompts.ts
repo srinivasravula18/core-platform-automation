@@ -313,6 +313,17 @@ Rules:
 - For each artifact, propose: target folder path, action (move, split, merge, no-op), one-sentence justification.
 - Prefer the smallest change that improves organization. Do not propose large restructuring unless the user asked for it.
 - If a folder is empty after the moves, mark it for deletion in a separate list.`,
+
+  featureAnalyst: `You analyze a product feature/section by reading the actual application source code, so a QA team can write requirement-based tests grounded in how the feature really works. You are given a feature query and excerpts from the target application's git repository (a metadata-driven, Salesforce-like CRUD platform with three surfaces: a backend Service module, an Admin app, and an end-user app called Keystone). You produce a structured "requirement understanding".
+
+Rules:
+- Ground EVERYTHING in the provided code excerpts and file paths. Never invent business rules, file paths, table names, endpoints, or behavior that is not supported by the excerpts. If the excerpts are insufficient for part of the feature, say so plainly rather than guessing.
+- Business rules: extract the concrete, testable rules the code enforces (validation, permissions/default-deny, required fields, ID/naming policy, recursion/limits, error contracts). Each rule must be observable and verifiable.
+- Data population: describe what the Service module populates/seeds/syncs in the background for this feature (scheduler, exports, data-import, triggers, seed scripts) when the excerpts show it. This is the precondition data a test depends on.
+- Separate Admin behavior (how admins configure/manage this feature via metadata) from Keystone behavior (what the end user does and sees). Keystone corresponds to the apps/shockwave directory.
+- Treat metadata (the metadata/** JSON and apps/service/src/metadata code) as the SOURCE OF TRUTH. Call out which metadata objects/fields define this feature.
+- sourceFiles: cite the specific files (with their real repo-relative paths from the excerpts) that justify your understanding, each with a one-line reason — this is the code↔requirement trace.
+- Stay strictly within the requested feature. Do not expand scope to unrelated features.`,
 } as const;
 
 export type AgentName = keyof typeof AGENT_PROMPTS;
@@ -330,6 +341,7 @@ export const CANONICAL_AGENTS: AgentName[] = [
   'playwrightCoder',
   'appInspector',
   'defectTriage',
+  'featureAnalyst',
 ];
 
 export const AGENT_ALIASES: Record<string, AgentName> = {
@@ -368,6 +380,7 @@ export function systemPromptFor(agent: AgentName): string {
     chatAssistant: 'handle greetings, scope questions, and route genuine QA tasks to sub-agents',
     searchAgent: 'filter a provided list of items by relevance to a query and return matching ids only',
     folderOrganizer: 'organize a test repository into folders and propose moves / merges / splits',
+    featureAnalyst: 'analyze a product feature from application source code and produce a grounded requirement understanding',
   };
   return composeSystemPrompt({
     agentName: agent,

@@ -373,3 +373,42 @@ CREATE TABLE IF NOT EXISTS git_repositories (
   created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Requirement-based testing: a requirement is the AI's grounded understanding of a
+-- product feature/section (discovered by searching the target app's git source).
+-- Cases are linked to requirements for traceability (existing coverage + generated gaps).
+CREATE TABLE IF NOT EXISTS requirements (
+  id                     TEXT PRIMARY KEY,
+  title                  TEXT NOT NULL,
+  description            TEXT DEFAULT '',
+  feature_query          TEXT DEFAULT '',
+  business_rules         JSONB DEFAULT '[]'::jsonb,
+  data_population_notes  TEXT DEFAULT '',
+  admin_behavior         TEXT DEFAULT '',
+  keystone_behavior      TEXT DEFAULT '',
+  metadata_refs          JSONB DEFAULT '[]'::jsonb,
+  source_files           JSONB DEFAULT '[]'::jsonb,
+  coverage_status        TEXT DEFAULT 'unknown',
+  status                 TEXT DEFAULT 'Draft',
+  folder_id              TEXT REFERENCES folders(id) ON DELETE SET NULL,
+  approval_state         TEXT NOT NULL DEFAULT 'proposed',
+  proposed_by            TEXT DEFAULT 'Feature Analyst',
+  source_run_id          TEXT,
+  created_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
+  deleted_at             TIMESTAMPTZ
+);
+
+-- Many-to-many coverage links between a requirement and the test cases that cover it.
+-- link_type 'existing' = case already in the repo reconciled as coverage;
+-- link_type 'generated' = case the agent created to close a coverage gap.
+CREATE TABLE IF NOT EXISTS requirement_case_links (
+  id              TEXT PRIMARY KEY,
+  requirement_id  TEXT NOT NULL REFERENCES requirements(id) ON DELETE CASCADE,
+  case_id         TEXT NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
+  link_type       TEXT NOT NULL DEFAULT 'existing',
+  note            TEXT DEFAULT '',
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS requirement_case_links_req ON requirement_case_links(requirement_id);
+CREATE UNIQUE INDEX IF NOT EXISTS requirement_case_links_unique ON requirement_case_links(requirement_id, case_id);
