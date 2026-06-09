@@ -23,6 +23,7 @@ import {
   Target,
 } from 'lucide-react';
 import { cn } from '@/src/lib/utils';
+import { useProjects } from '@/src/store/project';
 import { useSpeechToText } from '@/src/lib/useSpeechToText';
 import { WorkflowRunner } from '@/src/components/WorkflowRunner';
 import { DeepRunResult } from '@/src/components/DeepRunResult';
@@ -84,6 +85,26 @@ function parseCaseCount(text: string): number {
   return Math.min(10, Math.max(1, parseInt(m[1], 10) || 3));
 }
 
+function isAutoFolderResponse(text: string): boolean {
+  return /^(auto|automatic|you\s+decide|any|organi[sz]e)\b/i.test(text.trim());
+}
+
+function isExplicitFolderResponse(text: string): boolean {
+  const trimmed = text.trim();
+  return /^folder\s*[:=-]\s*\S+/i.test(trimmed) || /^@\w+/.test(trimmed);
+}
+
+function isLikelyFolderResponse(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed || trimmed.includes('?')) return false;
+  if (isAutoFolderResponse(trimmed) || isExplicitFolderResponse(trimmed)) return true;
+  return trimmed.split(/\s+/).length <= 4 && trimmed.length <= 60;
+}
+
+function stripFolderPrefix(text: string): string {
+  return text.trim().replace(/^folder\s*[:=-]\s*/i, '');
+}
+
 /**
  * Agent Console — the single, conversational home of TestFlowAI.
  *
@@ -103,8 +124,17 @@ type Turn =
   | { id: string; role: 'assistant'; kind: 'reqdiscovery'; result: any }
   | { id: string; role: 'assistant'; kind: 'cases'; cases: any[] }
   | { id: string; role: 'assistant'; kind: 'clarify'; plan: any; summary: string; confidence: number }
-  | { id: string; role: 'assistant'; kind: 'folderask'; text: string; understanding?: string }
+  | { id: string; role: 'assistant'; kind: 'folderask'; text: string; understanding?: string; originalPrompt?: string; targetUrl?: string; websiteId?: string; websiteName?: string; revisionCount?: number }
   | { id: string; role: 'assistant'; kind: 'thinking'; label: string };
+
+type PendingDeep = {
+  prompt: string;
+  targetUrl: string;
+  websiteId?: string;
+  websiteName?: string;
+  understanding: string;
+  revisionCount: number;
+};
 
 interface Suggestion {
   label: string;
@@ -181,7 +211,17 @@ function nextId(): string {
   return `turn-${turnCounter}-${Math.random().toString(36).slice(2, 7)}`;
 }
 
-const CONV_KEY = 'tfa_active_conversation';
+const CONV_KEY_BASE = 'tfa_active_conversation';
+// Each unique project + app is its own chat workspace. We namespace the chat
+// workspace id and the "active conversation" pointer by the selected scope, so
+// switching project/app swaps the console to that context's own history.
+// appId is null for the project-level "All apps" view, which gets its own bucket.
+function scopeWorkspaceId(projectId: string | null, appId: string | null): string {
+  return `${projectId || 'none'}::${appId || 'all'}`;
+}
+function activeConvKey(workspaceId: string): string {
+  return `${CONV_KEY_BASE}::${workspaceId}`;
+}
 function makeConversationId(): string {
   return `CONV-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
 }
@@ -260,12 +300,22 @@ function drillLinksForPlan(plan: any): { label: string; href: string; icon: type
 }
 
 export default function AgentConsole() {
+  // Active project/app scope. The whole page subtree remounts when this changes
+  // (see App.tsx scopeKey), so reading it once at mount binds this console
+  // instance to the right chat workspace.
+  const selectedProjectId = useProjects((s) => s.selectedProjectId);
+  const selectedAppId = useProjects((s) => s.selectedAppId);
+  const scopeProject = useProjects((s) => s.selectedProject());
+  const scopeApp = useProjects((s) => s.selectedApp());
+  const workspaceId = scopeWorkspaceId(selectedProjectId, selectedAppId);
+  const convKey = activeConvKey(workspaceId);
+
   const [turns, setTurns] = useState<Turn[]>([]);
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
   const [conversationId, setConversationId] = useState<string>(() => {
     try {
-      return localStorage.getItem(CONV_KEY) || makeConversationId();
+      return localStorage.getItem(convKey) || makeConversationId();
     } catch {
       return makeConversationId();
     }
@@ -273,7 +323,7 @@ export default function AgentConsole() {
   const [conversations, setConversations] = useState<ConversationMeta[]>([]);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [websites, setWebsites] = useState<Array<{ id: string; name: string; baseUrl: string }>>([]);
-  const [pendingDeep, setPendingDeep] = useState<string | null>(null);
+  const [pendingDeep, setPendingDeep] = useState<PendingDeep | null>(null);
   // Requirement mode: toggled with Shift+Tab. When on, every message is routed to
   // the requirement-discovery pipeline regardless of phrasing.
   const [reqMode, setReqMode] = useState(false);
@@ -285,24 +335,25 @@ export default function AgentConsole() {
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const loadedRef = useRef(false);
 
-  // Keep the active conversation id in localStorage so a refresh resumes it.
+  // Keep the active conversation id in localStorage (per scope) so a refresh
+  // resumes the right conversation for the selected project/app.
   useEffect(() => {
     try {
-      localStorage.setItem(CONV_KEY, conversationId);
+      localStorage.setItem(convKey, conversationId);
     } catch {
       /* ignore */
     }
-  }, [conversationId]);
+  }, [conversationId, convKey]);
 
   const loadConversations = useCallback(async () => {
     try {
-      const r = await fetch('/api/chat/conversations?workspaceId=default');
+      const r = await fetch(`/api/chat/conversations?workspaceId=${encodeURIComponent(workspaceId)}`);
       const d = await r.json();
       setConversations(Array.isArray(d.conversations) ? d.conversations : []);
     } catch {
       /* ignore */
     }
-  }, []);
+  }, [workspaceId]);
 
   const loadConversation = useCallback(async (id: string) => {
     loadedRef.current = false;
@@ -343,7 +394,7 @@ export default function AgentConsole() {
       fetch(`/api/chat/conversations/${conversationId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ workspaceId: 'default', title: firstUser?.text?.slice(0, 80) || 'New chat', turns: clean }),
+        body: JSON.stringify({ workspaceId, title: firstUser?.text?.slice(0, 80) || 'New chat', turns: clean }),
       })
         .then(() => loadConversations())
         .catch(() => {});
@@ -351,7 +402,7 @@ export default function AgentConsole() {
     return () => {
       if (saveTimer.current) clearTimeout(saveTimer.current);
     };
-  }, [turns, conversationId, loadConversations]);
+  }, [turns, conversationId, workspaceId, loadConversations]);
 
   // Close the history dropdown on outside click.
   useEffect(() => {
@@ -405,6 +456,23 @@ export default function AgentConsole() {
 
   const replaceTurn = useCallback((id: string, turn: Turn) => {
     setTurns((prev) => prev.map((t) => (t.id === id ? turn : t)));
+  }, []);
+
+  const requestDeepUnderstanding = useCallback(async (args: {
+    prompt: string;
+    targetUrl: string;
+    targetName?: string;
+    currentUnderstanding?: string;
+    correction?: string;
+  }) => {
+    const res = await fetch('/api/agent/understand-request', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(args),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data?.error || 'Failed to understand request');
+    return data;
   }, []);
 
   const send = useCallback(
@@ -498,9 +566,11 @@ export default function AgentConsole() {
       // multi-agent pipeline. Triggered by a URL, generation keywords, OR a
       // request to test a stored website by name. Before preparing, we ask the
       // user which folder to save the results in (unless one is mentioned).
-      const promptForDeep = pendingDeep || text;
-      const targetUrl = extractTargetUrl(promptForDeep);
-      const site = findWebsiteInText(promptForDeep, websites);
+      const promptForDeep = pendingDeep?.prompt || text;
+      const targetUrl = pendingDeep?.targetUrl || extractTargetUrl(promptForDeep);
+      const site = pendingDeep?.websiteId
+        ? websites.find((w) => w.id === pendingDeep.websiteId) || null
+        : findWebsiteInText(promptForDeep, websites);
       // The deep pipeline (real inspect -> cases -> Playwright scripts -> evidence) can only
       // act when there is a concrete target to drive. Require a URL or a known website AND an
       // actionable QA request. With no target we fall through to the planner, which asks for
@@ -508,22 +578,89 @@ export default function AgentConsole() {
       const hasTarget = !!targetUrl || !!site;
       const isDeep = pendingDeep ? true : (hasTarget && (siteActionable(promptForDeep) || isDeepRequest(promptForDeep)));
       if (isDeep) {
+        if (pendingDeep && !isLikelyFolderResponse(text)) {
+          try {
+            const revised = await requestDeepUnderstanding({
+              prompt: pendingDeep.prompt,
+              targetUrl: pendingDeep.targetUrl,
+              targetName: pendingDeep.websiteName,
+              currentUnderstanding: pendingDeep.understanding,
+              correction: text,
+            });
+            const nextPending: PendingDeep = {
+              ...pendingDeep,
+              understanding: revised.understanding || pendingDeep.understanding,
+              targetUrl: revised.targetUrl || pendingDeep.targetUrl,
+              websiteName: revised.targetName || pendingDeep.websiteName,
+              revisionCount: pendingDeep.revisionCount + 1,
+            };
+            setPendingDeep(nextPending);
+            replaceTurn(thinkingId, {
+              id: thinkingId,
+              role: 'assistant',
+              kind: 'folderask',
+              understanding: nextPending.understanding,
+              originalPrompt: nextPending.prompt,
+              targetUrl: nextPending.targetUrl,
+              websiteId: nextPending.websiteId,
+              websiteName: nextPending.websiteName,
+              revisionCount: nextPending.revisionCount,
+              text: 'I updated what I understood. You can edit it, correct me again, pick a folder, or proceed with an auto-named folder.',
+            });
+          } catch (err: any) {
+            replaceTurn(thinkingId, {
+              id: thinkingId,
+              role: 'assistant',
+              kind: 'text',
+              text: `I could not revise the understanding: ${err?.message || 'unknown error'}.`,
+            });
+          } finally {
+            setBusy(false);
+            inputRef.current?.focus();
+          }
+          return;
+        }
+
         // Ask for a folder first (only when we haven't already asked).
         if (!pendingDeep) {
           const mentionsFolder = /\bfolder\b/i.test(text) || /@\w+/.test(text);
           if (!mentionsFolder) {
-            setPendingDeep(text);
             const target = site ? `${site.name} (${site.baseUrl})` : targetUrl;
             const understanding =
               `Here's what I understood:\n` +
               `• Target: ${target}\n` +
               `• Task: ${promptForDeep}\n\n` +
               `Plan: log in to the target → perform the steps on the live app → verify the result → capture screenshots as evidence.`;
+            let generatedUnderstanding = understanding;
+            try {
+              const generated = await requestDeepUnderstanding({
+                prompt: promptForDeep,
+                targetUrl: site ? site.baseUrl : targetUrl,
+                targetName: site ? site.name : '',
+              });
+              generatedUnderstanding = generated.understanding || understanding;
+            } catch {
+              /* use deterministic fallback */
+            }
+            const nextPending: PendingDeep = {
+              prompt: text,
+              targetUrl: site ? site.baseUrl : targetUrl,
+              websiteId: site ? site.id : undefined,
+              websiteName: site ? site.name : undefined,
+              understanding: generatedUnderstanding,
+              revisionCount: 0,
+            };
+            setPendingDeep(nextPending);
             replaceTurn(thinkingId, {
               id: thinkingId,
               role: 'assistant',
               kind: 'folderask',
-              understanding,
+              understanding: generatedUnderstanding,
+              originalPrompt: nextPending.prompt,
+              targetUrl: nextPending.targetUrl,
+              websiteId: nextPending.websiteId,
+              websiteName: nextPending.websiteName,
+              revisionCount: 0,
               text: 'Look right? Pick a folder for the results (type a name below), or proceed with an auto-named folder.',
             });
             setBusy(false);
@@ -532,8 +669,9 @@ export default function AgentConsole() {
           }
         }
         const folderMention = pendingDeep
-          ? (/^(auto|automatic|you\s+decide|any|organi[sz]e)\b/i.test(text.trim()) ? '' : text.trim())
+          ? (isAutoFolderResponse(text) ? '' : stripFolderPrefix(text))
           : '';
+        const approvedUnderstanding = pendingDeep?.understanding || '';
         setPendingDeep(null);
         try {
           const res = await fetch('/api/agent/start', {
@@ -543,6 +681,7 @@ export default function AgentConsole() {
               app_url: extractTargetUrl(promptForDeep) || (site ? site.baseUrl : ''),
               websiteId: site ? site.id : undefined,
               prompt: promptForDeep,
+              approvedUnderstanding,
               testCaseCount: parseCaseCount(promptForDeep),
               flowMode: 'review_cases',
               folderMention: folderMention || undefined,
@@ -659,7 +798,7 @@ export default function AgentConsole() {
         inputRef.current?.focus();
       }
     },
-    [input, busy, location.pathname, stopListening, replaceTurn, reqMode, pendingDeep, websites],
+    [input, busy, location.pathname, stopListening, replaceTurn, requestDeepUnderstanding, reqMode, pendingDeep, websites],
   );
 
   const executePlan = useCallback(
@@ -748,7 +887,21 @@ export default function AgentConsole() {
             <BrainCircuit className="h-5 w-5" />
           </div>
           <div>
-            <h1 className="text-base font-semibold leading-tight text-[var(--text-primary)]">Agent Console</h1>
+            <div className="flex items-center gap-1.5">
+              <h1 className="text-base font-semibold leading-tight text-[var(--text-primary)]">Agent Console</h1>
+              {scopeProject && (
+                <span
+                  title="This chat is scoped to the selected project / app"
+                  className="inline-flex max-w-[260px] items-center gap-1 truncate rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--text-muted)]"
+                >
+                  <Layers className="h-3 w-3 shrink-0 text-[var(--accent)]" />
+                  <span className="truncate">
+                    {scopeProject.name}
+                    <span className="text-[var(--text-muted)]/70"> / {scopeApp ? scopeApp.name : 'All apps'}</span>
+                  </span>
+                </span>
+              )}
+            </div>
             <p className="text-xs text-[var(--text-muted)]">Tell the AI what to do. It plans, you approve, it runs.</p>
           </div>
         </div>
@@ -973,9 +1126,19 @@ export default function AgentConsole() {
                       </div>
                       <div className="rounded-2xl rounded-bl-sm border border-[var(--border)] bg-[var(--bg-card)] px-4 py-3 text-sm">
                         {turn.understanding && (
-                          <pre className="mb-2 whitespace-pre-wrap rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 font-sans text-[13px] text-[var(--text-primary)]">
-                            {turn.understanding}
-                          </pre>
+                          <textarea
+                            value={turn.understanding}
+                            onChange={(e) => {
+                              const nextUnderstanding = e.target.value;
+                              setTurns((prev) => prev.map((item) => (
+                                item.id === turn.id && item.role === 'assistant' && item.kind === 'folderask'
+                                  ? { ...item, understanding: nextUnderstanding }
+                                  : item
+                              )));
+                              setPendingDeep((prev) => (prev ? { ...prev, understanding: nextUnderstanding } : prev));
+                            }}
+                            className="mb-2 min-h-[150px] w-full resize-y whitespace-pre-wrap rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 font-sans text-[13px] text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
+                          />
                         )}
                         <p className="text-[var(--text-primary)]">{turn.text}</p>
                         <div className="mt-2.5 flex flex-wrap gap-2">
@@ -984,6 +1147,12 @@ export default function AgentConsole() {
                             className="inline-flex items-center gap-1.5 rounded-md bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-white hover:bg-[var(--accent-hover)]"
                           >
                             <Sparkles className="h-3.5 w-3.5" /> Proceed (auto folder)
+                          </button>
+                          <button
+                            onClick={() => send('auto')}
+                            className="inline-flex items-center gap-1.5 rounded-md border border-[var(--accent)] bg-[var(--accent)]/10 px-3 py-1.5 text-xs font-medium text-[var(--accent)] hover:bg-[var(--accent)]/15"
+                          >
+                            <Wand2 className="h-3.5 w-3.5" /> Use edited understanding
                           </button>
                           <button
                             onClick={() => {

@@ -372,6 +372,7 @@ async function runPostCaseAgentFlow(run: any, model: any, testCases: any, target
   const coder = await getOrchestrator('playwrightCoder');
   const scriptsResult = await coder.generateObject<any>({
     prompt: `Use this baseURL in the scripts when provided: ${targetUrl || 'not provided'}.
+Approved user-reviewed understanding: ${run.approvedUnderstanding || 'not provided'}.
 ${credentialContext}
 ${selectedQaContextText}
 Use this browser inspection context as the source of truth for reachable pages, visible labels, forms, navigation actions, tables/lists, buttons, links and final URL: ${JSON.stringify(compactInspectionContext(inspectionContext))}.
@@ -631,6 +632,56 @@ export function registerAgentRoutes(app: Express) {
     });
   });
 
+  app.post('/api/agent/understand-request', async (req, res) => {
+    const { prompt, targetName, targetUrl, currentUnderstanding, correction } = req.body || {};
+    const rawPrompt = String(prompt || '').trim();
+    const rawTargetUrl = String(targetUrl || '').trim();
+    const rawTargetName = String(targetName || '').trim();
+    if (!rawPrompt) return res.status(400).json({ error: 'prompt is required' });
+
+    const fallback = {
+      understanding:
+        `Here's what I understood:\n` +
+        `- Target: ${rawTargetName ? `${rawTargetName} (${rawTargetUrl || 'URL not provided'})` : rawTargetUrl || 'Target not provided'}\n` +
+        `- Task: ${rawPrompt}\n\n` +
+        `Plan: log in to the target, perform the requested steps on the live app, verify the result, and capture screenshots as evidence.`,
+      targetName: rawTargetName,
+      targetUrl: rawTargetUrl,
+      task: rawPrompt,
+      plannedApproach: 'Log in, inspect the live app, generate test cases, create Playwright scripts, execute them, and capture screenshot evidence.',
+      confidence: 70,
+      missingInfo: [] as string[],
+      source: 'fallback',
+    };
+
+    try {
+      const ai = await getOrchestrator('chatAssistant');
+      const result = await ai.generateObject<any>({
+        prompt:
+          `Interpret this QA automation request for a human confirmation card.\n\n` +
+          `Original request: ${rawPrompt}\n` +
+          `Detected target name: ${rawTargetName || 'not provided'}\n` +
+          `Detected target URL: ${rawTargetUrl || 'not provided'}\n` +
+          (currentUnderstanding ? `Current understanding:\n${String(currentUnderstanding)}\n` : '') +
+          (correction ? `User correction/revision:\n${String(correction)}\n` : '') +
+          `\nThe "understanding" field must be concise, user-facing plain text with these sections: Here's what I understood, Target, Task, Plan.`,
+        schema: z.object({
+          understanding: z.string().min(20),
+          targetName: z.string().default(''),
+          targetUrl: z.string().default(''),
+          task: z.string().default(''),
+          plannedApproach: z.string().default(''),
+          confidence: z.number().min(0).max(100).default(70),
+          missingInfo: z.array(z.string()).default([]),
+        }),
+        userMessage: rawPrompt,
+      });
+      res.json({ ...fallback, ...result.object, source: 'ai' });
+    } catch (err: any) {
+      res.json({ ...fallback, source: 'fallback', error: getAIErrorMessage(err) });
+    }
+  });
+
   app.get('/api/agent-runs', (req, res) => {
     res.set('Cache-Control', 'no-store');
     res.json(scopeFilter(db.agentRuns, reqScope(req)));
@@ -727,6 +778,7 @@ export function registerAgentRoutes(app: Express) {
 
   app.post('/api/agent/start', async (req, res) => {
     const { app_url, prompt } = req.body;
+    const approvedUnderstanding = String(req.body.approvedUnderstanding || '').trim();
     const testCaseCount = Math.min(10, Math.max(1, Number(req.body.testCaseCount) || 3));
     const flowMode = req.body.flowMode === 'review_cases' ? 'review_cases' : 'complete';
 
@@ -793,7 +845,7 @@ export function registerAgentRoutes(app: Express) {
     const runProvider = resolveProviderForAgent('chatAssistant');
     // Ground the run in the relevant slice of the app-knowledge pack (retrieved per request).
     // Smaller budget for the inspector (it runs in a loop), generous for the one-shot case writer.
-    const knowledgeCtx = { websiteId: req.body.websiteId, targetUrl, text: `${scopeContextText} ${prompt || ''}`.trim() };
+    const knowledgeCtx = { websiteId: req.body.websiteId, targetUrl, text: `${scopeContextText} ${prompt || ''} ${approvedUnderstanding}`.trim() };
     const inspectorKnowledge = buildKnowledgeBlock(knowledgeCtx, { maxChars: 3500 });
     const knowledgeBlock = buildKnowledgeBlock(knowledgeCtx, { maxChars: 12000 });
 
@@ -802,6 +854,7 @@ export function registerAgentRoutes(app: Express) {
       app_url: targetUrl,
       provider: runProvider,
       prompt: prompt || '',
+      approvedUnderstanding,
       websiteId: req.body.websiteId || '',
       projectId: scope.projectId || '',
       appId: scope.appId || '',
@@ -828,6 +881,14 @@ export function registerAgentRoutes(app: Express) {
       status: 'completed',
       output: `${selectedApp ? `Context: ${selectedProject?.name || 'project'} › ${selectedApp.name}. ` : selectedProject ? `Context: ${selectedProject.name} (project-level). ` : ''}Resolved target: ${targetUrl || 'none'}. Repository folder: ${folder ? getFolderPath(folder.id) : 'Uncategorized'}. QA scope: ${selectedQaContext.hasContext ? 'selected plan/suite/case context' : 'prompt only'}. Credentials: ${credentials.username && credentials.password ? `${(credentials as any).source || 'provided'} for ${(credentials as any).siteName || credentials.username} (role: ${(credentials as any).role || 'default'})` : 'none'}.`,
     });
+
+    if (approvedUnderstanding) {
+      newRun.messages.push({
+        agent: 'System',
+        status: 'completed',
+        output: `Approved understanding:\n${approvedUnderstanding}`,
+      });
+    }
 
     db.agentRuns.unshift(newRun);
     persistDataInBackground('new agent run');
@@ -856,7 +917,7 @@ export function registerAgentRoutes(app: Express) {
       newRun.messages.push({ agent: 'ApplicationInspector', status: 'running' });
       const inspectionContext = await inspectApplicationFlow({
         targetUrl,
-        prompt: prompt || '',
+        prompt: approvedUnderstanding ? `${prompt || ''}\n\nApproved understanding:\n${approvedUnderstanding}` : prompt || '',
         credentials,
         model: undefined as any,
         runId: taskId,
@@ -880,6 +941,7 @@ export function registerAgentRoutes(app: Express) {
       const caseWriter = await getOrchestrator('caseWriter');
       const caseResult = await caseWriter.generateObject<any>({
         prompt: `User prompt: ${prompt || 'not provided'}.
+Approved user-reviewed understanding: ${approvedUnderstanding || 'not provided'}.
 Playwright target URL: ${targetUrl || 'not provided'}.
 ${credentialContext}
 ${selectedQaContext.promptText}
