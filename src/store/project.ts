@@ -30,10 +30,20 @@ export interface Project {
   lastSyncedSha?: string;
   syncStatus: SyncStatus;
   lastError?: string;
+  /** Whether a private-repo access token is stored server-side. The token itself is never sent to the client. */
+  hasToken?: boolean;
   createdAt: string;
   updatedAt: string;
   apps: ProjectApp[];
 }
+
+/** Project create/update payload, plus write-only credential fields never read back. */
+export type ProjectInput = Partial<Project> & {
+  /** A private-repo access token to store (encrypted server-side). Omit to leave unchanged. */
+  repoToken?: string;
+  /** Set true to remove the stored token. */
+  removeToken?: boolean;
+};
 
 const SEL_PROJECT_KEY = 'tfa_project_id';
 const SEL_APP_KEY = 'tfa_app_id';
@@ -77,8 +87,8 @@ interface ProjectState {
   selectProject: (id: string | null) => void;
   selectApp: (id: string | null) => void;
 
-  createProject: (input: Partial<Project>) => Promise<Project>;
-  updateProject: (id: string, input: Partial<Project>) => Promise<void>;
+  createProject: (input: ProjectInput) => Promise<Project>;
+  updateProject: (id: string, input: ProjectInput) => Promise<void>;
   deleteProject: (id: string) => Promise<void>;
   createApp: (projectId: string, input: Partial<ProjectApp>) => Promise<ProjectApp>;
   updateApp: (id: string, input: Partial<ProjectApp>) => Promise<void>;

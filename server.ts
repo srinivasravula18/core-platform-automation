@@ -62,6 +62,18 @@ async function startServer() {
     res.json({ ok: true, service: 'testflowai-backend' });
   });
 
+  // Where this backend runs. Local folders are only usable when the backend has
+  // the repo on disk (dev); a production/cloud backend can only reach remote git.
+  // `DEPLOYMENT_MODE` overrides; otherwise derive from NODE_ENV (default local).
+  app.get('/api/app-config', (_req, res) => {
+    const mode =
+      (process.env.DEPLOYMENT_MODE || '').toLowerCase() === 'production' ||
+      (!process.env.DEPLOYMENT_MODE && String(process.env.NODE_ENV || '').toLowerCase() === 'production')
+        ? 'production'
+        : 'local';
+    res.json({ deploymentMode: mode, allowLocalRepo: mode !== 'production' });
+  });
+
   registerAuthRoutes(app);
   registerProjectRoutes(app);
   registerSettingsRoutes(app);

@@ -1,7 +1,7 @@
-import React, { useState } from 'react';
-import { X, ChevronLeft, ChevronRight, Check, FolderGit2, Globe, FileCode2, Loader2, GitBranch, HardDrive } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { X, ChevronLeft, ChevronRight, Check, FolderGit2, Globe, FileCode2, Loader2, GitBranch, HardDrive, KeyRound } from 'lucide-react';
 import { cn } from '@/src/lib/utils';
-import { useProjects, type Project, type ProjectApp } from '@/src/store/project';
+import { useProjects, type Project, type ProjectApp, type ProjectInput } from '@/src/store/project';
 
 type WizardKind = 'project' | 'app';
 
@@ -42,6 +42,11 @@ export function ProjectWizard({ kind, projectId, editProject, editApp, onClose, 
   const [pRepoPath, setPRepoPath] = useState(editProject?.repoPath ?? '');
   const [pRepoUrl, setPRepoUrl] = useState(editProject?.repoUrl ?? '');
   const [pBranch, setPBranch] = useState(editProject?.defaultBranch ?? 'main');
+  // Private-repo access token. Never pre-filled from the server (the token is never sent back);
+  // `hasToken` only tells us one is on file so we can offer "leave blank to keep" / "remove".
+  const [pRepoToken, setPRepoToken] = useState('');
+  const [pRemoveToken, setPRemoveToken] = useState(false);
+  const hadToken = Boolean(editProject?.hasToken);
 
   // ---- App form state ----
   const [aName, setAName] = useState(editApp?.name ?? '');
@@ -53,6 +58,21 @@ export function ProjectWizard({ kind, projectId, editProject, editApp, onClose, 
   const [step, setStep] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Local-folder repos are only usable when the backend runs locally (has disk
+  // access). In production the backend is remote, so only a remote git repo
+  // makes sense. Default to allowing local until the config loads.
+  const [allowLocal, setAllowLocal] = useState(true);
+  useEffect(() => {
+    fetch('/api/app-config')
+      .then((r) => r.json())
+      .then((c) => {
+        const ok = c?.allowLocalRepo !== false;
+        setAllowLocal(ok);
+        if (!ok) setPRepoKind('remote'); // production: force remote
+      })
+      .catch(() => {});
+  }, []);
 
   const steps =
     kind === 'project'
@@ -74,7 +94,7 @@ export function ProjectWizard({ kind, projectId, editProject, editApp, onClose, 
     setError(null);
     try {
       if (kind === 'project') {
-        const payload: Partial<Project> = {
+        const payload: ProjectInput = {
           name: pName.trim(),
           description: pDesc.trim(),
           repoKind: pRepoKind,
@@ -82,6 +102,10 @@ export function ProjectWizard({ kind, projectId, editProject, editApp, onClose, 
           repoUrl: pRepoKind === 'remote' ? pRepoUrl.trim() : '',
           defaultBranch: pBranch.trim() || 'main',
         };
+        if (pRepoKind === 'remote') {
+          if (pRepoToken.trim()) payload.repoToken = pRepoToken.trim();
+          if (pRemoveToken) payload.removeToken = true;
+        }
         if (editProject) await updateProject(editProject.id, payload);
         else await createProject(payload);
       } else {
@@ -185,36 +209,85 @@ export function ProjectWizard({ kind, projectId, editProject, editApp, onClose, 
 
           {kind === 'project' && step === 1 && (
             <>
-              {field('Repository source', 'Where this project’s one codebase lives.', (
-                <div className="grid grid-cols-2 gap-2">
-                  {([
-                    { v: 'local', label: 'Local folder', icon: HardDrive, hint: 'Already on this machine' },
-                    { v: 'remote', label: 'Remote URL', icon: GitBranch, hint: 'Clone from GitHub/GitLab' },
-                  ] as const).map((opt) => (
-                    <button
-                      key={opt.v}
-                      onClick={() => setPRepoKind(opt.v)}
-                      className={cn(
-                        'flex flex-col items-start gap-1 rounded-lg border p-3 text-left transition-colors',
-                        pRepoKind === opt.v
-                          ? 'border-[var(--accent)] bg-[var(--accent)]/5'
-                          : 'border-[var(--border)] hover:bg-[var(--bg-secondary)]',
-                      )}
-                    >
-                      <opt.icon className={cn('w-4 h-4', pRepoKind === opt.v ? 'text-[var(--accent)]' : 'text-[var(--text-muted)]')} />
-                      <span className="text-xs font-medium text-[var(--text-primary)]">{opt.label}</span>
-                      <span className="text-[10px] text-[var(--text-muted)]">{opt.hint}</span>
-                    </button>
-                  ))}
-                </div>
-              ))}
+              {allowLocal
+                ? field('Repository source', 'Where this project’s one codebase lives.', (
+                    <div className="grid grid-cols-2 gap-2">
+                      {([
+                        { v: 'local', label: 'Local folder', icon: HardDrive, hint: 'Already on this machine' },
+                        { v: 'remote', label: 'Remote URL', icon: GitBranch, hint: 'Connect a GitHub repo' },
+                      ] as const).map((opt) => (
+                        <button
+                          key={opt.v}
+                          onClick={() => setPRepoKind(opt.v)}
+                          className={cn(
+                            'flex flex-col items-start gap-1 rounded-lg border p-3 text-left transition-colors',
+                            pRepoKind === opt.v
+                              ? 'border-[var(--accent)] bg-[var(--accent)]/5'
+                              : 'border-[var(--border)] hover:bg-[var(--bg-secondary)]',
+                          )}
+                        >
+                          <opt.icon className={cn('w-4 h-4', pRepoKind === opt.v ? 'text-[var(--accent)]' : 'text-[var(--text-muted)]')} />
+                          <span className="text-xs font-medium text-[var(--text-primary)]">{opt.label}</span>
+                          <span className="text-[10px] text-[var(--text-muted)]">{opt.hint}</span>
+                        </button>
+                      ))}
+                    </div>
+                  ))
+                : (
+                    <div className="flex items-start gap-2 rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] p-3">
+                      <GitBranch className="w-4 h-4 mt-0.5 text-[var(--accent)]" />
+                      <div>
+                        <div className="text-xs font-medium text-[var(--text-primary)]">Remote git repository</div>
+                        <div className="text-[10px] text-[var(--text-muted)]">
+                          This is a production deployment — connect the project’s GitHub repo. Local folders aren’t available here.
+                        </div>
+                      </div>
+                    </div>
+                  )}
               {pRepoKind === 'local'
                 ? field('Local repo path', 'Absolute path to the repo folder on this machine.', (
                     <input className={inputCls} value={pRepoPath} onChange={(e) => setPRepoPath(e.target.value)} placeholder="D:\\core-platform" />
                   ))
-                : field('Repository URL', 'HTTPS clone URL. Access tokens are managed in Settings.', (
+                : field('Repository URL', 'HTTPS clone URL.', (
                     <input className={inputCls} value={pRepoUrl} onChange={(e) => setPRepoUrl(e.target.value)} placeholder="https://github.com/org/repo.git" />
                   ))}
+              {pRepoKind === 'remote' &&
+                field(
+                  'Access token',
+                  hadToken
+                    ? 'A token is saved. Leave blank to keep it, or paste a new one to replace it.'
+                    : 'Required for private repos. Use a fine-grained, read-only token scoped to this repo.',
+                  (
+                    <>
+                      <div className="relative">
+                        <KeyRound className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--text-muted)]" />
+                        <input
+                          className={cn(inputCls, 'pl-9')}
+                          type="password"
+                          autoComplete="off"
+                          value={pRepoToken}
+                          onChange={(e) => { setPRepoToken(e.target.value); if (e.target.value) setPRemoveToken(false); }}
+                          placeholder={hadToken ? '•••••••••••• (saved)' : 'github_pat_… or ghp_…'}
+                          disabled={pRemoveToken}
+                        />
+                      </div>
+                      <p className="text-[11px] text-[var(--text-muted)] mt-1.5 leading-relaxed">
+                        Stored encrypted on the server and never shown again. We verify access when you save.
+                        Public repos can be left blank.
+                      </p>
+                      {hadToken && (
+                        <label className="flex items-center gap-2 mt-2 text-[11px] text-[var(--text-muted)] cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={pRemoveToken}
+                            onChange={(e) => { setPRemoveToken(e.target.checked); if (e.target.checked) setPRepoToken(''); }}
+                          />
+                          Remove the saved token (treat as a public repo)
+                        </label>
+                      )}
+                    </>
+                  ),
+                )}
               {field('Default branch', undefined, (
                 <input className={inputCls} value={pBranch} onChange={(e) => setPBranch(e.target.value)} placeholder="main" />
               ))}
@@ -229,6 +302,18 @@ export function ProjectWizard({ kind, projectId, editProject, editApp, onClose, 
                 ['Source', pRepoKind === 'local' ? 'Local folder' : 'Remote URL'],
                 [pRepoKind === 'local' ? 'Path' : 'URL', pRepoKind === 'local' ? pRepoPath : pRepoUrl],
                 ['Branch', pBranch || 'main'],
+                ...(pRepoKind === 'remote'
+                  ? [[
+                      'Access token',
+                      pRemoveToken
+                        ? 'Will be removed (public repo)'
+                        : pRepoToken.trim()
+                          ? 'New token — will be saved & verified'
+                          : hadToken
+                            ? 'Keep saved token'
+                            : 'None (public repo)',
+                    ] as [string, string]]
+                  : []),
               ]}
             />
           )}

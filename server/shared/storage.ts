@@ -73,6 +73,8 @@ export const db: any = {
   appKnowledge: [] as any[],
   projects: [] as any[],
   apps: [] as any[],
+  // projectId -> AES-GCM-encrypted repo access token (private-repo auth). Ciphertext only.
+  repoSecrets: {} as Record<string, string>,
 };
 
 const settingsFilePath = path.resolve(process.cwd(), '.testflow-settings.json');
@@ -103,6 +105,7 @@ function getPersistableDbSnapshot() {
     appKnowledge: db.appKnowledge,
     projects: db.projects,
     apps: db.apps,
+    repoSecrets: db.repoSecrets,
   };
 }
 
@@ -133,6 +136,7 @@ export async function loadPersistedData() {
     db.appKnowledge = Array.isArray(data.appKnowledge) ? data.appKnowledge : [];
     db.projects = Array.isArray(data.projects) ? data.projects : [];
     db.apps = Array.isArray(data.apps) ? data.apps : [];
+    db.repoSecrets = data.repoSecrets && typeof data.repoSecrets === 'object' ? data.repoSecrets : {};
   } catch (error: any) {
     if (error?.code !== 'ENOENT') {
       console.error(`Failed to load persisted data from ${dataFilePath}:`, error);
