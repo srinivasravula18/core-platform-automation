@@ -1,14 +1,8 @@
 /**
  * TestFlowAI — AI Provider Abstraction
  *
- * The previous implementation hard-coded Gemini via the `ai` SDK (`generateObject`
- * from the `ai` package with a `createGeminiModel()` helper in
- * `server/shared/ai.ts`). That made it impossible to use OpenAI or Anthropic.
- *
- * This file defines a single Provider interface and a factory that returns a
- * provider by name. The Gemini implementation wraps the existing `ai`-SDK call.
- * The OpenAI and Anthropic implementations use direct REST calls so the package
- * footprint stays small.
+ * This file defines the supported Provider interface and model registry.
+ * TestFlowAI currently exposes Gemini, OpenAI, and Anthropic as service providers.
  *
  * All providers implement the same surface:
  *   - generateObject<T>({ system, prompt, schema, temperature }): T
@@ -20,6 +14,7 @@
  */
 
 export type ProviderName = 'gemini' | 'openai' | 'anthropic';
+export type ProviderAuthMode = 'api_key' | 'account';
 
 export interface GenerateObjectOptions<T> {
   system?: string;

@@ -542,7 +542,6 @@ export default function AgentConsole() {
             body: JSON.stringify({
               app_url: extractTargetUrl(promptForDeep) || (site ? site.baseUrl : ''),
               websiteId: site ? site.id : undefined,
-              provider: 'gemini',
               prompt: promptForDeep,
               testCaseCount: parseCaseCount(promptForDeep),
               flowMode: 'review_cases',

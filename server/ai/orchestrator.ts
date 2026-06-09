@@ -11,11 +11,12 @@
  *   const { object, usage, model, latencyMs } = await ai.generateObject({...});
  */
 
-import type { AIProvider, ProviderName } from './providers/types';
+import type { AIProvider, ProviderAuthMode, ProviderName } from './providers/types';
 import { DEFAULT_MODELS } from './providers/types';
 import { GeminiProvider } from './providers/gemini';
 import { OpenAIProvider } from './providers/openai';
 import { AnthropicProvider } from './providers/anthropic';
+import { AccountCliProvider } from './providers/cli';
 import { runGuardrailPipeline, type PipelineInput, type PipelineResult } from './guardrails';
 import { getActivePrompt } from './promptStore';
 import { recordUsage, getDailyCost } from './costTracker';
@@ -25,24 +26,41 @@ import { db } from '../shared/storage';
 export interface ProviderCredentials {
   apiKey: string;
   model?: string;
+  authMode: ProviderAuthMode;
+}
+
+const PROVIDERS: ProviderName[] = ['gemini', 'openai', 'anthropic'];
+
+function isProviderName(value: unknown): value is ProviderName {
+  return PROVIDERS.includes(value as ProviderName);
 }
 
 export function getProviderCredentials(provider: ProviderName): ProviderCredentials | null {
   const settings = db.settings?.providerSettings?.[provider];
+  if (settings?.enabled === false) return null;
+  if (settings?.authMode === 'account') {
+    return { apiKey: '', model: settings.model, authMode: 'account' };
+  }
   if (!settings?.apiKey) {
     if (provider === 'gemini') {
       const envKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_GENERATIVE_AI_API_KEY;
-      if (envKey) return { apiKey: envKey };
+      if (envKey) return { apiKey: envKey, authMode: 'api_key' };
     }
     if (provider === 'openai' && process.env.OPENAI_API_KEY) {
-      return { apiKey: process.env.OPENAI_API_KEY };
+      return { apiKey: process.env.OPENAI_API_KEY, authMode: 'api_key' };
     }
     if (provider === 'anthropic' && process.env.ANTHROPIC_API_KEY) {
-      return { apiKey: process.env.ANTHROPIC_API_KEY };
+      return { apiKey: process.env.ANTHROPIC_API_KEY, authMode: 'api_key' };
     }
     return null;
   }
-  return { apiKey: settings.apiKey, model: settings.model };
+  return { apiKey: settings.apiKey, model: settings.model, authMode: settings.authMode || 'api_key' };
+}
+
+function isLocalCliProviderAllowed(): boolean {
+  const env = String(process.env.NODE_ENV || '').toLowerCase();
+  const explicit = String(process.env.ALLOW_LOCAL_CLI_PROVIDERS || '').toLowerCase();
+  return explicit === 'true' || (!env || env === 'development' || env === 'dev');
 }
 
 export function buildProvider(provider: ProviderName): AIProvider {
@@ -53,6 +71,18 @@ export function buildProvider(provider: ProviderName): AIProvider {
     );
   }
   const model = creds.model || DEFAULT_MODELS[provider].default;
+  if (creds.authMode === 'account') {
+    if (!isLocalCliProviderAllowed()) {
+      throw new Error(
+        `Provider "${provider}" is configured for local subscription/account CLI auth, but CLI providers are disabled outside local development. Use API key mode in test and production.`,
+      );
+    }
+    if (provider === 'openai') return new AccountCliProvider('openai', 'codex', model);
+    if (provider === 'anthropic') return new AccountCliProvider('anthropic', 'claude', model);
+    throw new Error(
+      `Provider "${provider}" does not support subscription/account CLI auth in TestFlowAI. Use API key mode for this provider.`,
+    );
+  }
   switch (provider) {
     case 'gemini':
       return new GeminiProvider(creds.apiKey, model);
@@ -65,7 +95,7 @@ export function buildProvider(provider: ProviderName): AIProvider {
 
 export function listConfiguredProviders(): ProviderName[] {
   const out: ProviderName[] = [];
-  for (const name of ['gemini', 'openai', 'anthropic'] as ProviderName[]) {
+  for (const name of PROVIDERS) {
     if (getProviderCredentials(name)) out.push(name);
   }
   return out;
@@ -73,19 +103,25 @@ export function listConfiguredProviders(): ProviderName[] {
 
 export function resolveProviderForAgent(agent: string): ProviderName {
   const map = db.settings?.agentProviderMap;
-  if (map && (map as any)[agent]) return (map as any)[agent] as ProviderName;
-  return (db.settings?.defaultProvider as ProviderName) || 'gemini';
+  const rawPreferred = map && (map as any)[agent] ? (map as any)[agent] : db.settings?.defaultProvider;
+  const preferred = isProviderName(rawPreferred) ? rawPreferred : undefined;
+  if (preferred && getProviderCredentials(preferred)) return preferred;
+  const configured = listConfiguredProviders();
+  if (configured.length > 0) return configured[0];
+  return preferred || 'gemini';
 }
 
 export function resolveModelForAgent(agent: string, provider: ProviderName): string {
+  const validModels = [DEFAULT_MODELS[provider].default, ...DEFAULT_MODELS[provider].alternatives];
   // 1) per-agent override (Settings → AI Providers → per-agent model)
   const map = db.settings?.agentModelMap;
-  if (map && (map as any)[agent]) return (map as any)[agent] as string;
+  const agentModel = map && (map as any)[agent] ? String((map as any)[agent]) : '';
+  if (agentModel && validModels.includes(agentModel)) return agentModel;
   // 2) provider-level model chosen in the Settings panel (providerSettings[provider].model).
   //    Without this, getOrchestrator overwrites the UI-selected model with the hard default,
   //    so toggling the model in Settings never reached the agents.
   const providerModel = db.settings?.providerSettings?.[provider]?.model;
-  if (providerModel) return providerModel;
+  if (providerModel && validModels.includes(providerModel)) return providerModel;
   // 3) hard default for the provider
   return DEFAULT_MODELS[provider].default;
 }

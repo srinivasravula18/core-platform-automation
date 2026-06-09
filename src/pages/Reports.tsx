@@ -403,8 +403,11 @@ export default function Reports() {
     return total + (report.status === 'Failed' ? 1 : 0);
   }, 0);
   const requestedBySummary = reports.find(report => report.requestedBy)?.requestedBy || 'No reports logged';
+  const uniqueDurations = Array.from(new Set(reports.map(report => report.executionTime).filter(Boolean)));
   const executionDurationSummary = reports.length > 0
-    ? reports.map(report => report.executionTime).filter(Boolean).join(', ') || 'Not specified'
+    ? uniqueDurations.length
+      ? uniqueDurations.slice(0, 3).join(', ') + (uniqueDurations.length > 3 ? ` +${uniqueDurations.length - 3} more` : '')
+      : 'Not specified'
     : 'No reports logged';
 
   return (
@@ -519,16 +522,16 @@ export default function Reports() {
 
         {/* Main Table Styled search similar to Image 2 */}
         <div className="h-[calc(100vh-320px)] min-h-[360px] w-full overflow-x-auto overflow-y-auto rounded-b-xl">
-          <table className="w-full min-w-[1180px] table-fixed border-collapse text-left text-sm">
+          <table className="w-full min-w-[1530px] table-fixed border-collapse text-left text-sm">
             <thead className="bg-[var(--bg-secondary)] text-[var(--text-muted)] text-[11px] uppercase tracking-wider font-semibold border-b border-[var(--border)]">
               <tr>
                 <th className="w-16 px-4 py-3">ID</th>
-                <th className="w-[280px] px-4 py-3">Test Scenario</th>
+                <th className="w-[300px] px-4 py-3">Test Scenario</th>
                 <th className="w-24 px-4 py-3">Type</th>
                 <th className="w-[360px] px-4 py-3">Test Steps</th>
                 <th className="w-[420px] px-4 py-3">Expected Result</th>
-                <th className="w-28 px-4 py-3 text-center">Outcome</th>
-                <th className="w-44 px-4 py-3 text-left">Evidence</th>
+                <th className="w-[280px] px-4 py-3 text-left">Outcome</th>
+                <th className="w-[210px] px-4 py-3 text-left">Evidence</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-[var(--border)] font-sans">
@@ -599,7 +602,7 @@ export default function Reports() {
                       </td>
                       
                       {/* Outcome Badge Status */}
-                      <td className="py-4 px-4 text-center border-l border-[var(--border)]">
+                      <td className="border-l border-[var(--border)] px-4 py-4 text-left">
                         <span className={cn(
                           "inline-flex px-2 py-0.5 rounded text-[11px] font-bold border leading-none tracking-wide",
                           r.status === 'Passed' 
@@ -610,7 +613,7 @@ export default function Reports() {
                         </span>
                         
                         {r.status === 'Failed' && r.failureReason && (
-                          <span className="block text-[9px] text-red-400 font-mono mt-1 w-24 mx-auto truncate text-center" title={r.failureReason}>
+                          <span className="mt-2 block min-h-[150px] max-h-[260px] w-full overflow-y-auto whitespace-pre-wrap break-words rounded border border-red-500/20 bg-red-500/10 p-3 text-[11px] leading-5 text-red-300">
                             {r.failureReason}
                           </span>
                         )}
@@ -627,9 +630,11 @@ export default function Reports() {
                                   type="button"
                                   onClick={() => setActiveStep({ reportId: r.id, step: stepItemSum })}
                                   className={cn(
-                                    "rounded-md border px-2.5 py-1 text-[10px] font-bold transition-all",
+                                    "min-w-[78px] rounded-md border px-2.5 py-1 text-[10px] font-bold transition-all",
                                     activeStep?.reportId === r.id && activeStep?.step.step === stepItemSum.step
                                       ? "bg-[var(--accent)] text-white border-[var(--accent)] shadow"
+                                      : stepItemSum.outcome === 'Fail'
+                                      ? "border-red-500/30 bg-red-500/10 text-red-300 hover:bg-red-500/20"
                                       : "bg-[var(--bg-secondary)] hover:bg-[var(--border)] border-[var(--border)] text-[var(--text-primary)]"
                                   )}
                                 >
@@ -664,7 +669,7 @@ export default function Reports() {
                     </tr>
 
                     {/* Inline browser screen expander row when a step is active */}
-                    {false && activeStep?.reportId === r.id && (
+                    {activeStep?.reportId === r.id && (
                       <tr className="bg-[var(--bg-secondary)]/15">
                         <td colSpan={7} className="px-6 py-5 border-b border-[var(--border)]">
                           {/* Custom Red Banner for Failures exactly as shown in 1st image */}
@@ -694,6 +699,13 @@ export default function Reports() {
                                 <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse mr-0.5"></span>
                                 PLAYWRIGHT SCREENSHOT ENGINE
                               </span>
+                              <button
+                                type="button"
+                                onClick={() => setActiveStep(null)}
+                                className="shrink-0 rounded-md border border-slate-700 bg-slate-950 px-2.5 py-1 text-[10px] font-semibold text-slate-300 hover:bg-slate-800"
+                              >
+                                Close
+                              </button>
                             </div>
                             
                             {/* Browser Contents Viewport - Raw automated screenshot */}
@@ -734,8 +746,8 @@ export default function Reports() {
         </div>
       </div>
 
-      {/* Evidence popup opened from table step buttons */}
-      {activeStep && (
+      {/* Evidence is shown inline below the selected report row. */}
+      {false && activeStep && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-4 backdrop-blur-md" onClick={() => setActiveStep(null)}>
           <div className="flex max-h-[92vh] w-full max-w-6xl flex-col overflow-hidden rounded-xl border border-slate-800 bg-slate-950 shadow-2xl" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between gap-3 border-b border-slate-800 bg-slate-900 px-4 py-3">

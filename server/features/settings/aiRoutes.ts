@@ -8,7 +8,7 @@
 import type { Express } from 'express';
 import { db, persistDataInBackground, persistSettingsInBackground } from '../../shared/storage';
 import { buildProvider, listConfiguredProviders, resolveProviderForAgent, resolveModelForAgent } from '../../ai/orchestrator';
-import { DEFAULT_MODELS, type ProviderName } from '../../ai/providers/types';
+import { DEFAULT_MODELS, type ProviderAuthMode, type ProviderName } from '../../ai/providers/types';
 import {
   listPrompts,
   getActivePrompt,
@@ -26,6 +26,41 @@ import { recentGuardrailLogs } from '../../ai/guardrails';
 // Only the consolidated 7 roles are shown/managed in the UI. Legacy agent keys
 // still resolve (aliased) but are no longer surfaced for editing.
 const AGENT_NAMES: AgentName[] = CANONICAL_AGENTS;
+const PROVIDERS = ['gemini', 'openai', 'anthropic'] as ProviderName[];
+
+function ensureProviderSettings() {
+  const existing = db.settings.providerSettings || {};
+  db.settings.providerSettings = {};
+  for (const name of PROVIDERS) {
+    db.settings.providerSettings[name] = {
+      apiKey: existing[name]?.apiKey || '',
+      model: existing[name]?.model || '',
+      authMode: existing[name]?.authMode || 'api_key',
+      enabled: existing[name]?.enabled === undefined ? name === db.settings.defaultProvider : !!existing[name]?.enabled,
+    };
+  }
+  if (!PROVIDERS.includes(db.settings.defaultProvider)) db.settings.defaultProvider = 'gemini';
+  db.settings.agentProviderMap = Object.fromEntries(
+    Object.entries(db.settings.agentProviderMap || {}).filter(([, provider]) => PROVIDERS.includes(provider as ProviderName)),
+  );
+}
+
+function hasEnvApiKey(provider: ProviderName): boolean {
+  if (provider === 'gemini') return !!(process.env.GEMINI_API_KEY || process.env.GOOGLE_GENERATIVE_AI_API_KEY);
+  if (provider === 'openai') return !!process.env.OPENAI_API_KEY;
+  if (provider === 'anthropic') return !!process.env.ANTHROPIC_API_KEY;
+  return false;
+}
+
+function supportsAccountCli(provider: ProviderName): boolean {
+  return provider === 'openai' || provider === 'anthropic';
+}
+
+function isLocalCliProviderAllowed(): boolean {
+  const env = String(process.env.NODE_ENV || '').toLowerCase();
+  const explicit = String(process.env.ALLOW_LOCAL_CLI_PROVIDERS || '').toLowerCase();
+  return explicit === 'true' || (!env || env === 'development' || env === 'dev');
+}
 
 function redactKey(key: string): string {
   if (!key) return '';
@@ -37,14 +72,24 @@ export function registerSettingsRoutes(app: Express) {
   /* ---------- provider list ---------- */
 
   app.get('/api/ai/providers', (_req, res) => {
-    const out = (['gemini', 'openai', 'anthropic'] as ProviderName[]).map((p) => {
+    ensureProviderSettings();
+    const out = PROVIDERS.map((p) => {
       const stored = db.settings?.providerSettings?.[p];
+      const authMode = (stored?.authMode || 'api_key') as ProviderAuthMode;
+      const hasApiKey = !!stored?.apiKey || hasEnvApiKey(p);
+      const accountCallable = isLocalCliProviderAllowed() && supportsAccountCli(p);
       return {
         name: p,
         defaultModel: DEFAULT_MODELS[p].default,
         alternatives: DEFAULT_MODELS[p].alternatives,
-        configured: !!(stored?.apiKey) || !!(p === 'gemini' && process.env.GEMINI_API_KEY),
+        enabled: stored?.enabled !== false,
+        configured: authMode === 'api_key' ? hasApiKey : accountCallable,
+        callable: (stored?.enabled !== false) && (authMode === 'api_key' ? hasApiKey : accountCallable),
         model: stored?.model || DEFAULT_MODELS[p].default,
+        authMode,
+        accountTool: authMode === 'account' && p === 'openai' ? 'codex' : authMode === 'account' && p === 'anthropic' ? 'claude' : '',
+        runtime: authMode === 'api_key' ? 'sdk' : 'cli',
+        accountCliAllowed: isLocalCliProviderAllowed(),
         apiKeyMasked: stored?.apiKey ? redactKey(stored.apiKey) : '',
       };
     });
@@ -59,6 +104,7 @@ export function registerSettingsRoutes(app: Express) {
 
   app.post('/api/ai/providers/:name/test', async (req, res) => {
     const name = req.params.name as ProviderName;
+    if (!PROVIDERS.includes(name)) return res.status(404).json({ ok: false, provider: name, error: `Unknown provider: ${name}`, checkedAt: new Date().toISOString() });
     try {
       const provider = buildProvider(name);
       const health = await provider.health();
@@ -70,14 +116,20 @@ export function registerSettingsRoutes(app: Express) {
 
   app.put('/api/ai/providers/:name', (req, res) => {
     const name = req.params.name as ProviderName;
-    const { apiKey, model } = req.body || {};
-    if (!db.settings.providerSettings) db.settings.providerSettings = { gemini: { apiKey: '', model: '' }, openai: { apiKey: '', model: '' }, anthropic: { apiKey: '', model: '' } };
-    const slot = db.settings.providerSettings[name] || { apiKey: '', model: '' };
+    if (!PROVIDERS.includes(name)) return res.status(404).json({ error: `Unknown provider: ${name}` });
+    const { apiKey, model, authMode, enabled } = req.body || {};
+    ensureProviderSettings();
+    const slot = db.settings.providerSettings[name] || { apiKey: '', model: '', authMode: 'api_key' };
     if (apiKey !== undefined) slot.apiKey = apiKey;
     if (model !== undefined) slot.model = model;
+    if (authMode !== undefined) {
+      if (!['api_key', 'account'].includes(authMode)) return res.status(400).json({ error: 'authMode must be api_key or account' });
+      slot.authMode = authMode;
+    }
+    if (enabled !== undefined) slot.enabled = !!enabled;
     db.settings.providerSettings[name] = slot;
     persistSettingsInBackground(`provider settings: ${name}`);
-    res.json({ ok: true, name, model: slot.model || DEFAULT_MODELS[name].default });
+    res.json({ ok: true, name, model: slot.model || DEFAULT_MODELS[name].default, authMode: slot.authMode || 'api_key', enabled: slot.enabled !== false });
   });
 
   app.delete('/api/ai/providers/:name/key', (req, res) => {
@@ -91,12 +143,15 @@ export function registerSettingsRoutes(app: Express) {
 
   app.put('/api/ai/default-provider', (req, res) => {
     const { provider, model } = req.body || {};
-    if (provider && ['gemini', 'openai', 'anthropic'].includes(provider)) {
+    if (provider && PROVIDERS.includes(provider)) {
+      ensureProviderSettings();
+      db.settings.providerSettings[provider].enabled = true;
       db.settings.defaultProvider = provider;
     }
     if (model) {
-      if (!db.settings.providerSettings) db.settings.providerSettings = { gemini: { apiKey: '', model: '' }, openai: { apiKey: '', model: '' }, anthropic: { apiKey: '', model: '' } };
-      db.settings.providerSettings[provider || db.settings.defaultProvider].model = model;
+      ensureProviderSettings();
+      const targetProvider = PROVIDERS.includes(provider) ? provider : db.settings.defaultProvider;
+      db.settings.providerSettings[targetProvider].model = model;
     }
     persistSettingsInBackground('default provider');
     res.json({ ok: true, defaultProvider: db.settings.defaultProvider });
@@ -106,6 +161,7 @@ export function registerSettingsRoutes(app: Express) {
     const { agent, provider, model } = req.body || {};
     if (!agent) return res.status(400).json({ error: 'agent is required' });
     if (provider) {
+      if (!PROVIDERS.includes(provider)) return res.status(400).json({ error: `Unknown provider: ${provider}` });
       if (!db.settings.agentProviderMap) db.settings.agentProviderMap = {};
       db.settings.agentProviderMap[agent] = provider;
     }

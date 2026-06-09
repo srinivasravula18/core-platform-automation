@@ -1,29 +1,38 @@
-/**
- * Anthropic provider — official `@anthropic-ai/sdk` (Messages API).
- *
- * The model is selected by the user in Settings and passed through per call.
- * The Messages API has no strict JSON mode, so generateObject instructs the
- * model to return ONLY JSON and then validates against the Zod schema.
- *
- * Note: Opus 4.7 / 4.8 reject `temperature` (400), so it is omitted for those
- * models; older models still receive it.
- */
-
-import Anthropic from '@anthropic-ai/sdk';
+import { spawn } from 'child_process';
+import os from 'os';
+import path from 'path';
+import fs from 'fs/promises';
+import { randomUUID } from 'crypto';
 import { z } from 'zod';
 import type {
   AIProvider,
   GenerateObjectOptions,
   GenerateTextOptions,
   ProviderHealth,
-  ProviderResponse,
   ProviderName,
+  ProviderResponse,
 } from './types';
-import { ProviderError, classifyError, DEFAULT_MODELS, estimateCost } from './types';
+import { classifyError } from './types';
 
-/** Opus 4.7+ remove sampling params; sending `temperature` returns a 400. */
-function acceptsTemperature(model: string): boolean {
-  return !/opus-4-(?:[7-9]|1\d)/i.test(model);
+type CliTool = 'codex' | 'claude';
+
+function commandFor(tool: CliTool) {
+  if (tool === 'codex') return process.platform === 'win32' ? 'codex.cmd' : 'codex';
+  return process.platform === 'win32' ? 'claude.exe' : 'claude';
+}
+
+function extractJson(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    if (fenced) return JSON.parse(fenced[1]);
+    const objectMatch = text.match(/\{[\s\S]*\}/);
+    if (objectMatch) return JSON.parse(objectMatch[0]);
+    const arrayMatch = text.match(/\[[\s\S]*\]/);
+    if (arrayMatch) return JSON.parse(arrayMatch[0]);
+    throw new Error('CLI model did not return valid JSON');
+  }
 }
 
 function coerceToSchemaShape(parsed: unknown, schema: z.ZodTypeAny): unknown {
@@ -56,9 +65,7 @@ function coerceToSchemaShape(parsed: unknown, schema: z.ZodTypeAny): unknown {
 }
 
 function coerceFromValidationError(parsed: unknown, error: any): unknown {
-  const issue = Array.isArray(error?.issues)
-    ? error.issues.find((i: any) => Array.isArray(i?.path) && i.path.length === 1 && i.expected === 'array')
-    : undefined;
+  const issue = Array.isArray(error?.issues) ? error.issues.find((i: any) => Array.isArray(i?.path) && i.path.length === 1 && i.expected === 'array') : undefined;
   const missingKey = issue?.path?.[0];
   if (!missingKey || typeof missingKey !== 'string') return parsed;
   if (Array.isArray(parsed)) return { [missingKey]: parsed };
@@ -152,116 +159,112 @@ function normalizeScriptPayload(parsed: unknown): unknown {
   return root;
 }
 
-export class AnthropicProvider implements AIProvider {
-  readonly name: ProviderName = 'anthropic';
-  private client: Anthropic;
-  private apiKey: string;
-  private defaultModel: string;
+async function runProcess(command: string, args: string[], stdin: string, timeoutMs = 300_000): Promise<string> {
+  return await new Promise((resolve, reject) => {
+    const env = { ...process.env, NO_COLOR: '1' };
+    // The TestFlowAI backend may be launched from inside a Codex session. Do not
+    // pass parent-session internals to a nested `codex exec`; they can make the
+    // child CLI choose the wrong auth/runtime path.
+    delete env.CODEX_THREAD_ID;
+    delete env.CODEX_SANDBOX_NETWORK_DISABLED;
+    delete env.CODEX_MANAGED_BY_NPM;
+    delete env.CODEX_MANAGED_PACKAGE_ROOT;
+    const child = spawn(command, args, {
+      cwd: process.cwd(),
+      windowsHide: true,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env,
+      shell: process.platform === 'win32' && /\.(cmd|bat)$/i.test(command),
+    });
 
-  constructor(apiKey: string, defaultModel?: string) {
-    this.apiKey = apiKey;
-    this.defaultModel = defaultModel || DEFAULT_MODELS.anthropic.default;
-    this.client = new Anthropic({ apiKey });
+    let stdout = '';
+    let stderr = '';
+    const timer = setTimeout(() => {
+      child.kill();
+      reject(new Error(`${command} timed out after ${Math.round(timeoutMs / 1000)}s`));
+    }, timeoutMs);
+
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (chunk) => { stdout += chunk; });
+    child.stderr.on('data', (chunk) => { stderr += chunk; });
+    child.on('error', (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      if (code === 0) resolve(stdout.trim());
+      else reject(new Error(`${command} exited ${code}: ${stderr || stdout}`.trim()));
+    });
+    child.stdin.end(stdin);
+  });
+}
+
+export class AccountCliProvider implements AIProvider {
+  readonly name: ProviderName;
+  private defaultModel: string;
+  private tool: CliTool;
+
+  constructor(name: ProviderName, tool: CliTool, defaultModel: string) {
+    this.name = name;
+    this.tool = tool;
+    this.defaultModel = defaultModel;
   }
 
   private modelId(opts: { model?: string }) {
     return opts.model || this.defaultModel;
   }
 
-  private toProviderError(err: any): ProviderError {
-    if (err instanceof ProviderError) return err;
-    const status = err instanceof Anthropic.APIError ? err.status : undefined;
-    const message = err?.message || String(err);
-    return classifyError('anthropic', status, message);
+  private buildPrompt(opts: GenerateTextOptions) {
+    return `${opts.system ? `${opts.system}\n\n` : ''}${opts.prompt}`;
+  }
+
+  private async run(opts: GenerateTextOptions): Promise<string> {
+    const model = this.modelId(opts);
+    if (this.tool === 'codex') {
+      const outFile = path.join(os.tmpdir(), `testflow-codex-${randomUUID()}.txt`);
+      // In ChatGPT subscription auth mode, Codex should use its own local config
+      // model/provider. Passing the app's SDK model can force API-key auth.
+      const args = ['exec', '--cd', process.cwd(), '--sandbox', 'read-only', '--color', 'never', '--output-last-message', outFile, '-'];
+      try {
+        await runProcess(
+          commandFor('codex'),
+          args,
+          this.buildPrompt(opts),
+        );
+        return (await fs.readFile(outFile, 'utf8')).trim();
+      } finally {
+        await fs.unlink(outFile).catch(() => undefined);
+      }
+    }
+
+    return await runProcess(
+      commandFor('claude'),
+      ['-p', '--model', model, '--permission-mode', 'dontAsk', '--output-format', 'text', this.buildPrompt(opts)],
+      '',
+    );
   }
 
   async health(): Promise<ProviderHealth> {
     const checkedAt = new Date().toISOString();
-    if (!this.apiKey) {
-      return { ok: false, provider: 'anthropic', model: this.defaultModel, error: 'ANTHROPIC_API_KEY not set', checkedAt };
-    }
     try {
-      await this.client.messages.create({
-        model: this.defaultModel,
-        max_tokens: 5,
-        messages: [{ role: 'user', content: 'ping' }],
-      });
-      return { ok: true, provider: 'anthropic', model: this.defaultModel, checkedAt };
+      const text = await this.run({ prompt: 'Reply with OK only.', maxTokens: 8 });
+      return { ok: /\bOK\b/i.test(text), provider: this.name, model: this.defaultModel, error: /\bOK\b/i.test(text) ? undefined : text.slice(0, 200), checkedAt };
     } catch (err: any) {
-      return { ok: false, provider: 'anthropic', model: this.defaultModel, error: this.toProviderError(err).message, checkedAt };
-    }
-  }
-
-  private async callMessages(opts: GenerateTextOptions, jsonMode: boolean) {
-    const modelId = this.modelId(opts);
-    const systemParts: string[] = [];
-    if (opts.system) systemParts.push(opts.system);
-    if (jsonMode) {
-      systemParts.push(
-        'Return ONLY a single JSON object. No markdown, no code fences, no commentary before or after. The JSON must match the schema you have been given.',
-      );
-    }
-    const params: Anthropic.MessageCreateParamsNonStreaming = {
-      model: modelId,
-      max_tokens: opts.maxTokens ?? 2048,
-      messages: [{ role: 'user', content: opts.prompt }],
-    };
-    if (systemParts.length > 0) params.system = systemParts.join('\n\n');
-    if (acceptsTemperature(modelId)) params.temperature = opts.temperature ?? 0.2;
-
-    try {
-      const message = await this.client.messages.create(params, { signal: opts.signal });
-      const text = (message.content || [])
-        .filter((b): b is Anthropic.TextBlock => b.type === 'text')
-        .map((b) => b.text)
-        .join('');
-      const usage = message.usage
-        ? { input_tokens: message.usage.input_tokens, output_tokens: message.usage.output_tokens }
-        : undefined;
-      return { content: text, usage, modelId };
-    } catch (err: any) {
-      throw this.toProviderError(err);
-    }
-  }
-
-  private toUsageObj(modelId: string, usage?: { input_tokens: number; output_tokens: number }) {
-    if (!usage) return undefined;
-    const totalTokens = usage.input_tokens + usage.output_tokens;
-    return {
-      inputTokens: usage.input_tokens,
-      outputTokens: usage.output_tokens,
-      totalTokens,
-      costUsd: estimateCost(modelId, { inputTokens: usage.input_tokens, outputTokens: usage.output_tokens, totalTokens }),
-    };
-  }
-
-  async *generateTextStream(opts: GenerateTextOptions): AsyncIterable<string> {
-    const modelId = this.modelId(opts);
-    const params: Anthropic.MessageCreateParamsStreaming = {
-      model: modelId,
-      max_tokens: opts.maxTokens ?? 2048,
-      messages: [{ role: 'user', content: opts.prompt }],
-      stream: true,
-    };
-    if (opts.system) params.system = opts.system;
-    if (acceptsTemperature(modelId)) params.temperature = opts.temperature ?? 0.2;
-    const stream = this.client.messages.stream(params, { signal: opts.signal });
-    for await (const event of stream) {
-      if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
-        yield event.delta.text;
-      }
+      return { ok: false, provider: this.name, model: this.defaultModel, error: err?.message || String(err), checkedAt };
     }
   }
 
   async generateText(opts: GenerateTextOptions): Promise<ProviderResponse<string>> {
     const start = Date.now();
-    const { content, usage, modelId } = await this.callMessages(opts, false);
+    const text = await this.run(opts);
     return {
-      object: content,
-      text: content,
-      usage: this.toUsageObj(modelId, usage),
-      model: modelId,
-      provider: 'anthropic',
+      object: text,
+      text,
+      usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, costUsd: 0 },
+      model: this.modelId(opts),
+      provider: this.name,
       latencyMs: Date.now() - start,
     };
   }
@@ -269,30 +272,34 @@ export class AnthropicProvider implements AIProvider {
   async generateObject<T>(opts: GenerateObjectOptions<unknown>): Promise<ProviderResponse<T>> {
     const start = Date.now();
     const schemaZ = opts.schema as z.ZodTypeAny;
-    const jsonHint = `${opts.system ? `${opts.system}\n\n` : ''}Return ONLY a single JSON object matching this schema: ${JSON.stringify(schemaZ._def ?? schemaZ)}`;
-    const { content, usage, modelId } = await this.callMessages({ ...opts, system: jsonHint }, true);
-    let parsed: unknown;
+    const prompt = `${opts.prompt}\n\nReturn ONLY a JSON object matching the requested schema. No markdown, no code fences, no commentary.`;
+    const text = await this.run({ ...opts, prompt });
     try {
-      parsed = JSON.parse(content);
-    } catch {
-      const match = content.match(/\{[\s\S]*\}/);
-      if (!match) throw classifyError('anthropic', 200, 'Model did not return valid JSON');
-      parsed = JSON.parse(match[0]);
+      const parsed = normalizeScriptPayload(normalizeTestCasePayload(coerceToSchemaShape(extractJson(text), schemaZ)));
+      try {
+        const object = schemaZ.parse(parsed) as T;
+        return {
+          object,
+          text,
+          usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, costUsd: 0 },
+          model: this.modelId(opts),
+          provider: this.name,
+          latencyMs: Date.now() - start,
+        };
+      } catch (validationError: any) {
+        const recovered = coerceFromValidationError(parsed, validationError);
+        const object = schemaZ.parse(recovered) as T;
+        return {
+          object,
+          text,
+          usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, costUsd: 0 },
+          model: this.modelId(opts),
+          provider: this.name,
+          latencyMs: Date.now() - start,
+        };
+      }
+    } catch (error: any) {
+      throw classifyError(this.name, 200, error?.message || 'CLI model did not return schema-valid JSON');
     }
-    parsed = normalizeScriptPayload(normalizeTestCasePayload(coerceToSchemaShape(parsed, schemaZ)));
-    let validated: unknown;
-    try {
-      validated = schemaZ.parse(parsed);
-    } catch (validationError: any) {
-      validated = schemaZ.parse(coerceFromValidationError(parsed, validationError));
-    }
-    return {
-      object: validated as T,
-      text: content,
-      usage: this.toUsageObj(modelId, usage),
-      model: modelId,
-      provider: 'anthropic',
-      latencyMs: Date.now() - start,
-    };
   }
 }

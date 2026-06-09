@@ -3,16 +3,17 @@ import { randomUUID } from 'crypto';
 import { z } from 'zod';
 import { db, addActivity, persistDataInBackground } from '../../shared/storage';
 import { getFolderPath, resolveFolderForAgent } from '../../shared/folders';
-import { getAIErrorMessage, getGeminiKeyStatus } from '../../shared/ai';
+import { getAIErrorMessage } from '../../shared/ai';
 import { buildCredentialContext, resolveAgentTargetUrl } from '../../shared/url';
 import { playwrightScriptsSchema, testCasesSchema } from '../../shared/schemas';
 import { buildAgentExecutionSteps, buildCaseDescription, normalizeCaseSteps, normalizeCaseTags } from '../../shared/testCases';
-import { capturePlaywrightEvidence } from '../evidence/evidenceService';
+import { capturePlaywrightEvidence, createAuthStorageState } from '../evidence/evidenceService';
+import { gitGrep, readRepoFile } from '../git-agent/gitAgentService';
 import { executePlaywrightScripts } from '../playwright/executionService';
 import { promises as fsp } from 'fs';
 import path from 'path';
 import { inspectApplicationFlow } from './inspectionService';
-import { getOrchestrator } from '../../ai/orchestrator';
+import { getOrchestrator, listConfiguredProviders, resolveProviderForAgent } from '../../ai/orchestrator';
 import { buildKnowledgeBlock, recordObservation } from '../knowledge/knowledgeService';
 import { resolveCredentials, maskPassword } from '../credentials/credentialsService';
 import { pushInboxItem } from '../inbox/routes';
@@ -374,10 +375,19 @@ async function runPostCaseAgentFlow(run: any, model: any, testCases: any, target
 ${credentialContext}
 ${selectedQaContextText}
 Use this browser inspection context as the source of truth for reachable pages, visible labels, forms, navigation actions, tables/lists, buttons, links and final URL: ${JSON.stringify(compactInspectionContext(inspectionContext))}.
-LOGIN (resilient — do NOT assert any login-page heading/text): fill the username/email using a tolerant locator like page.locator('input[type="email"], input[type="text"], input[name*="user" i], input[name*="email" i]').first(), fill the password using page.locator('input[type="password"]').first(), then click page.locator('button[type="submit"], button:has-text("Sign in"), button:has-text("Login"), button:has-text("Log in")').first() (or press Enter on the password field), then wait for the post-login app to settle with await page.waitForLoadState('domcontentloaded') followed by a short await page.waitForTimeout(1500). NEVER use waitForLoadState('networkidle') — live apps keep polling and it will hang until timeout. Login UIs vary, so NEVER assert that a specific login heading or label is visible before/after filling.
+SETUP — NAVIGATE THEN LOG IN IF NEEDED: the MANDATORY FIRST LINES of every test body are (use this EXACT absolute URL — NOT '/', which resolves to the wrong path):
+  await page.goto('${targetUrl || '/'}');
+  await page.waitForLoadState('domcontentloaded'); await page.waitForTimeout(1500);
+Then handle login GUARDED (a session may already be injected, so these must be safe no-ops if no login form is present): if the page shows a login form, fill the email/username field and the password field with the provided credentials and click the Sign in button — wrap EACH in .catch(() => {}) and give them short timeouts, e.g.:
+  await page.getByLabel(/email|user/i).first().fill(USERNAME, { timeout: 4000 }).catch(() => {});
+  await page.getByLabel(/password/i).first().fill(PASSWORD, { timeout: 4000 }).catch(() => {});
+  await page.getByRole('button', { name: /sign ?in|log ?in/i }).first().click({ timeout: 4000 }).catch(() => {});
+  await page.waitForTimeout(2000);
+Use the REAL login field/button selectors from the source (the verifier will correct them). Do NOT assert anything about the login form. After this, go straight to the substantive task. NEVER use waitForLoadState('networkidle'). NEVER call APIs with undefined variables — verify only through the page UI.
+GUARDED ACTIONS: every click/fill on a control whose exact selector is uncertain MUST be guarded so a missing element does not hang or abort the run: await page.getByRole('button', { name: /New/i }).first().click({ timeout: 8000 }).catch(() => {}); Prefer getByRole/getByText using the EXACT visible labels from the inspection context. After a guarded action, take the step screenshot regardless of whether it succeeded.
 GROUNDING (no hallucination): only assert text, labels, headings, buttons, or table/list content that ACTUALLY appears in the inspection context above. NEVER assert "assumed" UI — no guessed success toasts (e.g. "created successfully"), menu names, or headings you did not see in the inspection context. If unsure an element exists, do not assert it; prefer asserting a URL change or a landmark the inspector recorded. When asserting a URL, match only a STABLE fragment with a loose regex (e.g. expect(page).toHaveURL(/nav=apps/) or expect(page.url()).toContain('nav=apps')) — NEVER assert the full URL or a pattern that includes query separators (?, &) or generated ids (appId, record ids) which vary every run.
 RESILIENCE (the user's intent MUST actually be performed): use await expect.soft(...) for every intermediate per-step verification so a single mismatched locator does NOT abort the test before the user's real goal (e.g. creating the record) is carried out. Always run each ACTION step (goto/fill/click/submit) regardless of whether a prior soft assertion failed. Use exactly ONE normal hard expect for the single final assertion that confirms the user's primary goal. Then follow the user-requested path discovered by the inspector; do not invent unrelated pages or menu names.
-STRICT OUTPUT CONTRACT: produce EXACTLY ONE script object per test case below, in the SAME order, so the count of scripts equals the count of test cases. For each script, set "test_case_title" to that case's title VERBATIM, and name the Playwright test identically: test('<exact case title>', async ({ page }, testInfo) => { ... }). One file = one test() = one case; do not merge multiple cases into one script and do not split a case across scripts. Each script's actions must mirror that case's ordered steps.
+STRICT OUTPUT CONTRACT: return JSON exactly like {"scripts":[{"test_case_title":"...","filename":"kebab-case.spec.ts","code":"import { test, expect } from '@playwright/test';\n..."}]}. Produce EXACTLY ONE script object per test case below, in the SAME order, so the count of scripts equals the count of test cases. Every object MUST include non-empty string fields "test_case_title", "filename", and "code"; never return empty objects. For each script, set "test_case_title" to that case's title VERBATIM, and name the Playwright test identically: test('<exact case title>', async ({ page }, testInfo) => { ... }). One file = one test() = one case; do not merge multiple cases into one script and do not split a case across scripts. Each script's actions must mirror that case's ordered steps.
 STEP-BY-STEP EVIDENCE (required): the test signature MUST include testInfo — test('<exact case title>', async ({ page }, testInfo) => { ... }). Perform the case's steps in order; immediately AFTER completing each step N (1-based, matching the case's steps array), attach a screenshot of the resulting screen with that step's number: await testInfo.attach('step-' + N, { body: await page.screenshot({ fullPage: true }), contentType: 'image/png' }); Use the literal step number (step-1, step-2, ...). Put the attach AFTER the action so it captures the post-action state; if a step asserts, attach before the assertion so evidence is captured even when the assertion later fails. Every step must produce exactly one 'step-N' attachment.
 Test cases: ${JSON.stringify(testCases)}${coderKnowledge}`,
     schema: playwrightScriptsSchema,
@@ -385,6 +395,8 @@ Test cases: ${JSON.stringify(testCases)}${coderKnowledge}`,
   });
   const scripts = scriptsResult.object;
   run.playwright_scripts = scripts.scripts as any;
+  // GIT-AGENT GATE: verify every selector against the app's REAL source before running.
+  await verifyScriptsWithGitAgent(run, run.playwright_scripts, run.prompt || '');
   await persistAgentScripts(run);
   run.messages.push({ agent: 'PlaywrightAgent', status: 'completed', output: scripts });
 
@@ -399,6 +411,63 @@ Test cases: ${JSON.stringify(testCases)}${coderKnowledge}`,
 
   run.status = 'completed';
   await persistAgentRunArtifacts(run);
+}
+
+/**
+ * GIT-AGENT SELECTOR VERIFICATION GATE.
+ * Before any script runs, check its selectors against the application's REAL source
+ * code (the git-agent target repo, D:\core-platform) and repair any that don't match.
+ * This is the "verify selectors during creation" step — it grounds guessed selectors
+ * in the actual DOM/source so the scripts hit real elements instead of timing out.
+ */
+async function verifyScriptsWithGitAgent(run: any, scripts: any[], prompt: string): Promise<void> {
+  if (!Array.isArray(scripts) || !scripts.length) return;
+  try {
+    const allCode = scripts.map((s) => String(s?.code || '')).join('\n');
+    // Candidate selectors used by the generated scripts.
+    const ids = Array.from(new Set((allCode.match(/#([a-zA-Z][\w-]{2,})/g) || []).map((s) => s.slice(1))));
+    const named = Array.from(new Set(
+      [...allCode.matchAll(/getBy(?:Label|Role|Text|Placeholder|TestId)\([^,)]*?['"`/]([^'"`/)]{2,40})/g)].map((m) => m[1].trim()),
+    )).filter((s) => /[a-z]/i.test(s));
+    const promptTerms = (String(prompt || '').toLowerCase().match(/[a-z][a-z0-9-]{2,}/g) || [])
+      .filter((t) => !['the', 'and', 'then', 'app', 'with', 'that', 'verify', 'admin'].includes(t))
+      .slice(0, 8);
+    const patterns = Array.from(new Set([...ids, ...named, ...promptTerms])).slice(0, 18);
+    if (!patterns.length) return;
+
+    let files: Array<{ path: string }> = [];
+    try { files = gitGrep(patterns); } catch { return; } // target repo missing -> skip silently
+    if (!files.length) return;
+
+    const excerpts = files.slice(0, 4)
+      .map((f) => `// FILE: ${f.path}\n${readRepoFile(f.path, 5000)}`)
+      .join('\n\n---\n\n');
+
+    run.messages.push({ agent: 'SelectorVerifier', status: 'running' });
+    // Use the inspector role for verification so this big call lands on a DIFFERENT
+    // model than the coder (spreads load across free per-model rate limits).
+    const verifier = await getOrchestrator('appInspector');
+    let fixed = 0;
+    for (const s of scripts) {
+      if (!s?.code) continue;
+      try {
+        const res = await verifier.generateObject<any>({
+          prompt: `Verify a Playwright script against the application's ACTUAL source code below. For every selector in the script (CSS #id, getByRole name, getByLabel/getByText/getByPlaceholder/getByTestId string), confirm it exists in the source. Replace any selector that is NOT present in the source with the correct one found in the source (e.g. the real element id, label text, or button name). Keep the test structure, step order, testInfo.attach('step-N',...) screenshots, soft assertions, and the final hard assertion intact. If a selector is already correct, keep it unchanged. Return the corrected full script in the "code" field.
+REAL SOURCE (component code from the app under test):
+${excerpts}
+SCRIPT TO VERIFY AND CORRECT:
+${s.code}`,
+          schema: z.object({ code: z.string() }),
+          userMessage: 'Verify and correct Playwright selectors against the real source.',
+        });
+        const code = res?.object?.code;
+        if (code && code.length > 80 && /test\(/.test(code)) { s.code = code; fixed += 1; }
+      } catch { /* keep the original script if verification fails */ }
+    }
+    run.messages.push({ agent: 'SelectorVerifier', status: 'completed', output: `Checked ${scripts.length} script(s) against ${files.length} source file(s); corrected ${fixed}.` });
+  } catch (e: any) {
+    run.messages.push({ agent: 'SelectorVerifier', status: 'completed', output: `Selector verification skipped: ${e?.message || e}` });
+  }
 }
 
 /**
@@ -452,7 +521,23 @@ async function runScriptsAndCollectEvidence(run: any, targetUrl: string, testCas
 
   if (scripts.length) {
     try {
-      const exec = await executePlaywrightScripts({ scripts, baseUrl: targetUrl, runId: run.id });
+      // Log in ONCE and inject the authenticated session into every script, so the
+      // generated tests never have to re-implement a brittle login against the SPA.
+      let storageStatePath: string | undefined;
+      try {
+        const authPath = path.join(process.cwd(), '.testflow-pw', `${run.id}-auth.json`);
+        await fsp.mkdir(path.dirname(authPath), { recursive: true });
+        const auth = await createAuthStorageState(targetUrl, liveCreds, authPath);
+        if (auth.ok) {
+          storageStatePath = authPath;
+          run.messages.push({ agent: 'EvidenceAgent', status: 'running', output: 'Authenticated session captured — scripts run logged in.' });
+        } else {
+          run.messages.push({ agent: 'EvidenceAgent', status: 'running', output: `Pre-login for auth state failed (${auth.reason || 'unknown'}); scripts must log in themselves.` });
+        }
+      } catch (e: any) {
+        run.messages.push({ agent: 'EvidenceAgent', status: 'running', output: `Auth-state capture error: ${e?.message || e}` });
+      }
+      const exec = await executePlaywrightScripts({ scripts, baseUrl: targetUrl, runId: run.id, storageStatePath });
       // Persist the full result (incl. per-test pass/fail) so the Agent Console can
       // show it directly — no need to press "Run all scripts" a second time (G6).
       run.execution_result = {
@@ -539,16 +624,20 @@ async function runScriptsAndCollectEvidence(run: any, targetUrl: string, testCas
 export function registerAgentRoutes(app: Express) {
   app.get('/api/ai/health', (req, res) => {
     res.json({
-      gemini: getGeminiKeyStatus(),
-      model: db.settings?.geminiModel || 'gemini-2.5-flash',
+      providers: listConfiguredProviders(),
+      defaultProvider: db.settings?.defaultProvider || 'gemini',
       cwd: process.cwd(),
       checkedAt: new Date().toISOString(),
     });
   });
 
-  app.get('/api/agent-runs', (req, res) => res.json(scopeFilter(db.agentRuns, reqScope(req))));
+  app.get('/api/agent-runs', (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    res.json(scopeFilter(db.agentRuns, reqScope(req)));
+  });
 
   app.get('/api/agent-runs/:id', (req, res) => {
+    res.set('Cache-Control', 'no-store');
     const run = db.agentRuns.find(r => r.id === req.params.id);
     if (!run) return res.status(404).json({ error: 'Run not found' });
     res.json(run);
@@ -637,7 +726,7 @@ export function registerAgentRoutes(app: Express) {
   });
 
   app.post('/api/agent/start', async (req, res) => {
-    const { app_url, provider, prompt } = req.body;
+    const { app_url, prompt } = req.body;
     const testCaseCount = Math.min(10, Math.max(1, Number(req.body.testCaseCount) || 3));
     const flowMode = req.body.flowMode === 'review_cases' ? 'review_cases' : 'complete';
 
@@ -701,6 +790,7 @@ export function registerAgentRoutes(app: Express) {
       targetUrl,
     });
     const taskId = randomUUID();
+    const runProvider = resolveProviderForAgent('chatAssistant');
     // Ground the run in the relevant slice of the app-knowledge pack (retrieved per request).
     // Smaller budget for the inspector (it runs in a loop), generous for the one-shot case writer.
     const knowledgeCtx = { websiteId: req.body.websiteId, targetUrl, text: `${scopeContextText} ${prompt || ''}`.trim() };
@@ -710,7 +800,7 @@ export function registerAgentRoutes(app: Express) {
     const newRun = {
       id: taskId,
       app_url: targetUrl,
-      provider,
+      provider: runProvider,
       prompt: prompt || '',
       websiteId: req.body.websiteId || '',
       projectId: scope.projectId || '',
@@ -744,14 +834,22 @@ export function registerAgentRoutes(app: Express) {
     res.json({ task_id: taskId });
 
     try {
-      const namingAi = await getOrchestrator('namingAgent');
-      const named = await namingAi.generateObject<{ name: string }>({
-        prompt: `User request: ${prompt || 'not provided'}\nTarget URL: ${targetUrl || 'not provided'}`,
-        schema: z.object({ name: z.string().min(4).max(80) }),
-        userMessage: prompt || targetUrl || '',
-      });
-      if (named.object?.name) {
-        newRun.artifactName = String(named.object.name).slice(0, 80);
+      try {
+        const namingAi = await getOrchestrator('namingAgent');
+        const named = await namingAi.generateObject<{ name: string }>({
+          prompt: `Return a concise QA artifact name as {"name":"..."}. User request: ${prompt || 'not provided'}\nTarget URL: ${targetUrl || 'not provided'}`,
+          schema: z.object({ name: z.string().min(4).max(80) }),
+          userMessage: prompt || targetUrl || '',
+        });
+        if (named.object?.name) {
+          newRun.artifactName = String(named.object.name).slice(0, 80);
+        }
+      } catch (err: any) {
+        newRun.messages.push({
+          agent: 'NamingAgent',
+          status: 'skipped',
+          output: `Using fallback artifact name because naming failed: ${getAIErrorMessage(err)}`,
+        });
       }
       const credentialContext = buildCredentialContext(credentials);
 

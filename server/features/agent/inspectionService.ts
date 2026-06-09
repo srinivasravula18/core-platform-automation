@@ -177,7 +177,7 @@ export async function inspectApplicationFlow(options: {
     observedPages.push({ stage: 'after-login', ...compactPageContext(lastContext) });
     let goalStatus: 'satisfied' | 'blocked' | 'partial' = 'partial';
 
-    for (let step = 0; step < 8; step += 1) {
+    for (let step = 0; step < 3; step += 1) {
       const orchestrator = await getOrchestrator('appInspector');
       const decisionResult = await orchestrator.generateObject<z.infer<typeof plannerSchema>>({
         schema: plannerSchema,

@@ -114,7 +114,6 @@ export default function AgentPanel() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           app_url: appUrl,
-          provider: 'gemini',
           prompt: userMessage,
           testCaseCount,
           flowMode,

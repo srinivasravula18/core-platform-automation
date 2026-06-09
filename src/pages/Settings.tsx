@@ -13,8 +13,13 @@ type ProviderInfo = {
   name: Provider;
   defaultModel: string;
   alternatives: string[];
+  enabled: boolean;
   configured: boolean;
+  callable: boolean;
   model: string;
+  authMode: 'api_key' | 'account';
+  accountTool: string;
+  accountCliAllowed: boolean;
   apiKeyMasked: string;
 };
 
@@ -318,6 +323,59 @@ function ProvidersSection() {
     }
   };
 
+  const setAuthMode = async (provider: Provider, authMode: ProviderInfo['authMode']) => {
+    setStatus({ type: 'idle', message: '' });
+    const current = providers.find((p) => p.name === provider);
+    if (authMode === 'account' && current && !current.accountCliAllowed) {
+      setStatus({ type: 'error', message: 'Subscription/account CLI auth is local-only. Use API key mode in test and production.' });
+      return;
+    }
+    setProviders((prev) => prev.map((p) => (
+      p.name === provider
+        ? {
+            ...p,
+            authMode,
+            configured: authMode === 'api_key' ? !!p.apiKeyMasked : provider === 'openai' || provider === 'anthropic',
+            callable: authMode === 'api_key' ? !!p.apiKeyMasked : provider === 'openai' || provider === 'anthropic',
+            accountTool: authMode === 'account' && provider === 'openai' ? 'codex' : authMode === 'account' && provider === 'anthropic' ? 'claude' : '',
+          }
+        : p
+    )));
+    const res = await fetch(`/api/ai/providers/${provider}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ authMode }),
+    });
+    if (res.ok) {
+      setStatus({
+        type: 'success',
+        message: authMode === 'api_key'
+          ? `${PROVIDER_LABELS[provider]} will use API key billing`
+          : `${PROVIDER_LABELS[provider]} saved as subscription/account auth`,
+      });
+      await load();
+    } else {
+      setStatus({ type: 'error', message: `Failed to save ${PROVIDER_LABELS[provider]} auth mode` });
+    }
+  };
+
+  const setEnabled = async (provider: Provider, enabled: boolean) => {
+    setStatus({ type: 'idle', message: '' });
+    setProviders((prev) => prev.map((p) => (p.name === provider ? { ...p, enabled, callable: enabled && p.configured } : p)));
+    const res = await fetch(`/api/ai/providers/${provider}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled }),
+    });
+    if (res.ok) {
+      setStatus({ type: 'success', message: `${PROVIDER_LABELS[provider]} ${enabled ? 'enabled' : 'disabled'}` });
+      await load();
+    } else {
+      setStatus({ type: 'error', message: `Failed to ${enabled ? 'enable' : 'disable'} ${PROVIDER_LABELS[provider]}` });
+      await load();
+    }
+  };
+
   const setModel = async (provider: Provider, model: string) => {
     const res = await fetch(`/api/ai/providers/${provider}`, {
       method: 'PUT',
@@ -363,6 +421,7 @@ function ProvidersSection() {
   };
 
   if (loading) return <SkeletonCard />;
+  const enabledProviders = providers.filter((p) => p.enabled);
 
   return (
     <div className="space-y-6">
@@ -371,7 +430,7 @@ function ProvidersSection() {
       <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-card)] p-4 sm:p-6 shadow-sm">
         <h2 className="text-lg font-medium">AI Providers</h2>
         <p className="mt-1 text-sm text-[var(--text-muted)]">
-          Add API keys for the providers you want to use. Test each before saving. Pick a default for new agents.
+          Keep service configuration here. API key mode is used by TestFlowAI server calls; subscription/account mode documents external Codex or Claude Code auth and is not called as an API key.
         </p>
 
         <div className="mt-6 space-y-4">
@@ -380,6 +439,8 @@ function ProvidersSection() {
               key={p.name}
               provider={p}
               onSaveKey={(apiKeyValue) => saveKey(p.name, apiKeyValue)}
+              onSetEnabled={(enabled) => setEnabled(p.name, enabled)}
+              onSetAuthMode={(authMode) => setAuthMode(p.name, authMode)}
               onSetModel={(m) => setModel(p.name, m)}
               onClearKey={() => clearKey(p.name)}
               onTest={() => test(p.name)}
@@ -406,7 +467,7 @@ function ProvidersSection() {
                 onChange={(e) => setAgentProvider(agent, e.target.value as Provider)}
                 className="rounded-md border border-[var(--border)] bg-[var(--bg-primary)] px-2 py-1 text-xs"
               >
-                {providers.map((p) => (
+                {(enabledProviders.length ? enabledProviders : providers).map((p) => (
                   <option key={p.name} value={p.name}>
                     {PROVIDER_LABELS[p.name]}
                   </option>
@@ -420,9 +481,11 @@ function ProvidersSection() {
   );
 }
 
-function ProviderCard({ provider, onSaveKey, onSetModel, onClearKey, onTest, onSetDefault }: React.PropsWithChildren<{
+function ProviderCard({ provider, onSaveKey, onSetEnabled, onSetAuthMode, onSetModel, onClearKey, onTest, onSetDefault }: React.PropsWithChildren<{
   provider: ProviderInfo;
   onSaveKey: (apiKeyValue: string) => void;
+  onSetEnabled: (enabled: boolean) => void;
+  onSetAuthMode: (authMode: ProviderInfo['authMode']) => void;
   onSetModel: (model: string) => void;
   onClearKey: () => void;
   onTest: () => void;
@@ -430,6 +493,7 @@ function ProviderCard({ provider, onSaveKey, onSetModel, onClearKey, onTest, onS
 }>) {
   const [apiKey, setApiKey] = useState('');
   const [showKey, setShowKey] = useState(false);
+  const authMode = provider.authMode === 'account' ? 'account' : 'api_key';
 
   return (
     <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] p-4">
@@ -442,7 +506,7 @@ function ProviderCard({ provider, onSaveKey, onSetModel, onClearKey, onTest, onS
             <h3 className="font-medium">{PROVIDER_LABELS[provider.name]}</h3>
             {provider.configured ? (
               <span className="inline-flex items-center gap-1 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-xs text-emerald-500">
-                <CheckCircle className="h-3 w-3" /> Configured
+                <CheckCircle className="h-3 w-3" /> {provider.enabled && provider.callable ? 'Active' : 'Configured'}
               </span>
             ) : (
               <span className="inline-flex items-center gap-1 rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-xs text-amber-500">
@@ -450,33 +514,101 @@ function ProviderCard({ provider, onSaveKey, onSetModel, onClearKey, onTest, onS
               </span>
             )}
           </div>
-          {provider.apiKeyMasked && <div className="text-xs text-[var(--text-muted)]">key: {provider.apiKeyMasked}</div>}
+          <div className="text-xs text-[var(--text-muted)]">
+            {authMode === 'api_key'
+              ? provider.apiKeyMasked ? `key: ${provider.apiKeyMasked}` : 'API key mode'
+              : provider.accountTool ? `Local CLI: ${provider.accountTool}` : 'Subscription/account auth'}
+          </div>
         </div>
         <div className="flex flex-wrap gap-2">
           <button
             type="button"
+            onClick={() => onSetEnabled(!provider.enabled)}
+            className={`inline-flex items-center gap-1 rounded-md border px-3 py-1.5 text-xs font-medium ${
+              provider.enabled
+                ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-500'
+                : 'border-[var(--border)] bg-[var(--bg-primary)] text-[var(--text-muted)] hover:border-[var(--accent)]'
+            }`}
+          >
+            {provider.enabled ? 'On' : 'Off'}
+          </button>
+          <button
+            type="button"
             onClick={onTest}
-            className="inline-flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-primary)] px-3 py-1.5 text-xs font-medium hover:border-[var(--accent)]"
+            disabled={!provider.enabled}
+            className="inline-flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-primary)] px-3 py-1.5 text-xs font-medium hover:border-[var(--accent)] disabled:opacity-50"
           >
             <Activity className="h-3 w-3" /> Test
           </button>
           <button
             type="button"
             onClick={() => onSetDefault(provider.model)}
-            className="inline-flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-primary)] px-3 py-1.5 text-xs font-medium hover:border-[var(--accent)]"
+            disabled={!provider.enabled}
+            className="inline-flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-primary)] px-3 py-1.5 text-xs font-medium hover:border-[var(--accent)] disabled:opacity-50"
           >
             <Zap className="h-3 w-3" /> Set as default
           </button>
         </div>
       </div>
 
-      <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto]">
+      <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+        <button
+          type="button"
+          onClick={() => onSetAuthMode('api_key')}
+          className={`flex cursor-pointer items-start gap-2 rounded-md border p-3 text-left text-sm ${authMode === 'api_key' ? 'border-[var(--accent)] bg-[var(--accent)]/5' : 'border-[var(--border)] bg-[var(--bg-primary)]'}`}
+        >
+          <input
+            type="radio"
+            checked={authMode === 'api_key'}
+            readOnly
+            tabIndex={-1}
+            className="mt-1 pointer-events-none accent-[var(--accent)]"
+          />
+          <span>
+            <span className="block font-medium">API key</span>
+            <span className="block text-xs text-[var(--text-muted)]">Used by TestFlowAI backend calls and cost tracking.</span>
+          </span>
+        </button>
+        <button
+          type="button"
+          onClick={() => onSetAuthMode('account')}
+          disabled={!provider.accountCliAllowed}
+          className={`flex cursor-pointer items-start gap-2 rounded-md border p-3 text-left text-sm disabled:cursor-not-allowed disabled:opacity-50 ${authMode === 'account' ? 'border-[var(--accent)] bg-[var(--accent)]/5' : 'border-[var(--border)] bg-[var(--bg-primary)]'}`}
+        >
+          <input
+            type="radio"
+            checked={authMode === 'account'}
+            readOnly
+            tabIndex={-1}
+            className="mt-1 pointer-events-none accent-[var(--accent)]"
+          />
+          <span>
+            <span className="block font-medium">Subscription / account</span>
+            <span className="block text-xs text-[var(--text-muted)]">
+              {provider.accountCliAllowed ? 'Uses your local Codex or Claude Code login where supported.' : 'Local development only. Use API key mode here.'}
+            </span>
+          </span>
+        </button>
+      </div>
+
+      {authMode === 'account' && (
+        <div className="mt-3 rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-600">
+          {!provider.accountCliAllowed
+            ? 'Subscription/account CLI auth is disabled outside local development. Switch this provider to API key mode for test or production.'
+            : provider.accountTool
+            ? `TestFlowAI will run ${provider.accountTool} locally for this provider, using the account already authenticated on this machine.`
+            : 'This provider has no supported local subscription CLI runner in TestFlowAI; use API key mode.'}
+        </div>
+      )}
+
+      <div className={`mt-3 grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto] ${authMode === 'account' ? 'opacity-50' : ''}`}>
         <div className="flex gap-2">
           <input
             type={showKey ? 'text' : 'password'}
             value={apiKey}
             onChange={(e) => setApiKey(e.target.value)}
             placeholder={provider.apiKeyMasked ? 'Replace API key' : 'Paste API key'}
+            disabled={authMode === 'account'}
             className="flex-1 rounded-md border border-[var(--border)] bg-[var(--bg-primary)] px-3 py-2 text-sm outline-none focus:border-[var(--accent)]"
           />
           <button
@@ -496,7 +628,7 @@ function ProviderCard({ provider, onSaveKey, onSetModel, onClearKey, onTest, onS
               onSaveKey(apiKey);
               setApiKey('');
             }}
-            disabled={!apiKey}
+            disabled={!apiKey || authMode === 'account'}
             className="inline-flex items-center gap-1 rounded-md bg-[var(--accent)] px-3 py-2 text-xs font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50"
           >
             <Save className="h-3 w-3" /> Save Key

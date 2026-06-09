@@ -81,13 +81,34 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
   const tick = useCallback(async () => {
     if (!activeRef.current) return;
     try {
-      const r = await fetch(`/api/agent-runs/${activeTaskId}`);
+      const r = await fetch(`/api/agent-runs/${activeTaskId}`, { cache: 'no-store' });
+      if (!r.ok) {
+        if (!activeRef.current) return;
+        setRun((prev: any) => prev || {
+          id: activeTaskId,
+          status: 'failed',
+          messages: [{ agent: 'System', status: 'failed', output: r.status === 404 ? 'This agent run is no longer available. Start a new run to continue.' : `Failed to load run (${r.status}).` }],
+          generated_cases: [],
+          playwright_scripts: [],
+          evidence_screenshots: [],
+        });
+        return;
+      }
       const data = await r.json();
       if (!activeRef.current) return;
       setRun(data);
       if (TERMINAL.includes(data?.status)) return;
-    } catch {
-      /* keep polling */
+    } catch (error: any) {
+      if (!activeRef.current) return;
+      setRun((prev: any) => prev || {
+        id: activeTaskId,
+        status: 'failed',
+        messages: [{ agent: 'System', status: 'failed', output: error?.message || 'Failed to reach the backend for this run.' }],
+        generated_cases: [],
+        playwright_scripts: [],
+        evidence_screenshots: [],
+      });
+      return;
     }
     if (activeRef.current) setTimeout(tick, 2000);
   }, [activeTaskId]);
@@ -233,18 +254,43 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
     }
   };
 
-  // Restart a failed run with the same parameters and follow the new task.
+  // Retry from the latest useful checkpoint. If cases already exist, continue
+  // from script/evidence generation instead of starting inspection/case writing
+  // from scratch. Only fall back to a fresh run when no cases were produced.
   const retry = async () => {
     if (retrying) return;
     setRetrying(true);
     try {
+      const retryCases = list.length ? list : (run?.generated_cases || []);
+      if (retryCases.length > 0) {
+        const res = await fetch('/api/agent/continue', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ taskId: activeTaskId, cases: retryCases }),
+        });
+        if (res.ok) {
+          setCases(retryCases.map((c: Case) => ({ ...c, steps: (c.steps || []).map((s) => ({ ...s })) })));
+          setPwResult(null);
+          setRun((prev: any) => (prev ? {
+            ...prev,
+            status: 'running',
+            generated_cases: retryCases,
+            playwright_scripts: [],
+            evidence_screenshots: [],
+          } : prev));
+          setTab('cases');
+          activeRef.current = true;
+          setTimeout(tick, 800);
+          return;
+        }
+      }
+
       const res = await fetch('/api/agent/start', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           app_url: run?.app_url || '',
           websiteId: run?.website_id || run?.websiteId || undefined,
-          provider: 'gemini',
           prompt: run?.prompt || '',
           testCaseCount: run?.generated_cases?.length || 3,
           flowMode: 'review_cases',
@@ -283,6 +329,7 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
         }),
       });
       const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || `Playwright run failed (${res.status})`);
       setPwResult(data);
     } catch (e: any) {
       setPwResult({ ok: false, error: e?.message || 'Run failed', tests: [] });
@@ -390,8 +437,11 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
       <div className="mb-3 flex flex-wrap items-center gap-1.5">
         {PIPELINE.map((p, i) => {
           const st = agentState(p.key);
-          const isActive = i === activePipelineIdx && st !== 'completed' && st !== 'failed';
-          const effState = isActive ? 'running' : st;
+          const runFailed = status === 'failed';
+          // Don't keep spinning a step once the whole run has failed — the in-flight
+          // step is where it stopped, so show it as failed instead of "loading".
+          const isActive = !runFailed && i === activePipelineIdx && st !== 'completed' && st !== 'failed';
+          const effState = runFailed && st === 'running' ? 'failed' : isActive ? 'running' : st;
           return (
             <div key={p.key} className="flex items-center gap-1.5">
               <span
@@ -784,10 +834,33 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
                   {evidence.map((shot, i) => (
                     <div key={i} className="overflow-hidden rounded-md border border-[var(--border)]">
                       <div className="border-b border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-1.5 text-[11px]">
-                        <div className="truncate font-medium text-[var(--text-primary)]">{shot.title || 'Evidence'}</div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <div className="min-w-0 flex-1 truncate font-medium text-[var(--text-primary)]">{shot.title || 'Evidence'}</div>
+                          {shot.status && (
+                            <span className={cn(
+                              'shrink-0 rounded border px-1.5 py-0.5 text-[9px] font-semibold uppercase',
+                              shot.status === 'passed'
+                                ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400'
+                                : 'border-red-500/30 bg-red-500/10 text-red-400',
+                            )}>
+                              {shot.status}
+                            </span>
+                          )}
+                        </div>
                         <div className="truncate text-[var(--text-muted)]">{shot.url}</div>
+                        {shot.reason && <pre className="mt-1 max-h-24 overflow-auto whitespace-pre-wrap rounded bg-red-500/10 p-1.5 font-mono text-[10px] text-red-300">{shot.reason}</pre>}
                       </div>
                       {shot.screenshotUrl && <img src={shot.screenshotUrl} alt={shot.title || 'evidence'} className="w-full bg-black object-contain" />}
+                      {Array.isArray(shot.stepScreenshots) && shot.stepScreenshots.length > 0 && (
+                        <div className="grid grid-cols-2 gap-1.5 border-t border-[var(--border)] bg-[var(--bg-secondary)] p-2 md:grid-cols-3">
+                          {shot.stepScreenshots.map((url: string, stepIndex: number) => (
+                            <a key={url} href={url} target="_blank" rel="noreferrer" className="overflow-hidden rounded border border-[var(--border)] bg-black">
+                              <div className="bg-[var(--bg-card)] px-1.5 py-1 text-[9px] font-semibold text-[var(--text-muted)]">Step {stepIndex + 1}</div>
+                              <img src={url} alt={`${shot.title || 'evidence'} step ${stepIndex + 1}`} className="h-28 w-full object-cover" />
+                            </a>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>

@@ -1,5 +1,43 @@
 import path from 'path';
 import fs from 'fs/promises';
+import { DEFAULT_MODELS, type ProviderName } from '../ai/providers/types';
+
+const PROVIDERS: ProviderName[] = ['gemini', 'openai', 'anthropic'];
+const DEFAULT_PROVIDER_SETTINGS: Record<ProviderName, { apiKey: string; model: string; authMode?: 'api_key' | 'account'; enabled?: boolean }> = {
+  gemini: { apiKey: '', model: '', authMode: 'api_key', enabled: true },
+  openai: { apiKey: '', model: '', authMode: 'api_key', enabled: false },
+  anthropic: { apiKey: '', model: '', authMode: 'api_key', enabled: false },
+};
+
+function isProviderName(value: unknown): value is ProviderName {
+  return PROVIDERS.includes(value as ProviderName);
+}
+
+function normalizeProviderSettings(settings: any) {
+  const existing = settings?.providerSettings || {};
+  const providerSettings = {} as Record<ProviderName, { apiKey: string; model: string; authMode?: 'api_key' | 'account'; enabled?: boolean }>;
+  for (const provider of PROVIDERS) {
+    const stored = existing[provider] || {};
+    providerSettings[provider] = {
+      ...DEFAULT_PROVIDER_SETTINGS[provider],
+      apiKey: typeof stored.apiKey === 'string' ? stored.apiKey : '',
+      model: typeof stored.model === 'string' ? stored.model : '',
+      authMode: stored.authMode === 'account' ? 'account' : 'api_key',
+      enabled: typeof stored.enabled === 'boolean' ? stored.enabled : DEFAULT_PROVIDER_SETTINGS[provider].enabled,
+    };
+  }
+
+  const defaultProvider = isProviderName(settings?.defaultProvider) ? settings.defaultProvider : 'gemini';
+  const agentProviderMap = Object.fromEntries(
+    Object.entries(settings?.agentProviderMap || {}).filter(([, provider]) => isProviderName(provider)),
+  ) as Record<string, ProviderName>;
+  const validModels = new Set(PROVIDERS.flatMap((provider) => [DEFAULT_MODELS[provider].default, ...DEFAULT_MODELS[provider].alternatives]));
+  const agentModelMap = Object.fromEntries(
+    Object.entries(settings?.agentModelMap || {}).filter(([, model]) => typeof model === 'string' && validModels.has(model)),
+  ) as Record<string, string>;
+
+  return { providerSettings, defaultProvider, agentProviderMap, agentModelMap };
+}
 
 export const db: any = {
   folders: [] as any[],
@@ -14,13 +52,9 @@ export const db: any = {
   settings: {
     geminiModel: 'gemini-2.5-flash',
     siteCredentials: [] as any[],
-    providerSettings: {
-      gemini: { apiKey: '', model: '' },
-      openai: { apiKey: '', model: '' },
-      anthropic: { apiKey: '', model: '' },
-    } as Record<'gemini' | 'openai' | 'anthropic', { apiKey: string; model: string }>,
-    defaultProvider: 'gemini' as 'gemini' | 'openai' | 'anthropic',
-    agentProviderMap: {} as Record<string, 'gemini' | 'openai' | 'anthropic'>,
+    providerSettings: DEFAULT_PROVIDER_SETTINGS,
+    defaultProvider: 'gemini' as ProviderName,
+    agentProviderMap: {} as Record<string, ProviderName>,
     agentModelMap: {} as Record<string, string>,
     dailyCostLimit: 50,
     autonomyLevel: 'review' as 'autonomous' | 'review' | 'manual',
@@ -114,14 +148,12 @@ export async function loadPersistedSettings() {
   try {
     const raw = await fs.readFile(settingsFilePath, 'utf-8');
     const settings = JSON.parse(raw);
+    const normalizedAiSettings = normalizeProviderSettings(settings);
     db.settings = {
       ...db.settings,
       ...settings,
       siteCredentials: Array.isArray(settings.siteCredentials) ? settings.siteCredentials : [],
-      providerSettings: settings.providerSettings || db.settings.providerSettings,
-      defaultProvider: settings.defaultProvider || db.settings.defaultProvider,
-      agentProviderMap: settings.agentProviderMap || db.settings.agentProviderMap,
-      agentModelMap: settings.agentModelMap || db.settings.agentModelMap,
+      ...normalizedAiSettings,
       dailyCostLimit: typeof settings.dailyCostLimit === 'number' ? settings.dailyCostLimit : db.settings.dailyCostLimit,
       autonomyLevel: settings.autonomyLevel || db.settings.autonomyLevel,
     };

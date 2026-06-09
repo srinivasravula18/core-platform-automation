@@ -193,6 +193,37 @@ export async function performLoginIfCredentialsProvided(page: any, credentials: 
   }
 }
 
+/**
+ * Log in once (using the same robust strategy the inspector uses) and save the
+ * authenticated browser session (cookies + localStorage) to a Playwright
+ * storageState file. Generated test scripts then start ALREADY logged in, so they
+ * never have to re-implement a brittle login against a custom SPA login form.
+ */
+export async function createAuthStorageState(
+  targetUrl: string,
+  credentials: any,
+  outPath: string,
+): Promise<{ ok: boolean; reason?: string }> {
+  const normalizedUrl = normalizeTargetUrl(targetUrl);
+  if (!normalizedUrl) return { ok: false, reason: 'No target URL.' };
+  if (!credentials?.username || !credentials?.password) return { ok: false, reason: 'No credentials.' };
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const context = await browser.newContext({ viewport: { width: 1365, height: 768 } });
+    const page = await context.newPage();
+    await page.goto(normalizedUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    const loginResult = await performLoginIfCredentialsProvided(page, credentials);
+    await page.waitForLoadState('domcontentloaded', { timeout: 8000 }).catch(() => undefined);
+    await page.waitForTimeout(1500);
+    await context.storageState({ path: outPath });
+    return { ok: loginResult?.success !== false, reason: loginResult?.reason };
+  } catch (err: any) {
+    return { ok: false, reason: err?.message || String(err) };
+  } finally {
+    await browser.close();
+  }
+}
+
 export async function capturePlaywrightEvidence(targetUrl: string, runId: string, testCases: any[] = [], credentials: any = {}) {
   const normalizedUrl = normalizeTargetUrl(targetUrl);
   if (!normalizedUrl) return [];

@@ -71,6 +71,8 @@ export async function executePlaywrightScripts(opts: {
   baseUrl?: string;
   runId?: string;
   timeoutMs?: number;
+  /** Path to a Playwright storageState JSON so every test starts authenticated. */
+  storageStatePath?: string;
 }): Promise<ExecutionResult> {
   const scripts = (opts.scripts || []).filter((s) => s && typeof s.code === 'string' && s.code.trim());
   const runId = opts.runId || `run-${Date.now()}`;
@@ -103,6 +105,7 @@ export default defineConfig({
   outputDir: './artifacts',
   use: {
     ${opts.baseUrl ? `baseURL: ${JSON.stringify(opts.baseUrl)},` : ''}
+    ${opts.storageStatePath ? `storageState: ${JSON.stringify(opts.storageStatePath)},` : ''}
     headless: true,
     screenshot: 'on',
     trace: 'retain-on-failure',
