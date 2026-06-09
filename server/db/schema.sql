@@ -412,3 +412,18 @@ CREATE TABLE IF NOT EXISTS requirement_case_links (
 );
 CREATE INDEX IF NOT EXISTS requirement_case_links_req ON requirement_case_links(requirement_id);
 CREATE UNIQUE INDEX IF NOT EXISTS requirement_case_links_unique ON requirement_case_links(requirement_id, case_id);
+
+-- ===== Projects → Apps scope (incremental, idempotent) =====
+-- One project == one git repo; an app is a testable surface within it. Every QA entity
+-- is scoped to a project (required once selected) and optionally an app (null = project-level).
+-- Columns are added in place so existing data is preserved; rows are backfilled to the
+-- seeded "Core Platform" project at startup (see projectService.seedDefaultProjectAndBackfill).
+DO $$
+DECLARE t text;
+BEGIN
+  FOREACH t IN ARRAY ARRAY['plans','suites','cases','runs','defects','reports','scripts','folders','requirements','agent_runs'] LOOP
+    EXECUTE format('ALTER TABLE %I ADD COLUMN IF NOT EXISTS project_id TEXT', t);
+    EXECUTE format('ALTER TABLE %I ADD COLUMN IF NOT EXISTS app_id TEXT', t);
+    EXECUTE format('CREATE INDEX IF NOT EXISTS %I ON %I(project_id)', t || '_project_idx', t);
+  END LOOP;
+END $$;

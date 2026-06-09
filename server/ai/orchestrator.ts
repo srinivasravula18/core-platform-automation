@@ -78,8 +78,15 @@ export function resolveProviderForAgent(agent: string): ProviderName {
 }
 
 export function resolveModelForAgent(agent: string, provider: ProviderName): string {
+  // 1) per-agent override (Settings → AI Providers → per-agent model)
   const map = db.settings?.agentModelMap;
   if (map && (map as any)[agent]) return (map as any)[agent] as string;
+  // 2) provider-level model chosen in the Settings panel (providerSettings[provider].model).
+  //    Without this, getOrchestrator overwrites the UI-selected model with the hard default,
+  //    so toggling the model in Settings never reached the agents.
+  const providerModel = db.settings?.providerSettings?.[provider]?.model;
+  if (providerModel) return providerModel;
+  // 3) hard default for the provider
   return DEFAULT_MODELS[provider].default;
 }
 

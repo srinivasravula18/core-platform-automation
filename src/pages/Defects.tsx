@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Search, Filter, MoreHorizontal, ShieldAlert, Camera, Sparkles } from 'lucide-react';
+import ExportMenu from '../components/ExportMenu';
 import { useAiSearch } from '@/src/lib/useAiSearch';
 import { cn } from '@/src/lib/utils';
 import html2canvas from 'html2canvas';
@@ -116,6 +117,19 @@ export default function Defects() {
           <p className="text-sm text-[var(--text-muted)] mt-1">Track issues and bugs discovered during testing.</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          <ExportMenu
+            filename="defects"
+            title="Defects"
+            rows={filteredDefects}
+            columns={[
+              { key: 'id', label: 'ID' },
+              { key: 'title', label: 'Title' },
+              { key: 'severity', label: 'Severity' },
+              { key: 'status', label: 'Status' },
+              { key: 'assignedTo', label: 'Assigned To' },
+              { key: 'description', label: 'Description' },
+            ]}
+          />
           <button onClick={openNewModal} className="flex items-center gap-2 bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-md text-sm font-medium transition-colors">
             <ShieldAlert className="w-4 h-4" /> Log Defect
           </button>

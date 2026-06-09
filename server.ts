@@ -18,6 +18,9 @@ import { registerChatRoutes } from './server/features/chat/routes';
 import { registerPlaywrightRoutes } from './server/features/playwright/routes';
 import { registerSearchRoutes } from './server/features/search/routes';
 import { registerAuthRoutes } from './server/features/auth/routes';
+import { registerProjectRoutes } from './server/features/projects/routes';
+import { seedDefaultProjectAndBackfill } from './server/features/projects/projectService';
+import { scopeMiddleware } from './server/shared/scope';
 import { ensureMigrated, isPgEnabled } from './server/db/repository';
 import { runSeedIfEmpty } from './server/db/seed';
 import { hydrateFromPg } from './server/features/credentials/credentialsService';
@@ -44,10 +47,15 @@ async function startServer() {
     console.log('[storage] using JSON file persistence (no DATABASE_URL set)');
   }
 
+  // Ensure a default "Core Platform" project exists and adopt all pre-existing
+  // unscoped data into it (runs after migration so the scope columns are present).
+  await seedDefaultProjectAndBackfill();
+
   const app = express();
   const PORT = Number(process.env.BACKEND_PORT || process.env.PORT || 3001);
 
   app.use(express.json());
+  app.use(scopeMiddleware);
   app.use('/evidence', express.static(path.resolve(process.cwd(), 'evidence')));
 
   app.get('/api/health', (_req, res) => {
@@ -55,6 +63,7 @@ async function startServer() {
   });
 
   registerAuthRoutes(app);
+  registerProjectRoutes(app);
   registerSettingsRoutes(app);
   registerAiSettingsRoutes(app);
   registerCredentialsRoutes(app);

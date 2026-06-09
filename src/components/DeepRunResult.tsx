@@ -107,6 +107,15 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
     }
   }, [run, cases]);
 
+  // G6: the deep run already executes the scripts and stores the result, so show
+  // that pass/fail directly — no need to press "Run all scripts" again. A manual
+  // re-run still overrides this seed.
+  useEffect(() => {
+    if (!pwResult && run?.execution_result && (run.execution_result.tests?.length || run.execution_result.error)) {
+      setPwResult(run.execution_result);
+    }
+  }, [run, pwResult]);
+
   const status = run?.status;
   const scripts: any[] = run?.playwright_scripts || [];
   const evidence: any[] = run?.evidence_screenshots || [];
@@ -685,7 +694,7 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
                     className="inline-flex items-center gap-1.5 rounded-md bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50"
                   >
                     {pwRunning ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <PlayCircle className="h-3.5 w-3.5" />}
-                    {pwRunning ? 'Running…' : 'Run all scripts'}
+                    {pwRunning ? 'Running…' : pwResult ? 'Re-run all scripts' : 'Run all scripts'}
                   </button>
                 </div>
               )}

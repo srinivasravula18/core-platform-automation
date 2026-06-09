@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Search, Sparkles, Loader2, Target, FileCode2, ArrowRight, Trash2 } from 'lucide-react';
+import ExportMenu from '../components/ExportMenu';
 import { Modal } from '@/src/components/Modal';
 
 const REQ_STATUSES = ['Draft', 'Under Review', 'Approved', 'Deprecated'];
@@ -118,12 +119,30 @@ export default function Requirements() {
           <h1 className="text-2xl font-bold tracking-tight">Requirements</h1>
           <p className="text-sm text-[var(--text-muted)] mt-1">Feature understanding grounded in the product source, with traceable test coverage.</p>
         </div>
-        <button
-          onClick={() => navigate('/traceability')}
-          className="flex items-center gap-2 border border-[var(--border)] bg-[var(--bg-secondary)] hover:border-[var(--accent)] text-[var(--text-primary)] px-3 py-2 rounded-md text-sm font-medium transition-colors"
-        >
-          <Target className="w-4 h-4 text-[var(--accent)]" /> Traceability Matrix
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          <ExportMenu
+            filename="requirements"
+            title="Requirements"
+            rows={filtered}
+            columns={[
+              { key: 'id', label: 'ID' },
+              { key: 'title', label: 'Title' },
+              { key: 'status', label: 'Status', get: (r) => r.status || 'Draft' },
+              { key: 'coverageStatus', label: 'Coverage' },
+              { key: 'description', label: 'Description' },
+              { key: 'businessRules', label: 'Business Rules' },
+              { key: 'dataPopulationNotes', label: 'Data Population Notes' },
+              { key: 'adminBehavior', label: 'Admin Behavior' },
+              { key: 'keystoneBehavior', label: 'Keystone Behavior' },
+            ]}
+          />
+          <button
+            onClick={() => navigate('/traceability')}
+            className="flex items-center gap-2 border border-[var(--border)] bg-[var(--bg-secondary)] hover:border-[var(--accent)] text-[var(--text-primary)] px-3 py-2 rounded-md text-sm font-medium transition-colors"
+          >
+            <Target className="w-4 h-4 text-[var(--accent)]" /> Traceability Matrix
+          </button>
+        </div>
       </div>
 
       {/* Discover bar */}

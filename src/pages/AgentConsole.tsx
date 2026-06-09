@@ -741,7 +741,7 @@ export default function AgentConsole() {
   const isEmpty = turns.length === 0;
 
   return (
-    <div className="mx-auto flex h-full max-w-5xl flex-col">
+    <div className="mx-auto flex h-full max-w-7xl flex-col">
       {/* Header */}
       <div className="mb-2 flex items-center justify-between gap-3">
         <div className="flex items-center gap-2">
@@ -813,7 +813,7 @@ export default function AgentConsole() {
               Describe a testing task in plain language. I&apos;ll turn it into a step-by-step plan, you review and approve,
               and I&apos;ll execute it — generating cases, plans, runs, defects, and reports for you.
             </p>
-            <div className="mt-7 grid w-full max-w-5xl grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
+            <div className="mt-7 grid w-full max-w-7xl grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
               {SUGGESTIONS.map((s) => (
                 <button
                   key={s.label}
@@ -831,7 +831,7 @@ export default function AgentConsole() {
               ))}
             </div>
 
-            <div className="mt-8 w-full max-w-5xl">
+            <div className="mt-8 w-full max-w-7xl">
               <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
                 Everything the agent can do for you
               </div>

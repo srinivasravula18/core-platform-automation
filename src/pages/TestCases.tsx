@@ -1,6 +1,7 @@
 import { useEffect, useState, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Search, Filter, MoreHorizontal, Plus, Sparkles, Loader2 } from 'lucide-react';
+import ExportMenu from '../components/ExportMenu';
 import { useAiSearch } from '@/src/lib/useAiSearch';
 import { Modal } from '@/src/components/Modal';
 import { AIActionModal } from '@/src/components/AIActionModal';
@@ -255,6 +256,24 @@ export default function TestCases() {
           <p className="text-sm text-[var(--text-muted)] mt-1">Manage and organize your test repository.</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          <ExportMenu
+            filename="test-cases"
+            title="Test Cases"
+            rows={filteredCases}
+            columns={[
+              { key: 'id', label: 'ID' },
+              { key: 'title', label: 'Title' },
+              { key: 'description', label: 'Description' },
+              { key: 'type', label: 'Type', get: (c) => c.type || 'Manual' },
+              { key: 'priority', label: 'Priority', get: (c) => c.priority || 'Medium' },
+              { key: 'status', label: 'Status', get: (c) => c.status || 'Draft' },
+              { key: 'tags', label: 'Tags' },
+              { key: 'createdBy', label: 'Created By' },
+              { key: 'suite', label: 'Suite', get: (c) => (suites.find((s) => s.id === c.testSuiteId) || {}).name || '' },
+              { key: 'stepCount', label: 'Steps', get: (c) => (c.steps || []).length },
+              { key: 'stepDetail', label: 'Step Detail', get: (c) => (c.steps || []).map((s: any, i: number) => `${i + 1}. ${s.action || ''}${s.expected ? ' => ' + s.expected : ''}`).join('  |  ') },
+            ]}
+          />
           <button onClick={openNewModal} className="flex items-center gap-2 bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white px-4 py-2 rounded-md text-sm font-medium transition-colors">
             <Plus className="w-4 h-4" /> New Case
           </button>

@@ -221,13 +221,88 @@ export function recordObservation(ctx: { websiteId?: string; targetUrl?: string;
   persistDataInBackground('record knowledge observation');
 }
 
-/** Wrap matched knowledge as a clearly-labeled prompt block (empty string when none). */
-export function buildKnowledgeBlock(ctx: { websiteId?: string; targetUrl?: string; text?: string }): string {
+// ---- Relevance retrieval (so we inject only the slice that matters, not the whole pack) ----
+
+/** Split markdown into sections by headings; the preamble is the first section. */
+function splitSections(content: string): Array<{ heading: string; body: string; idx: number }> {
+  const lines = content.split('\n');
+  const out: Array<{ heading: string; body: string; idx: number }> = [];
+  let cur = { heading: '', body: '', idx: 0 };
+  for (const line of lines) {
+    if (/^#{1,4}\s/.test(line)) {
+      if (cur.body.trim()) out.push(cur);
+      cur = { heading: line.replace(/^#+\s/, '').trim(), body: `${line}\n`, idx: out.length };
+    } else {
+      cur.body += `${line}\n`;
+    }
+  }
+  if (cur.body.trim()) out.push(cur);
+  return out.map((s, i) => ({ ...s, idx: i }));
+}
+
+const STOPWORDS = new Set([
+  'the', 'and', 'for', 'with', 'are', 'does', 'this', 'that', 'you', 'can', 'how', 'what', 'new',
+  'test', 'tests', 'testing', 'create', 'verify', 'check', 'into', 'from', 'has', 'have', 'its', 'app',
+]);
+
+function queryTerms(q: string): string[] {
+  return Array.from(new Set((q.toLowerCase().match(/[a-z0-9_]{3,}/g) || []).filter((t) => !STOPWORDS.has(t))));
+}
+
+/**
+ * Return the most relevant slice of a pack for a query, within a char budget.
+ * Sections are ranked by how strongly the query's terms appear (heading hits weighted),
+ * and the intro section is always kept for baseline grounding. Full pack stays stored;
+ * only this slice is injected — so big packs don't blow the token budget every run.
+ */
+function selectRelevantSlice(content: string, query: string, maxChars: number): string {
+  if (content.length <= maxChars) return content;
+  const sections = splitSections(content);
+  if (sections.length <= 1) return content.slice(0, maxChars);
+  const terms = queryTerms(query);
+  const intro = sections[0];
+  if (!terms.length) return (intro?.body || content).slice(0, maxChars);
+
+  const ranked = sections
+    .filter((s) => s.idx !== 0)
+    .map((s) => {
+      const hay = `${s.heading}\n${s.body}`.toLowerCase();
+      const headLow = s.heading.toLowerCase();
+      let score = 0;
+      for (const t of terms) {
+        const occ = hay.split(t).length - 1;
+        if (occ) score += occ + (headLow.includes(t) ? 5 : 0);
+      }
+      return { s, score };
+    })
+    .filter((x) => x.score > 0)
+    .sort((a, b) => b.score - a.score);
+
+  let out = intro ? intro.body : '';
+  for (const r of ranked) {
+    if (out.length + r.s.body.length + 2 > maxChars) continue;
+    out += `\n${r.s.body}`;
+  }
+  return (out.trim() ? out : content).slice(0, maxChars);
+}
+
+/**
+ * Wrap the RELEVANT slice of the matched pack as a labeled prompt block (empty when none).
+ * `maxChars` is the per-call token budget: keep it small for the planner (runs on every
+ * message) and generous for the deep pipeline / inspector where accuracy matters.
+ */
+export function buildKnowledgeBlock(
+  ctx: { websiteId?: string; targetUrl?: string; text?: string },
+  opts?: { maxChars?: number },
+): string {
   const { content } = resolveKnowledgeForContext(ctx);
   if (!content) return '';
+  const budget = Math.max(800, opts?.maxChars ?? 7000);
+  const slice = selectRelevantSlice(content, ctx.text || '', budget);
   const pack = matchPack(ctx);
   const obs = pack?.observations?.length
-    ? `\n\nRecently observed in live runs (auto-captured, newest first):\n- ${pack.observations.slice(0, 12).join('\n- ')}`
+    ? `\n\nRecently observed in live runs (auto-captured, newest first):\n- ${pack.observations.slice(0, 10).join('\n- ')}`
     : '';
-  return `\n\nAPPLICATION KNOWLEDGE — verified ground truth about the app under test. Treat this as authoritative for navigation, flows, business rules, expected behavior, gotchas, and selectors. Use it to make steps and assertions accurate; do NOT contradict it or invent behavior beyond it:\n"""\n${content}${obs}\n"""\n`;
+  const truncated = slice.length < content.length ? '\n[…most-relevant excerpt; full knowledge available on request…]' : '';
+  return `\n\nAPPLICATION KNOWLEDGE — verified ground truth about the app under test (most-relevant excerpt for this request). Treat as authoritative for navigation, flows, business rules, expected behavior, gotchas, and selectors; do NOT contradict it or invent behavior beyond it:\n"""\n${slice}${truncated}${obs}\n"""\n`;
 }

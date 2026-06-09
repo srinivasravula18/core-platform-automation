@@ -4,6 +4,8 @@ import { LayoutDashboard, TestTube2, Bug, Settings, BrainCircuit, PlayCircle, Fo
 import { cn } from '@/src/lib/utils';
 import { useTheme } from '@/src/store/theme';
 import { CommandBar } from '@/src/components/CommandBar';
+import { ProjectSwitcher } from '@/src/components/ProjectSwitcher';
+import { useProjects } from '@/src/store/project';
 import { AuthGate, logout, getUsername } from '@/src/components/AuthGate';
 import { appBasePath } from '@/src/lib/base-path';
 
@@ -247,6 +249,7 @@ function Topbar({ onMenuClick, onCommandBarOpen }: { onMenuClick: () => void; on
         </div>
       </div>
       <div className="flex items-center gap-2 sm:gap-4">
+        <ProjectSwitcher />
         <button
           onClick={onCommandBarOpen}
           className="hidden sm:flex items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2.5 py-1.5 text-xs font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-card)] transition-colors"
@@ -281,6 +284,9 @@ function Shell({ children }: { children: React.ReactNode }) {
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [isCommandBarOpen, setIsCommandBarOpen] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
+  // When the selected project/app changes, remount the page subtree so every page
+  // re-fetches its data with the new scope (pages fetch on mount).
+  const scopeKey = useProjects((s) => `${s.selectedProjectId ?? ''}:${s.selectedAppId ?? ''}`);
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
@@ -321,7 +327,9 @@ function Shell({ children }: { children: React.ReactNode }) {
       <div className="flex flex-1 flex-col min-w-0">
         <Topbar onMenuClick={() => setIsSidebarOpen(!isSidebarOpen)} onCommandBarOpen={() => setIsCommandBarOpen(true)} />
         <main data-sidebar={isSidebarOpen ? 'open' : 'closed'} className="flex-1 overflow-auto p-3 sm:p-6 relative">
-          {children}
+          <div key={scopeKey} className="contents">
+            {children}
+          </div>
         </main>
       </div>
       <CommandBar isOpen={isCommandBarOpen} onOpenChange={setIsCommandBarOpen} />

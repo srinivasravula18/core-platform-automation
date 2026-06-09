@@ -16,3 +16,10 @@ coverage/
 .mcp.json
 evidence/
 e2e/
+
+# Generated test-checklist & feature-audit docs
+docs/test-checklists/
+docs/CORE-PLATFORM-FEATURE-AUDIT.md
+CORE-PLATFORM-FEATURE-AUDIT.md
+
+/.testflow-pw

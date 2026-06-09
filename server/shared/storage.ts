@@ -37,6 +37,8 @@ export const db: any = {
   requirements: [] as any[],
   requirementLinks: [] as any[],
   appKnowledge: [] as any[],
+  projects: [] as any[],
+  apps: [] as any[],
 };
 
 const settingsFilePath = path.resolve(process.cwd(), '.testflow-settings.json');
@@ -65,6 +67,8 @@ function getPersistableDbSnapshot() {
     requirements: db.requirements,
     requirementLinks: db.requirementLinks,
     appKnowledge: db.appKnowledge,
+    projects: db.projects,
+    apps: db.apps,
   };
 }
 
@@ -93,6 +97,8 @@ export async function loadPersistedData() {
     db.requirements = Array.isArray(data.requirements) ? data.requirements : [];
     db.requirementLinks = Array.isArray(data.requirementLinks) ? data.requirementLinks : [];
     db.appKnowledge = Array.isArray(data.appKnowledge) ? data.appKnowledge : [];
+    db.projects = Array.isArray(data.projects) ? data.projects : [];
+    db.apps = Array.isArray(data.apps) ? data.apps : [];
   } catch (error: any) {
     if (error?.code !== 'ENOENT') {
       console.error(`Failed to load persisted data from ${dataFilePath}:`, error);
@@ -131,6 +137,15 @@ export async function savePersistedSettings() {
 export function persistDataInBackground(reason: string) {
   void savePersistedData().catch((error) => {
     console.error(`Failed to persist ${reason}:`, error);
+  });
+}
+
+// Persist db.settings (AI providers, model selection, autonomy, cost limit, etc.)
+// to the settings file. Settings live in a different file than data, so handlers
+// that mutate db.settings must use this — not persistDataInBackground.
+export function persistSettingsInBackground(reason: string) {
+  void savePersistedSettings().catch((error) => {
+    console.error(`Failed to persist settings (${reason}):`, error);
   });
 }
 

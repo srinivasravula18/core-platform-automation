@@ -6,7 +6,7 @@
  */
 
 import type { Express } from 'express';
-import { db, persistDataInBackground } from '../../shared/storage';
+import { db, persistDataInBackground, persistSettingsInBackground } from '../../shared/storage';
 import { buildProvider, listConfiguredProviders, resolveProviderForAgent, resolveModelForAgent } from '../../ai/orchestrator';
 import { DEFAULT_MODELS, type ProviderName } from '../../ai/providers/types';
 import {
@@ -76,7 +76,7 @@ export function registerSettingsRoutes(app: Express) {
     if (apiKey !== undefined) slot.apiKey = apiKey;
     if (model !== undefined) slot.model = model;
     db.settings.providerSettings[name] = slot;
-    persistDataInBackground(`provider settings: ${name}`);
+    persistSettingsInBackground(`provider settings: ${name}`);
     res.json({ ok: true, name, model: slot.model || DEFAULT_MODELS[name].default });
   });
 
@@ -84,7 +84,7 @@ export function registerSettingsRoutes(app: Express) {
     const name = req.params.name as ProviderName;
     if (db.settings.providerSettings?.[name]) {
       db.settings.providerSettings[name].apiKey = '';
-      persistDataInBackground(`clear provider key: ${name}`);
+      persistSettingsInBackground(`clear provider key: ${name}`);
     }
     res.json({ ok: true });
   });
@@ -98,7 +98,7 @@ export function registerSettingsRoutes(app: Express) {
       if (!db.settings.providerSettings) db.settings.providerSettings = { gemini: { apiKey: '', model: '' }, openai: { apiKey: '', model: '' }, anthropic: { apiKey: '', model: '' } };
       db.settings.providerSettings[provider || db.settings.defaultProvider].model = model;
     }
-    persistDataInBackground('default provider');
+    persistSettingsInBackground('default provider');
     res.json({ ok: true, defaultProvider: db.settings.defaultProvider });
   });
 
@@ -113,7 +113,7 @@ export function registerSettingsRoutes(app: Express) {
       if (!db.settings.agentModelMap) db.settings.agentModelMap = {};
       db.settings.agentModelMap[agent] = model;
     }
-    persistDataInBackground(`agent provider: ${agent}`);
+    persistSettingsInBackground(`agent provider: ${agent}`);
     res.json({ ok: true, agent, provider: resolveProviderForAgent(agent), model: resolveModelForAgent(agent, resolveProviderForAgent(agent)) });
   });
 
@@ -196,7 +196,7 @@ export function registerSettingsRoutes(app: Express) {
       return res.status(400).json({ error: 'level must be one of autonomous, review, manual' });
     }
     db.settings.autonomyLevel = level;
-    persistDataInBackground('autonomy level');
+    persistSettingsInBackground('autonomy level');
     res.json({ ok: true, level });
   });
 
@@ -204,7 +204,7 @@ export function registerSettingsRoutes(app: Express) {
     const { limit } = req.body || {};
     if (typeof limit !== 'number' || limit < 0) return res.status(400).json({ error: 'limit must be a non-negative number' });
     setDailyLimit(limit);
-    persistDataInBackground('daily cost limit');
+    persistSettingsInBackground('daily cost limit');
     res.json({ ok: true, limit });
   });
 

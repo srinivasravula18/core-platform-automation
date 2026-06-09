@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Search, Filter, ShieldCheck, ShieldAlert, Sparkles, Plus, Clock, FileSpreadsheet, Layers, User, Calendar, Trash2, Eye, EyeOff, AlertTriangle, PlayCircle, ExternalLink, Activity } from 'lucide-react';
+import ExportMenu from '../components/ExportMenu';
 import { cn } from '@/src/lib/utils';
 import { useAiSearch } from '@/src/lib/useAiSearch';
 import html2canvas from 'html2canvas';
@@ -414,7 +415,25 @@ export default function Reports() {
           <h1 className="text-2xl font-bold tracking-tight text-[var(--text-primary)]">Test Reports</h1>
           <p className="text-sm text-[var(--text-muted)] mt-1">Audit verification results, step checklists, and screenshot evidence payloads.</p>
         </div>
-        <div>
+        <div className="flex flex-wrap items-center gap-2">
+          <ExportMenu
+            filename="test-reports"
+            title="Test Reports"
+            rows={filteredReports}
+            columns={[
+              { key: 'id', label: 'ID' },
+              { key: 'name', label: 'Name' },
+              { key: 'status', label: 'Status' },
+              { key: 'planName', label: 'Plan' },
+              { key: 'suiteName', label: 'Suite' },
+              { key: 'requestedBy', label: 'Requested By' },
+              { key: 'executionTime', label: 'Execution Time' },
+              { key: 'totalExecutions', label: 'Total Executions' },
+              { key: 'failureReason', label: 'Failure Reason' },
+              { key: 'date', label: 'Date' },
+              { key: 'stepCount', label: 'Steps', get: (r) => (r.steps || []).length },
+            ]}
+          />
           <button onClick={() => setIsNewReportModalOpen(true)} className="flex items-center gap-2 bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white px-4 py-2 rounded-md text-sm font-medium transition-colors">
             <Plus className="w-4 h-4" /> Log Manual Report
           </button>

@@ -8,6 +8,9 @@ import { buildCredentialContext, resolveAgentTargetUrl } from '../../shared/url'
 import { playwrightScriptsSchema, testCasesSchema } from '../../shared/schemas';
 import { buildAgentExecutionSteps, buildCaseDescription, normalizeCaseSteps, normalizeCaseTags } from '../../shared/testCases';
 import { capturePlaywrightEvidence } from '../evidence/evidenceService';
+import { executePlaywrightScripts } from '../playwright/executionService';
+import { promises as fsp } from 'fs';
+import path from 'path';
 import { inspectApplicationFlow } from './inspectionService';
 import { getOrchestrator } from '../../ai/orchestrator';
 import { buildKnowledgeBlock, recordObservation } from '../knowledge/knowledgeService';
@@ -15,6 +18,8 @@ import { resolveCredentials, maskPassword } from '../credentials/credentialsServ
 import { pushInboxItem } from '../inbox/routes';
 import { Plans, Suites, Cases, Runs, Reports, Scripts, Folders } from '../../db/repository';
 import { runGuardrailPipeline } from '../../ai/guardrails';
+import { reqScope, scopeFilter } from '../../shared/scope';
+import { getApp, getProject } from '../projects/projectService';
 
 function getAgentPlanStatus(run: any) {
   if (run?.status === 'completed') return 'Completed';
@@ -196,6 +201,8 @@ async function persistAgentCaseArtifacts(run: any) {
       proposedBy: 'QA Assistant',
       approvalState: 'approved',
       sourceRunId: run.id,
+      projectId: run.projectId || '',
+      appId: run.appId || '',
     });
   }
 
@@ -216,6 +223,8 @@ async function persistAgentCaseArtifacts(run: any) {
       proposedBy: 'QA Assistant',
       approvalState: 'approved',
       sourceRunId: run.id,
+      projectId: run.projectId || '',
+      appId: run.appId || '',
     });
   }
 
@@ -240,6 +249,8 @@ async function persistAgentCaseArtifacts(run: any) {
       approvalState: 'pending_review',
       agentRunId: run.id,
       sourceRunId: run.id,
+      projectId: run.projectId || '',
+      appId: run.appId || '',
     });
   }
 
@@ -268,6 +279,8 @@ async function persistAgentScripts(run: any) {
       agentRunId: run.id,
       targetUrl: run.app_url || '',
       createdBy: 'QA Assistant',
+      projectId: run.projectId || '',
+      appId: run.appId || '',
     });
   }
 
@@ -309,6 +322,8 @@ async function persistAgentRunArtifacts(run: any) {
     triggerType: 'agent',
     proposedBy: 'QA Assistant',
     approvalState: 'approved',
+    projectId: run.projectId || '',
+    appId: run.appId || '',
   });
 
   await Reports.upsert({
@@ -327,6 +342,8 @@ async function persistAgentRunArtifacts(run: any) {
     folderId: run.folderId || null,
     steps: executionSteps,
     evidence: run.evidence_screenshots || [],
+    projectId: run.projectId || '',
+    appId: run.appId || '',
   });
 
   run.persisted = true;
@@ -334,22 +351,34 @@ async function persistAgentRunArtifacts(run: any) {
   persistDataInBackground('agent run artifacts');
 }
 
-async function runPostCaseAgentFlow(run: any, model: any, testCases: any, targetUrl: string) {
+async function runPostCaseAgentFlow(run: any, model: any, testCases: any, targetUrl: string, liveCredentials?: any) {
+  // The run record stores a MASKED password for safe persistence/logging. The live
+  // browser (login + evidence) must use the REAL resolved credentials, so prefer the
+  // passed live credentials; only fall back to the (possibly masked) run copy.
+  const liveCreds = liveCredentials && liveCredentials.username && liveCredentials.password
+    ? liveCredentials
+    : (run.credentials || {});
   run.messages.push({ agent: 'PlaywrightAgent', status: 'running' });
-  const credentialContext = buildCredentialContext(run.credentials || {});
+  // Use the REAL (live) credentials so the generated scripts contain a working
+  // login — run.credentials stores a MASKED password unsuitable for execution.
+  const credentialContext = buildCredentialContext(liveCreds);
   const inspectionContext = run.inspection_context || null;
   const selectedQaContextText = run.selectedQaContext
     ? `Selected QA repository context for this automation scope: ${JSON.stringify(run.selectedQaContext)}`
     : 'No selected QA repository context was provided for this automation scope.';
 
-  const coderKnowledge = buildKnowledgeBlock({ targetUrl, text: run.prompt || '' });
+  const coderKnowledge = buildKnowledgeBlock({ targetUrl, text: run.prompt || '' }, { maxChars: 9000 });
   const coder = await getOrchestrator('playwrightCoder');
   const scriptsResult = await coder.generateObject<any>({
     prompt: `Use this baseURL in the scripts when provided: ${targetUrl || 'not provided'}.
 ${credentialContext}
 ${selectedQaContextText}
-Use this browser inspection context as the source of truth for reachable pages, visible labels, forms, navigation actions, tables/lists, buttons, links and final URL: ${JSON.stringify(inspectionContext)}.
-For authenticated flows, fill the username/email and password fields before clicking submit. Then follow the same user-requested path discovered by the inspector and assert the exact inspected target state using visible text, headings, tables, lists, forms, or URL changes. Do not invent unrelated pages or menu names that are not present in the inspection context or test case steps.
+Use this browser inspection context as the source of truth for reachable pages, visible labels, forms, navigation actions, tables/lists, buttons, links and final URL: ${JSON.stringify(compactInspectionContext(inspectionContext))}.
+LOGIN (resilient — do NOT assert any login-page heading/text): fill the username/email using a tolerant locator like page.locator('input[type="email"], input[type="text"], input[name*="user" i], input[name*="email" i]').first(), fill the password using page.locator('input[type="password"]').first(), then click page.locator('button[type="submit"], button:has-text("Sign in"), button:has-text("Login"), button:has-text("Log in")').first() (or press Enter on the password field), then wait for the post-login app to settle with await page.waitForLoadState('domcontentloaded') followed by a short await page.waitForTimeout(1500). NEVER use waitForLoadState('networkidle') — live apps keep polling and it will hang until timeout. Login UIs vary, so NEVER assert that a specific login heading or label is visible before/after filling.
+GROUNDING (no hallucination): only assert text, labels, headings, buttons, or table/list content that ACTUALLY appears in the inspection context above. NEVER assert "assumed" UI — no guessed success toasts (e.g. "created successfully"), menu names, or headings you did not see in the inspection context. If unsure an element exists, do not assert it; prefer asserting a URL change or a landmark the inspector recorded. When asserting a URL, match only a STABLE fragment with a loose regex (e.g. expect(page).toHaveURL(/nav=apps/) or expect(page.url()).toContain('nav=apps')) — NEVER assert the full URL or a pattern that includes query separators (?, &) or generated ids (appId, record ids) which vary every run.
+RESILIENCE (the user's intent MUST actually be performed): use await expect.soft(...) for every intermediate per-step verification so a single mismatched locator does NOT abort the test before the user's real goal (e.g. creating the record) is carried out. Always run each ACTION step (goto/fill/click/submit) regardless of whether a prior soft assertion failed. Use exactly ONE normal hard expect for the single final assertion that confirms the user's primary goal. Then follow the user-requested path discovered by the inspector; do not invent unrelated pages or menu names.
+STRICT OUTPUT CONTRACT: produce EXACTLY ONE script object per test case below, in the SAME order, so the count of scripts equals the count of test cases. For each script, set "test_case_title" to that case's title VERBATIM, and name the Playwright test identically: test('<exact case title>', async ({ page }, testInfo) => { ... }). One file = one test() = one case; do not merge multiple cases into one script and do not split a case across scripts. Each script's actions must mirror that case's ordered steps.
+STEP-BY-STEP EVIDENCE (required): the test signature MUST include testInfo — test('<exact case title>', async ({ page }, testInfo) => { ... }). Perform the case's steps in order; immediately AFTER completing each step N (1-based, matching the case's steps array), attach a screenshot of the resulting screen with that step's number: await testInfo.attach('step-' + N, { body: await page.screenshot({ fullPage: true }), contentType: 'image/png' }); Use the literal step number (step-1, step-2, ...). Put the attach AFTER the action so it captures the post-action state; if a step asserts, attach before the assertion so evidence is captured even when the assertion later fails. Every step must produce exactly one 'step-N' attachment.
 Test cases: ${JSON.stringify(testCases)}${coderKnowledge}`,
     schema: playwrightScriptsSchema,
     userMessage: 'Generate Playwright scripts for the inspected flow.',
@@ -361,7 +390,7 @@ Test cases: ${JSON.stringify(testCases)}${coderKnowledge}`,
 
   run.messages.push({ agent: 'EvidenceAgent', status: 'running' });
   if (targetUrl) {
-    const evidence = await capturePlaywrightEvidence(targetUrl, run.id, testCases?.test_cases || run.generated_cases || [], run.credentials || {});
+    const evidence = await runScriptsAndCollectEvidence(run, targetUrl, testCases, liveCreds);
     run.evidence_screenshots = evidence as any;
     run.messages.push({ agent: 'EvidenceAgent', status: 'completed', output: evidence });
   } else {
@@ -370,6 +399,141 @@ Test cases: ${JSON.stringify(testCases)}${coderKnowledge}`,
 
   run.status = 'completed';
   await persistAgentRunArtifacts(run);
+}
+
+/**
+ * Actually EXECUTE the generated Playwright scripts (so the user's intent is
+ * performed in a real browser) and build evidence from that run — one real
+ * screenshot per executed case, with true pass/fail and failure reasons.
+ * Falls back to a base-URL login screenshot if the scripts can't be executed.
+ */
+const normTitle = (t: string) => String(t || '').trim().toLowerCase();
+const baseName = (f: string) => String(f || '').split(/[\\/]/).pop() || '';
+
+// Bound the inspection context before it is embedded into LLM prompts, so a large
+// page (long nav/tables/forms/actions) does not blow the token budget. Keeps the
+// fields the CaseWriter/Coder actually rely on.
+function compactInspectionContext(ic: any) {
+  if (!ic) return null;
+  const cap = (v: any, n: number) => (Array.isArray(v) ? v.slice(0, n) : v);
+  return {
+    goalStatus: ic.goalStatus,
+    currentUrl: ic.currentUrl,
+    pageSummary: typeof ic.pageSummary === 'string' ? ic.pageSummary.slice(0, 800) : ic.pageSummary,
+    visibleNavigation: cap(ic.visibleNavigation, 24),
+    visibleForms: cap(ic.visibleForms, 12),
+    visibleTables: cap(ic.visibleTables, 12),
+    assertionTargets: cap(ic.assertionTargets, 24),
+    actionsTaken: cap(ic.actionsTaken, 24),
+  };
+}
+
+async function runScriptsAndCollectEvidence(run: any, targetUrl: string, testCases: any, liveCreds: any) {
+  const rawScripts = (run.playwright_scripts || []) as any[];
+  const scripts = rawScripts.map((s: any) => ({ filename: s.filename, title: s.test_case_title, code: s.code }));
+  const cases = (testCases?.test_cases || run.generated_cases || []) as any[];
+  const norm = normTitle;
+
+  // Reliable mapping chain: executed test -> its spec file -> the script that
+  // produced it (by filename) -> that script's test_case_title -> the case index.
+  // Title match is only a secondary fallback; positional is the last resort.
+  const titleByFile = new Map<string, string>();
+  for (const s of scripts) if (s.filename) titleByFile.set(baseName(s.filename), norm(s.title));
+  const caseIndexByTitle = new Map<string, number>();
+  cases.forEach((c, i) => { if (!caseIndexByTitle.has(norm(c.title))) caseIndexByTitle.set(norm(c.title), i); });
+
+  const resolveCaseIndex = (t: any, fallbackPos: number): number => {
+    const viaFile = titleByFile.get(baseName(t.file));
+    if (viaFile && caseIndexByTitle.has(viaFile)) return caseIndexByTitle.get(viaFile)!;
+    const viaTitle = caseIndexByTitle.get(norm(t.title));
+    if (viaTitle !== undefined) return viaTitle;
+    return fallbackPos < cases.length ? fallbackPos : Math.max(0, cases.length - 1);
+  };
+
+  if (scripts.length) {
+    try {
+      const exec = await executePlaywrightScripts({ scripts, baseUrl: targetUrl, runId: run.id });
+      // Persist the full result (incl. per-test pass/fail) so the Agent Console can
+      // show it directly — no need to press "Run all scripts" a second time (G6).
+      run.execution_result = {
+        ok: exec.ok,
+        total: exec.total,
+        passed: exec.passed,
+        failed: exec.failed,
+        skipped: exec.skipped,
+        durationMs: exec.durationMs,
+        error: exec.error,
+        stderrTail: exec.stderrTail,
+        tests: (exec.tests || []).map((t) => ({ title: t.title, status: t.status, durationMs: t.durationMs, error: t.error })),
+      };
+      if (exec.tests && exec.tests.length) {
+        const evidenceDir = path.resolve(process.cwd(), 'evidence');
+        await fsp.mkdir(evidenceDir, { recursive: true });
+        const evidence: any[] = [];
+        const usedCaseIndexes = new Set<number>();
+        for (let i = 0; i < exec.tests.length; i += 1) {
+          const t = exec.tests[i];
+          // Reliable test -> case mapping (file -> script title -> case), with title
+          // and positional fallbacks. Avoid two tests colliding on one case index.
+          let caseIndex = resolveCaseIndex(t, i);
+          if (usedCaseIndexes.has(caseIndex)) {
+            const free = cases.findIndex((_, idx) => !usedCaseIndexes.has(idx));
+            if (free >= 0) caseIndex = free;
+          }
+          usedCaseIndexes.add(caseIndex);
+          let screenshotUrl = '';
+          if (t.screenshotPath) {
+            const dest = `${run.id}-case-${i + 1}.png`;
+            await fsp.copyFile(t.screenshotPath, path.join(evidenceDir, dest)).catch(() => undefined);
+            screenshotUrl = `/evidence/${dest}`;
+          }
+          // Copy each per-step screenshot the script attached, so the report can show
+          // a distinct image for every step instead of one image per case.
+          const stepScreenshots: string[] = [];
+          const stepPaths = t.stepScreenshotPaths || [];
+          for (let k = 0; k < stepPaths.length; k += 1) {
+            const dest = `${run.id}-case-${i + 1}-step-${k + 1}.png`;
+            const ok = await fsp.copyFile(stepPaths[k], path.join(evidenceDir, dest)).then(() => true).catch(() => false);
+            stepScreenshots.push(ok ? `/evidence/${dest}` : '');
+          }
+          evidence.push({
+            title: t.title || cases[caseIndex]?.title || `Test case ${i + 1}`,
+            testCaseIndex: caseIndex,
+            url: targetUrl,
+            screenshotUrl,
+            stepScreenshots,
+            status: t.status,
+            reason: t.error || '',
+            durationMs: t.durationMs,
+            executed: true,
+            capturedAt: new Date().toISOString(),
+          });
+        }
+        // Flag any case that produced no script/test, so the report can show it
+        // honestly as "not executed" instead of a silent green pass.
+        cases.forEach((c, idx) => {
+          if (!usedCaseIndexes.has(idx)) {
+            evidence.push({
+              title: c.title || `Test case ${idx + 1}`,
+              testCaseIndex: idx,
+              url: targetUrl,
+              screenshotUrl: '',
+              status: 'not_executed',
+              reason: 'No Playwright script was generated for this case, so it was not executed.',
+              executed: false,
+              capturedAt: new Date().toISOString(),
+            });
+          }
+        });
+        return evidence;
+      }
+      run.messages.push({ agent: 'EvidenceAgent', status: 'running', output: `Script execution produced no test results${exec.error ? `: ${exec.error}` : ''}. Falling back to base-URL evidence.` });
+    } catch (err: any) {
+      run.messages.push({ agent: 'EvidenceAgent', status: 'running', output: `Script execution failed: ${err?.message || err}. Falling back to base-URL evidence.` });
+    }
+  }
+  // FALLBACK: base-URL login + screenshot (original behaviour) when scripts can't run.
+  return capturePlaywrightEvidence(targetUrl, run.id, cases, liveCreds);
 }
 
 export function registerAgentRoutes(app: Express) {
@@ -382,7 +546,7 @@ export function registerAgentRoutes(app: Express) {
     });
   });
 
-  app.get('/api/agent-runs', (req, res) => res.json(db.agentRuns));
+  app.get('/api/agent-runs', (req, res) => res.json(scopeFilter(db.agentRuns, reqScope(req))));
 
   app.get('/api/agent-runs/:id', (req, res) => {
     const run = db.agentRuns.find(r => r.id === req.params.id);
@@ -490,7 +654,16 @@ export function registerAgentRoutes(app: Express) {
       return res.status(pipeline.policyVerdict.code).json({ error: pipeline.policyVerdict.error });
     }
 
-    const targetUrl = resolveAgentTargetUrl(prompt || '', app_url || '');
+    // Resolve the selected Project/App context. A selected app makes the agent's target
+    // and grounding deterministic: its base URL drives the Playwright target and its name
+    // sharpens knowledge-pack matching, instead of guessing from the prompt.
+    const scope = reqScope(req);
+    const selectedApp = scope.appId ? getApp(scope.appId) : undefined;
+    const selectedProject = scope.projectId ? getProject(scope.projectId) : undefined;
+    const scopeContextText = [selectedProject?.name, selectedApp?.name].filter(Boolean).join(' ');
+
+    // Precedence: an explicit URL the user typed > the selected app's base URL > prompt parsing.
+    const targetUrl = resolveAgentTargetUrl(prompt || '', app_url || selectedApp?.baseUrl || '');
 
     // Resolve credentials through the new multi-website, multi-user model.
     // Fall back to inline credentials if the user pasted them in chat.
@@ -528,15 +701,22 @@ export function registerAgentRoutes(app: Express) {
       targetUrl,
     });
     const taskId = randomUUID();
-    // Ground the whole run in the app-knowledge pack for this target (by stored
-    // website id, the target URL host, or a name in the prompt). Empty if none.
-    const knowledgeBlock = buildKnowledgeBlock({ websiteId: req.body.websiteId, targetUrl, text: prompt || '' });
+    // Ground the run in the relevant slice of the app-knowledge pack (retrieved per request).
+    // Smaller budget for the inspector (it runs in a loop), generous for the one-shot case writer.
+    const knowledgeCtx = { websiteId: req.body.websiteId, targetUrl, text: `${scopeContextText} ${prompt || ''}`.trim() };
+    const inspectorKnowledge = buildKnowledgeBlock(knowledgeCtx, { maxChars: 3500 });
+    const knowledgeBlock = buildKnowledgeBlock(knowledgeCtx, { maxChars: 12000 });
 
     const newRun = {
       id: taskId,
       app_url: targetUrl,
       provider,
       prompt: prompt || '',
+      websiteId: req.body.websiteId || '',
+      projectId: scope.projectId || '',
+      appId: scope.appId || '',
+      projectName: selectedProject?.name || '',
+      appName: selectedApp?.name || '',
       status: 'running',
       messages: [] as any[],
       generated_cases: [],
@@ -556,7 +736,7 @@ export function registerAgentRoutes(app: Express) {
     newRun.messages.push({
       agent: 'System',
       status: 'completed',
-      output: `Resolved target: ${targetUrl || 'none'}. Repository folder: ${folder ? getFolderPath(folder.id) : 'Uncategorized'}. QA scope: ${selectedQaContext.hasContext ? 'selected plan/suite/case context' : 'prompt only'}. Credentials: ${credentials.username && credentials.password ? `${(credentials as any).source || 'provided'} for ${(credentials as any).siteName || credentials.username} (role: ${(credentials as any).role || 'default'})` : 'none'}.`,
+      output: `${selectedApp ? `Context: ${selectedProject?.name || 'project'} › ${selectedApp.name}. ` : selectedProject ? `Context: ${selectedProject.name} (project-level). ` : ''}Resolved target: ${targetUrl || 'none'}. Repository folder: ${folder ? getFolderPath(folder.id) : 'Uncategorized'}. QA scope: ${selectedQaContext.hasContext ? 'selected plan/suite/case context' : 'prompt only'}. Credentials: ${credentials.username && credentials.password ? `${(credentials as any).source || 'provided'} for ${(credentials as any).siteName || credentials.username} (role: ${(credentials as any).role || 'default'})` : 'none'}.`,
     });
 
     db.agentRuns.unshift(newRun);
@@ -582,7 +762,7 @@ export function registerAgentRoutes(app: Express) {
         credentials,
         model: undefined as any,
         runId: taskId,
-        knowledge: knowledgeBlock,
+        knowledge: inspectorKnowledge,
       });
       newRun.inspection_context = inspectionContext;
       newRun.messages.push({ agent: 'ApplicationInspector', status: 'completed', output: inspectionContext });
@@ -605,7 +785,7 @@ export function registerAgentRoutes(app: Express) {
 Playwright target URL: ${targetUrl || 'not provided'}.
 ${credentialContext}
 ${selectedQaContext.promptText}
-Browser inspection result: ${JSON.stringify(inspectionContext)}.
+Browser inspection result: ${JSON.stringify(compactInspectionContext(inspectionContext))}.
 Generate exactly ${testCaseCount} comprehensive test cases.
 
 Use the inspection result as the source of truth for reachable pages, post-login state, visible navigation, forms, tables, list-like regions, and assertion targets. Do not invent unrelated admin pages or menu names. If the inspector reached the requested goal, at least one @bvt test case must cover that exact inspected end-to-end path, including any login and navigation actions recorded in actionsTaken. If the inspector was partial or blocked, generate cases for the reachable context and include clear preconditions/steps that show what needs to be verified next.
@@ -645,7 +825,7 @@ Each test case must include automation tags in @ format, for example @bvt, @sani
         return;
       }
 
-      await runPostCaseAgentFlow(newRun, undefined as any, testCases, targetUrl);
+      await runPostCaseAgentFlow(newRun, undefined as any, testCases, targetUrl, credentials);
     } catch (err: any) {
       console.error('AI Gen Error:', err);
       newRun.status = 'failed';
@@ -672,7 +852,10 @@ Each test case must include automation tags in @ format, for example @bvt, @sani
     res.json({ success: true });
 
     try {
-      await runPostCaseAgentFlow(run, undefined as any, { test_cases: cases }, run.app_url || '');
+      // Re-resolve the real credentials (the run only stores a masked copy) so the
+      // evidence run can actually log in.
+      const liveCreds = resolveCredentials({ targetUrl: run.app_url, websiteId: run.websiteId, role: (run.credentials || {}).role }) || undefined;
+      await runPostCaseAgentFlow(run, undefined as any, { test_cases: cases }, run.app_url || '', liveCreds);
     } catch (err: any) {
       console.error('AI Continue Error:', err);
       run.status = 'failed';
@@ -740,6 +923,9 @@ Each test case must include automation tags in @ format, for example @bvt, @sani
   app.post('/api/agent/save-cases', async (req, res) => {
     const { cases, taskId } = req.body;
     const linkedRun = taskId ? db.agentRuns.find((run: any) => run.id === taskId) : null;
+    const saveScope = reqScope(req);
+    const caseProjectId = linkedRun?.projectId || saveScope.projectId || '';
+    const caseAppId = linkedRun?.appId || saveScope.appId || '';
     const linkedPlanId = linkedRun ? `PLAN-${linkedRun.id.substring(0, 8).toUpperCase()}` : '';
     const linkedSuiteId = linkedRun ? `SUITE-${linkedRun.id.substring(0, 8).toUpperCase()}` : '';
     if (Array.isArray(cases)) {
@@ -765,6 +951,8 @@ Each test case must include automation tags in @ format, for example @bvt, @sani
           proposedBy: 'QA Assistant',
           approvalState: 'approved',
           agentRunId: c.agentRunId || linkedRun?.id || null,
+          projectId: caseProjectId,
+          appId: caseAppId,
         });
       }
       persistDataInBackground('saved generated cases');

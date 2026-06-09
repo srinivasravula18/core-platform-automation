@@ -7,6 +7,7 @@ import { buildCaseDescription, normalizeCaseSteps, normalizeCaseTags } from '../
 import { findSettingsPlaywrightTargetUrl, normalizeTargetUrl } from '../../shared/url';
 import { getAIErrorMessage } from '../../shared/ai';
 import { getOrchestrator } from '../../ai/orchestrator';
+import { reqScope, scopeFilter, scopeStamp } from '../../shared/scope';
 
 import {
   Plans,
@@ -64,17 +65,18 @@ function sanitizeCasePayload(payload: any, fallback: any = {}) {
 }
 
 export function registerResourceRoutes(app: Express) {
-  /* ---------- read endpoints (PG-backed) ---------- */
-  app.get('/api/plans', async (req, res) => res.json(await Plans.list()));
-  app.get('/api/suites', async (req, res) => res.json(await Suites.list()));
-  app.get('/api/cases', async (req, res) => res.json(await Cases.list()));
-  app.get('/api/runs', async (req, res) => res.json(await Runs.list()));
-  app.get('/api/defects', async (req, res) => res.json(await Defects.list()));
-  app.get('/api/scripts', async (req, res) => res.json(await Scripts.list()));
-  app.get('/api/reports', async (req, res) => res.json(await Reports.list()));
+  /* ---------- read endpoints (PG-backed, scoped to the selected project/app) ---------- */
+  app.get('/api/plans', async (req, res) => res.json(scopeFilter(await Plans.list(), reqScope(req))));
+  app.get('/api/suites', async (req, res) => res.json(scopeFilter(await Suites.list(), reqScope(req))));
+  app.get('/api/cases', async (req, res) => res.json(scopeFilter(await Cases.list(), reqScope(req))));
+  app.get('/api/runs', async (req, res) => res.json(scopeFilter(await Runs.list(), reqScope(req))));
+  app.get('/api/defects', async (req, res) => res.json(scopeFilter(await Defects.list(), reqScope(req))));
+  app.get('/api/scripts', async (req, res) => res.json(scopeFilter(await Scripts.list(), reqScope(req))));
+  app.get('/api/reports', async (req, res) => res.json(scopeFilter(await Reports.list(), reqScope(req))));
   app.get('/api/folders', async (req, res) => {
     const folders = await Folders.list();
-    res.json(folders.map((f: any) => ({ ...f, path: f.path || getFolderPath(f.id, folders) })));
+    const scoped = scopeFilter(folders, reqScope(req));
+    res.json(scoped.map((f: any) => ({ ...f, path: f.path || getFolderPath(f.id, folders) })));
   });
 
   /* ---------- folders: hierarchical create/resolve/update/delete (still tree-aware, uses repository) ---------- */
@@ -85,6 +87,7 @@ export function registerResourceRoutes(app: Express) {
       createdBy: req.body.createdBy || 'User',
     });
     if (!folder) return res.status(400).json({ error: 'Folder name is required' });
+    Object.assign(folder, scopeStamp(reqScope(req)));
     await Folders.upsert(folder);
     if (!isPgEnabled()) persistDataInBackground('folder');
     const allFolders = await Folders.list();
@@ -99,6 +102,7 @@ export function registerResourceRoutes(app: Express) {
       createdBy: req.body.createdBy || 'User',
     });
     if (!folder) return res.status(400).json({ error: 'Folder path is required' });
+    Object.assign(folder, scopeStamp(reqScope(req)));
     await Folders.upsert(folder);
     if (!isPgEnabled()) persistDataInBackground('folder resolve');
     const allFolders = await Folders.list();
@@ -184,6 +188,7 @@ export function registerResourceRoutes(app: Express) {
     });
 
     const newReport = {
+      ...scopeStamp(reqScope(req)),
       id: reportId,
       name,
       planName: r.planName || '',
@@ -208,6 +213,7 @@ export function registerResourceRoutes(app: Express) {
   app.post('/api/plans', async (req, res) => {
     const p = req.body;
     const newPlan = {
+      ...scopeStamp(reqScope(req)),
       id: `PLAN-${Math.random().toString(36).substring(2, 6).toUpperCase()}`,
       name: p.name || 'New Plan',
       scope: p.scope,
@@ -238,6 +244,7 @@ export function registerResourceRoutes(app: Express) {
   app.post('/api/suites', async (req, res) => {
     const s = req.body;
     const newSuite = {
+      ...scopeStamp(reqScope(req)),
       id: `SUITE-${Math.random().toString(36).substring(2, 6).toUpperCase()}`,
       name: s.name || 'New Suite',
       description: s.description,
@@ -263,6 +270,7 @@ export function registerResourceRoutes(app: Express) {
   app.post('/api/cases', async (req, res) => {
     const c = req.body;
     const newCase = {
+      ...scopeStamp(reqScope(req)),
       id: `TC-${Math.random().toString(36).substring(2, 6).toUpperCase()}`,
       title: c.title || 'New Case',
       description: buildCaseDescription(c),
@@ -355,6 +363,7 @@ Rules:
           const fallback = selectedCases[0] || {};
           const payload = sanitizeCasePayload(operation, fallback);
           const newCase = {
+            ...scopeStamp(reqScope(req)),
             id: `TC-AI-${Math.random().toString(36).substring(2, 6).toUpperCase()}`,
             ...payload,
             createdBy: 'AI Assistant',
@@ -410,6 +419,7 @@ Rules:
     const failed = steps.filter((s: any) => s.outcome === 'Fail').length;
 
     const newRun = {
+      ...scopeStamp(reqScope(req)),
       id: runId,
       name,
       suiteName: req.body.suiteName || 'Playwright Verification Suite',
@@ -438,6 +448,7 @@ Rules:
   app.post('/api/defects', async (req, res) => {
     const title = req.body.title || 'New Defect';
     const newDefect = {
+      ...scopeStamp(reqScope(req)),
       id: `DEF-${Math.random().toString(36).substring(2, 6).toUpperCase()}`,
       title,
       severity: req.body.severity || 'High',

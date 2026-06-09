@@ -32,6 +32,33 @@ export async function ensureMigrated() {
   }
 }
 
+/* ---------- project/app scope (added incrementally) ---------- */
+
+const SCOPED_TABLES = new Set([
+  'plans', 'suites', 'cases', 'runs', 'defects', 'reports', 'scripts', 'folders', 'requirements', 'agent_runs',
+]);
+
+/** Read the scope columns off a row so scopeFilter (route layer) can see them. */
+function scopeFields(r: any) {
+  return { projectId: r.project_id || '', appId: r.app_id || '' };
+}
+
+/**
+ * Persist scope columns for a row after its main upsert (PG only).
+ * COALESCE keeps an existing scope when the new payload doesn't carry one — so a
+ * generic update that omits projectId never wipes a row's project assignment.
+ */
+async function writeScopeCols(table: string, id: string, src: any): Promise<void> {
+  if (!isPgEnabled() || !id || !SCOPED_TABLES.has(table)) return;
+  const projectId = src?.projectId || null;
+  const appId = src?.appId || null;
+  if (!projectId && !appId) return;
+  await query(
+    `UPDATE ${table} SET project_id = COALESCE($2, project_id), app_id = COALESCE($3, app_id) WHERE id = $1`,
+    [id, projectId, appId],
+  );
+}
+
 /* ---------- row mappers ---------- */
 
 function mapPlan(r: any) {
@@ -62,6 +89,7 @@ function mapPlan(r: any) {
     createdBy: r.proposed_by,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
+    ...scopeFields(r),
   };
 }
 
@@ -87,6 +115,7 @@ function mapSuite(r: any) {
     createdBy: r.proposed_by,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
+    ...scopeFields(r),
   };
 }
 
@@ -116,6 +145,7 @@ function mapCase(r: any) {
     createdBy: r.proposed_by,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
+    ...scopeFields(r),
   };
 }
 
@@ -149,6 +179,7 @@ function mapRun(r: any) {
     date: typeof r.date === 'string' ? r.date : (r.date ? r.date.toISOString().split('T')[0] : ''),
     createdAt: r.created_at,
     updatedAt: r.updated_at,
+    ...scopeFields(r),
   };
 }
 
@@ -176,6 +207,7 @@ function mapDefect(r: any) {
     createdBy: r.proposed_by,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
+    ...scopeFields(r),
   };
 }
 
@@ -202,6 +234,7 @@ function mapReport(r: any) {
     date: typeof r.date === 'string' ? r.date : (r.date ? r.date.toISOString().split('T')[0] : ''),
     createdAt: r.created_at,
     updatedAt: r.updated_at,
+    ...scopeFields(r),
   };
 }
 
@@ -355,6 +388,7 @@ function mapAgentRun(r: any) {
     artifactName: r.artifact_name,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
+    ...scopeFields(r),
   };
 }
 
@@ -397,6 +431,7 @@ export const AgentRuns = {
        a.testPlanId || null, a.testSuiteId || null, a.testCaseId || null,
        JSON.stringify(a.credentials || {}), a.artifactName || ''],
     );
+    await writeScopeCols('agent_runs', id, a);
     return mapAgentRun(row);
   },
 };
@@ -421,6 +456,7 @@ function mapScript(r: any) {
     createdBy: r.created_by,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
+    ...scopeFields(r),
   };
 }
 
@@ -458,6 +494,7 @@ export const Scripts = {
        s.status || 'Generated', s.folderId || null, s.caseId || null,
        s.targetUrl || '', s.agentRunId || null, s.createdBy || 'QA Assistant'],
     );
+    await writeScopeCols('scripts', id, s);
     return mapScript(row);
   },
   async remove(id: string): Promise<boolean> {
@@ -487,6 +524,7 @@ function mapFolder(r: any) {
     createdAt: r.created_at,
     updatedAt: r.updated_at,
     deletedAt: r.deleted_at,
+    ...scopeFields(r),
   };
 }
 
@@ -520,6 +558,7 @@ export const Folders = {
       [id, f.name || 'Untitled', f.parentId || null, f.path || null, f.description || '',
        f.kind || 'Feature', f.icon || null, f.createdBy || 'User'],
     );
+    await writeScopeCols('folders', id, f);
     return mapFolder(row);
   },
   async remove(id: string): Promise<boolean> {
@@ -589,6 +628,7 @@ export const Plans = {
         plan.sourceRunId || null,
       ],
     );
+    await writeScopeCols('plans', id, plan);
     return mapPlan(row);
   },
   async remove(id: string): Promise<boolean> {
@@ -639,6 +679,7 @@ export const Suites = {
         s.approvalState || 'approved', s.proposedBy || s.createdBy || 'human', s.sourceRunId || null,
       ],
     );
+    await writeScopeCols('suites', id, s);
     return mapSuite(row);
   },
   async remove(id: string): Promise<boolean> {
@@ -694,6 +735,7 @@ export const Cases = {
         c.sourceRunId || null, c.agentRunId || null,
       ],
     );
+    await writeScopeCols('cases', id, c);
     return mapCase(row);
   },
   async remove(id: string): Promise<boolean> {
@@ -764,6 +806,7 @@ export const Runs = {
         r.date || null,
       ],
     );
+    await writeScopeCols('runs', id, r);
     return mapRun(row);
   },
   async remove(id: string): Promise<boolean> {
@@ -820,6 +863,7 @@ export const Defects = {
         d.sourceRunId || null,
       ],
     );
+    await writeScopeCols('defects', id, d);
     return mapDefect(row);
   },
   async remove(id: string): Promise<boolean> {
@@ -871,6 +915,7 @@ export const Reports = {
         rep.folderId || null, rep.date || null,
       ],
     );
+    await writeScopeCols('reports', id, rep);
     return mapReport(row);
   },
 };
@@ -1166,6 +1211,7 @@ function mapRequirement(r: any) {
     sourceRunId: r.source_run_id,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
+    ...scopeFields(r),
   };
 }
 
@@ -1210,6 +1256,7 @@ export const Requirements = {
         rq.sourceRunId || null,
       ],
     );
+    await writeScopeCols('requirements', id, rq);
     return mapRequirement(row);
   },
   async remove(id: string): Promise<boolean> {

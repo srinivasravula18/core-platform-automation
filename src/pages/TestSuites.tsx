@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useState } from 'react';
 import { ChevronDown, ChevronRight, Search, Filter, MoreHorizontal, Plus, Sparkles } from 'lucide-react';
+import ExportMenu from '../components/ExportMenu';
 import { useAiSearch } from '@/src/lib/useAiSearch';
 import { Modal } from '@/src/components/Modal';
 import { AIActionModal } from '@/src/components/AIActionModal';
@@ -182,6 +183,23 @@ export default function TestSuites() {
           <p className="text-sm text-[var(--text-muted)] mt-1">Group your test cases functionally (e.g. by module or feature).</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          <ExportMenu
+            filename="test-suites"
+            title="Test Suites"
+            rows={filteredSuites}
+            columns={[
+              { key: 'id', label: 'ID' },
+              { key: 'name', label: 'Name' },
+              { key: 'description', label: 'Description' },
+              { key: 'module', label: 'Module' },
+              { key: 'owner', label: 'Owner' },
+              { key: 'priority', label: 'Priority' },
+              { key: 'status', label: 'Status', get: (s) => s.status || 'Active' },
+              { key: 'tags', label: 'Tags' },
+              { key: 'plan', label: 'Plan', get: (s) => (plans.find((p) => p.id === s.testPlanId) || {}).name || '' },
+              { key: 'caseCount', label: 'Cases', get: (s) => cases.filter((c) => c.testSuiteId === s.id).length },
+            ]}
+          />
           <button onClick={openNewModal} className="flex items-center gap-2 bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white px-4 py-2 rounded-md text-sm font-medium transition-colors">
             <Plus className="w-4 h-4" /> New Suite
           </button>

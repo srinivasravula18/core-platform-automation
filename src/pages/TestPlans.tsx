@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft, Search, Filter, MoreHorizontal, Plus, Sparkles } from 'lucide-react';
+import ExportMenu from '../components/ExportMenu';
 import { useAiSearch } from '@/src/lib/useAiSearch';
 import { cn } from '@/src/lib/utils';
 import { Modal } from '@/src/components/Modal';
@@ -214,6 +215,22 @@ export default function TestPlans() {
           <p className="text-sm text-[var(--text-muted)] mt-1">Manage your high-level test plans and objectives.</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          <ExportMenu
+            filename="test-plans"
+            title="Test Plans"
+            rows={filteredPlans}
+            columns={[
+              { key: 'id', label: 'ID' },
+              { key: 'name', label: 'Name' },
+              { key: 'status', label: 'Status', get: (p) => p.status || 'Draft' },
+              { key: 'riskLevel', label: 'Risk Level' },
+              { key: 'scope', label: 'Scope' },
+              { key: 'objectives', label: 'Objectives' },
+              { key: 'environments', label: 'Environments' },
+              { key: 'suiteCount', label: 'Suites', get: (p) => suites.filter((s) => s.testPlanId === p.id).length },
+              { key: 'caseCount', label: 'Cases', get: (p) => cases.filter((c) => c.testPlanId === p.id).length },
+            ]}
+          />
           <button onClick={openNewModal} className="flex items-center gap-2 bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white px-4 py-2 rounded-md text-sm font-medium transition-colors">
             <Plus className="w-4 h-4" /> New Plan
           </button>

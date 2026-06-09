@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { ChevronDown, ChevronRight, Sparkles, Loader2, FlaskConical, Target, Link2Off, ShieldCheck, AlertTriangle } from 'lucide-react';
-
-const CASE_STATUSES = ['Draft', 'Under Review', 'Approved', 'Automated', 'Deprecated'];
+import { ChevronDown, ChevronRight, Sparkles, Loader2, Target, ShieldCheck, AlertTriangle } from 'lucide-react';
+import ExportMenu from '../components/ExportMenu';
+import EditableCaseCard from '../components/EditableCaseCard';
 
 const COVERAGE_BADGE: Record<string, { label: string; cls: string }> = {
   covered: { label: 'Covered', cls: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400' },
@@ -22,8 +22,6 @@ export default function Traceability() {
   const [aiInstruction, setAiInstruction] = useState('');
   const [aiWorking, setAiWorking] = useState(false);
   const [aiMessage, setAiMessage] = useState('');
-
-  const inlineSelectClass = 'rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-xs font-medium text-[var(--text-primary)] outline-none transition-colors hover:border-[var(--accent)] focus:border-[var(--accent)]';
 
   const fetchRequirements = useCallback(() => {
     fetch('/api/requirements')
@@ -66,20 +64,6 @@ export default function Traceability() {
     Object.keys(expanded).filter((id) => expanded[id]).forEach((id) => loadDetail(id));
   }, [expanded, fetchRequirements, loadDetail]);
 
-  const updateCaseInline = async (caseId: string, updates: Record<string, any>) => {
-    const res = await fetch(`/api/cases/${caseId}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(updates),
-    });
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
-      alert(data.error || 'Failed to update test case.');
-      return;
-    }
-    refreshExpanded();
-  };
-
   const toggleSelected = (caseId: string) => {
     setSelectedCaseIds((prev) => (prev.includes(caseId) ? prev.filter((id) => id !== caseId) : [...prev, caseId]));
   };
@@ -112,11 +96,37 @@ export default function Traceability() {
     if (res.ok) { loadDetail(requirementId); fetchRequirements(); }
   };
 
+  const traceRows = requirements.flatMap((req: any) => {
+    const linked = (details[req.id]?.linkedCases || []) as any[];
+    const base = { reqId: req.id, requirement: req.title, reqStatus: req.status || '', coverage: req.coverageStatus || 'unknown' };
+    if (!linked.length) {
+      return [{ ...base, caseId: '', caseTitle: details[req.id] ? '(no linked cases)' : '(expand to load coverage)', casePriority: '', caseStatus: '' }];
+    }
+    return linked.map((lc) => ({ ...base, caseId: lc.id, caseTitle: lc.title, casePriority: lc.priority || '', caseStatus: lc.status || '' }));
+  });
+
   return (
     <div className="app-page-shell h-full flex flex-col">
-      <div className="mb-6 flex-shrink-0">
-        <h1 className="text-2xl font-bold tracking-tight">Traceability</h1>
-        <p className="text-sm text-[var(--text-muted)] mt-1">Requirement → test case coverage matrix. Edit or rework the linked cases in place.</p>
+      <div className="mb-6 flex-shrink-0 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight">Traceability</h1>
+          <p className="text-sm text-[var(--text-muted)] mt-1">Requirement → test case coverage matrix. Edit or rework the linked cases in place.</p>
+        </div>
+        <ExportMenu
+          filename="traceability-matrix"
+          title="Traceability Matrix"
+          rows={traceRows}
+          columns={[
+            { key: 'reqId', label: 'Requirement ID' },
+            { key: 'requirement', label: 'Requirement' },
+            { key: 'reqStatus', label: 'Req Status' },
+            { key: 'coverage', label: 'Coverage' },
+            { key: 'caseId', label: 'Case ID' },
+            { key: 'caseTitle', label: 'Linked Case' },
+            { key: 'casePriority', label: 'Case Priority' },
+            { key: 'caseStatus', label: 'Case Status' },
+          ]}
+        />
       </div>
 
       {/* AI rework bar (appears when cases are selected) */}
@@ -177,67 +187,22 @@ export default function Traceability() {
                       </div>
                     )}
                     {detail && linkedCases.length > 0 && (
-                      <table className="w-full text-left text-sm">
-                        <thead>
-                          <tr className="text-[10px] uppercase tracking-wider text-[var(--text-muted)]">
-                            <th className="py-2 pr-2 w-8"></th>
-                            <th className="py-2 pr-2 w-24">Case</th>
-                            <th className="py-2 pr-2">Title</th>
-                            <th className="py-2 pr-2 w-24">Link</th>
-                            <th className="py-2 pr-2 w-36">Status</th>
-                            <th className="py-2 pr-2 w-10"></th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-[var(--border)]">
-                          {linkedCases.map((lc: any) => {
-                            const c = lc.case || {};
-                            const isGenerated = lc.linkType === 'generated';
-                            return (
-                              <tr key={c.id} className="hover:bg-[var(--bg-card)]">
-                                <td className="py-2 pr-2">
-                                  <input
-                                    type="checkbox"
-                                    checked={selectedCaseIds.includes(c.id)}
-                                    disabled={c.missing}
-                                    onChange={() => toggleSelected(c.id)}
-                                    className="rounded border-[var(--border)] text-[var(--accent)] focus:ring-[var(--accent)]"
-                                  />
-                                </td>
-                                <td className="py-2 pr-2 font-mono text-[11px] text-[var(--text-muted)]">{c.id}</td>
-                                <td className="py-2 pr-2">
-                                  <span className="flex items-center gap-1.5">
-                                    <FlaskConical className={`h-3.5 w-3.5 shrink-0 ${isGenerated ? 'text-sky-400' : 'text-emerald-400'}`} />
-                                    <span className={`truncate ${c.missing ? 'italic text-[var(--text-muted)]' : 'text-[var(--text-primary)]'}`}>{c.title}</span>
-                                  </span>
-                                </td>
-                                <td className="py-2 pr-2">
-                                  <span className={`rounded border px-1.5 py-0.5 text-[10px] font-semibold uppercase ${isGenerated ? 'border-sky-500/30 bg-sky-500/10 text-sky-400' : 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400'}`}>
-                                    {isGenerated ? 'Generated' : 'Existing'}
-                                  </span>
-                                </td>
-                                <td className="py-2 pr-2">
-                                  {c.missing ? (
-                                    <span className="text-xs text-[var(--text-muted)]">—</span>
-                                  ) : (
-                                    <select
-                                      value={c.status || 'Draft'}
-                                      onChange={(e) => updateCaseInline(c.id, { status: e.target.value })}
-                                      className={inlineSelectClass}
-                                    >
-                                      {CASE_STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
-                                    </select>
-                                  )}
-                                </td>
-                                <td className="py-2 pr-2 text-right">
-                                  <button onClick={() => unlinkCase(req.id, c.id)} title="Unlink from requirement" className="p-1 rounded hover:bg-[var(--border)] text-[var(--text-muted)]">
-                                    <Link2Off className="h-3.5 w-3.5" />
-                                  </button>
-                                </td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
+                      <div className="space-y-2 pt-1">
+                        {linkedCases.map((lc: any) => {
+                          const c = lc.case || { id: lc.caseId, title: '(deleted case)', missing: true };
+                          return (
+                            <EditableCaseCard
+                              key={c.id || lc.caseId}
+                              initial={c}
+                              linkType={lc.linkType === 'generated' ? 'generated' : 'existing'}
+                              selected={selectedCaseIds.includes(c.id)}
+                              onToggleSelected={() => toggleSelected(c.id)}
+                              onUnlink={() => unlinkCase(req.id, c.id)}
+                              onSaved={() => loadDetail(req.id)}
+                            />
+                          );
+                        })}
+                      </div>
                     )}
                     {detail && (
                       <div className="mt-2 flex items-center gap-1.5 text-[11px] text-[var(--text-muted)]">

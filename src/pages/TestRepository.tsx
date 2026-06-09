@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
-import { ChevronRight, FileText, Folder, FolderPlus, Layers, PlayCircle, Search, Trash2, ClipboardList, TestTube2 } from 'lucide-react';
+import { ChevronRight, FileText, Folder, FolderPlus, Layers, PlayCircle, Search, Trash2, ClipboardList, TestTube2, Code2, Copy, Download, Check } from 'lucide-react';
 import { cn } from '@/src/lib/utils';
+import { Modal } from '@/src/components/Modal';
 
 type FolderNode = any & { children: FolderNode[] };
 
@@ -66,6 +67,8 @@ function FolderTreeItem({ node, selectedId, onSelect, depth = 0 }: { key?: strin
 export default function TestRepository() {
   const [folders, setFolders] = useState<any[]>([]);
   const [artifacts, setArtifacts] = useState<Record<string, any[]>>({ plans: [], suites: [], cases: [], runs: [], reports: [], scripts: [], evidence: [] });
+  const [viewerScript, setViewerScript] = useState<any | null>(null);
+  const [copied, setCopied] = useState(false);
   const [selectedFolderId, setSelectedFolderId] = useState('');
   const [newRootFolderName, setNewRootFolderName] = useState('');
   const [newSubfolderName, setNewSubfolderName] = useState('');
@@ -261,13 +264,27 @@ export default function TestRepository() {
                     <span className="rounded border border-[var(--border)] px-2 py-0.5 text-xs text-[var(--text-muted)]">{items.length}</span>
                   </div>
                   <div className="divide-y divide-[var(--border)]">
-                    {items.length ? items.slice(0, 8).map((item) => (
-                      <div key={item.id} className="grid min-w-0 grid-cols-[96px_minmax(0,1fr)_88px] gap-3 px-4 py-3 text-sm sm:grid-cols-[140px_minmax(0,1fr)_110px]">
+                    {items.length ? items.slice(0, 8).map((item) => {
+                      const hasCode = config.key === 'scripts' && typeof item.code === 'string' && item.code.length > 0;
+                      return (
+                      <div
+                        key={item.id}
+                        onClick={hasCode ? () => { setViewerScript(item); setCopied(false); } : undefined}
+                        className={cn(
+                          'grid min-w-0 grid-cols-[96px_minmax(0,1fr)_88px] gap-3 px-4 py-3 text-sm sm:grid-cols-[140px_minmax(0,1fr)_110px]',
+                          hasCode && 'cursor-pointer hover:bg-[var(--bg-card)]',
+                        )}
+                        title={hasCode ? 'View script code' : undefined}
+                      >
                         <span className="min-w-0 truncate font-mono text-xs text-[var(--text-muted)]" title={item.id}>{item.id}</span>
-                        <span className="min-w-0 truncate font-medium text-[var(--text-primary)]" title={item.name || item.title || 'Untitled'}>{item.name || item.title || 'Untitled'}</span>
+                        <span className="flex min-w-0 items-center gap-1.5 truncate font-medium text-[var(--text-primary)]" title={item.name || item.title || 'Untitled'}>
+                          {hasCode && <Code2 className="h-3.5 w-3.5 shrink-0 text-indigo-400" />}
+                          <span className="truncate">{item.name || item.title || 'Untitled'}</span>
+                        </span>
                         <span className="min-w-0 truncate text-right text-xs text-[var(--text-muted)]" title={item.status || item.date || item.type || ''}>{item.status || item.date || item.type || ''}</span>
                       </div>
-                    )) : (
+                      );
+                    }) : (
                       <div className="px-4 py-6 text-center text-sm text-[var(--text-muted)]">No {config.label.toLowerCase()} in this folder.</div>
                     )}
                   </div>
@@ -277,6 +294,41 @@ export default function TestRepository() {
           </div>
         </section>
       </div>
+
+      <Modal isOpen={!!viewerScript} onClose={() => setViewerScript(null)} title={viewerScript?.filename || viewerScript?.name || 'Script'}>
+        {viewerScript && (
+          <div className="space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-[var(--text-muted)]">
+              <span className="font-mono">{viewerScript.id} · {viewerScript.framework || 'playwright'} · {viewerScript.language || 'typescript'}</span>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => { navigator.clipboard?.writeText(viewerScript.code || ''); setCopied(true); setTimeout(() => setCopied(false), 1500); }}
+                  className="inline-flex items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2.5 py-1.5 font-medium text-[var(--text-primary)] hover:border-[var(--accent)]"
+                >
+                  {copied ? <Check className="h-3.5 w-3.5 text-emerald-400" /> : <Copy className="h-3.5 w-3.5" />} {copied ? 'Copied' : 'Copy'}
+                </button>
+                <button
+                  onClick={() => {
+                    const blob = new Blob([viewerScript.code || ''], { type: 'text/plain' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = viewerScript.filename || `${viewerScript.id}.spec.ts`;
+                    a.click();
+                    URL.revokeObjectURL(url);
+                  }}
+                  className="inline-flex items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2.5 py-1.5 font-medium text-[var(--text-primary)] hover:border-[var(--accent)]"
+                >
+                  <Download className="h-3.5 w-3.5" /> Download
+                </button>
+              </div>
+            </div>
+            <pre className="max-h-[60vh] overflow-auto rounded-md bg-slate-950 p-4 font-mono text-[12px] leading-5 text-slate-200">
+              <code>{viewerScript.code}</code>
+            </pre>
+          </div>
+        )}
+      </Modal>
     </div>
   );
 }

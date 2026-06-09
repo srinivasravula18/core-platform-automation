@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { ArrowDownToLine, ArrowLeft, CheckCircle, Filter, Folder, Lock, MoreHorizontal, PlayCircle, Search, Share2, SlidersHorizontal, Sparkles } from 'lucide-react';
+import ExportMenu from '../components/ExportMenu';
 import { useAiSearch } from '@/src/lib/useAiSearch';
 import { cn } from '@/src/lib/utils';
 import { Modal } from '@/src/components/Modal';
@@ -342,6 +343,22 @@ export default function TestRuns() {
           </div>
         </div>
         <div className="flex gap-2">
+          <ExportMenu
+            filename={runView === 'closed' ? 'test-runs-closed' : 'test-runs-active'}
+            title="Test Runs"
+            rows={filteredRuns}
+            columns={[
+              { key: 'id', label: 'ID' },
+              { key: 'name', label: 'Name' },
+              { key: 'status', label: 'Status' },
+              { key: 'requestedBy', label: 'Requested By' },
+              { key: 'suiteName', label: 'Suite' },
+              { key: 'executionTime', label: 'Execution Time' },
+              { key: 'passed', label: 'Passed', get: (r) => (r.steps || []).filter((s: any) => /pass/i.test(s?.outcome || s?.status || '')).length },
+              { key: 'failed', label: 'Failed', get: (r) => (r.steps || []).filter((s: any) => /fail/i.test(s?.outcome || s?.status || '')).length },
+              { key: 'date', label: 'Date' },
+            ]}
+          />
           <button onClick={openNewModal} className="bg-[var(--accent)] text-white px-4 py-2 rounded-md text-sm font-medium">Create Manual Run</button>
           <button onClick={() => setIsAIRunModalOpen(true)} className="bg-[#8b5cf6] text-white px-3 py-2 rounded-md text-sm font-medium"><Sparkles className="inline w-4 h-4" /></button>
         </div>
