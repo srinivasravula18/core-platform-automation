@@ -21,6 +21,7 @@ import {
   Pencil,
   RotateCcw,
   Clock,
+  Recycle,
 } from 'lucide-react';
 
 /**
@@ -40,12 +41,15 @@ import {
 
 const PIPELINE: { key: string; label: string }[] = [
   { key: 'ApplicationInspector', label: 'Inspect app' },
+  { key: 'CodeAnalyst', label: 'Understand code' },
+  { key: 'CoverageScout', label: 'Find existing' },
   { key: 'TestGenerationAgent', label: 'Write cases' },
   { key: 'PlaywrightAgent', label: 'Generate scripts' },
   { key: 'EvidenceAgent', label: 'Capture evidence' },
 ];
 
-const TERMINAL = ['completed', 'failed', 'review_required'];
+// Statuses that halt polling and await a human decision or are final.
+const TERMINAL = ['completed', 'failed', 'review_required', 'coverage_options'];
 const EXPAND_OPTIONS = [4, 5, 6, 8, 10, 12];
 
 type Step = { action: string; expected: string };
@@ -145,6 +149,8 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
   const isRunning = !status || !TERMINAL.includes(status);
   const failed = status === 'failed';
   const reviewing = status === 'review_required';
+  const coverageGate = status === 'coverage_options';
+  const existingMatches: Case[] = run?.existing_matches || [];
   const list = cases || [];
 
   const agentState = (agent: string): string => {
@@ -185,7 +191,7 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
   // While the run is working, animate the first not-yet-done stage so the card
   // never looks frozen between status updates.
   const activePipelineIdx = isRunning
-    ? PIPELINE.findIndex((p) => agentState(p.key) !== 'completed' && agentState(p.key) !== 'failed')
+    ? PIPELINE.findIndex((p) => !['completed', 'failed', 'skipped'].includes(agentState(p.key)))
     : -1;
 
   /* ---------- local case editing ---------- */
@@ -280,6 +286,26 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
         setRun((prev: any) => (prev ? { ...prev, status: 'running' } : prev));
         activeRef.current = true;
         setTimeout(tick, 800); // resume polling for scripts + evidence
+      }
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  // Resolve the early reuse gate: reuse the matched existing cases, extend them with
+  // only the gaps, or generate a fresh set. The run then resumes from case-writing.
+  const coverageDecide = async (action: 'reuse' | 'gaps' | 'fresh') => {
+    setBusy(`cov-${action}`);
+    try {
+      const res = await fetch('/api/agent/coverage-decision', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ taskId: activeTaskId, action }),
+      });
+      if (res.ok) {
+        setRun((prev: any) => (prev ? { ...prev, status: 'running' } : prev));
+        activeRef.current = true;
+        setTimeout(tick, 800); // resume polling for cases → scripts → evidence
       }
     } finally {
       setBusy(null);
@@ -466,12 +492,12 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
                 ? 'border-red-500/20 bg-red-500/10 text-red-400'
                 : status === 'completed'
                   ? 'border-emerald-500/20 bg-emerald-500/10 text-emerald-400'
-                  : reviewing
+                  : reviewing || coverageGate
                     ? 'border-amber-500/20 bg-amber-500/10 text-amber-400'
                     : 'border-[var(--accent)]/20 bg-[var(--accent)]/10 text-[var(--accent)]',
             )}
           >
-            {failed ? 'failed' : status === 'completed' ? 'done' : reviewing ? 'review' : 'working'}
+            {failed ? 'failed' : status === 'completed' ? 'done' : coverageGate ? 'reuse?' : reviewing ? 'review' : 'working'}
           </span>
         </div>
       </div>
@@ -537,6 +563,66 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
             >
               {retrying ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RotateCcw className="h-3.5 w-3.5" />}
               {retrying ? 'Retrying…' : 'Retry'}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Early reuse gate: existing cases already cover this — reuse / extend / fresh */}
+      {coverageGate && (
+        <div className="rounded-md border border-amber-500/20 bg-amber-500/5 p-3">
+          <div className="mb-2 flex items-center gap-1.5 text-xs font-semibold text-amber-300">
+            <Recycle className="h-4 w-4" />
+            Found {existingMatches.length} existing test case{existingMatches.length === 1 ? '' : 's'} related to this request
+          </div>
+          <p className="mb-2.5 text-[11px] text-[var(--text-muted)]">
+            You already have coverage for this. Reuse it instead of generating from scratch, add only the missing scenarios, or start fresh.
+          </p>
+          <div className="mb-3 max-h-48 space-y-1 overflow-y-auto pr-1">
+            {existingMatches.map((c, i) => (
+              <div key={i} className="flex items-center gap-2 rounded border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-[11px]">
+                <span className="rounded bg-[var(--bg-card)] px-1.5 py-0.5 text-[9px] font-bold uppercase text-[var(--text-muted)]">{c.priority || 'Med'}</span>
+                <span className="min-w-0 flex-1 truncate text-[var(--text-primary)]">{c.title || 'Untitled'}</span>
+                {(c.tags || []).slice(0, 3).map((t) => (
+                  <span key={t} className="hidden shrink-0 rounded border border-[var(--border)] bg-[var(--bg-card)] px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-[var(--text-muted)] sm:inline">
+                    {String(t).startsWith('@') ? t : `@${t}`}
+                  </span>
+                ))}
+                <span className="shrink-0 text-[10px] text-[var(--text-muted)]">{(c.steps || []).length} steps</span>
+              </div>
+            ))}
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button
+              onClick={() => coverageDecide('reuse')}
+              disabled={!!busy}
+              className="inline-flex items-center gap-1.5 rounded-md bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50"
+            >
+              {busy === 'cov-reuse' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Recycle className="h-3.5 w-3.5" />}
+              Reuse these
+            </button>
+            <button
+              onClick={() => coverageDecide('gaps')}
+              disabled={!!busy}
+              className="inline-flex items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-1.5 text-xs font-medium text-[var(--text-primary)] hover:border-[var(--accent)] disabled:opacity-50"
+            >
+              {busy === 'cov-gaps' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />}
+              Add only gaps
+            </button>
+            <button
+              onClick={() => coverageDecide('fresh')}
+              disabled={!!busy}
+              className="inline-flex items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-1.5 text-xs font-medium text-[var(--text-primary)] hover:border-[var(--accent)] disabled:opacity-50"
+            >
+              {busy === 'cov-fresh' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <FlaskConical className="h-3.5 w-3.5" />}
+              Generate fresh
+            </button>
+            <button
+              onClick={() => navigate('/cases')}
+              className="ml-auto inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+            >
+              Open in workspace
+              <ArrowRight className="h-3 w-3" />
             </button>
           </div>
         </div>

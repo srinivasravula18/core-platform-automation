@@ -79,10 +79,14 @@ function findWebsiteInText(text: string, websites: Array<{ id: string; name: str
   return matches[0] || null;
 }
 
+// An explicit number in the prompt ("write 12 cases") is honored as-is (capped at
+// 40). With no number — including "as many as possible / comprehensive" — return 0,
+// the "auto" signal that tells the backend to scale the count to the feature's real
+// complexity (derived from the deep source-code understanding) instead of a fixed 3.
 function parseCaseCount(text: string): number {
   const m = text.match(/(\d{1,3})\s*(?:test\s*)?(?:cases?|scenarios?|scripts?)/i);
-  if (!m) return 3;
-  return Math.min(10, Math.max(1, parseInt(m[1], 10) || 3));
+  if (!m) return 0;
+  return Math.min(40, Math.max(1, parseInt(m[1], 10) || 0));
 }
 
 function isAutoFolderResponse(text: string): boolean {

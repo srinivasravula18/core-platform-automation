@@ -9,6 +9,7 @@ import { playwrightScriptsSchema, testCasesSchema } from '../../shared/schemas';
 import { buildAgentExecutionSteps, buildCaseDescription, normalizeCaseSteps, normalizeCaseTags } from '../../shared/testCases';
 import { capturePlaywrightEvidence, createAuthStorageState } from '../evidence/evidenceService';
 import { gitGrep, readRepoFile } from '../git-agent/gitAgentService';
+import { analyzeFeatureFromSource, proposeGapCases } from '../requirements/requirementService';
 import { executePlaywrightScripts } from '../playwright/executionService';
 import { promises as fsp } from 'fs';
 import path from 'path';
@@ -302,6 +303,89 @@ function markRunDone(run: any, status: 'completed' | 'failed'): void {
   run.completed_at = nowIso();
 }
 
+// Decide how many cases to write. An explicit number the user typed always wins.
+// Otherwise (requested === 0 → "auto" / "as many as possible" / "comprehensive")
+// scale to the feature's REAL complexity as understood from the source: roughly one
+// case per distinct business rule and candidate scenario, within a sane floor/ceiling
+// so a trivial feature isn't padded and a complex one isn't starved.
+function complexityDrivenCaseCount(understanding: any, requested: number): number {
+  if (requested && requested > 0) return Math.min(40, requested);
+  const rules = Array.isArray(understanding?.businessRules) ? understanding.businessRules.length : 0;
+  const scenarios = Array.isArray(understanding?.candidateScenarios) ? understanding.candidateScenarios.length : 0;
+  const suggested = Math.max(rules, scenarios);
+  return Math.min(30, Math.max(5, suggested));
+}
+
+// Keywords that describe what this run is about — drawn from the prompt and the
+// source understanding — used to find existing test cases that already cover it.
+const CASE_MATCH_STOP = new Set([
+  'the', 'and', 'for', 'test', 'tests', 'case', 'cases', 'with', 'that', 'this', 'from', 'into',
+  'your', 'will', 'must', 'should', 'verify', 'check', 'across', 'have', 'page', 'app', 'application',
+  'when', 'then', 'should', 'using', 'about', 'flow', 'flows', 'scenario', 'scenarios',
+]);
+function caseMatchKeywords(run: any): string[] {
+  const u = run.feature_understanding || {};
+  const text = [run.prompt, run.approvedUnderstanding, u.title, ...(Array.isArray(u.businessRules) ? u.businessRules : [])]
+    .filter(Boolean).join(' ').toLowerCase();
+  const toks = (text.match(/[a-z][a-z0-9-]{2,}/g) || []).filter((t) => !CASE_MATCH_STOP.has(t));
+  return Array.from(new Set(toks));
+}
+
+// Find EXISTING test cases (scoped to the run's project/app) that look related to
+// this request, so the agent can offer reuse instead of regenerating from scratch.
+// Cheap keyword-overlap scorer — surfaces candidates for the human to confirm.
+async function findRelatedExistingCases(run: any, limit = 6): Promise<any[]> {
+  let all: any[] = [];
+  try { all = await Cases.list(); } catch { return []; }
+  if (!Array.isArray(all) || !all.length) return [];
+  const scoped = scopeFilter(all as any[], { projectId: run.projectId || '', appId: run.appId || null });
+  const kws = caseMatchKeywords(run);
+  if (!kws.length || !scoped.length) return [];
+  return scoped
+    .map((c: any) => {
+      const hay = `${c.title || ''} ${c.description || ''} ${(c.tags || []).join(' ')}`.toLowerCase();
+      let score = 0;
+      for (const k of kws) if (hay.includes(k)) score += 1;
+      return { c, score };
+    })
+    .filter((x) => x.score >= 2)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit)
+    .map((x) => ({ ...x.c, _matchScore: x.score }));
+}
+
+// Map a stored QA-repository case into the shape the run's generated_cases use, so
+// reused cases render and execute exactly like generated ones. Keeps a back-pointer.
+function mapExistingToRunCase(c: any): any {
+  return {
+    title: c.title || 'Untitled',
+    description: c.description || '',
+    priority: c.priority || 'Medium',
+    type: c.type || 'Manual',
+    tags: normalizeCaseTags(c.tags || []),
+    steps: normalizeCaseSteps(c.steps || []),
+    captureEvidence: true,
+    existingCaseId: c.id,
+    reused: true,
+  };
+}
+
+// Compact, prompt-friendly summary of the source understanding for grounding the
+// case writer and the coder without blowing the token budget.
+function summarizeUnderstanding(u: any, maxChars = 4000): string {
+  if (!u || typeof u !== 'object') return '';
+  const lines: string[] = [];
+  if (u.title) lines.push(`Feature: ${u.title}`);
+  if (u.description) lines.push(`What it does: ${u.description}`);
+  if (Array.isArray(u.businessRules) && u.businessRules.length) lines.push(`Business rules enforced by the code:\n- ${u.businessRules.join('\n- ')}`);
+  if (u.adminBehavior) lines.push(`Admin behavior: ${u.adminBehavior}`);
+  if (u.keystoneBehavior) lines.push(`Keystone/Shockwave behavior: ${u.keystoneBehavior}`);
+  if (u.dataPopulationNotes) lines.push(`Background data/preconditions: ${u.dataPopulationNotes}`);
+  if (Array.isArray(u.metadataRefs) && u.metadataRefs.length) lines.push(`Metadata source of truth: ${u.metadataRefs.map((m: any) => m.object).filter(Boolean).join(', ')}`);
+  if (Array.isArray(u.sourceFiles) && u.sourceFiles.length) lines.push(`Grounded in source files: ${u.sourceFiles.map((f: any) => f.path).filter(Boolean).slice(0, 10).join(', ')}`);
+  return lines.join('\n').slice(0, maxChars);
+}
+
 async function persistAgentRunArtifacts(run: any) {
   const now = new Date();
   const date = now.toISOString().split('T')[0];
@@ -366,6 +450,113 @@ async function persistAgentRunArtifacts(run: any) {
   persistDataInBackground('agent run artifacts');
 }
 
+/**
+ * Write the run's test cases, then either pause for human review (review_cases) or
+ * run scripts + evidence (complete). Resumable: it reads everything it needs off the
+ * run record, so it can be invoked from the initial /start flow OR from the coverage
+ * gate's decision endpoint. mode 'fresh' generates from scratch; mode 'gaps' keeps
+ * the matched existing cases and appends only the scenarios they don't cover.
+ */
+async function generateCasesForRun(
+  run: any,
+  liveCredentials: any,
+  opts: { flowMode: 'review_cases' | 'complete'; mode: 'fresh' | 'gaps'; existingCases?: any[] },
+): Promise<void> {
+  const credentials = liveCredentials || run.credentials || {};
+  const credentialContext = buildCredentialContext(credentials);
+  const inspectionContext = run.inspection_context || null;
+  const featureUnderstanding = run.feature_understanding || null;
+  const prompt = run.prompt || '';
+  const approvedUnderstanding = run.approvedUnderstanding || '';
+  const targetUrl = run.app_url || '';
+  const requestedCaseCount = Math.max(0, Math.floor(Number(run.requested_case_count) || 0));
+  const selectedQaPromptText = run.selected_qa_prompt_text || 'No selected QA repository context was provided for this automation scope.';
+  const knowledgeBlock = buildKnowledgeBlock(
+    { websiteId: run.websiteId, targetUrl, text: `${run.scope_context_text || ''} ${prompt} ${approvedUnderstanding}`.trim() },
+    { maxChars: 12000 },
+  );
+  const testCaseCount = complexityDrivenCaseCount(featureUnderstanding, requestedCaseCount);
+  const understandingBlock = featureUnderstanding
+    ? `\nSOURCE-GROUNDED UNDERSTANDING (from the application's real code — treat as authoritative for business rules, roles, and edge cases):\n${summarizeUnderstanding(featureUnderstanding)}\n`
+    : '';
+
+  pushPhase(run, { agent: 'TestGenerationAgent', status: 'running' });
+
+  let generated: any[];
+  if (opts.mode === 'gaps' && Array.isArray(opts.existingCases) && opts.existingCases.length) {
+    // Keep the reused cases; ask the model for ONLY the gaps the code reveals they miss.
+    const existingForReconcile = opts.existingCases.map((c: any) => ({
+      id: c.existingCaseId || c.id || c.title,
+      title: c.title,
+      tags: c.tags || [],
+      type: c.type,
+      priority: c.priority,
+      stepCount: (c.steps || []).length,
+    }));
+    const gaps = await proposeGapCases(featureUnderstanding, existingForReconcile);
+    const gapCases = (gaps || []).map((g: any) => ({
+      title: g.title,
+      description: g.rationale || '',
+      priority: g.priority || 'Medium',
+      type: g.type || 'Automated',
+      tags: normalizeCaseTags(g.tags || []),
+      steps: normalizeCaseSteps(g.steps || []),
+      captureEvidence: true,
+    }));
+    generated = [...opts.existingCases, ...gapCases];
+  } else {
+    const caseWriter = await getOrchestrator('caseWriter');
+    const caseResult = await caseWriter.generateObject<any>({
+      prompt: `User prompt: ${prompt || 'not provided'}.
+Approved user-reviewed understanding: ${approvedUnderstanding || 'not provided'}.
+Playwright target URL: ${targetUrl || 'not provided'}.
+${credentialContext}
+${selectedQaPromptText}
+Browser inspection result: ${JSON.stringify(compactInspectionContext(inspectionContext))}.${understandingBlock}
+Write approximately ${testCaseCount} test case(s) — this target is derived from the feature's real complexity in the source above, so treat it as a guide: cover every distinct business rule, role difference (Admin vs Shockwave), branch, and negative/edge case the code reveals, and do not pad with trivial duplicates to hit a number. ${requestedCaseCount > 0 ? `The user explicitly asked for ${requestedCaseCount} case(s); honor that count.` : 'The user asked for comprehensive coverage, so err toward thoroughness over brevity.'}
+
+Use the inspection result as the source of truth for reachable pages, post-login state, visible navigation, forms, tables, list-like regions, and assertion targets. Do not invent unrelated admin pages or menu names. If the inspector reached the requested goal, at least one @bvt test case must cover that exact inspected end-to-end path, including any login and navigation actions recorded in actionsTaken. If the inspector was partial or blocked, generate cases for the reachable context and include clear preconditions/steps that show what needs to be verified next.
+
+For authenticated flows, steps must explicitly say to enter username/email "${credentials.username || '<provided username>'}" and password "${credentials.password || '<provided password>'}", click the relevant sign-in/login control, and then continue to the user-requested inspected target. When the request involves verifying data views, include steps that verify the visible table/list/grid container, headers, rows or empty-state, and absence of loading/error state using the labels found by inspection.
+
+Each test case must include automation tags in @ format, for example @bvt, @sanity, @regression, @smoke, @ui, @positive, @negative. If the user requested specific tag types (for example "@smoke cases" or "regression coverage"), apply those exact tags to every generated case. Each test case must include a steps array with ordered rows. Each row must have a clear action and expected result suitable for a report table.${knowledgeBlock}`,
+      schema: testCasesSchema,
+      userMessage: prompt || '',
+    });
+    generated = (caseResult.object.test_cases as any[]).map((testCase) => ({ ...testCase, captureEvidence: true }));
+  }
+
+  run.generated_cases = generated;
+  pushPhase(run, { agent: 'TestGenerationAgent', status: 'completed', output: { test_cases: generated } });
+  await persistAgentCaseArtifacts(run);
+
+  // Push every generated case to the inbox as a pending decision, so the human can
+  // approve / reject per-case from the inbox instead of just seeing a "review" button.
+  (run.generated_cases || []).forEach((tc: any, idx: number) => {
+    pushInboxItem({
+      workspaceId: 'default',
+      source: 'case',
+      sourceId: `${run.id}:${idx}`,
+      title: `Review new test case: ${tc.title || `Case ${idx + 1}`}`,
+      summary: tc.description || '',
+      confidence: 80,
+      proposedBy: 'QA Assistant',
+      payload: { runId: run.id, caseIndex: idx, case: tc },
+      links: [{ label: 'Open in Test Cases', href: '/test-cases' }],
+    });
+  });
+
+  if (opts.flowMode === 'review_cases') {
+    run.status = 'review_required';
+    run.review_started_at = nowIso();
+    pushPhase(run, { agent: 'System', status: 'review_required', output: 'Review and edit generated test cases, then continue the agent flow.' });
+    persistDataInBackground('review-required agent run');
+    return;
+  }
+
+  await runPostCaseAgentFlow(run, undefined as any, { test_cases: generated }, targetUrl, credentials);
+}
+
 async function runPostCaseAgentFlow(run: any, model: any, testCases: any, targetUrl: string, liveCredentials?: any) {
   // The run record stores a MASKED password for safe persistence/logging. The live
   // browser (login + evidence) must use the REAL resolved credentials, so prefer the
@@ -381,6 +572,9 @@ async function runPostCaseAgentFlow(run: any, model: any, testCases: any, target
   const selectedQaContextText = run.selectedQaContext
     ? `Selected QA repository context for this automation scope: ${JSON.stringify(run.selectedQaContext)}`
     : 'No selected QA repository context was provided for this automation scope.';
+  const coderUnderstanding = run.feature_understanding
+    ? `\nSOURCE-GROUNDED UNDERSTANDING (from the app's real code — use it to assert the right business rules and pick meaningful selectors, but only assert what the inspection context confirms is on screen):\n${summarizeUnderstanding(run.feature_understanding, 2500)}\n`
+    : '';
 
   const coderKnowledge = buildKnowledgeBlock({ targetUrl, text: run.prompt || '' }, { maxChars: 9000 });
   const coder = await getOrchestrator('playwrightCoder');
@@ -388,7 +582,7 @@ async function runPostCaseAgentFlow(run: any, model: any, testCases: any, target
     prompt: `Use this baseURL in the scripts when provided: ${targetUrl || 'not provided'}.
 Approved user-reviewed understanding: ${run.approvedUnderstanding || 'not provided'}.
 ${credentialContext}
-${selectedQaContextText}
+${selectedQaContextText}${coderUnderstanding}
 Use this browser inspection context as the source of truth for reachable pages, visible labels, forms, navigation actions, tables/lists, buttons, links and final URL: ${JSON.stringify(compactInspectionContext(inspectionContext))}.
 SETUP — NAVIGATE THEN LOG IN IF NEEDED: the MANDATORY FIRST LINES of every test body are (use this EXACT absolute URL — NOT '/', which resolves to the wrong path):
   await page.goto('${targetUrl || '/'}');
@@ -793,7 +987,9 @@ export function registerAgentRoutes(app: Express) {
   app.post('/api/agent/start', async (req, res) => {
     const { app_url, prompt } = req.body;
     const approvedUnderstanding = String(req.body.approvedUnderstanding || '').trim();
-    const testCaseCount = Math.min(10, Math.max(1, Number(req.body.testCaseCount) || 3));
+    // 0 (or absent) means "auto" — let the depth of the source understanding decide
+    // the count. A positive number is an explicit user request and is honored as-is.
+    const requestedCaseCount = Math.max(0, Math.floor(Number(req.body.testCaseCount) || 0));
     const flowMode = req.body.flowMode === 'review_cases' ? 'review_cases' : 'complete';
 
     // Layered guardrail pipeline. If the pipeline short-circuits (greeting, off-topic, etc.)
@@ -892,6 +1088,11 @@ export function registerAgentRoutes(app: Express) {
       completed_at: null as string | null,
       review_started_at: null as string | null,
       paused_ms: 0,
+      feature_understanding: null as any,
+      requested_case_count: 0,
+      selected_qa_prompt_text: '',
+      scope_context_text: '',
+      existing_matches: [] as any[],
     };
     newRun.messages.push({
       agent: 'System',
@@ -954,61 +1155,102 @@ export function registerAgentRoutes(app: Express) {
         recordObservation({ websiteId: req.body.websiteId, targetUrl, text: prompt || '' }, obsNote);
       } catch { /* observation is best-effort */ }
 
-      pushPhase(newRun, { agent: 'TestGenerationAgent', status: 'running' });
-      const caseWriter = await getOrchestrator('caseWriter');
-      const caseResult = await caseWriter.generateObject<any>({
-        prompt: `User prompt: ${prompt || 'not provided'}.
-Approved user-reviewed understanding: ${approvedUnderstanding || 'not provided'}.
-Playwright target URL: ${targetUrl || 'not provided'}.
-${credentialContext}
-${selectedQaContext.promptText}
-Browser inspection result: ${JSON.stringify(compactInspectionContext(inspectionContext))}.
-Generate exactly ${testCaseCount} comprehensive test cases.
-
-Use the inspection result as the source of truth for reachable pages, post-login state, visible navigation, forms, tables, list-like regions, and assertion targets. Do not invent unrelated admin pages or menu names. If the inspector reached the requested goal, at least one @bvt test case must cover that exact inspected end-to-end path, including any login and navigation actions recorded in actionsTaken. If the inspector was partial or blocked, generate cases for the reachable context and include clear preconditions/steps that show what needs to be verified next.
-
-For authenticated flows, steps must explicitly say to enter username/email "${credentials.username || '<provided username>'}" and password "${credentials.password || '<provided password>'}", click the relevant sign-in/login control, and then continue to the user-requested inspected target. When the request involves verifying data views, include steps that verify the visible table/list/grid container, headers, rows or empty-state, and absence of loading/error state using the labels found by inspection.
-
-Each test case must include automation tags in @ format, for example @bvt, @sanity, @regression, @smoke, @ui, @positive, @negative. If the user requested specific tag types (for example "@smoke cases" or "regression coverage"), apply those exact tags to every generated case. Each test case must include a steps array with ordered rows. Each row must have a clear action and expected result suitable for a report table.${knowledgeBlock}`,
-        schema: testCasesSchema,
-        userMessage: prompt || '',
-      });
-      const testCases = caseResult.object;
-      newRun.generated_cases = (testCases.test_cases as any[]).map((testCase) => ({ ...testCase, captureEvidence: true }));
-      pushPhase(newRun, { agent: 'TestGenerationAgent', status: 'completed', output: testCases });
-      await persistAgentCaseArtifacts(newRun);
-
-      // Push every generated case to the inbox as a pending decision, so the
-      // human can approve / reject per-case from the inbox instead of just
-      // seeing a "review" button.
-      (newRun.generated_cases || []).forEach((tc: any, idx: number) => {
-        pushInboxItem({
-          workspaceId: 'default',
-          source: 'case',
-          sourceId: `${newRun.id}:${idx}`,
-          title: `Review new test case: ${tc.title || `Case ${idx + 1}`}`,
-          summary: tc.description || '',
-          confidence: 80,
-          proposedBy: 'QA Assistant',
-          payload: { runId: newRun.id, caseIndex: idx, case: tc },
-          links: [{ label: 'Open in Test Cases', href: '/test-cases' }],
+      // DEEP CODE UNDERSTANDING (git agent over the real app source). Drives how
+      // many cases to write and grounds their steps in the rules the code enforces,
+      // so coverage scales with the feature's actual complexity — not a fixed count.
+      pushPhase(newRun, { agent: 'CodeAnalyst', status: 'running' });
+      let featureUnderstanding: any = null;
+      try {
+        const analysis = await analyzeFeatureFromSource(`${scopeContextText} ${prompt || ''} ${approvedUnderstanding}`.trim());
+        featureUnderstanding = analysis.understanding;
+        newRun.feature_understanding = featureUnderstanding;
+        pushPhase(newRun, {
+          agent: 'CodeAnalyst',
+          status: 'completed',
+          output: { ...featureUnderstanding, searchedFiles: analysis.files?.map((f) => f.path) || [] },
         });
-      });
+      } catch (err: any) {
+        // Source repo missing/unsearchable — fall back to inspection-only grounding.
+        pushPhase(newRun, { agent: 'CodeAnalyst', status: 'skipped', output: `Code understanding unavailable: ${getAIErrorMessage(err)}` });
+      }
+      // Stash the context the coverage gate / decision endpoint needs to resume.
+      newRun.requested_case_count = requestedCaseCount;
+      newRun.selected_qa_prompt_text = selectedQaContext.promptText;
+      newRun.scope_context_text = scopeContextText;
 
-      if (flowMode === 'review_cases') {
-        newRun.status = 'review_required';
+      // REUSE-BEFORE-REGENERATE: look for existing cases that already cover this
+      // request. In interactive mode, pause and let the user reuse / extend / start
+      // fresh instead of generating everything from scratch.
+      pushPhase(newRun, { agent: 'CoverageScout', status: 'running' });
+      const relatedExisting = await findRelatedExistingCases(newRun);
+      pushPhase(newRun, { agent: 'CoverageScout', status: 'completed', output: `${relatedExisting.length} related existing test case(s) found.` });
+
+      if (relatedExisting.length && flowMode === 'review_cases') {
+        newRun.existing_matches = relatedExisting.map(mapExistingToRunCase);
+        newRun.status = 'coverage_options';
         newRun.review_started_at = nowIso();
-        pushPhase(newRun, { agent: 'System', status: 'review_required', output: 'Review and edit generated test cases, then continue the agent flow.' });
-        persistDataInBackground('review-required agent run');
+        pushPhase(newRun, {
+          agent: 'System',
+          status: 'coverage_options',
+          output: `Found ${relatedExisting.length} existing test case(s) related to this request. Reuse them, add only the gaps, or generate fresh.`,
+        });
+        persistDataInBackground('coverage-options agent run');
         return;
       }
 
-      await runPostCaseAgentFlow(newRun, undefined as any, testCases, targetUrl, credentials);
+      await generateCasesForRun(newRun, credentials, { flowMode, mode: 'fresh' });
     } catch (err: any) {
       console.error('AI Gen Error:', err);
       markRunDone(newRun, 'failed');
       pushPhase(newRun, { agent: 'System', status: 'failed', output: getAIErrorMessage(err) });
       persistDataInBackground('failed agent run');
+    }
+  });
+
+  // Resolve the early reuse gate: the user chose to reuse existing cases, extend
+  // them with only the gaps, or generate a fresh set. Mirrors /continue's async shape.
+  app.post('/api/agent/coverage-decision', async (req, res) => {
+    const { taskId, action } = req.body;
+    const run = db.agentRuns.find((item: any) => item.id === taskId);
+    if (!run) return res.status(404).json({ error: 'Run not found' });
+    if (run.status !== 'coverage_options') {
+      return res.status(400).json({ error: 'No coverage decision is pending for this run.' });
+    }
+    const act: 'reuse' | 'gaps' | 'fresh' = ['reuse', 'gaps', 'fresh'].includes(action) ? action : 'fresh';
+
+    // Fold the time spent on this decision into paused_ms so it doesn't inflate the total.
+    if (run.review_started_at) {
+      run.paused_ms = (run.paused_ms || 0) + Math.max(0, Date.parse(nowIso()) - Date.parse(run.review_started_at));
+      run.review_started_at = null;
+    }
+    run.status = 'running';
+    persistDataInBackground('coverage decision');
+    res.json({ success: true, action: act });
+
+    try {
+      const liveCreds = resolveCredentials({ targetUrl: run.app_url, websiteId: run.websiteId, role: (run.credentials || {}).role }) || undefined;
+      const matched = Array.isArray(run.existing_matches) ? run.existing_matches : [];
+
+      if (act === 'reuse' && matched.length) {
+        // No generation — load the existing cases and let the human review, then
+        // Continue runs scripts + evidence against them like any other case set.
+        run.generated_cases = matched;
+        pushPhase(run, { agent: 'TestGenerationAgent', status: 'completed', output: { test_cases: matched, reused: true } });
+        await persistAgentCaseArtifacts(run);
+        run.status = 'review_required';
+        run.review_started_at = nowIso();
+        pushPhase(run, { agent: 'System', status: 'review_required', output: `Reusing ${matched.length} existing case(s) — review and continue to run scripts + evidence.` });
+        persistDataInBackground('reuse existing cases');
+      } else if (act === 'gaps' && matched.length) {
+        await generateCasesForRun(run, liveCreds, { flowMode: 'review_cases', mode: 'gaps', existingCases: matched });
+      } else {
+        await generateCasesForRun(run, liveCreds, { flowMode: 'review_cases', mode: 'fresh' });
+      }
+    } catch (err: any) {
+      console.error('AI Coverage Decision Error:', err);
+      markRunDone(run, 'failed');
+      pushPhase(run, { agent: 'System', status: 'failed', output: getAIErrorMessage(err) });
+      persistDataInBackground('failed coverage decision');
     }
   });
 

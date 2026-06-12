@@ -144,6 +144,94 @@ function gatherSourceExcerpts(keywords: string[]): { files: Array<{ path: string
   return { files: limited, excerpts: parts.join('\n\n---\n\n') };
 }
 
+/* ---------- reusable feature understanding (git-agent deep read) ---------- */
+
+/**
+ * Read the target application's REAL source (git agent over D:\core-platform) and
+ * produce a grounded, structured understanding of the requested feature: the
+ * business rules the code enforces, Admin vs Keystone/Shockwave behavior, the
+ * metadata source of truth, and a first cut of scenarios scaled to what the code
+ * actually does. This is the depth-of-understanding step the Agent Console uses to
+ * drive how many cases to write, the steps, and the scripts — instead of a fixed
+ * template. Pure analysis: no requirement/inbox side effects (that stays in
+ * discoverRequirement, which now reuses this).
+ */
+export async function analyzeFeatureFromSource(
+  query: string,
+  opts: { workspaceId?: string; userId?: string } = {},
+): Promise<{ understanding: FeatureUnderstanding; files: Array<{ path: string; area: string; surface: string }>; keywords: string[] }> {
+  const cleanQuery = String(query || '').trim();
+  const keywords = deriveKeywords(cleanQuery);
+  const { files, excerpts } = gatherSourceExcerpts(keywords);
+
+  const analyst = await getOrchestrator('featureAnalyst', opts);
+  const analystRes = await analyst.generateObject<FeatureUnderstanding>({
+    prompt: `Feature/section to analyze (user query): "${cleanQuery}"
+
+Search keywords used: ${keywords.join(', ')}
+
+Code excerpts from the target application's git repository (path + area). Ground your understanding ONLY in these:
+${excerpts || '(no matching source found — say so in the description and keep businessRules minimal rather than inventing them)'}
+
+Produce the requirement understanding as strict JSON matching the schema:
+- title: a concise requirement title for this feature.
+- description: 1-3 sentences on what the feature does and why it matters.
+- businessRules: the concrete, testable rules the code enforces.
+- dataPopulationNotes: what the Service module populates in the background as preconditions for this feature (if shown in the excerpts).
+- adminBehavior vs keystoneBehavior: configuration/management (Admin) vs end-user behavior (Keystone / apps/shockwave).
+- metadataRefs: metadata objects/fields that are the source of truth for this feature.
+- sourceFiles: the specific files (real paths from the excerpts) that justify your understanding, each with a one-line reason.
+- candidateScenarios: cover the feature in proportion to its real complexity — every distinct business rule, branch, role difference (Admin vs Shockwave), and edge/negative case visible in the code should get a scenario with concrete steps. Do not pad with trivial duplicates; do not under-cover a complex feature.`,
+    schema: featureAnalystSchema,
+    userMessage: cleanQuery,
+  });
+
+  if ((analystRes as any).shortCircuit) {
+    throw new Error(String((analystRes as any).shortCircuit));
+  }
+  const understanding: FeatureUnderstanding = (analystRes as any).object || {
+    title: cleanQuery,
+    description: '',
+    businessRules: [],
+    dataPopulationNotes: '',
+    adminBehavior: '',
+    keystoneBehavior: '',
+    metadataRefs: [],
+    sourceFiles: files.map((f) => ({ path: f.path, why: f.area })),
+    candidateScenarios: [],
+  };
+  return { understanding, files, keywords };
+}
+
+/**
+ * Given a feature understanding and the EXISTING cases that look related, ask the
+ * QA model which behaviors are still uncovered and propose ONLY those gap cases
+ * (with concrete steps). Used by the Agent Console "Add only the gaps" reuse action
+ * so we extend coverage instead of regenerating everything from scratch.
+ */
+export async function proposeGapCases(
+  understanding: FeatureUnderstanding | null,
+  existingCases: Array<{ id: string; title: string; tags?: string[]; type?: string; priority?: string; stepCount?: number }>,
+  opts: { workspaceId?: string; userId?: string } = {},
+): Promise<Reconciliation['proposedCases']> {
+  const reconciler = await getOrchestrator('caseWriter', opts);
+  const res = await reconciler.generateObject<Reconciliation>({
+    prompt: `You are a senior QA engineer EXTENDING coverage for a feature. Propose ONLY the test cases the existing ones do NOT already cover — never duplicate existing coverage.
+
+REQUIREMENT UNDERSTANDING (from the application's real source):
+${JSON.stringify(understanding || {}, null, 2)}
+
+EXISTING related test cases already in the QA repository (do NOT re-propose these):
+${JSON.stringify(existingCases)}
+
+Return strict JSON matching the schema. In coverage.gaps list the behaviors the existing cases miss; in proposedCases add only NEW cases (with concrete, executable steps and expected results) that close those gaps. If the existing cases already cover the feature, return an empty proposedCases array.`,
+    schema: reconcileSchema,
+    userMessage: 'propose only the gap cases to extend coverage',
+  });
+  if ((res as any).shortCircuit) throw new Error(String((res as any).shortCircuit));
+  return ((res as any).object?.proposedCases) || [];
+}
+
 /* ---------- helpers ---------- */
 
 function genId(prefix: string): string {
@@ -178,46 +266,8 @@ export async function discoverRequirement(
   const cleanQuery = String(query || '').trim();
   if (!cleanQuery) throw new Error('A feature or section to test is required.');
 
-  const keywords = deriveKeywords(cleanQuery);
-  const { files, excerpts } = gatherSourceExcerpts(keywords);
-
   // 1) Feature analyst: produce a grounded requirement understanding from the source.
-  const analyst = await getOrchestrator('featureAnalyst', opts);
-  const analystRes = await analyst.generateObject<FeatureUnderstanding>({
-    prompt: `Feature/section to analyze (user query): "${cleanQuery}"
-
-Search keywords used: ${keywords.join(', ')}
-
-Code excerpts from the target application's git repository (path + area). Ground your understanding ONLY in these:
-${excerpts || '(no matching source found — say so in the description and keep businessRules minimal rather than inventing them)'}
-
-Produce the requirement understanding as strict JSON matching the schema:
-- title: a concise requirement title for this feature.
-- description: 1-3 sentences on what the feature does and why it matters.
-- businessRules: the concrete, testable rules the code enforces.
-- dataPopulationNotes: what the Service module populates in the background as preconditions for this feature (if shown in the excerpts).
-- adminBehavior vs keystoneBehavior: configuration/management (Admin) vs end-user behavior (Keystone / apps/shockwave).
-- metadataRefs: metadata objects/fields that are the source of truth for this feature.
-- sourceFiles: the specific files (real paths from the excerpts) that justify your understanding, each with a one-line reason.
-- candidateScenarios: a first cut of test scenarios with concrete steps.`,
-    schema: featureAnalystSchema,
-    userMessage: cleanQuery,
-  });
-
-  if ((analystRes as any).shortCircuit) {
-    throw new Error(String((analystRes as any).shortCircuit));
-  }
-  const understanding: FeatureUnderstanding = (analystRes as any).object || {
-    title: cleanQuery,
-    description: '',
-    businessRules: [],
-    dataPopulationNotes: '',
-    adminBehavior: '',
-    keystoneBehavior: '',
-    metadataRefs: [],
-    sourceFiles: files.map((f) => ({ path: f.path, why: f.area })),
-    candidateScenarios: [],
-  };
+  const { understanding, files } = await analyzeFeatureFromSource(cleanQuery, opts);
 
   // 2) Reconcile against existing cases — reuse the analysisService coverage pattern.
   const existingCases = (await Cases.list()).slice(0, 100).map((c: any) => ({
