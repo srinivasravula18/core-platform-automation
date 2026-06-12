@@ -186,6 +186,21 @@ export class OpenAIProvider implements AIProvider {
     return opts.model || this.defaultModel;
   }
 
+  /**
+   * Build per-model sampling params. Newer OpenAI models (gpt-5 family, o-series
+   * reasoning models) reject the legacy `max_tokens` (require `max_completion_tokens`)
+   * and only allow the default temperature — sending either errors with a 400. Older
+   * chat models (gpt-4o, gpt-4, gpt-3.5) accept `max_completion_tokens` too, so we use
+   * it everywhere and only attach `temperature` for models that support a custom value.
+   */
+  private sampling(modelId: string, maxTokens: number, temperature?: number): Record<string, any> {
+    const m = (modelId || '').toLowerCase();
+    const newStyle = /^(gpt-5|o1|o3|o4)/.test(m);
+    const params: Record<string, any> = { max_completion_tokens: maxTokens };
+    if (!newStyle) params.temperature = temperature ?? 0.2;
+    return params;
+  }
+
   private toProviderError(err: any): ProviderError {
     if (err instanceof ProviderError) return err;
     const status = err instanceof OpenAI.APIError ? err.status : undefined;
@@ -202,7 +217,7 @@ export class OpenAIProvider implements AIProvider {
       await this.client.chat.completions.create({
         model: this.defaultModel,
         messages: [{ role: 'user', content: 'ping' }],
-        max_tokens: 5,
+        ...this.sampling(this.defaultModel, 16),
       });
       return { ok: true, provider: this.name, model: this.defaultModel, checkedAt };
     } catch (err: any) {
@@ -220,9 +235,8 @@ export class OpenAIProvider implements AIProvider {
             ...(opts.system ? [{ role: 'system' as const, content: opts.system }] : []),
             { role: 'user' as const, content: opts.prompt },
           ],
-          temperature: opts.temperature ?? 0.2,
           // Generous default so large structured outputs (e.g. full Playwright scripts) aren't truncated.
-          max_tokens: opts.maxTokens ?? 8000,
+          ...this.sampling(modelId, opts.maxTokens ?? 8000, opts.temperature),
           ...(jsonMode ? { response_format: { type: 'json_object' as const } } : {}),
         },
         { signal: opts.signal },
@@ -263,8 +277,7 @@ export class OpenAIProvider implements AIProvider {
           ...(opts.system ? [{ role: 'system' as const, content: opts.system }] : []),
           { role: 'user' as const, content: opts.prompt },
         ],
-        temperature: opts.temperature ?? 0.2,
-        max_tokens: opts.maxTokens ?? 2048,
+        ...this.sampling(this.modelId(opts), opts.maxTokens ?? 2048, opts.temperature),
         stream: true,
       },
       { signal: opts.signal },
