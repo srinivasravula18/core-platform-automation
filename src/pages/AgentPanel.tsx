@@ -481,7 +481,7 @@ export default function AgentPanel() {
 
       {/* Right Column: Output */}
       <div className="flex min-h-[420px] min-w-0 flex-1 flex-col overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--bg-card)] shadow-sm lg:min-h-0">
-        <div className="flex items-center border-b border-[var(--border)] px-4">
+        <div className="flex items-center border-b border-[var(--border)] px-2.5">
            <div className="flex gap-6 flex-1">
              <button 
                onClick={() => setActiveTab('cases')}
@@ -537,7 +537,7 @@ export default function AgentPanel() {
            )}
         </div>
 
-        <div className="flex-1 overflow-auto p-5 bg-[var(--bg-secondary)]">
+        <div className="flex-1 overflow-auto bg-[var(--bg-secondary)] p-2.5">
           {!runData && !isGenerating && (
             <div className="h-full flex flex-col items-center justify-center text-[var(--text-muted)]">
               <Bot className="w-12 h-12 mb-4 opacity-50" />
