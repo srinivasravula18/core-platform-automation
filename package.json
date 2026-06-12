@@ -4,6 +4,7 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
+    "postinstall": "node scripts/ensure-playwright.mjs",
     "dev": "vite --host 0.0.0.0 --port 3000 --strictPort",
     "dev:frontend": "vite --host 0.0.0.0 --port 3000 --strictPort",
     "dev:backend": "tsx server.ts",
@@ -16,7 +17,7 @@
     "start:backend": "node dist/server.cjs",
     "start:frontend": "node scripts/frontend-server.mjs",
     "check:gemini": "node scripts/check-gemini-rest.mjs",
-    "playwright:install": "playwright install chromium",
+    "playwright:install": "node scripts/ensure-playwright.mjs",
     "playwright:deps": "playwright install-deps chromium",
     "clean": "node -e \"fs.rmSync('dist',{recursive:true,force:true});fs.rmSync('server.js',{force:true});\"",
     "lint": "tsc --noEmit"
