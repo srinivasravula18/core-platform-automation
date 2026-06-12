@@ -135,6 +135,8 @@ export async function inspectApplicationFlow(options: {
   model?: any;
   runId: string;
   knowledge?: string;
+  /** Acting user's id, so the inspector's LLM usage is billed to the right profile. */
+  workspaceId?: string;
 }) {
   const normalizedUrl = normalizeTargetUrl(options.targetUrl);
   const warnings: string[] = [];
@@ -178,7 +180,7 @@ export async function inspectApplicationFlow(options: {
     let goalStatus: 'satisfied' | 'blocked' | 'partial' = 'partial';
 
     for (let step = 0; step < 3; step += 1) {
-      const orchestrator = await getOrchestrator('appInspector');
+      const orchestrator = await getOrchestrator('appInspector', { workspaceId: options.workspaceId || 'default' });
       const decisionResult = await orchestrator.generateObject<z.infer<typeof plannerSchema>>({
         schema: plannerSchema,
         prompt: `You are controlling a browser for QA discovery. User request: ${options.prompt}. Current page context: ${JSON.stringify({

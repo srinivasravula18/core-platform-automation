@@ -26,7 +26,15 @@ export interface AppKnowledgePack {
   content: string;
   /** Auto-captured observations from live runs (newest first), cur-able in the UI. */
   observations?: string[];
+  /** App user who owns this pack (per-user isolation). '' = legacy/admin-owned. */
+  ownerId?: string;
   updatedAt: string;
+}
+
+/** Packs visible to a given owner: their own only when an owner is given, else all. */
+function ownedPacks(ownerId?: string): AppKnowledgePack[] {
+  const all = list();
+  return ownerId ? all.filter((p) => (p.ownerId || '') === ownerId) : all;
 }
 
 function host(url: string): string {
@@ -111,8 +119,12 @@ export function seedDefaultKnowledgeIfEmpty(): void {
   persistDataInBackground('seed app knowledge');
 }
 
-export function listKnowledge(): AppKnowledgePack[] {
-  return list().slice();
+export function listKnowledge(ownerId?: string): AppKnowledgePack[] {
+  return ownedPacks(ownerId).slice();
+}
+
+export function getKnowledgePack(id: string): AppKnowledgePack | undefined {
+  return list().find((p) => p.id === id);
 }
 
 export function upsertKnowledge(input: Partial<AppKnowledgePack> & { content: string; name: string }): AppKnowledgePack {
@@ -138,6 +150,7 @@ export function upsertKnowledge(input: Partial<AppKnowledgePack> & { content: st
     matchNames: input.matchNames ?? [],
     websiteIds: input.websiteIds ?? [],
     content: input.content,
+    ownerId: input.ownerId || '',
     updatedAt: now,
   };
   packs.push(pack);
@@ -163,8 +176,9 @@ export function resolveKnowledgeForContext(ctx: {
   websiteId?: string;
   targetUrl?: string;
   text?: string;
+  ownerId?: string;
 }): { content: string; packName: string } {
-  const packs = list();
+  const packs = ownedPacks(ctx.ownerId);
   if (!packs.length) return { content: '', packName: '' };
 
   if (ctx.websiteId) {
@@ -185,8 +199,8 @@ export function resolveKnowledgeForContext(ctx: {
 }
 
 /** Find the pack that matches a context (same precedence as resolution). */
-function matchPack(ctx: { websiteId?: string; targetUrl?: string; text?: string }): AppKnowledgePack | undefined {
-  const packs = list();
+function matchPack(ctx: { websiteId?: string; targetUrl?: string; text?: string; ownerId?: string }): AppKnowledgePack | undefined {
+  const packs = ownedPacks(ctx.ownerId);
   if (ctx.websiteId) {
     const p = packs.find((x) => x.websiteIds?.includes(ctx.websiteId!));
     if (p) return p;
@@ -208,10 +222,23 @@ function matchPack(ctx: { websiteId?: string; targetUrl?: string; text?: string 
  * Deduped and capped, newest first. This is how the knowledge keeps up with features
  * that ship after the pack was written — every real run can teach it something.
  */
-export function recordObservation(ctx: { websiteId?: string; targetUrl?: string; text?: string }, note: string): void {
+export function recordObservation(ctx: { websiteId?: string; targetUrl?: string; text?: string; ownerId?: string }, note: string): void {
   const clean = (note || '').replace(/\s+/g, ' ').trim().slice(0, 400);
   if (!clean) return;
-  const pack = matchPack(ctx);
+  let pack = matchPack(ctx);
+  // A profile with no pack yet starts one from this run, so their App Knowledge grows
+  // from their own usage instead of staying empty forever.
+  if (!pack && ctx.ownerId) {
+    const h = ctx.targetUrl ? host(ctx.targetUrl) : '';
+    pack = upsertKnowledge({
+      name: h || 'App knowledge',
+      content: '',
+      matchHosts: h ? [h] : [],
+      matchNames: [],
+      websiteIds: ctx.websiteId ? [ctx.websiteId] : [],
+      ownerId: ctx.ownerId,
+    });
+  }
   if (!pack) return;
   const obs = (pack.observations = pack.observations || []);
   if (obs.includes(clean)) return;
@@ -292,7 +319,7 @@ function selectRelevantSlice(content: string, query: string, maxChars: number): 
  * message) and generous for the deep pipeline / inspector where accuracy matters.
  */
 export function buildKnowledgeBlock(
-  ctx: { websiteId?: string; targetUrl?: string; text?: string },
+  ctx: { websiteId?: string; targetUrl?: string; text?: string; ownerId?: string },
   opts?: { maxChars?: number },
 ): string {
   const { content } = resolveKnowledgeForContext(ctx);

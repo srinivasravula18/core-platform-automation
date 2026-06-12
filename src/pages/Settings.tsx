@@ -6,6 +6,7 @@ import {
   Eye, EyeOff, Zap, RotateCcw, Save, BookOpen, Pencil, Check, X, Activity, Loader2,
 } from 'lucide-react';
 import { GoogleSheetsIntegration } from '../components/GoogleSheetsIntegration';
+import { isAdmin } from '../components/AuthGate';
 
 type Provider = 'gemini' | 'openai' | 'anthropic';
 
@@ -75,7 +76,19 @@ const AGENT_LABELS: Record<string, { label: string; description: string }> = {
 
 export default function Settings() {
   const { theme, setTheme } = useTheme();
-  const [tab, setTab] = useState<'appearance' | 'providers' | 'prompts' | 'knowledge' | 'credentials' | 'cost'>('providers');
+  const [tab, setTab] = useState<'appearance' | 'providers' | 'prompts' | 'knowledge' | 'credentials' | 'cost' | 'profiles'>('providers');
+  const admin = isAdmin();
+
+  const tabs: Array<[typeof tab, string, any]> = [
+    ['providers', 'AI Providers', Bot],
+    ['prompts', 'System Prompts', MessageSquare],
+    ['knowledge', 'App Knowledge', Bot],
+    ['credentials', 'Credentials', Globe],
+    ['cost', 'Cost & Logs', Activity],
+    // Admin-only: create/manage the people who can log in and use the app.
+    ...(admin ? [['profiles', 'Profiles', Users] as [typeof tab, string, any]] : []),
+    ['appearance', 'Appearance', Sun],
+  ];
 
   return (
     <div className="app-page-shell space-y-6 px-1 sm:px-0">
@@ -85,14 +98,7 @@ export default function Settings() {
       </div>
 
       <div className="flex gap-1 overflow-x-auto rounded-lg border border-[var(--border)] bg-[var(--bg-card)] p-1 text-sm">
-        {([
-          ['providers', 'AI Providers', Bot],
-          ['prompts', 'System Prompts', MessageSquare],
-          ['knowledge', 'App Knowledge', Bot],
-          ['credentials', 'Credentials', Globe],
-          ['cost', 'Cost & Logs', Activity],
-          ['appearance', 'Appearance', Sun],
-        ] as const).map(([key, label, Icon]) => (
+        {tabs.map(([key, label, Icon]) => (
           <button
             key={key}
             onClick={() => setTab(key)}
@@ -114,6 +120,173 @@ export default function Settings() {
       {tab === 'knowledge' && <KnowledgeSection />}
       {tab === 'credentials' && <CredentialsSection />}
       {tab === 'cost' && <CostSection />}
+      {tab === 'profiles' && admin && <ProfilesSection />}
+    </div>
+  );
+}
+
+interface AppUserRow {
+  id: string;
+  username: string;
+  name: string;
+  role: 'admin' | 'tester';
+  createdAt: string;
+}
+
+/**
+ * Admin-only: create login profiles (name + login id + password). Each new profile
+ * is a tester who can immediately sign in and gets their own isolated, empty workspace.
+ */
+function ProfilesSection() {
+  const [users, setUsers] = useState<AppUserRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [name, setName] = useState('');
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState<SaveStatus>({ type: 'idle', message: '' });
+
+  const load = useCallback(() => {
+    setLoading(true);
+    fetch('/api/users')
+      .then((r) => r.json())
+      .then((d) => setUsers(Array.isArray(d.users) ? d.users : []))
+      .catch(() => setUsers([]))
+      .finally(() => setLoading(false));
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const create = async () => {
+    const n = name.trim();
+    const u = username.trim();
+    if (!n || !u || !password) {
+      setStatus({ type: 'error', message: 'Name, login ID, and password are all required.' });
+      return;
+    }
+    setBusy(true);
+    setStatus({ type: 'idle', message: '' });
+    try {
+      const res = await fetch('/api/users', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        // role defaults to tester: the new person signs in and gets their own empty workspace.
+        body: JSON.stringify({ name: n, username: u, password, role: 'tester' }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setStatus({ type: 'error', message: data?.error || 'Could not create the profile.' });
+        return;
+      }
+      setStatus({ type: 'success', message: `Profile "${u}" created — they can sign in now with their login ID and password.` });
+      setName(''); setUsername(''); setPassword('');
+      load();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const remove = async (user: AppUserRow) => {
+    if (!confirm(`Delete profile "${user.username}"? Their data becomes inaccessible.`)) return;
+    setBusy(true);
+    try {
+      const res = await fetch(`/api/users/${user.id}`, { method: 'DELETE' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) setStatus({ type: 'error', message: data?.error || 'Could not delete the profile.' });
+      else load();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-card)] p-6 shadow-sm">
+        <h2 className="flex items-center gap-2 text-lg font-medium"><Users className="h-5 w-5 text-[var(--accent)]" /> Profiles</h2>
+        <p className="mt-1 text-sm text-[var(--text-muted)]">
+          Create a login profile for a teammate. Give a name, a login ID, and a password — they can sign in immediately and start
+          with their own private, empty workspace. Each profile only sees their own data.
+        </p>
+      </div>
+
+      {/* Create form */}
+      <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-card)] p-5 shadow-sm">
+        <h3 className="mb-3 font-medium text-[var(--text-primary)]">New profile</h3>
+        <div className="grid gap-3 sm:grid-cols-3">
+          <div>
+            <label className="mb-1.5 block text-xs font-medium text-[var(--text-muted)]">Name</label>
+            <input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="Jane Doe"
+              className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm outline-none focus:border-[var(--accent)]"
+            />
+          </div>
+          <div>
+            <label className="mb-1.5 block text-xs font-medium text-[var(--text-muted)]">Login ID</label>
+            <input
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              placeholder="jane"
+              autoComplete="off"
+              className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm outline-none focus:border-[var(--accent)]"
+            />
+          </div>
+          <div>
+            <label className="mb-1.5 block text-xs font-medium text-[var(--text-muted)]">Password</label>
+            <input
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="••••••••"
+              autoComplete="new-password"
+              className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm outline-none focus:border-[var(--accent)]"
+            />
+          </div>
+        </div>
+        <div className="mt-3 flex items-center gap-3">
+          <button
+            onClick={create}
+            disabled={busy}
+            className="inline-flex items-center gap-2 rounded-md bg-[var(--accent)] px-4 py-2 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-60"
+          >
+            {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
+            Create profile
+          </button>
+          {status.type !== 'idle' && (
+            <span className={`text-xs ${status.type === 'success' ? 'text-emerald-500' : 'text-red-500'}`}>{status.message}</span>
+          )}
+        </div>
+      </div>
+
+      {/* Existing profiles */}
+      <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-card)] p-5 shadow-sm">
+        <h3 className="mb-3 font-medium text-[var(--text-primary)]">Existing profiles</h3>
+        {loading ? (
+          <p className="text-sm text-[var(--text-muted)]">Loading…</p>
+        ) : users.length === 0 ? (
+          <p className="text-sm text-[var(--text-muted)]">No profiles yet.</p>
+        ) : (
+          <div className="space-y-1.5">
+            {users.map((u) => (
+              <div key={u.id} className="flex items-center gap-3 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm">
+                <span className="font-medium text-[var(--text-primary)]">{u.name}</span>
+                <span className="text-[var(--text-muted)]">@{u.username}</span>
+                <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${u.role === 'admin' ? 'bg-[var(--accent)]/15 text-[var(--accent)]' : 'bg-[var(--bg-card)] text-[var(--text-muted)]'}`}>
+                  {u.role}
+                </span>
+                <button
+                  onClick={() => remove(u)}
+                  disabled={busy || u.role === 'admin'}
+                  title={u.role === 'admin' ? 'Admin profiles cannot be removed here' : 'Delete profile'}
+                  className="ml-auto rounded p-1.5 text-[var(--text-muted)] hover:text-red-500 disabled:opacity-30"
+                >
+                  <Trash2 className="h-4 w-4" />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

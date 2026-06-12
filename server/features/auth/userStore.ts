@@ -138,13 +138,24 @@ export async function claimLegacyDataForAdmin(): Promise<{ adminId: string; clai
 
   // In-memory stores (projects + websites are always in-memory; QA arrays back the
   // no-Postgres mode).
-  const memCollections = ['projects', 'websites', 'cases', 'runs', 'suites', 'plans', 'defects', 'scripts', 'reports', 'folders', 'requirements', 'agentRuns'];
+  const memCollections = ['projects', 'websites', 'cases', 'runs', 'suites', 'plans', 'defects', 'scripts', 'reports', 'folders', 'requirements', 'agentRuns', 'appKnowledge'];
   let claimedInMemory = 0;
   for (const key of memCollections) {
     const arr = (db as any)[key];
     if (!Array.isArray(arr)) continue;
     for (const row of arr) {
       if (row && typeof row === 'object' && !row.ownerId) { row.ownerId = adminId; claimedInMemory += 1; }
+    }
+  }
+  // Usage log is keyed by workspaceId (now = the acting user's id). Migrate legacy
+  // usage recorded under the shared 'default' workspace to admin, so admin keeps the
+  // historical Cost & Logs and every new profile starts at zero.
+  if (Array.isArray((db as any).usageLog)) {
+    for (const r of (db as any).usageLog) {
+      if (r && typeof r === 'object' && (!r.workspaceId || r.workspaceId === 'default')) {
+        r.workspaceId = adminId;
+        claimedInMemory += 1;
+      }
     }
   }
   if (claimedInMemory) persistDataInBackground('claim legacy data for admin');

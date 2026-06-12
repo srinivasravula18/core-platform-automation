@@ -483,7 +483,7 @@ async function generateCasesForRun(
   const requestedCaseCount = Math.max(0, Math.floor(Number(run.requested_case_count) || 0));
   const selectedQaPromptText = run.selected_qa_prompt_text || 'No selected QA repository context was provided for this automation scope.';
   const knowledgeBlock = buildKnowledgeBlock(
-    { websiteId: run.websiteId, targetUrl, text: `${run.scope_context_text || ''} ${prompt} ${approvedUnderstanding}`.trim() },
+    { websiteId: run.websiteId, targetUrl, text: `${run.scope_context_text || ''} ${prompt} ${approvedUnderstanding}`.trim(), ownerId: run.ownerId },
     { maxChars: 12000 },
   );
   const testCaseCount = complexityDrivenCaseCount(featureUnderstanding, requestedCaseCount);
@@ -516,7 +516,7 @@ async function generateCasesForRun(
     }));
     generated = [...opts.existingCases, ...gapCases];
   } else {
-    const caseWriter = await getOrchestrator('caseWriter');
+    const caseWriter = await getOrchestrator('caseWriter', { workspaceId: run.ownerId || 'default' });
     const caseResult = await caseWriter.generateObject<any>({
       prompt: `User prompt: ${prompt || 'not provided'}.
 Approved user-reviewed understanding: ${approvedUnderstanding || 'not provided'}.
@@ -587,8 +587,8 @@ async function runPostCaseAgentFlow(run: any, model: any, testCases: any, target
     ? `\nSOURCE-GROUNDED UNDERSTANDING (from the app's real code — use it to assert the right business rules and pick meaningful selectors, but only assert what the inspection context confirms is on screen):\n${summarizeUnderstanding(run.feature_understanding, 2500)}\n`
     : '';
 
-  const coderKnowledge = buildKnowledgeBlock({ targetUrl, text: run.prompt || '' }, { maxChars: 9000 });
-  const coder = await getOrchestrator('playwrightCoder');
+  const coderKnowledge = buildKnowledgeBlock({ targetUrl, text: run.prompt || '', ownerId: run.ownerId }, { maxChars: 9000 });
+  const coder = await getOrchestrator('playwrightCoder', { workspaceId: run.ownerId || 'default' });
   const scriptsResult = await coder.generateObject<any>({
     prompt: `Use this baseURL in the scripts when provided: ${targetUrl || 'not provided'}.
 Approved user-reviewed understanding: ${run.approvedUnderstanding || 'not provided'}.
@@ -667,7 +667,7 @@ async function verifyScriptsWithGitAgent(run: any, scripts: any[], prompt: strin
 
     // Use the inspector role for verification so these calls land on a DIFFERENT
     // model than the coder (spreads load across free per-model rate limits).
-    const verifier = await getOrchestrator('appInspector');
+    const verifier = await getOrchestrator('appInspector', { workspaceId: run.ownerId || 'default' });
     let fixed = 0;
     // Verify scripts with bounded concurrency. Each script is independent, so a small
     // worker pool turns N sequential LLM round-trips into ~N/CONCURRENCY waves — this
@@ -884,7 +884,7 @@ export function registerAgentRoutes(app: Express) {
     };
 
     try {
-      const ai = await getOrchestrator('chatAssistant');
+      const ai = await getOrchestrator('chatAssistant', { workspaceId: reqScope(req).userId || 'default' });
       const result = await ai.generateObject<any>({
         prompt:
           `Interpret this QA automation request for a human confirmation card.\n\n` +
@@ -989,7 +989,7 @@ export function registerAgentRoutes(app: Express) {
     if (!config) return res.status(400).json({ error: 'Invalid taskType' });
 
     try {
-      const ai = await getOrchestrator(config.agent);
+      const ai = await getOrchestrator(config.agent, { workspaceId: reqScope(req).userId || 'default' });
       const result = await ai.generateObject<any>({
         prompt: String(prompt || ''),
         schema: config.schema,
@@ -1077,7 +1077,7 @@ export function registerAgentRoutes(app: Express) {
     const runProvider = resolveProviderForAgent('chatAssistant');
     // Ground the run in the relevant slice of the app-knowledge pack (retrieved per request).
     // Smaller budget for the inspector (it runs in a loop), generous for the one-shot case writer.
-    const knowledgeCtx = { websiteId: req.body.websiteId, targetUrl, text: `${scopeContextText} ${prompt || ''} ${approvedUnderstanding}`.trim() };
+    const knowledgeCtx = { websiteId: req.body.websiteId, targetUrl, text: `${scopeContextText} ${prompt || ''} ${approvedUnderstanding}`.trim(), ownerId: scope.userId || '' };
     const inspectorKnowledge = buildKnowledgeBlock(knowledgeCtx, { maxChars: 3500 });
     const knowledgeBlock = buildKnowledgeBlock(knowledgeCtx, { maxChars: 12000 });
 
@@ -1137,7 +1137,7 @@ export function registerAgentRoutes(app: Express) {
 
     try {
       try {
-        const namingAi = await getOrchestrator('namingAgent');
+        const namingAi = await getOrchestrator('namingAgent', { workspaceId: newRun.ownerId || 'default' });
         const named = await namingAi.generateObject<{ name: string }>({
           prompt: `Return a concise QA artifact name as {"name":"..."}. User request: ${prompt || 'not provided'}\nTarget URL: ${targetUrl || 'not provided'}`,
           schema: z.object({ name: z.string().min(4).max(80) }),
@@ -1163,6 +1163,7 @@ export function registerAgentRoutes(app: Express) {
         model: undefined as any,
         runId: taskId,
         knowledge: inspectorKnowledge,
+        workspaceId: newRun.ownerId || 'default',
       });
       newRun.inspection_context = inspectionContext;
       pushPhase(newRun, { agent: 'ApplicationInspector', status: 'completed', output: inspectionContext });
@@ -1175,7 +1176,7 @@ export function registerAgentRoutes(app: Express) {
         const forms = (ic.visibleForms || []).map((f: any) => f?.name || f?.label).filter(Boolean).slice(0, 6).join(', ');
         const obsNote = `For "${(prompt || '').slice(0, 80)}" the app showed page "${ic.pageSummary || ic.currentUrl || ''}"`
           + (nav ? `; nav: ${nav}` : '') + (forms ? `; forms: ${forms}` : '') + ` (goal: ${ic.goalStatus || 'unknown'}).`;
-        recordObservation({ websiteId: req.body.websiteId, targetUrl, text: prompt || '' }, obsNote);
+        recordObservation({ websiteId: req.body.websiteId, targetUrl, text: prompt || '', ownerId: newRun.ownerId || '' }, obsNote);
       } catch { /* observation is best-effort */ }
 
       // DEEP CODE UNDERSTANDING (git agent over the real app source). Drives how
@@ -1184,7 +1185,7 @@ export function registerAgentRoutes(app: Express) {
       pushPhase(newRun, { agent: 'CodeAnalyst', status: 'running' });
       let featureUnderstanding: any = null;
       try {
-        const analysis = await analyzeFeatureFromSource(`${scopeContextText} ${prompt || ''} ${approvedUnderstanding}`.trim());
+        const analysis = await analyzeFeatureFromSource(`${scopeContextText} ${prompt || ''} ${approvedUnderstanding}`.trim(), { workspaceId: newRun.ownerId || 'default', userId: newRun.ownerId });
         featureUnderstanding = analysis.understanding;
         newRun.feature_understanding = featureUnderstanding;
         pushPhase(newRun, {
@@ -1316,7 +1317,7 @@ export function registerAgentRoutes(app: Express) {
   app.post('/api/agent/rework-case', async (req, res) => {
     try {
       const { testCase, feedback, targetUrl } = req.body;
-      const ai = await getOrchestrator('caseReworker');
+      const ai = await getOrchestrator('caseReworker', { workspaceId: reqScope(req).userId || 'default' });
       const result = await ai.generateObject<any>({
         prompt: `Target URL: ${targetUrl || 'not provided'}. Current case: ${JSON.stringify(testCase)}. Feedback: ${feedback || 'Improve clarity and coverage.'}`,
         schema: z.object({
@@ -1350,7 +1351,7 @@ export function registerAgentRoutes(app: Express) {
       const expansionPrompt = selectedStep
         ? `Break only this selected QA test step into exactly ${requestedCount} smaller executable sub-steps. Preserve the selected step intent and do not expand unrelated test case steps. Return only replacement rows for the selected step. Target URL: ${targetUrl || 'not provided'}. Full test case context: ${JSON.stringify(testCase)}. Selected step ${selectedStepIndex + 1}: ${JSON.stringify(selectedStep)}`
         : `Break this QA test case into exactly ${requestedCount} clear, granular, executable test steps. Preserve the original intent, credentials, target URL, assertions, and coverage. Do not add unrelated scenarios. Each step must have one specific user/system action and one matching expected result. Target URL: ${targetUrl || 'not provided'}. Test case: ${JSON.stringify(testCase)}`;
-      const ai = await getOrchestrator('stepExpander');
+      const ai = await getOrchestrator('stepExpander', { workspaceId: reqScope(req).userId || 'default' });
       const result = await ai.generateObject<any>({
         prompt: expansionPrompt,
         schema: z.object({

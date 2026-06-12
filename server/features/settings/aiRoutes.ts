@@ -22,6 +22,13 @@ import {
 import { type AgentName, CANONICAL_AGENTS } from '../../ai/systemPrompts';
 import { setDailyLimit, getDailyLimit, listUsage, getDailyCost } from '../../ai/costTracker';
 import { recentGuardrailLogs } from '../../ai/guardrails';
+import { reqScope } from '../../shared/scope';
+
+// Cost + usage are tracked per app-user (each profile sees only their own spend/logs).
+// The acting user's id is the usage "workspace"; fall back to 'default' when unauthenticated.
+function usageWorkspace(req: any): string {
+  return reqScope(req).userId || 'default';
+}
 
 // Only the consolidated 7 roles are shown/managed in the UI. Legacy agent keys
 // still resolve (aliased) but are no longer surfaced for editing.
@@ -240,7 +247,7 @@ export function registerSettingsRoutes(app: Express) {
   /* ---------- cost / guardrails ---------- */
 
   app.get('/api/ai/cost', (req, res) => {
-    const workspaceId = (req.query.workspaceId as string) || 'default';
+    const workspaceId = usageWorkspace(req);
     const limit = getDailyLimit();
     const used = getDailyCost(workspaceId);
     res.json({ workspaceId, used, limit, currency: 'USD', autonomyLevel: db.settings?.autonomyLevel || 'review', guardrailLogs: recentGuardrailLogs() });
@@ -265,7 +272,7 @@ export function registerSettingsRoutes(app: Express) {
   });
 
   app.get('/api/ai/usage', (req, res) => {
-    const workspaceId = (req.query.workspaceId as string) || 'default';
+    const workspaceId = usageWorkspace(req);
     const limit = Math.min(500, Number(req.query.limit) || 100);
     res.json({ usage: listUsage(workspaceId, limit) });
   });
