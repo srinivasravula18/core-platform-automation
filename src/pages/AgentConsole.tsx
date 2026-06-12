@@ -516,11 +516,20 @@ export default function AgentConsole() {
         { id: thinkingId, role: 'assistant', kind: 'thinking', label: 'Understanding your request…' },
       ]);
 
+      // A pending "Here's what I understood" card only consumes a SHORT folder-like reply
+      // (a folder name, or "auto"/"proceed"). ANY other message means the user moved on or
+      // is asking something new — abandon the card and route this message fresh, so a
+      // follow-up question ("what else should I test?") gets a chat answer instead of being
+      // swallowed as a correction. (Corrections are still possible by editing the card's box.)
+      const proceedingDeep = !!pendingDeep && isLikelyFolderResponse(text);
+      if (pendingDeep && !proceedingDeep) setPendingDeep(null);
+      const activePending = proceedingDeep ? pendingDeep : null;
+
       // Requirement-based testing path: search the target app source for a feature
       // / section, reconcile against existing coverage, propose gap cases. Only when
       // no URL or stored website is referenced (those want live inspection instead).
       if (
-        !pendingDeep &&
+        !activePending &&
         (reqMode || (REQ_RE.test(text) && !extractTargetUrl(text) && !findWebsiteInText(text, websites)))
       ) {
         try {
@@ -592,10 +601,10 @@ export default function AgentConsole() {
       // multi-agent pipeline. Triggered by a URL, generation keywords, OR a
       // request to test a stored website by name. Before preparing, we ask the
       // user which folder to save the results in (unless one is mentioned).
-      const promptForDeep = pendingDeep?.prompt || text;
-      const explicitUrl = pendingDeep?.targetUrl || extractTargetUrl(promptForDeep);
-      const site = pendingDeep?.websiteId
-        ? websites.find((w) => w.id === pendingDeep.websiteId) || null
+      const promptForDeep = activePending?.prompt || text;
+      const explicitUrl = activePending?.targetUrl || extractTargetUrl(promptForDeep);
+      const site = activePending?.websiteId
+        ? websites.find((w) => w.id === activePending.websiteId) || null
         : findWebsiteInText(promptForDeep, websites);
       // Fall back to the SELECTED project/app's base URL so a generation request in an
       // ongoing conversation ("generate the test cases") runs the full deep pipeline
@@ -611,11 +620,11 @@ export default function AgentConsole() {
       // for real generation, so plain "create a test plan/suite/run" still uses the planner.
       const isGenerationReq = DEEP_RE.test(promptForDeep);
       const wantsGeneration = isGenerationReq || (explicitTarget && siteActionable(promptForDeep));
-      const isDeep = pendingDeep ? true : (wantsGeneration && hasTarget);
+      const isDeep = activePending ? true : (wantsGeneration && hasTarget);
 
       // Generation requested but no target anywhere (e.g. "All apps" selected and no URL
       // typed): ask which app/URL to run against — never fall through to the plan-card.
-      if (!pendingDeep && wantsGeneration && !hasTarget) {
+      if (!activePending && wantsGeneration && !hasTarget) {
         replaceTurn(thinkingId, {
           id: thinkingId,
           role: 'assistant',
@@ -627,21 +636,21 @@ export default function AgentConsole() {
         return;
       }
       if (isDeep) {
-        if (pendingDeep && !isLikelyFolderResponse(text)) {
+        if (activePending && !isLikelyFolderResponse(text)) {
           try {
             const revised = await requestDeepUnderstanding({
-              prompt: pendingDeep.prompt,
-              targetUrl: pendingDeep.targetUrl,
-              targetName: pendingDeep.websiteName,
-              currentUnderstanding: pendingDeep.understanding,
+              prompt: activePending.prompt,
+              targetUrl: activePending.targetUrl,
+              targetName: activePending.websiteName,
+              currentUnderstanding: activePending.understanding,
               correction: text,
             });
             const nextPending: PendingDeep = {
-              ...pendingDeep,
-              understanding: revised.understanding || pendingDeep.understanding,
-              targetUrl: revised.targetUrl || pendingDeep.targetUrl,
-              websiteName: revised.targetName || pendingDeep.websiteName,
-              revisionCount: pendingDeep.revisionCount + 1,
+              ...activePending,
+              understanding: revised.understanding || activePending.understanding,
+              targetUrl: revised.targetUrl || activePending.targetUrl,
+              websiteName: revised.targetName || activePending.websiteName,
+              revisionCount: activePending.revisionCount + 1,
             };
             setPendingDeep(nextPending);
             replaceTurn(thinkingId, {
@@ -671,7 +680,7 @@ export default function AgentConsole() {
         }
 
         // Ask for a folder first (only when we haven't already asked).
-        if (!pendingDeep) {
+        if (!activePending) {
           const mentionsFolder = /\bfolder\b/i.test(text) || /@\w+/.test(text);
           if (!mentionsFolder) {
             const target = site ? `${site.name} (${site.baseUrl})` : targetUrl;
@@ -717,10 +726,10 @@ export default function AgentConsole() {
             return;
           }
         }
-        const folderMention = pendingDeep
+        const folderMention = activePending
           ? (isAutoFolderResponse(text) ? '' : stripFolderPrefix(text))
           : '';
-        const approvedUnderstanding = pendingDeep?.understanding || '';
+        const approvedUnderstanding = activePending?.understanding || '';
         setPendingDeep(null);
         try {
           const res = await fetch('/api/agent/start', {
@@ -892,7 +901,49 @@ export default function AgentConsole() {
         inputRef.current?.focus();
       }
     },
-    [input, busy, location.pathname, stopListening, replaceTurn, requestDeepUnderstanding, reqMode, pendingDeep, websites],
+    [input, busy, location.pathname, stopListening, replaceTurn, requestDeepUnderstanding, reqMode, pendingDeep, websites, scopeApp],
+  );
+
+  // Start the deep run directly from a "Here's what I understood" card's OWN stored data
+  // (understanding + target), independent of the volatile pendingDeep state. This keeps
+  // the Proceed buttons working even if the user typed other messages after the card
+  // appeared (which clears pendingDeep), so they never misfire into the planner.
+  const proceedDeepFromTurn = useCallback(
+    async (turn: { id: string; understanding?: string; originalPrompt?: string; targetUrl?: string; websiteId?: string }, folderName?: string) => {
+      if (busy) return;
+      setBusy(true);
+      setPendingDeep(null);
+      replaceTurn(turn.id, { id: turn.id, role: 'assistant', kind: 'thinking', label: 'Starting the run…' });
+      try {
+        const res = await fetch('/api/agent/start', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            app_url: turn.targetUrl || '',
+            websiteId: turn.websiteId || undefined,
+            prompt: turn.originalPrompt || '',
+            approvedUnderstanding: turn.understanding || '',
+            testCaseCount: parseCaseCount(turn.originalPrompt || ''),
+            flowMode: 'review_cases',
+            folderMention: folderName || undefined,
+          }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (data?.task_id) {
+          replaceTurn(turn.id, { id: turn.id, role: 'assistant', kind: 'deeprun', taskId: data.task_id });
+        } else if (data?.chat_response) {
+          replaceTurn(turn.id, { id: turn.id, role: 'assistant', kind: 'text', text: data.chat_response });
+        } else {
+          replaceTurn(turn.id, { id: turn.id, role: 'assistant', kind: 'text', text: data?.error || 'I could not start the run. Check that an AI provider key is set in Settings.' });
+        }
+      } catch (err: any) {
+        replaceTurn(turn.id, { id: turn.id, role: 'assistant', kind: 'text', text: `Something went wrong starting the run: ${err?.message || 'unknown error'}.` });
+      } finally {
+        setBusy(false);
+        inputRef.current?.focus();
+      }
+    },
+    [busy, replaceTurn],
   );
 
   const executePlan = useCallback(
@@ -1237,13 +1288,13 @@ export default function AgentConsole() {
                         <p className="text-[var(--text-primary)]">{turn.text}</p>
                         <div className="mt-2.5 flex flex-wrap gap-2">
                           <button
-                            onClick={() => send('auto')}
+                            onClick={() => proceedDeepFromTurn(turn)}
                             className="inline-flex items-center gap-1.5 rounded-md bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-white hover:bg-[var(--accent-hover)]"
                           >
                             <Sparkles className="h-3.5 w-3.5" /> Proceed (auto folder)
                           </button>
                           <button
-                            onClick={() => send('auto')}
+                            onClick={() => proceedDeepFromTurn(turn)}
                             className="inline-flex items-center gap-1.5 rounded-md border border-[var(--accent)] bg-[var(--accent)]/10 px-3 py-1.5 text-xs font-medium text-[var(--accent)] hover:bg-[var(--accent)]/15"
                           >
                             <Wand2 className="h-3.5 w-3.5" /> Use edited understanding
