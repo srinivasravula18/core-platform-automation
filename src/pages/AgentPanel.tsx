@@ -323,7 +323,7 @@ export default function AgentPanel() {
   };
 
   return (
-    <div className="app-page-shell agent-panel-shell h-full flex flex-col gap-6">
+    <div className="app-page-shell app-page-shell-fluid h-full flex flex-col gap-6">
       {(isGenerating || runData) && (
         <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-card)] p-4 shadow-sm">
           <div className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">Agent Pipeline</div>

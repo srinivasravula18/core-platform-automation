@@ -90,22 +90,9 @@
     }
   }
 
-  .agent-panel-shell {
-    width: min(100%, 1440px);
-  }
-
-  @media (min-width: 1600px) {
-    .agent-panel-shell {
-      width: calc(100vw - 72px);
-      max-width: 1880px;
-    }
-  }
-
-  @media (min-width: 2200px) {
-    .agent-panel-shell {
-      width: calc(100vw - 96px);
-      max-width: 2360px;
-    }
+  .app-page-shell-fluid {
+    width: 100%;
+    max-width: none;
   }
 }
 

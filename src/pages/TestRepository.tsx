@@ -167,7 +167,7 @@ export default function TestRepository() {
   };
 
   return (
-    <div className="app-page-shell flex h-full min-h-0 flex-col gap-5 overflow-hidden">
+    <div className="app-page-shell app-page-shell-fluid flex h-full min-h-0 flex-col gap-5 overflow-hidden">
       <div className="flex flex-shrink-0 items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Test Repository</h1>
@@ -175,7 +175,7 @@ export default function TestRepository() {
         </div>
       </div>
 
-      <div className="grid min-h-0 flex-1 grid-cols-1 gap-5 overflow-hidden lg:grid-cols-[340px_minmax(0,1fr)]">
+      <div className="grid min-h-0 flex-1 grid-cols-1 gap-5 overflow-hidden lg:grid-cols-[clamp(18rem,22vw,21.25rem)_minmax(0,1fr)]">
         <aside className="flex min-h-0 flex-col overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--bg-card)]">
           <div className="space-y-4 border-b border-[var(--border)] p-4">
             <div>
