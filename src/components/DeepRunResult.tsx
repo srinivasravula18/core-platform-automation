@@ -20,6 +20,7 @@ import {
   SplitSquareHorizontal,
   Pencil,
   RotateCcw,
+  Clock,
 } from 'lucide-react';
 
 /**
@@ -150,6 +151,37 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
     const msg = (run?.messages || []).filter((m: any) => m.agent === agent).pop();
     return msg?.status || 'pending';
   };
+
+  /* ---------- timing (per-phase + total) ---------- */
+  const fmtDuration = (ms: number | null): string => {
+    if (ms == null || ms < 0) return '';
+    const s = Math.round(ms / 1000);
+    if (s < 60) return `${s}s`;
+    const m = Math.floor(s / 60);
+    const rem = s % 60;
+    return rem ? `${m}m ${rem}s` : `${m}m`;
+  };
+  // Duration of one phase from its 'running' stamp to its terminal stamp. The
+  // still-running phase has no terminal yet, so it ticks live off Date.now().
+  const phaseMs = (agent: string): number | null => {
+    const msgs = (run?.messages || []).filter((m: any) => m.agent === agent);
+    const start = msgs.find((m: any) => m.status === 'running' && m.at);
+    if (!start?.at) return null;
+    const end = [...msgs].reverse().find((m: any) => ['completed', 'failed', 'skipped'].includes(m.status) && m.at);
+    const endAt = end?.at ? Date.parse(end.at) : (isRunning ? Date.now() : null);
+    if (endAt == null) return null;
+    return Math.max(0, endAt - Date.parse(start.at));
+  };
+  // Wall-clock from run start to finish, minus any human case-review pause, so the
+  // headline number reflects automation time rather than how long the user deliberated.
+  const totalMs: number | null = (() => {
+    if (!run?.created_at) return null;
+    const start = Date.parse(run.created_at);
+    if (Number.isNaN(start)) return null;
+    const end = run.completed_at ? Date.parse(run.completed_at) : (isRunning ? Date.now() : null);
+    if (end == null) return null;
+    return Math.max(0, end - start - (run.paused_ms || 0));
+  })();
   // While the run is working, animate the first not-yet-done stage so the card
   // never looks frozen between status updates.
   const activePipelineIdx = isRunning
@@ -417,20 +449,31 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
             {run?.artifactName || 'Deep test generation'}
           </span>
         </div>
-        <span
-          className={cn(
-            'shrink-0 rounded-md border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider',
-            failed
-              ? 'border-red-500/20 bg-red-500/10 text-red-400'
-              : status === 'completed'
-                ? 'border-emerald-500/20 bg-emerald-500/10 text-emerald-400'
-                : reviewing
-                  ? 'border-amber-500/20 bg-amber-500/10 text-amber-400'
-                  : 'border-[var(--accent)]/20 bg-[var(--accent)]/10 text-[var(--accent)]',
+        <div className="flex shrink-0 items-center gap-2">
+          {totalMs != null && (
+            <span
+              className="inline-flex items-center gap-1 text-[11px] font-medium text-[var(--text-muted)]"
+              title={status === 'completed' || failed ? 'Total time to complete this run (excludes case-review time)' : 'Elapsed so far'}
+            >
+              <Clock className="h-3 w-3" />
+              {fmtDuration(totalMs)}
+            </span>
           )}
-        >
-          {failed ? 'failed' : status === 'completed' ? 'done' : reviewing ? 'review' : 'working'}
-        </span>
+          <span
+            className={cn(
+              'rounded-md border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider',
+              failed
+                ? 'border-red-500/20 bg-red-500/10 text-red-400'
+                : status === 'completed'
+                  ? 'border-emerald-500/20 bg-emerald-500/10 text-emerald-400'
+                  : reviewing
+                    ? 'border-amber-500/20 bg-amber-500/10 text-amber-400'
+                    : 'border-[var(--accent)]/20 bg-[var(--accent)]/10 text-[var(--accent)]',
+            )}
+          >
+            {failed ? 'failed' : status === 'completed' ? 'done' : reviewing ? 'review' : 'working'}
+          </span>
+        </div>
       </div>
 
       {/* Pipeline */}
@@ -467,6 +510,12 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
                   <span className="h-3 w-3 rounded-full border border-current opacity-40" />
                 )}
                 {p.label}
+                {(() => {
+                  const d = phaseMs(p.key);
+                  return d != null && (effState === 'completed' || effState === 'running' || effState === 'failed')
+                    ? <span className="opacity-70 tabular-nums">· {fmtDuration(d)}</span>
+                    : null;
+                })()}
               </span>
               {i < PIPELINE.length - 1 && <span className="text-[var(--text-muted)]">·</span>}
             </div>

@@ -288,6 +288,20 @@ async function persistAgentScripts(run: any) {
   persistDataInBackground('agent scripts');
 }
 
+// Stamp every pipeline phase message with an ISO timestamp so the Agent Console
+// can show per-phase durations and a total. Routing phase boundaries through
+// this keeps timing accurate without threading a clock through each call site.
+function nowIso(): string { return new Date().toISOString(); }
+function pushPhase(run: any, msg: any): void {
+  run.messages.push({ ...msg, at: nowIso() });
+}
+// Mark the run as finished (or failed) and record the wall-clock end so the UI
+// can compute total time. paused_ms (human review gap) is excluded by the UI.
+function markRunDone(run: any, status: 'completed' | 'failed'): void {
+  run.status = status;
+  run.completed_at = nowIso();
+}
+
 async function persistAgentRunArtifacts(run: any) {
   const now = new Date();
   const date = now.toISOString().split('T')[0];
@@ -359,7 +373,7 @@ async function runPostCaseAgentFlow(run: any, model: any, testCases: any, target
   const liveCreds = liveCredentials && liveCredentials.username && liveCredentials.password
     ? liveCredentials
     : (run.credentials || {});
-  run.messages.push({ agent: 'PlaywrightAgent', status: 'running' });
+  pushPhase(run, { agent: 'PlaywrightAgent', status: 'running' });
   // Use the REAL (live) credentials so the generated scripts contain a working
   // login — run.credentials stores a MASKED password unsuitable for execution.
   const credentialContext = buildCredentialContext(liveCreds);
@@ -399,18 +413,18 @@ Test cases: ${JSON.stringify(testCases)}${coderKnowledge}`,
   // GIT-AGENT GATE: verify every selector against the app's REAL source before running.
   await verifyScriptsWithGitAgent(run, run.playwright_scripts, run.prompt || '');
   await persistAgentScripts(run);
-  run.messages.push({ agent: 'PlaywrightAgent', status: 'completed', output: scripts });
+  pushPhase(run, { agent: 'PlaywrightAgent', status: 'completed', output: scripts });
 
-  run.messages.push({ agent: 'EvidenceAgent', status: 'running' });
+  pushPhase(run, { agent: 'EvidenceAgent', status: 'running' });
   if (targetUrl) {
     const evidence = await runScriptsAndCollectEvidence(run, targetUrl, testCases, liveCreds);
     run.evidence_screenshots = evidence as any;
-    run.messages.push({ agent: 'EvidenceAgent', status: 'completed', output: evidence });
+    pushPhase(run, { agent: 'EvidenceAgent', status: 'completed', output: evidence });
   } else {
-    run.messages.push({ agent: 'EvidenceAgent', status: 'skipped', output: 'No target URL was provided in chat and no Website Credentials row is selected for Playwright.' });
+    pushPhase(run, { agent: 'EvidenceAgent', status: 'skipped', output: 'No target URL was provided in chat and no Website Credentials row is selected for Playwright.' });
   }
 
-  run.status = 'completed';
+  markRunDone(run, 'completed');
   await persistAgentRunArtifacts(run);
 }
 
@@ -444,7 +458,7 @@ async function verifyScriptsWithGitAgent(run: any, scripts: any[], prompt: strin
       .map((f) => `// FILE: ${f.path}\n${readRepoFile(f.path, 5000)}`)
       .join('\n\n---\n\n');
 
-    run.messages.push({ agent: 'SelectorVerifier', status: 'running' });
+    pushPhase(run, { agent: 'SelectorVerifier', status: 'running' });
     // Use the inspector role for verification so this big call lands on a DIFFERENT
     // model than the coder (spreads load across free per-model rate limits).
     const verifier = await getOrchestrator('appInspector');
@@ -465,7 +479,7 @@ ${s.code}`,
         if (code && code.length > 80 && /test\(/.test(code)) { s.code = code; fixed += 1; }
       } catch { /* keep the original script if verification fails */ }
     }
-    run.messages.push({ agent: 'SelectorVerifier', status: 'completed', output: `Checked ${scripts.length} script(s) against ${files.length} source file(s); corrected ${fixed}.` });
+    pushPhase(run, { agent: 'SelectorVerifier', status: 'completed', output: `Checked ${scripts.length} script(s) against ${files.length} source file(s); corrected ${fixed}.` });
   } catch (e: any) {
     run.messages.push({ agent: 'SelectorVerifier', status: 'completed', output: `Selector verification skipped: ${e?.message || e}` });
   }
@@ -875,6 +889,9 @@ export function registerAgentRoutes(app: Express) {
       credentials: safeCredentialsForLog,
       artifactName: buildFallbackArtifactName(prompt || '', targetUrl),
       created_at: new Date(),
+      completed_at: null as string | null,
+      review_started_at: null as string | null,
+      paused_ms: 0,
     };
     newRun.messages.push({
       agent: 'System',
@@ -914,7 +931,7 @@ export function registerAgentRoutes(app: Express) {
       }
       const credentialContext = buildCredentialContext(credentials);
 
-      newRun.messages.push({ agent: 'ApplicationInspector', status: 'running' });
+      pushPhase(newRun, { agent: 'ApplicationInspector', status: 'running' });
       const inspectionContext = await inspectApplicationFlow({
         targetUrl,
         prompt: approvedUnderstanding ? `${prompt || ''}\n\nApproved understanding:\n${approvedUnderstanding}` : prompt || '',
@@ -924,7 +941,7 @@ export function registerAgentRoutes(app: Express) {
         knowledge: inspectorKnowledge,
       });
       newRun.inspection_context = inspectionContext;
-      newRun.messages.push({ agent: 'ApplicationInspector', status: 'completed', output: inspectionContext });
+      pushPhase(newRun, { agent: 'ApplicationInspector', status: 'completed', output: inspectionContext });
 
       // Auto-grow the app knowledge: feed back a compact summary of what the live
       // inspector actually saw, so the pack keeps up with features added after it was written.
@@ -937,7 +954,7 @@ export function registerAgentRoutes(app: Express) {
         recordObservation({ websiteId: req.body.websiteId, targetUrl, text: prompt || '' }, obsNote);
       } catch { /* observation is best-effort */ }
 
-      newRun.messages.push({ agent: 'TestGenerationAgent', status: 'running' });
+      pushPhase(newRun, { agent: 'TestGenerationAgent', status: 'running' });
       const caseWriter = await getOrchestrator('caseWriter');
       const caseResult = await caseWriter.generateObject<any>({
         prompt: `User prompt: ${prompt || 'not provided'}.
@@ -958,7 +975,7 @@ Each test case must include automation tags in @ format, for example @bvt, @sani
       });
       const testCases = caseResult.object;
       newRun.generated_cases = (testCases.test_cases as any[]).map((testCase) => ({ ...testCase, captureEvidence: true }));
-      newRun.messages.push({ agent: 'TestGenerationAgent', status: 'completed', output: testCases });
+      pushPhase(newRun, { agent: 'TestGenerationAgent', status: 'completed', output: testCases });
       await persistAgentCaseArtifacts(newRun);
 
       // Push every generated case to the inbox as a pending decision, so the
@@ -980,7 +997,8 @@ Each test case must include automation tags in @ format, for example @bvt, @sani
 
       if (flowMode === 'review_cases') {
         newRun.status = 'review_required';
-        newRun.messages.push({ agent: 'System', status: 'review_required', output: 'Review and edit generated test cases, then continue the agent flow.' });
+        newRun.review_started_at = nowIso();
+        pushPhase(newRun, { agent: 'System', status: 'review_required', output: 'Review and edit generated test cases, then continue the agent flow.' });
         persistDataInBackground('review-required agent run');
         return;
       }
@@ -988,8 +1006,8 @@ Each test case must include automation tags in @ format, for example @bvt, @sani
       await runPostCaseAgentFlow(newRun, undefined as any, testCases, targetUrl, credentials);
     } catch (err: any) {
       console.error('AI Gen Error:', err);
-      newRun.status = 'failed';
-      newRun.messages.push({ agent: 'System', status: 'failed', output: getAIErrorMessage(err) });
+      markRunDone(newRun, 'failed');
+      pushPhase(newRun, { agent: 'System', status: 'failed', output: getAIErrorMessage(err) });
       persistDataInBackground('failed agent run');
     }
   });
@@ -1004,6 +1022,12 @@ Each test case must include automation tags in @ format, for example @bvt, @sani
     }
 
     run.status = 'running';
+    // The human just finished reviewing cases — fold that idle gap into paused_ms
+    // so the reported total reflects automation time, not how long they deliberated.
+    if (run.review_started_at) {
+      run.paused_ms = (run.paused_ms || 0) + Math.max(0, Date.parse(nowIso()) - Date.parse(run.review_started_at));
+      run.review_started_at = null;
+    }
     run.generated_cases = cases;
     run.playwright_scripts = [];
     run.evidence_screenshots = [];
@@ -1018,8 +1042,8 @@ Each test case must include automation tags in @ format, for example @bvt, @sani
       await runPostCaseAgentFlow(run, undefined as any, { test_cases: cases }, run.app_url || '', liveCreds);
     } catch (err: any) {
       console.error('AI Continue Error:', err);
-      run.status = 'failed';
-      run.messages.push({ agent: 'System', status: 'failed', output: getAIErrorMessage(err) });
+      markRunDone(run, 'failed');
+      pushPhase(run, { agent: 'System', status: 'failed', output: getAIErrorMessage(err) });
       persistDataInBackground('failed continued agent run');
     }
   });
