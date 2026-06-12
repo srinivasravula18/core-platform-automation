@@ -260,17 +260,23 @@ export interface DiscoverResult {
 
 export async function discoverRequirement(
   query: string,
-  opts: { workspaceId?: string; userId?: string } = {},
+  opts: { workspaceId?: string; userId?: string; role?: string } = {},
 ): Promise<DiscoverResult> {
   const workspaceId = opts.workspaceId || 'default';
+  const ownerId = opts.userId || '';
   const cleanQuery = String(query || '').trim();
   if (!cleanQuery) throw new Error('A feature or section to test is required.');
 
   // 1) Feature analyst: produce a grounded requirement understanding from the source.
   const { understanding, files } = await analyzeFeatureFromSource(cleanQuery, opts);
 
-  // 2) Reconcile against existing cases — reuse the analysisService coverage pattern.
-  const existingCases = (await Cases.list()).slice(0, 100).map((c: any) => ({
+  // 2) Reconcile against existing cases — only the discovering user's own cases when
+  // they're a tester, so isolation holds (admins reconcile against everything).
+  const allCases = await Cases.list();
+  const scopedCases = ownerId
+    ? allCases.filter((c: any) => (c.ownerId || '') === ownerId)
+    : allCases;
+  const existingCases = scopedCases.slice(0, 100).map((c: any) => ({
     id: c.id,
     title: c.title,
     tags: c.tags || [],
@@ -328,6 +334,7 @@ Do the following and return strict JSON matching the schema:
       createdBy: 'Feature Analyst',
       proposedBy: 'Feature Analyst',
       approvalState: 'pending_review',
+      ownerId,
     });
     generatedCases.push({ id: caseId, title: pc.title });
   }
@@ -355,6 +362,7 @@ Do the following and return strict JSON matching the schema:
     status: 'Draft',
     approvalState: 'proposed',
     proposedBy: 'Feature Analyst',
+    ownerId,
   });
 
   // 4) Link existing covering cases and the generated gap cases.

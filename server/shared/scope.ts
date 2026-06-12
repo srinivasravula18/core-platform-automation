@@ -17,6 +17,10 @@ export interface Scope {
   projectId: string;
   /** Selected app id, or null for project-level (cross-app). */
   appId: string | null;
+  /** Logged-in app user id, or '' when unauthenticated. Drives per-user isolation. */
+  userId?: string;
+  /** Logged-in user's role ('admin' sees all data; 'tester' sees only their own). */
+  role?: string;
 }
 
 function headerOrBody(req: Request, header: string, bodyKey: string): string {
@@ -30,7 +34,10 @@ function headerOrBody(req: Request, header: string, bodyKey: string): string {
 export function getScope(req: Request): Scope {
   const projectId = headerOrBody(req, 'x-project-id', 'projectId');
   const appId = headerOrBody(req, 'x-app-id', 'appId');
-  return { projectId, appId: appId || null };
+  // authContextMiddleware (registered before scopeMiddleware) resolves the token
+  // into the logged-in user; read it here without importing the auth module.
+  const authUser = (req as any).authUser as { userId?: string; role?: string } | null | undefined;
+  return { projectId, appId: appId || null, userId: authUser?.userId || '', role: authUser?.role || '' };
 }
 
 /** Express middleware: attach `req.scope` for every request. */
@@ -50,9 +57,17 @@ export function reqScope(req: Request): Scope {
  * - Untagged rows (no projectId) → visible in every project (non-breaking).
  * - App selected → that app's rows + project-level (untagged-app) rows.
  */
-export function scopeFilter<T extends { projectId?: string; appId?: string }>(items: T[], scope: Scope): T[] {
-  if (!scope.projectId) return items;
-  return items.filter((it) => {
+export function scopeFilter<T extends { projectId?: string; appId?: string; ownerId?: string }>(items: T[], scope: Scope): T[] {
+  let out = items;
+  // Per-user isolation FIRST and independent of project selection: every logged-in
+  // user (including admin) sees ONLY rows they own — no cross-user data visibility.
+  // Legacy/unowned rows are reassigned to admin at startup (claimLegacyDataForAdmin).
+  // Unauthenticated/internal callers (no userId) bypass this.
+  if (scope.userId) {
+    out = out.filter((it) => (it.ownerId || '') === scope.userId);
+  }
+  if (!scope.projectId) return out;
+  return out.filter((it) => {
     if (!it.projectId) return true;
     if (it.projectId !== scope.projectId) return false;
     if (scope.appId && it.appId && it.appId !== scope.appId) return false;
@@ -60,8 +75,15 @@ export function scopeFilter<T extends { projectId?: string; appId?: string }>(it
   });
 }
 
-/** Fields to stamp onto a new record so it belongs to the current scope. */
-export function scopeStamp(scope: Scope): { projectId?: string; appId?: string } {
-  if (!scope.projectId) return {};
-  return { projectId: scope.projectId, appId: scope.appId || '' };
+/** Fields to stamp onto a new record so it belongs to the current scope + owner. */
+export function scopeStamp(scope: Scope): { projectId?: string; appId?: string; ownerId?: string } {
+  const stamp: { projectId?: string; appId?: string; ownerId?: string } = {};
+  if (scope.projectId) {
+    stamp.projectId = scope.projectId;
+    stamp.appId = scope.appId || '';
+  }
+  // Stamp the owner even when no project is selected, so a tester's data is always
+  // attributable to them (and therefore visible to them, hidden from others).
+  if (scope.userId) stamp.ownerId = scope.userId;
+  return stamp;
 }

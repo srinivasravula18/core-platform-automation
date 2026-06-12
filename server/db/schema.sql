@@ -251,6 +251,7 @@ CREATE TABLE IF NOT EXISTS website_users (
 
 -- A website can have multiple logins (child pages / personas) on the same URL.
 -- These idempotent migrations fix login persistence and add the page fields.
+ALTER TABLE websites ADD COLUMN IF NOT EXISTS owner_id TEXT;
 ALTER TABLE website_users ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
 ALTER TABLE website_users ADD COLUMN IF NOT EXISTS page_name  TEXT DEFAULT '';
 ALTER TABLE website_users ADD COLUMN IF NOT EXISTS page_url   TEXT DEFAULT '';
@@ -424,6 +425,10 @@ BEGIN
   FOREACH t IN ARRAY ARRAY['plans','suites','cases','runs','defects','reports','scripts','folders','requirements','agent_runs'] LOOP
     EXECUTE format('ALTER TABLE %I ADD COLUMN IF NOT EXISTS project_id TEXT', t);
     EXECUTE format('ALTER TABLE %I ADD COLUMN IF NOT EXISTS app_id TEXT', t);
+    -- owner_id: the app user who owns the row (per-user data isolation). NULL/empty
+    -- = legacy/admin data (visible only to admins).
+    EXECUTE format('ALTER TABLE %I ADD COLUMN IF NOT EXISTS owner_id TEXT', t);
     EXECUTE format('CREATE INDEX IF NOT EXISTS %I ON %I(project_id)', t || '_project_idx', t);
+    EXECUTE format('CREATE INDEX IF NOT EXISTS %I ON %I(owner_id)', t || '_owner_idx', t);
   END LOOP;
 END $$;

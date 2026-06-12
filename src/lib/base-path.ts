@@ -11,14 +11,21 @@ export function withBasePath(path: string): string {
   return `${appBasePath}${path}`;
 }
 
-/** Read the selected project/app scope persisted by the project store (localStorage). */
+/**
+ * Headers attached to every same-origin API call: the selected project/app scope
+ * AND the auth token. The token lets the backend resolve the logged-in user and
+ * partition data per user (per-user isolation), so it must ride on every request,
+ * not just /auth/me.
+ */
 function scopeHeaders(): Record<string, string> {
   try {
+    const headers: Record<string, string> = {};
     const projectId = localStorage.getItem('tfa_project_id');
     const appId = localStorage.getItem('tfa_app_id');
-    const headers: Record<string, string> = {};
+    const token = localStorage.getItem('tfa_auth_token');
     if (projectId) headers['X-Project-Id'] = projectId;
     if (appId) headers['X-App-Id'] = appId;
+    if (token) headers['Authorization'] = `Bearer ${token}`;
     return headers;
   } catch {
     return {};

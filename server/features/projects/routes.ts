@@ -15,6 +15,16 @@ import { setRepoToken, getRepoToken, hasRepoToken, clearRepoToken } from './repo
 import { validateRemoteAccess, type RemoteCheck } from './repoSync';
 import { projectRepo } from './projectRepo';
 import { GitHubError } from './githubApi';
+import { reqScope } from '../../shared/scope';
+
+/** Every logged-in user sees only their own projects (no cross-user visibility). */
+function visibleToScope<T extends { ownerId?: string }>(items: T[], req: any): T[] {
+  const scope = reqScope(req);
+  if (scope.userId) {
+    return items.filter((p) => (p.ownerId || '') === scope.userId);
+  }
+  return items;
+}
 
 /** Attach the non-secret `hasToken` flag so the UI can show "token saved" without ever seeing it. */
 function withTokenFlag<T extends { id: string }>(project: T): T & { hasToken: boolean } {
@@ -37,13 +47,18 @@ function applyRemoteStatus(project: Project, check: RemoteCheck) {
 
 export function registerProjectRoutes(app: Express) {
   // ---- Projects ----
-  app.get('/api/projects', (_req, res) => {
-    res.json({ projects: listProjectsWithApps().map(withTokenFlag) });
+  app.get('/api/projects', (req, res) => {
+    res.json({ projects: visibleToScope(listProjectsWithApps(), req).map(withTokenFlag) });
   });
 
   app.get('/api/projects/:id', (req, res) => {
     const project = getProject(req.params.id);
     if (!project) return res.status(404).json({ error: 'Project not found.' });
+    // Don't let one user read another user's project by guessing its id.
+    const scope = reqScope(req);
+    if (scope.userId && (project.ownerId || '') !== scope.userId) {
+      return res.status(404).json({ error: 'Project not found.' });
+    }
     res.json(withTokenFlag({ ...project, apps: listApps(project.id) }));
   });
 
@@ -62,7 +77,7 @@ export function registerProjectRoutes(app: Express) {
         if (!check.ok && check.authFailed) return res.status(400).json({ error: check.error });
       }
 
-      const project = createProject(rest);
+      const project = createProject({ ...rest, ownerId: reqScope(req).userId || '' });
       if (token) setRepoToken(project.id, token);
       if (check) applyRemoteStatus(project, check); // reuse the check — no second network call
       res.status(201).json(withTokenFlag(getProject(project.id)!));

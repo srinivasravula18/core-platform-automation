@@ -145,8 +145,8 @@ export default function GitAgent() {
             <FileCode2 className="w-4 h-4 text-[var(--accent)]" />
           </div>
           <div className="max-h-[520px] overflow-auto">
-            <table className="w-full text-sm">
-              <thead className="sticky top-0 bg-[var(--bg-secondary)] text-[var(--text-muted)] uppercase text-[11px] tracking-wider">
+            <table className="w-full text-sm whitespace-nowrap">
+              <thead className="sticky top-0 z-10 bg-[var(--bg-secondary)] text-[var(--text-muted)] uppercase text-[11px] tracking-wider">
                 <tr>
                   <th className="px-4 py-3 text-left">Path</th>
                   <th className="px-4 py-3 text-left">Area</th>

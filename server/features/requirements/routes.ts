@@ -3,6 +3,7 @@ import { Requirements, RequirementLinks, Cases, isPgEnabled } from '../../db/rep
 import { addActivity, persistDataInBackground } from '../../shared/storage';
 import { getAIErrorMessage } from '../../shared/ai';
 import { discoverRequirement, getRequirementWithCases } from './requirementService';
+import { reqScope, scopeFilter } from '../../shared/scope';
 
 export function registerRequirementRoutes(app: Express) {
   /* ---------- discover: search the target app source, reconcile, propose gaps ---------- */
@@ -10,7 +11,8 @@ export function registerRequirementRoutes(app: Express) {
     try {
       const query = String(req.body?.query || '').trim();
       if (!query) return res.status(400).json({ error: 'Tell me which feature or section to test.' });
-      const result = await discoverRequirement(query, { workspaceId: req.body?.workspaceId || 'default' });
+      const scope = reqScope(req);
+      const result = await discoverRequirement(query, { workspaceId: req.body?.workspaceId || 'default', userId: scope.userId, role: scope.role });
       res.json(result);
     } catch (error: any) {
       res.status(500).json({ error: getAIErrorMessage(error) || error?.message || 'Failed to discover requirement.' });
@@ -18,9 +20,9 @@ export function registerRequirementRoutes(app: Express) {
   });
 
   /* ---------- list with coverage rollup ---------- */
-  app.get('/api/requirements', async (_req, res) => {
+  app.get('/api/requirements', async (req, res) => {
     try {
-      const requirements = await Requirements.list();
+      const requirements = scopeFilter(await Requirements.list(), reqScope(req));
       const links = await RequirementLinks.list();
       const byReq = new Map<string, { existing: number; generated: number }>();
       for (const l of links) {
@@ -43,6 +45,10 @@ export function registerRequirementRoutes(app: Express) {
     try {
       const requirement = await getRequirementWithCases(req.params.id);
       if (!requirement) return res.status(404).json({ error: 'Requirement not found.' });
+      const scope = reqScope(req);
+      if (scope.userId && ((requirement as any).ownerId || '') !== scope.userId) {
+        return res.status(404).json({ error: 'Requirement not found.' });
+      }
       res.json(requirement);
     } catch (error: any) {
       res.status(500).json({ error: error?.message || 'Failed to load requirement.' });

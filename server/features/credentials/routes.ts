@@ -10,6 +10,7 @@
 
 import type { Express } from 'express';
 import { persistDataInBackground } from '../../shared/storage';
+import { reqScope } from '../../shared/scope';
 import {
   listWebsites,
   getWebsite,
@@ -41,9 +42,26 @@ function userResponse(u: any) {
   };
 }
 
+// Every logged-in user may only see/use their own websites (no cross-user access).
+function canAccessWebsite(req: any, websiteId: string): boolean {
+  const scope = reqScope(req);
+  if (!scope.userId) return true;
+  const w = getWebsite(websiteId);
+  return !!w && (w.ownerId || '') === scope.userId;
+}
+function canAccessUser(req: any, userId: string): boolean {
+  const u = getUser(userId);
+  return !!u && canAccessWebsite(req, u.websiteId);
+}
+
 export function registerCredentialsRoutes(app: Express) {
-  app.get('/api/credentials/websites', (_req, res) => {
-    res.json({ websites: listWebsites() });
+  app.get('/api/credentials/websites', (req, res) => {
+    const scope = reqScope(req);
+    let websites = listWebsites();
+    if (scope.userId) {
+      websites = websites.filter((w) => (w.ownerId || '') === scope.userId);
+    }
+    res.json({ websites });
   });
 
   app.post('/api/credentials/websites', (req, res) => {
@@ -55,12 +73,14 @@ export function registerCredentialsRoutes(app: Express) {
       environment: environment || 'staging',
       description: description || '',
       tags: Array.isArray(tags) ? tags : [],
+      ownerId: reqScope(req).userId || '',
     });
     persistDataInBackground('create website');
     res.json({ ok: true, website: w });
   });
 
   app.put('/api/credentials/websites/:id', (req, res) => {
+    if (!canAccessWebsite(req, req.params.id)) return res.status(404).json({ error: 'Website not found' });
     const w = updateWebsite(req.params.id, req.body || {});
     if (!w) return res.status(404).json({ error: 'Website not found' });
     persistDataInBackground('update website');
@@ -68,16 +88,19 @@ export function registerCredentialsRoutes(app: Express) {
   });
 
   app.delete('/api/credentials/websites/:id', (req, res) => {
+    if (!canAccessWebsite(req, req.params.id)) return res.status(404).json({ error: 'Website not found' });
     const ok = deleteWebsite(req.params.id);
     persistDataInBackground('delete website');
     res.json({ ok });
   });
 
   app.get('/api/credentials/websites/:id/users', (req, res) => {
+    if (!canAccessWebsite(req, req.params.id)) return res.status(404).json({ error: 'Website not found' });
     res.json({ users: listUsersForWebsite(req.params.id).map(userResponse) });
   });
 
   app.post('/api/credentials/websites/:id/users', (req, res) => {
+    if (!canAccessWebsite(req, req.params.id)) return res.status(404).json({ error: 'Website not found' });
     const { label, username, password, role, customRole, notes, pageName, pageUrl } = req.body || {};
     if (!label || !username || !password || !role) {
       return res.status(400).json({ error: 'label, username, password, role are required' });
@@ -88,6 +111,7 @@ export function registerCredentialsRoutes(app: Express) {
   });
 
   app.put('/api/credentials/users/:id', (req, res) => {
+    if (!canAccessUser(req, req.params.id)) return res.status(404).json({ error: 'User not found' });
     const u = updateUser(req.params.id, req.body || {});
     if (!u) return res.status(404).json({ error: 'User not found' });
     persistDataInBackground('update user');
@@ -95,6 +119,7 @@ export function registerCredentialsRoutes(app: Express) {
   });
 
   app.delete('/api/credentials/users/:id', (req, res) => {
+    if (!canAccessUser(req, req.params.id)) return res.status(404).json({ error: 'User not found' });
     const ok = deleteUser(req.params.id);
     persistDataInBackground('delete user');
     res.json({ ok });
@@ -102,6 +127,7 @@ export function registerCredentialsRoutes(app: Express) {
 
   app.post('/api/credentials/resolve', (req, res) => {
     const opts = req.body || {};
+    const scope = reqScope(req);
     const resolved = resolveCredentials({
       userId: opts.userId,
       role: opts.role,
@@ -110,6 +136,7 @@ export function registerCredentialsRoutes(app: Express) {
       baseUrl: opts.baseUrl,
       targetUrl: opts.targetUrl,
       inline: opts.inline,
+      ownerId: scope.userId || undefined,
     });
     if (!resolved) return res.status(404).json({ error: 'No matching credentials' });
     res.json({
@@ -124,6 +151,7 @@ export function registerCredentialsRoutes(app: Express) {
   app.post('/api/credentials/reveal', (req, res) => {
     const { userId } = req.body || {};
     if (!userId) return res.status(400).json({ error: 'userId is required' });
+    if (!canAccessUser(req, userId)) return res.status(404).json({ error: 'User not found' });
     try {
       const password = revealPassword(userId);
       res.json({ ok: true, password });

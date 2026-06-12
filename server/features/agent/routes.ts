@@ -205,6 +205,7 @@ async function persistAgentCaseArtifacts(run: any) {
       sourceRunId: run.id,
       projectId: run.projectId || '',
       appId: run.appId || '',
+      ownerId: run.ownerId || '',
     });
   }
 
@@ -227,6 +228,7 @@ async function persistAgentCaseArtifacts(run: any) {
       sourceRunId: run.id,
       projectId: run.projectId || '',
       appId: run.appId || '',
+      ownerId: run.ownerId || '',
     });
   }
 
@@ -253,6 +255,7 @@ async function persistAgentCaseArtifacts(run: any) {
       sourceRunId: run.id,
       projectId: run.projectId || '',
       appId: run.appId || '',
+      ownerId: run.ownerId || '',
     });
   }
 
@@ -283,6 +286,7 @@ async function persistAgentScripts(run: any) {
       createdBy: 'QA Assistant',
       projectId: run.projectId || '',
       appId: run.appId || '',
+      ownerId: run.ownerId || '',
     });
   }
 
@@ -308,6 +312,13 @@ function markRunDone(run: any, status: 'completed' | 'failed'): void {
 // scale to the feature's REAL complexity as understood from the source: roughly one
 // case per distinct business rule and candidate scenario, within a sane floor/ceiling
 // so a trivial feature isn't padded and a complex one isn't starved.
+// For background flows, restrict credential resolution to the run owner's own
+// websites (every user is isolated). Legacy '' owners are reassigned to admin at
+// startup, so admin's pre-existing credentials keep resolving.
+function ownerScopeForRun(run: any): string | undefined {
+  return run?.ownerId || undefined;
+}
+
 function complexityDrivenCaseCount(understanding: any, requested: number): number {
   if (requested && requested > 0) return Math.min(40, requested);
   const rules = Array.isArray(understanding?.businessRules) ? understanding.businessRules.length : 0;
@@ -338,7 +349,7 @@ async function findRelatedExistingCases(run: any, limit = 6): Promise<any[]> {
   let all: any[] = [];
   try { all = await Cases.list(); } catch { return []; }
   if (!Array.isArray(all) || !all.length) return [];
-  const scoped = scopeFilter(all as any[], { projectId: run.projectId || '', appId: run.appId || null });
+  const scoped = scopeFilter(all as any[], { projectId: run.projectId || '', appId: run.appId || null, userId: run.ownerId || '', role: '' });
   const kws = caseMatchKeywords(run);
   if (!kws.length || !scoped.length) return [];
   return scoped
@@ -604,10 +615,11 @@ Test cases: ${JSON.stringify(testCases)}${coderKnowledge}`,
   });
   const scripts = scriptsResult.object;
   run.playwright_scripts = scripts.scripts as any;
-  // GIT-AGENT GATE: verify every selector against the app's REAL source before running.
+  pushPhase(run, { agent: 'PlaywrightAgent', status: 'completed', output: scripts });
+  // GIT-AGENT GATE: verify every selector against the app's REAL source before running
+  // (its own visible "Verify selectors" phase so the wait before evidence is explained).
   await verifyScriptsWithGitAgent(run, run.playwright_scripts, run.prompt || '');
   await persistAgentScripts(run);
-  pushPhase(run, { agent: 'PlaywrightAgent', status: 'completed', output: scripts });
 
   pushPhase(run, { agent: 'EvidenceAgent', status: 'running' });
   if (targetUrl) {
@@ -631,6 +643,7 @@ Test cases: ${JSON.stringify(testCases)}${coderKnowledge}`,
  */
 async function verifyScriptsWithGitAgent(run: any, scripts: any[], prompt: string): Promise<void> {
   if (!Array.isArray(scripts) || !scripts.length) return;
+  pushPhase(run, { agent: 'SelectorVerifier', status: 'running' });
   try {
     const allCode = scripts.map((s) => String(s?.code || '')).join('\n');
     // Candidate selectors used by the generated scripts.
@@ -642,23 +655,29 @@ async function verifyScriptsWithGitAgent(run: any, scripts: any[], prompt: strin
       .filter((t) => !['the', 'and', 'then', 'app', 'with', 'that', 'verify', 'admin'].includes(t))
       .slice(0, 8);
     const patterns = Array.from(new Set([...ids, ...named, ...promptTerms])).slice(0, 18);
-    if (!patterns.length) return;
+    if (!patterns.length) { pushPhase(run, { agent: 'SelectorVerifier', status: 'skipped', output: 'No selectors to verify.' }); return; }
 
     let files: Array<{ path: string }> = [];
-    try { files = gitGrep(patterns); } catch { return; } // target repo missing -> skip silently
-    if (!files.length) return;
+    try { files = gitGrep(patterns); } catch { pushPhase(run, { agent: 'SelectorVerifier', status: 'skipped', output: 'Source repo unavailable — selector verification skipped.' }); return; } // target repo missing
+    if (!files.length) { pushPhase(run, { agent: 'SelectorVerifier', status: 'skipped', output: 'No matching source files — selector verification skipped.' }); return; }
 
     const excerpts = files.slice(0, 4)
       .map((f) => `// FILE: ${f.path}\n${readRepoFile(f.path, 5000)}`)
       .join('\n\n---\n\n');
 
-    pushPhase(run, { agent: 'SelectorVerifier', status: 'running' });
-    // Use the inspector role for verification so this big call lands on a DIFFERENT
+    // Use the inspector role for verification so these calls land on a DIFFERENT
     // model than the coder (spreads load across free per-model rate limits).
     const verifier = await getOrchestrator('appInspector');
     let fixed = 0;
-    for (const s of scripts) {
-      if (!s?.code) continue;
+    // Verify scripts with bounded concurrency. Each script is independent, so a small
+    // worker pool turns N sequential LLM round-trips into ~N/CONCURRENCY waves — this
+    // is the gap between "scripts shown" and "evidence starts" on large suites. Per-
+    // script errors are swallowed (keep the original), so a rate-limited call just
+    // leaves that one script unverified rather than failing the run.
+    const SELECTOR_VERIFY_CONCURRENCY = 4;
+    let cursor = 0;
+    const verifyOne = async (s: any) => {
+      if (!s?.code) return;
       try {
         const res = await verifier.generateObject<any>({
           prompt: `Verify a Playwright script against the application's ACTUAL source code below. For every selector in the script (CSS #id, getByRole name, getByLabel/getByText/getByPlaceholder/getByTestId string), confirm it exists in the source. Replace any selector that is NOT present in the source with the correct one found in the source (e.g. the real element id, label text, or button name). Keep the test structure, step order, testInfo.attach('step-N',...) screenshots, soft assertions, and the final hard assertion intact. If a selector is already correct, keep it unchanged. Return the corrected full script in the "code" field.
@@ -672,10 +691,12 @@ ${s.code}`,
         const code = res?.object?.code;
         if (code && code.length > 80 && /test\(/.test(code)) { s.code = code; fixed += 1; }
       } catch { /* keep the original script if verification fails */ }
-    }
+    };
+    const worker = async () => { while (cursor < scripts.length) { await verifyOne(scripts[cursor++]); } };
+    await Promise.all(Array.from({ length: Math.min(SELECTOR_VERIFY_CONCURRENCY, scripts.length) }, worker));
     pushPhase(run, { agent: 'SelectorVerifier', status: 'completed', output: `Checked ${scripts.length} script(s) against ${files.length} source file(s); corrected ${fixed}.` });
   } catch (e: any) {
-    run.messages.push({ agent: 'SelectorVerifier', status: 'completed', output: `Selector verification skipped: ${e?.message || e}` });
+    pushPhase(run, { agent: 'SelectorVerifier', status: 'completed', output: `Selector verification skipped: ${e?.message || e}` });
   }
 }
 
@@ -1024,6 +1045,7 @@ export function registerAgentRoutes(app: Express) {
       role: req.body.credentialRole,
       websiteId: req.body.websiteId,
       inline: req.body.inlineCredentials,
+      ownerId: scope.userId || undefined,
     });
     const credentials = resolvedCreds || {
       username: '',
@@ -1068,6 +1090,7 @@ export function registerAgentRoutes(app: Express) {
       websiteId: req.body.websiteId || '',
       projectId: scope.projectId || '',
       appId: scope.appId || '',
+      ownerId: scope.userId || '',
       projectName: selectedProject?.name || '',
       appName: selectedApp?.name || '',
       status: 'running',
@@ -1228,7 +1251,7 @@ export function registerAgentRoutes(app: Express) {
     res.json({ success: true, action: act });
 
     try {
-      const liveCreds = resolveCredentials({ targetUrl: run.app_url, websiteId: run.websiteId, role: (run.credentials || {}).role }) || undefined;
+      const liveCreds = resolveCredentials({ targetUrl: run.app_url, websiteId: run.websiteId, role: (run.credentials || {}).role, ownerId: ownerScopeForRun(run) }) || undefined;
       const matched = Array.isArray(run.existing_matches) ? run.existing_matches : [];
 
       if (act === 'reuse' && matched.length) {
@@ -1280,7 +1303,7 @@ export function registerAgentRoutes(app: Express) {
     try {
       // Re-resolve the real credentials (the run only stores a masked copy) so the
       // evidence run can actually log in.
-      const liveCreds = resolveCredentials({ targetUrl: run.app_url, websiteId: run.websiteId, role: (run.credentials || {}).role }) || undefined;
+      const liveCreds = resolveCredentials({ targetUrl: run.app_url, websiteId: run.websiteId, role: (run.credentials || {}).role, ownerId: ownerScopeForRun(run) }) || undefined;
       await runPostCaseAgentFlow(run, undefined as any, { test_cases: cases }, run.app_url || '', liveCreds);
     } catch (err: any) {
       console.error('AI Continue Error:', err);
@@ -1352,6 +1375,7 @@ export function registerAgentRoutes(app: Express) {
     const saveScope = reqScope(req);
     const caseProjectId = linkedRun?.projectId || saveScope.projectId || '';
     const caseAppId = linkedRun?.appId || saveScope.appId || '';
+    const caseOwnerId = linkedRun?.ownerId || saveScope.userId || '';
     const linkedPlanId = linkedRun ? `PLAN-${linkedRun.id.substring(0, 8).toUpperCase()}` : '';
     const linkedSuiteId = linkedRun ? `SUITE-${linkedRun.id.substring(0, 8).toUpperCase()}` : '';
     if (Array.isArray(cases)) {
@@ -1379,6 +1403,7 @@ export function registerAgentRoutes(app: Express) {
           agentRunId: c.agentRunId || linkedRun?.id || null,
           projectId: caseProjectId,
           appId: caseAppId,
+          ownerId: caseOwnerId,
         });
       }
       persistDataInBackground('saved generated cases');

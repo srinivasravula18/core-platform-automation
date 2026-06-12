@@ -326,8 +326,8 @@ function Shell({ children }: { children: React.ReactNode }) {
       </div>
       <div className="flex flex-1 flex-col min-w-0">
         <Topbar onMenuClick={() => setIsSidebarOpen(!isSidebarOpen)} onCommandBarOpen={() => setIsCommandBarOpen(true)} />
-        <main data-sidebar={isSidebarOpen ? 'open' : 'closed'} className="flex-1 overflow-auto p-3 sm:p-6 relative">
-          <div key={scopeKey} className="contents">
+        <main data-sidebar={isSidebarOpen ? 'open' : 'closed'} className="flex-1 min-h-0 overflow-hidden relative flex flex-col">
+          <div key={scopeKey} className="flex-1 min-h-0 overflow-auto p-3 sm:p-6 flex flex-col">
             {children}
           </div>
         </main>

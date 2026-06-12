@@ -66,6 +66,8 @@ export interface Website {
   environment: 'dev' | 'staging' | 'prod' | 'local' | 'preview';
   description: string;
   tags: string[];
+  /** App user who owns this website + its logins (per-user isolation). '' = legacy/admin. */
+  ownerId?: string;
   createdAt: string;
 }
 
@@ -165,6 +167,7 @@ export function createWebsite(opts: Omit<Website, 'id' | 'createdAt'> & { id?: s
     environment: opts.environment || 'staging',
     description: opts.description || '',
     tags: opts.tags || [],
+    ownerId: opts.ownerId || '',
     createdAt: new Date().toISOString(),
   };
   (db.websites as any[]).unshift(rec);
@@ -269,30 +272,39 @@ export interface ResolveOptions {
   inline?: { username?: string; password?: string; siteName?: string };
   /** Target URL to extract hostname from for website auto-match */
   targetUrl?: string;
+  /** Restrict resolution to a single app user's own websites (per-user isolation). */
+  ownerId?: string;
 }
 
 export function resolveCredentials(opts: ResolveOptions): ResolvedCredential | null {
   ensureTables();
   const inline = opts.inline || {};
+  // Per-user isolation: when an owner is given, a run may only resolve against that
+  // user's own websites/logins (never another user's credentials).
+  const ownerOk = (w: any) => !opts.ownerId || (w?.ownerId || '') === opts.ownerId;
+  const sites = (db.websites as any[]).filter(ownerOk);
 
   if (opts.userId) {
     const u = getUser(opts.userId);
     if (u) {
-      const w = getWebsite(u.websiteId)!;
-      return toResolved(u, w, 'user');
+      const w = getWebsite(u.websiteId);
+      if (w && ownerOk(w)) return toResolved(u, w, 'user');
     }
   }
 
   let website: Website | null = null;
-  if (opts.websiteId) website = getWebsite(opts.websiteId);
+  if (opts.websiteId) {
+    const w = getWebsite(opts.websiteId);
+    website = w && ownerOk(w) ? w : null;
+  }
   if (!website && opts.websiteName) {
     const name = opts.websiteName.toLowerCase();
-    website = (db.websites as any[]).find((w) => w.name.toLowerCase().includes(name)) || null;
+    website = sites.find((w) => w.name.toLowerCase().includes(name)) || null;
   }
   if (!website && opts.baseUrl) {
     try {
       const host = new URL(opts.baseUrl).hostname.toLowerCase();
-      website = (db.websites as any[]).find((w) => {
+      website = sites.find((w) => {
         try {
           return new URL(w.baseUrl).hostname.toLowerCase() === host;
         } catch {
@@ -306,7 +318,7 @@ export function resolveCredentials(opts: ResolveOptions): ResolvedCredential | n
   if (!website && opts.targetUrl) {
     try {
       const host = new URL(opts.targetUrl).hostname.toLowerCase();
-      website = (db.websites as any[]).find((w) => {
+      website = sites.find((w) => {
         try {
           return new URL(w.baseUrl).hostname.toLowerCase() === host;
         } catch {
@@ -319,14 +331,13 @@ export function resolveCredentials(opts: ResolveOptions): ResolvedCredential | n
   }
   if (!website && inline.siteName) {
     const name = inline.siteName.toLowerCase();
-    website = (db.websites as any[]).find((w) => w.name.toLowerCase().includes(name)) || null;
+    website = sites.find((w) => w.name.toLowerCase().includes(name)) || null;
   }
   if (!website && inline.username) {
     const users = (db.websiteUsers as any[]).filter((u) => u.username === inline.username);
-    if (users.length > 0) {
-      const u = users[0];
-      const w = getWebsite(u.websiteId)!;
-      return toResolved(u, w, 'website-default');
+    for (const u of users) {
+      const w = getWebsite(u.websiteId);
+      if (w && ownerOk(w)) return toResolved(u, w, 'website-default');
     }
   }
   if (!website) return null;

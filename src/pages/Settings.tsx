@@ -1288,8 +1288,8 @@ function CostSection() {
       <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-card)] p-4 sm:p-6 shadow-sm">
         <h2 className="text-lg font-medium">Recent Usage</h2>
         <div className="mt-3 max-h-96 overflow-auto">
-          <table className="w-full text-sm">
-            <thead className="sticky top-0 bg-[var(--bg-card)] text-xs text-[var(--text-muted)]">
+          <table className="w-full text-sm whitespace-nowrap">
+            <thead className="sticky top-0 z-10 bg-[var(--bg-card)] text-xs text-[var(--text-muted)]">
               <tr>
                 <th className="px-2 py-1 text-left">When</th>
                 <th className="px-2 py-1 text-left">Agent</th>

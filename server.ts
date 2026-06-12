@@ -17,7 +17,8 @@ import { registerControllerRoutes } from './server/features/controller/routes';
 import { registerChatRoutes } from './server/features/chat/routes';
 import { registerPlaywrightRoutes } from './server/features/playwright/routes';
 import { registerSearchRoutes } from './server/features/search/routes';
-import { registerAuthRoutes } from './server/features/auth/routes';
+import { registerAuthRoutes, authContextMiddleware } from './server/features/auth/routes';
+import { seedAuthUsersIfEmpty, claimLegacyDataForAdmin } from './server/features/auth/userStore';
 import { registerProjectRoutes } from './server/features/projects/routes';
 import { seedDefaultProjectAndBackfill } from './server/features/projects/projectService';
 import { scopeMiddleware } from './server/shared/scope';
@@ -34,6 +35,8 @@ async function startServer() {
   await loadPersistedData();
   await loadPersistedSettings();
   seedDefaultKnowledgeIfEmpty();
+  // Ensure the admin + mark app-login accounts exist (multi-user auth + RBAC).
+  seedAuthUsersIfEmpty();
   if (isPgEnabled()) {
     try {
       await ensureMigrated();
@@ -51,10 +54,21 @@ async function startServer() {
   // unscoped data into it (runs after migration so the scope columns are present).
   await seedDefaultProjectAndBackfill();
 
+  // Reassign all pre-existing unowned data to the admin account so it stays visible
+  // under per-user isolation (testers keep their own data; admin gets the legacy set).
+  try {
+    const claim = await claimLegacyDataForAdmin();
+    if (claim) console.log(`[auth] legacy data claimed for admin ${claim.adminId} (in-memory rows: ${claim.claimedInMemory})`);
+  } catch (err: any) {
+    console.error('[auth] legacy data claim failed:', err?.message || err);
+  }
+
   const app = express();
   const PORT = Number(process.env.BACKEND_PORT || process.env.PORT || 3001);
 
   app.use(express.json({ limit: '5mb' }));
+  // Resolve the logged-in user BEFORE scope, so scopeMiddleware can partition data per user.
+  app.use(authContextMiddleware);
   app.use(scopeMiddleware);
   app.use('/evidence', express.static(path.resolve(process.cwd(), 'evidence')));
 

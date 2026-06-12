@@ -33,6 +33,8 @@ export interface Project {
   lastSyncedSha?: string;
   syncStatus: SyncStatus;
   lastError?: string;
+  /** App user who owns this project (per-user isolation). '' = legacy/admin-owned. */
+  ownerId?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -114,6 +116,7 @@ export function createProject(input: Partial<Project> & { name: string }): Proje
     repoAuthRef: input.repoAuthRef || '',
     defaultBranch: input.defaultBranch?.trim() || 'main',
     syncStatus: kind === 'local' ? 'ready' : 'idle',
+    ownerId: input.ownerId || '',
     createdAt: now,
     updatedAt: now,
   };

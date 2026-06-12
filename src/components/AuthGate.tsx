@@ -3,6 +3,7 @@ import { BrainCircuit, Lock, Loader2 } from 'lucide-react';
 
 const TOKEN_KEY = 'tfa_auth_token';
 const USERNAME_KEY = 'tfa_username';
+const ROLE_KEY = 'tfa_role';
 
 export function getAuthToken(): string {
   try {
@@ -20,6 +21,19 @@ export function getUsername(): string {
   }
 }
 
+export function getRole(): 'admin' | 'tester' | '' {
+  try {
+    const r = localStorage.getItem(ROLE_KEY);
+    return r === 'admin' || r === 'tester' ? r : '';
+  } catch {
+    return '';
+  }
+}
+
+export function isAdmin(): boolean {
+  return getRole() === 'admin';
+}
+
 export function logout() {
   try {
     const token = getAuthToken();
@@ -31,6 +45,7 @@ export function logout() {
     }
     localStorage.removeItem(TOKEN_KEY);
     localStorage.removeItem(USERNAME_KEY);
+    localStorage.removeItem(ROLE_KEY);
   } catch {
     /* ignore */
   }
@@ -52,8 +67,13 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
       return;
     }
     fetch('/api/auth/me', { headers: { Authorization: `Bearer ${token}` } })
-      .then((r) => {
+      .then(async (r) => {
         if (r.ok) {
+          const me = await r.json().catch(() => ({}));
+          try {
+            if (me?.role) localStorage.setItem(ROLE_KEY, me.role);
+            if (me?.username) localStorage.setItem(USERNAME_KEY, me.username);
+          } catch { /* ignore */ }
           setStatus('in');
         } else {
           localStorage.removeItem(TOKEN_KEY);
@@ -80,7 +100,10 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
         return;
       }
       localStorage.setItem(TOKEN_KEY, data.token);
-      try { localStorage.setItem(USERNAME_KEY, (data.username || username).trim()); } catch { /* ignore */ }
+      try {
+        localStorage.setItem(USERNAME_KEY, (data.username || username).trim());
+        if (data.role) localStorage.setItem(ROLE_KEY, data.role);
+      } catch { /* ignore */ }
       setStatus('in');
     } catch {
       setError('Could not reach the server. Please try again.');

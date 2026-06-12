@@ -45,6 +45,7 @@ const PIPELINE: { key: string; label: string }[] = [
   { key: 'CoverageScout', label: 'Find existing' },
   { key: 'TestGenerationAgent', label: 'Write cases' },
   { key: 'PlaywrightAgent', label: 'Generate scripts' },
+  { key: 'SelectorVerifier', label: 'Verify selectors' },
   { key: 'EvidenceAgent', label: 'Capture evidence' },
 ];
 

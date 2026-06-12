@@ -427,9 +427,9 @@ export default function TestPlans() {
 
           <div className="p-5 flex-1 overflow-auto">
             {activeDetailTab === 'suites' && (
-              <div className="border border-[var(--border)] rounded-lg overflow-hidden">
-                <table className="w-full text-left text-sm">
-                  <thead className="bg-[var(--bg-secondary)] text-[var(--text-muted)]">
+              <div className="border border-[var(--border)] rounded-lg overflow-auto max-h-[60vh]">
+                <table className="w-full text-left text-sm whitespace-nowrap">
+                  <thead className="sticky top-0 z-10 bg-[var(--bg-secondary)] text-[var(--text-muted)]">
                     <tr>
                       <th className="px-4 py-3 font-medium">Suite ID</th>
                       <th className="px-4 py-3 font-medium">Suite Name</th>
@@ -464,9 +464,9 @@ export default function TestPlans() {
             )}
 
             {activeDetailTab === 'cases' && (
-              <div className="border border-[var(--border)] rounded-lg overflow-hidden">
-                <table className="w-full text-left text-sm">
-                  <thead className="bg-[var(--bg-secondary)] text-[var(--text-muted)]">
+              <div className="border border-[var(--border)] rounded-lg overflow-auto max-h-[60vh]">
+                <table className="w-full text-left text-sm whitespace-nowrap">
+                  <thead className="sticky top-0 z-10 bg-[var(--bg-secondary)] text-[var(--text-muted)]">
                     <tr>
                       <th className="px-4 py-3 font-medium">ID</th>
                       <th className="px-4 py-3 font-medium">Title</th>

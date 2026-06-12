@@ -40,7 +40,7 @@ const SCOPED_TABLES = new Set([
 
 /** Read the scope columns off a row so scopeFilter (route layer) can see them. */
 function scopeFields(r: any) {
-  return { projectId: r.project_id || '', appId: r.app_id || '' };
+  return { projectId: r.project_id || '', appId: r.app_id || '', ownerId: r.owner_id || '' };
 }
 
 /**
@@ -52,10 +52,11 @@ async function writeScopeCols(table: string, id: string, src: any): Promise<void
   if (!isPgEnabled() || !id || !SCOPED_TABLES.has(table)) return;
   const projectId = src?.projectId || null;
   const appId = src?.appId || null;
-  if (!projectId && !appId) return;
+  const ownerId = src?.ownerId || null;
+  if (!projectId && !appId && !ownerId) return;
   await query(
-    `UPDATE ${table} SET project_id = COALESCE($2, project_id), app_id = COALESCE($3, app_id) WHERE id = $1`,
-    [id, projectId, appId],
+    `UPDATE ${table} SET project_id = COALESCE($2, project_id), app_id = COALESCE($3, app_id), owner_id = COALESCE($4, owner_id) WHERE id = $1`,
+    [id, projectId, appId, ownerId],
   );
 }
 
@@ -249,6 +250,7 @@ function mapWebsite(r: any) {
     environment: r.environment,
     description: r.description,
     tags: r.tags,
+    ownerId: r.owner_id || '',
     createdAt: r.created_at,
   };
 }
@@ -291,14 +293,14 @@ export const Websites = {
     }
     const id = w.id || uid('WEB');
     const r = await queryOne(
-      `INSERT INTO websites (id, name, base_url, environment, description, tags)
-       VALUES ($1,$2,$3,$4,$5,$6)
+      `INSERT INTO websites (id, name, base_url, environment, description, tags, owner_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7)
        ON CONFLICT (id) DO UPDATE SET
          name=EXCLUDED.name, base_url=EXCLUDED.base_url,
          environment=EXCLUDED.environment, description=EXCLUDED.description,
-         tags=EXCLUDED.tags
+         tags=EXCLUDED.tags, owner_id=COALESCE(EXCLUDED.owner_id, websites.owner_id)
        RETURNING *`,
-      [id, w.name, w.baseUrl, w.environment || 'staging', w.description || '', w.tags || []],
+      [id, w.name, w.baseUrl, w.environment || 'staging', w.description || '', w.tags || [], w.ownerId || null],
     );
     return mapWebsite(r);
   },
