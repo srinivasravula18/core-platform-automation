@@ -721,7 +721,7 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
                 </div>
               )}
 
-              <div className="max-h-[28rem] space-y-1.5 overflow-y-auto pr-1">
+              <div className="max-h-[min(28rem,60dvh)] space-y-1.5 overflow-y-auto pr-1">
                 {list.map((c, i) => (
                   <div key={i} className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)]">
                     <div className="flex items-center gap-2 px-3 py-2">
@@ -935,7 +935,7 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
               )}
 
               {scripts.length ? (
-                <div className="max-h-[24rem] space-y-1.5 overflow-y-auto pr-1">
+                <div className="max-h-[min(24rem,60dvh)] space-y-1.5 overflow-y-auto pr-1">
                   {scripts.map((s, i) => (
                     <div key={i} className="overflow-hidden rounded-md border border-[var(--border)]">
                       <button
@@ -964,7 +964,7 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
 
           {/* EVIDENCE */}
           {tab === 'evidence' && (
-            <div className="max-h-[28rem] overflow-y-auto pr-1">
+            <div className="max-h-[min(28rem,60dvh)] overflow-y-auto pr-1">
               {evidence.length ? (
                 <div className="space-y-2">
                   {evidence.map((shot, i) => (

@@ -323,7 +323,7 @@ export default function TestRepository() {
                 </button>
               </div>
             </div>
-            <pre className="max-h-[60vh] overflow-auto rounded-md bg-slate-950 p-4 font-mono text-[12px] leading-5 text-slate-200">
+            <pre className="max-h-[60dvh] overflow-auto rounded-md bg-slate-950 p-4 font-mono text-[12px] leading-5 text-slate-200">
               <code>{viewerScript.code}</code>
             </pre>
           </div>

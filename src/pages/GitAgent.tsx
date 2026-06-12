@@ -144,7 +144,7 @@ export default function GitAgent() {
             </div>
             <FileCode2 className="w-4 h-4 text-[var(--accent)]" />
           </div>
-          <div className="max-h-[520px] overflow-auto">
+          <div className="max-h-[60dvh] overflow-auto">
             <table className="w-full text-sm whitespace-nowrap">
               <thead className="sticky top-0 z-10 bg-[var(--bg-secondary)] text-[var(--text-muted)] uppercase text-[11px] tracking-wider">
                 <tr>
@@ -183,7 +183,7 @@ export default function GitAgent() {
             </div>
             <BrainCircuit className="w-4 h-4 text-[var(--accent)]" />
           </div>
-          <div className="max-h-[520px] overflow-auto p-4 space-y-4">
+          <div className="max-h-[60dvh] overflow-auto p-4 space-y-4">
             {!generation?.testCases?.length && (
               <div className="py-12 text-center text-sm text-[var(--text-muted)]">Generate test cases to populate Plans, Suites, and Cases.</div>
             )}
@@ -236,7 +236,7 @@ export default function GitAgent() {
           </div>
           <Code2 className="w-4 h-4 text-[var(--accent)]" />
         </div>
-        <div className="max-h-[620px] overflow-auto p-4 space-y-4">
+        <div className="max-h-[70dvh] overflow-auto p-4 space-y-4">
           {!generation?.scripts?.length && (
             <div className="py-12 text-center text-sm text-[var(--text-muted)]">Generate test cases to create Playwright script drafts.</div>
           )}

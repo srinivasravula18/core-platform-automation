@@ -237,10 +237,10 @@ export function CommandBar({ isOpen, onOpenChange }: CommandBarProps) {
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-start justify-center pt-[12vh]">
+    <div className="fixed inset-0 z-[100] flex items-start justify-center p-4 pt-[12vh]">
       <div className="fixed inset-0 bg-black/50 backdrop-blur-sm" onClick={close} />
-      <div className="relative w-full max-w-2xl mx-4 bg-[var(--bg-card)] border border-[var(--border)] rounded-xl shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-200">
-        <div className="relative flex items-center border-b border-[var(--border)]">
+      <div className="relative flex max-h-[80dvh] w-full max-w-2xl flex-col bg-[var(--bg-card)] border border-[var(--border)] rounded-xl shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+        <div className="relative flex flex-shrink-0 items-center border-b border-[var(--border)]">
           {mode === 'plan' ? (
             <Bot className="absolute left-4 w-4 h-4 text-[var(--accent)]" />
           ) : (
@@ -268,7 +268,7 @@ export function CommandBar({ isOpen, onOpenChange }: CommandBarProps) {
           </div>
         </div>
 
-        <div className="max-h-80 overflow-y-auto p-2">
+        <div className="min-h-0 flex-1 overflow-y-auto p-2">
           {mode === 'command' && !classifying && (
             <div className="space-y-0.5">
               {filteredCommands.length > 0 ? (

@@ -345,9 +345,9 @@ export default function AgentPanel() {
 
       <div className="flex flex-1 min-h-0 flex-col xl:flex-row gap-6">
       {/* Left Column: Chat and Flow */}
-      <div className="w-full xl:w-96 flex flex-col gap-6 flex-shrink-0 h-full min-h-[600px]">
-        
-        <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl flex flex-col h-full min-h-[600px] shadow-sm overflow-hidden">
+      <div className="w-full xl:w-96 flex flex-col gap-6 flex-shrink-0 h-full min-h-[420px] xl:min-h-0">
+
+        <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl flex flex-col h-full min-h-0 shadow-sm overflow-hidden">
           <div className="flex items-center gap-2 p-4 border-b border-[var(--border)] bg-[var(--bg-secondary)]">
             <Bot className="w-5 h-5 text-[var(--accent)]" />
             <h2 className="text-sm font-semibold">QA Assistant</h2>
@@ -480,7 +480,7 @@ export default function AgentPanel() {
       </div>
 
       {/* Right Column: Output */}
-      <div className="flex-1 bg-[var(--bg-card)] border border-[var(--border)] rounded-xl flex flex-col min-h-[600px] shadow-sm overflow-hidden">
+      <div className="flex-1 bg-[var(--bg-card)] border border-[var(--border)] rounded-xl flex flex-col min-h-[420px] xl:min-h-0 shadow-sm overflow-hidden">
         <div className="flex items-center border-b border-[var(--border)] px-4">
            <div className="flex gap-6 flex-1">
              <button 
@@ -737,7 +737,7 @@ export default function AgentPanel() {
                    Playwright
                  </span>
                </div>
-               <pre className="custom-scrollbar max-h-[520px] overflow-y-auto whitespace-pre-wrap break-words bg-slate-950 p-4 font-mono text-[13px] leading-6 text-slate-200">
+               <pre className="custom-scrollbar max-h-[60dvh] overflow-y-auto whitespace-pre-wrap break-words bg-slate-950 p-4 font-mono text-[13px] leading-6 text-slate-200">
                  <code>{script.code}</code>
                </pre>
              </div>

@@ -12,11 +12,11 @@ export function registerControllerRoutes(app: Express) {
 
   app.post('/api/controller/classify', async (req, res, next) => {
     try {
-      const { userMessage, pageContext, workspaceId, userId } = req.body || {};
+      const { userMessage, pageContext, workspaceId, userId, history } = req.body || {};
       if (!userMessage || typeof userMessage !== 'string') {
         return res.status(400).json({ error: 'userMessage is required' });
       }
-      const result = await classifyIntent({ userMessage, pageContext, workspaceId, userId });
+      const result = await classifyIntent({ userMessage, pageContext, workspaceId, userId, history });
       res.json(result);
     } catch (err: any) {
       if (err?.status) {
@@ -28,11 +28,11 @@ export function registerControllerRoutes(app: Express) {
 
   app.post('/api/controller/plan', async (req, res, next) => {
     try {
-      const { userMessage, pageContext, workspaceId, userId } = req.body || {};
+      const { userMessage, pageContext, workspaceId, userId, history } = req.body || {};
       if (!userMessage || typeof userMessage !== 'string') {
         return res.status(400).json({ error: 'userMessage is required' });
       }
-      const plan = await buildPlan({ userMessage, pageContext, workspaceId, userId });
+      const plan = await buildPlan({ userMessage, pageContext, workspaceId, userId, history });
       res.json(plan);
     } catch (err: any) {
       if (err?.status) {
@@ -80,7 +80,7 @@ export function registerControllerRoutes(app: Express) {
   });
 
   app.post('/api/controller/explain/stream', async (req, res) => {
-    const { topic, workspaceId, userId } = req.body || {};
+    const { topic, workspaceId, userId, history } = req.body || {};
     if (!topic || typeof topic !== 'string') {
       return res.status(400).json({ error: 'topic is required' });
     }
@@ -89,7 +89,7 @@ export function registerControllerRoutes(app: Express) {
     res.setHeader('X-Accel-Buffering', 'no');
     res.flushHeaders?.();
     try {
-      for await (const delta of streamExplain(topic, { workspaceId, userId })) {
+      for await (const delta of streamExplain(topic, { workspaceId, userId, history })) {
         res.write(delta);
       }
     } catch (err: any) {
@@ -101,11 +101,11 @@ export function registerControllerRoutes(app: Express) {
 
   app.post('/api/controller/explain', async (req, res, next) => {
     try {
-      const { topic, workspaceId, userId } = req.body || {};
+      const { topic, workspaceId, userId, history } = req.body || {};
       if (!topic || typeof topic !== 'string') {
         return res.status(400).json({ error: 'topic is required' });
       }
-      const text = await explainIntent(topic, { workspaceId, userId });
+      const text = await explainIntent(topic, { workspaceId, userId, history });
       res.json({ topic, answer: text });
     } catch (err: any) {
       if (err?.status) {

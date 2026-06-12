@@ -87,6 +87,21 @@ function recentConversation(): string {
   return controllerMemory.slice(-10).map((m) => `${m.role}: ${m.content}`).join('\n');
 }
 
+export type ChatTurn = { role: 'user' | 'assistant'; content: string };
+
+// Format the CURRENT chat's prior turns (sent per-request from the client) into a
+// transcript the model reads for continuity — so it never forgets earlier messages
+// in the same conversation (ChatGPT/Claude-style memory). Kept to the most recent
+// turns and lightly truncated to stay within the prompt budget.
+function formatHistory(history?: ChatTurn[]): string {
+  if (!Array.isArray(history) || !history.length) return '';
+  return history
+    .slice(-16)
+    .map((m) => `${m.role === 'assistant' ? 'assistant' : 'user'}: ${String(m.content || '').replace(/\s+/g, ' ').trim().slice(0, 1200)}`)
+    .filter((line) => line.length > 6)
+    .join('\n');
+}
+
 // Only look at conversation history + the workspace DB when the request actually
 // references past work. Plain requests ("generate 5 cases for x.com") skip it.
 const HISTORY_RE = /\b(previous|earlier|before|yesterday|last\s+(night|week|month|time)|days?\s+ago|weeks?\s+ago|recent(?:ly)?|already|those|these|that\s+(one|run|case|suite|plan|script|defect|report)|the\s+(cases?|suites?|scripts?|plans?|runs?|defects?|reports?|tests?)\s+(you|we|i)|you\s+(created|made|generated|wrote|built)|we\s+(talked|discussed|created|made|did)|re-?run|tweak|existing|do\s+you\s+remember|\bremember\b|organi[sz]e|\bfolders?\b|repositor\w*|file\s*system|move\s+\w+\s+(?:to|into|under))\b/i;
@@ -117,6 +132,8 @@ export interface ClassifyInput {
   };
   workspaceId?: string;
   userId?: string;
+  /** Prior turns of THIS chat, sent by the client for per-conversation memory. */
+  history?: ChatTurn[];
 }
 
 const VALID_KINDS: IntentKind[] = [
@@ -184,9 +201,13 @@ export async function classifyIntent(input: ClassifyInput): Promise<{ intents: I
     userId: input.userId,
   });
   remember(input.userMessage, 'user');
-  const useHistory = needsHistory(input.userMessage);
-  const workspaceContext = useHistory ? await buildWorkspaceContext() : '';
-  const conversation = useHistory ? recentConversation() : '';
+  // Per-chat memory: ALWAYS include this conversation's prior turns (from the client)
+  // so the model has continuity between messages. The heavier workspace DB snapshot is
+  // still only pulled when the message references past artifacts ("those cases", an id).
+  const provided = formatHistory(input.history);
+  const refsPast = needsHistory(input.userMessage);
+  const workspaceContext = refsPast ? await buildWorkspaceContext() : '';
+  const conversation = provided || (refsPast ? recentConversation() : '');
   const prompt = buildPrompt(input, { workspaceContext, conversation });
   const result = await orch.generateObject<z.infer<typeof intentSchema>>({
     prompt,
@@ -1020,11 +1041,12 @@ ${conversation ? `RECENT CONVERSATION (oldest first):\n${conversation}\n\n` : ''
 Question: ${topic}`;
 }
 
-export async function explainIntent(topic: string, options: { workspaceId?: string; userId?: string } = {}): Promise<string> {
+export async function explainIntent(topic: string, options: { workspaceId?: string; userId?: string; history?: ChatTurn[] } = {}): Promise<string> {
   const orch = await getOrchestrator('chatAssistant', options);
-  const useHistory = needsHistory(topic);
-  const workspaceContext = useHistory ? await buildWorkspaceContext() : '';
-  const conversation = useHistory ? recentConversation() : '';
+  const provided = formatHistory(options.history);
+  const refsPast = needsHistory(topic);
+  const workspaceContext = refsPast ? await buildWorkspaceContext() : '';
+  const conversation = provided || (refsPast ? recentConversation() : '');
   const { text, shortCircuit } = await orch.generateText({
     prompt: buildExplainPrompt(topic, workspaceContext, conversation),
     userMessage: topic,
@@ -1037,11 +1059,12 @@ export async function explainIntent(topic: string, options: { workspaceId?: stri
 }
 
 /** Streaming variant of explainIntent — yields text deltas as they arrive. */
-export async function* streamExplain(topic: string, options: { workspaceId?: string; userId?: string } = {}): AsyncGenerator<string> {
+export async function* streamExplain(topic: string, options: { workspaceId?: string; userId?: string; history?: ChatTurn[] } = {}): AsyncGenerator<string> {
   const orch = await getOrchestrator('chatAssistant', options);
-  const useHistory = needsHistory(topic);
-  const workspaceContext = useHistory ? await buildWorkspaceContext() : '';
-  const conversation = useHistory ? recentConversation() : '';
+  const provided = formatHistory(options.history);
+  const refsPast = needsHistory(topic);
+  const workspaceContext = refsPast ? await buildWorkspaceContext() : '';
+  const conversation = provided || (refsPast ? recentConversation() : '');
   let full = '';
   try {
     for await (const delta of orch.streamText({ prompt: buildExplainPrompt(topic, workspaceContext, conversation), userMessage: topic })) {

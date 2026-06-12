@@ -241,7 +241,7 @@ export default function TestPlans() {
       </div>
 
       <Modal isOpen={isPlanModalOpen} onClose={() => setIsPlanModalOpen(false)} title={selectedPlanId ? "Edit Test Plan" : "Create New Test Plan"}>
-        <div className="space-y-4 max-h-[70vh] overflow-y-auto px-1">
+        <div className="space-y-4 max-h-[70dvh] overflow-y-auto px-1">
           <div className="sticky top-0 z-20 border-b border-[var(--border)] bg-[var(--bg-card)] pb-4">
             <FolderSelect
               value={formData.folderId}
@@ -427,7 +427,7 @@ export default function TestPlans() {
 
           <div className="p-5 flex-1 overflow-auto">
             {activeDetailTab === 'suites' && (
-              <div className="border border-[var(--border)] rounded-lg overflow-auto max-h-[60vh]">
+              <div className="border border-[var(--border)] rounded-lg overflow-auto max-h-[60dvh]">
                 <table className="w-full text-left text-sm whitespace-nowrap">
                   <thead className="sticky top-0 z-10 bg-[var(--bg-secondary)] text-[var(--text-muted)]">
                     <tr>
@@ -464,7 +464,7 @@ export default function TestPlans() {
             )}
 
             {activeDetailTab === 'cases' && (
-              <div className="border border-[var(--border)] rounded-lg overflow-auto max-h-[60vh]">
+              <div className="border border-[var(--border)] rounded-lg overflow-auto max-h-[60dvh]">
                 <table className="w-full text-left text-sm whitespace-nowrap">
                   <thead className="sticky top-0 z-10 bg-[var(--bg-secondary)] text-[var(--text-muted)]">
                     <tr>

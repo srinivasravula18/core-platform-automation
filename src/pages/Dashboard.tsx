@@ -76,7 +76,7 @@ export default function Dashboard() {
       </div>
 
       <Modal isOpen={isPlanModalOpen} onClose={() => setIsPlanModalOpen(false)} title="Create New Test Plan">
-        <div className="space-y-4 max-h-[70vh] overflow-y-auto px-1">
+        <div className="space-y-4 max-h-[70dvh] overflow-y-auto px-1">
           <div className="sticky top-0 z-20 border-b border-[var(--border)] bg-[var(--bg-card)] pb-4">
             <FolderSelect
               value={formData.folderId}
@@ -199,7 +199,7 @@ export default function Dashboard() {
         ))}
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 items-stretch">
         {/* Chart View */}
         <div className="lg:col-span-2 p-5 rounded-xl border border-[var(--border)] bg-[var(--bg-card)] shadow-sm">
           <h2 className="text-base font-semibold mb-6">Execution Trend (Last 5 Days)</h2>
@@ -218,7 +218,7 @@ export default function Dashboard() {
         </div>
 
         {/* Recent Activity */}
-        <div className="p-5 rounded-xl border border-[var(--border)] bg-[var(--bg-card)] shadow-sm flex h-[344px] min-h-0 flex-col">
+        <div className="p-5 rounded-xl border border-[var(--border)] bg-[var(--bg-card)] shadow-sm flex max-h-[420px] min-h-0 flex-col">
           <h2 className="text-base font-semibold mb-4">Recent Activity</h2>
           <div className="min-h-0 flex-1 space-y-4 overflow-y-auto pr-2">
             {!stats?.recentActivity ? (

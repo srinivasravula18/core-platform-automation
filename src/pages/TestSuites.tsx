@@ -210,7 +210,7 @@ export default function TestSuites() {
       </div>
 
       <Modal isOpen={isSuiteModalOpen} onClose={() => setIsSuiteModalOpen(false)} title={selectedSuiteId ? "Edit Test Suite" : "Create New Test Suite"}>
-        <div className="space-y-4 max-h-[70vh] overflow-y-auto px-1">
+        <div className="space-y-4 max-h-[70dvh] overflow-y-auto px-1">
           <FolderSelect
             value={formData.folderId}
             onChange={(folderId) => setFormData({ ...formData, folderId })}
