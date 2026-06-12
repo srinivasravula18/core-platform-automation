@@ -481,8 +481,17 @@ function ProvidersSection() {
     load();
   }, [load]);
 
+  // All mutations update local state optimistically and DON'T refetch the whole list,
+  // so changing a model/provider/toggle never flashes or "refreshes" the page. We only
+  // re-sync from the server (load) if a request actually fails.
   const saveKey = async (provider: Provider, apiKey: string) => {
     setStatus({ type: 'idle', message: '' });
+    const masked = apiKey.length <= 8 ? '****' : `${apiKey.slice(0, 4)}****${apiKey.slice(-4)}`;
+    setProviders((prev) => prev.map((p) => (
+      p.name === provider
+        ? { ...p, apiKeyMasked: masked, configured: p.authMode === 'account' ? p.configured : true, callable: (p.authMode === 'account' ? p.configured : true) && p.enabled }
+        : p
+    )));
     const res = await fetch(`/api/ai/providers/${provider}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -490,9 +499,9 @@ function ProvidersSection() {
     });
     if (res.ok) {
       setStatus({ type: 'success', message: `${PROVIDER_LABELS[provider]} key saved` });
-      await load();
     } else {
       setStatus({ type: 'error', message: `Failed to save ${PROVIDER_LABELS[provider]} key` });
+      load();
     }
   };
 
@@ -526,9 +535,9 @@ function ProvidersSection() {
           ? `${PROVIDER_LABELS[provider]} will use API key billing`
           : `${PROVIDER_LABELS[provider]} saved as subscription/account auth`,
       });
-      await load();
     } else {
       setStatus({ type: 'error', message: `Failed to save ${PROVIDER_LABELS[provider]} auth mode` });
+      load();
     }
   };
 
@@ -542,26 +551,29 @@ function ProvidersSection() {
     });
     if (res.ok) {
       setStatus({ type: 'success', message: `${PROVIDER_LABELS[provider]} ${enabled ? 'enabled' : 'disabled'}` });
-      await load();
     } else {
       setStatus({ type: 'error', message: `Failed to ${enabled ? 'enable' : 'disable'} ${PROVIDER_LABELS[provider]}` });
-      await load();
+      load();
     }
   };
 
   const setModel = async (provider: Provider, model: string) => {
+    setProviders((prev) => prev.map((p) => (p.name === provider ? { ...p, model } : p)));
     const res = await fetch(`/api/ai/providers/${provider}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ model }),
     });
-    if (res.ok) await load();
+    if (!res.ok) load();
   };
 
   const clearKey = async (provider: Provider) => {
     if (!confirm(`Remove the ${PROVIDER_LABELS[provider]} API key?`)) return;
-    await fetch(`/api/ai/providers/${provider}/key`, { method: 'DELETE' });
-    await load();
+    setProviders((prev) => prev.map((p) => (
+      p.name === provider ? { ...p, apiKeyMasked: '', configured: p.authMode === 'account' ? p.configured : false, callable: false } : p
+    )));
+    const res = await fetch(`/api/ai/providers/${provider}/key`, { method: 'DELETE' });
+    if (!res.ok) load();
   };
 
   const test = async (provider: Provider) => {
@@ -576,21 +588,25 @@ function ProvidersSection() {
   };
 
   const setDefault = async (provider: Provider, model: string) => {
-    await fetch('/api/ai/default-provider', {
+    setDefaultProvider(provider);
+    setProviders((prev) => prev.map((p) => (p.name === provider ? { ...p, model, enabled: true, callable: p.configured } : p)));
+    setStatus({ type: 'success', message: `${PROVIDER_LABELS[provider]} set as default` });
+    const res = await fetch('/api/ai/default-provider', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ provider, model }),
     });
-    await load();
+    if (!res.ok) load();
   };
 
   const setAgentProvider = async (agent: string, provider: Provider) => {
-    await fetch('/api/ai/agent-provider', {
+    setAgentMap((prev) => ({ ...prev, [agent]: provider }));
+    const res = await fetch('/api/ai/agent-provider', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ agent, provider }),
     });
-    await load();
+    if (!res.ok) load();
   };
 
   // Only show the skeleton on the very first load. Refetches after a save/toggle
