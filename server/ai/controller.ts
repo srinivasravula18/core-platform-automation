@@ -168,6 +168,7 @@ Your job is to break this request into a list of typed intents that the app can 
 ${VALID_KINDS.map((k) => `- ${k}: ${INTENT_LABELS[k]}`).join('\n')}
 
 Rules:
+- CONVERSATIONAL DEFAULT (MOST IMPORTANT): This is an ongoing chat with full memory of the RECENT CONVERSATION above. If the latest message is a QUESTION, a discussion, or an exploratory follow-up — e.g. "what about the table resize?", "what of the excel/pdf download?", "should we also test X?", "do we have sorting?", "what else?", "how about Y?", or anything seeking information / ending with "?" — return a SINGLE intent with kind="explain" and ANSWER it conversationally, carrying forward the feature/target already established earlier in the conversation (do NOT ask the user to repeat the app/target they already gave). Do NOT convert a question into a create_*/generate/run action. Only emit action intents (create_cases, generate_script, create_run, create_plan, etc.) when the user gives a CLEAR IMPERATIVE COMMAND to act — e.g. "create/generate/write the cases", "run it", "do it now", "proceed", "go ahead". When in doubt between answering and acting, ANSWER with explain.
 - Return strict JSON: {"intents": [...], "summary": "...", "reasoning": "..."}.
 - Each intent must include: kind, confidence (0-100), title, description, params.
 - For navigate, params = { path: "/cases" }.

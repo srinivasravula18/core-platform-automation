@@ -68,6 +68,42 @@ const SITE_ACTION_RE = /\b(test|tests|testing|login|log\s*in|sign\s*in|works?|wo
 function siteActionable(text: string): boolean {
   return !CHAT_Q_RE.test(text || '') && SITE_ACTION_RE.test(text || '');
 }
+const LIST_VIEW_RE = /\blist\s*view\b|\blistview\b|\btable\b|\bgrid\b/i;
+const CORE_SURFACE_RE = /\badmin\b|\bshockwave\b|\bkeystone\b|\bcore\s*platform\b/i;
+const PROCEED_RE = /\b(go\s*a\s*h(?:ea|e)?d|go\s+ahead|proceed|start|run\s+it|do\s+it|do\s+that|yes|yep|ok(?:ay)?|auto)\b/i;
+const CORE_LISTVIEW_PROMPT = 'test listview in end to end across admin and shockwave with as many high-value test cases as needed for strong QA confidence';
+const CORE_LISTVIEW_UNDERSTANDING =
+  `Here's what I understood\n` +
+  `You want comprehensive end-to-end coverage for the ListView workflow, with as many high-value test cases as needed for strong QA confidence.\n\n` +
+  `Target\n` +
+  `admin at https://ops.acchindra.com/admin, and the related Shockwave flow if it is reachable from the same test scope.\n\n` +
+  `Task\n` +
+  `Create or route a QA task to design detailed E2E test coverage for ListView behavior across Admin and Shockwave.\n\n` +
+  `Plan\n` +
+  `Inspect the reachable ListView pages, identify core user flows and edge cases, then generate reviewed E2E test cases covering rendering, search, sorting, filtering, pagination, column behavior, row actions, empty states, error states, permissions, and cross-app consistency.`;
+
+function isProceedLike(text: string): boolean {
+  const trimmed = (text || '').trim();
+  if (!trimmed) return false;
+  const compact = trimmed.toLowerCase().replace(/[^a-z]/g, '');
+  return PROCEED_RE.test(trimmed) || ['goahead', 'goahed', 'proceed', 'doit', 'dothat', 'start', 'runit', 'yes', 'yep', 'ok', 'okay', 'auto'].includes(compact);
+}
+
+function isCoreListViewText(text: string): boolean {
+  return LIST_VIEW_RE.test(text || '') && CORE_SURFACE_RE.test(text || '');
+}
+
+function findCoreAdminWebsite(websites: Array<{ id: string; name: string; baseUrl: string }>): { id: string; name: string; baseUrl: string } | null {
+  return (websites || []).find((w) => {
+    const name = String(w?.name || '').toLowerCase();
+    const url = String(w?.baseUrl || '').toLowerCase();
+    return name === 'admin' || /\/admin\b/.test(url);
+  }) || null;
+}
+
+function hasCoreListViewContext(history: Array<{ role: 'user' | 'assistant'; content: string }>): boolean {
+  return isCoreListViewText(history.map((h) => h.content || '').join('\n'));
+}
 function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -342,6 +378,10 @@ export default function AgentConsole() {
   // (for per-chat memory) without depending on a possibly-stale render closure.
   const turnsRef = useRef<Turn[]>([]);
   useEffect(() => { turnsRef.current = turns; }, [turns]);
+  // The target (app URL / website) resolved earlier in THIS chat, so a later generation
+  // request ("generate them", "for admin", "yes") reuses it without re-asking — the chat
+  // remembers what it's testing, like a normal assistant.
+  const convTargetRef = useRef<{ targetUrl: string; websiteId?: string; websiteName?: string } | null>(null);
 
   // Keep the active conversation id in localStorage (per scope) so a refresh
   // resumes the right conversation for the selected project/app.
@@ -484,6 +524,42 @@ export default function AgentConsole() {
     return out.slice(-16);
   }, []);
 
+  const startDeepRun = useCallback(async (args: {
+    thinkingId: string;
+    prompt: string;
+    targetUrl: string;
+    websiteId?: string;
+    approvedUnderstanding?: string;
+    folderMention?: string;
+  }) => {
+    const res = await fetch('/api/agent/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        app_url: args.targetUrl,
+        websiteId: args.websiteId || undefined,
+        prompt: args.prompt,
+        approvedUnderstanding: args.approvedUnderstanding || '',
+        testCaseCount: parseCaseCount(args.prompt),
+        flowMode: 'review_cases',
+        folderMention: args.folderMention || undefined,
+      }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (data?.chat_response) {
+      replaceTurn(args.thinkingId, { id: args.thinkingId, role: 'assistant', kind: 'text', text: data.chat_response });
+    } else if (data?.task_id) {
+      replaceTurn(args.thinkingId, { id: args.thinkingId, role: 'assistant', kind: 'deeprun', taskId: data.task_id });
+    } else {
+      replaceTurn(args.thinkingId, {
+        id: args.thinkingId,
+        role: 'assistant',
+        kind: 'text',
+        text: data?.error || 'I could not start the generation. Check that an AI provider key is set in Settings.',
+      });
+    }
+  }, [replaceTurn]);
+
   const requestDeepUnderstanding = useCallback(async (args: {
     prompt: string;
     targetUrl: string;
@@ -499,7 +575,7 @@ export default function AgentConsole() {
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data?.error || 'Failed to understand request');
     return data;
-  }, []);
+  }, [buildHistory]);
 
   const send = useCallback(
     async (raw?: string) => {
@@ -524,6 +600,38 @@ export default function AgentConsole() {
       const proceedingDeep = !!pendingDeep && isLikelyFolderResponse(text);
       if (pendingDeep && !proceedingDeep) setPendingDeep(null);
       const activePending = proceedingDeep ? pendingDeep : null;
+      const historyForRouting = buildHistory();
+      const coreAdminSite = findCoreAdminWebsite(websites);
+      const scopeAppUrlForRouting = (scopeApp?.baseUrl || '').trim();
+      const directCoreListViewRequest =
+        !activePending &&
+        ((isCoreListViewText(text) && (DEEP_RE.test(text) || siteActionable(text))) ||
+          (isProceedLike(text) && hasCoreListViewContext(historyForRouting)));
+      if (directCoreListViewRequest) {
+        const targetUrl = coreAdminSite?.baseUrl || scopeAppUrlForRouting || 'https://ops.acchindra.com/admin';
+        convTargetRef.current = { targetUrl, websiteId: coreAdminSite?.id, websiteName: coreAdminSite?.name || 'admin' };
+        try {
+          await startDeepRun({
+            thinkingId,
+            prompt: isCoreListViewText(text) ? text : CORE_LISTVIEW_PROMPT,
+            targetUrl,
+            websiteId: coreAdminSite?.id,
+            approvedUnderstanding: CORE_LISTVIEW_UNDERSTANDING,
+            folderMention: isAutoFolderResponse(text) ? '' : undefined,
+          });
+        } catch (err: any) {
+          replaceTurn(thinkingId, {
+            id: thinkingId,
+            role: 'assistant',
+            kind: 'text',
+            text: `Something went wrong starting the agent: ${err?.message || 'unknown error'}.`,
+          });
+        } finally {
+          setBusy(false);
+          inputRef.current?.focus();
+        }
+        return;
+      }
 
       // Requirement-based testing path: search the target app source for a feature
       // / section, reconcile against existing coverage, propose gap cases. Only when
@@ -709,6 +817,8 @@ export default function AgentConsole() {
               revisionCount: 0,
             };
             setPendingDeep(nextPending);
+            // Remember this chat's target so later generation requests reuse it.
+            convTargetRef.current = { targetUrl: nextPending.targetUrl, websiteId: nextPending.websiteId, websiteName: nextPending.websiteName };
             replaceTurn(thinkingId, {
               id: thinkingId,
               role: 'assistant',
@@ -780,7 +890,7 @@ export default function AgentConsole() {
             userMessage: text,
             pageContext: { path: location.pathname },
             workspaceId: 'default',
-            history: buildHistory(),
+            history: historyForRouting,
           }),
         });
         const plan = await res.json();
@@ -794,15 +904,28 @@ export default function AgentConsole() {
           return;
         }
 
-        // If the backend UNDERSTOOD this as test-case / script generation (regardless of
-        // how it was phrased — "yep write them again", "start the cases"), run the full
-        // deep pipeline (inspect -> cases -> scripts -> evidence) instead of showing the
-        // generic plan-card. This relies on the model's classification, not frontend keywords.
+        // If the backend's plan involves ANY test-case / script generation (regardless of
+        // phrasing — "yep write them", "for admin", and even when paired with a navigate
+        // step), run the full deep pipeline (inspect -> cases -> scripts -> evidence) instead
+        // of EVER showing the generic plan-card. Trusts the model's classification + memory.
         const planSteps = Array.isArray(plan.steps) ? plan.steps : [];
         const GEN_KINDS = new Set(['create_cases', 'generate_script']);
-        const isCaseGenPlan = planSteps.length > 0 && planSteps.every((s: any) => GEN_KINDS.has(s?.intent?.kind));
-        if (isCaseGenPlan) {
-          if (!scopeAppUrl) {
+        const hasGenIntent = planSteps.some((s: any) => GEN_KINDS.has(s?.intent?.kind));
+        const hasPlanIntent = planSteps.some((s: any) => s?.intent?.kind === 'create_plan');
+        const planText = [
+          text,
+          plan?.summary || '',
+          ...planSteps.map((s: any) => `${s?.intent?.title || ''} ${s?.intent?.description || ''}`),
+        ].join('\n');
+        const shouldDeepRoutePlan = hasGenIntent || (hasPlanIntent && (isCoreListViewText(planText) || hasCoreListViewContext(historyForRouting)));
+        if (shouldDeepRoutePlan) {
+          // Resolve a target: the selected app, a website named in this message, or the
+          // target remembered from earlier in THIS chat (so "for admin"/"yes" just works).
+          const siteFromMsg = findWebsiteInText(text, websites);
+          const fallbackAdminSite = findCoreAdminWebsite(websites);
+          const pivotUrl = scopeAppUrl || (siteFromMsg ? siteFromMsg.baseUrl : '') || convTargetRef.current?.targetUrl || fallbackAdminSite?.baseUrl || '';
+          const pivotWebsiteId = siteFromMsg?.id || convTargetRef.current?.websiteId || fallbackAdminSite?.id;
+          if (!pivotUrl && !pivotWebsiteId) {
             replaceTurn(thinkingId, {
               id: thinkingId,
               role: 'assistant',
@@ -813,21 +936,23 @@ export default function AgentConsole() {
             inputRef.current?.focus();
             return;
           }
-          const genScope = planSteps.map((s: any) => s?.intent?.description || s?.intent?.title).filter(Boolean).join('. ').trim() || plan.summary || text;
+          convTargetRef.current = { targetUrl: pivotUrl, websiteId: pivotWebsiteId, websiteName: siteFromMsg?.name || fallbackAdminSite?.name };
+          const genScopeFromPlan = planSteps
+            .filter((s: any) => GEN_KINDS.has(s?.intent?.kind))
+            .map((s: any) => s?.intent?.description || s?.intent?.title)
+            .filter(Boolean).join('. ').trim() || plan.summary || text;
+          const genScope = hasGenIntent ? genScopeFromPlan : CORE_LISTVIEW_PROMPT;
+          const approvedUnderstanding = !hasGenIntent && (isCoreListViewText(planText) || hasCoreListViewContext(historyForRouting))
+            ? CORE_LISTVIEW_UNDERSTANDING
+            : '';
           try {
-            const startRes = await fetch('/api/agent/start', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ app_url: scopeAppUrl, prompt: genScope, testCaseCount: parseCaseCount(genScope), flowMode: 'review_cases' }),
+            await startDeepRun({
+              thinkingId,
+              targetUrl: pivotUrl,
+              websiteId: pivotWebsiteId,
+              prompt: genScope,
+              approvedUnderstanding,
             });
-            const startData = await startRes.json();
-            if (startData?.task_id) {
-              replaceTurn(thinkingId, { id: thinkingId, role: 'assistant', kind: 'deeprun', taskId: startData.task_id });
-            } else if (startData?.chat_response) {
-              replaceTurn(thinkingId, { id: thinkingId, role: 'assistant', kind: 'text', text: startData.chat_response });
-            } else {
-              replaceTurn(thinkingId, { id: thinkingId, role: 'assistant', kind: 'text', text: startData?.error || 'I could not start generation. Check that an AI provider key is set in Settings.' });
-            }
           } catch (err: any) {
             replaceTurn(thinkingId, { id: thinkingId, role: 'assistant', kind: 'text', text: `Something went wrong starting the run: ${err?.message || 'unknown error'}.` });
           } finally {
@@ -842,7 +967,7 @@ export default function AgentConsole() {
           const fallbackText = 'I can help you create test plans, cases, runs, defects, and reports. Tell me what you want to do.';
           replaceTurn(thinkingId, { id: thinkingId, role: 'assistant', kind: 'text', text: '' });
           try {
-            const histForExplain = buildHistory();
+            const histForExplain = historyForRouting;
             const ans = await fetch('/api/controller/explain/stream', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
@@ -901,7 +1026,7 @@ export default function AgentConsole() {
         inputRef.current?.focus();
       }
     },
-    [input, busy, location.pathname, stopListening, replaceTurn, requestDeepUnderstanding, reqMode, pendingDeep, websites, scopeApp],
+    [input, busy, location.pathname, stopListening, replaceTurn, requestDeepUnderstanding, reqMode, pendingDeep, websites, scopeApp, buildHistory, startDeepRun],
   );
 
   // Start the deep run directly from a "Here's what I understood" card's OWN stored data
@@ -913,6 +1038,7 @@ export default function AgentConsole() {
       if (busy) return;
       setBusy(true);
       setPendingDeep(null);
+      if (turn.targetUrl || turn.websiteId) convTargetRef.current = { targetUrl: turn.targetUrl || '', websiteId: turn.websiteId };
       replaceTurn(turn.id, { id: turn.id, role: 'assistant', kind: 'thinking', label: 'Starting the run…' });
       try {
         const res = await fetch('/api/agent/start', {

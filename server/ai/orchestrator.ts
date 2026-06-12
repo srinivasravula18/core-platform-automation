@@ -239,8 +239,20 @@ export class AgentOrchestrator {
     }
     const system = await this.assembleSystem(pipeline);
     if (!this.provider.generateTextStream) {
+      // Providers without native streaming (the account/CLI runner) return the whole
+      // answer at once. Emit it in small word-grouped chunks so the UI still renders
+      // progressively instead of dumping a wall of text. (True low-latency token
+      // streaming still requires an API-key/SDK provider.)
       const result = await this.provider.generateText({ system, prompt: opts.prompt, temperature: opts.temperature, maxTokens: opts.maxTokens });
-      yield result.text;
+      const full = result.text || '';
+      const tokens = full.match(/\S+\s*/g) || (full ? [full] : []);
+      let buf = '';
+      for (let i = 0; i < tokens.length; i += 1) {
+        buf += tokens[i];
+        // Flush every few words so the client paints incrementally.
+        if ((i + 1) % 4 === 0) { yield buf; buf = ''; }
+      }
+      if (buf) yield buf;
       return;
     }
     for await (const delta of this.provider.generateTextStream({ system, prompt: opts.prompt, temperature: opts.temperature, maxTokens: opts.maxTokens })) {
