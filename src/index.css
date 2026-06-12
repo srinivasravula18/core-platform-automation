@@ -89,6 +89,24 @@
       max-width: 2360px;
     }
   }
+
+  .agent-panel-shell {
+    width: min(100%, 1440px);
+  }
+
+  @media (min-width: 1600px) {
+    .agent-panel-shell {
+      width: calc(100vw - 72px);
+      max-width: 1880px;
+    }
+  }
+
+  @media (min-width: 2200px) {
+    .agent-panel-shell {
+      width: calc(100vw - 96px);
+      max-width: 2360px;
+    }
+  }
 }
 
 /* When the sidebar is collapsed, let the data/list screens use the full width

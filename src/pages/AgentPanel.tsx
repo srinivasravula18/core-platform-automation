@@ -323,7 +323,7 @@ export default function AgentPanel() {
   };
 
   return (
-    <div className="app-page-shell h-full flex flex-col gap-6">
+    <div className="app-page-shell agent-panel-shell h-full flex flex-col gap-6">
       {(isGenerating || runData) && (
         <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-card)] p-4 shadow-sm">
           <div className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">Agent Pipeline</div>
@@ -343,9 +343,9 @@ export default function AgentPanel() {
         </div>
       )}
 
-      <div className="flex flex-1 min-h-0 flex-col xl:flex-row gap-6">
+      <div className="flex flex-1 min-h-0 flex-col gap-6 xl:flex-row">
       {/* Left Column: Chat and Flow */}
-      <div className="w-full xl:w-96 flex flex-col gap-6 flex-shrink-0 h-full min-h-[420px] xl:min-h-0">
+      <div className="flex h-full min-h-[420px] w-full min-w-0 flex-shrink-0 flex-col gap-6 xl:min-h-0 xl:w-auto xl:min-w-[20rem] xl:max-w-[28rem] xl:basis-[clamp(20rem,24vw,28rem)]">
 
         <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl flex flex-col h-full min-h-0 shadow-sm overflow-hidden">
           <div className="flex items-center gap-2 p-4 border-b border-[var(--border)] bg-[var(--bg-secondary)]">
@@ -480,7 +480,7 @@ export default function AgentPanel() {
       </div>
 
       {/* Right Column: Output */}
-      <div className="flex-1 bg-[var(--bg-card)] border border-[var(--border)] rounded-xl flex flex-col min-h-[420px] xl:min-h-0 shadow-sm overflow-hidden">
+      <div className="flex min-h-[420px] min-w-0 flex-1 flex-col overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--bg-card)] shadow-sm xl:min-h-0">
         <div className="flex items-center border-b border-[var(--border)] px-4">
            <div className="flex gap-6 flex-1">
              <button 
