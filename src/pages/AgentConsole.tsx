@@ -593,16 +593,39 @@ export default function AgentConsole() {
       // request to test a stored website by name. Before preparing, we ask the
       // user which folder to save the results in (unless one is mentioned).
       const promptForDeep = pendingDeep?.prompt || text;
-      const targetUrl = pendingDeep?.targetUrl || extractTargetUrl(promptForDeep);
+      const explicitUrl = pendingDeep?.targetUrl || extractTargetUrl(promptForDeep);
       const site = pendingDeep?.websiteId
         ? websites.find((w) => w.id === pendingDeep.websiteId) || null
         : findWebsiteInText(promptForDeep, websites);
-      // The deep pipeline (real inspect -> cases -> Playwright scripts -> evidence) can only
-      // act when there is a concrete target to drive. Require a URL or a known website AND an
-      // actionable QA request. With no target we fall through to the planner, which asks for
-      // the URL instead of kicking off a deep run against nothing.
+      // Fall back to the SELECTED project/app's base URL so a generation request in an
+      // ongoing conversation ("generate the test cases") runs the full deep pipeline
+      // (inspect -> cases -> scripts -> evidence) against the current app — instead of
+      // dropping to the generic planner and showing a plan-card.
+      const scopeAppUrl = (scopeApp?.baseUrl || '').trim();
+      const explicitTarget = !!explicitUrl || !!site;
+      const targetUrl = explicitUrl || (site ? '' : scopeAppUrl);
       const hasTarget = !!targetUrl || !!site;
-      const isDeep = pendingDeep ? true : (hasTarget && (siteActionable(promptForDeep) || isDeepRequest(promptForDeep)));
+      // A genuine case/script/automation generation request (DEEP_RE) always wants the
+      // deep pipeline. When a URL/website is named explicitly, any actionable QA request
+      // (test/check/verify…) can also go deep — but the selected-app fallback is reserved
+      // for real generation, so plain "create a test plan/suite/run" still uses the planner.
+      const isGenerationReq = DEEP_RE.test(promptForDeep);
+      const wantsGeneration = isGenerationReq || (explicitTarget && siteActionable(promptForDeep));
+      const isDeep = pendingDeep ? true : (wantsGeneration && hasTarget);
+
+      // Generation requested but no target anywhere (e.g. "All apps" selected and no URL
+      // typed): ask which app/URL to run against — never fall through to the plan-card.
+      if (!pendingDeep && wantsGeneration && !hasTarget) {
+        replaceTurn(thinkingId, {
+          id: thinkingId,
+          role: 'assistant',
+          kind: 'text',
+          text: 'Which app should I run this against? Select an app in the project switcher (top bar) so I can use its URL, or paste the target URL here — then I will inspect it, generate the cases and Playwright scripts, and capture evidence.',
+        });
+        setBusy(false);
+        inputRef.current?.focus();
+        return;
+      }
       if (isDeep) {
         if (pendingDeep && !isLikelyFolderResponse(text)) {
           try {
@@ -704,7 +727,7 @@ export default function AgentConsole() {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              app_url: extractTargetUrl(promptForDeep) || (site ? site.baseUrl : ''),
+              app_url: targetUrl || (site ? site.baseUrl : ''),
               websiteId: site ? site.id : undefined,
               prompt: promptForDeep,
               approvedUnderstanding,
@@ -759,6 +782,49 @@ export default function AgentConsole() {
             kind: 'text',
             text: plan?.error || 'Sorry, I could not process that request. Please try rephrasing it.',
           });
+          return;
+        }
+
+        // If the backend UNDERSTOOD this as test-case / script generation (regardless of
+        // how it was phrased — "yep write them again", "start the cases"), run the full
+        // deep pipeline (inspect -> cases -> scripts -> evidence) instead of showing the
+        // generic plan-card. This relies on the model's classification, not frontend keywords.
+        const planSteps = Array.isArray(plan.steps) ? plan.steps : [];
+        const GEN_KINDS = new Set(['create_cases', 'generate_script']);
+        const isCaseGenPlan = planSteps.length > 0 && planSteps.every((s: any) => GEN_KINDS.has(s?.intent?.kind));
+        if (isCaseGenPlan) {
+          if (!scopeAppUrl) {
+            replaceTurn(thinkingId, {
+              id: thinkingId,
+              role: 'assistant',
+              kind: 'text',
+              text: 'Which app should I run this against? Select an app in the project switcher (top bar) so I can use its URL — then I will inspect it, generate the cases and Playwright scripts, and capture evidence.',
+            });
+            setBusy(false);
+            inputRef.current?.focus();
+            return;
+          }
+          const genScope = planSteps.map((s: any) => s?.intent?.description || s?.intent?.title).filter(Boolean).join('. ').trim() || plan.summary || text;
+          try {
+            const startRes = await fetch('/api/agent/start', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ app_url: scopeAppUrl, prompt: genScope, testCaseCount: parseCaseCount(genScope), flowMode: 'review_cases' }),
+            });
+            const startData = await startRes.json();
+            if (startData?.task_id) {
+              replaceTurn(thinkingId, { id: thinkingId, role: 'assistant', kind: 'deeprun', taskId: startData.task_id });
+            } else if (startData?.chat_response) {
+              replaceTurn(thinkingId, { id: thinkingId, role: 'assistant', kind: 'text', text: startData.chat_response });
+            } else {
+              replaceTurn(thinkingId, { id: thinkingId, role: 'assistant', kind: 'text', text: startData?.error || 'I could not start generation. Check that an AI provider key is set in Settings.' });
+            }
+          } catch (err: any) {
+            replaceTurn(thinkingId, { id: thinkingId, role: 'assistant', kind: 'text', text: `Something went wrong starting the run: ${err?.message || 'unknown error'}.` });
+          } finally {
+            setBusy(false);
+            inputRef.current?.focus();
+          }
           return;
         }
 
@@ -907,7 +973,7 @@ export default function AgentConsole() {
   const isEmpty = turns.length === 0;
 
   return (
-    <div className="mx-auto flex h-full max-w-7xl flex-col">
+    <div className="flex h-full w-full flex-col px-4 sm:px-6">
       {/* Header */}
       <div className="mb-2 flex items-center justify-between gap-3">
         <div className="flex items-center gap-2">
@@ -993,7 +1059,7 @@ export default function AgentConsole() {
               Describe a testing task in plain language. I&apos;ll turn it into a step-by-step plan, you review and approve,
               and I&apos;ll execute it — generating cases, plans, runs, defects, and reports for you.
             </p>
-            <div className="mt-7 grid w-full max-w-7xl grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
+            <div className="mt-7 grid w-full grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
               {SUGGESTIONS.map((s) => (
                 <button
                   key={s.label}
@@ -1011,7 +1077,7 @@ export default function AgentConsole() {
               ))}
             </div>
 
-            <div className="mt-8 w-full max-w-7xl">
+            <div className="mt-8 w-full">
               <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
                 Everything the agent can do for you
               </div>

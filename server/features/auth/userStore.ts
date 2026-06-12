@@ -124,17 +124,21 @@ export function seedAuthUsersIfEmpty(): void {
 }
 
 /**
- * Assign all pre-existing UNOWNED data (created before per-user isolation, owner_id
- * NULL/'') to the admin account. Under full isolation an unowned row is invisible to
- * everyone, so this makes the original single-admin data show up for admin while each
- * tester keeps their own (already-owned) data. Idempotent: only touches unowned rows,
- * never reassigns data that already belongs to a user. Covers both the in-memory store
- * and Postgres.
+ * Reassign ORPHANED data to the admin account so it stays visible under per-user
+ * isolation. Orphaned = owner_id is NULL/'' (created before isolation) OR owner_id is
+ * an id that no longer belongs to any current app user (e.g. the app-user JSON store
+ * was reset and admin got a new id, leaving its websites/projects owned by the dead id).
+ * Data owned by a CURRENT user (admin or a tester) is never touched, so testers keep
+ * their own data. Idempotent and self-healing — runs on every startup. Covers the
+ * in-memory store and Postgres.
  */
 export async function claimLegacyDataForAdmin(): Promise<{ adminId: string; claimedInMemory: number } | null> {
   const admin = listUsers().find((u) => u.role === 'admin');
   if (!admin) return null;
   const adminId = admin.id;
+  // Ids that belong to a real current user — their data must be preserved.
+  const validIds = new Set(listUsers().map((u) => u.id));
+  const isOrphan = (owner: any) => !owner || !validIds.has(owner);
 
   // In-memory stores (projects + websites are always in-memory; QA arrays back the
   // no-Postgres mode).
@@ -144,15 +148,15 @@ export async function claimLegacyDataForAdmin(): Promise<{ adminId: string; clai
     const arr = (db as any)[key];
     if (!Array.isArray(arr)) continue;
     for (const row of arr) {
-      if (row && typeof row === 'object' && !row.ownerId) { row.ownerId = adminId; claimedInMemory += 1; }
+      if (row && typeof row === 'object' && isOrphan(row.ownerId)) { row.ownerId = adminId; claimedInMemory += 1; }
     }
   }
-  // Usage log is keyed by workspaceId (now = the acting user's id). Migrate legacy
-  // usage recorded under the shared 'default' workspace to admin, so admin keeps the
-  // historical Cost & Logs and every new profile starts at zero.
+  // Usage log is keyed by workspaceId (= the acting user's id). Orphaned/legacy usage
+  // ('default' or a dead user id) is migrated to admin, so admin keeps the historical
+  // Cost & Logs and every new profile starts at zero.
   if (Array.isArray((db as any).usageLog)) {
     for (const r of (db as any).usageLog) {
-      if (r && typeof r === 'object' && (!r.workspaceId || r.workspaceId === 'default')) {
+      if (r && typeof r === 'object' && (r.workspaceId === 'default' || isOrphan(r.workspaceId))) {
         r.workspaceId = adminId;
         claimedInMemory += 1;
       }
@@ -161,11 +165,16 @@ export async function claimLegacyDataForAdmin(): Promise<{ adminId: string; clai
   if (claimedInMemory) persistDataInBackground('claim legacy data for admin');
 
   // Postgres scoped tables (source of truth for QA entities when DATABASE_URL is set).
+  // Reassign rows that are unowned OR owned by an id that is not a current user.
   if (isPostgresEnabled()) {
+    const ids = Array.from(validIds);
     const pgTables = ['plans', 'suites', 'cases', 'runs', 'defects', 'reports', 'scripts', 'folders', 'requirements', 'agent_runs', 'websites'];
     for (const t of pgTables) {
       try {
-        await query(`UPDATE ${t} SET owner_id = $1 WHERE owner_id IS NULL OR owner_id = ''`, [adminId]);
+        await query(
+          `UPDATE ${t} SET owner_id = $1 WHERE owner_id IS NULL OR owner_id = '' OR NOT (owner_id = ANY($2::text[]))`,
+          [adminId, ids],
+        );
       } catch (e: any) {
         console.error(`[claim] ${t}:`, e?.message || e);
       }
