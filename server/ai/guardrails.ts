@@ -72,8 +72,6 @@ const FAREWELL = /^\s*(bye|goodbye|see\s*you|cya|later|farewell)\s*[!.?]*\s*$/i;
 const IDENTITY_QUESTION = /^\s*(who\s+are\s+you|what\s+are\s+you|what\s+can\s+you\s+do|help\s*me|help|how\s+do\s+i|what\s+is\s+this|your\s+(purpose|capabilities|name))\s*\??\s*$/i;
 const YES_NO = /^\s*(yes|y|yep|yeah|sure|ok(?:ay)?|alright|confirmed?|reject|reject\s+it|approve|approved)\s*[!.?]*\s*$/i;
 const ABUSIVE = /\b(fuck|shit|asshole|bastard|bitch|wtf|stfu|kill\s+yourself|kys|slur|retard|fag)\b/i;
-const QA_KEYWORD = /\b(test|testing|qa|quality|playwright|selenium|cypress|automation|automate|script|test\s*case|test\s*plan|test\s*suite|scenario|regression|smoke|sanity|bug|defect|application|website|web\s*app|url|api|login|signin|sign\s*in|checkout|workflow|flow|requirements?|coverage|deploy|staging|prod|repro|reproduce|stack\s*trace|screenshot|evidence|assert(?:ion)?|expect|locator|selector)\b/i;
-const URL_PATTERN = /\bhttps?:\/\/[^\s]+/i;
 
 const INJECTION_PATTERNS: Array<{ name: string; re: RegExp }> = [
   { name: 'ignore-previous', re: /\b(ignore|disregard|forget)\b[^.\n]{0,80}\b(previous|prior|above|earlier|preceding)\b[^.\n]{0,80}\b(instruction|prompt|directive|rule|context)\b/i },
@@ -164,14 +162,10 @@ export function preLLMPolicyCheck(ctx: GuardrailContext, normalized: string): Gu
       reason: 'identity question',
     };
   }
-  if (ctx.agent === 'chatAssistant' && !QA_KEYWORD.test(normalized) && !URL_PATTERN.test(normalized)) {
-    return {
-      kind: 'respond',
-      reply:
-        "This product is scoped to QA. Tell me the app or feature you want covered, paste a URL, or describe a test case — and I will take it from there.",
-      reason: 'off-topic',
-    };
-  }
+  // NOTE: scope / off-topic / harmful judgments are intentionally NOT done here with
+  // keyword regexes — that misfires on contextual follow-ups ("do we have sorting?")
+  // that lack QA keywords on their own. The chatAssistant model makes that call
+  // semantically using SCOPE_POLICY + the conversation history (see systemPrompts.ts).
   return { kind: 'allow', reason: 'pre-LLM policy passed' };
 }
 

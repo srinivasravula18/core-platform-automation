@@ -338,6 +338,10 @@ export default function AgentConsole() {
   const historyRef = useRef<HTMLDivElement>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const loadedRef = useRef(false);
+  // Mirror the live turn list in a ref so send() can read the prior conversation
+  // (for per-chat memory) without depending on a possibly-stale render closure.
+  const turnsRef = useRef<Turn[]>([]);
+  useEffect(() => { turnsRef.current = turns; }, [turns]);
 
   // Keep the active conversation id in localStorage (per scope) so a refresh
   // resumes the right conversation for the selected project/app.
@@ -462,6 +466,24 @@ export default function AgentConsole() {
     setTurns((prev) => prev.map((t) => (t.id === id ? turn : t)));
   }, []);
 
+  // The prior turns of THIS chat, as a compact role/content transcript, so every
+  // request carries conversation memory (ChatGPT/Claude-style continuity).
+  const buildHistory = useCallback((): Array<{ role: 'user' | 'assistant'; content: string }> => {
+    const out: Array<{ role: 'user' | 'assistant'; content: string }> = [];
+    for (const t of turnsRef.current) {
+      if (t.role === 'user') {
+        if (t.text?.trim()) out.push({ role: 'user', content: t.text });
+      } else if (t.kind === 'text' && t.text?.trim()) {
+        out.push({ role: 'assistant', content: t.text });
+      } else if (t.kind === 'folderask' && t.understanding?.trim()) {
+        out.push({ role: 'assistant', content: t.understanding });
+      } else if (t.kind === 'clarify' && t.summary?.trim()) {
+        out.push({ role: 'assistant', content: t.summary });
+      }
+    }
+    return out.slice(-16);
+  }, []);
+
   const requestDeepUnderstanding = useCallback(async (args: {
     prompt: string;
     targetUrl: string;
@@ -472,7 +494,7 @@ export default function AgentConsole() {
     const res = await fetch('/api/agent/understand-request', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(args),
+      body: JSON.stringify({ ...args, history: buildHistory() }),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data?.error || 'Failed to understand request');
@@ -726,6 +748,7 @@ export default function AgentConsole() {
             userMessage: text,
             pageContext: { path: location.pathname },
             workspaceId: 'default',
+            history: buildHistory(),
           }),
         });
         const plan = await res.json();
@@ -744,16 +767,17 @@ export default function AgentConsole() {
           const fallbackText = 'I can help you create test plans, cases, runs, defects, and reports. Tell me what you want to do.';
           replaceTurn(thinkingId, { id: thinkingId, role: 'assistant', kind: 'text', text: '' });
           try {
+            const histForExplain = buildHistory();
             const ans = await fetch('/api/controller/explain/stream', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ topic: text, workspaceId: 'default' }),
+              body: JSON.stringify({ topic: text, workspaceId: 'default', history: histForExplain }),
             });
             if (!ans.ok || !ans.body) {
               const data = await fetch('/api/controller/explain', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ topic: text, workspaceId: 'default' }),
+                body: JSON.stringify({ topic: text, workspaceId: 'default', history: histForExplain }),
               }).then((r) => r.json()).catch(() => ({}));
               replaceTurn(thinkingId, { id: thinkingId, role: 'assistant', kind: 'text', text: cleanChat(data?.answer || plan?.summary || fallbackText) });
             } else {

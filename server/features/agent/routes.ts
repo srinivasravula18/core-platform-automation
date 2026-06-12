@@ -862,8 +862,13 @@ export function registerAgentRoutes(app: Express) {
   });
 
   app.post('/api/agent/understand-request', async (req, res) => {
-    const { prompt, targetName, targetUrl, currentUnderstanding, correction } = req.body || {};
+    const { prompt, targetName, targetUrl, currentUnderstanding, correction, history } = req.body || {};
     const rawPrompt = String(prompt || '').trim();
+    // Prior turns of this chat, so the understanding reflects the ongoing conversation
+    // (e.g. "now do the same for the reports page" refers back to earlier messages).
+    const historyBlock = Array.isArray(history) && history.length
+      ? `Conversation so far (oldest first):\n${history.slice(-16).map((m: any) => `${m?.role === 'assistant' ? 'assistant' : 'user'}: ${String(m?.content || '').replace(/\s+/g, ' ').trim().slice(0, 1200)}`).filter((l: string) => l.length > 6).join('\n')}\n\n`
+      : '';
     const rawTargetUrl = String(targetUrl || '').trim();
     const rawTargetName = String(targetName || '').trim();
     if (!rawPrompt) return res.status(400).json({ error: 'prompt is required' });
@@ -888,6 +893,7 @@ export function registerAgentRoutes(app: Express) {
       const result = await ai.generateObject<any>({
         prompt:
           `Interpret this QA automation request for a human confirmation card.\n\n` +
+          historyBlock +
           `Original request: ${rawPrompt}\n` +
           `Detected target name: ${rawTargetName || 'not provided'}\n` +
           `Detected target URL: ${rawTargetUrl || 'not provided'}\n` +

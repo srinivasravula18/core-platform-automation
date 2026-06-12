@@ -144,7 +144,7 @@ export function ProjectWizard({ kind, projectId, editProject, editApp, onClose, 
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/50" onMouseDown={onClose}>
       <div
-        className="w-full max-w-lg rounded-2xl border border-[var(--border)] bg-[var(--bg-card)] shadow-2xl overflow-hidden flex flex-col max-h-[90vh]"
+        className="w-full max-w-[95vw] sm:max-w-lg rounded-2xl border border-[var(--border)] bg-[var(--bg-card)] shadow-2xl overflow-hidden flex flex-col max-h-[90dvh]"
         onMouseDown={(e) => e.stopPropagation()}
       >
         {/* Header */}
@@ -195,7 +195,7 @@ export function ProjectWizard({ kind, projectId, editProject, editApp, onClose, 
         </div>
 
         {/* Body */}
-        <div className="px-5 py-5 space-y-4 overflow-y-auto">
+        <div className="px-5 py-5 space-y-4 flex-1 min-h-0 overflow-y-auto">
           {kind === 'project' && step === 0 && (
             <>
               {field('Project name', 'One project maps to one git repository.', (

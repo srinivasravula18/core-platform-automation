@@ -72,7 +72,7 @@ export function ProjectSwitcher() {
 
       {/* Dropdown */}
       {open && (
-        <div className="absolute left-0 top-full mt-2 w-80 rounded-xl border border-[var(--border)] bg-[var(--bg-card)] shadow-2xl z-50 overflow-hidden">
+        <div className="absolute left-0 top-full mt-2 w-[min(20rem,calc(100vw-2rem))] rounded-xl border border-[var(--border)] bg-[var(--bg-card)] shadow-2xl z-50 overflow-hidden">
           <div className="flex items-center justify-between px-3 py-2.5 border-b border-[var(--border)]">
             <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">Projects</span>
             <button
@@ -83,7 +83,7 @@ export function ProjectSwitcher() {
             </button>
           </div>
 
-          <div className="max-h-[24rem] overflow-y-auto py-1">
+          <div className="max-h-[min(24rem,60dvh)] overflow-y-auto py-1">
             {loading && (
               <div className="flex items-center gap-2 px-3 py-6 text-xs text-[var(--text-muted)] justify-center">
                 <Loader2 className="w-4 h-4 animate-spin" /> Loading…

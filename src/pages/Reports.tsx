@@ -411,7 +411,7 @@ export default function Reports() {
     : 'No reports logged';
 
   return (
-    <div className="mx-auto flex min-h-screen max-w-[1680px] flex-col px-4 pb-12">
+    <div className="mx-auto flex h-full min-h-0 max-w-[1680px] flex-col px-4 pb-4">
       {/* Header Info */}
       <div className="flex items-center justify-between mb-5 flex-shrink-0">
         <div>
@@ -444,7 +444,7 @@ export default function Reports() {
       </div>
 
       {/* Main Widescreen Interface as requested by 2nd image */}
-      <div className="flex-shrink-0 flex flex-col bg-[var(--bg-card)] border border-[var(--border)] rounded-xl shadow-sm overflow-hidden mb-6">
+      <div className="flex-1 min-h-0 flex flex-col bg-[var(--bg-card)] border border-[var(--border)] rounded-xl shadow-sm overflow-hidden mb-2">
         
         {/* Statistics Executive Summary Row */}
         <div className="p-5 border-b border-[var(--border)] bg-[var(--bg-secondary)]/30 grid grid-cols-1 md:grid-cols-4 gap-4 text-left">
@@ -521,7 +521,7 @@ export default function Reports() {
         </div>
 
         {/* Main Table Styled search similar to Image 2 */}
-        <div className="h-[calc(100vh-320px)] min-h-[360px] w-full overflow-x-auto overflow-y-auto rounded-b-xl">
+        <div className="flex-1 min-h-0 w-full overflow-x-auto overflow-y-auto rounded-b-xl">
           <table className="w-full min-w-[1530px] table-fixed border-collapse text-left text-sm">
             <thead className="bg-[var(--bg-secondary)] text-[var(--text-muted)] text-[11px] uppercase tracking-wider font-semibold border-b border-[var(--border)]">
               <tr>
@@ -579,7 +579,7 @@ export default function Reports() {
                       
                       {/* Test steps numbered list block */}
                       <td className="border-l border-[var(--border)] px-4 py-4">
-                        <div className="custom-scrollbar max-h-[calc(100vh-450px)] space-y-3 overflow-y-auto pr-2">
+                        <div className="custom-scrollbar max-h-[calc(100dvh-450px)] space-y-3 overflow-y-auto pr-2">
                           {r.steps?.map((stepItemSum, stepIdx) => (
                             <div key={stepIdx} className="flex items-start gap-2 border-b border-dashed border-slate-100 pb-2 text-xs leading-5 text-slate-700 last:border-0 last:pb-0 dark:border-slate-800/40 dark:text-slate-200">
                               <span className="shrink-0 select-none rounded bg-[var(--bg-secondary)] px-1.5 py-0.5 font-mono text-[10px] font-bold text-slate-400">{stepIdx + 1}</span>
@@ -591,7 +591,7 @@ export default function Reports() {
                       
                       {/* Expected result numbered list block corresponding to steps */}
                       <td className="border-l border-[var(--border)] px-4 py-4">
-                        <div className="custom-scrollbar max-h-[calc(100vh-450px)] space-y-3 overflow-y-auto pr-2">
+                        <div className="custom-scrollbar max-h-[calc(100dvh-450px)] space-y-3 overflow-y-auto pr-2">
                           {r.steps?.map((stepItemSum, stepIdx) => (
                             <div key={stepIdx} className="flex items-start gap-2 border-b border-dashed border-slate-100 pb-2 text-xs leading-5 text-slate-500 last:border-0 last:pb-0 dark:border-slate-800/40 dark:text-slate-400">
                               <span className="shrink-0 select-none rounded bg-[var(--bg-secondary)] px-1.5 py-0.5 font-mono text-[10px] font-bold text-slate-400">{stepIdx + 1}</span>
@@ -621,7 +621,7 @@ export default function Reports() {
                       
                       {/* Evidence Step-triggering buttons Column */}
                       <td className="border-l border-[var(--border)] px-4 py-4">
-                        <div className="custom-scrollbar flex max-h-[calc(100vh-450px)] flex-col gap-2 overflow-y-auto pr-2">
+                        <div className="custom-scrollbar flex max-h-[calc(100dvh-450px)] flex-col gap-2 overflow-y-auto pr-2">
                           {r.steps?.map((stepItemSum, stepIdx) => (
                             <div key={stepIdx} className="flex min-h-[30px] items-center gap-2 border-b border-dashed border-slate-100 pb-1.5 text-[11px] last:border-0 last:pb-0 dark:border-slate-800/40">
                               <span className="w-5 shrink-0 select-none text-right font-mono font-bold text-slate-400">{stepIdx + 1}</span>
@@ -749,7 +749,7 @@ export default function Reports() {
       {/* Evidence is shown inline below the selected report row. */}
       {false && activeStep && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-4 backdrop-blur-md" onClick={() => setActiveStep(null)}>
-          <div className="flex max-h-[92vh] w-full max-w-6xl flex-col overflow-hidden rounded-xl border border-slate-800 bg-slate-950 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+          <div className="flex max-h-[92dvh] w-full max-w-6xl flex-col overflow-hidden rounded-xl border border-slate-800 bg-slate-950 shadow-2xl" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between gap-3 border-b border-slate-800 bg-slate-900 px-4 py-3">
               <div className="flex min-w-0 items-center gap-2">
                 <span className="h-3 w-3 rounded-full bg-red-500/80"></span>
@@ -785,7 +785,7 @@ export default function Reports() {
                 <img
                   src={withBasePath(`/api/screenshot?url=${encodeURIComponent(activeStep.step.screenshot)}`)}
                   alt={SCREENSHOT_PRESETS[activeStep.step.screenshot]?.title || `Live Verification of ${activeStep.step.screenshot}`}
-                  className="max-h-[76vh] w-full object-contain"
+                  className="max-h-[76dvh] w-full object-contain"
                   referrerPolicy="no-referrer"
                   onError={(e) => {
                     e.currentTarget.src = "https://images.unsplash.com/photo-1541560052-5e137f229371?w=1280&q=80";
@@ -809,9 +809,9 @@ export default function Reports() {
       {/* Lightbox Modal for Screenshots Evidence */}
       {lightboxKey && (
         <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-md flex items-center justify-center z-50 p-6" onClick={() => setLightboxKey(null)}>
-          <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl w-full max-w-3xl overflow-hidden shadow-2xl flex flex-col" onClick={(e) => e.stopPropagation()}>
+          <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl w-full max-w-[95vw] sm:max-w-3xl max-h-[90dvh] overflow-hidden shadow-2xl flex flex-col" onClick={(e) => e.stopPropagation()}>
             {/* Browser chrome header bar simulation */}
-            <div className="bg-[var(--bg-secondary)] px-4 py-3 border-b border-[var(--border)] flex items-center justify-between">
+            <div className="bg-[var(--bg-secondary)] px-4 py-3 border-b border-[var(--border)] flex flex-shrink-0 items-center justify-between">
               <div className="flex flex-wrap items-center gap-2">
                 <span className="w-3 h-3 rounded-full bg-red-500/80"></span>
                 <span className="w-3 h-3 rounded-full bg-yellow-500/80"></span>
@@ -825,7 +825,7 @@ export default function Reports() {
               </button>
             </div>
             {/* Browser body canvas content context */}
-            <div className="p-0 bg-slate-900 overflow-hidden h-[450px] flex items-center justify-center">
+            <div className="p-0 bg-slate-900 overflow-hidden flex-1 min-h-0 flex items-center justify-center">
               <img
                 src={withBasePath(`/api/screenshot?url=${encodeURIComponent(lightboxKey)}`)}
                 alt={SCREENSHOT_PRESETS[lightboxKey]?.title || `Captured URL View: ${lightboxKey}`}
@@ -847,7 +847,7 @@ export default function Reports() {
 
       {/* Manual Report Modal Layout */}
       <Modal isOpen={isNewReportModalOpen} onClose={() => setIsNewReportModalOpen(false)} title="Log Manual Run Audit Report">
-        <div className="space-y-4 max-h-[72vh] overflow-y-auto px-1 text-left">
+        <div className="space-y-4 max-h-[72dvh] overflow-y-auto px-1 text-left">
           
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
              <div>

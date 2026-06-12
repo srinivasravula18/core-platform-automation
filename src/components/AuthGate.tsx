@@ -113,7 +113,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
 
   if (status === 'checking') {
     return (
-      <div className="flex h-screen w-full items-center justify-center bg-[var(--bg-primary)] text-[var(--text-muted)]">
+      <div className="flex h-[100dvh] w-full items-center justify-center bg-[var(--bg-primary)] text-[var(--text-muted)]">
         <Loader2 className="h-6 w-6 animate-spin" />
       </div>
     );
@@ -124,7 +124,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <div className="flex h-screen w-full items-center justify-center bg-[var(--bg-primary)] p-4 font-sans text-[var(--text-primary)]">
+    <div className="flex h-[100dvh] w-full items-center justify-center bg-[var(--bg-primary)] p-4 font-sans text-[var(--text-primary)]">
       <div className="w-full max-w-sm rounded-2xl border border-[var(--border)] bg-[var(--bg-card)] p-8 shadow-xl">
         <div className="mb-6 flex flex-col items-center text-center">
           <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-xl bg-[var(--accent)]/10">
