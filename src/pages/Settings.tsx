@@ -593,7 +593,10 @@ function ProvidersSection() {
     await load();
   };
 
-  if (loading) return <SkeletonCard />;
+  // Only show the skeleton on the very first load. Refetches after a save/toggle
+  // (load() flips `loading` again) must NOT unmount the section — otherwise the whole
+  // page flashes/reconfigures and the API key being typed in a card is lost.
+  if (loading && providers.length === 0) return <SkeletonCard />;
   const enabledProviders = providers.filter((p) => p.enabled);
 
   return (
@@ -708,7 +711,11 @@ function ProviderCard({ provider, onSaveKey, onSetEnabled, onSetAuthMode, onSetM
           <button
             type="button"
             onClick={onTest}
-            disabled={!provider.enabled}
+            // The connection check tests the configured credential, not whether the
+            // provider is toggled on — so it's available as soon as a key is saved
+            // (or account auth is available), even if the provider is currently Off.
+            disabled={!provider.configured}
+            title={!provider.configured ? 'Add an API key (or account auth) first' : 'Run a connection check'}
             className="inline-flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-primary)] px-3 py-1.5 text-xs font-medium hover:border-[var(--accent)] disabled:opacity-50"
           >
             <Activity className="h-3 w-3" /> Test
