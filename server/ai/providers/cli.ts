@@ -162,7 +162,7 @@ function normalizeScriptPayload(parsed: unknown): unknown {
 async function runProcess(command: string, args: string[], stdin: string, timeoutMs = 300_000): Promise<string> {
   return await new Promise((resolve, reject) => {
     const env = { ...process.env, NO_COLOR: '1' };
-    // The TestFlowAI backend may be launched from inside a Codex session. Do not
+    // The Test Flow AI backend may be launched from inside a Codex session. Do not
     // pass parent-session internals to a nested `codex exec`; they can make the
     // child CLI choose the wrong auth/runtime path.
     delete env.CODEX_THREAD_ID;

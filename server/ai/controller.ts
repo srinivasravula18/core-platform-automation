@@ -142,7 +142,7 @@ function buildPrompt(input: ClassifyInput, extra: { workspaceContext?: string; c
     ? `\nWORKSPACE CONTEXT — existing artifacts with ids and timestamps (most recent first):\n${extra.workspaceContext}\nWhen the user refers to previously created work ("the test cases / suites / scripts / plan you created 2 days ago", "tweak those and rerun", "the run from yesterday"), resolve the reference to the concrete ids above and put them in the intent params (caseId/caseIds/suiteId/runId/planId). For "rerun", emit a create_run intent reusing the existing suiteId/caseIds. If the referenced item is genuinely not in this context, return a single "explain" intent that names what you can see and asks which item they mean.\n`
     : '';
 
-  return `You are the TestFlowAI Universal AI Controller. The user has asked:
+  return `You are the Test Flow AI Universal AI Controller. The user has asked:
 
 "${input.userMessage}"
 ${ctx}${convoBlock}${wsBlock}

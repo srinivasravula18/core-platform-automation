@@ -1,8 +1,8 @@
 /**
- * TestFlowAI — AI Provider Abstraction
+ * Test Flow AI — AI Provider Abstraction
  *
  * This file defines the supported Provider interface and model registry.
- * TestFlowAI currently exposes Gemini, OpenAI, and Anthropic as service providers.
+ * Test Flow AI currently exposes Gemini, OpenAI, and Anthropic as service providers.
  *
  * All providers implement the same surface:
  *   - generateObject<T>({ system, prompt, schema, temperature }): T

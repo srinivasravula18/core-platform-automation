@@ -91,7 +91,7 @@ export function GoogleSheetsIntegration() {
         },
         body: JSON.stringify({
           properties: {
-            title: `TestFlowAI QA Data - ${new Date().toLocaleDateString()}`
+            title: `Test Flow AI QA Data - ${new Date().toLocaleDateString()}`
           },
           sheets: [
             { properties: { title: 'Test Plans' } },

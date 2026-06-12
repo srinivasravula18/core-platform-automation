@@ -53,7 +53,7 @@ const SCREENSHOT_PRESETS: Record<string, { title: string; url: string; contentHt
           </div>
         </div>
         <div className="text-[10px] text-emerald-500/60 flex justify-between border-t border-emerald-500/10 pt-2 font-sans">
-          <span>Client: TestFlowAI Auth Engine</span>
+          <span>Client: Test Flow AI Auth Engine</span>
           <span>Latency: 114ms</span>
         </div>
       </div>

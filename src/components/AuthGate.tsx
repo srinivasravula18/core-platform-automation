@@ -130,7 +130,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
           <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-xl bg-[var(--accent)]/10">
             <BrainCircuit className="h-7 w-7 text-[var(--accent)]" />
           </div>
-          <h1 className="text-xl font-bold tracking-tight">TestFlowAI</h1>
+          <h1 className="text-xl font-bold tracking-tight">Test Flow AI</h1>
           <p className="mt-1 text-sm text-[var(--text-muted)]">Sign in to continue</p>
         </div>
 

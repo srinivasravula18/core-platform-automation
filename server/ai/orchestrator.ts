@@ -80,7 +80,7 @@ export function buildProvider(provider: ProviderName): AIProvider {
     if (provider === 'openai') return new AccountCliProvider('openai', 'codex', model);
     if (provider === 'anthropic') return new AccountCliProvider('anthropic', 'claude', model);
     throw new Error(
-      `Provider "${provider}" does not support subscription/account CLI auth in TestFlowAI. Use API key mode for this provider.`,
+      `Provider "${provider}" does not support subscription/account CLI auth in Test Flow AI. Use API key mode for this provider.`,
     );
   }
   switch (provider) {

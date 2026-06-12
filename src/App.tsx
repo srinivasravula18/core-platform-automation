@@ -68,7 +68,7 @@ function Sidebar({ isOpen }: { isOpen: boolean }) {
       <div className="h-16 flex items-center px-6 border-b border-[var(--border)] whitespace-nowrap">
         <div className="flex items-center gap-2 text-xl font-bold tracking-tight text-[var(--text-primary)]">
           <BrainCircuit className="w-6 h-6 text-[var(--accent)]" />
-          TestFlowAI
+          Test Flow AI
         </div>
       </div>
       <div className="flex-1 py-4 px-3 flex flex-col gap-4 overflow-y-auto overflow-x-hidden">

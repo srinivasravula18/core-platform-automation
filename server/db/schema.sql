@@ -1,4 +1,4 @@
--- TestFlowAI — PostgreSQL schema
+-- Test Flow AI — PostgreSQL schema
 -- All entities support the approval state machine: proposed → pending_review → approved | rejected | in_revision
 -- Soft deletes via deleted_at; audit log on every transition.
 

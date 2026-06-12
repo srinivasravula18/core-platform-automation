@@ -110,7 +110,7 @@ function stripFolderPrefix(text: string): string {
 }
 
 /**
- * Agent Console — the single, conversational home of TestFlowAI.
+ * Agent Console — the single, conversational home of Test Flow AI.
  *
  * The human describes what they want in plain language (or voice). The AI
  * controller classifies the request into a reviewable plan, the human approves,

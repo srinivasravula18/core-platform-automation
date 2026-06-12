@@ -1,5 +1,5 @@
 /**
- * TestFlowAI — Strict Layered Guardrails
+ * Test Flow AI — Strict Layered Guardrails
  *
  * The previous guardrail implementation (regex-based, single function, applied only
  * to /api/agent/start) had three problems:
@@ -159,7 +159,7 @@ export function preLLMPolicyCheck(ctx: GuardrailContext, normalized: string): Gu
     return {
       kind: 'respond',
       reply:
-        "I am an AI agent inside TestFlowAI. I generate test plans, test cases, and Playwright scripts; I triage runs and defects; and I watch git repos for coverage gaps. " +
+        "I am an AI agent inside Test Flow AI. I generate test plans, test cases, and Playwright scripts; I triage runs and defects; and I watch git repos for coverage gaps. " +
         "Pick one of those and I will start.",
       reason: 'identity question',
     };

@@ -1,5 +1,5 @@
 /**
- * App user store — the people who log into TestFlowAI itself (distinct from the
+ * App user store — the people who log into Test Flow AI itself (distinct from the
  * `website_users` credential model, which is logins for the apps UNDER test).
  *
  * Two roles:

@@ -426,7 +426,7 @@ function AppearanceSection({ theme, setTheme }: { theme: string; setTheme: (t: '
     <div className="space-y-6">
       <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-card)] p-6 shadow-sm">
         <h2 className="text-lg font-medium">Appearance</h2>
-        <p className="mt-1 text-sm text-[var(--text-muted)]">Customize how TestFlowAI looks on your device.</p>
+        <p className="mt-1 text-sm text-[var(--text-muted)]">Customize how Test Flow AI looks on your device.</p>
         <div className="mt-6 flex flex-wrap gap-4">
           <button
             onClick={() => setTheme('light')}
@@ -603,7 +603,7 @@ function ProvidersSection() {
       <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-card)] p-4 sm:p-6 shadow-sm">
         <h2 className="text-lg font-medium">AI Providers</h2>
         <p className="mt-1 text-sm text-[var(--text-muted)]">
-          Keep service configuration here. API key mode is used by TestFlowAI server calls; subscription/account mode documents external Codex or Claude Code auth and is not called as an API key.
+          Keep service configuration here. API key mode is used by Test Flow AI server calls; subscription/account mode documents external Codex or Claude Code auth and is not called as an API key.
         </p>
 
         <div className="mt-6 space-y-4">
@@ -739,7 +739,7 @@ function ProviderCard({ provider, onSaveKey, onSetEnabled, onSetAuthMode, onSetM
           />
           <span>
             <span className="block font-medium">API key</span>
-            <span className="block text-xs text-[var(--text-muted)]">Used by TestFlowAI backend calls and cost tracking.</span>
+            <span className="block text-xs text-[var(--text-muted)]">Used by Test Flow AI backend calls and cost tracking.</span>
           </span>
         </button>
         <button
@@ -769,8 +769,8 @@ function ProviderCard({ provider, onSaveKey, onSetEnabled, onSetAuthMode, onSetM
           {!provider.accountCliAllowed
             ? 'Subscription/account CLI auth is disabled outside local development. Switch this provider to API key mode for test or production.'
             : provider.accountTool
-            ? `TestFlowAI will run ${provider.accountTool} locally for this provider, using the account already authenticated on this machine.`
-            : 'This provider has no supported local subscription CLI runner in TestFlowAI; use API key mode.'}
+            ? `Test Flow AI will run ${provider.accountTool} locally for this provider, using the account already authenticated on this machine.`
+            : 'This provider has no supported local subscription CLI runner in Test Flow AI; use API key mode.'}
         </div>
       )}
 
@@ -1427,7 +1427,7 @@ function CostSection() {
     <div className="space-y-6">
       <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-card)] p-4 sm:p-6 shadow-sm">
         <h2 className="text-lg font-medium">Daily AI Cost</h2>
-        <p className="mt-1 text-sm text-[var(--text-muted)]">Track what TestFlowAI spends on AI providers and set a hard cap.</p>
+        <p className="mt-1 text-sm text-[var(--text-muted)]">Track what Test Flow AI spends on AI providers and set a hard cap.</p>
         <div className="mt-4">
           <div className="flex items-baseline gap-2">
             <span className="text-3xl font-bold">${cost.used.toFixed(4)}</span>
