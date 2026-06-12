@@ -11,6 +11,7 @@
 import path from 'path';
 import fs from 'fs/promises';
 import { spawn } from 'child_process';
+import { CHROMIUM_LAUNCH_ARGS, chromiumExecutablePath } from '../../shared/browser';
 
 export interface ScriptInput {
   filename?: string;
@@ -95,6 +96,10 @@ export async function executePlaywrightScripts(opts: {
     await fs.writeFile(path.join(testsDir, fn), sanitizeTestCode(scripts[i].code), 'utf8');
   }
 
+  // Server-safe Chromium launch (headless Ubuntu/containers need --no-sandbox etc.);
+  // optionally pin a system Chromium via PLAYWRIGHT_CHROMIUM_PATH.
+  const execPath = chromiumExecutablePath();
+  const launchOptions = `{ args: ${JSON.stringify(CHROMIUM_LAUNCH_ARGS)}${execPath ? `, executablePath: ${JSON.stringify(execPath)}` : ''} }`;
   const config = `import { defineConfig } from '@playwright/test';
 export default defineConfig({
   testDir: './tests',
@@ -107,6 +112,7 @@ export default defineConfig({
     ${opts.baseUrl ? `baseURL: ${JSON.stringify(opts.baseUrl)},` : ''}
     ${opts.storageStatePath ? `storageState: ${JSON.stringify(opts.storageStatePath)},` : ''}
     headless: true,
+    launchOptions: ${launchOptions},
     screenshot: 'on',
     trace: 'retain-on-failure',
     // Bound individual actions/navigations so a single missing element fails fast

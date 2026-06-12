@@ -2,6 +2,7 @@ import path from 'path';
 import fs from 'fs/promises';
 import { chromium } from 'playwright';
 import { normalizeTargetUrl } from '../../shared/url';
+import { chromiumLaunchOptions } from '../../shared/browser';
 
 async function fillLocator(locator: any, value: string) {
   try {
@@ -207,7 +208,7 @@ export async function createAuthStorageState(
   const normalizedUrl = normalizeTargetUrl(targetUrl);
   if (!normalizedUrl) return { ok: false, reason: 'No target URL.' };
   if (!credentials?.username || !credentials?.password) return { ok: false, reason: 'No credentials.' };
-  const browser = await chromium.launch({ headless: true });
+  const browser = await chromium.launch(chromiumLaunchOptions());
   try {
     const context = await browser.newContext({ viewport: { width: 1365, height: 768 } });
     const page = await context.newPage();
@@ -235,7 +236,7 @@ export async function capturePlaywrightEvidence(targetUrl: string, runId: string
     .map((testCase, index) => ({ testCase, index }))
     .filter(({ testCase }) => testCase?.captureEvidence !== false);
   const casesToCapture = selectedCases.length ? selectedCases : [{ testCase: { title: 'Target base URL evidence' }, index: 0 }];
-  const browser = await chromium.launch({ headless: true });
+  const browser = await chromium.launch(chromiumLaunchOptions());
 
   try {
     const evidence = [];

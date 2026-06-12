@@ -1,6 +1,7 @@
 import path from 'path';
 import fs from 'fs/promises';
 import { chromium } from 'playwright';
+import { chromiumLaunchOptions } from '../../shared/browser';
 import { z } from 'zod';
 import { normalizeTargetUrl } from '../../shared/url';
 import { performLoginIfCredentialsProvided } from '../evidence/evidenceService';
@@ -160,7 +161,7 @@ export async function inspectApplicationFlow(options: {
     };
   }
 
-  const browser = await chromium.launch({ headless: true });
+  const browser = await chromium.launch(chromiumLaunchOptions());
   const page = await browser.newPage({ viewport: { width: 1365, height: 768 } });
 
   try {
