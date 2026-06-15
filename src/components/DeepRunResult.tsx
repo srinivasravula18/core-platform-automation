@@ -320,30 +320,24 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
     if (retrying) return;
     setRetrying(true);
     try {
-      const retryCases = list.length ? list : (run?.generated_cases || []);
-      if (retryCases.length > 0) {
-        const res = await fetch('/api/agent/continue', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ taskId: activeTaskId, cases: retryCases }),
-        });
-        if (res.ok) {
-          setCases(retryCases.map((c: Case) => ({ ...c, steps: (c.steps || []).map((s) => ({ ...s })) })));
-          setPwResult(null);
-          setRun((prev: any) => (prev ? {
-            ...prev,
-            status: 'running',
-            generated_cases: retryCases,
-            playwright_scripts: [],
-            evidence_screenshots: [],
-          } : prev));
-          setTab('cases');
-          activeRef.current = true;
-          setTimeout(tick, 800);
-          return;
-        }
+      // Resume from the phase that failed (reusing the completed inspection / code
+      // understanding / coverage matches) instead of re-running the whole pipeline.
+      const resumeRes = await fetch('/api/agent/retry', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ taskId: activeTaskId }),
+      });
+      const resume = await resumeRes.json().catch(() => ({}));
+      if (resumeRes.ok && resume?.success) {
+        setPwResult(null);
+        setRun((prev: any) => (prev ? { ...prev, status: 'running', completed_at: null } : prev));
+        setTab('cases');
+        activeRef.current = true;
+        setTimeout(tick, 800);
+        return;
       }
 
+      // Backend says it can't cheaply resume (no inspection yet) → fresh run from scratch.
       const res = await fetch('/api/agent/start', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

@@ -1428,6 +1428,51 @@ export function registerAgentRoutes(app: Express) {
     }
   });
 
+  // RESUME-ON-RETRY: restart a failed run from the phase it died on, reusing the
+  // expensive work already done (inspection, code-understanding, coverage matches) instead
+  // of starting from scratch. Resume point is derived from what the run already produced.
+  app.post('/api/agent/retry', async (req, res) => {
+    const { taskId } = req.body;
+    const run = db.agentRuns.find((item: any) => item.id === taskId);
+    if (!run) return res.status(404).json({ error: 'Run not found' });
+
+    const hasInspection = !!run.inspection_context;
+    const hasCases = Array.isArray(run.generated_cases) && run.generated_cases.length > 0;
+    if (!hasInspection) {
+      // Inspection never produced usable context — nothing cheap to resume from; the
+      // client should kick off a fresh run (which re-inspects).
+      return res.json({ success: false, needsFullRestart: true });
+    }
+
+    const liveCreds = resolveCredentials({ targetUrl: run.app_url, websiteId: run.websiteId, role: (run.credentials || {}).role, ownerId: ownerScopeForRun(run) }) || undefined;
+    run.status = 'running';
+    run.completed_at = null;
+    if (run.review_started_at) {
+      run.paused_ms = (run.paused_ms || 0) + Math.max(0, Date.parse(nowIso()) - Date.parse(run.review_started_at));
+      run.review_started_at = null;
+    }
+    const resumedFrom = hasCases ? 'scripts' : 'write_cases';
+    pushPhase(run, { agent: 'System', status: 'running', output: `Retrying — resuming from ${hasCases ? 'script generation' : 'case writing'} (reusing the completed inspection${run.feature_understanding ? ' + code understanding' : ''}).` });
+    persistDataInBackground('retry agent run');
+    res.json({ success: true, resumedFrom });
+
+    try {
+      if (hasCases) {
+        await runPostCaseAgentFlow(run, undefined as any, { test_cases: run.generated_cases }, run.app_url || '', liveCreds);
+      } else {
+        // Resume case writing using the already-computed inspection + understanding +
+        // coverage matches. Keep existing matches (gaps) when present, else fresh.
+        const matched = Array.isArray(run.existing_matches) ? run.existing_matches : [];
+        await generateCasesForRun(run, liveCreds, { flowMode: 'review_cases', mode: matched.length ? 'gaps' : 'fresh', existingCases: matched });
+      }
+    } catch (err: any) {
+      console.error('AI Retry Error:', err);
+      markRunDone(run, 'failed');
+      pushPhase(run, { agent: 'System', status: 'failed', output: getAIErrorMessage(err) });
+      persistDataInBackground('failed retry');
+    }
+  });
+
   app.post('/api/agent/rework-case', async (req, res) => {
     try {
       const { testCase, feedback, targetUrl } = req.body;
