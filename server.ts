@@ -1,6 +1,6 @@
+import './server/shared/env';
 import express from 'express';
 import path from 'path';
-import dotenv from 'dotenv';
 import { loadPersistedData, loadPersistedSettings } from './server/shared/storage';
 import { registerSettingsRoutes } from './server/features/settings/routes';
 import { registerSettingsRoutes as registerAiSettingsRoutes } from './server/features/settings/aiRoutes';
@@ -25,11 +25,6 @@ import { scopeMiddleware } from './server/shared/scope';
 import { ensureMigrated, isPgEnabled } from './server/db/repository';
 import { runSeedIfEmpty } from './server/db/seed';
 import { hydrateFromPg } from './server/features/credentials/credentialsService';
-
-dotenv.config({
-  path: [path.resolve(process.cwd(), '.env.local'), path.resolve(process.cwd(), '.env')],
-  override: true,
-});
 
 async function startServer() {
   await loadPersistedData();

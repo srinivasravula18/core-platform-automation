@@ -73,7 +73,10 @@ export default function GitAgent() {
       <div className="flex items-start justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Git Agent</h1>
-          <p className="text-sm text-[var(--text-muted)] mt-1">Generate draft test cases from code changes in <span className="font-medium text-[var(--text-primary)]">D:\core-platform</span>.</p>
+          <p className="text-sm text-[var(--text-muted)] mt-1">
+            Generate draft test cases from code changes in{' '}
+            <span className="font-medium text-[var(--text-primary)]">{status?.repoPath || 'the configured target repo'}</span>.
+          </p>
         </div>
         <div className="flex items-center gap-3">
           <label className="text-sm text-[var(--text-muted)]">
@@ -275,7 +278,6 @@ export default function GitAgent() {
     </div>
   );
 }
-
 
 
 

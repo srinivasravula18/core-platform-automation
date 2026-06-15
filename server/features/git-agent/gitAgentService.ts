@@ -1,3 +1,4 @@
+import '../../shared/env';
 import path from 'path';
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { spawnSync } from 'child_process';

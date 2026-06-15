@@ -834,7 +834,7 @@ export default function AgentConsole() {
               id: thinkingId,
               role: 'assistant',
               kind: 'text',
-              text: data?.error || 'I could not analyze that feature. Make sure the target repo (D:\\core-platform) is available.',
+              text: data?.error || 'I could not analyze that feature. Make sure the configured target repo is available.',
             });
           } else {
             replaceTurn(thinkingId, { id: thinkingId, role: 'assistant', kind: 'reqdiscovery', result: data });
