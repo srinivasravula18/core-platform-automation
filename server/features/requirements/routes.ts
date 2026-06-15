@@ -75,6 +75,21 @@ export function registerRequirementRoutes(app: Express) {
     res.json({ success: true });
   });
 
+  app.post('/api/requirements/bulk-delete', async (req, res) => {
+    const ids: string[] = Array.isArray(req.body?.ids) ? req.body.ids.map(String) : [];
+    if (!ids.length) return res.status(400).json({ error: 'ids array is required' });
+    let deleted = 0;
+    for (const id of ids) {
+      const existing = await Requirements.get(id);
+      if (!existing) continue;
+      await Requirements.remove(id);
+      deleted += 1;
+    }
+    if (!isPgEnabled()) persistDataInBackground('requirement bulk delete');
+    addActivity(`Deleted ${deleted} requirements`);
+    res.json({ success: true, deleted });
+  });
+
   /* ---------- manage coverage links ---------- */
   app.post('/api/requirements/:id/links', async (req, res) => {
     const requirement = await Requirements.get(req.params.id);

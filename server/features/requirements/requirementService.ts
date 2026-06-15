@@ -24,8 +24,8 @@ import { gitGrep, readRepoFile, GIT_AGENT_TARGET_REPO } from '../git-agent/gitAg
 /* ---------- schemas ---------- */
 
 const featureAnalystSchema = z.object({
-  title: z.string(),
-  description: z.string(),
+  title: z.string().default('Feature under test'),
+  description: z.string().default(''),
   businessRules: z.array(z.string()).default([]),
   dataPopulationNotes: z.string().default(''),
   adminBehavior: z.string().default(''),
@@ -33,27 +33,30 @@ const featureAnalystSchema = z.object({
   metadataRefs: z.array(z.object({ object: z.string(), note: z.string().default('') })).default([]),
   sourceFiles: z.array(z.object({ path: z.string(), why: z.string().default('') })).default([]),
   candidateScenarios: z.array(z.object({
-    title: z.string(),
+    title: z.string().default('Scenario'),
     priority: z.string().default('Medium'),
     rationale: z.string().default(''),
-    steps: z.array(z.object({ action: z.string(), expected: z.string() })).default([]),
+    steps: z.array(z.object({ action: z.string().default(''), expected: z.string().default('') })).default([]),
   })).default([]),
 });
 
 const reconcileSchema = z.object({
+  // Tolerant: the model (esp. codex) sometimes omits coverage fields. Defaulting them
+  // keeps the run alive instead of failing the whole "Write cases" stage on a missing
+  // boolean. sufficient defaults false → we then propose gap cases, which is the safe path.
   coverage: z.object({
-    sufficient: z.boolean(),
+    sufficient: z.boolean().default(false),
     coveredBy: z.array(z.object({ id: z.string(), title: z.string().default(''), reason: z.string().default('') })).default([]),
     gaps: z.array(z.string()).default([]),
     reasoning: z.string().default(''),
-  }),
+  }).default({ sufficient: false, coveredBy: [], gaps: [], reasoning: '' }),
   proposedCases: z.array(z.object({
-    title: z.string(),
+    title: z.string().default('Proposed test case'),
     type: z.string().default('Manual'),
     priority: z.string().default('Medium'),
     tags: z.array(z.string()).default([]),
     rationale: z.string().default(''),
-    steps: z.array(z.object({ action: z.string(), expected: z.string() })).default([]),
+    steps: z.array(z.object({ action: z.string().default(''), expected: z.string().default('') })).default([]),
   })).default([]),
 });
 

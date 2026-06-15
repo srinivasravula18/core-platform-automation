@@ -59,6 +59,67 @@ export interface ProviderHealth {
   checkedAt: string;
 }
 
+/* ----------------------------------------------------------------------------
+ * Native tool-calling (function-calling) surface.
+ *
+ * `chatWithTools` is ONE round-trip: given the running message list and the tool
+ * specs, the provider returns either final assistant text OR a set of tool-call
+ * requests (using each SDK's native function-calling — Anthropic tool_use, OpenAI
+ * tool_calls, Gemini functionCall). The agent LOOP (server/ai/agentLoop.ts) owns
+ * the iteration: it executes the requested tools, appends the results as `tool`
+ * messages, and calls chatWithTools again until the model returns text, an accept
+ * check passes, or a budget is hit. No Vercel AI SDK — native SDKs only.
+ * -------------------------------------------------------------------------- */
+
+/** A tool exposed to the model. `parameters` is a JSON Schema object. */
+export interface ToolSpec {
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+}
+
+export interface ToolCallRequest {
+  /** Provider-assigned call id (used to correlate the tool result). */
+  id: string;
+  name: string;
+  arguments: Record<string, unknown>;
+}
+
+export type ChatRole = 'system' | 'user' | 'assistant' | 'tool';
+
+export interface ChatMessage {
+  role: ChatRole;
+  /** Text content (assistant text, user text, or a serialized tool result). */
+  content?: string;
+  /** Present on assistant turns that requested tool calls. */
+  toolCalls?: ToolCallRequest[];
+  /** Present on role:'tool' messages — correlates to a prior ToolCallRequest.id. */
+  toolCallId?: string;
+  toolName?: string;
+}
+
+export interface ChatWithToolsOptions {
+  system?: string;
+  messages: ChatMessage[];
+  tools?: ToolSpec[];
+  temperature?: number;
+  maxTokens?: number;
+  model?: string;
+  signal?: AbortSignal;
+}
+
+export interface ChatWithToolsResult {
+  /** Final assistant text, if the model answered instead of calling tools. */
+  text?: string;
+  /** Tool calls the model wants executed this round (empty when it answered). */
+  toolCalls: ToolCallRequest[];
+  usage?: ProviderUsage;
+  model: string;
+  provider: ProviderName;
+  stopReason: 'tool_calls' | 'stop' | 'length' | 'other';
+  latencyMs: number;
+}
+
 export interface AIProvider {
   readonly name: ProviderName;
   health(): Promise<ProviderHealth>;
@@ -66,6 +127,9 @@ export interface AIProvider {
   generateText(opts: GenerateTextOptions): Promise<ProviderResponse<string>>;
   /** Optional token stream. Yields text deltas as they arrive. */
   generateTextStream?(opts: GenerateTextOptions): AsyncIterable<string>;
+  /** Optional native tool-calling round-trip. Providers that implement it enable
+   * the agent loop; the account/CLI provider may omit it. */
+  chatWithTools?(opts: ChatWithToolsOptions): Promise<ChatWithToolsResult>;
 }
 
 export class ProviderError extends Error {

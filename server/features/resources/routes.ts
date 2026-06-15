@@ -140,6 +140,28 @@ export function registerResourceRoutes(app: Express) {
     res.json({ success: true });
   });
 
+  app.post('/api/folders/bulk-delete', async (req, res) => {
+    const ids: string[] = Array.isArray(req.body?.ids) ? req.body.ids.map(String) : [];
+    if (!ids.length) return res.status(400).json({ error: 'ids array is required' });
+    const allFolders = await Folders.list();
+    const blocked: string[] = [];
+    let deleted = 0;
+    for (const id of ids) {
+      const existing = allFolders.find((f: any) => f.id === id);
+      if (!existing) continue;
+      const hasChildFolders = allFolders.some((f: any) => f.parentId === id);
+      if (hasChildFolders || folderHasArtifacts(id)) {
+        blocked.push(existing.name);
+        continue;
+      }
+      await Folders.remove(id);
+      deleted += 1;
+    }
+    if (!isPgEnabled()) persistDataInBackground('folder bulk delete');
+    addActivity(`Deleted ${deleted} folder(s)`);
+    res.json({ success: true, deleted, blocked });
+  });
+
   /* ---------- generic CRUD: PUT/DELETE for plans/suites/cases/runs/defects/scripts/reports ---------- */
   const crudEntities: Array<{
     name: string;
@@ -172,6 +194,21 @@ export function registerResourceRoutes(app: Express) {
       if (!isPgEnabled()) persistDataInBackground(`${e.name} delete`);
       addActivity(`Deleted ${e.name.slice(0, -1)}: ${existing.name || existing.title}`);
       res.json({ success: true });
+    });
+
+    app.post(`/api/${e.name}/bulk-delete`, async (req, res) => {
+      const ids: string[] = Array.isArray(req.body?.ids) ? req.body.ids.map(String) : [];
+      if (!ids.length) return res.status(400).json({ error: 'ids array is required' });
+      let deleted = 0;
+      for (const id of ids) {
+        const existing = await e.repo.get(id);
+        if (!existing) continue;
+        await e.repo.remove(id);
+        deleted += 1;
+      }
+      if (!isPgEnabled()) persistDataInBackground(`${e.name} bulk delete`);
+      addActivity(`Deleted ${deleted} ${e.name}`);
+      res.json({ success: true, deleted });
     });
   }
 

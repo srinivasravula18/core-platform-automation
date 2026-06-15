@@ -215,6 +215,7 @@ export async function classifyIntent(input: ClassifyInput): Promise<{ intents: I
     schema: intentSchema,
     temperature: 0.2,
     userMessage: input.userMessage,
+    hasHistory: !!conversation,
   });
 
   if (result.shortCircuit) {
@@ -370,6 +371,34 @@ export async function buildPlan(input: ClassifyInput): Promise<Plan> {
   return plan;
 }
 
+/**
+ * Execute a SINGLE intent directly (no static plan), reusing the existing per-intent
+ * handler in executeStep. This is what the SupervisorAgent's tools call: the model
+ * selects the capability at runtime (tool-calling) and this runs the real handler —
+ * retiring the "classify once → static switch" path in favour of dynamic selection.
+ */
+export async function executeIntent(
+  kind: string,
+  params: Record<string, unknown>,
+  opts: { workspaceId?: string; userId?: string; userMessage?: string } = {},
+): Promise<unknown> {
+  const intent = toIntentDraft({ kind, params, title: INTENT_LABELS[kind as IntentKind], confidence: 90 });
+  if (!intent) throw new Error(`Could not build intent for kind "${kind}".`);
+  const plan: Plan = {
+    id: `SUP-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`,
+    userMessage: opts.userMessage || '',
+    summary: '', reasoning: '',
+    steps: [], estimatedCostUsd: 0,
+    createdAt: new Date().toISOString(),
+    status: 'running',
+    workspaceId: opts.workspaceId || 'default',
+    userId: opts.userId,
+  };
+  const step: PlanStep = { id: `SUPSTEP-${Math.random().toString(36).slice(2, 6)}`, index: 0, intent, status: 'running' };
+  plan.steps = [step];
+  return executeStep(step, plan);
+}
+
 export function getPlan(id: string): Plan | undefined {
   return planPlans.get(id);
 }
@@ -396,28 +425,38 @@ export async function executePlan(planId: string, options: { approveAll?: boolea
   if (plan.status === 'running' || plan.status === 'completed') return plan;
   plan.status = 'running';
 
+  let anyFailed = false;
   for (const step of plan.steps) {
     if (step.status === 'cancelled' || step.status === 'skipped') continue;
     if (step.status === 'awaiting_approval' && !options.approveAll) continue;
 
     step.status = 'running';
     step.startedAt = new Date().toISOString();
-    try {
-      step.result = await executeStep(step, plan);
-      step.status = 'completed';
-    } catch (err: any) {
-      step.status = 'failed';
-      step.error = err?.message || String(err);
-      plan.status = 'failed';
-      break;
-    } finally {
-      step.finishedAt = new Date().toISOString();
+    // Iterate, don't give up: retry a failed step once (handles transient provider/LLM
+    // errors), and do NOT hard-abort the whole plan on one failure — run the remaining
+    // steps so the user gets partial progress, then report an honest plan status.
+    const MAX_STEP_ATTEMPTS = 2;
+    let lastErr: any = null;
+    for (let attempt = 1; attempt <= MAX_STEP_ATTEMPTS; attempt += 1) {
+      try {
+        step.result = await executeStep(step, plan);
+        step.status = 'completed';
+        step.error = undefined;
+        lastErr = null;
+        break;
+      } catch (err: any) {
+        lastErr = err;
+        step.error = err?.message || String(err);
+      }
     }
+    if (lastErr) {
+      step.status = 'failed';
+      anyFailed = true;
+    }
+    step.finishedAt = new Date().toISOString();
   }
 
-  if (plan.status === 'running') {
-    plan.status = plan.steps.every((s) => s.status === 'completed' || s.status === 'skipped' || s.status === 'cancelled') ? 'completed' : 'failed';
-  }
+  plan.status = anyFailed ? 'failed' : 'completed';
   return plan;
 }
 
@@ -1051,6 +1090,7 @@ export async function explainIntent(topic: string, options: { workspaceId?: stri
   const { text, shortCircuit } = await orch.generateText({
     prompt: buildExplainPrompt(topic, workspaceContext, conversation),
     userMessage: topic,
+    hasHistory: !!conversation,
   });
   if (shortCircuit) return sanitizeAnswer(shortCircuit);
   const answer = sanitizeAnswer(text) || 'No answer available.';
@@ -1068,7 +1108,7 @@ export async function* streamExplain(topic: string, options: { workspaceId?: str
   const conversation = provided || (refsPast ? recentConversation() : '');
   let full = '';
   try {
-    for await (const delta of orch.streamText({ prompt: buildExplainPrompt(topic, workspaceContext, conversation), userMessage: topic })) {
+    for await (const delta of orch.streamText({ prompt: buildExplainPrompt(topic, workspaceContext, conversation), userMessage: topic, hasHistory: !!conversation })) {
       full += delta;
       yield delta;
     }

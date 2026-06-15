@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { Search, Filter, ShieldCheck, ShieldAlert, Sparkles, Plus, Clock, FileSpreadsheet, Layers, User, Calendar, Trash2, Eye, EyeOff, AlertTriangle, PlayCircle, ExternalLink, Activity } from 'lucide-react';
+import { Search, Filter, ShieldCheck, ShieldAlert, Sparkles, Plus, Clock, FileSpreadsheet, Layers, User, Calendar, Trash2, Eye, EyeOff, AlertTriangle, PlayCircle, ExternalLink, Activity, CheckSquare, X } from 'lucide-react';
 import ExportMenu from '../components/ExportMenu';
 import { cn } from '@/src/lib/utils';
 import { useAiSearch } from '@/src/lib/useAiSearch';
+import { useBulkDelete } from '@/src/lib/useBulkDelete';
 import html2canvas from 'html2canvas';
 import { Modal } from '@/src/components/Modal';
 import { FolderSelect } from '@/src/components/FolderSelect';
@@ -339,6 +340,8 @@ export default function Reports() {
       .catch(console.error);
   };
 
+  const bulk = useBulkDelete('reports', () => { setSelectedReport(null); fetchReports(); }, 'report');
+
   const handleDeleteReport = (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
     if (confirm('Are you sure you want to delete this test report entry?')) {
@@ -437,6 +440,9 @@ export default function Reports() {
               { key: 'stepCount', label: 'Steps', get: (r) => (r.steps || []).length },
             ]}
           />
+          <button onClick={bulk.toggleSelectMode} className={cn("flex items-center gap-1.5 border px-3 py-2 rounded-md text-sm font-medium transition-colors", bulk.selectMode ? "border-[var(--accent)] text-[var(--accent)] bg-[var(--accent)]/10" : "border-[var(--border)] bg-[var(--bg-secondary)] hover:bg-[var(--border)] text-[var(--text-primary)]")}>
+            {bulk.selectMode ? <X className="w-4 h-4" /> : <CheckSquare className="w-4 h-4" />} {bulk.selectMode ? 'Cancel' : 'Select'}
+          </button>
           <button onClick={() => setIsNewReportModalOpen(true)} className="flex items-center gap-2 bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white px-4 py-2 rounded-md text-sm font-medium transition-colors">
             <Plus className="w-4 h-4" /> Log Manual Report
           </button>
@@ -515,9 +521,15 @@ export default function Reports() {
             </div>
           </div>
           
-          <div className="text-xs font-mono text-slate-500">
-            Click step buttons under <strong className="text-slate-600 dark:text-slate-300">Evidence</strong> to display real screen evidence inline
-          </div>
+          {bulk.selectMode && bulk.selectedCount > 0 ? (
+            <button onClick={bulk.deleteSelected} disabled={bulk.busy} className="flex items-center gap-1.5 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
+              <Trash2 className="w-4 h-4" /> Delete selected ({bulk.selectedCount})
+            </button>
+          ) : (
+            <div className="text-xs font-mono text-slate-500">
+              Click step buttons under <strong className="text-slate-600 dark:text-slate-300">Evidence</strong> to display real screen evidence inline
+            </div>
+          )}
         </div>
 
         {/* Main Table Styled search similar to Image 2 */}
@@ -525,6 +537,11 @@ export default function Reports() {
           <table className="w-full min-w-[1530px] table-fixed border-collapse text-left text-sm">
             <thead className="bg-[var(--bg-secondary)] text-[var(--text-muted)] text-[11px] uppercase tracking-wider font-semibold border-b border-[var(--border)]">
               <tr>
+                {bulk.selectMode && (
+                  <th className="w-10 px-4 py-3">
+                    <input type="checkbox" checked={bulk.allSelected(filteredReports.map((r) => r.id))} onChange={() => bulk.toggleAll(filteredReports.map((r) => r.id))} />
+                  </th>
+                )}
                 <th className="w-16 px-4 py-3">ID</th>
                 <th className="w-[300px] px-4 py-3">Test Scenario</th>
                 <th className="w-24 px-4 py-3">Type</th>
@@ -537,7 +554,7 @@ export default function Reports() {
             <tbody className="divide-y divide-[var(--border)] font-sans">
               {filteredReports.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="py-12 px-4 text-center text-sm text-[var(--text-muted)]">
+                  <td colSpan={bulk.selectMode ? 8 : 7} className="py-12 px-4 text-center text-sm text-[var(--text-muted)]">
                     No test reports found.
                   </td>
                 </tr>
@@ -549,6 +566,11 @@ export default function Reports() {
                       "hover:bg-[var(--bg-secondary)]/40 transition-colors align-top text-left",
                       activeStep?.reportId === r.id ? "bg-[var(--bg-secondary)]/10" : ""
                     )}>
+                      {bulk.selectMode && (
+                        <td className="py-4 px-4">
+                          <input type="checkbox" checked={bulk.isSelected(r.id)} onChange={() => bulk.toggle(r.id)} />
+                        </td>
+                      )}
                       {/* ID column */}
                       <td className="py-4 px-4 font-bold font-mono text-xs text-slate-950 dark:text-slate-100">
                         {`TC-00${rIdx + 1}`}
@@ -671,7 +693,7 @@ export default function Reports() {
                     {/* Inline browser screen expander row when a step is active */}
                     {activeStep?.reportId === r.id && (
                       <tr className="bg-[var(--bg-secondary)]/15">
-                        <td colSpan={7} className="px-6 py-5 border-b border-[var(--border)]">
+                        <td colSpan={bulk.selectMode ? 8 : 7} className="px-6 py-5 border-b border-[var(--border)]">
                           {/* Custom Red Banner for Failures exactly as shown in 1st image */}
                           {activeStep.step.outcome === 'Fail' && activeStep.step.reason && (
                             <div className="mx-auto mb-4 flex max-w-5xl items-start gap-2 rounded-lg border border-red-500/20 bg-red-950/20 p-3 text-left text-xs shadow-inner">
@@ -846,8 +868,27 @@ export default function Reports() {
       )}
 
       {/* Manual Report Modal Layout */}
-      <Modal isOpen={isNewReportModalOpen} onClose={() => setIsNewReportModalOpen(false)} title="Log Manual Run Audit Report">
-        <div className="space-y-4 max-h-[72dvh] overflow-y-auto px-1 text-left">
+      <Modal
+        isOpen={isNewReportModalOpen}
+        onClose={() => setIsNewReportModalOpen(false)}
+        title="Log Manual Run Audit Report"
+        footer={
+          <div className="flex justify-end gap-3">
+            <button type="button" onClick={() => setIsNewReportModalOpen(false)} className="px-4 py-2 border border-[var(--border)] text-xs font-semibold text-[var(--text-muted)] hover:text-[var(--text-primary)] rounded transition-all">
+               Cancel
+            </button>
+            <button
+              type="button"
+              onClick={handleCreateReport}
+              disabled={!newReportName.trim()}
+              className="px-4 py-2 bg-[var(--accent)] text-white text-xs font-semibold rounded hover:bg-[var(--accent-hover)] transition-all disabled:opacity-50"
+            >
+               Save Verification Report
+            </button>
+          </div>
+        }
+      >
+        <div className="space-y-4 text-left">
           
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
              <div>
@@ -1031,20 +1072,6 @@ export default function Reports() {
              </div>
           </div>
 
-          <div className="pt-3 flex justify-end gap-3 border-t border-[var(--border)] bg-[var(--bg-card)]">
-            <button type="button" onClick={() => setIsNewReportModalOpen(false)} className="px-4 py-2 border border-[var(--border)] text-xs font-semibold text-[var(--text-muted)] hover:text-[var(--text-primary)] rounded transition-all">
-               Cancel
-            </button>
-            <button 
-              type="button" 
-              onClick={handleCreateReport} 
-              disabled={!newReportName.trim()}
-              className="px-4 py-2 bg-[var(--accent)] text-white text-xs font-semibold rounded hover:bg-[var(--accent-hover)] transition-all disabled:opacity-50"
-            >
-               Save Verification Report
-            </button>
-          </div>
-          
         </div>
       </Modal>
 

@@ -1,7 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
-import { ChevronRight, FileText, Folder, FolderPlus, Layers, PlayCircle, Search, Trash2, ClipboardList, TestTube2, Code2, Copy, Download, Check } from 'lucide-react';
+import { ChevronRight, FileText, Folder, FolderPlus, Layers, PlayCircle, Search, Trash2, ClipboardList, TestTube2, Code2, Copy, Download, Check, CheckSquare, X } from 'lucide-react';
 import { cn } from '@/src/lib/utils';
 import { Modal } from '@/src/components/Modal';
+
+// Artifact groups backed by a real DELETE/bulk-delete endpoint (evidence is derived, not deletable).
+const DELETABLE_KEYS = new Set(['plans', 'suites', 'cases', 'runs', 'reports', 'scripts']);
 
 type FolderNode = any & { children: FolderNode[] };
 
@@ -73,6 +76,9 @@ export default function TestRepository() {
   const [newRootFolderName, setNewRootFolderName] = useState('');
   const [newSubfolderName, setNewSubfolderName] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set());
+  const [deleting, setDeleting] = useState(false);
 
   const fetchData = () => {
     Promise.all([
@@ -166,6 +172,75 @@ export default function TestRepository() {
     fetchData();
   };
 
+  const toggleSelectMode = () => {
+    setSelectMode((prev) => {
+      if (prev) setSelectedKeys(new Set());
+      return !prev;
+    });
+  };
+
+  const composeKey = (entity: string, id: string) => `${entity}::${id}`;
+
+  const toggleItem = (entity: string, id: string) => {
+    const k = composeKey(entity, id);
+    setSelectedKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(k)) next.delete(k);
+      else next.add(k);
+      return next;
+    });
+  };
+
+  const isItemSelected = (entity: string, id: string) => selectedKeys.has(composeKey(entity, id));
+
+  const deleteArtifact = async (entity: string, id: string) => {
+    if (!DELETABLE_KEYS.has(entity)) return;
+    if (!confirm(`Delete this ${entity.replace(/s$/, '')}? This cannot be undone.`)) return;
+    setDeleting(true);
+    try {
+      await fetch(`/api/${entity}/${id}`, { method: 'DELETE' });
+      fetchData();
+    } catch (error) {
+      console.error(error);
+      alert('Failed to delete item.');
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  const deleteSelectedArtifacts = async () => {
+    const keys: string[] = Array.from(selectedKeys);
+    if (!keys.length) return;
+    if (!confirm(`Delete ${keys.length} selected item${keys.length === 1 ? '' : 's'}? This cannot be undone.`)) return;
+    // group ids by entity for bulk-delete calls
+    const byEntity = new Map<string, string[]>();
+    for (const k of keys) {
+      const [entity, id] = k.split('::');
+      if (!DELETABLE_KEYS.has(entity)) continue;
+      byEntity.set(entity, [...(byEntity.get(entity) || []), id]);
+    }
+    setDeleting(true);
+    try {
+      await Promise.all(
+        Array.from(byEntity.entries()).map(([entity, ids]) =>
+          fetch(`/api/${entity}/bulk-delete`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ids }),
+          }),
+        ),
+      );
+      setSelectedKeys(new Set());
+      setSelectMode(false);
+      fetchData();
+    } catch (error) {
+      console.error(error);
+      alert('Failed to delete selected items.');
+    } finally {
+      setDeleting(false);
+    }
+  };
+
   return (
     <div className="app-page-shell app-page-shell-fluid flex h-full min-h-0 flex-col gap-5 overflow-hidden">
       <div className="flex flex-shrink-0 items-center justify-between">
@@ -242,6 +317,14 @@ export default function TestRepository() {
                   className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] py-2 pl-9 pr-3 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)] sm:w-72"
                 />
               </div>
+              <button onClick={toggleSelectMode} className={cn("inline-flex items-center gap-1.5 rounded-md border px-3 py-2 text-sm font-medium transition-colors", selectMode ? "border-[var(--accent)] text-[var(--accent)] bg-[var(--accent)]/10" : "border-[var(--border)] bg-[var(--bg-secondary)] text-[var(--text-primary)] hover:border-[var(--accent)]")}>
+                {selectMode ? <X className="h-4 w-4" /> : <CheckSquare className="h-4 w-4" />} {selectMode ? 'Cancel' : 'Select'}
+              </button>
+              {selectMode && selectedKeys.size > 0 && (
+                <button onClick={deleteSelectedArtifacts} disabled={deleting} className="inline-flex items-center gap-1.5 rounded-md bg-red-600 px-3 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50">
+                  <Trash2 className="h-4 w-4" /> Delete selected ({selectedKeys.size})
+                </button>
+              )}
               {selectedFolder && (
                 <button onClick={deleteFolder} className="rounded-md border border-red-500/20 bg-red-500/10 p-2 text-red-400 hover:bg-red-500/20" title="Delete empty folder">
                   <Trash2 className="h-4 w-4" />
@@ -254,10 +337,24 @@ export default function TestRepository() {
             {artifactConfig.map((config) => {
               const items = visibleItems(config.key);
               const Icon = config.icon;
+              const canDelete = DELETABLE_KEYS.has(config.key);
+              const groupVisibleIds = items.slice(0, 8).map((item) => item.id);
+              const groupAllSelected = canDelete && groupVisibleIds.length > 0 && groupVisibleIds.every((id) => isItemSelected(config.key, id));
+              const toggleGroupAll = () => {
+                setSelectedKeys((prev) => {
+                  const next = new Set(prev);
+                  if (groupAllSelected) groupVisibleIds.forEach((id) => next.delete(composeKey(config.key, id)));
+                  else groupVisibleIds.forEach((id) => next.add(composeKey(config.key, id)));
+                  return next;
+                });
+              };
               return (
                 <div key={config.key} className="rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)]">
                   <div className="flex items-center justify-between border-b border-[var(--border)] px-4 py-3">
                     <div className="flex items-center gap-2 text-sm font-semibold">
+                      {selectMode && canDelete && (
+                        <input type="checkbox" checked={groupAllSelected} onChange={toggleGroupAll} title={`Select all ${config.label.toLowerCase()}`} />
+                      )}
                       <Icon className="h-4 w-4 text-[var(--accent)]" />
                       {config.label}
                     </div>
@@ -266,22 +363,42 @@ export default function TestRepository() {
                   <div className="divide-y divide-[var(--border)]">
                     {items.length ? items.slice(0, 8).map((item) => {
                       const hasCode = config.key === 'scripts' && typeof item.code === 'string' && item.code.length > 0;
+                      const rowSelectable = selectMode && canDelete;
                       return (
                       <div
                         key={item.id}
-                        onClick={hasCode ? () => { setViewerScript(item); setCopied(false); } : undefined}
+                        onClick={rowSelectable ? () => toggleItem(config.key, item.id) : (hasCode ? () => { setViewerScript(item); setCopied(false); } : undefined)}
                         className={cn(
-                          'grid min-w-0 grid-cols-[96px_minmax(0,1fr)_88px] gap-3 px-4 py-3 text-sm sm:grid-cols-[140px_minmax(0,1fr)_110px]',
-                          hasCode && 'cursor-pointer hover:bg-[var(--bg-card)]',
+                          'flex min-w-0 items-center gap-3 px-4 py-3 text-sm',
+                          (hasCode || rowSelectable) && 'cursor-pointer hover:bg-[var(--bg-card)]',
                         )}
-                        title={hasCode ? 'View script code' : undefined}
+                        title={rowSelectable ? 'Toggle selection' : (hasCode ? 'View script code' : undefined)}
                       >
-                        <span className="min-w-0 truncate font-mono text-xs text-[var(--text-muted)]" title={item.id}>{item.id}</span>
-                        <span className="flex min-w-0 items-center gap-1.5 truncate font-medium text-[var(--text-primary)]" title={item.name || item.title || 'Untitled'}>
+                        {rowSelectable && (
+                          <input
+                            type="checkbox"
+                            checked={isItemSelected(config.key, item.id)}
+                            onChange={() => toggleItem(config.key, item.id)}
+                            onClick={(e) => e.stopPropagation()}
+                            className="shrink-0"
+                          />
+                        )}
+                        <span className="w-[96px] shrink-0 truncate font-mono text-xs text-[var(--text-muted)] sm:w-[140px]" title={item.id}>{item.id}</span>
+                        <span className="flex min-w-0 flex-1 items-center gap-1.5 truncate font-medium text-[var(--text-primary)]" title={item.name || item.title || 'Untitled'}>
                           {hasCode && <Code2 className="h-3.5 w-3.5 shrink-0 text-indigo-400" />}
                           <span className="truncate">{item.name || item.title || 'Untitled'}</span>
                         </span>
-                        <span className="min-w-0 truncate text-right text-xs text-[var(--text-muted)]" title={item.status || item.date || item.type || ''}>{item.status || item.date || item.type || ''}</span>
+                        <span className="w-[88px] shrink-0 truncate text-right text-xs text-[var(--text-muted)] sm:w-[110px]" title={item.status || item.date || item.type || ''}>{item.status || item.date || item.type || ''}</span>
+                        {canDelete && (
+                          <button
+                            onClick={(e) => { e.stopPropagation(); deleteArtifact(config.key, item.id); }}
+                            disabled={deleting}
+                            title="Delete"
+                            className="shrink-0 rounded p-1 text-[var(--text-muted)] transition-colors hover:bg-red-500/10 hover:text-red-500 disabled:opacity-50"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        )}
                       </div>
                       );
                     }) : (

@@ -20,6 +20,7 @@ import { resolveCredentials, maskPassword } from '../credentials/credentialsServ
 import { pushInboxItem } from '../inbox/routes';
 import { Plans, Suites, Cases, Runs, Reports, Scripts, Folders } from '../../db/repository';
 import { runGuardrailPipeline } from '../../ai/guardrails';
+import { assessInspection, assessCasesGrounding, assessExecution } from '../../ai/verifier';
 import { reqScope, scopeFilter } from '../../shared/scope';
 import { getApp, getProject } from '../projects/projectService';
 
@@ -408,9 +409,22 @@ async function persistAgentRunArtifacts(run: any) {
   await persistAgentScripts(run);
 
   const executionSteps = buildAgentExecutionSteps(run);
+  // Count only REAL verdicts. "Not Executed"/"Blocked"/"Skipped" are neither a pass
+  // nor a fail — counting them as passed is the false-green bug we are removing.
   const failed = executionSteps.filter((s: any) => /fail/i.test(String(s.outcome || ''))).length;
-  const passed = executionSteps.length - failed;
+  const passed = executionSteps.filter((s: any) => /pass/i.test(String(s.outcome || ''))).length;
+  const notVerified = executionSteps.length - passed - failed;
   const firstFailure = executionSteps.find((s: any) => /fail/i.test(String(s.outcome || '')));
+  // A run is only "Passed" when something actually ran AND every executed verdict passed.
+  // If nothing produced a real verdict, the result is Inconclusive, never Passed.
+  const reportStatus = failed > 0
+    ? 'Failed'
+    : (passed > 0 && notVerified === 0 ? 'Passed' : 'Inconclusive');
+  const progressLabel = [
+    `${passed} passed`,
+    failed > 0 ? `${failed} failed` : '',
+    notVerified > 0 ? `${notVerified} not executed` : '',
+  ].filter(Boolean).join(' / ');
 
   await Runs.upsert({
     id: existingRunId,
@@ -420,7 +434,7 @@ async function persistAgentRunArtifacts(run: any) {
     requestedBy: 'QA Assistant',
     executionTime: 'Generated',
     status: 'Completed',
-    progress: failed > 0 ? `${passed} passed / ${failed} failed` : `${passed} passed`,
+    progress: progressLabel,
     date,
     totalExecutions: executionSteps.length,
     passed,
@@ -445,8 +459,10 @@ async function persistAgentRunArtifacts(run: any) {
     requestedBy: 'QA Assistant',
     executionTime: 'Generated',
     totalExecutions: executionSteps.length,
-    status: failed > 0 ? 'Failed' : 'Passed',
-    failureReason: firstFailure ? String(firstFailure.reason || firstFailure.expected || '') : '',
+    status: reportStatus,
+    failureReason: firstFailure
+      ? String(firstFailure.reason || firstFailure.expected || '')
+      : (reportStatus === 'Inconclusive' ? `${notVerified} case(s) were generated but never executed against the target — no verdict.` : ''),
     date,
     targetUrl: run.app_url || '',
     folderId: run.folderId || null,
@@ -455,6 +471,22 @@ async function persistAgentRunArtifacts(run: any) {
     projectId: run.projectId || '',
     appId: run.appId || '',
   });
+
+  // Honest overall verdict combining the three grounded gates: did we SEE the app,
+  // were the cases grounded, and did the scripts actually pass? Surfaced so the Agent
+  // Console can show the truth instead of an unconditional green.
+  const inspectionOk = !(run as any).inspection_blind;
+  const groundingOk = (run as any).cases_grounding ? (run as any).cases_grounding.ok : true;
+  const execVerdict = assessExecution(run.execution_result);
+  const overall = inspectionOk && groundingOk && execVerdict.ok ? 'verified'
+    : (reportStatus === 'Failed' ? 'failed' : 'inconclusive');
+  (run as any).verdict = {
+    overall,
+    inspection: inspectionOk ? 'ok' : 'blind',
+    grounding: groundingOk ? 'ok' : 'ungrounded',
+    execution: execVerdict.reason,
+    reportStatus,
+  };
 
   run.persisted = true;
   addActivity(`Agent artifacts saved to ${run.folderId ? getFolderPath(run.folderId) : 'Uncategorized'}: ${baseName}`);
@@ -538,7 +570,17 @@ Each test case must include automation tags in @ format, for example @bvt, @sani
   }
 
   run.generated_cases = generated;
-  pushPhase(run, { agent: 'TestGenerationAgent', status: 'completed', output: { test_cases: generated } });
+  // GROUNDING GATE (Phase 2): verify the generated cases actually reference what the
+  // inspector saw on the live page. If they don't (and the page WAS readable), the
+  // cases were written from the prompt alone — flag it honestly so the run isn't sold
+  // as grounded coverage.
+  const groundingVerdict = assessCasesGrounding(generated, run.inspection_context);
+  (run as any).cases_grounding = groundingVerdict;
+  pushPhase(run, {
+    agent: 'TestGenerationAgent',
+    status: 'completed',
+    output: { test_cases: generated, grounding: groundingVerdict.reason, grounded: groundingVerdict.ok },
+  });
   await persistAgentCaseArtifacts(run);
 
   // Push every generated case to the inbox as a pending decision, so the human can
@@ -767,7 +809,43 @@ async function runScriptsAndCollectEvidence(run: any, targetUrl: string, testCas
       } catch (e: any) {
         run.messages.push({ agent: 'EvidenceAgent', status: 'running', output: `Auth-state capture error: ${e?.message || e}` });
       }
-      const exec = await executePlaywrightScripts({ scripts, baseUrl: targetUrl, runId: run.id, storageStatePath });
+      let exec = await executePlaywrightScripts({ scripts, baseUrl: targetUrl, runId: run.id, storageStatePath });
+
+      // EXECUTION-REPAIR LOOP (Phase 3, evaluator-optimizer): the real Playwright result
+      // is ground truth. When tests fail, feed the actual error + the observed DOM back to
+      // the coder to fix the failing script, then re-run — up to a bounded budget. This is
+      // the agent "fixing itself until the tests pass" instead of reporting a broken result.
+      const MAX_REPAIR_ROUNDS = 2;
+      for (let round = 1; round <= MAX_REPAIR_ROUNDS && (exec.failed || 0) > 0; round += 1) {
+        const failing = (exec.tests || []).filter((t) => /fail|timedout|interrupted/i.test(String(t.status)));
+        if (!failing.length) break;
+        pushPhase(run, { agent: 'ExecutionRepair', status: 'running', output: `Round ${round}/${MAX_REPAIR_ROUNDS}: ${failing.length} failing test(s) — repairing against the real failure + observed DOM.` });
+        let repaired = 0;
+        for (const t of failing) {
+          const idx = scripts.findIndex((s) => (s.filename && baseName(s.filename) === baseName(t.file)) || normTitle(s.title) === normTitle(t.title));
+          if (idx < 0) continue;
+          try {
+            const coder = await getOrchestrator('playwrightCoder', { workspaceId: run.ownerId || 'default' });
+            const res = await coder.generateObject<{ code: string }>({
+              prompt: `A generated Playwright test FAILED when executed against the live app. Fix it.\n\nFailure error:\n${String(t.error || 'unknown failure').slice(0, 1500)}\n\nWhat the inspector actually observed on the page (use these REAL selectors/labels — do not invent):\n${JSON.stringify(compactInspectionContext(run.inspection_context))}\n\nCurrent failing test code:\n${String(scripts[idx].code || '').slice(0, 6000)}\n\nReturn the corrected full test file as {"code":"..."}. Keep the same test title. Prefer role/label/text selectors grounded in the observed page. Add resilient waits. Do not change what the test verifies.`,
+              schema: z.object({ code: z.string() }),
+              userMessage: 'Repair a failing Playwright test against the real execution error.',
+            });
+            const code = res?.object?.code;
+            if (code && code.length > 80 && /test\(/.test(code)) {
+              scripts[idx].code = code;
+              const orig = (run.playwright_scripts || []).find((ps: any) => baseName(ps.filename) === baseName(scripts[idx].filename));
+              if (orig) orig.code = code;
+              repaired += 1;
+            }
+          } catch { /* keep the original script if repair fails */ }
+        }
+        pushPhase(run, { agent: 'ExecutionRepair', status: 'completed', output: `Repaired ${repaired} of ${failing.length} failing test(s)${repaired ? ' — re-running.' : ' — no fix produced, stopping repair.'}` });
+        if (!repaired) break;
+        await persistAgentScripts(run);
+        exec = await executePlaywrightScripts({ scripts, baseUrl: targetUrl, runId: run.id, storageStatePath });
+      }
+
       // Persist the full result (incl. per-test pass/fail) so the Agent Console can
       // show it directly — no need to press "Run all scripts" a second time (G6).
       run.execution_result = {
@@ -1161,18 +1239,48 @@ export function registerAgentRoutes(app: Express) {
       }
       const credentialContext = buildCredentialContext(credentials);
 
-      pushPhase(newRun, { agent: 'ApplicationInspector', status: 'running' });
-      const inspectionContext = await inspectApplicationFlow({
-        targetUrl,
-        prompt: approvedUnderstanding ? `${prompt || ''}\n\nApproved understanding:\n${approvedUnderstanding}` : prompt || '',
-        credentials,
-        model: undefined as any,
-        runId: taskId,
-        knowledge: inspectorKnowledge,
-        workspaceId: newRun.ownerId || 'default',
-      });
+      // SELF-CORRECTING INSPECTOR (Phase 2): the inspector must actually SEE the live
+      // app before we generate anything. A grounded Verifier gate (assessInspection)
+      // decides success; if the inspection comes back blind/blocked, we re-strategize
+      // and retry up to a bounded budget instead of silently generating ungrounded tests.
+      const MAX_INSPECT_ATTEMPTS = 3;
+      let inspectionContext: any = null;
+      let inspectionVerdict = { ok: false, reason: 'not run' };
+      for (let attempt = 1; attempt <= MAX_INSPECT_ATTEMPTS; attempt += 1) {
+        pushPhase(newRun, {
+          agent: 'ApplicationInspector',
+          status: 'running',
+          output: attempt > 1 ? `Re-inspecting (attempt ${attempt}/${MAX_INSPECT_ATTEMPTS}) — previous attempt could not read the page: ${inspectionVerdict.reason}` : undefined,
+        });
+        const retryHint = attempt > 1
+          ? `\n\nIMPORTANT: a previous inspection attempt failed to read the page (${inspectionVerdict.reason}). Wait for the app to finish loading, ensure you are logged in, and navigate to the feature under test before reporting.`
+          : '';
+        inspectionContext = await inspectApplicationFlow({
+          targetUrl,
+          prompt: (approvedUnderstanding ? `${prompt || ''}\n\nApproved understanding:\n${approvedUnderstanding}` : prompt || '') + retryHint,
+          credentials,
+          model: undefined as any,
+          runId: taskId,
+          knowledge: inspectorKnowledge,
+          workspaceId: newRun.ownerId || 'default',
+        });
+        inspectionVerdict = assessInspection(inspectionContext);
+        if (inspectionVerdict.ok) break;
+      }
       newRun.inspection_context = inspectionContext;
-      pushPhase(newRun, { agent: 'ApplicationInspector', status: 'completed', output: inspectionContext });
+      if (!inspectionVerdict.ok) {
+        // Still blind after retries — record it honestly so downstream + the UI know the
+        // generated tests are NOT grounded (and the run won't be reported as a clean pass).
+        (newRun as any).inspection_blind = true;
+        pushPhase(newRun, {
+          agent: 'ApplicationInspector',
+          status: 'completed',
+          output: `WARNING: after ${MAX_INSPECT_ATTEMPTS} attempts the inspector could not read the live application (${inspectionVerdict.reason}). Any test cases generated next are NOT grounded in the real page.`,
+        });
+      } else {
+        (newRun as any).inspection_blind = false;
+        pushPhase(newRun, { agent: 'ApplicationInspector', status: 'completed', output: { ...inspectionContext, verifier: inspectionVerdict.reason } });
+      }
 
       // Auto-grow the app knowledge: feed back a compact summary of what the live
       // inspector actually saw, so the pack keeps up with features added after it was written.

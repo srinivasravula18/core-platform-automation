@@ -7,9 +7,14 @@ interface ModalProps {
   title: string;
   children: ReactNode;
   size?: 'md' | 'xl';
+  /**
+   * Optional action bar pinned to the bottom of the modal. When provided it is
+   * rendered in a fixed footer that stays visible while the body scrolls.
+   */
+  footer?: ReactNode;
 }
 
-export function Modal({ isOpen, onClose, title, children, size = 'xl' }: ModalProps) {
+export function Modal({ isOpen, onClose, title, children, size = 'xl', footer }: ModalProps) {
   if (!isOpen) return null;
 
   const widthClass = size === 'xl' ? 'sm:max-w-5xl' : 'sm:max-w-md';
@@ -26,6 +31,11 @@ export function Modal({ isOpen, onClose, title, children, size = 'xl' }: ModalPr
         <div className="p-4 flex-1 min-h-0 overflow-auto">
           {children}
         </div>
+        {footer && (
+          <div className="flex-shrink-0 border-t border-[var(--border)] bg-[var(--bg-card)] px-4 py-3">
+            {footer}
+          </div>
+        )}
       </div>
     </div>
   );

@@ -887,6 +887,11 @@ export const Reports = {
     const rows = await query("SELECT * FROM reports WHERE deleted_at IS NULL ORDER BY created_at DESC");
     return rows.map(mapReport);
   },
+  async get(id: string): Promise<any | null> {
+    if (!isPgEnabled()) return (db.reports as any[]).find((r: any) => r.id === id) || null;
+    const r = await queryOne('SELECT * FROM reports WHERE id = $1 AND deleted_at IS NULL', [id]);
+    return mapReport(r);
+  },
   async upsert(rep: any): Promise<any> {
     if (!isPgEnabled()) {
       const idx = db.reports.findIndex((x: any) => x.id === rep.id);
@@ -919,6 +924,15 @@ export const Reports = {
     );
     await writeScopeCols('reports', id, rep);
     return mapReport(row);
+  },
+  async remove(id: string): Promise<boolean> {
+    if (!isPgEnabled()) {
+      const before = db.reports.length;
+      (db as any).reports = db.reports.filter((x: any) => x.id !== id);
+      return db.reports.length < before;
+    }
+    const res = await query('UPDATE reports SET deleted_at = now() WHERE id = $1 AND deleted_at IS NULL', [id]);
+    return res.length > 0;
   },
 };
 

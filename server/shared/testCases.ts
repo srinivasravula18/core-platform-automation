@@ -41,11 +41,16 @@ export function buildAgentExecutionSteps(run: any) {
     // Only string test statuses are meaningful outcomes; numeric values (e.g. an
     // HTTP status from base-URL fallback evidence) are not test verdicts.
     const status = typeof ev?.status === 'string' ? ev.status : '';
-    if (!status) return { outcome: 'Pass', reason: '' };
+    // No real verdict was recorded (no evidence row, or only a base-URL fallback
+    // screenshot). This is NOT a pass — claiming "Pass" here is the false-green bug.
+    // Report it honestly as Not Executed so it never counts as a verified success.
+    if (!status) return { outcome: 'Not Executed', reason: 'No execution verdict was recorded for this case.' };
+    if (/pass/i.test(status)) return { outcome: 'Pass', reason: '' };
     if (/(fail|timedout|interrupted)/i.test(status)) return { outcome: 'Fail', reason: ev?.reason || '' };
     if (/not_executed|blocked/i.test(status)) return { outcome: 'Blocked', reason: ev?.reason || '' };
     if (/skip/i.test(status)) return { outcome: 'Skipped', reason: ev?.reason || '' };
-    return { outcome: 'Pass', reason: '' };
+    // Unknown non-empty status: do not assume success.
+    return { outcome: 'Not Executed', reason: `Unrecognized execution status: ${status}` };
   };
 
   return (run.generated_cases || []).flatMap((testCase: any, caseIndex: number) => {

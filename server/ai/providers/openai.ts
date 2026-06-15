@@ -15,6 +15,10 @@ import type {
   ProviderHealth,
   ProviderResponse,
   ProviderName,
+  ChatWithToolsOptions,
+  ChatWithToolsResult,
+  ToolCallRequest,
+  ChatMessage,
 } from './types';
 import { ProviderError, classifyError, DEFAULT_MODELS, estimateCost } from './types';
 
@@ -114,7 +118,7 @@ function normalizeTestCasePayload(parsed: unknown): unknown {
     const title = stringifyField(testCase.title || testCase.name || testCase.scenario || `Test case ${index + 1}`);
     const steps = Array.isArray(testCase.steps) ? testCase.steps : [];
     const normalizedSteps = steps.map((rawStep, stepIndex) => {
-      const step = rawStep && typeof rawStep === 'object' ? rawStep as Record<string, unknown> : { action: rawStep };
+      const step: Record<string, unknown> = rawStep && typeof rawStep === 'object' ? (rawStep as Record<string, unknown>) : { action: rawStep };
       const action = stringifyField(step.action || step.step || step.instruction || step.description || `Execute step ${stepIndex + 1}`);
       const expected = stringifyField(step.expected || step.expectedResult || step.expected_result || step.assertion || step.result || step.outcome)
         || 'The expected result for this step is observed.';
@@ -153,7 +157,7 @@ function normalizeScriptPayload(parsed: unknown): unknown {
   if (!scripts) return parsed;
 
   root.scripts = scripts.map((rawScript, index) => {
-    const script = rawScript && typeof rawScript === 'object' ? { ...(rawScript as Record<string, unknown>) } : { code: rawScript };
+    const script: Record<string, unknown> = rawScript && typeof rawScript === 'object' ? { ...(rawScript as Record<string, unknown>) } : { code: rawScript };
     const title = stringifyField(script.test_case_title || script.title || script.name || script.testName || script.test_name || `Generated Playwright script ${index + 1}`);
     const code = stringifyField(script.code || script.script || script.source || script.content || script.playwright || script.test || script.body);
     return {
@@ -164,6 +168,27 @@ function normalizeScriptPayload(parsed: unknown): unknown {
     };
   });
   return root;
+}
+
+/** Map a provider-agnostic ChatMessage to an OpenAI chat message param. */
+function toOpenAIMessage(m: ChatMessage): OpenAI.Chat.ChatCompletionMessageParam {
+  if (m.role === 'tool') {
+    return { role: 'tool', tool_call_id: m.toolCallId || '', content: m.content || '' };
+  }
+  if (m.role === 'assistant' && m.toolCalls?.length) {
+    return {
+      role: 'assistant',
+      content: m.content || null,
+      tool_calls: m.toolCalls.map((tc) => ({
+        id: tc.id,
+        type: 'function' as const,
+        function: { name: tc.name, arguments: JSON.stringify(tc.arguments || {}) },
+      })),
+    };
+  }
+  if (m.role === 'assistant') return { role: 'assistant', content: m.content || '' };
+  if (m.role === 'system') return { role: 'system', content: m.content || '' };
+  return { role: 'user', content: m.content || '' };
 }
 
 export class OpenAIProvider implements AIProvider {
@@ -250,6 +275,57 @@ export class OpenAIProvider implements AIProvider {
           }
         : undefined;
       return { content, usage, modelId };
+    } catch (err: any) {
+      throw this.toProviderError(err);
+    }
+  }
+
+  /** Native tool-calling round-trip via OpenAI tools / tool_calls. */
+  async chatWithTools(opts: ChatWithToolsOptions): Promise<ChatWithToolsResult> {
+    const start = Date.now();
+    const modelId = this.modelId(opts);
+    const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [];
+    if (opts.system) messages.push({ role: 'system', content: opts.system });
+    for (const m of opts.messages) messages.push(toOpenAIMessage(m));
+    const tools = opts.tools?.length
+      ? opts.tools.map((t) => ({
+          type: 'function' as const,
+          function: { name: t.name, description: t.description, parameters: t.parameters },
+        }))
+      : undefined;
+    try {
+      const completion = await this.client.chat.completions.create(
+        {
+          model: modelId,
+          messages,
+          ...(tools ? { tools, tool_choice: 'auto' as const } : {}),
+          ...this.sampling(modelId, opts.maxTokens ?? 4096, opts.temperature),
+        },
+        { signal: opts.signal },
+      );
+      const choice = completion.choices?.[0];
+      const msg = choice?.message;
+      const toolCalls: ToolCallRequest[] = (msg?.tool_calls || [])
+        .filter((tc): tc is OpenAI.Chat.ChatCompletionMessageToolCall & { type: 'function' } => (tc as any).type === 'function')
+        .map((tc) => {
+          let args: Record<string, unknown> = {};
+          try { args = JSON.parse((tc as any).function.arguments || '{}'); } catch { args = {}; }
+          return { id: tc.id, name: (tc as any).function.name, arguments: args };
+        });
+      const stopReason: ChatWithToolsResult['stopReason'] =
+        choice?.finish_reason === 'tool_calls' ? 'tool_calls'
+          : choice?.finish_reason === 'length' ? 'length'
+            : choice?.finish_reason === 'stop' ? 'stop' : 'other';
+      const u = completion.usage;
+      return {
+        text: msg?.content || undefined,
+        toolCalls,
+        usage: this.toUsageObj(modelId, u ? { prompt_tokens: u.prompt_tokens, completion_tokens: u.completion_tokens, total_tokens: u.total_tokens } : undefined),
+        model: modelId,
+        provider: this.name,
+        stopReason,
+        latencyMs: Date.now() - start,
+      };
     } catch (err: any) {
       throw this.toProviderError(err);
     }

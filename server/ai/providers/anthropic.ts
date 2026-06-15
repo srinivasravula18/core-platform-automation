@@ -18,12 +18,36 @@ import type {
   ProviderHealth,
   ProviderResponse,
   ProviderName,
+  ChatWithToolsOptions,
+  ChatWithToolsResult,
+  ToolCallRequest,
+  ChatMessage,
 } from './types';
 import { ProviderError, classifyError, DEFAULT_MODELS, estimateCost } from './types';
 
 /** Opus 4.7+ remove sampling params; sending `temperature` returns a 400. */
 function acceptsTemperature(model: string): boolean {
   return !/opus-4-(?:[7-9]|1\d)/i.test(model);
+}
+
+/** Map a provider-agnostic ChatMessage to an Anthropic Messages param. */
+function toAnthropicMessage(m: ChatMessage): Anthropic.MessageParam {
+  if (m.role === 'tool') {
+    return {
+      role: 'user',
+      content: [{ type: 'tool_result', tool_use_id: m.toolCallId || '', content: m.content || '' }],
+    };
+  }
+  if (m.role === 'assistant' && m.toolCalls?.length) {
+    const blocks: Anthropic.ContentBlockParam[] = [];
+    if (m.content) blocks.push({ type: 'text', text: m.content });
+    for (const tc of m.toolCalls) {
+      blocks.push({ type: 'tool_use', id: tc.id, name: tc.name, input: tc.arguments });
+    }
+    return { role: 'assistant', content: blocks };
+  }
+  // system is carried out-of-band via params.system; fold any stray one into user text.
+  return { role: m.role === 'assistant' ? 'assistant' : 'user', content: m.content || '' };
 }
 
 function coerceToSchemaShape(parsed: unknown, schema: z.ZodTypeAny): unknown {
@@ -102,7 +126,7 @@ function normalizeTestCasePayload(parsed: unknown): unknown {
     const testCase = rawCase && typeof rawCase === 'object' ? { ...(rawCase as Record<string, unknown>) } : {};
     const title = stringifyField(testCase.title || testCase.name || testCase.scenario || `Test case ${index + 1}`);
     const normalizedSteps = (Array.isArray(testCase.steps) ? testCase.steps : []).map((rawStep, stepIndex) => {
-      const step = rawStep && typeof rawStep === 'object' ? rawStep as Record<string, unknown> : { action: rawStep };
+      const step: Record<string, unknown> = rawStep && typeof rawStep === 'object' ? (rawStep as Record<string, unknown>) : { action: rawStep };
       const action = stringifyField(step.action || step.step || step.instruction || step.description || `Execute step ${stepIndex + 1}`);
       const expected = stringifyField(step.expected || step.expectedResult || step.expected_result || step.assertion || step.result || step.outcome)
         || 'The expected result for this step is observed.';
@@ -139,7 +163,7 @@ function normalizeScriptPayload(parsed: unknown): unknown {
   if (!scripts) return parsed;
 
   root.scripts = scripts.map((rawScript, index) => {
-    const script = rawScript && typeof rawScript === 'object' ? { ...(rawScript as Record<string, unknown>) } : { code: rawScript };
+    const script: Record<string, unknown> = rawScript && typeof rawScript === 'object' ? { ...(rawScript as Record<string, unknown>) } : { code: rawScript };
     const title = stringifyField(script.test_case_title || script.title || script.name || script.testName || script.test_name || `Generated Playwright script ${index + 1}`);
     const code = stringifyField(script.code || script.script || script.source || script.content || script.playwright || script.test || script.body);
     return {
@@ -219,6 +243,53 @@ export class AnthropicProvider implements AIProvider {
         ? { input_tokens: message.usage.input_tokens, output_tokens: message.usage.output_tokens }
         : undefined;
       return { content: text, usage, modelId };
+    } catch (err: any) {
+      throw this.toProviderError(err);
+    }
+  }
+
+  /** Native tool-calling round-trip via Anthropic tool_use / tool_result blocks. */
+  async chatWithTools(opts: ChatWithToolsOptions): Promise<ChatWithToolsResult> {
+    const start = Date.now();
+    const modelId = this.modelId(opts);
+    const messages: Anthropic.MessageParam[] = opts.messages.map((m) => toAnthropicMessage(m));
+    const params: Anthropic.MessageCreateParamsNonStreaming = {
+      model: modelId,
+      max_tokens: opts.maxTokens ?? 4096,
+      messages,
+    };
+    if (opts.system) params.system = opts.system;
+    if (opts.tools?.length) {
+      params.tools = opts.tools.map((t) => ({
+        name: t.name,
+        description: t.description,
+        input_schema: t.parameters as Anthropic.Tool.InputSchema,
+      }));
+    }
+    if (acceptsTemperature(modelId)) params.temperature = opts.temperature ?? 0.2;
+
+    try {
+      const message = await this.client.messages.create(params, { signal: opts.signal });
+      const text = (message.content || [])
+        .filter((b): b is Anthropic.TextBlock => b.type === 'text')
+        .map((b) => b.text)
+        .join('');
+      const toolCalls: ToolCallRequest[] = (message.content || [])
+        .filter((b): b is Anthropic.ToolUseBlock => b.type === 'tool_use')
+        .map((b) => ({ id: b.id, name: b.name, arguments: (b.input as Record<string, unknown>) || {} }));
+      const stopReason: ChatWithToolsResult['stopReason'] =
+        message.stop_reason === 'tool_use' ? 'tool_calls'
+          : message.stop_reason === 'max_tokens' ? 'length'
+            : message.stop_reason === 'end_turn' ? 'stop' : 'other';
+      return {
+        text: text || undefined,
+        toolCalls,
+        usage: this.toUsageObj(modelId, message.usage ? { input_tokens: message.usage.input_tokens, output_tokens: message.usage.output_tokens } : undefined),
+        model: modelId,
+        provider: 'anthropic',
+        stopReason,
+        latencyMs: Date.now() - start,
+      };
     } catch (err: any) {
       throw this.toProviderError(err);
     }

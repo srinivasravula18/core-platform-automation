@@ -11,8 +11,9 @@
  *   const { object, usage, model, latencyMs } = await ai.generateObject({...});
  */
 
-import type { AIProvider, ProviderAuthMode, ProviderName } from './providers/types';
+import type { AIProvider, ProviderAuthMode, ProviderName, ChatMessage } from './providers/types';
 import { DEFAULT_MODELS } from './providers/types';
+import type { AgentStep, AgentRunResult, RunToolLoopOptions, ToolInvocation } from './tools/types';
 import { GeminiProvider } from './providers/gemini';
 import { OpenAIProvider } from './providers/openai';
 import { AnthropicProvider } from './providers/anthropic';
@@ -142,7 +143,7 @@ export class AgentOrchestrator {
     return pipeline.systemPrompt;
   }
 
-  async generateObject<T>(opts: { prompt: string; schema: unknown; temperature?: number; maxTokens?: number; userMessage?: string }) {
+  async generateObject<T>(opts: { prompt: string; schema: unknown; temperature?: number; maxTokens?: number; userMessage?: string; hasHistory?: boolean }) {
     const pipeline = runGuardrailPipeline({
       agent: this.agent as any,
       userMessage: opts.userMessage || opts.prompt,
@@ -150,6 +151,7 @@ export class AgentOrchestrator {
       userId: this.userId,
       providerName: this.provider.name,
       modelName: (this.provider as any).defaultModel,
+      hasHistory: opts.hasHistory,
     } as PipelineInput);
     if (pipeline.policyVerdict.kind === 'respond') {
       return { shortCircuit: pipeline.policyVerdict.reply, object: undefined, usage: undefined, model: '', latencyMs: 0 };
@@ -181,7 +183,7 @@ export class AgentOrchestrator {
     return { object: result.object, usage: result.usage, model: result.model, latencyMs: result.latencyMs, provider: this.provider.name };
   }
 
-  async generateText(opts: { prompt: string; temperature?: number; maxTokens?: number; userMessage?: string }) {
+  async generateText(opts: { prompt: string; temperature?: number; maxTokens?: number; userMessage?: string; hasHistory?: boolean }) {
     const pipeline = runGuardrailPipeline({
       agent: this.agent as any,
       userMessage: opts.userMessage || opts.prompt,
@@ -189,6 +191,7 @@ export class AgentOrchestrator {
       userId: this.userId,
       providerName: this.provider.name,
       modelName: (this.provider as any).defaultModel,
+      hasHistory: opts.hasHistory,
     } as PipelineInput);
     if (pipeline.policyVerdict.kind === 'respond') {
       return { shortCircuit: pipeline.policyVerdict.reply, text: '', usage: undefined, model: '', latencyMs: 0 };
@@ -219,7 +222,7 @@ export class AgentOrchestrator {
     return { text: result.text, usage: result.usage, model: result.model, latencyMs: result.latencyMs, provider: this.provider.name };
   }
 
-  async *streamText(opts: { prompt: string; temperature?: number; maxTokens?: number; userMessage?: string }): AsyncIterable<string> {
+  async *streamText(opts: { prompt: string; temperature?: number; maxTokens?: number; userMessage?: string; hasHistory?: boolean }): AsyncIterable<string> {
     const pipeline = runGuardrailPipeline({
       agent: this.agent as any,
       userMessage: opts.userMessage || opts.prompt,
@@ -227,6 +230,7 @@ export class AgentOrchestrator {
       userId: this.userId,
       providerName: this.provider.name,
       modelName: (this.provider as any).defaultModel,
+      hasHistory: opts.hasHistory,
     } as PipelineInput);
     if (pipeline.policyVerdict.kind === 'respond') {
       yield pipeline.policyVerdict.reply;
@@ -259,6 +263,199 @@ export class AgentOrchestrator {
       if (delta) yield delta;
     }
   }
+
+  /**
+   * Run a grounded agentic tool loop: the model repeatedly calls tools, observes the
+   * results, and continues until it answers, an accept-check passes, or a budget is hit.
+   * Uses the provider's NATIVE function-calling (chatWithTools). This is the core of the
+   * re-architected agents — no more one-shot prompt→JSON.
+   */
+  async runToolLoop(opts: RunToolLoopOptions): Promise<AgentRunResult> {
+    if (!this.provider.chatWithTools) {
+      throw new Error(`Provider "${this.provider.name}" does not support tool calling (no chatWithTools). Pick an API-key provider in Settings.`);
+    }
+    const pipeline = runGuardrailPipeline({
+      agent: this.agent as any,
+      userMessage: opts.task,
+      workspaceId: this.workspaceId,
+      userId: this.userId,
+      providerName: this.provider.name,
+      modelName: (this.provider as any).defaultModel,
+      hasHistory: true, // a tool loop is an ongoing task, never a bare one-liner to short-circuit
+    } as PipelineInput);
+    if (pipeline.policyVerdict.kind === 'reject') {
+      const err: any = new Error(pipeline.policyVerdict.error);
+      err.status = pipeline.policyVerdict.code;
+      throw err;
+    }
+    const system = opts.system || (await this.assembleSystem(pipeline));
+    const toolSpecs = opts.tools.map((t) => t.spec);
+    const toolByName = new Map(opts.tools.map((t) => [t.spec.name, t]));
+    const ctx = opts.toolContext || {};
+    const maxSteps = opts.maxSteps ?? 12;
+    const maxAcceptRetries = opts.maxAcceptRetries ?? 2;
+
+    const messages: ChatMessage[] = [{ role: 'user', content: opts.task }];
+    const steps: AgentStep[] = [];
+    const toolResults: AgentRunResult['toolResults'] = [];
+    const totalUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0, costUsd: 0 };
+    let acceptRetries = 0;
+    let finalText = '';
+    let stoppedReason: AgentRunResult['stoppedReason'] = 'max_steps';
+
+    for (let i = 0; i < maxSteps; i += 1) {
+      if (opts.signal?.aborted) { stoppedReason = 'aborted'; break; }
+      if (opts.maxTotalTokens && totalUsage.totalTokens >= opts.maxTotalTokens) { stoppedReason = 'budget'; break; }
+
+      const res = await callWithRetry(() => this.provider.chatWithTools!({
+        system,
+        messages,
+        tools: toolSpecs,
+        temperature: opts.temperature,
+        maxTokens: opts.maxTokensPerCall ?? 4096,
+        signal: opts.signal,
+      }), opts.signal);
+      if (res.usage) {
+        totalUsage.inputTokens += res.usage.inputTokens ?? 0;
+        totalUsage.outputTokens += res.usage.outputTokens ?? 0;
+        totalUsage.totalTokens += res.usage.totalTokens ?? 0;
+        totalUsage.costUsd += res.usage.costUsd ?? 0;
+      }
+      await recordUsage({
+        workspaceId: this.workspaceId,
+        userId: this.userId,
+        agent: this.agent,
+        provider: this.provider.name,
+        model: res.model,
+        inputTokens: res.usage?.inputTokens ?? 0,
+        outputTokens: res.usage?.outputTokens ?? 0,
+        costUsd: res.usage?.costUsd ?? 0,
+        requestId: pipeline.requestId,
+      });
+
+      const step: AgentStep = { index: i, text: res.text, toolCalls: [], usage: res.usage };
+
+      if (res.toolCalls.length) {
+        // Record the assistant's tool-call turn so the provider sees the full exchange.
+        messages.push({ role: 'assistant', content: res.text, toolCalls: res.toolCalls });
+        for (const call of res.toolCalls) {
+          const inv: ToolInvocation = { id: call.id, name: call.name, arguments: call.arguments };
+          const tool = toolByName.get(call.name);
+          const t0 = Date.now();
+          if (!tool) {
+            inv.error = `Unknown tool "${call.name}".`;
+          } else {
+            try {
+              const result = await tool.execute(call.arguments, ctx);
+              inv.result = result;
+              toolResults.push({ name: call.name, arguments: call.arguments, result });
+            } catch (err: any) {
+              inv.error = err?.message || String(err);
+            }
+          }
+          inv.ms = Date.now() - t0;
+          step.toolCalls.push(inv);
+          // Feed the result (or error) back to the model as a tool message.
+          messages.push({
+            role: 'tool',
+            toolCallId: call.id,
+            toolName: call.name,
+            content: inv.error
+              ? `ERROR: ${inv.error}`
+              : safeJson(inv.result),
+          });
+        }
+        steps.push(step);
+        opts.onStep?.(step);
+        continue;
+      }
+
+      // No tool calls → the model produced a final answer.
+      finalText = res.text || '';
+      messages.push({ role: 'assistant', content: finalText });
+      steps.push(step);
+      opts.onStep?.(step);
+
+      if (opts.accept) {
+        const verdict = await opts.accept({ finalText, steps, ctx });
+        if (!verdict.ok && acceptRetries < maxAcceptRetries) {
+          acceptRetries += 1;
+          // Grounded Reflexion: append the critique and let the agent try again.
+          messages.push({
+            role: 'user',
+            content: `Your result was not accepted. ${verdict.feedback || 'It did not meet the acceptance criteria.'} Diagnose why and try again — do not repeat the same approach.`,
+          });
+          continue;
+        }
+        stoppedReason = verdict.ok ? 'accepted' : 'max_steps';
+        return { finalText, steps, accepted: verdict.ok, stoppedReason, toolResults, totalUsage };
+      }
+
+      stoppedReason = 'final_text';
+      return { finalText, steps, accepted: true, stoppedReason, toolResults, totalUsage };
+    }
+
+    return { finalText, steps, accepted: false, stoppedReason, toolResults, totalUsage };
+  }
+}
+
+/** Retry transient provider errors (rate_limit / network / 429 / 5xx) with exponential
+ * backoff. Gemini and Anthropic SDKs do not retry on their own, so a single 503 would
+ * otherwise abort a whole agent run. Non-transient errors (auth, bad_request) throw
+ * immediately. */
+async function callWithRetry<T>(fn: () => Promise<T>, signal?: AbortSignal, attempts = 4): Promise<T> {
+  let lastErr: any;
+  for (let i = 0; i < attempts; i += 1) {
+    if (signal?.aborted) throw new Error('aborted');
+    try {
+      return await fn();
+    } catch (err: any) {
+      lastErr = err;
+      const code = err?.code;
+      const status = err?.status;
+      const retryable = code === 'rate_limit' || code === 'network' || status === 429 || (status >= 500 && status < 600);
+      if (!retryable || i === attempts - 1) throw err;
+      const delayMs = Math.min(8000, 500 * 2 ** i);
+      await new Promise((r) => setTimeout(r, delayMs));
+    }
+  }
+  throw lastErr;
+}
+
+function safeJson(value: unknown): string {
+  try {
+    const s = typeof value === 'string' ? value : JSON.stringify(value);
+    return (s ?? '').slice(0, 8000);
+  } catch {
+    return String(value).slice(0, 8000);
+  }
+}
+
+/**
+ * Like getOrchestrator, but guarantees a provider that supports NATIVE tool-calling
+ * (chatWithTools). The agent loop needs this. We honour the Settings-selected provider
+ * when it can do tools; if it is in account/CLI mode (no function-calling), we fall back
+ * to the first configured API-key provider that can, so the loop still runs.
+ */
+export async function getToolCapableOrchestrator(agent: string, opts: { workspaceId?: string; userId?: string } = {}): Promise<AgentOrchestrator> {
+  const canonical = canonicalAgent(agent);
+  const preferred = resolveProviderForAgent(canonical);
+  const order: ProviderName[] = [preferred, ...listConfiguredProviders().filter((p) => p !== preferred)];
+  for (const provider of order) {
+    const creds = getProviderCredentials(provider);
+    if (!creds) continue;
+    let base: AIProvider;
+    try { base = buildProvider(provider); } catch { continue; }
+    // Any provider that exposes chatWithTools works: API-key providers do it natively;
+    // the account/CLI provider (codex/claude subscription) emulates it via prompting.
+    if (!base.chatWithTools) continue;
+    const model = resolveModelForAgent(canonical, provider);
+    if (model && (base as any).defaultModel !== model) (base as any).defaultModel = model;
+    return new AgentOrchestrator(base, canonical, opts.workspaceId || 'default', opts.userId);
+  }
+  throw new Error(
+    'No tool-capable AI provider is configured. Enable a provider in Settings → AI Providers (Gemini/OpenAI/Anthropic API key, or codex/claude in account mode).',
+  );
 }
 
 export async function getOrchestrator(agent: string, opts: { workspaceId?: string; userId?: string } = {}): Promise<AgentOrchestrator> {

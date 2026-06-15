@@ -1,5 +1,11 @@
 import type { Express } from 'express';
 import { buildPlan, cancelPlan, classifyIntent, executePlan, explainIntent, streamExplain, getPlan, listPlans, getControllerMemory, clearControllerMemory } from '../../ai/controller';
+import { runSupervisor, answerAppQuestionFromCode } from '../../ai/supervisor';
+import { quickWorkspaceAnswer } from '../../ai/tools/registry';
+
+// An action request mutates/creates/runs something → needs the full tool loop. A plain
+// question can be answered with the FAST single-call git-grounded path.
+const ACTION_RE = /\b(generate|create|write|build|make|run|execute|file\s+(a|the)|add|move|organi[sz]e|re-?run|delete|remove|update|edit|set\s|navigate|open|go\s+to|triage|expand|rework|schedule)\b/i;
 import { INTENT_LABELS, type IntentKind, type Plan, type PlanStep } from '../../ai/intents';
 
 export function registerControllerRoutes(app: Express) {
@@ -39,6 +45,87 @@ export function registerControllerRoutes(app: Express) {
         return res.status(err.status).json({ error: err.message });
       }
       next(err);
+    }
+  });
+
+  // SupervisorAgent: dynamic tool-selecting orchestration (retires the static switch).
+  // The model chooses + executes capabilities in a loop until the goal is met.
+  app.post('/api/controller/supervise', async (req, res, next) => {
+    try {
+      const { userMessage, workspaceId, userId, history, pageContext, apps } = req.body || {};
+      if (!userMessage || typeof userMessage !== 'string') {
+        return res.status(400).json({ error: 'userMessage is required' });
+      }
+      // FAST PATH 1: simple count/list questions answered straight from the DB (no LLM).
+      const quick = await quickWorkspaceAnswer(userMessage, userId);
+      if (quick) {
+        return res.json({ reply: quick, accepted: true, fast: true, actions: [], trace: [] });
+      }
+      // FAST PATH 2: app-knowledge QUESTIONS get a single git-grounded LLM call (retrieval
+      // done deterministically), instead of the slow multi-step tool loop.
+      if (!ACTION_RE.test(userMessage)) {
+        const reply = await answerAppQuestionFromCode(userMessage, { workspaceId, userId, apps });
+        return res.json({ reply, accepted: true, fast: true, actions: [{ tool: 'search_codebase', arguments: {} }], trace: [] });
+      }
+      const result = await runSupervisor({ userMessage, workspaceId, userId, history, pageContext, apps });
+      res.json({
+        reply: result.finalText,
+        accepted: result.accepted,
+        actions: result.toolResults.map((t) => ({ tool: t.name, arguments: t.arguments })),
+        trace: result.steps.map((s) => ({
+          index: s.index,
+          text: s.text,
+          toolCalls: s.toolCalls.map((c) => ({ name: c.name, arguments: c.arguments, error: c.error, ms: c.ms })),
+        })),
+      });
+    } catch (err: any) {
+      if (err?.status) return res.status(err.status).json({ error: err.message });
+      next(err);
+    }
+  });
+
+  // Streaming Supervisor: emits one JSON line per agent step (tool calls as they happen)
+  // so the chat can show LIVE activity ("Searching the codebase for …", "Reading …"),
+  // then a final line with the answer. Mirrors the /explain/stream pattern.
+  app.post('/api/controller/supervise/stream', async (req, res) => {
+    const { userMessage, workspaceId, userId, history, pageContext, apps } = req.body || {};
+    if (!userMessage || typeof userMessage !== 'string') {
+      return res.status(400).json({ error: 'userMessage is required' });
+    }
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.flushHeaders?.();
+    const send = (obj: any) => { try { res.write(`${JSON.stringify(obj)}\n`); } catch { /* client gone */ } };
+    try {
+      // Instant path: simple count/list answered from the DB, no steps.
+      const quick = await quickWorkspaceAnswer(userMessage, userId);
+      if (quick) { send({ type: 'final', reply: quick, fast: true }); return res.end(); }
+      // Fast git-grounded path for app-knowledge QUESTIONS: ONE LLM call after deterministic
+      // retrieval. Emits the search/read progress so the UI still animates the live steps.
+      if (!ACTION_RE.test(userMessage)) {
+        let i = 0;
+        const reply = await answerAppQuestionFromCode(userMessage, {
+          workspaceId, userId, apps,
+          onProgress: (label) => send({ type: 'step', index: i++, toolCalls: [{ name: /reading/i.test(label) ? 'read_code_file' : 'search_codebase', arguments: {} }], text: label }),
+        });
+        send({ type: 'final', reply, fast: true });
+        return res.end();
+      }
+      const result = await runSupervisor({
+        userMessage, workspaceId, userId, history, pageContext, apps,
+        onStep: (s) => send({
+          type: 'step',
+          index: s.index,
+          text: s.text,
+          toolCalls: s.toolCalls.map((c) => ({ name: c.name, arguments: c.arguments, error: c.error })),
+        }),
+      });
+      send({ type: 'final', reply: result.finalText, accepted: result.accepted });
+    } catch (err: any) {
+      send({ type: 'error', error: err?.message || 'supervisor failed' });
+    } finally {
+      res.end();
     }
   });
 

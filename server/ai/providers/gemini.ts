@@ -7,6 +7,7 @@
 
 import { generateObject, generateText as aiGenerateText, streamText as aiStreamText } from 'ai';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
+import { GoogleGenAI } from '@google/genai';
 import { z } from 'zod';
 import type {
   AIProvider,
@@ -15,8 +16,37 @@ import type {
   ProviderHealth,
   ProviderResponse,
   ProviderName,
+  ChatWithToolsOptions,
+  ChatWithToolsResult,
+  ToolCallRequest,
+  ChatMessage,
 } from './types';
 import { classifyError, DEFAULT_MODELS, estimateCost } from './types';
+
+/** Map a provider-agnostic ChatMessage to a @google/genai Content entry. */
+function toGeminiContent(m: ChatMessage): { role: string; parts: any[] } {
+  if (m.role === 'tool') {
+    // Gemini requires functionResponse.response to be a JSON OBJECT (not an array or
+    // primitive). Wrap anything that isn't a plain object under { output }.
+    let response: Record<string, unknown>;
+    try {
+      const parsed = JSON.parse(m.content || '{}');
+      response = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : { output: parsed };
+    } catch {
+      response = { output: m.content || '' };
+    }
+    return { role: 'user', parts: [{ functionResponse: { id: m.toolCallId, name: m.toolName, response } }] };
+  }
+  if (m.role === 'assistant' && m.toolCalls?.length) {
+    const parts: any[] = [];
+    if (m.content) parts.push({ text: m.content });
+    for (const tc of m.toolCalls) parts.push({ functionCall: { id: tc.id, name: tc.name, args: tc.arguments } });
+    return { role: 'model', parts };
+  }
+  if (m.role === 'assistant') return { role: 'model', parts: [{ text: m.content || '' }] };
+  // system folded into user text (system is normally carried via config.systemInstruction).
+  return { role: 'user', parts: [{ text: m.content || '' }] };
+}
 
 export class GeminiProvider implements AIProvider {
   readonly name: ProviderName = 'gemini';
@@ -34,6 +64,55 @@ export class GeminiProvider implements AIProvider {
 
   private modelId(opts: { model?: string }) {
     return opts.model || this.defaultModel;
+  }
+
+  /** Native tool-calling round-trip via @google/genai functionCall / functionResponse.
+   * Uses the native SDK (NOT the `ai` SDK) per the agent-architecture decision. */
+  async chatWithTools(opts: ChatWithToolsOptions): Promise<ChatWithToolsResult> {
+    const start = Date.now();
+    const modelId = this.modelId(opts);
+    const ai = new GoogleGenAI({ apiKey: this.apiKey });
+    const contents = opts.messages.map((m) => toGeminiContent(m));
+    const config: Record<string, any> = {};
+    if (opts.system) config.systemInstruction = opts.system;
+    if (typeof opts.temperature === 'number') config.temperature = opts.temperature;
+    if (opts.maxTokens) config.maxOutputTokens = opts.maxTokens;
+    if (opts.tools?.length) {
+      config.tools = [{
+        functionDeclarations: opts.tools.map((t) => ({
+          name: t.name,
+          description: t.description,
+          // Pass JSON Schema directly — avoids the Type-enum conversion.
+          parametersJsonSchema: t.parameters,
+        })),
+      }];
+    }
+    try {
+      const resp = await ai.models.generateContent({ model: modelId, contents: contents as any, config });
+      const calls = resp.functionCalls || [];
+      const toolCalls: ToolCallRequest[] = calls.map((c, i) => ({
+        id: c.id || `${c.name || 'call'}_${i}`,
+        name: c.name || '',
+        arguments: (c.args as Record<string, unknown>) || {},
+      }));
+      const u: any = resp.usageMetadata || {};
+      const inputTokens = u.promptTokenCount ?? 0;
+      const outputTokens = u.candidatesTokenCount ?? 0;
+      const totalTokens = u.totalTokenCount ?? (inputTokens + outputTokens);
+      let text: string | undefined;
+      try { text = resp.text || undefined; } catch { text = undefined; }
+      return {
+        text: toolCalls.length ? undefined : text,
+        toolCalls,
+        usage: { inputTokens, outputTokens, totalTokens, costUsd: estimateCost(modelId, { inputTokens, outputTokens, totalTokens }) },
+        model: modelId,
+        provider: 'gemini',
+        stopReason: toolCalls.length ? 'tool_calls' : 'stop',
+        latencyMs: Date.now() - start,
+      };
+    } catch (err: any) {
+      throw classifyError('gemini', err?.status, err?.message || String(err));
+    }
   }
 
   async health(): Promise<ProviderHealth> {

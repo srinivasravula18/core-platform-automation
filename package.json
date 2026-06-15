@@ -17,6 +17,7 @@
     "start:backend": "node dist/server.cjs",
     "start:frontend": "node scripts/frontend-server.mjs",
     "check:gemini": "node scripts/check-gemini-rest.mjs",
+    "eval:agents": "tsx scripts/agent-evals.ts",
     "playwright:install": "node scripts/ensure-playwright.mjs",
     "playwright:deps": "playwright install-deps chromium",
     "clean": "node -e \"fs.rmSync('dist',{recursive:true,force:true});fs.rmSync('server.js',{force:true});\"",

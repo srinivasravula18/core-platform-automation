@@ -13,7 +13,7 @@ import {
   Bug,
   ClipboardList,
   FolderTree,
-  RotateCcw,
+  SquarePen,
   Code2,
   Layers,
   Image as ImageIcon,
@@ -21,6 +21,9 @@ import {
   History,
   MessageSquare,
   Target,
+  AppWindow,
+  Check,
+  ChevronDown,
 } from 'lucide-react';
 import { cn } from '@/src/lib/utils';
 import { useProjects } from '@/src/store/project';
@@ -58,6 +61,58 @@ function extractTargetUrl(message: string): string {
 
 function isDeepRequest(text: string): boolean {
   return !!extractTargetUrl(text) || DEEP_RE.test(text);
+}
+
+// Informational / workspace queries ("how many test cases?", "list my suites",
+// "which runs failed?") are NOT deep runs — they should be answered by the Supervisor
+// (which calls query_workspace / reads the codebase), not trigger an inspect→generate
+// pipeline asking for a target app. A request only counts as informational when it asks
+// ABOUT existing artifacts without a generation/run verb and without a target URL.
+const ARTIFACT_RE = /\b(test\s*cases?|cases?|suites?|plans?|runs?|scripts?|defects?|reports?|folders?)\b/i;
+const ASK_RE = /\b(how many|how much|number of|count|list|show|what(?:'s| is| are| does)?|which|do i have|are there|exist|tell me|give me|status of|summary)\b/i;
+const GEN_VERB_RE = /\b(generate|create|write|build|make|run|execute|automat\w*|inspect|screenshot|capture|test\s+the|check\s+the|verify|validate|add\s+\w+\s+to|new\b)\b/i;
+// Turn a streamed Supervisor step into a human-readable "what it's doing right now" label.
+function describeAgentStep(ev: { toolCalls?: Array<{ name: string; arguments?: any }> }): string {
+  const calls = ev.toolCalls || [];
+  if (!calls.length) return 'Thinking…';
+  const tc = calls[0];
+  const a = tc.arguments || {};
+  switch (tc.name) {
+    case 'query_workspace': return `Looking up ${a.kind || 'the workspace'}…`;
+    case 'search_codebase': return `Searching the codebase for ${(Array.isArray(a.terms) ? a.terms.join(', ') : a.terms) || 'the feature'}…`;
+    case 'read_code_file': return `Reading ${a.path || 'the source code'}…`;
+    case 'create_cases': return 'Generating test cases…';
+    case 'create_plan': return 'Creating a test plan…';
+    case 'create_suite': return 'Creating a test suite…';
+    case 'create_run': return 'Starting a test run…';
+    case 'generate_script': return 'Writing a Playwright script…';
+    case 'generate_report': return 'Generating a report…';
+    case 'create_defect': return 'Filing a defect…';
+    case 'create_folder': return 'Creating a folder…';
+    case 'move_to_folder': return 'Organizing artifacts…';
+    default: return `Running ${tc.name}…`;
+  }
+}
+
+function isInformationalQuery(text: string): boolean {
+  const t = text || '';
+  if (extractTargetUrl(t)) return false;       // a URL means they want a live run
+  if (GEN_VERB_RE.test(t)) return false;        // generation/run verbs → deep/action flow
+  return ASK_RE.test(t) && ARTIFACT_RE.test(t); // a question about existing artifacts
+}
+
+// App-knowledge questions ("how many features in the list view?", "what fields does the
+// user form have?", "which pages need testing?") must be answered by the Supervisor, which
+// reads the GIT SOURCE OF TRUTH (search_codebase / read_code_file) — NOT punted to the
+// explain path that asks for a URL. Any question about app surface area, with no
+// generation/run verb and no URL, routes to the Supervisor.
+const APP_KNOWLEDGE_RE = /\b(features?|pages?|fields?|buttons?|columns?|views?|list\s*views?|screens?|tabs?|forms?|workflows?|modules?|endpoints?|routes?|menus?|navigation|sections?|filters?|how does|how do(?:es)? it|what does|capabilit\w+)\b/i;
+function isQuestionForSupervisor(text: string): boolean {
+  const t = text || '';
+  if (extractTargetUrl(t)) return false;
+  if (GEN_VERB_RE.test(t)) return false;
+  if (isInformationalQuery(t)) return true;            // artifact counts/lists
+  return ASK_RE.test(t) && APP_KNOWLEDGE_RE.test(t);   // app-surface questions → consult git
 }
 
 // When a stored website is named, route to the deep pipeline if the request is
@@ -363,6 +418,11 @@ export default function AgentConsole() {
   const [conversations, setConversations] = useState<ConversationMeta[]>([]);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [websites, setWebsites] = useState<Array<{ id: string; name: string; baseUrl: string }>>([]);
+  // Explicit "apps under test" selected by the user in the composer. ALL selected apps
+  // are passed to the agent as target context on every request, so it always has the app
+  // data and never replies "I don't have the URL / context".
+  const [selectedAppIds, setSelectedAppIds] = useState<Set<string>>(new Set());
+  const [appPickerOpen, setAppPickerOpen] = useState(false);
   const [pendingDeep, setPendingDeep] = useState<PendingDeep | null>(null);
   // Requirement mode: toggled with Shift+Tab. When on, every message is routed to
   // the requirement-discovery pipeline regardless of phrasing.
@@ -510,15 +570,53 @@ export default function AgentConsole() {
   // request carries conversation memory (ChatGPT/Claude-style continuity).
   const buildHistory = useCallback((): Array<{ role: 'user' | 'assistant'; content: string }> => {
     const out: Array<{ role: 'user' | 'assistant'; content: string }> = [];
+    const push = (content: string) => { if (content && content.trim()) out.push({ role: 'assistant', content: content.trim().slice(0, 1000) }); };
     for (const t of turnsRef.current) {
       if (t.role === 'user') {
         if (t.text?.trim()) out.push({ role: 'user', content: t.text });
-      } else if (t.kind === 'text' && t.text?.trim()) {
-        out.push({ role: 'assistant', content: t.text });
-      } else if (t.kind === 'folderask' && t.understanding?.trim()) {
-        out.push({ role: 'assistant', content: t.understanding });
-      } else if (t.kind === 'clarify' && t.summary?.trim()) {
-        out.push({ role: 'assistant', content: t.summary });
+        continue;
+      }
+      // Serialize EVERY assistant turn kind — not just plain text. Previously the
+      // "work" turns (plan/cases/deeprun/codereview/reqdiscovery) contributed zero
+      // bytes, so follow-ups like "add sorting" or "rerun those" lost the artifacts
+      // the agent had just produced. The agent must remember what it did.
+      switch (t.kind) {
+        case 'text':
+          push(t.text);
+          break;
+        case 'folderask':
+          push(t.understanding || t.text);
+          break;
+        case 'clarify':
+          push(t.summary);
+          break;
+        case 'plan': {
+          const steps = Array.isArray(t.plan?.steps)
+            ? t.plan.steps.map((s: any, i: number) => `${i + 1}. ${s?.intent?.title || s?.intent?.kind || 'step'}`).join('; ')
+            : '';
+          push([t.plan?.summary, steps && `Plan steps: ${steps}`].filter(Boolean).join(' '));
+          break;
+        }
+        case 'cases': {
+          const titles = Array.isArray(t.cases)
+            ? t.cases.map((c: any, i: number) => `${i + 1}. ${c?.title || c?.name || `case ${i + 1}`}`).join('; ')
+            : '';
+          push(`Generated ${Array.isArray(t.cases) ? t.cases.length : 0} test case(s): ${titles}`);
+          break;
+        }
+        case 'deeprun': {
+          const tgt = convTargetRef.current?.targetUrl || convTargetRef.current?.websiteName || '';
+          push(`Started a deep test-generation run (task ${t.taskId})${tgt ? ` for ${tgt}` : ''}.`);
+          break;
+        }
+        case 'reqdiscovery':
+          push(`Requirement discovery: ${typeof t.result === 'string' ? t.result : (t.result?.summary || JSON.stringify(t.result || {})).slice(0, 600)}`);
+          break;
+        case 'codereview':
+          push(`Code review findings: ${typeof t.analysis === 'string' ? t.analysis : (t.analysis?.summary || JSON.stringify(t.analysis || {})).slice(0, 600)}`);
+          break;
+        default:
+          break;
       }
     }
     return out.slice(-16);
@@ -577,6 +675,54 @@ export default function AgentConsole() {
     return data;
   }, [buildHistory]);
 
+  // The apps the user explicitly selected in the composer (all of them), as target
+  // context for the agent. Mirrored to a ref so callbacks read the latest without churn.
+  const selectedApps = websites.filter((w) => selectedAppIds.has(w.id)).map((w) => ({ name: w.name, baseUrl: w.baseUrl }));
+  const selectedAppsRef = useRef<Array<{ name: string; baseUrl: string }>>([]);
+  useEffect(() => { selectedAppsRef.current = selectedApps; });
+
+  // Route a message to the SupervisorAgent (dynamic tool-loop: query_workspace,
+  // search_codebase, create_* …) and STREAM its live steps into the thinking turn, so the
+  // user sees what the agent is actually doing in real time instead of a static label.
+  const runViaSupervisor = useCallback(async (text: string, thinkingId: string) => {
+    const setThinkingLabel = (label: string) =>
+      setTurns((prev) => prev.map((t) => (t.id === thinkingId && t.role === 'assistant' && t.kind === 'thinking' ? { ...t, label } : t)));
+    try {
+      const res = await fetch('/api/controller/supervise/stream', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userMessage: text, workspaceId: 'default', history: buildHistory(), pageContext: { path: location.pathname }, apps: selectedAppsRef.current }),
+      });
+      if (!res.ok || !res.body) {
+        const data = await res.json().catch(() => ({}));
+        replaceTurn(thinkingId, { id: thinkingId, role: 'assistant', kind: 'text', text: cleanChat(data?.error || `Request failed (${res.status}).`) });
+        return;
+      }
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = '';
+      let finalReply = '';
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const lines = buf.split('\n');
+        buf = lines.pop() || '';
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          let ev: any;
+          try { ev = JSON.parse(line); } catch { continue; }
+          if (ev.type === 'step') setThinkingLabel(ev.text && ev.text.length < 80 ? ev.text : describeAgentStep(ev));
+          else if (ev.type === 'final') finalReply = ev.reply || '';
+          else if (ev.type === 'error') finalReply = ev.error || 'The agent could not complete that.';
+        }
+      }
+      replaceTurn(thinkingId, { id: thinkingId, role: 'assistant', kind: 'text', text: cleanChat(finalReply || 'Done.') });
+    } catch (err: any) {
+      replaceTurn(thinkingId, { id: thinkingId, role: 'assistant', kind: 'text', text: `Something went wrong: ${err?.message || 'unknown error'}.` });
+    }
+  }, [buildHistory, location.pathname, replaceTurn]);
+
   const send = useCallback(
     async (raw?: string) => {
       const text = (raw ?? input).trim();
@@ -600,6 +746,22 @@ export default function AgentConsole() {
       const proceedingDeep = !!pendingDeep && isLikelyFolderResponse(text);
       if (pendingDeep && !proceedingDeep) setPendingDeep(null);
       const activePending = proceedingDeep ? pendingDeep : null;
+
+      // Informational/workspace questions ("how many test cases?", "list my suites") AND
+      // app-knowledge questions ("how many features in the list view?") go to the
+      // Supervisor — it answers artifact queries from the DB and app-behaviour questions by
+      // reading the git source of truth (search_codebase), instead of the deep-run pipeline
+      // asking "which app should I run this against?".
+      if (!activePending && isQuestionForSupervisor(text)) {
+        try {
+          await runViaSupervisor(text, thinkingId);
+        } finally {
+          setBusy(false);
+          inputRef.current?.focus();
+        }
+        return;
+      }
+
       const historyForRouting = buildHistory();
       const coreAdminSite = findCoreAdminWebsite(websites);
       const scopeAppUrlForRouting = (scopeApp?.baseUrl || '').trim();
@@ -1026,7 +1188,7 @@ export default function AgentConsole() {
         inputRef.current?.focus();
       }
     },
-    [input, busy, location.pathname, stopListening, replaceTurn, requestDeepUnderstanding, reqMode, pendingDeep, websites, scopeApp, buildHistory, startDeepRun],
+    [input, busy, location.pathname, stopListening, replaceTurn, requestDeepUnderstanding, reqMode, pendingDeep, websites, scopeApp, buildHistory, startDeepRun, runViaSupervisor],
   );
 
   // Start the deep run directly from a "Here's what I understood" card's OWN stored data
@@ -1219,7 +1381,7 @@ export default function AgentConsole() {
             onClick={newConversation}
             className="inline-flex items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--bg-card)] px-2.5 py-1.5 text-xs font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:border-[var(--accent)] transition-colors"
           >
-            <RotateCcw className="h-3.5 w-3.5" /> New
+            <SquarePen className="h-3.5 w-3.5" /> New
           </button>
         </div>
       </div>
@@ -1294,8 +1456,21 @@ export default function AgentConsole() {
               if (turn.kind === 'thinking') {
                 return (
                   <div key={turn.id} className="flex items-center gap-2.5 text-sm text-[var(--text-muted)]">
-                    <Loader2 className="h-4 w-4 animate-spin text-[var(--accent)]" />
-                    {turn.label}
+                    <style>{`
+                      @keyframes tfaStepIn{0%{opacity:0;transform:translateY(4px)}100%{opacity:1;transform:translateY(0)}}
+                      @keyframes tfaDot{0%,80%,100%{opacity:.25;transform:translateY(0)}40%{opacity:1;transform:translateY(-3px)}}
+                    `}</style>
+                    <Loader2 className="h-4 w-4 shrink-0 animate-spin text-[var(--accent)]" />
+                    {/* key={turn.label} remounts the span on every step so the new
+                        activity fades/slides in — the live "what the agent is doing" feed. */}
+                    <span key={turn.label} style={{ animation: 'tfaStepIn .28s ease-out' }} className="font-medium text-[var(--text-primary)]">
+                      {turn.label}
+                    </span>
+                    <span className="ml-0.5 inline-flex items-end gap-[3px] pb-0.5">
+                      {[0, 150, 300].map((d) => (
+                        <span key={d} className="inline-block h-1 w-1 rounded-full bg-[var(--accent)]" style={{ animation: 'tfaDot 1s ease-in-out infinite', animationDelay: `${d}ms` }} />
+                      ))}
+                    </span>
                   </div>
                 );
               }
@@ -1544,6 +1719,52 @@ export default function AgentConsole() {
           />
           <div className="flex items-center justify-between gap-2 px-1">
             <div className="flex items-center gap-2 text-[11px] text-[var(--text-muted)]">
+              {/* Apps-under-test multi-select: all selected apps are sent to the agent as
+                  target context, so it never lacks the URL/app data. */}
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => setAppPickerOpen((o) => !o)}
+                  title="Select which saved apps the agent should target (multi-select)"
+                  className={cn(
+                    'inline-flex items-center gap-1 rounded-md border px-2 py-1 text-[11px] font-medium transition-colors',
+                    selectedApps.length
+                      ? 'border-[var(--accent)] bg-[var(--accent)]/10 text-[var(--accent)]'
+                      : 'border-[var(--border)] text-[var(--text-muted)] hover:border-[var(--accent)]',
+                  )}
+                >
+                  <AppWindow className="h-3.5 w-3.5" />
+                  {selectedApps.length ? `${selectedApps.length} app${selectedApps.length > 1 ? 's' : ''} selected` : 'Apps to test'}
+                  <ChevronDown className="h-3 w-3" />
+                </button>
+                {appPickerOpen && (
+                  <div className="absolute bottom-full left-0 z-20 mb-1 max-h-64 w-72 overflow-auto rounded-lg border border-[var(--border)] bg-[var(--bg-card)] p-1 shadow-lg">
+                    {websites.length === 0 ? (
+                      <div className="px-2 py-2 text-[11px] text-[var(--text-muted)]">No saved apps. Add them in Settings → Website Credentials.</div>
+                    ) : (
+                      websites.map((w) => {
+                        const on = selectedAppIds.has(w.id);
+                        return (
+                          <button
+                            key={w.id}
+                            type="button"
+                            onClick={() => setSelectedAppIds((prev) => { const n = new Set(prev); if (on) n.delete(w.id); else n.add(w.id); return n; })}
+                            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs hover:bg-[var(--bg-secondary)]"
+                          >
+                            <span className={cn('flex h-4 w-4 shrink-0 items-center justify-center rounded border', on ? 'border-[var(--accent)] bg-[var(--accent)] text-white' : 'border-[var(--border)]')}>
+                              {on && <Check className="h-3 w-3" />}
+                            </span>
+                            <span className="min-w-0 flex-1 truncate">
+                              <span className="font-medium text-[var(--text-primary)]">{w.name}</span>
+                              <span className="ml-1 text-[var(--text-muted)]">{w.baseUrl}</span>
+                            </span>
+                          </button>
+                        );
+                      })
+                    )}
+                  </div>
+                )}
+              </div>
               {isListening || interimTranscript || speechError ? (
                 <span className={cn(speechError ? 'text-red-400' : 'text-[var(--text-muted)]')}>
                   {speechError || (interimTranscript ? `Listening: ${interimTranscript}` : 'Listening…')}

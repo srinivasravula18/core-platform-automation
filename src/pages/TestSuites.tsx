@@ -1,7 +1,9 @@
 import { Fragment, useEffect, useState } from 'react';
-import { ChevronDown, ChevronRight, Search, Filter, MoreHorizontal, Plus, Sparkles } from 'lucide-react';
+import { ChevronDown, ChevronRight, Search, Filter, MoreHorizontal, Plus, Sparkles, Trash2, CheckSquare, X } from 'lucide-react';
 import ExportMenu from '../components/ExportMenu';
 import { useAiSearch } from '@/src/lib/useAiSearch';
+import { useBulkDelete } from '@/src/lib/useBulkDelete';
+import { cn } from '@/src/lib/utils';
 import { Modal } from '@/src/components/Modal';
 import { AIActionModal } from '@/src/components/AIActionModal';
 import { FolderSelect } from '@/src/components/FolderSelect';
@@ -30,6 +32,8 @@ export default function TestSuites() {
       .then(data => { setSuites(data); setLoading(false); })
       .catch(console.error);
   };
+
+  const bulk = useBulkDelete('suites', fetchSuites, 'suite');
 
   const fetchPlans = () => {
     fetch('/api/plans')
@@ -200,6 +204,9 @@ export default function TestSuites() {
               { key: 'caseCount', label: 'Cases', get: (s) => cases.filter((c) => c.testSuiteId === s.id).length },
             ]}
           />
+          <button onClick={bulk.toggleSelectMode} className={cn("flex items-center gap-1.5 border px-3 py-2 rounded-md text-sm font-medium transition-colors", bulk.selectMode ? "border-[var(--accent)] text-[var(--accent)] bg-[var(--accent)]/10" : "border-[var(--border)] bg-[var(--bg-secondary)] hover:bg-[var(--border)] text-[var(--text-primary)]")}>
+            {bulk.selectMode ? <X className="w-4 h-4" /> : <CheckSquare className="w-4 h-4" />} {bulk.selectMode ? 'Cancel' : 'Select'}
+          </button>
           <button onClick={openNewModal} className="flex items-center gap-2 bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white px-4 py-2 rounded-md text-sm font-medium transition-colors">
             <Plus className="w-4 h-4" /> New Suite
           </button>
@@ -209,8 +216,27 @@ export default function TestSuites() {
         </div>
       </div>
 
-      <Modal isOpen={isSuiteModalOpen} onClose={() => setIsSuiteModalOpen(false)} title={selectedSuiteId ? "Edit Test Suite" : "Create New Test Suite"}>
-        <div className="space-y-4 max-h-[70dvh] overflow-y-auto px-1">
+      <Modal
+        isOpen={isSuiteModalOpen}
+        onClose={() => setIsSuiteModalOpen(false)}
+        title={selectedSuiteId ? "Edit Test Suite" : "Create New Test Suite"}
+        footer={
+          <div className="flex justify-between items-center">
+            <div>
+              {selectedSuiteId && (
+                <button onClick={handleDeleteSuite} className="px-4 py-2 text-sm font-medium text-red-500 hover:text-red-400">Delete</button>
+              )}
+            </div>
+            <div className="flex gap-3">
+              <button onClick={() => setIsSuiteModalOpen(false)} className="px-4 py-2 text-sm font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]">Cancel</button>
+              <button onClick={handleSaveSuite} disabled={!formData.name.trim()} className="px-4 py-2 bg-[var(--accent)] text-white text-sm font-medium rounded-md hover:bg-[var(--accent-hover)] disabled:opacity-50">
+                {selectedSuiteId ? 'Save Changes' : 'Create Suite'}
+              </button>
+            </div>
+          </div>
+        }
+      >
+        <div className="space-y-4">
           <FolderSelect
             value={formData.folderId}
             onChange={(folderId) => setFormData({ ...formData, folderId })}
@@ -281,19 +307,6 @@ export default function TestSuites() {
                 <input type="text" value={formData.tags} onChange={(e) => setFormData({...formData, tags: e.target.value})} placeholder="e.g. Sanity, API" className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]" />
             </div>
           </div>
-          <div className="pt-2 flex justify-between items-center bg-[var(--bg-card)] mt-2">
-            <div>
-              {selectedSuiteId && (
-                <button onClick={handleDeleteSuite} className="px-4 py-2 text-sm font-medium text-red-500 hover:text-red-400">Delete</button>
-              )}
-            </div>
-            <div className="flex gap-3">
-              <button onClick={() => setIsSuiteModalOpen(false)} className="px-4 py-2 text-sm font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]">Cancel</button>
-              <button onClick={handleSaveSuite} disabled={!formData.name.trim()} className="px-4 py-2 bg-[var(--accent)] text-white text-sm font-medium rounded-md hover:bg-[var(--accent-hover)] disabled:opacity-50">
-                {selectedSuiteId ? 'Save Changes' : 'Create Suite'}
-              </button>
-            </div>
-          </div>
         </div>
       </Modal>
 
@@ -336,12 +349,22 @@ export default function TestSuites() {
               </div>
             )}
           </div>
+          {bulk.selectMode && bulk.selectedCount > 0 && (
+            <button onClick={bulk.deleteSelected} disabled={bulk.busy} className="ml-auto flex items-center gap-1.5 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
+              <Trash2 className="w-4 h-4" /> Delete selected ({bulk.selectedCount})
+            </button>
+          )}
         </div>
-        
+
         <div className="flex-1 overflow-auto">
           <table className="w-full text-left text-sm whitespace-nowrap">
             <thead className="sticky top-0 bg-[var(--bg-secondary)] border-b border-[var(--border)] z-10">
               <tr className="text-[var(--text-muted)]">
+                {bulk.selectMode && (
+                  <th className="font-medium py-3 px-4 w-10">
+                    <input type="checkbox" checked={bulk.allSelected(filteredSuites.map((s) => s.id))} onChange={() => bulk.toggleAll(filteredSuites.map((s) => s.id))} />
+                  </th>
+                )}
                 <th className="font-medium py-3 px-4 w-24">ID</th>
                 <th className="font-medium py-3 px-4">Name</th>
                 <th className="font-medium py-3 px-4">Folder</th>
@@ -353,9 +376,9 @@ export default function TestSuites() {
             </thead>
             <tbody className="divide-y divide-[var(--border)]">
               {loading ? (
-                <tr><td colSpan={7} className="py-8 text-center text-[var(--text-muted)]">Loading suites...</td></tr>
+                <tr><td colSpan={bulk.selectMode ? 8 : 7} className="py-8 text-center text-[var(--text-muted)]">Loading suites...</td></tr>
               ) : filteredSuites.length === 0 ? (
-                <tr><td colSpan={7} className="py-8 text-center text-[var(--text-muted)]">No suites found.</td></tr>
+                <tr><td colSpan={bulk.selectMode ? 8 : 7} className="py-8 text-center text-[var(--text-muted)]">No suites found.</td></tr>
               ) : filteredSuites.map((suite) => {
                 const suiteCases = getSuiteCases(suite.id);
                 const isExpanded = expandedSuiteIds.includes(suite.id);
@@ -363,6 +386,11 @@ export default function TestSuites() {
                 return (
                   <Fragment key={suite.id}>
                     <tr className="hover:bg-[var(--bg-secondary)] transition-colors">
+                      {bulk.selectMode && (
+                        <td className="py-3 px-4" onClick={(e) => e.stopPropagation()}>
+                          <input type="checkbox" checked={bulk.isSelected(suite.id)} onChange={() => bulk.toggle(suite.id)} />
+                        </td>
+                      )}
                       <td className="py-3 px-4 font-mono text-xs text-[var(--text-muted)]">{suite.id}</td>
                       <td className="py-3 px-4">
                         <div className="flex items-start gap-2">
@@ -461,12 +489,19 @@ export default function TestSuites() {
                           >
                             <MoreHorizontal className="w-4 h-4" />
                           </button>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); bulk.deleteOne(suite.id); }}
+                            title="Delete"
+                            className="p-1 rounded hover:bg-red-500/10 text-[var(--text-muted)] hover:text-red-500 transition-colors"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
                         </div>
                       </td>
                     </tr>
                     {isExpanded && (
                       <tr>
-                        <td colSpan={7} className="bg-[var(--bg-secondary)]/50 px-10 py-4">
+                        <td colSpan={bulk.selectMode ? 8 : 7} className="bg-[var(--bg-secondary)]/50 px-10 py-4">
                           <div className="border border-[var(--border)] rounded-lg bg-[var(--bg-card)] overflow-hidden">
                             <div className="px-4 py-2 border-b border-[var(--border)] text-xs font-bold uppercase tracking-wider text-[var(--text-muted)]">
                               Related Test Cases

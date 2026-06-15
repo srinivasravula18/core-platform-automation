@@ -37,6 +37,10 @@ export interface GuardrailContext {
   costDailyLimit?: number;
   providerName?: string;
   modelName?: string;
+  /** True when the request carries prior conversation turns. A bare "yes/approve"
+   * is then a CONTINUATION and must reach the model (which has the history), not be
+   * short-circuited into a "I need more context" reply. */
+  hasHistory?: boolean;
 }
 
 export interface GuardrailLog {
@@ -146,7 +150,9 @@ export function preLLMPolicyCheck(ctx: GuardrailContext, normalized: string): Gu
       reason: 'farewell',
     };
   }
-  if (YES_NO.test(normalized)) {
+  if (YES_NO.test(normalized) && !ctx.hasHistory) {
+    // Only ambiguous when there is NO conversation. With history, "yes/approve/proceed"
+    // is a continuation of the prior proposal — let the model handle it with context.
     return {
       kind: 'respond',
       reply: "I need a bit more context — say which artifact (a test case, a run, a defect) and what to do with it.",
@@ -234,6 +240,7 @@ export interface PipelineInput {
   costDailyLimit?: number;
   providerName?: string;
   modelName?: string;
+  hasHistory?: boolean;
 }
 
 export interface PipelineResult {

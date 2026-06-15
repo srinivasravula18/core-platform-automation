@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
-import { Search, Filter, MoreHorizontal, ShieldAlert, Camera, Sparkles } from 'lucide-react';
+import { Search, Filter, MoreHorizontal, ShieldAlert, Camera, Sparkles, Trash2, CheckSquare, X } from 'lucide-react';
 import ExportMenu from '../components/ExportMenu';
 import { useAiSearch } from '@/src/lib/useAiSearch';
+import { useBulkDelete } from '@/src/lib/useBulkDelete';
 import { cn } from '@/src/lib/utils';
 import html2canvas from 'html2canvas';
 import { Modal } from '@/src/components/Modal';
@@ -26,6 +27,8 @@ export default function Defects() {
       .then(data => { setDefects(data); setLoading(false); })
       .catch(console.error);
   };
+
+  const bulk = useBulkDelete('defects', fetchDefects, 'defect');
 
   useEffect(() => {
     fetchDefects();
@@ -130,6 +133,9 @@ export default function Defects() {
               { key: 'description', label: 'Description' },
             ]}
           />
+          <button onClick={bulk.toggleSelectMode} className={cn("flex items-center gap-1.5 border px-3 py-2 rounded-md text-sm font-medium transition-colors", bulk.selectMode ? "border-red-500 text-red-500 bg-red-500/10" : "border-[var(--border)] bg-[var(--bg-secondary)] hover:bg-[var(--border)] text-[var(--text-primary)]")}>
+            {bulk.selectMode ? <X className="w-4 h-4" /> : <CheckSquare className="w-4 h-4" />} {bulk.selectMode ? 'Cancel' : 'Select'}
+          </button>
           <button onClick={openNewModal} className="flex items-center gap-2 bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-md text-sm font-medium transition-colors">
             <ShieldAlert className="w-4 h-4" /> Log Defect
           </button>
@@ -139,13 +145,12 @@ export default function Defects() {
         </div>
       </div>
 
-      <Modal isOpen={isDefectModalOpen} onClose={() => setIsDefectModalOpen(false)} title={selectedDefectId ? "Edit Defect" : "Log New Defect"}>
-        <div className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Defect Description</label>
-            <input type="text" value={newDefectTitle} onChange={(e) => setNewDefectTitle(e.target.value)} placeholder="e.g. Broken layout on Safari" className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-red-500 text-[var(--text-primary)]" />
-          </div>
-          <div className="pt-2 flex justify-between items-center bg-[var(--bg-card)] mt-2">
+      <Modal
+        isOpen={isDefectModalOpen}
+        onClose={() => setIsDefectModalOpen(false)}
+        title={selectedDefectId ? "Edit Defect" : "Log New Defect"}
+        footer={
+          <div className="flex justify-between items-center">
             <div>
               {selectedDefectId && (
                 <button onClick={handleDeleteDefect} className="px-4 py-2 text-sm font-medium text-red-500 hover:text-red-400">Delete</button>
@@ -157,6 +162,13 @@ export default function Defects() {
                 {selectedDefectId ? 'Save Changes' : 'Log Defect'}
               </button>
             </div>
+          </div>
+        }
+      >
+        <div className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Defect Description</label>
+            <input type="text" value={newDefectTitle} onChange={(e) => setNewDefectTitle(e.target.value)} placeholder="e.g. Broken layout on Safari" className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-red-500 text-[var(--text-primary)]" />
           </div>
         </div>
       </Modal>
@@ -200,12 +212,22 @@ export default function Defects() {
               </div>
             )}
           </div>
+          {bulk.selectMode && bulk.selectedCount > 0 && (
+            <button onClick={bulk.deleteSelected} disabled={bulk.busy} className="ml-auto flex items-center gap-1.5 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
+              <Trash2 className="w-4 h-4" /> Delete selected ({bulk.selectedCount})
+            </button>
+          )}
         </div>
-        
+
         <div className="flex-1 overflow-auto">
           <table className="w-full text-left text-sm whitespace-nowrap">
             <thead className="sticky top-0 bg-[var(--bg-secondary)] border-b border-[var(--border)] z-10">
               <tr className="text-[var(--text-muted)]">
+                {bulk.selectMode && (
+                  <th className="font-medium py-3 px-4 w-10">
+                    <input type="checkbox" checked={bulk.allSelected(filteredDefects.map((d) => d.id))} onChange={() => bulk.toggleAll(filteredDefects.map((d) => d.id))} />
+                  </th>
+                )}
                 <th className="font-medium py-3 px-4 w-24">ID</th>
                 <th className="font-medium py-3 px-4">Title</th>
                 <th className="font-medium py-3 px-4 w-32">Severity</th>
@@ -215,11 +237,16 @@ export default function Defects() {
             </thead>
             <tbody className="divide-y divide-[var(--border)]">
               {loading ? (
-                <tr><td colSpan={5} className="py-8 text-center text-[var(--text-muted)]">Loading defects...</td></tr>
+                <tr><td colSpan={bulk.selectMode ? 6 : 5} className="py-8 text-center text-[var(--text-muted)]">Loading defects...</td></tr>
               ) : filteredDefects.length === 0 ? (
-                <tr><td colSpan={5} className="py-8 text-center text-[var(--text-muted)]">No defects found.</td></tr>
+                <tr><td colSpan={bulk.selectMode ? 6 : 5} className="py-8 text-center text-[var(--text-muted)]">No defects found.</td></tr>
               ) : filteredDefects.map((defect) => (
-                <tr key={defect.id} onClick={() => openEditModal(defect)} className="hover:bg-[var(--bg-secondary)] transition-colors cursor-pointer">
+                <tr key={defect.id} onClick={() => bulk.selectMode ? bulk.toggle(defect.id) : openEditModal(defect)} className="hover:bg-[var(--bg-secondary)] transition-colors cursor-pointer">
+                  {bulk.selectMode && (
+                    <td className="py-3 px-4" onClick={(e) => e.stopPropagation()}>
+                      <input type="checkbox" checked={bulk.isSelected(defect.id)} onChange={() => bulk.toggle(defect.id)} />
+                    </td>
+                  )}
                   <td className="py-3 px-4 font-mono text-xs text-[var(--text-muted)]">{defect.id}</td>
                   <td className="py-3 px-4 font-medium">{defect.title}</td>
                   <td className="py-3 px-4">
@@ -254,6 +281,16 @@ export default function Defects() {
                       className="p-1 rounded hover:bg-[var(--border)] text-[var(--text-muted)] transition-colors"
                     >
                       <MoreHorizontal className="w-4 h-4" />
+                    </button>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        bulk.deleteOne(defect.id);
+                      }}
+                      title="Delete defect"
+                      className="p-1 rounded hover:bg-red-500/10 text-[var(--text-muted)] hover:text-red-500 transition-colors"
+                    >
+                      <Trash2 className="w-4 h-4" />
                     </button>
                   </td>
                 </tr>

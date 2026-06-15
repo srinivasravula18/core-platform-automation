@@ -503,6 +503,28 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
         </div>
       </div>
 
+      {/* Honest verdict — combines the grounded gates (did we SEE the app, were the
+          cases grounded, did the scripts actually pass?). No more unconditional green. */}
+      {run?.verdict && !isRunning && (
+        <div
+          className={cn(
+            'mb-3 rounded-lg border px-3 py-2 text-[11px]',
+            run.verdict.overall === 'verified'
+              ? 'border-emerald-500/20 bg-emerald-500/10 text-emerald-300'
+              : run.verdict.overall === 'failed'
+                ? 'border-red-500/20 bg-red-500/10 text-red-300'
+                : 'border-amber-500/20 bg-amber-500/10 text-amber-300',
+          )}
+        >
+          <div className="font-semibold uppercase tracking-wider">
+            {run.verdict.overall === 'verified' ? 'Verified' : run.verdict.overall === 'failed' ? 'Failed' : 'Inconclusive'}
+          </div>
+          <div className="mt-0.5 text-[var(--text-muted)]">
+            Saw the app: <b>{run.verdict.inspection}</b> · Cases grounded: <b>{run.verdict.grounding}</b> · Execution: <b>{run.verdict.execution}</b>
+          </div>
+        </div>
+      )}
+
       {/* Pipeline */}
       <div className="mb-3 flex flex-wrap items-center gap-1.5">
         {PIPELINE.map((p, i) => {
@@ -577,7 +599,7 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
             Found {existingMatches.length} existing test case{existingMatches.length === 1 ? '' : 's'} related to this request
           </div>
           <p className="mb-2.5 text-[11px] text-[var(--text-muted)]">
-            You already have coverage for this. Reuse it instead of generating from scratch, add only the missing scenarios, or start fresh.
+            You already have coverage for this. Reuse the existing cases as-is, keep them and add only the missing scenarios, or generate a brand-new set from scratch.
           </p>
           <div className="mb-3 max-h-48 space-y-1 overflow-y-auto pr-1">
             {existingMatches.map((c, i) => (
@@ -597,6 +619,7 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
             <button
               onClick={() => coverageDecide('reuse')}
               disabled={!!busy}
+              title="Use these existing cases as-is (generate no new cases) and run scripts + evidence against them"
               className="inline-flex items-center gap-1.5 rounded-md bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50"
             >
               {busy === 'cov-reuse' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Recycle className="h-3.5 w-3.5" />}
@@ -605,14 +628,16 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
             <button
               onClick={() => coverageDecide('gaps')}
               disabled={!!busy}
+              title="Keep all the existing cases above and generate only the scenarios they don't already cover"
               className="inline-flex items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-1.5 text-xs font-medium text-[var(--text-primary)] hover:border-[var(--accent)] disabled:opacity-50"
             >
               {busy === 'cov-gaps' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />}
-              Add only gaps
+              Existing + gaps
             </button>
             <button
               onClick={() => coverageDecide('fresh')}
               disabled={!!busy}
+              title="Ignore the existing cases and generate a brand-new set from scratch"
               className="inline-flex items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-1.5 text-xs font-medium text-[var(--text-primary)] hover:border-[var(--accent)] disabled:opacity-50"
             >
               {busy === 'cov-fresh' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <FlaskConical className="h-3.5 w-3.5" />}

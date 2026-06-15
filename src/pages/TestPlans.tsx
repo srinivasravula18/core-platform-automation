@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, Search, Filter, MoreHorizontal, Plus, Sparkles } from 'lucide-react';
+import { ArrowLeft, Search, Filter, MoreHorizontal, Plus, Sparkles, Trash2, CheckSquare, X } from 'lucide-react';
 import ExportMenu from '../components/ExportMenu';
 import { useAiSearch } from '@/src/lib/useAiSearch';
+import { useBulkDelete } from '@/src/lib/useBulkDelete';
 import { cn } from '@/src/lib/utils';
 import { Modal } from '@/src/components/Modal';
 import { AIActionModal } from '@/src/components/AIActionModal';
@@ -75,6 +76,8 @@ export default function TestPlans() {
       .then(data => { setPlans(data); setLoading(false); })
       .catch(console.error);
   };
+
+  const bulk = useBulkDelete('plans', fetchPlans, 'plan');
 
   const fetchPlanRelations = () => {
     Promise.all([
@@ -231,6 +234,9 @@ export default function TestPlans() {
               { key: 'caseCount', label: 'Cases', get: (p) => cases.filter((c) => c.testPlanId === p.id).length },
             ]}
           />
+          <button onClick={bulk.toggleSelectMode} className={cn("flex items-center gap-1.5 border px-3 py-2 rounded-md text-sm font-medium transition-colors", bulk.selectMode ? "border-[var(--accent)] text-[var(--accent)] bg-[var(--accent)]/10" : "border-[var(--border)] bg-[var(--bg-secondary)] hover:bg-[var(--border)] text-[var(--text-primary)]")}>
+            {bulk.selectMode ? <X className="w-4 h-4" /> : <CheckSquare className="w-4 h-4" />} {bulk.selectMode ? 'Cancel' : 'Select'}
+          </button>
           <button onClick={openNewModal} className="flex items-center gap-2 bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white px-4 py-2 rounded-md text-sm font-medium transition-colors">
             <Plus className="w-4 h-4" /> New Plan
           </button>
@@ -240,8 +246,27 @@ export default function TestPlans() {
         </div>
       </div>
 
-      <Modal isOpen={isPlanModalOpen} onClose={() => setIsPlanModalOpen(false)} title={selectedPlanId ? "Edit Test Plan" : "Create New Test Plan"}>
-        <div className="space-y-4 max-h-[70dvh] overflow-y-auto px-1">
+      <Modal
+        isOpen={isPlanModalOpen}
+        onClose={() => setIsPlanModalOpen(false)}
+        title={selectedPlanId ? "Edit Test Plan" : "Create New Test Plan"}
+        footer={
+          <div className="flex justify-between items-center">
+            <div>
+              {selectedPlanId && (
+                <button onClick={handleDeletePlan} className="px-4 py-2 text-sm font-medium text-red-500 hover:text-red-400">Delete</button>
+              )}
+            </div>
+            <div className="flex gap-3">
+              <button onClick={() => setIsPlanModalOpen(false)} className="px-4 py-2 text-sm font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]">Cancel</button>
+              <button onClick={handleSavePlan} disabled={!formData.name.trim()} className="px-4 py-2 bg-[var(--accent)] text-white text-sm font-medium rounded-md hover:bg-[var(--accent-hover)] disabled:opacity-50">
+                {selectedPlanId ? 'Save Changes' : 'Create Plan'}
+              </button>
+            </div>
+          </div>
+        }
+      >
+        <div className="space-y-4">
           <div className="sticky top-0 z-20 border-b border-[var(--border)] bg-[var(--bg-card)] pb-4">
             <FolderSelect
               value={formData.folderId}
@@ -355,20 +380,6 @@ export default function TestPlans() {
                 <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Deliverables</label>
                 <input type="text" value={formData.deliverables} onChange={(e) => setFormData({...formData, deliverables: e.target.value})} placeholder="e.g. Plan, Summary Report" className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]" />
              </div>
-          </div>
-          
-          <div className="pt-2 flex justify-between items-center bg-[var(--bg-card)] mt-2">
-            <div>
-              {selectedPlanId && (
-                <button onClick={handleDeletePlan} className="px-4 py-2 text-sm font-medium text-red-500 hover:text-red-400">Delete</button>
-              )}
-            </div>
-            <div className="flex gap-3">
-              <button onClick={() => setIsPlanModalOpen(false)} className="px-4 py-2 text-sm font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]">Cancel</button>
-              <button onClick={handleSavePlan} disabled={!formData.name.trim()} className="px-4 py-2 bg-[var(--accent)] text-white text-sm font-medium rounded-md hover:bg-[var(--accent-hover)] disabled:opacity-50">
-                {selectedPlanId ? 'Save Changes' : 'Create Plan'}
-              </button>
-            </div>
           </div>
         </div>
       </Modal>
@@ -546,12 +557,22 @@ export default function TestPlans() {
               </div>
             )}
           </div>
+          {bulk.selectMode && bulk.selectedCount > 0 && (
+            <button onClick={bulk.deleteSelected} disabled={bulk.busy} className="ml-auto flex items-center gap-1.5 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
+              <Trash2 className="w-4 h-4" /> Delete selected ({bulk.selectedCount})
+            </button>
+          )}
         </div>
-        
+
         <div className="flex-1 overflow-auto">
           <table className="w-full text-left text-sm whitespace-nowrap">
             <thead className="sticky top-0 bg-[var(--bg-secondary)] border-b border-[var(--border)] z-10">
               <tr className="text-[var(--text-muted)]">
+                {bulk.selectMode && (
+                  <th className="font-medium py-3 px-4 w-10">
+                    <input type="checkbox" checked={bulk.allSelected(filteredPlans.map((p) => p.id))} onChange={() => bulk.toggleAll(filteredPlans.map((p) => p.id))} />
+                  </th>
+                )}
                 <th className="font-medium py-3 px-4 w-24">ID</th>
                 <th className="font-medium py-3 px-4">Name</th>
                 <th className="font-medium py-3 px-4">Folder</th>
@@ -562,9 +583,9 @@ export default function TestPlans() {
             </thead>
             <tbody className="divide-y divide-[var(--border)]">
               {loading ? (
-                <tr><td colSpan={6} className="py-8 text-center text-[var(--text-muted)]">Loading plans...</td></tr>
+                <tr><td colSpan={bulk.selectMode ? 7 : 6} className="py-8 text-center text-[var(--text-muted)]">Loading plans...</td></tr>
               ) : filteredPlans.length === 0 ? (
-                <tr><td colSpan={6} className="py-8 text-center text-[var(--text-muted)]">No plans found.</td></tr>
+                <tr><td colSpan={bulk.selectMode ? 7 : 6} className="py-8 text-center text-[var(--text-muted)]">No plans found.</td></tr>
               ) : filteredPlans.map((plan) => {
                 const planSuites = getPlanSuites(plan.id);
                 const planCases = getPlanCases(plan.id);
@@ -573,12 +594,17 @@ export default function TestPlans() {
                 return (
                   <tr
                     key={plan.id}
-                    onClick={() => navigate(`/plans/${plan.id}`)}
+                    onClick={() => bulk.selectMode ? bulk.toggle(plan.id) : navigate(`/plans/${plan.id}`)}
                     className={cn(
                       "transition-colors cursor-pointer",
                       isSelected ? "bg-[var(--accent)]/10" : "hover:bg-[var(--bg-secondary)]"
                     )}
                   >
+                    {bulk.selectMode && (
+                      <td className="py-3 px-4" onClick={(e) => e.stopPropagation()}>
+                        <input type="checkbox" checked={bulk.isSelected(plan.id)} onChange={() => bulk.toggle(plan.id)} />
+                      </td>
+                    )}
                     <td className="py-3 px-4 font-mono text-xs text-[var(--text-muted)]">{plan.id}</td>
                     <td className="py-3 px-4">
                       <div className="flex flex-wrap items-center gap-2">
@@ -629,7 +655,7 @@ export default function TestPlans() {
                       </select>
                     </td>
                     <td className="py-3 px-4 text-right">
-                      <div className="relative inline-flex">
+                      <div className="relative inline-flex items-center gap-1">
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
@@ -639,6 +665,13 @@ export default function TestPlans() {
                           className="p-1 rounded hover:bg-[var(--border)] text-[var(--text-muted)] transition-colors"
                         >
                           <MoreHorizontal className="w-4 h-4" />
+                        </button>
+                        <button
+                          onClick={(e) => { e.stopPropagation(); bulk.deleteOne(plan.id); }}
+                          title="Delete"
+                          className="p-1 rounded hover:bg-red-500/10 text-[var(--text-muted)] hover:text-red-500 transition-colors"
+                        >
+                          <Trash2 className="w-4 h-4" />
                         </button>
                         {openActionPlanId === plan.id && (
                           <div

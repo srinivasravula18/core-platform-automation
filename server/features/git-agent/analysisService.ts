@@ -28,16 +28,16 @@ const analysisSchema = z.object({
     testFocus: z.string(),
   })).default([]),
   coverage: z.object({
-    sufficient: z.boolean(),
+    sufficient: z.boolean().default(false),
     coveredBy: z.array(z.object({
-      kind: z.enum(['case', 'script']),
+      kind: z.enum(['case', 'script']).default('case'),
       id: z.string(),
-      title: z.string(),
-      reason: z.string(),
+      title: z.string().default(''),
+      reason: z.string().default(''),
     })).default([]),
     gaps: z.array(z.string()).default([]),
-    reasoning: z.string(),
-  }),
+    reasoning: z.string().default(''),
+  }).default({ sufficient: false, coveredBy: [], gaps: [], reasoning: '' }),
   proposedCases: z.array(z.object({
     title: z.string(),
     type: z.string(),

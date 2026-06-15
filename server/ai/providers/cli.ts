@@ -11,6 +11,9 @@ import type {
   ProviderHealth,
   ProviderName,
   ProviderResponse,
+  ChatWithToolsOptions,
+  ChatWithToolsResult,
+  ChatMessage,
 } from './types';
 import { classifyError } from './types';
 
@@ -109,7 +112,7 @@ function normalizeTestCasePayload(parsed: unknown): unknown {
     const testCase = rawCase && typeof rawCase === 'object' ? { ...(rawCase as Record<string, unknown>) } : {};
     const title = stringifyField(testCase.title || testCase.name || testCase.scenario || `Test case ${index + 1}`);
     const normalizedSteps = (Array.isArray(testCase.steps) ? testCase.steps : []).map((rawStep, stepIndex) => {
-      const step = rawStep && typeof rawStep === 'object' ? rawStep as Record<string, unknown> : { action: rawStep };
+      const step: Record<string, unknown> = rawStep && typeof rawStep === 'object' ? (rawStep as Record<string, unknown>) : { action: rawStep };
       const action = stringifyField(step.action || step.step || step.instruction || step.description || `Execute step ${stepIndex + 1}`);
       const expected = stringifyField(step.expected || step.expectedResult || step.expected_result || step.assertion || step.result || step.outcome)
         || 'The expected result for this step is observed.';
@@ -146,7 +149,7 @@ function normalizeScriptPayload(parsed: unknown): unknown {
   if (!scripts) return parsed;
 
   root.scripts = scripts.map((rawScript, index) => {
-    const script = rawScript && typeof rawScript === 'object' ? { ...(rawScript as Record<string, unknown>) } : { code: rawScript };
+    const script: Record<string, unknown> = rawScript && typeof rawScript === 'object' ? { ...(rawScript as Record<string, unknown>) } : { code: rawScript };
     const title = stringifyField(script.test_case_title || script.title || script.name || script.testName || script.test_name || `Generated Playwright script ${index + 1}`);
     const code = stringifyField(script.code || script.script || script.source || script.content || script.playwright || script.test || script.body);
     return {
@@ -161,7 +164,7 @@ function normalizeScriptPayload(parsed: unknown): unknown {
 
 async function runProcess(command: string, args: string[], stdin: string, timeoutMs = 300_000): Promise<string> {
   return await new Promise((resolve, reject) => {
-    const env = { ...process.env, NO_COLOR: '1' };
+    const env: NodeJS.ProcessEnv = { ...process.env, NO_COLOR: '1' };
     // The Test Flow AI backend may be launched from inside a Codex session. Do not
     // pass parent-session internals to a nested `codex exec`; they can make the
     // child CLI choose the wrong auth/runtime path.
@@ -199,6 +202,17 @@ async function runProcess(command: string, args: string[], stdin: string, timeou
     });
     child.stdin.end(stdin);
   });
+}
+
+/** Render a provider-agnostic ChatMessage as plain text for the CLI transcript. */
+function renderCliMessage(m: ChatMessage): string {
+  if (m.role === 'tool') return `TOOL RESULT (${m.toolName || 'tool'}):\n${m.content || ''}`;
+  if (m.role === 'assistant' && m.toolCalls?.length) {
+    return `ASSISTANT called: ${m.toolCalls.map((tc) => `${tc.name}(${JSON.stringify(tc.arguments)})`).join(', ')}`;
+  }
+  if (m.role === 'assistant') return `ASSISTANT: ${m.content || ''}`;
+  if (m.role === 'system') return `SYSTEM: ${m.content || ''}`;
+  return `USER: ${m.content || ''}`;
 }
 
 export class AccountCliProvider implements AIProvider {
@@ -267,6 +281,62 @@ export class AccountCliProvider implements AIProvider {
       provider: this.name,
       latencyMs: Date.now() - start,
     };
+  }
+
+  /**
+   * Tool-calling EMULATED via prompting — the account/CLI tools (codex/claude
+   * subscription) have no native function-calling API, so we ask the model to reply
+   * with a single JSON object choosing either a tool call or a final answer, parse it,
+   * and let the loop execute the tool. Less strict than native function-calling (the
+   * loop retries on malformed output), but it lets the existing codex/claude login drive
+   * the agents without an API key.
+   */
+  async chatWithTools(opts: ChatWithToolsOptions): Promise<ChatWithToolsResult> {
+    const start = Date.now();
+    const model = this.modelId(opts);
+    const toolList = (opts.tools || [])
+      .map((t) => `- ${t.name}: ${t.description}\n  arguments (JSON Schema): ${JSON.stringify(t.parameters)}`)
+      .join('\n');
+    const transcript = opts.messages.map(renderCliMessage).join('\n\n');
+    const prompt = `You complete the task by calling tools one at a time.
+
+AVAILABLE TOOLS:
+${toolList || '(no tools)'}
+
+CONVERSATION SO FAR:
+${transcript}
+
+Decide the single next action. Reply with EXACTLY ONE JSON object and NOTHING else (no markdown, no code fences):
+- To call a tool: {"action":"tool_call","name":"<toolName>","arguments":{ ... }}
+- To give your final answer when the task is done: {"action":"final","text":"<your answer>"}`;
+
+    let raw = '';
+    try {
+      raw = await this.run({ system: opts.system, prompt, model, signal: opts.signal });
+    } catch (err: any) {
+      throw classifyError(this.name, undefined, err?.message || String(err));
+    }
+    const zeroUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0, costUsd: 0 };
+    let parsed: any;
+    try {
+      parsed = extractJson(raw);
+    } catch {
+      // No parseable JSON — treat the whole reply as the final answer.
+      return { text: raw.trim() || undefined, toolCalls: [], usage: zeroUsage, model, provider: this.name, stopReason: 'stop', latencyMs: Date.now() - start };
+    }
+    if (parsed && parsed.action === 'tool_call' && parsed.name) {
+      return {
+        toolCalls: [{ id: `call_${randomUUID().slice(0, 8)}`, name: String(parsed.name), arguments: parsed.arguments && typeof parsed.arguments === 'object' ? parsed.arguments : {} }],
+        text: undefined,
+        usage: zeroUsage,
+        model,
+        provider: this.name,
+        stopReason: 'tool_calls',
+        latencyMs: Date.now() - start,
+      };
+    }
+    const finalText = parsed?.action === 'final' ? String(parsed.text ?? '') : (typeof parsed === 'string' ? parsed : raw.trim());
+    return { text: finalText || undefined, toolCalls: [], usage: zeroUsage, model, provider: this.name, stopReason: 'stop', latencyMs: Date.now() - start };
   }
 
   async generateObject<T>(opts: GenerateObjectOptions<unknown>): Promise<ProviderResponse<T>> {

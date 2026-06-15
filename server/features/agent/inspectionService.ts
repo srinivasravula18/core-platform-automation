@@ -39,6 +39,16 @@ function compactPageContext(context: any) {
 }
 
 async function collectPageContext(page: any) {
+  // The bundler (esbuild via tsx, with keepNames) rewrites the helpers inside the
+  // page.evaluate() callback below into `__name(...)` wrappers. That `__name` helper
+  // lives in the Node module scope and is NOT shipped to the browser when Playwright
+  // serializes the function, so the first helper would throw
+  // `ReferenceError: __name is not defined`, the catch below would swallow it, and the
+  // whole inspection would silently return an empty result (the agent goes "blind").
+  // Defining a no-op `__name` on the page's global object first — via a STRING that the
+  // bundler never rewrites — makes those injected calls resolve inside the browser.
+  await page.evaluate('(() => { if (typeof window.__name !== "function") { window.__name = function (fn) { return fn; }; } })()');
+
   return page.evaluate(() => {
     const clean = (value: string | null | undefined) => String(value || '').replace(/\s+/g, ' ').trim();
     const visible = (element: Element) => {
@@ -276,7 +286,10 @@ export async function inspectApplicationFlow(options: {
       actionsTaken,
       observedPages,
       screenshots,
-      warnings: [...warnings, error?.message || String(error)],
+      warnings: [
+        ...warnings,
+        `Page inspection failed — the agent could not read the live application, so any generated tests are NOT grounded in the real page. Cause: ${error?.message || String(error)}`,
+      ],
     };
   } finally {
     await page.close().catch(() => undefined);

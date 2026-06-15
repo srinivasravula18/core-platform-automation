@@ -1,8 +1,10 @@
 import { useEffect, useState, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Search, Filter, MoreHorizontal, Plus, Sparkles, Loader2 } from 'lucide-react';
+import { Search, Filter, MoreHorizontal, Plus, Sparkles, Loader2, Trash2, CheckSquare, X } from 'lucide-react';
 import ExportMenu from '../components/ExportMenu';
 import { useAiSearch } from '@/src/lib/useAiSearch';
+import { useBulkDelete } from '@/src/lib/useBulkDelete';
+import { cn } from '@/src/lib/utils';
 import { Modal } from '@/src/components/Modal';
 import { AIActionModal } from '@/src/components/AIActionModal';
 import { FolderSelect } from '@/src/components/FolderSelect';
@@ -65,6 +67,8 @@ export default function TestCases() {
       .then(data => setFolders(Array.isArray(data) ? data : []))
       .catch(console.error);
   };
+
+  const bulk = useBulkDelete('cases', fetchCases, 'case');
 
   useEffect(() => {
     fetchCases();
@@ -274,6 +278,9 @@ export default function TestCases() {
               { key: 'stepDetail', label: 'Step Detail', get: (c) => (c.steps || []).map((s: any, i: number) => `${i + 1}. ${s.action || ''}${s.expected ? ' => ' + s.expected : ''}`).join('  |  ') },
             ]}
           />
+          <button onClick={bulk.toggleSelectMode} className={cn("flex items-center gap-1.5 border px-3 py-2 rounded-md text-sm font-medium transition-colors", bulk.selectMode ? "border-[var(--accent)] text-[var(--accent)] bg-[var(--accent)]/10" : "border-[var(--border)] bg-[var(--bg-secondary)] hover:bg-[var(--border)] text-[var(--text-primary)]")}>
+            {bulk.selectMode ? <X className="w-4 h-4" /> : <CheckSquare className="w-4 h-4" />} {bulk.selectMode ? 'Cancel' : 'Select'}
+          </button>
           <button onClick={openNewModal} className="flex items-center gap-2 bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white px-4 py-2 rounded-md text-sm font-medium transition-colors">
             <Plus className="w-4 h-4" /> New Case
           </button>
@@ -283,8 +290,28 @@ export default function TestCases() {
         </div>
       </div>
 
-      <Modal isOpen={isCaseModalOpen} onClose={() => setIsCaseModalOpen(false)} title={selectedCaseId ? "Edit Test Case" : "Create New Test Case"} size="xl">
-        <div className="space-y-4 max-h-[70dvh] overflow-y-auto px-1">
+      <Modal
+        isOpen={isCaseModalOpen}
+        onClose={() => setIsCaseModalOpen(false)}
+        title={selectedCaseId ? "Edit Test Case" : "Create New Test Case"}
+        size="xl"
+        footer={
+          <div className="flex justify-between items-center">
+            <div>
+              {selectedCaseId && (
+                <button onClick={handleDeleteCase} className="px-4 py-2 text-sm font-medium text-red-500 hover:text-red-400">Delete</button>
+              )}
+            </div>
+            <div className="flex gap-3">
+              <button onClick={() => setIsCaseModalOpen(false)} className="px-4 py-2 text-sm font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]">Cancel</button>
+              <button onClick={handleSaveCase} disabled={!formData.title.trim()} className="px-4 py-2 bg-[var(--accent)] text-white text-sm font-medium rounded-md hover:bg-[var(--accent-hover)] disabled:opacity-50">
+                {selectedCaseId ? 'Save Changes' : 'Create Case'}
+              </button>
+            </div>
+          </div>
+        }
+      >
+        <div className="space-y-4">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
              <div>
                 <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Test Plan (Optional)</label>
@@ -426,19 +453,6 @@ export default function TestCases() {
               </span>
             </span>
           </label>
-          <div className="pt-2 flex justify-between items-center bg-[var(--bg-card)] mt-2">
-            <div>
-              {selectedCaseId && (
-                <button onClick={handleDeleteCase} className="px-4 py-2 text-sm font-medium text-red-500 hover:text-red-400">Delete</button>
-              )}
-            </div>
-            <div className="flex gap-3">
-              <button onClick={() => setIsCaseModalOpen(false)} className="px-4 py-2 text-sm font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]">Cancel</button>
-              <button onClick={handleSaveCase} disabled={!formData.title.trim()} className="px-4 py-2 bg-[var(--accent)] text-white text-sm font-medium rounded-md hover:bg-[var(--accent-hover)] disabled:opacity-50">
-                {selectedCaseId ? 'Save Changes' : 'Create Case'}
-              </button>
-            </div>
-          </div>
         </div>
       </Modal>
 
@@ -482,6 +496,11 @@ export default function TestCases() {
               </div>
             )}
           </div>
+          {bulk.selectMode && bulk.selectedCount > 0 && (
+            <button onClick={bulk.deleteSelected} disabled={bulk.busy} className="ml-auto flex items-center gap-1.5 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
+              <Trash2 className="w-4 h-4" /> Delete selected ({bulk.selectedCount})
+            </button>
+          )}
           </div>
           {selectedCaseIds.length > 0 && (
             <div className="rounded-lg border border-[var(--accent)]/30 bg-[var(--accent)]/10 p-3">
@@ -534,13 +553,22 @@ export default function TestCases() {
             <thead className="sticky top-0 bg-[var(--bg-secondary)] border-b border-[var(--border)] z-10">
               <tr className="text-[var(--text-muted)]">
                 <th className="font-medium py-3 px-4 w-10">
-                  <input
-                    type="checkbox"
-                    checked={filteredCases.length > 0 && filteredCases.every((testCase) => selectedCaseIds.includes(testCase.id))}
-                    onChange={toggleAllVisibleCases}
-                    className="rounded border-[var(--border)] text-[var(--accent)] focus:ring-[var(--accent)]"
-                    title="Select all visible cases"
-                  />
+                  {bulk.selectMode ? (
+                    <input
+                      type="checkbox"
+                      checked={bulk.allSelected(filteredCases.map((testCase) => testCase.id))}
+                      onChange={() => bulk.toggleAll(filteredCases.map((testCase) => testCase.id))}
+                      title="Select all visible cases for deletion"
+                    />
+                  ) : (
+                    <input
+                      type="checkbox"
+                      checked={filteredCases.length > 0 && filteredCases.every((testCase) => selectedCaseIds.includes(testCase.id))}
+                      onChange={toggleAllVisibleCases}
+                      className="rounded border-[var(--border)] text-[var(--accent)] focus:ring-[var(--accent)]"
+                      title="Select all visible cases"
+                    />
+                  )}
                 </th>
                 <th className="font-medium py-3 px-4 w-24">ID</th>
                 <th className="font-medium py-3 px-4">Title</th>
@@ -561,19 +589,28 @@ export default function TestCases() {
                 <tr><td colSpan={10} className="py-8 text-center text-[var(--text-muted)]">No test cases found.</td></tr>
               )}
               {filteredCases.map((tc) => (
-                <tr key={tc.id} onClick={() => openEditModal(tc)} className="hover:bg-[var(--bg-secondary)] transition-colors cursor-pointer">
-                  <td className="py-3 px-4">
-                    <input
-                      type="checkbox"
-                      checked={selectedCaseIds.includes(tc.id)}
-                      onChange={(event) => {
-                        event.stopPropagation();
-                        toggleSelectedCase(tc.id);
-                      }}
-                      onClick={(event) => event.stopPropagation()}
-                      className="rounded border-[var(--border)] text-[var(--accent)] focus:ring-[var(--accent)]"
-                      title={`Select ${tc.title}`}
-                    />
+                <tr key={tc.id} onClick={() => bulk.selectMode ? bulk.toggle(tc.id) : openEditModal(tc)} className="hover:bg-[var(--bg-secondary)] transition-colors cursor-pointer">
+                  <td className="py-3 px-4" onClick={(e) => e.stopPropagation()}>
+                    {bulk.selectMode ? (
+                      <input
+                        type="checkbox"
+                        checked={bulk.isSelected(tc.id)}
+                        onChange={() => bulk.toggle(tc.id)}
+                        title={`Select ${tc.title} for deletion`}
+                      />
+                    ) : (
+                      <input
+                        type="checkbox"
+                        checked={selectedCaseIds.includes(tc.id)}
+                        onChange={(event) => {
+                          event.stopPropagation();
+                          toggleSelectedCase(tc.id);
+                        }}
+                        onClick={(event) => event.stopPropagation()}
+                        className="rounded border-[var(--border)] text-[var(--accent)] focus:ring-[var(--accent)]"
+                        title={`Select ${tc.title}`}
+                      />
+                    )}
                   </td>
                   <td className="py-3 px-4 font-mono text-xs text-[var(--text-muted)]">{tc.id}</td>
                   <td className="py-3 px-4 font-medium max-w-sm truncate">{tc.title}</td>
@@ -675,6 +712,16 @@ export default function TestCases() {
                       className="p-1 rounded hover:bg-[var(--border)] text-[var(--text-muted)] transition-colors"
                     >
                       <MoreHorizontal className="w-4 h-4" />
+                    </button>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        bulk.deleteOne(tc.id);
+                      }}
+                      title="Delete"
+                      className="p-1 rounded hover:bg-red-500/10 text-[var(--text-muted)] hover:text-red-500 transition-colors"
+                    >
+                      <Trash2 className="w-4 h-4" />
                     </button>
                   </td>
                 </tr>
