@@ -14,6 +14,13 @@ import { executeIntent } from './controller';
 import type { AgentTool, ToolContext, AgentStep } from './tools/types';
 import { queryWorkspaceTool, searchCodebaseTool, readCodeFileTool } from './tools/registry';
 import { gitGrep, readRepoFile, GIT_AGENT_TARGET_REPO } from '../features/git-agent/gitAgentService';
+import { existsSync } from 'fs';
+import { join } from 'path';
+
+/** Is the source-of-truth git repo actually present on this server? */
+function isCodeRepoConnected(): boolean {
+  try { return existsSync(join(GIT_AGENT_TARGET_REPO, '.git')); } catch { return false; }
+}
 
 interface IntentToolDef {
   kind: string;
@@ -117,6 +124,12 @@ export async function answerAppQuestionFromCode(question: string, opts: {
   apps?: Array<{ name: string; baseUrl: string }>;
   onProgress?: (label: string) => void;
 } = {}): Promise<string> {
+  // If the source repo isn't present on this server, say so precisely (with the path it
+  // expected) instead of a vague "no matching files" — this is the #1 production gotcha:
+  // the code-search repo must be cloned on the server and GIT_AGENT_TARGET_REPO pointed at it.
+  if (!isCodeRepoConnected()) {
+    return `I can't read the source code because the application's git repo is not connected on this server. It looked for the repo at "${GIT_AGENT_TARGET_REPO}" but found no git repository there. To enable code-grounded answers in this environment, clone the application's source repo on the server and set the GIT_AGENT_TARGET_REPO environment variable to its path, then restart.`;
+  }
   const terms = keywordsFor(question);
   for (const a of opts.apps || []) if (a?.name) terms.push(...keywordsFor(a.name));
   const searchTerms = Array.from(new Set(terms)).slice(0, 12);

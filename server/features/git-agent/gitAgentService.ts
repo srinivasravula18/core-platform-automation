@@ -4,7 +4,11 @@ import { spawnSync } from 'child_process';
 import { db, addActivity, persistDataInBackground } from '../../shared/storage';
 import { buildCaseDescription, normalizeCaseSteps, normalizeCaseTags } from '../../shared/testCases';
 
-const gitAgentTargetRepo = 'D:\\core-platform';
+// The source repo the agents grep/read as the "source of truth". MUST be configurable:
+// the old hardcoded Windows path only exists on a local dev machine, so on a deployed
+// (Linux) server it can't be found and code-grounded answers fail with "no matching files".
+// Set GIT_AGENT_TARGET_REPO (or CORE_PLATFORM_REPO) to the cloned repo path in production.
+const gitAgentTargetRepo = process.env.GIT_AGENT_TARGET_REPO || process.env.CORE_PLATFORM_REPO || 'D:\\core-platform';
 const gitAgentStatePath = path.resolve(process.cwd(), '.testflow-git-agent-state.json');
 
 function readJsonFile<T>(filePath: string, fallback: T): T {
