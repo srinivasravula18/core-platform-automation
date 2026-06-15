@@ -308,6 +308,30 @@ function markRunDone(run: any, status: 'completed' | 'failed'): void {
   run.completed_at = nowIso();
 }
 
+/* ---------------------------------------------------------------------------
+ * #5 Inspection / code-understanding cache.
+ * Iterative local testing re-runs the same app+feature repeatedly. Cache the two
+ * expensive, slow-on-codex results (live inspection + source understanding) keyed by
+ * target + feature so 2nd+ runs skip them entirely. Short TTL so app changes are picked
+ * up; cleared automatically. Keyed by lowercased targetUrl + normalized prompt.
+ * -------------------------------------------------------------------------- */
+const INSPECT_CACHE_TTL_MS = 15 * 60 * 1000;
+const inspectionCache = new Map<string, { at: number; value: any }>();
+const understandingCache = new Map<string, { at: number; value: any }>();
+
+function featureCacheKey(targetUrl: string, prompt: string): string {
+  return `${String(targetUrl || '').toLowerCase()}::${String(prompt || '').toLowerCase().replace(/\s+/g, ' ').trim().slice(0, 200)}`;
+}
+function getCached(cache: Map<string, { at: number; value: any }>, key: string): any | null {
+  const hit = cache.get(key);
+  if (!hit) return null;
+  if (Date.now() - hit.at > INSPECT_CACHE_TTL_MS) { cache.delete(key); return null; }
+  return hit.value;
+}
+function setCached(cache: Map<string, { at: number; value: any }>, key: string, value: any): void {
+  cache.set(key, { at: Date.now(), value });
+}
+
 // Decide how many cases to write. An explicit number the user typed always wins.
 // Otherwise (requested === 0 → "auto" / "as many as possible" / "comprehensive")
 // scale to the feature's REAL complexity as understood from the source: roughly one
@@ -1220,67 +1244,66 @@ export function registerAgentRoutes(app: Express) {
     res.json({ task_id: taskId });
 
     try {
-      try {
-        const namingAi = await getOrchestrator('namingAgent', { workspaceId: newRun.ownerId || 'default' });
-        const named = await namingAi.generateObject<{ name: string }>({
-          prompt: `Return a concise QA artifact name as {"name":"..."}. User request: ${prompt || 'not provided'}\nTarget URL: ${targetUrl || 'not provided'}`,
-          schema: z.object({ name: z.string().min(4).max(80) }),
-          userMessage: prompt || targetUrl || '',
-        });
-        if (named.object?.name) {
-          newRun.artifactName = String(named.object.name).slice(0, 80);
-        }
-      } catch (err: any) {
-        newRun.messages.push({
-          agent: 'NamingAgent',
-          status: 'skipped',
-          output: `Using fallback artifact name because naming failed: ${getAIErrorMessage(err)}`,
-        });
-      }
+      // #1: NamingAgent removed from the critical path — newRun.artifactName already holds
+      // a deterministic name (buildFallbackArtifactName), saving a ~30s codex call up front.
       const credentialContext = buildCredentialContext(credentials);
+      const cacheKey = featureCacheKey(targetUrl, `${prompt || ''} ${approvedUnderstanding}`);
 
-      // SELF-CORRECTING INSPECTOR (Phase 2): the inspector must actually SEE the live
-      // app before we generate anything. A grounded Verifier gate (assessInspection)
-      // decides success; if the inspection comes back blind/blocked, we re-strategize
-      // and retry up to a bounded budget instead of silently generating ungrounded tests.
-      const MAX_INSPECT_ATTEMPTS = 3;
-      let inspectionContext: any = null;
-      let inspectionVerdict = { ok: false, reason: 'not run' };
-      for (let attempt = 1; attempt <= MAX_INSPECT_ATTEMPTS; attempt += 1) {
-        pushPhase(newRun, {
-          agent: 'ApplicationInspector',
-          status: 'running',
-          output: attempt > 1 ? `Re-inspecting (attempt ${attempt}/${MAX_INSPECT_ATTEMPTS}) — previous attempt could not read the page: ${inspectionVerdict.reason}` : undefined,
-        });
-        const retryHint = attempt > 1
-          ? `\n\nIMPORTANT: a previous inspection attempt failed to read the page (${inspectionVerdict.reason}). Wait for the app to finish loading, ensure you are logged in, and navigate to the feature under test before reporting.`
-          : '';
-        inspectionContext = await inspectApplicationFlow({
+      // #2 + #5: Inspect the live app and Understand the source IN PARALLEL (independent),
+      // each served from a short-lived cache on repeat local runs — so the slow CodeAnalyst
+      // codex call hides entirely behind the (longer) browser inspection, and a 2nd run on
+      // the same app+feature skips both. The inspector's own cheap blind-retry (#3) lives
+      // inside inspectApplicationFlow, so we call it once here.
+      pushPhase(newRun, { agent: 'ApplicationInspector', status: 'running' });
+      pushPhase(newRun, { agent: 'CodeAnalyst', status: 'running' });
+
+      const inspectTask = (async () => {
+        const cached = getCached(inspectionCache, cacheKey);
+        if (cached) {
+          pushPhase(newRun, { agent: 'ApplicationInspector', status: 'completed', output: { ...cached, cached: true, verifier: 'reused cached inspection' } });
+          return { ctx: cached, ok: true };
+        }
+        const ctx = await inspectApplicationFlow({
           targetUrl,
-          prompt: (approvedUnderstanding ? `${prompt || ''}\n\nApproved understanding:\n${approvedUnderstanding}` : prompt || '') + retryHint,
+          prompt: approvedUnderstanding ? `${prompt || ''}\n\nApproved understanding:\n${approvedUnderstanding}` : prompt || '',
           credentials,
           model: undefined as any,
           runId: taskId,
           knowledge: inspectorKnowledge,
           workspaceId: newRun.ownerId || 'default',
         });
-        inspectionVerdict = assessInspection(inspectionContext);
-        if (inspectionVerdict.ok) break;
-      }
+        const verdict = assessInspection(ctx);
+        if (verdict.ok) {
+          setCached(inspectionCache, cacheKey, ctx);
+          pushPhase(newRun, { agent: 'ApplicationInspector', status: 'completed', output: { ...ctx, verifier: verdict.reason } });
+        } else {
+          pushPhase(newRun, { agent: 'ApplicationInspector', status: 'completed', output: `WARNING: the inspector could not read the live application (${verdict.reason}). Any test cases generated next are NOT grounded in the real page.` });
+        }
+        return { ctx, ok: verdict.ok };
+      })();
+
+      const understandTask = (async () => {
+        const cached = getCached(understandingCache, cacheKey);
+        if (cached) {
+          pushPhase(newRun, { agent: 'CodeAnalyst', status: 'completed', output: { ...cached, cached: true, searchedFiles: [] } });
+          return cached;
+        }
+        try {
+          const analysis = await analyzeFeatureFromSource(`${scopeContextText} ${prompt || ''} ${approvedUnderstanding}`.trim(), { workspaceId: newRun.ownerId || 'default', userId: newRun.ownerId });
+          setCached(understandingCache, cacheKey, analysis.understanding);
+          pushPhase(newRun, { agent: 'CodeAnalyst', status: 'completed', output: { ...analysis.understanding, searchedFiles: analysis.files?.map((f) => f.path) || [] } });
+          return analysis.understanding;
+        } catch (err: any) {
+          pushPhase(newRun, { agent: 'CodeAnalyst', status: 'skipped', output: `Code understanding unavailable: ${getAIErrorMessage(err)}` });
+          return null;
+        }
+      })();
+
+      const [inspectResult, featureUnderstanding] = await Promise.all([inspectTask, understandTask]);
+      const inspectionContext = inspectResult.ctx;
       newRun.inspection_context = inspectionContext;
-      if (!inspectionVerdict.ok) {
-        // Still blind after retries — record it honestly so downstream + the UI know the
-        // generated tests are NOT grounded (and the run won't be reported as a clean pass).
-        (newRun as any).inspection_blind = true;
-        pushPhase(newRun, {
-          agent: 'ApplicationInspector',
-          status: 'completed',
-          output: `WARNING: after ${MAX_INSPECT_ATTEMPTS} attempts the inspector could not read the live application (${inspectionVerdict.reason}). Any test cases generated next are NOT grounded in the real page.`,
-        });
-      } else {
-        (newRun as any).inspection_blind = false;
-        pushPhase(newRun, { agent: 'ApplicationInspector', status: 'completed', output: { ...inspectionContext, verifier: inspectionVerdict.reason } });
-      }
+      (newRun as any).inspection_blind = !inspectResult.ok;
+      newRun.feature_understanding = featureUnderstanding;
 
       // Auto-grow the app knowledge: feed back a compact summary of what the live
       // inspector actually saw, so the pack keeps up with features added after it was written.
@@ -1292,25 +1315,6 @@ export function registerAgentRoutes(app: Express) {
           + (nav ? `; nav: ${nav}` : '') + (forms ? `; forms: ${forms}` : '') + ` (goal: ${ic.goalStatus || 'unknown'}).`;
         recordObservation({ websiteId: req.body.websiteId, targetUrl, text: prompt || '', ownerId: newRun.ownerId || '' }, obsNote);
       } catch { /* observation is best-effort */ }
-
-      // DEEP CODE UNDERSTANDING (git agent over the real app source). Drives how
-      // many cases to write and grounds their steps in the rules the code enforces,
-      // so coverage scales with the feature's actual complexity — not a fixed count.
-      pushPhase(newRun, { agent: 'CodeAnalyst', status: 'running' });
-      let featureUnderstanding: any = null;
-      try {
-        const analysis = await analyzeFeatureFromSource(`${scopeContextText} ${prompt || ''} ${approvedUnderstanding}`.trim(), { workspaceId: newRun.ownerId || 'default', userId: newRun.ownerId });
-        featureUnderstanding = analysis.understanding;
-        newRun.feature_understanding = featureUnderstanding;
-        pushPhase(newRun, {
-          agent: 'CodeAnalyst',
-          status: 'completed',
-          output: { ...featureUnderstanding, searchedFiles: analysis.files?.map((f) => f.path) || [] },
-        });
-      } catch (err: any) {
-        // Source repo missing/unsearchable — fall back to inspection-only grounding.
-        pushPhase(newRun, { agent: 'CodeAnalyst', status: 'skipped', output: `Code understanding unavailable: ${getAIErrorMessage(err)}` });
-      }
       // Stash the context the coverage gate / decision endpoint needs to resume.
       newRun.requested_case_count = requestedCaseCount;
       newRun.selected_qa_prompt_text = selectedQaContext.promptText;

@@ -89,6 +89,22 @@ function recentConversation(): string {
 
 export type ChatTurn = { role: 'user' | 'assistant'; content: string };
 
+export type SelectedApp = { name: string; baseUrl: string };
+
+// When the user has selected app(s) — via the top-bar scope switcher or the composer
+// "Apps to test" picker — build a directive block naming them as the target. This is
+// injected into every chat prompt so the model maps vague references ("the entire
+// application", "admin and keystone", "the list view") to these apps instead of replying
+// that it does not know which app/scope the user means.
+function buildAppsBlock(apps?: SelectedApp[]): string {
+  const list = (Array.isArray(apps) ? apps : [])
+    .filter((a) => a && typeof a.baseUrl === 'string' && a.baseUrl.trim())
+    .map((a) => `${a.name || a.baseUrl} (${a.baseUrl})`);
+  if (!list.length) return '';
+  return `\nAPPS UNDER TEST (selected by the user — treat these as the target; do NOT ask which app/scope): ${list.join(', ')}.
+When the user refers to "the entire application", "the app", "admin and keystone", "the list view", "this page/section/flow", or similar, map that reference to the selected app(s) above and proceed using them (their names and base URLs) as the concrete target. Do NOT reply that you do not know which app/scope is meant — an app IS selected. Answer for the selected app(s), e.g. "for the Admin app at <url>, the List View features to test are …".\n`;
+}
+
 // Format the CURRENT chat's prior turns (sent per-request from the client) into a
 // transcript the model reads for continuity — so it never forgets earlier messages
 // in the same conversation (ChatGPT/Claude-style memory). Kept to the most recent
@@ -134,6 +150,8 @@ export interface ClassifyInput {
   userId?: string;
   /** Prior turns of THIS chat, sent by the client for per-conversation memory. */
   history?: ChatTurn[];
+  /** App(s) the user selected as the target (top-bar scope + composer picker, merged). */
+  apps?: SelectedApp[];
 }
 
 const VALID_KINDS: IntentKind[] = [
@@ -152,6 +170,8 @@ function buildPrompt(input: ClassifyInput, extra: { workspaceContext?: string; c
       (input.pageContext.selectedFolderId ? `\nSelected folder: ${input.pageContext.selectedFolderId}` : '')
     : '';
 
+  const appsBlock = buildAppsBlock(input.apps);
+
   const convoBlock = extra.conversation
     ? `\nRECENT CONVERSATION (oldest first) — use it for continuity ("the feature we discussed yesterday", "those cases"):\n${extra.conversation}\n`
     : '';
@@ -162,7 +182,7 @@ function buildPrompt(input: ClassifyInput, extra: { workspaceContext?: string; c
   return `You are the Test Flow AI Universal AI Controller. The user has asked:
 
 "${input.userMessage}"
-${ctx}${convoBlock}${wsBlock}
+${ctx}${appsBlock}${convoBlock}${wsBlock}
 
 Your job is to break this request into a list of typed intents that the app can execute. The available intent kinds are:
 ${VALID_KINDS.map((k) => `- ${k}: ${INTENT_LABELS[k]}`).join('\n')}
@@ -1067,9 +1087,10 @@ export function sanitizeAnswer(text: string): string {
     .trim();
 }
 
-function buildExplainPrompt(topic: string, workspaceContext: string, conversation: string): string {
+function buildExplainPrompt(topic: string, workspaceContext: string, conversation: string, apps?: SelectedApp[]): string {
+  const appsBlock = buildAppsBlock(apps);
   return `Answer the user's question for a QA testing assistant.
-
+${appsBlock}
 ${conversation ? `RECENT CONVERSATION (oldest first):\n${conversation}\n\n` : ''}${workspaceContext && workspaceContext !== '{}' ? `WORKSPACE CONTEXT — existing artifacts with ids and timestamps (most recent first):\n${workspaceContext}\n\n` : ''}Rules:
 - Use the workspace context and conversation above to answer questions about previously created work (for example "the test cases / suites / scripts / plan you created 2 days ago", "the run from yesterday"). Reference the real ids, titles, and dates from the context — do NOT make up artifacts.
 - If the user wants to act on past work (tweak a case and rerun, etc.), briefly confirm which specific item(s) by id/title, then tell them you can do it.
@@ -1081,14 +1102,14 @@ ${conversation ? `RECENT CONVERSATION (oldest first):\n${conversation}\n\n` : ''
 Question: ${topic}`;
 }
 
-export async function explainIntent(topic: string, options: { workspaceId?: string; userId?: string; history?: ChatTurn[] } = {}): Promise<string> {
+export async function explainIntent(topic: string, options: { workspaceId?: string; userId?: string; history?: ChatTurn[]; apps?: SelectedApp[] } = {}): Promise<string> {
   const orch = await getOrchestrator('chatAssistant', options);
   const provided = formatHistory(options.history);
   const refsPast = needsHistory(topic);
   const workspaceContext = refsPast ? await buildWorkspaceContext() : '';
   const conversation = provided || (refsPast ? recentConversation() : '');
   const { text, shortCircuit } = await orch.generateText({
-    prompt: buildExplainPrompt(topic, workspaceContext, conversation),
+    prompt: buildExplainPrompt(topic, workspaceContext, conversation, options.apps),
     userMessage: topic,
     hasHistory: !!conversation,
   });
@@ -1100,7 +1121,7 @@ export async function explainIntent(topic: string, options: { workspaceId?: stri
 }
 
 /** Streaming variant of explainIntent — yields text deltas as they arrive. */
-export async function* streamExplain(topic: string, options: { workspaceId?: string; userId?: string; history?: ChatTurn[] } = {}): AsyncGenerator<string> {
+export async function* streamExplain(topic: string, options: { workspaceId?: string; userId?: string; history?: ChatTurn[]; apps?: SelectedApp[] } = {}): AsyncGenerator<string> {
   const orch = await getOrchestrator('chatAssistant', options);
   const provided = formatHistory(options.history);
   const refsPast = needsHistory(topic);
@@ -1108,7 +1129,7 @@ export async function* streamExplain(topic: string, options: { workspaceId?: str
   const conversation = provided || (refsPast ? recentConversation() : '');
   let full = '';
   try {
-    for await (const delta of orch.streamText({ prompt: buildExplainPrompt(topic, workspaceContext, conversation), userMessage: topic, hasHistory: !!conversation })) {
+    for await (const delta of orch.streamText({ prompt: buildExplainPrompt(topic, workspaceContext, conversation, options.apps), userMessage: topic, hasHistory: !!conversation })) {
       full += delta;
       yield delta;
     }

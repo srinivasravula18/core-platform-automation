@@ -190,7 +190,22 @@ export async function inspectApplicationFlow(options: {
     observedPages.push({ stage: 'after-login', ...compactPageContext(lastContext) });
     let goalStatus: 'satisfied' | 'blocked' | 'partial' = 'partial';
 
-    for (let step = 0; step < 3; step += 1) {
+    // #3 Cheap blind-retry: if the page hasn't rendered its content yet (SPA still
+    // hydrating), re-collect context a couple of times on the SAME page — no browser
+    // relaunch, no re-login, no LLM call. This recovers a "blind" read cheaply, instead of
+    // the caller re-running the whole expensive inspection.
+    for (let r = 0; r < 2; r += 1) {
+      const blank = !((lastContext.actions || []).length || (lastContext.forms || []).length || (lastContext.tables || []).length);
+      if (!blank) break;
+      await page.waitForLoadState('networkidle', { timeout: 8000 }).catch(() => undefined);
+      await page.waitForTimeout(1200);
+      lastContext = await collectPageContext(page);
+      observedPages.push({ stage: `recollect-${r + 1}`, ...compactPageContext(lastContext) });
+    }
+
+    // #4 Cap the LLM planner loop at 2 codex calls (was 3). It still breaks early when the
+    // goal is satisfied, so simple views finish in one call.
+    for (let step = 0; step < 2; step += 1) {
       const orchestrator = await getOrchestrator('appInspector', { workspaceId: options.workspaceId || 'default' });
       const decisionResult = await orchestrator.generateObject<z.infer<typeof plannerSchema>>({
         schema: plannerSchema,

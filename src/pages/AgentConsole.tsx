@@ -680,6 +680,26 @@ export default function AgentConsole() {
   const selectedApps = websites.filter((w) => selectedAppIds.has(w.id)).map((w) => ({ name: w.name, baseUrl: w.baseUrl }));
   const selectedAppsRef = useRef<Array<{ name: string; baseUrl: string }>>([]);
   useEffect(() => { selectedAppsRef.current = selectedApps; });
+  // The top-bar scope app, mirrored to a ref so callbacks read the latest.
+  const scopeAppRef = useRef<{ name: string; baseUrl: string } | null>(null);
+  useEffect(() => { scopeAppRef.current = scopeApp ? { name: scopeApp.name, baseUrl: scopeApp.baseUrl } : null; });
+  // The single "selected apps" payload sent on EVERY chat fetch: merges the top-bar
+  // scope app and the composer multi-select, deduped by baseUrl. This is the target the
+  // agent must use so it never asks "which app" when an app is selected.
+  const getSelectedApps = useCallback((): Array<{ name: string; baseUrl: string }> => {
+    const out: Array<{ name: string; baseUrl: string }> = [];
+    const seen = new Set<string>();
+    const add = (a?: { name: string; baseUrl: string } | null) => {
+      if (!a || !a.baseUrl) return;
+      const key = a.baseUrl.trim().toLowerCase();
+      if (!key || seen.has(key)) return;
+      seen.add(key);
+      out.push({ name: a.name, baseUrl: a.baseUrl });
+    };
+    add(scopeAppRef.current);
+    for (const a of selectedAppsRef.current) add(a);
+    return out;
+  }, []);
 
   // Route a message to the SupervisorAgent (dynamic tool-loop: query_workspace,
   // search_codebase, create_* …) and STREAM its live steps into the thinking turn, so the
@@ -691,7 +711,7 @@ export default function AgentConsole() {
       const res = await fetch('/api/controller/supervise/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userMessage: text, workspaceId: 'default', history: buildHistory(), pageContext: { path: location.pathname }, apps: selectedAppsRef.current }),
+        body: JSON.stringify({ userMessage: text, workspaceId: 'default', history: buildHistory(), pageContext: { path: location.pathname }, apps: getSelectedApps() }),
       });
       if (!res.ok || !res.body) {
         const data = await res.json().catch(() => ({}));
@@ -721,7 +741,7 @@ export default function AgentConsole() {
     } catch (err: any) {
       replaceTurn(thinkingId, { id: thinkingId, role: 'assistant', kind: 'text', text: `Something went wrong: ${err?.message || 'unknown error'}.` });
     }
-  }, [buildHistory, location.pathname, replaceTurn]);
+  }, [buildHistory, location.pathname, replaceTurn, getSelectedApps]);
 
   const send = useCallback(
     async (raw?: string) => {
@@ -1015,6 +1035,7 @@ export default function AgentConsole() {
               testCaseCount: parseCaseCount(promptForDeep),
               flowMode: 'review_cases',
               folderMention: folderMention || undefined,
+              apps: getSelectedApps(),
             }),
           });
           const data = await res.json();
@@ -1053,6 +1074,7 @@ export default function AgentConsole() {
             pageContext: { path: location.pathname },
             workspaceId: 'default',
             history: historyForRouting,
+            apps: getSelectedApps(),
           }),
         });
         const plan = await res.json();
@@ -1133,13 +1155,13 @@ export default function AgentConsole() {
             const ans = await fetch('/api/controller/explain/stream', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ topic: text, workspaceId: 'default', history: histForExplain }),
+              body: JSON.stringify({ topic: text, workspaceId: 'default', history: histForExplain, apps: getSelectedApps() }),
             });
             if (!ans.ok || !ans.body) {
               const data = await fetch('/api/controller/explain', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ topic: text, workspaceId: 'default', history: histForExplain }),
+                body: JSON.stringify({ topic: text, workspaceId: 'default', history: histForExplain, apps: getSelectedApps() }),
               }).then((r) => r.json()).catch(() => ({}));
               replaceTurn(thinkingId, { id: thinkingId, role: 'assistant', kind: 'text', text: cleanChat(data?.answer || plan?.summary || fallbackText) });
             } else {
@@ -1188,7 +1210,7 @@ export default function AgentConsole() {
         inputRef.current?.focus();
       }
     },
-    [input, busy, location.pathname, stopListening, replaceTurn, requestDeepUnderstanding, reqMode, pendingDeep, websites, scopeApp, buildHistory, startDeepRun, runViaSupervisor],
+    [input, busy, location.pathname, stopListening, replaceTurn, requestDeepUnderstanding, reqMode, pendingDeep, websites, scopeApp, buildHistory, startDeepRun, runViaSupervisor, getSelectedApps],
   );
 
   // Start the deep run directly from a "Here's what I understood" card's OWN stored data
