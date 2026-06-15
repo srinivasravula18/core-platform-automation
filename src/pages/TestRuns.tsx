@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { ArrowDownToLine, ArrowLeft, CheckCircle, Filter, Folder, Lock, MoreHorizontal, PlayCircle, Search, Share2, SlidersHorizontal, Sparkles, Trash2, CheckSquare, X } from 'lucide-react';
+import { ArrowDownToLine, ArrowLeft, CheckCircle, Filter, Folder, Lock, MoreHorizontal, PlayCircle, Search, Share2, SlidersHorizontal, Sparkles, Trash2 } from 'lucide-react';
 import ExportMenu from '../components/ExportMenu';
 import { useAiSearch } from '@/src/lib/useAiSearch';
 import { useBulkDelete } from '@/src/lib/useBulkDelete';
@@ -259,6 +259,11 @@ export default function TestRuns() {
               <option>All Test Cases</option>
             </select>
             <div className="flex flex-wrap items-center gap-2">
+              {caseBulk.selectedCount > 0 && (
+                <button onClick={caseBulk.deleteSelected} disabled={caseBulk.busy} className="flex items-center gap-1.5 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white px-3 py-2 rounded-md text-sm font-medium transition-colors">
+                  <Trash2 className="w-4 h-4" /> Delete selected ({caseBulk.selectedCount})
+                </button>
+              )}
               <button onClick={() => setCaseStatusFilter('All')} title="Show all grouped cases" className="p-2 rounded-md border border-[var(--border)] text-[var(--accent)]"><Folder className="w-4 h-4" /></button>
               <div className="relative">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--text-muted)]" />
@@ -309,18 +314,7 @@ export default function TestRuns() {
                     <th className="px-4 py-3 font-medium">Priority</th>
                     <th className="px-4 py-3 font-medium">Status</th>
                     <th className="px-4 py-3 w-12 text-right">
-                      {caseBulk.selectedCount > 0 ? (
-                        <button
-                          onClick={caseBulk.deleteSelected}
-                          disabled={caseBulk.busy}
-                          title={`Delete ${caseBulk.selectedCount} selected`}
-                          className="inline-flex items-center gap-1 rounded-md bg-red-600 hover:bg-red-700 disabled:opacity-50 px-2 py-1 text-xs font-medium text-white"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" /> {caseBulk.selectedCount}
-                        </button>
-                      ) : (
-                        <SlidersHorizontal className="w-4 h-4" />
-                      )}
+                      <SlidersHorizontal className="w-4 h-4" />
                     </th>
                   </tr>
                 </thead>
@@ -394,9 +388,6 @@ export default function TestRuns() {
               { key: 'date', label: 'Date' },
             ]}
           />
-          <button onClick={bulk.toggleSelectMode} className={cn("flex items-center gap-1.5 border px-3 py-2 rounded-md text-sm font-medium transition-colors", bulk.selectMode ? "border-[var(--accent)] text-[var(--accent)] bg-[var(--accent)]/10" : "border-[var(--border)] bg-[var(--bg-secondary)] hover:bg-[var(--border)] text-[var(--text-primary)]")}>
-            {bulk.selectMode ? <X className="w-4 h-4" /> : <CheckSquare className="w-4 h-4" />} {bulk.selectMode ? 'Cancel' : 'Select'}
-          </button>
           <button onClick={openNewModal} className="bg-[var(--accent)] text-white px-4 py-2 rounded-md text-sm font-medium">Create Manual Run</button>
           <button onClick={() => setIsAIRunModalOpen(true)} className="bg-[#8b5cf6] text-white px-3 py-2 rounded-md text-sm font-medium"><Sparkles className="inline w-4 h-4" /></button>
         </div>
@@ -451,7 +442,7 @@ export default function TestRuns() {
               <input value={searchTerm} onChange={(e) => { const v = e.target.value; setSearchTerm(v); if (aiSearch.isAiQuery(v)) aiSearch.run(v, runs.map((r) => ({ id: r.id, name: r.name, status: r.status, suiteName: r.suiteName, requestedBy: r.requestedBy, date: r.date }))); else aiSearch.reset(); }} placeholder="Search runs…  or @ai find smartly" className="w-96 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md pl-9 pr-4 py-2 text-sm outline-none focus:border-[var(--accent)]" />
             </div>
             <button onClick={() => setIsViewMenuOpen(!isViewMenuOpen)} title="Open run view filters" className="p-2 rounded-md border border-[var(--border)]"><Filter className="w-4 h-4" /></button>
-            {bulk.selectMode && bulk.selectedCount > 0 && (
+            {bulk.selectedCount > 0 && (
               <button onClick={bulk.deleteSelected} disabled={bulk.busy} className="flex items-center gap-1.5 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
                 <Trash2 className="w-4 h-4" /> Delete selected ({bulk.selectedCount})
               </button>
@@ -463,11 +454,9 @@ export default function TestRuns() {
           <table className="w-full text-left text-sm whitespace-nowrap">
             <thead className="sticky top-0 bg-[var(--bg-secondary)] border-b border-[var(--border)] text-[var(--text-muted)]">
               <tr>
-                {bulk.selectMode && (
-                  <th className="px-4 py-3 w-10">
-                    <input type="checkbox" checked={bulk.allSelected(filteredRuns.map((run) => run.id))} onChange={() => bulk.toggleAll(filteredRuns.map((run) => run.id))} />
-                  </th>
-                )}
+                <th className="px-4 py-3 w-10">
+                  <input type="checkbox" checked={bulk.allSelected(filteredRuns.map((run) => run.id))} onChange={() => bulk.toggleAll(filteredRuns.map((run) => run.id))} />
+                </th>
                 <th className="px-4 py-3 w-10"></th>
                 <th className="px-4 py-3 font-medium">Run</th>
                 <th className="px-4 py-3 font-medium">Folder</th>
@@ -480,18 +469,16 @@ export default function TestRuns() {
             </thead>
             <tbody className="divide-y divide-[var(--border)]">
               {loading ? (
-                <tr><td colSpan={bulk.selectMode ? 9 : 8} className="px-4 py-8 text-center text-[var(--text-muted)]">Loading runs...</td></tr>
+                <tr><td colSpan={9} className="px-4 py-8 text-center text-[var(--text-muted)]">Loading runs...</td></tr>
               ) : filteredRuns.length === 0 ? (
-                <tr><td colSpan={bulk.selectMode ? 9 : 8} className="px-4 py-8 text-center text-[var(--text-muted)]">No test runs found.</td></tr>
+                <tr><td colSpan={9} className="px-4 py-8 text-center text-[var(--text-muted)]">No test runs found.</td></tr>
               ) : filteredRuns.map((run) => {
                 const stats = getRunStats(run);
                 return (
-                  <tr key={run.id} onClick={() => bulk.selectMode ? bulk.toggle(run.id) : navigate(`/runs/${run.id}`)} className="hover:bg-[var(--bg-secondary)] cursor-pointer">
-                    {bulk.selectMode && (
-                      <td className="px-4 py-4" onClick={(e) => e.stopPropagation()}>
-                        <input type="checkbox" checked={bulk.isSelected(run.id)} onChange={() => bulk.toggle(run.id)} />
-                      </td>
-                    )}
+                  <tr key={run.id} onClick={() => navigate(`/runs/${run.id}`)} className="hover:bg-[var(--bg-secondary)] cursor-pointer">
+                    <td className="px-4 py-4" onClick={(e) => e.stopPropagation()}>
+                      <input type="checkbox" checked={bulk.isSelected(run.id)} onChange={() => bulk.toggle(run.id)} />
+                    </td>
                     <td className="px-4 py-4"><CheckCircle className="w-8 h-8 text-[var(--accent)]" /></td>
                     <td className="px-4 py-4">
                       <div className="font-semibold">{run.name}</div>

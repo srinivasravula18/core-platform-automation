@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, Search, Filter, MoreHorizontal, Plus, Sparkles, Trash2, CheckSquare, X } from 'lucide-react';
+import { ArrowLeft, Search, Filter, MoreHorizontal, Plus, Sparkles, Trash2 } from 'lucide-react';
 import ExportMenu from '../components/ExportMenu';
 import { useAiSearch } from '@/src/lib/useAiSearch';
 import { useBulkDelete } from '@/src/lib/useBulkDelete';
@@ -234,9 +234,6 @@ export default function TestPlans() {
               { key: 'caseCount', label: 'Cases', get: (p) => cases.filter((c) => c.testPlanId === p.id).length },
             ]}
           />
-          <button onClick={bulk.toggleSelectMode} className={cn("flex items-center gap-1.5 border px-3 py-2 rounded-md text-sm font-medium transition-colors", bulk.selectMode ? "border-[var(--accent)] text-[var(--accent)] bg-[var(--accent)]/10" : "border-[var(--border)] bg-[var(--bg-secondary)] hover:bg-[var(--border)] text-[var(--text-primary)]")}>
-            {bulk.selectMode ? <X className="w-4 h-4" /> : <CheckSquare className="w-4 h-4" />} {bulk.selectMode ? 'Cancel' : 'Select'}
-          </button>
           <button onClick={openNewModal} className="flex items-center gap-2 bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white px-4 py-2 rounded-md text-sm font-medium transition-colors">
             <Plus className="w-4 h-4" /> New Plan
           </button>
@@ -557,7 +554,7 @@ export default function TestPlans() {
               </div>
             )}
           </div>
-          {bulk.selectMode && bulk.selectedCount > 0 && (
+          {bulk.selectedCount > 0 && (
             <button onClick={bulk.deleteSelected} disabled={bulk.busy} className="ml-auto flex items-center gap-1.5 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
               <Trash2 className="w-4 h-4" /> Delete selected ({bulk.selectedCount})
             </button>
@@ -568,11 +565,9 @@ export default function TestPlans() {
           <table className="w-full text-left text-sm whitespace-nowrap">
             <thead className="sticky top-0 bg-[var(--bg-secondary)] border-b border-[var(--border)] z-10">
               <tr className="text-[var(--text-muted)]">
-                {bulk.selectMode && (
-                  <th className="font-medium py-3 px-4 w-10">
-                    <input type="checkbox" checked={bulk.allSelected(filteredPlans.map((p) => p.id))} onChange={() => bulk.toggleAll(filteredPlans.map((p) => p.id))} />
-                  </th>
-                )}
+                <th className="font-medium py-3 px-4 w-10">
+                  <input type="checkbox" checked={bulk.allSelected(filteredPlans.map((p) => p.id))} onChange={() => bulk.toggleAll(filteredPlans.map((p) => p.id))} />
+                </th>
                 <th className="font-medium py-3 px-4 w-24">ID</th>
                 <th className="font-medium py-3 px-4">Name</th>
                 <th className="font-medium py-3 px-4">Folder</th>
@@ -583,9 +578,9 @@ export default function TestPlans() {
             </thead>
             <tbody className="divide-y divide-[var(--border)]">
               {loading ? (
-                <tr><td colSpan={bulk.selectMode ? 7 : 6} className="py-8 text-center text-[var(--text-muted)]">Loading plans...</td></tr>
+                <tr><td colSpan={7} className="py-8 text-center text-[var(--text-muted)]">Loading plans...</td></tr>
               ) : filteredPlans.length === 0 ? (
-                <tr><td colSpan={bulk.selectMode ? 7 : 6} className="py-8 text-center text-[var(--text-muted)]">No plans found.</td></tr>
+                <tr><td colSpan={7} className="py-8 text-center text-[var(--text-muted)]">No plans found.</td></tr>
               ) : filteredPlans.map((plan) => {
                 const planSuites = getPlanSuites(plan.id);
                 const planCases = getPlanCases(plan.id);
@@ -594,17 +589,15 @@ export default function TestPlans() {
                 return (
                   <tr
                     key={plan.id}
-                    onClick={() => bulk.selectMode ? bulk.toggle(plan.id) : navigate(`/plans/${plan.id}`)}
+                    onClick={() => navigate(`/plans/${plan.id}`)}
                     className={cn(
                       "transition-colors cursor-pointer",
                       isSelected ? "bg-[var(--accent)]/10" : "hover:bg-[var(--bg-secondary)]"
                     )}
                   >
-                    {bulk.selectMode && (
-                      <td className="py-3 px-4" onClick={(e) => e.stopPropagation()}>
-                        <input type="checkbox" checked={bulk.isSelected(plan.id)} onChange={() => bulk.toggle(plan.id)} />
-                      </td>
-                    )}
+                    <td className="py-3 px-4" onClick={(e) => e.stopPropagation()}>
+                      <input type="checkbox" checked={bulk.isSelected(plan.id)} onChange={() => bulk.toggle(plan.id)} />
+                    </td>
                     <td className="py-3 px-4 font-mono text-xs text-[var(--text-muted)]">{plan.id}</td>
                     <td className="py-3 px-4">
                       <div className="flex flex-wrap items-center gap-2">

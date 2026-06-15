@@ -1,9 +1,8 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Search, Sparkles, Loader2, Target, FileCode2, ArrowRight, Trash2, CheckSquare, X } from 'lucide-react';
+import { Search, Sparkles, Loader2, Target, FileCode2, ArrowRight, Trash2 } from 'lucide-react';
 import ExportMenu from '../components/ExportMenu';
 import { useBulkDelete } from '@/src/lib/useBulkDelete';
-import { cn } from '@/src/lib/utils';
 import { Modal } from '@/src/components/Modal';
 
 const REQ_STATUSES = ['Draft', 'Under Review', 'Approved', 'Deprecated'];
@@ -140,9 +139,6 @@ export default function Requirements() {
               { key: 'keystoneBehavior', label: 'Keystone Behavior' },
             ]}
           />
-          <button onClick={bulk.toggleSelectMode} className={cn("flex items-center gap-1.5 border px-3 py-2 rounded-md text-sm font-medium transition-colors", bulk.selectMode ? "border-[var(--accent)] text-[var(--accent)] bg-[var(--accent)]/10" : "border-[var(--border)] bg-[var(--bg-secondary)] hover:bg-[var(--border)] text-[var(--text-primary)]")}>
-            {bulk.selectMode ? <X className="w-4 h-4" /> : <CheckSquare className="w-4 h-4" />} {bulk.selectMode ? 'Cancel' : 'Select'}
-          </button>
           <button
             onClick={() => navigate('/traceability')}
             className="flex items-center gap-2 border border-[var(--border)] bg-[var(--bg-secondary)] hover:border-[var(--accent)] text-[var(--text-primary)] px-3 py-2 rounded-md text-sm font-medium transition-colors"
@@ -190,7 +186,7 @@ export default function Requirements() {
               className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md pl-9 pr-4 py-1.5 text-sm outline-none focus:border-[var(--accent)]"
             />
           </div>
-          {bulk.selectMode && bulk.selectedCount > 0 && (
+          {bulk.selectedCount > 0 && (
             <button onClick={bulk.deleteSelected} disabled={bulk.busy} className="ml-auto flex items-center gap-1.5 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
               <Trash2 className="w-4 h-4" /> Delete selected ({bulk.selectedCount})
             </button>
@@ -201,11 +197,9 @@ export default function Requirements() {
           <table className="w-full text-left text-sm whitespace-nowrap">
             <thead className="sticky top-0 bg-[var(--bg-secondary)] border-b border-[var(--border)] z-10">
               <tr className="text-[var(--text-muted)]">
-                {bulk.selectMode && (
-                  <th className="font-medium py-3 px-4 w-10">
-                    <input type="checkbox" checked={bulk.allSelected(filtered.map((r) => r.id))} onChange={() => bulk.toggleAll(filtered.map((r) => r.id))} />
-                  </th>
-                )}
+                <th className="font-medium py-3 px-4 w-10">
+                  <input type="checkbox" checked={bulk.allSelected(filtered.map((r) => r.id))} onChange={() => bulk.toggleAll(filtered.map((r) => r.id))} />
+                </th>
                 <th className="font-medium py-3 px-4 w-28">ID</th>
                 <th className="font-medium py-3 px-4">Title</th>
                 <th className="font-medium py-3 px-4">Feature query</th>
@@ -216,17 +210,15 @@ export default function Requirements() {
               </tr>
             </thead>
             <tbody className="divide-y divide-[var(--border)]">
-              {loading && (<tr><td colSpan={bulk.selectMode ? 8 : 7} className="py-8 text-center text-[var(--text-muted)]">Loading requirements...</td></tr>)}
-              {!loading && filtered.length === 0 && (<tr><td colSpan={bulk.selectMode ? 8 : 7} className="py-8 text-center text-[var(--text-muted)]">No requirements yet. Discover one from the product source above.</td></tr>)}
+              {loading && (<tr><td colSpan={8} className="py-8 text-center text-[var(--text-muted)]">Loading requirements...</td></tr>)}
+              {!loading && filtered.length === 0 && (<tr><td colSpan={8} className="py-8 text-center text-[var(--text-muted)]">No requirements yet. Discover one from the product source above.</td></tr>)}
               {filtered.map((req) => {
                 const badge = COVERAGE_BADGE[req.coverageStatus] || COVERAGE_BADGE.unknown;
                 return (
-                  <tr key={req.id} onClick={() => bulk.selectMode ? bulk.toggle(req.id) : openDetail(req)} className="hover:bg-[var(--bg-secondary)] transition-colors cursor-pointer">
-                    {bulk.selectMode && (
-                      <td className="py-3 px-4" onClick={(e) => e.stopPropagation()}>
-                        <input type="checkbox" checked={bulk.isSelected(req.id)} onChange={() => bulk.toggle(req.id)} />
-                      </td>
-                    )}
+                  <tr key={req.id} onClick={() => openDetail(req)} className="hover:bg-[var(--bg-secondary)] transition-colors cursor-pointer">
+                    <td className="py-3 px-4" onClick={(e) => e.stopPropagation()}>
+                      <input type="checkbox" checked={bulk.isSelected(req.id)} onChange={() => bulk.toggle(req.id)} />
+                    </td>
                     <td className="py-3 px-4 font-mono text-xs text-[var(--text-muted)]">{req.id}</td>
                     <td className="py-3 px-4 font-medium max-w-sm truncate">{req.title}</td>
                     <td className="py-3 px-4 text-[var(--text-muted)] max-w-xs truncate">{req.featureQuery}</td>

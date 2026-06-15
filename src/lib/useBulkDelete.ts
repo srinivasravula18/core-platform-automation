@@ -3,6 +3,9 @@ import { useCallback, useMemo, useState } from 'react';
 /**
  * Shared single + multi (bulk) delete logic for artifact list pages.
  *
+ * Selection is always on — consumers render the checkboxes unconditionally
+ * (there is no "Select" mode to enter).
+ *
  * Backend contract (see server/features/resources/routes.ts):
  *   DELETE /api/<entity>/:id
  *   POST   /api/<entity>/bulk-delete   body { ids: string[] }
@@ -10,7 +13,6 @@ import { useCallback, useMemo, useState } from 'react';
  * Usage:
  *   const del = useBulkDelete('cases', fetchCases);
  *   - del.deleteOne(id)            // single-row delete (with confirm)
- *   - del.selectMode / del.toggleSelectMode()
  *   - del.toggle(id) / del.isSelected(id)
  *   - del.toggleAll(visibleIds)  / del.allSelected(visibleIds)
  *   - del.selectedCount
@@ -18,18 +20,10 @@ import { useCallback, useMemo, useState } from 'react';
  */
 export function useBulkDelete(entity: string, onChanged: () => void, labelSingular?: string) {
   const label = labelSingular || entity.replace(/s$/, '');
-  const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
 
   const clearSelection = useCallback(() => setSelectedIds(new Set()), []);
-
-  const toggleSelectMode = useCallback(() => {
-    setSelectMode((prev) => {
-      if (prev) setSelectedIds(new Set());
-      return !prev;
-    });
-  }, []);
 
   const isSelected = useCallback((id: string) => selectedIds.has(id), [selectedIds]);
 
@@ -97,7 +91,6 @@ export function useBulkDelete(entity: string, onChanged: () => void, labelSingul
         body: JSON.stringify({ ids }),
       });
       setSelectedIds(new Set());
-      setSelectMode(false);
       onChanged();
     } catch (error) {
       console.error(error);
@@ -111,8 +104,6 @@ export function useBulkDelete(entity: string, onChanged: () => void, labelSingul
 
   return useMemo(
     () => ({
-      selectMode,
-      toggleSelectMode,
       selectedIds,
       selectedCount,
       isSelected,
@@ -124,6 +115,6 @@ export function useBulkDelete(entity: string, onChanged: () => void, labelSingul
       deleteSelected,
       busy,
     }),
-    [selectMode, toggleSelectMode, selectedIds, selectedCount, isSelected, toggle, toggleAll, allSelected, clearSelection, deleteOne, deleteSelected, busy],
+    [selectedIds, selectedCount, isSelected, toggle, toggleAll, allSelected, clearSelection, deleteOne, deleteSelected, busy],
   );
 }

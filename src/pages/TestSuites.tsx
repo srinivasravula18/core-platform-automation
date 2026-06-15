@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useState } from 'react';
-import { ChevronDown, ChevronRight, Search, Filter, MoreHorizontal, Plus, Sparkles, Trash2, CheckSquare, X } from 'lucide-react';
+import { ChevronDown, ChevronRight, Search, Filter, MoreHorizontal, Plus, Sparkles, Trash2 } from 'lucide-react';
 import ExportMenu from '../components/ExportMenu';
 import { useAiSearch } from '@/src/lib/useAiSearch';
 import { useBulkDelete } from '@/src/lib/useBulkDelete';
@@ -204,9 +204,6 @@ export default function TestSuites() {
               { key: 'caseCount', label: 'Cases', get: (s) => cases.filter((c) => c.testSuiteId === s.id).length },
             ]}
           />
-          <button onClick={bulk.toggleSelectMode} className={cn("flex items-center gap-1.5 border px-3 py-2 rounded-md text-sm font-medium transition-colors", bulk.selectMode ? "border-[var(--accent)] text-[var(--accent)] bg-[var(--accent)]/10" : "border-[var(--border)] bg-[var(--bg-secondary)] hover:bg-[var(--border)] text-[var(--text-primary)]")}>
-            {bulk.selectMode ? <X className="w-4 h-4" /> : <CheckSquare className="w-4 h-4" />} {bulk.selectMode ? 'Cancel' : 'Select'}
-          </button>
           <button onClick={openNewModal} className="flex items-center gap-2 bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white px-4 py-2 rounded-md text-sm font-medium transition-colors">
             <Plus className="w-4 h-4" /> New Suite
           </button>
@@ -349,7 +346,7 @@ export default function TestSuites() {
               </div>
             )}
           </div>
-          {bulk.selectMode && bulk.selectedCount > 0 && (
+          {bulk.selectedCount > 0 && (
             <button onClick={bulk.deleteSelected} disabled={bulk.busy} className="ml-auto flex items-center gap-1.5 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
               <Trash2 className="w-4 h-4" /> Delete selected ({bulk.selectedCount})
             </button>
@@ -360,11 +357,9 @@ export default function TestSuites() {
           <table className="w-full text-left text-sm whitespace-nowrap">
             <thead className="sticky top-0 bg-[var(--bg-secondary)] border-b border-[var(--border)] z-10">
               <tr className="text-[var(--text-muted)]">
-                {bulk.selectMode && (
-                  <th className="font-medium py-3 px-4 w-10">
-                    <input type="checkbox" checked={bulk.allSelected(filteredSuites.map((s) => s.id))} onChange={() => bulk.toggleAll(filteredSuites.map((s) => s.id))} />
-                  </th>
-                )}
+                <th className="font-medium py-3 px-4 w-10">
+                  <input type="checkbox" checked={bulk.allSelected(filteredSuites.map((s) => s.id))} onChange={() => bulk.toggleAll(filteredSuites.map((s) => s.id))} />
+                </th>
                 <th className="font-medium py-3 px-4 w-24">ID</th>
                 <th className="font-medium py-3 px-4">Name</th>
                 <th className="font-medium py-3 px-4">Folder</th>
@@ -376,9 +371,9 @@ export default function TestSuites() {
             </thead>
             <tbody className="divide-y divide-[var(--border)]">
               {loading ? (
-                <tr><td colSpan={bulk.selectMode ? 8 : 7} className="py-8 text-center text-[var(--text-muted)]">Loading suites...</td></tr>
+                <tr><td colSpan={8} className="py-8 text-center text-[var(--text-muted)]">Loading suites...</td></tr>
               ) : filteredSuites.length === 0 ? (
-                <tr><td colSpan={bulk.selectMode ? 8 : 7} className="py-8 text-center text-[var(--text-muted)]">No suites found.</td></tr>
+                <tr><td colSpan={8} className="py-8 text-center text-[var(--text-muted)]">No suites found.</td></tr>
               ) : filteredSuites.map((suite) => {
                 const suiteCases = getSuiteCases(suite.id);
                 const isExpanded = expandedSuiteIds.includes(suite.id);
@@ -386,11 +381,9 @@ export default function TestSuites() {
                 return (
                   <Fragment key={suite.id}>
                     <tr className="hover:bg-[var(--bg-secondary)] transition-colors">
-                      {bulk.selectMode && (
-                        <td className="py-3 px-4" onClick={(e) => e.stopPropagation()}>
-                          <input type="checkbox" checked={bulk.isSelected(suite.id)} onChange={() => bulk.toggle(suite.id)} />
-                        </td>
-                      )}
+                      <td className="py-3 px-4" onClick={(e) => e.stopPropagation()}>
+                        <input type="checkbox" checked={bulk.isSelected(suite.id)} onChange={() => bulk.toggle(suite.id)} />
+                      </td>
                       <td className="py-3 px-4 font-mono text-xs text-[var(--text-muted)]">{suite.id}</td>
                       <td className="py-3 px-4">
                         <div className="flex items-start gap-2">
@@ -501,7 +494,7 @@ export default function TestSuites() {
                     </tr>
                     {isExpanded && (
                       <tr>
-                        <td colSpan={bulk.selectMode ? 8 : 7} className="bg-[var(--bg-secondary)]/50 px-10 py-4">
+                        <td colSpan={8} className="bg-[var(--bg-secondary)]/50 px-10 py-4">
                           <div className="border border-[var(--border)] rounded-lg bg-[var(--bg-card)] overflow-hidden">
                             <div className="px-4 py-2 border-b border-[var(--border)] text-xs font-bold uppercase tracking-wider text-[var(--text-muted)]">
                               Related Test Cases
