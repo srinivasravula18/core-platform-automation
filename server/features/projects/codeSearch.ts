@@ -117,12 +117,13 @@ export async function searchCodeInScope(
       if (seen.has(row.path)) continue;
       seen.add(row.path);
       const classified = classifyChangedFile(row.path);
+      const r = row as { path: string; line?: number; preview?: string };
       merged.push({
         path: row.path,
         area: classified.area,
         surface: classified.surface,
-        line: row.line,
-        preview: row.preview,
+        line: r.line,
+        preview: r.preview,
       });
       if (merged.length >= maxFiles) {
         return { repo: scope.repoLabel, roots: scope.roots, matches: merged };
