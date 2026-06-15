@@ -1111,6 +1111,8 @@ type CredRow = {
   saving?: boolean;
 };
 
+const SAVED_PASSWORD_MASK = '********';
+
 function CredentialsSection() {
   const [rows, setRows] = useState<CredRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -1306,22 +1308,33 @@ function CredentialsSection() {
             </div>
           )}
 
-          {rows.map((r) => (
-            <div
-              key={r.key}
-              className="grid grid-cols-1 items-center gap-2 rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] p-2 lg:grid-cols-[1.2fr_1.5fr_1.2fr_1.2fr_auto_auto]"
-            >
+          {rows.map((r) => {
+            const hasSavedPassword = Boolean(r.userId);
+            const passwordValue = r.password || (r.passwordVisible ? r.revealedPassword || '' : hasSavedPassword ? SAVED_PASSWORD_MASK : '');
+            return (
+              <div
+                key={r.key}
+                className="grid grid-cols-1 items-center gap-2 rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] p-2 lg:grid-cols-[1.2fr_1.5fr_1.2fr_1.2fr_auto_auto]"
+              >
               <input value={r.name} onChange={(e) => patch(r.key, { name: e.target.value })} onBlur={() => saveRow(r.key)} placeholder="Website name" className="rounded-md border border-[var(--border)] bg-[var(--bg-primary)] px-2 py-1.5 text-sm outline-none focus:border-[var(--accent)]" />
               <input value={r.url} onChange={(e) => patch(r.key, { url: e.target.value })} onBlur={() => saveRow(r.key)} placeholder="https://app.example.com" className="rounded-md border border-[var(--border)] bg-[var(--bg-primary)] px-2 py-1.5 text-sm outline-none focus:border-[var(--accent)]" />
               <input value={r.username} onChange={(e) => patch(r.key, { username: e.target.value })} onBlur={() => saveRow(r.key)} placeholder="Username / email" className="rounded-md border border-[var(--border)] bg-[var(--bg-primary)] px-2 py-1.5 text-sm outline-none focus:border-[var(--accent)]" />
               <div className="flex min-w-0 rounded-md border border-[var(--border)] bg-[var(--bg-primary)] focus-within:border-[var(--accent)]">
                 <input
                   type={r.passwordVisible ? 'text' : 'password'}
-                  value={r.password || (r.passwordVisible ? r.revealedPassword || '' : '')}
-                  onChange={(e) => patch(r.key, { password: e.target.value })}
+                  value={passwordValue}
+                  onChange={(e) => {
+                    const next = !r.passwordVisible && hasSavedPassword && !r.password
+                      ? e.target.value.replace(SAVED_PASSWORD_MASK, '')
+                      : e.target.value;
+                    patch(r.key, { password: next });
+                  }}
                   onBlur={() => saveRow(r.key)}
-                  placeholder={r.userId ? 'unchanged' : 'Password'}
-                  className="min-w-0 flex-1 bg-transparent px-2 py-1.5 text-sm outline-none"
+                  onFocus={(e) => {
+                    if (!r.passwordVisible && hasSavedPassword && !r.password) e.currentTarget.select();
+                  }}
+                  placeholder="Password"
+                  className="min-w-0 flex-1 bg-transparent px-2 py-1.5 text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] outline-none"
                 />
                 <button
                   type="button"
@@ -1347,7 +1360,8 @@ function CredentialsSection() {
                 )}
               </div>
             </div>
-          ))}
+            );
+          })}
         </div>
       </div>
     </div>
