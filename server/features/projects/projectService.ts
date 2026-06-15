@@ -10,6 +10,7 @@
  */
 
 import { randomUUID } from 'crypto';
+import { existsSync } from 'fs';
 import { db, persistDataInBackground, savePersistedData } from '../../shared/storage';
 import { isPostgresEnabled, query } from '../../db/pool';
 
@@ -73,6 +74,25 @@ function slugify(name: string): string {
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')
     .slice(0, 48) || 'item';
+}
+
+function preferredDefaultRepoPath(): string {
+  const fromEnv = String(process.env.GIT_AGENT_TARGET_REPO || process.env.CORE_PLATFORM_REPO || '').trim();
+  if (fromEnv) return fromEnv;
+  return process.platform === 'win32' ? 'D:\\core-platform' : '/home/ubuntu/projects/core-platform';
+}
+
+function isLegacyWindowsDefaultRepoPath(value: string): boolean {
+  return String(value || '').trim().toLowerCase() === 'd:\\core-platform';
+}
+
+export function resolveDefaultProjectRepoPath(currentPath = ''): string {
+  const current = String(currentPath || '').trim();
+  const preferred = preferredDefaultRepoPath();
+  if (!current) return preferred;
+  if (existsSync(current)) return current;
+  if (isLegacyWindowsDefaultRepoPath(current) && preferred && preferred !== current) return preferred;
+  return current;
 }
 
 /** Make a slug unique within a set of existing slugs. */
@@ -242,6 +262,7 @@ const SCOPED_PG_TABLES = ['plans', 'suites', 'cases', 'runs', 'defects', 'report
  * team already has lives under one project. Runs once (guarded by a settings flag).
  */
 export async function seedDefaultProjectAndBackfill(): Promise<void> {
+  const defaultRepoPath = resolveDefaultProjectRepoPath();
   // 1) Seed the default project if there are none yet.
   if (projects().length === 0) {
     const now = new Date().toISOString();
@@ -251,7 +272,7 @@ export async function seedDefaultProjectAndBackfill(): Promise<void> {
       slug: 'core-platform',
       description: 'Default project — your existing test data lives here.',
       repoKind: 'local',
-      repoPath: 'D:\\core-platform',
+      repoPath: defaultRepoPath,
       repoUrl: '',
       defaultBranch: 'main',
       syncStatus: 'ready',
@@ -259,6 +280,16 @@ export async function seedDefaultProjectAndBackfill(): Promise<void> {
       updatedAt: now,
     });
     persistDataInBackground('seed default project');
+  }
+
+  const defaultProject = projects().find((p) => p.id === DEFAULT_PROJECT_ID);
+  if (defaultProject && defaultProject.repoKind === 'local') {
+    const repairedPath = resolveDefaultProjectRepoPath(defaultProject.repoPath || '');
+    if (repairedPath !== (defaultProject.repoPath || '')) {
+      defaultProject.repoPath = repairedPath;
+      defaultProject.updatedAt = new Date().toISOString();
+      persistDataInBackground('repair default project repo path');
+    }
   }
 
   // 2) Adopt any unscoped rows into the default project. Run every boot (not guarded

@@ -2,6 +2,7 @@ import type { Express } from 'express';
 import { buildPlan, cancelPlan, classifyIntent, executePlan, explainIntent, streamExplain, getPlan, listPlans, getControllerMemory, clearControllerMemory } from '../../ai/controller';
 import { runSupervisor, answerAppQuestionFromCode } from '../../ai/supervisor';
 import { quickWorkspaceAnswer } from '../../ai/tools/registry';
+import { reqScope } from '../../shared/scope';
 
 // An action request mutates/creates/runs something → needs the full tool loop. A plain
 // question can be answered with the FAST single-call git-grounded path.
@@ -53,21 +54,38 @@ export function registerControllerRoutes(app: Express) {
   app.post('/api/controller/supervise', async (req, res, next) => {
     try {
       const { userMessage, workspaceId, userId, history, pageContext, apps } = req.body || {};
+      const scope = reqScope(req);
+      const effectiveUserId = scope.userId || userId;
       if (!userMessage || typeof userMessage !== 'string') {
         return res.status(400).json({ error: 'userMessage is required' });
       }
       // FAST PATH 1: simple count/list questions answered straight from the DB (no LLM).
-      const quick = await quickWorkspaceAnswer(userMessage, userId);
+      const quick = await quickWorkspaceAnswer(userMessage, effectiveUserId);
       if (quick) {
         return res.json({ reply: quick, accepted: true, fast: true, actions: [], trace: [] });
       }
       // FAST PATH 2: app-knowledge QUESTIONS get a single git-grounded LLM call (retrieval
       // done deterministically), instead of the slow multi-step tool loop.
       if (!ACTION_RE.test(userMessage)) {
-        const reply = await answerAppQuestionFromCode(userMessage, { workspaceId, userId, apps });
+        const reply = await answerAppQuestionFromCode(userMessage, {
+          workspaceId,
+          userId: effectiveUserId,
+          projectId: scope.projectId,
+          appId: scope.appId,
+          apps,
+        });
         return res.json({ reply, accepted: true, fast: true, actions: [{ tool: 'search_codebase', arguments: {} }], trace: [] });
       }
-      const result = await runSupervisor({ userMessage, workspaceId, userId, history, pageContext, apps });
+      const result = await runSupervisor({
+        userMessage,
+        workspaceId,
+        userId: effectiveUserId,
+        projectId: scope.projectId,
+        appId: scope.appId,
+        history,
+        pageContext,
+        apps,
+      });
       res.json({
         reply: result.finalText,
         accepted: result.accepted,
@@ -89,6 +107,8 @@ export function registerControllerRoutes(app: Express) {
   // then a final line with the answer. Mirrors the /explain/stream pattern.
   app.post('/api/controller/supervise/stream', async (req, res) => {
     const { userMessage, workspaceId, userId, history, pageContext, apps } = req.body || {};
+    const scope = reqScope(req);
+    const effectiveUserId = scope.userId || userId;
     if (!userMessage || typeof userMessage !== 'string') {
       return res.status(400).json({ error: 'userMessage is required' });
     }
@@ -99,21 +119,32 @@ export function registerControllerRoutes(app: Express) {
     const send = (obj: any) => { try { res.write(`${JSON.stringify(obj)}\n`); } catch { /* client gone */ } };
     try {
       // Instant path: simple count/list answered from the DB, no steps.
-      const quick = await quickWorkspaceAnswer(userMessage, userId);
+      const quick = await quickWorkspaceAnswer(userMessage, effectiveUserId);
       if (quick) { send({ type: 'final', reply: quick, fast: true }); return res.end(); }
       // Fast git-grounded path for app-knowledge QUESTIONS: ONE LLM call after deterministic
       // retrieval. Emits the search/read progress so the UI still animates the live steps.
       if (!ACTION_RE.test(userMessage)) {
         let i = 0;
         const reply = await answerAppQuestionFromCode(userMessage, {
-          workspaceId, userId, apps,
+          workspaceId,
+          userId: effectiveUserId,
+          projectId: scope.projectId,
+          appId: scope.appId,
+          apps,
           onProgress: (label) => send({ type: 'step', index: i++, toolCalls: [{ name: /reading/i.test(label) ? 'read_code_file' : 'search_codebase', arguments: {} }], text: label }),
         });
         send({ type: 'final', reply, fast: true });
         return res.end();
       }
       const result = await runSupervisor({
-        userMessage, workspaceId, userId, history, pageContext, apps,
+        userMessage,
+        workspaceId,
+        userId: effectiveUserId,
+        projectId: scope.projectId,
+        appId: scope.appId,
+        history,
+        pageContext,
+        apps,
         onStep: (s) => send({
           type: 'step',
           index: s.index,

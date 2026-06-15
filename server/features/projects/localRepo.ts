@@ -10,7 +10,7 @@
 import path from 'path';
 import fs from 'fs';
 import { spawnSync } from 'child_process';
-import { getProject } from './projectService';
+import { DEFAULT_PROJECT_ID, getProject, resolveDefaultProjectRepoPath } from './projectService';
 import type { TreeEntry, CommitSummary, DiffFile } from './githubApi';
 
 function repoError(message: string, status = 400): Error {
@@ -25,10 +25,15 @@ function repoPathOf(projectId: string): string {
   if (project.repoKind !== 'local' || !project.repoPath) {
     throw repoError('This project has no local repository on disk.', 400);
   }
-  if (!fs.existsSync(project.repoPath)) {
-    throw repoError(`Local repo path does not exist: ${project.repoPath}`, 404);
+  const configuredPath = String(project.repoPath || '').trim();
+  if (fs.existsSync(configuredPath)) {
+    return configuredPath;
   }
-  return project.repoPath;
+  const fallbackPath = project.id === DEFAULT_PROJECT_ID ? resolveDefaultProjectRepoPath(configuredPath) : configuredPath;
+  if (fallbackPath && fallbackPath !== configuredPath && fs.existsSync(fallbackPath)) {
+    return fallbackPath;
+  }
+  throw repoError(`Local repo path does not exist: ${configuredPath}`, 404);
 }
 
 function git(cwd: string, args: string[], timeout = 120000): string {

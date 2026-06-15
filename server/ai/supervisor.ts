@@ -13,14 +13,7 @@ import { getToolCapableOrchestrator, getOrchestrator } from './orchestrator';
 import { executeIntent } from './controller';
 import type { AgentTool, ToolContext, AgentStep } from './tools/types';
 import { queryWorkspaceTool, searchCodebaseTool, readCodeFileTool } from './tools/registry';
-import { gitGrep, readRepoFile, GIT_AGENT_TARGET_REPO } from '../features/git-agent/gitAgentService';
-import { existsSync } from 'fs';
-import { join } from 'path';
-
-/** Is the source-of-truth git repo actually present on this server? */
-function isCodeRepoConnected(): boolean {
-  try { return existsSync(join(GIT_AGENT_TARGET_REPO, '.git')); } catch { return false; }
-}
+import { readCodeFileInScope, resolveCodeSearchScope, searchCodeInScope } from '../features/projects/codeSearch';
 
 interface IntentToolDef {
   kind: string;
@@ -88,6 +81,18 @@ function keywordsFor(q: string): string[] {
   return Array.from(new Set(words));
 }
 
+function expandFeatureTerms(question: string): string[] {
+  const q = String(question || '').toLowerCase();
+  const extra: string[] = [];
+  if (/\blist\s*view\b|\blistview\b/.test(q)) extra.push('list view', 'list-view', 'listview');
+  if (/\btable\b|\bgrid\b|\blist\s*view\b|\blistview\b/.test(q)) {
+    extra.push('table', 'grid', 'column', 'columns', 'filter', 'filters', 'sort', 'sorting', 'search', 'pagination', 'export', 'toolbar');
+  }
+  if (/\bshockwave\b|\bkeystone\b/.test(q)) extra.push('shockwave', 'keystone');
+  if (/\badmin\b/.test(q)) extra.push('admin');
+  return Array.from(new Set(extra));
+}
+
 const SRC_EXT = /\.(tsx?|jsx?|vue|svelte|py|go|java|rb|cs|php)$/i;
 const NOISE_PATH = /(^|\/)(node_modules|dist|build|coverage|\.next|\.github|\.playwright-cli|\.husky|evidence|seeds|fixtures|__tests__|e2e|tests?|migrations)\//i;
 const NOISE_EXT = /\.(ya?ml|json|lock|md|txt|env.*|cfg|toml|ini|csv|snap|log)$/i;
@@ -121,30 +126,35 @@ function rankCodeFiles(files: Array<{ path: string }>, terms: string[]): Array<{
  */
 export async function answerAppQuestionFromCode(question: string, opts: {
   workspaceId?: string; userId?: string;
+  projectId?: string; appId?: string | null;
   apps?: Array<{ name: string; baseUrl: string }>;
   onProgress?: (label: string) => void;
 } = {}): Promise<string> {
-  // If the source repo isn't present on this server, say so precisely (with the path it
-  // expected) instead of a vague "no matching files" — this is the #1 production gotcha:
-  // the code-search repo must be cloned on the server and GIT_AGENT_TARGET_REPO pointed at it.
-  if (!isCodeRepoConnected()) {
-    return `I can't read the source code because the application's git repo is not connected on this server. It looked for the repo at "${GIT_AGENT_TARGET_REPO}" but found no git repository there. To enable code-grounded answers in this environment, clone the application's source repo on the server and set the GIT_AGENT_TARGET_REPO environment variable to its path, then restart.`;
-  }
-  const terms = keywordsFor(question);
+  const terms = [...keywordsFor(question), ...expandFeatureTerms(question)];
   for (const a of opts.apps || []) if (a?.name) terms.push(...keywordsFor(a.name));
   const searchTerms = Array.from(new Set(terms)).slice(0, 12);
-  opts.onProgress?.(`Searching the codebase for ${searchTerms.slice(0, 5).join(', ')}…`);
+  const scope = resolveCodeSearchScope({ projectId: opts.projectId, appId: opts.appId });
+  opts.onProgress?.(`Searching the codebase for ${searchTerms.slice(0, 5).join(', ') || 'the feature'}…`);
   let files: Array<{ path: string }> = [];
-  try { files = gitGrep(searchTerms, ['.'], 300) as Array<{ path: string }>; } catch { /* repo missing */ }
+  try {
+    const result = await searchCodeInScope(searchTerms, { projectId: opts.projectId, appId: opts.appId }, 300);
+    files = result.matches as Array<{ path: string }>;
+  } catch (err: any) {
+    return `I couldn't read the source code for this scope. It looked in "${scope.repoLabel}"${scope.roots.length ? ` within ${scope.roots.join(', ')}` : ''}, but the repo access failed: ${err?.message || 'unknown error'}.`;
+  }
   // Rank candidates so REAL source files that match the query terms win, instead of
   // grabbing config/test-artifact files (.github, .playwright-cli, yml, json) that git
   // happens to return first. This is what makes the single-shot answer accurate.
   const top = rankCodeFiles(files, searchTerms).slice(0, 5);
   opts.onProgress?.(top.length ? `Reading ${top.length} source file(s)…` : 'Reading the codebase…');
-  const excerpts = top
-    .map((f) => { try { return `FILE: ${f.path}\n${readRepoFile(f.path, 2200)}`; } catch { return ''; } })
-    .filter(Boolean)
-    .join('\n\n---\n\n');
+  const excerptParts = await Promise.all(top.map(async (f) => {
+    try {
+      return `FILE: ${f.path}\n${await readCodeFileInScope(f.path, { projectId: opts.projectId, appId: opts.appId }, 2200)}`;
+    } catch {
+      return '';
+    }
+  }));
+  const excerpts = excerptParts.filter(Boolean).join('\n\n---\n\n');
   const appsBlock = (opts.apps || []).length
     ? `\nApps under test (selected by the user): ${(opts.apps || []).map((a) => `${a.name} (${a.baseUrl})`).join(', ')}.`
     : '';
@@ -155,7 +165,7 @@ export async function answerAppQuestionFromCode(question: string, opts: {
 
 QUESTION: ${question}
 
-SOURCE CODE EXCERPTS (${top.length} file(s) from ${GIT_AGENT_TARGET_REPO}):
+SOURCE CODE EXCERPTS (${top.length} file(s) from ${scope.repoLabel}${scope.roots.length ? `, restricted to ${scope.roots.join(', ')}` : ''}):
 ${excerpts || '(no matching files found — the repo may be unavailable or the terms too specific)'}\n`;
   const { text, shortCircuit } = await orch.generateText({ prompt, userMessage: question, hasHistory: true });
   return shortCircuit || text || 'I could not find that in the codebase.';
@@ -165,13 +175,21 @@ export async function runSupervisor(input: {
   userMessage: string;
   workspaceId?: string;
   userId?: string;
+  projectId?: string;
+  appId?: string | null;
   history?: Array<{ role: 'user' | 'assistant'; content: string }>;
   pageContext?: { path?: string };
   apps?: Array<{ name: string; baseUrl: string }>;
   onStep?: (step: AgentStep) => void;
   signal?: AbortSignal;
 }): Promise<SupervisorResult> {
-  const ctx: ToolContext = { workspaceId: input.workspaceId || 'default', userId: input.userId, userMessage: input.userMessage };
+  const ctx: ToolContext = {
+    workspaceId: input.workspaceId || 'default',
+    userId: input.userId,
+    projectId: input.projectId,
+    appId: input.appId || null,
+    userMessage: input.userMessage,
+  };
   const tools: AgentTool[] = [queryWorkspaceTool, searchCodebaseTool, readCodeFileTool, ...INTENT_TOOLS.map((d) => buildIntentTool(d, ctx))];
 
   const historyBlock = input.history?.length

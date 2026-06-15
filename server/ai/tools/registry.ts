@@ -10,7 +10,7 @@
  */
 import type { AgentTool, ToolContext } from './types';
 import { Cases, Suites, Plans, Runs, Scripts, Defects } from '../../db/repository';
-import { gitGrep, readRepoFile, GIT_AGENT_TARGET_REPO } from '../../features/git-agent/gitAgentService';
+import { searchCodeInScope, readCodeFileInScope } from '../../features/projects/codeSearch';
 
 type Lister = { list: () => Promise<any[]> };
 const COLLECTIONS: Record<string, Lister> = {
@@ -82,12 +82,11 @@ export const searchCodebaseTool: AgentTool = {
       required: ['terms'],
     },
   },
-  async execute(args) {
+  async execute(args, ctx) {
     const terms = Array.isArray(args.terms) ? args.terms.map(String) : [String(args.terms || '')];
     const limit = Math.max(1, Math.min(60, Number(args.limit) || 30));
-    // Search the WHOLE tracked repo (the user wants the full codebase as ground truth).
-    const matches = gitGrep(terms, ['.'], limit);
-    return { repo: GIT_AGENT_TARGET_REPO, matchCount: matches.length, matches };
+    const result = await searchCodeInScope(terms, { projectId: ctx.projectId, appId: ctx.appId }, limit);
+    return { repo: result.repo, roots: result.roots, matchCount: result.matches.length, matches: result.matches };
   },
 };
 
@@ -105,8 +104,12 @@ export const readCodeFileTool: AgentTool = {
       required: ['path'],
     },
   },
-  async execute(args) {
-    const content = readRepoFile(String(args.path || ''), Math.max(500, Math.min(20000, Number(args.maxBytes) || 6000)));
+  async execute(args, ctx) {
+    const content = await readCodeFileInScope(
+      String(args.path || ''),
+      { projectId: ctx.projectId, appId: ctx.appId },
+      Math.max(500, Math.min(20000, Number(args.maxBytes) || 6000)),
+    );
     return { path: args.path, content };
   },
 };

@@ -15,6 +15,8 @@ import type { ToolSpec, ProviderUsage } from '../providers/types';
 export interface ToolContext {
   workspaceId?: string;
   userId?: string;
+  projectId?: string;
+  appId?: string | null;
   runId?: string;
   /** Free-form scratch shared across a single agent run (e.g. the inspection context). */
   scratch?: Record<string, unknown>;
