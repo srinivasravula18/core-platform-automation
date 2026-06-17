@@ -14,6 +14,7 @@ import { seedDefaultKnowledgeIfEmpty } from './server/features/knowledge/knowled
 import { registerScreenshotRoutes } from './server/features/screenshot/routes';
 import { registerCredentialsRoutes } from './server/features/credentials/routes';
 import { registerControllerRoutes } from './server/features/controller/routes';
+import { registerAgentRuntimeRoutes } from './server/agent-runtime/routes';
 import { registerChatRoutes } from './server/features/chat/routes';
 import { registerPlaywrightRoutes } from './server/features/playwright/routes';
 import { registerSearchRoutes } from './server/features/search/routes';
@@ -89,6 +90,7 @@ async function startServer() {
   registerAiSettingsRoutes(app);
   registerCredentialsRoutes(app);
   registerControllerRoutes(app);
+  registerAgentRuntimeRoutes(app);
   registerChatRoutes(app);
   registerPlaywrightRoutes(app);
   registerSearchRoutes(app);

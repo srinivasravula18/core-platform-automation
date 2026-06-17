@@ -23,6 +23,12 @@ import { Activity } from './repository';
 
 export async function runSeedIfEmpty(): Promise<{ seeded: boolean; reason?: string }> {
   if (!isPostgresEnabled()) return { seeded: false, reason: 'postgres disabled' };
+  // Demo data is OPT-IN. It is fictional e-commerce content (Checkout/coupon, etc.) that
+  // is irrelevant — and misleading — for the real app under test. Test Flow AI must start
+  // EMPTY and let the agents research the actual app. Enable only with SEED_DEMO_DATA=true.
+  if (String(process.env.SEED_DEMO_DATA || '').toLowerCase() !== 'true') {
+    return { seeded: false, reason: 'demo seed disabled (set SEED_DEMO_DATA=true to enable)' };
+  }
   const existing = await queryOne<{ count: string }>('SELECT count(*)::text AS count FROM plans');
   if (existing && Number(existing.count) > 0) return { seeded: false, reason: 'plans already exist' };
 

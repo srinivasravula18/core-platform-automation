@@ -72,7 +72,8 @@ const STOP = new Set([
   'happens', 'want', 'need', 'app', 'application', 'how', 'does', 'work', 'works', 'this',
 ]);
 
-// Map user vocabulary onto the words that actually appear in the core-platform source.
+// Generic QA/software vocabulary expansion (NOT app-specific): map a user's word onto
+// common synonyms so the code search casts a wider net for ANY application's source.
 const SYNONYMS: Record<string, string[]> = {
   login: ['auth', 'signin', 'session'],
   signin: ['auth', 'login', 'session'],
@@ -120,10 +121,10 @@ function deriveKeywords(query: string): string[] {
 
 /* ---------- source gathering ---------- */
 
-function gatherSourceExcerpts(keywords: string[]): { files: Array<{ path: string; area: string; surface: string }>; excerpts: string } {
-  const hits = gitGrep(keywords);
-  // Take a balanced sample across surfaces so the analyst sees Service, Admin,
-  // Keystone, and metadata rather than 12 files from one directory.
+function gatherSourceExcerpts(keywords: string[], repoPath?: string): { files: Array<{ path: string; area: string; surface: string }>; excerpts: string } {
+  const hits = gitGrep(keywords, undefined, undefined, repoPath);
+  // Take a balanced sample across the repo's surfaces so the analyst sees a spread of
+  // areas rather than 12 files from one directory (surfaces are derived from the repo).
   const bySurface: Record<string, Array<{ path: string; area: string; surface: string }>> = {};
   for (const h of hits) {
     (bySurface[h.surface] ||= []).push(h);
@@ -138,7 +139,7 @@ function gatherSourceExcerpts(keywords: string[]): { files: Array<{ path: string
   for (const f of limited) {
     let content = '';
     try {
-      content = readRepoFile(f.path, 4000);
+      content = readRepoFile(f.path, 4000, repoPath);
     } catch {
       content = '';
     }
@@ -161,11 +162,11 @@ function gatherSourceExcerpts(keywords: string[]): { files: Array<{ path: string
  */
 export async function analyzeFeatureFromSource(
   query: string,
-  opts: { workspaceId?: string; userId?: string } = {},
+  opts: { workspaceId?: string; userId?: string; repoPath?: string } = {},
 ): Promise<{ understanding: FeatureUnderstanding; files: Array<{ path: string; area: string; surface: string }>; keywords: string[] }> {
   const cleanQuery = String(query || '').trim();
   const keywords = deriveKeywords(cleanQuery);
-  const { files, excerpts } = gatherSourceExcerpts(keywords);
+  const { files, excerpts } = gatherSourceExcerpts(keywords, opts.repoPath);
 
   const analyst = await getOrchestrator('featureAnalyst', opts);
   const analystRes = await analyst.generateObject<FeatureUnderstanding>({
@@ -176,15 +177,15 @@ Search keywords used: ${keywords.join(', ')}
 Code excerpts from the target application's git repository (path + area). Ground your understanding ONLY in these:
 ${excerpts || '(no matching source found — say so in the description and keep businessRules minimal rather than inventing them)'}
 
-Produce the requirement understanding as strict JSON matching the schema:
+INFER the application's architecture from the excerpts — do NOT assume any specific product, framework, or surface names. Let the code tell you. Produce the requirement understanding as strict JSON matching the schema:
 - title: a concise requirement title for this feature.
 - description: 1-3 sentences on what the feature does and why it matters.
 - businessRules: the concrete, testable rules the code enforces.
-- dataPopulationNotes: what the Service module populates in the background as preconditions for this feature (if shown in the excerpts).
-- adminBehavior vs keystoneBehavior: configuration/management (Admin) vs end-user behavior (Keystone / apps/shockwave).
-- metadataRefs: metadata objects/fields that are the source of truth for this feature.
+- dataPopulationNotes: what the backend populates/seeds/syncs in the background as preconditions for this feature (only if the excerpts show it).
+- adminBehavior vs keystoneBehavior: if the app has distinct surfaces, put the configuration/admin-surface behavior in adminBehavior and the end-user-surface behavior in keystoneBehavior; if it has only one surface, describe it in whichever fits and leave the other empty. Do not invent a surface the code does not show.
+- metadataRefs: if the app is metadata-/config-driven, the objects/fields that are the source of truth for this feature; otherwise leave empty.
 - sourceFiles: the specific files (real paths from the excerpts) that justify your understanding, each with a one-line reason.
-- candidateScenarios: cover the feature in proportion to its real complexity — every distinct business rule, branch, role difference (Admin vs Shockwave), and edge/negative case visible in the code should get a scenario with concrete steps. Do not pad with trivial duplicates; do not under-cover a complex feature.`,
+- candidateScenarios: cover the feature in proportion to its real complexity — every distinct business rule, branch, role/permission difference, and edge/negative case visible in the code should get a scenario with concrete steps. Do not pad with trivial duplicates; do not under-cover a complex feature.`,
     schema: featureAnalystSchema,
     userMessage: cleanQuery,
   });
@@ -263,7 +264,7 @@ export interface DiscoverResult {
 
 export async function discoverRequirement(
   query: string,
-  opts: { workspaceId?: string; userId?: string; role?: string } = {},
+  opts: { workspaceId?: string; userId?: string; role?: string; repoPath?: string } = {},
 ): Promise<DiscoverResult> {
   const workspaceId = opts.workspaceId || 'default';
   const ownerId = opts.userId || '';

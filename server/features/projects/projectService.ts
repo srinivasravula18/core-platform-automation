@@ -77,9 +77,10 @@ function slugify(name: string): string {
 }
 
 function preferredDefaultRepoPath(): string {
-  const fromEnv = String(process.env.GIT_AGENT_TARGET_REPO || process.env.CORE_PLATFORM_REPO || '').trim();
-  if (fromEnv) return fromEnv;
-  return process.platform === 'win32' ? 'D:\\core-platform' : '/home/ubuntu/projects/core-platform';
+  // Env-driven only. Do NOT guess a machine-specific absolute path — that silently points
+  // the agent at a repo that doesn't exist on this host. Unset → empty, so the project's
+  // own configured repoPath is required (or the global GIT_AGENT_TARGET_REPO fallback).
+  return String(process.env.GIT_AGENT_TARGET_REPO || process.env.CORE_PLATFORM_REPO || '').trim();
 }
 
 function isLegacyWindowsDefaultRepoPath(value: string): boolean {

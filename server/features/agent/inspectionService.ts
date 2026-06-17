@@ -9,12 +9,15 @@ import { getOrchestrator } from '../../ai/orchestrator';
 
 const plannerSchema = z.object({
   status: z.enum(['continue', 'satisfied', 'blocked']),
-  reason: z.string(),
+  reason: z.string().default(''),
+  // Optional with a safe default: when the planner reports satisfied/blocked it has no
+  // next action, and omitting it should NOT fail the whole inspection (it used to throw
+  // "expected object, received undefined" and report the live app as blind).
   action: z.object({
     type: z.enum(['click', 'none']),
     elementId: z.string().optional(),
     expectedOutcome: z.string().optional(),
-  }),
+  }).default({ type: 'none' }),
 });
 
 const destructiveActionPattern = /\b(delete|remove|archive|deactivate|disable|reset|purge|drop|destroy|cancel\s+subscription|purchase|pay\s+now|submit\s+order|confirm\s+delete)\b/i;
@@ -190,6 +193,18 @@ export async function inspectApplicationFlow(options: {
     observedPages.push({ stage: 'after-login', ...compactPageContext(lastContext) });
     let goalStatus: 'satisfied' | 'blocked' | 'partial' = 'partial';
 
+    // #3a Wait for lazy-loaded content: the shell (nav) often renders before the main
+    // data (lists/tables fetched async, shown behind a "Loading…" placeholder). Without
+    // this, we capture nav-only and miss the very table the user wants tested. Bounded +
+    // best-effort: proceed anyway if it never clears.
+    await page.waitForFunction(
+      () => !/\bloading\b/i.test((document.body && document.body.innerText) || ''),
+      { timeout: 8000 },
+    ).catch(() => undefined);
+    await page.waitForTimeout(700);
+    lastContext = await collectPageContext(page);
+    observedPages.push({ stage: 'post-load', ...compactPageContext(lastContext) });
+
     // #3 Cheap blind-retry: if the page hasn't rendered its content yet (SPA still
     // hydrating), re-collect context a couple of times on the SAME page — no browser
     // relaunch, no re-login, no LLM call. This recovers a "blind" read cheaply, instead of
@@ -207,21 +222,36 @@ export async function inspectApplicationFlow(options: {
     // goal is satisfied, so simple views finish in one call.
     for (let step = 0; step < 2; step += 1) {
       const orchestrator = await getOrchestrator('appInspector', { workspaceId: options.workspaceId || 'default' });
-      const decisionResult = await orchestrator.generateObject<z.infer<typeof plannerSchema>>({
-        schema: plannerSchema,
-        prompt: `You are controlling a browser for QA discovery. User request: ${options.prompt}. Current page context: ${JSON.stringify({
-          url: lastContext.url,
-          title: lastContext.title,
-          headings: lastContext.headings,
-          actions: lastContext.actions,
-          tables: lastContext.tables,
-          listLikeRegions: lastContext.listLikeRegions,
-          forms: lastContext.forms,
-          bodyText: lastContext.bodyText.slice(0, 1800),
-        })}. Decide whether the user's requested goal is already satisfied, blocked, or whether one visible action should be clicked next. Only choose an elementId from actions. Do not choose destructive actions such as delete, remove, save, submit data changes, unless the user explicitly asked for that.${options.knowledge || ''}`,
-        userMessage: options.prompt || 'Inspect the application flow.',
-      });
-      const decision = decisionResult.object;
+      const plannerPrompt = `You are controlling a browser for QA discovery. User request: ${options.prompt}. Current page context: ${JSON.stringify({
+        url: lastContext.url,
+        title: lastContext.title,
+        headings: lastContext.headings,
+        actions: lastContext.actions,
+        tables: lastContext.tables,
+        listLikeRegions: lastContext.listLikeRegions,
+        forms: lastContext.forms,
+        bodyText: lastContext.bodyText.slice(0, 1800),
+      })}. Decide whether the user's requested goal is already satisfied, blocked, or whether one visible action should be clicked next. Only choose an elementId from actions. Do not choose destructive actions such as delete, remove, save, submit data changes, unless the user explicitly asked for that.${options.knowledge || ''}`;
+      // The planner is a structured-output call; smaller / low-effort models occasionally
+      // return off-schema JSON. Retry once, then DEGRADE GRACEFULLY — keep the page context
+      // we already observed (login + navigation succeeded) instead of throwing away the whole
+      // inspection and reporting it as blind.
+      let decision: z.infer<typeof plannerSchema> | undefined;
+      for (let attempt = 0; attempt < 2 && !decision; attempt += 1) {
+        try {
+          const decisionResult = await orchestrator.generateObject<z.infer<typeof plannerSchema>>({
+            schema: plannerSchema,
+            prompt: plannerPrompt,
+            userMessage: options.prompt || 'Inspect the application flow.',
+          });
+          decision = (decisionResult.object as z.infer<typeof plannerSchema>) || undefined;
+        } catch (err: any) {
+          if (attempt >= 1) {
+            warnings.push(`Inspector planner returned no valid decision (${String(err?.message || err).slice(0, 100)}); proceeding with the page already observed.`);
+          }
+        }
+      }
+      if (!decision) { goalStatus = 'partial'; break; } // planner failed → keep observed page, mark partial
 
       actionsTaken.push({ type: 'planner', step: step + 1, ...decision });
 

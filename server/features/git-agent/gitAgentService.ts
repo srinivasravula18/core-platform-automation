@@ -5,11 +5,22 @@ import { spawnSync } from 'child_process';
 import { db, addActivity, persistDataInBackground } from '../../shared/storage';
 import { buildCaseDescription, normalizeCaseSteps, normalizeCaseTags } from '../../shared/testCases';
 
-// The source repo the agents grep/read as the "source of truth". MUST be configurable:
-// the old hardcoded Windows path only exists on a local dev machine, so on a deployed
-// (Linux) server it can't be found and code-grounded answers fail with "no matching files".
-// Set GIT_AGENT_TARGET_REPO (or CORE_PLATFORM_REPO) to the cloned repo path in production.
-const gitAgentTargetRepo = process.env.GIT_AGENT_TARGET_REPO || process.env.CORE_PLATFORM_REPO || 'D:\\core-platform';
+/**
+ * Resolve the repo to operate on. DYNAMIC and never app-specific:
+ *   1. an explicit repoPath passed by the caller (the SELECTED project's repoPath) —
+ *      this is the normal path, so the agents research whatever app the user picked;
+ *   2. else an optional GENERIC env override (GIT_AGENT_TARGET_REPO / CORE_PLATFORM_REPO)
+ *      for single-repo deployments;
+ *   3. else '' → callers surface "repo not configured" instead of guessing a path.
+ * No application's path is hardcoded anywhere.
+ */
+export function resolveTargetRepo(explicit?: string): string {
+  return (explicit || '').trim() || (process.env.GIT_AGENT_TARGET_REPO || process.env.CORE_PLATFORM_REPO || '').trim();
+}
+// The standalone Git Agent dashboard (status/diff/sync) operates on the env-configured
+// default repo; the PER-APP research path (gitGrep/readRepoFile) passes an explicit
+// project repoPath instead — see those functions.
+const gitAgentTargetRepo = resolveTargetRepo();
 const gitAgentStatePath = path.resolve(process.cwd(), '.testflow-git-agent-state.json');
 
 function readJsonFile<T>(filePath: string, fallback: T): T {
@@ -72,15 +83,19 @@ function writeGitAgentState(nextState: any) {
   return merged;
 }
 
+// Best-effort area/surface label for a changed file, derived from GENERIC naming
+// conventions that hold across most repos — never from one app's directory layout.
+// Falls back to the file's own top-level directory so any project is classified.
 function classifyChangedFile(filePath: string) {
-  const normalized = filePath.replace(/\\/g, '/').toLowerCase();
-  if (normalized.includes('apps/admin/')) return { area: 'Admin', surface: 'admin', suite: 'admin-changes' };
-  if (normalized.includes('apps/shockwave/')) return { area: 'Keystone / Shockwave', surface: 'keystone', suite: 'keystone-changes' };
-  if (normalized.includes('apps/service/')) return { area: 'API / Service', surface: 'api', suite: 'api-changes' };
-  if (normalized.includes('metadata/') || normalized.includes('seeds/')) return { area: 'Metadata', surface: 'all', suite: 'metadata-changes' };
-  if (normalized.includes('packages/list-view/') || normalized.includes('list-view')) return { area: 'Shared List View', surface: 'all', suite: 'shared-list-view-changes' };
-  if (normalized.includes('packages/ui/')) return { area: 'Shared UI', surface: 'all', suite: 'shared-ui-changes' };
-  return { area: 'Application', surface: 'all', suite: 'application-changes' };
+  const n = filePath.replace(/\\/g, '/').toLowerCase();
+  if (/(^|\/)(admin|backoffice|console)(\/|$)/.test(n)) return { area: 'Admin', surface: 'admin', suite: 'admin-changes' };
+  if (/(^|\/)(api|service|services|server|backend|functions|lambda)(\/|$)/.test(n)) return { area: 'API / Service', surface: 'api', suite: 'api-changes' };
+  if (/(^|\/)(web|www|frontend|front-end|client|ui|webapp)(\/|$)/.test(n)) return { area: 'Frontend', surface: 'frontend', suite: 'frontend-changes' };
+  if (/(^|\/)(schema|migrations?|seeds?|metadata|config)(\/|$)/.test(n)) return { area: 'Data / Config', surface: 'all', suite: 'data-config-changes' };
+  // Otherwise name the area after the file's top-level directory (repo-derived).
+  const top = n.split('/').filter(Boolean)[0] || 'application';
+  const label = top.replace(/[-_]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+  return { area: label, surface: 'all', suite: `${top.replace(/[^a-z0-9]+/g, '-')}-changes` };
 }
 
 function riskForChangedFile(filePath: string) {
@@ -527,41 +542,30 @@ export const GIT_AGENT_TARGET_REPO = gitAgentTargetRepo;
 export { classifyChangedFile };
 
 /**
- * Search roots in the target repo, grouped by surface, so requirement discovery
- * reliably looks where business logic, background data population, the Admin and
- * Keystone apps, and the metadata source of truth actually live.
+ * Generic SOURCE file globs (by extension, NOT by app-specific directory). Searching
+ * the whole repo for these works for ANY application's layout, while skipping binaries,
+ * lockfiles, and most docs. No core-platform paths are assumed.
  */
-export const CORE_PLATFORM_SEARCH_ROOTS: Record<string, string[]> = {
-  service: ['apps/service/src'],
-  dataPopulation: [
-    'apps/service/src/scheduler',
-    'apps/service/src/exports',
-    'apps/service/src/data-import',
-    'apps/service/src/triggers',
-    'seeds/scripts',
-    'ecosystem.config.cjs',
-  ],
-  admin: ['apps/admin/src'],
-  keystone: ['apps/shockwave/src'],
-  metadata: ['metadata', 'apps/service/src/metadata'],
-};
-
-const ALL_SEARCH_ROOTS = Array.from(new Set(Object.values(CORE_PLATFORM_SEARCH_ROOTS).flat()));
+const SOURCE_GLOBS = [
+  '*.ts', '*.tsx', '*.js', '*.jsx', '*.mjs', '*.cjs', '*.vue', '*.svelte',
+  '*.py', '*.go', '*.java', '*.kt', '*.rb', '*.cs', '*.php', '*.rs', '*.swift', '*.scala',
+  '*.html', '*.css', '*.scss', '*.sql', '*.json', '*.yml', '*.yaml', '*.graphql', '*.proto',
+];
 
 /**
  * Run `git grep` in the target repo for any of the given patterns, restricted to the
- * given pathspecs (defaults to all surface roots). Returns the matching tracked files,
- * each tagged with its core-platform area. Case-insensitive, names-only.
+ * given pathspecs. Defaults to source files across the WHOLE repo (app-agnostic), so
+ * the agents research any application's real code. Returns matching tracked files,
+ * each tagged with a best-effort area. Case-insensitive, names-only.
  */
-export function gitGrep(patterns: string[], pathspecs: string[] = ALL_SEARCH_ROOTS, maxFiles = 60) {
-  if (!existsSync(path.join(gitAgentTargetRepo, '.git'))) {
-    throw new Error(`Target repo was not found at ${gitAgentTargetRepo}.`);
+export function gitGrep(patterns: string[], pathspecs: string[] = SOURCE_GLOBS, maxFiles = 60, repoPath?: string) {
+  const repo = resolveTargetRepo(repoPath);
+  if (!repo || !existsSync(path.join(repo, '.git'))) {
+    throw new Error(`Target repo was not found${repo ? ` at ${repo}` : ' (no repo configured for this project)'}.`);
   }
   const cleanPatterns = patterns.map((p) => String(p || '').trim()).filter((p) => p.length >= 2);
   if (!cleanPatterns.length) return [] as Array<{ path: string; area: string; surface: string }>;
 
-  const patternArgs: string[] = [];
-  for (const p of cleanPatterns) patternArgs.push('-e', p);
   // -l names only, -i case-insensitive, -I skip binary, --or so any pattern matches.
   const orArgs: string[] = [];
   cleanPatterns.forEach((p, i) => {
@@ -569,7 +573,7 @@ export function gitGrep(patterns: string[], pathspecs: string[] = ALL_SEARCH_ROO
     orArgs.push('-e', p);
   });
 
-  const out = gitOutputOrEmpty(gitAgentTargetRepo, ['grep', '-l', '-i', '-I', ...orArgs, '--', ...pathspecs], 60000);
+  const out = gitOutputOrEmpty(repo, ['grep', '-l', '-i', '-I', ...orArgs, '--', ...pathspecs], 60000);
   const files = out.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
   const seen = new Set<string>();
   const results: Array<{ path: string; area: string; surface: string }> = [];
@@ -584,13 +588,14 @@ export function gitGrep(patterns: string[], pathspecs: string[] = ALL_SEARCH_ROO
 }
 
 /** Read a tracked file's content at HEAD from the target repo, capped to maxBytes. */
-export function readRepoFile(relPath: string, maxBytes = 6000): string {
-  if (!existsSync(path.join(gitAgentTargetRepo, '.git'))) {
-    throw new Error(`Target repo was not found at ${gitAgentTargetRepo}.`);
+export function readRepoFile(relPath: string, maxBytes = 6000, repoPath?: string): string {
+  const repo = resolveTargetRepo(repoPath);
+  if (!repo || !existsSync(path.join(repo, '.git'))) {
+    throw new Error(`Target repo was not found${repo ? ` at ${repo}` : ' (no repo configured for this project)'}.`);
   }
   const normalized = String(relPath || '').replace(/\\/g, '/').replace(/^\/+/, '');
   if (!normalized) return '';
-  const content = gitOutputOrEmpty(gitAgentTargetRepo, ['show', `HEAD:${normalized}`], 30000);
+  const content = gitOutputOrEmpty(repo, ['show', `HEAD:${normalized}`], 30000);
   return content.length > maxBytes ? `${content.slice(0, maxBytes)}\n... [file truncated]` : content;
 }
 

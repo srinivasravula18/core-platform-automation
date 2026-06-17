@@ -74,7 +74,11 @@ export interface SupervisorResult {
   accepted: boolean;
 }
 
-const STOPWORDS = new Set(['what', 'which', 'how', 'many', 'much', 'does', 'do', 'the', 'are', 'is', 'have', 'has', 'in', 'on', 'to', 'for', 'of', 'a', 'an', 'and', 'or', 'this', 'that', 'there', 'app', 'application', 'feature', 'features', 'page', 'pages', 'view', 'views', 'list', 'can', 'we', 'you', 'should', 'need', 'about', 'from', 'with', 'it', 'its', 'they', 'them', 'their', 'all', 'any', 'me', 'my', 'our', 'test', 'tests', 'testing']);
+// Only GRAMMATICAL fillers — NOT product nouns. Words like "list", "view", "features",
+// "page", "app", "table", "test" are exactly what we want to grep the codebase for, so they
+// must NOT be stripped (stripping them degraded "list view features" into generic terms that
+// only matched docs → "no source files found").
+const STOPWORDS = new Set(['what', 'which', 'how', 'many', 'much', 'does', 'do', 'the', 'are', 'is', 'have', 'has', 'in', 'on', 'to', 'for', 'of', 'a', 'an', 'and', 'or', 'this', 'that', 'there', 'can', 'we', 'you', 'should', 'need', 'about', 'from', 'with', 'it', 'its', 'they', 'them', 'their', 'all', 'any', 'me', 'my', 'our', 'out', 'please', 'show', 'tell', 'give', 'want', 'would', 'could', 'will']);
 
 function keywordsFor(q: string): string[] {
   const words = (String(q || '').toLowerCase().match(/[a-z][a-z0-9_-]{2,}/g) || []).filter((w) => !STOPWORDS.has(w));
@@ -88,8 +92,8 @@ function expandFeatureTerms(question: string): string[] {
   if (/\btable\b|\bgrid\b|\blist\s*view\b|\blistview\b/.test(q)) {
     extra.push('table', 'grid', 'column', 'columns', 'filter', 'filters', 'sort', 'sorting', 'search', 'pagination', 'export', 'toolbar');
   }
-  if (/\bshockwave\b|\bkeystone\b/.test(q)) extra.push('shockwave', 'keystone');
-  if (/\badmin\b/.test(q)) extra.push('admin');
+  // Only GENERIC UI-testing vocabulary above — no app-specific surface names. The agent
+  // researches the actual app's surfaces from its code/inspection, not from baked-in names.
   return Array.from(new Set(extra));
 }
 
@@ -161,7 +165,8 @@ export async function answerAppQuestionFromCode(question: string, opts: {
   // generateText (single call) — no tools needed since retrieval is already done. Uses the
   // Settings-selected provider/model dynamically.
   const orch = await getOrchestrator('chatAssistant', { workspaceId: opts.workspaceId, userId: opts.userId });
-  const prompt = `You are a QA assistant. Answer the user's question about the application using ONLY the real source code excerpts below (the source of truth). Be specific and cite file paths. If the excerpts do not contain the answer, say what you can see and what else is needed — do NOT invent behaviour.${appsBlock}
+  const prompt = `You are a QA assistant. Answer the user's question about the application using ONLY the real source code excerpts below (the source of truth). Be specific and concrete. If the excerpts do not contain the answer, say what you can see and what else is needed — do NOT invent behaviour.
+Do NOT show, cite, or list source file paths, file names, or repo locations in your answer. Ground yourself in the code internally, but present only the user-facing findings (features, rules, behaviors) in plain language — no "Source:", no file paths, no code locations.${appsBlock}
 
 QUESTION: ${question}
 

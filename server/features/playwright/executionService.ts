@@ -67,6 +67,22 @@ export function sanitizeTestCode(code: string): string {
   });
 }
 
+// Track running Playwright child processes per run so a user "Stop" can SIGKILL the
+// in-flight execution (the heaviest, killable part of a run) instead of waiting it out.
+const runChildren = new Map<string, Set<import('child_process').ChildProcess>>();
+
+/** Kill any in-flight Playwright process(es) for a run. Called when the user stops a run. */
+export function killRunProcesses(runId: string): number {
+  const set = runChildren.get(runId);
+  if (!set) return 0;
+  let killed = 0;
+  for (const child of set) {
+    try { child.kill('SIGKILL'); killed += 1; } catch { /* already gone */ }
+  }
+  runChildren.delete(runId);
+  return killed;
+}
+
 export async function executePlaywrightScripts(opts: {
   scripts: ScriptInput[];
   baseUrl?: string;
@@ -135,6 +151,11 @@ export default defineConfig({
       env: { ...process.env, FORCE_COLOR: '0', CI: '1' },
     });
 
+    // Register so a user "Stop" (killRunProcesses) can terminate this in-flight run.
+    if (!runChildren.has(runId)) runChildren.set(runId, new Set());
+    runChildren.get(runId)!.add(child);
+    const unregister = () => { runChildren.get(runId)?.delete(child); };
+
     let stderr = '';
     const killer = setTimeout(() => {
       try { child.kill('SIGKILL'); } catch { /* ignore */ }
@@ -148,11 +169,13 @@ export default defineConfig({
 
     child.on('error', (err) => {
       clearTimeout(killer);
+      unregister();
       resolve({ ok: false, ...base, error: err.message, stderrTail: stderr.slice(-1500) || undefined });
     });
 
     child.on('close', async () => {
       clearTimeout(killer);
+      unregister();
       try {
         const raw = await fs.readFile(resultsFile, 'utf8');
         const json = JSON.parse(raw);

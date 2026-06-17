@@ -68,9 +68,9 @@ export function assessCasesGrounding(cases: any[], inspection: any): VerifierVer
     return { ok: false, reason: 'No test cases were generated.' };
   }
   const tokens = observedTokens(inspection);
-  // If the inspector saw nothing, grounding can't be judged here — defer to the
-  // inspection gate (this gate only fires meaningfully when there IS observed content).
-  if (tokens.size === 0) return { ok: true, reason: 'No observed tokens to ground against; inspection gate governs this run.' };
+  // If the inspector saw nothing (blind inspection), the cases CANNOT be grounded in the
+  // live app — say so honestly instead of reporting a misleading "ok".
+  if (tokens.size === 0) return { ok: false, reason: 'The inspector observed nothing on the page, so these cases are not grounded in the live application.' };
 
   let grounded = 0;
   for (const c of cases) {

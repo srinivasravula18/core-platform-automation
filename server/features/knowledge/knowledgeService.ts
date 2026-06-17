@@ -49,62 +49,21 @@ function list(): AppKnowledgePack[] {
   return Array.isArray(db.appKnowledge) ? db.appKnowledge : (db.appKnowledge = []);
 }
 
-/** The condensed, agent-facing knowledge for the Core Platform (Admin + Keystone). */
-const CORE_PLATFORM_PACK_CONTENT = `# Application under test: Core Platform (Admin + Keystone)
+// NO hardcoded application knowledge. Test Flow AI must work for ANY app, so the
+// agents earn their ground truth by RESEARCH — reading the target's real source
+// (git agent) and inspecting the live app — not from a baked-in pack. Knowledge here
+// is purely what the user authors in Settings → App Knowledge, plus observations
+// auto-captured from real runs (recordObservation). There are no default packs.
+const DEFAULT_PACKS: Omit<AppKnowledgePack, 'id' | 'updatedAt'>[] = [];
 
-A metadata-driven, Salesforce-like CRUD platform. Nothing about the business objects is hardcoded — admins define metadata, end users work with the data.
-
-## Surfaces & access
-- **Admin app** — configure metadata (apps, objects, fields, layouts, tabs, roles, groups, users, permissions, access records, system settings). URL host: ops.acchindra.com, path /admin (locally :5002).
-- **Keystone** — the end-user app where business records live (folder is "shockwave", product renamed "Keystone"). Path /shockwave (locally :5003).
-- **App Service** — the backend that enforces everything. Admin & Keystone NEVER bypass it.
-- Login: use the stored website credentials by reference (do not embed passwords). Admin & Keystone require separate logins (different session namespaces).
-
-## Admin navigation (URL-driven)
-Admin is a single page; sections switch via \`?nav=<key>&appId=<id>\`. Keys: apps, app_hierarchy, search_results, agent, objects, tabs, flows, roles, groups, users, permissions, access_controls (Access Records), system_settings, email_logs, scheduled_jobs, audit_logs, recycle_bin. App scope (top-left "Apps" launcher) filters every metadata list.
-
-## Key flows to test (Admin)
-- **Create App**: New App modal → Label* (#create-app-label), API Name* (#create-app-api), Prefix* 3 chars (#create-app-prefix), Parent App* (#create-app-parent). Parent is required (no true root via UI). Auto-creates app:view + app:import permissions.
-- **Create Object**: 2-step modal. Step 1 → Label* (#create-object-label), API Name* (#create-object-api), Plural Label, Prefix* (#create-object-prefix), checkboxes Global search/Inline edit. Click Next → Step 2 record-naming (Manual / Auto-if-blank / Always-auto) → Create. Side effects: business table created, default record type "master", 5 layouts (record/edit/creation/summary/search), 7 system fields (id, name, status, created_by, created_at, modified_by, modified_at), an "All" list view.
-- **Create Field** (Object Home → Fields → New): #field-label, #field-api-name, #field-type (Text, Currency, Date, Date/Time, Email, File, Lookup, Master-Detail, Multi Picklist, Number, Percent, Phone, Picklist, Rich Text Area, Text Area, Time, URL). Picklist needs each value to have a Value + Label + Active checkbox. Master-detail forces Required on; File forces Required off.
-- **Create Tab** (Tabs → New): Tab Type (Object Workspace / Custom Website Tab) + Object + Label + API Name (label/api do NOT auto-fill).
-- **Access Record** (Access Records → New): Object + Principal (Role/Group/User) + checkboxes Read/Create/Update/Delete/View All/Modify All + per-field rules.
-
-## Business rules to assert (expected behavior)
-- New record: id = object-prefix + 7 random chars; status defaults to "Active"; row_version starts at 1; created_by/modified_by = the actor.
-- Update needs an If-Match precondition (else 428); stale version → 409 conflict.
-- **Default-DENY access**: a non-admin sees an object/record only if an Access Record grants it. system_admin / super user bypass everything.
-- Uniqueness (case-insensitive): app/object/field label, api_name, and prefix are unique. username is NOT unique.
-- App hierarchy: a child app inherits its parent app's objects/tabs.
-
-## Gotchas (high-value negative/edge tests)
-- **A new field does NOT auto-appear on the Keystone create/edit form** — it must be added to the layout first. It does show in the list-view column picker immediately.
-- List views are access-filtered (a page can be shorter than page_size) and return no total count.
-- Picklist option requires Value + Label + Active, all three.
-- Validation rules block invalid saves immediately (no cache). Triggers fire on create/update.
-- ~60s caches on access/permission/metadata reads — visibility changes can lag up to a minute.
-
-## Stable selectors / labels (for automation)
-- Buttons by text: "New", "Create", "Next", "Edit", "Delete", "Save", "Run Flow". Modal titles in <h3>.
-- Field ids: #create-app-label/api/prefix/parent, #create-object-label/api/prefix, #field-label/#field-api-name/#field-type, #create-tab-type/#create-tab-object/#create-tab-label.
-- Keystone: app launcher aria-label "Apps", tabs aria-label "Tabs", "Global Search"; record actions "Edit"/"Delete"/"New {object}"; create modal title "New {object}".
-
-When testing this app, ground steps and assertions in the rules and selectors above; cite the exact screen/field, and prefer the documented expected behavior for assertions.`;
-
-const DEFAULT_PACKS: Omit<AppKnowledgePack, 'id' | 'updatedAt'>[] = [
-  {
-    name: 'Core Platform (Admin + Keystone)',
-    matchHosts: ['ops.acchindra.com', 'localhost:5002', 'localhost:5003', '127.0.0.1:5002', '127.0.0.1:5003'],
-    matchNames: ['admin', 'keystone', 'shockwave', 'core platform', 'core-platform'],
-    websiteIds: [],
-    content: CORE_PLATFORM_PACK_CONTENT,
-  },
-];
-
-/** Seed default packs on first run; binds them to any matching stored websites. */
+/**
+ * Seed default packs on first run. Intentionally a no-op now (DEFAULT_PACKS is empty):
+ * nothing about any specific application is hardcoded. Kept for call-site compatibility
+ * and so future GENERIC (app-agnostic) seeds could be added without touching server.ts.
+ */
 export function seedDefaultKnowledgeIfEmpty(): void {
   const packs = list();
-  if (packs.length > 0) return;
+  if (packs.length > 0 || DEFAULT_PACKS.length === 0) return;
   const websites: Array<{ id: string; name: string; baseUrl: string }> = db.websites || [];
   for (const def of DEFAULT_PACKS) {
     const boundWebsiteIds = websites

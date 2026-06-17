@@ -50,7 +50,7 @@ const PIPELINE: { key: string; label: string }[] = [
 ];
 
 // Statuses that halt polling and await a human decision or are final.
-const TERMINAL = ['completed', 'failed', 'review_required', 'coverage_options'];
+const TERMINAL = ['completed', 'failed', 'review_required', 'coverage_options', 'cancelled'];
 const EXPAND_OPTIONS = [4, 5, 6, 8, 10, 12];
 
 type Step = { action: string; expected: string };
@@ -471,6 +471,18 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
           </span>
         </div>
         <div className="flex shrink-0 items-center gap-2">
+          {isRunning && (
+            <button
+              onClick={async () => {
+                try { await fetch('/api/agent/cancel', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ taskId: activeTaskId }) }); } catch { /* ignore */ }
+                setRun((prev: any) => (prev ? { ...prev, status: 'cancelled' } : prev));
+              }}
+              title="Stop this run"
+              className="inline-flex items-center gap-1 rounded-md border border-red-500/30 bg-red-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-red-400 hover:bg-red-500/20"
+            >
+              <XCircle className="h-3.5 w-3.5" /> Stop
+            </button>
+          )}
           {totalMs != null && (
             <span
               className="inline-flex items-center gap-1 text-[11px] font-medium text-[var(--text-muted)]"
@@ -483,7 +495,7 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
           <span
             className={cn(
               'rounded-md border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider',
-              failed
+              failed || status === 'cancelled'
                 ? 'border-red-500/20 bg-red-500/10 text-red-400'
                 : status === 'completed'
                   ? 'border-emerald-500/20 bg-emerald-500/10 text-emerald-400'
@@ -492,7 +504,7 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
                     : 'border-[var(--accent)]/20 bg-[var(--accent)]/10 text-[var(--accent)]',
             )}
           >
-            {failed ? 'failed' : status === 'completed' ? 'done' : coverageGate ? 'reuse?' : reviewing ? 'review' : 'working'}
+            {status === 'cancelled' ? 'stopped' : failed ? 'failed' : status === 'completed' ? 'done' : coverageGate ? 'reuse?' : reviewing ? 'review' : 'working'}
           </span>
         </div>
       </div>
@@ -743,7 +755,10 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
               <div className="max-h-[min(28rem,60dvh)] space-y-1.5 overflow-y-auto pr-1">
                 {list.map((c, i) => (
                   <div key={i} className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)]">
-                    <div className="flex items-center gap-2 px-3 py-2">
+                    <div
+                      onClick={() => setEditing(editing === i ? null : i)}
+                      className="flex cursor-pointer items-center gap-2 px-3 py-2"
+                    >
                       <span className="rounded bg-[var(--bg-card)] px-1.5 py-0.5 text-[10px] font-bold uppercase text-[var(--text-muted)]">
                         {c.priority || 'Med'}
                       </span>
@@ -755,14 +770,14 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
                       ))}
                       <span className="text-[10px] text-[var(--text-muted)]">{(c.steps || []).length} steps</span>
                       <button
-                        onClick={() => setEditing(editing === i ? null : i)}
+                        onClick={(e) => { e.stopPropagation(); setEditing(editing === i ? null : i); }}
                         className="rounded p-1 text-[var(--text-muted)] hover:text-[var(--accent)]"
-                        title="Edit case"
+                        title={editing === i ? 'Collapse' : 'Open'}
                       >
-                        <Pencil className="h-3.5 w-3.5" />
+                        <ChevronDown className={cn('h-3.5 w-3.5 transition-transform', editing === i && 'rotate-180')} />
                       </button>
                       <button
-                        onClick={() => removeCase(i)}
+                        onClick={(e) => { e.stopPropagation(); removeCase(i); }}
                         className="rounded p-1 text-[var(--text-muted)] hover:text-red-500"
                         title="Delete case"
                       >

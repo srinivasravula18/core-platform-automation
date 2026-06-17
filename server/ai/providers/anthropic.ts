@@ -24,6 +24,10 @@ import type {
   ChatMessage,
 } from './types';
 import { ProviderError, classifyError, DEFAULT_MODELS, estimateCost } from './types';
+// Shared, NON-FABRICATING structured-output helpers (one copy for every provider).
+import {
+  coerceToSchemaShape, repairValidationError, normalizeTestCasePayload, normalizeScriptPayload,
+} from './structuredOutput';
 
 /** Opus 4.7+ remove sampling params; sending `temperature` returns a 400. */
 function acceptsTemperature(model: string): boolean {
@@ -48,132 +52,6 @@ function toAnthropicMessage(m: ChatMessage): Anthropic.MessageParam {
   }
   // system is carried out-of-band via params.system; fold any stray one into user text.
   return { role: m.role === 'assistant' ? 'assistant' : 'user', content: m.content || '' };
-}
-
-function coerceToSchemaShape(parsed: unknown, schema: z.ZodTypeAny): unknown {
-  const expectedArrayKeys = ['scripts', 'test_cases', 'flows', 'cases', 'playwright_scripts', 'tests', 'items'];
-  try {
-    const def: any = (schema as any)?._def;
-    const isObjectSchema = def?.typeName === 'ZodObject' || def?.type === 'object';
-    if (!isObjectSchema) return parsed;
-    const shape = typeof def.shape === 'function' ? def.shape() : def.shape;
-    const keys = Object.keys(shape || {});
-    if (!keys.length) return parsed;
-    const arrayKey = keys.find((k) => {
-      const childDef = (shape[k] as any)?._def;
-      return childDef?.typeName === 'ZodArray' || childDef?.type === 'array';
-    }) || keys[0];
-    if (Array.isArray(parsed)) return { [arrayKey]: parsed };
-    if (parsed && typeof parsed === 'object') {
-      const obj = parsed as Record<string, unknown>;
-      if (obj[arrayKey] === undefined) {
-        const namedArrayKey = expectedArrayKeys.find((k) => Array.isArray(obj[k]));
-        const arrProp = namedArrayKey ? obj[namedArrayKey] : Object.values(obj).find((v) => Array.isArray(v));
-        if (arrProp) obj[arrayKey] = arrProp;
-      }
-      return obj;
-    }
-    return parsed;
-  } catch {
-    return parsed;
-  }
-}
-
-function coerceFromValidationError(parsed: unknown, error: any): unknown {
-  const issue = Array.isArray(error?.issues)
-    ? error.issues.find((i: any) => Array.isArray(i?.path) && i.path.length === 1 && i.expected === 'array')
-    : undefined;
-  const missingKey = issue?.path?.[0];
-  if (!missingKey || typeof missingKey !== 'string') return parsed;
-  if (Array.isArray(parsed)) return { [missingKey]: parsed };
-  if (parsed && typeof parsed === 'object') {
-    const obj = parsed as Record<string, unknown>;
-    const arrProp = Object.values(obj).find((v) => Array.isArray(v));
-    if (arrProp) return { ...obj, [missingKey]: arrProp };
-  }
-  return parsed;
-}
-
-function normalizePriority(value: unknown): 'Low' | 'Medium' | 'High' | 'Critical' {
-  const text = String(value || '').toLowerCase();
-  if (text.includes('critical')) return 'Critical';
-  if (text.includes('high') || text.includes('bvt') || text.includes('smoke')) return 'High';
-  if (text.includes('low')) return 'Low';
-  return 'Medium';
-}
-
-function normalizeCaseType(value: unknown): 'Manual' | 'Automated' | 'Both' {
-  const text = String(value || '').toLowerCase();
-  if (text.includes('both')) return 'Both';
-  if (text.includes('auto') || text.includes('playwright')) return 'Automated';
-  return 'Manual';
-}
-
-function stringifyField(value: unknown): string {
-  if (typeof value === 'string') return value;
-  if (Array.isArray(value)) return value.map((item) => stringifyField(item)).filter(Boolean).join('; ');
-  if (value && typeof value === 'object') return Object.values(value as Record<string, unknown>).map((item) => stringifyField(item)).filter(Boolean).join('; ');
-  return value === undefined || value === null ? '' : String(value);
-}
-
-function normalizeTestCasePayload(parsed: unknown): unknown {
-  if (!parsed || typeof parsed !== 'object') return parsed;
-  const root = parsed as Record<string, unknown>;
-  const cases = Array.isArray(root.test_cases) ? root.test_cases : Array.isArray(root.cases) ? root.cases : undefined;
-  if (!cases) return parsed;
-
-  root.test_cases = cases.map((rawCase, index) => {
-    const testCase = rawCase && typeof rawCase === 'object' ? { ...(rawCase as Record<string, unknown>) } : {};
-    const title = stringifyField(testCase.title || testCase.name || testCase.scenario || `Test case ${index + 1}`);
-    const normalizedSteps = (Array.isArray(testCase.steps) ? testCase.steps : []).map((rawStep, stepIndex) => {
-      const step: Record<string, unknown> = rawStep && typeof rawStep === 'object' ? (rawStep as Record<string, unknown>) : { action: rawStep };
-      const action = stringifyField(step.action || step.step || step.instruction || step.description || `Execute step ${stepIndex + 1}`);
-      const expected = stringifyField(step.expected || step.expectedResult || step.expected_result || step.assertion || step.result || step.outcome)
-        || 'The expected result for this step is observed.';
-      return { action, expected };
-    });
-
-    return {
-      ...testCase,
-      title,
-      description: stringifyField(testCase.description || testCase.summary || testCase.objective || testCase.purpose) || title,
-      preconditions: stringifyField(testCase.preconditions || testCase.precondition || testCase.prerequisites) || 'Application is reachable and required test credentials are available.',
-      tags: Array.isArray(testCase.tags) ? testCase.tags.map((tag) => stringifyField(tag)).filter(Boolean) : ['@ui', '@positive'],
-      priority: normalizePriority(testCase.priority),
-      type: normalizeCaseType(testCase.type),
-      steps: normalizedSteps.length ? normalizedSteps : [{ action: 'Open the target page.', expected: 'The target page loads successfully.' }],
-    };
-  });
-  return root;
-}
-
-function slugifyFilename(value: string, fallback: string): string {
-  const slug = String(value || fallback)
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 80);
-  return `${slug || fallback}.spec.ts`;
-}
-
-function normalizeScriptPayload(parsed: unknown): unknown {
-  if (!parsed || typeof parsed !== 'object') return parsed;
-  const root = parsed as Record<string, unknown>;
-  const scripts = Array.isArray(root.scripts) ? root.scripts : Array.isArray(root.playwright_scripts) ? root.playwright_scripts : undefined;
-  if (!scripts) return parsed;
-
-  root.scripts = scripts.map((rawScript, index) => {
-    const script: Record<string, unknown> = rawScript && typeof rawScript === 'object' ? { ...(rawScript as Record<string, unknown>) } : { code: rawScript };
-    const title = stringifyField(script.test_case_title || script.title || script.name || script.testName || script.test_name || `Generated Playwright script ${index + 1}`);
-    const code = stringifyField(script.code || script.script || script.source || script.content || script.playwright || script.test || script.body);
-    return {
-      ...script,
-      test_case_title: title,
-      filename: stringifyField(script.filename || script.file || script.path) || slugifyFilename(title, `generated-script-${index + 1}`),
-      code: code || `import { test, expect } from '@playwright/test';\n\ntest('${title.replace(/'/g, "\\'")}', async ({ page }) => {\n  await page.goto('/');\n  await expect(page.locator('body')).toBeVisible();\n});`,
-    };
-  });
-  return root;
 }
 
 export class AnthropicProvider implements AIProvider {
@@ -355,7 +233,14 @@ export class AnthropicProvider implements AIProvider {
     try {
       validated = schemaZ.parse(parsed);
     } catch (validationError: any) {
-      validated = schemaZ.parse(coerceFromValidationError(parsed, validationError));
+      try {
+        validated = schemaZ.parse(repairValidationError(parsed, validationError));
+      } catch (stillInvalid: any) {
+        // Never let a raw Zod issues array escape as the model's "answer".
+        const issues: any[] = Array.isArray(stillInvalid?.issues) ? stillInvalid.issues : [];
+        const fields = issues.slice(0, 4).map((i) => (Array.isArray(i?.path) ? i.path.join('.') : '?')).filter(Boolean).join(', ');
+        throw classifyError('anthropic', 200, `Model response did not match the expected schema${fields ? ` (fields: ${fields})` : ''}.`);
+      }
     }
     return {
       object: validated as T,

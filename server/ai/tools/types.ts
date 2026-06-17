@@ -46,7 +46,7 @@ export interface AgentStep {
   usage?: ProviderUsage;
 }
 
-export type StopReason = 'accepted' | 'final_text' | 'max_steps' | 'budget' | 'aborted';
+export type StopReason = 'accepted' | 'final_text' | 'max_steps' | 'budget' | 'aborted' | 'empty_response' | 'truncated';
 
 export interface AgentRunResult {
   finalText: string;

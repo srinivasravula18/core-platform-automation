@@ -59,10 +59,13 @@ export function resolveCodeSearchScope(input: CodeSearchScopeInput = {}): CodeSe
   const appId = input.appId ? String(input.appId).trim() : null;
   const project = projectId ? getProject(projectId) : undefined;
   if (!project) {
+    // Only fall back to the global repo when NO project was requested. If a projectId was
+    // supplied but not found, do NOT silently search the whole default repo under the
+    // caller's project scope — surface it as an empty/unknown scope instead.
     return {
       mode: 'global',
-      repoLabel: GIT_AGENT_TARGET_REPO,
-      roots: [],
+      repoLabel: projectId ? `unknown project ${projectId}` : GIT_AGENT_TARGET_REPO,
+      roots: projectId ? ['__none__'] : [],
       projectId: '',
       appId: null,
     };

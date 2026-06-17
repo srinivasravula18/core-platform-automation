@@ -115,7 +115,9 @@ If there are no code changes, return an empty changes array and coverage.suffici
   const object = (result as any).object || {
     summary: 'No analysis produced.',
     changes: [],
-    coverage: { sufficient: true, coveredBy: [], gaps: [], reasoning: '' },
+    // sufficient:false on empty output — never tell the user "already covered" when the
+    // analysis actually failed/produced nothing (that suppresses needed gap cases).
+    coverage: { sufficient: false, coveredBy: [], gaps: [], reasoning: 'Analysis produced no result; coverage is unknown.' },
     proposedCases: [],
     proposedScripts: [],
   };

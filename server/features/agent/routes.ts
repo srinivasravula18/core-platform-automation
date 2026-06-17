@@ -10,7 +10,7 @@ import { buildAgentExecutionSteps, buildCaseDescription, normalizeCaseSteps, nor
 import { capturePlaywrightEvidence, createAuthStorageState } from '../evidence/evidenceService';
 import { gitGrep, readRepoFile } from '../git-agent/gitAgentService';
 import { analyzeFeatureFromSource, proposeGapCases } from '../requirements/requirementService';
-import { executePlaywrightScripts } from '../playwright/executionService';
+import { executePlaywrightScripts, killRunProcesses } from '../playwright/executionService';
 import { promises as fsp } from 'fs';
 import path from 'path';
 import { inspectApplicationFlow } from './inspectionService';
@@ -23,6 +23,11 @@ import { runGuardrailPipeline } from '../../ai/guardrails';
 import { assessInspection, assessCasesGrounding, assessExecution } from '../../ai/verifier';
 import { reqScope, scopeFilter } from '../../shared/scope';
 import { getApp, getProject } from '../projects/projectService';
+// Strike 3: the single, shared source of grounding for every deep-run worker.
+// isNoiseTurn / deriveUnderstandingFromChat live here now (were duplicated below)
+// and resolveUnderstanding is the one place that decides the run's understanding,
+// so the case writer, coder, and analyst can no longer disagree.
+import { isNoiseTurn, deriveUnderstandingFromChat, resolveUnderstanding } from '../../agent-runtime/context/goalContext';
 
 function getAgentPlanStatus(run: any) {
   if (run?.status === 'completed') return 'Completed';
@@ -55,15 +60,12 @@ function getAgentPlanRiskLevel(run: any) {
 
 function buildFallbackArtifactName(prompt: string, targetUrl: string) {
   const source = `${prompt || ''} ${targetUrl || ''}`.toLowerCase();
-  const appName = /keystone/.test(source)
-    ? 'Keystone Admin'
-    : /nexumi/.test(source)
-      ? 'Nexumi Landing Page'
-      : /admin/.test(source)
-        ? 'Admin App'
-        : targetUrl
-          ? new URL(targetUrl).hostname.replace(/^www\./, '').split('.')[0].replace(/[-_]/g, ' ')
-          : 'Application';
+  // App name is DERIVED from the target URL host (works for any app), never a hardcoded
+  // per-app guess. Falls back to a neutral label when there is no usable URL.
+  let appName = 'Application';
+  if (targetUrl) {
+    try { appName = new URL(targetUrl).hostname.replace(/^www\./, '').split('.')[0].replace(/[-_]/g, ' ') || 'Application'; } catch { /* keep default */ }
+  }
   const scopeParts = [];
   if (/\blogin|log in|signin|sign in|credential|auth/.test(source)) scopeParts.push('Login');
   if (/\blist|table|grid|row|column|apps\b/.test(source)) scopeParts.push('List View');
@@ -299,11 +301,18 @@ async function persistAgentScripts(run: any) {
 // this keeps timing accurate without threading a clock through each call site.
 function nowIso(): string { return new Date().toISOString(); }
 function pushPhase(run: any, msg: any): void {
+  // Best-effort cancellation: if the user requested a stop, abort as soon as the next
+  // phase tries to start (so the pipeline doesn't advance past where it is).
+  if (run?.cancelRequested && msg?.status === 'running') {
+    throw new Error('RUN_CANCELLED');
+  }
   run.messages.push({ ...msg, at: nowIso() });
 }
 // Mark the run as finished (or failed) and record the wall-clock end so the UI
 // can compute total time. paused_ms (human review gap) is excluded by the UI.
-function markRunDone(run: any, status: 'completed' | 'failed'): void {
+function markRunDone(run: any, status: 'completed' | 'failed' | 'cancelled'): void {
+  // Never override an explicit user cancel with completed/failed.
+  if (run.status === 'cancelled') return;
   run.status = status;
   run.completed_at = nowIso();
 }
@@ -414,8 +423,8 @@ function summarizeUnderstanding(u: any, maxChars = 4000): string {
   if (u.title) lines.push(`Feature: ${u.title}`);
   if (u.description) lines.push(`What it does: ${u.description}`);
   if (Array.isArray(u.businessRules) && u.businessRules.length) lines.push(`Business rules enforced by the code:\n- ${u.businessRules.join('\n- ')}`);
-  if (u.adminBehavior) lines.push(`Admin behavior: ${u.adminBehavior}`);
-  if (u.keystoneBehavior) lines.push(`Keystone/Shockwave behavior: ${u.keystoneBehavior}`);
+  if (u.adminBehavior) lines.push(`Configuration/admin-surface behavior: ${u.adminBehavior}`);
+  if (u.keystoneBehavior) lines.push(`End-user-surface behavior: ${u.keystoneBehavior}`);
   if (u.dataPopulationNotes) lines.push(`Background data/preconditions: ${u.dataPopulationNotes}`);
   if (Array.isArray(u.metadataRefs) && u.metadataRefs.length) lines.push(`Metadata source of truth: ${u.metadataRefs.map((m: any) => m.object).filter(Boolean).join(', ')}`);
   if (Array.isArray(u.sourceFiles) && u.sourceFiles.length) lines.push(`Grounded in source files: ${u.sourceFiles.map((f: any) => f.path).filter(Boolean).slice(0, 10).join(', ')}`);
@@ -500,14 +509,16 @@ async function persistAgentRunArtifacts(run: any) {
   // were the cases grounded, and did the scripts actually pass? Surfaced so the Agent
   // Console can show the truth instead of an unconditional green.
   const inspectionOk = !(run as any).inspection_blind;
-  const groundingOk = (run as any).cases_grounding ? (run as any).cases_grounding.ok : true;
+  // Grounding can only be "ok" if we actually SAW the app AND the cases reference it.
+  // A blind inspection means the cases are NOT grounded — never report grounded:ok then.
+  const groundingOk = inspectionOk && ((run as any).cases_grounding ? (run as any).cases_grounding.ok : true);
   const execVerdict = assessExecution(run.execution_result);
   const overall = inspectionOk && groundingOk && execVerdict.ok ? 'verified'
     : (reportStatus === 'Failed' ? 'failed' : 'inconclusive');
   (run as any).verdict = {
     overall,
     inspection: inspectionOk ? 'ok' : 'blind',
-    grounding: groundingOk ? 'ok' : 'ungrounded',
+    grounding: !inspectionOk ? 'not grounded (blind)' : (groundingOk ? 'ok' : 'ungrounded'),
     execution: execVerdict.reason,
     reportStatus,
   };
@@ -516,6 +527,9 @@ async function persistAgentRunArtifacts(run: any) {
   addActivity(`Agent artifacts saved to ${run.folderId ? getFolderPath(run.folderId) : 'Uncategorized'}: ${baseName}`);
   persistDataInBackground('agent run artifacts');
 }
+
+// isNoiseTurn and deriveUnderstandingFromChat moved to agent-runtime/context/goalContext.ts
+// (imported above) so the chat-fallback logic is the single source shared by every worker.
 
 /**
  * Write the run's test cases, then either pause for human review (review_cases) or
@@ -530,11 +544,30 @@ async function generateCasesForRun(
   opts: { flowMode: 'review_cases' | 'complete'; mode: 'fresh' | 'gaps'; existingCases?: any[] },
 ): Promise<void> {
   const credentials = liveCredentials || run.credentials || {};
+  // BLOCKING HONESTY GATE (Phase 1): if the inspector saw nothing on the live page, the
+  // cases CANNOT be grounded in the real app. Generating them anyway produces ungrounded
+  // "coverage" that masquerades as real — the exact fake-green failure we are removing.
+  // Stop the pipeline here instead of writing cases from the prompt alone. (Respect an
+  // explicit user cancel — never overwrite a cancelled run; markRunDone already guards.)
+  if ((run as any).inspection_blind && run.status !== 'cancelled') {
+    const why = 'Inspection saw nothing on the page — cannot ground test cases in the live app; not generating ungrounded cases.';
+    pushPhase(run, { agent: 'System', status: 'failed', output: why });
+    markRunDone(run, 'failed');
+    // Record an honest verdict so downstream consumers/UI never read this as verified.
+    (run as any).cases_grounding = { ok: false, reason: why };
+    persistDataInBackground('blind-inspection blocked agent run');
+    return;
+  }
   const credentialContext = buildCredentialContext(credentials);
   const inspectionContext = run.inspection_context || null;
   const featureUnderstanding = run.feature_understanding || null;
   const prompt = run.prompt || '';
-  const approvedUnderstanding = run.approvedUnderstanding || '';
+  // Resolve the ONE understanding shared by every worker (Strike 3). resolveUnderstanding
+  // centralizes the former inline logic: prefer the human-approved understanding, else fall
+  // back to the richest grounded answer the agent gave earlier in THIS chat (e.g. the feature
+  // inventory). Without the fallback, runs started from supervisor/shortcut paths reached the
+  // case writer with "understanding: not provided" and drifted to a generic feature set.
+  const approvedUnderstanding = resolveUnderstanding(run);
   const targetUrl = run.app_url || '';
   const requestedCaseCount = Math.max(0, Math.floor(Number(run.requested_case_count) || 0));
   const selectedQaPromptText = run.selected_qa_prompt_text || 'No selected QA repository context was provided for this automation scope.';
@@ -545,6 +578,21 @@ async function generateCasesForRun(
   const testCaseCount = complexityDrivenCaseCount(featureUnderstanding, requestedCaseCount);
   const understandingBlock = featureUnderstanding
     ? `\nSOURCE-GROUNDED UNDERSTANDING (from the application's real code — treat as authoritative for business rules, roles, and edge cases):\n${summarizeUnderstanding(featureUnderstanding)}\n`
+    : '';
+  // The actual chat that led to this run. AUTHORITATIVE for scope — the cases must cover
+  // what the user and agent discussed (e.g. specific objects/users/permissions), not a
+  // generic template. Prevents the "cases don't match the conversation" disconnect.
+  const conv = (Array.isArray((run as any).chat_history) ? (run as any).chat_history : [])
+    // Drop greetings / capability blurbs / provider-error dumps so the scope signal
+    // (what the user actually asked for, what the agent actually found) isn't buried.
+    .filter((m: any) => m && m.content && !(m.role === 'assistant' && isNoiseTurn(m.content)))
+    .slice(-12)
+    // Give substantive assistant answers (e.g. a feature inventory) room to survive —
+    // 800 chars truncated the very inventory the cases must cover.
+    .map((m: any) => `${m.role === 'assistant' ? 'assistant' : 'user'}: ${String(m.content).replace(/\s+/g, ' ').trim().slice(0, m.role === 'assistant' ? 2400 : 600)}`)
+    .join('\n');
+  const conversationBlock = conv
+    ? `\nCONVERSATION THAT LED TO THIS RUN (authoritative scope — the test cases MUST cover exactly what was discussed here; do not substitute a generic feature set):\n${conv}\n`
     : '';
 
   pushPhase(run, { agent: 'TestGenerationAgent', status: 'running' });
@@ -578,9 +626,9 @@ async function generateCasesForRun(
 Approved user-reviewed understanding: ${approvedUnderstanding || 'not provided'}.
 Playwright target URL: ${targetUrl || 'not provided'}.
 ${credentialContext}
-${selectedQaPromptText}
+${selectedQaPromptText}${conversationBlock}
 Browser inspection result: ${JSON.stringify(compactInspectionContext(inspectionContext))}.${understandingBlock}
-Write approximately ${testCaseCount} test case(s) — this target is derived from the feature's real complexity in the source above, so treat it as a guide: cover every distinct business rule, role difference (Admin vs Shockwave), branch, and negative/edge case the code reveals, and do not pad with trivial duplicates to hit a number. ${requestedCaseCount > 0 ? `The user explicitly asked for ${requestedCaseCount} case(s); honor that count.` : 'The user asked for comprehensive coverage, so err toward thoroughness over brevity.'}
+Write approximately ${testCaseCount} test case(s) — this target is derived from the feature's real complexity in the source above, so treat it as a guide: cover every distinct business rule, role/permission difference, branch, and negative/edge case the code reveals, and do not pad with trivial duplicates to hit a number. ${requestedCaseCount > 0 ? `The user explicitly asked for ${requestedCaseCount} case(s); honor that count.` : 'The user asked for comprehensive coverage, so err toward thoroughness over brevity.'}
 
 Use the inspection result as the source of truth for reachable pages, post-login state, visible navigation, forms, tables, list-like regions, and assertion targets. Do not invent unrelated admin pages or menu names. If the inspector reached the requested goal, at least one @bvt test case must cover that exact inspected end-to-end path, including any login and navigation actions recorded in actionsTaken. If the inspector was partial or blocked, generate cases for the reachable context and include clear preconditions/steps that show what needs to be verified next.
 
@@ -631,6 +679,22 @@ Each test case must include automation tags in @ format, for example @bvt, @sani
     return;
   }
 
+  // BLOCKING GROUNDING GATE: in the automatic (no-human-review) flow, ungrounded cases
+  // must NOT proceed to script generation/execution as if they were valid — that would
+  // produce "passes" against cases that don't reflect the live app. Stop here with an
+  // honest non-verified verdict instead of executing scripts for ungrounded cases.
+  // (review_cases flow already routes through a human, who is the gate there.)
+  if (!groundingVerdict.ok && run.status !== 'cancelled') {
+    pushPhase(run, {
+      agent: 'System',
+      status: 'failed',
+      output: `Generated cases are not grounded in the live application (${groundingVerdict.reason}) — not executing scripts for ungrounded cases.`,
+    });
+    markRunDone(run, 'failed');
+    persistDataInBackground('ungrounded-cases blocked agent run');
+    return;
+  }
+
   await runPostCaseAgentFlow(run, undefined as any, { test_cases: generated }, targetUrl, credentials);
 }
 
@@ -652,12 +716,18 @@ async function runPostCaseAgentFlow(run: any, model: any, testCases: any, target
   const coderUnderstanding = run.feature_understanding
     ? `\nSOURCE-GROUNDED UNDERSTANDING (from the app's real code — use it to assert the right business rules and pick meaningful selectors, but only assert what the inspection context confirms is on screen):\n${summarizeUnderstanding(run.feature_understanding, 2500)}\n`
     : '';
+  // CRITICAL FIX (Strike 3): ground the coder on the SAME understanding the case writer
+  // used. Previously this prompt printed raw run.approvedUnderstanding, so on the common
+  // path where approvedUnderstanding is empty the coder saw "not provided" while the case
+  // writer had the chat-derived understanding — the two agents diverged. resolveUnderstanding
+  // applies the identical chat fallback, so coder and case writer now agree.
+  const reviewedUnderstanding = resolveUnderstanding(run);
 
   const coderKnowledge = buildKnowledgeBlock({ targetUrl, text: run.prompt || '', ownerId: run.ownerId }, { maxChars: 9000 });
   const coder = await getOrchestrator('playwrightCoder', { workspaceId: run.ownerId || 'default' });
   const scriptsResult = await coder.generateObject<any>({
     prompt: `Use this baseURL in the scripts when provided: ${targetUrl || 'not provided'}.
-Approved user-reviewed understanding: ${run.approvedUnderstanding || 'not provided'}.
+Approved user-reviewed understanding: ${reviewedUnderstanding || 'not provided'}.
 ${credentialContext}
 ${selectedQaContextText}${coderUnderstanding}
 Use this browser inspection context as the source of truth for reachable pages, visible labels, forms, navigation actions, tables/lists, buttons, links and final URL: ${JSON.stringify(compactInspectionContext(inspectionContext))}.
@@ -723,12 +793,14 @@ async function verifyScriptsWithGitAgent(run: any, scripts: any[], prompt: strin
     const patterns = Array.from(new Set([...ids, ...named, ...promptTerms])).slice(0, 18);
     if (!patterns.length) { pushPhase(run, { agent: 'SelectorVerifier', status: 'skipped', output: 'No selectors to verify.' }); return; }
 
+    // Verify selectors against the SELECTED project's repo (dynamic per app).
+    const repoPath = (getProject(run.projectId || '')?.repoPath || '').trim();
     let files: Array<{ path: string }> = [];
-    try { files = gitGrep(patterns); } catch { pushPhase(run, { agent: 'SelectorVerifier', status: 'skipped', output: 'Source repo unavailable — selector verification skipped.' }); return; } // target repo missing
+    try { files = gitGrep(patterns, undefined, undefined, repoPath); } catch { pushPhase(run, { agent: 'SelectorVerifier', status: 'skipped', output: 'Source repo unavailable — selector verification skipped.' }); return; } // target repo missing
     if (!files.length) { pushPhase(run, { agent: 'SelectorVerifier', status: 'skipped', output: 'No matching source files — selector verification skipped.' }); return; }
 
     const excerpts = files.slice(0, 4)
-      .map((f) => `// FILE: ${f.path}\n${readRepoFile(f.path, 5000)}`)
+      .map((f) => `// FILE: ${f.path}\n${readRepoFile(f.path, 5000, repoPath)}`)
       .join('\n\n---\n\n');
 
     // Use the inspector role for verification so these calls land on a DIFFERENT
@@ -1116,6 +1188,9 @@ export function registerAgentRoutes(app: Express) {
   app.post('/api/agent/start', async (req, res) => {
     const { app_url, prompt } = req.body;
     const approvedUnderstanding = String(req.body.approvedUnderstanding || '').trim();
+    // The conversation that led here, so case generation is grounded in what was actually
+    // discussed (e.g. the Admin objects/users/permissions), not just the prompt string.
+    const chatHistory: Array<{ role: string; content: string }> = Array.isArray(req.body.history) ? req.body.history : [];
     // 0 (or absent) means "auto" — let the depth of the source understanding decide
     // the count. A positive number is an explicit user request and is honored as-is.
     const requestedCaseCount = Math.max(0, Math.floor(Number(req.body.testCaseCount) || 0));
@@ -1223,6 +1298,7 @@ export function registerAgentRoutes(app: Express) {
       requested_case_count: 0,
       selected_qa_prompt_text: '',
       scope_context_text: '',
+      chat_history: chatHistory,
       existing_matches: [] as any[],
     };
     newRun.messages.push({
@@ -1289,7 +1365,13 @@ export function registerAgentRoutes(app: Express) {
           return cached;
         }
         try {
-          const analysis = await analyzeFeatureFromSource(`${scopeContextText} ${prompt || ''} ${approvedUnderstanding}`.trim(), { workspaceId: newRun.ownerId || 'default', userId: newRun.ownerId });
+          // Research the SELECTED project's repo — dynamic per app, no hardcoded path.
+          const repoPath = (getProject(newRun.projectId || '')?.repoPath || '').trim();
+          // Strike 3: ground the CodeAnalyst on the SAME resolved understanding the case
+          // writer/coder use (resolveUnderstanding applies the chat fallback) instead of the
+          // raw request-body approvedUnderstanding, so all three workers share one grounding.
+          const analystUnderstanding = resolveUnderstanding(newRun);
+          const analysis = await analyzeFeatureFromSource(`${scopeContextText} ${prompt || ''} ${analystUnderstanding}`.trim(), { workspaceId: newRun.ownerId || 'default', userId: newRun.ownerId, repoPath });
           setCached(understandingCache, cacheKey, analysis.understanding);
           pushPhase(newRun, { agent: 'CodeAnalyst', status: 'completed', output: { ...analysis.understanding, searchedFiles: analysis.files?.map((f) => f.path) || [] } });
           return analysis.understanding;
@@ -1435,6 +1517,22 @@ export function registerAgentRoutes(app: Express) {
   // RESUME-ON-RETRY: restart a failed run from the phase it died on, reusing the
   // expensive work already done (inspection, code-understanding, coverage matches) instead
   // of starting from scratch. Resume point is derived from what the run already produced.
+  // Stop/terminate a running agent run. Marks it cancelled (a terminal state) and sets a
+  // flag the pipeline checks at the next phase boundary, so it stops advancing.
+  app.post('/api/agent/cancel', (req, res) => {
+    const { taskId } = req.body || {};
+    const run = db.agentRuns.find((item: any) => item.id === taskId);
+    if (!run) return res.status(404).json({ error: 'Run not found' });
+    (run as any).cancelRequested = true;
+    run.status = 'cancelled';
+    run.completed_at = nowIso();
+    // Kill any in-flight Playwright execution for this run (the heavy, killable work).
+    const killed = killRunProcesses(run.id);
+    pushPhase(run, { agent: 'System', status: 'cancelled', output: `Run stopped by user.${killed ? ` Terminated ${killed} running process(es).` : ''}` });
+    persistDataInBackground('cancel agent run');
+    res.json({ success: true, status: 'cancelled', killed });
+  });
+
   app.post('/api/agent/retry', async (req, res) => {
     const { taskId } = req.body;
     const run = db.agentRuns.find((item: any) => item.id === taskId);

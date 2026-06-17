@@ -370,11 +370,36 @@ export class AgentOrchestrator {
         continue;
       }
 
-      // No tool calls → the model produced a final answer.
+      // No tool calls → the model produced what it considers a final answer.
       finalText = res.text || '';
       messages.push({ role: 'assistant', content: finalText });
       steps.push(step);
       opts.onStep?.(step);
+
+      // HONESTY GATE: an empty/whitespace final answer is NOT a success, and neither is a
+      // response the provider flagged as truncated (stopReason === 'length'). Reporting
+      // `accepted: true` with no real content is exactly the fake-green failure we are
+      // eliminating. Detect these here so they either trigger a Reflexion retry (when an
+      // accept() critic exists) or surface an honest not-accepted verdict.
+      const isEmptyFinal = finalText.trim().length === 0;
+      const isTruncated = res.stopReason === 'length';
+      if (isEmptyFinal || isTruncated) {
+        const why = isEmptyFinal
+          ? 'the model returned an empty final answer'
+          : 'the model output was truncated (hit the token limit) before completing';
+        if (acceptRetries < maxAcceptRetries) {
+          acceptRetries += 1;
+          // Give the agent a chance to actually produce a complete answer.
+          messages.push({
+            role: 'user',
+            content: `Your result was not accepted because ${why}. Produce a complete, non-empty final answer.`,
+          });
+          continue;
+        }
+        // Out of retries: fail loudly rather than masquerading as a clean final answer.
+        stoppedReason = isEmptyFinal ? 'empty_response' : 'truncated';
+        return { finalText, steps, accepted: false, stoppedReason, toolResults, totalUsage };
+      }
 
       if (opts.accept) {
         const verdict = await opts.accept({ finalText, steps, ctx });

@@ -24,6 +24,7 @@ import {
   AppWindow,
   Check,
   ChevronDown,
+  User,
 } from 'lucide-react';
 import { cn } from '@/src/lib/utils';
 import { useProjects } from '@/src/store/project';
@@ -34,43 +35,14 @@ import { CodeChangeReview } from '@/src/components/CodeChangeReview';
 import { RequirementDiscoveryResult } from '@/src/components/RequirementDiscoveryResult';
 import { GeneratedCases } from '@/src/components/GeneratedCases';
 
-// A request about the git codebase / recent code changes -> AI diff analysis.
-// Only UNAMBIGUOUS developer/codebase vocabulary triggers this. Ambiguous everyday words
-// that collide with normal TestFlow actions (e.g. "merge these suites", "what changed in my
-// last run") are deliberately excluded so they reach the planner and are understood in context.
-const GIT_RE = /\b(code\s*changes?|codebase|code\s*base|git\b|repositor(?:y|ies)|diff|commit|pull\s*request|source\s*code|db\s*change|schema\s*change|api\s*change)\b/i;
+// NOTE: The brittle regex DECISION layer that used to live here (GIT_RE, REQ_RE, DEEP_RE,
+// GEN_VERB_RE, siteActionable, isQuestionForSupervisor, isCoreListViewText, isProceedLike,
+// extractTargetUrl, findCoreAdminWebsite, …) has been retired. The routing decision is now
+// made by ONE backend call to POST /api/agent/goal (see send() below), which returns a typed
+// `kind` the console dispatches on. Only the small helpers still used by preserved EXECUTION
+// and rendering flows (describeAgentStep, isNoiseAnswer/lastAssistantAnswer for grounding,
+// escapeRegExp/findWebsiteInText for resolving a named app to a websiteId) remain.
 
-// A requirement-based testing request -> search the target app source, reconcile
-// against existing coverage, propose gap cases. This is a heavy, niche pipeline that
-// greps a specific repo, so it must be OPT-IN via an explicit phrase. It deliberately
-// does NOT trigger on the everyday words "feature"/"section"/"business logic" — those
-// belong to the conversational planner, which asks for the target instead of guessing.
-const REQ_RE = /\brequirement[-\s]?based\b|\brequirements?\s+(?:testing|coverage|analysis|traceability|gaps?)\b/i;
-
-// A request needs the deep pipeline (real inspect -> cases -> Playwright scripts
-// -> evidence) when it targets a URL or asks for cases / scripts / automation.
-const DEEP_RE = /\b(cases?|test\s*cases?|playwright|scripts?|automat\w*|e2e|end[-\s]?to[-\s]?end|screenshots?|evidence|scenarios?)\b/i;
-const DOMAIN_RE = /\b((?:https?:\/\/)?(?:(?:www\.)?[a-z0-9-]+(?:\.[a-z0-9-]+)+|(?:\d{1,3}\.){3}\d{1,3})(?::\d{2,5})?(?:\/[^\s]*)?)/i;
-
-function extractTargetUrl(message: string): string {
-  const match = message.match(DOMAIN_RE);
-  if (!match) return '';
-  const raw = match[1].replace(/[),.;!?]+$/, '');
-  return /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
-}
-
-function isDeepRequest(text: string): boolean {
-  return !!extractTargetUrl(text) || DEEP_RE.test(text);
-}
-
-// Informational / workspace queries ("how many test cases?", "list my suites",
-// "which runs failed?") are NOT deep runs — they should be answered by the Supervisor
-// (which calls query_workspace / reads the codebase), not trigger an inspect→generate
-// pipeline asking for a target app. A request only counts as informational when it asks
-// ABOUT existing artifacts without a generation/run verb and without a target URL.
-const ARTIFACT_RE = /\b(test\s*cases?|cases?|suites?|plans?|runs?|scripts?|defects?|reports?|folders?)\b/i;
-const ASK_RE = /\b(how many|how much|number of|count|list|show|what(?:'s| is| are| does)?|which|do i have|are there|exist|tell me|give me|status of|summary)\b/i;
-const GEN_VERB_RE = /\b(generate|create|write|build|make|run|execute|automat\w*|inspect|screenshot|capture|test\s+the|check\s+the|verify|validate|add\s+\w+\s+to|new\b)\b/i;
 // Turn a streamed Supervisor step into a human-readable "what it's doing right now" label.
 function describeAgentStep(ev: { toolCalls?: Array<{ name: string; arguments?: any }> }): string {
   const calls = ev.toolCalls || [];
@@ -94,70 +66,34 @@ function describeAgentStep(ev: { toolCalls?: Array<{ name: string; arguments?: a
   }
 }
 
-function isInformationalQuery(text: string): boolean {
-  const t = text || '';
-  if (extractTargetUrl(t)) return false;       // a URL means they want a live run
-  if (GEN_VERB_RE.test(t)) return false;        // generation/run verbs → deep/action flow
-  return ASK_RE.test(t) && ARTIFACT_RE.test(t); // a question about existing artifacts
+// The agent's most recent substantive answer — used as the deep run's understanding when
+// the user says "proceed/yep", so generated cases reflect the ACTUAL conversation
+// (e.g. the Admin objects/users/permissions the agent just described) instead of a
+// hardcoded template.
+// Turns that carry no scope signal — greetings, capability blurbs, provider-error dumps,
+// and failed "I don't know" answers. Never ground a run in these.
+function isNoiseAnswer(content: string): boolean {
+  const c = (content || '').trim();
+  if (c.length < 12) return true;
+  if (/^\[(openai|anthropic|gemini|google|cli|deepseek|cerebras)\]/i.test(c)) return true;
+  if (/invalid_type|invalid_value|"code"\s*:\s*"invalid_/i.test(c)) return true;
+  if (/^(hi|hello|hey)[.!,\s]/i.test(c)) return true;
+  if (/^(i['’]?m ready to help|i can draft a test plan|hi\.? i can)/i.test(c)) return true;
+  if (/no matching source files|i don['’]?t know|i can['’]?t list|could not read/i.test(c)) return true;
+  return false;
 }
-
-// App-knowledge questions ("how many features in the list view?", "what fields does the
-// user form have?", "which pages need testing?") must be answered by the Supervisor, which
-// reads the GIT SOURCE OF TRUTH (search_codebase / read_code_file) — NOT punted to the
-// explain path that asks for a URL. Any question about app surface area, with no
-// generation/run verb and no URL, routes to the Supervisor.
-const APP_KNOWLEDGE_RE = /\b(features?|pages?|fields?|buttons?|columns?|views?|list\s*views?|screens?|tabs?|forms?|workflows?|modules?|endpoints?|routes?|menus?|navigation|sections?|filters?|how does|how do(?:es)? it|what does|capabilit\w+)\b/i;
-function isQuestionForSupervisor(text: string): boolean {
-  const t = text || '';
-  if (extractTargetUrl(t)) return false;
-  if (GEN_VERB_RE.test(t)) return false;
-  if (isInformationalQuery(t)) return true;            // artifact counts/lists
-  return ASK_RE.test(t) && APP_KNOWLEDGE_RE.test(t);   // app-surface questions → consult git
-}
-
-// When a stored website is named, route to the deep pipeline if the request is
-// an actionable QA task on that site (test/check/verify/generate/explore/etc.),
-// but NOT when it is a plain info question ("what is…", "tell me about…").
-const CHAT_Q_RE = /\b(tell me|what(?:'s| is| are| does)|explain|describe|who\s|how (?:do|can) i|why\s|when\s|(?:list|show me)(?: the)? (?:cases?|suites?|plans?|runs?|defects?|reports?))\b/i;
-const SITE_ACTION_RE = /\b(test|tests|testing|login|log\s*in|sign\s*in|works?|working|does|check|verify|validate|automat\w*|e2e|end[-\s]?to[-\s]?end|flows?|features?|scenarios?|regression|smoke|sanity|click|navigat\w*|search|export|import|filter|sort|submit|create|add|edit|update|delete|remove|upload|download|generate|cases?|coverage|inspect|explore|screenshots?|evidence|buttons?|forms?|dashboards?|modules?|functionality|workflows?|pages?)\b/i;
-function siteActionable(text: string): boolean {
-  return !CHAT_Q_RE.test(text || '') && SITE_ACTION_RE.test(text || '');
-}
-const LIST_VIEW_RE = /\blist\s*view\b|\blistview\b|\btable\b|\bgrid\b/i;
-const CORE_SURFACE_RE = /\badmin\b|\bshockwave\b|\bkeystone\b|\bcore\s*platform\b/i;
-const PROCEED_RE = /\b(go\s*a\s*h(?:ea|e)?d|go\s+ahead|proceed|start|run\s+it|do\s+it|do\s+that|yes|yep|ok(?:ay)?|auto)\b/i;
-const CORE_LISTVIEW_PROMPT = 'test listview in end to end across admin and shockwave with as many high-value test cases as needed for strong QA confidence';
-const CORE_LISTVIEW_UNDERSTANDING =
-  `Here's what I understood\n` +
-  `You want comprehensive end-to-end coverage for the ListView workflow, with as many high-value test cases as needed for strong QA confidence.\n\n` +
-  `Target\n` +
-  `admin at https://ops.acchindra.com/admin, and the related Shockwave flow if it is reachable from the same test scope.\n\n` +
-  `Task\n` +
-  `Create or route a QA task to design detailed E2E test coverage for ListView behavior across Admin and Shockwave.\n\n` +
-  `Plan\n` +
-  `Inspect the reachable ListView pages, identify core user flows and edge cases, then generate reviewed E2E test cases covering rendering, search, sorting, filtering, pagination, column behavior, row actions, empty states, error states, permissions, and cross-app consistency.`;
-
-function isProceedLike(text: string): boolean {
-  const trimmed = (text || '').trim();
-  if (!trimmed) return false;
-  const compact = trimmed.toLowerCase().replace(/[^a-z]/g, '');
-  return PROCEED_RE.test(trimmed) || ['goahead', 'goahed', 'proceed', 'doit', 'dothat', 'start', 'runit', 'yes', 'yep', 'ok', 'okay', 'auto'].includes(compact);
-}
-
-function isCoreListViewText(text: string): boolean {
-  return LIST_VIEW_RE.test(text || '') && CORE_SURFACE_RE.test(text || '');
-}
-
-function findCoreAdminWebsite(websites: Array<{ id: string; name: string; baseUrl: string }>): { id: string; name: string; baseUrl: string } | null {
-  return (websites || []).find((w) => {
-    const name = String(w?.name || '').toLowerCase();
-    const url = String(w?.baseUrl || '').toLowerCase();
-    return name === 'admin' || /\/admin\b/.test(url);
-  }) || null;
-}
-
-function hasCoreListViewContext(history: Array<{ role: 'user' | 'assistant'; content: string }>): boolean {
-  return isCoreListViewText(history.map((h) => h.content || '').join('\n'));
+// The richest grounded assistant answer (e.g. a feature inventory), not just the trailing
+// message — a short "ok, doing it" must not win over the real answer the cases must cover.
+function lastAssistantAnswer(history: Array<{ role: 'user' | 'assistant'; content: string }>): string {
+  const recent = history.filter((h) => h.role === 'assistant' && !isNoiseAnswer(h.content || '')).slice(-6);
+  if (!recent.length) {
+    // Fall back to the most recent non-empty assistant turn if everything looked like noise.
+    for (let i = history.length - 1; i >= 0; i -= 1) {
+      if (history[i].role === 'assistant' && (history[i].content || '').trim()) return history[i].content;
+    }
+    return '';
+  }
+  return recent.reduce((best, h) => (h.content.length > best.length ? h.content : best), '');
 }
 function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -219,7 +155,7 @@ type Turn =
   | { id: string; role: 'assistant'; kind: 'reqdiscovery'; result: any }
   | { id: string; role: 'assistant'; kind: 'cases'; cases: any[] }
   | { id: string; role: 'assistant'; kind: 'clarify'; plan: any; summary: string; confidence: number }
-  | { id: string; role: 'assistant'; kind: 'folderask'; text: string; understanding?: string; originalPrompt?: string; targetUrl?: string; websiteId?: string; websiteName?: string; revisionCount?: number }
+  | { id: string; role: 'assistant'; kind: 'folderask'; text: string; understanding?: string; folderName?: string; originalPrompt?: string; targetUrl?: string; websiteId?: string; websiteName?: string; revisionCount?: number }
   | { id: string; role: 'assistant'; kind: 'thinking'; label: string };
 
 type PendingDeep = {
@@ -424,6 +360,8 @@ export default function AgentConsole() {
   const [selectedAppIds, setSelectedAppIds] = useState<Set<string>>(new Set());
   const [appPickerOpen, setAppPickerOpen] = useState(false);
   const [pendingDeep, setPendingDeep] = useState<PendingDeep | null>(null);
+  // Existing repository folders, for the deep-run "save results to folder" picker.
+  const [folderOptions, setFolderOptions] = useState<Array<{ id: string; name: string; path?: string }>>([]);
   // Requirement mode: toggled with Shift+Tab. When on, every message is routed to
   // the requirement-discovery pipeline regardless of phrasing.
   const [reqMode, setReqMode] = useState(false);
@@ -438,6 +376,13 @@ export default function AgentConsole() {
   // (for per-chat memory) without depending on a possibly-stale render closure.
   const turnsRef = useRef<Turn[]>([]);
   useEffect(() => { turnsRef.current = turns; }, [turns]);
+  // Load existing repository folders for the deep-run results folder picker.
+  useEffect(() => {
+    fetch('/api/folders')
+      .then((r) => r.json())
+      .then((data) => setFolderOptions(Array.isArray(data) ? data : []))
+      .catch(() => setFolderOptions([]));
+  }, []);
   // The target (app URL / website) resolved earlier in THIS chat, so a later generation
   // request ("generate them", "for admin", "yes") reuses it without re-asking — the chat
   // remembers what it's testing, like a normal assistant.
@@ -570,7 +515,7 @@ export default function AgentConsole() {
   // request carries conversation memory (ChatGPT/Claude-style continuity).
   const buildHistory = useCallback((): Array<{ role: 'user' | 'assistant'; content: string }> => {
     const out: Array<{ role: 'user' | 'assistant'; content: string }> = [];
-    const push = (content: string) => { if (content && content.trim()) out.push({ role: 'assistant', content: content.trim().slice(0, 1000) }); };
+    const push = (content: string) => { if (content && content.trim()) out.push({ role: 'assistant', content: content.trim().slice(0, 2400) }); };
     for (const t of turnsRef.current) {
       if (t.role === 'user') {
         if (t.text?.trim()) out.push({ role: 'user', content: t.text });
@@ -641,6 +586,10 @@ export default function AgentConsole() {
         testCaseCount: parseCaseCount(args.prompt),
         flowMode: 'review_cases',
         folderMention: args.folderMention || undefined,
+        // Carry the conversation so case generation is grounded in what was actually
+        // discussed — not just the (sometimes generic) prompt.
+        history: buildHistory(),
+        apps: getSelectedApps(),
       }),
     });
     const data = await res.json().catch(() => ({}));
@@ -656,7 +605,7 @@ export default function AgentConsole() {
         text: data?.error || 'I could not start the generation. Check that an AI provider key is set in Settings.',
       });
     }
-  }, [replaceTurn]);
+  }, [replaceTurn, buildHistory]);
 
   const requestDeepUnderstanding = useCallback(async (args: {
     prompt: string;
@@ -674,6 +623,50 @@ export default function AgentConsole() {
     if (!res.ok) throw new Error(data?.error || 'Failed to understand request');
     return data;
   }, [buildHistory]);
+
+  // Present the "Here's what I understood" review card for a deep generation/run request:
+  // generate an understanding (grounded in the conversation), stash it as pendingDeep, and
+  // render the folder-ask card so the user can edit, correct, pick a folder, or proceed.
+  // This is the SAME review-first flow the console has always used for deep runs — it is
+  // reused by the unified router's generate_cases / deep_test_run decisions.
+  const presentDeepUnderstanding = useCallback(async (args: {
+    thinkingId: string;
+    prompt: string;
+    targetUrl: string;
+    websiteId?: string;
+    websiteName?: string;
+  }) => {
+    const { thinkingId, prompt, targetUrl, websiteId, websiteName } = args;
+    const target = websiteName ? `${websiteName} (${targetUrl})` : targetUrl;
+    const fallbackUnderstanding =
+      `Here's what I understood:\n` +
+      `• Target: ${target}\n` +
+      `• Task: ${prompt}\n\n` +
+      `Plan: log in to the target → perform the steps on the live app → verify the result → capture screenshots as evidence.`;
+    let understanding = fallbackUnderstanding;
+    try {
+      const generated = await requestDeepUnderstanding({ prompt, targetUrl, targetName: websiteName || '' });
+      understanding = generated.understanding || fallbackUnderstanding;
+    } catch {
+      /* use deterministic fallback */
+    }
+    const nextPending: PendingDeep = { prompt, targetUrl, websiteId, websiteName, understanding, revisionCount: 0 };
+    setPendingDeep(nextPending);
+    // Remember this chat's target so later generation requests reuse it.
+    convTargetRef.current = { targetUrl, websiteId, websiteName };
+    replaceTurn(thinkingId, {
+      id: thinkingId,
+      role: 'assistant',
+      kind: 'folderask',
+      understanding,
+      originalPrompt: prompt,
+      targetUrl,
+      websiteId,
+      websiteName,
+      revisionCount: 0,
+      text: 'Look right? Pick a folder for the results (type a name below), or proceed with an auto-named folder.',
+    });
+  }, [requestDeepUnderstanding, replaceTurn]);
 
   // The apps the user explicitly selected in the composer (all of them), as target
   // context for the agent. Mirrored to a ref so callbacks read the latest without churn.
@@ -767,166 +760,16 @@ export default function AgentConsole() {
       if (pendingDeep && !proceedingDeep) setPendingDeep(null);
       const activePending = proceedingDeep ? pendingDeep : null;
 
-      // Informational/workspace questions ("how many test cases?", "list my suites") AND
-      // app-knowledge questions ("how many features in the list view?") go to the
-      // Supervisor — it answers artifact queries from the DB and app-behaviour questions by
-      // reading the git source of truth (search_codebase), instead of the deep-run pipeline
-      // asking "which app should I run this against?".
-      if (!activePending && isQuestionForSupervisor(text)) {
-        try {
-          await runViaSupervisor(text, thinkingId);
-        } finally {
-          setBusy(false);
-          inputRef.current?.focus();
-        }
-        return;
-      }
+      // ── Preserved pre-checks (run BEFORE the unified router) ───────────────────────
+      // These two flows are explicit, stateful, or have no equivalent backend route-kind,
+      // so they are kept exactly as before and short-circuit the /api/agent/goal call.
 
-      const historyForRouting = buildHistory();
-      const coreAdminSite = findCoreAdminWebsite(websites);
-      const scopeAppUrlForRouting = (scopeApp?.baseUrl || '').trim();
-      const directCoreListViewRequest =
-        !activePending &&
-        ((isCoreListViewText(text) && (DEEP_RE.test(text) || siteActionable(text))) ||
-          (isProceedLike(text) && hasCoreListViewContext(historyForRouting)));
-      if (directCoreListViewRequest) {
-        const targetUrl = coreAdminSite?.baseUrl || scopeAppUrlForRouting || 'https://ops.acchindra.com/admin';
-        convTargetRef.current = { targetUrl, websiteId: coreAdminSite?.id, websiteName: coreAdminSite?.name || 'admin' };
-        try {
-          await startDeepRun({
-            thinkingId,
-            prompt: isCoreListViewText(text) ? text : CORE_LISTVIEW_PROMPT,
-            targetUrl,
-            websiteId: coreAdminSite?.id,
-            approvedUnderstanding: CORE_LISTVIEW_UNDERSTANDING,
-            folderMention: isAutoFolderResponse(text) ? '' : undefined,
-          });
-        } catch (err: any) {
-          replaceTurn(thinkingId, {
-            id: thinkingId,
-            role: 'assistant',
-            kind: 'text',
-            text: `Something went wrong starting the agent: ${err?.message || 'unknown error'}.`,
-          });
-        } finally {
-          setBusy(false);
-          inputRef.current?.focus();
-        }
-        return;
-      }
-
-      // Requirement-based testing path: search the target app source for a feature
-      // / section, reconcile against existing coverage, propose gap cases. Only when
-      // no URL or stored website is referenced (those want live inspection instead).
-      if (
-        !activePending &&
-        (reqMode || (REQ_RE.test(text) && !extractTargetUrl(text) && !findWebsiteInText(text, websites)))
-      ) {
-        try {
-          const res = await fetch('/api/requirements/discover', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ query: text, workspaceId: 'default' }),
-          });
-          const data = await res.json();
-          if (!res.ok) {
-            replaceTurn(thinkingId, {
-              id: thinkingId,
-              role: 'assistant',
-              kind: 'text',
-              text: data?.error || 'I could not analyze that feature. Make sure the configured target repo is available.',
-            });
-          } else {
-            replaceTurn(thinkingId, { id: thinkingId, role: 'assistant', kind: 'reqdiscovery', result: data });
-          }
-        } catch (err: any) {
-          replaceTurn(thinkingId, {
-            id: thinkingId,
-            role: 'assistant',
-            kind: 'text',
-            text: `Something went wrong analyzing the feature: ${err?.message || 'unknown error'}.`,
-          });
-        } finally {
-          setBusy(false);
-          inputRef.current?.focus();
-        }
-        return;
-      }
-
-      // Codebase path: analyze recent git changes, reconcile against existing
-      // coverage, propose gap tests. Checked before the deep/URL path.
-      if (GIT_RE.test(text) && !extractTargetUrl(text)) {
-        try {
-          const res = await fetch('/api/git-agent/analyze', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ baseRef: 'auto', workspaceId: 'default' }),
-          });
-          const data = await res.json();
-          if (!res.ok) {
-            replaceTurn(thinkingId, {
-              id: thinkingId,
-              role: 'assistant',
-              kind: 'text',
-              text: data?.error || 'I could not read the codebase. Make sure the Git Agent target repo is available.',
-            });
-          } else {
-            replaceTurn(thinkingId, { id: thinkingId, role: 'assistant', kind: 'codereview', analysis: data });
-          }
-        } catch (err: any) {
-          replaceTurn(thinkingId, {
-            id: thinkingId,
-            role: 'assistant',
-            kind: 'text',
-            text: `Something went wrong analyzing the code changes: ${err?.message || 'unknown error'}.`,
-          });
-        } finally {
-          setBusy(false);
-          inputRef.current?.focus();
-        }
-        return;
-      }
-
-      // Deep generation path: cases + Playwright scripts + evidence via the
-      // multi-agent pipeline. Triggered by a URL, generation keywords, OR a
-      // request to test a stored website by name. Before preparing, we ask the
-      // user which folder to save the results in (unless one is mentioned).
-      const promptForDeep = activePending?.prompt || text;
-      const explicitUrl = activePending?.targetUrl || extractTargetUrl(promptForDeep);
-      const site = activePending?.websiteId
-        ? websites.find((w) => w.id === activePending.websiteId) || null
-        : findWebsiteInText(promptForDeep, websites);
-      // Fall back to the SELECTED project/app's base URL so a generation request in an
-      // ongoing conversation ("generate the test cases") runs the full deep pipeline
-      // (inspect -> cases -> scripts -> evidence) against the current app — instead of
-      // dropping to the generic planner and showing a plan-card.
-      const scopeAppUrl = (scopeApp?.baseUrl || '').trim();
-      const explicitTarget = !!explicitUrl || !!site;
-      const targetUrl = explicitUrl || (site ? '' : scopeAppUrl);
-      const hasTarget = !!targetUrl || !!site;
-      // A genuine case/script/automation generation request (DEEP_RE) always wants the
-      // deep pipeline. When a URL/website is named explicitly, any actionable QA request
-      // (test/check/verify…) can also go deep — but the selected-app fallback is reserved
-      // for real generation, so plain "create a test plan/suite/run" still uses the planner.
-      const isGenerationReq = DEEP_RE.test(promptForDeep);
-      const wantsGeneration = isGenerationReq || (explicitTarget && siteActionable(promptForDeep));
-      const isDeep = activePending ? true : (wantsGeneration && hasTarget);
-
-      // Generation requested but no target anywhere (e.g. "All apps" selected and no URL
-      // typed): ask which app/URL to run against — never fall through to the plan-card.
-      if (!activePending && wantsGeneration && !hasTarget) {
-        replaceTurn(thinkingId, {
-          id: thinkingId,
-          role: 'assistant',
-          kind: 'text',
-          text: 'Which app should I run this against? Select an app in the project switcher (top bar) so I can use its URL, or paste the target URL here — then I will inspect it, generate the cases and Playwright scripts, and capture evidence.',
-        });
-        setBusy(false);
-        inputRef.current?.focus();
-        return;
-      }
-      if (isDeep) {
-        if (activePending && !isLikelyFolderResponse(text)) {
+      // 1) Pending "Here's what I understood" review card: a folder-like reply (folder name
+      //    or "auto"/"proceed") FINALIZES the deep run; any other reply REVISES the
+      //    understanding. (Non-folder replies that abandon the card already cleared
+      //    pendingDeep above and fall through to the unified router.)
+      if (activePending) {
+        if (!isLikelyFolderResponse(text)) {
           try {
             const revised = await requestDeepUnderstanding({
               prompt: activePending.prompt,
@@ -968,89 +811,19 @@ export default function AgentConsole() {
           }
           return;
         }
-
-        // Ask for a folder first (only when we haven't already asked).
-        if (!activePending) {
-          const mentionsFolder = /\bfolder\b/i.test(text) || /@\w+/.test(text);
-          if (!mentionsFolder) {
-            const target = site ? `${site.name} (${site.baseUrl})` : targetUrl;
-            const understanding =
-              `Here's what I understood:\n` +
-              `• Target: ${target}\n` +
-              `• Task: ${promptForDeep}\n\n` +
-              `Plan: log in to the target → perform the steps on the live app → verify the result → capture screenshots as evidence.`;
-            let generatedUnderstanding = understanding;
-            try {
-              const generated = await requestDeepUnderstanding({
-                prompt: promptForDeep,
-                targetUrl: site ? site.baseUrl : targetUrl,
-                targetName: site ? site.name : '',
-              });
-              generatedUnderstanding = generated.understanding || understanding;
-            } catch {
-              /* use deterministic fallback */
-            }
-            const nextPending: PendingDeep = {
-              prompt: text,
-              targetUrl: site ? site.baseUrl : targetUrl,
-              websiteId: site ? site.id : undefined,
-              websiteName: site ? site.name : undefined,
-              understanding: generatedUnderstanding,
-              revisionCount: 0,
-            };
-            setPendingDeep(nextPending);
-            // Remember this chat's target so later generation requests reuse it.
-            convTargetRef.current = { targetUrl: nextPending.targetUrl, websiteId: nextPending.websiteId, websiteName: nextPending.websiteName };
-            replaceTurn(thinkingId, {
-              id: thinkingId,
-              role: 'assistant',
-              kind: 'folderask',
-              understanding: generatedUnderstanding,
-              originalPrompt: nextPending.prompt,
-              targetUrl: nextPending.targetUrl,
-              websiteId: nextPending.websiteId,
-              websiteName: nextPending.websiteName,
-              revisionCount: 0,
-              text: 'Look right? Pick a folder for the results (type a name below), or proceed with an auto-named folder.',
-            });
-            setBusy(false);
-            inputRef.current?.focus();
-            return;
-          }
-        }
-        const folderMention = activePending
-          ? (isAutoFolderResponse(text) ? '' : stripFolderPrefix(text))
-          : '';
-        const approvedUnderstanding = activePending?.understanding || '';
+        // Folder-like reply → start the deep run with the reviewed understanding.
+        const folderMention = isAutoFolderResponse(text) ? '' : stripFolderPrefix(text);
+        const approvedUnderstanding = activePending.understanding || lastAssistantAnswer(buildHistory());
         setPendingDeep(null);
         try {
-          const res = await fetch('/api/agent/start', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              app_url: targetUrl || (site ? site.baseUrl : ''),
-              websiteId: site ? site.id : undefined,
-              prompt: promptForDeep,
-              approvedUnderstanding,
-              testCaseCount: parseCaseCount(promptForDeep),
-              flowMode: 'review_cases',
-              folderMention: folderMention || undefined,
-              apps: getSelectedApps(),
-            }),
+          await startDeepRun({
+            thinkingId,
+            prompt: activePending.prompt,
+            targetUrl: activePending.targetUrl,
+            websiteId: activePending.websiteId,
+            approvedUnderstanding,
+            folderMention: folderMention || undefined,
           });
-          const data = await res.json();
-          if (data?.chat_response) {
-            replaceTurn(thinkingId, { id: thinkingId, role: 'assistant', kind: 'text', text: data.chat_response });
-          } else if (data?.task_id) {
-            replaceTurn(thinkingId, { id: thinkingId, role: 'assistant', kind: 'deeprun', taskId: data.task_id });
-          } else {
-            replaceTurn(thinkingId, {
-              id: thinkingId,
-              role: 'assistant',
-              kind: 'text',
-              text: data?.error || 'I could not start the generation. Check that an AI provider key is set in Settings.',
-            });
-          }
         } catch (err: any) {
           replaceTurn(thinkingId, {
             id: thinkingId,
@@ -1065,139 +838,231 @@ export default function AgentConsole() {
         return;
       }
 
+      // 2) Requirement mode (Shift+Tab opt-in): search the target app source for a feature
+      //    / section, reconcile against existing coverage, propose gap cases. This is a niche
+      //    opt-in pipeline with no equivalent /goal route-kind, so it is kept explicit.
+      if (reqMode) {
+        try {
+          const res = await fetch('/api/requirements/discover', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ query: text, workspaceId: 'default' }),
+          });
+          const data = await res.json();
+          if (!res.ok) {
+            replaceTurn(thinkingId, {
+              id: thinkingId,
+              role: 'assistant',
+              kind: 'text',
+              text: data?.error || 'I could not analyze that feature. Make sure the configured target repo is available.',
+            });
+          } else {
+            replaceTurn(thinkingId, { id: thinkingId, role: 'assistant', kind: 'reqdiscovery', result: data });
+          }
+        } catch (err: any) {
+          replaceTurn(thinkingId, {
+            id: thinkingId,
+            role: 'assistant',
+            kind: 'text',
+            text: `Something went wrong analyzing the feature: ${err?.message || 'unknown error'}.`,
+          });
+        } finally {
+          setBusy(false);
+          inputRef.current?.focus();
+        }
+        return;
+      }
+
+      // ── The single primary decision: the unified backend router ─────────────────────
+      // POST the message to /api/agent/goal and dispatch on the returned `kind`, reusing
+      // the existing execution + rendering helpers. This replaces the old pile of frontend
+      // regexes (DEEP_RE / GEN_VERB_RE / siteActionable / isQuestionForSupervisor / …).
+      const historyForRouting = buildHistory();
+      const scopeAppUrl = (scopeApp?.baseUrl || '').trim();
       try {
-        const res = await fetch('/api/controller/plan', {
+        const res = await fetch('/api/agent/goal', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            userMessage: text,
-            pageContext: { path: location.pathname },
-            workspaceId: 'default',
+            message: text,
             history: historyForRouting,
             apps: getSelectedApps(),
+            pageContext: { path: location.pathname },
           }),
         });
-        const plan = await res.json();
+        const goal = await res.json().catch(() => ({}));
         if (!res.ok) {
           replaceTurn(thinkingId, {
             id: thinkingId,
             role: 'assistant',
             kind: 'text',
-            text: plan?.error || 'Sorry, I could not process that request. Please try rephrasing it.',
+            text: goal?.error || 'Sorry, I could not process that request. Please try rephrasing it.',
           });
           return;
         }
 
-        // If the backend's plan involves ANY test-case / script generation (regardless of
-        // phrasing — "yep write them", "for admin", and even when paired with a navigate
-        // step), run the full deep pipeline (inspect -> cases -> scripts -> evidence) instead
-        // of EVER showing the generic plan-card. Trusts the model's classification + memory.
-        const planSteps = Array.isArray(plan.steps) ? plan.steps : [];
-        const GEN_KINDS = new Set(['create_cases', 'generate_script']);
-        const hasGenIntent = planSteps.some((s: any) => GEN_KINDS.has(s?.intent?.kind));
-        const hasPlanIntent = planSteps.some((s: any) => s?.intent?.kind === 'create_plan');
-        const planText = [
-          text,
-          plan?.summary || '',
-          ...planSteps.map((s: any) => `${s?.intent?.title || ''} ${s?.intent?.description || ''}`),
-        ].join('\n');
-        const shouldDeepRoutePlan = hasGenIntent || (hasPlanIntent && (isCoreListViewText(planText) || hasCoreListViewContext(historyForRouting)));
-        if (shouldDeepRoutePlan) {
-          // Resolve a target: the selected app, a website named in this message, or the
-          // target remembered from earlier in THIS chat (so "for admin"/"yes" just works).
-          const siteFromMsg = findWebsiteInText(text, websites);
-          const fallbackAdminSite = findCoreAdminWebsite(websites);
-          const pivotUrl = scopeAppUrl || (siteFromMsg ? siteFromMsg.baseUrl : '') || convTargetRef.current?.targetUrl || fallbackAdminSite?.baseUrl || '';
-          const pivotWebsiteId = siteFromMsg?.id || convTargetRef.current?.websiteId || fallbackAdminSite?.id;
-          if (!pivotUrl && !pivotWebsiteId) {
+        const kind = goal?.kind;
+
+        // answer / clarify → a plain assistant-text turn. For 'answer' we keep the nicer
+        // streaming UX by re-using the Supervisor stream (which grounds in code + workspace);
+        // if that fails it falls back to the reply text the router already produced.
+        if (kind === 'answer') {
+          if (typeof goal.reply === 'string' && goal.reply.trim()) {
+            replaceTurn(thinkingId, { id: thinkingId, role: 'assistant', kind: 'text', text: cleanChat(goal.reply) });
+          } else {
+            await runViaSupervisor(text, thinkingId);
+          }
+          return;
+        }
+        if (kind === 'clarify') {
+          replaceTurn(thinkingId, {
+            id: thinkingId,
+            role: 'assistant',
+            kind: 'text',
+            text: cleanChat(goal.reply || 'Could you give me a bit more detail so I get this right?'),
+          });
+          return;
+        }
+
+        // code_analysis → the existing git-agent analysis path (renders a CodeChangeReview).
+        if (kind === 'code_analysis') {
+          try {
+            const ares = await fetch('/api/git-agent/analyze', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ baseRef: 'auto', workspaceId: 'default' }),
+            });
+            const data = await ares.json();
+            if (!ares.ok) {
+              replaceTurn(thinkingId, {
+                id: thinkingId,
+                role: 'assistant',
+                kind: 'text',
+                text: data?.error || 'I could not read the codebase. Make sure the Git Agent target repo is available.',
+              });
+            } else {
+              replaceTurn(thinkingId, { id: thinkingId, role: 'assistant', kind: 'codereview', analysis: data });
+            }
+          } catch (err: any) {
             replaceTurn(thinkingId, {
               id: thinkingId,
               role: 'assistant',
               kind: 'text',
-              text: 'Which app should I run this against? Select an app in the project switcher (top bar) so I can use its URL — then I will inspect it, generate the cases and Playwright scripts, and capture evidence.',
+              text: `Something went wrong analyzing the code changes: ${err?.message || 'unknown error'}.`,
+            });
+          }
+          return;
+        }
+
+        // generate_cases / deep_test_run → the existing deep pipeline via startDeepRun, with
+        // the review-first folder-ask card. The router's `execute` flag distinguishes a
+        // review (generate_cases) from a full run (deep_test_run); the deep pipeline's
+        // flowMode='review_cases' already realizes review-first, so generate_cases shows the
+        // understanding card before any execution and deep_test_run proceeds with it.
+        if (kind === 'generate_cases' || kind === 'deep_test_run') {
+          // Resolve a concrete target. Prefer the router's resolved target, then the named
+          // website (so we can pass a websiteId), then the selected/scope app, then the
+          // target remembered earlier in THIS chat. Never fabricate a hardcoded URL.
+          const routedUrl = (goal?.target?.url || '').trim();
+          const routedName = (goal?.target?.name || '').trim();
+          const namedSite =
+            findWebsiteInText(routedName, websites) ||
+            findWebsiteInText(routedUrl, websites) ||
+            findWebsiteInText(text, websites);
+          const targetUrl =
+            routedUrl ||
+            namedSite?.baseUrl ||
+            scopeAppUrl ||
+            (getSelectedApps()[0]?.baseUrl || '') ||
+            convTargetRef.current?.targetUrl ||
+            '';
+          const websiteId = namedSite?.id || convTargetRef.current?.websiteId;
+          const websiteName = routedName || namedSite?.name || convTargetRef.current?.websiteName;
+          if (!targetUrl && !websiteId) {
+            replaceTurn(thinkingId, {
+              id: thinkingId,
+              role: 'assistant',
+              kind: 'text',
+              text: 'Which app should I run this against? Select an app in the project switcher (top bar) so I can use its URL, or paste the target URL here — then I will inspect it, generate the cases and Playwright scripts, and capture evidence.',
             });
             setBusy(false);
             inputRef.current?.focus();
             return;
           }
-          convTargetRef.current = { targetUrl: pivotUrl, websiteId: pivotWebsiteId, websiteName: siteFromMsg?.name || fallbackAdminSite?.name };
-          const genScopeFromPlan = planSteps
-            .filter((s: any) => GEN_KINDS.has(s?.intent?.kind))
-            .map((s: any) => s?.intent?.description || s?.intent?.title)
-            .filter(Boolean).join('. ').trim() || plan.summary || text;
-          const genScope = hasGenIntent ? genScopeFromPlan : CORE_LISTVIEW_PROMPT;
-          const approvedUnderstanding = !hasGenIntent && (isCoreListViewText(planText) || hasCoreListViewContext(historyForRouting))
-            ? CORE_LISTVIEW_UNDERSTANDING
-            : '';
-          try {
-            await startDeepRun({
-              thinkingId,
-              targetUrl: pivotUrl,
-              websiteId: pivotWebsiteId,
-              prompt: genScope,
-              approvedUnderstanding,
-            });
-          } catch (err: any) {
-            replaceTurn(thinkingId, { id: thinkingId, role: 'assistant', kind: 'text', text: `Something went wrong starting the run: ${err?.message || 'unknown error'}.` });
-          } finally {
-            setBusy(false);
-            inputRef.current?.focus();
-          }
+          // The prompt carries the router's grounded scope when it has one, so the deep run
+          // reflects the actual conversation rather than just the raw message.
+          const prompt = (typeof goal.scope === 'string' && goal.scope.trim()) ? goal.scope.trim() : text;
+          await presentDeepUnderstanding({ thinkingId, prompt, targetUrl, websiteId, websiteName });
+          setBusy(false);
+          inputRef.current?.focus();
           return;
         }
 
-        if (planIsChatOnly(plan)) {
-          // Pure question / chat — stream the answer token-by-token.
-          const fallbackText = 'I can help you create test plans, cases, runs, defects, and reports. Tell me what you want to do.';
-          replaceTurn(thinkingId, { id: thinkingId, role: 'assistant', kind: 'text', text: '' });
-          try {
-            const histForExplain = historyForRouting;
-            const ans = await fetch('/api/controller/explain/stream', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ topic: text, workspaceId: 'default', history: histForExplain, apps: getSelectedApps() }),
-            });
-            if (!ans.ok || !ans.body) {
-              const data = await fetch('/api/controller/explain', {
+        // workspace_action → the existing plan-card flow (same plan shape as
+        // /api/controller/plan). Pure chat-only plans stream the answer; low-confidence
+        // plans confirm first; otherwise render the reviewable WorkflowRunner plan card.
+        const plan = goal?.plan;
+        if (kind === 'workspace_action' && plan) {
+          if (planIsChatOnly(plan)) {
+            const fallbackText = 'I can help you create test plans, cases, runs, defects, and reports. Tell me what you want to do.';
+            replaceTurn(thinkingId, { id: thinkingId, role: 'assistant', kind: 'text', text: '' });
+            try {
+              const histForExplain = historyForRouting;
+              const ans = await fetch('/api/controller/explain/stream', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ topic: text, workspaceId: 'default', history: histForExplain, apps: getSelectedApps() }),
-              }).then((r) => r.json()).catch(() => ({}));
-              replaceTurn(thinkingId, { id: thinkingId, role: 'assistant', kind: 'text', text: cleanChat(data?.answer || plan?.summary || fallbackText) });
-            } else {
-              const reader = ans.body.getReader();
-              const decoder = new TextDecoder();
-              let acc = '';
-              for (;;) {
-                const { done, value } = await reader.read();
-                if (done) break;
-                acc += decoder.decode(value, { stream: true });
-                const display = cleanChat(acc);
-                setTurns((prev) => prev.map((t) => (t.id === thinkingId ? { id: thinkingId, role: 'assistant', kind: 'text', text: display } : t)));
+              });
+              if (!ans.ok || !ans.body) {
+                const data = await fetch('/api/controller/explain', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ topic: text, workspaceId: 'default', history: histForExplain, apps: getSelectedApps() }),
+                }).then((r) => r.json()).catch(() => ({}));
+                replaceTurn(thinkingId, { id: thinkingId, role: 'assistant', kind: 'text', text: cleanChat(data?.answer || plan?.summary || fallbackText) });
+              } else {
+                const reader = ans.body.getReader();
+                const decoder = new TextDecoder();
+                let acc = '';
+                for (;;) {
+                  const { done, value } = await reader.read();
+                  if (done) break;
+                  acc += decoder.decode(value, { stream: true });
+                  const display = cleanChat(acc);
+                  setTurns((prev) => prev.map((t) => (t.id === thinkingId ? { id: thinkingId, role: 'assistant', kind: 'text', text: display } : t)));
+                }
+                if (!acc.trim()) {
+                  setTurns((prev) => prev.map((t) => (t.id === thinkingId ? { id: thinkingId, role: 'assistant', kind: 'text', text: fallbackText } : t)));
+                }
               }
-              if (!acc.trim()) {
-                setTurns((prev) => prev.map((t) => (t.id === thinkingId ? { id: thinkingId, role: 'assistant', kind: 'text', text: fallbackText } : t)));
-              }
+            } catch {
+              replaceTurn(thinkingId, { id: thinkingId, role: 'assistant', kind: 'text', text: plan?.summary || fallbackText });
             }
-          } catch {
-            replaceTurn(thinkingId, { id: thinkingId, role: 'assistant', kind: 'text', text: plan?.summary || fallbackText });
+            return;
+          }
+
+          if (planConfidence(plan) < CLARIFY_THRESHOLD) {
+            replaceTurn(thinkingId, {
+              id: thinkingId,
+              role: 'assistant',
+              kind: 'clarify',
+              plan,
+              summary: plan.summary || 'do that',
+              confidence: planConfidence(plan),
+            });
+          } else {
+            replaceTurn(thinkingId, { id: thinkingId, role: 'assistant', kind: 'plan', plan });
           }
           return;
         }
 
-        // Ambiguous request: confirm the interpretation before acting.
-        if (planConfidence(plan) < CLARIFY_THRESHOLD) {
-          replaceTurn(thinkingId, {
-            id: thinkingId,
-            role: 'assistant',
-            kind: 'clarify',
-            plan,
-            summary: plan.summary || 'do that',
-            confidence: planConfidence(plan),
-          });
-        } else {
-          replaceTurn(thinkingId, { id: thinkingId, role: 'assistant', kind: 'plan', plan });
-        }
+        // Unknown / unhandled kind: surface any reply, else a safe fallback.
+        replaceTurn(thinkingId, {
+          id: thinkingId,
+          role: 'assistant',
+          kind: 'text',
+          text: cleanChat(goal?.reply || plan?.summary || 'I can help you create test plans, cases, runs, defects, and reports. Tell me what you want to do.'),
+        });
       } catch (err: any) {
         replaceTurn(thinkingId, {
           id: thinkingId,
@@ -1210,7 +1075,7 @@ export default function AgentConsole() {
         inputRef.current?.focus();
       }
     },
-    [input, busy, location.pathname, stopListening, replaceTurn, requestDeepUnderstanding, reqMode, pendingDeep, websites, scopeApp, buildHistory, startDeepRun, runViaSupervisor, getSelectedApps],
+    [input, busy, location.pathname, stopListening, replaceTurn, requestDeepUnderstanding, presentDeepUnderstanding, reqMode, pendingDeep, websites, scopeApp, buildHistory, startDeepRun, runViaSupervisor, getSelectedApps],
   );
 
   // Start the deep run directly from a "Here's what I understood" card's OWN stored data
@@ -1468,9 +1333,13 @@ export default function AgentConsole() {
             {turns.map((turn) => {
               if (turn.role === 'user') {
                 return (
-                  <div key={turn.id} className="flex justify-end">
-                    <div className="max-w-[85%] whitespace-pre-wrap rounded-2xl rounded-br-sm bg-[var(--accent)] px-4 py-2.5 text-sm text-white">
+                  <div key={turn.id} className="flex items-start justify-end gap-2.5">
+                    {/* Softer tinted bubble + primary text reads better than solid accent + white. */}
+                    <div className="max-w-[85%] whitespace-pre-wrap rounded-2xl rounded-br-sm border border-[var(--accent)]/30 bg-[var(--accent)]/15 px-4 py-2.5 text-sm text-[var(--text-primary)]">
                       {turn.text}
+                    </div>
+                    <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[var(--accent)]/10 text-[var(--accent)]">
+                      <User className="h-4 w-4" />
                     </div>
                   </div>
                 );
@@ -1596,7 +1465,13 @@ export default function AgentConsole() {
                         {turn.understanding && (
                           <textarea
                             value={turn.understanding}
+                            rows={3}
+                            // Auto-grow to fit content (dynamic height, not fixed), capped so it never
+                            // takes over the viewport; scrolls past the cap.
+                            ref={(el) => { if (el) { el.style.height = 'auto'; el.style.height = `${Math.min(el.scrollHeight, 360)}px`; } }}
                             onChange={(e) => {
+                              e.target.style.height = 'auto';
+                              e.target.style.height = `${Math.min(e.target.scrollHeight, 360)}px`;
                               const nextUnderstanding = e.target.value;
                               setTurns((prev) => prev.map((item) => (
                                 item.id === turn.id && item.role === 'assistant' && item.kind === 'folderask'
@@ -1605,22 +1480,44 @@ export default function AgentConsole() {
                               )));
                               setPendingDeep((prev) => (prev ? { ...prev, understanding: nextUnderstanding } : prev));
                             }}
-                            className="mb-2 min-h-[150px] w-full resize-y whitespace-pre-wrap rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 font-sans text-[13px] text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
+                            className="mb-2 w-full resize-none overflow-y-auto whitespace-pre-wrap rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 font-sans text-[13px] text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
                           />
                         )}
                         <p className="text-[var(--text-primary)]">{turn.text}</p>
-                        <div className="mt-2.5 flex flex-wrap gap-2">
-                          <button
-                            onClick={() => proceedDeepFromTurn(turn)}
-                            className="inline-flex items-center gap-1.5 rounded-md bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-white hover:bg-[var(--accent-hover)]"
+                        {/* Results folder + actions, all in a single row: pick an existing folder,
+                            or type a new name (blank = auto-named), then proceed/cancel. */}
+                        <div className="mt-2 flex items-center gap-2">
+                          <select
+                            value={folderOptions.some((f) => (f.path || f.name) === turn.folderName) ? turn.folderName : ''}
+                            onChange={(e) => {
+                              const name = e.target.value;
+                              setTurns((prev) => prev.map((item) => (
+                                item.id === turn.id && item.role === 'assistant' && item.kind === 'folderask' ? { ...item, folderName: name } : item
+                              )));
+                            }}
+                            className="shrink-0 max-w-[150px] rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
                           >
-                            <Sparkles className="h-3.5 w-3.5" /> Proceed (auto folder)
-                          </button>
+                            <option value="">Auto-named new folder</option>
+                            {folderOptions.map((f) => (
+                              <option key={f.id} value={f.path || f.name}>{f.path || f.name}</option>
+                            ))}
+                          </select>
+                          <input
+                            value={turn.folderName || ''}
+                            onChange={(e) => {
+                              const name = e.target.value;
+                              setTurns((prev) => prev.map((item) => (
+                                item.id === turn.id && item.role === 'assistant' && item.kind === 'folderask' ? { ...item, folderName: name } : item
+                              )));
+                            }}
+                            placeholder="or new folder name"
+                            className="min-w-0 flex-1 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2.5 py-1.5 text-xs text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
+                          />
                           <button
-                            onClick={() => proceedDeepFromTurn(turn)}
-                            className="inline-flex items-center gap-1.5 rounded-md border border-[var(--accent)] bg-[var(--accent)]/10 px-3 py-1.5 text-xs font-medium text-[var(--accent)] hover:bg-[var(--accent)]/15"
+                            onClick={() => proceedDeepFromTurn(turn, (turn.folderName || '').trim() || undefined)}
+                            className="inline-flex shrink-0 items-center gap-1.5 rounded-md bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-white hover:bg-[var(--accent-hover)]"
                           >
-                            <Wand2 className="h-3.5 w-3.5" /> Use edited understanding
+                            <Sparkles className="h-3.5 w-3.5" /> {(turn.folderName || '').trim() ? 'Proceed' : 'Proceed (auto)'}
                           </button>
                           <button
                             onClick={() => {
@@ -1633,7 +1530,7 @@ export default function AgentConsole() {
                               });
                               inputRef.current?.focus();
                             }}
-                            className="inline-flex items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--bg-card)] px-3 py-1.5 text-xs font-medium text-[var(--text-muted)] hover:border-[var(--accent)] hover:text-[var(--text-primary)]"
+                            className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--bg-card)] px-3 py-1.5 text-xs font-medium text-[var(--text-muted)] hover:border-[var(--accent)] hover:text-[var(--text-primary)]"
                           >
                             Cancel
                           </button>

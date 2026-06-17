@@ -163,8 +163,11 @@ export const localRepo = {
 
   search(projectId: string, queryText: string, perPage = 30): Array<{ path: string; line?: number; preview?: string }> {
     const cwd = repoPathOf(projectId);
+    // Restrict to SOURCE files so root docs/config (README.md, .yml, .github/…) can't
+    // saturate the results and bury the actual app source the agent needs.
+    const SRC_PATHSPECS = ['*.ts', '*.tsx', '*.js', '*.jsx', '*.vue', '*.svelte', '*.py', '*.go', '*.java', '*.rb', '*.cs', '*.php', '*.html', '*.css', '*.scss'];
     // git grep exits 1 when there are no matches — treat that as an empty result.
-    const result = spawnSync('git', ['-c', `safe.directory=${cwd.replace(/\\/g, '/')}`, 'grep', '-n', '-I', '--no-color', '-F', '-e', queryText], {
+    const result = spawnSync('git', ['-c', `safe.directory=${cwd.replace(/\\/g, '/')}`, 'grep', '-n', '-I', '--no-color', '-F', '-e', queryText, '--', ...SRC_PATHSPECS], {
       cwd,
       encoding: 'utf8',
       timeout: 60000,
@@ -174,7 +177,10 @@ export const localRepo = {
     if (result.status === 1) return [];
     if (result.status !== 0) throw repoError((result.stderr || 'git grep failed').trim(), 422);
     return (result.stdout || '')
-      .split('\n')
+      // Split on CRLF *or* LF: on Windows, grep lines from CRLF files keep a trailing
+      // \r that breaks the `path:line:preview` regex below (so path becomes the whole
+      // line and line numbers are lost). Normalize the line ending here.
+      .split(/\r?\n/)
       .filter(Boolean)
       .slice(0, Math.min(perPage, 200))
       .map((l) => {
