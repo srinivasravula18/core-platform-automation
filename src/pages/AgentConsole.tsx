@@ -24,6 +24,7 @@ import {
   AppWindow,
   Check,
   ChevronDown,
+  Copy,
   User,
 } from 'lucide-react';
 import { cn } from '@/src/lib/utils';
@@ -360,6 +361,8 @@ export default function AgentConsole() {
   const [selectedAppIds, setSelectedAppIds] = useState<Set<string>>(new Set());
   const [appPickerOpen, setAppPickerOpen] = useState(false);
   const [pendingDeep, setPendingDeep] = useState<PendingDeep | null>(null);
+  const [copiedTurnId, setCopiedTurnId] = useState<string | null>(null);
+  const [editingTurnId, setEditingTurnId] = useState<string | null>(null);
   // Existing repository folders, for the deep-run "save results to folder" picker.
   const [folderOptions, setFolderOptions] = useState<Array<{ id: string; name: string; path?: string }>>([]);
   // Requirement mode: toggled with Shift+Tab. When on, every message is routed to
@@ -765,14 +768,17 @@ export default function AgentConsole() {
       if (!text || busy) return;
       stopListening();
       setInput('');
+      const editedTurnId = raw === undefined ? editingTurnId : null;
+      setEditingTurnId(null);
       setBusy(true);
 
       const thinkingId = nextId();
-      setTurns((prev) => [
-        ...prev,
-        { id: nextId(), role: 'user', text },
-        { id: thinkingId, role: 'assistant', kind: 'thinking', label: 'Understanding your request…' },
-      ]);
+      setTurns((prev) => {
+        const nextTurns = editedTurnId
+          ? prev.map((t) => (t.id === editedTurnId && t.role === 'user' ? { ...t, text } : t))
+          : [...prev, { id: nextId(), role: 'user', text }];
+        return [...nextTurns, { id: thinkingId, role: 'assistant', kind: 'thinking', label: 'Understanding your request...' }];
+      });
 
       // A pending "Here's what I understood" card only consumes a SHORT folder-like reply
       // (a folder name, or "auto"/"proceed"). ANY other message means the user moved on or
@@ -1203,6 +1209,28 @@ export default function AgentConsole() {
     [patchTurn],
   );
 
+  const editUserPrompt = useCallback((turnId: string, text: string) => {
+    setEditingTurnId(turnId);
+    setInput(text);
+    inputRef.current?.focus();
+    requestAnimationFrame(() => {
+      const el = inputRef.current;
+      if (!el) return;
+      const pos = el.value.length;
+      el.setSelectionRange(pos, pos);
+    });
+  }, []);
+
+  const copyUserPrompt = useCallback(async (turnId: string, text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedTurnId(turnId);
+      window.setTimeout(() => setCopiedTurnId((current) => (current === turnId ? null : current)), 1500);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
   const confirmClarify = useCallback((turnId: string, plan: any) => {
     setTurns((prev) => prev.map((t) => (t.id === turnId ? { id: turnId, role: 'assistant', kind: 'plan', plan } : t)));
   }, []);
@@ -1362,8 +1390,28 @@ export default function AgentConsole() {
                 return (
                   <div key={turn.id} className="flex items-start justify-end gap-2.5">
                     {/* Softer tinted bubble + primary text reads better than solid accent + white. */}
-                    <div className="max-w-[85%] whitespace-pre-wrap rounded-2xl rounded-br-sm border border-[var(--accent)]/30 bg-[var(--accent)]/15 px-4 py-2.5 text-sm text-[var(--text-primary)]">
-                      {turn.text}
+                    <div className="max-w-[85%]">
+                      <div className="rounded-2xl rounded-br-sm border border-[var(--accent)]/30 bg-[var(--accent)]/15 px-4 py-2.5 text-sm text-[var(--text-primary)]">
+                        {turn.text}
+                      </div>
+                      <div className="mt-1 flex justify-end gap-1">
+                        <button
+                          type="button"
+                          onClick={() => editUserPrompt(turn.id, turn.text)}
+                          title="Edit prompt"
+                          className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-[var(--border)] bg-[var(--bg-card)] text-[var(--text-muted)] hover:border-[var(--accent)] hover:text-[var(--text-primary)]"
+                        >
+                          <SquarePen className="h-3 w-3" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void copyUserPrompt(turn.id, turn.text)}
+                          title={copiedTurnId === turn.id ? 'Copied' : 'Copy prompt'}
+                          className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-[var(--border)] bg-[var(--bg-card)] text-[var(--text-muted)] hover:border-[var(--accent)] hover:text-[var(--text-primary)]"
+                        >
+                          <Copy className="h-3 w-3" />
+                        </button>
+                      </div>
                     </div>
                     <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[var(--accent)]/10 text-[var(--accent)]">
                       <User className="h-4 w-4" />
@@ -1629,6 +1677,20 @@ export default function AgentConsole() {
               : 'border-[var(--border)] focus-within:border-[var(--accent)]',
           )}
         >
+          {editingTurnId && (
+            <div className="mb-1 flex items-center justify-between gap-2 px-1">
+              <span className="inline-flex items-center gap-1.5 rounded-full bg-[var(--accent)]/10 px-2.5 py-1 text-[11px] font-semibold text-[var(--accent)]">
+                <SquarePen className="h-3.5 w-3.5" /> Editing previous prompt
+              </span>
+              <button
+                type="button"
+                onClick={() => setEditingTurnId(null)}
+                className="text-[11px] font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+              >
+                Cancel
+              </button>
+            </div>
+          )}
           {reqMode && (
             <div className="mb-1 flex items-center justify-between gap-2 px-1">
               <span className="inline-flex items-center gap-1.5 rounded-full bg-[var(--accent)]/10 px-2.5 py-1 text-[11px] font-semibold text-[var(--accent)]">
