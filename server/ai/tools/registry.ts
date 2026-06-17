@@ -9,7 +9,7 @@
  * generateCasesForRun, playwrightCoder, executePlaywrightScripts, etc.
  */
 import type { AgentTool, ToolContext } from './types';
-import { Cases, Suites, Plans, Runs, Scripts, Defects } from '../../db/repository';
+import { Cases, Suites, Plans, Runs, Scripts, Defects, Reports, Requirements } from '../../db/repository';
 import { searchCodeInScope, readCodeFileInScope } from '../../features/projects/codeSearch';
 
 type Lister = { list: () => Promise<any[]> };
@@ -20,6 +20,8 @@ const COLLECTIONS: Record<string, Lister> = {
   runs: Runs as any,
   scripts: Scripts as any,
   defects: Defects as any,
+  requirements: Requirements as any,
+  reports: Reports as any,
 };
 
 /** Read-only: list workspace artifacts of a given kind, newest first, compacted. */
@@ -122,21 +124,38 @@ export const readCodeFileTool: AgentTool = {
  * spawning a slow codex round-trip.
  */
 const KIND_MATCHERS: Array<{ coll: Lister; re: RegExp; label: string }> = [
+  // Order matters: more specific labels first so "test runs" isn't shadowed, etc.
   { coll: Cases as any, re: /\b(test\s*cases?|cases?)\b/, label: 'test cases' },
-  { coll: Suites as any, re: /\b(test\s*suites?|suites?)\b/, label: 'suites' },
-  { coll: Plans as any, re: /\b(test\s*plans?|plans?)\b/, label: 'plans' },
-  { coll: Runs as any, re: /\bruns?\b/, label: 'runs' },
+  { coll: Suites as any, re: /\b(test\s*suites?|suites?)\b/, label: 'test suites' },
+  { coll: Plans as any, re: /\b(test\s*plans?|plans?)\b/, label: 'test plans' },
+  { coll: Runs as any, re: /\b(test\s*runs?|runs?|executions?)\b/, label: 'test runs' },
   { coll: Scripts as any, re: /\b(scripts?|playwright)\b/, label: 'scripts' },
-  { coll: Defects as any, re: /\b(defects?|bugs?)\b/, label: 'defects' },
+  { coll: Defects as any, re: /\b(defects?|bugs?|issues?)\b/, label: 'defects' },
+  { coll: Requirements as any, re: /\brequirements?\b/, label: 'requirements' },
+  { coll: Reports as any, re: /\breports?\b/, label: 'reports' },
 ];
 
-export async function quickWorkspaceAnswer(message: string, userId?: string): Promise<string | null> {
+export interface WorkspaceScope { userId?: string; projectId?: string; appId?: string | null; }
+
+export async function quickWorkspaceAnswer(
+  message: string,
+  scopeArg?: string | WorkspaceScope,
+): Promise<string | null> {
   const t = (message || '').toLowerCase();
   const isCount = /\b(how many|count|counts|number of|how much|total)\b/.test(t);
-  const isList = /\b(list|show me|what are|which)\b/.test(t);
+  const isList = /\b(list|show me|what are|which|do i have|are there)\b/.test(t);
   if (!isCount && !isList) return null;
 
-  const scope = (items: any[]) => (userId ? items.filter((it) => !it?.ownerId || it.ownerId === userId) : items);
+  // Accept a bare userId (legacy callers) or a full {userId, projectId, appId} scope.
+  const sc: WorkspaceScope = typeof scopeArg === 'string' ? { userId: scopeArg } : (scopeArg || {});
+  // Scope to the current owner + project + app ("here"). Only filter on a field when the
+  // record actually carries it, so legacy/unscoped rows are still counted.
+  const scope = (items: any[]) => items.filter((it) => {
+    if (sc.userId && it?.ownerId && it.ownerId !== sc.userId) return false;
+    if (sc.projectId && it?.projectId && it.projectId !== sc.projectId) return false;
+    if (sc.appId && it?.appId && it.appId !== sc.appId) return false;
+    return true;
+  });
   const matched = KIND_MATCHERS.filter((k) => k.re.test(t));
 
   if (isCount) {
@@ -149,8 +168,14 @@ export async function quickWorkspaceAnswer(message: string, userId?: string): Pr
       else return null;
     }
     const parts: string[] = [];
-    for (const k of targets) parts.push(`${scope(await k.coll.list()).length} ${k.label}`);
-    if (targets.length === 1) return `There are ${parts[0]} in the workspace.`;
+    for (const k of targets) {
+      const n = scope(await k.coll.list()).length;
+      parts.push(`${n} ${n === 1 ? k.label.replace(/s$/, '') : k.label}`);
+    }
+    if (targets.length === 1) {
+      const n = parseInt(parts[0], 10);
+      return `There ${n === 1 ? 'is' : 'are'} ${parts[0]} in the workspace.`;
+    }
     return `Workspace counts — ${parts.join(', ')}.`;
   }
 

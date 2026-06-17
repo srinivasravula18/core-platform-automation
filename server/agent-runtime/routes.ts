@@ -17,6 +17,7 @@ import type { RoutingContext, RouteTarget } from './goals/types';
 import type { ChatTurn, SelectedApp } from '../ai/controller';
 import { buildPlan } from '../ai/controller';
 import { answerAppQuestionFromCode } from '../ai/supervisor';
+import { quickWorkspaceAnswer } from '../ai/tools/registry';
 import { reqScope } from '../shared/scope';
 
 interface GoalRequestBody {
@@ -55,6 +56,18 @@ export function registerAgentRuntimeRoutes(app: Express) {
 
       switch (route.kind) {
         case 'answer': {
+          // FAST PATH: questions about the user's OWN QA artifacts (test cases, suites,
+          // plans, runs, scripts, defects, requirements, reports) are answered from the
+          // workspace data — scoped to this project/app — NOT from app source code.
+          // "how many test cases are there here" -> a real count, not a code excerpt.
+          const quick = await quickWorkspaceAnswer(message, {
+            userId: scope.userId,
+            projectId: scope.projectId,
+            appId: scope.appId,
+          });
+          if (quick) {
+            return res.json({ kind: 'answer', reply: quick, route, source: 'workspace' });
+          }
           const reply = await answerAppQuestionFromCode(message, {
             workspaceId,
             userId: scope.userId,
