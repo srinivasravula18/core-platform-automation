@@ -23,3 +23,5 @@ docs/CORE-PLATFORM-FEATURE-AUDIT.md
 CORE-PLATFORM-FEATURE-AUDIT.md
 
 /.testflow-pw
+# Local backup snapshots
+*.bak

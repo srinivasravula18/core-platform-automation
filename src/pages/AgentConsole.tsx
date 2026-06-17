@@ -370,6 +370,7 @@ export default function AgentConsole() {
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const historyRef = useRef<HTMLDivElement>(null);
+  const appPickerRef = useRef<HTMLDivElement>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const loadedRef = useRef(false);
   // Mirror the live turn list in a ref so send() can read the prior conversation
@@ -397,6 +398,27 @@ export default function AgentConsole() {
       /* ignore */
     }
   }, [conversationId, convKey]);
+
+  useEffect(() => {
+    if (!appPickerOpen) return undefined;
+
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target as Node | null;
+      if (target && appPickerRef.current?.contains(target)) return;
+      setAppPickerOpen(false);
+    };
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setAppPickerOpen(false);
+    };
+
+    document.addEventListener('pointerdown', onPointerDown);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [appPickerOpen]);
 
   const loadConversations = useCallback(async () => {
     try {
@@ -671,6 +693,7 @@ export default function AgentConsole() {
   // The apps the user explicitly selected in the composer (all of them), as target
   // context for the agent. Mirrored to a ref so callbacks read the latest without churn.
   const selectedApps = websites.filter((w) => selectedAppIds.has(w.id)).map((w) => ({ name: w.name, baseUrl: w.baseUrl }));
+  const allAppsSelected = websites.length > 0 && selectedAppIds.size === websites.length;
   const selectedAppsRef = useRef<Array<{ name: string; baseUrl: string }>>([]);
   useEffect(() => { selectedAppsRef.current = selectedApps; });
   // The top-bar scope app, mirrored to a ref so callbacks read the latest.
@@ -1640,7 +1663,7 @@ export default function AgentConsole() {
             <div className="flex items-center gap-2 text-[11px] text-[var(--text-muted)]">
               {/* Apps-under-test multi-select: all selected apps are sent to the agent as
                   target context, so it never lacks the URL/app data. */}
-              <div className="relative">
+              <div ref={appPickerRef} className="relative">
                 <button
                   type="button"
                   onClick={() => setAppPickerOpen((o) => !o)}
@@ -1661,7 +1684,18 @@ export default function AgentConsole() {
                     {websites.length === 0 ? (
                       <div className="px-2 py-2 text-[11px] text-[var(--text-muted)]">No saved apps. Add them in Settings → Website Credentials.</div>
                     ) : (
-                      websites.map((w) => {
+                      <>
+                        <div className="mb-1 flex items-center justify-between gap-2 border-b border-[var(--border)] px-2 py-1.5">
+                          <span className="text-[10px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Apps to test</span>
+                          <button
+                            type="button"
+                            onClick={() => setSelectedAppIds(allAppsSelected ? new Set() : new Set(websites.map((w) => w.id)))}
+                            className="rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[var(--accent)] hover:bg-[var(--accent)]/10"
+                          >
+                            {allAppsSelected ? 'Clear' : 'Select all'}
+                          </button>
+                        </div>
+                        {websites.map((w) => {
                         const on = selectedAppIds.has(w.id);
                         return (
                           <button
@@ -1679,7 +1713,8 @@ export default function AgentConsole() {
                             </span>
                           </button>
                         );
-                      })
+                      })}
+                      </>
                     )}
                   </div>
                 )}
