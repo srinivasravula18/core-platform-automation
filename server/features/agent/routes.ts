@@ -10,7 +10,7 @@ import { buildAgentExecutionSteps, buildCaseDescription, normalizeCaseSteps, nor
 import { capturePlaywrightEvidence, createAuthStorageState } from '../evidence/evidenceService';
 import { gitGrep, readRepoFile } from '../git-agent/gitAgentService';
 import { analyzeFeatureFromSource, proposeGapCases } from '../requirements/requirementService';
-import { executePlaywrightScripts, killRunProcesses } from '../playwright/executionService';
+import { executePlaywrightScripts, killRunProcesses, sanitizeTestCode, repairTestCode } from '../playwright/executionService';
 import { promises as fsp } from 'fs';
 import path from 'path';
 import { inspectApplicationFlow } from './inspectionService';
@@ -750,6 +750,18 @@ Test cases: ${JSON.stringify(testCases)}${coderKnowledge}`,
     userMessage: 'Generate Playwright scripts for the inspected flow.',
   });
   const scripts = scriptsResult.object;
+  // Normalize EACH generated script so a truncated/unterminated file (LLM dropping the
+  // trailing `});` of test(...)) does not get persisted or break execution. We repair
+  // parse errors up front; the executor quarantines anything still unrecoverable so one
+  // bad file never zeroes out the whole batch.
+  if (Array.isArray(scripts.scripts)) {
+    for (const s of scripts.scripts as any[]) {
+      if (s && typeof s.code === 'string') {
+        const cleaned = sanitizeTestCode(s.code);
+        s.code = repairTestCode(cleaned) || cleaned;
+      }
+    }
+  }
   run.playwright_scripts = scripts.scripts as any;
   pushPhase(run, { agent: 'PlaywrightAgent', status: 'completed', output: scripts });
   // GIT-AGENT GATE: verify every selector against the app's REAL source before running

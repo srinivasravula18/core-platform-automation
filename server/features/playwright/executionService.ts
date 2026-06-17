@@ -11,6 +11,7 @@
 import path from 'path';
 import fs from 'fs/promises';
 import { spawn } from 'child_process';
+import { transformSync } from 'esbuild';
 import { CHROMIUM_LAUNCH_ARGS, chromiumExecutablePath } from '../../shared/browser';
 
 export interface ScriptInput {
@@ -44,6 +45,8 @@ export interface ExecutionResult {
   runId: string;
   error?: string;
   stderrTail?: string;
+  /** Filenames of scripts that could not be parsed/repaired and were skipped so the batch could run. */
+  quarantined?: string[];
 }
 
 const RUN_ROOT = path.resolve(process.cwd(), '.testflow-pw');
@@ -67,6 +70,38 @@ export function sanitizeTestCode(code: string): string {
     const fixtures = inner.split(',').map((s) => s.trim()).filter((s) => s && s !== 'testInfo');
     return `async ({ ${fixtures.join(', ')} }, testInfo) =>`;
   });
+}
+
+/** True if the TypeScript source parses cleanly (esbuild transpile = real parser, no type checks). */
+function isParseable(code: string): boolean {
+  try { transformSync(code, { loader: 'ts', sourcemap: false }); return true; }
+  catch { return false; }
+}
+
+/**
+ * Repair a truncated/unterminated generated test. The LLM most commonly drops the
+ * trailing closers of the test(...) call (e.g. ends with `}` instead of `});`),
+ * which makes the file un-collectable. We brute-force a small set of closing-token
+ * suffixes and return the first that parses. Returns null if nothing makes it valid.
+ */
+export function repairTestCode(code: string): string | null {
+  if (isParseable(code)) return code;
+  const base = code.replace(/\s+$/, '');
+  const candidates = new Set<string>();
+  const toks = [')', '}', ';'];
+  // Single/sequence suffixes (handles the common `}` -> `});` truncation).
+  for (const a of toks) {
+    candidates.add(base + a);
+    for (const b of toks) {
+      candidates.add(base + a + b);
+      for (const c of toks) {
+        candidates.add(base + a + b + c);
+        for (const d of toks) candidates.add(base + a + b + c + d);
+      }
+    }
+  }
+  for (const cand of candidates) if (isParseable(cand)) return cand;
+  return null;
 }
 
 // Track running Playwright child processes per run so a user "Stop" can SIGKILL the
@@ -106,12 +141,34 @@ export async function executePlaywrightScripts(opts: {
   const resultsFile = path.join(runDir, 'results.json');
   await fs.mkdir(testsDir, { recursive: true });
 
+  // Validate & repair EACH script before writing. Playwright collects every spec file
+  // at startup, so a single un-parseable file aborts collection for the WHOLE batch
+  // (0 tests run). We esbuild-parse each file; auto-repair truncated ones; and quarantine
+  // any that still won't parse — so the good scripts always run instead of all falling
+  // back to "not executed".
   const seen = new Set<string>();
+  const quarantined: string[] = [];
+  let written = 0;
   for (let i = 0; i < scripts.length; i++) {
     let fn = sanitizeFilename(scripts[i].filename || scripts[i].title || '', i);
     while (seen.has(fn)) fn = fn.replace(/\.spec\.ts$/, `-${i}.spec.ts`);
     seen.add(fn);
-    await fs.writeFile(path.join(testsDir, fn), sanitizeTestCode(scripts[i].code), 'utf8');
+    let code = sanitizeTestCode(scripts[i].code);
+    if (!isParseable(code)) {
+      const repaired = repairTestCode(code);
+      if (repaired) {
+        code = repaired;
+      } else {
+        quarantined.push(fn);
+        continue; // skip the broken file — do NOT let it break collection for the rest
+      }
+    }
+    await fs.writeFile(path.join(testsDir, fn), code, 'utf8');
+    written += 1;
+  }
+
+  if (!written) {
+    return { ok: false, ...base, error: `All ${scripts.length} generated script(s) had unrecoverable syntax errors and could not be run.` };
   }
 
   // Server-safe Chromium launch (headless Ubuntu/containers need --no-sandbox etc.);
@@ -254,6 +311,7 @@ export default defineConfig({
           tests,
           runId,
           stderrTail: failed > 0 || tests.length === 0 ? stderr.slice(-1500) || undefined : undefined,
+          quarantined: quarantined.length ? quarantined : undefined,
         });
       } catch {
         resolve({
