@@ -544,10 +544,17 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
         {PIPELINE.map((p, i) => {
           const st = agentState(p.key);
           const runFailed = status === 'failed';
-          // Don't keep spinning a step once the whole run has failed — the in-flight
-          // step is where it stopped, so show it as failed instead of "loading".
-          const isActive = !runFailed && i === activePipelineIdx && st !== 'completed' && st !== 'failed';
-          const effState = runFailed && st === 'running' ? 'failed' : isActive ? 'running' : st;
+          const runStopped = status === 'cancelled';
+          // Don't keep spinning a step once the whole run has halted — the in-flight step is
+          // where it stopped. A failed run shows it as failed; a user-stopped run shows it as
+          // a neutral (non-spinning) step instead of "loading".
+          const halted = runFailed || runStopped;
+          const isActive = !halted && i === activePipelineIdx && st !== 'completed' && st !== 'failed';
+          const effState = runFailed && st === 'running'
+            ? 'failed'
+            : runStopped && st === 'running'
+              ? 'stopped'
+              : isActive ? 'running' : st;
           return (
             <div key={p.key} className="flex items-center gap-1.5">
               <span
@@ -575,7 +582,7 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
                 {p.label}
                 {(() => {
                   const d = phaseMs(p.key);
-                  return d != null && (effState === 'completed' || effState === 'running' || effState === 'failed')
+                  return d != null && (effState === 'completed' || effState === 'running' || effState === 'failed' || effState === 'stopped')
                     ? <span className="opacity-70 tabular-nums">· {fmtDuration(d)}</span>
                     : null;
                 })()}
