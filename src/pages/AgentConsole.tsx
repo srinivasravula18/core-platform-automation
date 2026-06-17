@@ -1111,7 +1111,11 @@ export default function AgentConsole() {
       setBusy(true);
       setPendingDeep(null);
       if (turn.targetUrl || turn.websiteId) convTargetRef.current = { targetUrl: turn.targetUrl || '', websiteId: turn.websiteId };
-      replaceTurn(turn.id, { id: turn.id, role: 'assistant', kind: 'thinking', label: 'Starting the run…' });
+      // Keep the confirmed understanding visible in the chat as a record, and add the run
+      // card BELOW it — so clicking Proceed never makes the dialog vanish with nothing shown.
+      const runTurnId = nextId();
+      replaceTurn(turn.id, { id: turn.id, role: 'assistant', kind: 'text', text: turn.understanding || 'Proceeding with the run…' });
+      setTurns((prev) => [...prev, { id: runTurnId, role: 'assistant', kind: 'thinking', label: 'Starting the run…' }]);
       try {
         const res = await fetch('/api/agent/start', {
           method: 'POST',
@@ -1128,14 +1132,14 @@ export default function AgentConsole() {
         });
         const data = await res.json().catch(() => ({}));
         if (data?.task_id) {
-          replaceTurn(turn.id, { id: turn.id, role: 'assistant', kind: 'deeprun', taskId: data.task_id });
+          replaceTurn(runTurnId, { id: runTurnId, role: 'assistant', kind: 'deeprun', taskId: data.task_id });
         } else if (data?.chat_response) {
-          replaceTurn(turn.id, { id: turn.id, role: 'assistant', kind: 'text', text: data.chat_response });
+          replaceTurn(runTurnId, { id: runTurnId, role: 'assistant', kind: 'text', text: data.chat_response });
         } else {
-          replaceTurn(turn.id, { id: turn.id, role: 'assistant', kind: 'text', text: data?.error || 'I could not start the run. Check that an AI provider key is set in Settings.' });
+          replaceTurn(runTurnId, { id: runTurnId, role: 'assistant', kind: 'text', text: data?.error || 'I could not start the run. Check that an AI provider key is set in Settings.' });
         }
       } catch (err: any) {
-        replaceTurn(turn.id, { id: turn.id, role: 'assistant', kind: 'text', text: `Something went wrong starting the run: ${err?.message || 'unknown error'}.` });
+        replaceTurn(runTurnId, { id: runTurnId, role: 'assistant', kind: 'text', text: `Something went wrong starting the run: ${err?.message || 'unknown error'}.` });
       } finally {
         setBusy(false);
         inputRef.current?.focus();

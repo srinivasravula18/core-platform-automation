@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { cn } from '@/src/lib/utils';
+import { withBasePath } from '@/src/lib/base-path';
 import {
   Loader2,
   CheckCircle2,
@@ -439,7 +440,9 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
       const steps = (c.steps || []).map((s, si) => `<tr><td>${si + 1}. ${esc(s.action)}</td><td>${esc(s.expected)}</td></tr>`).join('');
       return `<div class="c"><h3>${i + 1}. ${esc(c.title)} ${badge}</h3><div class="m">${esc(c.priority || 'Medium')} · ${esc(c.type || 'Manual')}${(c.tags || []).length ? ' · ' + (c.tags || []).map(esc).join(', ') : ''}</div>${c.description ? `<p>${esc(c.description)}</p>` : ''}<table><thead><tr><th>Step</th><th>Expected result</th></tr></thead><tbody>${steps || '<tr><td colspan="2">No steps</td></tr>'}</tbody></table>${r?.error ? `<pre class="e">${esc(r.error)}</pre>` : ''}</div>`;
     }).join('');
-    const evHtml = (evidence || []).map((shot) => `<div class="ev"><div class="m">${esc(shot.title || 'Evidence')} — ${esc(shot.url || '')}</div>${shot.screenshotUrl ? `<img src="${esc(shot.screenshotUrl)}"/>` : ''}</div>`).join('');
+    // Downloaded HTML is opened outside the app, so screenshot links must be absolute (origin + base path).
+    const absShot = (u: string) => (u && u.startsWith('/') ? `${window.location.origin}${withBasePath(u)}` : u);
+    const evHtml = (evidence || []).map((shot) => `<div class="ev"><div class="m">${esc(shot.title || 'Evidence')} — ${esc(shot.url || '')}</div>${shot.screenshotUrl ? `<img src="${esc(absShot(shot.screenshotUrl))}"/>` : ''}</div>`).join('');
     return `<!doctype html><html><head><meta charset="utf-8"><title>${esc(run?.artifactName || 'Test Report')}</title><style>body{font-family:Arial,Helvetica,sans-serif;margin:28px;color:#111}h1{margin:0;font-size:22px}.s{color:#555;margin:6px 0 18px}.c{border:1px solid #e2e2e2;border-radius:8px;padding:12px 14px;margin:10px 0;page-break-inside:avoid}.c h3{margin:0 0 4px;font-size:15px}.m{color:#666;font-size:12px;margin-bottom:6px}table{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:6px}th,td{border:1px solid #eee;padding:6px 8px;text-align:left;vertical-align:top}th{background:#fafafa}.b{font-size:11px;padding:1px 7px;border-radius:10px;color:#fff}.b.passed{background:#16a34a}.b.failed,.b.timedOut,.b.interrupted{background:#dc2626}.b.skipped{background:#9ca3af}.e{background:#fef2f2;color:#b91c1c;padding:8px;white-space:pre-wrap;font-size:12px;border-radius:6px;margin-top:6px}.ev img{max-width:100%;border:1px solid #ddd;border-radius:6px}h2{margin-top:24px;border-top:1px solid #eee;padding-top:14px}</style></head><body><h1>${esc(run?.artifactName || 'Agent Test Report')}</h1><div class="s">${esc(run?.app_url || 'No target URL')} · ${esc(summary)} · ${new Date().toLocaleString()}</div><h2>Test cases (${list.length})</h2>${casesHtml}${(evidence || []).length ? `<h2>Evidence (${evidence.length})</h2>${evHtml}` : ''}</body></html>`;
   };
 
@@ -1033,7 +1036,7 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
                           )}
                           {shot.traceUrl && (
                             <a
-                              href={shot.traceUrl}
+                              href={withBasePath(shot.traceUrl)}
                               target="_blank"
                               rel="noreferrer"
                               title="Download the Playwright trace, then open it at trace.playwright.dev to replay the run step by step"
@@ -1046,13 +1049,13 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
                         <div className="truncate text-[var(--text-muted)]">{shot.url}</div>
                         {shot.reason && <pre className="mt-1 max-h-24 overflow-auto whitespace-pre-wrap rounded bg-red-500/10 p-1.5 font-mono text-[10px] text-red-300">{shot.reason}</pre>}
                       </div>
-                      {shot.screenshotUrl && <img src={shot.screenshotUrl} alt={shot.title || 'evidence'} className="w-full bg-black object-contain" />}
+                      {shot.screenshotUrl && <img src={withBasePath(shot.screenshotUrl)} alt={shot.title || 'evidence'} className="w-full bg-black object-contain" />}
                       {Array.isArray(shot.stepScreenshots) && shot.stepScreenshots.length > 0 && (
                         <div className="grid grid-cols-2 gap-1.5 border-t border-[var(--border)] bg-[var(--bg-secondary)] p-2 md:grid-cols-3">
                           {shot.stepScreenshots.map((url: string, stepIndex: number) => (
-                            <a key={url} href={url} target="_blank" rel="noreferrer" className="overflow-hidden rounded border border-[var(--border)] bg-black">
+                            <a key={url} href={withBasePath(url)} target="_blank" rel="noreferrer" className="overflow-hidden rounded border border-[var(--border)] bg-black">
                               <div className="bg-[var(--bg-card)] px-1.5 py-1 text-[9px] font-semibold text-[var(--text-muted)]">Step {stepIndex + 1}</div>
-                              <img src={url} alt={`${shot.title || 'evidence'} step ${stepIndex + 1}`} className="h-28 w-full object-cover" />
+                              <img src={withBasePath(url)} alt={`${shot.title || 'evidence'} step ${stepIndex + 1}`} className="h-28 w-full object-cover" />
                             </a>
                           ))}
                         </div>

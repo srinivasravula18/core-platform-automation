@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Bot, Save, Download, Loader2, Plus, CheckCircle2, Mic, Send, SplitSquareHorizontal, FolderTree } from 'lucide-react';
 import { cn } from '@/src/lib/utils';
+import { withBasePath } from '@/src/lib/base-path';
 import { useSpeechToText } from '@/src/lib/useSpeechToText';
 import { PlanList, WorkflowRunner } from '@/src/components/WorkflowRunner';
 
@@ -755,7 +756,7 @@ export default function AgentPanel() {
                     <div className="text-sm font-semibold text-[var(--text-primary)]">Evidence: {shot.title || 'Playwright screenshot evidence'}</div>
                     <div className="text-xs text-[var(--text-muted)] break-all">{shot.url}</div>
                   </div>
-                  <img src={shot.screenshotUrl} alt={shot.title || 'Playwright screenshot evidence'} className="w-full bg-black object-contain" />
+                  <img src={withBasePath(shot.screenshotUrl)} alt={shot.title || 'Playwright screenshot evidence'} className="w-full bg-black object-contain" />
                   <div className="px-4 py-2 text-xs text-[var(--text-muted)] border-t border-[var(--border)]">
                     HTTP {shot.status || 'unknown'} captured at {shot.capturedAt ? new Date(shot.capturedAt).toLocaleString() : 'unknown time'}
                     {shot.login?.attempted && (
