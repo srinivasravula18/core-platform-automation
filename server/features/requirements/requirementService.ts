@@ -15,6 +15,7 @@
 
 import { z } from 'zod';
 import { getOrchestrator } from '../../ai/orchestrator';
+import { deepParallelResearch, relevantSourcePaths } from '../../ai/research/deepResearch';
 import { Cases, Requirements, RequirementLinks, isPgEnabled } from '../../db/repository';
 import { persistDataInBackground, addActivity } from '../../shared/storage';
 import { normalizeCaseSteps, normalizeCaseTags } from '../../shared/testCases';
@@ -135,46 +136,38 @@ function harvestReferenceTerms(content: string): string[] {
   return Array.from(out);
 }
 
-function pickBalanced(hits: Array<{ path: string; area: string; surface: string }>, perSurface: number, total: number) {
-  const bySurface: Record<string, Array<{ path: string; area: string; surface: string }>> = {};
-  for (const h of hits) (bySurface[h.surface] ||= []).push(h);
-  const picked: Array<{ path: string; area: string; surface: string }> = [];
-  for (const surface of Object.keys(bySurface)) picked.push(...bySurface[surface].slice(0, perSurface));
-  return picked.slice(0, total);
-}
-
 // DEEP, deterministic source gathering: a broad grep, then a SECOND round that follows the
-// identifiers used by the strongest files (so referenced modules are pulled in), then read a
-// generous balanced sample. This gives the analyst wide, reference-followed grounding without
-// N slow model round-trips — the searching is fast native grep; the one model call is the analyst.
+// identifiers used by the strongest files (so referenced modules are pulled in), then read
+// the RELEVANT files (count is dynamic — scales to how much relevant code exists, no fixed N).
+// The searching is fast native grep; the one model call is the analyst.
 function gatherSourceExcerpts(keywords: string[], repoPath?: string): { files: Array<{ path: string; area: string; surface: string }>; excerpts: string } {
   const hits = gitGrep(keywords, undefined, undefined, repoPath);
-  const seen = new Set(hits.map((h) => h.path));
+  const byPath = new Map(hits.map((h) => [h.path, h]));
 
-  // Round 2 — follow references found in the first few strongest files.
-  const seed = pickBalanced(hits, 2, 6);
+  // Round 2 — follow references found in the strongest (most relevant) files.
+  const seed = relevantSourcePaths(hits.map((h) => h.path), keywords);
   const refTerms = new Set<string>();
-  for (const f of seed) {
+  for (const p of seed) {
     try {
-      for (const t of harvestReferenceTerms(readRepoFile(f.path, 4000, repoPath))) {
+      for (const t of harvestReferenceTerms(readRepoFile(p, 4000, repoPath))) {
         if (!keywords.includes(t)) refTerms.add(t);
-        if (refTerms.size >= 12) break;
       }
     } catch { /* best-effort */ }
-    if (refTerms.size >= 12) break;
   }
   if (refTerms.size) {
     try {
       for (const h of gitGrep(Array.from(refTerms), undefined, undefined, repoPath)) {
-        if (!seen.has(h.path)) { hits.push(h); seen.add(h.path); }
+        if (!byPath.has(h.path)) byPath.set(h.path, h);
       }
     } catch { /* best-effort */ }
   }
 
-  // Read a generous balanced sample across surfaces (deep, not a thin slice of one dir).
-  const limited = pickBalanced(hits, 5, 20);
+  // Read the RELEVANT files (dynamic count) across the merged candidate pool.
+  const allTerms = Array.from(new Set([...keywords, ...refTerms]));
+  const chosen = relevantSourcePaths(Array.from(byPath.keys()), allTerms);
+  const files = chosen.map((p) => byPath.get(p)).filter(Boolean) as Array<{ path: string; area: string; surface: string }>;
   const parts: string[] = [];
-  for (const f of limited) {
+  for (const f of files) {
     let content = '';
     try {
       content = readRepoFile(f.path, 4500, repoPath);
@@ -183,7 +176,7 @@ function gatherSourceExcerpts(keywords: string[], repoPath?: string): { files: A
     }
     if (content.trim()) parts.push(`FILE: ${f.path}  [area: ${f.area}]\n${content}`);
   }
-  return { files: limited, excerpts: parts.join('\n\n---\n\n') };
+  return { files, excerpts: parts.join('\n\n---\n\n') };
 }
 
 /* ---------- reusable feature understanding (git-agent deep read) ---------- */
@@ -204,11 +197,32 @@ export async function analyzeFeatureFromSource(
 ): Promise<{ understanding: FeatureUnderstanding; files: Array<{ path: string; area: string; surface: string }>; keywords: string[] }> {
   const cleanQuery = String(query || '').trim();
   const keywords = deriveKeywords(cleanQuery);
-  // DEEP, deterministic research: broad multi-round grep that follows references across the
-  // codebase, reading a generous balanced sample. Fast (native search) and reliable — the
-  // grounding the analyst, case writer and coder all build on.
+  // Always gather a deterministic deep sample (reliable grounding + the file list we return).
   const { files, excerpts } = gatherSourceExcerpts(keywords, opts.repoPath);
-  const groundingBlock = `Code read from the target application's real source across the codebase (path + area). Ground your understanding ONLY in these:\n${excerpts || '(no matching source found — say so in the description and keep businessRules minimal rather than inventing them)'}`;
+
+  // CLAUDE-CODE-STYLE deep parallel research: decompose the feature into angles and
+  // investigate them concurrently across the real source before structuring — so cases and
+  // scripts are grounded in genuinely deep coverage. Falls back to the deterministic sample.
+  const repoPath = opts.repoPath;
+  let researchNotes = '';
+  try {
+    researchNotes = await deepParallelResearch({
+      question: cleanQuery,
+      io: {
+        // Dynamic, relevance-filtered file set (count scales to the request — no fixed N).
+        search: async (terms) => relevantSourcePaths(gitGrep(terms, undefined, undefined, repoPath).map((h) => h.path), terms),
+        read: async (p, b) => readRepoFile(p, b, repoPath),
+      },
+      orchestratorAgent: 'featureAnalyst',
+      workspaceId: opts.workspaceId,
+      userId: opts.userId,
+    });
+  } catch {
+    researchNotes = '';
+  }
+  const groundingBlock = researchNotes
+    ? `DEEP PARALLEL RESEARCH NOTES — compiled by reading the application's REAL source across many areas of the codebase concurrently. PRIMARY grounding; treat as authoritative:\n${researchNotes}\n\nSupporting raw code (path + area):\n${excerpts || '(none)'}`
+    : `Code read from the target application's real source across the codebase (path + area). Ground your understanding ONLY in these:\n${excerpts || '(no matching source found — say so in the description and keep businessRules minimal rather than inventing them)'}`;
 
   const analyst = await getOrchestrator('featureAnalyst', opts);
   const analystRes = await analyst.generateObject<FeatureUnderstanding>({

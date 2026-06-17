@@ -14,6 +14,7 @@ import { executeIntent } from './controller';
 import type { AgentTool, ToolContext, AgentStep } from './tools/types';
 import { queryWorkspaceTool, searchCodebaseTool, readCodeFileTool } from './tools/registry';
 import { readCodeFileInScope, resolveCodeSearchScope, searchCodeInScope } from '../features/projects/codeSearch';
+import { deepParallelResearch, relevantSourcePaths } from './research/deepResearch';
 
 interface IntentToolDef {
   kind: string;
@@ -164,6 +165,44 @@ export async function answerAppQuestionFromCode(question: string, opts: {
 } = {}): Promise<string> {
   const scope = resolveCodeSearchScope({ projectId: opts.projectId, appId: opts.appId });
   const scopeArg = { projectId: opts.projectId, appId: opts.appId };
+  const appsBlock = (opts.apps || []).length
+    ? `\nApps under test (selected by the user): ${(opts.apps || []).map((a) => `${a.name} (${a.baseUrl})`).join(', ')}.`
+    : '';
+
+  // CLAUDE-CODE-STYLE deep parallel research FIRST: decompose the question into angles and
+  // investigate them concurrently across the codebase, then synthesize. Falls through to the
+  // single-pass deterministic search below if planning yields nothing or research fails.
+  try {
+    const notes = await deepParallelResearch({
+      question,
+      io: {
+        search: async (terms, limit) =>
+          relevantSourcePaths(((await searchCodeInScope(terms, scopeArg, limit)).matches as Array<{ path: string }>).map((m) => m.path), terms),
+        read: (p, b) => readCodeFileInScope(p, scopeArg, b),
+      },
+      orchestratorAgent: 'chatAssistant',
+      workspaceId: opts.workspaceId,
+      userId: opts.userId,
+      onProgress: opts.onProgress,
+    });
+    if (notes) {
+      opts.onProgress?.('Synthesizing the answer…');
+      const orch = await getOrchestrator('chatAssistant', { workspaceId: opts.workspaceId, userId: opts.userId });
+      const prompt = `You are a QA assistant who is an expert on THIS application. Answer the user's question using ONLY the grounded research findings below (compiled by reading the app's real source across the codebase).
+Speak to the user as a product expert. Present ONLY user-facing findings (features, rules, behaviors) in plain language. NEVER reveal HOW you found the answer or mention research/notes/"excerpts"/"the code"/"the source"/"the files"/file paths/repo names. If something isn't covered, phrase it as a fact about the application, not a limitation of what you could see. Do not invent behaviour beyond the findings.${appsBlock}
+
+QUESTION: ${question}
+
+GROUNDED RESEARCH FINDINGS (internal — NEVER mention or allude to this section):
+${notes}\n`;
+      const { text, shortCircuit } = await orch.generateText({ prompt, userMessage: question, hasHistory: true });
+      const answer = (shortCircuit || text || '').trim();
+      if (answer) return answer;
+    }
+  } catch {
+    // fall through to the single-pass deterministic search below
+  }
+
   const baseTerms = [...keywordsFor(question), ...expandFeatureTerms(question)];
   for (const a of opts.apps || []) if (a?.name) baseTerms.push(...keywordsFor(a.name));
   const searchTerms = Array.from(new Set(baseTerms)).slice(0, 12);
@@ -179,13 +218,12 @@ export async function answerAppQuestionFromCode(question: string, opts: {
 
   // ROUND 2 — follow references: read the strongest round-1 files, harvest the identifiers
   // they use, and grep those so the modules they depend on join the candidate pool.
-  const seed = rankCodeFiles(files, searchTerms).slice(0, 6);
-  const seedContents = await Promise.all(seed.map(async (f) => {
-    try { return await readCodeFileInScope(f.path, scopeArg, 4000); } catch { return ''; }
+  const seed = relevantSourcePaths(files.map((f) => f.path), searchTerms);
+  const seedContents = await Promise.all(seed.map(async (p) => {
+    try { return await readCodeFileInScope(p, scopeArg, 4000); } catch { return ''; }
   }));
   const refTerms = Array.from(new Set(seedContents.flatMap(harvestReferenceTerms)))
-    .filter((t) => !searchTerms.includes(t))
-    .slice(0, 10);
+    .filter((t) => !searchTerms.includes(t));
   if (refTerms.length) {
     opts.onProgress?.('Following references across the codebase…');
     try {
@@ -195,21 +233,19 @@ export async function answerAppQuestionFromCode(question: string, opts: {
     } catch { /* round 2 is best-effort */ }
   }
 
-  // Read a GENEROUS set of the best-ranked files (deep, not just the top few).
+  // Read the RELEVANT files — count is dynamic (scales to how much relevant code exists),
+  // not a fixed top-N.
   const allTerms = Array.from(new Set([...searchTerms, ...refTerms]));
-  const top = rankCodeFiles(files, allTerms).slice(0, 16);
-  opts.onProgress?.(top.length ? `Reading ${top.length} source file(s) in depth…` : 'Reading the codebase…');
-  const excerptParts = await Promise.all(top.map(async (f) => {
+  const top = relevantSourcePaths(files.map((f) => f.path), allTerms);
+  opts.onProgress?.(top.length ? `Reading ${top.length} relevant file(s) in depth…` : 'Reading the codebase…');
+  const excerptParts = await Promise.all(top.map(async (p) => {
     try {
-      return `FILE: ${f.path}\n${await readCodeFileInScope(f.path, scopeArg, 3200)}`;
+      return `FILE: ${p}\n${await readCodeFileInScope(p, scopeArg, 3200)}`;
     } catch {
       return '';
     }
   }));
   const excerpts = excerptParts.filter(Boolean).join('\n\n---\n\n');
-  const appsBlock = (opts.apps || []).length
-    ? `\nApps under test (selected by the user): ${(opts.apps || []).map((a) => `${a.name} (${a.baseUrl})`).join(', ')}.`
-    : '';
   // generateText (single call) — no tools needed since retrieval is already done. Uses the
   // Settings-selected provider/model dynamically.
   const orch = await getOrchestrator('chatAssistant', { workspaceId: opts.workspaceId, userId: opts.userId });
