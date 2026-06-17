@@ -121,25 +121,63 @@ function deriveKeywords(query: string): string[] {
 
 /* ---------- source gathering ---------- */
 
+// Harvest distinct identifiers / route+label strings from a file so a second grep round can
+// "follow references" into the modules it depends on — broad coverage via fast native search.
+function harvestReferenceTerms(content: string): string[] {
+  const out = new Set<string>();
+  for (const m of content.matchAll(/\b([A-Za-z][A-Za-z0-9_]{4,28})\b/g)) {
+    const w = m[1];
+    if (/[a-z][A-Z]/.test(w) || /^[A-Z][a-z]+[A-Z]/.test(w)) out.add(w);
+  }
+  for (const m of content.matchAll(/['"`](\/[A-Za-z][\w\/-]{2,40}|[A-Z][A-Za-z ]{2,30})['"`]/g)) {
+    out.add(m[1].trim());
+  }
+  return Array.from(out);
+}
+
+function pickBalanced(hits: Array<{ path: string; area: string; surface: string }>, perSurface: number, total: number) {
+  const bySurface: Record<string, Array<{ path: string; area: string; surface: string }>> = {};
+  for (const h of hits) (bySurface[h.surface] ||= []).push(h);
+  const picked: Array<{ path: string; area: string; surface: string }> = [];
+  for (const surface of Object.keys(bySurface)) picked.push(...bySurface[surface].slice(0, perSurface));
+  return picked.slice(0, total);
+}
+
+// DEEP, deterministic source gathering: a broad grep, then a SECOND round that follows the
+// identifiers used by the strongest files (so referenced modules are pulled in), then read a
+// generous balanced sample. This gives the analyst wide, reference-followed grounding without
+// N slow model round-trips — the searching is fast native grep; the one model call is the analyst.
 function gatherSourceExcerpts(keywords: string[], repoPath?: string): { files: Array<{ path: string; area: string; surface: string }>; excerpts: string } {
   const hits = gitGrep(keywords, undefined, undefined, repoPath);
-  // Take a balanced sample across the repo's surfaces so the analyst sees a spread of
-  // areas rather than 12 files from one directory (surfaces are derived from the repo).
-  const bySurface: Record<string, Array<{ path: string; area: string; surface: string }>> = {};
-  for (const h of hits) {
-    (bySurface[h.surface] ||= []).push(h);
-  }
-  const picked: Array<{ path: string; area: string; surface: string }> = [];
-  for (const surface of Object.keys(bySurface)) {
-    picked.push(...bySurface[surface].slice(0, 4));
-  }
-  const limited = picked.slice(0, 12);
+  const seen = new Set(hits.map((h) => h.path));
 
+  // Round 2 — follow references found in the first few strongest files.
+  const seed = pickBalanced(hits, 2, 6);
+  const refTerms = new Set<string>();
+  for (const f of seed) {
+    try {
+      for (const t of harvestReferenceTerms(readRepoFile(f.path, 4000, repoPath))) {
+        if (!keywords.includes(t)) refTerms.add(t);
+        if (refTerms.size >= 12) break;
+      }
+    } catch { /* best-effort */ }
+    if (refTerms.size >= 12) break;
+  }
+  if (refTerms.size) {
+    try {
+      for (const h of gitGrep(Array.from(refTerms), undefined, undefined, repoPath)) {
+        if (!seen.has(h.path)) { hits.push(h); seen.add(h.path); }
+      }
+    } catch { /* best-effort */ }
+  }
+
+  // Read a generous balanced sample across surfaces (deep, not a thin slice of one dir).
+  const limited = pickBalanced(hits, 5, 20);
   const parts: string[] = [];
   for (const f of limited) {
     let content = '';
     try {
-      content = readRepoFile(f.path, 4000, repoPath);
+      content = readRepoFile(f.path, 4500, repoPath);
     } catch {
       content = '';
     }
@@ -166,7 +204,11 @@ export async function analyzeFeatureFromSource(
 ): Promise<{ understanding: FeatureUnderstanding; files: Array<{ path: string; area: string; surface: string }>; keywords: string[] }> {
   const cleanQuery = String(query || '').trim();
   const keywords = deriveKeywords(cleanQuery);
+  // DEEP, deterministic research: broad multi-round grep that follows references across the
+  // codebase, reading a generous balanced sample. Fast (native search) and reliable — the
+  // grounding the analyst, case writer and coder all build on.
   const { files, excerpts } = gatherSourceExcerpts(keywords, opts.repoPath);
+  const groundingBlock = `Code read from the target application's real source across the codebase (path + area). Ground your understanding ONLY in these:\n${excerpts || '(no matching source found — say so in the description and keep businessRules minimal rather than inventing them)'}`;
 
   const analyst = await getOrchestrator('featureAnalyst', opts);
   const analystRes = await analyst.generateObject<FeatureUnderstanding>({
@@ -174,18 +216,17 @@ export async function analyzeFeatureFromSource(
 
 Search keywords used: ${keywords.join(', ')}
 
-Code excerpts from the target application's git repository (path + area). Ground your understanding ONLY in these:
-${excerpts || '(no matching source found — say so in the description and keep businessRules minimal rather than inventing them)'}
+${groundingBlock}
 
-INFER the application's architecture from the excerpts — do NOT assume any specific product, framework, or surface names. Let the code tell you. Produce the requirement understanding as strict JSON matching the schema:
+INFER the application's architecture from the research notes and excerpts above — do NOT assume any specific product, framework, or surface names. Let the code tell you. Use ONLY behaviour the research actually establishes; never invent meta-concepts (CI/seeding/regression scaffolding) that aren't real user features. Produce the requirement understanding as strict JSON matching the schema:
 - title: a concise requirement title for this feature.
 - description: 1-3 sentences on what the feature does and why it matters.
 - businessRules: the concrete, testable rules the code enforces.
-- dataPopulationNotes: what the backend populates/seeds/syncs in the background as preconditions for this feature (only if the excerpts show it).
+- dataPopulationNotes: what the backend populates/seeds/syncs in the background as preconditions for this feature (only if the research shows it).
 - adminBehavior vs keystoneBehavior: if the app has distinct surfaces, put the configuration/admin-surface behavior in adminBehavior and the end-user-surface behavior in keystoneBehavior; if it has only one surface, describe it in whichever fits and leave the other empty. Do not invent a surface the code does not show.
 - metadataRefs: if the app is metadata-/config-driven, the objects/fields that are the source of truth for this feature; otherwise leave empty.
-- sourceFiles: the specific files (real paths from the excerpts) that justify your understanding, each with a one-line reason.
-- candidateScenarios: cover the feature in proportion to its real complexity — every distinct business rule, branch, role/permission difference, and edge/negative case visible in the code should get a scenario with concrete steps. Do not pad with trivial duplicates; do not under-cover a complex feature.`,
+- sourceFiles: the specific files (real paths from the research/excerpts) that justify your understanding, each with a one-line reason.
+- candidateScenarios: cover the feature in proportion to its real complexity — every distinct business rule, branch, role/permission difference, and edge/negative case visible in the code should get a scenario. Each scenario's steps must be DETAILED and concrete: each step a specific user/system action with the REAL on-screen label/field/button and a matching observable expected result (not vague "verify it works"). Do not pad with trivial duplicates; do not under-cover a complex feature.`,
     schema: featureAnalystSchema,
     userMessage: cleanQuery,
   });

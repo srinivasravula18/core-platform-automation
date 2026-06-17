@@ -128,32 +128,80 @@ function rankCodeFiles(files: Array<{ path: string }>, terms: string[]): Array<{
  * from those excerpts. Replaces the slow ~6-step tool loop (which made one codex call per
  * step) for read-only questions, while staying grounded in the real source of truth.
  */
+// Harvest distinct code identifiers (camelCase/PascalCase) and route/label strings from a
+// file so a SECOND grep round can "follow references" into the modules this file depends on
+// — the broad coverage of an agent's exploration, done with fast native search (no model call).
+function harvestReferenceTerms(content: string): string[] {
+  const out = new Set<string>();
+  for (const m of content.matchAll(/\b([A-Za-z][A-Za-z0-9_]{4,28})\b/g)) {
+    const w = m[1];
+    if (/[a-z][A-Z]/.test(w) || /^[A-Z][a-z]+[A-Z]/.test(w)) out.add(w); // internal capital = identifier
+  }
+  for (const m of content.matchAll(/['"`](\/[A-Za-z][\w\/-]{2,40}|[A-Z][A-Za-z ]{2,30})['"`]/g)) {
+    out.add(m[1].trim());
+  }
+  return Array.from(out);
+}
+
+/**
+ * Git-grounded answer for app-knowledge QUESTIONS. Retrieval is done DEEPLY but
+ * DETERMINISTICALLY: a broad multi-round grep across the whole codebase (round 2 follows
+ * the identifiers found in round 1, so referenced modules are pulled in), then a generous
+ * set of the best files is read — and only ONE model call synthesizes the answer.
+ *
+ * Why not an agentic tool loop here: a loop makes one model call PER search step, and on a
+ * reasoning model each call is ~15-30s, so a 10-step search stacks to minutes (and the
+ * context grows every step). Native grep is instant, so doing the searching deterministically
+ * and the reasoning in a single call is fast EVERYWHERE while still reading widely. Per-call
+ * tokens follow the Settings-selected model — no hardcoded token caps.
+ */
 export async function answerAppQuestionFromCode(question: string, opts: {
   workspaceId?: string; userId?: string;
   projectId?: string; appId?: string | null;
   apps?: Array<{ name: string; baseUrl: string }>;
   onProgress?: (label: string) => void;
+  signal?: AbortSignal;
 } = {}): Promise<string> {
-  const terms = [...keywordsFor(question), ...expandFeatureTerms(question)];
-  for (const a of opts.apps || []) if (a?.name) terms.push(...keywordsFor(a.name));
-  const searchTerms = Array.from(new Set(terms)).slice(0, 12);
   const scope = resolveCodeSearchScope({ projectId: opts.projectId, appId: opts.appId });
+  const scopeArg = { projectId: opts.projectId, appId: opts.appId };
+  const baseTerms = [...keywordsFor(question), ...expandFeatureTerms(question)];
+  for (const a of opts.apps || []) if (a?.name) baseTerms.push(...keywordsFor(a.name));
+  const searchTerms = Array.from(new Set(baseTerms)).slice(0, 12);
+
   opts.onProgress?.(`Searching the codebase for ${searchTerms.slice(0, 5).join(', ') || 'the feature'}…`);
   let files: Array<{ path: string }> = [];
   try {
-    const result = await searchCodeInScope(searchTerms, { projectId: opts.projectId, appId: opts.appId }, 300);
-    files = result.matches as Array<{ path: string }>;
+    const r1 = await searchCodeInScope(searchTerms, scopeArg, 300);
+    files = r1.matches as Array<{ path: string }>;
   } catch (err: any) {
     return `I couldn't read the source code for this scope. It looked in "${scope.repoLabel}"${scope.roots.length ? ` within ${scope.roots.join(', ')}` : ''}, but the repo access failed: ${err?.message || 'unknown error'}.`;
   }
-  // Rank candidates so REAL source files that match the query terms win, instead of
-  // grabbing config/test-artifact files (.github, .playwright-cli, yml, json) that git
-  // happens to return first. This is what makes the single-shot answer accurate.
-  const top = rankCodeFiles(files, searchTerms).slice(0, 5);
-  opts.onProgress?.(top.length ? `Reading ${top.length} source file(s)…` : 'Reading the codebase…');
+
+  // ROUND 2 — follow references: read the strongest round-1 files, harvest the identifiers
+  // they use, and grep those so the modules they depend on join the candidate pool.
+  const seed = rankCodeFiles(files, searchTerms).slice(0, 6);
+  const seedContents = await Promise.all(seed.map(async (f) => {
+    try { return await readCodeFileInScope(f.path, scopeArg, 4000); } catch { return ''; }
+  }));
+  const refTerms = Array.from(new Set(seedContents.flatMap(harvestReferenceTerms)))
+    .filter((t) => !searchTerms.includes(t))
+    .slice(0, 10);
+  if (refTerms.length) {
+    opts.onProgress?.('Following references across the codebase…');
+    try {
+      const r2 = await searchCodeInScope(refTerms, scopeArg, 300);
+      const have = new Set(files.map((f) => f.path));
+      for (const m of (r2.matches as Array<{ path: string }>)) if (!have.has(m.path)) files.push(m);
+    } catch { /* round 2 is best-effort */ }
+  }
+
+  // Read a GENEROUS set of the best-ranked files (deep, not just the top few).
+  const allTerms = Array.from(new Set([...searchTerms, ...refTerms]));
+  const top = rankCodeFiles(files, allTerms).slice(0, 16);
+  opts.onProgress?.(top.length ? `Reading ${top.length} source file(s) in depth…` : 'Reading the codebase…');
   const excerptParts = await Promise.all(top.map(async (f) => {
     try {
-      return `FILE: ${f.path}\n${await readCodeFileInScope(f.path, { projectId: opts.projectId, appId: opts.appId }, 2200)}`;
+      return `FILE: ${f.path}\n${await readCodeFileInScope(f.path, scopeArg, 3200)}`;
     } catch {
       return '';
     }
