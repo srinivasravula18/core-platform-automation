@@ -15,7 +15,7 @@ import { promises as fsp } from 'fs';
 import path from 'path';
 import { inspectApplicationFlow } from './inspectionService';
 import { getOrchestrator, listConfiguredProviders, resolveProviderForAgent } from '../../ai/orchestrator';
-import { answerAppQuestionFromCode } from '../../ai/supervisor';
+import { answerAppQuestionFromCode, stripCodebaseLocationsForAgentConsole } from '../../ai/supervisor';
 import { buildKnowledgeBlock, recordObservation } from '../knowledge/knowledgeService';
 import { resolveCredentials, maskPassword } from '../credentials/credentialsService';
 import { pushInboxItem } from '../inbox/routes';
@@ -1273,7 +1273,7 @@ export function registerAgentRoutes(app: Express) {
           appId: scope.appId,
           apps,
         });
-        const understanding = String(grounded || '').trim();
+        const understanding = stripCodebaseLocationsForAgentConsole(String(grounded || '').trim());
         if (understanding) {
           return res.json({
             ...fallback,
@@ -1314,7 +1314,12 @@ export function registerAgentRoutes(app: Express) {
         }),
         userMessage: rawPrompt,
       });
-      res.json({ ...fallback, ...result.object, source: 'ai' });
+      res.json({
+        ...fallback,
+        ...result.object,
+        understanding: stripCodebaseLocationsForAgentConsole(String(result.object?.understanding || fallback.understanding)),
+        source: 'ai',
+      });
     } catch (err: any) {
       res.json({ ...fallback, source: 'fallback', error: getAIErrorMessage(err) });
     }
@@ -1602,7 +1607,9 @@ export function registerAgentRoutes(app: Express) {
           const analystUnderstanding = resolveUnderstanding(newRun);
           const analysis = await analyzeFeatureFromSource(`${scopeContextText} ${prompt || ''} ${analystUnderstanding}`.trim(), { workspaceId: newRun.ownerId || 'default', userId: newRun.ownerId, repoPath });
           setCached(understandingCache, cacheKey, analysis.understanding);
-          pushPhase(newRun, { agent: 'CodeAnalyst', status: 'completed', output: { ...analysis.understanding, searchedFiles: analysis.files?.map((f) => f.path) || [] } });
+          const rawUnderstanding = (analysis.understanding || {}) as any;
+          const { sourceFiles: _sourceFiles, files: _files, searchedFiles: _searchedFiles, ...visibleUnderstanding } = rawUnderstanding;
+          pushPhase(newRun, { agent: 'CodeAnalyst', status: 'completed', output: visibleUnderstanding });
           return analysis.understanding;
         } catch (err: any) {
           pushPhase(newRun, { agent: 'CodeAnalyst', status: 'skipped', output: `Code understanding unavailable: ${getAIErrorMessage(err)}` });

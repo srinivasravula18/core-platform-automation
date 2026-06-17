@@ -131,22 +131,39 @@ function numberLines(content: string): string {
     .join('\n');
 }
 
-function codebaseRootLine(repoLabel: string): string {
-  const root = String(repoLabel || '').trim();
-  if (!root) return '';
-  return `CODEBASE ROOT: ${root}\n`;
-}
-
 const INTENT_DRIVEN_ANSWER_RULES = `Infer the response shape from the user's intent:
 - If the user asks what to test, asks for test areas, asks to create/generate cases, or asks for QA coverage/scenarios, use this structure:
   1. Start with "For <app/feature>, the concrete target is:" and name the precise target/workflow/entity that the codebase supports.
-  2. Add "Grounding I found:" with concise bullets citing real codebase references as path:line. Cite only references present in the provided material. If a CODEBASE ROOT is provided, use it to make relative file references unambiguous.
+  2. Add "Grounding I found:" with concise bullets that describe the grounded behavior found in the codebase, but DO NOT show file paths, file names, directory names, repository names, or line numbers.
   3. Add "Good Test Areas" with numbered sections and concrete bullets. Derive every section name and bullet from the codebase material. Do not use a fixed checklist, app-specific assumptions, or generic QA areas that were not found in the material.
   4. End with "The highest-value first set would be:" and a short prioritized list containing only grounded areas from the answer above.
-- If the user asks a direct factual question, answer directly and briefly. Include citations only if the user asks for evidence or the answer depends on a specific codebase rule.
-- If the user asks for evidence, sources, or "where did you find this", include a compact grounding section with path:line references.
+- If the user asks a direct factual question, answer directly and briefly. Do not include source locations.
+- If the user asks for evidence, sources, or "where did you find this", summarize the evidence in product/behavior terms. Do not disclose file locations in Agent Console responses.
 - If the codebase material does not support a requested item, say that it was not found in the codebase material instead of inventing it.
-- Markdown/documentation files are excluded and must not be cited.`;
+- Markdown/documentation files are excluded and must not be cited.
+- Agent Console responses must never display codebase file paths, filenames, line numbers, or repo directories. Keep source locations internal only.`;
+
+export function stripCodebaseLocationsForAgentConsole(value: string): string {
+  const sourceRef =
+    /(?:^|[\s(;])(?:[A-Za-z]:[\\/]|\.{0,2}[\\/]?(?:apps|server|src|tests?|docs|seeds|packages|api|lib|components|hooks|pages|shared|client|services|e2e|unit|features|db|scripts)[\\/])[\w./\\@-]+\.(?:tsx?|jsx?|vue|svelte|py|go|java|rb|cs|php|json|ya?ml|sql|css|scss|html|spec\.ts|test\.ts)(?::\d+(?:-\d+)?)?/gi;
+  const bareFileRef =
+    /(?:^|[\s(;])[\w.-]+\.(?:tsx?|jsx?|vue|svelte|py|go|java|rb|cs|php|json|ya?ml|sql|css|scss|html|spec\.ts|test\.ts)(?::\d+(?:-\d+)?)?/gi;
+  return String(value || '')
+    .split(/\r?\n/)
+    .map((line) => line
+      .replace(/\s+referenced by\s+[^.]+(?=\.|$)/gi, '')
+      .replace(sourceRef, ' ')
+      .replace(bareFileRef, ' ')
+      .replace(/\s*;\s*(?=;|$)/g, '')
+      .replace(/\s+([,.;:])/g, '$1')
+      .replace(/:\s*(?:;|\.)?\s*$/g, '')
+      .replace(/\(\s*\)/g, '')
+      .replace(/[ \t]{2,}/g, ' ')
+      .trimEnd())
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
 
 /**
  * FAST git-grounded answer for app-knowledge QUESTIONS: do the retrieval deterministically
@@ -214,18 +231,17 @@ export async function answerAppQuestionFromCode(question: string, opts: {
       opts.onProgress?.('Synthesizing the answer…');
       const orch = await getOrchestrator('chatAssistant', { workspaceId: opts.workspaceId, userId: opts.userId });
       const prompt = `You are a QA assistant who is an expert on THIS application. Answer the user's question using ONLY the grounded research findings below (compiled by reading the app's real codebase files; Markdown/documentation files are excluded).
-Speak to the user as a product/QA expert. Do not invent behaviour beyond the findings. You may cite codebase file paths and line numbers when the user's intent calls for grounded evidence, test coverage, or test-area recommendations. For ordinary factual answers, keep citations minimal.${appsBlock}
+Speak to the user as a product/QA expert. Do not invent behaviour beyond the findings. Keep source locations internal: never show file paths, filenames, directories, repo names, or line numbers in the final answer.${appsBlock}
 
 ${INTENT_DRIVEN_ANSWER_RULES}
 
 QUESTION: ${question}
 
-${codebaseRootLine(scope.repoLabel)}
 GROUNDED RESEARCH FINDINGS:
 ${notes}\n`;
       const { text, shortCircuit } = await orch.generateText({ prompt, userMessage: question, hasHistory: true });
       const answer = (shortCircuit || text || '').trim();
-      if (answer) return answer;
+      if (answer) return stripCodebaseLocationsForAgentConsole(answer);
     }
   } catch {
     // fall through to the single-pass deterministic search below
@@ -278,17 +294,16 @@ ${notes}\n`;
   // Settings-selected provider/model dynamically.
   const orch = await getOrchestrator('chatAssistant', { workspaceId: opts.workspaceId, userId: opts.userId });
   const prompt = `You are a QA assistant who knows this application. Answer the user's question grounded ONLY in the application's real codebase files provided below (your source of truth). Markdown/documentation files are excluded. Be specific and concrete. If the provided codebase files do not contain the answer, say plainly what you can determine and what you'd need to answer fully — do NOT invent behaviour.
-Speak to the user as a product/QA expert. Do not invent behaviour beyond the codebase files. You may cite codebase file paths and line numbers when the user's intent calls for grounded evidence, test coverage, or test-area recommendations. For ordinary factual answers, keep citations minimal.${appsBlock}
+Speak to the user as a product/QA expert. Do not invent behaviour beyond the codebase files. Keep source locations internal: never show file paths, filenames, directories, repo names, or line numbers in the final answer.${appsBlock}
 
 ${INTENT_DRIVEN_ANSWER_RULES}
 
 QUESTION: ${question}
 
-${codebaseRootLine(scope.repoLabel)}
 APPLICATION CODEBASE FILES (${top.length} file(s)):
 ${excerpts || '(no matching files found — the repo may be unavailable or the terms too specific)'}\n`;
   const { text, shortCircuit } = await orch.generateText({ prompt, userMessage: question, hasHistory: true });
-  return shortCircuit || text || 'I could not find that in the codebase.';
+  return stripCodebaseLocationsForAgentConsole(shortCircuit || text || 'I could not find that in the codebase.');
 }
 
 export async function runSupervisor(input: {

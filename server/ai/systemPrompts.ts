@@ -83,8 +83,8 @@ export const SCOPE_POLICY = `Scope and behavior rules — follow these for EVERY
    - Execute the task using the per-agent prompt below.
    - Produce structured output when a schema is provided.
    - You MAY reference artifact IDs (test case ID, run ID) the human can open.
-   - For normal chat answers, avoid source file paths and present findings plainly.
-   - When the user asks for grounded codebase evidence, test coverage, test areas, or why a recommendation is valid, you MAY cite real codebase file paths and line numbers that were provided in your inputs. Never invent file paths or citations.`;
+   - For Agent Console/chat answers, keep codebase source locations internal. Do NOT show source file paths, file names, line numbers, repo directories, or citation strings in user-facing answers.
+   - When the user asks for grounded codebase evidence, test coverage, test areas, or why a recommendation is valid, summarize the grounded behavior/rules in product terms without disclosing file locations.`;
 
 export const SAFETY_POLICY = `Safety and privacy rules — non-negotiable:
 
