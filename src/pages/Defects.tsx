@@ -7,6 +7,7 @@ import { cn } from '@/src/lib/utils';
 import html2canvas from 'html2canvas';
 import { Modal } from '@/src/components/Modal';
 import { AIActionModal } from '@/src/components/AIActionModal';
+import { showAlert, showConfirm } from '@/src/lib/dialog';
 
 export default function Defects() {
   const [defects, setDefects] = useState<any[]>([]);
@@ -70,9 +71,9 @@ export default function Defects() {
     }
   };
 
-  const handleDeleteDefect = () => {
+  const handleDeleteDefect = async () => {
     if (!selectedDefectId) return;
-    if (confirm('Are you sure you want to delete this defect?')) {
+    if (await showConfirm('Are you sure you want to delete this defect?', { tone: 'danger' })) {
       fetch(`/api/defects/${selectedDefectId}`, { method: 'DELETE' })
         .then(() => {
           setIsDefectModalOpen(false);
@@ -99,7 +100,7 @@ export default function Defects() {
       a.click();
     } catch (e) {
       console.error(e);
-      alert('Failed to capture screen.');
+      void showAlert('Failed to capture screen.');
     }
   };
 

@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import { GoogleSheetsIntegration } from '../components/GoogleSheetsIntegration';
 import { isAdmin } from '../components/AuthGate';
+import { showConfirm } from '@/src/lib/dialog';
 
 type Provider = 'gemini' | 'openai' | 'anthropic';
 
@@ -184,7 +185,7 @@ function ProfilesSection() {
   };
 
   const remove = async (user: AppUserRow) => {
-    if (!confirm(`Delete profile "${user.username}"? Their data becomes inaccessible.`)) return;
+    if (!await showConfirm(`Delete profile "${user.username}"? Their data becomes inaccessible.`, { tone: 'danger' })) return;
     setBusy(true);
     try {
       const res = await fetch(`/api/users/${user.id}`, { method: 'DELETE' });
@@ -436,7 +437,7 @@ function ProvidersSection() {
   };
 
   const clearKey = async (provider: Provider) => {
-    if (!confirm(`Remove the ${PROVIDER_LABELS[provider]} API key?`)) return;
+    if (!await showConfirm(`Remove the ${PROVIDER_LABELS[provider]} API key?`, { tone: 'danger' })) return;
     setProviders((prev) => prev.map((p) => (
       p.name === provider ? { ...p, apiKeyMasked: '', configured: p.authMode === 'account' ? p.configured : false, callable: false } : p
     )));
@@ -777,7 +778,7 @@ function PromptsSection() {
   };
 
   const reset = async (agent: string) => {
-    if (!confirm(`Reset ${AGENT_LABELS[agent]?.label || agent} to the system default?`)) return;
+    if (!await showConfirm(`Reset ${AGENT_LABELS[agent]?.label || agent} to the system default?`)) return;
     await fetch(`/api/ai/prompts/${agent}/reset`, { method: 'POST' });
     await load();
   };
@@ -1130,7 +1131,7 @@ function CredentialsSection() {
     const r = rows.find((x) => x.key === key);
     if (!r) return;
     if (r.websiteId) {
-      if (!confirm('Delete this website credential?')) return;
+      if (!await showConfirm('Delete this website credential?', { tone: 'danger' })) return;
       await fetch(`/api/credentials/websites/${r.websiteId}`, { method: 'DELETE' });
     }
     setRows((prev) => prev.filter((x) => x.key !== key));

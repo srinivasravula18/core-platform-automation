@@ -2,6 +2,7 @@ import { useCallback, useState } from 'react';
 import { Mic, Send, Bot, Loader2, Sparkles, Check, X, RefreshCw } from 'lucide-react';
 import { Modal } from './Modal';
 import { useSpeechToText } from '@/src/lib/useSpeechToText';
+import { showAlert } from '@/src/lib/dialog';
 
 interface AIActionModalProps {
   isOpen: boolean;
@@ -43,11 +44,11 @@ export function AIActionModal({ isOpen, onClose, taskType, onApprove, title }: A
       if (res.ok) {
         setGeneratedData(data);
       } else {
-        alert("Failed to generate: " + data.error);
+        void showAlert("Failed to generate: " + data.error);
       }
     } catch (e) {
       console.error(e);
-      alert("Error generating action.");
+      void showAlert("Error generating action.");
     } finally {
       setIsGenerating(false);
     }

@@ -7,6 +7,7 @@ import { useBulkDelete } from '@/src/lib/useBulkDelete';
 import { Modal } from '@/src/components/Modal';
 import { AIActionModal } from '@/src/components/AIActionModal';
 import { FolderSelect } from '@/src/components/FolderSelect';
+import { showAlert, showConfirm } from '@/src/lib/dialog';
 
 const CASE_STATUSES = ['Draft', 'Under Review', 'Approved', 'Automated', 'Deprecated'];
 
@@ -155,9 +156,9 @@ export default function TestCases() {
     setFormData({ ...formData, steps: steps.length ? steps : [{ action: '', expected: '' }] });
   };
 
-  const handleDeleteCase = () => {
+  const handleDeleteCase = async () => {
     if (!selectedCaseId) return;
-    if (confirm('Are you sure you want to delete this test case?')) {
+    if (await showConfirm('Are you sure you want to delete this test case?', { tone: 'danger' })) {
       fetch(`/api/cases/${selectedCaseId}`, { method: 'DELETE' })
         .then(() => {
           setIsCaseModalOpen(false);
@@ -194,7 +195,7 @@ export default function TestCases() {
     });
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
-      alert(data.error || 'Failed to update test case.');
+      void showAlert(data.error || 'Failed to update test case.');
       return;
     }
     fetchCases();

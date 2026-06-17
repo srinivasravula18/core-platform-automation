@@ -9,6 +9,7 @@ import { Modal } from '@/src/components/Modal';
 import { FolderSelect } from '@/src/components/FolderSelect';
 import { FolderBadge } from '@/src/components/FolderBadge';
 import { withBasePath } from '@/src/lib/base-path';
+import { showConfirm } from '@/src/lib/dialog';
 
 interface Step {
   step: string;
@@ -342,9 +343,9 @@ export default function Reports() {
 
   const bulk = useBulkDelete('reports', () => { setSelectedReport(null); fetchReports(); }, 'report');
 
-  const handleDeleteReport = (id: string, e: React.MouseEvent) => {
+  const handleDeleteReport = async (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    if (confirm('Are you sure you want to delete this test report entry?')) {
+    if (await showConfirm('Are you sure you want to delete this test report entry?', { tone: 'danger' })) {
       fetch(`/api/reports/${id}`, { method: 'DELETE' })
         .then(() => {
           if (selectedReport?.id === id) {

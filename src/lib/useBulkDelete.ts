@@ -1,4 +1,5 @@
 import { useCallback, useMemo, useState } from 'react';
+import { showAlert, showConfirm } from '@/src/lib/dialog';
 
 /**
  * Shared single + multi (bulk) delete logic for artifact list pages.
@@ -58,7 +59,7 @@ export function useBulkDelete(entity: string, onChanged: () => void, labelSingul
   const deleteOne = useCallback(
     async (id: string) => {
       if (!id) return;
-      if (!confirm(`Delete this ${label}? This cannot be undone.`)) return;
+      if (!await showConfirm(`Delete this ${label}? This cannot be undone.`, { tone: 'danger' })) return;
       setBusy(true);
       try {
         await fetch(`/api/${entity}/${id}`, { method: 'DELETE' });
@@ -71,7 +72,7 @@ export function useBulkDelete(entity: string, onChanged: () => void, labelSingul
         onChanged();
       } catch (error) {
         console.error(error);
-        alert(`Failed to delete ${label}.`);
+        void showAlert(`Failed to delete ${label}.`);
       } finally {
         setBusy(false);
       }
@@ -82,7 +83,7 @@ export function useBulkDelete(entity: string, onChanged: () => void, labelSingul
   const deleteSelected = useCallback(async () => {
     const ids = Array.from(selectedIds);
     if (!ids.length) return;
-    if (!confirm(`Delete ${ids.length} selected ${label}${ids.length === 1 ? '' : 's'}? This cannot be undone.`)) return;
+    if (!await showConfirm(`Delete ${ids.length} selected ${label}${ids.length === 1 ? '' : 's'}? This cannot be undone.`, { tone: 'danger' })) return;
     setBusy(true);
     try {
       await fetch(`/api/${entity}/bulk-delete`, {
@@ -94,7 +95,7 @@ export function useBulkDelete(entity: string, onChanged: () => void, labelSingul
       onChanged();
     } catch (error) {
       console.error(error);
-      alert(`Failed to delete selected ${label}s.`);
+      void showAlert(`Failed to delete selected ${label}s.`);
     } finally {
       setBusy(false);
     }

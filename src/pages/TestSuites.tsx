@@ -7,6 +7,7 @@ import { cn } from '@/src/lib/utils';
 import { Modal } from '@/src/components/Modal';
 import { AIActionModal } from '@/src/components/AIActionModal';
 import { FolderSelect } from '@/src/components/FolderSelect';
+import { showAlert, showConfirm } from '@/src/lib/dialog';
 
 export default function TestSuites() {
   const [suites, setSuites] = useState<any[]>([]);
@@ -121,9 +122,9 @@ export default function TestSuites() {
     }
   };
 
-  const handleDeleteSuite = () => {
+  const handleDeleteSuite = async () => {
     if (!selectedSuiteId) return;
-    if (confirm('Are you sure you want to delete this suite?')) {
+    if (await showConfirm('Are you sure you want to delete this suite?', { tone: 'danger' })) {
       fetch(`/api/suites/${selectedSuiteId}`, { method: 'DELETE' })
         .then(() => {
           setIsSuiteModalOpen(false);
@@ -152,7 +153,7 @@ export default function TestSuites() {
     });
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
-      alert(data.error || 'Failed to update test suite.');
+      void showAlert(data.error || 'Failed to update test suite.');
       return;
     }
     fetchSuites();

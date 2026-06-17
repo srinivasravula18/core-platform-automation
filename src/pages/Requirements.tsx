@@ -4,6 +4,7 @@ import { Search, Sparkles, Loader2, Target, FileCode2, ArrowRight, Trash2 } from
 import ExportMenu from '../components/ExportMenu';
 import { useBulkDelete } from '@/src/lib/useBulkDelete';
 import { Modal } from '@/src/components/Modal';
+import { showAlert, showConfirm } from '@/src/lib/dialog';
 
 const REQ_STATUSES = ['Draft', 'Under Review', 'Approved', 'Deprecated'];
 
@@ -96,13 +97,13 @@ export default function Requirements() {
       fetchRequirements();
     } else {
       const data = await res.json().catch(() => ({}));
-      alert(data.error || 'Failed to save requirement.');
+      void showAlert(data.error || 'Failed to save requirement.');
     }
   };
 
   const deleteRequirement = async () => {
     if (!selected) return;
-    if (!confirm('Delete this requirement? Its case links will be removed (the cases themselves are kept).')) return;
+    if (!await showConfirm('Delete this requirement? Its case links will be removed (the cases themselves are kept).', { tone: 'danger' })) return;
     const res = await fetch(`/api/requirements/${selected.id}`, { method: 'DELETE' });
     if (res.ok) {
       setIsModalOpen(false);

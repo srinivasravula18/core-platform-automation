@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { initAuth, googleSignIn, getAccessToken, logout } from '../lib/googleAuth';
 import { User } from 'firebase/auth';
+import { showConfirm } from '@/src/lib/dialog';
 
 const SCOPES = 'https://www.googleapis.com/auth/sheets';
 
@@ -51,7 +52,7 @@ export function GoogleSheetsIntegration() {
   };
 
   const handleSyncToSheets = async () => {
-    const confirmation = window.confirm('Are you sure you want to push all latest Test Plans, Suites, and Cases to a new Google Sheet? This will help you maintain them on Sheets.');
+    const confirmation = await showConfirm('Are you sure you want to push all latest Test Plans, Suites, and Cases to a new Google Sheet? This will help you maintain them on Sheets.');
     if (!confirmation) return;
 
     setIsSyncing(true);

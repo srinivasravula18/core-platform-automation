@@ -4,6 +4,7 @@ import { cn } from '@/src/lib/utils';
 import { withBasePath } from '@/src/lib/base-path';
 import { useSpeechToText } from '@/src/lib/useSpeechToText';
 import { PlanList, WorkflowRunner } from '@/src/components/WorkflowRunner';
+import { showAlert } from '@/src/lib/dialog';
 
 const casualGreetingPattern = /^(hi+|h+i+|hlo+|hello+|hey+|good\s+(morning|afternoon|evening)|thanks?|thank\s+you|ok(?:ay)?)\b[\s!.?]*$/i;
 const identityQuestionPattern = /\b(who\s+are\s+you|what\s+can\s+you\s+do|help|your\s+purpose)\b/i;
@@ -129,7 +130,7 @@ export default function AgentPanel() {
         setTaskId(data.task_id);
         setMessages(prev => [...prev, { role: 'system', content: `Started Job: ${data.task_id.substring(0,8)}... Orchestrating A2A workflow.` }]);
       } else {
-        alert(data.error || 'Failed to start agent');
+        void showAlert(data.error || 'Failed to start agent');
         setIsGenerating(false);
       }
     } catch (e) {
@@ -174,7 +175,7 @@ export default function AgentPanel() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ cases: runData.generated_cases, taskId })
     });
-    alert('Cases saved successfully to Test Cases module!');
+    void showAlert('Cases saved successfully to Test Cases module!');
   };
 
   const downloadPlaywrightScripts = () => {
@@ -208,7 +209,7 @@ export default function AgentPanel() {
       if (!res.ok) throw new Error(data.error || 'Failed to continue agent flow');
     } catch (err: any) {
       setIsGenerating(false);
-      alert(err.message || 'Failed to continue agent flow.');
+      void showAlert(err.message || 'Failed to continue agent flow.');
     }
   };
 
@@ -275,7 +276,7 @@ export default function AgentPanel() {
       updateGeneratedCase(caseIndex, data);
       setCaseFeedback('');
     } catch (err: any) {
-      alert(err.message || 'Failed to rework test case.');
+      void showAlert(err.message || 'Failed to rework test case.');
     } finally {
       setIsReworkingCase(false);
     }
@@ -308,7 +309,7 @@ export default function AgentPanel() {
         updateGeneratedCase(caseIndex, { steps: data.steps });
       }
     } catch (err: any) {
-      alert(err.message || 'Failed to expand test steps.');
+      void showAlert(err.message || 'Failed to expand test steps.');
     } finally {
       setExpandingCaseIndex(null);
     }

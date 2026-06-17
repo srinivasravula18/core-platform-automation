@@ -9,6 +9,7 @@ import { Modal } from '@/src/components/Modal';
 import { AIActionModal } from '@/src/components/AIActionModal';
 import { FolderSelect } from '@/src/components/FolderSelect';
 import { FolderBadge } from '@/src/components/FolderBadge';
+import { showAlert } from '@/src/lib/dialog';
 
 function getRunStats(run: any) {
   const steps = Array.isArray(run?.steps) ? run.steps : [];
@@ -192,7 +193,7 @@ export default function TestRuns() {
   const shareRun = async (run: any) => {
     const url = `${window.location.origin}/runs/${run.id}`;
     await navigator.clipboard?.writeText(url);
-    alert('Run link copied to clipboard.');
+    void showAlert('Run link copied to clipboard.');
   };
 
   if (selectedRun) {

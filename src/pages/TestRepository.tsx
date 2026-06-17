@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { ChevronRight, FileText, Folder, FolderPlus, Layers, PlayCircle, Search, Trash2, ClipboardList, TestTube2, Code2, Copy, Download, Check, CheckSquare, X } from 'lucide-react';
 import { cn } from '@/src/lib/utils';
 import { Modal } from '@/src/components/Modal';
+import { showAlert, showConfirm } from '@/src/lib/dialog';
 
 // Artifact groups backed by a real DELETE/bulk-delete endpoint (evidence is derived, not deletable).
 const DELETABLE_KEYS = new Set(['plans', 'suites', 'cases', 'runs', 'reports', 'scripts']);
@@ -165,7 +166,7 @@ export default function TestRepository() {
     const res = await fetch(`/api/folders/${selectedFolderId}`, { method: 'DELETE' });
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
-      alert(data.error || 'Folder cannot be deleted.');
+      void showAlert(data.error || 'Folder cannot be deleted.');
       return;
     }
     setSelectedFolderId('');
@@ -195,14 +196,14 @@ export default function TestRepository() {
 
   const deleteArtifact = async (entity: string, id: string) => {
     if (!DELETABLE_KEYS.has(entity)) return;
-    if (!confirm(`Delete this ${entity.replace(/s$/, '')}? This cannot be undone.`)) return;
+    if (!await showConfirm(`Delete this ${entity.replace(/s$/, '')}? This cannot be undone.`, { tone: 'danger' })) return;
     setDeleting(true);
     try {
       await fetch(`/api/${entity}/${id}`, { method: 'DELETE' });
       fetchData();
     } catch (error) {
       console.error(error);
-      alert('Failed to delete item.');
+      void showAlert('Failed to delete item.');
     } finally {
       setDeleting(false);
     }
@@ -211,7 +212,7 @@ export default function TestRepository() {
   const deleteSelectedArtifacts = async () => {
     const keys: string[] = Array.from(selectedKeys);
     if (!keys.length) return;
-    if (!confirm(`Delete ${keys.length} selected item${keys.length === 1 ? '' : 's'}? This cannot be undone.`)) return;
+    if (!await showConfirm(`Delete ${keys.length} selected item${keys.length === 1 ? '' : 's'}? This cannot be undone.`, { tone: 'danger' })) return;
     // group ids by entity for bulk-delete calls
     const byEntity = new Map<string, string[]>();
     for (const k of keys) {
@@ -235,7 +236,7 @@ export default function TestRepository() {
       fetchData();
     } catch (error) {
       console.error(error);
-      alert('Failed to delete selected items.');
+      void showAlert('Failed to delete selected items.');
     } finally {
       setDeleting(false);
     }

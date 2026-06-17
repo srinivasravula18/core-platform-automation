@@ -9,6 +9,7 @@ import { Modal } from '@/src/components/Modal';
 import { AIActionModal } from '@/src/components/AIActionModal';
 import { FolderSelect } from '@/src/components/FolderSelect';
 import { FolderBadge } from '@/src/components/FolderBadge';
+import { showAlert, showConfirm } from '@/src/lib/dialog';
 
 const PLAN_STATUSES = ['Draft', 'Under Review', 'Approved', 'In Progress', 'Completed', 'Blocked', 'Cancelled', 'Archived'];
 const PLAN_RISK_LEVELS = ['Low', 'Medium', 'High'];
@@ -146,9 +147,9 @@ export default function TestPlans() {
     }
   };
 
-  const handleDeletePlan = () => {
+  const handleDeletePlan = async () => {
     if (!selectedPlanId) return;
-    if (confirm('Are you sure you want to delete this plan?')) {
+    if (await showConfirm('Are you sure you want to delete this plan?', { tone: 'danger' })) {
       fetch(`/api/plans/${selectedPlanId}`, { method: 'DELETE' })
         .then(() => {
           setIsPlanModalOpen(false);
@@ -158,8 +159,8 @@ export default function TestPlans() {
     }
   };
 
-  const handleDeletePlanById = (planId: string) => {
-    if (confirm('Are you sure you want to delete this plan?')) {
+  const handleDeletePlanById = async (planId: string) => {
+    if (await showConfirm('Are you sure you want to delete this plan?', { tone: 'danger' })) {
       fetch(`/api/plans/${planId}`, { method: 'DELETE' })
         .then(() => {
           if (openActionPlanId === planId) setOpenActionPlanId(null);
@@ -189,7 +190,7 @@ export default function TestPlans() {
     });
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
-      alert(data.error || 'Failed to update test plan.');
+      void showAlert(data.error || 'Failed to update test plan.');
       return;
     }
     fetchPlans();

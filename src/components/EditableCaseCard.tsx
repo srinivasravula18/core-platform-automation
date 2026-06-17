@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactElement } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { FlaskConical, Pencil, SplitSquareHorizontal, Send, Loader2, Check, Link2Off } from 'lucide-react';
+import { showAlert } from '@/src/lib/dialog';
 
 /**
  * A single test case rendered as an inline-editable card — the same editing
@@ -96,7 +97,7 @@ export default function EditableCaseCard({ initial, linkType, selected, onToggle
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        alert(data.error || 'Failed to update test case.');
+        void showAlert(data.error || 'Failed to update test case.');
         return false;
       }
       return true;

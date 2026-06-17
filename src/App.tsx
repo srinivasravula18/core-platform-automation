@@ -8,6 +8,7 @@ import { ProjectSwitcher } from '@/src/components/ProjectSwitcher';
 import { useProjects } from '@/src/store/project';
 import { AuthGate, logout, getUsername } from '@/src/components/AuthGate';
 import { appBasePath } from '@/src/lib/base-path';
+import { DialogHost } from '@/src/lib/dialog';
 
 import AgentConsole from '@/src/pages/AgentConsole';
 import AgentPanel from '@/src/pages/AgentPanel';
@@ -370,6 +371,7 @@ export default function App() {
         </Routes>
       </Shell>
       </BrowserRouter>
+      <DialogHost />
     </AuthGate>
   );
 }

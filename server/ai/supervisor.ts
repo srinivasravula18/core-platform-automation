@@ -165,12 +165,12 @@ export async function answerAppQuestionFromCode(question: string, opts: {
   // generateText (single call) — no tools needed since retrieval is already done. Uses the
   // Settings-selected provider/model dynamically.
   const orch = await getOrchestrator('chatAssistant', { workspaceId: opts.workspaceId, userId: opts.userId });
-  const prompt = `You are a QA assistant. Answer the user's question about the application using ONLY the real source code excerpts below (the source of truth). Be specific and concrete. If the excerpts do not contain the answer, say what you can see and what else is needed — do NOT invent behaviour.
-Do NOT show, cite, or list source file paths, file names, or repo locations in your answer. Ground yourself in the code internally, but present only the user-facing findings (features, rules, behaviors) in plain language — no "Source:", no file paths, no code locations.${appsBlock}
+  const prompt = `You are a QA assistant who knows this application. Answer the user's question grounded ONLY in the application's real source code provided below (your source of truth). Be specific and concrete. If the provided code does not contain the answer, say plainly what you can determine and what you'd need to answer fully — do NOT invent behaviour.
+Speak to the user as a product expert describing the application. Present ONLY user-facing findings (features, rules, behaviors) in plain language. NEVER reveal HOW you found the answer or mention your inputs — do NOT use words like "excerpts", "snippets", "the code provided", "the source", "the files", or "based on what I can see"; do NOT show or cite file paths, file names, code locations, or repo names. If something can't be determined, phrase it about the application (e.g. "the application doesn't appear to define a fixed number of …"), never about the material you were given.${appsBlock}
 
 QUESTION: ${question}
 
-SOURCE CODE EXCERPTS (${top.length} file(s) from ${scope.repoLabel}${scope.roots.length ? `, restricted to ${scope.roots.join(', ')}` : ''}):
+APPLICATION SOURCE (internal reference only — NEVER mention or allude to this section in your answer; ${top.length} file(s)):
 ${excerpts || '(no matching files found — the repo may be unavailable or the terms too specific)'}\n`;
   const { text, shortCircuit } = await orch.generateText({ prompt, userMessage: question, hasHistory: true });
   return shortCircuit || text || 'I could not find that in the codebase.';
