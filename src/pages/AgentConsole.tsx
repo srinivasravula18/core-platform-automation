@@ -1388,18 +1388,18 @@ export default function AgentConsole() {
             {turns.map((turn) => {
               if (turn.role === 'user') {
                 return (
-                  <div key={turn.id} className="flex items-start justify-end gap-2.5">
+                  <div key={turn.id} className="group flex items-start justify-end gap-2.5">
                     {/* Softer tinted bubble + primary text reads better than solid accent + white. */}
                     <div className="max-w-[85%]">
                       <div className="rounded-2xl rounded-br-sm border border-[var(--accent)]/30 bg-[var(--accent)]/15 px-4 py-2.5 text-sm text-[var(--text-primary)]">
                         {turn.text}
                       </div>
-                      <div className="mt-1 flex justify-end gap-1">
+                      <div className="mt-1 pr-1 flex justify-end gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
                         <button
                           type="button"
                           onClick={() => editUserPrompt(turn.id, turn.text)}
                           title="Edit prompt"
-                          className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-[var(--border)] bg-[var(--bg-card)] text-[var(--text-muted)] hover:border-[var(--accent)] hover:text-[var(--text-primary)]"
+                          className="inline-flex h-7 w-7 items-center justify-center rounded-md text-[var(--text-muted)] hover:bg-[var(--bg-secondary)] hover:text-[var(--text-primary)]"
                         >
                           <SquarePen className="h-3 w-3" />
                         </button>
@@ -1407,7 +1407,7 @@ export default function AgentConsole() {
                           type="button"
                           onClick={() => void copyUserPrompt(turn.id, turn.text)}
                           title={copiedTurnId === turn.id ? 'Copied' : 'Copy prompt'}
-                          className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-[var(--border)] bg-[var(--bg-card)] text-[var(--text-muted)] hover:border-[var(--accent)] hover:text-[var(--text-primary)]"
+                          className="inline-flex h-7 w-7 items-center justify-center rounded-md text-[var(--text-muted)] hover:bg-[var(--bg-secondary)] hover:text-[var(--text-primary)]"
                         >
                           <Copy className="h-3 w-3" />
                         </button>
