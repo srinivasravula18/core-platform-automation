@@ -1404,22 +1404,17 @@ export default function AgentConsole() {
                 if (isEditing) {
                   return (
                     <div key={turn.id} className="flex items-start justify-end gap-2.5">
-                      <div className="w-full max-w-[85%] overflow-hidden rounded-2xl border border-[var(--accent)] bg-[var(--bg-card)] shadow-sm ring-2 ring-[var(--accent)]/30">
+                      <div className="flex w-fit min-w-[240px] max-w-[85%] flex-col overflow-hidden rounded-2xl border border-[var(--accent)] bg-[var(--bg-card)] shadow-sm ring-2 ring-[var(--accent)]/30">
                         <textarea
                           autoFocus
                           value={editDraft}
-                          onChange={(e) => {
-                            setEditDraft(e.target.value);
-                            e.target.style.height = 'auto';
-                            e.target.style.height = `${Math.min(e.target.scrollHeight, 320)}px`;
-                          }}
+                          onChange={(e) => setEditDraft(e.target.value)}
                           onKeyDown={(e) => {
                             if (e.key === 'Escape') { e.preventDefault(); cancelInlineEdit(); }
                             if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); saveInlineEdit(turn.id); }
                           }}
                           rows={1}
-                          className="block max-h-[320px] w-full resize-none bg-transparent px-4 py-3 text-sm text-[var(--text-primary)] outline-none"
-                          ref={(el) => { if (el) { el.style.height = 'auto'; el.style.height = `${Math.min(el.scrollHeight, 320)}px`; } }}
+                          className="field-sizing-content block max-h-[320px] min-w-0 max-w-full resize-none whitespace-pre-wrap break-words bg-transparent px-4 py-3 text-sm text-[var(--text-primary)] outline-none"
                         />
                         <div className="flex items-center justify-between gap-3 border-t border-[var(--border)] px-4 py-2.5">
                           <span className="flex items-start gap-1.5 text-[11px] leading-snug text-[var(--text-muted)]">
