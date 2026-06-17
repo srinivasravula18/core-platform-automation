@@ -9,7 +9,7 @@
  */
 import { useEffect } from 'react';
 import { create } from 'zustand';
-import { AlertTriangle, Info } from 'lucide-react';
+import { AlertTriangle, Info, CheckCircle2 } from 'lucide-react';
 import { cn } from '@/src/lib/utils';
 
 type DialogKind = 'alert' | 'confirm';
@@ -47,6 +47,29 @@ const useDialogStore = create<DialogState>((set, get) => ({
 export interface AlertOptions { title?: string; confirmText?: string; }
 export interface ConfirmOptions { title?: string; confirmText?: string; cancelText?: string; tone?: 'default' | 'danger'; }
 
+// ---- Toasts: brief, non-blocking confirmations (e.g. "Copied to clipboard") ----
+type ToastTone = 'success' | 'info' | 'error';
+interface Toast { id: number; message: string; tone: ToastTone; }
+interface ToastState {
+  toasts: Toast[];
+  add: (t: Toast) => void;
+  remove: (id: number) => void;
+}
+const useToastStore = create<ToastState>((set) => ({
+  toasts: [],
+  add: (t) => set((s) => ({ toasts: [...s.toasts, t] })),
+  remove: (id) => set((s) => ({ toasts: s.toasts.filter((x) => x.id !== id) })),
+}));
+
+/** Show a brief auto-dismissing toast (does not block). Default tone 'success'. */
+export function showToast(message: string, opts: { tone?: ToastTone; durationMs?: number } = {}): void {
+  const id = ++counter;
+  useToastStore.getState().add({ id, message, tone: opts.tone || 'success' });
+  if (typeof window !== 'undefined') {
+    window.setTimeout(() => useToastStore.getState().remove(id), opts.durationMs ?? 2200);
+  }
+}
+
 /** Styled replacement for window.alert(). Resolves when the user dismisses it. */
 export function showAlert(message: string, opts: AlertOptions = {}): Promise<void> {
   return new Promise((resolve) => {
@@ -79,13 +102,8 @@ export function showConfirm(message: string, opts: ConfirmOptions = {}): Promise
   });
 }
 
-/** Mount ONCE near the app root. Renders the active dialog from the queue. */
-export function DialogHost() {
-  const dialog = useDialogStore((s) => s.queue[0]);
-  const resolveTop = useDialogStore((s) => s.resolveTop);
-
+function DialogModal({ dialog, resolveTop }: { dialog: DialogRequest; resolveTop: (v: boolean) => void }) {
   useEffect(() => {
-    if (!dialog) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') resolveTop(dialog.kind === 'alert');
       else if (e.key === 'Enter') resolveTop(true);
@@ -94,7 +112,6 @@ export function DialogHost() {
     return () => window.removeEventListener('keydown', onKey);
   }, [dialog, resolveTop]);
 
-  if (!dialog) return null;
   const danger = dialog.tone === 'danger';
   // Dismissing (overlay click / Esc): confirm -> cancel(false), alert -> acknowledged(true).
   const dismiss = () => resolveTop(dialog.kind === 'alert');
@@ -136,5 +153,40 @@ export function DialogHost() {
         </div>
       </div>
     </div>
+  );
+}
+
+function ToastViewport() {
+  const toasts = useToastStore((s) => s.toasts);
+  if (!toasts.length) return null;
+  return (
+    <div className="pointer-events-none fixed bottom-5 left-1/2 z-[110] flex -translate-x-1/2 flex-col items-center gap-2">
+      {toasts.map((t) => (
+        <div
+          key={t.id}
+          className={cn(
+            'pointer-events-auto flex items-center gap-2 rounded-full border px-4 py-2 text-sm font-medium shadow-lg animate-in fade-in slide-in-from-bottom-2 duration-200',
+            'border-[var(--border)] bg-[var(--bg-card)] text-[var(--text-primary)]',
+          )}
+        >
+          {t.tone === 'error'
+            ? <AlertTriangle className="h-4 w-4 text-red-400" />
+            : <CheckCircle2 className={cn('h-4 w-4', t.tone === 'info' ? 'text-[var(--accent)]' : 'text-emerald-400')} />}
+          {t.message}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** Mount ONCE near the app root. Renders the active dialog AND any toasts. */
+export function DialogHost() {
+  const dialog = useDialogStore((s) => s.queue[0]);
+  const resolveTop = useDialogStore((s) => s.resolveTop);
+  return (
+    <>
+      {dialog && <DialogModal dialog={dialog} resolveTop={resolveTop} />}
+      <ToastViewport />
+    </>
   );
 }

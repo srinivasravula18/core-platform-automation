@@ -26,10 +26,12 @@ import {
   ChevronDown,
   Copy,
   User,
+  Info,
 } from 'lucide-react';
 import { cn } from '@/src/lib/utils';
 import { useProjects } from '@/src/store/project';
 import { useSpeechToText } from '@/src/lib/useSpeechToText';
+import { showToast } from '@/src/lib/dialog';
 import { WorkflowRunner } from '@/src/components/WorkflowRunner';
 import { DeepRunResult } from '@/src/components/DeepRunResult';
 import { CodeChangeReview } from '@/src/components/CodeChangeReview';
@@ -363,6 +365,7 @@ export default function AgentConsole() {
   const [pendingDeep, setPendingDeep] = useState<PendingDeep | null>(null);
   const [copiedTurnId, setCopiedTurnId] = useState<string | null>(null);
   const [editingTurnId, setEditingTurnId] = useState<string | null>(null);
+  const [editDraft, setEditDraft] = useState('');
   // Existing repository folders, for the deep-run "save results to folder" picker.
   const [folderOptions, setFolderOptions] = useState<Array<{ id: string; name: string; path?: string }>>([]);
   // Requirement mode: toggled with Shift+Tab. When on, every message is routed to
@@ -763,12 +766,13 @@ export default function AgentConsole() {
   }, [buildHistory, location.pathname, replaceTurn, getSelectedApps]);
 
   const send = useCallback(
-    async (raw?: string) => {
+    async (raw?: string, editTurnIdArg?: string | null) => {
       const text = (raw ?? input).trim();
       if (!text || busy) return;
       stopListening();
-      setInput('');
-      const editedTurnId = raw === undefined ? editingTurnId : null;
+      // Inline edit passes the turn id explicitly; the bottom composer uses editingTurnId.
+      const editedTurnId = editTurnIdArg !== undefined ? editTurnIdArg : (raw === undefined ? editingTurnId : null);
+      if (editTurnIdArg === undefined) setInput('');
       setEditingTurnId(null);
       setBusy(true);
 
@@ -1104,7 +1108,7 @@ export default function AgentConsole() {
         inputRef.current?.focus();
       }
     },
-    [input, busy, location.pathname, stopListening, replaceTurn, requestDeepUnderstanding, presentDeepUnderstanding, reqMode, pendingDeep, websites, scopeApp, buildHistory, startDeepRun, runViaSupervisor, getSelectedApps],
+    [input, busy, editingTurnId, location.pathname, stopListening, replaceTurn, requestDeepUnderstanding, presentDeepUnderstanding, reqMode, pendingDeep, websites, scopeApp, buildHistory, startDeepRun, runViaSupervisor, getSelectedApps],
   );
 
   // Start the deep run directly from a "Here's what I understood" card's OWN stored data
@@ -1209,22 +1213,31 @@ export default function AgentConsole() {
     [patchTurn],
   );
 
+  // INLINE edit: turn the user's message bubble into an editable box in place (instead of
+  // pushing the text down into the composer).
   const editUserPrompt = useCallback((turnId: string, text: string) => {
     setEditingTurnId(turnId);
-    setInput(text);
-    inputRef.current?.focus();
-    requestAnimationFrame(() => {
-      const el = inputRef.current;
-      if (!el) return;
-      const pos = el.value.length;
-      el.setSelectionRange(pos, pos);
-    });
+    setEditDraft(text);
   }, []);
+
+  const cancelInlineEdit = useCallback(() => {
+    setEditingTurnId(null);
+    setEditDraft('');
+  }, []);
+
+  const saveInlineEdit = useCallback((turnId: string) => {
+    const text = editDraft.trim();
+    if (!text || busy) return;
+    setEditingTurnId(null);
+    setEditDraft('');
+    void send(text, turnId);
+  }, [editDraft, busy, send]);
 
   const copyUserPrompt = useCallback(async (turnId: string, text: string) => {
     try {
       await navigator.clipboard.writeText(text);
       setCopiedTurnId(turnId);
+      showToast('Copied to clipboard');
       window.setTimeout(() => setCopiedTurnId((current) => (current === turnId ? null : current)), 1500);
     } catch {
       /* ignore */
@@ -1387,6 +1400,57 @@ export default function AgentConsole() {
           <div className="space-y-4 py-2">
             {turns.map((turn) => {
               if (turn.role === 'user') {
+                const isEditing = editingTurnId === turn.id;
+                if (isEditing) {
+                  return (
+                    <div key={turn.id} className="flex items-start justify-end gap-2.5">
+                      <div className="w-full max-w-[85%] overflow-hidden rounded-2xl border border-[var(--accent)] bg-[var(--bg-card)] shadow-sm ring-2 ring-[var(--accent)]/30">
+                        <textarea
+                          autoFocus
+                          value={editDraft}
+                          onChange={(e) => {
+                            setEditDraft(e.target.value);
+                            e.target.style.height = 'auto';
+                            e.target.style.height = `${Math.min(e.target.scrollHeight, 320)}px`;
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Escape') { e.preventDefault(); cancelInlineEdit(); }
+                            if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); saveInlineEdit(turn.id); }
+                          }}
+                          rows={1}
+                          className="block max-h-[320px] w-full resize-none bg-transparent px-4 py-3 text-sm text-[var(--text-primary)] outline-none"
+                          ref={(el) => { if (el) { el.style.height = 'auto'; el.style.height = `${Math.min(el.scrollHeight, 320)}px`; } }}
+                        />
+                        <div className="flex items-center justify-between gap-3 border-t border-[var(--border)] px-4 py-2.5">
+                          <span className="flex items-start gap-1.5 text-[11px] leading-snug text-[var(--text-muted)]">
+                            <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                            Editing this message will update it and re-run the response from here.
+                          </span>
+                          <div className="flex shrink-0 gap-2">
+                            <button
+                              type="button"
+                              onClick={cancelInlineEdit}
+                              className="rounded-lg px-3 py-1.5 text-sm font-medium text-[var(--text-muted)] hover:bg-[var(--bg-secondary)] hover:text-[var(--text-primary)]"
+                            >
+                              Cancel
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => saveInlineEdit(turn.id)}
+                              disabled={!editDraft.trim() || busy}
+                              className="rounded-lg bg-[var(--accent)] px-3 py-1.5 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50"
+                            >
+                              Save
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                      <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[var(--accent)]/10 text-[var(--accent)]">
+                        <User className="h-4 w-4" />
+                      </div>
+                    </div>
+                  );
+                }
                 return (
                   <div key={turn.id} className="group flex items-start justify-end gap-2.5">
                     {/* Softer tinted bubble + primary text reads better than solid accent + white. */}
@@ -1677,20 +1741,6 @@ export default function AgentConsole() {
               : 'border-[var(--border)] focus-within:border-[var(--accent)]',
           )}
         >
-          {editingTurnId && (
-            <div className="mb-1 flex items-center justify-between gap-2 px-1">
-              <span className="inline-flex items-center gap-1.5 rounded-full bg-[var(--accent)]/10 px-2.5 py-1 text-[11px] font-semibold text-[var(--accent)]">
-                <SquarePen className="h-3.5 w-3.5" /> Editing previous prompt
-              </span>
-              <button
-                type="button"
-                onClick={() => setEditingTurnId(null)}
-                className="text-[11px] font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]"
-              >
-                Cancel
-              </button>
-            </div>
-          )}
           {reqMode && (
             <div className="mb-1 flex items-center justify-between gap-2 px-1">
               <span className="inline-flex items-center gap-1.5 rounded-full bg-[var(--accent)]/10 px-2.5 py-1 text-[11px] font-semibold text-[var(--accent)]">
