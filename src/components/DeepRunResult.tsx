@@ -1016,6 +1016,17 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
                               {shot.status}
                             </span>
                           )}
+                          {shot.traceUrl && (
+                            <a
+                              href={shot.traceUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                              title="Download the Playwright trace, then open it at trace.playwright.dev to replay the run step by step"
+                              className="shrink-0 rounded border border-[var(--accent)]/30 bg-[var(--accent)]/10 px-1.5 py-0.5 text-[9px] font-semibold uppercase text-[var(--accent)] hover:bg-[var(--accent)]/20"
+                            >
+                              Trace ↓
+                            </a>
+                          )}
                         </div>
                         <div className="truncate text-[var(--text-muted)]">{shot.url}</div>
                         {shot.reason && <pre className="mt-1 max-h-24 overflow-auto whitespace-pre-wrap rounded bg-red-500/10 p-1.5 font-mono text-[10px] text-red-300">{shot.reason}</pre>}

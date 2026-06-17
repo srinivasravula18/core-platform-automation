@@ -29,6 +29,8 @@ export interface TestResult {
   screenshotPath?: string;
   /** Absolute paths to ordered per-step screenshots the script attached via testInfo.attach('step-N', ...). */
   stepScreenshotPaths?: string[];
+  /** Absolute path to the Playwright trace zip (trace: 'retain-on-failure') — present for failures. */
+  tracePath?: string;
 }
 
 export interface ExecutionResult {
@@ -201,6 +203,7 @@ export default defineConfig({
                   .filter((a) => /^step-\d+$/i.test(String(a?.name || '')) && (a?.path || a?.body))
                   .sort((a, b) => (parseInt(String(a.name).replace(/\D/g, ''), 10) || 0) - (parseInt(String(b.name).replace(/\D/g, ''), 10) || 0));
                 const shot = atts.find((a) => a?.name === 'screenshot' && a?.path);
+                const trace = atts.find((a) => a?.name === 'trace' && a?.path);
                 rawStepAttsByTest.push(rawStepAtts);
                 tests.push({
                   title: spec.title || t.title || 'test',
@@ -209,6 +212,7 @@ export default defineConfig({
                   durationMs: last.duration || 0,
                   screenshotPath: shot?.path,
                   stepScreenshotPaths: [],
+                  tracePath: trace?.path,
                   error: errMsg ? String(errMsg).replace(/\[[0-9;]*m/g, '').slice(0, 600) : undefined,
                 });
               }

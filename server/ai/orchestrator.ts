@@ -11,7 +11,7 @@
  *   const { object, usage, model, latencyMs } = await ai.generateObject({...});
  */
 
-import type { AIProvider, ProviderAuthMode, ProviderName, ChatMessage } from './providers/types';
+import type { AIProvider, ProviderAuthMode, ProviderName, ChatMessage, ProviderResponse } from './providers/types';
 import { DEFAULT_MODELS } from './providers/types';
 import type { AgentStep, AgentRunResult, RunToolLoopOptions, ToolInvocation } from './tools/types';
 import { GeminiProvider } from './providers/gemini';
@@ -162,13 +162,20 @@ export class AgentOrchestrator {
       throw err;
     }
     const system = await this.assembleSystem(pipeline);
-    const result = await this.provider.generateObject<T>({
-      system,
-      prompt: opts.prompt,
-      schema: opts.schema,
-      temperature: opts.temperature,
-      maxTokens: opts.maxTokens,
-    });
+    // GLOBAL resilience: a provider can occasionally return off-schema JSON (esp. smaller /
+    // low-effort models like a Codex mini). Rather than fail the whole agent stage on a
+    // one-off bad response, retry the structured-output call once with a firm reminder to
+    // emit ONLY valid JSON for the schema. This is a retry — NOT fabrication — so a real,
+    // persistent mismatch still surfaces honestly.
+    const isSchemaError = (e: any) => /schema|invalid_type|invalid_value|expected .*received|did not match|valid json|received undefined/i.test(String(e?.message || ''));
+    let result: ProviderResponse<T>;
+    try {
+      result = await this.provider.generateObject<T>({ system, prompt: opts.prompt, schema: opts.schema, temperature: opts.temperature, maxTokens: opts.maxTokens });
+    } catch (err: any) {
+      if (!isSchemaError(err)) throw err;
+      const retrySystem = `${system}\n\nIMPORTANT: Your previous reply did not match the required JSON schema. Reply with ONLY a single valid JSON object that exactly matches the schema — all required fields present, correct types, no prose, no markdown, no code fences.`;
+      result = await this.provider.generateObject<T>({ system: retrySystem, prompt: opts.prompt, schema: opts.schema, temperature: opts.temperature, maxTokens: opts.maxTokens });
+    }
     await recordUsage({
       workspaceId: this.workspaceId,
       userId: this.userId,

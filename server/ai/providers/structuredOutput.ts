@@ -96,9 +96,18 @@ export function coerceToSchemaShape(parsed: unknown, schema: z.ZodTypeAny): unkn
     if (parsed && typeof parsed === 'object') {
       const obj = parsed as Record<string, unknown>;
       if (obj[arrayKey] === undefined) {
-        // Named alias only — never "first array of any value".
+        // 1) Named alias (cases→test_cases, etc.).
         const namedArrayKey = expectedArrayKeys.find((k) => k !== arrayKey && Array.isArray(obj[k]));
-        if (namedArrayKey) obj[arrayKey] = obj[namedArrayKey];
+        if (namedArrayKey) {
+          obj[arrayKey] = obj[namedArrayKey];
+        } else {
+          // 2) UNAMBIGUOUS single array: if the object has exactly one array-valued
+          //    property, it must be the intended one (handles a model using a key we
+          //    don't alias, e.g. "testCases"). Safe — not the "grab any array" guess,
+          //    which only applies when there are multiple arrays to choose between.
+          const arrayProps = Object.keys(obj).filter((k) => Array.isArray(obj[k]));
+          if (arrayProps.length === 1) obj[arrayKey] = obj[arrayProps[0]];
+        }
       }
       if (stringKey && obj[stringKey] === undefined) {
         const namedStringKey = expectedStringKeys.find((k) => k !== stringKey && typeof obj[k] === 'string');

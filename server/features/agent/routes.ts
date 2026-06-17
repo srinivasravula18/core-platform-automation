@@ -985,12 +985,21 @@ async function runScriptsAndCollectEvidence(run: any, targetUrl: string, testCas
             const ok = await fsp.copyFile(stepPaths[k], path.join(evidenceDir, dest)).then(() => true).catch(() => false);
             stepScreenshots.push(ok ? `/evidence/${dest}` : '');
           }
+          // Surface the Playwright trace (retain-on-failure) so a failed test can be
+          // replayed step-by-step in the Trace Viewer — real, debuggable evidence.
+          let traceUrl = '';
+          if (t.tracePath) {
+            const dest = `${run.id}-case-${i + 1}-trace.zip`;
+            const ok = await fsp.copyFile(t.tracePath, path.join(evidenceDir, dest)).then(() => true).catch(() => false);
+            if (ok) traceUrl = `/evidence/${dest}`;
+          }
           evidence.push({
             title: t.title || cases[caseIndex]?.title || `Test case ${i + 1}`,
             testCaseIndex: caseIndex,
             url: targetUrl,
             screenshotUrl,
             stepScreenshots,
+            traceUrl,
             status: t.status,
             reason: t.error || '',
             durationMs: t.durationMs,

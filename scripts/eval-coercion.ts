@@ -41,8 +41,10 @@ check('bare array is wrapped into the single array key',
   Array.isArray((coerceToSchemaShape([1, 2, 3], oneArray) as any).test_cases));
 check('known alias key is remapped (cases → test_cases)',
   (coerceToSchemaShape({ cases: [1, 2] }, oneArray) as any).test_cases?.length === 2);
-check('UNRELATED array is NOT grabbed into the expected key',
-  (coerceToSchemaShape({ notes: ['a', 'b'] }, oneArray) as any).test_cases === undefined);
+check('single array under an unaliased key IS recovered (unambiguous)',
+  (coerceToSchemaShape({ testCases: [1, 2] }, oneArray) as any).test_cases?.length === 2);
+check('MULTIPLE arrays with no known key are NOT guessed (ambiguous → leave it)',
+  (coerceToSchemaShape({ notes: ['a'], tags: ['b'] }, oneArray) as any).test_cases === undefined);
 
 console.log('\n[4] normalizeTestCasePayload — no fabricated content');
 {

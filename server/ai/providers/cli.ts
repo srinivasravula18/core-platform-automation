@@ -249,6 +249,13 @@ Decide the single next action. Reply with EXACTLY ONE JSON object and NOTHING el
         };
       }
     } catch (error: any) {
+      // Never surface a raw Zod issues array as the "answer" — summarize the offending
+      // fields into a clean, classified error (matches the OpenAI provider's behavior).
+      const issues: any[] = Array.isArray(error?.issues) ? error.issues : [];
+      if (issues.length) {
+        const fields = issues.slice(0, 4).map((i) => (Array.isArray(i?.path) ? i.path.join('.') : '?')).filter(Boolean).join(', ');
+        throw classifyError(this.name, 200, `Model response did not match the expected schema${fields ? ` (fields: ${fields})` : ''}.`);
+      }
       throw classifyError(this.name, 200, error?.message || 'CLI model did not return schema-valid JSON');
     }
   }

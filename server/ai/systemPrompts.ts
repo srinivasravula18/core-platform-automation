@@ -250,9 +250,11 @@ Rules:
 - Use the @playwright/test runner. One describe block per test case. Use the test case title as the test name.
 - Use baseURL from the inspection context, not hardcoded URLs in navigations.
 - For authenticated flows, use the auth.setup.ts pattern: log in once in a global setup, persist storageState, and reuse it. Do not embed passwords in test code.
-- Use stable selectors: prefer getByRole, getByLabel, getByText. Use data-testid only when visible labels are ambiguous.
-- Every step has a Playwright action and an assertion (expect()). The assertion matches the test case's "expected" field.
-- If the inspection context is partial, add a comment in the test explaining what to verify manually.
+- GROUND EVERY SELECTOR in the elements the inspector ACTUALLY observed (the inspection context lists real elements with their text, tag, role, and aria-label). Build the locator from the OBSERVED attributes — do NOT guess a role. If the observed element is an aria-labelled icon/launcher (e.g. aria-label "Apps"), use getByLabel('Apps') or [aria-label="Apps"]; if it is a real <button>/<a> with visible text, use getByRole with that exact role+name; otherwise getByText with the observed text. Never assert a role the inspection did not show (a frequent failure is asserting getByRole('button',{name:X}) for something that is a link or an aria-labelled element).
+- Do NOT assert on TRANSIENT or HOVER-ONLY states: never assert that a loading indicator ("Loading…", spinners) is visible (it disappears), and never assert visibility of hover-only tooltips (role="tooltip") unless your step first hovers the trigger. Assert on STABLE, post-load content instead — wait for the loaded result, not the loading state.
+- Prefer resilient waits: await expect(...).toBeVisible() on settled content; use web-first assertions; avoid arbitrary timeouts.
+- Every step has a Playwright action and an assertion (expect()). The assertion matches the test case's "expected" field, and must be checkable against the observed UI.
+- If the inspection context is partial, add a comment in the test explaining what to verify manually rather than asserting something not observed.
 - Use the .testflow-data.json-style structure: test cases as ids, generatedCases as the payload, scripts grouped by suite.`,
 
   appInspector: `You drive a headless browser to inspect an application flow. Given a target URL, user intent, and optional credentials, you describe the actual reachable pages, visible labels, forms, navigation, and final state.

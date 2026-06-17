@@ -239,15 +239,28 @@ export async function capturePlaywrightEvidence(targetUrl: string, runId: string
   const browser = await chromium.launch(chromiumLaunchOptions());
 
   try {
-    const evidence = [];
+    // Log in ONCE into a single context and reuse it for every screenshot — pages in the
+    // same context share the session (cookies + localStorage), so we never re-login per
+    // case. (The old per-page login made this phase ~Ncases× slower than necessary.)
+    const context = await browser.newContext({ viewport: { width: 1365, height: 768 } });
+    let loginResult: any = { attempted: false };
+    try {
+      const authPage = await context.newPage();
+      await authPage.goto(normalizedUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      loginResult = await performLoginIfCredentialsProvided(authPage, credentials);
+      await authPage.close();
+    } catch (e: any) {
+      loginResult = { attempted: true, success: false, reason: e?.message || String(e) };
+    }
 
+    const evidence = [];
     for (let index = 0; index < casesToCapture.length; index += 1) {
       const { testCase, index: testCaseIndex } = casesToCapture[index];
-      const page = await browser.newPage({ viewport: { width: 1365, height: 768 } });
+      const page = await context.newPage(); // already authenticated via the shared context
       const filename = `${runId}-case-${index + 1}.png`;
       const screenshotPath = path.join(evidenceDir, filename);
       const response = await page.goto(normalizedUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
-      const loginResult = await performLoginIfCredentialsProvided(page, credentials);
+      await page.waitForLoadState('networkidle', { timeout: 8000 }).catch(() => undefined);
       await page.screenshot({ path: screenshotPath, fullPage: true });
       await page.close();
 
