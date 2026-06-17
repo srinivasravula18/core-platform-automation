@@ -716,6 +716,14 @@ async function runPostCaseAgentFlow(run: any, model: any, testCases: any, target
   // Use the REAL (live) credentials so the generated scripts contain a working
   // login — run.credentials stores a MASKED password unsuitable for execution.
   const credentialContext = buildCredentialContext(liveCreds);
+  const hasLoginCredentials = !!(liveCreds?.username && liveCreds?.password);
+  const loginScriptBlock = hasLoginCredentials
+    ? `LOGIN IS REQUIRED BEFORE TESTING AUTHENTICATED PAGES. Every generated script must define these constants near the top of the file and use them in guarded login code:
+const USERNAME = ${JSON.stringify(String(liveCreds.username))};
+const PASSWORD = ${JSON.stringify(String(liveCreds.password))};
+
+Do NOT write comments such as "Auth is expected to be handled by global setup". Do NOT rely on auth.setup.ts. The script must be runnable by itself. After page.goto(...), if a login form is present, fill USERNAME into the email/username/login field, fill PASSWORD into the password field, click the sign-in/login button, and wait for the post-login page. Each login action must be guarded with a short timeout and .catch(() => {}) because an authenticated storage state may already be injected.`
+    : `No login credentials were resolved for this run. Do not invent username/password values. If a login wall is present, the script should fail with a clear assertion that credentials are required.`;
   const inspectionContext = run.inspection_context || null;
   const selectedQaContextText = run.selectedQaContext
     ? `Selected QA repository context for this automation scope: ${JSON.stringify(run.selectedQaContext)}`
@@ -732,21 +740,23 @@ async function runPostCaseAgentFlow(run: any, model: any, testCases: any, target
 
   const coderKnowledge = buildKnowledgeBlock({ targetUrl, text: run.prompt || '', ownerId: run.ownerId }, { maxChars: 9000 });
   const coder = await getOrchestrator('playwrightCoder', { workspaceId: run.ownerId || 'default' });
+  const caseList = Array.isArray(testCases?.test_cases) ? testCases.test_cases : [];
   const scriptsResult = await coder.generateObject<any>({
     prompt: `Use this baseURL in the scripts when provided: ${targetUrl || 'not provided'}.
 Approved user-reviewed understanding: ${reviewedUnderstanding || 'not provided'}.
 ${credentialContext}
+${loginScriptBlock}
 ${selectedQaContextText}${coderUnderstanding}
 Use this browser inspection context as the source of truth for reachable pages, visible labels, forms, navigation actions, tables/lists, buttons, links and final URL: ${JSON.stringify(compactInspectionContext(inspectionContext))}.
 SETUP — NAVIGATE THEN LOG IN IF NEEDED: the MANDATORY FIRST LINES of every test body are (use this EXACT absolute URL — NOT '/', which resolves to the wrong path):
   await page.goto('${targetUrl || '/'}');
   await page.waitForLoadState('domcontentloaded'); await page.waitForTimeout(1500);
-Then handle login GUARDED (a session may already be injected, so these must be safe no-ops if no login form is present): if the page shows a login form, fill the email/username field and the password field with the provided credentials and click the Sign in button — wrap EACH in .catch(() => {}) and give them short timeouts, e.g.:
+Then handle login GUARDED (a session may already be injected, so these must be safe no-ops if no login form is present): if the page shows a login form, fill the email/username field and the password field with USERNAME and PASSWORD and click the Sign in button — wrap EACH in .catch(() => {}) and give them short timeouts, e.g.:
   await page.getByLabel(/email|user/i).first().fill(USERNAME, { timeout: 4000 }).catch(() => {});
   await page.getByLabel(/password/i).first().fill(PASSWORD, { timeout: 4000 }).catch(() => {});
   await page.getByRole('button', { name: /sign ?in|log ?in/i }).first().click({ timeout: 4000 }).catch(() => {});
   await page.waitForTimeout(2000);
-Use the REAL login field/button selectors from the source (the verifier will correct them). Do NOT assert anything about the login form. After this, go straight to the substantive task. NEVER use waitForLoadState('networkidle'). NEVER call APIs with undefined variables — verify only through the page UI.
+Use the REAL login field/button selectors from the source (the verifier will correct them). Do NOT assert anything about the login form. After this, go straight to the substantive task. NEVER use waitForLoadState('networkidle'). NEVER call APIs with undefined variables. Never leave USERNAME or PASSWORD undefined. Never use a relative URL such as '/shockwave/' when an absolute target URL is provided — verify only through the page UI.
 GUARDED ACTIONS: every click/fill on a control whose exact selector is uncertain MUST be guarded so a missing element does not hang or abort the run: await page.getByRole('button', { name: /New/i }).first().click({ timeout: 8000 }).catch(() => {}); Prefer getByRole/getByText using the EXACT visible labels from the inspection context. After a guarded action, take the step screenshot regardless of whether it succeeded.
 GROUNDING (no hallucination): only assert text, labels, headings, buttons, or table/list content that ACTUALLY appears in the inspection context above. NEVER assert "assumed" UI — no guessed success toasts (e.g. "created successfully"), menu names, or headings you did not see in the inspection context. If unsure an element exists, do not assert it; prefer asserting a URL change or a landmark the inspector recorded. When asserting a URL, match only a STABLE fragment with a loose regex (e.g. expect(page).toHaveURL(/nav=apps/) or expect(page.url()).toContain('nav=apps')) — NEVER assert the full URL or a pattern that includes query separators (?, &) or generated ids (appId, record ids) which vary every run.
 RESILIENCE (the user's intent MUST actually be performed): use await expect.soft(...) for every intermediate per-step verification so a single mismatched locator does NOT abort the test before the user's real goal (e.g. creating the record) is carried out. Always run each ACTION step (goto/fill/click/submit) regardless of whether a prior soft assertion failed. Use exactly ONE normal hard expect for the single final assertion that confirms the user's primary goal. Then follow the user-requested path discovered by the inspector; do not invent unrelated pages or menu names.
@@ -761,16 +771,68 @@ Test cases: ${JSON.stringify(testCases)}${coderKnowledge}`,
   // trailing `});` of test(...)) does not get persisted or break execution. We repair
   // parse errors up front; the executor quarantines anything still unrecoverable so one
   // bad file never zeroes out the whole batch.
-  if (Array.isArray(scripts.scripts)) {
-    for (const s of scripts.scripts as any[]) {
+  const initialScripts = Array.isArray(scripts.scripts) ? scripts.scripts as any[] : [];
+  if (initialScripts.length) {
+    for (const s of initialScripts) {
       if (s && typeof s.code === 'string') {
         const cleaned = sanitizeTestCode(s.code);
         s.code = repairTestCode(cleaned) || cleaned;
       }
     }
   }
-  run.playwright_scripts = scripts.scripts as any;
-  pushPhase(run, { agent: 'PlaywrightAgent', status: 'completed', output: scripts });
+  if (caseList.length && initialScripts.length !== caseList.length) {
+    pushPhase(run, {
+      agent: 'PlaywrightAgent',
+      status: 'running',
+      output: `Playwright coder returned ${initialScripts.length}/${caseList.length} script(s); generating missing scripts one case at a time.`,
+    });
+  }
+  const aligned = await alignScriptsToCases(initialScripts, caseList, async (testCase, index) => {
+    try {
+      const one = await coder.generateObject<any>({
+        prompt: `Generate exactly ONE Playwright TypeScript script for exactly ONE reviewed test case.
+
+Use this baseURL in the script when provided: ${targetUrl || 'not provided'}.
+Approved user-reviewed understanding: ${reviewedUnderstanding || 'not provided'}.
+${credentialContext}
+${loginScriptBlock}
+${selectedQaContextText}${coderUnderstanding}
+Use this browser inspection context as the source of truth for reachable pages, visible labels, forms, navigation actions, tables/lists, buttons, links and final URL: ${JSON.stringify(compactInspectionContext(inspectionContext))}.
+
+Rules:
+- Return JSON exactly like {"scripts":[{"test_case_title":"...","filename":"kebab-case.spec.ts","code":"import { test, expect } from '@playwright/test';\\n..."}]}.
+- Return exactly one script object. No combined scripts. No empty placeholder scripts.
+- Set test_case_title to the test case title verbatim: ${JSON.stringify(testCase?.title || `Test case ${index + 1}`)}.
+- The Playwright test name must be the same title verbatim and must use async ({ page }, testInfo).
+- Start by navigating to ${targetUrl || '/'} and handling login with USERNAME/PASSWORD before the feature steps when credentials are available. Do not assume global auth.
+- Mirror this exact test case's ordered steps, not any other case. The script must cover every step in the payload below in order. Attach exactly one screenshot after each step with testInfo.attach('step-' + N, ...).
+- Ground selectors and assertions only in the inspection context or source-grounded understanding. Do not invent menus, labels, or success messages.
+
+Test case payload: ${JSON.stringify({ test_cases: [testCase] })}${coderKnowledge}`,
+        schema: playwrightScriptsSchema,
+        userMessage: `Generate one Playwright script for case ${index + 1}.`,
+      });
+      const generated = Array.isArray(one.object?.scripts) ? one.object.scripts[0] : null;
+      return generated || null;
+    } catch {
+      return null;
+    }
+  });
+  if (caseList.length && aligned.missing.length) {
+    run.playwright_scripts = aligned.scripts;
+    pushPhase(run, {
+      agent: 'PlaywrightAgent',
+      status: 'failed',
+      output: `Generated ${aligned.scripts.length}/${caseList.length} script(s). Missing script(s) for case ${aligned.missing.map((i) => i + 1).join(', ')}; evidence was not run for an incomplete script set.`,
+    });
+    await persistAgentScripts(run);
+    markRunDone(run, 'failed');
+    persistDataInBackground('incomplete agent scripts');
+    return;
+  }
+  run.playwright_scripts = (caseList.length ? aligned.scripts : initialScripts)
+    .map((script: any) => ensureExecutableLogin(script, liveCreds, targetUrl)) as any;
+  pushPhase(run, { agent: 'PlaywrightAgent', status: 'completed', output: { scripts: run.playwright_scripts } });
   // GIT-AGENT GATE: verify every selector against the app's REAL source before running
   // (its own visible "Verify selectors" phase so the wait before evidence is explained).
   await verifyScriptsWithGitAgent(run, run.playwright_scripts, run.prompt || '');
@@ -866,6 +928,111 @@ ${s.code}`,
 const normTitle = (t: string) => String(t || '').trim().toLowerCase();
 const baseName = (f: string) => String(f || '').split(/[\\/]/).pop() || '';
 
+function scriptFilenameForCase(title: string, index: number): string {
+  const slug = String(title || `case-${index + 1}`)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 80);
+  return `${slug || `case-${index + 1}`}.spec.ts`;
+}
+
+function normalizeScriptForCase(script: any, testCase: any, index: number) {
+  const title = String(testCase?.title || script?.test_case_title || script?.title || `Test case ${index + 1}`).trim();
+  const rawCode = String(script?.code || '');
+  const cleaned = rawCode ? sanitizeTestCode(rawCode) : '';
+  return {
+    ...script,
+    test_case_title: title,
+    filename: String(script?.filename || '').trim() || scriptFilenameForCase(title, index),
+    code: repairTestCode(cleaned) || cleaned,
+  };
+}
+
+function scriptLooksUsable(script: any): boolean {
+  const code = String(script?.code || '');
+  return code.length > 80 && /@playwright\/test/.test(code) && /\btest\s*\(/.test(code);
+}
+
+function ensureExecutableLogin(script: any, credentials: any, targetUrl: string) {
+  if (!script || !credentials?.username || !credentials?.password) return script;
+  let code = String(script.code || '');
+  if (!code) return script;
+  code = code.replace(/\/\/\s*Auth is expected[^\n]*\n?/gi, '');
+  if (targetUrl) {
+    code = code.replace(/await\s+page\.goto\((['"`])\/[^'"`]*\1\)/, `await page.goto(${JSON.stringify(targetUrl)})`);
+  }
+  const constants = `const USERNAME = ${JSON.stringify(String(credentials.username))};\nconst PASSWORD = ${JSON.stringify(String(credentials.password))};`;
+  if (!/\bconst\s+USERNAME\b/.test(code) || !/\bconst\s+PASSWORD\b/.test(code)) {
+    const importBlock = code.match(/^(?:import[^\n]*\n)+/);
+    if (importBlock) {
+      code = code.replace(importBlock[0], `${importBlock[0]}\n${constants}\n\n`);
+    } else {
+      code = `${constants}\n\n${code}`;
+    }
+  }
+  const hasLoginFill = /\.fill\(\s*USERNAME\b/.test(code) && /\.fill\(\s*PASSWORD\b/.test(code);
+  if (!hasLoginFill) {
+    const loginSnippet =
+      `\n  await page.getByLabel(/email|user|login/i).first().fill(USERNAME, { timeout: 4000 }).catch(() => {});\n` +
+      `  await page.getByLabel(/password/i).first().fill(PASSWORD, { timeout: 4000 }).catch(() => {});\n` +
+      `  await page.getByRole('button', { name: /sign ?in|log ?in/i }).first().click({ timeout: 4000 }).catch(() => {});\n` +
+      `  await page.waitForTimeout(2000);\n`;
+    if (/await\s+page\.waitForLoadState\(\s*['"]domcontentloaded['"]\s*\)\s*;/.test(code)) {
+      code = code.replace(/await\s+page\.waitForLoadState\(\s*['"]domcontentloaded['"]\s*\)\s*;/, (match) => `${match}${loginSnippet}`);
+    } else {
+      code = code.replace(/await\s+page\.goto\([^)]+\)\s*;/, (match) => `${match}${loginSnippet}`);
+    }
+  }
+  return { ...script, code };
+}
+
+async function alignScriptsToCases(
+  initialScripts: any[],
+  cases: any[],
+  generateOne: (testCase: any, index: number) => Promise<any | null>,
+): Promise<{ scripts: any[]; missing: number[] }> {
+  if (!cases.length) return { scripts: Array.isArray(initialScripts) ? initialScripts : [], missing: [] };
+  const candidates = (Array.isArray(initialScripts) ? initialScripts : [])
+    .map((script, index) => ({ script, index }))
+    .filter(({ script }) => scriptLooksUsable(script));
+  const used = new Set<number>();
+  const aligned: Array<any | null> = Array(cases.length).fill(null);
+  const fullPositionalSet = candidates.length === cases.length;
+
+  for (let caseIndex = 0; caseIndex < cases.length; caseIndex += 1) {
+    const expectedTitle = normTitle(cases[caseIndex]?.title);
+    let candidateIndex = candidates.findIndex(({ script, index }) => {
+      if (used.has(index)) return false;
+      return expectedTitle && normTitle(script?.test_case_title || script?.title) === expectedTitle;
+    });
+    if (candidateIndex < 0 && fullPositionalSet && candidates[caseIndex] && !used.has(candidates[caseIndex].index)) {
+      candidateIndex = caseIndex;
+    }
+    if (candidateIndex >= 0 && candidates[candidateIndex]) {
+      const { script, index } = candidates[candidateIndex];
+      used.add(index);
+      aligned[caseIndex] = normalizeScriptForCase(script, cases[caseIndex], caseIndex);
+    }
+  }
+
+  for (let caseIndex = 0; caseIndex < cases.length; caseIndex += 1) {
+    if (aligned[caseIndex]) continue;
+    const generated = await generateOne(cases[caseIndex], caseIndex);
+    if (generated && scriptLooksUsable(generated)) {
+      aligned[caseIndex] = normalizeScriptForCase(generated, cases[caseIndex], caseIndex);
+    }
+  }
+
+  const missing: number[] = [];
+  const scripts: any[] = [];
+  aligned.forEach((script, index) => {
+    if (script) scripts.push(script);
+    else missing.push(index);
+  });
+  return { scripts, missing };
+}
+
 // Bound the inspection context before it is embedded into LLM prompts, so a large
 // page (long nav/tables/forms/actions) does not blow the token budget. Keeps the
 // fields the CaseWriter/Coder actually rely on.
@@ -924,7 +1091,7 @@ async function runScriptsAndCollectEvidence(run: any, targetUrl: string, testCas
       } catch (e: any) {
         run.messages.push({ agent: 'EvidenceAgent', status: 'running', output: `Auth-state capture error: ${e?.message || e}` });
       }
-      let exec = await executePlaywrightScripts({ scripts, baseUrl: targetUrl, runId: run.id, storageStatePath });
+      let exec = await executePlaywrightScripts({ scripts, baseUrl: targetUrl, runId: run.id, storageStatePath, singleSession: true });
 
       // EXECUTION-REPAIR LOOP (Phase 3, evaluator-optimizer): the real Playwright result
       // is ground truth. When tests fail, feed the actual error + the observed DOM back to
@@ -958,7 +1125,7 @@ async function runScriptsAndCollectEvidence(run: any, targetUrl: string, testCas
         pushPhase(run, { agent: 'ExecutionRepair', status: 'completed', output: `Repaired ${repaired} of ${failing.length} failing test(s)${repaired ? ' — re-running.' : ' — no fix produced, stopping repair.'}` });
         if (!repaired) break;
         await persistAgentScripts(run);
-        exec = await executePlaywrightScripts({ scripts, baseUrl: targetUrl, runId: run.id, storageStatePath });
+        exec = await executePlaywrightScripts({ scripts, baseUrl: targetUrl, runId: run.id, storageStatePath, singleSession: true });
       }
 
       // Persist the full result (incl. per-test pass/fail) so the Agent Console can

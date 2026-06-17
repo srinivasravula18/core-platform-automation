@@ -127,6 +127,8 @@ export async function executePlaywrightScripts(opts: {
   timeoutMs?: number;
   /** Path to a Playwright storageState JSON so every test starts authenticated. */
   storageStatePath?: string;
+  /** Run specs one-by-one while reusing one browser context/page across all tests. */
+  singleSession?: boolean;
 }): Promise<ExecutionResult> {
   const scripts = (opts.scripts || []).filter((s) => s && typeof s.code === 'string' && s.code.trim());
   const runId = opts.runId || `run-${Date.now()}`;
@@ -141,6 +143,33 @@ export async function executePlaywrightScripts(opts: {
   const resultsFile = path.join(runDir, 'results.json');
   await fs.mkdir(testsDir, { recursive: true });
 
+  if (opts.singleSession) {
+    const contextOptions = `{
+      ${opts.baseUrl ? `baseURL: ${JSON.stringify(opts.baseUrl)},` : ''}
+      ${opts.storageStatePath ? `storageState: ${JSON.stringify(opts.storageStatePath)},` : ''}
+    }`;
+    const sharedFixture = `import { test as base, expect, type BrowserContext, type Page } from '@playwright/test';
+
+let sharedContext: BrowserContext | undefined;
+let sharedPage: Page | undefined;
+
+export const test = base.extend<{ context: BrowserContext; page: Page }>({
+  context: async ({ browser }, use) => {
+    if (!sharedContext) sharedContext = await browser.newContext(${contextOptions});
+    await use(sharedContext);
+  },
+  page: async ({ context }, use) => {
+    if (!sharedPage || sharedPage.isClosed()) sharedPage = await context.newPage();
+    await use(sharedPage);
+  },
+});
+
+export { expect };
+export type { BrowserContext, Page } from '@playwright/test';
+`;
+    await fs.writeFile(path.join(runDir, 'shared-session.ts'), sharedFixture, 'utf8');
+  }
+
   // Validate & repair EACH script before writing. Playwright collects every spec file
   // at startup, so a single un-parseable file aborts collection for the WHOLE batch
   // (0 tests run). We esbuild-parse each file; auto-repair truncated ones; and quarantine
@@ -154,6 +183,9 @@ export async function executePlaywrightScripts(opts: {
     while (seen.has(fn)) fn = fn.replace(/\.spec\.ts$/, `-${i}.spec.ts`);
     seen.add(fn);
     let code = sanitizeTestCode(scripts[i].code);
+    if (opts.singleSession) {
+      code = code.replace(/from\s+['"]@playwright\/test['"]/g, "from '../shared-session'");
+    }
     if (!isParseable(code)) {
       const repaired = repairTestCode(code);
       if (repaired) {
@@ -178,7 +210,8 @@ export async function executePlaywrightScripts(opts: {
   const config = `import { defineConfig } from '@playwright/test';
 export default defineConfig({
   testDir: './tests',
-  fullyParallel: true,
+  fullyParallel: ${opts.singleSession ? 'false' : 'true'},
+  ${opts.singleSession ? 'workers: 1,' : ''}
   retries: 0,
   timeout: 120000,
   reporter: [['json', { outputFile: 'results.json' }]],

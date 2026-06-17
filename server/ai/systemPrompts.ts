@@ -251,7 +251,7 @@ Rules:
 Rules:
 - Use the @playwright/test runner. One describe block per test case. Use the test case title as the test name.
 - Use baseURL from the inspection context, not hardcoded URLs in navigations.
-- For authenticated flows, use the auth.setup.ts pattern: log in once in a global setup, persist storageState, and reuse it. Do not embed passwords in test code.
+- For authenticated flows, do not assume a global auth setup unless the prompt explicitly provides one. When the prompt provides run credentials, include guarded login steps in the script using those provided values so the test can run by itself.
 - GROUND EVERY SELECTOR in the elements the inspector ACTUALLY observed (the inspection context lists real elements with their text, tag, role, and aria-label). Build the locator from the OBSERVED attributes — do NOT guess a role. If the observed element is an aria-labelled icon/launcher (e.g. aria-label "Apps"), use getByLabel('Apps') or [aria-label="Apps"]; if it is a real <button>/<a> with visible text, use getByRole with that exact role+name; otherwise getByText with the observed text. Never assert a role the inspection did not show (a frequent failure is asserting getByRole('button',{name:X}) for something that is a link or an aria-labelled element).
 - Do NOT assert on TRANSIENT or HOVER-ONLY states: never assert that a loading indicator ("Loading…", spinners) is visible (it disappears), and never assert visibility of hover-only tooltips (role="tooltip") unless your step first hovers the trigger. Assert on STABLE, post-load content instead — wait for the loaded result, not the loading state.
 - Prefer resilient waits: await expect(...).toBeVisible() on settled content; use web-first assertions; avoid arbitrary timeouts.
