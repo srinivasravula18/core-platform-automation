@@ -21,17 +21,22 @@ export function assessInspection(ctx: any): VerifierVerdict {
   if (!ctx || typeof ctx !== 'object') {
     return { ok: false, reason: 'No inspection context was produced.' };
   }
-  if (ctx.goalStatus === 'blocked') {
-    const why = Array.isArray(ctx.warnings) && ctx.warnings.length ? `: ${ctx.warnings.join('; ')}` : '';
-    return { ok: false, reason: `Inspector reported goalStatus=blocked${why}.` };
-  }
   const nav = (ctx.visibleNavigation || []).length;
   const forms = (ctx.visibleForms || []).length;
   const tables = (ctx.visibleTables || []).length;
-  if (nav + forms + tables === 0) {
-    return { ok: false, reason: 'Inspector observed no navigation, forms, or tables — it could not read the live page.' };
+  const observed = nav + forms + tables;
+  // "Blind" means the inspector could not READ the page at all. A 'blocked' GOAL — e.g. the
+  // list records were still "Loading…", or one sub-step couldn't complete — is NOT blind when
+  // the page WAS observed: the captured navigation/forms/tables are valid grounding for cases.
+  // Only treat it as blind when nothing at all was observed (the real blind-inspection class).
+  if (observed === 0) {
+    const why = Array.isArray(ctx.warnings) && ctx.warnings.length ? `: ${ctx.warnings.join('; ')}` : '';
+    return { ok: false, reason: `Inspector observed no navigation, forms, or tables — it could not read the live page${why}.` };
   }
-  return { ok: true, reason: `Observed ${nav} navigation item(s), ${forms} form(s), ${tables} table(s).` };
+  return {
+    ok: true,
+    reason: `Observed ${nav} navigation item(s), ${forms} form(s), ${tables} table(s)${ctx.goalStatus === 'blocked' ? ' (goal only partially reached — grounding on the observed page)' : ''}.`,
+  };
 }
 
 /** Collect the human-readable tokens the inspector actually observed on the page. */

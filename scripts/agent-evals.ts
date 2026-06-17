@@ -33,6 +33,9 @@ const blind = { goalStatus: 'blocked', warnings: ['__name is not defined'], visi
 const seen = { goalStatus: 'satisfied', visibleNavigation: [{ text: 'Apps' }], visibleForms: [{ name: 'Login', fields: [{ name: 'username' }] }], visibleTables: [{ label: 'Users', headers: ['Name', 'Role'] }] };
 check('inspection: blind → rejected', assessInspection(blind).ok === false);
 check('inspection: saw page → accepted', assessInspection(seen).ok === true);
+// A 'blocked' GOAL is NOT blind when the page WAS observed (e.g. list records still loading).
+const blockedButSaw = { goalStatus: 'blocked', visibleNavigation: [{ text: 'Apps' }, { text: 'Objects' }], visibleForms: [], visibleTables: [] };
+check('inspection: blocked goal but content seen → accepted', assessInspection(blockedButSaw).ok === true);
 check('cases: ungrounded → rejected', assessCasesGrounding([{ title: 'click the gizmo widget', steps: [{ action: 'tap foo' }] }], seen).ok === false);
 check('cases: grounded → accepted', assessCasesGrounding([{ title: 'Verify Users table', steps: [{ action: 'open Apps', expected: 'Name and Role columns' }] }], seen).ok === true);
 check('cases: none → rejected', assessCasesGrounding([], seen).ok === false);
