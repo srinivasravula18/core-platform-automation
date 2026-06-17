@@ -152,6 +152,10 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
   const reviewing = status === 'review_required';
   const coverageGate = status === 'coverage_options';
   const existingMatches: Case[] = run?.existing_matches || [];
+  // Cases the user removed from the coverage card (by index) — dropped before reuse/gaps.
+  const [removedMatches, setRemovedMatches] = useState<Set<number>>(new Set());
+  const keptMatches = existingMatches.filter((_, i) => !removedMatches.has(i));
+  const matchKey = (c: any) => String(c?.id ?? c?.existingCaseId ?? c?.title);
   const list = cases || [];
 
   const agentState = (agent: string): string => {
@@ -301,7 +305,8 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
       const res = await fetch('/api/agent/coverage-decision', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ taskId: activeTaskId, action }),
+        // Only the cases the user kept (didn't delete from the card) are reused/extended.
+        body: JSON.stringify({ taskId: activeTaskId, action, keep: keptMatches.map(matchKey) }),
       });
       if (res.ok) {
         setRun((prev: any) => (prev ? { ...prev, status: 'running' } : prev));
@@ -602,13 +607,13 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
         <div className="rounded-md border border-amber-500/20 bg-amber-500/5 p-3">
           <div className="mb-2 flex items-center gap-1.5 text-xs font-semibold text-amber-300">
             <Recycle className="h-4 w-4" />
-            Found {existingMatches.length} existing test case{existingMatches.length === 1 ? '' : 's'} related to this request
+            Found {keptMatches.length} existing test case{keptMatches.length === 1 ? '' : 's'} related to this request{removedMatches.size ? ` (${removedMatches.size} removed)` : ''}
           </div>
           <p className="mb-2.5 text-[11px] text-[var(--text-muted)]">
             You already have coverage for this. Reuse the existing cases as-is, keep them and add only the missing scenarios, or generate a brand-new set from scratch.
           </p>
           <div className="mb-3 max-h-48 space-y-1 overflow-y-auto pr-1">
-            {existingMatches.map((c, i) => (
+            {existingMatches.map((c, i) => removedMatches.has(i) ? null : (
               <div key={i} className="flex items-center gap-2 rounded border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-[11px]">
                 <span className="rounded bg-[var(--bg-card)] px-1.5 py-0.5 text-[9px] font-bold uppercase text-[var(--text-muted)]">{c.priority || 'Med'}</span>
                 <span className="min-w-0 flex-1 truncate text-[var(--text-primary)]">{c.title || 'Untitled'}</span>
@@ -618,13 +623,23 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
                   </span>
                 ))}
                 <span className="shrink-0 text-[10px] text-[var(--text-muted)]">{(c.steps || []).length} steps</span>
+                <button
+                  onClick={() => setRemovedMatches((prev) => { const next = new Set(prev); next.add(i); return next; })}
+                  title="Remove this case from the set (it won't be reused or extended)"
+                  className="shrink-0 rounded p-0.5 text-[var(--text-muted)] hover:text-red-500"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </button>
               </div>
             ))}
+            {keptMatches.length === 0 && (
+              <div className="px-2 py-1.5 text-[11px] text-[var(--text-muted)]">All matched cases removed — choose “Generate fresh”.</div>
+            )}
           </div>
           <div className="flex flex-wrap gap-2">
             <button
               onClick={() => coverageDecide('reuse')}
-              disabled={!!busy}
+              disabled={!!busy || keptMatches.length === 0}
               title="Use these existing cases as-is (generate no new cases) and run scripts + evidence against them"
               className="inline-flex items-center gap-1.5 rounded-md bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50"
             >
@@ -633,8 +648,8 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
             </button>
             <button
               onClick={() => coverageDecide('gaps')}
-              disabled={!!busy}
-              title="Keep all the existing cases above and generate only the scenarios they don't already cover"
+              disabled={!!busy || keptMatches.length === 0}
+              title="Keep the existing cases above and generate only the scenarios they don't already cover"
               className="inline-flex items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-1.5 text-xs font-medium text-[var(--text-primary)] hover:border-[var(--accent)] disabled:opacity-50"
             >
               {busy === 'cov-gaps' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />}

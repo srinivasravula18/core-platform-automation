@@ -1462,7 +1462,14 @@ export function registerAgentRoutes(app: Express) {
 
     try {
       const liveCreds = resolveCredentials({ targetUrl: run.app_url, websiteId: run.websiteId, role: (run.credentials || {}).role, ownerId: ownerScopeForRun(run) }) || undefined;
-      const matched = Array.isArray(run.existing_matches) ? run.existing_matches : [];
+      let matched = Array.isArray(run.existing_matches) ? run.existing_matches : [];
+      // Honor per-case deletions from the coverage card: keep only the cases the user kept,
+      // so irrelevant/over-matched existing cases (e.g. unrelated auth/coupon) aren't reused.
+      const keepIds = Array.isArray(req.body.keep) ? req.body.keep.map(String) : null;
+      if (keepIds) {
+        const keepSet = new Set(keepIds);
+        matched = matched.filter((c: any) => keepSet.has(String(c.id ?? c.existingCaseId ?? c.title)));
+      }
 
       if (act === 'reuse' && matched.length) {
         // No generation — load the existing cases and let the human review, then
