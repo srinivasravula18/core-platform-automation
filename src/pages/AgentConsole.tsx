@@ -163,6 +163,7 @@ type Turn =
 
 type PendingDeep = {
   prompt: string;
+  originalRequest?: string;
   targetUrl: string;
   websiteId?: string;
   websiteName?: string;
@@ -637,6 +638,7 @@ export default function AgentConsole() {
 
   const requestDeepUnderstanding = useCallback(async (args: {
     prompt: string;
+    originalRequest?: string;
     targetUrl: string;
     targetName?: string;
     currentUnderstanding?: string;
@@ -645,12 +647,17 @@ export default function AgentConsole() {
     const res = await fetch('/api/agent/understand-request', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...args, history: buildHistory() }),
+      body: JSON.stringify({
+        ...args,
+        history: buildHistory(),
+        projectId: selectedProjectId || undefined,
+        appId: selectedAppId || undefined,
+      }),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data?.error || 'Failed to understand request');
     return data;
-  }, [buildHistory]);
+  }, [buildHistory, selectedProjectId, selectedAppId]);
 
   // Present the "Here's what I understood" review card for a deep generation/run request:
   // generate an understanding (grounded in the conversation), stash it as pendingDeep, and
@@ -660,11 +667,12 @@ export default function AgentConsole() {
   const presentDeepUnderstanding = useCallback(async (args: {
     thinkingId: string;
     prompt: string;
+    originalRequest?: string;
     targetUrl: string;
     websiteId?: string;
     websiteName?: string;
   }) => {
-    const { thinkingId, prompt, targetUrl, websiteId, websiteName } = args;
+    const { thinkingId, prompt, originalRequest, targetUrl, websiteId, websiteName } = args;
     const target = websiteName ? `${websiteName} (${targetUrl})` : targetUrl;
     const fallbackUnderstanding =
       `Here's what I understood:\n` +
@@ -673,12 +681,12 @@ export default function AgentConsole() {
       `Plan: log in to the target → perform the steps on the live app → verify the result → capture screenshots as evidence.`;
     let understanding = fallbackUnderstanding;
     try {
-      const generated = await requestDeepUnderstanding({ prompt, targetUrl, targetName: websiteName || '' });
+      const generated = await requestDeepUnderstanding({ prompt, originalRequest: originalRequest || prompt, targetUrl, targetName: websiteName || '' });
       understanding = generated.understanding || fallbackUnderstanding;
     } catch {
       /* use deterministic fallback */
     }
-    const nextPending: PendingDeep = { prompt, targetUrl, websiteId, websiteName, understanding, revisionCount: 0 };
+    const nextPending: PendingDeep = { prompt, originalRequest: originalRequest || prompt, targetUrl, websiteId, websiteName, understanding, revisionCount: 0 };
     setPendingDeep(nextPending);
     // Remember this chat's target so later generation requests reuse it.
     convTargetRef.current = { targetUrl, websiteId, websiteName };
@@ -687,7 +695,7 @@ export default function AgentConsole() {
       role: 'assistant',
       kind: 'folderask',
       understanding,
-      originalPrompt: prompt,
+      originalPrompt: originalRequest || prompt,
       targetUrl,
       websiteId,
       websiteName,
@@ -806,6 +814,7 @@ export default function AgentConsole() {
           try {
             const revised = await requestDeepUnderstanding({
               prompt: activePending.prompt,
+              originalRequest: activePending.originalRequest || activePending.prompt,
               targetUrl: activePending.targetUrl,
               targetName: activePending.websiteName,
               currentUnderstanding: activePending.understanding,
@@ -824,7 +833,7 @@ export default function AgentConsole() {
               role: 'assistant',
               kind: 'folderask',
               understanding: nextPending.understanding,
-              originalPrompt: nextPending.prompt,
+              originalPrompt: nextPending.originalRequest || nextPending.prompt,
               targetUrl: nextPending.targetUrl,
               websiteId: nextPending.websiteId,
               websiteName: nextPending.websiteName,
@@ -851,7 +860,7 @@ export default function AgentConsole() {
         try {
           await startDeepRun({
             thinkingId,
-            prompt: activePending.prompt,
+            prompt: activePending.originalRequest || activePending.prompt,
             targetUrl: activePending.targetUrl,
             websiteId: activePending.websiteId,
             approvedUnderstanding,
@@ -1025,7 +1034,7 @@ export default function AgentConsole() {
           // The prompt carries the router's grounded scope when it has one, so the deep run
           // reflects the actual conversation rather than just the raw message.
           const prompt = (typeof goal.scope === 'string' && goal.scope.trim()) ? goal.scope.trim() : text;
-          await presentDeepUnderstanding({ thinkingId, prompt, targetUrl, websiteId, websiteName });
+          await presentDeepUnderstanding({ thinkingId, prompt, originalRequest: text, targetUrl, websiteId, websiteName });
           setBusy(false);
           inputRef.current?.focus();
           return;

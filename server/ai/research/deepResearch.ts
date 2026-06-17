@@ -18,9 +18,75 @@
 import { z } from 'zod';
 import { getOrchestrator } from '../orchestrator';
 
-const SRC_EXT = /\.(tsx?|jsx?|vue|svelte|py|go|java|rb|cs|php)$/i;
-const NOISE_PATH = /(^|\/)(node_modules|dist|build|coverage|\.next|\.github|\.playwright-cli|\.husky|evidence|seeds|fixtures|__tests__|e2e|tests?|migrations)\//i;
-const NOISE_EXT = /\.(ya?ml|json|lock|md|txt|env.*|cfg|toml|ini|csv|snap|log)$/i;
+const SEARCH_STOPWORDS = new Set([
+  'what', 'which', 'how', 'many', 'much', 'does', 'the', 'are', 'and', 'for', 'from',
+  'with', 'this', 'that', 'there', 'their', 'your', 'have', 'need', 'want', 'show',
+  'tell', 'give', 'about', 'into', 'onto', 'then', 'than', 'when', 'where', 'why',
+]);
+
+function searchTokens(value: string): string[] {
+  return Array.from(new Set(String(value || '').toLowerCase().match(/[a-z0-9]+/g) || []))
+    .filter((token) => token.length >= 2 && !SEARCH_STOPWORDS.has(token));
+}
+
+function phraseVariants(value: string): string[] {
+  const words = searchTokens(value);
+  if (!words.length) return [];
+  const joined = words.join(' ');
+  const variants = new Set<string>([joined, ...words]);
+  if (words.length > 1) {
+    variants.add(words.join('-'));
+    variants.add(words.join('_'));
+    variants.add(words.join(''));
+  }
+  for (const word of words) {
+    if (word.endsWith('s') && word.length > 3) variants.add(word.slice(0, -1));
+    else variants.add(`${word}s`);
+  }
+  return Array.from(variants).filter((term) => term.length >= 2);
+}
+
+function intentExpansionTerms(words: string[]): string[] {
+  const tokenSet = new Set(words);
+  const terms = new Set<string>();
+  const hasAny = (...items: string[]) => items.some((item) => tokenSet.has(item));
+  if (hasAny('test', 'tests', 'case', 'cases', 'qa', 'coverage', 'scenario', 'scenarios', 'regression')) {
+    [
+      'validation', 'required', 'permission', 'permissions', 'role', 'roles', 'empty state',
+      'error state', 'edge case', 'create', 'new', 'delete', 'bulk', 'export', 'inline edit',
+    ].forEach((term) => terms.add(term));
+  }
+  if (hasAny('list', 'lists', 'table', 'tables', 'grid', 'grids', 'view', 'views')) {
+    [
+      'list view', 'list-view', 'list_view', 'list_views', 'table', 'grid', 'columns',
+      'column', 'field', 'fields', 'filter', 'filters', 'sort', 'sorting', 'search',
+      'pagination', 'toolbar', 'row actions', 'selected count', 'empty state',
+    ].forEach((term) => terms.add(term));
+  }
+  if (hasAny('feature', 'object', 'objects', 'entity', 'entities', 'tab', 'tabs', 'app', 'apps')) {
+    [
+      'metadata', 'object', 'objects', 'api_name', 'field', 'fields', 'tab', 'tabs',
+      'navigation', 'route', 'routes',
+    ].forEach((term) => terms.add(term));
+  }
+  return Array.from(terms);
+}
+
+function questionTerms(question: string): string[] {
+  const phrases = Array.from(String(question || '').matchAll(/["'`]([^"'`]{2,80})["'`]/g))
+    .map((m) => m[1]);
+  const words = searchTokens(question);
+  const adjacent = words.slice(0, -1).map((word, index) => `${word} ${words[index + 1]}`);
+  const all = [...phrases, ...adjacent, ...words, ...intentExpansionTerms(words)].flatMap(phraseVariants);
+  return Array.from(new Set(all)).slice(0, 36);
+}
+
+function numberLines(content: string): string {
+  return String(content || '')
+    .split(/\r?\n/)
+    .map((line, index) => `${index + 1}: ${line}`)
+    .join('\n');
+}
 
 /**
  * Select the RELEVANT source files for a set of terms — with a DYNAMIC count, not a fixed
@@ -30,20 +96,24 @@ const NOISE_EXT = /\.(ya?ml|json|lock|md|txt|env.*|cfg|toml|ini|csv|snap|log)$/i
  */
 export function relevantSourcePaths(paths: string[], terms: string[]): string[] {
   const lc = terms.map((t) => t.toLowerCase()).filter(Boolean);
+  const termTokens = new Set(lc.flatMap(searchTokens));
   const scored = paths.map((path) => {
     const p = String(path || '').toLowerCase();
     const base = p.split('/').pop() || '';
+    const pathTokens = new Set(searchTokens(p));
+    const baseTokens = new Set(searchTokens(base));
     let s = 0;
-    if (NOISE_PATH.test(`/${p}`)) s -= 100;
-    if (SRC_EXT.test(p)) s += 5;
-    if (NOISE_EXT.test(p)) s -= 6;
     for (const t of lc) {
-      if (base.includes(t)) s += 4;       // term in filename = strong signal
-      else if (p.includes(t)) s += 1;     // term elsewhere in the path
+      if (base.includes(t)) s += 5;
+      else if (p.includes(t)) s += 2;
+    }
+    for (const token of termTokens) {
+      if (baseTokens.has(token)) s += 4;
+      else if (pathTokens.has(token)) s += 1;
     }
     return { path, s };
   }).filter((x) => x.s > 0).sort((a, b) => b.s - a.s);
-  if (!scored.length) return paths.filter((p) => SRC_EXT.test(p) && !NOISE_PATH.test(`/${p}`));
+  if (!scored.length) return paths;
   // DYNAMIC cutoff: keep every file within ~40% of the top relevance score. Count emerges
   // from the result distribution — no hardcoded file count.
   const top = scored[0].s;
@@ -86,7 +156,7 @@ const NO_FINDINGS = /no relevant code found/i;
 async function planFacets(opts: DeepResearchOptions, orch: any, max: number): Promise<Array<{ name: string; terms: string[] }>> {
   try {
     const res = await orch.generateObject({
-      prompt: `Decompose this request into up to ${max} DISTINCT investigation angles for searching an application's SOURCE CODE, so parallel searches cover the feature in depth (the way a senior engineer would split up exploring an unfamiliar codebase). Each angle must target a different sub-area — e.g. for a "list view" feature: saved/default views, filtering & sorting, columns & pagination, roles & permissions, bulk actions, export, inline edit, recycle bin. For each angle give a short name and 3-6 concrete search terms likely to appear in the real code (identifiers, route fragments, UI labels, function names, synonyms).
+      prompt: `Decompose this request into up to ${max} DISTINCT investigation angles for searching an application's codebase files, so parallel searches cover the feature in depth (the way a senior engineer would split up exploring an unfamiliar codebase). Each angle must target a different sub-area implied by the request. For each angle give a short name and 3-6 concrete search terms likely to appear in the real codebase (identifiers, route fragments, UI labels, config keys, test names, synonyms). Do not use documentation or Markdown files as a source.
 
 REQUEST: ${opts.question}
 
@@ -104,7 +174,43 @@ Return strict JSON: {"facets":[{"name":"...","terms":["...","..."]}]}. Make the 
   }
 }
 
-/** Research ONE facet: native search + read its code, then one worker call to extract grounded findings. */
+function fallbackFacets(question: string, max: number): Array<{ name: string; terms: string[] }> {
+  const terms = questionTerms(question);
+  if (!terms.length) return [];
+  const facets: Array<{ name: string; terms: string[] }> = [];
+  const windowSize = Math.max(4, Math.ceil(terms.length / Math.max(1, Math.min(max, 4))));
+  for (let i = 0; i < terms.length && facets.length < max; i += windowSize) {
+    const slice = terms.slice(i, i + windowSize);
+    if (slice.length) facets.push({ name: `request terms ${facets.length + 1}`, terms: slice.slice(0, 8) });
+  }
+  return facets;
+}
+
+function mergeFacets(
+  planned: Array<{ name: string; terms: string[] }>,
+  fallback: Array<{ name: string; terms: string[] }>,
+  max: number,
+): Array<{ name: string; terms: string[] }> {
+  const out: Array<{ name: string; terms: string[] }> = [];
+  const seenNames = new Set<string>();
+  const seenTermSets = new Set<string>();
+  const ordered = fallback.length ? [fallback[0], ...planned, ...fallback.slice(1)] : planned;
+  for (const facet of ordered) {
+    const terms = Array.from(new Set((facet.terms || []).flatMap(phraseVariants))).filter(Boolean).slice(0, 8);
+    if (!terms.length) continue;
+    const name = String(facet.name || `request terms ${out.length + 1}`).trim();
+    const termKey = terms.map((term) => term.toLowerCase()).sort().join('|');
+    const nameKey = name.toLowerCase();
+    if (seenNames.has(nameKey) || seenTermSets.has(termKey)) continue;
+    seenNames.add(nameKey);
+    seenTermSets.add(termKey);
+    out.push({ name, terms });
+    if (out.length >= max) break;
+  }
+  return out;
+}
+
+/** Research ONE facet: native search + read its evidence, then one worker call to extract grounded findings. */
 async function researchFacet(
   facet: { name: string; terms: string[] },
   opts: DeepResearchOptions,
@@ -119,20 +225,20 @@ async function researchFacet(
     paths = [];
   }
   const excerpts = (await Promise.all(paths.map(async (p) => {
-    try { return `FILE: ${p}\n${await opts.io.read(p, bytesPerFile)}`; } catch { return ''; }
+    try { return `FILE: ${p}\n${numberLines(await opts.io.read(p, bytesPerFile))}`; } catch { return ''; }
   }))).filter(Boolean).join('\n\n---\n\n');
   if (!excerpts) return { name: facet.name, findings: '' };
 
   try {
     const { text, shortCircuit } = await orch.generateText({
-      prompt: `You are investigating ONE aspect of an application by reading its REAL source code. Report ONLY grounded findings for this aspect — used downstream to answer questions and write test cases.
+      prompt: `You are investigating ONE aspect of an application by reading its REAL codebase files. Report ONLY grounded findings for this aspect — used downstream to answer questions and write test cases. Markdown/documentation files are not allowed as sources.
 
 ASPECT: ${facet.name}
 OVERALL REQUEST (for context): ${opts.question}
 
-From the code below, extract concise bullet findings for THIS aspect: concrete business rules, validations, required fields/limits/defaults, role/permission differences, branches & states, edge/negative cases (errors, empty states, invalid input), data preconditions, and REAL user-facing anchors (labels, button/link text, headings, table/column names, route fragments). Ground every bullet in the code shown; do NOT invent behaviour or meta-concepts. If the code below does not actually cover this aspect, reply exactly "no relevant code found".
+From the evidence below, extract concise bullet findings for THIS aspect: concrete business rules, validations, required fields/limits/defaults, role/permission differences, branches & states, edge/negative cases (errors, empty states, invalid input), data preconditions, and REAL user-facing anchors (labels, button/link text, headings, table/column names, route fragments). Ground every bullet in the evidence shown; include supporting codebase references as path:line when the line is visible. Do NOT invent behaviour, meta-concepts, or citations. If the evidence below does not actually cover this aspect, reply exactly "no relevant code found".
 
-CODE:
+EVIDENCE:
 ${excerpts}`,
       userMessage: facet.name,
       hasHistory: true,
@@ -152,7 +258,7 @@ export async function deepParallelResearch(opts: DeepResearchOptions): Promise<s
   const orch = await getOrchestrator(opts.orchestratorAgent, { workspaceId: opts.workspaceId, userId: opts.userId });
 
   opts.onProgress?.('Planning the investigation…');
-  const facets = await planFacets(opts, orch, max);
+  const facets = mergeFacets(await planFacets(opts, orch, max), fallbackFacets(opts.question, max), max);
   if (!facets.length) return '';
 
   opts.onProgress?.(`Searching ${facets.length} areas of the codebase in parallel…`);

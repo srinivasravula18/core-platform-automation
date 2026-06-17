@@ -15,6 +15,7 @@ import { promises as fsp } from 'fs';
 import path from 'path';
 import { inspectApplicationFlow } from './inspectionService';
 import { getOrchestrator, listConfiguredProviders, resolveProviderForAgent } from '../../ai/orchestrator';
+import { answerAppQuestionFromCode } from '../../ai/supervisor';
 import { buildKnowledgeBlock, recordObservation } from '../knowledge/knowledgeService';
 import { resolveCredentials, maskPassword } from '../credentials/credentialsService';
 import { pushInboxItem } from '../inbox/routes';
@@ -28,6 +29,12 @@ import { getApp, getProject } from '../projects/projectService';
 // and resolveUnderstanding is the one place that decides the run's understanding,
 // so the case writer, coder, and analyst can no longer disagree.
 import { isNoiseTurn, deriveUnderstandingFromChat, resolveUnderstanding } from '../../agent-runtime/context/goalContext';
+
+function wantsCodeGroundedTestUnderstanding(value: string): boolean {
+  const text = String(value || '').toLowerCase();
+  return /\b(test\s*cases?|cases?|test\s*areas?|coverage|scenarios?|qa|regression|what\s+(?:can|should)\s+i\s+test|write|create|generate|draft)\b/.test(text)
+    && /\b(test|case|cases|qa|coverage|scenario|scenarios|regression)\b/.test(text);
+}
 
 function getAgentPlanStatus(run: any) {
   if (run?.status === 'completed') return 'Completed';
@@ -1057,8 +1064,10 @@ export function registerAgentRoutes(app: Express) {
   });
 
   app.post('/api/agent/understand-request', async (req, res) => {
-    const { prompt, targetName, targetUrl, currentUnderstanding, correction, history } = req.body || {};
+    const { prompt, originalRequest, targetName, targetUrl, currentUnderstanding, correction, history } = req.body || {};
     const rawPrompt = String(prompt || '').trim();
+    const rawOriginalRequest = String(originalRequest || '').trim();
+    const intentPrompt = rawOriginalRequest || rawPrompt;
     // Prior turns of this chat, so the understanding reflects the ongoing conversation
     // (e.g. "now do the same for the reports page" refers back to earlier messages).
     const historyBlock = Array.isArray(history) && history.length
@@ -1083,13 +1092,45 @@ export function registerAgentRoutes(app: Express) {
       source: 'fallback',
     };
 
+    if (!correction && wantsCodeGroundedTestUnderstanding(intentPrompt)) {
+      try {
+        const scope = reqScope(req);
+        const targetLabel = rawTargetName || rawTargetUrl;
+        const apps = targetLabel
+          ? [{ name: rawTargetName || targetLabel, baseUrl: rawTargetUrl || targetLabel }]
+          : undefined;
+        const grounded = await answerAppQuestionFromCode(intentPrompt, {
+          workspaceId: scope.userId || 'default',
+          userId: scope.userId,
+          projectId: scope.projectId,
+          appId: scope.appId,
+          apps,
+        });
+        const understanding = String(grounded || '').trim();
+        if (understanding) {
+          return res.json({
+            ...fallback,
+            understanding,
+            task: rawPrompt,
+            plannedApproach: 'Use the codebase-grounded test areas above as the reviewed understanding, then draft human-reviewable cases.',
+            confidence: 85,
+            missingInfo: [],
+            source: 'codebase',
+          });
+        }
+      } catch {
+        // Fall through to the concise confirmation generator/fallback below.
+      }
+    }
+
     try {
       const ai = await getOrchestrator('chatAssistant', { workspaceId: reqScope(req).userId || 'default' });
       const result = await ai.generateObject<any>({
         prompt:
           `Interpret this QA automation request for a human confirmation card.\n\n` +
           historyBlock +
-          `Original request: ${rawPrompt}\n` +
+          `Original request: ${intentPrompt}\n` +
+          (rawOriginalRequest && rawOriginalRequest !== rawPrompt ? `Router-extracted scope: ${rawPrompt}\n` : '') +
           `Detected target name: ${rawTargetName || 'not provided'}\n` +
           `Detected target URL: ${rawTargetUrl || 'not provided'}\n` +
           (currentUnderstanding ? `Current understanding:\n${String(currentUnderstanding)}\n` : '') +

@@ -87,41 +87,66 @@ function keywordsFor(q: string): string[] {
 }
 
 function expandFeatureTerms(question: string): string[] {
-  const q = String(question || '').toLowerCase();
-  const extra: string[] = [];
-  if (/\blist\s*view\b|\blistview\b/.test(q)) extra.push('list view', 'list-view', 'listview');
-  if (/\btable\b|\bgrid\b|\blist\s*view\b|\blistview\b/.test(q)) {
-    extra.push('table', 'grid', 'column', 'columns', 'filter', 'filters', 'sort', 'sorting', 'search', 'pagination', 'export', 'toolbar');
+  const words = keywordsFor(question);
+  const extra = new Set<string>(words);
+  const wordSet = new Set(words);
+  const hasAny = (...items: string[]) => items.some((item) => wordSet.has(item));
+  for (let i = 0; i < words.length - 1; i++) {
+    const pair = [words[i], words[i + 1]];
+    extra.add(pair.join(' '));
+    extra.add(pair.join('-'));
+    extra.add(pair.join('_'));
+    extra.add(pair.join(''));
   }
-  // Only GENERIC UI-testing vocabulary above — no app-specific surface names. The agent
-  // researches the actual app's surfaces from its code/inspection, not from baked-in names.
+  for (const word of words) {
+    if (word.endsWith('s') && word.length > 3) extra.add(word.slice(0, -1));
+    else extra.add(`${word}s`);
+  }
+  if (hasAny('test', 'tests', 'case', 'cases', 'qa', 'coverage', 'scenario', 'scenarios', 'regression')) {
+    [
+      'validation', 'required', 'permission', 'permissions', 'role', 'roles', 'empty state',
+      'error state', 'edge case', 'create', 'new', 'delete', 'bulk', 'export', 'inline edit',
+    ].forEach((term) => extra.add(term));
+  }
+  if (hasAny('list', 'lists', 'table', 'tables', 'grid', 'grids', 'view', 'views')) {
+    [
+      'list view', 'list-view', 'list_view', 'list_views', 'table', 'grid', 'columns',
+      'column', 'field', 'fields', 'filter', 'filters', 'sort', 'sorting', 'search',
+      'pagination', 'toolbar', 'row actions', 'selected count',
+    ].forEach((term) => extra.add(term));
+  }
+  if (hasAny('feature', 'object', 'objects', 'entity', 'entities', 'tab', 'tabs', 'app', 'apps')) {
+    [
+      'metadata', 'object', 'objects', 'api_name', 'field', 'fields', 'tab', 'tabs',
+      'navigation', 'route', 'routes',
+    ].forEach((term) => extra.add(term));
+  }
   return Array.from(new Set(extra));
 }
 
-const SRC_EXT = /\.(tsx?|jsx?|vue|svelte|py|go|java|rb|cs|php)$/i;
-const NOISE_PATH = /(^|\/)(node_modules|dist|build|coverage|\.next|\.github|\.playwright-cli|\.husky|evidence|seeds|fixtures|__tests__|e2e|tests?|migrations)\//i;
-const NOISE_EXT = /\.(ya?ml|json|lock|md|txt|env.*|cfg|toml|ini|csv|snap|log)$/i;
-
-/** Score & sort grep matches so the most relevant SOURCE files come first. */
-function rankCodeFiles(files: Array<{ path: string }>, terms: string[]): Array<{ path: string }> {
-  const scored = files.map((f) => {
-    const p = String(f.path || '').toLowerCase();
-    const base = p.split('/').pop() || '';
-    let s = 0;
-    if (NOISE_PATH.test(`/${p}`)) s -= 100;
-    if (SRC_EXT.test(p)) s += 5;
-    if (NOISE_EXT.test(p)) s -= 6;
-    for (const t of terms) {
-      if (base.includes(t)) s += 4;        // term in the filename = strong signal
-      else if (p.includes(t)) s += 1;      // term elsewhere in the path
-    }
-    return { f, s };
-  });
-  const good = scored.filter((x) => x.s > 0).sort((a, b) => b.s - a.s).map((x) => x.f);
-  // Fallback: if nothing scored positive, prefer any source files, else original order.
-  if (good.length) return good;
-  return files.filter((f) => SRC_EXT.test(f.path) && !NOISE_PATH.test(`/${f.path}`));
+function numberLines(content: string): string {
+  return String(content || '')
+    .split(/\r?\n/)
+    .map((line, index) => `${index + 1}: ${line}`)
+    .join('\n');
 }
+
+function codebaseRootLine(repoLabel: string): string {
+  const root = String(repoLabel || '').trim();
+  if (!root) return '';
+  return `CODEBASE ROOT: ${root}\n`;
+}
+
+const INTENT_DRIVEN_ANSWER_RULES = `Infer the response shape from the user's intent:
+- If the user asks what to test, asks for test areas, asks to create/generate cases, or asks for QA coverage/scenarios, use this structure:
+  1. Start with "For <app/feature>, the concrete target is:" and name the precise target/workflow/entity that the codebase supports.
+  2. Add "Grounding I found:" with concise bullets citing real codebase references as path:line. Cite only references present in the provided material. If a CODEBASE ROOT is provided, use it to make relative file references unambiguous.
+  3. Add "Good Test Areas" with numbered sections and concrete bullets. Derive every section name and bullet from the codebase material. Do not use a fixed checklist, app-specific assumptions, or generic QA areas that were not found in the material.
+  4. End with "The highest-value first set would be:" and a short prioritized list containing only grounded areas from the answer above.
+- If the user asks a direct factual question, answer directly and briefly. Include citations only if the user asks for evidence or the answer depends on a specific codebase rule.
+- If the user asks for evidence, sources, or "where did you find this", include a compact grounding section with path:line references.
+- If the codebase material does not support a requested item, say that it was not found in the codebase material instead of inventing it.
+- Markdown/documentation files are excluded and must not be cited.`;
 
 /**
  * FAST git-grounded answer for app-knowledge QUESTIONS: do the retrieval deterministically
@@ -188,12 +213,15 @@ export async function answerAppQuestionFromCode(question: string, opts: {
     if (notes) {
       opts.onProgress?.('Synthesizing the answer…');
       const orch = await getOrchestrator('chatAssistant', { workspaceId: opts.workspaceId, userId: opts.userId });
-      const prompt = `You are a QA assistant who is an expert on THIS application. Answer the user's question using ONLY the grounded research findings below (compiled by reading the app's real source across the codebase).
-Speak to the user as a product expert. Present ONLY user-facing findings (features, rules, behaviors) in plain language. NEVER reveal HOW you found the answer or mention research/notes/"excerpts"/"the code"/"the source"/"the files"/file paths/repo names. If something isn't covered, phrase it as a fact about the application, not a limitation of what you could see. Do not invent behaviour beyond the findings.${appsBlock}
+      const prompt = `You are a QA assistant who is an expert on THIS application. Answer the user's question using ONLY the grounded research findings below (compiled by reading the app's real codebase files; Markdown/documentation files are excluded).
+Speak to the user as a product/QA expert. Do not invent behaviour beyond the findings. You may cite codebase file paths and line numbers when the user's intent calls for grounded evidence, test coverage, or test-area recommendations. For ordinary factual answers, keep citations minimal.${appsBlock}
+
+${INTENT_DRIVEN_ANSWER_RULES}
 
 QUESTION: ${question}
 
-GROUNDED RESEARCH FINDINGS (internal — NEVER mention or allude to this section):
+${codebaseRootLine(scope.repoLabel)}
+GROUNDED RESEARCH FINDINGS:
 ${notes}\n`;
       const { text, shortCircuit } = await orch.generateText({ prompt, userMessage: question, hasHistory: true });
       const answer = (shortCircuit || text || '').trim();
@@ -213,7 +241,7 @@ ${notes}\n`;
     const r1 = await searchCodeInScope(searchTerms, scopeArg, 300);
     files = r1.matches as Array<{ path: string }>;
   } catch (err: any) {
-    return `I couldn't read the source code for this scope. It looked in "${scope.repoLabel}"${scope.roots.length ? ` within ${scope.roots.join(', ')}` : ''}, but the repo access failed: ${err?.message || 'unknown error'}.`;
+    return `I couldn't read the codebase files for this scope. It looked in "${scope.repoLabel}"${scope.roots.length ? ` within ${scope.roots.join(', ')}` : ''}, but the repo access failed: ${err?.message || 'unknown error'}.`;
   }
 
   // ROUND 2 — follow references: read the strongest round-1 files, harvest the identifiers
@@ -240,7 +268,7 @@ ${notes}\n`;
   opts.onProgress?.(top.length ? `Reading ${top.length} relevant file(s) in depth…` : 'Reading the codebase…');
   const excerptParts = await Promise.all(top.map(async (p) => {
     try {
-      return `FILE: ${p}\n${await readCodeFileInScope(p, scopeArg, 3200)}`;
+      return `FILE: ${p}\n${numberLines(await readCodeFileInScope(p, scopeArg, 3200))}`;
     } catch {
       return '';
     }
@@ -249,12 +277,15 @@ ${notes}\n`;
   // generateText (single call) — no tools needed since retrieval is already done. Uses the
   // Settings-selected provider/model dynamically.
   const orch = await getOrchestrator('chatAssistant', { workspaceId: opts.workspaceId, userId: opts.userId });
-  const prompt = `You are a QA assistant who knows this application. Answer the user's question grounded ONLY in the application's real source code provided below (your source of truth). Be specific and concrete. If the provided code does not contain the answer, say plainly what you can determine and what you'd need to answer fully — do NOT invent behaviour.
-Speak to the user as a product expert describing the application. Present ONLY user-facing findings (features, rules, behaviors) in plain language. NEVER reveal HOW you found the answer or mention your inputs — do NOT use words like "excerpts", "snippets", "the code provided", "the source", "the files", or "based on what I can see"; do NOT show or cite file paths, file names, code locations, or repo names. If something can't be determined, phrase it about the application (e.g. "the application doesn't appear to define a fixed number of …"), never about the material you were given.${appsBlock}
+  const prompt = `You are a QA assistant who knows this application. Answer the user's question grounded ONLY in the application's real codebase files provided below (your source of truth). Markdown/documentation files are excluded. Be specific and concrete. If the provided codebase files do not contain the answer, say plainly what you can determine and what you'd need to answer fully — do NOT invent behaviour.
+Speak to the user as a product/QA expert. Do not invent behaviour beyond the codebase files. You may cite codebase file paths and line numbers when the user's intent calls for grounded evidence, test coverage, or test-area recommendations. For ordinary factual answers, keep citations minimal.${appsBlock}
+
+${INTENT_DRIVEN_ANSWER_RULES}
 
 QUESTION: ${question}
 
-APPLICATION SOURCE (internal reference only — NEVER mention or allude to this section in your answer; ${top.length} file(s)):
+${codebaseRootLine(scope.repoLabel)}
+APPLICATION CODEBASE FILES (${top.length} file(s)):
 ${excerpts || '(no matching files found — the repo may be unavailable or the terms too specific)'}\n`;
   const { text, shortCircuit } = await orch.generateText({ prompt, userMessage: question, hasHistory: true });
   return shortCircuit || text || 'I could not find that in the codebase.';

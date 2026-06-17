@@ -74,7 +74,7 @@ export const searchCodebaseTool: AgentTool = {
   spec: {
     name: 'search_codebase',
     description:
-      'Search the application SOURCE CODE (the git repo — the single source of truth for how the app really works) for terms, identifiers, routes, field names, or labels. Use this BEFORE answering anything about app behaviour you are not certain of. Case-insensitive; returns matching file paths.',
+      'Search the application codebase files (the git repo - the single source of truth for how the app really works) for terms, identifiers, routes, field names, labels, config, or tests. Markdown/documentation files are excluded. Use this BEFORE answering anything about app behaviour you are not certain of. Case-insensitive; returns matching file paths.',
     parameters: {
       type: 'object',
       properties: {
@@ -96,7 +96,7 @@ export const readCodeFileTool: AgentTool = {
   spec: {
     name: 'read_code_file',
     description:
-      'Read the real contents of a source file from the application git repo (the source of truth). Use after search_codebase to read the actual code before answering. Path is relative to the repo root.',
+      'Read the real contents of a codebase file from the application git repo (the source of truth). Markdown/documentation files are excluded. Use after search_codebase to read the actual codebase file before answering. Path is relative to the repo root.',
     parameters: {
       type: 'object',
       properties: {

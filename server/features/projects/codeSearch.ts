@@ -47,6 +47,37 @@ function withinRoots(filePath: string, roots: string[]): boolean {
   return roots.some((root) => normalized === root || normalized.startsWith(`${root}/`));
 }
 
+function searchTokens(value: string): string[] {
+  return Array.from(new Set(String(value || '').toLowerCase().match(/[a-z0-9]+/g) || []))
+    .filter((token) => token.length >= 2);
+}
+
+function rankMatch(match: { path: string; preview?: string }, patterns: string[]): number {
+  const queryTokens = new Set(patterns.flatMap(searchTokens));
+  const pathText = normalizeRepoPath(match.path).toLowerCase();
+  const baseText = pathText.split('/').pop() || '';
+  const previewText = String(match.preview || '').toLowerCase();
+  const pathTokens = new Set(searchTokens(pathText));
+  const baseTokens = new Set(searchTokens(baseText));
+  const previewTokens = new Set(searchTokens(previewText));
+  let score = 0;
+  for (const token of queryTokens) {
+    if (baseTokens.has(token)) score += 6;
+    else if (pathTokens.has(token)) score += 3;
+    if (previewTokens.has(token)) score += 2;
+  }
+  for (const pattern of patterns.map((p) => p.toLowerCase()).filter(Boolean)) {
+    if (baseText.includes(pattern)) score += 8;
+    else if (pathText.includes(pattern)) score += 5;
+    if (previewText.includes(pattern)) score += 4;
+  }
+  return score;
+}
+
+function isMarkdownPath(pathValue: string): boolean {
+  return /\.(md|mdx|markdown)$/i.test(normalizeRepoPath(pathValue));
+}
+
 function rootsForApp(projectId?: string, appId?: string | null): string[] {
   if (!projectId || !appId) return [];
   const app = getApp(appId);
@@ -101,40 +132,52 @@ export async function searchCodeInScope(
   }
 
   if (scope.mode === 'global' || !scope.projectId) {
-    const pathspecs = scope.roots.length ? scope.roots : ['.'];
-    const matches = gitGrep(cleanPatterns, pathspecs, maxFiles).map((match) => ({
-      path: match.path,
-      area: match.area,
-      surface: match.surface,
-    }));
+    const markdownExcludes = [':(exclude)*.md', ':(exclude)*.mdx', ':(exclude)*.markdown'];
+    const pathspecs = [...(scope.roots.length ? scope.roots : ['.']), ...markdownExcludes];
+    const matches = gitGrep(cleanPatterns, pathspecs, Math.max(maxFiles, maxFiles * 3))
+      .filter((match) => !isMarkdownPath(match.path))
+      .map((match) => ({
+        path: match.path,
+        area: match.area,
+        surface: match.surface,
+      }))
+      .sort((a, b) => rankMatch(b, cleanPatterns) - rankMatch(a, cleanPatterns))
+      .slice(0, maxFiles);
     return { repo: scope.repoLabel, roots: scope.roots, matches };
   }
 
-  const seen = new Set<string>();
-  const merged: CodeSearchMatch[] = [];
+  const merged = new Map<string, CodeSearchMatch & { score: number }>();
   const perTerm = Math.max(25, Math.min(100, maxFiles * 2));
   for (const term of cleanPatterns) {
     const rows = await projectRepo.search(scope.projectId, term, perTerm);
     for (const row of rows) {
       if (!withinRoots(row.path, scope.roots)) continue;
-      if (seen.has(row.path)) continue;
-      seen.add(row.path);
-      const classified = classifyChangedFile(row.path);
+      if (isMarkdownPath(row.path)) continue;
       const r = row as { path: string; line?: number; preview?: string };
-      merged.push({
+      const existing = merged.get(row.path);
+      const score = rankMatch(r, cleanPatterns) + rankMatch(r, [term]);
+      if (existing) {
+        existing.score += score;
+        if (!existing.preview && r.preview) existing.preview = r.preview;
+        continue;
+      }
+      const classified = classifyChangedFile(row.path);
+      merged.set(row.path, {
         path: row.path,
         area: classified.area,
         surface: classified.surface,
         line: r.line,
         preview: r.preview,
+        score,
       });
-      if (merged.length >= maxFiles) {
-        return { repo: scope.repoLabel, roots: scope.roots, matches: merged };
-      }
     }
   }
 
-  return { repo: scope.repoLabel, roots: scope.roots, matches: merged };
+  const matches = Array.from(merged.values())
+    .sort((a, b) => b.score - a.score)
+    .slice(0, maxFiles)
+    .map(({ score: _score, ...match }) => match);
+  return { repo: scope.repoLabel, roots: scope.roots, matches };
 }
 
 export async function readCodeFileInScope(
@@ -142,6 +185,9 @@ export async function readCodeFileInScope(
   input: CodeSearchScopeInput = {},
   maxBytes = 6000,
 ): Promise<string> {
+  if (isMarkdownPath(relPath)) {
+    throw new Error('Markdown files are excluded from agent codebase reads.');
+  }
   const scope = resolveCodeSearchScope(input);
   if (scope.mode === 'project' && scope.projectId) {
     const content = await projectRepo.readFile(scope.projectId, relPath);

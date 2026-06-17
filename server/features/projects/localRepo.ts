@@ -53,6 +53,43 @@ function git(cwd: string, args: string[], timeout = 120000): string {
 
 const US = '\x1f'; // unit separator for safe field splitting
 
+function searchTokens(value: string): string[] {
+  return Array.from(new Set(String(value || '').toLowerCase().match(/[a-z0-9]+/g) || []))
+    .filter((token) => token.length >= 2);
+}
+
+function tokenOverlapScore(tokens: Set<string>, queryTokens: string[], weight: number): number {
+  let score = 0;
+  for (const token of queryTokens) {
+    if (tokens.has(token)) score += weight;
+  }
+  return score;
+}
+
+function evidenceRank(pathValue: string, queryText: string, preview = ''): number {
+  const pathText = String(pathValue || '').replace(/\\/g, '/').toLowerCase();
+  const baseText = pathText.split('/').pop() || '';
+  const previewText = String(preview || '').toLowerCase();
+  const queryTokens = searchTokens(queryText);
+  const pathTokens = new Set(searchTokens(pathText));
+  const baseTokens = new Set(searchTokens(baseText));
+  const previewTokens = new Set(searchTokens(previewText));
+  const exactQuery = String(queryText || '').trim().toLowerCase();
+
+  let score = 0;
+  score += tokenOverlapScore(baseTokens, queryTokens, 6);
+  score += tokenOverlapScore(pathTokens, queryTokens, 3);
+  score += tokenOverlapScore(previewTokens, queryTokens, 2);
+  if (exactQuery && baseText.includes(exactQuery)) score += 8;
+  if (exactQuery && pathText.includes(exactQuery)) score += 5;
+  if (exactQuery && previewText.includes(exactQuery)) score += 4;
+  return score;
+}
+
+function isMarkdownPath(pathValue: string): boolean {
+  return /\.(md|mdx|markdown)$/i.test(String(pathValue || ''));
+}
+
 /** Count +/- body lines in a unified-diff section (ignores the +++/--- headers). */
 function countChanges(section: string): { additions: number; deletions: number } {
   let additions = 0;
@@ -163,11 +200,11 @@ export const localRepo = {
 
   search(projectId: string, queryText: string, perPage = 30): Array<{ path: string; line?: number; preview?: string }> {
     const cwd = repoPathOf(projectId);
-    // Restrict to SOURCE files so root docs/config (README.md, .yml, .github/…) can't
-    // saturate the results and bury the actual app source the agent needs.
-    const SRC_PATHSPECS = ['*.ts', '*.tsx', '*.js', '*.jsx', '*.vue', '*.svelte', '*.py', '*.go', '*.java', '*.rb', '*.cs', '*.php', '*.html', '*.css', '*.scss'];
+    // Search tracked text evidence broadly; git skips binary content and the ranking
+    // below lets the repo's own matched paths/lines decide what is most relevant.
+    const pathspecs = ['.', ':(exclude)*.md', ':(exclude)*.mdx', ':(exclude)*.markdown'];
     // git grep exits 1 when there are no matches — treat that as an empty result.
-    const result = spawnSync('git', ['-c', `safe.directory=${cwd.replace(/\\/g, '/')}`, 'grep', '-n', '-I', '--no-color', '-F', '-e', queryText, '--', ...SRC_PATHSPECS], {
+    const result = spawnSync('git', ['-c', `safe.directory=${cwd.replace(/\\/g, '/')}`, 'grep', '-n', '-I', '--no-color', '-i', '--max-count=3', '-F', '-e', queryText, '--', ...pathspecs], {
       cwd,
       encoding: 'utf8',
       timeout: 60000,
@@ -176,17 +213,27 @@ export const localRepo = {
     });
     if (result.status === 1) return [];
     if (result.status !== 0) throw repoError((result.stderr || 'git grep failed').trim(), 422);
-    return (result.stdout || '')
+    const grouped = new Map<string, { path: string; line?: number; preview?: string; rankText: string }>();
+    for (const l of (result.stdout || '')
       // Split on CRLF *or* LF: on Windows, grep lines from CRLF files keep a trailing
       // \r that breaks the `path:line:preview` regex below (so path becomes the whole
       // line and line numbers are lost). Normalize the line ending here.
       .split(/\r?\n/)
-      .filter(Boolean)
+      .filter(Boolean)) {
+      const m = l.match(/^(.+?):(\d+):(.*)$/);
+      const row = m ? { path: m[1], line: Number(m[2]), preview: m[3].trim().slice(0, 200) } : { path: l };
+      if (isMarkdownPath(row.path)) continue;
+      const existing = grouped.get(row.path);
+      if (existing) {
+        existing.rankText = `${existing.rankText} ${row.preview || ''}`.trim();
+      } else {
+        grouped.set(row.path, { ...row, rankText: row.preview || '' });
+      }
+    }
+    return Array.from(grouped.values())
+      .sort((a, b) => evidenceRank(b.path, queryText, b.rankText) - evidenceRank(a.path, queryText, a.rankText))
       .slice(0, Math.min(perPage, 200))
-      .map((l) => {
-        const m = l.match(/^(.+?):(\d+):(.*)$/);
-        return m ? { path: m[1], line: Number(m[2]), preview: m[3].trim().slice(0, 200) } : { path: l };
-      });
+      .map(({ rankText: _rankText, ...row }) => row);
   },
 };
 

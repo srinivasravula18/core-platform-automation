@@ -94,7 +94,7 @@ export type SelectedApp = { name: string; baseUrl: string };
 // When the user has selected app(s) — via the top-bar scope switcher or the composer
 // "Apps to test" picker — build a directive block naming them as the target. This is
 // injected into every chat prompt so the model maps vague references ("the entire
-// application", "admin and keystone", "the list view") to these apps instead of replying
+// application", "the selected app", "the current feature") to these apps instead of replying
 // that it does not know which app/scope the user means.
 function buildAppsBlock(apps?: SelectedApp[]): string {
   const list = (Array.isArray(apps) ? apps : [])
@@ -102,7 +102,7 @@ function buildAppsBlock(apps?: SelectedApp[]): string {
     .map((a) => `${a.name || a.baseUrl} (${a.baseUrl})`);
   if (!list.length) return '';
   return `\nAPPS UNDER TEST (selected by the user — treat these as the target; do NOT ask which app/scope): ${list.join(', ')}.
-When the user refers to "the entire application", "the app", "admin and keystone", "the list view", "this page/section/flow", or similar, map that reference to the selected app(s) above and proceed using them (their names and base URLs) as the concrete target. Do NOT reply that you do not know which app/scope is meant — an app IS selected. Answer for the selected app(s), e.g. "for the Admin app at <url>, the List View features to test are …".\n`;
+When the user refers to "the entire application", "the app", "the selected app", "the current feature", "this page/section/flow", or similar, map that reference to the selected app(s) above and proceed using them (their names and base URLs) as the concrete target. Do NOT reply that you do not know which app/scope is meant — an app IS selected. Answer using the selected app name and URL from the list above.\n`;
 }
 
 // Format the CURRENT chat's prior turns (sent per-request from the client) into a
