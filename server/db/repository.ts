@@ -152,6 +152,7 @@ function mapCase(r: any) {
 
 function mapRun(r: any) {
   if (!r) return null;
+  const agentRunId = r.source_run_id || r.inferred_agent_run_id || null;
   return {
     id: r.id,
     name: r.name,
@@ -177,6 +178,8 @@ function mapRun(r: any) {
     proposedBy: r.proposed_by,
     approvedBy: r.approved_by,
     approvedAt: r.approved_at,
+    sourceRunId: agentRunId,
+    agentRunId,
     date: typeof r.date === 'string' ? r.date : (r.date ? r.date.toISOString().split('T')[0] : ''),
     createdAt: r.created_at,
     updatedAt: r.updated_at,
@@ -205,6 +208,7 @@ function mapDefect(r: any) {
     proposedBy: r.proposed_by,
     approvedBy: r.approved_by,
     approvedAt: r.approved_at,
+    sourceRunId: r.source_run_id,
     createdBy: r.proposed_by,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
@@ -763,12 +767,40 @@ export const Cases = {
 export const Runs = {
   async list(): Promise<any[]> {
     if (!isPgEnabled()) return db.runs as any[];
-    const rows = await query("SELECT * FROM runs WHERE deleted_at IS NULL ORDER BY created_at DESC");
+    const rows = await query(
+      `SELECT r.*, linked.agent_run_id AS inferred_agent_run_id
+       FROM runs r
+       LEFT JOIN LATERAL (
+         SELECT c.agent_run_id
+         FROM cases c
+         WHERE c.deleted_at IS NULL
+           AND c.agent_run_id IS NOT NULL
+           AND (c.test_plan_id = r.test_plan_id OR c.test_suite_id = r.suite_id OR c.id = ANY(COALESCE(r.case_ids, ARRAY[]::TEXT[])))
+         ORDER BY c.created_at DESC
+         LIMIT 1
+       ) linked ON true
+       WHERE r.deleted_at IS NULL
+       ORDER BY r.created_at DESC`,
+    );
     return rows.map(mapRun);
   },
   async get(id: string): Promise<any | null> {
     if (!isPgEnabled()) return db.runs.find((r: any) => r.id === id) || null;
-    const r = await queryOne('SELECT * FROM runs WHERE id = $1 AND deleted_at IS NULL', [id]);
+    const r = await queryOne(
+      `SELECT r.*, linked.agent_run_id AS inferred_agent_run_id
+       FROM runs r
+       LEFT JOIN LATERAL (
+         SELECT c.agent_run_id
+         FROM cases c
+         WHERE c.deleted_at IS NULL
+           AND c.agent_run_id IS NOT NULL
+           AND (c.test_plan_id = r.test_plan_id OR c.test_suite_id = r.suite_id OR c.id = ANY(COALESCE(r.case_ids, ARRAY[]::TEXT[])))
+         ORDER BY c.created_at DESC
+         LIMIT 1
+       ) linked ON true
+       WHERE r.id = $1 AND r.deleted_at IS NULL`,
+      [id],
+    );
     return mapRun(r);
   },
   async upsert(r: any): Promise<any> {
@@ -783,8 +815,8 @@ export const Runs = {
     const evidenceJson = JSON.stringify(r.evidence || []);
     const triggerMetaJson = JSON.stringify(r.triggerMeta || {});
     const row = await queryOne(
-      `INSERT INTO runs (id, name, suite_id, test_plan_id, case_ids, requested_by, execution_time, total_executions, passed, failed, progress, status, target_url, folder_id, steps, evidence, trigger_type, trigger_meta, started_at, completed_at, approval_state, proposed_by, date, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::jsonb,$16::jsonb,$17,$18::jsonb,$19,$20,$21,$22, COALESCE($23, CURRENT_DATE), now(), now())
+      `INSERT INTO runs (id, name, suite_id, test_plan_id, case_ids, requested_by, execution_time, total_executions, passed, failed, progress, status, target_url, folder_id, steps, evidence, trigger_type, trigger_meta, started_at, completed_at, approval_state, proposed_by, source_run_id, date, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::jsonb,$16::jsonb,$17,$18::jsonb,$19,$20,$21,$22,$23, COALESCE($24, CURRENT_DATE), now(), now())
        ON CONFLICT (id) DO UPDATE SET
          name=EXCLUDED.name, suite_id=EXCLUDED.suite_id, test_plan_id=EXCLUDED.test_plan_id,
          case_ids=EXCLUDED.case_ids, requested_by=EXCLUDED.requested_by, execution_time=EXCLUDED.execution_time,
@@ -794,6 +826,7 @@ export const Runs = {
          trigger_type=EXCLUDED.trigger_type, trigger_meta=EXCLUDED.trigger_meta,
          started_at=EXCLUDED.started_at, completed_at=EXCLUDED.completed_at,
          approval_state=EXCLUDED.approval_state, proposed_by=EXCLUDED.proposed_by,
+         source_run_id=EXCLUDED.source_run_id,
          updated_at=now()
        RETURNING *`,
       [
@@ -805,6 +838,7 @@ export const Runs = {
         r.triggerType || 'manual', triggerMetaJson,
         r.startedAt || null, r.completedAt || null,
         r.approvalState || 'approved', r.proposedBy || 'human',
+        r.sourceRunId || r.agentRunId || null,
         r.date || null,
       ],
     );
