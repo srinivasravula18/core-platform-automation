@@ -9,7 +9,7 @@ import { playwrightScriptsSchema, testCasesSchema } from '../../shared/schemas';
 import { buildAgentExecutionSteps, buildCaseDescription, normalizeCaseSteps, normalizeCaseTags } from '../../shared/testCases';
 import { capturePlaywrightEvidence, createAuthStorageState } from '../evidence/evidenceService';
 import { gitGrep, readRepoFile } from '../git-agent/gitAgentService';
-import { analyzeFeatureFromSource, proposeGapCases } from '../requirements/requirementService';
+import { analyzeFeatureFromSource, discoverFeatureInventoryFromSource, proposeGapCases } from '../requirements/requirementService';
 import { executePlaywrightScripts, killRunProcesses, sanitizeTestCode, repairTestCode } from '../playwright/executionService';
 import { promises as fsp } from 'fs';
 import path from 'path';
@@ -428,7 +428,7 @@ async function persistAgentCaseArtifacts(run: any) {
       strategy: 'AI-assisted functional and UI validation',
       testTypes: 'Functional, UI, Regression, Sanity',
       environments: run.app_url || '',
-      roles: 'QA Assistant, PlaywrightAgent, EvidenceAgent',
+      roles: 'QA Assistant, CodeAnalyst, FeatureDiscoveryAgent, E2EFlowAgent, PlaywrightAgent, EvidenceAgent',
       status: getAgentPlanStatus(run),
       riskLevel: getAgentPlanRiskLevel(run),
       folderId: run.folderId || null,
@@ -557,6 +557,7 @@ function markRunDone(run: any, status: 'completed' | 'failed' | 'cancelled'): vo
 const INSPECT_CACHE_TTL_MS = 15 * 60 * 1000;
 const inspectionCache = new Map<string, { at: number; value: any }>();
 const understandingCache = new Map<string, { at: number; value: any }>();
+const featureInventoryCache = new Map<string, { at: number; value: any }>();
 
 function featureCacheKey(targetUrl: string, prompt: string): string {
   return `${String(targetUrl || '').toLowerCase()}::${String(prompt || '').toLowerCase().replace(/\s+/g, ' ').trim().slice(0, 200)}`;
@@ -587,8 +588,25 @@ function complexityDrivenCaseCount(understanding: any, requested: number): numbe
   if (requested && requested > 0) return Math.min(40, requested);
   const rules = Array.isArray(understanding?.businessRules) ? understanding.businessRules.length : 0;
   const scenarios = Array.isArray(understanding?.candidateScenarios) ? understanding.candidateScenarios.length : 0;
-  const suggested = Math.max(rules, scenarios);
-  return Math.min(30, Math.max(5, suggested));
+  const features = Array.isArray(understanding?.featureInventory?.features) ? understanding.featureInventory.features : [];
+  const directFeatures = Array.isArray(understanding?.features) ? understanding.features : [];
+  const inventoryFeatures = features.length ? features : directFeatures;
+  const subfeatures = inventoryFeatures.reduce((total: number, feature: any) => {
+    const count = Array.isArray(feature?.subfeatures) ? feature.subfeatures.length : 0;
+    return total + Math.max(1, count);
+  }, 0);
+  const e2eFlows = Array.isArray(understanding?.featureInventory?.e2eFlows)
+    ? understanding.featureInventory.e2eFlows.length
+    : Array.isArray(understanding?.e2eFlows)
+      ? understanding.e2eFlows.length
+      : 0;
+  const suggested = Math.max(rules, scenarios, subfeatures + e2eFlows);
+  return Math.min(40, Math.max(5, suggested));
+}
+
+function wantsFeatureInventory(prompt: string, approvedUnderstanding: string): boolean {
+  const text = `${prompt || ''} ${approvedUnderstanding || ''}`.toLowerCase();
+  return /\b(all|every|entire|whole|across|application|app|features?|sub[-\s]?features?|modules?|screens?|pages?|workflows?|journeys?|end\s*to\s*end|e2e|coverage|test\s*areas?|each\s+feature|comprehensive)\b/.test(text);
 }
 
 // Keywords that describe what this run is about — drawn from the prompt and the
@@ -600,7 +618,15 @@ const CASE_MATCH_STOP = new Set([
 ]);
 function caseMatchKeywords(run: any): string[] {
   const u = run.feature_understanding || {};
-  const text = [run.prompt, run.approvedUnderstanding, u.title, ...(Array.isArray(u.businessRules) ? u.businessRules : [])]
+  const inv = run.feature_inventory || {};
+  const inventoryTerms = [
+    ...(Array.isArray(inv.features) ? inv.features.flatMap((feature: any) => [
+      feature?.name,
+      ...(Array.isArray(feature?.subfeatures) ? feature.subfeatures.map((sub: any) => sub?.name) : []),
+    ]) : []),
+    ...(Array.isArray(inv.e2eFlows) ? inv.e2eFlows.map((flow: any) => flow?.name) : []),
+  ];
+  const text = [run.prompt, run.approvedUnderstanding, u.title, ...(Array.isArray(u.businessRules) ? u.businessRules : []), ...inventoryTerms]
     .filter(Boolean).join(' ').toLowerCase();
   const toks = (text.match(/[a-z][a-z0-9-]{2,}/g) || []).filter((t) => !CASE_MATCH_STOP.has(t));
   return Array.from(new Set(toks));
@@ -659,6 +685,72 @@ function summarizeUnderstanding(u: any, maxChars = 4000): string {
   if (Array.isArray(u.metadataRefs) && u.metadataRefs.length) lines.push(`Metadata source of truth: ${u.metadataRefs.map((m: any) => m.object).filter(Boolean).join(', ')}`);
   if (Array.isArray(u.sourceFiles) && u.sourceFiles.length) lines.push(`Grounded in source files: ${u.sourceFiles.map((f: any) => f.path).filter(Boolean).slice(0, 10).join(', ')}`);
   return lines.join('\n').slice(0, maxChars);
+}
+
+function summarizeFeatureInventory(inventory: any, maxChars = 12000): string {
+  if (!inventory || typeof inventory !== 'object') return '';
+  const lines: string[] = [];
+  if (inventory.appName) lines.push(`Application: ${inventory.appName}`);
+  if (inventory.summary) lines.push(`Summary: ${inventory.summary}`);
+  const features = Array.isArray(inventory.features) ? inventory.features : [];
+  for (const feature of features.slice(0, 35)) {
+    lines.push(`Feature: ${feature?.name || 'Feature'} [${feature?.surface || 'Application'}] - ${feature?.description || ''}`.trim());
+    const subfeatures = Array.isArray(feature?.subfeatures) ? feature.subfeatures : [];
+    for (const sub of subfeatures.slice(0, 14)) {
+      lines.push(`  Subfeature: ${sub?.name || 'Subfeature'} | priority=${sub?.priority || 'Medium'} | actions=${(sub?.userActions || []).join('; ')} | rules=${(sub?.businessRules || []).join('; ')} | testIdeas=${(sub?.testIdeas || []).join('; ')} | tags=${(sub?.tags || []).join(', ')}`);
+    }
+  }
+  const flows = Array.isArray(inventory.e2eFlows) ? inventory.e2eFlows : [];
+  if (flows.length) {
+    lines.push('End-to-end flows:');
+    for (const flow of flows.slice(0, 20)) {
+      lines.push(`  E2E: ${flow?.name || 'Flow'} | priority=${flow?.priority || 'High'} | features=${(flow?.coveredFeatures || []).join(' > ')} | journey=${(flow?.userJourney || []).join(' -> ')} | rules=${(flow?.businessRules || []).join('; ')}`);
+    }
+  }
+  return lines.join('\n').slice(0, maxChars);
+}
+
+function inventoryGroundingTokens(inventory: any): Set<string> {
+  const tokens = new Set<string>();
+  const add = (value: unknown) => {
+    String(value || '')
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter((word) => word.length >= 4 && !CASE_MATCH_STOP.has(word))
+      .forEach((word) => tokens.add(word));
+  };
+  for (const feature of Array.isArray(inventory?.features) ? inventory.features : []) {
+    add(feature?.name);
+    add(feature?.description);
+    for (const sub of Array.isArray(feature?.subfeatures) ? feature.subfeatures : []) {
+      add(sub?.name);
+      add(sub?.description);
+      (sub?.businessRules || []).forEach(add);
+      (sub?.userActions || []).forEach(add);
+      (sub?.testIdeas || []).forEach(add);
+    }
+  }
+  for (const flow of Array.isArray(inventory?.e2eFlows) ? inventory.e2eFlows : []) {
+    add(flow?.name);
+    add(flow?.description);
+    (flow?.coveredFeatures || []).forEach(add);
+    (flow?.userJourney || []).forEach(add);
+    (flow?.businessRules || []).forEach(add);
+  }
+  return tokens;
+}
+
+function assessCasesInventoryGrounding(cases: any[], inventory: any) {
+  if (!inventory || !Array.isArray(cases) || cases.length === 0) return null;
+  const tokens = inventoryGroundingTokens(inventory);
+  if (tokens.size === 0) return null;
+  let grounded = 0;
+  for (const c of cases) {
+    const text = JSON.stringify([c?.title, c?.description, c?.tags, c?.steps]).toLowerCase();
+    if ([...tokens].some((token) => text.includes(token))) grounded += 1;
+  }
+  if (grounded === 0) return { ok: false, reason: 'No generated cases reference the source-discovered feature inventory.' };
+  return { ok: true, reason: `${grounded}/${cases.length} cases reference source-discovered features/subfeatures/E2E flows.` };
 }
 
 async function persistAgentRunArtifacts(run: any) {
@@ -800,6 +892,7 @@ async function generateCasesForRun(
   const credentialContext = buildCredentialContext(credentials);
   const inspectionContext = run.inspection_context || null;
   const featureUnderstanding = run.feature_understanding || null;
+  const featureInventory = run.feature_inventory || null;
   const prompt = run.prompt || '';
   // Resolve the ONE understanding shared by every worker (Strike 3). resolveUnderstanding
   // centralizes the former inline logic: prefer the human-approved understanding, else fall
@@ -814,9 +907,15 @@ async function generateCasesForRun(
     { websiteId: run.websiteId, targetUrl, text: `${run.scope_context_text || ''} ${prompt} ${approvedUnderstanding}`.trim(), ownerId: run.ownerId },
     { maxChars: 12000 },
   );
-  const testCaseCount = complexityDrivenCaseCount(featureUnderstanding, requestedCaseCount);
+  const effectiveUnderstanding = featureInventory
+    ? { ...(featureUnderstanding || {}), featureInventory }
+    : featureUnderstanding;
+  const testCaseCount = complexityDrivenCaseCount(effectiveUnderstanding, requestedCaseCount);
   const understandingBlock = featureUnderstanding
     ? `\nSOURCE-GROUNDED UNDERSTANDING (from the application's real code — treat as authoritative for business rules, roles, and edge cases):\n${summarizeUnderstanding(featureUnderstanding)}\n`
+    : '';
+  const featureInventoryBlock = featureInventory
+    ? `\nFEATURE/SUBFEATURE COVERAGE BLUEPRINT (from FeatureDiscoveryAgent + E2EFlowAgent; use this to structure cases, not just the top-level feature summary):\n${summarizeFeatureInventory(featureInventory)}\n`
     : '';
   // The actual chat that led to this run. AUTHORITATIVE for scope — the cases must cover
   // what the user and agent discussed (e.g. specific objects/users/permissions), not a
@@ -867,7 +966,15 @@ Playwright target URL: ${targetUrl || 'not provided'}.
 ${credentialContext}
 ${selectedQaPromptText}${conversationBlock}
 Browser inspection result: ${JSON.stringify(compactInspectionContext(inspectionContext))}.${understandingBlock}
+${featureInventoryBlock}
 Write approximately ${testCaseCount} test case(s) — this target is derived from the feature's real complexity in the source above, so treat it as a guide: cover every distinct business rule, role/permission difference, branch, and negative/edge case the code reveals, and do not pad with trivial duplicates to hit a number. ${requestedCaseCount > 0 ? `The user explicitly asked for ${requestedCaseCount} case(s); honor that count.` : 'The user asked for comprehensive coverage, so err toward thoroughness over brevity.'}
+
+When the FEATURE/SUBFEATURE COVERAGE BLUEPRINT is present, it is the case-coverage contract:
+- Generate one focused test case for each testable subfeature unless the user explicitly requested fewer cases; if fewer were requested, choose the highest-risk subfeatures first and state the omitted units in the descriptions/tags.
+- Generate separate @e2e test cases for the E2E flows listed by E2EFlowAgent. Do not merge E2E flows into single-feature cases.
+- Case titles must make the covered unit obvious: use "Feature - Subfeature ..." for feature cases and "E2E - Flow ..." for cross-application flows.
+- Each feature case's steps must stay inside that feature/subfeature and test its concrete actions, rules, states, and edge paths.
+- Do not collapse multiple unrelated subfeatures into a broad "validate page" case.
 
 Use the inspection result as the source of truth for reachable pages, post-login state, visible navigation, forms, tables, list-like regions, and assertion targets. Do not invent unrelated admin pages or menu names. If the inspector reached the requested goal, at least one @bvt test case must cover that exact inspected end-to-end path, including any login and navigation actions recorded in actionsTaken. If the inspector was partial or blocked, generate cases for the reachable context and include clear preconditions/steps that show what needs to be verified next.
 
@@ -885,7 +992,14 @@ Each test case must include automation tags in @ format, for example @bvt, @sani
   // inspector saw on the live page. If they don't (and the page WAS readable), the
   // cases were written from the prompt alone — flag it honestly so the run isn't sold
   // as grounded coverage.
-  const groundingVerdict = assessCasesGrounding(generated, run.inspection_context);
+  const liveGroundingVerdict = assessCasesGrounding(generated, run.inspection_context);
+  const inventoryGroundingVerdict = assessCasesInventoryGrounding(generated, run.feature_inventory);
+  const groundingVerdict = inventoryGroundingVerdict?.ok
+    ? {
+        ok: true,
+        reason: `${liveGroundingVerdict.reason} Source blueprint grounding: ${inventoryGroundingVerdict.reason}`,
+      }
+    : liveGroundingVerdict;
   (run as any).cases_grounding = groundingVerdict;
   pushPhase(run, {
     agent: 'TestGenerationAgent',
@@ -966,6 +1080,9 @@ Do NOT write comments such as "Auth is expected to be handled by global setup". 
   const coderUnderstanding = run.feature_understanding
     ? `\nSOURCE-GROUNDED UNDERSTANDING (from the app's real code — use it to assert the right business rules and pick meaningful selectors, but only assert what the inspection context confirms is on screen):\n${summarizeUnderstanding(run.feature_understanding, 2500)}\n`
     : '';
+  const coderFeatureInventory = run.feature_inventory
+    ? `\nFEATURE/SUBFEATURE + E2E COVERAGE BLUEPRINT (keep generated scripts aligned to these reviewed case units):\n${summarizeFeatureInventory(run.feature_inventory, 5000)}\n`
+    : '';
   // CRITICAL FIX (Strike 3): ground the coder on the SAME understanding the case writer
   // used. Previously this prompt printed raw run.approvedUnderstanding, so on the common
   // path where approvedUnderstanding is empty the coder saw "not provided" while the case
@@ -981,7 +1098,7 @@ Do NOT write comments such as "Auth is expected to be handled by global setup". 
 Approved user-reviewed understanding: ${reviewedUnderstanding || 'not provided'}.
 ${credentialContext}
 ${loginScriptBlock}
-${selectedQaContextText}${coderUnderstanding}
+${selectedQaContextText}${coderUnderstanding}${coderFeatureInventory}
 Use this browser inspection context as the source of truth for reachable pages, visible labels, forms, navigation actions, tables/lists, buttons, links and final URL: ${JSON.stringify(compactInspectionContext(inspectionContext))}.
 SETUP — NAVIGATE THEN LOG IN IF NEEDED: the MANDATORY FIRST LINES of every test body are (use this EXACT absolute URL — NOT '/', which resolves to the wrong path):
   await page.goto('${targetUrl || '/'}');
@@ -1787,6 +1904,7 @@ export function registerAgentRoutes(app: Express) {
       review_started_at: null as string | null,
       paused_ms: 0,
       feature_understanding: null as any,
+      feature_inventory: null as any,
       requested_case_count: 0,
       selected_qa_prompt_text: '',
       scope_context_text: '',
@@ -1853,8 +1971,14 @@ export function registerAgentRoutes(app: Express) {
       const understandTask = (async () => {
         const cached = getCached(understandingCache, cacheKey);
         if (cached) {
-          pushPhase(newRun, { agent: 'CodeAnalyst', status: 'completed', output: { ...cached, cached: true, searchedFiles: [] } });
-          return cached;
+          const cachedUnderstanding = cached?.understanding || cached;
+          const cachedInventory = cached?.featureInventory || null;
+          pushPhase(newRun, { agent: 'CodeAnalyst', status: 'completed', output: { ...cachedUnderstanding, cached: true, searchedFiles: [] } });
+          if (cachedInventory) {
+            pushPhase(newRun, { agent: 'FeatureDiscoveryAgent', status: 'completed', output: { summary: cachedInventory.summary || '', features: (cachedInventory.features || []).length, cached: true } });
+            pushPhase(newRun, { agent: 'E2EFlowAgent', status: 'completed', output: { flows: (cachedInventory.e2eFlows || []).length, cached: true } });
+          }
+          return { understanding: cachedUnderstanding, featureInventory: cachedInventory };
         }
         try {
           // Research the SELECTED project's repo — dynamic per app, no hardcoded path.
@@ -1864,22 +1988,62 @@ export function registerAgentRoutes(app: Express) {
           // raw request-body approvedUnderstanding, so all three workers share one grounding.
           const analystUnderstanding = resolveUnderstanding(newRun);
           const analysis = await analyzeFeatureFromSource(`${scopeContextText} ${prompt || ''} ${analystUnderstanding}`.trim(), { workspaceId: newRun.ownerId || 'default', userId: newRun.ownerId, repoPath });
-          setCached(understandingCache, cacheKey, analysis.understanding);
           const rawUnderstanding = (analysis.understanding || {}) as any;
           const { sourceFiles: _sourceFiles, files: _files, searchedFiles: _searchedFiles, ...visibleUnderstanding } = rawUnderstanding;
           pushPhase(newRun, { agent: 'CodeAnalyst', status: 'completed', output: visibleUnderstanding });
-          return analysis.understanding;
+          let featureInventory: any = null;
+          if (wantsFeatureInventory(prompt || '', analystUnderstanding || approvedUnderstanding || '')) {
+            const inventoryKey = featureCacheKey(targetUrl, `feature-inventory ${scopeContextText} ${prompt || ''} ${analystUnderstanding}`.trim());
+            const cachedInventory = getCached(featureInventoryCache, inventoryKey);
+            if (cachedInventory) {
+              featureInventory = cachedInventory;
+              pushPhase(newRun, { agent: 'FeatureDiscoveryAgent', status: 'completed', output: { summary: featureInventory.summary || '', features: (featureInventory.features || []).length, cached: true } });
+              pushPhase(newRun, { agent: 'E2EFlowAgent', status: 'completed', output: { flows: (featureInventory.e2eFlows || []).length, cached: true } });
+            } else {
+              pushPhase(newRun, { agent: 'FeatureDiscoveryAgent', status: 'running' });
+              pushPhase(newRun, { agent: 'E2EFlowAgent', status: 'running' });
+              try {
+                const inventoryResult = await discoverFeatureInventoryFromSource(`${scopeContextText} ${prompt || ''} ${analystUnderstanding}`.trim(), { workspaceId: newRun.ownerId || 'default', userId: newRun.ownerId, repoPath });
+                featureInventory = inventoryResult.inventory;
+                setCached(featureInventoryCache, inventoryKey, featureInventory);
+                pushPhase(newRun, {
+                  agent: 'FeatureDiscoveryAgent',
+                  status: 'completed',
+                  output: {
+                    summary: featureInventory.summary || '',
+                    features: (featureInventory.features || []).map((feature: any) => ({
+                      name: feature.name,
+                      subfeatures: Array.isArray(feature.subfeatures) ? feature.subfeatures.length : 0,
+                    })).slice(0, 20),
+                  },
+                });
+                pushPhase(newRun, {
+                  agent: 'E2EFlowAgent',
+                  status: 'completed',
+                  output: {
+                    flows: (featureInventory.e2eFlows || []).map((flow: any) => flow.name).slice(0, 20),
+                  },
+                });
+              } catch (inventoryErr: any) {
+                pushPhase(newRun, { agent: 'FeatureDiscoveryAgent', status: 'skipped', output: `Feature inventory unavailable: ${getAIErrorMessage(inventoryErr)}` });
+                pushPhase(newRun, { agent: 'E2EFlowAgent', status: 'skipped', output: 'Skipped because feature inventory was unavailable.' });
+              }
+            }
+          }
+          setCached(understandingCache, cacheKey, { understanding: analysis.understanding, featureInventory });
+          return { understanding: analysis.understanding, featureInventory };
         } catch (err: any) {
           pushPhase(newRun, { agent: 'CodeAnalyst', status: 'skipped', output: `Code understanding unavailable: ${getAIErrorMessage(err)}` });
-          return null;
+          return { understanding: null, featureInventory: null };
         }
       })();
 
-      const [inspectResult, featureUnderstanding] = await Promise.all([inspectTask, understandTask]);
+      const [inspectResult, sourceUnderstanding] = await Promise.all([inspectTask, understandTask]);
       const inspectionContext = inspectResult.ctx;
       newRun.inspection_context = inspectionContext;
       (newRun as any).inspection_blind = !inspectResult.ok;
-      newRun.feature_understanding = featureUnderstanding;
+      newRun.feature_understanding = sourceUnderstanding?.understanding || null;
+      newRun.feature_inventory = sourceUnderstanding?.featureInventory || null;
 
       // Auto-grow the app knowledge: feed back a compact summary of what the live
       // inspector actually saw, so the pack keeps up with features added after it was written.

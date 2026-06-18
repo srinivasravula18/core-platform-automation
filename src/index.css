@@ -94,6 +94,42 @@
     width: 100%;
     max-width: none;
   }
+
+  .resizable-columns {
+    border-collapse: collapse;
+  }
+
+  .resizable-columns th[data-resizable-column-header="true"] {
+    position: relative;
+  }
+
+  .resizable-columns th[data-resizable-column-header="true"]::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    right: -4px;
+    bottom: 0;
+    z-index: 20;
+    width: 8px;
+    cursor: col-resize;
+    border-right: 1px solid transparent;
+    background: transparent;
+  }
+
+  .resizable-columns th[data-resizable-column-header="true"]:hover::after,
+  .resizable-columns.is-column-resizing th[data-resizable-column-header="true"]::after {
+    border-right-color: color-mix(in srgb, var(--accent) 72%, transparent);
+  }
+
+  .resizable-columns :is(th, td).truncate {
+    max-width: none !important;
+  }
+
+  body.is-resizing-table-column,
+  body.is-resizing-table-column * {
+    cursor: col-resize !important;
+    user-select: none !important;
+  }
 }
 
 /* When the sidebar is collapsed, let the data/list screens use the full width

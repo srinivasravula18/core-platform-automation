@@ -43,6 +43,8 @@ import {
 const PIPELINE: { key: string; label: string }[] = [
   { key: 'ApplicationInspector', label: 'Inspect app' },
   { key: 'CodeAnalyst', label: 'Understand code' },
+  { key: 'FeatureDiscoveryAgent', label: 'Map features' },
+  { key: 'E2EFlowAgent', label: 'Map E2E flows' },
   { key: 'CoverageScout', label: 'Find existing' },
   { key: 'TestGenerationAgent', label: 'Write cases' },
   { key: 'PlaywrightAgent', label: 'Generate scripts' },

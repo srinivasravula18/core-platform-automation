@@ -41,6 +41,41 @@ const featureAnalystSchema = z.object({
   })).default([]),
 });
 
+const featureInventorySchema = z.object({
+  appName: z.string().default('Application'),
+  summary: z.string().default(''),
+  features: z.array(z.object({
+    name: z.string().default('Feature'),
+    surface: z.string().default('Application'),
+    description: z.string().default(''),
+    sourceFiles: z.array(z.object({ path: z.string(), why: z.string().default('') })).default([]),
+    subfeatures: z.array(z.object({
+      name: z.string().default('Subfeature'),
+      description: z.string().default(''),
+      businessRules: z.array(z.string()).default([]),
+      userActions: z.array(z.string()).default([]),
+      testIdeas: z.array(z.string()).default([]),
+      priority: z.string().default('Medium'),
+      tags: z.array(z.string()).default([]),
+    })).default([]),
+  })).default([]),
+  e2eFlows: z.array(z.object({
+    name: z.string().default('End-to-end flow'),
+    description: z.string().default(''),
+    entryPoint: z.string().default(''),
+    coveredFeatures: z.array(z.string()).default([]),
+    userJourney: z.array(z.string()).default([]),
+    businessRules: z.array(z.string()).default([]),
+    sourceFiles: z.array(z.object({ path: z.string(), why: z.string().default('') })).default([]),
+    priority: z.string().default('High'),
+    tags: z.array(z.string()).default([]),
+  })).default([]),
+});
+
+const e2eFlowSchema = z.object({
+  e2eFlows: featureInventorySchema.shape.e2eFlows,
+});
+
 const reconcileSchema = z.object({
   // Tolerant: the model (esp. codex) sometimes omits coverage fields. Defaulting them
   // keeps the run alive instead of failing the whole "Write cases" stage on a missing
@@ -62,6 +97,7 @@ const reconcileSchema = z.object({
 });
 
 export type FeatureUnderstanding = z.infer<typeof featureAnalystSchema>;
+export type FeatureInventory = z.infer<typeof featureInventorySchema>;
 export type Reconciliation = z.infer<typeof reconcileSchema>;
 
 /* ---------- keyword derivation ---------- */
@@ -108,6 +144,20 @@ const SYNONYMS: Record<string, string[]> = {
   buttons: ['button'],
 };
 
+const FULL_APP_DISCOVERY_TERMS = [
+  'route', 'routes', 'router', 'navigation', 'menu', 'page', 'pages',
+  'screen', 'screens', 'feature', 'features', 'workflow', 'workflows',
+  'form', 'forms', 'table', 'tables', 'list', 'grid', 'create', 'edit',
+  'update', 'delete', 'bulk', 'search', 'filter', 'sort', 'export',
+  'import', 'settings', 'dashboard', 'auth', 'login', 'permission',
+  'validation', 'empty state', 'error state',
+];
+
+function isBroadDiscoveryQuery(query: string): boolean {
+  const text = String(query || '').toLowerCase();
+  return /\b(all|every|entire|whole|across|application|app|features?|sub[-\s]?features?|modules?|screens?|pages?|workflows?|journeys?|end\s*to\s*end|e2e|coverage|test\s*areas?|each\s+feature)\b/.test(text);
+}
+
 function deriveKeywords(query: string): string[] {
   const tokens = (String(query || '').toLowerCase().match(/[a-z0-9-]+/g) || ([] as string[])).filter((t) => t.length >= 3);
   const meaningful = tokens.filter((t) => !STOP.has(t));
@@ -118,6 +168,14 @@ function deriveKeywords(query: string): string[] {
     for (const s of SYNONYMS[t] || []) set.add(s);
   }
   return Array.from(set).slice(0, 12);
+}
+
+function deriveInventoryKeywords(query: string): string[] {
+  const set = new Set(deriveKeywords(query));
+  if (isBroadDiscoveryQuery(query) || set.size === 0) {
+    FULL_APP_DISCOVERY_TERMS.forEach((term) => set.add(term));
+  }
+  return Array.from(set).slice(0, 42);
 }
 
 /* ---------- source gathering ---------- */
@@ -140,8 +198,12 @@ function harvestReferenceTerms(content: string): string[] {
 // identifiers used by the strongest files (so referenced modules are pulled in), then read
 // the RELEVANT files (count is dynamic — scales to how much relevant code exists, no fixed N).
 // The searching is fast native grep; the one model call is the analyst.
-function gatherSourceExcerpts(keywords: string[], repoPath?: string): { files: Array<{ path: string; area: string; surface: string }>; excerpts: string } {
-  const hits = gitGrep(keywords, undefined, undefined, repoPath);
+function gatherSourceExcerpts(
+  keywords: string[],
+  repoPath?: string,
+  opts: { maxFiles?: number; maxBytesPerFile?: number } = {},
+): { files: Array<{ path: string; area: string; surface: string }>; excerpts: string } {
+  const hits = gitGrep(keywords, undefined, opts.maxFiles, repoPath);
   const byPath = new Map(hits.map((h) => [h.path, h]));
 
   // Round 2 — follow references found in the strongest (most relevant) files.
@@ -156,7 +218,7 @@ function gatherSourceExcerpts(keywords: string[], repoPath?: string): { files: A
   }
   if (refTerms.size) {
     try {
-      for (const h of gitGrep(Array.from(refTerms), undefined, undefined, repoPath)) {
+      for (const h of gitGrep(Array.from(refTerms), undefined, opts.maxFiles, repoPath)) {
         if (!byPath.has(h.path)) byPath.set(h.path, h);
       }
     } catch { /* best-effort */ }
@@ -170,13 +232,32 @@ function gatherSourceExcerpts(keywords: string[], repoPath?: string): { files: A
   for (const f of files) {
     let content = '';
     try {
-      content = readRepoFile(f.path, 4500, repoPath);
+      content = readRepoFile(f.path, opts.maxBytesPerFile || 4500, repoPath);
     } catch {
       content = '';
     }
     if (content.trim()) parts.push(`FILE: ${f.path}  [area: ${f.area}]\n${content}`);
   }
   return { files, excerpts: parts.join('\n\n---\n\n') };
+}
+
+function summarizeFeatureInventoryForPrompt(inventory: FeatureInventory): string {
+  const lines: string[] = [];
+  if (inventory.appName) lines.push(`Application: ${inventory.appName}`);
+  if (inventory.summary) lines.push(`Summary: ${inventory.summary}`);
+  for (const feature of (inventory.features || []).slice(0, 30)) {
+    lines.push(`Feature: ${feature.name} [${feature.surface || 'Application'}] - ${feature.description || ''}`.trim());
+    for (const sub of (feature.subfeatures || []).slice(0, 12)) {
+      lines.push(`  Subfeature: ${sub.name} | priority=${sub.priority || 'Medium'} | actions=${(sub.userActions || []).join('; ')} | rules=${(sub.businessRules || []).join('; ')} | testIdeas=${(sub.testIdeas || []).join('; ')}`);
+    }
+  }
+  if (inventory.e2eFlows?.length) {
+    lines.push('End-to-end flows:');
+    for (const flow of inventory.e2eFlows.slice(0, 20)) {
+      lines.push(`  E2E: ${flow.name} | priority=${flow.priority || 'High'} | features=${(flow.coveredFeatures || []).join(' > ')} | journey=${(flow.userJourney || []).join(' -> ')}`);
+    }
+  }
+  return lines.join('\n').slice(0, 12000);
 }
 
 /* ---------- reusable feature understanding (git-agent deep read) ---------- */
@@ -260,6 +341,115 @@ INFER the application's architecture from the research notes and excerpts above 
     candidateScenarios: [],
   };
   return { understanding, files, keywords };
+}
+
+/**
+ * Build a source-grounded feature map for broad QA requests. This is deliberately
+ * separate from analyzeFeatureFromSource(): the analyst above explains one
+ * requested feature, while this inventory decomposes an application into testable
+ * feature/subfeature units plus end-to-end user journeys.
+ */
+export async function discoverFeatureInventoryFromSource(
+  query: string,
+  opts: { workspaceId?: string; userId?: string; repoPath?: string } = {},
+): Promise<{ inventory: FeatureInventory; files: Array<{ path: string; area: string; surface: string }>; keywords: string[] }> {
+  const cleanQuery = String(query || '').trim() || 'Discover all testable features, subfeatures, and end-to-end flows in this application.';
+  const keywords = deriveInventoryKeywords(cleanQuery);
+  const repoPath = opts.repoPath;
+  const { files, excerpts } = gatherSourceExcerpts(keywords, repoPath, { maxFiles: 80, maxBytesPerFile: 2800 });
+
+  let researchNotes = '';
+  try {
+    researchNotes = await deepParallelResearch({
+      question: `${cleanQuery}
+
+Discover feature-level, subfeature-level, and end-to-end QA coverage across the selected application. Split the app by user-visible capabilities and backend-enforced rules. Do not stop at top-level pages.`,
+      io: {
+        search: async (terms) => {
+          const merged = Array.from(new Set([...keywords, ...(terms || [])])).slice(0, 48);
+          return relevantSourcePaths(gitGrep(merged, undefined, 90, repoPath).map((h) => h.path), merged);
+        },
+        read: async (p, b) => readRepoFile(p, b, repoPath),
+      },
+      orchestratorAgent: 'featureDiscoveryAgent',
+      workspaceId: opts.workspaceId,
+      userId: opts.userId,
+      maxFacets: 8,
+      bytesPerFile: 3000,
+    });
+  } catch {
+    researchNotes = '';
+  }
+
+  const groundingBlock = researchNotes
+    ? `PARALLEL SOURCE RESEARCH NOTES (primary grounding):\n${researchNotes}\n\nSupporting raw source excerpts:\n${excerpts || '(none)'}`
+    : `Raw source excerpts from broad feature discovery searches:\n${excerpts || '(no matching source found; return empty feature arrays rather than inventing)'}`;
+
+  const featureAgent = await getOrchestrator('featureDiscoveryAgent', opts);
+  const featureRes = await featureAgent.generateObject<FeatureInventory>({
+    prompt: `You are FeatureDiscoveryAgent. Build a granular QA feature inventory from the target application's REAL source.
+
+User request:
+${cleanQuery}
+
+Search keywords:
+${keywords.join(', ')}
+
+${groundingBlock}
+
+Return strict JSON matching the schema.
+
+Rules:
+- Do NOT return only top-level pages/modules. Decompose into feature -> subfeatures.
+- A subfeature is testable as its own case: a user action, validation, permission rule, data state, table behavior, or branch.
+- Capture backend-enforced business rules and frontend-visible actions under the matching subfeature.
+- Prefer one subfeature per user-visible capability or code-enforced branch: create/edit/delete, filters/search, import/export, validation failures, permissions, empty/error states, async/background behavior, etc.
+- Use sourceFiles with real repo-relative paths from the evidence only.
+- Keep unrelated framework plumbing out unless it changes user-visible or API behavior.
+- Leave e2eFlows empty in this response; E2EFlowAgent fills them next.`,
+    schema: featureInventorySchema,
+    userMessage: cleanQuery,
+    hasHistory: true,
+  });
+  if ((featureRes as any).shortCircuit) throw new Error(String((featureRes as any).shortCircuit));
+
+  const inventory: FeatureInventory = (featureRes as any).object || {
+    appName: 'Application',
+    summary: '',
+    features: [],
+    e2eFlows: [],
+  };
+
+  const e2eAgent = await getOrchestrator('e2eFlowAgent', opts);
+  const e2eRes = await e2eAgent.generateObject<z.infer<typeof e2eFlowSchema>>({
+    prompt: `You are E2EFlowAgent. Identify end-to-end user journeys across the application from source-grounded evidence and the feature inventory.
+
+User request:
+${cleanQuery}
+
+FEATURE INVENTORY FROM FEATUREDISCOVERYAGENT:
+${summarizeFeatureInventoryForPrompt(inventory)}
+
+SOURCE GROUNDING:
+${groundingBlock}
+
+Return strict JSON matching the schema.
+
+Rules:
+- An E2E flow must cross multiple features, screens, APIs, roles, or persisted states.
+- Do not duplicate single subfeature cases; those are handled by FeatureDiscoveryAgent.
+- Each userJourney step must be concrete and ordered enough for a test case.
+- coveredFeatures must reference feature/subfeature names from the inventory where possible.
+- Include business rules and sourceFiles that justify the flow.
+- If the evidence does not establish any cross-feature journey, return an empty e2eFlows array.`,
+    schema: e2eFlowSchema,
+    userMessage: cleanQuery,
+    hasHistory: true,
+  });
+  if ((e2eRes as any).shortCircuit) throw new Error(String((e2eRes as any).shortCircuit));
+
+  inventory.e2eFlows = (e2eRes as any).object?.e2eFlows || [];
+  return { inventory, files, keywords };
 }
 
 /**

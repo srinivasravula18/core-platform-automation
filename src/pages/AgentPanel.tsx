@@ -48,7 +48,7 @@ export default function AgentPanel() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [isReworkingCase, setIsReworkingCase] = useState(false);
   const [activeTab, setActiveTab] = useState<'cases' | 'code' | 'evidence' | 'workflows'>('cases');
-  const [testCaseCount, setTestCaseCount] = useState(3);
+  const [testCaseCount, setTestCaseCount] = useState(0);
   const [flowMode, setFlowMode] = useState<'review_cases' | 'complete'>('review_cases');
   const [editingCaseIndex, setEditingCaseIndex] = useState<number | null>(null);
   const [caseFeedback, setCaseFeedback] = useState('');
@@ -329,15 +329,15 @@ export default function AgentPanel() {
       {(isGenerating || runData) && (
         <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-card)] p-4 shadow-sm">
           <div className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">Agent Pipeline</div>
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-[1fr_auto_1fr_auto_1fr_auto_1fr] sm:items-center">
-            {['ApplicationInspector', 'TestGenerationAgent', 'PlaywrightAgent', 'EvidenceAgent'].map((agent, index, agents) => (
+          <div className="flex flex-wrap items-center gap-3">
+            {['ApplicationInspector', 'CodeAnalyst', 'FeatureDiscoveryAgent', 'E2EFlowAgent', 'CoverageScout', 'TestGenerationAgent', 'PlaywrightAgent', 'EvidenceAgent'].map((agent, index, agents) => (
               <div key={agent} className="contents">
-                <div className="flex items-center gap-3 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2">
+                <div className="flex min-w-[10rem] items-center gap-3 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2">
                   {getAgentStatusIcon(agent)}
                   <span className="text-xs font-medium text-[var(--text-primary)]">{agent}</span>
                 </div>
                 {index < agents.length - 1 && (
-                  <div className="hidden h-px w-8 bg-[var(--border)] sm:block" />
+                  <div className="hidden h-px w-5 bg-[var(--border)] sm:block" />
                 )}
               </div>
             ))}
@@ -370,7 +370,7 @@ export default function AgentPanel() {
               <div>
                 <span>Test cases</span>
                 <div className="mt-1 flex rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] overflow-hidden">
-                  {[3, 5, 8].map((count) => (
+                  {[0, 3, 5, 8].map((count) => (
                     <button
                       key={count}
                       type="button"
@@ -381,7 +381,7 @@ export default function AgentPanel() {
                         testCaseCount === count ? "bg-[var(--accent)] text-white" : "text-[var(--text-muted)] hover:text-[var(--text-primary)]"
                       )}
                     >
-                      {count}
+                      {count === 0 ? 'Auto' : count}
                     </button>
                   ))}
                 </div>

@@ -73,6 +73,9 @@ const AGENT_LABELS: Record<string, { label: string; description: string }> = {
   playwrightCoder: { label: 'Playwright Coder', description: 'Generates Playwright TypeScript scripts.' },
   appInspector: { label: 'Application Inspector', description: 'Drives a headless browser to inspect a flow.' },
   defectTriage: { label: 'Defect & Report Analyst', description: 'Triages defects and writes report narratives.' },
+  featureAnalyst: { label: 'Feature Analyst', description: 'Analyzes one source-grounded feature and its business rules.' },
+  featureDiscoveryAgent: { label: 'Feature Discovery', description: 'Maps source-grounded features and subfeatures across the app.' },
+  e2eFlowAgent: { label: 'E2E Flow Mapper', description: 'Finds cross-feature source-grounded end-to-end journeys.' },
 };
 
 export default function Settings() {

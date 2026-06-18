@@ -9,6 +9,7 @@ import { useProjects } from '@/src/store/project';
 import { AuthGate, logout, getUsername } from '@/src/components/AuthGate';
 import { appBasePath } from '@/src/lib/base-path';
 import { DialogHost } from '@/src/lib/dialog';
+import { useResizableTables } from '@/src/lib/useResizableTables';
 
 import AgentConsole from '@/src/pages/AgentConsole';
 import AgentPanel from '@/src/pages/AgentPanel';
@@ -288,6 +289,8 @@ function Shell({ children }: { children: React.ReactNode }) {
   // When the selected project/app changes, remount the page subtree so every page
   // re-fetches its data with the new scope (pages fetch on mount).
   const scopeKey = useProjects((s) => `${s.selectedProjectId ?? ''}:${s.selectedAppId ?? ''}`);
+
+  useResizableTables();
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
