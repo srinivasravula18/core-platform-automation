@@ -64,6 +64,11 @@ function sanitizeCasePayload(payload: any, fallback: any = {}) {
   };
 }
 
+function uniqueStrings(values: any) {
+  if (!Array.isArray(values)) return [];
+  return Array.from(new Set(values.map((value) => String(value || '').trim()).filter(Boolean)));
+}
+
 export function registerResourceRoutes(app: Express) {
   /* ---------- read endpoints (PG-backed, scoped to the selected project/app) ---------- */
   app.get('/api/plans', async (req, res) => res.json(scopeFilter(await Plans.list(), reqScope(req))));
@@ -426,6 +431,133 @@ Rules:
     } catch (error: any) {
       res.status(500).json({ error: getAIErrorMessage(error) || error?.message || 'Failed to apply AI case action.' });
     }
+  });
+
+  /* ---------- POST /api/runs/from-selection ---------- */
+  app.post('/api/runs/from-selection', async (req, res) => {
+    const scope = reqScope(req);
+    const selectedPlanIds = uniqueStrings(req.body?.planIds);
+    const selectedSuiteIds = uniqueStrings(req.body?.suiteIds);
+    const selectedCaseIds = uniqueStrings(req.body?.caseIds);
+
+    if (!selectedPlanIds.length && !selectedSuiteIds.length && !selectedCaseIds.length) {
+      return res.status(400).json({ error: 'Select at least one plan, suite, or case to run.' });
+    }
+
+    const [allPlans, allSuites, allCases] = await Promise.all([
+      Plans.list(),
+      Suites.list(),
+      Cases.list(),
+    ]);
+    const plans = scopeFilter(allPlans, scope);
+    const suites = scopeFilter(allSuites, scope);
+    const cases = scopeFilter(allCases, scope);
+
+    const planIds = new Set(selectedPlanIds.filter((id) => plans.some((plan: any) => plan.id === id)));
+    const suiteIds = new Set(selectedSuiteIds.filter((id) => suites.some((suite: any) => suite.id === id)));
+
+    suites.forEach((suite: any) => {
+      if (planIds.has(suite.testPlanId)) suiteIds.add(suite.id);
+    });
+
+    let addedDescendant = true;
+    while (addedDescendant) {
+      addedDescendant = false;
+      suites.forEach((suite: any) => {
+        if (suiteIds.has(suite.parentSuite) && !suiteIds.has(suite.id)) {
+          suiteIds.add(suite.id);
+          addedDescendant = true;
+        }
+      });
+    }
+
+    const caseIds = new Set(selectedCaseIds.filter((id) => cases.some((testCase: any) => testCase.id === id)));
+    cases.forEach((testCase: any) => {
+      if (planIds.has(testCase.testPlanId) || suiteIds.has(testCase.testSuiteId)) {
+        caseIds.add(testCase.id);
+      }
+    });
+
+    const selectedCases = cases.filter((testCase: any) => caseIds.has(testCase.id));
+    if (!selectedCases.length) {
+      return res.status(400).json({ error: 'No test cases are linked to the selected item(s).' });
+    }
+
+    const runId = `RUN-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
+    const targetUrl = normalizeTargetUrl(req.body?.targetUrl || findSettingsPlaywrightTargetUrl() || '');
+    const selectedPlans = plans.filter((plan: any) => planIds.has(plan.id));
+    const selectedSuites = suites.filter((suite: any) => suiteIds.has(suite.id));
+    const folderId = selectedCases.find((testCase: any) => testCase.folderId)?.folderId
+      || selectedSuites.find((suite: any) => suite.folderId)?.folderId
+      || selectedPlans.find((plan: any) => plan.folderId)?.folderId
+      || '';
+
+    const steps = selectedCases.flatMap((testCase: any) => {
+      const caseSteps = normalizeCaseSteps(testCase.steps);
+      const shouldCaptureCaseEvidence = Boolean(testCase.captureEvidenceOnManualRun !== false && targetUrl);
+      if (!caseSteps.length) {
+        return [{
+          step: `${testCase.id}`,
+          action: `Review test case: ${testCase.title || testCase.id}`,
+          expected: 'Test case can be executed and evaluated.',
+          outcome: 'Pass',
+          reason: '',
+          screenshot: shouldCaptureCaseEvidence ? targetUrl : '',
+          testCaseId: testCase.id,
+          testCaseTitle: testCase.title,
+        }];
+      }
+      return caseSteps.map((step, index) => ({
+        step: `${testCase.id}.${index + 1}`,
+        action: step.action,
+        expected: step.expected,
+        outcome: 'Pass',
+        reason: '',
+        screenshot: shouldCaptureCaseEvidence ? targetUrl : '',
+        testCaseId: testCase.id,
+        testCaseTitle: testCase.title,
+      }));
+    });
+    const passed = steps.filter((step: any) => step.outcome === 'Pass').length;
+    const failed = steps.filter((step: any) => step.outcome === 'Fail').length;
+    const name = req.body?.name || (
+      selectedCases.length === 1
+        ? `Run: ${selectedCases[0].title || selectedCases[0].id}`
+        : `Selected run: ${selectedCases.length} cases`
+    );
+    const suiteName = selectedSuites.length === 1
+      ? selectedSuites[0].name
+      : selectedPlans.length === 1
+        ? selectedPlans[0].name
+        : 'Selected Test Repository';
+
+    const newRun = {
+      ...scopeStamp(scope),
+      id: runId,
+      name,
+      suiteName,
+      requestedBy: req.body?.requestedBy || '',
+      executionTime: req.body?.executionTime || '',
+      status: 'Completed',
+      progress: `${passed} passed`,
+      date: new Date().toISOString().split('T')[0],
+      totalExecutions: steps.length,
+      passed,
+      failed,
+      targetUrl,
+      folderId,
+      testCaseId: selectedCases.length === 1 ? selectedCases[0].id : '',
+      testCaseTitle: selectedCases.length === 1 ? selectedCases[0].title || '' : '',
+      caseIds: selectedCases.map((testCase: any) => testCase.id),
+      suiteIds: Array.from(suiteIds),
+      planIds: Array.from(planIds),
+      captureEvidence: Boolean(targetUrl),
+      steps,
+    };
+    await Runs.upsert(newRun);
+    if (!isPgEnabled()) persistDataInBackground('selection run');
+    addActivity(`Started selected run: ${name}`);
+    res.json({ success: true, run: newRun });
   });
 
   /* ---------- POST /api/runs ---------- */

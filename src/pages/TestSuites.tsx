@@ -1,8 +1,10 @@
 import { Fragment, useEffect, useState } from 'react';
-import { ChevronDown, ChevronRight, Search, Filter, MoreHorizontal, Plus, Sparkles, Trash2 } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import { ChevronDown, ChevronRight, Search, Filter, MoreHorizontal, Plus, Sparkles, Trash2, PlayCircle, Loader2 } from 'lucide-react';
 import ExportMenu from '../components/ExportMenu';
 import { useAiSearch } from '@/src/lib/useAiSearch';
 import { useBulkDelete } from '@/src/lib/useBulkDelete';
+import { startSelectedRun } from '@/src/lib/startSelectedRun';
 import { cn } from '@/src/lib/utils';
 import { Modal } from '@/src/components/Modal';
 import { AIActionModal } from '@/src/components/AIActionModal';
@@ -10,6 +12,7 @@ import { FolderSelect } from '@/src/components/FolderSelect';
 import { showAlert, showConfirm } from '@/src/lib/dialog';
 
 export default function TestSuites() {
+  const navigate = useNavigate();
   const [suites, setSuites] = useState<any[]>([]);
   const [plans, setPlans] = useState<any[]>([]);
   const [cases, setCases] = useState<any[]>([]);
@@ -22,6 +25,7 @@ export default function TestSuites() {
   const [isFilterOpen, setIsFilterOpen] = useState(false);
   const [isSuiteModalOpen, setIsSuiteModalOpen] = useState(false);
   const [isAISuiteModalOpen, setIsAISuiteModalOpen] = useState(false);
+  const [isStartingRun, setIsStartingRun] = useState(false);
   const [formData, setFormData] = useState({ name: '', description: '', testPlanId: '', parentSuite: '', module: '', owner: '', tags: '', priority: 'Medium', status: 'Active', folderId: '' });
 
   const [selectedSuiteId, setSelectedSuiteId] = useState<string | null>(null);
@@ -35,6 +39,7 @@ export default function TestSuites() {
   };
 
   const bulk = useBulkDelete('suites', fetchSuites, 'suite');
+  const selectedSuiteIds = Array.from(bulk.selectedIds).map(String);
 
   const fetchPlans = () => {
     fetch('/api/plans')
@@ -158,6 +163,19 @@ export default function TestSuites() {
     }
     fetchSuites();
     fetchCases();
+  };
+
+  const runSelectedSuites = async (suiteIds = selectedSuiteIds) => {
+    if (!suiteIds.length || isStartingRun) return;
+    setIsStartingRun(true);
+    try {
+      await startSelectedRun({ suiteIds }, navigate);
+      bulk.clearSelection();
+    } catch (error: any) {
+      void showAlert(error.message || 'Failed to start selected test suite run.');
+    } finally {
+      setIsStartingRun(false);
+    }
   };
 
   const toggleSuiteExpanded = (suiteId: string) => {
@@ -348,9 +366,14 @@ export default function TestSuites() {
             )}
           </div>
           {bulk.selectedCount > 0 && (
-            <button onClick={bulk.deleteSelected} disabled={bulk.busy} className="ml-auto flex items-center gap-1.5 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
-              <Trash2 className="w-4 h-4" /> Delete selected ({bulk.selectedCount})
-            </button>
+            <div className="ml-auto flex items-center gap-2">
+              <button onClick={() => runSelectedSuites()} disabled={isStartingRun} className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
+                {isStartingRun ? <Loader2 className="w-4 h-4 animate-spin" /> : <PlayCircle className="w-4 h-4" />} Run selected ({bulk.selectedCount})
+              </button>
+              <button onClick={bulk.deleteSelected} disabled={bulk.busy} className="flex items-center gap-1.5 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
+                <Trash2 className="w-4 h-4" /> Delete selected ({bulk.selectedCount})
+              </button>
+            </div>
           )}
         </div>
 
@@ -463,6 +486,17 @@ export default function TestSuites() {
                       </td>
                       <td className="py-3 px-4 text-right">
                         <div className="flex items-center justify-end gap-1">
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              runSelectedSuites([suite.id]);
+                            }}
+                            disabled={isStartingRun}
+                            title="Run test suite"
+                            className="p-1 rounded hover:bg-emerald-500/10 text-[var(--text-muted)] hover:text-emerald-400 disabled:opacity-50 transition-colors"
+                          >
+                            <PlayCircle className="w-4 h-4" />
+                          </button>
                           <button
                             onClick={(e) => {
                               e.stopPropagation();

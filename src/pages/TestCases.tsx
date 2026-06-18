@@ -1,9 +1,10 @@
 import { useEffect, useState, useRef } from 'react';
-import { useSearchParams } from 'react-router-dom';
-import { Search, Filter, MoreHorizontal, Plus, Sparkles, Loader2, Trash2 } from 'lucide-react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
+import { Search, Filter, MoreHorizontal, Plus, Sparkles, Loader2, Trash2, PlayCircle } from 'lucide-react';
 import ExportMenu from '../components/ExportMenu';
 import { useAiSearch } from '@/src/lib/useAiSearch';
 import { useBulkDelete } from '@/src/lib/useBulkDelete';
+import { startSelectedRun } from '@/src/lib/startSelectedRun';
 import { Modal } from '@/src/components/Modal';
 import { AIActionModal } from '@/src/components/AIActionModal';
 import { FolderSelect } from '@/src/components/FolderSelect';
@@ -12,6 +13,7 @@ import { showAlert, showConfirm } from '@/src/lib/dialog';
 const CASE_STATUSES = ['Draft', 'Under Review', 'Approved', 'Automated', 'Deprecated'];
 
 export default function TestCases() {
+  const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const [cases, setCases] = useState<any[]>([]);
   const [plans, setPlans] = useState<any[]>([]);
@@ -27,6 +29,7 @@ export default function TestCases() {
   const [caseAIInstruction, setCaseAIInstruction] = useState('');
   const [isCaseAIWorking, setIsCaseAIWorking] = useState(false);
   const [caseAIMessage, setCaseAIMessage] = useState('');
+  const [isStartingRun, setIsStartingRun] = useState(false);
   const emptyStep = { action: '', expected: '' };
   const [formData, setFormData] = useState({ title: '', description: '', testPlanId: '', testSuiteId: '', createdBy: 'Admin', tags: '', type: 'Manual', priority: 'Medium', status: 'Draft', folderId: '', captureEvidenceOnManualRun: true, steps: [emptyStep] });
   const inlineSelectClass = "w-full min-w-[140px] rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs font-medium text-[var(--text-primary)] outline-none transition-colors hover:border-[var(--accent)] focus:border-[var(--accent)]";
@@ -70,7 +73,7 @@ export default function TestCases() {
   const bulk = useBulkDelete('cases', fetchCases, 'case');
   // The always-on checkbox column drives a single selection that powers BOTH
   // bulk-delete and the AI multi-select action below.
-  const selectedCaseIds = Array.from(bulk.selectedIds);
+  const selectedCaseIds = Array.from(bulk.selectedIds).map(String);
 
   useEffect(() => {
     fetchCases();
@@ -221,6 +224,19 @@ export default function TestCases() {
       setCaseAIMessage(error.message || 'Failed to apply AI action.');
     } finally {
       setIsCaseAIWorking(false);
+    }
+  };
+
+  const runSelectedCases = async (caseIds = selectedCaseIds) => {
+    if (!caseIds.length || isStartingRun) return;
+    setIsStartingRun(true);
+    try {
+      await startSelectedRun({ caseIds }, navigate);
+      bulk.clearSelection();
+    } catch (error: any) {
+      void showAlert(error.message || 'Failed to start selected test case run.');
+    } finally {
+      setIsStartingRun(false);
     }
   };
 
@@ -486,9 +502,14 @@ export default function TestCases() {
             )}
           </div>
           {bulk.selectedCount > 0 && (
-            <button onClick={bulk.deleteSelected} disabled={bulk.busy} className="ml-auto flex items-center gap-1.5 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
-              <Trash2 className="w-4 h-4" /> Delete selected ({bulk.selectedCount})
-            </button>
+            <div className="ml-auto flex items-center gap-2">
+              <button onClick={() => runSelectedCases()} disabled={isStartingRun} className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
+                {isStartingRun ? <Loader2 className="w-4 h-4 animate-spin" /> : <PlayCircle className="w-4 h-4" />} Run selected ({bulk.selectedCount})
+              </button>
+              <button onClick={bulk.deleteSelected} disabled={bulk.busy} className="flex items-center gap-1.5 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
+                <Trash2 className="w-4 h-4" /> Delete selected ({bulk.selectedCount})
+              </button>
+            </div>
           )}
           </div>
           {selectedCaseIds.length > 0 && (
@@ -670,6 +691,17 @@ export default function TestCases() {
                     </select>
                   </td>
                   <td className="py-3 px-4 text-right flex gap-1 justify-end">
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        runSelectedCases([tc.id]);
+                      }}
+                      disabled={isStartingRun}
+                      title="Run test case"
+                      className="p-1 rounded hover:bg-emerald-500/10 text-[var(--text-muted)] hover:text-emerald-400 disabled:opacity-50 transition-colors"
+                    >
+                      <PlayCircle className="w-4 h-4" />
+                    </button>
                     <button
                       onClick={(e) => {
                         e.stopPropagation();

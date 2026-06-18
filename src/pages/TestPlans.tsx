@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, Search, Filter, MoreHorizontal, Plus, Sparkles, Trash2 } from 'lucide-react';
+import { ArrowLeft, Search, Filter, MoreHorizontal, Plus, Sparkles, Trash2, PlayCircle, Loader2 } from 'lucide-react';
 import ExportMenu from '../components/ExportMenu';
 import { useAiSearch } from '@/src/lib/useAiSearch';
 import { useBulkDelete } from '@/src/lib/useBulkDelete';
+import { startSelectedRun } from '@/src/lib/startSelectedRun';
 import { cn } from '@/src/lib/utils';
 import { Modal } from '@/src/components/Modal';
 import { AIActionModal } from '@/src/components/AIActionModal';
@@ -64,6 +65,7 @@ export default function TestPlans() {
   const [isFilterOpen, setIsFilterOpen] = useState(false);
   const [isPlanModalOpen, setIsPlanModalOpen] = useState(false);
   const [isAIPlanModalOpen, setIsAIPlanModalOpen] = useState(false);
+  const [isStartingRun, setIsStartingRun] = useState(false);
   const [formData, setFormData] = useState({ 
     name: '', scope: '', objectives: '', inScope: '', outOfScope: '', strategy: '', testTypes: '', environments: '', roles: '', entryExit: '', schedule: '', risks: '', deliverables: '', status: 'Draft', riskLevel: 'Medium', folderId: ''
   });
@@ -79,6 +81,7 @@ export default function TestPlans() {
   };
 
   const bulk = useBulkDelete('plans', fetchPlans, 'plan');
+  const selectedPlanIds = Array.from(bulk.selectedIds).map(String);
 
   const fetchPlanRelations = () => {
     Promise.all([
@@ -195,6 +198,19 @@ export default function TestPlans() {
     }
     fetchPlans();
     fetchPlanRelations();
+  };
+
+  const runSelectedPlans = async (planIds = selectedPlanIds) => {
+    if (!planIds.length || isStartingRun) return;
+    setIsStartingRun(true);
+    try {
+      await startSelectedRun({ planIds }, navigate);
+      bulk.clearSelection();
+    } catch (error: any) {
+      void showAlert(error.message || 'Failed to start selected test plan run.');
+    } finally {
+      setIsStartingRun(false);
+    }
   };
 
   const getPlanSuites = (planId: string) => suites.filter((suite) => suite.testPlanId === planId);
@@ -556,9 +572,14 @@ export default function TestPlans() {
             )}
           </div>
           {bulk.selectedCount > 0 && (
-            <button onClick={bulk.deleteSelected} disabled={bulk.busy} className="ml-auto flex items-center gap-1.5 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
-              <Trash2 className="w-4 h-4" /> Delete selected ({bulk.selectedCount})
-            </button>
+            <div className="ml-auto flex items-center gap-2">
+              <button onClick={() => runSelectedPlans()} disabled={isStartingRun} className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
+                {isStartingRun ? <Loader2 className="w-4 h-4 animate-spin" /> : <PlayCircle className="w-4 h-4" />} Run selected ({bulk.selectedCount})
+              </button>
+              <button onClick={bulk.deleteSelected} disabled={bulk.busy} className="flex items-center gap-1.5 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
+                <Trash2 className="w-4 h-4" /> Delete selected ({bulk.selectedCount})
+              </button>
+            </div>
           )}
         </div>
 
@@ -650,6 +671,17 @@ export default function TestPlans() {
                     </td>
                     <td className="py-3 px-4 text-right">
                       <div className="relative inline-flex items-center gap-1">
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            runSelectedPlans([plan.id]);
+                          }}
+                          disabled={isStartingRun}
+                          title="Run test plan"
+                          className="p-1 rounded hover:bg-emerald-500/10 text-[var(--text-muted)] hover:text-emerald-400 disabled:opacity-50 transition-colors"
+                        >
+                          <PlayCircle className="w-4 h-4" />
+                        </button>
                         <button
                           onClick={(e) => {
                             e.stopPropagation();

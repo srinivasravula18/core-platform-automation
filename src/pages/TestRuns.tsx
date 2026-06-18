@@ -111,6 +111,19 @@ export default function TestRuns() {
 
   const selectedRunCases = useMemo(() => {
     if (!selectedRun) return [];
+    if (Array.isArray(selectedRun.caseIds) && selectedRun.caseIds.length) {
+      const selectedCaseIds = new Set(selectedRun.caseIds);
+      return cases.filter((testCase) => selectedCaseIds.has(testCase.id));
+    }
+    if (Array.isArray(selectedRun.suiteIds) && selectedRun.suiteIds.length) {
+      const selectedSuiteIds = new Set(selectedRun.suiteIds);
+      return cases.filter((testCase) => selectedSuiteIds.has(testCase.testSuiteId));
+    }
+    if (Array.isArray(selectedRun.planIds) && selectedRun.planIds.length) {
+      const selectedPlanIds = new Set(selectedRun.planIds);
+      const selectedSuiteIds = new Set(suites.filter((item) => selectedPlanIds.has(item.testPlanId)).map((item) => item.id));
+      return cases.filter((testCase) => selectedPlanIds.has(testCase.testPlanId) || selectedSuiteIds.has(testCase.testSuiteId));
+    }
     const suite = suites.find((item) => item.name === selectedRun.suiteName || item.id === selectedRun.suiteId);
     const suiteCases = suite ? cases.filter((testCase) => testCase.testSuiteId === suite.id) : [];
     if (suiteCases.length) return suiteCases;
