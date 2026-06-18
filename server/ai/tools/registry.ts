@@ -11,6 +11,9 @@
 import type { AgentTool, ToolContext } from './types';
 import { Cases, Suites, Plans, Runs, Scripts, Defects, Reports, Requirements } from '../../db/repository';
 import { searchCodeInScope, readCodeFileInScope } from '../../features/projects/codeSearch';
+import { findUntestedEdges } from '../exploration/edgeFinder';
+import { analyzeFeatureCoverage, renderCoverageReport } from '../exploration/featureCoverage';
+import { expandByReferences } from '../exploration/referenceGraph';
 
 type Lister = { list: () => Promise<any[]> };
 const COLLECTIONS: Record<string, Lister> = {
@@ -117,6 +120,139 @@ export const readCodeFileTool: AgentTool = {
 };
 
 /**
+ * DRILL tool: given a code file, follow its imports (root → child → nth-child) and return the
+ * connected files it actually depends on. This is the "follow the wiring" step of an adaptive
+ * code exploration — use it after read_code_file to pull in the real modules a file uses instead
+ * of guessing which files matter. Backed by the deterministic reference-graph traversal.
+ */
+export const followImportsTool: AgentTool = {
+  spec: {
+    name: 'follow_imports',
+    description:
+      'Follow a code file\'s imports to the connected files it depends on (root → child → nth-child). Use after read_code_file to drill into the real modules a file wires together, then read the ones that implement the logic you need. Read-only.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Repo-relative file to start from (e.g. the file you just read).' },
+        depth: { type: 'integer', description: 'How many import hops to follow (default 2, max 3).' },
+      },
+      required: ['path'],
+    },
+  },
+  async execute(args, ctx: ToolContext) {
+    const path = String(args.path || '').trim();
+    if (!path) throw new Error('follow_imports requires a non-empty "path".');
+    const depth = Math.max(1, Math.min(3, Number(args.depth) || 2));
+    const nodes = await expandByReferences(
+      [path],
+      { read: async (p, b) => readCodeFileInScope(p, { projectId: ctx.projectId, appId: ctx.appId }, b) },
+      { maxDepth: depth, maxFiles: 30 },
+    );
+    return {
+      root: path,
+      connectedFileCount: nodes.length,
+      connectedFiles: nodes.map((n) => ({ path: n.path, hops: n.depth, importedBy: n.importedBy })),
+    };
+  },
+};
+
+/**
+ * EXPLORATION & DISCOVERY (book Ch 21): given a feature, deeply research the app's REAL
+ * codebase and propose UNTESTED edge cases — error states, validations, permission gaps,
+ * empty/boundary states — that are NOT already covered by existing test cases. Read-only:
+ * it proposes draft scenarios; it does not create artifacts. Backed by findUntestedEdges,
+ * which reuses the same deep code-research engine the chat answer path uses.
+ */
+export const findUntestedEdgesTool: AgentTool = {
+  spec: {
+    name: 'find_untested_edges',
+    description:
+      'Find UNTESTED edge cases for a feature: researches the real application codebase (validations, error/empty states, role/permission gaps, boundary inputs, negative paths) and returns proposed scenarios NOT already covered by existing test cases. Use when the user asks "what are we missing?", wants better coverage, or asks for edge/negative cases. Read-only — returns draft proposals, creates nothing.',
+    parameters: {
+      type: 'object',
+      properties: {
+        feature: { type: 'string', description: 'The feature/area to find untested edge cases for (e.g. a page, list view, or flow name).' },
+        maxProposals: { type: 'integer', description: 'Max proposals to return (default 12).' },
+      },
+      required: ['feature'],
+    },
+  },
+  async execute(args, ctx: ToolContext) {
+    const feature = String(args.feature || '').trim();
+    if (!feature) throw new Error('find_untested_edges requires a non-empty "feature".');
+    // Resolve the titles of cases already in scope so the explorer only proposes genuine GAPS.
+    let existingCaseTitles: string[] = [];
+    try {
+      let items = await (Cases as Lister).list();
+      items = items.filter((it) => {
+        if (ctx.userId && it?.ownerId && it.ownerId !== ctx.userId) return false;
+        if (ctx.projectId && it?.projectId && it.projectId !== ctx.projectId) return false;
+        if (ctx.appId && it?.appId && it.appId !== ctx.appId) return false;
+        return true;
+      });
+      existingCaseTitles = items.map((it: any) => String(it?.title || it?.name || '')).filter(Boolean);
+    } catch { /* best-effort: an empty list just means everything is a candidate gap */ }
+    const result = await findUntestedEdges({
+      feature,
+      existingCaseTitles,
+      workspaceId: ctx.workspaceId,
+      userId: ctx.userId,
+      projectId: ctx.projectId,
+      appId: ctx.appId,
+      maxProposals: Math.max(1, Math.min(30, Number(args.maxProposals) || 12)),
+    });
+    return { feature, proposalCount: result.proposals.length, proposals: result.proposals };
+  },
+};
+
+/**
+ * DEEP feature + sub-feature COVERAGE AUDIT (book Ch 7/11/19). Unlike the cheap token gate,
+ * this has agents lift the work: FeatureDiscoveryAgent decomposes the feature into sub-features
+ * grounded in real source (each with its business rules + user actions), then featureAnalyst
+ * audits — behavior by behavior — which are actually exercised by existing cases and which are
+ * missing. Returns a per-sub-feature coverage map + proposed cases for the gaps.
+ */
+export const analyzeFeatureCoverageTool: AgentTool = {
+  spec: {
+    name: 'analyze_feature_coverage',
+    description:
+      'DEEP coverage audit of a feature AND its sub-features: discovers the feature/sub-feature inventory from the real codebase, then checks behavior-by-behavior (every business rule and user action) whether existing test cases actually cover it, reports per-sub-feature coverage %, and proposes cases for the gaps. Use when the user asks how well a feature is covered, wants a feature/sub-feature breakdown, or asks to check coverage in depth.',
+    parameters: {
+      type: 'object',
+      properties: {
+        feature: { type: 'string', description: 'The feature/area to audit (e.g. a page, module, or flow name).' },
+        maxFeatures: { type: 'integer', description: 'Max discovered features to audit (default 6).' },
+      },
+      required: ['feature'],
+    },
+  },
+  async execute(args, ctx: ToolContext) {
+    const feature = String(args.feature || '').trim();
+    if (!feature) throw new Error('analyze_feature_coverage requires a non-empty "feature".');
+    // Pull the existing cases in scope so coverage is judged against real work.
+    let existingCases: any[] = [];
+    try {
+      let items = await (Cases as Lister).list();
+      items = items.filter((it) => {
+        if (ctx.userId && it?.ownerId && it.ownerId !== ctx.userId) return false;
+        if (ctx.projectId && it?.projectId && it.projectId !== ctx.projectId) return false;
+        if (ctx.appId && it?.appId && it.appId !== ctx.appId) return false;
+        return true;
+      });
+      existingCases = items.map((it: any) => ({ title: it?.title || it?.name, description: it?.description, tags: it?.tags, steps: it?.steps }));
+    } catch { /* no cases → everything is a gap, which the audit will report honestly */ }
+    const report = await analyzeFeatureCoverage({
+      feature,
+      existingCases,
+      workspaceId: ctx.workspaceId,
+      userId: ctx.userId,
+      maxFeatures: Math.max(1, Math.min(12, Number(args.maxFeatures) || 6)),
+    });
+    return { summary: report.summary, report: renderCoverageReport(report), features: report.features };
+  },
+};
+
+/**
  * FAST PATH: answer simple count/list questions about workspace artifacts directly
  * from the repository — NO LLM call. Returns a ready answer string, or null if the
  * message isn't a simple count/list query (then the caller falls back to the agent loop).
@@ -192,7 +328,7 @@ export async function quickWorkspaceAnswer(
 
 /** All registered tools by name. */
 export function coreTools(): AgentTool[] {
-  return [queryWorkspaceTool, searchCodebaseTool, readCodeFileTool];
+  return [queryWorkspaceTool, searchCodebaseTool, readCodeFileTool, followImportsTool, findUntestedEdgesTool, analyzeFeatureCoverageTool];
 }
 
 export function toolByName(name: string): AgentTool | undefined {

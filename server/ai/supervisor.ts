@@ -12,9 +12,10 @@
 import { getToolCapableOrchestrator, getOrchestrator } from './orchestrator';
 import { executeIntent } from './controller';
 import type { AgentTool, ToolContext, AgentStep } from './tools/types';
-import { queryWorkspaceTool, searchCodebaseTool, readCodeFileTool } from './tools/registry';
+import { queryWorkspaceTool, searchCodebaseTool, readCodeFileTool, followImportsTool, findUntestedEdgesTool, analyzeFeatureCoverageTool } from './tools/registry';
 import { readCodeFileInScope, resolveCodeSearchScope, searchCodeInScope } from '../features/projects/codeSearch';
 import { deepParallelResearch, relevantSourcePaths } from './research/deepResearch';
+import { expandByReferences } from './exploration/referenceGraph';
 
 interface IntentToolDef {
   kind: string;
@@ -63,6 +64,8 @@ Operating rules:
 - Decompose the request and call the tools needed, in order. A later step may depend on an id produced by an earlier one — read the tool results and pass real ids forward.
 - When the user refers to existing work ("those cases", "the last run", "the login suite"), FIRST call query_workspace to resolve concrete ids, then act on them. Never invent ids.
 - When unsure how a feature behaves, search_codebase for the relevant terms, then read_code_file on the most relevant matches, and base your answer on what the code actually says.
+- When the user asks what coverage is MISSING, wants edge/negative cases, or asks "what are we not testing?", call find_untested_edges with the feature — it researches the real codebase and returns gap scenarios not already covered by existing cases.
+- When the user asks HOW WELL a feature is covered, wants a feature/sub-feature breakdown, or asks to check coverage in depth, call analyze_feature_coverage — it discovers the feature's sub-features from real source and audits each behavior (business rule / user action) against existing cases, returning per-sub-feature coverage and gap proposals.
 - Do not ask for details you can obtain with query_workspace. Only ask the user (by replying with text instead of calling a tool) when a genuinely required detail is missing and unobtainable — e.g. a brand-new plan with no name/scope.
 - If a tool returns an error, diagnose it and try a corrected call; do not repeat the same failing call.
 - When the goal is complete, STOP calling tools and reply with a short plain-text summary of exactly what you did (names + ids), or the answer to their question.
@@ -198,6 +201,26 @@ function harvestReferenceTerms(content: string): string[] {
  * and the reasoning in a single call is fast EVERYWHERE while still reading widely. Per-call
  * tokens follow the Settings-selected model — no hardcoded token caps.
  */
+// System prompt for the ADAPTIVE code explorer — encodes the senior-engineer methodology
+// (search → map → read → follow_imports → drill the edges), where each step is decided from
+// what the previous one returned. This is what lifts answers from mid-level happy-path summaries
+// to edge-level depth, using the model's native tool-calling.
+const ADAPTIVE_CODE_EXPLORER_SYSTEM = `You are a senior engineer + QA expert exploring THIS application's REAL source code with tools, to answer the user's question at EDGE-LEVEL depth — never a shallow happy-path summary.
+
+Tools: search_codebase (grep terms → file paths), read_code_file (read a file), follow_imports (from a file, get the connected child/nth-child files it imports). Use them in an ADAPTIVE loop, deciding each next step from what the previous step returned — the way a human actually reads an unfamiliar codebase:
+
+1. SEARCH for the feature with precise terms (identifiers, route fragments, UI labels, file-name hints), and read the strongest hit.
+2. MAP it: notice which file/package the feature lives in, then search_codebase for that path fragment to surface the module's sibling files (its real surface).
+3. READ the core file(s), then FOLLOW_IMPORTS on them to pull in the modules that actually implement the logic, and read the important ones.
+4. HUNT THE EDGES on purpose — keep searching/reading until you have found: input validations & required fields, boundary/limit values and caps (e.g. max rows, per-lane limits), empty / loading / error states, permission & role gates, special tokens / flags / enums, and failure/exception branches. These are what make an answer edge-level.
+5. Do NOT answer from a single file or stop at the happy path. Keep going (search → read → follow → read) until the feature AND its edges are covered.
+
+When done, STOP calling tools and give the final answer:
+- Ground every point ONLY in code you actually read; never invent behaviour.
+- For "what to test" questions: organize by sub-feature, and for EACH include its edge/negative cases (validations, limits/caps, empty/error/loading states, permission gates, special tokens, failure branches).
+- NEVER show file paths, file names, directory names, or line numbers — keep source locations internal.
+- Be concrete; surface the non-obvious edges, not just the obvious controls.`;
+
 export async function answerAppQuestionFromCode(question: string, opts: {
   workspaceId?: string; userId?: string;
   projectId?: string; appId?: string | null;
@@ -211,20 +234,64 @@ export async function answerAppQuestionFromCode(question: string, opts: {
     ? `\nApps under test (selected by the user): ${(opts.apps || []).map((a) => `${a.name} (${a.baseUrl})`).join(', ')}.`
     : '';
 
-  // CLAUDE-CODE-STYLE deep parallel research FIRST: decompose the question into angles and
-  // investigate them concurrently across the codebase, then synthesize. Falls through to the
-  // single-pass deterministic search below if planning yields nothing or research fails.
+  // ADAPTIVE, CLAUDE-CODE-STYLE EXPLORATION (PRIMARY): let the model drive the deep search with
+  // its OWN tool calls — search → map → read → follow_imports → drill into the edges — deciding
+  // each next step from what it just found. This is the senior-engineer loop that yields
+  // edge-level answers instead of mid-level summaries. Falls through to parallel research / single
+  // pass if the provider can't do tool-calling or the loop returns nothing.
+  try {
+    const toolOrch = await getToolCapableOrchestrator('chatAssistant', { workspaceId: opts.workspaceId, userId: opts.userId });
+    const exploreCtx: ToolContext = {
+      workspaceId: opts.workspaceId || 'default',
+      userId: opts.userId,
+      projectId: opts.projectId,
+      appId: opts.appId || null,
+      userMessage: question,
+    };
+    const loop = await toolOrch.runToolLoop({
+      task: `Answer this question about THIS application, grounded ONLY in its REAL source code: ${question}${appsBlock}`,
+      system: ADAPTIVE_CODE_EXPLORER_SYSTEM,
+      tools: [searchCodebaseTool, readCodeFileTool, followImportsTool],
+      toolContext: exploreCtx,
+      maxSteps: 18,
+      temperature: 0.2,
+      onStep: (step) => {
+        const call = step.toolCalls?.[0];
+        if (call) opts.onProgress?.(`exploring: ${call.name}(${JSON.stringify(call.arguments).replace(/\s+/g, ' ').slice(0, 70)})…`);
+      },
+      signal: opts.signal,
+    });
+    const loopAnswer = (loop.finalText || '').trim();
+    if (loopAnswer) return stripCodebaseLocationsForAgentConsole(loopAnswer);
+  } catch {
+    // provider without tool-calling, or the loop failed → fall through to parallel research.
+  }
+
+  // FALLBACK — deep PARALLEL research: decompose into angles, investigate concurrently while
+  // FOLLOWING imports to the connected code, and (for QA questions) hunt edges, then synthesize.
+  const isQaQuestion = /\b(test|tests|testing|qa|cover|coverage|scenario|scenarios|edge|edges|validate|verify|check|cases?|negative)\b/i.test(question);
+  const researchQuestion = isQaQuestion
+    ? `${question}\n\nInvestigate at QA depth: enumerate the feature's sub-features AND, for each, its EDGE and NEGATIVE behaviour grounded in the real code — input validations, required fields, boundary/limit values and caps, empty/loading/error states, permission & role gates, special tokens/flags/enums, and failure/exception branches. Do not stop at the happy path.`
+    : question;
   try {
     const notes = await deepParallelResearch({
-      question,
+      question: researchQuestion,
       io: {
-        search: async (terms, limit) =>
-          relevantSourcePaths(((await searchCodeInScope(terms, scopeArg, limit)).matches as Array<{ path: string }>).map((m) => m.path), terms),
+        // Grep for the terms, then FOLLOW imports from the strongest hits to the connected
+        // child/nth-child files, so each facet sees the real wiring — not just the keyword match.
+        search: async (terms, limit) => {
+          const hits = relevantSourcePaths(((await searchCodeInScope(terms, scopeArg, limit)).matches as Array<{ path: string }>).map((m) => m.path), terms);
+          try {
+            const graph = await expandByReferences(hits.slice(0, 6), { read: async (p, b) => readCodeFileInScope(p, scopeArg, b) }, { maxDepth: 2, maxFiles: Math.max(limit, 30) });
+            return Array.from(new Set([...hits, ...graph.map((n) => n.path)]));
+          } catch { return hits; }
+        },
         read: (p, b) => readCodeFileInScope(p, scopeArg, b),
       },
       orchestratorAgent: 'chatAssistant',
       workspaceId: opts.workspaceId,
       userId: opts.userId,
+      maxFacets: isQaQuestion ? 8 : 6,
       onProgress: opts.onProgress,
     });
     if (notes) {
@@ -325,7 +392,7 @@ export async function runSupervisor(input: {
     appId: input.appId || null,
     userMessage: input.userMessage,
   };
-  const tools: AgentTool[] = [queryWorkspaceTool, searchCodebaseTool, readCodeFileTool, ...INTENT_TOOLS.map((d) => buildIntentTool(d, ctx))];
+  const tools: AgentTool[] = [queryWorkspaceTool, searchCodebaseTool, readCodeFileTool, followImportsTool, findUntestedEdgesTool, analyzeFeatureCoverageTool, ...INTENT_TOOLS.map((d) => buildIntentTool(d, ctx))];
 
   const historyBlock = input.history?.length
     ? `\n\nRECENT CONVERSATION (oldest first):\n${input.history.slice(-16).map((m) => `${m.role}: ${m.content}`).join('\n')}`

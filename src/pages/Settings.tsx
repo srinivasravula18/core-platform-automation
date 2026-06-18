@@ -389,8 +389,8 @@ function ProvidersSection() {
         ? {
             ...p,
             authMode,
-            configured: authMode === 'api_key' ? !!p.apiKeyMasked : provider === 'openai' || provider === 'anthropic',
-            callable: authMode === 'api_key' ? !!p.apiKeyMasked : provider === 'openai' || provider === 'anthropic',
+            configured: authMode === 'api_key' ? !!p.apiKeyMasked : p.accountCliAllowed && (provider === 'openai' || provider === 'anthropic'),
+            callable: authMode === 'api_key' ? !!p.apiKeyMasked && p.enabled : p.enabled && p.accountCliAllowed && (provider === 'openai' || provider === 'anthropic'),
             accountTool: authMode === 'account' && provider === 'openai' ? 'codex' : authMode === 'account' && provider === 'anthropic' ? 'claude' : '',
           }
         : p
@@ -416,6 +416,9 @@ function ProvidersSection() {
   const setEnabled = async (provider: Provider, enabled: boolean) => {
     setStatus({ type: 'idle', message: '' });
     setProviders((prev) => prev.map((p) => (p.name === provider ? { ...p, enabled, callable: enabled && p.configured } : p)));
+    if (enabled && providers.find((p) => p.name === provider)?.configured && !providers.find((p) => p.name === defaultProvider)?.callable) {
+      setDefaultProvider(provider);
+    }
     const res = await fetch(`/api/ai/providers/${provider}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -611,7 +614,7 @@ function ProviderCard({ provider, onSaveKey, onSetEnabled, onSetAuthMode, onSetM
           <button
             type="button"
             onClick={() => onSetDefault(provider.model)}
-            disabled={!provider.enabled}
+            disabled={!provider.enabled || !provider.configured}
             className="inline-flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-primary)] px-3 py-1.5 text-xs font-medium hover:border-[var(--accent)] disabled:opacity-50"
           >
             <Zap className="h-3 w-3" /> Set as default
@@ -637,33 +640,32 @@ function ProviderCard({ provider, onSaveKey, onSetEnabled, onSetAuthMode, onSetM
             <span className="block text-xs text-[var(--text-muted)]">Used by Test Flow AI backend calls and cost tracking.</span>
           </span>
         </button>
-        <button
-          type="button"
-          onClick={() => onSetAuthMode('account')}
-          disabled={!provider.accountCliAllowed}
-          className={`flex cursor-pointer items-start gap-2 rounded-md border p-3 text-left text-sm disabled:cursor-not-allowed disabled:opacity-50 ${authMode === 'account' ? 'border-[var(--accent)] bg-[var(--accent)]/5' : 'border-[var(--border)] bg-[var(--bg-primary)]'}`}
-        >
-          <input
-            type="radio"
-            checked={authMode === 'account'}
-            readOnly
-            tabIndex={-1}
-            className="mt-1 pointer-events-none accent-[var(--accent)]"
-          />
-          <span>
-            <span className="block font-medium">Subscription / account</span>
-            <span className="block text-xs text-[var(--text-muted)]">
-              {provider.accountCliAllowed ? 'Uses your local Codex or Claude Code login where supported.' : 'Local development only. Use API key mode here.'}
+        {provider.accountCliAllowed && (
+          <button
+            type="button"
+            onClick={() => onSetAuthMode('account')}
+            className={`flex cursor-pointer items-start gap-2 rounded-md border p-3 text-left text-sm ${authMode === 'account' ? 'border-[var(--accent)] bg-[var(--accent)]/5' : 'border-[var(--border)] bg-[var(--bg-primary)]'}`}
+          >
+            <input
+              type="radio"
+              checked={authMode === 'account'}
+              readOnly
+              tabIndex={-1}
+              className="mt-1 pointer-events-none accent-[var(--accent)]"
+            />
+            <span>
+              <span className="block font-medium">Subscription / account</span>
+              <span className="block text-xs text-[var(--text-muted)]">
+                Uses your local Codex or Claude Code login where supported.
+              </span>
             </span>
-          </span>
-        </button>
+          </button>
+        )}
       </div>
 
-      {authMode === 'account' && (
+      {authMode === 'account' && provider.accountCliAllowed && (
         <div className="mt-3 rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-600">
-          {!provider.accountCliAllowed
-            ? 'Subscription/account CLI auth is disabled outside local development. Switch this provider to API key mode for test or production.'
-            : provider.accountTool
+          {provider.accountTool
             ? `Test Flow AI will run ${provider.accountTool} locally for this provider, using the account already authenticated on this machine.`
             : 'This provider has no supported local subscription CLI runner in Test Flow AI; use API key mode.'}
         </div>

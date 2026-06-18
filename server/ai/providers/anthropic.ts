@@ -23,7 +23,7 @@ import type {
   ToolCallRequest,
   ChatMessage,
 } from './types';
-import { ProviderError, classifyError, DEFAULT_MODELS, estimateCost } from './types';
+import { ProviderError, classifyError, DEFAULT_MODELS, estimateCost, maxOutputFor } from './types';
 // Shared, NON-FABRICATING structured-output helpers (one copy for every provider).
 import {
   coerceToSchemaShape, repairValidationError, normalizeTestCasePayload, normalizeScriptPayload,
@@ -36,10 +36,12 @@ function acceptsTemperature(model: string): boolean {
 
 function resolveRequiredMaxTokens(model: string, requested?: number): number {
   if (typeof requested === 'number' && requested > 0) return requested;
-  // Anthropic's Messages API requires max_tokens. Keep this in one place and use
-  // a roomy default so normal agent answers/scripts are not cut off by the old
-  // scattered 2048/4096 call-site caps.
-  return /haiku/i.test(model) ? 4096 : 8192;
+  // Anthropic's Messages API REQUIRES max_tokens (unlike Gemini/OpenAI, which fall back to the
+  // model default when omitted). So derive the ceiling from the SELECTED model's real max-output
+  // capability (maxOutputFor) instead of a fixed 8192/4096 that silently truncated long agent
+  // outputs (scripts, large case sets). The user monitors actual spend via the cost tracker, so
+  // a model-defined ceiling is the right default — the model only ever emits what it needs.
+  return maxOutputFor(model);
 }
 
 /** Map a provider-agnostic ChatMessage to an Anthropic Messages param. */

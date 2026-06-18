@@ -93,3 +93,31 @@ export function listUsage(workspaceId: string, limit = 100): UsageRecord[] {
     .filter((r) => r.workspaceId === workspaceId)
     .slice(0, limit);
 }
+
+/* ---------- Per-project quota (book Ch 16: Resource-Aware Optimization) ----------
+ * In this codebase `workspaceId` IS the project scope (see PROJECTS-APPS-ARCHITECTURE:
+ * workspace_id is repurposed as project_id), so per-workspace daily cost is already
+ * per-project. These additive helpers let one project have its OWN daily quota and let
+ * callers refuse new work when a project has burned its budget — without touching the
+ * recordUsage hot path. */
+
+/** A project's effective daily USD quota: its own override if set, else the global limit. */
+export function getProjectQuota(projectId: string): number {
+  const overrides = (db.settings as any)?.projectCostQuotas as Record<string, number> | undefined;
+  const own = overrides && typeof overrides[projectId] === 'number' ? overrides[projectId] : undefined;
+  return own ?? getDailyLimit();
+}
+
+export function setProjectQuota(projectId: string, limitUsd: number) {
+  if (!db.settings) (db as any).settings = {};
+  const settings = db.settings as any;
+  if (!settings.projectCostQuotas) settings.projectCostQuotas = {};
+  settings.projectCostQuotas[projectId] = limitUsd;
+}
+
+/** Has this project exceeded its daily quota? Returns the numbers so callers can report honestly. */
+export function isProjectOverQuota(projectId: string, day?: Date): { over: boolean; usedUsd: number; quotaUsd: number } {
+  const usedUsd = getDailyCost(projectId, day);
+  const quotaUsd = getProjectQuota(projectId);
+  return { over: usedUsd >= quotaUsd, usedUsd, quotaUsd };
+}

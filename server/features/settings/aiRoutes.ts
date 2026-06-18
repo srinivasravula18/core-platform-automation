@@ -75,11 +75,32 @@ function redactKey(key: string): string {
   return `${key.slice(0, 4)}****${key.slice(-4)}`;
 }
 
+function providerIsCallable(provider: ProviderName): boolean {
+  const stored = db.settings?.providerSettings?.[provider];
+  if (!stored || stored.enabled === false) return false;
+  const authMode = (stored.authMode || 'api_key') as ProviderAuthMode;
+  if (authMode === 'account') return isLocalCliProviderAllowed() && supportsAccountCli(provider);
+  return !!stored.apiKey || hasEnvApiKey(provider);
+}
+
+function repairDefaultProviderIfNeeded(): void {
+  if (providerIsCallable(db.settings.defaultProvider)) return;
+  const fallback = PROVIDERS.find((provider) => providerIsCallable(provider));
+  if (fallback) db.settings.defaultProvider = fallback;
+}
+
 export function registerSettingsRoutes(app: Express) {
   /* ---------- provider list ---------- */
 
   app.get('/api/ai/providers', (_req, res) => {
     ensureProviderSettings();
+    if (!isLocalCliProviderAllowed()) {
+      for (const provider of PROVIDERS) {
+        const stored = db.settings.providerSettings[provider];
+        if (stored?.authMode === 'account') stored.authMode = 'api_key';
+      }
+    }
+    repairDefaultProviderIfNeeded();
     const out = PROVIDERS.map((p) => {
       const stored = db.settings?.providerSettings?.[p];
       const authMode = (stored?.authMode || 'api_key') as ProviderAuthMode;
@@ -131,10 +152,16 @@ export function registerSettingsRoutes(app: Express) {
     if (model !== undefined) slot.model = model;
     if (authMode !== undefined) {
       if (!['api_key', 'account'].includes(authMode)) return res.status(400).json({ error: 'authMode must be api_key or account' });
+      if (authMode === 'account' && !isLocalCliProviderAllowed()) {
+        return res.status(400).json({ error: 'Subscription/account auth is only available in local development.' });
+      }
       slot.authMode = authMode;
     }
     if (enabled !== undefined) slot.enabled = !!enabled;
     db.settings.providerSettings[name] = slot;
+    if (providerIsCallable(name) && !providerIsCallable(db.settings.defaultProvider)) {
+      db.settings.defaultProvider = name;
+    }
     persistSettingsInBackground(`provider settings: ${name}`);
     res.json({ ok: true, name, model: slot.model || DEFAULT_MODELS[name].default, authMode: slot.authMode || 'api_key', enabled: slot.enabled !== false });
   });

@@ -560,7 +560,8 @@ Rules:
     schema: featureInventorySchema,
     userMessage: cleanQuery,
     hasHistory: true,
-    maxTokens: 12000,
+    // No hardcoded output cap — defer to the selected model's max output (maxOutputFor), so a
+    // large inventory is never truncated. API spend is visible in the cost tracker.
   });
   if ((featureRes as any).shortCircuit) throw new Error(String((featureRes as any).shortCircuit));
 
@@ -599,7 +600,7 @@ Rules:
     schema: e2eFlowSchema,
     userMessage: cleanQuery,
     hasHistory: true,
-    maxTokens: 8000,
+    // No hardcoded output cap — defer to the selected model's max output (maxOutputFor).
   });
   if ((e2eRes as any).shortCircuit) throw new Error(String((e2eRes as any).shortCircuit));
 

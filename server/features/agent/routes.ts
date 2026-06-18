@@ -21,7 +21,10 @@ import { resolveCredentials, maskPassword } from '../credentials/credentialsServ
 import { pushInboxItem } from '../inbox/routes';
 import { Plans, Suites, Cases, Runs, Reports, Scripts, Folders, Requirements, RequirementLinks, Defects } from '../../db/repository';
 import { runGuardrailPipeline } from '../../ai/guardrails';
-import { assessInspection, assessCasesGrounding, assessExecution } from '../../ai/verifier';
+import { assessInspection, assessCasesGrounding, assessExecution, assessFeatureCompleteness } from '../../ai/verifier';
+import { classifyFailure } from '../../ai/recovery';
+import { isProjectOverQuota } from '../../ai/costTracker';
+import { retrieveRunMemories, summarizeMemoriesForPrompt, recordRunMemory } from '../../ai/memory/runMemory';
 import { reqScope, scopeFilter } from '../../shared/scope';
 import { getApp, getProject } from '../projects/projectService';
 // Strike 3: the single, shared source of grounding for every deep-run worker.
@@ -1001,6 +1004,36 @@ Each test case must include automation tags in @ format, for example @bvt, @sani
       }
     : liveGroundingVerdict;
   (run as any).cases_grounding = groundingVerdict;
+
+  // SUB-FEATURE COMPLETENESS (book Ch 7/11/19): a feature must not read "tested" while some
+  // of its discovered sub-features have zero cases (the silent-coverage-gap failure). We
+  // check every sub-feature in the source-discovered inventory against the generated cases
+  // and surface any uncovered ones. Non-blocking on purpose — like the grounding "weak"
+  // flag, this informs the human/report rather than failing an otherwise valid run.
+  try {
+    const inv: any = run.feature_inventory;
+    const subFeatures = (Array.isArray(inv?.features) ? inv.features : [])
+      .flatMap((f: any) => (Array.isArray(f?.subfeatures) ? f.subfeatures : []))
+      .map((s: any) => ({ name: String(s?.name || '').trim() }))
+      .filter((s: { name: string }) => s.name);
+    if (subFeatures.length) {
+      const featureLabel = (Array.isArray(inv?.features) && inv.features[0]?.name)
+        ? String(inv.features[0].name)
+        : (String(run.prompt || 'feature').slice(0, 60));
+      const completeness = assessFeatureCompleteness(featureLabel, subFeatures, generated);
+      (run as any).feature_completeness = completeness;
+      pushPhase(run, {
+        agent: 'System',
+        status: completeness.ok ? 'completed' : 'running',
+        output: completeness.ok
+          ? `Sub-feature coverage: ${completeness.reason}`
+          : `COVERAGE GAP — ${completeness.reason} Consider find_untested_edges or another generation pass for the uncovered sub-features.`,
+      });
+    }
+  } catch (err: any) {
+    console.warn('feature-completeness check failed (non-fatal):', err?.message || err);
+  }
+
   pushPhase(run, {
     agent: 'TestGenerationAgent',
     status: 'completed',
@@ -1091,6 +1124,20 @@ Do NOT write comments such as "Auth is expected to be handled by global setup". 
   const reviewedUnderstanding = resolveUnderstanding(run);
 
   const coderKnowledge = buildKnowledgeBlock({ targetUrl, text: run.prompt || '', ownerId: run.ownerId }, { maxChars: 9000 });
+  // EPISODIC MEMORY (book Ch 8/9): recall selectors that were flaky/broken on prior runs of
+  // this feature so the coder avoids them instead of re-discovering the same flakiness.
+  let coderMemory = '';
+  try {
+    const mems = await retrieveRunMemories({
+      feature: String(run.prompt || run.artifactName || '').slice(0, 80),
+      projectId: run.projectId || undefined,
+      appId: run.appId || undefined,
+      ownerId: run.ownerId || undefined,
+      limit: 25,
+    });
+    const block = summarizeMemoriesForPrompt(mems);
+    if (block) coderMemory = `\nLESSONS FROM PRIOR RUNS (avoid the flaky/broken selectors below; prefer the stable ones):\n${block}\n`;
+  } catch { /* memory is an enhancement, never a hard dependency */ }
   const coder = await getOrchestrator('playwrightCoder', { workspaceId: run.ownerId || 'default' });
   const caseList = Array.isArray(testCases?.test_cases) ? testCases.test_cases : [];
   const scriptsResult = await coder.generateObject<any>({
@@ -1098,7 +1145,7 @@ Do NOT write comments such as "Auth is expected to be handled by global setup". 
 Approved user-reviewed understanding: ${reviewedUnderstanding || 'not provided'}.
 ${credentialContext}
 ${loginScriptBlock}
-${selectedQaContextText}${coderUnderstanding}${coderFeatureInventory}
+${selectedQaContextText}${coderUnderstanding}${coderFeatureInventory}${coderMemory}
 Use this browser inspection context as the source of truth for reachable pages, visible labels, forms, navigation actions, tables/lists, buttons, links and final URL: ${JSON.stringify(compactInspectionContext(inspectionContext))}.
 SETUP — NAVIGATE THEN LOG IN IF NEEDED: the MANDATORY FIRST LINES of every test body are (use this EXACT absolute URL — NOT '/', which resolves to the wrong path):
   await page.goto('${targetUrl || '/'}');
@@ -1198,6 +1245,28 @@ Test case payload: ${JSON.stringify({ test_cases: [testCase] })}${coderKnowledge
     pushPhase(run, { agent: 'EvidenceAgent', status: 'completed', output: evidence });
   } else {
     pushPhase(run, { agent: 'EvidenceAgent', status: 'skipped', output: 'No target URL was provided in chat and no Website Credentials row is selected for Playwright.' });
+  }
+
+  // EPISODIC MEMORY (book Ch 8/9): record this run's outcome so future runs of the same
+  // feature recall whether it was stable / flaky / broken and why. Best-effort — never blocks.
+  try {
+    const exec = (run as any).execution_result;
+    const failed = Number(exec?.failed) || 0;
+    const passed = Number(exec?.passed) || 0;
+    const total = Number(exec?.total) || 0;
+    const stability: 'stable' | 'flaky' | 'broken' = total === 0 ? 'broken' : failed > 0 ? (passed > 0 ? 'flaky' : 'broken') : 'stable';
+    const firstFail = Array.isArray(exec?.tests) ? exec.tests.find((t: any) => /fail|timedout|interrupted/i.test(String(t?.status))) : null;
+    await recordRunMemory({
+      feature: String(run.prompt || run.artifactName || '').slice(0, 120),
+      stability,
+      failureCause: firstFail?.error ? String(firstFail.error).slice(0, 300) : undefined,
+      runId: run.id,
+      projectId: run.projectId || undefined,
+      appId: run.appId || undefined,
+      ownerId: run.ownerId || undefined,
+    });
+  } catch (err: any) {
+    console.warn('run-memory record failed (non-fatal):', err?.message || err);
   }
 
   markRunDone(run, 'completed');
@@ -1566,10 +1635,19 @@ async function runScriptsAndCollectEvidence(run: any, targetUrl: string, testCas
       }
       run.messages.push({ agent: 'EvidenceAgent', status: 'running', output: `Script execution produced no test results${exec.error ? `: ${exec.error}` : ''}. Falling back to base-URL evidence.` });
     } catch (err: any) {
-      run.messages.push({ agent: 'EvidenceAgent', status: 'running', output: `Script execution failed: ${err?.message || err}. Falling back to base-URL evidence.` });
+      // Classify the failure (book Ch 12 taxonomy) so the degradation is reported honestly:
+      // a 'degrade' is an expected graceful fallback; an 'escalate' means something needs a human.
+      const decision = classifyFailure('execute', err);
+      run.messages.push({
+        agent: 'EvidenceAgent',
+        status: 'running',
+        output: `Script execution failed [${decision.action}: ${decision.reason}]: ${err?.message || err}. Falling back to base-URL evidence.`,
+      });
+      (run as any).execution_recovery = decision;
     }
   }
-  // FALLBACK: base-URL login + screenshot (original behaviour) when scripts can't run.
+  // FALLBACK / graceful degradation: base-URL login + screenshot (original behaviour) when
+  // scripts can't run — partial, honest evidence instead of a hard failure or a fake green.
   return capturePlaywrightEvidence(targetUrl, run.id, cases, liveCreds);
 }
 
@@ -1928,6 +2006,21 @@ export function registerAgentRoutes(app: Express) {
     db.agentRuns.unshift(newRun);
     persistDataInBackground('new agent run');
     res.json({ task_id: taskId });
+
+    // COST QUOTA (book Ch 16: Resource-Aware Optimization): if this project has already burned
+    // its daily budget, refuse to start the (expensive) pipeline rather than overspending. The
+    // response is already sent, so we just stop here with an honest, surfaced reason.
+    const quota = isProjectOverQuota(newRun.ownerId || 'default');
+    if (quota.over) {
+      pushPhase(newRun, {
+        agent: 'System',
+        status: 'failed',
+        output: `Daily AI cost quota reached for this project ($${quota.usedUsd.toFixed(2)} of $${quota.quotaUsd.toFixed(2)}). Not starting a new run until the quota resets or is raised in Settings.`,
+      });
+      markRunDone(newRun, 'failed');
+      persistDataInBackground('cost-quota blocked agent run');
+      return;
+    }
 
     try {
       // #1: NamingAgent removed from the critical path — newRun.artifactName already holds

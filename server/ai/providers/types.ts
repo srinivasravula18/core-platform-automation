@@ -170,6 +170,70 @@ export const PRICING_PER_1M_TOKENS: Record<string, { input: number; output: numb
   'claude-haiku-4-5': { input: 1.0, output: 5.0 },
 };
 
+/* ----------------------------------------------------------------------------
+ * Model capability registry — context window + max OUTPUT tokens per model.
+ *
+ * The point: limits follow the MODEL the user picks in Settings, never a scattered
+ * hardcoded cap. Providers derive their default max-output from `maxOutputFor(model)`
+ * instead of a fixed 8192/4096 (which truncated long agent outputs). For API-key usage
+ * the user monitors real spend via the cost tracker, so a roomy model-defined ceiling is
+ * the right default. Update these when a provider ships new context/output sizes — it is
+ * the single source of truth.
+ * -------------------------------------------------------------------------- */
+export interface ModelCaps {
+  /** Total context window (input + output) the model accepts, in tokens. */
+  contextWindow: number;
+  /** Maximum OUTPUT tokens the model can produce in one response. */
+  maxOutput: number;
+}
+
+// Verified against official provider docs (June 2026): platform.claude.com/docs (Models
+// overview), developers.openai.com (GPT-5.4/5.5), ai.google.dev (Gemini). Update here only.
+export const MODEL_CAPS: Record<string, ModelCaps> = {
+  // Gemini — 1,048,576 context, 65,536 max output.
+  'gemini-2.5-flash': { contextWindow: 1_048_576, maxOutput: 65_536 },
+  'gemini-2.5-flash-lite': { contextWindow: 1_048_576, maxOutput: 65_536 },
+  'gemini-2.5-pro': { contextWindow: 1_048_576, maxOutput: 65_536 },
+  'gemini-3.5-flash': { contextWindow: 1_048_576, maxOutput: 65_536 },
+  'gemini-3.1-pro': { contextWindow: 1_048_576, maxOutput: 65_536 },
+  'gemini-3.1-flash-lite': { contextWindow: 1_048_576, maxOutput: 65_536 },
+  // OpenAI GPT-5.x — GPT-5.4 / 5.5 have a 1.05M context window, 128k max output. (mini/nano
+  // specs aren't published separately; kept conservative at 400k context, 128k output.)
+  'gpt-5.5': { contextWindow: 1_050_000, maxOutput: 128_000 },
+  'gpt-5.4': { contextWindow: 1_050_000, maxOutput: 128_000 },
+  'gpt-5.4-mini': { contextWindow: 400_000, maxOutput: 128_000 },
+  'gpt-5.4-nano': { contextWindow: 400_000, maxOutput: 128_000 },
+  // Anthropic Claude 4.x — Opus 4.8 & Sonnet 4.6 are 1M context; Haiku 4.5 is 200k. Max output:
+  // Opus 128k, Sonnet & Haiku 64k. (Batch API can extend output to 300k via beta header.)
+  'claude-opus-4-8': { contextWindow: 1_000_000, maxOutput: 128_000 },
+  'claude-sonnet-4-6': { contextWindow: 1_000_000, maxOutput: 64_000 },
+  'claude-haiku-4-5': { contextWindow: 200_000, maxOutput: 64_000 },
+  'claude-fable-5': { contextWindow: 1_000_000, maxOutput: 128_000 },
+};
+
+/** Family-based fallback so an unknown/newer model id still gets sane, model-appropriate caps. */
+function familyCaps(model: string): ModelCaps {
+  const m = String(model || '').toLowerCase();
+  if (m.includes('gemini')) return { contextWindow: 1_048_576, maxOutput: 65_536 };
+  if (m.includes('gpt') || m.startsWith('o')) return { contextWindow: 400_000, maxOutput: 128_000 };
+  if (m.includes('haiku')) return { contextWindow: 200_000, maxOutput: 64_000 };
+  if (m.includes('opus') || m.includes('fable') || m.includes('mythos')) return { contextWindow: 1_000_000, maxOutput: 128_000 };
+  if (m.includes('sonnet') || m.includes('claude')) return { contextWindow: 1_000_000, maxOutput: 64_000 };
+  return { contextWindow: 128_000, maxOutput: 16_000 };
+}
+
+export function modelCaps(model: string): ModelCaps {
+  return MODEL_CAPS[model] || familyCaps(model);
+}
+/** The model's max OUTPUT tokens — providers use this as the default ceiling (not a hardcode). */
+export function maxOutputFor(model: string): number {
+  return modelCaps(model).maxOutput;
+}
+/** The model's total context window — for budgeting input + history against the real limit. */
+export function contextWindowFor(model: string): number {
+  return modelCaps(model).contextWindow;
+}
+
 export function estimateCost(model: string, usage: ProviderUsage | undefined): number {
   if (!usage || usage.totalTokens === undefined) return 0;
   const pricing = PRICING_PER_1M_TOKENS[model] ?? { input: 1.0, output: 3.0 };
