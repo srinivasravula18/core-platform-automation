@@ -142,11 +142,11 @@ export const followImportsTool: AgentTool = {
   async execute(args, ctx: ToolContext) {
     const path = String(args.path || '').trim();
     if (!path) throw new Error('follow_imports requires a non-empty "path".');
-    const depth = Math.max(1, Math.min(3, Number(args.depth) || 2));
+    const depth = Math.max(1, Math.min(5, Number(args.depth) || 3));
     const nodes = await expandByReferences(
       [path],
       { read: async (p, b) => readCodeFileInScope(p, { projectId: ctx.projectId, appId: ctx.appId }, b) },
-      { maxDepth: depth, maxFiles: 30 },
+      { maxDepth: depth, maxFiles: 80 },
     );
     return {
       root: path,

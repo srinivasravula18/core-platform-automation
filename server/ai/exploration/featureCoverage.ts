@@ -72,17 +72,19 @@ async function discoverViaGraph(feature: string, opts: {
   // is "real source, not test files". The reference graph then follows their imports to the
   // connected code — no hand-coded path-relevance bias.
   const seeds = Array.from(new Set(
-    gitGrep(terms, undefined, 60, repoPath)
+    gitGrep(terms, undefined, 80, repoPath)
       .map((h) => h.path)
       .filter((p) => /\.(tsx?|jsx?|vue|svelte)$/i.test(p) && !/\.(spec|test|stories)\./i.test(p)),
-  )).slice(0, 6);
+  )).slice(0, 14);
   if (!seeds.length) return { appName: 'Application', features: [] } as unknown as FeatureInventory;
 
-  opts.onProgress?.('Following imports (root → child → nth-child) to the connected code…');
-  const nodes = await expandByReferences(seeds, { read: async (p, b) => readRepoFile(p, b, repoPath) }, { maxDepth: 2, maxFiles: 30 });
+  opts.onProgress?.('Following imports (root → child → … → end of the relevant subgraph)…');
+  // DEEP + DYNAMIC: drill the feature's import subgraph to its end (relevance-pruned by `terms`),
+  // not a fixed 2 hops. Cost is not the constraint here — coverage depth is.
+  const nodes = await expandByReferences(seeds, { read: async (p, b) => readRepoFile(p, b, repoPath) }, { terms, maxDepth: 8, maxFiles: 200 });
   opts.onProgress?.(graphSummary(nodes));
 
-  const excerpts = (await Promise.all(nodes.slice(0, 30).map(async (n) => {
+  const excerpts = (await Promise.all(nodes.slice(0, 100).map(async (n) => {
     try { return `FILE: ${n.path}\n${readRepoFile(n.path, 3000, repoPath)}`; } catch { return ''; }
   }))).filter(Boolean).join('\n\n---\n\n');
   if (!excerpts) return { appName: 'Application', features: [] } as unknown as FeatureInventory;

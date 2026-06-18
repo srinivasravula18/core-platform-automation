@@ -186,11 +186,25 @@ export function resolveRelativeImport(
 export async function expandByReferences(
   seedPaths: string[],
   io: GraphIO,
-  opts?: { maxDepth?: number; maxFiles?: number; maxBytesPerFile?: number },
+  opts?: { maxDepth?: number; maxFiles?: number; maxBytesPerFile?: number; terms?: string[]; freeDepth?: number },
 ): Promise<GraphNode[]> {
-  const maxDepth = opts?.maxDepth ?? 2;
-  const maxFiles = opts?.maxFiles ?? 40;
+  // DYNAMIC traversal: follow imports DEEPLY (not a fixed 2 hops). Direct dependencies of the
+  // seeds are always followed (freeDepth); BEYOND that, only branches RELEVANT to `terms` are
+  // drilled — so the walk stays on the feature's connected subgraph and naturally ENDS when that
+  // subgraph is exhausted, instead of stopping at an arbitrary depth or fanning into the whole
+  // framework/utility tree. maxFiles is only a token-safety backstop, not the intended stop.
+  const maxDepth = opts?.maxDepth ?? 6;
+  const maxFiles = opts?.maxFiles ?? 120;
   const maxBytesPerFile = opts?.maxBytesPerFile ?? 4000;
+  const freeDepth = opts?.freeDepth ?? 1;
+  const termSet = (opts?.terms || []).map((t) => String(t).toLowerCase()).filter((t) => t.length >= 3);
+  const relevant = (path: string, content: string | null): boolean => {
+    if (!termSet.length) return true; // no terms → drill everything within the budget
+    const p = path.toLowerCase();
+    if (termSet.some((t) => p.includes(t))) return true;
+    const c = (content || '').toLowerCase();
+    return termSet.some((t) => c.includes(t));
+  };
 
   // path -> content (successful read) or null (read threw => file absent / unreadable).
   const contentCache = new Map<string, string | null>();
@@ -260,7 +274,13 @@ export async function expandByReferences(
       // resolve to null and are left to the caller's keyword-search fallback.
       const childPath = await resolveSpecAsync(node.path, spec);
       if (!childPath || visited.has(childPath)) continue;
-      const child: GraphNode = { path: childPath, depth: node.depth + 1, importedBy: node.path };
+      const childDepth = node.depth + 1;
+      // Beyond the free (direct-dependency) depth, only DRILL into children relevant to the
+      // feature terms — this is what lets the walk go DEEP on the right subgraph and stop when it
+      // runs out, instead of fanning into the whole codebase. (Content is already cached from the
+      // existence check during resolution, so this adds no extra read.)
+      if (childDepth > freeDepth && !relevant(childPath, contentCache.get(childPath) ?? null)) continue;
+      const child: GraphNode = { path: childPath, depth: childDepth, importedBy: node.path };
       visited.set(childPath, child);
       queue.push(child);
       if (visited.size >= maxFiles) break;

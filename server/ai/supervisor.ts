@@ -282,7 +282,9 @@ export async function answerAppQuestionFromCode(question: string, opts: {
         search: async (terms, limit) => {
           const hits = relevantSourcePaths(((await searchCodeInScope(terms, scopeArg, limit)).matches as Array<{ path: string }>).map((m) => m.path), terms);
           try {
-            const graph = await expandByReferences(hits.slice(0, 6), { read: async (p, b) => readCodeFileInScope(p, scopeArg, b) }, { maxDepth: 2, maxFiles: Math.max(limit, 30) });
+            // Drill the import subgraph DEEP and dynamically (relevance-pruned by the facet terms),
+            // to the end of the relevant connected files — not a fixed 2 hops.
+            const graph = await expandByReferences(hits.slice(0, 14), { read: async (p, b) => readCodeFileInScope(p, scopeArg, b) }, { terms, maxDepth: 8, maxFiles: 200 });
             return Array.from(new Set([...hits, ...graph.map((n) => n.path)]));
           } catch { return hits; }
         },
