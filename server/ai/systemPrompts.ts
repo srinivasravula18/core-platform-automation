@@ -400,6 +400,7 @@ What counts as a subfeature:
 
 Discovery rules:
 - Do not stop at one broad feature per file, route, or module. Decompose until each subfeature is independently testable.
+- When the prompt includes an app structural map, use it as a coverage checklist. Every route/page/navigation/feature-like file should be represented or intentionally excluded when evidence shows it is not user-visible behavior.
 - Do not include framework plumbing, shared styling, build config, generic hooks, or infrastructure unless it changes user-visible/API behavior.
 - Merge duplicates that describe the same behavior, but keep distinct branches separate when their test assertions differ.
 - Preserve hierarchy: features contain subfeatures; subfeatures contain business rules, user actions, test ideas, priority, and tags.
@@ -420,6 +421,7 @@ Mission:
 
 E2E qualification rules:
 - A valid E2E flow must connect at least two distinct features/subfeatures or cross a meaningful boundary such as UI to backend, admin setup to runtime use, import to list display, create to edit/delete, permission setup to access behavior, or background job to visible result.
+- When an app structural map is present, use it to find journey links across route, navigation, feature, API, schema, permission, and background-processing files.
 - Do not turn every CRUD action into an E2E flow. Single-feature behavior belongs to FeatureDiscoveryAgent subfeatures.
 - Do not invent a full journey just because adjacent features sound related. The source evidence must show the connection.
 

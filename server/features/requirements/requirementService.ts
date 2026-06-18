@@ -20,7 +20,7 @@ import { Cases, Requirements, RequirementLinks, isPgEnabled } from '../../db/rep
 import { persistDataInBackground, addActivity } from '../../shared/storage';
 import { normalizeCaseSteps, normalizeCaseTags } from '../../shared/testCases';
 import { pushInboxItem } from '../inbox/routes';
-import { gitGrep, readRepoFile, GIT_AGENT_TARGET_REPO } from '../git-agent/gitAgentService';
+import { gitGrep, listRepoSourceFiles, readRepoFile, GIT_AGENT_TARGET_REPO } from '../git-agent/gitAgentService';
 
 /* ---------- schemas ---------- */
 
@@ -180,6 +180,130 @@ function deriveInventoryKeywords(query: string): string[] {
 
 /* ---------- source gathering ---------- */
 
+type SourceFileMeta = { path: string; area: string; surface: string };
+
+const SOURCE_NOISE_RE = /(^|\/)(\.[^/]+|node_modules|dist|build|coverage|docs?|e2e|tests?|__tests__|test-results|playwright-report|evidence|generated|vendor|public|assets)(\/|$)|\.(test|spec|stories)\.[tj]sx?$|\.d\.ts$/i;
+const STRUCTURAL_PATH_RE = /(^|\/)(app|apps|pages|routes|router|navigation|nav|menu|sidebar|screens|views|features|feature|modules|workflows|flows|api|apis|services|controllers|handlers|schema|schemas|metadata|config|permissions?|auth)(\/|\.|-|_)/i;
+const MANIFEST_PATH_RE = /(^|\/)(app|main|index|routes?|router|navigation|nav|menu|sidebar|layout|tabs|shell)\.[tj]sx?$|(^|\/)(routes?|router|navigation|nav|menu|sidebar|layout|tabs|shell)(\/|$)/i;
+const UI_SOURCE_RE = /\.(tsx|jsx|vue|svelte|html)$/i;
+const SERVICE_SOURCE_RE = /\.(ts|js|mjs|cjs|py|go|java|kt|rb|cs|php|rs|swift|scala)$/i;
+
+function sourcePathTokens(value: string): string[] {
+  return Array.from(new Set(String(value || '')
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((token) => token.length >= 2 && !STOP.has(token))));
+}
+
+function structuralScore(file: SourceFileMeta, terms: string[], broad: boolean): number {
+  const p = file.path.replace(/\\/g, '/');
+  const lower = p.toLowerCase();
+  if (SOURCE_NOISE_RE.test(lower)) return -100;
+
+  let score = 0;
+  if (MANIFEST_PATH_RE.test(lower)) score += 18;
+  if (STRUCTURAL_PATH_RE.test(lower)) score += 10;
+  if (/(^|\/)(page|screen|view|route|controller|handler|service|schema|config)\.[tj]sx?$/i.test(lower)) score += 8;
+  if (/(^|\/)(api|apis|services?|controllers?|handlers?)(\/|$)/i.test(lower)) score += 6;
+  if (/(^|\/)(schema|schemas|metadata|config|permissions?|auth)(\/|$)/i.test(lower)) score += 5;
+  if (UI_SOURCE_RE.test(lower)) score += 4;
+  else if (SERVICE_SOURCE_RE.test(lower)) score += 2;
+
+  const pathTokens = new Set(sourcePathTokens(p));
+  for (const term of terms) {
+    const clean = String(term || '').toLowerCase().trim();
+    if (!clean) continue;
+    if (lower.includes(clean)) score += clean.length > 3 ? 5 : 2;
+    for (const token of sourcePathTokens(clean)) {
+      if (pathTokens.has(token)) score += 4;
+    }
+  }
+
+  if (broad && STRUCTURAL_PATH_RE.test(lower)) score += 4;
+  return score;
+}
+
+function structuralGroupKey(pathValue: string): string {
+  const parts = String(pathValue || '').replace(/\\/g, '/').split('/').filter(Boolean);
+  const idx = parts.findIndex((part) => /^(app|apps|pages|routes|screens|views|features|feature|modules|workflows|flows|api|apis|services|schema|schemas|metadata|config)$/i.test(part));
+  if (idx >= 0) return parts.slice(0, Math.min(parts.length, idx + 2)).join('/');
+  return parts.slice(0, Math.min(parts.length, 2)).join('/') || pathValue;
+}
+
+function discoverStructuralSourceFiles(query: string, keywords: string[], repoPath?: string, limit = 180): SourceFileMeta[] {
+  let all: SourceFileMeta[] = [];
+  try {
+    all = listRepoSourceFiles(repoPath, 10000);
+  } catch {
+    return [];
+  }
+  const broad = isBroadDiscoveryQuery(query);
+  const terms = Array.from(new Set([...keywords, ...sourcePathTokens(query), ...FULL_APP_DISCOVERY_TERMS]));
+  const scored = all
+    .map((file) => ({ file, score: structuralScore(file, terms, broad) }))
+    .filter((item) => item.score > 0)
+    .sort((a, b) => b.score - a.score || a.file.path.localeCompare(b.file.path));
+
+  const manifests = scored.filter((item) => MANIFEST_PATH_RE.test(item.file.path)).slice(0, 45);
+  const byGroup = new Map<string, Array<{ file: SourceFileMeta; score: number }>>();
+  for (const item of scored) {
+    const key = structuralGroupKey(item.file.path);
+    const bucket = byGroup.get(key) || [];
+    if (bucket.length < 4) bucket.push(item);
+    byGroup.set(key, bucket);
+  }
+
+  const picked: SourceFileMeta[] = [];
+  const seen = new Set<string>();
+  const add = (file: SourceFileMeta) => {
+    if (!file?.path || seen.has(file.path)) return;
+    seen.add(file.path);
+    picked.push(file);
+  };
+  manifests.forEach((item) => add(item.file));
+  Array.from(byGroup.values())
+    .flat()
+    .sort((a, b) => b.score - a.score || a.file.path.localeCompare(b.file.path))
+    .forEach((item) => add(item.file));
+  return picked.slice(0, limit);
+}
+
+function selectStructuralFilesForTerms(files: SourceFileMeta[], terms: string[], limit = 32): string[] {
+  const scored = files
+    .map((file) => ({ file, score: structuralScore(file, terms, true) }))
+    .filter((item) => item.score > 0)
+    .sort((a, b) => b.score - a.score || a.file.path.localeCompare(b.file.path));
+  return scored.slice(0, limit).map((item) => item.file.path);
+}
+
+function extractSourceAnchors(content: string): string[] {
+  const anchors = new Set<string>();
+  const add = (value: string) => {
+    const clean = String(value || '').replace(/\s+/g, ' ').trim();
+    if (clean.length >= 2 && clean.length <= 80 && !/^[{}[\](),.;:=]+$/.test(clean)) anchors.add(clean);
+  };
+  for (const m of content.matchAll(/['"`](\/[A-Za-z0-9][A-Za-z0-9/_:.-]{0,90})['"`]/g)) add(m[1]);
+  for (const m of content.matchAll(/\b(?:path|route|href|to|url|label|title|name|text|aria-label)\s*[:=]\s*['"`]([^'"`]{2,80})['"`]/gi)) add(m[1]);
+  for (const m of content.matchAll(/\b(?:export\s+default\s+function|function|const|class)\s+([A-Z][A-Za-z0-9_]{2,50})\b/g)) add(m[1]);
+  for (const m of content.matchAll(/>\s*([A-Z][A-Za-z0-9][^<>{}\n]{1,60})\s*</g)) add(m[1]);
+  return Array.from(anchors).slice(0, 10);
+}
+
+function buildStructuralMapForPrompt(files: SourceFileMeta[], repoPath?: string, maxFiles = 150, maxChars = 18000): string {
+  const lines: string[] = [];
+  for (const file of files.slice(0, maxFiles)) {
+    let anchors: string[] = [];
+    try {
+      anchors = extractSourceAnchors(readRepoFile(file.path, 2600, repoPath));
+    } catch {
+      anchors = [];
+    }
+    lines.push(`${file.path} [${file.area}]${anchors.length ? ` anchors: ${anchors.join(' | ')}` : ''}`);
+  }
+  return lines.join('\n').slice(0, maxChars);
+}
+
 // Harvest distinct identifiers / route+label strings from a file so a second grep round can
 // "follow references" into the modules it depends on — broad coverage via fast native search.
 function harvestReferenceTerms(content: string): string[] {
@@ -201,10 +325,13 @@ function harvestReferenceTerms(content: string): string[] {
 function gatherSourceExcerpts(
   keywords: string[],
   repoPath?: string,
-  opts: { maxFiles?: number; maxBytesPerFile?: number } = {},
+  opts: { maxFiles?: number; maxBytesPerFile?: number; seedFiles?: SourceFileMeta[]; maxSelectedFiles?: number } = {},
 ): { files: Array<{ path: string; area: string; surface: string }>; excerpts: string } {
   const hits = gitGrep(keywords, undefined, opts.maxFiles, repoPath);
   const byPath = new Map(hits.map((h) => [h.path, h]));
+  for (const seed of opts.seedFiles || []) {
+    if (seed?.path && !byPath.has(seed.path)) byPath.set(seed.path, seed);
+  }
 
   // Round 2 — follow references found in the strongest (most relevant) files.
   const seed = relevantSourcePaths(hits.map((h) => h.path), keywords);
@@ -226,7 +353,9 @@ function gatherSourceExcerpts(
 
   // Read the RELEVANT files (dynamic count) across the merged candidate pool.
   const allTerms = Array.from(new Set([...keywords, ...refTerms]));
-  const chosen = relevantSourcePaths(Array.from(byPath.keys()), allTerms);
+  const forced = (opts.seedFiles || []).map((file) => file.path).filter(Boolean);
+  const chosen = Array.from(new Set([...forced, ...relevantSourcePaths(Array.from(byPath.keys()), allTerms)]))
+    .slice(0, opts.maxSelectedFiles || Number.POSITIVE_INFINITY);
   const files = chosen.map((p) => byPath.get(p)).filter(Boolean) as Array<{ path: string; area: string; surface: string }>;
   const parts: string[] = [];
   for (const f of files) {
@@ -356,7 +485,14 @@ export async function discoverFeatureInventoryFromSource(
   const cleanQuery = String(query || '').trim() || 'Discover all testable features, subfeatures, and end-to-end flows in this application.';
   const keywords = deriveInventoryKeywords(cleanQuery);
   const repoPath = opts.repoPath;
-  const { files, excerpts } = gatherSourceExcerpts(keywords, repoPath, { maxFiles: 80, maxBytesPerFile: 2800 });
+  const structuralFiles = discoverStructuralSourceFiles(cleanQuery, keywords, repoPath, 180);
+  const structuralMap = buildStructuralMapForPrompt(structuralFiles, repoPath);
+  const { files, excerpts } = gatherSourceExcerpts(keywords, repoPath, {
+    maxFiles: 260,
+    maxBytesPerFile: 2600,
+    seedFiles: structuralFiles.slice(0, 130),
+    maxSelectedFiles: 150,
+  });
 
   let researchNotes = '';
   try {
@@ -367,7 +503,9 @@ Discover feature-level, subfeature-level, and end-to-end QA coverage across the 
       io: {
         search: async (terms) => {
           const merged = Array.from(new Set([...keywords, ...(terms || [])])).slice(0, 48);
-          return relevantSourcePaths(gitGrep(merged, undefined, 90, repoPath).map((h) => h.path), merged);
+          const grepPaths = relevantSourcePaths(gitGrep(merged, undefined, 220, repoPath).map((h) => h.path), merged);
+          const structuralPaths = selectStructuralFilesForTerms(structuralFiles, merged, 36);
+          return Array.from(new Set([...structuralPaths, ...grepPaths])).slice(0, 90);
         },
         read: async (p, b) => readRepoFile(p, b, repoPath),
       },
@@ -382,8 +520,8 @@ Discover feature-level, subfeature-level, and end-to-end QA coverage across the 
   }
 
   const groundingBlock = researchNotes
-    ? `PARALLEL SOURCE RESEARCH NOTES (primary grounding):\n${researchNotes}\n\nSupporting raw source excerpts:\n${excerpts || '(none)'}`
-    : `Raw source excerpts from broad feature discovery searches:\n${excerpts || '(no matching source found; return empty feature arrays rather than inventing)'}`;
+    ? `APP STRUCTURAL MAP (deterministic repo scan; use this as the coverage checklist, and use excerpts/research as behavior proof):\n${structuralMap || '(none)'}\n\nPARALLEL SOURCE RESEARCH NOTES (primary grounding):\n${researchNotes}\n\nSupporting raw source excerpts:\n${excerpts || '(none)'}`
+    : `APP STRUCTURAL MAP (deterministic repo scan; use this as the coverage checklist, and use excerpts as behavior proof):\n${structuralMap || '(none)'}\n\nRaw source excerpts from broad feature discovery searches:\n${excerpts || '(no matching source found; return empty feature arrays rather than inventing)'}`;
 
   const featureAgent = await getOrchestrator('featureDiscoveryAgent', opts);
   const featureRes = await featureAgent.generateObject<FeatureInventory>({
@@ -401,6 +539,7 @@ Return strict JSON matching the schema.
 
 Rules:
 - Do NOT return only top-level pages/modules. Decompose into feature -> subfeatures.
+- Use the APP STRUCTURAL MAP as a checklist. Each route/page/navigation/feature-like file should either be represented as a feature/subfeature or excluded only when the evidence shows it is not user-visible behavior.
 - A subfeature is testable as its own case: a user action, validation, permission rule, data state, table behavior, or branch.
 - Capture backend-enforced business rules and frontend-visible actions under the matching subfeature.
 - Prefer one subfeature per user-visible capability or code-enforced branch: create/edit/delete, filters/search, import/export, validation failures, permissions, empty/error states, async/background behavior, etc.
@@ -410,6 +549,7 @@ Rules:
     schema: featureInventorySchema,
     userMessage: cleanQuery,
     hasHistory: true,
+    maxTokens: 12000,
   });
   if ((featureRes as any).shortCircuit) throw new Error(String((featureRes as any).shortCircuit));
 
@@ -437,6 +577,7 @@ Return strict JSON matching the schema.
 
 Rules:
 - An E2E flow must cross multiple features, screens, APIs, roles, or persisted states.
+- Use the APP STRUCTURAL MAP and feature inventory together. Look for links such as login -> landing -> feature use, create -> list/detail -> edit/delete, settings/config -> runtime behavior, import -> records -> export, permission setup -> restricted action, and background processing -> visible result.
 - Do not duplicate single subfeature cases; those are handled by FeatureDiscoveryAgent.
 - Each userJourney step must be concrete and ordered enough for a test case.
 - coveredFeatures must reference feature/subfeature names from the inventory where possible.
@@ -445,6 +586,7 @@ Rules:
     schema: e2eFlowSchema,
     userMessage: cleanQuery,
     hasHistory: true,
+    maxTokens: 8000,
   });
   if ((e2eRes as any).shortCircuit) throw new Error(String((e2eRes as any).shortCircuit));
 

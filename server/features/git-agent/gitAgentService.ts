@@ -587,6 +587,26 @@ export function gitGrep(patterns: string[], pathspecs: string[] = SOURCE_GLOBS, 
   return results;
 }
 
+/** List tracked source files in the target repo. Used by broad feature discovery so
+ * important route/page/feature files are considered even when generic grep terms miss them. */
+export function listRepoSourceFiles(repoPath?: string, maxFiles = 8000) {
+  const repo = resolveTargetRepo(repoPath);
+  if (!repo || !existsSync(path.join(repo, '.git'))) {
+    throw new Error(`Target repo was not found${repo ? ` at ${repo}` : ' (no repo configured for this project)'}.`);
+  }
+  const out = gitOutputOrEmpty(repo, ['ls-files', '--', ...SOURCE_GLOBS], 60000);
+  const seen = new Set<string>();
+  const results: Array<{ path: string; area: string; surface: string }> = [];
+  for (const file of out.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)) {
+    if (seen.has(file)) continue;
+    seen.add(file);
+    const c = classifyChangedFile(file);
+    results.push({ path: file, area: c.area, surface: c.surface });
+    if (results.length >= maxFiles) break;
+  }
+  return results;
+}
+
 /** Read a tracked file's content at HEAD from the target repo, capped to maxBytes. */
 export function readRepoFile(relPath: string, maxBytes = 6000, repoPath?: string): string {
   const repo = resolveTargetRepo(repoPath);
