@@ -36,6 +36,41 @@ function wantsCodeGroundedTestUnderstanding(value: string): boolean {
     && /\b(test|case|cases|qa|coverage|scenario|scenarios|regression)\b/.test(text);
 }
 
+function extractCarriedForwardScope(value: string): string {
+  const text = String(value || '');
+  const marker = 'Carry forward this prior agent answer as authoritative scope:';
+  const idx = text.indexOf(marker);
+  if (idx === -1) return '';
+  return stripCodebaseLocationsForAgentConsole(text.slice(idx + marker.length).trim());
+}
+
+function isShortFollowUpAction(value: string): boolean {
+  const text = String(value || '').trim().toLowerCase();
+  if (!text || text.length > 80) return false;
+  return /\b(deep\s*test|test\s+them\s+all|run\s+them|test\s+all|continue|proceed|generate\s+(?:scripts|cases)|create\s+(?:scripts|cases))\b/.test(text);
+}
+
+function buildCarriedForwardUnderstanding(input: {
+  task: string;
+  rawOriginalRequest: string;
+  targetName: string;
+  targetUrl: string;
+  carriedScope: string;
+}): string {
+  const target = input.targetName
+    ? `${input.targetName}${input.targetUrl ? ` at ${input.targetUrl}` : ''}`
+    : input.targetUrl || 'Target not provided';
+  const action = input.rawOriginalRequest || input.task || 'Continue with the requested deep QA work';
+  return stripCodebaseLocationsForAgentConsole(
+    `Here's what I understood\n` +
+    `You want me to continue from the grounded scope already found in this chat and perform: ${action}.\n\n` +
+    `Target\n${target}\n\n` +
+    `Task\n${input.task || action}\n\n` +
+    `Grounded scope I will carry forward\n${input.carriedScope}\n\n` +
+    `Plan\nUse the grounded scope above as the source of truth, create human-reviewable QA cases, then generate matching Playwright scripts and evidence only after approval.`,
+  );
+}
+
 function getAgentPlanStatus(run: any) {
   if (run?.status === 'completed') return 'Completed';
   if (run?.status === 'review_required') return 'Under Review';
@@ -1231,10 +1266,12 @@ export function registerAgentRoutes(app: Express) {
   });
 
   app.post('/api/agent/understand-request', async (req, res) => {
-    const { prompt, originalRequest, targetName, targetUrl, currentUnderstanding, correction, history } = req.body || {};
+    const { prompt, originalRequest, contextPrompt, targetName, targetUrl, currentUnderstanding, correction, history } = req.body || {};
     const rawPrompt = String(prompt || '').trim();
     const rawOriginalRequest = String(originalRequest || '').trim();
-    const intentPrompt = rawOriginalRequest || rawPrompt;
+    const rawContextPrompt = String(contextPrompt || '').trim();
+    const intentPrompt = [rawOriginalRequest, rawPrompt, rawContextPrompt].filter(Boolean).join('\n\n');
+    const groundingPrompt = rawContextPrompt || [rawOriginalRequest, rawPrompt].filter(Boolean).join('\n\n');
     // Prior turns of this chat, so the understanding reflects the ongoing conversation
     // (e.g. "now do the same for the reports page" refers back to earlier messages).
     const historyBlock = Array.isArray(history) && history.length
@@ -1242,7 +1279,7 @@ export function registerAgentRoutes(app: Express) {
       : '';
     const rawTargetUrl = String(targetUrl || '').trim();
     const rawTargetName = String(targetName || '').trim();
-    if (!rawPrompt) return res.status(400).json({ error: 'prompt is required' });
+    if (!rawPrompt && !rawContextPrompt) return res.status(400).json({ error: 'prompt is required' });
 
     const fallback = {
       understanding:
@@ -1259,6 +1296,25 @@ export function registerAgentRoutes(app: Express) {
       source: 'fallback',
     };
 
+    const carriedScope = extractCarriedForwardScope(rawContextPrompt);
+    if (!correction && carriedScope && isShortFollowUpAction(rawOriginalRequest || rawPrompt)) {
+      return res.json({
+        ...fallback,
+        understanding: buildCarriedForwardUnderstanding({
+          task: rawPrompt,
+          rawOriginalRequest,
+          targetName: rawTargetName,
+          targetUrl: rawTargetUrl,
+          carriedScope,
+        }),
+        task: rawPrompt,
+        plannedApproach: 'Use the previously grounded scope from this chat as the reviewed understanding, then continue the deep QA workflow.',
+        confidence: 90,
+        missingInfo: [],
+        source: 'conversation_context',
+      });
+    }
+
     if (!correction && wantsCodeGroundedTestUnderstanding(intentPrompt)) {
       try {
         const scope = reqScope(req);
@@ -1266,7 +1322,7 @@ export function registerAgentRoutes(app: Express) {
         const apps = targetLabel
           ? [{ name: rawTargetName || targetLabel, baseUrl: rawTargetUrl || targetLabel }]
           : undefined;
-        const grounded = await answerAppQuestionFromCode(intentPrompt, {
+        const grounded = await answerAppQuestionFromCode(groundingPrompt || intentPrompt, {
           workspaceId: scope.userId || 'default',
           userId: scope.userId,
           projectId: scope.projectId,
@@ -1296,8 +1352,9 @@ export function registerAgentRoutes(app: Express) {
         prompt:
           `Interpret this QA automation request for a human confirmation card.\n\n` +
           historyBlock +
-          `Original request: ${intentPrompt}\n` +
+          `Original request: ${rawOriginalRequest || rawPrompt}\n` +
           (rawOriginalRequest && rawOriginalRequest !== rawPrompt ? `Router-extracted scope: ${rawPrompt}\n` : '') +
+          (rawContextPrompt ? `Full carried-forward context for this follow-up:\n${rawContextPrompt}\n` : '') +
           `Detected target name: ${rawTargetName || 'not provided'}\n` +
           `Detected target URL: ${rawTargetUrl || 'not provided'}\n` +
           (currentUnderstanding ? `Current understanding:\n${String(currentUnderstanding)}\n` : '') +

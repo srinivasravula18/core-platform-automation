@@ -34,6 +34,14 @@ function acceptsTemperature(model: string): boolean {
   return !/opus-4-(?:[7-9]|1\d)/i.test(model);
 }
 
+function resolveRequiredMaxTokens(model: string, requested?: number): number {
+  if (typeof requested === 'number' && requested > 0) return requested;
+  // Anthropic's Messages API requires max_tokens. Keep this in one place and use
+  // a roomy default so normal agent answers/scripts are not cut off by the old
+  // scattered 2048/4096 call-site caps.
+  return /haiku/i.test(model) ? 4096 : 8192;
+}
+
 /** Map a provider-agnostic ChatMessage to an Anthropic Messages param. */
 function toAnthropicMessage(m: ChatMessage): Anthropic.MessageParam {
   if (m.role === 'tool') {
@@ -105,7 +113,7 @@ export class AnthropicProvider implements AIProvider {
     }
     const params: Anthropic.MessageCreateParamsNonStreaming = {
       model: modelId,
-      max_tokens: opts.maxTokens ?? 2048,
+      max_tokens: resolveRequiredMaxTokens(modelId, opts.maxTokens),
       messages: [{ role: 'user', content: opts.prompt }],
     };
     if (systemParts.length > 0) params.system = systemParts.join('\n\n');
@@ -133,7 +141,7 @@ export class AnthropicProvider implements AIProvider {
     const messages: Anthropic.MessageParam[] = opts.messages.map((m) => toAnthropicMessage(m));
     const params: Anthropic.MessageCreateParamsNonStreaming = {
       model: modelId,
-      max_tokens: opts.maxTokens ?? 4096,
+      max_tokens: resolveRequiredMaxTokens(modelId, opts.maxTokens),
       messages,
     };
     if (opts.system) params.system = opts.system;
@@ -188,7 +196,7 @@ export class AnthropicProvider implements AIProvider {
     const modelId = this.modelId(opts);
     const params: Anthropic.MessageCreateParamsStreaming = {
       model: modelId,
-      max_tokens: opts.maxTokens ?? 2048,
+      max_tokens: resolveRequiredMaxTokens(modelId, opts.maxTokens),
       messages: [{ role: 'user', content: opts.prompt }],
       stream: true,
     };

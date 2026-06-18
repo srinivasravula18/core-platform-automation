@@ -158,12 +158,14 @@ type Turn =
   | { id: string; role: 'assistant'; kind: 'reqdiscovery'; result: any }
   | { id: string; role: 'assistant'; kind: 'cases'; cases: any[] }
   | { id: string; role: 'assistant'; kind: 'clarify'; plan: any; summary: string; confidence: number }
-  | { id: string; role: 'assistant'; kind: 'folderask'; text: string; understanding?: string; folderName?: string; originalPrompt?: string; targetUrl?: string; websiteId?: string; websiteName?: string; revisionCount?: number }
+  | { id: string; role: 'assistant'; kind: 'folderask'; text: string; understanding?: string; folderName?: string; originalPrompt?: string; contextPrompt?: string; caseCountPrompt?: string; targetUrl?: string; websiteId?: string; websiteName?: string; revisionCount?: number }
   | { id: string; role: 'assistant'; kind: 'thinking'; label: string };
 
 type PendingDeep = {
   prompt: string;
   originalRequest?: string;
+  contextPrompt?: string;
+  caseCountPrompt?: string;
   targetUrl: string;
   websiteId?: string;
   websiteName?: string;
@@ -540,6 +542,41 @@ export default function AgentConsole() {
     setTurns((prev) => prev.map((t) => (t.id === id ? turn : t)));
   }, []);
 
+  const richestAssistantContext = useCallback((): string => {
+    const recent = turnsRef.current
+      .filter((t) => t.role === 'assistant')
+      .map((t) => {
+        switch (t.kind) {
+          case 'text': return t.text || '';
+          case 'folderask': return t.understanding || t.text || '';
+          case 'clarify': return t.summary || '';
+          case 'plan': return t.plan?.summary || '';
+          case 'cases': return Array.isArray(t.cases)
+            ? `Generated test cases:\n${t.cases.map((c: any, i: number) => `${i + 1}. ${c?.title || c?.name || `case ${i + 1}`}`).join('\n')}`
+            : '';
+          case 'codereview': return typeof t.analysis === 'string' ? t.analysis : (t.analysis?.summary || '');
+          case 'reqdiscovery': return typeof t.result === 'string' ? t.result : (t.result?.summary || '');
+          default: return '';
+        }
+      })
+      .filter((content) => content && !isNoiseAnswer(content))
+      .slice(-6);
+    if (!recent.length) return '';
+    return recent.reduce((best, content) => (content.length > best.length ? content : best), '').trim();
+  }, []);
+
+  const buildDeepContextPrompt = useCallback((rawRequest: string, resolvedScope: string): string => {
+    const request = (rawRequest || '').trim();
+    const scope = (resolvedScope || '').trim();
+    const prior = richestAssistantContext();
+    const parts = [
+      request ? `User follow-up/request: ${request}` : '',
+      scope && scope !== request ? `Resolved scope from router: ${scope}` : '',
+      prior ? `Carry forward this prior agent answer as authoritative scope:\n${prior}` : '',
+    ].filter(Boolean);
+    return (parts.join('\n\n') || scope || request).trim();
+  }, [richestAssistantContext]);
+
   // The prior turns of THIS chat, as a compact role/content transcript, so every
   // request carries conversation memory (ChatGPT/Claude-style continuity).
   const buildHistory = useCallback((): Array<{ role: 'user' | 'assistant'; content: string }> => {
@@ -603,6 +640,7 @@ export default function AgentConsole() {
     websiteId?: string;
     approvedUnderstanding?: string;
     folderMention?: string;
+    caseCountPrompt?: string;
   }) => {
     const res = await fetch('/api/agent/start', {
       method: 'POST',
@@ -612,7 +650,7 @@ export default function AgentConsole() {
         websiteId: args.websiteId || undefined,
         prompt: args.prompt,
         approvedUnderstanding: args.approvedUnderstanding || '',
-        testCaseCount: parseCaseCount(args.prompt),
+        testCaseCount: parseCaseCount(args.caseCountPrompt || args.prompt),
         flowMode: 'review_cases',
         folderMention: args.folderMention || undefined,
         // Carry the conversation so case generation is grounded in what was actually
@@ -639,6 +677,7 @@ export default function AgentConsole() {
   const requestDeepUnderstanding = useCallback(async (args: {
     prompt: string;
     originalRequest?: string;
+    contextPrompt?: string;
     targetUrl: string;
     targetName?: string;
     currentUnderstanding?: string;
@@ -668,11 +707,13 @@ export default function AgentConsole() {
     thinkingId: string;
     prompt: string;
     originalRequest?: string;
+    contextPrompt?: string;
     targetUrl: string;
     websiteId?: string;
     websiteName?: string;
   }) => {
     const { thinkingId, prompt, originalRequest, targetUrl, websiteId, websiteName } = args;
+    const contextPrompt = (args.contextPrompt || buildDeepContextPrompt(originalRequest || prompt, prompt)).trim();
     const target = websiteName ? `${websiteName} (${targetUrl})` : targetUrl;
     const fallbackUnderstanding =
       `Here's what I understood:\n` +
@@ -681,12 +722,13 @@ export default function AgentConsole() {
       `Plan: log in to the target → perform the steps on the live app → verify the result → capture screenshots as evidence.`;
     let understanding = fallbackUnderstanding;
     try {
-      const generated = await requestDeepUnderstanding({ prompt, originalRequest: originalRequest || prompt, targetUrl, targetName: websiteName || '' });
+      const generated = await requestDeepUnderstanding({ prompt, originalRequest: originalRequest || prompt, contextPrompt, targetUrl, targetName: websiteName || '' });
       understanding = generated.understanding || fallbackUnderstanding;
     } catch {
       /* use deterministic fallback */
     }
-    const nextPending: PendingDeep = { prompt, originalRequest: originalRequest || prompt, targetUrl, websiteId, websiteName, understanding, revisionCount: 0 };
+    const caseCountPrompt = originalRequest || prompt;
+    const nextPending: PendingDeep = { prompt, originalRequest: originalRequest || prompt, contextPrompt, caseCountPrompt, targetUrl, websiteId, websiteName, understanding, revisionCount: 0 };
     setPendingDeep(nextPending);
     // Remember this chat's target so later generation requests reuse it.
     convTargetRef.current = { targetUrl, websiteId, websiteName };
@@ -695,14 +737,16 @@ export default function AgentConsole() {
       role: 'assistant',
       kind: 'folderask',
       understanding,
-      originalPrompt: originalRequest || prompt,
+      originalPrompt: contextPrompt || prompt,
+      contextPrompt,
+      caseCountPrompt,
       targetUrl,
       websiteId,
       websiteName,
       revisionCount: 0,
       text: 'Look right? Pick a folder for the results (type a name below), or proceed with an auto-named folder.',
     });
-  }, [requestDeepUnderstanding, replaceTurn]);
+  }, [buildDeepContextPrompt, requestDeepUnderstanding, replaceTurn]);
 
   // The apps the user explicitly selected in the composer (all of them), as target
   // context for the agent. Mirrored to a ref so callbacks read the latest without churn.
@@ -815,6 +859,7 @@ export default function AgentConsole() {
             const revised = await requestDeepUnderstanding({
               prompt: activePending.prompt,
               originalRequest: activePending.originalRequest || activePending.prompt,
+              contextPrompt: activePending.contextPrompt || activePending.prompt,
               targetUrl: activePending.targetUrl,
               targetName: activePending.websiteName,
               currentUnderstanding: activePending.understanding,
@@ -833,7 +878,9 @@ export default function AgentConsole() {
               role: 'assistant',
               kind: 'folderask',
               understanding: nextPending.understanding,
-              originalPrompt: nextPending.originalRequest || nextPending.prompt,
+              originalPrompt: nextPending.contextPrompt || nextPending.prompt,
+              contextPrompt: nextPending.contextPrompt,
+              caseCountPrompt: nextPending.caseCountPrompt || nextPending.originalRequest || nextPending.prompt,
               targetUrl: nextPending.targetUrl,
               websiteId: nextPending.websiteId,
               websiteName: nextPending.websiteName,
@@ -860,11 +907,12 @@ export default function AgentConsole() {
         try {
           await startDeepRun({
             thinkingId,
-            prompt: activePending.originalRequest || activePending.prompt,
+            prompt: activePending.contextPrompt || activePending.prompt,
             targetUrl: activePending.targetUrl,
             websiteId: activePending.websiteId,
             approvedUnderstanding,
             folderMention: folderMention || undefined,
+            caseCountPrompt: activePending.caseCountPrompt || activePending.originalRequest || activePending.prompt,
           });
         } catch (err: any) {
           replaceTurn(thinkingId, {
@@ -1034,7 +1082,8 @@ export default function AgentConsole() {
           // The prompt carries the router's grounded scope when it has one, so the deep run
           // reflects the actual conversation rather than just the raw message.
           const prompt = (typeof goal.scope === 'string' && goal.scope.trim()) ? goal.scope.trim() : text;
-          await presentDeepUnderstanding({ thinkingId, prompt, originalRequest: text, targetUrl, websiteId, websiteName });
+          const contextPrompt = buildDeepContextPrompt(text, prompt);
+          await presentDeepUnderstanding({ thinkingId, prompt, originalRequest: text, contextPrompt, targetUrl, websiteId, websiteName });
           setBusy(false);
           inputRef.current?.focus();
           return;
@@ -1117,7 +1166,7 @@ export default function AgentConsole() {
         inputRef.current?.focus();
       }
     },
-    [input, busy, editingTurnId, location.pathname, stopListening, replaceTurn, requestDeepUnderstanding, presentDeepUnderstanding, reqMode, pendingDeep, websites, scopeApp, buildHistory, startDeepRun, runViaSupervisor, getSelectedApps],
+    [input, busy, editingTurnId, location.pathname, stopListening, replaceTurn, requestDeepUnderstanding, presentDeepUnderstanding, reqMode, pendingDeep, websites, scopeApp, buildHistory, buildDeepContextPrompt, startDeepRun, runViaSupervisor, getSelectedApps],
   );
 
   // Start the deep run directly from a "Here's what I understood" card's OWN stored data
@@ -1125,7 +1174,7 @@ export default function AgentConsole() {
   // the Proceed buttons working even if the user typed other messages after the card
   // appeared (which clears pendingDeep), so they never misfire into the planner.
   const proceedDeepFromTurn = useCallback(
-    async (turn: { id: string; understanding?: string; originalPrompt?: string; targetUrl?: string; websiteId?: string }, folderName?: string) => {
+    async (turn: { id: string; understanding?: string; originalPrompt?: string; contextPrompt?: string; caseCountPrompt?: string; targetUrl?: string; websiteId?: string }, folderName?: string) => {
       if (busy) return;
       setBusy(true);
       setPendingDeep(null);
@@ -1136,27 +1185,15 @@ export default function AgentConsole() {
       replaceTurn(turn.id, { id: turn.id, role: 'assistant', kind: 'text', text: turn.understanding || 'Proceeding with the run…' });
       setTurns((prev) => [...prev, { id: runTurnId, role: 'assistant', kind: 'thinking', label: 'Starting the run…' }]);
       try {
-        const res = await fetch('/api/agent/start', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            app_url: turn.targetUrl || '',
-            websiteId: turn.websiteId || undefined,
-            prompt: turn.originalPrompt || '',
-            approvedUnderstanding: turn.understanding || '',
-            testCaseCount: parseCaseCount(turn.originalPrompt || ''),
-            flowMode: 'review_cases',
-            folderMention: folderName || undefined,
-          }),
+        await startDeepRun({
+          thinkingId: runTurnId,
+          prompt: turn.contextPrompt || turn.originalPrompt || '',
+          targetUrl: turn.targetUrl || '',
+          websiteId: turn.websiteId || undefined,
+          approvedUnderstanding: turn.understanding || '',
+          folderMention: folderName || undefined,
+          caseCountPrompt: turn.caseCountPrompt || turn.originalPrompt || '',
         });
-        const data = await res.json().catch(() => ({}));
-        if (data?.task_id) {
-          replaceTurn(runTurnId, { id: runTurnId, role: 'assistant', kind: 'deeprun', taskId: data.task_id });
-        } else if (data?.chat_response) {
-          replaceTurn(runTurnId, { id: runTurnId, role: 'assistant', kind: 'text', text: data.chat_response });
-        } else {
-          replaceTurn(runTurnId, { id: runTurnId, role: 'assistant', kind: 'text', text: data?.error || 'I could not start the run. Check that an AI provider key is set in Settings.' });
-        }
       } catch (err: any) {
         replaceTurn(runTurnId, { id: runTurnId, role: 'assistant', kind: 'text', text: `Something went wrong starting the run: ${err?.message || 'unknown error'}.` });
       } finally {
@@ -1164,7 +1201,7 @@ export default function AgentConsole() {
         inputRef.current?.focus();
       }
     },
-    [busy, replaceTurn],
+    [busy, replaceTurn, startDeepRun],
   );
 
   const executePlan = useCallback(

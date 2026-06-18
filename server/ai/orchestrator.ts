@@ -322,7 +322,7 @@ export class AgentOrchestrator {
         messages,
         tools: toolSpecs,
         temperature: opts.temperature,
-        maxTokens: opts.maxTokensPerCall ?? 4096,
+        maxTokens: opts.maxTokensPerCall,
         signal: opts.signal,
       }), opts.signal);
       if (res.usage) {
