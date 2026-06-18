@@ -44,6 +44,14 @@ const featureAnalystSchema = z.object({
 const featureInventorySchema = z.object({
   appName: z.string().default('Application'),
   summary: z.string().default(''),
+  coverageAudit: z.object({
+    structuralFilesReviewed: z.array(z.string()).default([]),
+    omittedStructuralFiles: z.array(z.object({
+      path: z.string().default(''),
+      reason: z.string().default(''),
+    })).default([]),
+    riskNotes: z.array(z.string()).default([]),
+  }).default({ structuralFilesReviewed: [], omittedStructuralFiles: [], riskNotes: [] }),
   features: z.array(z.object({
     name: z.string().default('Feature'),
     surface: z.string().default('Application'),
@@ -74,6 +82,7 @@ const featureInventorySchema = z.object({
 
 const e2eFlowSchema = z.object({
   e2eFlows: featureInventorySchema.shape.e2eFlows,
+  coverageAudit: featureInventorySchema.shape.coverageAudit,
 });
 
 const reconcileSchema = z.object({
@@ -545,7 +554,9 @@ Rules:
 - Prefer one subfeature per user-visible capability or code-enforced branch: create/edit/delete, filters/search, import/export, validation failures, permissions, empty/error states, async/background behavior, etc.
 - Use sourceFiles with real repo-relative paths from the evidence only.
 - Keep unrelated framework plumbing out unless it changes user-visible or API behavior.
-- Leave e2eFlows empty in this response; E2EFlowAgent fills them next.`,
+- Leave e2eFlows empty in this response; E2EFlowAgent fills them next.
+- Fill coverageAudit.structuralFilesReviewed with the structural-map files you actually used for coverage.
+- Fill coverageAudit.omittedStructuralFiles for important-looking structural-map files you intentionally excluded, with the evidence-based reason. Do not omit a route/page/feature-like file silently.`,
     schema: featureInventorySchema,
     userMessage: cleanQuery,
     hasHistory: true,
@@ -582,7 +593,9 @@ Rules:
 - Each userJourney step must be concrete and ordered enough for a test case.
 - coveredFeatures must reference feature/subfeature names from the inventory where possible.
 - Include business rules and sourceFiles that justify the flow.
-- If the evidence does not establish any cross-feature journey, return an empty e2eFlows array.`,
+- If the evidence does not establish any cross-feature journey, return an empty e2eFlows array.
+- Fill coverageAudit.structuralFilesReviewed with the structural-map files used to infer cross-feature journeys.
+- Fill coverageAudit.omittedStructuralFiles for important-looking structural-map files that did not connect to a supported E2E journey, with a short reason.`,
     schema: e2eFlowSchema,
     userMessage: cleanQuery,
     hasHistory: true,
@@ -591,6 +604,12 @@ Rules:
   if ((e2eRes as any).shortCircuit) throw new Error(String((e2eRes as any).shortCircuit));
 
   inventory.e2eFlows = (e2eRes as any).object?.e2eFlows || [];
+  if ((e2eRes as any).object?.coverageAudit) {
+    inventory.coverageAudit = {
+      ...(inventory.coverageAudit || { structuralFilesReviewed: [], omittedStructuralFiles: [], riskNotes: [] }),
+      e2e: (e2eRes as any).object.coverageAudit,
+    } as any;
+  }
   return { inventory, files, keywords };
 }
 

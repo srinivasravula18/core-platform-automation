@@ -405,6 +405,7 @@ Discovery rules:
 - Merge duplicates that describe the same behavior, but keep distinct branches separate when their test assertions differ.
 - Preserve hierarchy: features contain subfeatures; subfeatures contain business rules, user actions, test ideas, priority, and tags.
 - Leave e2eFlows empty. E2EFlowAgent owns cross-feature journey discovery.
+- Maintain coverage accountability: list reviewed structural files in coverageAudit.structuralFilesReviewed and explicitly explain important omitted route/page/feature-like files in coverageAudit.omittedStructuralFiles.
 
 Grounding rules:
 - Use only source research, excerpts, and file paths in the prompt. Never invent screens, labels, flows, APIs, roles, or rules.
@@ -433,6 +434,7 @@ Flow quality rules:
 - businessRules must describe cross-feature rules or state transitions that must hold through the journey.
 - priority should reflect business risk and regression value.
 - tags should include useful automation labels such as @e2e, @regression, @smoke, @permissions, @data, or domain-specific tags shown by the evidence.
+- Maintain coverage accountability: list structural files used to infer journeys in coverageAudit.structuralFilesReviewed and explain important files that do not form supported E2E journeys in coverageAudit.omittedStructuralFiles.
 
 Grounding rules:
 - Use only the feature inventory and source evidence in the prompt.
