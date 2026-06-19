@@ -42,9 +42,10 @@ function runGit(cwd: string, args: string[], timeout = 120000) {
     encoding: 'utf8',
     timeout,
     windowsHide: true,
-    // No output cap: a git read must return the ENTIRE file, however large (Node's default
-    // maxBuffer is only 1 MB, which would silently cut off big source files).
-    maxBuffer: 1024 * 1024 * 512,
+    // NO size cap at all — read the entire file regardless of size, like Claude Code does. Node's
+    // default maxBuffer is 1 MB and exceeding it makes git error out (so a big file would come back
+    // empty); Infinity removes the limit so any file, however large, is read in full.
+    maxBuffer: Infinity,
   });
 
   if (result.error) throw result.error;
