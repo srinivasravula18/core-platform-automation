@@ -35,6 +35,151 @@ function clampConfidence(n: unknown): number {
   return Math.max(0, Math.min(100, Math.round(v)));
 }
 
+function cleanText(value: string): string {
+  return String(value || '').toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
+function looksLikeQuestionOrCoverageAsk(message: string): boolean {
+  const text = cleanText(message);
+  if (!text) return false;
+  if (/\b(generate|draft|create|write|author|build|make|run|execute|rerun|re-run|playwright)\b/.test(text)) return false;
+  if (/\?$/.test(text)) return true;
+  if (/\b(what|which|how|where|why|do|does|did|can|could|should|would|is|are)\b/.test(text)) return true;
+  const coverageAsk =
+    /\b(list|show|tell|outline|summari[sz]e|map)\b/.test(text)
+    && /\b(features?|test areas?|coverage|scenarios?|workflows?|journeys?|modules?|pages?|screens?|end to end|e2e)\b/.test(text);
+  const whatToTest =
+    /\b(features?\s+to\s+test|what\s+(?:should|can)\s+(?:i|we)\s+test|what\s+to\s+test|test\s+areas?|coverage\s+areas?)\b/.test(text);
+  return coverageAsk || whatToTest;
+}
+
+function resolveNamedTarget(message: string, ctx: RoutingContext): RouteTarget | undefined {
+  const text = cleanText(message);
+  const selected = Array.isArray(ctx.selectedApps) ? ctx.selectedApps.filter(Boolean) : [];
+  const matched = selected.filter((app) => {
+    const name = cleanText(app?.name || '');
+    return !!name && text.includes(name);
+  });
+  if (matched.length === 1) return matched[0];
+  if (matched.length > 1) {
+    return {
+      name: matched.map((app) => app.name).filter(Boolean).join(' + '),
+      url: matched.map((app) => app.url).filter(Boolean).join(', ') || undefined,
+    };
+  }
+  return undefined;
+}
+
+function heuristicClassifyGoal(message: string, ctx: RoutingContext = {}): RawGoalClassification {
+  const text = cleanText(message);
+  const target = resolveNamedTarget(message, ctx) || resolveTarget({
+    kind: 'answer',
+    confidence: 70,
+    isQuestion: false,
+    isImperative: false,
+    wantsExecution: false,
+    scope: message,
+    target: {},
+    missing: [],
+    clarifyingQuestion: '',
+    reason: 'heuristic target resolution',
+  }, ctx) || {};
+  const scope = String(message || '').trim();
+  const hasExecutionVerb = /\b(run|execute|rerun|re-run|playwright|e2e|end to end|end-to-end)\b/.test(text);
+  const hasGenerationVerb = /\b(generate|draft|write|author|create|build|make)\b/.test(text);
+  const hasCodeVerb = /\b(analy[sz]e|review|diff|recent changes|repo|repository|codebase|code changes?)\b/.test(text);
+  const hasWorkspaceVerb = /\b(plan|suite|folder|report|defect|move|organize|organise|navigate|open|go to)\b/.test(text);
+  const isQuestion = looksLikeQuestionOrCoverageAsk(message);
+
+  if (isQuestion) {
+    return {
+      kind: 'answer',
+      confidence: 86,
+      isQuestion: true,
+      isImperative: false,
+      wantsExecution: false,
+      scope,
+      target,
+      missing: [],
+      clarifyingQuestion: '',
+      reason: 'heuristic informational/test-coverage request',
+    };
+  }
+
+  if (hasCodeVerb && !hasGenerationVerb && !hasExecutionVerb) {
+    return {
+      kind: 'code_analysis',
+      confidence: 78,
+      isQuestion: false,
+      isImperative: true,
+      wantsExecution: false,
+      scope,
+      target,
+      missing: [],
+      clarifyingQuestion: '',
+      reason: 'heuristic code-analysis request',
+    };
+  }
+
+  if (hasWorkspaceVerb && !hasExecutionVerb && !/\btest|case|coverage|scenario|qa\b/.test(text)) {
+    return {
+      kind: 'workspace_action',
+      confidence: 75,
+      isQuestion: false,
+      isImperative: true,
+      wantsExecution: false,
+      scope,
+      target,
+      missing: [],
+      clarifyingQuestion: '',
+      reason: 'heuristic workspace action request',
+    };
+  }
+
+  if (hasExecutionVerb) {
+    return {
+      kind: 'deep_test_run',
+      confidence: 82,
+      isQuestion: false,
+      isImperative: true,
+      wantsExecution: true,
+      scope,
+      target,
+      missing: [],
+      clarifyingQuestion: '',
+      reason: 'heuristic execution request',
+    };
+  }
+
+  if (hasGenerationVerb || /\b(test|case|cases|coverage|scenario|scenarios|qa)\b/.test(text)) {
+    return {
+      kind: 'generate_cases',
+      confidence: 74,
+      isQuestion: false,
+      isImperative: true,
+      wantsExecution: false,
+      scope,
+      target,
+      missing: [],
+      clarifyingQuestion: '',
+      reason: 'heuristic case-generation request',
+    };
+  }
+
+  return {
+    kind: 'answer',
+    confidence: 60,
+    isQuestion: false,
+    isImperative: false,
+    wantsExecution: false,
+    scope,
+    target,
+    missing: [],
+    clarifyingQuestion: '',
+    reason: 'heuristic fallback',
+  };
+}
+
 /** Map the model's free-form label onto a canonical RouteKind. */
 function canonicalKind(raw: string): RouteKind {
   const k = String(raw || '').toLowerCase().trim();
@@ -222,6 +367,17 @@ export async function classifyGoal(input: ClassifyGoalInput): Promise<RawGoalCla
 
 /** Convenience: classify (LLM) then decide (deterministic) in one call. */
 export async function routeGoal(input: ClassifyGoalInput, ctx: RoutingContext = {}): Promise<{ route: Route; raw: RawGoalClassification }> {
-  const raw = await classifyGoal(input);
+  const direct = heuristicClassifyGoal(input.message, ctx);
+  const shouldBypassModel = looksLikeQuestionOrCoverageAsk(input.message);
+  let raw: RawGoalClassification;
+  if (shouldBypassModel) {
+    raw = direct;
+  } else {
+    try {
+      raw = await classifyGoal(input);
+    } catch {
+      raw = direct;
+    }
+  }
   return { route: decideRoute(raw, ctx), raw };
 }

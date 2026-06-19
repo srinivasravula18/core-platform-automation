@@ -128,6 +128,19 @@ function expandFeatureTerms(question: string): string[] {
   return Array.from(new Set(extra));
 }
 
+function isBroadCoverageQuestion(question: string): boolean {
+  const text = String(question || '').toLowerCase().replace(/\s+/g, ' ').trim();
+  if (!text) return false;
+  const broadScope = /\b(all|entire|whole|across|full|complete|every)\b/.test(text);
+  const coverageAsk =
+    /\b(features?|test areas?|coverage|scenarios?|workflows?|journeys?|modules?|pages?|screens?)\b/.test(text)
+    || /\bwhat\s+(?:should|can)\s+(?:i|we)\s+test\b/.test(text)
+    || /\bfeatures?\s+to\s+test\b/.test(text);
+  const multiSurface = /\b(admin|keystone)\b/.test(text) && /\b(admin\b.*\bkeystone|keystone\b.*\badmin)\b/.test(text);
+  const crossFlow = /\b(end to end|end-to-end|e2e)\b/.test(text);
+  return coverageAsk && (broadScope || multiSurface || crossFlow);
+}
+
 function numberLines(content: string): string {
   return String(content || '')
     .split(/\r?\n/)
@@ -234,13 +247,14 @@ export async function answerAppQuestionFromCode(question: string, opts: {
   const appsBlock = (opts.apps || []).length
     ? `\nApps under test (selected by the user): ${(opts.apps || []).map((a) => `${a.name} (${a.baseUrl})`).join(', ')}.`
     : '';
+  const broadCoverage = isBroadCoverageQuestion(question);
 
   // ADAPTIVE, CLAUDE-CODE-STYLE EXPLORATION (PRIMARY): let the model drive the deep search with
   // its OWN tool calls — search → map → read → follow_imports → drill into the edges — deciding
   // each next step from what it just found. This is the senior-engineer loop that yields
   // edge-level answers instead of mid-level summaries. Falls through to parallel research / single
   // pass if the provider can't do tool-calling or the loop returns nothing.
-  try {
+  if (!broadCoverage) try {
     const toolOrch = await getToolCapableOrchestrator('chatAssistant', { workspaceId: opts.workspaceId, userId: opts.userId });
     const exploreCtx: ToolContext = {
       workspaceId: opts.workspaceId || 'default',
@@ -277,7 +291,7 @@ export async function answerAppQuestionFromCode(question: string, opts: {
   const researchQuestion = isQaQuestion
     ? `${question}\n\nInvestigate at QA depth: enumerate the feature's sub-features AND, for each, its EDGE and NEGATIVE behaviour grounded in the real code — input validations, required fields, boundary/limit values and caps, empty/loading/error states, permission & role gates, special tokens/flags/enums, and failure/exception branches. Do not stop at the happy path.`
     : question;
-  try {
+  if (!broadCoverage) try {
     const notes = await deepParallelResearch({
       question: researchQuestion,
       io: {
