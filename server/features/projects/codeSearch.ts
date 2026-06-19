@@ -183,15 +183,16 @@ export async function searchCodeInScope(
 export async function readCodeFileInScope(
   relPath: string,
   input: CodeSearchScopeInput = {},
-  maxBytes = 6000,
+  _maxBytes?: number,
 ): Promise<string> {
   if (isMarkdownPath(relPath)) {
     throw new Error('Markdown files are excluded from agent codebase reads.');
   }
+  // Read the ENTIRE file — no byte cap. Whatever a caller passes for bytes is ignored; agents
+  // see the whole file, every line, the way a human (or Claude Code / Codex) reads source.
   const scope = resolveCodeSearchScope(input);
   if (scope.mode === 'project' && scope.projectId) {
-    const content = await projectRepo.readFile(scope.projectId, relPath);
-    return content.length > maxBytes ? `${content.slice(0, maxBytes)}\n... [file truncated]` : content;
+    return projectRepo.readFile(scope.projectId, relPath);
   }
-  return readRepoFile(relPath, maxBytes);
+  return readRepoFile(relPath);
 }

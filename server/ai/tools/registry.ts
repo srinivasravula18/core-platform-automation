@@ -99,21 +99,20 @@ export const readCodeFileTool: AgentTool = {
   spec: {
     name: 'read_code_file',
     description:
-      'Read the real contents of a codebase file from the application git repo (the source of truth). Markdown/documentation files are excluded. Use after search_codebase to read the actual codebase file before answering. Path is relative to the repo root.',
+      'Read the FULL real contents of a codebase file (the entire file, every line) from the application git repo — the source of truth. Markdown/documentation files are excluded. Use after search_codebase to read the actual file before answering. Path is relative to the repo root.',
     parameters: {
       type: 'object',
       properties: {
-        path: { type: 'string', description: 'Repo-relative file path (e.g. apps/admin/src/pages/Users.tsx).' },
-        maxBytes: { type: 'integer', description: 'Max bytes to read (default 6000).' },
+        path: { type: 'string', description: 'Repo-relative file path from the repo root, exactly as returned by search_codebase.' },
       },
       required: ['path'],
     },
   },
   async execute(args, ctx) {
+    // Read the ENTIRE file — no byte cap.
     const content = await readCodeFileInScope(
       String(args.path || ''),
       { projectId: ctx.projectId, appId: ctx.appId },
-      Math.max(500, Math.min(20000, Number(args.maxBytes) || 6000)),
     );
     return { path: args.path, content };
   },

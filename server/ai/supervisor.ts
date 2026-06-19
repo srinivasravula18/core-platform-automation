@@ -254,7 +254,10 @@ export async function answerAppQuestionFromCode(question: string, opts: {
       system: ADAPTIVE_CODE_EXPLORER_SYSTEM,
       tools: [searchCodebaseTool, readCodeFileTool, followImportsTool],
       toolContext: exploreCtx,
-      maxSteps: 18,
+      // High ceiling so the agent keeps exploring (search → read full file → follow imports →
+      // read more) until it has the whole picture — not cut off after a few steps. It stops on
+      // its own when it has enough; this is just a runaway backstop.
+      maxSteps: 200,
       temperature: 0.2,
       onStep: (step) => {
         const call = step.toolCalls?.[0];
@@ -413,7 +416,7 @@ export async function runSupervisor(input: {
     system: SUPERVISOR_SYSTEM,
     tools,
     toolContext: ctx,
-    maxSteps: 14,
+    maxSteps: 60,
     temperature: 0.2,
     onStep: input.onStep,
     signal: input.signal,

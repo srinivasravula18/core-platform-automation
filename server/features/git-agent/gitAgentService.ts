@@ -42,6 +42,9 @@ function runGit(cwd: string, args: string[], timeout = 120000) {
     encoding: 'utf8',
     timeout,
     windowsHide: true,
+    // No output cap: a git read must return the ENTIRE file, however large (Node's default
+    // maxBuffer is only 1 MB, which would silently cut off big source files).
+    maxBuffer: 1024 * 1024 * 512,
   });
 
   if (result.error) throw result.error;
@@ -615,8 +618,10 @@ export function readRepoFile(relPath: string, maxBytes = 6000, repoPath?: string
   }
   const normalized = String(relPath || '').replace(/\\/g, '/').replace(/^\/+/, '');
   if (!normalized) return '';
-  const content = gitOutputOrEmpty(repo, ['show', `HEAD:${normalized}`], 30000);
-  return content.length > maxBytes ? `${content.slice(0, maxBytes)}\n... [file truncated]` : content;
+  // Read the ENTIRE file — every line, no byte cap. Agents must see the whole file (the logic,
+  // validations, limits, and error branches live deep in the file, not in the first few KB).
+  void maxBytes;
+  return gitOutputOrEmpty(repo, ['show', `HEAD:${normalized}`], 30000);
 }
 
 /**
