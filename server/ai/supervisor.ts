@@ -9,7 +9,6 @@
  *
  * Provider + model come from Settings (getOrchestrator). Native function-calling only.
  */
-import { z } from 'zod';
 import { getToolCapableOrchestrator, getOrchestrator } from './orchestrator';
 import { executeIntent } from './controller';
 import type { AgentTool, ToolContext, AgentStep } from './tools/types';
@@ -223,50 +222,6 @@ When done, STOP calling tools and give the final answer:
 - NEVER show file paths, file names, directory names, or line numbers — keep source locations internal.
 - Be concrete; surface the non-obvious edges, not just the obvious controls.`;
 
-// COMPLETENESS GATE (book Ch 4 Reflection / Ch 11 Goal Monitoring). Instead of trusting the
-// model to self-stop at the right depth, a reviewer pass judges whether the answer is genuinely
-// EDGE-LEVEL. If not, runToolLoop appends the critic's feedback and the agent KEEPS exploring
-// (more search/read/follow) until the answer is accepted — so depth is enforced by QUALITY, not
-// by a step count. Only applies to QA "what to test"/coverage questions; everything else passes.
-const completenessSchema = z.object({
-  complete: z.boolean().default(false),
-  missing: z.array(z.string()).default([]),
-  feedback: z.string().default(''),
-});
-
-function buildCompletenessGate(question: string, opts: { workspaceId?: string; userId?: string }) {
-  const isQa = /\b(test|tests|testing|qa|cover|coverage|features?|sub-?features?|scenarios?|edges?|cases?|negative)\b/i.test(question);
-  return async (state: { finalText: string }): Promise<{ ok: boolean; feedback?: string }> => {
-    if (!isQa) return { ok: true }; // depth is only enforced for QA "what to test" answers
-    const text = (state.finalText || '').trim();
-    if (text.length < 200) {
-      return { ok: false, feedback: 'The answer is too thin. Keep exploring the REAL code — read full files and follow_imports — and give a thorough, grounded, edge-level answer.' };
-    }
-    try {
-      const judge = await getOrchestrator('chatAssistant', opts);
-      const res = await judge.generateObject<z.infer<typeof completenessSchema>>({
-        prompt: `You are reviewing an answer to a QA "what to test" question for EDGE-LEVEL completeness.
-An edge-level answer organizes by sub-feature and, for EACH, includes its negative/edge behaviour grounded in the real code: input validations & required fields, boundary/limit values & caps, empty/loading/error states, permission/role gates, special tokens/flags/enums, and failure/exception branches. A MID-level answer just lists the visible controls / the happy path.
-
-QUESTION: ${question}
-
-ANSWER UNDER REVIEW:
-${text}
-
-Be strict. If the answer reads like a list of visible features without their validations, limits/caps, empty/error states, permission gates and failure branches, it is NOT complete. Return strict JSON: {"complete": boolean, "missing": ["the specific edge dimensions or sub-features still missing"], "feedback": "one concrete instruction telling the agent what to search/read next to fill the gaps"}.`,
-        schema: completenessSchema,
-        userMessage: question,
-      });
-      const o: any = (res as any).object || {};
-      if ((res as any).shortCircuit || o.complete) return { ok: true };
-      const fb = `${o.feedback || 'The answer is not yet edge-level complete.'}${(o.missing || []).length ? ` Still missing: ${(o.missing || []).join('; ')}.` : ''} Keep exploring: search_codebase, read FULL files with read_code_file, and follow_imports to find these, then EXPAND the answer with the concrete edge cases (validations, limits/caps, empty/error states, permission gates, failure branches). Do not shorten what you already have.`;
-      return { ok: false, feedback: fb };
-    } catch {
-      return { ok: true }; // never block the answer on a judge failure
-    }
-  };
-}
-
 export async function answerAppQuestionFromCode(question: string, opts: {
   workspaceId?: string; userId?: string;
   projectId?: string; appId?: string | null;
@@ -304,10 +259,6 @@ export async function answerAppQuestionFromCode(question: string, opts: {
       // its own when it has enough; this is just a runaway backstop.
       maxSteps: 200,
       temperature: 0.2,
-      // Quality-driven depth: a reviewer judges edge-completeness; if the answer is shallow the
-      // loop continues exploring until it's accepted (or these retries are exhausted).
-      accept: buildCompletenessGate(question, { workspaceId: opts.workspaceId, userId: opts.userId }),
-      maxAcceptRetries: 4,
       onStep: (step) => {
         const call = step.toolCalls?.[0];
         if (call) opts.onProgress?.(`exploring: ${call.name}(${JSON.stringify(call.arguments).replace(/\s+/g, ' ').slice(0, 70)})…`);
@@ -465,12 +416,8 @@ export async function runSupervisor(input: {
     system: SUPERVISOR_SYSTEM,
     tools,
     toolContext: ctx,
-    maxSteps: 200,
+    maxSteps: 60,
     temperature: 0.2,
-    // Reviewer-enforced depth for QA "what to test" questions: keep exploring until the answer
-    // is edge-complete (non-QA tasks pass straight through).
-    accept: buildCompletenessGate(input.userMessage, { workspaceId: ctx.workspaceId, userId: ctx.userId }),
-    maxAcceptRetries: 4,
     onStep: input.onStep,
     signal: input.signal,
   });
