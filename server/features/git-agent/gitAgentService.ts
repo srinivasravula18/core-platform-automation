@@ -591,6 +591,58 @@ export function gitGrep(patterns: string[], pathspecs: string[] = SOURCE_GLOBS, 
   return results;
 }
 
+export interface CodeMatch { path: string; matchCount: number; snippet: string; }
+
+/**
+ * AGENTIC-SEARCH grep that returns MATCHING LINES WITH CONTEXT (not just file names) — the way
+ * Claude Code's ripgrep does it. The agent immediately sees the real matching code (with a few
+ * surrounding lines), so it can judge relevance and decide what to read next without a separate
+ * read for every candidate. Backed by `git grep -C` (portable — uses the git that's already here;
+ * no ripgrep binary needed). Files ranked by match count; markdown excluded. Returns [] on failure
+ * so the caller can fall back to the plain file-name grep.
+ */
+export function searchCodeWithContext(
+  patterns: string[],
+  repoPath?: string,
+  opts: { maxFiles?: number; contextLines?: number; maxLinesPerFile?: number; pathspecs?: string[] } = {},
+): CodeMatch[] {
+  const repo = resolveTargetRepo(repoPath);
+  if (!repo || !existsSync(path.join(repo, '.git'))) return [];
+  const clean = Array.from(new Set(patterns.map((p) => String(p || '').trim()).filter((p) => p.length >= 2)));
+  if (!clean.length) return [];
+  const ctx = opts.contextLines ?? 2;
+  const maxFiles = opts.maxFiles ?? 40;
+  const maxLinesPerFile = opts.maxLinesPerFile ?? 60;
+
+  const orArgs: string[] = [];
+  clean.forEach((p, i) => { if (i > 0) orArgs.push('--or'); orArgs.push('-e', p); });
+  const pathspecs = opts.pathspecs && opts.pathspecs.length ? opts.pathspecs : ['.'];
+  const excludes = [':(exclude)*.md', ':(exclude)*.mdx', ':(exclude)*.markdown'];
+
+  // --heading puts the filename on its own line and strips the path prefix from each match/context
+  // line; --break inserts a blank line between files — both make the output cleanly parseable.
+  const out = gitOutputOrEmpty(
+    repo,
+    ['grep', '-n', '-i', '-I', '-C', String(ctx), '--heading', '--break', ...orArgs, '--', ...pathspecs, ...excludes],
+    60000,
+  );
+  if (!out.trim()) return [];
+
+  const results: CodeMatch[] = [];
+  for (const block of out.split(/\r?\n\r?\n/)) {
+    const lines = block.split(/\r?\n/).filter((l) => l.length > 0);
+    if (!lines.length) continue;
+    const headIdx = lines.findIndex((l) => !/^\d+[:-]/.test(l));
+    const filePath = (headIdx >= 0 ? lines[headIdx] : '').trim().replace(/\\/g, '/');
+    if (!filePath || /\.(md|mdx|markdown)$/i.test(filePath)) continue;
+    const body = lines.filter((l) => /^\d+[:-]/.test(l) || l === '--');
+    const matchCount = body.filter((l) => /^\d+:/.test(l)).length;
+    if (!matchCount) continue;
+    results.push({ path: filePath, matchCount, snippet: body.slice(0, maxLinesPerFile).join('\n') });
+  }
+  return results.sort((a, b) => b.matchCount - a.matchCount).slice(0, maxFiles);
+}
+
 /** List tracked source files in the target repo. Used by broad feature discovery so
  * important route/page/feature files are considered even when generic grep terms miss them. */
 export function listRepoSourceFiles(repoPath?: string, maxFiles = 8000) {

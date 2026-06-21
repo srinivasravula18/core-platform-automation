@@ -13,7 +13,9 @@ import { Cases, Suites, Plans, Runs, Scripts, Defects, Reports, Requirements } f
 import { searchCodeInScope, readCodeFileInScope } from '../../features/projects/codeSearch';
 import { findUntestedEdges } from '../exploration/edgeFinder';
 import { analyzeFeatureCoverage, renderCoverageReport } from '../exploration/featureCoverage';
+import { corePlatformDataTools } from './corePlatformData';
 import { expandByReferences } from '../exploration/referenceGraph';
+import { searchCodeWithContext } from '../../features/git-agent/gitAgentService';
 
 type Lister = { list: () => Promise<any[]> };
 const COLLECTIONS: Record<string, Lister> = {
@@ -77,11 +79,11 @@ export const searchCodebaseTool: AgentTool = {
   spec: {
     name: 'search_codebase',
     description:
-      'Search the application codebase files (the git repo - the single source of truth for how the app really works) for terms, identifiers, routes, field names, labels, config, or tests. Markdown/documentation files are excluded. Use this BEFORE answering anything about app behaviour you are not certain of. Case-insensitive; returns matching file paths.',
+      'Search the application codebase (the git repo - the single source of truth) for terms, identifiers, routes, field names, labels, config, or tests — like ripgrep. Returns the MATCHING CODE LINES with a few lines of surrounding context per file (ranked by match count), so you can see exactly what matched without opening every file, then read_code_file the ones that matter. Markdown excluded. Use this BEFORE answering anything about app behaviour you are not certain of. Case-insensitive; regex supported.',
     parameters: {
       type: 'object',
       properties: {
-        terms: { type: 'array', items: { type: 'string' }, description: 'Words/identifiers to search for (any match).' },
+        terms: { type: 'array', items: { type: 'string' }, description: 'Words/identifiers/regex to search for (any match). Try several phrasings/synonyms if the first misses — that is how agentic search finds things.' },
         limit: { type: 'integer', description: 'Max files to return (default 30).' },
       },
       required: ['terms'],
@@ -90,6 +92,14 @@ export const searchCodebaseTool: AgentTool = {
   async execute(args, ctx) {
     const terms = Array.isArray(args.terms) ? args.terms.map(String) : [String(args.terms || '')];
     const limit = Math.max(1, Math.min(60, Number(args.limit) || 30));
+    // AGENTIC SEARCH (Claude-Code-style): grep that returns the matching code lines WITH context,
+    // so the agent sees WHY each file matched. Falls back to the scoped file-name grep.
+    try {
+      const hits = searchCodeWithContext(terms, undefined, { maxFiles: limit, contextLines: 2 });
+      if (hits.length) {
+        return { matchCount: hits.length, matches: hits.map((h) => ({ path: h.path, matchCount: h.matchCount, snippet: h.snippet })) };
+      }
+    } catch { /* fall back to the scoped grep below */ }
     const result = await searchCodeInScope(terms, { projectId: ctx.projectId, appId: ctx.appId }, limit);
     return { repo: result.repo, roots: result.roots, matchCount: result.matches.length, matches: result.matches };
   },
@@ -327,7 +337,11 @@ export async function quickWorkspaceAnswer(
 
 /** All registered tools by name. */
 export function coreTools(): AgentTool[] {
-  return [queryWorkspaceTool, searchCodebaseTool, readCodeFileTool, followImportsTool, findUntestedEdgesTool, analyzeFeatureCoverageTool];
+  return [
+    queryWorkspaceTool, searchCodebaseTool, readCodeFileTool, followImportsTool, findUntestedEdgesTool, analyzeFeatureCoverageTool,
+    // Core Platform DATA tools (real schema + records via the App Service) — only when configured.
+    ...corePlatformDataTools(),
+  ];
 }
 
 export function toolByName(name: string): AgentTool | undefined {

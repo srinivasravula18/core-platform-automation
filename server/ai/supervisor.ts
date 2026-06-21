@@ -13,9 +13,11 @@ import { getToolCapableOrchestrator, getOrchestrator } from './orchestrator';
 import { executeIntent } from './controller';
 import type { AgentTool, ToolContext, AgentStep } from './tools/types';
 import { queryWorkspaceTool, searchCodebaseTool, readCodeFileTool, followImportsTool, findUntestedEdgesTool, analyzeFeatureCoverageTool } from './tools/registry';
+import { corePlatformDataTools } from './tools/corePlatformData';
 import { readCodeFileInScope, resolveCodeSearchScope, searchCodeInScope } from '../features/projects/codeSearch';
 import { deepParallelResearch, relevantSourcePaths } from './research/deepResearch';
 import { expandByReferences } from './exploration/referenceGraph';
+import { z } from 'zod';
 
 interface IntentToolDef {
   kind: string;
@@ -235,6 +237,79 @@ When done, STOP calling tools and give the final answer:
 - NEVER show file paths, file names, directory names, or line numbers — keep source locations internal.
 - Be concrete; surface the non-obvious edges, not just the obvious controls.`;
 
+/**
+ * DECOMPOSED deep answer for BROAD "list everything / all features / end-to-end" questions.
+ *
+ * A single agent that reads every full file into ONE context window overflows the model's hard
+ * input limit on broad questions (the failure we saw: 1.43M chars > the model's cap). The fix is
+ * NOT a budget that stops exploration — it is DECOMPOSITION: the model proposes the distinct
+ * sub-areas, and EACH is explored by its OWN fresh worker (its own context window) in parallel,
+ * then the sub-answers are merged. Total depth is UNBOUNDED (no worker stops early), no single
+ * window overflows (each reads full files only within its slice), and nothing is compacted away
+ * (the merge sees the compact sub-answers, never the raw file dumps). This is how broad coverage
+ * is produced exhaustively without a depth cap.
+ */
+async function answerByDecomposition(
+  question: string,
+  opts: { workspaceId?: string; userId?: string; projectId?: string; appId?: string | null; signal?: AbortSignal; onProgress?: (label: string) => void },
+  appsBlock: string,
+): Promise<string> {
+  const coord = await getOrchestrator('chatAssistant', { workspaceId: opts.workspaceId, userId: opts.userId });
+  opts.onProgress?.('Planning the sub-areas to explore in parallel…');
+
+  // 1. DECOMPOSE — the model proposes the distinct sub-areas (no hardcoded list).
+  let areas: Array<{ name: string; focus: string }> = [];
+  try {
+    const r = await coord.generateObject<{ areas: Array<{ name: string; focus: string }> }>({
+      prompt: `Break the QA question below into 6-16 DISTINCT, non-overlapping SUB-AREAS that can each be investigated independently in this application's real source code. Together they must cover the ENTIRE surface so nothing is missed. Return strict JSON {"areas":[{"name":"short area name","focus":"what to look for in the code for this sub-area"}]}.\n\nQUESTION: ${question}`,
+      schema: z.object({ areas: z.array(z.object({ name: z.string(), focus: z.string().default('') })).default([]) }),
+      userMessage: question,
+    });
+    areas = (((r as any).object?.areas) || []).filter((a: any) => a && a.name);
+  } catch { /* fall back to a single area */ }
+  if (!areas.length) areas = [{ name: question, focus: question }];
+
+  // 2. FAN OUT — each sub-area gets its OWN worker with a FRESH context window. Small parallel
+  // batches so the windows never combine into one.
+  opts.onProgress?.(`Exploring ${areas.length} sub-areas in parallel (each with its own context)…`);
+  const subAnswers: Array<{ area: string; text: string }> = [];
+  const BATCH = 4;
+  for (let i = 0; i < areas.length; i += BATCH) {
+    if (opts.signal?.aborted) break;
+    const batch = areas.slice(i, i + BATCH);
+    const results = await Promise.all(batch.map(async (area) => {
+      try {
+        const worker = await getToolCapableOrchestrator('chatAssistant', { workspaceId: opts.workspaceId, userId: opts.userId });
+        const loop = await worker.runToolLoop({
+          task: `Investigate ONLY this sub-area of the application, grounded ONLY in its REAL source code: "${area.name}" — ${area.focus}.\nThe overall question is: ${question}\nReport this sub-area at EDGE level: its sub-features, input validations, boundary/limit values & caps (EXACT numbers), empty/loading/error states, permission/role gates, special tokens/flags, and failure branches. Be exhaustive for THIS sub-area only.`,
+          system: ADAPTIVE_CODE_EXPLORER_SYSTEM,
+          tools: [searchCodebaseTool, readCodeFileTool, followImportsTool],
+          toolContext: { workspaceId: opts.workspaceId || 'default', userId: opts.userId, projectId: opts.projectId, appId: opts.appId || null, userMessage: question },
+          maxSteps: 60,
+          temperature: 0.2,
+          signal: opts.signal,
+        });
+        const text = (loop.finalText || '').trim();
+        return text ? { area: area.name, text } : null;
+      } catch { return null; }
+    }));
+    for (const r of results) if (r) subAnswers.push(r);
+    opts.onProgress?.(`Completed ${subAnswers.length}/${areas.length} sub-areas…`);
+  }
+  if (!subAnswers.length) return '';
+
+  // 3. MERGE — synthesize the compact sub-answers (never the raw files, so this never overflows).
+  opts.onProgress?.('Merging the findings into the complete answer…');
+  const findings = subAnswers.map((s) => `## ${s.area}\n${s.text}`).join('\n\n');
+  const merge = await coord.generateText({
+    prompt: `Combine the independently-researched SUB-AREA FINDINGS below into ONE complete, well-organized answer to the user's question. Preserve EVERY concrete detail — sub-features, EXACT limits/caps/numbers, validations, empty/loading/error states, permission gates, and failure branches. Do not drop or generalize anything. Keep source locations internal: never show file paths, filenames, or line numbers.${appsBlock}\n\n${INTENT_DRIVEN_ANSWER_RULES}\n\nQUESTION: ${question}\n\nSUB-AREA FINDINGS:\n${findings}`,
+    userMessage: question,
+    hasHistory: true,
+  });
+  const answer = (((merge as any).shortCircuit) || ((merge as any).text) || findings).trim();
+  return stripCodebaseLocationsForAgentConsole(answer);
+}
+
 export async function answerAppQuestionFromCode(question: string, opts: {
   workspaceId?: string; userId?: string;
   projectId?: string; appId?: string | null;
@@ -248,6 +323,17 @@ export async function answerAppQuestionFromCode(question: string, opts: {
     ? `\nApps under test (selected by the user): ${(opts.apps || []).map((a) => `${a.name} (${a.baseUrl})`).join(', ')}.`
     : '';
   const broadCoverage = isBroadCoverageQuestion(question);
+
+  // BROAD questions ("all features", "end to end", "every sub-feature") would overflow a single
+  // model window if ONE agent read every full file at once (the 1.43M-char crash). Decompose into
+  // sub-areas and explore each with its OWN fresh-window worker in parallel, then merge — unbounded
+  // depth, no budget that stops exploration, no single-window overflow.
+  if (broadCoverage) {
+    try {
+      const decomposed = await answerByDecomposition(question, opts, appsBlock);
+      if (decomposed) return decomposed;
+    } catch { /* fall through to the existing single-agent paths */ }
+  }
 
   // ADAPTIVE, CLAUDE-CODE-STYLE EXPLORATION (PRIMARY): let the model drive the deep search with
   // its OWN tool calls — search → map → read → follow_imports → drill into the edges — deciding
@@ -412,7 +498,7 @@ export async function runSupervisor(input: {
     appId: input.appId || null,
     userMessage: input.userMessage,
   };
-  const tools: AgentTool[] = [queryWorkspaceTool, searchCodebaseTool, readCodeFileTool, followImportsTool, findUntestedEdgesTool, analyzeFeatureCoverageTool, ...INTENT_TOOLS.map((d) => buildIntentTool(d, ctx))];
+  const tools: AgentTool[] = [queryWorkspaceTool, searchCodebaseTool, readCodeFileTool, followImportsTool, findUntestedEdgesTool, analyzeFeatureCoverageTool, ...corePlatformDataTools(), ...INTENT_TOOLS.map((d) => buildIntentTool(d, ctx))];
 
   const historyBlock = input.history?.length
     ? `\n\nRECENT CONVERSATION (oldest first):\n${input.history.slice(-16).map((m) => `${m.role}: ${m.content}`).join('\n')}`
