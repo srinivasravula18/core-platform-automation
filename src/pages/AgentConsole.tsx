@@ -788,42 +788,6 @@ export default function AgentConsole() {
       pageContext: { path: location.pathname },
       apps: getSelectedApps(),
     };
-    const runNonStreamingFallback = async (reason?: unknown): Promise<boolean> => {
-      try {
-        setThinkingLabel('Retrying without streaming...');
-        const res = await fetch('/api/controller/supervise', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(requestBody),
-        });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) {
-          replaceTurn(thinkingId, {
-            id: thinkingId,
-            role: 'assistant',
-            kind: 'text',
-            text: cleanChat(data?.error || `Request failed (${res.status}).`),
-          });
-          return true;
-        }
-        replaceTurn(thinkingId, {
-          id: thinkingId,
-          role: 'assistant',
-          kind: 'text',
-          text: cleanChat(data?.reply || 'Done.'),
-        });
-        return true;
-      } catch {
-        const message = reason instanceof Error ? reason.message : String(reason || 'unknown error');
-        replaceTurn(thinkingId, {
-          id: thinkingId,
-          role: 'assistant',
-          kind: 'text',
-          text: `Something went wrong: ${message}.`,
-        });
-        return false;
-      }
-    };
     try {
       const res = await fetch('/api/controller/supervise/stream', {
         method: 'POST',
@@ -832,15 +796,14 @@ export default function AgentConsole() {
       });
       if (!res.ok || !res.body) {
         const data = await res.json().catch(() => ({}));
-        if (!(await runNonStreamingFallback(data?.error || `Request failed (${res.status}).`))) {
-          replaceTurn(thinkingId, { id: thinkingId, role: 'assistant', kind: 'text', text: cleanChat(data?.error || `Request failed (${res.status}).`) });
-        }
+        replaceTurn(thinkingId, { id: thinkingId, role: 'assistant', kind: 'text', text: cleanChat(data?.error || `Request failed (${res.status}).`) });
         return;
       }
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buf = '';
       let finalReply = '';
+      let liveReply = '';
       for (;;) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -852,13 +815,26 @@ export default function AgentConsole() {
           let ev: any;
           try { ev = JSON.parse(line); } catch { continue; }
           if (ev.type === 'step') setThinkingLabel(ev.text && ev.text.length < 80 ? ev.text : describeAgentStep(ev));
+          else if (ev.type === 'answer_delta') {
+            liveReply += ev.delta || '';
+            replaceTurn(thinkingId, { id: thinkingId, role: 'assistant', kind: 'text', text: cleanChat(liveReply || ' ') });
+          }
+          else if (ev.type === 'heartbeat') {
+            // Keeps production proxies from treating a long AI call as idle.
+          }
           else if (ev.type === 'final') finalReply = ev.reply || '';
           else if (ev.type === 'error') finalReply = ev.error || 'The agent could not complete that.';
         }
       }
       replaceTurn(thinkingId, { id: thinkingId, role: 'assistant', kind: 'text', text: cleanChat(finalReply || 'Done.') });
     } catch (err: any) {
-      await runNonStreamingFallback(err);
+      const message = err instanceof Error ? err.message : String(err || 'network error');
+      replaceTurn(thinkingId, {
+        id: thinkingId,
+        role: 'assistant',
+        kind: 'text',
+        text: `The streaming request was interrupted before the agent finished: ${message}.`,
+      });
     }
   }, [buildHistory, location.pathname, replaceTurn, getSelectedApps]);
 

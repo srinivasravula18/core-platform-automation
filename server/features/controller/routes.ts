@@ -22,6 +22,42 @@ function prepareStreamingResponse(res: any) {
   res.flushHeaders?.();
 }
 
+function flushStream(res: any) {
+  try { res.flush?.(); } catch { /* compression flush is best-effort */ }
+}
+
+function startStreamHeartbeat(res: any, send: (obj: any) => void) {
+  return setInterval(() => {
+    send({ type: 'heartbeat', at: Date.now() });
+    flushStream(res);
+  }, 10000);
+}
+
+async function sendFinalReply(
+  res: any,
+  send: (obj: any) => void,
+  reply: string,
+  extra: Record<string, unknown> = {},
+) {
+  const full = String(reply || '');
+  const tokens = full.match(/\S+\s*/g) || (full ? [full] : []);
+  let buf = '';
+  for (let i = 0; i < tokens.length; i += 1) {
+    buf += tokens[i];
+    if ((i + 1) % 5 === 0) {
+      send({ type: 'answer_delta', delta: buf });
+      flushStream(res);
+      buf = '';
+      await new Promise((resolve) => setTimeout(resolve, 12));
+    }
+  }
+  if (buf) {
+    send({ type: 'answer_delta', delta: buf });
+    flushStream(res);
+  }
+  send({ type: 'final', reply: full, ...extra });
+}
+
 export function registerControllerRoutes(app: Express) {
   app.get('/api/controller/intents', (req, res) => {
     res.json({
@@ -127,11 +163,13 @@ export function registerControllerRoutes(app: Express) {
     }
     prepareStreamingResponse(res);
     const send = (obj: any) => { try { res.write(`${JSON.stringify(obj)}\n`); } catch { /* client gone */ } };
+    const heartbeat = startStreamHeartbeat(res, send);
     try {
       send({ type: 'step', index: 0, text: 'Starting...', toolCalls: [] });
+      flushStream(res);
       // Instant path: simple count/list answered from the DB, no steps.
       const quick = await quickWorkspaceAnswer(userMessage, effectiveUserId);
-      if (quick) { send({ type: 'final', reply: quick, fast: true }); return res.end(); }
+      if (quick) { await sendFinalReply(res, send, quick, { fast: true }); return res.end(); }
       // Fast git-grounded path for app-knowledge QUESTIONS: ONE LLM call after deterministic
       // retrieval. Emits the search/read progress so the UI still animates the live steps.
       if (!ACTION_RE.test(userMessage)) {
@@ -142,9 +180,12 @@ export function registerControllerRoutes(app: Express) {
           projectId: scope.projectId,
           appId: scope.appId,
           apps,
-          onProgress: (label) => send({ type: 'step', index: i++, toolCalls: [{ name: /reading/i.test(label) ? 'read_code_file' : 'search_codebase', arguments: {} }], text: label }),
+          onProgress: (label) => {
+            send({ type: 'step', index: i++, toolCalls: [{ name: /reading/i.test(label) ? 'read_code_file' : 'search_codebase', arguments: {} }], text: label });
+            flushStream(res);
+          },
         });
-        send({ type: 'final', reply, fast: true });
+        await sendFinalReply(res, send, reply, { fast: true });
         return res.end();
       }
       const result = await runSupervisor({
@@ -156,17 +197,21 @@ export function registerControllerRoutes(app: Express) {
         history,
         pageContext,
         apps,
-        onStep: (s) => send({
-          type: 'step',
-          index: s.index,
-          text: s.text,
-          toolCalls: s.toolCalls.map((c) => ({ name: c.name, arguments: c.arguments, error: c.error })),
-        }),
+        onStep: (s) => {
+          send({
+            type: 'step',
+            index: s.index,
+            text: s.text,
+            toolCalls: s.toolCalls.map((c) => ({ name: c.name, arguments: c.arguments, error: c.error })),
+          });
+          flushStream(res);
+        },
       });
-      send({ type: 'final', reply: result.finalText, accepted: result.accepted });
+      await sendFinalReply(res, send, result.finalText, { accepted: result.accepted });
     } catch (err: any) {
       send({ type: 'error', error: err?.message || 'supervisor failed' });
     } finally {
+      clearInterval(heartbeat);
       res.end();
     }
   });
