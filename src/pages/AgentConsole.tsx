@@ -907,8 +907,9 @@ export default function AgentConsole() {
         buffer = lines.pop() || '';
         for (const line of lines) {
           if (!line.trim()) continue;
+          const raw = line.startsWith('data: ') ? line.slice(6) : line;
           let event: any;
-          try { event = JSON.parse(line); } catch { continue; }
+          try { event = JSON.parse(raw); } catch { continue; }
           if (event.type === 'step' && event.text) {
             updateThinkingLabel(thinkingId, String(event.text));
           } else if (event.type === 'final') {
@@ -1050,8 +1051,9 @@ export default function AgentConsole() {
         buf = lines.pop() || '';
         for (const line of lines) {
           if (!line.trim()) continue;
+          const rawLine = line.startsWith('data: ') ? line.slice(6) : line;
           let ev: any;
-          try { ev = JSON.parse(line); } catch { continue; }
+          try { ev = JSON.parse(rawLine); } catch { continue; }
           if (ev.type === 'step') setThinkingLabel(ev.text && ev.text.length < 80 ? ev.text : describeAgentStep(ev));
           else if (ev.type === 'answer_delta') {
             liveReply += ev.delta || '';

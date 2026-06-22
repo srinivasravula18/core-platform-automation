@@ -32,7 +32,7 @@ export function registerRequirementRoutes(app: Express) {
 
     prepareStreamingResponse(res);
     const send = (obj: any) => {
-      try { res.write(`${JSON.stringify(obj)}\n`); } catch { /* client gone */ }
+      try { res.write(`data: ${JSON.stringify(obj)}\n\n`); } catch { /* client gone */ }
     };
     const heartbeat = setInterval(() => {
       send({ type: 'heartbeat', at: Date.now() });

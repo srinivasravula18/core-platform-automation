@@ -162,7 +162,7 @@ export function registerControllerRoutes(app: Express) {
       return res.status(400).json({ error: 'userMessage is required' });
     }
     prepareStreamingResponse(res);
-    const send = (obj: any) => { try { res.write(`${JSON.stringify(obj)}\n`); } catch { /* client gone */ } };
+    const send = (obj: any) => { try { res.write(`data: ${JSON.stringify(obj)}\n\n`); } catch { /* client gone */ } };
     const heartbeat = startStreamHeartbeat(res, send);
     try {
       send({ type: 'step', index: 0, text: 'Starting...', toolCalls: [] });
