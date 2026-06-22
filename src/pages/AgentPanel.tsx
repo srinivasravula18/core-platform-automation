@@ -333,12 +333,15 @@ export default function AgentPanel() {
             {[
               ['ApplicationInspector', 'Inspect app'],
               ['CodeAnalyst', 'Understand code'],
-              ['FeatureDiscoveryAgent', 'Find existing requirements'],
-              ['FeatureWriter', 'Map requirement features'],
-              ['RequirementWriter', 'Draft requirements'],
-              ['CoverageScout', 'Find existing coverage'],
-              ['TestGenerationAgent', 'Write missing cases'],
-              ['PlaywrightAgent', 'Generate scripts'],
+              ['FeatureDiscoveryAgent', 'Find Existing Features'],
+              ['FeatureWriter', 'Write New Features (missing)'],
+              ['RequirementWriter', 'Write New Requirements (missing)'],
+              ['FeatureMapper', '↳ Map features'],
+              ['FeatureCoverageScout', '↳ Find existing'],
+              ['FeatureTestWriter', '↳ Write cases'],
+              ['CoverageGapChecker', 'Recheck coverage'],
+              ['PlaywrightAgent', 'Generate scripts on new/updated'],
+              ['SelectorVerifier', 'Verify selectors'],
               ['EvidenceAgent', 'Capture evidence'],
             ].map(([agent, label], index, agents) => (
               <div key={agent} className="contents">

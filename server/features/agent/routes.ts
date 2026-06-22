@@ -1055,6 +1055,49 @@ async function persistAgentRunArtifacts(run: any) {
  * gate's decision endpoint. mode 'fresh' generates from scratch; mode 'gaps' keeps
  * the matched existing cases and appends only the scenarios they don't cover.
  */
+
+/** Generate test cases focused on ONE specific feature from the feature inventory. */
+async function generateCasesForFeature(run: any, feature: any, liveCredentials: any): Promise<any[]> {
+  const credentials = liveCredentials || run.credentials || {};
+  const credentialContext = buildCredentialContext(credentials);
+  const inspectionContext = run.inspection_context || null;
+  const approvedUnderstanding = resolveUnderstanding(run);
+  const targetUrl = run.app_url || '';
+
+  const subfeatureBlock = (feature.subfeatures || []).map((s: any) =>
+    `  • ${s.name}: ${s.description || ''}\n    Rules: ${(s.businessRules || []).join('; ') || 'none'}\n    Actions: ${(s.userActions || []).join('; ') || 'none'}`,
+  ).join('\n');
+
+  const caseWriter = await getOrchestrator('caseWriter', { workspaceId: run.ownerId || 'default' });
+  const result = await caseWriter.generateObject<any>({
+    prompt: `Write focused test cases for this specific feature: "${feature.name}".
+${feature.description ? `Feature description: ${feature.description}` : ''}
+Surface: ${feature.surface || 'Application'}
+Subfeatures to cover:
+${subfeatureBlock || '  (infer from the feature name and code understanding)'}
+
+User request context: ${run.prompt || 'not provided'}
+Target URL: ${targetUrl || 'not provided'}
+${credentialContext}
+App inspection result: ${JSON.stringify(compactInspectionContext(inspectionContext))}
+Code understanding: ${approvedUnderstanding ? approvedUnderstanding.slice(0, 3000) : 'not provided'}
+
+Rules:
+- Generate ONE test case per subfeature (or per distinct business rule if no subfeatures)
+- Each case covers ONLY "${feature.name}" — do not test unrelated features
+- Use real on-screen element labels from the inspection result for all selectors
+- Include tags: @bvt, @regression, @smoke, @positive/@negative as appropriate
+- Steps must be concrete and automatable — name exact labels, buttons, fields visible in the app`,
+    schema: testCasesSchema,
+    userMessage: run.prompt || '',
+  });
+  return (result.object.test_cases as any[]).map((tc: any) => ({
+    ...tc,
+    captureEvidence: true,
+    _feature: feature.name,
+  }));
+}
+
 async function generateCasesForRun(
   run: any,
   liveCredentials: any,
@@ -2265,12 +2308,9 @@ export function registerAgentRoutes(app: Express) {
         const cached = getCached(understandingCache, cacheKey);
         if (cached) {
           const cachedUnderstanding = cached?.understanding || cached;
-          const cachedInventory = cached?.featureInventory || null;
+          // featureInventory is now emitted separately after FeatureDiscoveryAgent
           pushPhase(newRun, { agent: 'CodeAnalyst', status: 'completed', output: { ...cachedUnderstanding, cached: true, searchedFiles: [] } });
-          if (cachedInventory) {
-            pushPhase(newRun, { agent: 'FeatureWriter', status: 'completed', output: featureWriterOutput(cachedInventory, { cached: true }) });
-          }
-          return { understanding: cachedUnderstanding, featureInventory: cachedInventory };
+          return { understanding: cachedUnderstanding, featureInventory: cached?.featureInventory || null };
         }
         if (canReusePriorCodeGrounding(newRun.understandingSource, newRun.priorGrounding)) {
           const reusedGrounding = stripCodebaseLocationsForAgentConsole(newRun.priorGrounding || approvedUnderstanding);
@@ -2288,9 +2328,7 @@ export function registerAgentRoutes(app: Express) {
               note: 'Reused the prior code-grounded chat answer; source files were not reread for this stage.',
             },
           });
-          if (reusedInventory) {
-            pushPhase(newRun, { agent: 'FeatureWriter', status: 'completed', output: featureWriterOutput(reusedInventory, { reused: true }) });
-          }
+          // FeatureWriter phase is emitted after FeatureDiscoveryAgent — not here
           setCached(understandingCache, cacheKey, { understanding: reusedUnderstanding, featureInventory: reusedInventory });
           return { understanding: reusedUnderstanding, featureInventory: reusedInventory };
         }
@@ -2305,27 +2343,11 @@ export function registerAgentRoutes(app: Express) {
           const rawUnderstanding = (analysis.understanding || {}) as any;
           const { sourceFiles: _sourceFiles, files: _files, searchedFiles: _searchedFiles, ...visibleUnderstanding } = rawUnderstanding;
           pushPhase(newRun, { agent: 'CodeAnalyst', status: 'completed', output: visibleUnderstanding });
-          let featureInventory: any = null;
-          if (wantsFeatureInventory(prompt || '', analystUnderstanding || approvedUnderstanding || '')) {
-            const inventoryKey = featureCacheKey(targetUrl, `feature-inventory ${scopeContextText} ${prompt || ''} ${analystUnderstanding}`.trim());
-            const cachedInventory = getCached(featureInventoryCache, inventoryKey);
-            if (cachedInventory) {
-              featureInventory = cachedInventory;
-              pushPhase(newRun, { agent: 'FeatureWriter', status: 'completed', output: featureWriterOutput(featureInventory, { cached: true }) });
-            } else {
-              pushPhase(newRun, { agent: 'FeatureWriter', status: 'running' });
-              try {
-                const inventoryResult = await discoverFeatureInventoryFromSource(`${scopeContextText} ${prompt || ''} ${analystUnderstanding}`.trim(), { workspaceId: newRun.ownerId || 'default', userId: newRun.ownerId, repoPath });
-                featureInventory = inventoryResult.inventory;
-                setCached(featureInventoryCache, inventoryKey, featureInventory);
-                pushPhase(newRun, { agent: 'FeatureWriter', status: 'completed', output: featureWriterOutput(featureInventory) });
-              } catch (inventoryErr: any) {
-                pushPhase(newRun, { agent: 'FeatureWriter', status: 'skipped', output: `Feature inventory unavailable: ${getAIErrorMessage(inventoryErr)}` });
-              }
-            }
-          }
-          setCached(understandingCache, cacheKey, { understanding: analysis.understanding, featureInventory });
-          return { understanding: analysis.understanding, featureInventory };
+          // FeatureWriter now runs AFTER FeatureDiscoveryAgent (post understandTask) so phases
+          // emit in the correct order: Find Existing → Write New (missing). Cache the inventory
+          // key here so FeatureWriter can retrieve it without re-running the LLM.
+          setCached(understandingCache, cacheKey, { understanding: analysis.understanding, featureInventory: null });
+          return { understanding: analysis.understanding, featureInventory: null };
         } catch (err: any) {
           pushPhase(newRun, { agent: 'CodeAnalyst', status: 'skipped', output: `Code understanding unavailable: ${getAIErrorMessage(err)}` });
           return { understanding: null, featureInventory: null };
@@ -2335,10 +2357,8 @@ export function registerAgentRoutes(app: Express) {
       const sourceUnderstanding = await understandTask;
       newRun.feature_understanding = sourceUnderstanding?.understanding || null;
       newRun.feature_inventory = sourceUnderstanding?.featureInventory || null;
-      if (!newRun.feature_inventory) {
-        pushPhase(newRun, { agent: 'FeatureWriter', status: 'skipped', output: 'No broad feature inventory was required for this focused scope.' });
-      }
 
+      // ── Phase 3: Find Existing Features ────────────────────────────────────
       pushPhase(newRun, { agent: 'FeatureDiscoveryAgent', status: 'running' });
       const existingFeatureRequirements = await findExistingFeatureRequirements(newRun);
       (newRun as any).existing_feature_matches = existingFeatureRequirements;
@@ -2346,15 +2366,46 @@ export function registerAgentRoutes(app: Express) {
         agent: 'FeatureDiscoveryAgent',
         status: 'completed',
         output: existingFeatureRequirements.length
-          ? {
-              count: existingFeatureRequirements.length,
-              matches: existingFeatureRequirements.map((req: any) => ({ id: req.id, title: req.title })).slice(0, 10),
-            }
-          : 'No existing feature/requirement records matched this source-grounded scope.',
+          ? { count: existingFeatureRequirements.length, matches: existingFeatureRequirements.map((req: any) => ({ id: req.id, title: req.title })).slice(0, 10) }
+          : 'No existing feature/requirement records found for this scope.',
       });
 
-      // Skip re-drafting when the run was launched from an existing requirement card —
-      // the requirement already exists and the context is already grounded.
+      // ── Phase 4: Write New Features (missing) ──────────────────────────────
+      // FeatureWriter now runs here (after discovery) so the phase order in the UI is correct.
+      let featureInventory = newRun.feature_inventory;
+      if (!featureInventory && newRun.understandingSource !== 'requirement') {
+        const analystUnderstanding = resolveUnderstanding(newRun);
+        const inventoryKey = featureCacheKey(targetUrl, `feature-inventory ${scopeContextText} ${prompt || ''} ${analystUnderstanding}`.trim());
+        const cachedInventory = getCached(featureInventoryCache, inventoryKey);
+        if (cachedInventory) {
+          featureInventory = cachedInventory;
+          newRun.feature_inventory = featureInventory;
+          pushPhase(newRun, { agent: 'FeatureWriter', status: 'completed', output: featureWriterOutput(featureInventory, { cached: true }) });
+        } else if (wantsFeatureInventory(prompt || '', analystUnderstanding || approvedUnderstanding || '')) {
+          pushPhase(newRun, { agent: 'FeatureWriter', status: 'running' });
+          try {
+            const repoPath = (getProject(newRun.projectId || '')?.repoPath || '').trim();
+            const inventoryResult = await discoverFeatureInventoryFromSource(
+              `${scopeContextText} ${prompt || ''} ${analystUnderstanding}`.trim(),
+              { workspaceId: newRun.ownerId || 'default', userId: newRun.ownerId, repoPath },
+            );
+            featureInventory = inventoryResult.inventory;
+            newRun.feature_inventory = featureInventory;
+            setCached(featureInventoryCache, inventoryKey, featureInventory);
+            pushPhase(newRun, { agent: 'FeatureWriter', status: 'completed', output: featureWriterOutput(featureInventory) });
+          } catch (inventoryErr: any) {
+            pushPhase(newRun, { agent: 'FeatureWriter', status: 'skipped', output: `Feature inventory unavailable: ${getAIErrorMessage(inventoryErr)}` });
+          }
+        } else {
+          pushPhase(newRun, { agent: 'FeatureWriter', status: 'skipped', output: 'Focused scope — no broad feature inventory needed.' });
+        }
+      } else if (featureInventory) {
+        pushPhase(newRun, { agent: 'FeatureWriter', status: 'completed', output: featureWriterOutput(featureInventory, { reused: true }) });
+      } else {
+        pushPhase(newRun, { agent: 'FeatureWriter', status: 'skipped', output: 'Requirement context already available — feature discovery skipped.' });
+      }
+
+      // ── Phase 5: Write New Requirements (missing) — per-feature loop ────────
       if (newRun.understandingSource === 'requirement') {
         pushPhase(newRun, { agent: 'RequirementWriter', status: 'skipped', output: 'Requirement already exists — skipping draft phase.' });
       } else {
@@ -2363,16 +2414,11 @@ export function registerAgentRoutes(app: Express) {
         pushPhase(newRun, {
           agent: 'RequirementWriter',
           status: 'completed',
-          output: {
-            requirementId: agentRequirementId(newRun),
-            status: 'Draft',
-            source: 'feature_inventory',
-          },
+          output: { requirementId: agentRequirementId(newRun), status: 'Draft', source: 'feature_inventory' },
         });
       }
 
-      // Auto-grow the app knowledge: feed back a compact summary of what the live
-      // inspector actually saw, so the pack keeps up with features added after it was written.
+      // Auto-grow the app knowledge
       try {
         const ic: any = inspectionContext || {};
         const nav = (ic.visibleNavigation || []).slice(0, 10).join(', ');
@@ -2381,34 +2427,131 @@ export function registerAgentRoutes(app: Express) {
           + (nav ? `; nav: ${nav}` : '') + (forms ? `; forms: ${forms}` : '') + ` (goal: ${ic.goalStatus || 'unknown'}).`;
         recordObservation({ websiteId: req.body.websiteId, targetUrl, text: prompt || '', ownerId: newRun.ownerId || '' }, obsNote);
       } catch { /* observation is best-effort */ }
-      // Stash the context the coverage gate / decision endpoint needs to resume.
+
       newRun.requested_case_count = requestedCaseCount;
       newRun.selected_qa_prompt_text = selectedQaContext.promptText;
       newRun.scope_context_text = scopeContextText;
 
-      // REUSE-BEFORE-REGENERATE: look for existing cases that already cover this
-      // request. In interactive mode, pause and let the user reuse / extend / start
-      // fresh instead of generating everything from scratch.
-      pushPhase(newRun, { agent: 'CoverageScout', status: 'running' });
-      const relatedExisting = await findRelatedExistingCases(newRun);
-      newRun.existing_matches = relatedExisting.map(mapExistingToRunCase);
-      await persistAgentRequirementArtifacts(newRun);
-      pushPhase(newRun, { agent: 'CoverageScout', status: 'completed', output: `${relatedExisting.length} related existing test case(s) found.` });
+      // Per-feature sub-loop: for each NEW feature → Map → Find existing → Write cases
+      const inventoryFeatures = (featureInventory?.features as any[] || []);
+      if (inventoryFeatures.length > 0) {
+        const existingTitles = existingFeatureRequirements.map((r: any) => (r.title || '').toLowerCase());
+        const newFeatures = inventoryFeatures.filter((f: any) =>
+          !existingTitles.some((t) => t.includes((f.name || '').toLowerCase().slice(0, 10))),
+        );
+        const featureLoop = (newFeatures.length ? newFeatures : inventoryFeatures).slice(0, 4);
+        const allGeneratedCases: any[] = [];
 
-      if (relatedExisting.length && flowMode === 'review_cases') {
-        newRun.status = 'coverage_options';
-        newRun.review_started_at = nowIso();
+        for (const feature of featureLoop) {
+          // Sub-phase: Map features
+          pushPhase(newRun, {
+            agent: 'FeatureMapper',
+            status: 'completed',
+            output: { feature: feature.name, subfeatures: (feature.subfeatures || []).length, surface: feature.surface || '' },
+          });
+          // Sub-phase: Find existing coverage for this feature
+          pushPhase(newRun, { agent: 'FeatureCoverageScout', status: 'running' });
+          const featureRelated = await findRelatedExistingCases({ ...newRun, prompt: `${feature.name} ${feature.description || ''}`.trim() });
+          pushPhase(newRun, {
+            agent: 'FeatureCoverageScout',
+            status: 'completed',
+            output: featureRelated.length ? `${featureRelated.length} existing case(s) for "${feature.name}".` : `No existing cases for "${feature.name}".`,
+          });
+          if (featureRelated.length) allGeneratedCases.push(...featureRelated.map(mapExistingToRunCase));
+          // Sub-phase: Write cases for this feature
+          pushPhase(newRun, { agent: 'FeatureTestWriter', status: 'running' });
+          try {
+            const cases = await generateCasesForFeature(newRun, feature, credentials);
+            allGeneratedCases.push(...cases);
+            pushPhase(newRun, {
+              agent: 'FeatureTestWriter',
+              status: 'completed',
+              output: `${cases.length} new case(s) written for "${feature.name}".`,
+            });
+          } catch (featureErr: any) {
+            pushPhase(newRun, { agent: 'FeatureTestWriter', status: 'skipped', output: getAIErrorMessage(featureErr) });
+          }
+        }
+
+        // ── Phase 6: Recheck coverage — fill any gaps ──────────────────────────
+        pushPhase(newRun, { agent: 'CoverageGapChecker', status: 'running' });
+        const allSubFeatures = inventoryFeatures
+          .flatMap((f: any) => (Array.isArray(f?.subfeatures) ? f.subfeatures : []))
+          .map((s: any) => ({ name: String(s?.name || '').trim() }))
+          .filter((s: { name: string }) => s.name);
+        if (allSubFeatures.length && allGeneratedCases.length) {
+          const featureLabel = inventoryFeatures[0]?.name ? String(inventoryFeatures[0].name) : String(prompt || 'feature').slice(0, 60);
+          const completeness = assessFeatureCompleteness(featureLabel, allSubFeatures, allGeneratedCases);
+          if (!completeness.ok) {
+            try {
+              const gapCases = await proposeGapCases(newRun.feature_understanding, allGeneratedCases.map((c: any) => ({
+                id: c.existingCaseId || c.id || c.title, title: c.title, tags: c.tags || [], type: c.type, priority: c.priority, stepCount: (c.steps || []).length,
+              })));
+              const gapFormatted = (gapCases || []).map((g: any) => ({
+                title: g.title, description: g.rationale || '', priority: g.priority || 'Medium', type: g.type || 'Automated',
+                tags: normalizeCaseTags(g.tags || []), steps: normalizeCaseSteps(g.steps || []), captureEvidence: true,
+              }));
+              if (gapFormatted.length) allGeneratedCases.push(...gapFormatted);
+              pushPhase(newRun, {
+                agent: 'CoverageGapChecker',
+                status: 'completed',
+                output: gapFormatted.length ? `${gapFormatted.length} gap case(s) added. ${completeness.reason}` : `No actionable gaps. ${completeness.reason}`,
+              });
+            } catch {
+              pushPhase(newRun, { agent: 'CoverageGapChecker', status: 'completed', output: completeness.reason });
+            }
+          } else {
+            pushPhase(newRun, { agent: 'CoverageGapChecker', status: 'completed', output: `All features covered. ${completeness.reason}` });
+          }
+        } else {
+          pushPhase(newRun, { agent: 'CoverageGapChecker', status: 'completed', output: 'No subfeature inventory to validate against.' });
+        }
+
+        // Commit all accumulated cases and go straight to script generation
+        newRun.generated_cases = allGeneratedCases;
+        newRun.existing_matches = [];
         pushPhase(newRun, {
-          agent: 'System',
-          status: 'coverage_options',
-          output: `Found ${relatedExisting.length} existing test case(s) related to this request. Reuse them, add only the gaps, or generate fresh.`,
+          agent: 'TestGenerationAgent',
+          status: 'completed',
+          output: { test_cases: allGeneratedCases, grounded: true, grounding: 'Per-feature case generation complete.' },
         });
-        await persistAgentQualityArtifacts(newRun);
-        persistDataInBackground('coverage-options agent run');
-        return;
+        await persistAgentCaseArtifacts(newRun);
+        await persistAgentRequirementArtifacts(newRun);
+        (newRun.generated_cases || []).forEach((tc: any, idx: number) => {
+          pushInboxItem({
+            workspaceId: 'default', source: 'case', sourceId: `${newRun.id}:${idx}`,
+            title: `Review new test case: ${tc.title || `Case ${idx + 1}`}`, summary: tc.description || '',
+            confidence: 80, proposedBy: 'QA Assistant',
+            payload: { runId: newRun.id, caseIndex: idx, case: tc },
+            links: [{ label: 'Open in Test Cases', href: '/test-cases' }],
+          });
+        });
+        if (flowMode === 'review_cases') {
+          newRun.status = 'review_required';
+          newRun.review_started_at = nowIso();
+          pushPhase(newRun, { agent: 'System', status: 'review_required', output: 'Review and edit generated test cases, then continue the agent flow.' });
+          await persistAgentRunAndReportArtifacts(newRun);
+          persistDataInBackground('review-required agent run');
+          return;
+        }
+        await runPostCaseAgentFlow(newRun, undefined as any, { test_cases: allGeneratedCases }, targetUrl, credentials);
+      } else {
+        // No feature inventory — fall back to single-batch generation with coverage-options gate
+        pushPhase(newRun, { agent: 'CoverageScout', status: 'running' });
+        const relatedExisting = await findRelatedExistingCases(newRun);
+        newRun.existing_matches = relatedExisting.map(mapExistingToRunCase);
+        await persistAgentRequirementArtifacts(newRun);
+        pushPhase(newRun, { agent: 'CoverageScout', status: 'completed', output: `${relatedExisting.length} related existing test case(s) found.` });
+        if (relatedExisting.length && flowMode === 'review_cases') {
+          newRun.status = 'coverage_options';
+          newRun.review_started_at = nowIso();
+          pushPhase(newRun, { agent: 'System', status: 'coverage_options', output: `Found ${relatedExisting.length} existing test case(s). Reuse them, add only the gaps, or generate fresh.` });
+          await persistAgentQualityArtifacts(newRun);
+          persistDataInBackground('coverage-options agent run');
+          return;
+        }
+        await generateCasesForRun(newRun, credentials, { flowMode, mode: 'fresh' });
       }
-
-      await generateCasesForRun(newRun, credentials, { flowMode, mode: 'fresh' });
     } catch (err: any) {
       console.error('AI Gen Error:', err);
       markRunDone(newRun, 'failed');

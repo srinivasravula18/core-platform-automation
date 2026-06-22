@@ -40,15 +40,19 @@ import {
  * cases are written. The human curates them, then continues.
  */
 
-const PIPELINE: { key: string; label: string }[] = [
+const PIPELINE: { key: string; label: string; sub?: boolean }[] = [
   { key: 'ApplicationInspector', label: 'Inspect app' },
   { key: 'CodeAnalyst', label: 'Understand code' },
-  { key: 'FeatureDiscoveryAgent', label: 'Find existing requirements' },
-  { key: 'FeatureWriter', label: 'Map requirement features' },
-  { key: 'RequirementWriter', label: 'Draft requirements' },
+  { key: 'FeatureDiscoveryAgent', label: 'Find Existing Features' },
+  { key: 'FeatureWriter', label: 'Write New Features (missing)' },
+  { key: 'RequirementWriter', label: 'Write New Requirements (missing)' },
+  { key: 'FeatureMapper', label: 'Map features', sub: true },
+  { key: 'FeatureCoverageScout', label: 'Find existing', sub: true },
+  { key: 'FeatureTestWriter', label: 'Write cases', sub: true },
+  { key: 'CoverageGapChecker', label: 'Recheck coverage' },
   { key: 'CoverageScout', label: 'Find existing coverage' },
   { key: 'TestGenerationAgent', label: 'Write missing cases' },
-  { key: 'PlaywrightAgent', label: 'Generate scripts' },
+  { key: 'PlaywrightAgent', label: 'Generate scripts on new/updated' },
   { key: 'SelectorVerifier', label: 'Verify selectors' },
   { key: 'EvidenceAgent', label: 'Capture evidence' },
 ];
@@ -572,11 +576,14 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
             : runStopped && st === 'running'
               ? 'stopped'
               : isActive ? 'running' : st;
+          const nextP = visiblePipeline[i + 1];
+          const showSep = i < visiblePipeline.length - 1 && !p.sub && !nextP?.sub;
           return (
-            <div key={p.key} className="flex items-center gap-1.5">
+            <div key={p.key} className={cn('flex items-center gap-1.5', p.sub && 'ml-4')}>
               <span
                 className={cn(
                   'inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-[11px] font-medium transition-colors',
+                  p.sub && 'text-[10px]',
                   effState === 'completed'
                     ? 'border-emerald-500/20 bg-emerald-500/5 text-emerald-400'
                     : effState === 'running'
@@ -604,7 +611,7 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
                     : null;
                 })()}
               </span>
-              {i < visiblePipeline.length - 1 && <span className="text-[var(--text-muted)]">·</span>}
+              {showSep && <span className="text-[var(--text-muted)]">·</span>}
             </div>
           );
         })}
