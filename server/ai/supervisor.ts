@@ -244,6 +244,10 @@ When done, STOP calling tools and give the final answer:
  * answer in seconds, so fan-out is fine.
  */
 function providerSupportsDecomposition(_opts?: { workspaceId?: string; userId?: string }): boolean {
+  // Deep decomposition fans out into many parallel model/tool-loop calls. It is useful for
+  // offline exhaustive analysis, but too slow and opaque for the production chat default.
+  // Keep it opt-in so API-key production behaves like the fast local single-pass path.
+  if (String(process.env.AGENT_DEEP_DECOMPOSITION || '').toLowerCase() !== 'true') return false;
   try {
     const provider = resolveProviderForAgent('chatAssistant');
     const creds = getProviderCredentials(provider);
