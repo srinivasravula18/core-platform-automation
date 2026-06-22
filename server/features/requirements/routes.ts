@@ -2,17 +2,101 @@ import type { Express } from 'express';
 import { Requirements, RequirementLinks, Cases, isPgEnabled } from '../../db/repository';
 import { addActivity, persistDataInBackground } from '../../shared/storage';
 import { getAIErrorMessage } from '../../shared/ai';
-import { discoverRequirement, getRequirementWithCases } from './requirementService';
+import { confirmRequirementDraft, discoverRequirement, draftRequirement, getRequirementWithCases } from './requirementService';
 import { reqScope, scopeFilter } from '../../shared/scope';
+import { getProject } from '../projects/projectService';
+
+function repoPathForScope(scope: ReturnType<typeof reqScope>): string {
+  return scope.projectId ? (getProject(scope.projectId)?.repoPath || '') : '';
+}
+
+function prepareStreamingResponse(res: any) {
+  res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Surrogate-Control', 'no-store');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.setHeader('Connection', 'keep-alive');
+  res.socket?.setNoDelay?.(true);
+  res.flushHeaders?.();
+}
+
+function flushStream(res: any) {
+  try { res.flush?.(); } catch { /* best effort */ }
+}
 
 export function registerRequirementRoutes(app: Express) {
+  app.post('/api/requirements/draft/stream', async (req, res) => {
+    const query = String(req.body?.query || '').trim();
+    if (!query) return res.status(400).json({ error: 'Tell me which feature or section to test.' });
+
+    prepareStreamingResponse(res);
+    const send = (obj: any) => {
+      try { res.write(`${JSON.stringify(obj)}\n`); } catch { /* client gone */ }
+    };
+    const heartbeat = setInterval(() => {
+      send({ type: 'heartbeat', at: Date.now() });
+      flushStream(res);
+    }, 10000);
+
+    try {
+      const scope = reqScope(req);
+      let index = 0;
+      const onProgress = (text: string) => {
+        send({ type: 'step', index: index++, text });
+        flushStream(res);
+      };
+      onProgress('Starting requirement drafting agent...');
+      const result = await draftRequirement(query, {
+        workspaceId: req.body?.workspaceId || 'default',
+        userId: scope.userId,
+        role: scope.role,
+        repoPath: repoPathForScope(scope),
+        projectId: scope.projectId,
+        appId: scope.appId || '',
+        requirementsOnly: true,
+        onProgress,
+      });
+      send({ type: 'final', result });
+      flushStream(res);
+    } catch (error: any) {
+      send({ type: 'error', error: getAIErrorMessage(error) || error?.message || 'Failed to draft requirement.' });
+    } finally {
+      clearInterval(heartbeat);
+      res.end();
+    }
+  });
+
+  app.post('/api/requirements/draft', async (req, res) => {
+    try {
+      const query = String(req.body?.query || '').trim();
+      if (!query) return res.status(400).json({ error: 'Tell me which feature or section to test.' });
+      const scope = reqScope(req);
+      const result = await draftRequirement(query, { workspaceId: req.body?.workspaceId || 'default', userId: scope.userId, role: scope.role, repoPath: repoPathForScope(scope), projectId: scope.projectId, appId: scope.appId || '', requirementsOnly: true });
+      res.json(result);
+    } catch (error: any) {
+      res.status(500).json({ error: getAIErrorMessage(error) || error?.message || 'Failed to draft requirement.' });
+    }
+  });
+
+  app.post('/api/requirements/confirm', async (req, res) => {
+    try {
+      const scope = reqScope(req);
+      const result = await confirmRequirementDraft(req.body?.draft || {}, { workspaceId: req.body?.workspaceId || 'default', userId: scope.userId, role: scope.role, projectId: scope.projectId, appId: scope.appId || '' });
+      res.json(result);
+    } catch (error: any) {
+      res.status(500).json({ error: getAIErrorMessage(error) || error?.message || 'Failed to create requirement.' });
+    }
+  });
+
   /* ---------- discover: search the target app source, reconcile, propose gaps ---------- */
   app.post('/api/requirements/discover', async (req, res) => {
     try {
       const query = String(req.body?.query || '').trim();
       if (!query) return res.status(400).json({ error: 'Tell me which feature or section to test.' });
       const scope = reqScope(req);
-      const result = await discoverRequirement(query, { workspaceId: req.body?.workspaceId || 'default', userId: scope.userId, role: scope.role });
+      const requirementsOnly = req.body?.requirementsOnly === true || req.body?.mode === 'requirements_only';
+      const result = await discoverRequirement(query, { workspaceId: req.body?.workspaceId || 'default', userId: scope.userId, role: scope.role, repoPath: repoPathForScope(scope), projectId: scope.projectId, appId: scope.appId || '', requirementsOnly });
       res.json(result);
     } catch (error: any) {
       res.status(500).json({ error: getAIErrorMessage(error) || error?.message || 'Failed to discover requirement.' });

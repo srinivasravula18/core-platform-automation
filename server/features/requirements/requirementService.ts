@@ -24,21 +24,42 @@ import { gitGrep, listRepoSourceFiles, readRepoFile, GIT_AGENT_TARGET_REPO } fro
 
 /* ---------- schemas ---------- */
 
+const textField = (fallback = '') =>
+  z.preprocess((value) => {
+    if (value == null) return fallback;
+    if (Array.isArray(value)) return value.filter(Boolean).map(String).join('; ');
+    if (typeof value === 'object') return JSON.stringify(value);
+    return String(value);
+  }, z.string().default(fallback));
+
+const arrayField = <T extends z.ZodTypeAny>(item: T) =>
+  z.preprocess((value) => (Array.isArray(value) ? value : []), z.array(item).default([]));
+
+const metadataRefSchema = z.preprocess((value) => {
+  if (value && typeof value === 'object' && !Array.isArray(value)) return value;
+  return { object: value == null ? '' : String(value), note: '' };
+}, z.object({ object: textField(''), note: textField('') }));
+
+const sourceFileRefSchema = z.preprocess((value) => {
+  if (value && typeof value === 'object' && !Array.isArray(value)) return value;
+  return { path: value == null ? '' : String(value), why: '' };
+}, z.object({ path: textField(''), why: textField('') }));
+
 const featureAnalystSchema = z.object({
-  title: z.string().default('Feature under test'),
-  description: z.string().default(''),
-  businessRules: z.array(z.string()).default([]),
-  dataPopulationNotes: z.string().default(''),
-  adminBehavior: z.string().default(''),
-  keystoneBehavior: z.string().default(''),
-  metadataRefs: z.array(z.object({ object: z.string(), note: z.string().default('') })).default([]),
-  sourceFiles: z.array(z.object({ path: z.string(), why: z.string().default('') })).default([]),
-  candidateScenarios: z.array(z.object({
-    title: z.string().default('Scenario'),
-    priority: z.string().default('Medium'),
-    rationale: z.string().default(''),
-    steps: z.array(z.object({ action: z.string().default(''), expected: z.string().default('') })).default([]),
-  })).default([]),
+  title: textField('Feature under test'),
+  description: textField(''),
+  businessRules: arrayField(textField('')),
+  dataPopulationNotes: textField(''),
+  adminBehavior: textField(''),
+  keystoneBehavior: textField(''),
+  metadataRefs: arrayField(metadataRefSchema),
+  sourceFiles: arrayField(sourceFileRefSchema),
+  candidateScenarios: arrayField(z.object({
+    title: textField('Scenario'),
+    priority: textField('Medium'),
+    rationale: textField(''),
+    steps: arrayField(z.object({ action: textField(''), expected: textField('') })),
+  })),
 });
 
 const featureInventorySchema = z.object({
@@ -412,19 +433,30 @@ function summarizeFeatureInventoryForPrompt(inventory: FeatureInventory): string
  */
 export async function analyzeFeatureFromSource(
   query: string,
-  opts: { workspaceId?: string; userId?: string; repoPath?: string } = {},
+  opts: { workspaceId?: string; userId?: string; repoPath?: string; onProgress?: (label: string) => void } = {},
 ): Promise<{ understanding: FeatureUnderstanding; files: Array<{ path: string; area: string; surface: string }>; keywords: string[] }> {
   const cleanQuery = String(query || '').trim();
   const keywords = deriveKeywords(cleanQuery);
+  const inventoryKeywords = deriveInventoryKeywords(cleanQuery);
+  const repoPath = opts.repoPath;
+  opts.onProgress?.('Scanning route, feature, service, metadata, and UI structure...');
+  const structuralFiles = discoverStructuralSourceFiles(cleanQuery, inventoryKeywords, repoPath, 220);
+  const structuralMap = buildStructuralMapForPrompt(structuralFiles, repoPath, 180, 24000);
   // Always gather a deterministic deep sample (reliable grounding + the file list we return).
-  const { files, excerpts } = gatherSourceExcerpts(keywords, opts.repoPath);
+  opts.onProgress?.(`Searching source files for ${keywords.slice(0, 5).join(', ') || 'the requirement'}...`);
+  const { files, excerpts } = gatherSourceExcerpts(Array.from(new Set([...keywords, ...inventoryKeywords])), repoPath, {
+    maxFiles: 360,
+    maxBytesPerFile: 3800,
+    seedFiles: structuralFiles.slice(0, 160),
+    maxSelectedFiles: 190,
+  });
 
   // CLAUDE-CODE-STYLE deep parallel research: decompose the feature into angles and
   // investigate them concurrently across the real source before structuring — so cases and
   // scripts are grounded in genuinely deep coverage. Falls back to the deterministic sample.
-  const repoPath = opts.repoPath;
   let researchNotes = '';
   try {
+    opts.onProgress?.(`Exploring ${Math.max(1, keywords.length)} code area(s) in parallel...`);
     researchNotes = await deepParallelResearch({
       question: cleanQuery,
       io: {
@@ -435,6 +467,7 @@ export async function analyzeFeatureFromSource(
       orchestratorAgent: 'featureAnalyst',
       workspaceId: opts.workspaceId,
       userId: opts.userId,
+      onProgress: opts.onProgress,
     });
   } catch {
     researchNotes = '';
@@ -444,6 +477,7 @@ export async function analyzeFeatureFromSource(
     : `Code read from the target application's real source across the codebase (path + area). Ground your understanding ONLY in these:\n${excerpts || '(no matching source found — say so in the description and keep businessRules minimal rather than inventing them)'}`;
 
   const analyst = await getOrchestrator('featureAnalyst', opts);
+  opts.onProgress?.('Extracting requirement rules from source evidence...');
   const analystRes = await analyst.generateObject<FeatureUnderstanding>({
     prompt: `Feature/section to analyze (user query): "${cleanQuery}"
 
@@ -478,6 +512,7 @@ INFER the application's architecture from the research notes and excerpts above 
     sourceFiles: files.map((f) => ({ path: f.path, why: f.area })),
     candidateScenarios: [],
   };
+  opts.onProgress?.('Source-grounded requirement understanding is ready...');
   return { understanding, files, keywords };
 }
 
@@ -489,7 +524,7 @@ INFER the application's architecture from the research notes and excerpts above 
  */
 export async function discoverFeatureInventoryFromSource(
   query: string,
-  opts: { workspaceId?: string; userId?: string; repoPath?: string } = {},
+  opts: { workspaceId?: string; userId?: string; repoPath?: string; onProgress?: (label: string) => void } = {},
 ): Promise<{ inventory: FeatureInventory; files: Array<{ path: string; area: string; surface: string }>; keywords: string[] }> {
   const cleanQuery = String(query || '').trim() || 'Discover all testable features, subfeatures, and end-to-end flows in this application.';
   const keywords = deriveInventoryKeywords(cleanQuery);
@@ -505,6 +540,7 @@ export async function discoverFeatureInventoryFromSource(
 
   let researchNotes = '';
   try {
+    opts.onProgress?.('Mapping feature areas from source structure...');
     researchNotes = await deepParallelResearch({
       question: `${cleanQuery}
 
@@ -521,6 +557,7 @@ Discover feature-level, subfeature-level, and end-to-end QA coverage across the 
       orchestratorAgent: 'featureDiscoveryAgent',
       workspaceId: opts.workspaceId,
       userId: opts.userId,
+      onProgress: opts.onProgress,
       maxFacets: 8,
       bytesPerFile: 3000,
     });
@@ -533,6 +570,7 @@ Discover feature-level, subfeature-level, and end-to-end QA coverage across the 
     : `APP STRUCTURAL MAP (deterministic repo scan; use this as the coverage checklist, and use excerpts as behavior proof):\n${structuralMap || '(none)'}\n\nRaw source excerpts from broad feature discovery searches:\n${excerpts || '(no matching source found; return empty feature arrays rather than inventing)'}`;
 
   const featureAgent = await getOrchestrator('featureDiscoveryAgent', opts);
+  opts.onProgress?.('Mapping features and subfeatures from code...');
   const featureRes = await featureAgent.generateObject<FeatureInventory>({
     prompt: `You are FeatureDiscoveryAgent. Build a granular QA feature inventory from the target application's REAL source.
 
@@ -573,6 +611,7 @@ Rules:
   };
 
   const e2eAgent = await getOrchestrator('e2eFlowAgent', opts);
+  opts.onProgress?.('Mapping E2E flows from mapped features...');
   const e2eRes = await e2eAgent.generateObject<z.infer<typeof e2eFlowSchema>>({
     prompt: `You are E2EFlowAgent. Identify end-to-end user journeys across the application from source-grounded evidence and the feature inventory.
 
@@ -667,36 +706,18 @@ export interface DiscoverResult {
   repoPath: string;
 }
 
+export type RequirementDraftResult = DiscoverResult & { draft: true };
+
 /* ---------- main entry ---------- */
 
-export async function discoverRequirement(
-  query: string,
-  opts: { workspaceId?: string; userId?: string; role?: string; repoPath?: string } = {},
-): Promise<DiscoverResult> {
-  const workspaceId = opts.workspaceId || 'default';
-  const ownerId = opts.userId || '';
-  const cleanQuery = String(query || '').trim();
-  if (!cleanQuery) throw new Error('A feature or section to test is required.');
-
-  // 1) Feature analyst: produce a grounded requirement understanding from the source.
-  const { understanding, files } = await analyzeFeatureFromSource(cleanQuery, opts);
-
-  // 2) Reconcile against existing cases — only the discovering user's own cases when
-  // they're a tester, so isolation holds (admins reconcile against everything).
-  const allCases = await Cases.list();
-  const scopedCases = ownerId
-    ? allCases.filter((c: any) => (c.ownerId || '') === ownerId)
-    : allCases;
-  const existingCases = scopedCases.slice(0, 100).map((c: any) => ({
-    id: c.id,
-    title: c.title,
-    tags: c.tags || [],
-    type: c.type,
-    priority: c.priority,
-    stepCount: (c.steps || []).length,
-  }));
-
+async function reconcileRequirementCoverage(
+  understanding: FeatureUnderstanding,
+  existingCases: Array<{ id: string; title: string; tags?: string[]; type?: string; priority?: string; stepCount?: number }>,
+  opts: { workspaceId?: string; userId?: string; role?: string; onProgress?: (label: string) => void },
+  requirementsOnly: boolean,
+): Promise<Reconciliation> {
   const reconciler = await getOrchestrator('caseWriter', opts);
+  opts.onProgress?.(`Checking ${existingCases.length} existing test case(s) for coverage...`);
   const reconcileRes = await reconciler.generateObject<Reconciliation>({
     prompt: `You are a senior QA engineer deciding what tests a requirement needs. Reconcile the requirement understanding against the EXISTING test cases before proposing anything.
 
@@ -709,7 +730,9 @@ ${JSON.stringify(existingCases)}
 Do the following and return strict JSON matching the schema:
 1) In coverage.coveredBy, list the EXISTING case ids (use ids that appear verbatim above) that already test this requirement, each with a short reason. Set coverage.sufficient = true ONLY if the existing cases genuinely cover the requirement's business rules.
 2) In coverage.gaps, list the specific behaviors the existing cases do NOT cover.
-3) If coverage is NOT sufficient, in proposedCases propose the MINIMUM set of new test cases (with concrete, executable steps and expected results) to close the gaps. Prefer the requirement's candidateScenarios where they fit. Do NOT duplicate existing coverage. If coverage IS sufficient, leave proposedCases empty.`,
+3) ${requirementsOnly
+  ? `The caller asked for requirements only. Leave proposedCases empty even if gaps exist.`
+  : `If coverage is NOT sufficient, in proposedCases propose the MINIMUM set of new test cases (with concrete, executable steps and expected results) to close the gaps. Prefer the requirement's candidateScenarios where they fit. Do NOT duplicate existing coverage. If coverage IS sufficient, leave proposedCases empty.`}`,
     schema: reconcileSchema,
     userMessage: 'reconcile requirement coverage against existing cases',
   });
@@ -717,10 +740,227 @@ Do the following and return strict JSON matching the schema:
   if ((reconcileRes as any).shortCircuit) {
     throw new Error(String((reconcileRes as any).shortCircuit));
   }
-  const reconciliation: Reconciliation = (reconcileRes as any).object || {
+  opts.onProgress?.('Coverage reconciliation is ready...');
+  return (reconcileRes as any).object || {
     coverage: { sufficient: false, coveredBy: [], gaps: [], reasoning: '' },
     proposedCases: [],
   };
+}
+
+async function existingCasesForRequirement(ownerId: string) {
+  const allCases = await Cases.list();
+  const scopedCases = ownerId
+    ? allCases.filter((c: any) => (c.ownerId || '') === ownerId)
+    : allCases;
+  return scopedCases.slice(0, 100).map((c: any) => ({
+    id: c.id,
+    title: c.title,
+    tags: c.tags || [],
+    type: c.type,
+    priority: c.priority,
+    stepCount: (c.steps || []).length,
+  }));
+}
+
+function buildRequirementRecord(
+  requirementId: string,
+  cleanQuery: string,
+  understanding: FeatureUnderstanding,
+  files: Array<{ path: string; area: string; surface: string }>,
+  coverageStatus: string,
+  ownerId: string,
+  scope: { projectId?: string; appId?: string } = {},
+) {
+  return {
+    id: requirementId,
+    title: understanding.title || cleanQuery,
+    description: understanding.description || '',
+    featureQuery: cleanQuery,
+    businessRules: understanding.businessRules || [],
+    dataPopulationNotes: understanding.dataPopulationNotes || '',
+    adminBehavior: understanding.adminBehavior || '',
+    keystoneBehavior: understanding.keystoneBehavior || '',
+    metadataRefs: understanding.metadataRefs || [],
+    sourceFiles: (understanding.sourceFiles && understanding.sourceFiles.length
+      ? understanding.sourceFiles
+      : files.map((f) => ({ path: f.path, why: f.area }))),
+    coverageStatus,
+    status: 'Draft',
+    approvalState: 'proposed',
+    proposedBy: 'Feature Analyst',
+    projectId: scope.projectId || '',
+    appId: scope.appId || '',
+    ownerId,
+  };
+}
+
+function mergeInventoryIntoUnderstanding(base: FeatureUnderstanding, inventory: FeatureInventory): FeatureUnderstanding {
+  const businessRules = new Set((base.businessRules || []).map((rule) => String(rule)).filter(Boolean));
+  const candidateScenarios = [...(base.candidateScenarios || [])];
+  const sourceFiles = new Map<string, { path: string; why: string }>();
+  for (const file of base.sourceFiles || []) {
+    if (file?.path) sourceFiles.set(file.path, { path: file.path, why: file.why || '' });
+  }
+
+  for (const feature of inventory.features || []) {
+    const featureName = String(feature.name || 'Feature').trim();
+    if (feature.description) businessRules.add(`${featureName}: ${feature.description}`);
+    for (const file of feature.sourceFiles || []) {
+      if (file?.path) sourceFiles.set(file.path, { path: file.path, why: file.why || featureName });
+    }
+    for (const sub of feature.subfeatures || []) {
+      const subName = String(sub.name || 'Subfeature').trim();
+      for (const rule of sub.businessRules || []) businessRules.add(`${featureName} / ${subName}: ${rule}`);
+      for (const action of sub.userActions || []) businessRules.add(`${featureName} / ${subName} action: ${action}`);
+      candidateScenarios.push({
+        title: `${featureName} - ${subName}`,
+        priority: sub.priority || 'Medium',
+        rationale: sub.description || (sub.testIdeas || []).join('; '),
+        steps: (sub.testIdeas && sub.testIdeas.length
+          ? sub.testIdeas.map((idea) => ({ action: idea, expected: `The ${subName} behavior is observable and matches the code-defined rule.` }))
+          : [{ action: `Exercise ${subName} in ${featureName}.`, expected: `The ${subName} behavior matches the source-defined requirement.` }]),
+      });
+    }
+  }
+
+  for (const flow of inventory.e2eFlows || []) {
+    const flowName = String(flow.name || 'End-to-end flow').trim();
+    if (flow.description) businessRules.add(`E2E ${flowName}: ${flow.description}`);
+    for (const rule of flow.businessRules || []) businessRules.add(`E2E ${flowName}: ${rule}`);
+    for (const file of flow.sourceFiles || []) {
+      if (file?.path) sourceFiles.set(file.path, { path: file.path, why: file.why || flowName });
+    }
+    candidateScenarios.push({
+      title: `E2E - ${flowName}`,
+      priority: flow.priority || 'High',
+      rationale: flow.description || `Covers ${flow.coveredFeatures?.join(', ') || 'mapped features'}.`,
+      steps: (flow.userJourney && flow.userJourney.length
+        ? flow.userJourney.map((step) => ({ action: step, expected: 'The journey advances to the next code-supported state.' }))
+        : [{ action: `Complete ${flowName}.`, expected: 'The end-to-end journey reaches the expected final state.' }]),
+    });
+  }
+
+  const summary = inventory.summary ? `\n\nMapped feature inventory: ${inventory.summary}` : '';
+  return {
+    ...base,
+    description: `${base.description || ''}${summary}`.trim(),
+    businessRules: Array.from(businessRules),
+    sourceFiles: Array.from(sourceFiles.values()),
+    candidateScenarios,
+  };
+}
+
+export async function draftRequirement(
+  query: string,
+  opts: { workspaceId?: string; userId?: string; role?: string; repoPath?: string; projectId?: string; appId?: string; requirementsOnly?: boolean; onProgress?: (label: string) => void } = {},
+): Promise<RequirementDraftResult> {
+  const ownerId = opts.userId || '';
+  const cleanQuery = String(query || '').trim();
+  if (!cleanQuery) throw new Error('A feature or section to test is required.');
+
+  opts.onProgress?.('Starting requirement draft...');
+  let { understanding, files } = await analyzeFeatureFromSource(cleanQuery, opts);
+  try {
+    opts.onProgress?.('Running mapped feature and E2E flow research...');
+    const inventoryResult = await discoverFeatureInventoryFromSource(cleanQuery, opts);
+    understanding = mergeInventoryIntoUnderstanding(understanding, inventoryResult.inventory);
+    const byPath = new Map(files.map((file) => [file.path, file]));
+    for (const file of inventoryResult.files || []) {
+      if (file?.path && !byPath.has(file.path)) byPath.set(file.path, file);
+    }
+    files = Array.from(byPath.values());
+  } catch {
+    opts.onProgress?.('Mapped feature research was incomplete; using source analyst findings...');
+  }
+  opts.onProgress?.('Building code-grounded requirement review card...');
+  const coverage = {
+    sufficient: false,
+    coveredBy: [],
+    gaps: [],
+    reasoning: 'Not evaluated for draft creation. Requirement drafts are grounded only in the selected codebase.',
+  };
+  const coverageStatus = 'unknown';
+  const requirement = buildRequirementRecord(genId('REQ'), cleanQuery, understanding, files, coverageStatus, ownerId, { projectId: opts.projectId, appId: opts.appId });
+
+  return {
+    draft: true,
+    requirement,
+    understanding,
+    coverage,
+    existingLinks: [],
+    generatedCases: [],
+    searchedFiles: files,
+    repoPath: opts.repoPath || GIT_AGENT_TARGET_REPO,
+  };
+}
+
+export async function confirmRequirementDraft(
+  draft: Partial<RequirementDraftResult>,
+  opts: { workspaceId?: string; userId?: string; role?: string; projectId?: string; appId?: string } = {},
+): Promise<DiscoverResult> {
+  const ownerId = opts.userId || '';
+  const incoming = draft?.requirement || {};
+  const requirementId = String((incoming as any).id || '').trim() || genId('REQ');
+  const requirement = await Requirements.upsert({
+    id: requirementId,
+    title: String((incoming as any).title || 'Requirement'),
+    description: String((incoming as any).description || ''),
+    featureQuery: String((incoming as any).featureQuery || ''),
+    businessRules: Array.isArray((incoming as any).businessRules) ? (incoming as any).businessRules : [],
+    dataPopulationNotes: String((incoming as any).dataPopulationNotes || ''),
+    adminBehavior: String((incoming as any).adminBehavior || ''),
+    keystoneBehavior: String((incoming as any).keystoneBehavior || ''),
+    metadataRefs: Array.isArray((incoming as any).metadataRefs) ? (incoming as any).metadataRefs : [],
+    sourceFiles: Array.isArray((incoming as any).sourceFiles) ? (incoming as any).sourceFiles : [],
+    coverageStatus: String((incoming as any).coverageStatus || 'unknown'),
+    status: String((incoming as any).status || 'Draft'),
+    approvalState: String((incoming as any).approvalState || 'proposed'),
+    proposedBy: String((incoming as any).proposedBy || 'Feature Analyst'),
+    projectId: opts.projectId || (incoming as any).projectId || '',
+    appId: opts.appId || (incoming as any).appId || '',
+    ownerId,
+  });
+
+  const existingLinks: Array<{ caseId: string; title: string; reason: string }> = [];
+  const allCaseIds = new Set((await Cases.list()).map((c: any) => c.id));
+  for (const cb of draft?.existingLinks || []) {
+    const caseId = String((cb as any).caseId || '').trim();
+    if (!caseId || !allCaseIds.has(caseId)) continue;
+    await RequirementLinks.upsert({ requirementId, caseId, linkType: 'existing', note: (cb as any).reason || '' });
+    existingLinks.push({ caseId, title: (cb as any).title || '', reason: (cb as any).reason || '' });
+  }
+
+  if (!isPgEnabled()) persistDataInBackground('requirement draft confirm');
+  addActivity(`Feature Analyst created requirement "${requirement.title}" from reviewed draft.`);
+
+  return {
+    requirement,
+    understanding: draft?.understanding as FeatureUnderstanding,
+    coverage: draft?.coverage || { sufficient: false, coveredBy: [], gaps: [], reasoning: '' },
+    existingLinks,
+    generatedCases: [],
+    searchedFiles: draft?.searchedFiles || [],
+    repoPath: draft?.repoPath || GIT_AGENT_TARGET_REPO,
+  };
+}
+
+export async function discoverRequirement(
+  query: string,
+  opts: { workspaceId?: string; userId?: string; role?: string; repoPath?: string; projectId?: string; appId?: string; requirementsOnly?: boolean } = {},
+): Promise<DiscoverResult> {
+  const workspaceId = opts.workspaceId || 'default';
+  const ownerId = opts.userId || '';
+  const requirementsOnly = opts.requirementsOnly === true;
+  const cleanQuery = String(query || '').trim();
+  if (!cleanQuery) throw new Error('A feature or section to test is required.');
+
+  // 1) Feature analyst: produce a grounded requirement understanding from the source.
+  const { understanding, files } = await analyzeFeatureFromSource(cleanQuery, opts);
+
+  // 2) Reconcile against existing cases — only the discovering user's own cases when
+  // they're a tester, so isolation holds (admins reconcile against everything).
+  const existingCases = await existingCasesForRequirement(ownerId);
+  const reconciliation = await reconcileRequirementCoverage(understanding, existingCases, opts, requirementsOnly);
 
   // 3) Persist the requirement.
   const requirementId = genId('REQ');
@@ -729,7 +969,8 @@ Do the following and return strict JSON matching the schema:
 
   // Create the gap cases (pending review) and remember them for linking.
   const generatedCases: Array<{ id: string; title: string }> = [];
-  for (const pc of reconciliation.proposedCases || []) {
+  const proposedCases = requirementsOnly ? [] : (reconciliation.proposedCases || []);
+  for (const pc of proposedCases) {
     const caseId = genId('TC-REQ');
     const tags = normalizeCaseTags(pc.tags && pc.tags.length ? [...pc.tags, '@requirement'] : ['@requirement']);
     await Cases.upsert({
@@ -756,25 +997,7 @@ Do the following and return strict JSON matching the schema:
     generatedCases.length,
   );
 
-  const requirement = await Requirements.upsert({
-    id: requirementId,
-    title: understanding.title || cleanQuery,
-    description: understanding.description || '',
-    featureQuery: cleanQuery,
-    businessRules: understanding.businessRules || [],
-    dataPopulationNotes: understanding.dataPopulationNotes || '',
-    adminBehavior: understanding.adminBehavior || '',
-    keystoneBehavior: understanding.keystoneBehavior || '',
-    metadataRefs: understanding.metadataRefs || [],
-    sourceFiles: (understanding.sourceFiles && understanding.sourceFiles.length
-      ? understanding.sourceFiles
-      : files.map((f) => ({ path: f.path, why: f.area }))),
-    coverageStatus,
-    status: 'Draft',
-    approvalState: 'proposed',
-    proposedBy: 'Feature Analyst',
-    ownerId,
-  });
+  const requirement = await Requirements.upsert(buildRequirementRecord(requirementId, cleanQuery, understanding, files, coverageStatus, ownerId, { projectId: opts.projectId, appId: opts.appId }));
 
   // 4) Link existing covering cases and the generated gap cases.
   const existingLinks: Array<{ caseId: string; title: string; reason: string }> = [];
@@ -817,7 +1040,7 @@ Do the following and return strict JSON matching the schema:
     generatedCases,
     inboxItemId,
     searchedFiles: files,
-    repoPath: GIT_AGENT_TARGET_REPO,
+    repoPath: opts.repoPath || GIT_AGENT_TARGET_REPO,
   };
 }
 

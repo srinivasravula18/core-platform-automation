@@ -53,7 +53,7 @@ export default function Requirements() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Discovery failed.');
-      setDiscoverMessage(`Discovered "${data.requirement?.title}" — ${data.existingLinks?.length || 0} existing, ${data.generatedCases?.length || 0} new case(s).`);
+      setDiscoverMessage(`Agent created "${data.requirement?.title}" - ${data.existingLinks?.length || 0} existing, ${data.generatedCases?.length || 0} new case(s).`);
       setDiscoverQuery('');
       fetchRequirements();
     } catch (error: any) {
@@ -121,7 +121,7 @@ export default function Requirements() {
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-6 flex-shrink-0">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Requirements</h1>
-          <p className="text-sm text-[var(--text-muted)] mt-1">Feature understanding grounded in the product source, with traceable test coverage.</p>
+          <p className="text-sm text-[var(--text-muted)] mt-1">Agent-grounded requirements with traceable test coverage.</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <ExportMenu
@@ -149,17 +149,17 @@ export default function Requirements() {
         </div>
       </div>
 
-      {/* Discover bar */}
+      {/* Agent requirement creation */}
       <div className="mb-4 rounded-xl border border-[var(--accent)]/30 bg-[var(--accent)]/5 p-3 flex-shrink-0">
         <div className="mb-2 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
-          <Sparkles className="h-3.5 w-3.5" /> Discover a requirement from the product source
+          <Sparkles className="h-3.5 w-3.5" /> Create a requirement with the agent
         </div>
         <div className="flex flex-col gap-2 lg:flex-row">
           <input
             value={discoverQuery}
             onChange={(e) => setDiscoverQuery(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Enter') runDiscovery(); }}
-            placeholder="e.g. list view feature, permissions section, record validation…"
+            placeholder="e.g. list view feature, permissions section, record validation..."
             className="min-w-0 flex-1 rounded-md border border-[var(--border)] bg-[var(--bg-primary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
             disabled={discovering}
           />
@@ -169,7 +169,7 @@ export default function Requirements() {
             className="inline-flex items-center justify-center gap-2 rounded-md bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50"
           >
             {discovering ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
-            Discover
+            Create with agent
           </button>
         </div>
         {discoverMessage && <div className="mt-2 text-xs text-[var(--text-muted)]">{discoverMessage}</div>}
@@ -212,7 +212,7 @@ export default function Requirements() {
             </thead>
             <tbody className="divide-y divide-[var(--border)]">
               {loading && (<tr><td colSpan={8} className="py-8 text-center text-[var(--text-muted)]">Loading requirements...</td></tr>)}
-              {!loading && filtered.length === 0 && (<tr><td colSpan={8} className="py-8 text-center text-[var(--text-muted)]">No requirements yet. Discover one from the product source above.</td></tr>)}
+              {!loading && filtered.length === 0 && (<tr><td colSpan={8} className="py-8 text-center text-[var(--text-muted)]">No requirements yet. Create one with the agent above.</td></tr>)}
               {filtered.map((req) => {
                 const badge = COVERAGE_BADGE[req.coverageStatus] || COVERAGE_BADGE.unknown;
                 return (

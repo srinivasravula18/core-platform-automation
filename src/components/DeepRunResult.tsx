@@ -43,10 +43,11 @@ import {
 const PIPELINE: { key: string; label: string }[] = [
   { key: 'ApplicationInspector', label: 'Inspect app' },
   { key: 'CodeAnalyst', label: 'Understand code' },
-  { key: 'FeatureDiscoveryAgent', label: 'Map features' },
-  { key: 'E2EFlowAgent', label: 'Map E2E flows' },
-  { key: 'CoverageScout', label: 'Find existing' },
-  { key: 'TestGenerationAgent', label: 'Write cases' },
+  { key: 'FeatureDiscoveryAgent', label: 'Find existing requirements' },
+  { key: 'FeatureWriter', label: 'Map requirement features' },
+  { key: 'RequirementWriter', label: 'Draft requirements' },
+  { key: 'CoverageScout', label: 'Find existing coverage' },
+  { key: 'TestGenerationAgent', label: 'Write missing cases' },
   { key: 'PlaywrightAgent', label: 'Generate scripts' },
   { key: 'SelectorVerifier', label: 'Verify selectors' },
   { key: 'EvidenceAgent', label: 'Capture evidence' },
@@ -161,8 +162,19 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
   const matchKey = (c: any) => String(c?.id ?? c?.existingCaseId ?? c?.title);
   const list = cases || [];
 
+  const messages = run?.messages || [];
+  const latestAgentMessage = (agent: string) => messages.filter((m: any) => m.agent === agent).pop();
+  const hasPhase = (...agents: string[]) => agents.some((agent) => messages.some((m: any) => m.agent === agent));
+
   const agentState = (agent: string): string => {
-    const msg = (run?.messages || []).filter((m: any) => m.agent === agent).pop();
+    const msg = latestAgentMessage(agent);
+    if (agent === 'RequirementWriter' && !msg) {
+      const advancedPastRequirements =
+        hasPhase('CoverageScout', 'TestGenerationAgent', 'PlaywrightAgent', 'SelectorVerifier', 'EvidenceAgent') ||
+        Boolean(run?.requirement_id || run?.requirementId || run?.generated_cases?.length || run?.existing_matches?.length) ||
+        ['coverage_options', 'review_required', 'completed'].includes(String(status || '').toLowerCase());
+      if (advancedPastRequirements) return 'completed';
+    }
     return msg?.status || 'pending';
   };
 
@@ -178,7 +190,7 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
   // Duration of one phase from its 'running' stamp to its terminal stamp. The
   // still-running phase has no terminal yet, so it ticks live off Date.now().
   const phaseMs = (agent: string): number | null => {
-    const msgs = (run?.messages || []).filter((m: any) => m.agent === agent);
+    const msgs = messages.filter((m: any) => m.agent === agent);
     const start = msgs.find((m: any) => m.status === 'running' && m.at);
     if (!start?.at) return null;
     const end = [...msgs].reverse().find((m: any) => ['completed', 'failed', 'skipped'].includes(m.status) && m.at);
@@ -201,6 +213,9 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
   const activePipelineIdx = isRunning
     ? PIPELINE.findIndex((p) => !['completed', 'failed', 'skipped'].includes(agentState(p.key)))
     : -1;
+  const visiblePipeline = failed
+    ? PIPELINE.filter((p) => agentState(p.key) !== 'pending')
+    : PIPELINE;
 
   /* ---------- local case editing ---------- */
   const patchCase = (i: number, patch: Partial<Case>) => {
@@ -543,7 +558,7 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
 
       {/* Pipeline */}
       <div className="mb-3 flex flex-wrap items-center gap-1.5">
-        {PIPELINE.map((p, i) => {
+        {visiblePipeline.map((p, i) => {
           const st = agentState(p.key);
           const runFailed = status === 'failed';
           const runStopped = status === 'cancelled';
@@ -589,7 +604,7 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
                     : null;
                 })()}
               </span>
-              {i < PIPELINE.length - 1 && <span className="text-[var(--text-muted)]">·</span>}
+              {i < visiblePipeline.length - 1 && <span className="text-[var(--text-muted)]">·</span>}
             </div>
           );
         })}

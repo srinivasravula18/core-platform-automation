@@ -330,11 +330,21 @@ export default function AgentPanel() {
         <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-card)] p-4 shadow-sm">
           <div className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">Agent Pipeline</div>
           <div className="flex flex-wrap items-center gap-3">
-            {['ApplicationInspector', 'CodeAnalyst', 'FeatureDiscoveryAgent', 'E2EFlowAgent', 'CoverageScout', 'TestGenerationAgent', 'PlaywrightAgent', 'EvidenceAgent'].map((agent, index, agents) => (
+            {[
+              ['ApplicationInspector', 'Inspect app'],
+              ['CodeAnalyst', 'Understand code'],
+              ['FeatureDiscoveryAgent', 'Find existing requirements'],
+              ['FeatureWriter', 'Map requirement features'],
+              ['RequirementWriter', 'Draft requirements'],
+              ['CoverageScout', 'Find existing coverage'],
+              ['TestGenerationAgent', 'Write missing cases'],
+              ['PlaywrightAgent', 'Generate scripts'],
+              ['EvidenceAgent', 'Capture evidence'],
+            ].map(([agent, label], index, agents) => (
               <div key={agent} className="contents">
                 <div className="flex min-w-[10rem] items-center gap-3 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2">
                   {getAgentStatusIcon(agent)}
-                  <span className="text-xs font-medium text-[var(--text-primary)]">{agent}</span>
+                  <span className="text-xs font-medium text-[var(--text-primary)]">{label}</span>
                 </div>
                 {index < agents.length - 1 && (
                   <div className="hidden h-px w-5 bg-[var(--border)] sm:block" />

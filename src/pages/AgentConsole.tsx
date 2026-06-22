@@ -4,6 +4,7 @@ import {
   BrainCircuit,
   Mic,
   Send,
+  StopCircle,
   Loader2,
   Inbox,
   Sparkles,
@@ -36,6 +37,7 @@ import { WorkflowRunner } from '@/src/components/WorkflowRunner';
 import { DeepRunResult } from '@/src/components/DeepRunResult';
 import { CodeChangeReview } from '@/src/components/CodeChangeReview';
 import { RequirementDiscoveryResult } from '@/src/components/RequirementDiscoveryResult';
+import { RequirementDraftReview } from '@/src/components/RequirementDraftReview';
 import { GeneratedCases } from '@/src/components/GeneratedCases';
 
 // NOTE: The brittle regex DECISION layer that used to live here (GIT_RE, REQ_RE, DEEP_RE,
@@ -139,6 +141,53 @@ function stripFolderPrefix(text: string): string {
   return text.trim().replace(/^folder\s*[:=-]\s*/i, '');
 }
 
+const REQUIREMENT_WORD_RE = /\b(?:requirements?|requirments?|requiremnts?|requiremts?|req(?:uirements?|s|mts?)?)\b/i;
+const REQUIREMENT_WORD_RE_GLOBAL = /\b(?:requirements?|requirments?|requiremnts?|requiremts?|req(?:uirements?|s|mts?)?)\b/gi;
+
+function isExplicitRequirementOnlyRequest(text: string): boolean {
+  const value = (text || '').toLowerCase();
+  if (!REQUIREMENT_WORD_RE.test(value)) return false;
+  const explicitOnly =
+    new RegExp(`${REQUIREMENT_WORD_RE.source}\\s+only`, 'i').test(value) ||
+    new RegExp(`only\\s+${REQUIREMENT_WORD_RE.source}`, 'i').test(value);
+  const createVerb = new RegExp(`\\b(?:create|generate|write|draft|discover|add|make)\\b[\\s\\S]{0,80}${REQUIREMENT_WORD_RE.source}`, 'i').test(value);
+  const asksCasesOrScripts = /\b(?:test\s*)?(?:cases?|scripts?|playwright|suite|run)\b/.test(value);
+  return explicitOnly || (createVerb && !asksCasesOrScripts);
+}
+
+function extractRequirementOnlyQuery(text: string): string {
+  return (text || '')
+    .replace(/^(?:please\s+)?(?:can|could|would)\s+you\s+/i, '')
+    .replace(/^(?:i\s+(?:want|need)\s+(?:you\s+)?to\s+)/i, '')
+    .replace(/\b(?:create|generate|write|draft|discover|add|make)\b/gi, ' ')
+    .replace(/\b(?:test\s+plan|plan|containing|with)\b/gi, ' ')
+    .replace(REQUIREMENT_WORD_RE_GLOBAL, ' ')
+    .replace(/\bonly\b/gi, ' ')
+    .replace(/\b(?:from|using|based on)\s+(?:the\s+)?(?:code|codebase|source|product source)\b/gi, ' ')
+    .replace(/\b(?:for|on|about)\b/gi, ' ')
+    .replace(/\b(?:a|an|the)\b/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function isRequirementDraftApprove(text: string): boolean {
+  return /^(?:yes|ok|okay|approve|approved|save|create|confirm|looks good|proceed|go ahead)\b/i.test(text.trim());
+}
+
+function isRequirementDraftCancel(text: string): boolean {
+  return /^(?:cancel|discard|stop|never mind|nevermind)\b/i.test(text.trim());
+}
+
+function initialThinkingLabel(text: string, opts: { selectedApps: number; requirementDraftPending: boolean }): string {
+  const value = (text || '').toLowerCase();
+  if (opts.requirementDraftPending) return 'Updating requirement draft...';
+  if (isExplicitRequirementOnlyRequest(text)) return 'Reading source for requirement draft...';
+  if (/\b(requirements?|requirments?|requiremnts?|requiremts?)\b/.test(value)) return 'Preparing requirement review...';
+  if (/\b(?:test\s*)?(?:cases?|scripts?|playwright|suite|plan|run)\b/.test(value)) return 'Preparing test workflow...';
+  if (opts.selectedApps > 0) return `Inspecting ${opts.selectedApps} selected app${opts.selectedApps === 1 ? '' : 's'}...`;
+  return 'Analyzing request...';
+}
+
 /**
  * Agent Console — the single, conversational home of Test Flow AI.
  *
@@ -156,9 +205,10 @@ type Turn =
   | { id: string; role: 'assistant'; kind: 'deeprun'; taskId: string }
   | { id: string; role: 'assistant'; kind: 'codereview'; analysis: any }
   | { id: string; role: 'assistant'; kind: 'reqdiscovery'; result: any }
+  | { id: string; role: 'assistant'; kind: 'reqdraft'; result: any; query: string; revisionCount?: number }
   | { id: string; role: 'assistant'; kind: 'cases'; cases: any[] }
   | { id: string; role: 'assistant'; kind: 'clarify'; plan: any; summary: string; confidence: number }
-  | { id: string; role: 'assistant'; kind: 'folderask'; text: string; understanding?: string; folderName?: string; originalPrompt?: string; contextPrompt?: string; caseCountPrompt?: string; targetUrl?: string; websiteId?: string; websiteName?: string; revisionCount?: number }
+  | { id: string; role: 'assistant'; kind: 'folderask'; text: string; understanding?: string; understandingSource?: string; folderName?: string; originalPrompt?: string; contextPrompt?: string; caseCountPrompt?: string; targetUrl?: string; websiteId?: string; websiteName?: string; revisionCount?: number }
   | { id: string; role: 'assistant'; kind: 'thinking'; label: string };
 
 type PendingDeep = {
@@ -170,6 +220,14 @@ type PendingDeep = {
   websiteId?: string;
   websiteName?: string;
   understanding: string;
+  understandingSource?: string;
+  revisionCount: number;
+};
+
+type PendingRequirementDraft = {
+  turnId: string;
+  query: string;
+  result: any;
   revisionCount: number;
 };
 
@@ -366,6 +424,7 @@ export default function AgentConsole() {
   const [selectedAppIds, setSelectedAppIds] = useState<Set<string>>(new Set());
   const [appPickerOpen, setAppPickerOpen] = useState(false);
   const [pendingDeep, setPendingDeep] = useState<PendingDeep | null>(null);
+  const [pendingRequirementDraft, setPendingRequirementDraft] = useState<PendingRequirementDraft | null>(null);
   const [copiedTurnId, setCopiedTurnId] = useState<string | null>(null);
   const [editingTurnId, setEditingTurnId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState('');
@@ -397,6 +456,8 @@ export default function AgentConsole() {
   // request ("generate them", "for admin", "yes") reuses it without re-asking — the chat
   // remembers what it's testing, like a normal assistant.
   const convTargetRef = useRef<{ targetUrl: string; websiteId?: string; websiteName?: string } | null>(null);
+  const activeAbortRef = useRef<AbortController | null>(null);
+  const activeThinkingIdRef = useRef<string | null>(null);
 
   // Keep the active conversation id in localStorage (per scope) so a refresh
   // resumes the right conversation for the selected project/app.
@@ -542,6 +603,32 @@ export default function AgentConsole() {
     setTurns((prev) => prev.map((t) => (t.id === id ? turn : t)));
   }, []);
 
+  const updateThinkingLabel = useCallback((id: string, label: string) => {
+    setTurns((prev) => prev.map((t) => (
+      t.id === id && t.role === 'assistant' && t.kind === 'thinking'
+        ? { ...t, label }
+        : t
+    )));
+  }, []);
+
+  const stopActiveRequest = useCallback(() => {
+    activeAbortRef.current?.abort();
+    activeAbortRef.current = null;
+    const thinkingId = activeThinkingIdRef.current;
+    activeThinkingIdRef.current = null;
+    stopListening();
+    if (thinkingId) {
+      replaceTurn(thinkingId, {
+        id: thinkingId,
+        role: 'assistant',
+        kind: 'text',
+        text: 'Stopped.',
+      });
+    }
+    setBusy(false);
+    inputRef.current?.focus();
+  }, [replaceTurn, stopListening]);
+
   const richestAssistantContext = useCallback((): string => {
     const recent = turnsRef.current
       .filter((t) => t.role === 'assistant')
@@ -556,6 +643,7 @@ export default function AgentConsole() {
             : '';
           case 'codereview': return typeof t.analysis === 'string' ? t.analysis : (t.analysis?.summary || '');
           case 'reqdiscovery': return typeof t.result === 'string' ? t.result : (t.result?.summary || '');
+          case 'reqdraft': return t.result?.requirement?.description || t.result?.requirement?.title || '';
           default: return '';
         }
       })
@@ -623,6 +711,9 @@ export default function AgentConsole() {
         case 'reqdiscovery':
           push(`Requirement discovery: ${typeof t.result === 'string' ? t.result : (t.result?.summary || JSON.stringify(t.result || {})).slice(0, 600)}`);
           break;
+        case 'reqdraft':
+          push(`Requirement draft: ${t.result?.requirement?.title || t.query || ''}. ${t.result?.requirement?.description || ''}`);
+          break;
         case 'codereview':
           push(`Code review findings: ${typeof t.analysis === 'string' ? t.analysis : (t.analysis?.summary || JSON.stringify(t.analysis || {})).slice(0, 600)}`);
           break;
@@ -639,17 +730,23 @@ export default function AgentConsole() {
     targetUrl: string;
     websiteId?: string;
     approvedUnderstanding?: string;
+    understandingSource?: string;
+    priorGrounding?: string;
     folderMention?: string;
     caseCountPrompt?: string;
   }) => {
+    updateThinkingLabel(args.thinkingId, 'Starting agent run...');
     const res = await fetch('/api/agent/start', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      signal: activeAbortRef.current?.signal,
       body: JSON.stringify({
         app_url: args.targetUrl,
         websiteId: args.websiteId || undefined,
         prompt: args.prompt,
         approvedUnderstanding: args.approvedUnderstanding || '',
+        understandingSource: args.understandingSource || '',
+        priorGrounding: args.priorGrounding || args.approvedUnderstanding || '',
         testCaseCount: parseCaseCount(args.caseCountPrompt || args.prompt),
         flowMode: 'review_cases',
         folderMention: args.folderMention || undefined,
@@ -672,7 +769,7 @@ export default function AgentConsole() {
         text: data?.error || 'I could not start the generation. Check that an AI provider key is set in Settings.',
       });
     }
-  }, [replaceTurn, buildHistory]);
+  }, [replaceTurn, buildHistory, updateThinkingLabel]);
 
   const requestDeepUnderstanding = useCallback(async (args: {
     prompt: string;
@@ -686,6 +783,7 @@ export default function AgentConsole() {
     const res = await fetch('/api/agent/understand-request', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      signal: activeAbortRef.current?.signal,
       body: JSON.stringify({
         ...args,
         history: buildHistory(),
@@ -713,6 +811,7 @@ export default function AgentConsole() {
     websiteName?: string;
   }) => {
     const { thinkingId, prompt, originalRequest, targetUrl, websiteId, websiteName } = args;
+    updateThinkingLabel(thinkingId, 'Building reviewed test scope...');
     const contextPrompt = (args.contextPrompt || buildDeepContextPrompt(originalRequest || prompt, prompt)).trim();
     const target = websiteName ? `${websiteName} (${targetUrl})` : targetUrl;
     const fallbackUnderstanding =
@@ -721,14 +820,16 @@ export default function AgentConsole() {
       `• Task: ${prompt}\n\n` +
       `Plan: log in to the target → perform the steps on the live app → verify the result → capture screenshots as evidence.`;
     let understanding = fallbackUnderstanding;
+    let understandingSource = 'fallback';
     try {
       const generated = await requestDeepUnderstanding({ prompt, originalRequest: originalRequest || prompt, contextPrompt, targetUrl, targetName: websiteName || '' });
       understanding = generated.understanding || fallbackUnderstanding;
+      understandingSource = generated.source || understandingSource;
     } catch {
       /* use deterministic fallback */
     }
     const caseCountPrompt = originalRequest || prompt;
-    const nextPending: PendingDeep = { prompt, originalRequest: originalRequest || prompt, contextPrompt, caseCountPrompt, targetUrl, websiteId, websiteName, understanding, revisionCount: 0 };
+    const nextPending: PendingDeep = { prompt, originalRequest: originalRequest || prompt, contextPrompt, caseCountPrompt, targetUrl, websiteId, websiteName, understanding, understandingSource, revisionCount: 0 };
     setPendingDeep(nextPending);
     // Remember this chat's target so later generation requests reuse it.
     convTargetRef.current = { targetUrl, websiteId, websiteName };
@@ -737,6 +838,7 @@ export default function AgentConsole() {
       role: 'assistant',
       kind: 'folderask',
       understanding,
+      understandingSource,
       originalPrompt: contextPrompt || prompt,
       contextPrompt,
       caseCountPrompt,
@@ -746,7 +848,137 @@ export default function AgentConsole() {
       revisionCount: 0,
       text: 'Look right? Pick a folder for the results (type a name below), or proceed with an auto-named folder.',
     });
-  }, [buildDeepContextPrompt, requestDeepUnderstanding, replaceTurn]);
+  }, [buildDeepContextPrompt, requestDeepUnderstanding, replaceTurn, updateThinkingLabel]);
+
+  const runRequirementDraft = useCallback(async (thinkingId: string, query: string, previousDraft?: PendingRequirementDraft, instruction?: string) => {
+    const featureQuery = (query || '').trim();
+    if (!featureQuery) {
+      replaceTurn(thinkingId, {
+        id: thinkingId,
+        role: 'assistant',
+        kind: 'text',
+        text: 'Which feature or section should I create the requirement for?',
+      });
+      return;
+    }
+    const draftQuery = previousDraft && instruction
+      ? [
+        `Original requirement request: ${previousDraft.query}`,
+        `Current draft: ${JSON.stringify(previousDraft.result?.requirement || {})}`,
+        `User requested changes: ${instruction}`,
+      ].join('\n\n')
+      : featureQuery;
+    updateThinkingLabel(thinkingId, previousDraft ? 'Applying your requirement changes...' : 'Preparing requirement scope...');
+    try {
+      const res = await fetch('/api/requirements/draft/stream', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal: activeAbortRef.current?.signal,
+        body: JSON.stringify({
+          query: draftQuery,
+          workspaceId: 'default',
+          projectId: selectedProjectId || undefined,
+          appId: selectedAppId || undefined,
+        }),
+      });
+      if (!res.ok || !res.body) {
+        const data = await res.json().catch(() => ({}));
+        replaceTurn(thinkingId, {
+          id: thinkingId,
+          role: 'assistant',
+          kind: 'text',
+          text: data?.error || 'I could not draft that requirement. Make sure the configured target repo is available.',
+        });
+        return;
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let finalResult: any = null;
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          let event: any;
+          try { event = JSON.parse(line); } catch { continue; }
+          if (event.type === 'step' && event.text) {
+            updateThinkingLabel(thinkingId, String(event.text));
+          } else if (event.type === 'final') {
+            finalResult = event.result;
+          } else if (event.type === 'error') {
+            throw new Error(event.error || 'Failed to draft requirement.');
+          }
+        }
+      }
+
+      if (finalResult) {
+        const data = finalResult;
+        const revisionCount = previousDraft ? previousDraft.revisionCount + 1 : 0;
+        const nextDraft = { turnId: thinkingId, query: previousDraft?.query || featureQuery, result: data, revisionCount };
+        setPendingDeep(null);
+        setPendingRequirementDraft(nextDraft);
+        replaceTurn(thinkingId, { id: thinkingId, role: 'assistant', kind: 'reqdraft', result: data, query: nextDraft.query, revisionCount });
+      } else {
+        throw new Error('Requirement draft stream ended without a final result.');
+      }
+    } catch (err: any) {
+      replaceTurn(thinkingId, {
+        id: thinkingId,
+        role: 'assistant',
+        kind: 'text',
+        text: err?.name === 'AbortError'
+          ? 'Stopped.'
+          : `Something went wrong drafting the requirement: ${err?.message || 'unknown error'}.`,
+      });
+    }
+  }, [replaceTurn, selectedProjectId, selectedAppId, updateThinkingLabel]);
+
+  const confirmRequirementDraft = useCallback(async (turn: { id: string; result: any }) => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const res = await fetch('/api/requirements/confirm', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          draft: turn.result,
+          workspaceId: 'default',
+          projectId: selectedProjectId || undefined,
+          appId: selectedAppId || undefined,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || 'Failed to create requirement.');
+      setPendingRequirementDraft(null);
+      replaceTurn(turn.id, { id: turn.id, role: 'assistant', kind: 'reqdiscovery', result: data });
+    } catch (err: any) {
+      replaceTurn(turn.id, {
+        id: turn.id,
+        role: 'assistant',
+        kind: 'text',
+        text: `I could not create the requirement: ${err?.message || 'unknown error'}.`,
+      });
+    } finally {
+      setBusy(false);
+      inputRef.current?.focus();
+    }
+  }, [busy, replaceTurn, selectedProjectId, selectedAppId]);
+
+  const discardRequirementDraft = useCallback((turnId: string) => {
+    setPendingRequirementDraft((prev) => (prev?.turnId === turnId ? null : prev));
+    replaceTurn(turnId, {
+      id: turnId,
+      role: 'assistant',
+      kind: 'text',
+      text: 'Requirement draft discarded.',
+    });
+    inputRef.current?.focus();
+  }, [replaceTurn]);
 
   // The apps the user explicitly selected in the composer (all of them), as target
   // context for the agent. Mirrored to a ref so callbacks read the latest without churn.
@@ -792,6 +1024,7 @@ export default function AgentConsole() {
       const res = await fetch('/api/controller/supervise/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        signal: activeAbortRef.current?.signal,
         body: JSON.stringify(requestBody),
       });
       if (!res.ok || !res.body) {
@@ -828,6 +1061,10 @@ export default function AgentConsole() {
       }
       replaceTurn(thinkingId, { id: thinkingId, role: 'assistant', kind: 'text', text: cleanChat(finalReply || 'Done.') });
     } catch (err: any) {
+      if (err?.name === 'AbortError') {
+        replaceTurn(thinkingId, { id: thinkingId, role: 'assistant', kind: 'text', text: 'Stopped.' });
+        return;
+      }
       const message = err instanceof Error ? err.message : String(err || 'network error');
       replaceTurn(thinkingId, {
         id: thinkingId,
@@ -850,12 +1087,70 @@ export default function AgentConsole() {
       setBusy(true);
 
       const thinkingId = nextId();
+      const requestController = new AbortController();
+      activeAbortRef.current?.abort();
+      activeAbortRef.current = requestController;
+      activeThinkingIdRef.current = thinkingId;
+      const clearActiveRequest = () => {
+        if (activeAbortRef.current === requestController) activeAbortRef.current = null;
+        if (activeThinkingIdRef.current === thinkingId) activeThinkingIdRef.current = null;
+      };
       setTurns((prev) => {
         const nextTurns = editedTurnId
           ? prev.map((t) => (t.id === editedTurnId && t.role === 'user' ? { ...t, text } : t))
           : [...prev, { id: nextId(), role: 'user', text }];
-        return [...nextTurns, { id: thinkingId, role: 'assistant', kind: 'thinking', label: 'Understanding your request...' }];
+        return [...nextTurns, {
+          id: thinkingId,
+          role: 'assistant',
+          kind: 'thinking',
+          label: initialThinkingLabel(text, {
+            selectedApps: getSelectedApps().length,
+            requirementDraftPending: Boolean(pendingRequirementDraft),
+          }),
+        }];
       });
+
+      if (pendingRequirementDraft) {
+        try {
+          if (isRequirementDraftCancel(text)) {
+            updateThinkingLabel(thinkingId, 'Discarding requirement draft...');
+            setPendingRequirementDraft(null);
+            replaceTurn(thinkingId, { id: thinkingId, role: 'assistant', kind: 'text', text: 'Requirement draft discarded.' });
+          } else if (isRequirementDraftApprove(text)) {
+            updateThinkingLabel(thinkingId, 'Saving approved requirement...');
+            const res = await fetch('/api/requirements/confirm', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              signal: activeAbortRef.current?.signal,
+              body: JSON.stringify({
+                draft: pendingRequirementDraft.result,
+                workspaceId: 'default',
+                projectId: selectedProjectId || undefined,
+                appId: selectedAppId || undefined,
+              }),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data?.error || 'Failed to create requirement.');
+            setPendingRequirementDraft(null);
+            replaceTurn(thinkingId, { id: thinkingId, role: 'assistant', kind: 'reqdiscovery', result: data });
+          } else {
+            updateThinkingLabel(thinkingId, 'Reworking requirement draft...');
+            await runRequirementDraft(thinkingId, pendingRequirementDraft.query, pendingRequirementDraft, text);
+          }
+        } catch (err: any) {
+          replaceTurn(thinkingId, {
+            id: thinkingId,
+            role: 'assistant',
+            kind: 'text',
+            text: err?.name === 'AbortError' ? 'Stopped.' : `I could not update the requirement draft: ${err?.message || 'unknown error'}.`,
+          });
+        } finally {
+          clearActiveRequest();
+          setBusy(false);
+          inputRef.current?.focus();
+        }
+        return;
+      }
 
       // A pending "Here's what I understood" card only consumes a SHORT folder-like reply
       // (a folder name, or "auto"/"proceed"). ANY other message means the user moved on or
@@ -877,6 +1172,7 @@ export default function AgentConsole() {
       if (activePending) {
         if (!isLikelyFolderResponse(text)) {
           try {
+            updateThinkingLabel(thinkingId, 'Revising reviewed test scope...');
             const revised = await requestDeepUnderstanding({
               prompt: activePending.prompt,
               originalRequest: activePending.originalRequest || activePending.prompt,
@@ -889,6 +1185,7 @@ export default function AgentConsole() {
             const nextPending: PendingDeep = {
               ...activePending,
               understanding: revised.understanding || activePending.understanding,
+              understandingSource: revised.source || activePending.understandingSource,
               targetUrl: revised.targetUrl || activePending.targetUrl,
               websiteName: revised.targetName || activePending.websiteName,
               revisionCount: activePending.revisionCount + 1,
@@ -899,6 +1196,7 @@ export default function AgentConsole() {
               role: 'assistant',
               kind: 'folderask',
               understanding: nextPending.understanding,
+              understandingSource: nextPending.understandingSource,
               originalPrompt: nextPending.contextPrompt || nextPending.prompt,
               contextPrompt: nextPending.contextPrompt,
               caseCountPrompt: nextPending.caseCountPrompt || nextPending.originalRequest || nextPending.prompt,
@@ -916,6 +1214,7 @@ export default function AgentConsole() {
               text: `I could not revise the understanding: ${err?.message || 'unknown error'}.`,
             });
           } finally {
+            clearActiveRequest();
             setBusy(false);
             inputRef.current?.focus();
           }
@@ -926,12 +1225,15 @@ export default function AgentConsole() {
         const approvedUnderstanding = activePending.understanding || lastAssistantAnswer(buildHistory());
         setPendingDeep(null);
         try {
+          updateThinkingLabel(thinkingId, 'Starting reviewed test run...');
           await startDeepRun({
             thinkingId,
             prompt: activePending.contextPrompt || activePending.prompt,
             targetUrl: activePending.targetUrl,
             websiteId: activePending.websiteId,
             approvedUnderstanding,
+            understandingSource: activePending.understandingSource,
+            priorGrounding: approvedUnderstanding,
             folderMention: folderMention || undefined,
             caseCountPrompt: activePending.caseCountPrompt || activePending.originalRequest || activePending.prompt,
           });
@@ -943,41 +1245,24 @@ export default function AgentConsole() {
             text: `Something went wrong starting the agent: ${err?.message || 'unknown error'}.`,
           });
         } finally {
+          clearActiveRequest();
           setBusy(false);
           inputRef.current?.focus();
         }
         return;
       }
 
-      // 2) Requirement mode (Shift+Tab opt-in): search the target app source for a feature
-      //    / section, reconcile against existing coverage, propose gap cases. This is a niche
-      //    opt-in pipeline with no equivalent /goal route-kind, so it is kept explicit.
-      if (reqMode) {
+      // 2) Requirement creation only:
+      //    - Shift+Tab requirement mode keeps forcing this route.
+      //    - Plain-text requests like "create requirements only for list view" also bypass
+      //      the goal router, so the console drafts a requirement without starting a deep run.
+      const requirementOnly = isExplicitRequirementOnlyRequest(text);
+      if (reqMode || requirementOnly) {
         try {
-          const res = await fetch('/api/requirements/discover', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ query: text, workspaceId: 'default' }),
-          });
-          const data = await res.json();
-          if (!res.ok) {
-            replaceTurn(thinkingId, {
-              id: thinkingId,
-              role: 'assistant',
-              kind: 'text',
-              text: data?.error || 'I could not analyze that feature. Make sure the configured target repo is available.',
-            });
-          } else {
-            replaceTurn(thinkingId, { id: thinkingId, role: 'assistant', kind: 'reqdiscovery', result: data });
-          }
-        } catch (err: any) {
-          replaceTurn(thinkingId, {
-            id: thinkingId,
-            role: 'assistant',
-            kind: 'text',
-            text: `Something went wrong analyzing the feature: ${err?.message || 'unknown error'}.`,
-          });
+          updateThinkingLabel(thinkingId, 'Starting requirement drafting agent...');
+          await runRequirementDraft(thinkingId, requirementOnly ? extractRequirementOnlyQuery(text) : text);
         } finally {
+          clearActiveRequest();
           setBusy(false);
           inputRef.current?.focus();
         }
@@ -991,9 +1276,11 @@ export default function AgentConsole() {
       const historyForRouting = buildHistory();
       const scopeAppUrl = (scopeApp?.baseUrl || '').trim();
       try {
+        updateThinkingLabel(thinkingId, 'Routing request to the right agent...');
         const res = await fetch('/api/agent/goal', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
+          signal: activeAbortRef.current?.signal,
           body: JSON.stringify({
             message: text,
             history: historyForRouting,
@@ -1013,6 +1300,17 @@ export default function AgentConsole() {
         }
 
         const kind = goal?.kind;
+        updateThinkingLabel(thinkingId, kind === 'answer'
+          ? 'Preparing grounded answer...'
+          : kind === 'clarify'
+            ? 'Checking what needs clarification...'
+            : kind === 'code_analysis'
+              ? 'Preparing code analysis...'
+              : kind === 'generate_cases' || kind === 'deep_test_run'
+                ? 'Preparing reviewed test generation...'
+                : kind === 'workspace_action'
+                  ? 'Preparing workspace action...'
+                  : 'Preparing response...');
 
         // answer / clarify → a plain assistant-text turn. For 'answer' we keep the nicer
         // streaming UX by re-using the Supervisor stream (which grounds in code + workspace);
@@ -1021,6 +1319,7 @@ export default function AgentConsole() {
           if (typeof goal.reply === 'string' && goal.reply.trim()) {
             replaceTurn(thinkingId, { id: thinkingId, role: 'assistant', kind: 'text', text: cleanChat(goal.reply) });
           } else {
+            updateThinkingLabel(thinkingId, 'Streaming grounded answer...');
             await runViaSupervisor(text, thinkingId);
           }
           return;
@@ -1038,9 +1337,11 @@ export default function AgentConsole() {
         // code_analysis → the existing git-agent analysis path (renders a CodeChangeReview).
         if (kind === 'code_analysis') {
           try {
+            updateThinkingLabel(thinkingId, 'Reading repository changes...');
             const ares = await fetch('/api/git-agent/analyze', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
+              signal: activeAbortRef.current?.signal,
               body: JSON.stringify({ baseRef: 'auto', workspaceId: 'default' }),
             });
             const data = await ares.json();
@@ -1104,6 +1405,7 @@ export default function AgentConsole() {
           // reflects the actual conversation rather than just the raw message.
           const prompt = (typeof goal.scope === 'string' && goal.scope.trim()) ? goal.scope.trim() : text;
           const contextPrompt = buildDeepContextPrompt(text, prompt);
+          updateThinkingLabel(thinkingId, 'Building reviewed test scope...');
           await presentDeepUnderstanding({ thinkingId, prompt, originalRequest: text, contextPrompt, targetUrl, websiteId, websiteName });
           setBusy(false);
           inputRef.current?.focus();
@@ -1117,18 +1419,21 @@ export default function AgentConsole() {
         if (kind === 'workspace_action' && plan) {
           if (planIsChatOnly(plan)) {
             const fallbackText = 'I can help you create test plans, cases, runs, defects, and reports. Tell me what you want to do.';
+            updateThinkingLabel(thinkingId, 'Streaming workspace answer...');
             replaceTurn(thinkingId, { id: thinkingId, role: 'assistant', kind: 'text', text: '' });
             try {
               const histForExplain = historyForRouting;
               const ans = await fetch('/api/controller/explain/stream', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
+                signal: activeAbortRef.current?.signal,
                 body: JSON.stringify({ topic: text, workspaceId: 'default', history: histForExplain, apps: getSelectedApps() }),
               });
               if (!ans.ok || !ans.body) {
                 const data = await fetch('/api/controller/explain', {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
+                  signal: activeAbortRef.current?.signal,
                   body: JSON.stringify({ topic: text, workspaceId: 'default', history: histForExplain, apps: getSelectedApps() }),
                 }).then((r) => r.json()).catch(() => ({}));
                 replaceTurn(thinkingId, { id: thinkingId, role: 'assistant', kind: 'text', text: cleanChat(data?.answer || plan?.summary || fallbackText) });
@@ -1154,6 +1459,7 @@ export default function AgentConsole() {
           }
 
           if (planConfidence(plan) < CLARIFY_THRESHOLD) {
+            updateThinkingLabel(thinkingId, 'Preparing clarification...');
             replaceTurn(thinkingId, {
               id: thinkingId,
               role: 'assistant',
@@ -1163,6 +1469,7 @@ export default function AgentConsole() {
               confidence: planConfidence(plan),
             });
           } else {
+            updateThinkingLabel(thinkingId, 'Preparing approval card...');
             replaceTurn(thinkingId, { id: thinkingId, role: 'assistant', kind: 'plan', plan });
           }
           return;
@@ -1176,6 +1483,10 @@ export default function AgentConsole() {
           text: cleanChat(goal?.reply || plan?.summary || 'I can help you create test plans, cases, runs, defects, and reports. Tell me what you want to do.'),
         });
       } catch (err: any) {
+        if (err?.name === 'AbortError') {
+          replaceTurn(thinkingId, { id: thinkingId, role: 'assistant', kind: 'text', text: 'Stopped.' });
+          return;
+        }
         replaceTurn(thinkingId, {
           id: thinkingId,
           role: 'assistant',
@@ -1183,11 +1494,12 @@ export default function AgentConsole() {
           text: `Something went wrong: ${err?.message || 'unknown error'}. Check that an AI provider key is configured in Settings.`,
         });
       } finally {
+        clearActiveRequest();
         setBusy(false);
         inputRef.current?.focus();
       }
     },
-    [input, busy, editingTurnId, location.pathname, stopListening, replaceTurn, requestDeepUnderstanding, presentDeepUnderstanding, reqMode, pendingDeep, websites, scopeApp, buildHistory, buildDeepContextPrompt, startDeepRun, runViaSupervisor, getSelectedApps],
+    [input, busy, editingTurnId, location.pathname, stopListening, replaceTurn, updateThinkingLabel, requestDeepUnderstanding, presentDeepUnderstanding, runRequirementDraft, reqMode, pendingDeep, pendingRequirementDraft, websites, scopeApp, buildHistory, buildDeepContextPrompt, startDeepRun, runViaSupervisor, getSelectedApps],
   );
 
   // Start the deep run directly from a "Here's what I understood" card's OWN stored data
@@ -1195,7 +1507,7 @@ export default function AgentConsole() {
   // the Proceed buttons working even if the user typed other messages after the card
   // appeared (which clears pendingDeep), so they never misfire into the planner.
   const proceedDeepFromTurn = useCallback(
-    async (turn: { id: string; understanding?: string; originalPrompt?: string; contextPrompt?: string; caseCountPrompt?: string; targetUrl?: string; websiteId?: string }, folderName?: string) => {
+    async (turn: { id: string; understanding?: string; understandingSource?: string; originalPrompt?: string; contextPrompt?: string; caseCountPrompt?: string; targetUrl?: string; websiteId?: string }, folderName?: string) => {
       if (busy) return;
       setBusy(true);
       setPendingDeep(null);
@@ -1212,6 +1524,8 @@ export default function AgentConsole() {
           targetUrl: turn.targetUrl || '',
           websiteId: turn.websiteId || undefined,
           approvedUnderstanding: turn.understanding || '',
+          understandingSource: turn.understandingSource || '',
+          priorGrounding: turn.understanding || '',
           folderMention: folderName || undefined,
           caseCountPrompt: turn.caseCountPrompt || turn.originalPrompt || '',
         });
@@ -1608,6 +1922,25 @@ export default function AgentConsole() {
                   </div>
                 );
               }
+              if (turn.kind === 'reqdraft') {
+                return (
+                  <div key={turn.id} className="flex justify-start">
+                    <div className="flex w-full max-w-[95%] gap-2.5">
+                      <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[var(--accent)]/10 text-[var(--accent)]">
+                        <BrainCircuit className="h-4 w-4" />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <RequirementDraftReview
+                          result={turn.result}
+                          busy={busy || (!!pendingRequirementDraft && pendingRequirementDraft.turnId !== turn.id)}
+                          onCreate={() => void confirmRequirementDraft(turn)}
+                          onDiscard={() => discardRequirementDraft(turn.id)}
+                        />
+                      </div>
+                    </div>
+                  </div>
+                );
+              }
               if (turn.kind === 'cases') {
                 return (
                   <div key={turn.id} className="flex justify-start">
@@ -1921,14 +2254,25 @@ export default function AgentConsole() {
               >
                 <Mic className="h-4 w-4" />
               </button>
-              <button
-                onClick={() => void send()}
-                disabled={busy || !input.trim()}
-                className="flex h-9 items-center gap-1.5 rounded-full bg-[var(--accent)] px-4 text-sm font-medium text-white transition-colors hover:bg-[var(--accent-hover)] disabled:opacity-50"
-              >
-                {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
-                <span className="hidden sm:inline">Send</span>
-              </button>
+              {busy ? (
+                <button
+                  type="button"
+                  onClick={stopActiveRequest}
+                  className="flex h-9 items-center gap-1.5 rounded-full border border-red-500/40 bg-red-500/15 px-4 text-sm font-semibold text-red-300 transition-colors hover:bg-red-500/25 hover:text-red-200"
+                >
+                  <StopCircle className="h-4 w-4" />
+                  <span className="hidden sm:inline">Stop</span>
+                </button>
+              ) : (
+                <button
+                  onClick={() => void send()}
+                  disabled={!input.trim()}
+                  className="flex h-9 items-center gap-1.5 rounded-full bg-[var(--accent)] px-4 text-sm font-medium text-white transition-colors hover:bg-[var(--accent-hover)] disabled:opacity-50"
+                >
+                  <Send className="h-4 w-4" />
+                  <span className="hidden sm:inline">Send</span>
+                </button>
+              )}
             </div>
           </div>
         </div>
