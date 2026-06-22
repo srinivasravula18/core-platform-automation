@@ -62,8 +62,19 @@ export function getAIErrorMessage(err: any) {
   // CLI providers (codex / claude account mode) emit multi-line stderr on failure.
   // The first line is the useful part ("codex.cmd exited 1"); everything after is
   // config/system-prompt content that must never reach the UI.
-  const cliExitMatch = message.match(/^((?:codex(?:\.cmd)?|claude(?:\.cmd)?) exited \d+)[:\s]/i);
+  const cliExitMatch = message.match(/^((?:codex(?:\.cmd)?|claude(?:\.cmd)?) exited \d+)[:\s]([\s\S]*)/i);
   if (cliExitMatch) {
+    const detail = cliExitMatch[2] || '';
+    if (/usage limit/i.test(detail)) {
+      const hint = detail.match(/you'?ve? hit your usage limit[^\n]*/i);
+      return `Codex usage limit reached — ${hint ? hint[0].trim() : 'visit chatgpt.com/codex/settings/usage to top up.'}`;
+    }
+    if (/session.*expir|5.hour|5h.*limit/i.test(detail)) {
+      return `${cliExitMatch[1]}. The Codex 5-hour session has expired — restart Codex in your terminal to start a new session, then retry.`;
+    }
+    if (/not (?:logged in|authenticated)|unauthorized/i.test(detail)) {
+      return `${cliExitMatch[1]}. Codex is not authenticated — run "codex" in a terminal to log in.`;
+    }
     return `${cliExitMatch[1]}. Check that the OpenAI / Anthropic CLI tool is installed and authenticated (run "codex" or "claude" in a terminal to verify).`;
   }
 

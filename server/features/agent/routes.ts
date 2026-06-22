@@ -641,7 +641,8 @@ function wantsFeatureInventory(prompt: string, approvedUnderstanding: string): b
 // source understanding — used to find existing test cases that already cover it.
 function canReusePriorCodeGrounding(source: string, grounding: string): boolean {
   const normalized = String(source || '').toLowerCase();
-  return /^(codebase|conversation_context)$/.test(normalized) && String(grounding || '').trim().length >= 120;
+  // 'requirement' source already has deep code grounding baked into the context string.
+  return /^(codebase|conversation_context|requirement)$/.test(normalized) && String(grounding || '').trim().length >= 120;
 }
 
 function meaningfulGroundingLines(value: string, limit = 40): string[] {
@@ -2352,17 +2353,23 @@ export function registerAgentRoutes(app: Express) {
           : 'No existing feature/requirement records matched this source-grounded scope.',
       });
 
-      pushPhase(newRun, { agent: 'RequirementWriter', status: 'running' });
-      await persistAgentRequirementArtifacts(newRun);
-      pushPhase(newRun, {
-        agent: 'RequirementWriter',
-        status: 'completed',
-        output: {
-          requirementId: agentRequirementId(newRun),
-          status: 'Draft',
-          source: 'feature_inventory',
-        },
-      });
+      // Skip re-drafting when the run was launched from an existing requirement card —
+      // the requirement already exists and the context is already grounded.
+      if (newRun.understandingSource === 'requirement') {
+        pushPhase(newRun, { agent: 'RequirementWriter', status: 'skipped', output: 'Requirement already exists — skipping draft phase.' });
+      } else {
+        pushPhase(newRun, { agent: 'RequirementWriter', status: 'running' });
+        await persistAgentRequirementArtifacts(newRun);
+        pushPhase(newRun, {
+          agent: 'RequirementWriter',
+          status: 'completed',
+          output: {
+            requirementId: agentRequirementId(newRun),
+            status: 'Draft',
+            source: 'feature_inventory',
+          },
+        });
+      }
 
       // Auto-grow the app knowledge: feed back a compact summary of what the live
       // inspector actually saw, so the pack keeps up with features added after it was written.

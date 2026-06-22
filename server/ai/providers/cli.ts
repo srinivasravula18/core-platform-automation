@@ -133,10 +133,12 @@ export class AccountCliProvider implements AIProvider {
       }
     }
 
+    // Pass the prompt via stdin to avoid ENAMETOOLONG on large prompts (OS arg-length limits).
+    // `claude -p` reads from stdin when no inline prompt argument is given.
     return await runProcess(
       commandFor('claude'),
-      ['-p', '--model', model, '--permission-mode', 'dontAsk', '--output-format', 'text', this.buildPrompt(opts)],
-      '',
+      ['-p', '--model', model, '--permission-mode', 'dontAsk', '--output-format', 'text'],
+      this.buildPrompt(opts),
     );
   }
 
