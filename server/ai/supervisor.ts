@@ -9,7 +9,7 @@
  *
  * Provider + model come from Settings (getOrchestrator). Native function-calling only.
  */
-import { getToolCapableOrchestrator, getOrchestrator } from './orchestrator';
+import { getToolCapableOrchestrator, getOrchestrator, resolveProviderForAgent, getProviderCredentials } from './orchestrator';
 import { executeIntent } from './controller';
 import type { AgentTool, ToolContext, AgentStep } from './tools/types';
 import { queryWorkspaceTool, searchCodebaseTool, readCodeFileTool, followImportsTool, findUntestedEdgesTool, analyzeFeatureCoverageTool } from './tools/registry';
@@ -238,6 +238,20 @@ When done, STOP calling tools and give the final answer:
 - Be concrete; surface the non-obvious edges, not just the obvious controls.`;
 
 /**
+ * Whether the active provider can handle the decomposition fan-out (many concurrent model calls)
+ * without becoming unusably slow. Account/CLI providers (codex/claude) spawn a process per call
+ * (~15-100s each), so the worker fan-out takes 10-40 min; we skip it for them. API-key providers
+ * answer in seconds, so fan-out is fine.
+ */
+function providerSupportsDecomposition(_opts?: { workspaceId?: string; userId?: string }): boolean {
+  try {
+    const provider = resolveProviderForAgent('chatAssistant');
+    const creds = getProviderCredentials(provider);
+    return !!creds && creds.authMode !== 'account';
+  } catch { return false; }
+}
+
+/**
  * DECOMPOSED deep answer for BROAD "list everything / all features / end-to-end" questions.
  *
  * A single agent that reads every full file into ONE context window overflows the model's hard
@@ -327,8 +341,13 @@ export async function answerAppQuestionFromCode(question: string, opts: {
   // BROAD questions ("all features", "end to end", "every sub-feature") would overflow a single
   // model window if ONE agent read every full file at once (the 1.43M-char crash). Decompose into
   // sub-areas and explore each with its OWN fresh-window worker in parallel, then merge — unbounded
-  // depth, no budget that stops exploration, no single-window overflow.
-  if (broadCoverage) {
+  // depth, no single-window overflow.
+  //
+  // BUT only fan out on a FAST (API-key) provider: account/CLI auth (codex/claude) spawns a CLI
+  // process per call (~15-100s each), so 12 workers × many steps = hundreds of slow calls (the
+  // 10-min UI hang). On a slow provider we fall through to the bounded single-pass below, which
+  // makes only a handful of calls (fast) and caps reads so it never overflows.
+  if (broadCoverage && providerSupportsDecomposition(opts)) {
     try {
       const decomposed = await answerByDecomposition(question, opts, appsBlock);
       if (decomposed) return decomposed;
@@ -437,7 +456,7 @@ ${notes}\n`;
   // they use, and grep those so the modules they depend on join the candidate pool.
   const seed = relevantSourcePaths(files.map((f) => f.path), searchTerms);
   const seedContents = await Promise.all(seed.map(async (p) => {
-    try { return await readCodeFileInScope(p, scopeArg, 4000); } catch { return ''; }
+    try { return (await readCodeFileInScope(p, scopeArg, 4000)).slice(0, 4000); } catch { return ''; }
   }));
   const refTerms = Array.from(new Set(seedContents.flatMap(harvestReferenceTerms)))
     .filter((t) => !searchTerms.includes(t));
@@ -457,7 +476,9 @@ ${notes}\n`;
   opts.onProgress?.(top.length ? `Reading ${top.length} relevant file(s) in depth…` : 'Reading the codebase…');
   const excerptParts = await Promise.all(top.map(async (p) => {
     try {
-      return `FILE: ${p}\n${numberLines(await readCodeFileInScope(p, scopeArg, 3200))}`;
+      // Cap the per-file excerpt: this is the bounded fallback (used on slow CLI providers and
+      // when the deeper paths fail), so it must make few calls and never overflow the window.
+      return `FILE: ${p}\n${numberLines((await readCodeFileInScope(p, scopeArg, 3200)).slice(0, 3500))}`;
     } catch {
       return '';
     }
