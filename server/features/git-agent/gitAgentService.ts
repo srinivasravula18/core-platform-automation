@@ -2,6 +2,7 @@ import '../../shared/env';
 import path from 'path';
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { spawnSync } from 'child_process';
+import { rgPath } from '@vscode/ripgrep';
 import { db, addActivity, persistDataInBackground } from '../../shared/storage';
 import { buildCaseDescription, normalizeCaseSteps, normalizeCaseTags } from '../../shared/testCases';
 
@@ -594,6 +595,57 @@ export function gitGrep(patterns: string[], pathspecs: string[] = SOURCE_GLOBS, 
 export interface CodeMatch { path: string; matchCount: number; snippet: string; }
 
 /**
+ * Real RIPGREP search (via @vscode/ripgrep's bundled binary) returning matching lines + context.
+ * Faster than git grep, respects .gitignore, regex, type filters. Returns null if rg can't run
+ * (so the caller falls back to git grep); returns [] if rg ran but found nothing.
+ */
+function ripgrepWithContext(patterns: string[], repo: string, ctx: number, maxFiles: number, maxLinesPerFile: number): CodeMatch[] | null {
+  // Pass the repo as ripgrep's search PATH (forward-slashed) instead of using cwd. On Windows,
+  // spawnSync with an absolute exe + a changed cwd throws ENOENT, and a backslash path arg gets
+  // mangled ("D:\repo" -> "D:repo"); a forward-slashed path argument with no cwd works correctly.
+  const searchPath = repo.replace(/\\/g, '/').replace(/\/+$/, '');
+  const prefix = `${searchPath}/`;
+  const orArgs = patterns.flatMap((p) => ['-e', p]);
+  const res = spawnSync(rgPath, [
+    '--json', '-i', '-C', String(ctx),
+    '-g', '!*.md', '-g', '!*.mdx', '-g', '!*.markdown',
+    '-g', '!**/node_modules/**', '-g', '!**/.git/**', '-g', '!**/dist/**', '-g', '!**/build/**',
+    '-g', '!*.min.*', '-g', '!*.map', '-g', '!**/coverage/**',
+    ...orArgs, searchPath,
+  ], { encoding: 'utf8', timeout: 30000, maxBuffer: 1024 * 1024 * 256, windowsHide: true });
+  if (res.error || res.status === 2 || res.status === null) return null; // rg unavailable/errored → fall back
+
+  const byFile = new Map<string, { lines: string[]; count: number }>();
+  let cur: { path: string; lines: string[]; count: number } | null = null;
+  for (const raw of (res.stdout || '').split(/\r?\n/)) {
+    if (!raw) continue;
+    let ev: any;
+    try { ev = JSON.parse(raw); } catch { continue; }
+    if (ev.type === 'begin') {
+      let p = String(ev.data?.path?.text || '').replace(/\\/g, '/');
+      if (p.startsWith(prefix)) p = p.slice(prefix.length); // make repo-relative
+      cur = { path: p, lines: [], count: 0 };
+    } else if (ev.type === 'match' && cur) {
+      const n = ev.data?.line_number ?? '';
+      const t = String(ev.data?.lines?.text || '').replace(/\r?\n$/, '');
+      cur.lines.push(`${n}: ${t}`);
+      cur.count += Array.isArray(ev.data?.submatches) ? ev.data.submatches.length : 1;
+    } else if (ev.type === 'context' && cur) {
+      const n = ev.data?.line_number ?? '';
+      const t = String(ev.data?.lines?.text || '').replace(/\r?\n$/, '');
+      cur.lines.push(`${n}  ${t}`);
+    } else if (ev.type === 'end' && cur) {
+      if (cur.path && cur.count > 0) byFile.set(cur.path, { lines: cur.lines.slice(0, maxLinesPerFile), count: cur.count });
+      cur = null;
+    }
+  }
+  return Array.from(byFile.entries())
+    .map(([p, v]) => ({ path: p.replace(/^\.\//, ''), matchCount: v.count, snippet: v.lines.join('\n') }))
+    .sort((a, b) => b.matchCount - a.matchCount)
+    .slice(0, maxFiles);
+}
+
+/**
  * AGENTIC-SEARCH grep that returns MATCHING LINES WITH CONTEXT (not just file names) — the way
  * Claude Code's ripgrep does it. The agent immediately sees the real matching code (with a few
  * surrounding lines), so it can judge relevance and decide what to read next without a separate
@@ -613,6 +665,10 @@ export function searchCodeWithContext(
   const ctx = opts.contextLines ?? 2;
   const maxFiles = opts.maxFiles ?? 40;
   const maxLinesPerFile = opts.maxLinesPerFile ?? 60;
+
+  // PRIMARY: real ripgrep (faster, .gitignore-aware, regex). FALLBACK: git grep (always present).
+  const rg = ripgrepWithContext(clean, repo, ctx, maxFiles, maxLinesPerFile);
+  if (rg !== null) return rg;
 
   const orArgs: string[] = [];
   clean.forEach((p, i) => { if (i > 0) orArgs.push('--or'); orArgs.push('-e', p); });
