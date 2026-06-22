@@ -9,6 +9,19 @@ import { reqScope } from '../../shared/scope';
 const ACTION_RE = /\b(generate|create|write|build|make|run|execute|file\s+(a|the)|add|move|organi[sz]e|re-?run|delete|remove|update|edit|set\s|navigate|open|go\s+to|triage|expand|rework|schedule)\b/i;
 import { INTENT_LABELS, type IntentKind, type Plan, type PlanStep } from '../../ai/intents';
 
+function prepareStreamingResponse(res: any) {
+  // text/event-stream discourages buffering in production proxies/CDNs even though
+  // the client still consumes raw chunks with fetch().getReader().
+  res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Surrogate-Control', 'no-store');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.setHeader('Connection', 'keep-alive');
+  res.socket?.setNoDelay?.(true);
+  res.flushHeaders?.();
+}
+
 export function registerControllerRoutes(app: Express) {
   app.get('/api/controller/intents', (req, res) => {
     res.json({
@@ -112,12 +125,10 @@ export function registerControllerRoutes(app: Express) {
     if (!userMessage || typeof userMessage !== 'string') {
       return res.status(400).json({ error: 'userMessage is required' });
     }
-    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-    res.setHeader('Cache-Control', 'no-cache, no-transform');
-    res.setHeader('X-Accel-Buffering', 'no');
-    res.flushHeaders?.();
+    prepareStreamingResponse(res);
     const send = (obj: any) => { try { res.write(`${JSON.stringify(obj)}\n`); } catch { /* client gone */ } };
     try {
+      send({ type: 'step', index: 0, text: 'Starting...', toolCalls: [] });
       // Instant path: simple count/list answered from the DB, no steps.
       const quick = await quickWorkspaceAnswer(userMessage, effectiveUserId);
       if (quick) { send({ type: 'final', reply: quick, fast: true }); return res.end(); }
@@ -202,11 +213,9 @@ export function registerControllerRoutes(app: Express) {
     if (!topic || typeof topic !== 'string') {
       return res.status(400).json({ error: 'topic is required' });
     }
-    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-    res.setHeader('Cache-Control', 'no-cache, no-transform');
-    res.setHeader('X-Accel-Buffering', 'no');
-    res.flushHeaders?.();
+    prepareStreamingResponse(res);
     try {
+      res.write('\n');
       for await (const delta of streamExplain(topic, { workspaceId, userId, history, apps })) {
         res.write(delta);
       }

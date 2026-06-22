@@ -781,15 +781,60 @@ export default function AgentConsole() {
   const runViaSupervisor = useCallback(async (text: string, thinkingId: string) => {
     const setThinkingLabel = (label: string) =>
       setTurns((prev) => prev.map((t) => (t.id === thinkingId && t.role === 'assistant' && t.kind === 'thinking' ? { ...t, label } : t)));
+    const requestBody = {
+      userMessage: text,
+      workspaceId: 'default',
+      history: buildHistory(),
+      pageContext: { path: location.pathname },
+      apps: getSelectedApps(),
+    };
+    const runNonStreamingFallback = async (reason?: unknown): Promise<boolean> => {
+      try {
+        setThinkingLabel('Retrying without streaming...');
+        const res = await fetch('/api/controller/supervise', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(requestBody),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          replaceTurn(thinkingId, {
+            id: thinkingId,
+            role: 'assistant',
+            kind: 'text',
+            text: cleanChat(data?.error || `Request failed (${res.status}).`),
+          });
+          return true;
+        }
+        replaceTurn(thinkingId, {
+          id: thinkingId,
+          role: 'assistant',
+          kind: 'text',
+          text: cleanChat(data?.reply || 'Done.'),
+        });
+        return true;
+      } catch {
+        const message = reason instanceof Error ? reason.message : String(reason || 'unknown error');
+        replaceTurn(thinkingId, {
+          id: thinkingId,
+          role: 'assistant',
+          kind: 'text',
+          text: `Something went wrong: ${message}.`,
+        });
+        return false;
+      }
+    };
     try {
       const res = await fetch('/api/controller/supervise/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userMessage: text, workspaceId: 'default', history: buildHistory(), pageContext: { path: location.pathname }, apps: getSelectedApps() }),
+        body: JSON.stringify(requestBody),
       });
       if (!res.ok || !res.body) {
         const data = await res.json().catch(() => ({}));
-        replaceTurn(thinkingId, { id: thinkingId, role: 'assistant', kind: 'text', text: cleanChat(data?.error || `Request failed (${res.status}).`) });
+        if (!(await runNonStreamingFallback(data?.error || `Request failed (${res.status}).`))) {
+          replaceTurn(thinkingId, { id: thinkingId, role: 'assistant', kind: 'text', text: cleanChat(data?.error || `Request failed (${res.status}).`) });
+        }
         return;
       }
       const reader = res.body.getReader();
@@ -813,7 +858,7 @@ export default function AgentConsole() {
       }
       replaceTurn(thinkingId, { id: thinkingId, role: 'assistant', kind: 'text', text: cleanChat(finalReply || 'Done.') });
     } catch (err: any) {
-      replaceTurn(thinkingId, { id: thinkingId, role: 'assistant', kind: 'text', text: `Something went wrong: ${err?.message || 'unknown error'}.` });
+      await runNonStreamingFallback(err);
     }
   }, [buildHistory, location.pathname, replaceTurn, getSelectedApps]);
 
