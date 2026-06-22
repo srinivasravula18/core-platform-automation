@@ -1284,8 +1284,7 @@ export const Requirements = {
       return rq;
     }
     const id = rq.id || uid('REQ');
-    const row = await queryOne(
-      `INSERT INTO requirements (id, title, description, feature_query, business_rules, data_population_notes, admin_behavior, keystone_behavior, metadata_refs, source_files, coverage_status, status, folder_id, approval_state, proposed_by, source_run_id, created_at, updated_at)
+    const sql = `INSERT INTO requirements (id, title, description, feature_query, business_rules, data_population_notes, admin_behavior, keystone_behavior, metadata_refs, source_files, coverage_status, status, folder_id, approval_state, proposed_by, source_run_id, created_at, updated_at)
        VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9::jsonb,$10::jsonb,$11,$12,$13,$14,$15,$16, now(), now())
        ON CONFLICT (id) DO UPDATE SET
          title=EXCLUDED.title, description=EXCLUDED.description, feature_query=EXCLUDED.feature_query,
@@ -1295,17 +1294,27 @@ export const Requirements = {
          coverage_status=EXCLUDED.coverage_status, status=EXCLUDED.status, folder_id=EXCLUDED.folder_id,
          approval_state=EXCLUDED.approval_state, proposed_by=EXCLUDED.proposed_by,
          source_run_id=EXCLUDED.source_run_id, updated_at=now()
-       RETURNING *`,
-      [
-        id, rq.title || 'Untitled Requirement', rq.description || '', rq.featureQuery || '',
-        JSON.stringify(rq.businessRules || []), rq.dataPopulationNotes || '',
-        rq.adminBehavior || '', rq.keystoneBehavior || '',
-        JSON.stringify(rq.metadataRefs || []), JSON.stringify(rq.sourceFiles || []),
-        rq.coverageStatus || 'unknown', rq.status || 'Draft', rq.folderId || null,
-        rq.approvalState || 'proposed', rq.proposedBy || rq.createdBy || 'Feature Analyst',
-        rq.sourceRunId || null,
-      ],
-    );
+       RETURNING *`;
+    const params = (folderId: string | null) => [
+      id, rq.title || 'Untitled Requirement', rq.description || '', rq.featureQuery || '',
+      JSON.stringify(rq.businessRules || []), rq.dataPopulationNotes || '',
+      rq.adminBehavior || '', rq.keystoneBehavior || '',
+      JSON.stringify(rq.metadataRefs || []), JSON.stringify(rq.sourceFiles || []),
+      rq.coverageStatus || 'unknown', rq.status || 'Draft', folderId,
+      rq.approvalState || 'proposed', rq.proposedBy || rq.createdBy || 'Feature Analyst',
+      rq.sourceRunId || null,
+    ];
+    let row: any;
+    try {
+      row = await queryOne(sql, params(rq.folderId || null));
+    } catch (e: any) {
+      // Stale or deleted folder_id — retry without it rather than surface a 500.
+      if (e?.code === '23503' && String(e?.constraint || '').includes('folder')) {
+        row = await queryOne(sql, params(null));
+      } else {
+        throw e;
+      }
+    }
     await writeScopeCols('requirements', id, rq);
     return mapRequirement(row);
   },
