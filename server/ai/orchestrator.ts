@@ -61,7 +61,17 @@ export function getProviderCredentials(provider: ProviderName): ProviderCredenti
 function isLocalCliProviderAllowed(): boolean {
   const env = String(process.env.NODE_ENV || '').toLowerCase();
   const explicit = String(process.env.ALLOW_LOCAL_CLI_PROVIDERS || '').toLowerCase();
-  return explicit === 'true' || (!env || env === 'development' || env === 'dev');
+  const deploymentMode = String(process.env.DEPLOYMENT_MODE || '').toLowerCase();
+  const lifecycle = String(process.env.npm_lifecycle_event || '').toLowerCase();
+  if (explicit === 'true') return true;
+  if (explicit === 'false') return false;
+  return (
+    !env ||
+    env === 'development' ||
+    env === 'dev' ||
+    deploymentMode === 'local' ||
+    lifecycle.startsWith('dev')
+  );
 }
 
 export function buildProvider(provider: ProviderName): AIProvider {

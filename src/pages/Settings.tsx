@@ -561,6 +561,8 @@ function ProviderCard({ provider, onSaveKey, onSetEnabled, onSetAuthMode, onSetM
   const [apiKey, setApiKey] = useState('');
   const [showKey, setShowKey] = useState(false);
   const authMode = provider.authMode === 'account' ? 'account' : 'api_key';
+  const accountCliSupported = provider.name === 'openai' || provider.name === 'anthropic';
+  const showAccountMode = provider.accountCliAllowed && accountCliSupported;
 
   return (
     <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] p-4">
@@ -640,7 +642,7 @@ function ProviderCard({ provider, onSaveKey, onSetEnabled, onSetAuthMode, onSetM
             <span className="block text-xs text-[var(--text-muted)]">Used by Test Flow AI backend calls and cost tracking.</span>
           </span>
         </button>
-        {provider.accountCliAllowed && (
+        {showAccountMode && (
           <button
             type="button"
             onClick={() => onSetAuthMode('account')}
@@ -663,11 +665,9 @@ function ProviderCard({ provider, onSaveKey, onSetEnabled, onSetAuthMode, onSetM
         )}
       </div>
 
-      {authMode === 'account' && provider.accountCliAllowed && (
+      {authMode === 'account' && showAccountMode && (
         <div className="mt-3 rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-600">
-          {provider.accountTool
-            ? `Test Flow AI will run ${provider.accountTool} locally for this provider, using the account already authenticated on this machine.`
-            : 'This provider has no supported local subscription CLI runner in Test Flow AI; use API key mode.'}
+          Test Flow AI will run {provider.accountTool} locally for this provider, using the account already authenticated on this machine.
         </div>
       )}
 
