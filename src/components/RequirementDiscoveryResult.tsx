@@ -14,6 +14,7 @@ import {
   Settings2,
   Users,
   ScrollText,
+  TestTube2,
 } from 'lucide-react';
 
 /**
@@ -32,7 +33,7 @@ const COVERAGE_BADGE: Record<string, { label: string; cls: string }> = {
   unknown: { label: 'Coverage unknown', cls: 'border-slate-500/30 bg-slate-500/10 text-slate-400' },
 };
 
-export function RequirementDiscoveryResult({ result }: { result: any }) {
+export function RequirementDiscoveryResult({ result, onGenerateTests }: { result: any; onGenerateTests?: (context: string) => void }) {
   const [openCase, setOpenCase] = useState<number | null>(null);
   const navigate = useNavigate();
 
@@ -212,6 +213,34 @@ export function RequirementDiscoveryResult({ result }: { result: any }) {
         >
           <ScrollText className="h-3.5 w-3.5 text-[var(--accent)]" /> Open Requirements
         </button>
+        {onGenerateTests && (
+          <button
+            onClick={() => {
+              const lines: string[] = [`Requirement: ${requirement.title || 'Untitled'}`];
+              if (understanding.description) lines.push(`Description: ${understanding.description}`);
+              if ((understanding.businessRules || []).length) {
+                lines.push('Business rules:');
+                (understanding.businessRules as string[]).forEach((r) => lines.push(`  - ${r}`));
+              }
+              if (understanding.adminBehavior) lines.push(`Admin surface: ${understanding.adminBehavior}`);
+              if (understanding.keystoneBehavior) lines.push(`End-user surface: ${understanding.keystoneBehavior}`);
+              if ((understanding.metadataRefs || []).length) {
+                lines.push('Metadata objects: ' + (understanding.metadataRefs as any[]).map((m) => m.name || m).join(', '));
+              }
+              if (sourceFiles.length) {
+                lines.push('Key source files: ' + sourceFiles.slice(0, 6).map((f: any) => f.path || f).join(', '));
+              }
+              if (scenarios.length) {
+                lines.push(`Candidate scenarios (${scenarios.length}):`);
+                scenarios.forEach((s: any) => lines.push(`  - ${s.title}`));
+              }
+              onGenerateTests(lines.join('\n'));
+            }}
+            className="inline-flex items-center gap-1.5 rounded-md border border-emerald-500/40 bg-emerald-500/10 px-3 py-1.5 text-xs font-medium text-emerald-400 hover:bg-emerald-500/20"
+          >
+            <TestTube2 className="h-3.5 w-3.5" /> Generate Tests
+          </button>
+        )}
       </div>
     </div>
   );

@@ -1938,7 +1938,50 @@ export default function AgentConsole() {
                         <BrainCircuit className="h-4 w-4" />
                       </div>
                       <div className="min-w-0 flex-1">
-                        <RequirementDiscoveryResult result={turn.result} />
+                        <RequirementDiscoveryResult
+                          result={turn.result}
+                          onGenerateTests={(context) => {
+                            const thinkingId = `gen-${Date.now()}`;
+                            const reqTitle = turn.result?.requirement?.title || 'this requirement';
+                            const prompt = `Generate test cases for: ${reqTitle}`;
+                            const targetUrl = (scopeApp?.baseUrl || '').trim() || getSelectedApps()[0]?.baseUrl || '';
+                            const namedSite = websites?.find((w: any) => w.baseUrl === targetUrl);
+                            setTurns((prev) => [
+                              ...prev,
+                              { id: `user-${Date.now()}`, role: 'user', text: `Generate tests for the "${reqTitle}" requirement` },
+                              { id: thinkingId, role: 'assistant', kind: 'thinking', label: 'Preparing test generation from requirement...' },
+                            ]);
+                            setBusy(true);
+                            setPendingDeep({
+                              prompt,
+                              originalRequest: prompt,
+                              contextPrompt: context,
+                              caseCountPrompt: prompt,
+                              targetUrl,
+                              websiteId: namedSite?.id,
+                              websiteName: namedSite?.name,
+                              understanding: context,
+                              understandingSource: 'requirement',
+                              revisionCount: 0,
+                            });
+                            replaceTurn(thinkingId, {
+                              id: thinkingId,
+                              role: 'assistant',
+                              kind: 'folderask',
+                              text: context,
+                              understanding: context,
+                              understandingSource: 'requirement',
+                              originalPrompt: prompt,
+                              contextPrompt: context,
+                              caseCountPrompt: prompt,
+                              targetUrl,
+                              websiteId: namedSite?.id,
+                              websiteName: namedSite?.name,
+                            });
+                            setBusy(false);
+                            setTimeout(() => inputRef.current?.focus(), 50);
+                          }}
+                        />
                       </div>
                     </div>
                   </div>
