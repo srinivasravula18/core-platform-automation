@@ -383,7 +383,7 @@ async function dynamicBfsDiscovery(
   const graphNodes = await expandByReferences(
     seedPaths,
     { read: async (p, b) => readRepoFile(p, b, repoPath) },
-    { terms: keywords, maxDepth: 8, maxFiles: 400, maxBytesPerFile: 3000, freeDepth: 1 },
+    { terms: keywords, maxDepth: 6, maxFiles: 80, maxBytesPerFile: 2000, freeDepth: 1 },
   );
 
   // Step 3: build the ordered file list.
@@ -414,7 +414,9 @@ async function dynamicBfsDiscovery(
     } catch { /* unreadable — skip */ }
   }
 
-  return { files, excerpts: parts.join('\n\n---\n\n') };
+  const EXCERPT_CHAR_CAP = 200_000;
+  const joined = parts.join('\n\n---\n\n');
+  return { files, excerpts: joined.length > EXCERPT_CHAR_CAP ? joined.slice(0, EXCERPT_CHAR_CAP) + '\n\n[truncated — too large]' : joined };
 }
 
 function summarizeFeatureInventoryForPrompt(inventory: FeatureInventory): string {
@@ -483,7 +485,7 @@ export async function analyzeFeatureFromSource(
           const graph = await expandByReferences(
             hits.slice(0, 14),
             { read: async (p, b) => readRepoFile(p, b, repoPath) },
-            { terms, maxDepth: 8, maxFiles: 200, maxBytesPerFile: 2000, freeDepth: 1 },
+            { terms, maxDepth: 5, maxFiles: 40, maxBytesPerFile: 1500, freeDepth: 1 },
           );
           return Array.from(new Set([...hits, ...graph.map((n) => n.path)]));
         },
