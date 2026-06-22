@@ -26,8 +26,21 @@ export const CONFIDENCE_FLOOR = 55;
 const TARGET_REQUIRED: ReadonlySet<RouteKind> = new Set<RouteKind>(['generate_cases', 'deep_test_run']);
 
 const VALID_KINDS: ReadonlySet<RouteKind> = new Set<RouteKind>([
-  'answer', 'clarify', 'generate_cases', 'deep_test_run', 'code_analysis', 'workspace_action',
+  'answer', 'clarify', 'generate_cases', 'deep_test_run', 'code_analysis', 'workspace_action', 'requirement_draft',
 ]);
+
+/** True when the message is asking to create/write/draft a REQUIREMENT (not test cases). */
+function looksLikeRequirementDraft(message: string): boolean {
+  const text = cleanText(message);
+  // Must have a creation verb
+  if (!/\b(?:create|write|draft|generate|discover|make|add)\b/.test(text)) return false;
+  // Must mention "requirement" in any spelling/truncation, OR "req" as a standalone word/prefix
+  const hasReqWord = /\breequi|\brequ[a-z]*ment|\bRequirement|\brequirment|\brequirement|\brequirnment|\brequiremnts|\breq(?:s|uirements?|uirment)?\b/i.test(message)
+    || /\breq\b/i.test(text);
+  if (!hasReqWord) return false;
+  // Must NOT also be asking for test cases / scripts / runs (those are generate_cases)
+  return !/\b(?:test\s+cases?|cases?|scripts?|playwright|suite|run)\b/.test(text);
+}
 
 function clampConfidence(n: unknown): number {
   const v = Number(n);
@@ -151,6 +164,21 @@ function heuristicClassifyGoal(message: string, ctx: RoutingContext = {}): RawGo
     };
   }
 
+  if (looksLikeRequirementDraft(message)) {
+    return {
+      kind: 'requirement_draft',
+      confidence: 88,
+      isQuestion: false,
+      isImperative: true,
+      wantsExecution: false,
+      scope,
+      target,
+      missing: [],
+      clarifyingQuestion: '',
+      reason: 'heuristic requirement-draft request',
+    };
+  }
+
   if (hasGenerationVerb || /\b(test|case|cases|coverage|scenario|scenarios|qa)\b/.test(text)) {
     return {
       kind: 'generate_cases',
@@ -186,6 +214,7 @@ function canonicalKind(raw: string): RouteKind {
   if (VALID_KINDS.has(k as RouteKind)) return k as RouteKind;
   // Tolerate common synonyms the model may emit.
   if (/run|execute|e2e|playwright/.test(k)) return 'deep_test_run';
+  if (/requirement/.test(k)) return 'requirement_draft';
   if (/case|generate|draft|author/.test(k)) return 'generate_cases';
   if (/analy|diff|review|repo|code/.test(k)) return 'code_analysis';
   if (/plan|suite|folder|report|organi|move|defect|navigate/.test(k)) return 'workspace_action';
@@ -265,6 +294,9 @@ export function decideRoute(raw: RawGoalClassification, ctx: RoutingContext = {}
     return { kind, confidence, scope: raw.scope, target, reason: raw.reason || kind };
   }
 
+  // requirement_draft — codebase-only, no target needed.
+  if (kind === 'requirement_draft') return { kind, confidence, scope: raw.scope, reason: raw.reason || 'requirement draft from codebase' };
+
   // The model explicitly asked to clarify (e.g. a bare demonstrative with no scope).
   if (kind === 'clarify') return clarify(raw, raw.reason || 'model asked to clarify');
 
@@ -301,7 +333,7 @@ Latest message:
 "${message}"
 
 Return JSON with these fields:
-- kind: one of "answer" (a question/discussion to answer), "generate_cases" (draft test cases), "deep_test_run" (inspect a live app + generate + RUN), "code_analysis" (analyze repo/diff), "workspace_action" (create/modify a plan, suite, run, folder, report, defect, etc.), "clarify" (too ambiguous to act).
+- kind: one of "answer" (a question/discussion to answer), "requirement_draft" (create/write/draft/generate a REQUIREMENT or requirements doc — codebase research only, no live app), "generate_cases" (draft test cases), "deep_test_run" (inspect a live app + generate + RUN), "code_analysis" (analyze repo/diff), "workspace_action" (create/modify a plan, suite, run, folder, report, defect, etc.), "clarify" (too ambiguous to act). IMPORTANT: if the user asks to "create requirements", "write requirements", "draft a requirement", or similar (even with typos like "reequipments", "requriments"), always use "requirement_draft" — never "generate_cases" or "deep_test_run".
 - confidence: 0-100. Use 70+ only when the intent is clear; 40-69 when ambiguous; <40 when guessing.
 - isQuestion: true if the latest message is a question or exploratory follow-up (e.g. "what about sorting?", "do we have X?", ends with "?").
 - isImperative: true ONLY if it is a clear command to act now ("generate the cases", "run it", "do it", "proceed", "go ahead").

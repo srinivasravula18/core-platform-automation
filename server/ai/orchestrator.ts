@@ -39,7 +39,7 @@ function isProviderName(value: unknown): value is ProviderName {
 export function getProviderCredentials(provider: ProviderName): ProviderCredentials | null {
   const settings = db.settings?.providerSettings?.[provider];
   if (settings?.enabled === false) return null;
-  if (settings?.authMode === 'account') {
+  if (settings?.authMode === 'account' && isLocalCliProviderAllowed()) {
     return { apiKey: '', model: settings.model, authMode: 'account' };
   }
   if (!settings?.apiKey) {

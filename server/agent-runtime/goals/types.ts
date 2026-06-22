@@ -18,12 +18,13 @@
 
 /** The high-level destinations a user message can route to. One per pipeline. */
 export type RouteKind =
-  | 'answer'           // a question / discussion → answer from code + workspace (no side effects)
-  | 'clarify'          // ambiguous or missing detail → ask ONE question, do nothing else
-  | 'generate_cases'   // imperative to draft test cases (review-first, NOT executed)
-  | 'deep_test_run'    // imperative to inspect a live app + generate + EXECUTE
-  | 'code_analysis'    // analyze the repo / a diff / recent changes
-  | 'workspace_action';// other CRUD on workspace artifacts (plan/suite/run/folder/report…)
+  | 'answer'             // a question / discussion → answer from code + workspace (no side effects)
+  | 'clarify'            // ambiguous or missing detail → ask ONE question, do nothing else
+  | 'generate_cases'     // imperative to draft test cases (review-first, NOT executed)
+  | 'deep_test_run'      // imperative to inspect a live app + generate + EXECUTE
+  | 'code_analysis'      // analyze the repo / a diff / recent changes
+  | 'workspace_action'   // other CRUD on workspace artifacts (plan/suite/run/folder/report…)
+  | 'requirement_draft'; // create / write / draft a REQUIREMENT from codebase only — no app inspection
 
 export interface RouteTarget {
   /** Concrete base URL to run against, if known. */

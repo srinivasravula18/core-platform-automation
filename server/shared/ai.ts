@@ -59,5 +59,20 @@ export function getAIErrorMessage(err: any) {
     return 'Google rejected the configured Gemini API key. The local app is reading a key, but generativelanguage.googleapis.com says it is invalid. Create/copy a fresh Google AI Studio API key and replace GEMINI_API_KEY in .env.local.';
   }
 
+  // CLI providers (codex / claude account mode) emit multi-line stderr on failure.
+  // The first line is the useful part ("codex.cmd exited 1"); everything after is
+  // config/system-prompt content that must never reach the UI.
+  const cliExitMatch = message.match(/^((?:codex(?:\.cmd)?|claude(?:\.cmd)?) exited \d+)[:\s]/i);
+  if (cliExitMatch) {
+    return `${cliExitMatch[1]}. Check that the OpenAI / Anthropic CLI tool is installed and authenticated (run "codex" or "claude" in a terminal to verify).`;
+  }
+
+  // Generic safety net: if the message is very long it likely contains raw output.
+  // Truncate to the first line or 200 chars, whichever is shorter.
+  const firstLine = message.split(/\r?\n/)[0];
+  if (message.length > 300 && firstLine.length < message.length) {
+    return firstLine.length > 200 ? `${firstLine.slice(0, 200)}…` : firstLine;
+  }
+
   return message;
 }

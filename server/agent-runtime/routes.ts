@@ -105,6 +105,11 @@ export function registerAgentRuntimeRoutes(app: Express) {
           });
         }
 
+        case 'requirement_draft': {
+          // Decision only — the frontend calls /api/requirements/draft/stream.
+          return res.json({ kind: 'requirement_draft', scope: route.scope, route });
+        }
+
         default: {
           // Exhaustive guard: any unexpected kind is surfaced rather than swallowed.
           return res.json({ kind: route.kind, route });

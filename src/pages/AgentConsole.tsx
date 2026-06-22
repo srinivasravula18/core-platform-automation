@@ -141,18 +141,21 @@ function stripFolderPrefix(text: string): string {
   return text.trim().replace(/^folder\s*[:=-]\s*/i, '');
 }
 
-const REQUIREMENT_WORD_RE = /\b(?:requirements?|requirments?|requiremnts?|requiremts?|req(?:uirements?|s|mts?)?)\b/i;
-const REQUIREMENT_WORD_RE_GLOBAL = /\b(?:requirements?|requirments?|requiremnts?|requiremts?|req(?:uirements?|s|mts?)?)\b/gi;
+// Matches "requirement(s)" and common misspellings/truncations.
+const REQUIREMENT_WORD_RE = /\b(?:requirements?|requirments?|requiremnts?|requiremts?|requiments?|requriments?|reqs?)\b/i;
+const REQUIREMENT_WORD_RE_GLOBAL = /\b(?:requirements?|requirments?|requiremnts?|requiremts?|requiments?|requriments?|reqs?)\b/gi;
+
+function isRequirementWord(text: string): boolean {
+  return REQUIREMENT_WORD_RE.test(text);
+}
 
 function isExplicitRequirementOnlyRequest(text: string): boolean {
   const value = (text || '').toLowerCase();
-  if (!REQUIREMENT_WORD_RE.test(value)) return false;
-  const explicitOnly =
-    new RegExp(`${REQUIREMENT_WORD_RE.source}\\s+only`, 'i').test(value) ||
-    new RegExp(`only\\s+${REQUIREMENT_WORD_RE.source}`, 'i').test(value);
-  const createVerb = new RegExp(`\\b(?:create|generate|write|draft|discover|add|make)\\b[\\s\\S]{0,80}${REQUIREMENT_WORD_RE.source}`, 'i').test(value);
-  const asksCasesOrScripts = /\b(?:test\s*)?(?:cases?|scripts?|playwright|suite|run)\b/.test(value);
-  return explicitOnly || (createVerb && !asksCasesOrScripts);
+  if (!isRequirementWord(value)) return false;
+  const createVerb = /\b(?:create|generate|write|draft|discover|add|make)\b[\s\S]{0,80}req/i.test(value);
+  // "req* for/to/of X" without asking for cases/scripts/runs is a requirement-only request.
+  const asksCasesOrScripts = /\b(?:cases?|scripts?|playwright|suite|run)\b/.test(value);
+  return createVerb && !asksCasesOrScripts;
 }
 
 function extractRequirementOnlyQuery(text: string): string {
@@ -161,7 +164,7 @@ function extractRequirementOnlyQuery(text: string): string {
     .replace(/^(?:i\s+(?:want|need)\s+(?:you\s+)?to\s+)/i, '')
     .replace(/\b(?:create|generate|write|draft|discover|add|make)\b/gi, ' ')
     .replace(/\b(?:test\s+plan|plan|containing|with)\b/gi, ' ')
-    .replace(REQUIREMENT_WORD_RE_GLOBAL, ' ')
+    .replace(/\breq(?:u(?:i(?:r?e?m?e?n?t?s?|ments?|rements?|irements?|uirements?)?)?)?s?\b/gi, ' ')
     .replace(/\bonly\b/gi, ' ')
     .replace(/\b(?:from|using|based on)\s+(?:the\s+)?(?:code|codebase|source|product source)\b/gi, ' ')
     .replace(/\b(?:for|on|about)\b/gi, ' ')
@@ -182,7 +185,7 @@ function initialThinkingLabel(text: string, opts: { selectedApps: number; requir
   const value = (text || '').toLowerCase();
   if (opts.requirementDraftPending) return 'Updating requirement draft...';
   if (isExplicitRequirementOnlyRequest(text)) return 'Reading source for requirement draft...';
-  if (/\b(requirements?|requirments?|requiremnts?|requiremts?)\b/.test(value)) return 'Preparing requirement review...';
+  if (isRequirementWord(value)) return 'Preparing requirement review...';
   if (/\b(?:test\s*)?(?:cases?|scripts?|playwright|suite|plan|run)\b/.test(value)) return 'Preparing test workflow...';
   if (opts.selectedApps > 0) return `Inspecting ${opts.selectedApps} selected app${opts.selectedApps === 1 ? '' : 's'}...`;
   return 'Analyzing request...';
@@ -927,13 +930,15 @@ export default function AgentConsole() {
         throw new Error('Requirement draft stream ended without a final result.');
       }
     } catch (err: any) {
+      const rawMsg = err?.message || 'unknown error';
+      const safeMsg = rawMsg.split(/\r?\n/)[0].slice(0, 200);
       replaceTurn(thinkingId, {
         id: thinkingId,
         role: 'assistant',
         kind: 'text',
         text: err?.name === 'AbortError'
           ? 'Stopped.'
-          : `Something went wrong drafting the requirement: ${err?.message || 'unknown error'}.`,
+          : `Something went wrong drafting the requirement: ${safeMsg}.`,
       });
     }
   }, [replaceTurn, selectedProjectId, selectedAppId, updateThinkingLabel]);
@@ -1306,11 +1311,13 @@ export default function AgentConsole() {
             ? 'Checking what needs clarification...'
             : kind === 'code_analysis'
               ? 'Preparing code analysis...'
-              : kind === 'generate_cases' || kind === 'deep_test_run'
-                ? 'Preparing reviewed test generation...'
-                : kind === 'workspace_action'
-                  ? 'Preparing workspace action...'
-                  : 'Preparing response...');
+              : kind === 'requirement_draft'
+                ? 'Researching codebase for requirement draft...'
+                : kind === 'generate_cases' || kind === 'deep_test_run'
+                  ? 'Preparing reviewed test generation...'
+                  : kind === 'workspace_action'
+                    ? 'Preparing workspace action...'
+                    : 'Preparing response...');
 
         // answer / clarify → a plain assistant-text turn. For 'answer' we keep the nicer
         // streaming UX by re-using the Supervisor stream (which grounds in code + workspace);
@@ -1362,6 +1369,19 @@ export default function AgentConsole() {
               kind: 'text',
               text: `Something went wrong analyzing the code changes: ${err?.message || 'unknown error'}.`,
             });
+          }
+          return;
+        }
+
+        // requirement_draft → codebase-only, never touches the live app.
+        if (kind === 'requirement_draft') {
+          try {
+            updateThinkingLabel(thinkingId, 'Starting requirement drafting agent...');
+            await runRequirementDraft(thinkingId, goal?.scope || text);
+          } finally {
+            clearActiveRequest();
+            setBusy(false);
+            inputRef.current?.focus();
           }
           return;
         }

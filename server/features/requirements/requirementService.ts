@@ -16,6 +16,7 @@
 import { z } from 'zod';
 import { getOrchestrator } from '../../ai/orchestrator';
 import { deepParallelResearch, relevantSourcePaths } from '../../ai/research/deepResearch';
+import { expandByReferences } from '../../ai/exploration/referenceGraph';
 import { Cases, Requirements, RequirementLinks, isPgEnabled } from '../../db/repository';
 import { persistDataInBackground, addActivity } from '../../shared/storage';
 import { normalizeCaseSteps, normalizeCaseTags } from '../../shared/testCases';
@@ -348,55 +349,71 @@ function harvestReferenceTerms(content: string): string[] {
   return Array.from(out);
 }
 
-// DEEP, deterministic source gathering: a broad grep, then a SECOND round that follows the
-// identifiers used by the strongest files (so referenced modules are pulled in), then read
-// the RELEVANT files (count is dynamic — scales to how much relevant code exists, no fixed N).
-// The searching is fast native grep; the one model call is the analyst.
-function gatherSourceExcerpts(
+/**
+ * Dynamic, BFS-driven source discovery — Claude-Code style.
+ *
+ * 1. Keyword extraction → broad git grep → relevance-ranked seed files.
+ * 2. expandByReferences: real import-graph BFS from those seeds following actual
+ *    TS/JS `import` statements depth-first through child → grandchild … → leaf nodes.
+ *    Relevance-pruned beyond freeDepth=1 so the walk terminates naturally at the
+ *    boundary of the feature's subgraph — no artificial file-count or byte budget.
+ * 3. Return nodes in BFS order (seeds → direct imports → transitive dependencies).
+ *
+ * Termination is purely graph-driven: when there are no more reachable nodes whose
+ * path or content matches the keywords, the BFS stops. Per-file read size (maxBytesPerFile)
+ * prevents any single large file from dominating, but the total set size is emergent.
+ */
+async function dynamicBfsDiscovery(
   keywords: string[],
   repoPath?: string,
-  opts: { maxFiles?: number; maxBytesPerFile?: number; seedFiles?: SourceFileMeta[]; maxSelectedFiles?: number } = {},
-): { files: Array<{ path: string; area: string; surface: string }>; excerpts: string } {
-  const hits = gitGrep(keywords, undefined, opts.maxFiles, repoPath);
-  const byPath = new Map(hits.map((h) => [h.path, h]));
-  for (const seed of opts.seedFiles || []) {
-    if (seed?.path && !byPath.has(seed.path)) byPath.set(seed.path, seed);
+  opts: { structuralSeeds?: SourceFileMeta[] } = {},
+): Promise<{ files: Array<{ path: string; area: string; surface: string }>; excerpts: string }> {
+  // Step 1: grep → relevance-ranked seed paths.
+  const grepHits = gitGrep(keywords, undefined, 80, repoPath);
+  const hitMeta = new Map(grepHits.map((h) => [h.path, h]));
+  for (const s of opts.structuralSeeds || []) {
+    if (s?.path && !hitMeta.has(s.path)) hitMeta.set(s.path, s);
+  }
+  const seedPaths = relevantSourcePaths(Array.from(hitMeta.keys()), keywords).slice(0, 24);
+
+  // Step 2: BFS over the actual import graph.
+  // - freeDepth=1: every direct import of a seed is followed unconditionally.
+  // - Beyond depth 1: only nodes whose path OR content contains a keyword are enqueued.
+  //   This naturally terminates at the feature's subgraph without an artificial cap.
+  const graphNodes = await expandByReferences(
+    seedPaths,
+    { read: async (p, b) => readRepoFile(p, b, repoPath) },
+    { terms: keywords, maxDepth: 8, maxFiles: 400, maxBytesPerFile: 3000, freeDepth: 1 },
+  );
+
+  // Step 3: build the ordered file list.
+  // BFS order (shallower = more directly relevant = first). Structural seeds not reached
+  // by the import walk are appended at the end — they are top-level files (routes, manifests)
+  // that nothing imports but are still structurally important entry points.
+  const seenPaths = new Set<string>();
+  const ordered: string[] = [];
+  for (const node of graphNodes) {
+    if (!seenPaths.has(node.path)) { seenPaths.add(node.path); ordered.push(node.path); }
+  }
+  for (const [p] of hitMeta) {
+    if (!seenPaths.has(p)) { seenPaths.add(p); ordered.push(p); }
   }
 
-  // Round 2 — follow references found in the strongest (most relevant) files.
-  const seed = relevantSourcePaths(hits.map((h) => h.path), keywords);
-  const refTerms = new Set<string>();
-  for (const p of seed) {
-    try {
-      for (const t of harvestReferenceTerms(readRepoFile(p, 4000, repoPath))) {
-        if (!keywords.includes(t)) refTerms.add(t);
-      }
-    } catch { /* best-effort */ }
-  }
-  if (refTerms.size) {
-    try {
-      for (const h of gitGrep(Array.from(refTerms), undefined, opts.maxFiles, repoPath)) {
-        if (!byPath.has(h.path)) byPath.set(h.path, h);
-      }
-    } catch { /* best-effort */ }
-  }
-
-  // Read the RELEVANT files (dynamic count) across the merged candidate pool.
-  const allTerms = Array.from(new Set([...keywords, ...refTerms]));
-  const forced = (opts.seedFiles || []).map((file) => file.path).filter(Boolean);
-  const chosen = Array.from(new Set([...forced, ...relevantSourcePaths(Array.from(byPath.keys()), allTerms)]))
-    .slice(0, opts.maxSelectedFiles || Number.POSITIVE_INFINITY);
-  const files = chosen.map((p) => byPath.get(p)).filter(Boolean) as Array<{ path: string; area: string; surface: string }>;
+  // Step 4: read every node in BFS order and assemble the excerpts block.
+  // expandByReferences already read each file up to maxBytesPerFile during the walk;
+  // we re-read here to get the content for the prompt (same byte cap).
+  const files: Array<{ path: string; area: string; surface: string }> = [];
   const parts: string[] = [];
-  for (const f of files) {
-    let content = '';
+  for (const p of ordered) {
     try {
-      content = readRepoFile(f.path, opts.maxBytesPerFile || 4500, repoPath);
-    } catch {
-      content = '';
-    }
-    if (content.trim()) parts.push(`FILE: ${f.path}  [area: ${f.area}]\n${content}`);
+      const content = readRepoFile(p, 3000, repoPath);
+      if (!content.trim()) continue;
+      const meta = hitMeta.get(p);
+      files.push({ path: p, area: meta?.area ?? 'code', surface: (meta as any)?.surface ?? '' });
+      parts.push(`FILE: ${p}  [area: ${meta?.area ?? 'code'}]\n${content}`);
+    } catch { /* unreadable — skip */ }
   }
+
   return { files, excerpts: parts.join('\n\n---\n\n') };
 }
 
@@ -440,28 +457,36 @@ export async function analyzeFeatureFromSource(
   const inventoryKeywords = deriveInventoryKeywords(cleanQuery);
   const repoPath = opts.repoPath;
   opts.onProgress?.('Scanning route, feature, service, metadata, and UI structure...');
-  const structuralFiles = discoverStructuralSourceFiles(cleanQuery, inventoryKeywords, repoPath, 220);
-  const structuralMap = buildStructuralMapForPrompt(structuralFiles, repoPath, 180, 24000);
-  // Always gather a deterministic deep sample (reliable grounding + the file list we return).
-  opts.onProgress?.(`Searching source files for ${keywords.slice(0, 5).join(', ') || 'the requirement'}...`);
-  const { files, excerpts } = gatherSourceExcerpts(Array.from(new Set([...keywords, ...inventoryKeywords])), repoPath, {
-    maxFiles: 360,
-    maxBytesPerFile: 3800,
-    seedFiles: structuralFiles.slice(0, 160),
-    maxSelectedFiles: 190,
-  });
+  const structuralFiles = discoverStructuralSourceFiles(cleanQuery, inventoryKeywords, repoPath, 120);
+  const structuralMap = buildStructuralMapForPrompt(structuralFiles, repoPath, 80, 12000);
 
-  // CLAUDE-CODE-STYLE deep parallel research: decompose the feature into angles and
-  // investigate them concurrently across the real source before structuring — so cases and
-  // scripts are grounded in genuinely deep coverage. Falls back to the deterministic sample.
+  // BFS import-graph discovery: keyword → grep seeds → follow actual TS/JS imports
+  // depth-first until the feature's subgraph is fully traversed. No hardcoded file count.
+  opts.onProgress?.(`Searching source files for ${keywords.slice(0, 5).join(', ') || 'the requirement'}...`);
+  const { files, excerpts } = await dynamicBfsDiscovery(
+    Array.from(new Set([...keywords, ...inventoryKeywords])),
+    repoPath,
+    { structuralSeeds: structuralFiles },
+  );
+
+  // Deep parallel research: decompose the feature into investigation angles and research
+  // each concurrently. Each facet's io.search also uses BFS so it gets transitive imports,
+  // not just the files whose names happen to match the search terms.
   let researchNotes = '';
   try {
     opts.onProgress?.(`Exploring ${Math.max(1, keywords.length)} code area(s) in parallel...`);
     researchNotes = await deepParallelResearch({
       question: cleanQuery,
       io: {
-        // Dynamic, relevance-filtered file set (count scales to the request — no fixed N).
-        search: async (terms) => relevantSourcePaths(gitGrep(terms, undefined, undefined, repoPath).map((h) => h.path), terms),
+        search: async (terms) => {
+          const hits = relevantSourcePaths(gitGrep(terms, undefined, 80, repoPath).map((h) => h.path), terms);
+          const graph = await expandByReferences(
+            hits.slice(0, 14),
+            { read: async (p, b) => readRepoFile(p, b, repoPath) },
+            { terms, maxDepth: 8, maxFiles: 200, maxBytesPerFile: 2000, freeDepth: 1 },
+          );
+          return Array.from(new Set([...hits, ...graph.map((n) => n.path)]));
+        },
         read: async (p, b) => readRepoFile(p, b, repoPath),
       },
       orchestratorAgent: 'featureAnalyst',
@@ -475,6 +500,7 @@ export async function analyzeFeatureFromSource(
   const groundingBlock = researchNotes
     ? `DEEP PARALLEL RESEARCH NOTES — compiled by reading the application's REAL source across many areas of the codebase concurrently. PRIMARY grounding; treat as authoritative:\n${researchNotes}\n\nSupporting raw code (path + area):\n${excerpts || '(none)'}`
     : `Code read from the target application's real source across the codebase (path + area). Ground your understanding ONLY in these:\n${excerpts || '(no matching source found — say so in the description and keep businessRules minimal rather than inventing them)'}`;
+
 
   const analyst = await getOrchestrator('featureAnalyst', opts);
   opts.onProgress?.('Extracting requirement rules from source evidence...');
@@ -529,14 +555,11 @@ export async function discoverFeatureInventoryFromSource(
   const cleanQuery = String(query || '').trim() || 'Discover all testable features, subfeatures, and end-to-end flows in this application.';
   const keywords = deriveInventoryKeywords(cleanQuery);
   const repoPath = opts.repoPath;
-  const structuralFiles = discoverStructuralSourceFiles(cleanQuery, keywords, repoPath, 180);
-  const structuralMap = buildStructuralMapForPrompt(structuralFiles, repoPath);
-  const { files, excerpts } = gatherSourceExcerpts(keywords, repoPath, {
-    maxFiles: 260,
-    maxBytesPerFile: 2600,
-    seedFiles: structuralFiles.slice(0, 130),
-    maxSelectedFiles: 150,
-  });
+  const structuralFiles = discoverStructuralSourceFiles(cleanQuery, keywords, repoPath, 120);
+  const structuralMap = buildStructuralMapForPrompt(structuralFiles, repoPath, 80, 12000);
+
+  // BFS import-graph discovery — same pattern as analyzeFeatureFromSource.
+  const { files, excerpts } = await dynamicBfsDiscovery(keywords, repoPath, { structuralSeeds: structuralFiles });
 
   let researchNotes = '';
   try {
@@ -547,10 +570,15 @@ export async function discoverFeatureInventoryFromSource(
 Discover feature-level, subfeature-level, and end-to-end QA coverage across the selected application. Split the app by user-visible capabilities and backend-enforced rules. Do not stop at top-level pages.`,
       io: {
         search: async (terms) => {
-          const merged = Array.from(new Set([...keywords, ...(terms || [])])).slice(0, 48);
-          const grepPaths = relevantSourcePaths(gitGrep(merged, undefined, 220, repoPath).map((h) => h.path), merged);
-          const structuralPaths = selectStructuralFilesForTerms(structuralFiles, merged, 36);
-          return Array.from(new Set([...structuralPaths, ...grepPaths])).slice(0, 90);
+          const merged = Array.from(new Set([...keywords, ...(terms || [])]));
+          const hits = relevantSourcePaths(gitGrep(merged, undefined, 80, repoPath).map((h) => h.path), merged);
+          const structuralPaths = selectStructuralFilesForTerms(structuralFiles, merged, 20);
+          const graph = await expandByReferences(
+            [...new Set([...structuralPaths, ...hits])].slice(0, 14),
+            { read: async (p, b) => readRepoFile(p, b, repoPath) },
+            { terms: merged, maxDepth: 8, maxFiles: 200, maxBytesPerFile: 2000, freeDepth: 1 },
+          );
+          return Array.from(new Set([...structuralPaths, ...hits, ...graph.map((n) => n.path)]));
         },
         read: async (p, b) => readRepoFile(p, b, repoPath),
       },
@@ -558,8 +586,8 @@ Discover feature-level, subfeature-level, and end-to-end QA coverage across the 
       workspaceId: opts.workspaceId,
       userId: opts.userId,
       onProgress: opts.onProgress,
-      maxFacets: 8,
-      bytesPerFile: 3000,
+      maxFacets: 5,
+      bytesPerFile: 2000,
     });
   } catch {
     researchNotes = '';
@@ -568,6 +596,7 @@ Discover feature-level, subfeature-level, and end-to-end QA coverage across the 
   const groundingBlock = researchNotes
     ? `APP STRUCTURAL MAP (deterministic repo scan; use this as the coverage checklist, and use excerpts/research as behavior proof):\n${structuralMap || '(none)'}\n\nPARALLEL SOURCE RESEARCH NOTES (primary grounding):\n${researchNotes}\n\nSupporting raw source excerpts:\n${excerpts || '(none)'}`
     : `APP STRUCTURAL MAP (deterministic repo scan; use this as the coverage checklist, and use excerpts as behavior proof):\n${structuralMap || '(none)'}\n\nRaw source excerpts from broad feature discovery searches:\n${excerpts || '(no matching source found; return empty feature arrays rather than inventing)'}`;
+
 
   const featureAgent = await getOrchestrator('featureDiscoveryAgent', opts);
   opts.onProgress?.('Mapping features and subfeatures from code...');
