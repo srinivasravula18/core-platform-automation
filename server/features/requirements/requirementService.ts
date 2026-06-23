@@ -22,6 +22,8 @@ import { persistDataInBackground, addActivity } from '../../shared/storage';
 import { normalizeCaseSteps, normalizeCaseTags } from '../../shared/testCases';
 import { pushInboxItem } from '../inbox/routes';
 import { gitGrep, listRepoSourceFiles, readRepoFile, GIT_AGENT_TARGET_REPO } from '../git-agent/gitAgentService';
+import { analyzeApiAndMetadataFromSource, type ApiAnalysis } from './apiAnalystService';
+import { fetchCorePlatformObjectCatalog } from '../../ai/tools/corePlatformData';
 
 /* ---------- schemas ---------- */
 
@@ -37,7 +39,16 @@ const arrayField = <T extends z.ZodTypeAny>(item: T) =>
   z.preprocess((value) => (Array.isArray(value) ? value : []), z.array(item).default([]));
 
 const metadataRefSchema = z.preprocess((value) => {
-  if (value && typeof value === 'object' && !Array.isArray(value)) return value;
+  // The model is inconsistent about the key it uses for the object/table name — it may
+  // emit `object`, `name`, `api_name`, `table`, `label`, etc. The old schema only read
+  // `object`, so any synonym silently parsed to an empty ref. Coalesce the common key
+  // variants so a metadata ref the model DID produce is not thrown away.
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    const v = value as Record<string, unknown>;
+    const object = v.object ?? v.name ?? v.api_name ?? v.apiName ?? v.objectApiName ?? v.table ?? v.label ?? '';
+    const note = v.note ?? v.why ?? v.description ?? v.reason ?? '';
+    return { object: object == null ? '' : String(object), note: note == null ? '' : String(note) };
+  }
   return { object: value == null ? '' : String(value), note: '' };
 }, z.object({ object: textField(''), note: textField('') }));
 
@@ -59,7 +70,14 @@ const featureAnalystSchema = z.object({
     title: textField('Scenario'),
     priority: textField('Medium'),
     rationale: textField(''),
-    steps: arrayField(z.object({ action: textField(''), expected: textField('') })),
+    steps: arrayField(z.preprocess((value) => {
+      // The model sometimes emits a step as a bare string ("Click Sign in") instead of
+      // an {action, expected} object. Coerce strings (and other shapes) into the object
+      // form so a valid, code-grounded draft is not thrown away over a formatting quirk.
+      if (typeof value === 'string') return { action: value, expected: '' };
+      if (value && typeof value === 'object' && !Array.isArray(value)) return value;
+      return { action: value == null ? '' : String(value), expected: '' };
+    }, z.object({ action: textField(''), expected: textField('') }))),
   })),
 });
 
@@ -504,6 +522,26 @@ export async function analyzeFeatureFromSource(
     : `Code read from the target application's real source across the codebase (path + area). Ground your understanding ONLY in these:\n${excerpts || '(no matching source found — say so in the description and keep businessRules minimal rather than inventing them)'}`;
 
 
+  // Ground metadataRefs in the app's LIVE metadata object catalog (best-effort — never blocks
+  // the draft). Giving the model the real api_names up front yields exact refs ("trigger_audit_log",
+  // "tab", "field") instead of descriptive guesses, and lets it leave a ref out rather than invent one.
+  let metaCatalogBlock = '';
+  try {
+    opts.onProgress?.('Loading live metadata object catalog for grounding...');
+    const catalog = await fetchCorePlatformObjectCatalog();
+    if (catalog.length) {
+      const lines = catalog
+        .map((c) => `- ${c.api_name} (${c.label}) [app: ${c.app}]`)
+        .join('\n');
+      // Examples are derived from THIS connected app's own catalog — never hardcoded — so the
+      // grounding stays correct when the platform is pointed at a different application.
+      const examples = catalog.slice(0, 4).map((c) => `"${c.api_name}"`).join(', ');
+      metaCatalogBlock = `\n\nLIVE METADATA OBJECT CATALOG — the REAL metadata object api_names from the connected application's own database (fetched at runtime). These are the ONLY valid values for metadataRefs.object. Use the EXACT api_name verbatim${examples ? ` (for example, drawn from this app: ${examples})` : ''} — never a descriptive phrase, label, or invented name. If a feature's source of truth is not one of these objects, leave metadataRefs empty:\n${lines}`;
+    }
+  } catch {
+    metaCatalogBlock = '';
+  }
+
   const analyst = await getOrchestrator('featureAnalyst', opts);
   opts.onProgress?.('Extracting requirement rules from source evidence...');
   const analystRes = await analyst.generateObject<FeatureUnderstanding>({
@@ -511,7 +549,7 @@ export async function analyzeFeatureFromSource(
 
 Search keywords used: ${keywords.join(', ')}
 
-${groundingBlock}
+${groundingBlock}${metaCatalogBlock}
 
 INFER the application's architecture from the research notes and excerpts above — do NOT assume any specific product, framework, or surface names. Let the code tell you. Use ONLY behaviour the research actually establishes; never invent meta-concepts (CI/seeding/regression scaffolding) that aren't real user features. Produce the requirement understanding as strict JSON matching the schema:
 - title: a concise requirement title for this feature.
@@ -519,7 +557,7 @@ INFER the application's architecture from the research notes and excerpts above 
 - businessRules: the concrete, testable rules the code enforces.
 - dataPopulationNotes: what the backend populates/seeds/syncs in the background as preconditions for this feature (only if the research shows it).
 - adminBehavior vs keystoneBehavior: if the app has distinct surfaces, put the configuration/admin-surface behavior in adminBehavior and the end-user-surface behavior in keystoneBehavior; if it has only one surface, describe it in whichever fits and leave the other empty. Do not invent a surface the code does not show.
-- metadataRefs: if the app is metadata-/config-driven, the objects/fields that are the source of truth for this feature; otherwise leave empty.
+- metadataRefs: the EXACT metadata object api_names that are the source of truth for this feature. Each entry's "object" MUST be a verbatim api_name taken from the LIVE METADATA OBJECT CATALOG provided above — never a descriptive phrase, label, invented name, or DB-table/column name. Put any table/column-level detail in businessRules or dataPopulationNotes instead. If no catalog was provided above, or none of its objects are the source of truth for this feature, leave metadataRefs empty rather than inventing entries.
 - sourceFiles: the specific files (real paths from the research/excerpts) that justify your understanding, each with a one-line reason.
 - candidateScenarios: cover the feature in proportion to its real complexity — every distinct business rule, branch, role/permission difference, and edge/negative case visible in the code should get a scenario. Each scenario's steps must be DETAILED and concrete: each step a specific user/system action with the REAL on-screen label/field/button and a matching observable expected result (not vague "verify it works"). Do not pad with trivial duplicates; do not under-cover a complex feature.`,
     schema: featureAnalystSchema,
@@ -735,6 +773,7 @@ export interface DiscoverResult {
   inboxItemId?: string;
   searchedFiles: Array<{ path: string; area: string; surface: string }>;
   repoPath: string;
+  apiAnalysis?: ApiAnalysis;
 }
 
 export type RequirementDraftResult = DiscoverResult & { draft: true };
@@ -890,19 +929,7 @@ export async function draftRequirement(
   if (!cleanQuery) throw new Error('A feature or section to test is required.');
 
   opts.onProgress?.('Starting requirement draft...');
-  let { understanding, files } = await analyzeFeatureFromSource(cleanQuery, opts);
-  try {
-    opts.onProgress?.('Running mapped feature and E2E flow research...');
-    const inventoryResult = await discoverFeatureInventoryFromSource(cleanQuery, opts);
-    understanding = mergeInventoryIntoUnderstanding(understanding, inventoryResult.inventory);
-    const byPath = new Map(files.map((file) => [file.path, file]));
-    for (const file of inventoryResult.files || []) {
-      if (file?.path && !byPath.has(file.path)) byPath.set(file.path, file);
-    }
-    files = Array.from(byPath.values());
-  } catch {
-    opts.onProgress?.('Mapped feature research was incomplete; using source analyst findings...');
-  }
+  const { understanding, files } = await analyzeFeatureFromSource(cleanQuery, opts);
   opts.onProgress?.('Building code-grounded requirement review card...');
   const coverage = {
     sufficient: false,
@@ -985,8 +1012,15 @@ export async function discoverRequirement(
   const cleanQuery = String(query || '').trim();
   if (!cleanQuery) throw new Error('A feature or section to test is required.');
 
-  // 1) Feature analyst: produce a grounded requirement understanding from the source.
-  const { understanding, files } = await analyzeFeatureFromSource(cleanQuery, opts);
+  // 1) Feature analyst + API & Metadata analyst — run in parallel for speed.
+  // Pass websiteId (appId from scope) + ownerId so the analyst resolves credentials
+  // from the per-workspace Website record, not from hardcoded env vars.
+  const apiAnalystOpts = { ...opts, websiteId: opts.appId || undefined, ownerId };
+  const [featureResult, apiAnalysis] = await Promise.all([
+    analyzeFeatureFromSource(cleanQuery, opts),
+    analyzeApiAndMetadataFromSource(cleanQuery, apiAnalystOpts).catch(() => undefined),
+  ]);
+  const { understanding, files } = featureResult;
 
   // 2) Reconcile against existing cases — only the discovering user's own cases when
   // they're a tester, so isolation holds (admins reconcile against everything).
@@ -1072,6 +1106,7 @@ export async function discoverRequirement(
     inboxItemId,
     searchedFiles: files,
     repoPath: opts.repoPath || GIT_AGENT_TARGET_REPO,
+    apiAnalysis,
   };
 }
 

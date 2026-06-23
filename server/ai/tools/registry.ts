@@ -14,6 +14,7 @@ import { searchCodeInScope, readCodeFileInScope } from '../../features/projects/
 import { findUntestedEdges } from '../exploration/edgeFinder';
 import { analyzeFeatureCoverage, renderCoverageReport } from '../exploration/featureCoverage';
 import { corePlatformDataTools } from './corePlatformData';
+import { corePlatformMetaTools } from './corePlatformMeta';
 import { expandByReferences } from '../exploration/referenceGraph';
 import { searchCodeWithContext } from '../../features/git-agent/gitAgentService';
 
@@ -341,6 +342,9 @@ export function coreTools(): AgentTool[] {
     queryWorkspaceTool, searchCodebaseTool, readCodeFileTool, followImportsTool, findUntestedEdgesTool, analyzeFeatureCoverageTool,
     // Core Platform DATA tools (real schema + records via the App Service) — only when configured.
     ...corePlatformDataTools(),
+    // Core Platform META tools — object discovery, field inspection, sample records, route search.
+    // Available to all models (OpenAI, Claude API, Codex, etc.) via the native tool-calling loop.
+    ...corePlatformMetaTools,
   ];
 }
 

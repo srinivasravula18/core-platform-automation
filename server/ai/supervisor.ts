@@ -14,6 +14,7 @@ import { executeIntent } from './controller';
 import type { AgentTool, ToolContext, AgentStep } from './tools/types';
 import { queryWorkspaceTool, searchCodebaseTool, readCodeFileTool, followImportsTool, findUntestedEdgesTool, analyzeFeatureCoverageTool } from './tools/registry';
 import { corePlatformDataTools } from './tools/corePlatformData';
+import { corePlatformMetaTools } from './tools/corePlatformMeta';
 import { readCodeFileInScope, resolveCodeSearchScope, searchCodeInScope } from '../features/projects/codeSearch';
 import { deepParallelResearch, relevantSourcePaths } from './research/deepResearch';
 import { expandByReferences } from './exploration/referenceGraph';
@@ -523,7 +524,7 @@ export async function runSupervisor(input: {
     appId: input.appId || null,
     userMessage: input.userMessage,
   };
-  const tools: AgentTool[] = [queryWorkspaceTool, searchCodebaseTool, readCodeFileTool, followImportsTool, findUntestedEdgesTool, analyzeFeatureCoverageTool, ...corePlatformDataTools(), ...INTENT_TOOLS.map((d) => buildIntentTool(d, ctx))];
+  const tools: AgentTool[] = [queryWorkspaceTool, searchCodebaseTool, readCodeFileTool, followImportsTool, findUntestedEdgesTool, analyzeFeatureCoverageTool, ...corePlatformDataTools(), ...corePlatformMetaTools, ...INTENT_TOOLS.map((d) => buildIntentTool(d, ctx))];
 
   const historyBlock = input.history?.length
     ? `\n\nRECENT CONVERSATION (oldest first):\n${input.history.slice(-16).map((m) => `${m.role}: ${m.content}`).join('\n')}`

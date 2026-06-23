@@ -348,6 +348,7 @@ export default function App() {
       <Shell>
         <Routes>
           <Route path="/" element={<AgentConsole />} />
+          <Route path="/chat/:chatId" element={<AgentConsole />} />
           <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/repository" element={<TestRepository />} />
           <Route path="/plans" element={<TestPlans />} />
@@ -361,6 +362,7 @@ export default function App() {
           <Route path="/reports" element={<Reports />} />
           <Route path="/defects" element={<Defects />} />
           <Route path="/agent" element={<AgentConsole />} />
+          <Route path="/agent/chat/:chatId" element={<AgentConsole />} />
           <Route path="/studio" element={<AgentPanel />} />
           <Route path="/git-agent" element={<GitAgent />} />
           <Route path="/settings" element={<SettingsPage />} />

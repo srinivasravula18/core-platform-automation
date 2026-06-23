@@ -15,6 +15,7 @@
  *   CORE_PLATFORM_USERNAME + _PASSWORD         credentials to log in for a token
  */
 import type { AgentTool, ToolContext } from './types';
+import { Pool } from 'pg';
 
 function baseUrl(): string {
   return String(process.env.CORE_PLATFORM_BASE_URL || '').replace(/\/+$/, '');
@@ -174,6 +175,56 @@ export const createRecordTool: AgentTool = {
     return cpRequest('POST', `/api/apps/${enc(String(args.app_id))}/objects/${enc(String(args.object_api_name))}/records`, args.values);
   },
 };
+
+// Lazily-created read-only pool to the Core Platform DB, used ONLY to read the metadata object
+// catalog (schema, not user data). We deliberately read meta.object DIRECTLY — the SAME source
+// the MCP server uses — because the access-scoped App Service endpoint (/api/apps/:id/objects)
+// HIDES platform meta-objects (tab, field, permission, ...), which are exactly the objects a
+// requirement draft needs to reference. Reading schema directly is safe; record data still
+// flows through the access-enforced App Service everywhere else.
+let catalogPool: Pool | null = null;
+function getCatalogPool(): Pool | null {
+  if (catalogPool) return catalogPool;
+  const host = String(process.env.CORE_PLATFORM_DB_HOST || '').trim();
+  if (!host) return null;
+  catalogPool = new Pool({
+    host,
+    port: Number(process.env.CORE_PLATFORM_DB_PORT) || 5432,
+    database: process.env.CORE_PLATFORM_DB_NAME || 'core-platform',
+    user: process.env.CORE_PLATFORM_DB_USER || 'postgres',
+    password: String(process.env.CORE_PLATFORM_DB_PASSWORD || ''),
+    ssl: process.env.CORE_PLATFORM_DB_SSL === 'true' ? { rejectUnauthorized: false } : false,
+    max: 2,
+  });
+  return catalogPool;
+}
+
+/**
+ * Best-effort: fetch the live catalog of ALL metadata objects (business + platform meta-objects)
+ * straight from the Core Platform DB, as ground-truth vocabulary for requirement drafting (so
+ * `metadataRefs` are exact, real api_names instead of the model's descriptive guesses). NEVER
+ * throws — returns an empty array on any failure (DB not configured/unreachable) so a draft is
+ * never blocked by metadata grounding being unavailable.
+ */
+export async function fetchCorePlatformObjectCatalog(): Promise<Array<{ app: string; api_name: string; label: string }>> {
+  const pool = getCatalogPool();
+  if (!pool) return [];
+  try {
+    const res = await pool.query(
+      `SELECT o.api_name, o.label, a.api_name AS app
+         FROM meta.object o
+         JOIN meta.app a ON a.id = o.app_id
+        ORDER BY a.api_name, o.api_name`,
+    );
+    return (res.rows || []).map((r: any) => ({
+      app: String(r.app ?? ''),
+      api_name: String(r.api_name ?? ''),
+      label: String(r.label ?? r.api_name ?? ''),
+    })).filter((r) => r.api_name);
+  } catch {
+    return [];
+  }
+}
 
 /** Whether the Core Platform data tools are configured (base URL + a token/credential). */
 export function corePlatformDataConfigured(): boolean {

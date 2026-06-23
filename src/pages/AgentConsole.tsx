@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import {
   BrainCircuit,
   Mic,
@@ -21,7 +21,9 @@ import {
   Wand2,
   History,
   MessageSquare,
+  Star,
   Target,
+  Trash2,
   AppWindow,
   Check,
   ChevronDown,
@@ -321,7 +323,14 @@ function activeConvKey(workspaceId: string): string {
   return `${CONV_KEY_BASE}::${workspaceId}`;
 }
 function makeConversationId(): string {
-  return `CONV-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  // Fallback: manually generate a UUID v4
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16);
+  });
 }
 
 interface ConversationMeta {
@@ -413,6 +422,8 @@ export default function AgentConsole() {
   const [busy, setBusy] = useState(false);
   const [conversationId, setConversationId] = useState<string>(() => {
     try {
+      // URL param takes precedence — lets users share / bookmark a specific chat
+      if (urlChatId) return urlChatId;
       return localStorage.getItem(convKey) || makeConversationId();
     } catch {
       return makeConversationId();
@@ -420,6 +431,14 @@ export default function AgentConsole() {
   });
   const [conversations, setConversations] = useState<ConversationMeta[]>([]);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [favorites, setFavorites] = useState<Set<string>>(() => {
+    try {
+      const stored = localStorage.getItem('tfa_conv_favorites');
+      return new Set(stored ? JSON.parse(stored) : []);
+    } catch {
+      return new Set();
+    }
+  });
   const [websites, setWebsites] = useState<Array<{ id: string; name: string; baseUrl: string }>>([]);
   // Explicit "apps under test" selected by the user in the composer. ALL selected apps
   // are passed to the agent as target context on every request, so it always has the app
@@ -438,6 +457,7 @@ export default function AgentConsole() {
   const [reqMode, setReqMode] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
+  const { chatId: urlChatId } = useParams<{ chatId?: string }>();
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const historyRef = useRef<HTMLDivElement>(null);
@@ -471,6 +491,16 @@ export default function AgentConsole() {
       /* ignore */
     }
   }, [conversationId, convKey]);
+
+  // Sync conversationId → URL so the address bar always reflects the active chat.
+  // Uses replace so switching chats doesn't pollute the browser history stack.
+  useEffect(() => {
+    const basePath = location.pathname.replace(/\/chat\/[^/]*$/, '').replace(/\/$/, '') || '/';
+    const target = `${basePath === '/' ? '' : basePath}/chat/${conversationId}`;
+    if (location.pathname !== target) {
+      navigate(target, { replace: true });
+    }
+  }, [conversationId, location.pathname, navigate]);
 
   useEffect(() => {
     if (!appPickerOpen) return undefined;
@@ -580,6 +610,31 @@ export default function AgentConsole() {
     },
     [conversationId, loadConversation],
   );
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('tfa_conv_favorites', JSON.stringify(Array.from(favorites)));
+    } catch { /* ignore */ }
+  }, [favorites]);
+
+  const toggleFavorite = useCallback((id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setFavorites((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const deleteConversation = useCallback(async (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    try {
+      await fetch(`/api/chat/conversations/${id}`, { method: 'DELETE' });
+    } catch { /* ignore */ }
+    setConversations((prev) => prev.filter((c) => c.id !== id));
+    setFavorites((prev) => { const next = new Set(prev); next.delete(id); return next; });
+    if (id === conversationId) newConversation();
+  }, [conversationId, newConversation]);
 
   const appendSpeechTranscript = useCallback((transcript: string) => {
     setInput((prev) => prev + (prev.trim() ? ' ' : '') + transcript);
@@ -1693,7 +1748,12 @@ export default function AgentConsole() {
                 </span>
               )}
             </div>
-            <p className="text-xs text-[var(--text-muted)]">Tell the AI what to do. It plans, you approve, it runs.</p>
+            <div className="flex items-center gap-2">
+              <p className="text-xs text-[var(--text-muted)]">Tell the AI what to do. It plans, you approve, it runs.</p>
+              <span className="font-mono text-[10px] text-[var(--text-muted)] border border-[var(--border)] bg-[var(--bg-secondary)] rounded px-1.5 py-0.5 tracking-wide select-all" title="Chat ID">
+                #{conversationId}
+              </span>
+            </div>
           </div>
         </div>
         <div className="flex items-center gap-2">
@@ -1713,23 +1773,47 @@ export default function AgentConsole() {
                   {conversations.length === 0 && (
                     <div className="px-3 py-4 text-center text-xs text-[var(--text-muted)]">No saved conversations yet.</div>
                   )}
-                  {conversations.map((c) => (
-                    <button
+                  {[...conversations]
+                    .sort((a, b) => (favorites.has(b.id) ? 1 : 0) - (favorites.has(a.id) ? 1 : 0))
+                    .map((c) => (
+                    <div
                       key={c.id}
-                      onClick={() => switchConversation(c.id)}
                       className={cn(
-                        'flex w-full items-start gap-2 border-b border-[var(--border)] px-3 py-2 text-left last:border-b-0 hover:bg-[var(--bg-secondary)]',
+                        'group flex w-full items-start gap-2 border-b border-[var(--border)] px-3 py-2 last:border-b-0 hover:bg-[var(--bg-secondary)] cursor-pointer',
                         c.id === conversationId && 'bg-[var(--accent)]/5',
                       )}
+                      onClick={() => switchConversation(c.id)}
                     >
                       <MessageSquare className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[var(--text-muted)]" />
                       <span className="min-w-0 flex-1">
                         <span className="block truncate text-xs font-medium text-[var(--text-primary)]">{c.title || 'Untitled chat'}</span>
+                        <span className="block font-mono text-[10px] text-[var(--text-muted)]/60 truncate">{c.id}</span>
                         <span className="text-[10px] text-[var(--text-muted)]">
                           {c.turnCount} message{c.turnCount === 1 ? '' : 's'} · {new Date(c.updatedAt).toLocaleString()}
                         </span>
                       </span>
-                    </button>
+                      <div className="flex shrink-0 items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <button
+                          type="button"
+                          title={favorites.has(c.id) ? 'Remove from favorites' : 'Add to favorites'}
+                          onClick={(e) => toggleFavorite(c.id, e)}
+                          className={cn(
+                            'flex h-6 w-6 items-center justify-center rounded hover:bg-[var(--bg-secondary)]',
+                            favorites.has(c.id) ? 'text-amber-400' : 'text-[var(--text-muted)]',
+                          )}
+                        >
+                          <Star className={cn('h-3.5 w-3.5', favorites.has(c.id) && 'fill-amber-400')} />
+                        </button>
+                        <button
+                          type="button"
+                          title="Delete conversation"
+                          onClick={(e) => void deleteConversation(c.id, e)}
+                          className="flex h-6 w-6 items-center justify-center rounded text-[var(--text-muted)] hover:bg-red-500/10 hover:text-red-400"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    </div>
                   ))}
                 </div>
               </div>
