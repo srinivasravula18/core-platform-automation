@@ -99,6 +99,23 @@ Two independent surfaces were exercised:
 
 ## 5. Full Per-Prompt Results
 
+### What we expected vs what we got (in plain words)
+
+For each prompt we asked the AI to read the **real core-platform code** and write a requirement. Here is what we were hoping for, and what actually came back:
+
+| We expected | What we got |
+|---|---|
+| It cites **real files** that actually exist in the codebase (not made-up names) | ✅ Got it — **627 of 627 cited files are real** (100%). No invented files. |
+| It names the **real metadata objects** (`tab`, `field`, `permission`…) as the source of truth | ⚠️ Mixed — got real names in **45 of 56** drafts; the rest came back empty (later traced to a bug + a data-source issue, both since fixed). |
+| It writes **concrete, code-based rules**, not vague generic ones | ✅ Got it — **avg 34 rules per draft**, and every rule we spot-checked matched the code word-for-word. |
+| It separates **admin behaviour** from **end-user (Keystone) behaviour** | ✅ Got it — admin filled in **54/56**; Keystone correctly left blank on back-end-only features. |
+| It notes **what the system populates in the background** (defaults, audit, etc.) | ✅ Got it — data notes filled in **56/56** (100%). |
+| It **doesn't hallucinate** | ✅ Got it — **zero hallucinations** in every claim we verified against the code. |
+
+**In one line:** we expected code-grounded, trustworthy requirements — and that's what we got on source files, rules, and surface split (all strong); the only weak spot was the metadata-object naming, which we found and fixed during the test.
+
+> **How to read the metadata column below:** `Meta = 0/0` means the AI named no metadata objects for that prompt (e.g. auth, which isn't metadata-driven) — that's fine. `Meta = 0/5` (seen before the fix) meant it *tried* but the names were dropped by a bug. `Meta = 4/4` means all the names it gave were real and kept.
+
 Legend: **Src** = real source files / total cited · **Meta** = populated refs / total · **Rules** = business-rule count · **A/K/D** = Admin / Keystone / Data populated.
 
 | # | Category | Title | Src | Meta | Rules | A | K | D |
