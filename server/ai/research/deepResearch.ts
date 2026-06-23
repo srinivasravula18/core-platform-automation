@@ -156,7 +156,7 @@ const NO_FINDINGS = /no relevant code found/i;
 async function planFacets(opts: DeepResearchOptions, orch: any, max: number): Promise<Array<{ name: string; terms: string[] }>> {
   try {
     const res = await orch.generateObject({
-      prompt: `Decompose this request into up to ${max} DISTINCT investigation angles for searching an application's codebase files, so parallel searches cover the feature in depth (the way a senior engineer would split up exploring an unfamiliar codebase). Each angle must target a different sub-area implied by the request. For each angle give a short name and 3-6 concrete search terms likely to appear in the real codebase (identifiers, route fragments, UI labels, config keys, test names, synonyms). Do not use documentation or Markdown files as a source.
+      prompt: `Decompose this request into the RIGHT number of DISTINCT investigation angles for searching an application's codebase files — as few as 2 for a simple, focused feature and up to ${max} for a broad, multi-part, or end-to-end one. Match the feature's REAL breadth the way a senior engineer would split up exploring an unfamiliar codebase: do NOT pad a simple feature with filler angles, and do NOT split a single concern into several. Each angle must target a genuinely different sub-area implied by the request. For each angle give a short name and 3-6 concrete search terms likely to appear in the real codebase (identifiers, route fragments, UI labels, config keys, test names, synonyms). Do not use documentation or Markdown files as a source.
 
 REQUEST: ${opts.question}
 
@@ -250,15 +250,46 @@ ${excerpts}`,
 }
 
 /**
+ * Pick an UPPER BOUND on investigation angles from the request's apparent breadth. The
+ * planner then chooses the actual number within this ceiling, so the count scales with
+ * complexity: a focused single-feature prompt gets a small ceiling; a broad / E2E /
+ * regression / multi-object prompt gets a larger one. Replaces the old fixed cap of 6.
+ */
+export function facetCeiling(question: string): number {
+  const q = String(question || '').toLowerCase();
+  let ceiling = 5; // base for a normal single-feature request
+  // Breadth signals — these requests genuinely span many sub-areas.
+  if (/\b(e2e|end[-\s]?to[-\s]?end|regression|across|entire|whole|full|every|all\b|life\s?cycle|workflow|traceability|chain|multi[-\s]?(object|step)|app\s?scope|cross[-\s]?object|relationship)\b/.test(q)) {
+    ceiling += 4;
+  }
+  // Conjunctions imply multiple distinct things to investigate ("X and Y then Z").
+  const conjunctions = (q.match(/\b(and|then|plus)\b|,/g) || []).length;
+  ceiling += Math.min(4, conjunctions);
+  // Longer, more detailed asks tend to imply more angles.
+  if (q.length > 140) ceiling += 2;
+  // Keep it sane: never fewer than 3, never a runaway fan-out.
+  return Math.max(3, Math.min(14, ceiling));
+}
+
+/**
  * Run the full parallel investigation and return merged research notes (markdown), or ''
  * when planning yields nothing (the caller then falls back to a single-pass search).
  */
 export async function deepParallelResearch(opts: DeepResearchOptions): Promise<string> {
-  const max = opts.maxFacets ?? 6;
+  // Ceiling on investigation angles. The planner picks the ACTUAL count within this
+  // bound from the feature's real breadth — so simple prompts use few angles and broad
+  // / E2E prompts use more, instead of every request collapsing to a fixed number.
+  const max = opts.maxFacets ?? facetCeiling(opts.question);
   const orch = await getOrchestrator(opts.orchestratorAgent, { workspaceId: opts.workspaceId, userId: opts.userId });
 
   opts.onProgress?.('Planning the investigation…');
-  const facets = mergeFacets(await planFacets(opts, orch, max), fallbackFacets(opts.question, max), max);
+  // IMPORTANT: the heuristic fallback is used ONLY when the planner returns nothing — it is
+  // NOT used to pad a genuine (possibly small) plan up to `max`. That padding is exactly what
+  // forced every request to the same count regardless of complexity.
+  const planned = await planFacets(opts, orch, max);
+  const facets = planned.length
+    ? mergeFacets(planned, [], max)
+    : mergeFacets([], fallbackFacets(opts.question, max), max);
   if (!facets.length) return '';
 
   opts.onProgress?.(`Searching ${facets.length} areas of the codebase in parallel…`);

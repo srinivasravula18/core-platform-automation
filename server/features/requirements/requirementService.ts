@@ -15,7 +15,7 @@
 
 import { z } from 'zod';
 import { getOrchestrator } from '../../ai/orchestrator';
-import { deepParallelResearch, relevantSourcePaths } from '../../ai/research/deepResearch';
+import { deepParallelResearch, relevantSourcePaths, facetCeiling } from '../../ai/research/deepResearch';
 import { expandByReferences } from '../../ai/exploration/referenceGraph';
 import { Cases, Requirements, RequirementLinks, isPgEnabled } from '../../db/repository';
 import { persistDataInBackground, addActivity } from '../../shared/storage';
@@ -626,7 +626,9 @@ Discover feature-level, subfeature-level, and end-to-end QA coverage across the 
       workspaceId: opts.workspaceId,
       userId: opts.userId,
       onProgress: opts.onProgress,
-      maxFacets: 5,
+      // Inventory/E2E discovery is inherently broad ("don't stop at top-level"), so scale with
+      // the request's complexity but keep a higher floor than a single-feature draft.
+      maxFacets: Math.max(8, facetCeiling(cleanQuery)),
       bytesPerFile: 2000,
     });
   } catch {
