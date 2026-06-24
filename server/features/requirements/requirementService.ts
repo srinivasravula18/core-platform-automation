@@ -24,6 +24,7 @@ import { pushInboxItem } from '../inbox/routes';
 import { gitGrep, listRepoSourceFiles, readRepoFile, GIT_AGENT_TARGET_REPO } from '../git-agent/gitAgentService';
 import { analyzeApiAndMetadataFromSource, type ApiAnalysis } from './apiAnalystService';
 import { fetchCorePlatformObjectCatalog } from '../../ai/tools/corePlatformData';
+import { getApp } from '../projects/projectService';
 
 /* ---------- schemas ---------- */
 
@@ -528,7 +529,15 @@ export async function analyzeFeatureFromSource(
   let metaCatalogBlock = '';
   try {
     opts.onProgress?.('Loading live metadata object catalog for grounding...');
-    const catalog = await fetchCorePlatformObjectCatalog();
+    // Per-app grounding: use the SELECTED app's base URL (+ optional spec path) so the swagger
+    // catalog is fetched from whatever app this draft targets — not a single global env URL.
+    // Falls back to the global config when no app is selected or it has no base URL.
+    let appConn: { baseUrl?: string; specPath?: string } | undefined;
+    try {
+      const activeApp = opts.appId ? getApp(opts.appId) : undefined;
+      if (activeApp?.baseUrl) appConn = { baseUrl: activeApp.baseUrl, specPath: (activeApp as any).specPath };
+    } catch { /* ignore — fall back to global */ }
+    const catalog = await fetchCorePlatformObjectCatalog(appConn);
     if (catalog.length) {
       const lines = catalog
         .map((c) => `- ${c.api_name} (${c.label}) [app: ${c.app}]`)

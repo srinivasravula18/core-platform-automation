@@ -206,14 +206,17 @@ function getCatalogPool(): Pool | null {
  * throws — returns an empty array on any failure (DB not configured/unreachable) so a draft is
  * never blocked by metadata grounding being unavailable.
  */
-export async function fetchCorePlatformObjectCatalog(): Promise<Array<{ app: string; api_name: string; label: string }>> {
-  // Source switch for the own-MCP-vs-srinivas comparison:
-  //   CORE_PLATFORM_CATALOG_SOURCE = 'api' → fetch via the App Service (srinivas's API-based path,
-  //     access-enforced, NO data leakage, but only sees business objects — meta-objects are hidden).
-  //   anything else (default 'db') → direct meta.object read (sees all objects incl. meta-objects).
+export async function fetchCorePlatformObjectCatalog(
+  conn?: { baseUrl?: string; specPath?: string },
+): Promise<Array<{ app: string; api_name: string; label: string }>> {
+  // Source switch:
+  //   CORE_PLATFORM_CATALOG_SOURCE = 'swagger' → derive from the target's OpenAPI spec
+  //     (per-app baseUrl + auto-probed spec path; pure API, no DB, app-agnostic). RECOMMENDED.
+  //   'api'  → App Service objects endpoint (business objects only — meta-objects hidden).
+  //   default 'db' → direct meta.object read (sees all, but needs a DB connection).
   const __src = String(process.env.CORE_PLATFORM_CATALOG_SOURCE || 'db').toLowerCase();
   if (__src === 'api') return fetchObjectCatalogViaApi();
-  if (__src === 'swagger') return fetchObjectCatalogViaSwagger();
+  if (__src === 'swagger') return fetchObjectCatalogViaSwagger(conn);
   const pool = getCatalogPool();
   if (!pool) return [];
   try {
@@ -250,6 +253,31 @@ function swaggerResourceToApiName(seg: string): string {
   return [...words.slice(0, -1), last].join('_');
 }
 
+// Common locations apps publish their OpenAPI/Swagger spec. Probed in order; the per-app
+// configured path (if any) is tried first.
+const SWAGGER_SPEC_PATHS = [
+  '/openapi.json', '/swagger.json', '/v3/api-docs', '/api-docs', '/swagger/v1/swagger.json', '/api/openapi.json',
+];
+
+/** Best-effort: find and fetch a target's OpenAPI spec by probing common paths. */
+async function fetchSwaggerSpec(url: string, preferredPath?: string): Promise<any | null> {
+  const tried = new Set<string>();
+  const candidates = [preferredPath, ...SWAGGER_SPEC_PATHS].filter(Boolean) as string[];
+  for (const raw of candidates) {
+    const p = raw.startsWith('/') ? raw : `/${raw}`;
+    if (tried.has(p)) continue;
+    tried.add(p);
+    try {
+      const res = await fetch(`${url}${p}`);
+      if (res.ok) {
+        const json = (await res.json()) as any;
+        if (json && (json.openapi || json.swagger || json.paths)) return json;
+      }
+    } catch { /* try next */ }
+  }
+  return null;
+}
+
 /**
  * Swagger/OpenAPI path: derive the catalog from the target's spec — pure API, no DB.
  * Business objects come from the access-enforced objects API; the platform meta-objects
@@ -257,17 +285,18 @@ function swaggerResourceToApiName(seg: string): string {
  * recovered from the spec's admin/CRUD collection paths (a segment immediately followed
  * by an id placeholder, e.g. /admin/access-records/{id} → access_record). App-agnostic:
  * any app's spec reveals its manageable resources the same way.
+ *
+ * Per-app: pass the active app's baseUrl (+ optional specPath). The spec location is
+ * auto-probed across common paths, so a newly-created app needs only its base URL.
  */
-async function fetchObjectCatalogViaSwagger(): Promise<Array<{ app: string; api_name: string; label: string }>> {
+async function fetchObjectCatalogViaSwagger(
+  conn?: { baseUrl?: string; specPath?: string },
+): Promise<Array<{ app: string; api_name: string; label: string }>> {
   try {
-    const url = baseUrl();
+    const url = (conn?.baseUrl || baseUrl() || '').replace(/\/+$/, '');
     if (!url) return [];
     const business = await fetchObjectCatalogViaApi();
-    let spec: any = null;
-    try {
-      const res = await fetch(`${url}/openapi.json`);
-      if (res.ok) spec = await res.json();
-    } catch { /* no spec — fall back to business only */ }
+    const spec = await fetchSwaggerSpec(url, conn?.specPath);
     const paths: string[] = spec && spec.paths ? Object.keys(spec.paths) : [];
     const metaNames = new Set<string>();
     for (const p of paths) {
