@@ -29,9 +29,7 @@ CORE-PLATFORM-FEATURE-AUDIT.md
 # QA requirements-AI sweep artifacts (local test runs — not source)
 scripts/*.ps1
 scripts/*.csv
-scripts/sub-json/
-scripts/all-rq-json/
-scripts/critical-json/
+scripts/*-json/
 scripts/backend.log
 
 # Claude Code local workspace

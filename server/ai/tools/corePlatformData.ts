@@ -207,6 +207,13 @@ function getCatalogPool(): Pool | null {
  * never blocked by metadata grounding being unavailable.
  */
 export async function fetchCorePlatformObjectCatalog(): Promise<Array<{ app: string; api_name: string; label: string }>> {
+  // Source switch for the own-MCP-vs-srinivas comparison:
+  //   CORE_PLATFORM_CATALOG_SOURCE = 'api' → fetch via the App Service (srinivas's API-based path,
+  //     access-enforced, NO data leakage, but only sees business objects — meta-objects are hidden).
+  //   anything else (default 'db') → direct meta.object read (sees all objects incl. meta-objects).
+  const __src = String(process.env.CORE_PLATFORM_CATALOG_SOURCE || 'db').toLowerCase();
+  if (__src === 'api') return fetchObjectCatalogViaApi();
+  if (__src === 'swagger') return fetchObjectCatalogViaSwagger();
   const pool = getCatalogPool();
   if (!pool) return [];
   try {
@@ -221,6 +228,87 @@ export async function fetchCorePlatformObjectCatalog(): Promise<Array<{ app: str
       api_name: String(r.api_name ?? ''),
       label: String(r.label ?? r.api_name ?? ''),
     })).filter((r) => r.api_name);
+  } catch {
+    return [];
+  }
+}
+
+// Resource segments that are not real metadata objects (verbs/system paths). Kept small
+// and generic so the derivation stays app-agnostic.
+const SWAGGER_STOP_SEGMENTS = new Set([
+  'api', 'admin', 'auth', 'me', 'health', 'content', 'meta', 'json', 'download', 'upload', 'runs', 'logs', 'v1', 'v2',
+]);
+
+/** Singularize + snake_case a URL collection segment: "access-records" → "access_record". */
+function swaggerResourceToApiName(seg: string): string {
+  const words = seg.split('-').filter(Boolean);
+  if (!words.length) return '';
+  let last = words[words.length - 1];
+  if (/ies$/.test(last)) last = last.slice(0, -3) + 'y';
+  else if (/(ses|xes|zes|ches|shes)$/.test(last)) last = last.slice(0, -2);
+  else if (/s$/.test(last) && !/ss$/.test(last)) last = last.slice(0, -1);
+  return [...words.slice(0, -1), last].join('_');
+}
+
+/**
+ * Swagger/OpenAPI path: derive the catalog from the target's spec — pure API, no DB.
+ * Business objects come from the access-enforced objects API; the platform meta-objects
+ * (field, tab, permission, access_record, ...) that the business endpoint hides are
+ * recovered from the spec's admin/CRUD collection paths (a segment immediately followed
+ * by an id placeholder, e.g. /admin/access-records/{id} → access_record). App-agnostic:
+ * any app's spec reveals its manageable resources the same way.
+ */
+async function fetchObjectCatalogViaSwagger(): Promise<Array<{ app: string; api_name: string; label: string }>> {
+  try {
+    const url = baseUrl();
+    if (!url) return [];
+    const business = await fetchObjectCatalogViaApi();
+    let spec: any = null;
+    try {
+      const res = await fetch(`${url}/openapi.json`);
+      if (res.ok) spec = await res.json();
+    } catch { /* no spec — fall back to business only */ }
+    const paths: string[] = spec && spec.paths ? Object.keys(spec.paths) : [];
+    const metaNames = new Set<string>();
+    for (const p of paths) {
+      const segs = p.split('/').filter(Boolean);
+      for (let i = 0; i < segs.length - 1; i++) {
+        const cur = segs[i];
+        const next = segs[i + 1];
+        if (next.startsWith('{') && !cur.startsWith('{')) {
+          const name = swaggerResourceToApiName(cur);
+          if (name && name.length > 1 && !SWAGGER_STOP_SEGMENTS.has(name)) metaNames.add(name);
+        }
+      }
+    }
+    const businessNames = new Set(business.map((b) => b.api_name));
+    const out = [...business];
+    for (const n of metaNames) {
+      if (!businessNames.has(n)) out.push({ app: 'core', api_name: n, label: n });
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+/** Srinivas's API-based path: list objects per app through the access-enforced App Service. */
+async function fetchObjectCatalogViaApi(): Promise<Array<{ app: string; api_name: string; label: string }>> {
+  try {
+    if (!corePlatformDataConfigured()) return [];
+    const apps = items(await cpRequest('GET', '/api/apps')) as any[];
+    const out: Array<{ app: string; api_name: string; label: string }> = [];
+    for (const app of Array.isArray(apps) ? apps : []) {
+      const appId = app?.id;
+      if (!appId) continue;
+      try {
+        const objs = items(await cpRequest('GET', `/api/apps/${enc(String(appId))}/objects`)) as any[];
+        for (const o of Array.isArray(objs) ? objs : []) {
+          if (o?.api_name) out.push({ app: String(app.api_name || app.id), api_name: String(o.api_name), label: String(o.label || o.api_name) });
+        }
+      } catch { /* skip this app, keep the rest */ }
+    }
+    return out;
   } catch {
     return [];
   }
