@@ -49,7 +49,7 @@ const graphInventorySchema = z.object({
 async function discoverViaGraph(feature: string, opts: {
   workspaceId?: string; userId?: string; repoPath?: string; onProgress?: (label: string) => void;
 }): Promise<FeatureInventory> {
-  const repoPath = opts.repoPath || process.env.GIT_AGENT_TARGET_REPO || process.env.CORE_PLATFORM_REPO || '';
+  const repoPath = opts.repoPath || process.env.GIT_AGENT_TARGET_REPO || process.env.TARGET_REPO || '';
   const orch = await getOrchestrator('featureDiscoveryAgent', { workspaceId: opts.workspaceId, userId: opts.userId });
 
   // The AGENT decides WHERE to look — it proposes the code-search terms for this feature. No

@@ -42,21 +42,21 @@ function resolveConnection(ctx?: ToolContext): AppConn {
     if (site?.baseUrl) {
       return {
         baseUrl: site.baseUrl.replace(/\/$/, ''),
-        username: process.env.CORE_PLATFORM_USERNAME || 'admin',
-        password: process.env.CORE_PLATFORM_PASSWORD || 'admin',
+        username: process.env.TARGET_USERNAME || 'admin',
+        password: process.env.TARGET_PASSWORD || 'admin',
       };
     }
   }
   // 2. env vars
   return {
-    baseUrl: (process.env.CORE_PLATFORM_BASE_URL || 'http://localhost:5001').replace(/\/$/, ''),
-    username: process.env.CORE_PLATFORM_USERNAME || 'admin',
-    password: process.env.CORE_PLATFORM_PASSWORD || 'admin',
+    baseUrl: (process.env.TARGET_BASE_URL || 'http://localhost:5001').replace(/\/$/, ''),
+    username: process.env.TARGET_USERNAME || 'admin',
+    password: process.env.TARGET_PASSWORD || 'admin',
   };
 }
 
 async function getToken(conn: AppConn, forceRefresh = false): Promise<string> {
-  const staticToken = String(process.env.CORE_PLATFORM_TOKEN || '').trim();
+  const staticToken = String(process.env.TARGET_TOKEN || '').trim();
   if (staticToken) return staticToken;
 
   const cached = tokenCache.get(conn.baseUrl);
@@ -86,7 +86,7 @@ async function cpFetch(method: string, path: string, body: unknown, ctx?: ToolCo
 
   let token = await getToken(conn);
   let res = await call(token);
-  if (res.status === 401 && !process.env.CORE_PLATFORM_TOKEN) {
+  if (res.status === 401 && !process.env.TARGET_TOKEN) {
     tokenCache.delete(conn.baseUrl);
     token = await getToken(conn, true);
     res = await call(token);
@@ -349,7 +349,7 @@ export const getApiRoutesTool: AgentTool = {
   },
   async execute(args) {
     try {
-      const repoPath = (process.env.CORE_PLATFORM_REPO_PATH || 'D:/core-platform').replace(/[/\\]$/, '');
+      const repoPath = (process.env.TARGET_REPO_PATH || 'D:/core-platform').replace(/[/\\]$/, '');
       const kws = keywords(String(args.query || ''));
       const routePattern = /app\.(get|post|put|patch|delete)\s*\(\s*["'`]/i;
 

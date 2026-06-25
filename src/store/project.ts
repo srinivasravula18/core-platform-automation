@@ -11,6 +11,10 @@ export interface ProjectApp {
   description?: string;
   baseUrl?: string;
   environment?: string;
+  /** How this app's metadata catalog is grounded. Default 'swagger' (metadata-driven apps). */
+  catalogStrategy?: 'swagger' | 'api' | 'source' | 'none';
+  /** Path to the app's OpenAPI spec (probed if unset). Default '/api/openapi.json'. */
+  specPath?: string;
   repoSubpath?: string;
   searchRoots?: Record<string, string>;
   knowledgePackId?: string;

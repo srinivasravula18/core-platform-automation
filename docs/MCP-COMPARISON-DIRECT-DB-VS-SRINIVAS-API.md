@@ -1,7 +1,7 @@
 # MCP Grounding Comparison — Direct-DB vs API vs Swagger
 
 **Question:** How should the test-automation app ground its core-platform metadata — own **direct-DB read** (`meta.object`), **plain API** (App Service `/api/apps/.../objects`), or the **OpenAPI/Swagger spec** (paths derived into a catalog)?
-**Method:** the **same 20 object/metadata/background lifecycle prompts** run through the identical requirements pipeline; the **only** variable is the catalog source (`CORE_PLATFORM_CATALOG_SOURCE = db | api | swagger`).
+**Method:** the **same 20 object/metadata/background lifecycle prompts** run through the identical requirements pipeline; the **only** variable is the catalog source (`CATALOG_SOURCE = db | api | swagger`).
 **Date:** 2026-06-24
 **User priority:** API-based (no direct DB) to avoid data leakage. This finds the source that's both secure AND well-grounded.
 
@@ -130,4 +130,4 @@ Add a meta-objects endpoint to core-platform's App Service (e.g. `/api/apps/:id/
 | Results CSV | `scripts/result-objmeta.csv` | `scripts/result-objmeta-srinivas.csv` |
 | Draft JSONs | `scripts/objmeta-json/` | `scripts/srinivas-json/` |
 | Baseline report | `docs/OBJECT-METADATA-LIFECYCLE-BENCHMARK.md` | — |
-| Source switch | `corePlatformData.ts` — `CORE_PLATFORM_CATALOG_SOURCE` env | |
+| Source switch | `corePlatformData.ts` — `CATALOG_SOURCE` env | |

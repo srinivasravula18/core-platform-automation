@@ -10,19 +10,18 @@
  * fetch()es the App Service, exactly like it already does for everything else.
  *
  * Config (same convention as the MCP server):
- *   CORE_PLATFORM_BASE_URL                     App Service base URL (required)
- *   CORE_PLATFORM_TOKEN                        bearer token to act as, OR
- *   CORE_PLATFORM_USERNAME + _PASSWORD         credentials to log in for a token
+ *   TARGET_BASE_URL                     App Service base URL (required)
+ *   TARGET_TOKEN                        bearer token to act as, OR
+ *   TARGET_USERNAME + _PASSWORD         credentials to log in for a token
  */
 import type { AgentTool, ToolContext } from './types';
-import { Pool } from 'pg';
 
 function baseUrl(): string {
-  return String(process.env.CORE_PLATFORM_BASE_URL || '').replace(/\/+$/, '');
+  return String(process.env.TARGET_BASE_URL || '').replace(/\/+$/, '');
 }
 
 // Cache a logged-in token so we don't re-auth on every call. Cleared on a 401 so the next call
-// re-logs-in. A static CORE_PLATFORM_TOKEN (if set) is always preferred and never cached/cleared.
+// re-logs-in. A static TARGET_TOKEN (if set) is always preferred and never cached/cleared.
 let cachedToken: string | null = null;
 
 async function loginForToken(url: string, username: string, password: string): Promise<string> {
@@ -37,13 +36,13 @@ async function loginForToken(url: string, username: string, password: string): P
 }
 
 async function resolveToken(url: string, forceRefresh = false): Promise<string> {
-  const staticToken = String(process.env.CORE_PLATFORM_TOKEN || '').trim();
+  const staticToken = String(process.env.TARGET_TOKEN || '').trim();
   if (staticToken) return staticToken;
   if (cachedToken && !forceRefresh) return cachedToken;
-  const username = String(process.env.CORE_PLATFORM_USERNAME || '').trim();
-  const password = String(process.env.CORE_PLATFORM_PASSWORD || '').trim();
+  const username = String(process.env.TARGET_USERNAME || '').trim();
+  const password = String(process.env.TARGET_PASSWORD || '').trim();
   if (!username || !password) {
-    throw new Error('Core Platform data tools are not configured. Set CORE_PLATFORM_BASE_URL and CORE_PLATFORM_TOKEN (or CORE_PLATFORM_USERNAME + CORE_PLATFORM_PASSWORD).');
+    throw new Error('Core Platform data tools are not configured. Set TARGET_BASE_URL and TARGET_TOKEN (or TARGET_USERNAME + TARGET_PASSWORD).');
   }
   cachedToken = await loginForToken(url, username, password);
   return cachedToken;
@@ -52,7 +51,7 @@ async function resolveToken(url: string, forceRefresh = false): Promise<string> 
 /** One App Service request with the user's bearer token. Retries once on 401 (token expired). */
 async function cpRequest(method: string, path: string, body?: unknown): Promise<unknown> {
   const url = baseUrl();
-  if (!url) throw new Error('Core Platform data tools are not configured: CORE_PLATFORM_BASE_URL is not set.');
+  if (!url) throw new Error('Core Platform data tools are not configured: TARGET_BASE_URL is not set.');
   const call = async (token: string) => {
     const res = await fetch(`${url}${path}`, {
       method,
@@ -66,7 +65,7 @@ async function cpRequest(method: string, path: string, body?: unknown): Promise<
   };
   let token = await resolveToken(url);
   let { res, data } = await call(token);
-  if (res.status === 401 && !process.env.CORE_PLATFORM_TOKEN) {
+  if (res.status === 401 && !process.env.TARGET_TOKEN) {
     cachedToken = null;
     token = await resolveToken(url, true);
     ({ res, data } = await call(token));
@@ -176,64 +175,35 @@ export const createRecordTool: AgentTool = {
   },
 };
 
-// Lazily-created read-only pool to the Core Platform DB, used ONLY to read the metadata object
-// catalog (schema, not user data). We deliberately read meta.object DIRECTLY — the SAME source
-// the MCP server uses — because the access-scoped App Service endpoint (/api/apps/:id/objects)
-// HIDES platform meta-objects (tab, field, permission, ...), which are exactly the objects a
-// requirement draft needs to reference. Reading schema directly is safe; record data still
-// flows through the access-enforced App Service everywhere else.
-let catalogPool: Pool | null = null;
-function getCatalogPool(): Pool | null {
-  if (catalogPool) return catalogPool;
-  const host = String(process.env.CORE_PLATFORM_DB_HOST || '').trim();
-  if (!host) return null;
-  catalogPool = new Pool({
-    host,
-    port: Number(process.env.CORE_PLATFORM_DB_PORT) || 5432,
-    database: process.env.CORE_PLATFORM_DB_NAME || 'core-platform',
-    user: process.env.CORE_PLATFORM_DB_USER || 'postgres',
-    password: String(process.env.CORE_PLATFORM_DB_PASSWORD || ''),
-    ssl: process.env.CORE_PLATFORM_DB_SSL === 'true' ? { rejectUnauthorized: false } : false,
-    max: 2,
-  });
-  return catalogPool;
+/** Per-app connection + credentials for grounding. Resolved from the active app (multi-tenant). */
+export interface CatalogConn {
+  baseUrl?: string;
+  specPath?: string;
+  catalogStrategy?: string;
+  /** This app's read-only credentials (for the business-objects API half). */
+  token?: string;
+  username?: string;
+  password?: string;
 }
 
 /**
- * Best-effort: fetch the live catalog of ALL metadata objects (business + platform meta-objects)
- * straight from the Core Platform DB, as ground-truth vocabulary for requirement drafting (so
- * `metadataRefs` are exact, real api_names instead of the model's descriptive guesses). NEVER
- * throws — returns an empty array on any failure (DB not configured/unreachable) so a draft is
- * never blocked by metadata grounding being unavailable.
+ * Fetch the live catalog of metadata objects for an app, as ground-truth vocabulary for
+ * requirement drafting (so `metadataRefs` are exact, real api_names instead of guesses).
+ *
+ * Strategy is resolved PER-APP (multi-tenant). Tenants run metadata-driven platforms, so the
+ * default is 'swagger' — derive the catalog from the app's OpenAPI spec (pure API, no DB, no
+ * data leakage). 'api' = the objects endpoint (business objects only). 'source' falls through
+ * to swagger. 'none' = empty. NEVER throws — returns [] on any failure so a draft is never
+ * blocked by grounding being unavailable.
  */
 export async function fetchCorePlatformObjectCatalog(
-  conn?: { baseUrl?: string; specPath?: string },
+  conn?: CatalogConn,
 ): Promise<Array<{ app: string; api_name: string; label: string }>> {
-  // Source switch:
-  //   CORE_PLATFORM_CATALOG_SOURCE = 'swagger' → derive from the target's OpenAPI spec
-  //     (per-app baseUrl + auto-probed spec path; pure API, no DB, app-agnostic). RECOMMENDED.
-  //   'api'  → App Service objects endpoint (business objects only — meta-objects hidden).
-  //   default 'db' → direct meta.object read (sees all, but needs a DB connection).
-  const __src = String(process.env.CORE_PLATFORM_CATALOG_SOURCE || 'db').toLowerCase();
-  if (__src === 'api') return fetchObjectCatalogViaApi();
-  if (__src === 'swagger') return fetchObjectCatalogViaSwagger(conn);
-  const pool = getCatalogPool();
-  if (!pool) return [];
-  try {
-    const res = await pool.query(
-      `SELECT o.api_name, o.label, a.api_name AS app
-         FROM meta.object o
-         JOIN meta.app a ON a.id = o.app_id
-        ORDER BY a.api_name, o.api_name`,
-    );
-    return (res.rows || []).map((r: any) => ({
-      app: String(r.app ?? ''),
-      api_name: String(r.api_name ?? ''),
-      label: String(r.label ?? r.api_name ?? ''),
-    })).filter((r) => r.api_name);
-  } catch {
-    return [];
-  }
+  const __src = String(conn?.catalogStrategy || process.env.CATALOG_SOURCE || 'swagger').toLowerCase();
+  if (__src === 'none') return [];
+  if (__src === 'api') return fetchObjectCatalogViaApi(conn);
+  // 'swagger' (default) and 'source' both derive from the OpenAPI spec.
+  return fetchObjectCatalogViaSwagger(conn);
 }
 
 // Resource segments that are not real metadata objects (verbs/system paths). Kept small
@@ -290,13 +260,13 @@ async function fetchSwaggerSpec(url: string, preferredPath?: string): Promise<an
  * auto-probed across common paths, so a newly-created app needs only its base URL.
  */
 async function fetchObjectCatalogViaSwagger(
-  conn?: { baseUrl?: string; specPath?: string },
+  conn?: CatalogConn,
 ): Promise<Array<{ app: string; api_name: string; label: string }>> {
   try {
     const url = (conn?.baseUrl || baseUrl() || '').replace(/\/+$/, '');
     if (!url) return [];
-    const business = await fetchObjectCatalogViaApi();
-    const spec = await fetchSwaggerSpec(url, conn?.specPath);
+    const business = await fetchObjectCatalogViaApi(conn);
+    const spec = await fetchSwaggerSpec(url, conn?.specPath || process.env.TARGET_SPEC_PATH || undefined);
     const paths: string[] = spec && spec.paths ? Object.keys(spec.paths) : [];
     const metaNames = new Set<string>();
     for (const p of paths) {
@@ -321,17 +291,43 @@ async function fetchObjectCatalogViaSwagger(
   }
 }
 
-/** Srinivas's API-based path: list objects per app through the access-enforced App Service. */
-async function fetchObjectCatalogViaApi(): Promise<Array<{ app: string; api_name: string; label: string }>> {
+/** Resolve a bearer token for an app from its own connection (static token, else login). */
+async function resolveConnToken(conn: CatalogConn, url: string): Promise<string | null> {
+  const token = String(conn.token || process.env.TARGET_TOKEN || '').trim();
+  if (token) return token;
+  const username = String(conn.username || process.env.TARGET_USERNAME || '').trim();
+  const password = String(conn.password || process.env.TARGET_PASSWORD || '').trim();
+  if (!username || !password) return null;
   try {
-    if (!corePlatformDataConfigured()) return [];
-    const apps = items(await cpRequest('GET', '/api/apps')) as any[];
+    return await loginForToken(url, username, password);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * API path: list objects per app through the access-enforced App Service — using THIS app's
+ * own baseUrl + credentials (multi-tenant), falling back to the global env only for a single
+ * self-hosted target. Access-enforced, no DB, no cross-tenant leakage.
+ */
+async function fetchObjectCatalogViaApi(conn?: CatalogConn): Promise<Array<{ app: string; api_name: string; label: string }>> {
+  try {
+    const url = (conn?.baseUrl || baseUrl() || '').replace(/\/+$/, '');
+    if (!url) return [];
+    const token = await resolveConnToken(conn || {}, url);
+    if (!token) return [];
+    const authGet = async (path: string) => {
+      const res = await fetch(`${url}${path}`, { headers: { authorization: `Bearer ${token}` } });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return res.json();
+    };
+    const apps = items(await authGet('/api/apps')) as any[];
     const out: Array<{ app: string; api_name: string; label: string }> = [];
     for (const app of Array.isArray(apps) ? apps : []) {
       const appId = app?.id;
       if (!appId) continue;
       try {
-        const objs = items(await cpRequest('GET', `/api/apps/${enc(String(appId))}/objects`)) as any[];
+        const objs = items(await authGet(`/api/apps/${enc(String(appId))}/objects`)) as any[];
         for (const o of Array.isArray(objs) ? objs : []) {
           if (o?.api_name) out.push({ app: String(app.api_name || app.id), api_name: String(o.api_name), label: String(o.label || o.api_name) });
         }
@@ -343,11 +339,99 @@ async function fetchObjectCatalogViaApi(): Promise<Array<{ app: string; api_name
   }
 }
 
+/**
+ * Build a REAL TEST DATA pack for the objects a prompt is about, so generated cases/scripts use
+ * actual field api_names + valid values (incl. picklist options) and reference a real record —
+ * instead of guessing selectors and typing placeholder text. Pure API, per-app, access-enforced.
+ *
+ * `hintText` is the prompt + understanding; objects whose api_name/label appear in it are picked.
+ * NEVER throws — returns '' if nothing is configured/found so generation is never blocked.
+ */
+export async function fetchTestDataPack(conn: CatalogConn, hintText: string, objectHints: string[] = []): Promise<string> {
+  try {
+    const url = (conn?.baseUrl || baseUrl() || '').replace(/\/+$/, '');
+    if (!url) return '';
+    const token = await resolveConnToken(conn || {}, url);
+    if (!token) return '';
+    const authGet = async (path: string) => {
+      const res = await fetch(`${url}${path}`, { headers: { authorization: `Bearer ${token}` } });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return res.json();
+    };
+    const authPost = async (path: string, body: unknown) => {
+      const res = await fetch(`${url}${path}`, { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify(body) });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return res.json();
+    };
+    const text = String(hintText || '').toLowerCase();
+    const explicit = new Set(objectHints.map((s) => String(s || '').toLowerCase().trim()).filter(Boolean));
+    const apps = items(await authGet('/api/apps')) as any[];
+    // Pick the objects this prompt is about. Priority:
+    //   1. explicit object hints (e.g. the understanding's metadataRefs) — authoritative,
+    //   2. api_name/label that appears in the hint text (prompt + understanding + inspection),
+    //   3. fallback to the app's first business object(s) — so runs on a generic screen (e.g. the
+    //      Recycle Bin for delete/restore) still get a real record + schema to act on.
+    const picked: Array<{ appId: string; appName: string; objName: string }> = [];
+    const allObjs: Array<{ appId: string; appName: string; objName: string }> = [];
+    for (const app of Array.isArray(apps) ? apps : []) {
+      if (!app?.id) continue;
+      let objs: any[] = [];
+      try { objs = items(await authGet(`/api/apps/${enc(String(app.id))}/objects`)) as any[]; } catch { continue; }
+      for (const o of Array.isArray(objs) ? objs : []) {
+        const name = String(o?.api_name || '').toLowerCase();
+        const label = String(o?.label || '').toLowerCase();
+        if (!name) continue;
+        const ref = { appId: String(app.id), appName: String(app.api_name || app.id), objName: String(o.api_name) };
+        allObjs.push(ref);
+        if (explicit.has(name) || text.includes(name) || (label.length > 2 && text.includes(label))) {
+          picked.push(ref);
+        }
+      }
+    }
+    const seen = new Set<string>();
+    // Use matched objects when found, else fall back to the first business object so there is
+    // always a real record + schema available (never silently empty when an app is reachable).
+    const source = picked.length ? picked : allObjs.slice(0, 1);
+    const top = source.filter((p) => !seen.has(p.objName) && seen.add(p.objName)).slice(0, 2);
+    if (!top.length) return '';
+    const blocks: string[] = [];
+    for (const p of top) {
+      // Real fields (api_name, type, required, picklist options).
+      let fields: any[] = [];
+      try {
+        const d = await authGet(`/api/apps/${enc(p.appId)}/objects/${enc(p.objName)}/describe`);
+        fields = (Array.isArray((d as any)?.fields) ? (d as any).fields : items(d)) as any[];
+      } catch { /* no schema */ }
+      const fieldLines = (Array.isArray(fields) ? fields : []).slice(0, 25).map((f: any) => {
+        const req = (f?.required || f?.is_required) ? ' REQUIRED' : '';
+        const opts = f?.picklist_values || f?.options || f?.picklist;
+        const pick = Array.isArray(opts) && opts.length
+          ? ` options=[${opts.map((x: any) => x?.value ?? x?.label ?? x).filter(Boolean).slice(0, 8).join(' | ')}]`
+          : '';
+        return `  - ${f?.api_name} (${f?.data_type || f?.type || 'text'})${req}${pick}`;
+      }).filter((l) => !l.includes('undefined'));
+      // One real record to reference / edit.
+      let sample = '';
+      try {
+        const q = await authPost(`/api/apps/${enc(p.appId)}/objects/${enc(p.objName)}/list-views/query`, { pagination: { page: 1, page_size: 1 } });
+        const rec = (items(q) as any[])?.[0];
+        if (rec) sample = `  example existing record: ${JSON.stringify(rec).slice(0, 400)}`;
+      } catch { /* no records */ }
+      if (fieldLines.length || sample) {
+        blocks.push(`Object "${p.objName}" [app: ${p.appName}]\n${fieldLines.join('\n')}${sample ? `\n${sample}` : ''}`);
+      }
+    }
+    return blocks.join('\n\n');
+  } catch {
+    return '';
+  }
+}
+
 /** Whether the Core Platform data tools are configured (base URL + a token/credential). */
 export function corePlatformDataConfigured(): boolean {
   if (!baseUrl()) return false;
-  if (String(process.env.CORE_PLATFORM_TOKEN || '').trim()) return true;
-  return !!(String(process.env.CORE_PLATFORM_USERNAME || '').trim() && String(process.env.CORE_PLATFORM_PASSWORD || '').trim());
+  if (String(process.env.TARGET_TOKEN || '').trim()) return true;
+  return !!(String(process.env.TARGET_USERNAME || '').trim() && String(process.env.TARGET_PASSWORD || '').trim());
 }
 
 /** Read-only data tools (safe to always offer). create_record is a write — added separately. */

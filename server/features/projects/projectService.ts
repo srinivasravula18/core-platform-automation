@@ -49,6 +49,15 @@ export interface AppRecord {
   /** The deployed surface the agent tests against. */
   baseUrl?: string;
   environment?: string;
+  /**
+   * How this app's metadata catalog is grounded. Tenants' apps are metadata-driven
+   * platforms, so the default is 'swagger' (derive the catalog from the app's OpenAPI
+   * spec). 'api' = the app's objects endpoint; 'source' = from the repo; 'none' = no
+   * catalog (graceful). Default when unset: 'swagger'.
+   */
+  catalogStrategy?: 'swagger' | 'api' | 'source' | 'none';
+  /** Path to the app's OpenAPI spec (probed if unset). Default: '/api/openapi.json'. */
+  specPath?: string;
   /** Where this app lives in the project's monorepo. '' = whole repo. */
   repoSubpath?: string;
   /** Optional named code roots (surface -> sub-path) for grounding/search. */
@@ -80,7 +89,7 @@ function preferredDefaultRepoPath(): string {
   // Env-driven only. Do NOT guess a machine-specific absolute path — that silently points
   // the agent at a repo that doesn't exist on this host. Unset → empty, so the project's
   // own configured repoPath is required (or the global GIT_AGENT_TARGET_REPO fallback).
-  return String(process.env.GIT_AGENT_TARGET_REPO || process.env.CORE_PLATFORM_REPO || '').trim();
+  return String(process.env.GIT_AGENT_TARGET_REPO || process.env.TARGET_REPO || '').trim();
 }
 
 function isLegacyWindowsDefaultRepoPath(value: string): boolean {
@@ -204,6 +213,9 @@ export function createApp(projectId: string, input: Partial<AppRecord> & { name:
     description: input.description?.trim() || '',
     baseUrl: input.baseUrl?.trim() || '',
     environment: input.environment?.trim() || 'staging',
+    // Tenants' apps are metadata-driven platforms → default to swagger grounding.
+    catalogStrategy: input.catalogStrategy || 'swagger',
+    specPath: input.specPath?.trim() || '/api/openapi.json',
     repoSubpath: input.repoSubpath?.trim() || '',
     searchRoots: input.searchRoots && typeof input.searchRoots === 'object' ? input.searchRoots : {},
     knowledgePackId: input.knowledgePackId || '',
@@ -226,6 +238,8 @@ export function updateApp(id: string, input: Partial<AppRecord>): AppRecord {
   if (input.description !== undefined) app.description = String(input.description).trim();
   if (input.baseUrl !== undefined) app.baseUrl = String(input.baseUrl).trim();
   if (input.environment !== undefined) app.environment = String(input.environment).trim() || 'staging';
+  if (input.catalogStrategy !== undefined) app.catalogStrategy = input.catalogStrategy;
+  if (input.specPath !== undefined) app.specPath = String(input.specPath).trim() || '/api/openapi.json';
   if (input.repoSubpath !== undefined) app.repoSubpath = String(input.repoSubpath).trim();
   if (input.searchRoots !== undefined && typeof input.searchRoots === 'object') app.searchRoots = input.searchRoots;
   if (input.knowledgePackId !== undefined) app.knowledgePackId = input.knowledgePackId;

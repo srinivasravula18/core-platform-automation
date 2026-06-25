@@ -53,6 +53,7 @@ export function ProjectWizard({ kind, projectId, editProject, editApp, onClose, 
   const [aDesc, setADesc] = useState(editApp?.description ?? '');
   const [aBaseUrl, setABaseUrl] = useState(editApp?.baseUrl ?? '');
   const [aEnv, setAEnv] = useState(editApp?.environment ?? 'staging');
+  const [aSpecPath, setASpecPath] = useState(editApp?.specPath ?? '/api/openapi.json');
   const [aSubpath, setASubpath] = useState(editApp?.repoSubpath ?? '');
 
   const [step, setStep] = useState(0);
@@ -114,6 +115,7 @@ export function ProjectWizard({ kind, projectId, editProject, editApp, onClose, 
           description: aDesc.trim(),
           baseUrl: aBaseUrl.trim(),
           environment: aEnv,
+          specPath: aSpecPath.trim() || '/api/openapi.json',
           repoSubpath: aSubpath.trim(),
         };
         if (editApp) await updateApp(editApp.id, payload);
@@ -343,6 +345,9 @@ export function ProjectWizard({ kind, projectId, editProject, editApp, onClose, 
                     <option key={env} value={env}>{env}</option>
                   ))}
                 </select>
+              ))}
+              {field('OpenAPI spec path', 'Where the app publishes its OpenAPI/Swagger spec. The agent grounds tests from it.', (
+                <input className={inputCls} value={aSpecPath} onChange={(e) => setASpecPath(e.target.value)} placeholder="/api/openapi.json" />
               ))}
             </>
           )}

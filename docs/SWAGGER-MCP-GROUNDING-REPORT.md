@@ -4,7 +4,7 @@
 **Feature:** OpenAPI/Swagger-derived metadata catalog feeding the requirements/MCP grounding
 **Target:** core-platform App Service (`/openapi.json`, 215 paths)
 **Date:** 2026-06-24
-**Catalog source:** `CORE_PLATFORM_CATALOG_SOURCE=swagger` (pure API, no DB)
+**Catalog source:** `CATALOG_SOURCE=swagger` (pure API, no DB)
 
 ---
 

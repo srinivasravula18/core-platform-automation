@@ -34,3 +34,4 @@ scripts/backend.log
 
 # Claude Code local workspace
 .claude/
+.testflow-run-memory.json

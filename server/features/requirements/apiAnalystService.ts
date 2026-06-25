@@ -175,17 +175,17 @@ function resolveAppConnection(opts: { websiteId?: string; ownerId?: string }): {
       if (site?.baseUrl) {
         return {
           baseUrl: site.baseUrl.replace(/\/$/, ''),
-          username: process.env.CORE_PLATFORM_USERNAME || 'admin',
-          password: process.env.CORE_PLATFORM_PASSWORD || 'admin',
+          username: process.env.TARGET_USERNAME || 'admin',
+          password: process.env.TARGET_PASSWORD || 'admin',
         };
       }
     }
   }
   // env vars — valid for single-tenant dev/staging deployments
   return {
-    baseUrl: (process.env.CORE_PLATFORM_BASE_URL || 'http://localhost:5001').replace(/\/$/, ''),
-    username: process.env.CORE_PLATFORM_USERNAME || 'admin',
-    password: process.env.CORE_PLATFORM_PASSWORD || 'admin',
+    baseUrl: (process.env.TARGET_BASE_URL || 'http://localhost:5001').replace(/\/$/, ''),
+    username: process.env.TARGET_USERNAME || 'admin',
+    password: process.env.TARGET_PASSWORD || 'admin',
   };
 }
 

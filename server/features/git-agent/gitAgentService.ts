@@ -10,13 +10,13 @@ import { buildCaseDescription, normalizeCaseSteps, normalizeCaseTags } from '../
  * Resolve the repo to operate on. DYNAMIC and never app-specific:
  *   1. an explicit repoPath passed by the caller (the SELECTED project's repoPath) —
  *      this is the normal path, so the agents research whatever app the user picked;
- *   2. else an optional GENERIC env override (GIT_AGENT_TARGET_REPO / CORE_PLATFORM_REPO)
+ *   2. else an optional GENERIC env override (GIT_AGENT_TARGET_REPO / TARGET_REPO)
  *      for single-repo deployments;
  *   3. else '' → callers surface "repo not configured" instead of guessing a path.
  * No application's path is hardcoded anywhere.
  */
 export function resolveTargetRepo(explicit?: string): string {
-  return (explicit || '').trim() || (process.env.GIT_AGENT_TARGET_REPO || process.env.CORE_PLATFORM_REPO || '').trim();
+  return (explicit || '').trim() || (process.env.GIT_AGENT_TARGET_REPO || process.env.TARGET_REPO || '').trim();
 }
 // The standalone Git Agent dashboard (status/diff/sync) operates on the env-configured
 // default repo; the PER-APP research path (gitGrep/readRepoFile) passes an explicit

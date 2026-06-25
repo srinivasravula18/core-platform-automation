@@ -27,6 +27,7 @@ import { isProjectOverQuota } from '../../ai/costTracker';
 import { retrieveRunMemories, summarizeMemoriesForPrompt, recordRunMemory } from '../../ai/memory/runMemory';
 import { reqScope, scopeFilter } from '../../shared/scope';
 import { getApp, getProject } from '../projects/projectService';
+import { fetchTestDataPack } from '../../ai/tools/corePlatformData';
 // Strike 3: the single, shared source of grounding for every deep-run worker.
 // isNoiseTurn / deriveUnderstandingFromChat live here now (were duplicated below)
 // and resolveUnderstanding is the one place that decides the run's understanding,
@@ -1163,6 +1164,40 @@ async function generateCasesForRun(
     ? `\nCONVERSATION THAT LED TO THIS RUN (authoritative scope — the test cases MUST cover exactly what was discussed here; do not substitute a generic feature set):\n${conv}\n`
     : '';
 
+  // REAL TEST DATA grounding (MCP/data tools): pull the actual field schema (api_names, types,
+  // required, picklist options) + a sample record for the object(s) this prompt is about, so the
+  // cases use valid concrete values instead of placeholder guesses. Per-app + access-enforced;
+  // best-effort — never blocks generation.
+  let testDataBlock = '';
+  try {
+    const activeApp = run.appId ? getApp(run.appId) : undefined;
+    let apiBase = activeApp?.baseUrl || '';
+    if (!apiBase && targetUrl) { try { apiBase = new URL(targetUrl).origin; } catch { /* ignore */ } }
+    if (apiBase) {
+      // Hints include the live inspection context, so even prompts that say "a record" without
+      // naming the object still resolve to the object the inspector actually landed on (e.g. the
+      // Accounts list), and the pack is built for it.
+      const inspectionHint = (() => { try { return JSON.stringify(compactInspectionContext(inspectionContext) || ''); } catch { return ''; } })();
+      // Explicit object hints from the source-grounded understanding (authoritative even when the
+      // inspected screen is generic, e.g. the Recycle Bin), so delete/restore-type runs still
+      // resolve the real object instead of falling back blindly.
+      const objectHints = (() => {
+        const refs = (featureUnderstanding as any)?.metadataRefs;
+        if (!Array.isArray(refs)) return [] as string[];
+        return refs.map((r: any) => String(r?.object || r?.api_name || r || '')).filter(Boolean);
+      })();
+      const pack = await fetchTestDataPack(
+        { baseUrl: apiBase, specPath: activeApp?.specPath, username: credentials.username, password: credentials.password },
+        `${prompt} ${approvedUnderstanding} ${summarizeUnderstanding(featureUnderstanding || {})} ${inspectionHint}`,
+        objectHints,
+      );
+      if (pack) {
+        testDataBlock = `\nREAL TEST DATA (from the live app metadata — AUTHORITATIVE). Use these EXACT field api_names and valid values when steps create/edit a record; for picklists choose one of the listed options; to edit/delete, act on the example existing record. Do NOT invent field names or placeholder values:\n${pack}\n`;
+        (run as any).test_data_pack = pack; // shared with the coder so generated code uses the same real values
+      }
+    }
+  } catch { /* fall back to no test-data grounding */ }
+
   pushPhase(run, { agent: 'TestGenerationAgent', status: 'running' });
 
   let generated: any[];
@@ -1196,7 +1231,7 @@ Playwright target URL: ${targetUrl || 'not provided'}.
 ${credentialContext}
 ${selectedQaPromptText}${conversationBlock}
 Browser inspection result: ${JSON.stringify(compactInspectionContext(inspectionContext))}.${understandingBlock}
-${featureInventoryBlock}
+${featureInventoryBlock}${testDataBlock}
 Write approximately ${testCaseCount} test case(s) — this target is derived from the feature's real complexity in the source above, so treat it as a guide: cover every distinct business rule, role/permission difference, branch, and negative/edge case the code reveals, and do not pad with trivial duplicates to hit a number. ${requestedCaseCount > 0 ? `The user explicitly asked for ${requestedCaseCount} case(s); honor that count.` : 'The user asked for comprehensive coverage, so err toward thoroughness over brevity.'}
 
 When the FEATURE/SUBFEATURE COVERAGE BLUEPRINT is present, it is the case-coverage contract:
@@ -1365,6 +1400,10 @@ Do NOT write comments such as "Auth is expected to be handled by global setup". 
     const block = summarizeMemoriesForPrompt(mems);
     if (block) coderMemory = `\nLESSONS FROM PRIOR RUNS (avoid the flaky/broken selectors below; prefer the stable ones):\n${block}\n`;
   } catch { /* memory is an enhancement, never a hard dependency */ }
+  const tdPack = (run as any).test_data_pack || '';
+  const coderTestData = tdPack
+    ? `\nREAL TEST DATA (from the live app metadata — use these EXACT field api_names and valid values when the case creates/edits a record; for picklists use one listed option; reference the example existing record for edit/delete; do NOT use placeholder/env-var values for the data the case specifies):\n${tdPack}\n`
+    : '';
   const coder = await getOrchestrator('playwrightCoder', { workspaceId: run.ownerId || 'default' });
   const caseList = Array.isArray(testCases?.test_cases) ? testCases.test_cases : [];
   const scriptsResult = await coder.generateObject<any>({
@@ -1372,7 +1411,7 @@ Do NOT write comments such as "Auth is expected to be handled by global setup". 
 Approved user-reviewed understanding: ${reviewedUnderstanding || 'not provided'}.
 ${credentialContext}
 ${loginScriptBlock}
-${selectedQaContextText}${coderUnderstanding}${coderFeatureInventory}${coderMemory}
+${selectedQaContextText}${coderUnderstanding}${coderFeatureInventory}${coderMemory}${coderTestData}
 Use this browser inspection context as the source of truth for reachable pages, visible labels, forms, navigation actions, tables/lists, buttons, links and final URL: ${JSON.stringify(compactInspectionContext(inspectionContext))}.
 SETUP — NAVIGATE THEN LOG IN IF NEEDED: the MANDATORY FIRST LINES of every test body are (use this EXACT absolute URL — NOT '/', which resolves to the wrong path):
   await page.goto('${targetUrl || '/'}');

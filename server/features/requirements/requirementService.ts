@@ -25,6 +25,7 @@ import { gitGrep, listRepoSourceFiles, readRepoFile, GIT_AGENT_TARGET_REPO } fro
 import { analyzeApiAndMetadataFromSource, type ApiAnalysis } from './apiAnalystService';
 import { fetchCorePlatformObjectCatalog } from '../../ai/tools/corePlatformData';
 import { getApp } from '../projects/projectService';
+import { resolveCredentials } from '../credentials/credentialsService';
 
 /* ---------- schemas ---------- */
 
@@ -532,10 +533,26 @@ export async function analyzeFeatureFromSource(
     // Per-app grounding: use the SELECTED app's base URL (+ optional spec path) so the swagger
     // catalog is fetched from whatever app this draft targets — not a single global env URL.
     // Falls back to the global config when no app is selected or it has no base URL.
-    let appConn: { baseUrl?: string; specPath?: string } | undefined;
+    let appConn: { baseUrl?: string; specPath?: string; catalogStrategy?: string; username?: string; password?: string } | undefined;
     try {
       const activeApp = opts.appId ? getApp(opts.appId) : undefined;
-      if (activeApp?.baseUrl) appConn = { baseUrl: activeApp.baseUrl, specPath: (activeApp as any).specPath };
+      if (activeApp?.baseUrl) {
+        appConn = {
+          baseUrl: activeApp.baseUrl,
+          specPath: activeApp.specPath,
+          catalogStrategy: activeApp.catalogStrategy,
+        };
+        // Per-app credentials: resolve THIS app's stored login, scoped to the owner, so the
+        // business-objects half authenticates as the tenant's own read-only user — never a
+        // shared/global credential, and never another tenant's.
+        try {
+          const cred = resolveCredentials({ baseUrl: activeApp.baseUrl, ownerId: opts.userId });
+          if (cred?.username && cred?.password) {
+            appConn.username = cred.username;
+            appConn.password = cred.password;
+          }
+        } catch { /* fall back to global creds */ }
+      }
     } catch { /* ignore — fall back to global */ }
     const catalog = await fetchCorePlatformObjectCatalog(appConn);
     if (catalog.length) {

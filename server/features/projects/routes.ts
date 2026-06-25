@@ -6,6 +6,7 @@ import {
   updateProject,
   deleteProject,
   listApps,
+  getApp,
   createApp,
   updateApp,
   deleteApp,
@@ -24,6 +25,21 @@ function visibleToScope<T extends { ownerId?: string }>(items: T[], req: any): T
     return items.filter((p) => (p.ownerId || '') === scope.userId);
   }
   return items;
+}
+
+/** True if the request's user owns the project (or no user scope is set). */
+function ownsProject(req: any, projectId: string): boolean {
+  const project = getProject(projectId);
+  if (!project) return false;
+  const scope = reqScope(req);
+  return !scope.userId || (project.ownerId || '') === scope.userId;
+}
+
+/** True if the request's user owns the project the app belongs to. Apps are scoped via their project. */
+function ownsApp(req: any, appId: string): boolean {
+  const appRec = getApp(appId);
+  if (!appRec) return false;
+  return ownsProject(req, appRec.projectId);
 }
 
 /** Attach the non-secret `hasToken` flag so the UI can show "token saved" without ever seeing it. */
@@ -172,11 +188,13 @@ export function registerProjectRoutes(app: Express) {
 
   // ---- Apps (nested under a project) ----
   app.get('/api/projects/:id/apps', (req, res) => {
-    if (!getProject(req.params.id)) return res.status(404).json({ error: 'Project not found.' });
+    // 404 (not 403) on a foreign/missing project so ids aren't enumerable across tenants.
+    if (!ownsProject(req, req.params.id)) return res.status(404).json({ error: 'Project not found.' });
     res.json({ apps: listApps(req.params.id) });
   });
 
   app.post('/api/projects/:id/apps', (req, res) => {
+    if (!ownsProject(req, req.params.id)) return res.status(404).json({ error: 'Project not found.' });
     try {
       const created = createApp(req.params.id, req.body || {});
       res.status(201).json(created);
@@ -187,6 +205,7 @@ export function registerProjectRoutes(app: Express) {
   });
 
   app.put('/api/apps/:id', (req, res) => {
+    if (!ownsApp(req, req.params.id)) return res.status(404).json({ error: 'App not found.' });
     try {
       const updated = updateApp(req.params.id, req.body || {});
       res.json(updated);
@@ -197,6 +216,7 @@ export function registerProjectRoutes(app: Express) {
   });
 
   app.delete('/api/apps/:id', (req, res) => {
+    if (!ownsApp(req, req.params.id)) return res.status(404).json({ error: 'App not found.' });
     const ok = deleteApp(req.params.id);
     if (!ok) return res.status(404).json({ error: 'App not found.' });
     res.json({ ok: true });
