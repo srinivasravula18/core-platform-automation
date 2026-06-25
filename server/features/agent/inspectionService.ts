@@ -7,14 +7,31 @@ import { normalizeTargetUrl } from '../../shared/url';
 import { performLoginIfCredentialsProvided } from '../evidence/evidenceService';
 import { getOrchestrator } from '../../ai/orchestrator';
 
+// Tolerant on the enum fields: smaller / non-strict models return status/type values that
+// aren't verbatim members (or omit them), which used to hard-fail validation — the planner
+// then gave up after 2 retries and the inspector never drilled past login+navigate. Coerce
+// any reasonable value into the allowed set and default to 'continue' so the drill-in loop
+// actually runs instead of aborting.
+const coerceStatus = z.preprocess((v) => {
+  const s = String(v ?? '').toLowerCase().trim();
+  if (s === 'continue' || s === 'satisfied' || s === 'blocked') return s;
+  if (/satisf|done|complete|success|finish/.test(s)) return 'satisfied';
+  if (/block|denied|cannot|unable|forbidden|restrict/.test(s)) return 'blocked';
+  return 'continue'; // unknown/missing -> keep exploring toward the goal
+}, z.enum(['continue', 'satisfied', 'blocked']).default('continue'));
+
+const coerceActionType = z.preprocess(
+  (v) => (String(v ?? '').toLowerCase().trim() === 'click' ? 'click' : 'none'),
+  z.enum(['click', 'none']).default('none'),
+);
+
 const plannerSchema = z.object({
-  status: z.enum(['continue', 'satisfied', 'blocked']),
+  status: coerceStatus,
   reason: z.string().default(''),
   // Optional with a safe default: when the planner reports satisfied/blocked it has no
-  // next action, and omitting it should NOT fail the whole inspection (it used to throw
-  // "expected object, received undefined" and report the live app as blind).
+  // next action, and omitting it should NOT fail the whole inspection.
   action: z.object({
-    type: z.enum(['click', 'none']),
+    type: coerceActionType,
     elementId: z.string().optional(),
     expectedOutcome: z.string().optional(),
   }).default({ type: 'none' }),
@@ -218,9 +235,11 @@ export async function inspectApplicationFlow(options: {
       observedPages.push({ stage: `recollect-${r + 1}`, ...compactPageContext(lastContext) });
     }
 
-    // #4 Cap the LLM planner loop at 2 codex calls (was 3). It still breaks early when the
-    // goal is satisfied, so simple views finish in one call.
-    for (let step = 0; step < 2; step += 1) {
+    // #4 Cap the LLM planner loop at 4 steps. It still breaks early when the goal is
+    // satisfied, so a simple view finishes in one call — but a goal whose controls live a
+    // few levels deep (behind a menu/panel/dialog) needs a few clicks to DRILL in and reveal
+    // the real controls before the codegen can ground them. Short-circuits on satisfied/blocked.
+    for (let step = 0; step < 4; step += 1) {
       const orchestrator = await getOrchestrator('appInspector', { workspaceId: options.workspaceId || 'default' });
       const plannerPrompt = `You are controlling a browser for QA discovery. User request: ${options.prompt}. Current page context: ${JSON.stringify({
         url: lastContext.url,
@@ -231,7 +250,7 @@ export async function inspectApplicationFlow(options: {
         listLikeRegions: lastContext.listLikeRegions,
         forms: lastContext.forms,
         bodyText: lastContext.bodyText.slice(0, 1800),
-      })}. Decide whether the user's requested goal is already satisfied, blocked, or whether one visible action should be clicked next. Only choose an elementId from actions. Do not choose destructive actions such as delete, remove, save, submit data changes, unless the user explicitly asked for that.${options.knowledge || ''}`;
+      })}. Decide whether the user's requested goal is already satisfied, blocked, or whether one visible action should be clicked next to make progress toward it. IMPORTANT — REACH THE CONTROLS THE REQUEST IS ABOUT: the goal is satisfied only once the specific controls the user's request targets are actually visible on screen. If those controls are not on the current view because they live behind a menu, panel, dialog, tab, or other secondary entry point, CLICK to OPEN that container so its controls become visible — do NOT report 'satisfied' merely because a page, list, or table loaded. Opening menus, panels, dialogs, and tabs to REVEAL controls is non-destructive discovery and is expected. Only choose an elementId from actions. Never click a control that MUTATES data or state — delete, remove, save, submit, apply changes — unless the user explicitly asked for that.${options.knowledge || ''}`;
       // The planner is a structured-output call; smaller / low-effort models occasionally
       // return off-schema JSON. Retry once, then DEGRADE GRACEFULLY — keep the page context
       // we already observed (login + navigation succeeded) instead of throwing away the whole

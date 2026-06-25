@@ -577,7 +577,14 @@ Search keywords used: ${keywords.join(', ')}
 
 ${groundingBlock}${metaCatalogBlock}
 
-INFER the application's architecture from the research notes and excerpts above — do NOT assume any specific product, framework, or surface names. Let the code tell you. Use ONLY behaviour the research actually establishes; never invent meta-concepts (CI/seeding/regression scaffolding) that aren't real user features. Produce the requirement understanding as strict JSON matching the schema:
+INFER the application's architecture from the research notes and excerpts above — do NOT assume any specific product, framework, or surface names. Let the code tell you. Use ONLY behaviour the research actually establishes; never invent meta-concepts (CI/seeding/regression scaffolding) that aren't real user features.
+
+SCOPE DISCIPLINE — write the requirement at the altitude the query actually asks for; do not narrow it to a subject the user did not name:
+- If the query NAMES a specific object, section, module, or screen, scope the requirement to THAT subject.
+- If the query asks about a GENERIC, REUSABLE CAPABILITY that applies across many objects/views (e.g. a shared toolbar action, an export / settings / filter / column control, a list-view mechanism) WITHOUT naming a specific object, write the requirement about the CAPABILITY ITSELF as it works generally — describe the shared control and its rules across the surface. Do NOT anchor it to, or title it after, one concrete object you merely found in the code (e.g. don't turn "list view export and settings" into "export and settings for <SomeObject>"); that invents a scope the user did not request. Keep the title and rules about the capability.
+- In the generic case, metadataRefs should be the generic config object(s) the capability operates on (e.g. the list-view / view-definition object) if the catalog has them, and you should leave specific business-object refs empty unless the query named one.
+
+Produce the requirement understanding as strict JSON matching the schema:
 - title: a concise requirement title for this feature.
 - description: 1-3 sentences on what the feature does and why it matters.
 - businessRules: the concrete, testable rules the code enforces.
