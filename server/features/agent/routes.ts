@@ -658,7 +658,16 @@ function parseCaseCount(prompt: string): number {
 
 function wantsFeatureInventory(prompt: string, approvedUnderstanding: string): boolean {
   const text = `${prompt || ''} ${approvedUnderstanding || ''}`.toLowerCase();
-  return /\b(all|every|entire|whole|across|application|app|features?|sub[-\s]?features?|modules?|screens?|pages?|workflows?|journeys?|end\s*to\s*end|e2e|coverage|test\s*areas?|each\s+feature|comprehensive)\b/.test(text);
+  // The inventory path fans a request out across MANY units (one case per object/subfeature). Only
+  // a genuinely BROAD request should trigger it — broad intent ("all/every/each/entire/whole/
+  // across/comprehensive/complete") combined with a scope noun (features/modules/app/...), or an
+  // explicit end-to-end/coverage ask. A SINGULAR feature request ("the list view feature") must
+  // NOT trigger it, or it sprays cases over every object that has that feature (the bug the user
+  // hit: a "list view" request producing per-object "Sharing Settings list view" cases).
+  const broadIntent = /\b(all|every|each|entire|whole|across|comprehensive|complete)\b/.test(text);
+  const broadScope = /\b(features?|sub[-\s]?features?|modules?|screens?|pages?|workflows?|journeys?|app|application|product|system|everything|areas?)\b/.test(text);
+  const e2e = /\b(end\s*to\s*end|e2e)\b/.test(text);
+  return (broadIntent && broadScope) || (e2e && broadScope);
 }
 
 // Keywords that describe what this run is about — drawn from the prompt and the
@@ -1990,10 +1999,17 @@ export function registerAgentRoutes(app: Express) {
       const url = String(app_url || '');
       const creds = (username && password) ? { username: String(username), password: String(password) } : undefined;
       const { flow, sourceFiles, notes } = await inspectFlow({ goal: String(goal || ''), repoPath, testData: String(testData || ''), workspaceId: 'default' });
+      const stepCount = (flow.steps || []).length;
+      // A flow with no steps is a FAILURE of the tracer (e.g. the prompt overflowed), NOT a passing
+      // test — the emitted script would be login-only and "pass" trivially. Report it honestly.
+      if (stepCount === 0) {
+        res.json({ steps: 0, summary: flow.summary, sourceFiles, notes, script: '', execution: { passed: 0, failed: 1, total: 1, tests: [{ status: 'failed', title: String(goal || ''), error: 'FlowInspector produced 0 steps (no flow traced) — not a real test.' }] } });
+        return;
+      }
       const script = flowToScript(String(goal || 'Flow test').slice(0, 80), { url, credentials: creds }, flow);
       const exec = await executePlaywrightScripts({ scripts: [{ filename: 'flow.spec.ts', title: 'flow', code: script }], baseUrl: url, runId: `flow-${randomUUID().slice(0, 8)}`, singleSession: true });
       res.json({
-        steps: (flow.steps || []).length, summary: flow.summary, sourceFiles, notes, script,
+        steps: stepCount, summary: flow.summary, sourceFiles, notes, script,
         execution: { passed: exec.passed, failed: exec.failed, total: exec.total, tests: (exec.tests || []).map((t: any) => ({ status: t.status, title: t.title, error: t.error })) },
       });
     } catch (e: any) {

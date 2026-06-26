@@ -94,20 +94,22 @@ export async function inspectFlow(opts: { goal: string; repoPath: string; testDa
   // (index-only) misses uncommitted code. Dynamic: goal x code-derived selectors, no hardcoding.
   const goalSel = goalSelectors(map, opts.goal);
   const needles = goalSel.length ? goalSel : searchTerms(opts.goal);
-  const filePaths = findSourceFiles(opts.repoPath, needles, { maxReturn: 7 });
+  const filePaths = findSourceFiles(opts.repoPath, needles, { maxReturn: 5 });
   const top = filePaths.map((p) => ({ path: p }));
-  const excerpts = top.map((f) => `// FILE: ${f.path}\n${readRepoFile(f.path, 6500, opts.repoPath)}`).join('\n\n---\n\n');
+  // Keep excerpts bounded — too many/too-large files overflow the model context ("prompt too
+  // long") and yield 0 steps. Cap files and per-file size; the ranked-first files matter most.
+  const excerpts = top.map((f) => `// FILE: ${f.path}\n${readRepoFile(f.path, 3500, opts.repoPath)}`).join('\n\n---\n\n').slice(0, 22000);
   notes.push(`goal selectors: ${goalSel.slice(0, 6).join(' | ') || '(none)'}`);
   // CLEAN selector lists — just the real NAME strings (no "role:name" combining, which the model
   // copied verbatim into the name field last time, producing garbage like name:"button:^new$").
   const buttonNames = Array.from(new Set(map.roleNames.filter((r) => r.role === 'button' || r.role === 'link').map((r) => r.name)));
   const cap = (a: string[], n: number) => a.slice(0, n).join(' | ');
   const mapBlock = [
-    `button/link names: ${cap([...new Set([...map.ariaLabels, ...buttonNames])], 160)}`,
-    `field labels (for fill): ${cap(map.labels, 90)}`,
-    `placeholders: ${cap(map.placeholders, 50)}`,
-    map.testIds.length ? `test ids: ${cap(map.testIds, 50)}` : '',
-  ].filter(Boolean).join('\n');
+    `button/link names: ${cap([...new Set([...map.ariaLabels, ...buttonNames])], 100)}`,
+    `field labels (for fill): ${cap(map.labels, 60)}`,
+    `placeholders: ${cap(map.placeholders, 30)}`,
+    map.testIds.length ? `test ids: ${cap(map.testIds, 30)}` : '',
+  ].filter(Boolean).join('\n').slice(0, 6000);
   notes.push(`searched ${files.length} files, read ${top.length} (ranked), ${map.fileCount} files in selector map`);
 
   // Use the caseWriter role — a more capable model than appInspector, which struggles with this
@@ -135,6 +137,7 @@ CRITICAL — the flow must COMPLETE the goal, not just navigate:
 - Then PERFORM the goal's primary action to completion — actually toggle/change the control AND click the save/apply/submit button. A save/apply button is OFTEN DISABLED until you make a change (dirty-state precondition), so MAKE THE CHANGE FIRST (toggle a checkbox / edit a field), then click save. NEVER cancel or click Close/Cancel without completing the goal.
 - Do NOT add brittle intermediate assertions about modal/menu state (e.g. asserting a generic "Close" button is visible) — those guess at UI state and fail. Use 'assert' ONLY for the FINAL outcome that proves the goal succeeded, grounded in a concrete element the source shows (a persisted value, a changed row, a confirmation the code actually renders).
 - A checkbox/toggle/list item is by=role role="checkbox" with the item's real name (e.g. a column/field name from the TEST DATA). A section heading or panel TITLE (e.g. an "Available …" label) is NOT a control — never click it. NEVER use the test-data description text itself as a selector name; test-data values are only the data you fill/choose, not locators.
+- Not every change has an explicit Save: many toggles/settings APPLY IMMEDIATELY when changed. Only add a save/apply click if the source actually shows a save control for THAT change. If there is none, do NOT invent or click one — the outcome to assert is the control's new state itself (e.g. assert the checkbox is now checked, by=role role="checkbox" assertKind=visible/text), not a save button.
 - Use ONLY names from the REAL SELECTORS lists; skip a control rather than invent one. End with ONE outcome assertion.`,
     userMessage: opts.goal,
   }).catch((e: any) => { notes.push(`flow LLM error: ${String(e?.message || e).slice(0, 140)}`); return { object: { summary: '', steps: [] } as Flow }; });
@@ -150,9 +153,15 @@ function locatorStr(s: FlowStep): string {
     case 'label': return `page.getByLabel(${v}).first()`;
     case 'placeholder': return `page.getByPlaceholder(${v}).first()`;
     case 'text': return `page.getByText(${v}, { exact: false }).first()`;
-    // exact:true — substring name-matching over-matches (e.g. "Settings" also hits "System
-    // Settings" in the nav) and .first() then picks the wrong element. Exact + first is precise.
-    default: return `page.getByRole(${JSON.stringify(s.role || 'button')}, { name: ${v}, exact: true }).first()`;
+    default: {
+      // exact:true for clean-named controls (button/link/tab/menuitem) — substring over-matches
+      // (e.g. "Settings" also hits "System Settings") and .first() picks the wrong one. But
+      // checkbox/radio/option/textbox accessible names often include an appended DESCRIPTION, so
+      // exact would never match — use substring for those.
+      const role = s.role || 'button';
+      const exact = ['button', 'link', 'tab', 'menuitem'].includes(role);
+      return `page.getByRole(${JSON.stringify(role)}, { name: ${v}${exact ? ', exact: true' : ''} }).first()`;
+    }
   }
 }
 
