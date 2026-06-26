@@ -288,7 +288,15 @@ export async function quickWorkspaceAnswer(
   scopeArg?: string | WorkspaceScope,
 ): Promise<string | null> {
   const t = (message || '').toLowerCase();
-  const isCount = /\b(how many|count|counts|number of|how much|total)\b/.test(t);
+  // Clarification / explanation questions are conversational Q&A, NOT a counts/list query — even
+  // when the message (often a pasted case description) mentions "count", "runs", or "cases". Bow
+  // out so the assistant answers them using the recent conversation context.
+  if (/\b(explain|clarif\w*|elaborate|describe|walk me through|do(?:es)?n'?t understand|what do you mean|what does (?:this|that|it)|which screen|what screen|tell me about|what is this (?:case|test)|reg(?:arding)? which)\b/.test(t)) return null;
+  // The count intent must be a real counting ask — a bare "count" inside "count, sum, or avg" is
+  // an aggregation word, not a request. Require how-many phrasing or "count of/the/my/all".
+  const isCount = /\b(how many|number of|how much|\btotal\b)\b/.test(t)
+    || /\bcounts?\s+(?:of|the|my|all|in)\b/.test(t)
+    || /^\s*counts?\b/.test(t);
   const isList = /\b(list|show me|what are|which|do i have|are there)\b/.test(t);
   if (!isCount && !isList) return null;
 
