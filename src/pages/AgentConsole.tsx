@@ -550,10 +550,48 @@ export default function AgentConsole() {
     }
   }, []);
 
-  // Initial load: restore the active conversation + the history list.
+  // Initial load: restore the active conversation + the history list. If the remembered id has no
+  // content (e.g. a fresh id was minted before the scope settled, or the user navigated away and
+  // back to the console), fall back to the most recently updated non-empty chat for this scope so
+  // the recent conversation is shown instead of the empty welcome screen.
   useEffect(() => {
-    loadConversation(conversationId);
-    loadConversations();
+    const cleanTurns = (raw: unknown): Turn[] =>
+      (Array.isArray(raw) ? (raw as Turn[]) : []).filter((t) => !(t.role === 'assistant' && t.kind === 'thinking'));
+    (async () => {
+      let convs: ConversationMeta[] = [];
+      try {
+        const r = await fetch(`/api/chat/conversations?workspaceId=${encodeURIComponent(workspaceId)}`);
+        const d = await r.json();
+        convs = Array.isArray(d.conversations) ? d.conversations : [];
+        setConversations(convs);
+      } catch { /* ignore */ }
+
+      const preferredId = conversationId;
+      let chosen = preferredId;
+      let chosenTurns: Turn[] = [];
+      try {
+        const r = await fetch(`/api/chat/conversations/${preferredId}`);
+        chosenTurns = cleanTurns((await r.json())?.turns);
+      } catch { /* ignore */ }
+
+      // Only fall back when this wasn't an explicit deep link to a specific chat.
+      if (chosenTurns.length === 0 && !urlChatId) {
+        const recent = [...convs]
+          .filter((c) => (c.turnCount || 0) > 0)
+          .sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''))[0];
+        if (recent && recent.id !== preferredId) {
+          try {
+            const r = await fetch(`/api/chat/conversations/${recent.id}`);
+            chosenTurns = cleanTurns((await r.json())?.turns);
+            chosen = recent.id;
+          } catch { /* ignore */ }
+        }
+      }
+
+      if (chosen !== conversationId) setConversationId(chosen);
+      setTurns(chosenTurns);
+      loadedRef.current = true;
+    })();
     fetch('/api/credentials/websites')
       .then((r) => r.json())
       .then((d) => setWebsites(Array.isArray(d?.websites) ? d.websites : []))
