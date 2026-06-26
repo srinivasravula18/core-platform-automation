@@ -13,7 +13,7 @@ import { analyzeFeatureFromSource, discoverFeatureInventoryFromSource, proposeGa
 import { executePlaywrightScripts, killRunProcesses, sanitizeTestCode, repairTestCode } from '../playwright/executionService';
 import { liveAuthor, emitScript } from './liveAuthor';
 import { inspectFlow, flowToScript } from './flowInspector';
-import { extractSelectorMap, renderSelectorMap, mapHas, type SelectorMap } from './selectorMap';
+import { extractSelectorMap, renderSelectorMap, mapHas, correctSelectorMethods, type SelectorMap } from './selectorMap';
 
 // Cache the extracted code selector-map per repo (the source rarely changes mid-session).
 const selectorMapCache = new Map<string, SelectorMap>();
@@ -645,6 +645,17 @@ function complexityDrivenCaseCount(understanding: any, requested: number): numbe
   return Math.min(40, Math.max(5, suggested));
 }
 
+// Parse an explicit case count the user typed in natural language ("generate 5 test cases",
+// "10 cases", "write 3 tests", "give me 8 scenarios"). Returns 0 when none is stated, so the
+// flow/complexity decides. App-agnostic — pure language parsing, no app specifics.
+function parseCaseCount(prompt: string): number {
+  const text = String(prompt || '').toLowerCase();
+  const m = text.match(/\b(\d{1,3})\s+(?:test\s*)?(?:cases?|tests?|scenarios?)\b/)
+    || text.match(/\b(?:generate|create|write|add|make|need|want|give\s+me)\s+(\d{1,3})\b/);
+  if (m) { const n = parseInt(m[1], 10); if (n >= 1 && n <= 200) return n; }
+  return 0;
+}
+
 function wantsFeatureInventory(prompt: string, approvedUnderstanding: string): boolean {
   const text = `${prompt || ''} ${approvedUnderstanding || ''}`.toLowerCase();
   return /\b(all|every|entire|whole|across|application|app|features?|sub[-\s]?features?|modules?|screens?|pages?|workflows?|journeys?|end\s*to\s*end|e2e|coverage|test\s*areas?|each\s+feature|comprehensive)\b/.test(text);
@@ -1256,7 +1267,9 @@ ${credentialContext}
 ${selectedQaPromptText}${conversationBlock}
 Browser inspection result: ${JSON.stringify(compactInspectionContext(inspectionContext))}.${understandingBlock}
 ${featureInventoryBlock}${testDataBlock}${readAgentSkill() ? `\nLEARNED QA-AUTHORING SKILL (general case/script guidance refined over prior runs — apply it):\n${readAgentSkill()}\n` : ''}
-Write approximately ${testCaseCount} test case(s) — this target is derived from the feature's real complexity in the source above, so treat it as a guide: cover every distinct business rule, role/permission difference, branch, and negative/edge case the code reveals, and do not pad with trivial duplicates to hit a number. ${requestedCaseCount > 0 ? `The user explicitly asked for ${requestedCaseCount} case(s); honor that count.` : 'The user asked for comprehensive coverage, so err toward thoroughness over brevity.'}
+${requestedCaseCount > 0
+  ? `Produce EXACTLY ${requestedCaseCount} test case(s) — no more and no fewer. The user FIXED this count, so honor it precisely: choose the ${requestedCaseCount} highest-value cases (distinct business rules, role/permission differences, branches, and negative/edge cases first). Do not exceed the count and do not pad with trivial duplicates to reach it.`
+  : `Write approximately ${testCaseCount} test case(s) — this target is derived from the feature's real complexity in the source above, so treat it as a guide: cover every distinct business rule, role/permission difference, branch, and negative/edge case the code reveals, and do not pad with trivial duplicates to hit a number. The user asked for comprehensive coverage, so err toward thoroughness over brevity.`}
 
 When the FEATURE/SUBFEATURE COVERAGE BLUEPRINT is present, it is the case-coverage contract:
 - Generate one focused test case for each testable subfeature unless the user explicitly requested fewer cases; if fewer were requested, choose the highest-risk subfeatures first and state the omitted units in the descriptions/tags.
@@ -1276,6 +1289,12 @@ Each test case must include automation tags in @ format, for example @bvt, @sani
     generated = (caseResult.object.test_cases as any[]).map((testCase) => ({ ...testCase, captureEvidence: true }));
   }
 
+  // FIXED COUNT (user wish): when the user fixed a case count, enforce it EXACTLY — the model can
+  // over-produce. If it produced more, keep the first N (the prompt ordered them highest-value
+  // first). When no count is fixed, the count follows the flow/complexity (untouched here).
+  if (requestedCaseCount > 0 && Array.isArray(generated) && generated.length > requestedCaseCount) {
+    generated = generated.slice(0, requestedCaseCount);
+  }
   run.generated_cases = generated;
   // GROUNDING GATE (Phase 2): verify the generated cases actually reference what the
   // inspector saw on the live page. If they don't (and the page WAS readable), the
@@ -1607,6 +1626,17 @@ async function verifyScriptsWithGitAgent(run: any, scripts: any[], _prompt: stri
     };
     const ignorable = /sign ?in|log ?in|email|user(name)?|password/i;
 
+    // PASS 1 (deterministic): rewrite every selector to the METHOD the code defines for it
+    // (placeholder->getByPlaceholder, testid->getByTestId, etc.) — right name AND right method,
+    // straight from the code map. No LLM, no guessing.
+    let methodFixes = 0;
+    for (const s of scripts) {
+      if (!s?.code) continue;
+      const r = correctSelectorMethods(String(s.code), map);
+      if (r.fixes > 0) { s.code = r.code; methodFixes += r.fixes; }
+    }
+
+    // PASS 2 (LLM): for selectors whose NAME is still not in the code map, rewrite them.
     const verifier = await getOrchestrator('appInspector', { workspaceId: run.ownerId || 'default' });
     let totalCulprits = 0; let rewritten = 0;
     let cursor = 0;
@@ -1633,7 +1663,7 @@ ${s.code}`,
     };
     const worker = async () => { while (cursor < scripts.length) { await verifyOne(scripts[cursor++]); } };
     await Promise.all(Array.from({ length: 4 }, worker));
-    pushPhase(run, { agent: 'SelectorVerifier', status: 'completed', output: `Cross-verified ${scripts.length} script(s) vs ${map.fileCount} source files; ${totalCulprits} culprit selector(s) found, ${rewritten} script(s) rewritten with real selectors.` });
+    pushPhase(run, { agent: 'SelectorVerifier', status: 'completed', output: `Cross-verified ${scripts.length} script(s) vs ${map.fileCount} source files; ${methodFixes} selector method(s) corrected from code, ${totalCulprits} culprit name(s) found, ${rewritten} script(s) rewritten.` });
   } catch (e: any) {
     pushPhase(run, { agent: 'SelectorVerifier', status: 'completed', output: `Selector verification error: ${e?.message || e}` });
   }
@@ -2218,7 +2248,9 @@ export function registerAgentRoutes(app: Express) {
     const chatHistory: Array<{ role: string; content: string }> = Array.isArray(req.body.history) ? req.body.history : [];
     // 0 (or absent) means "auto" — let the depth of the source understanding decide
     // the count. A positive number is an explicit user request and is honored as-is.
-    const requestedCaseCount = Math.max(0, Math.floor(Number(req.body.testCaseCount) || 0));
+    // Honor the user's wish: an explicit count from the UI field OR parsed from the prompt
+    // ("Generate 5 test cases ...") wins. 0 means "auto" — the flow/complexity decides.
+    const requestedCaseCount = Math.max(0, Math.floor(Number(req.body.testCaseCount) || 0)) || parseCaseCount(prompt || '');
     const flowMode = req.body.flowMode === 'review_cases' ? 'review_cases' : 'complete';
 
     // Layered guardrail pipeline. If the pipeline short-circuits (greeting, off-topic, etc.)
@@ -2541,9 +2573,12 @@ export function registerAgentRoutes(app: Express) {
       newRun.selected_qa_prompt_text = selectedQaContext.promptText;
       newRun.scope_context_text = scopeContextText;
 
-      // Per-feature sub-loop: for each NEW feature → Map → Find existing → Write cases
+      // Per-feature sub-loop: for each NEW feature → Map → Find existing → Write cases.
+      // BUT when the user FIXED a case count, skip the comprehensive per-feature expansion (which
+      // produces one case per subfeature) and use the focused single-batch path below, which
+      // honors the exact requested count.
       const inventoryFeatures = (featureInventory?.features as any[] || []);
-      if (inventoryFeatures.length > 0) {
+      if (inventoryFeatures.length > 0 && !requestedCaseCount) {
         const existingTitles = existingFeatureRequirements.map((r: any) => (r.title || '').toLowerCase());
         const newFeatures = inventoryFeatures.filter((f: any) =>
           !existingTitles.some((t) => t.includes((f.name || '').toLowerCase().slice(0, 10))),

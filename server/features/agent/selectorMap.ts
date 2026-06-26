@@ -66,7 +66,7 @@ export function extractSelectorMap(repoPath: string, opts?: { maxFiles?: number 
       grab(RE.placeholder, txt, (m) => add(placeholders, m[1]));
       grab(RE.getByLabel, txt, (m) => add(labels, m[1]));
       grab(RE.label, txt, (m) => add(labels, m[1]));
-      grab(RE.getByRole, txt, (m) => { const name = m[2].replace(/\s+/g, ' ').trim(); if (name.length > 1) roleNames.push({ role: m[1], name }); });
+      grab(RE.getByRole, txt, (m) => { const name = m[2].replace(/\s+/g, ' ').trim(); if (name.length > 1 && !/[|^${}\\]/.test(name)) roleNames.push({ role: m[1], name }); });
     }
   };
   walk(repoPath);
@@ -80,6 +80,38 @@ export function extractSelectorMap(repoPath: string, opts?: { maxFiles?: number 
     roleNames: dedupeRoles,
     fileCount,
   };
+}
+
+/**
+ * Find source files that contain any of the given needle strings (e.g. real selector labels),
+ * by walking the WORKING TREE — reliable where `git grep` (index-only) misses uncommitted code.
+ * Returns file paths ranked by how many distinct needles each contains. App-agnostic.
+ */
+export function findSourceFiles(repoPath: string, needles: string[], opts?: { maxFiles?: number; maxReturn?: number }): string[] {
+  const lows = Array.from(new Set(needles.map((n) => String(n || '').toLowerCase().trim()).filter((n) => n.length > 2)));
+  if (!lows.length) return [];
+  const maxFiles = opts?.maxFiles ?? 5000;
+  const scores = new Map<string, number>();
+  let count = 0;
+  const walk = (dir: string) => {
+    if (count >= maxFiles) return;
+    let entries: fs.Dirent[];
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      if (count >= maxFiles) return;
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) { if (!SKIP_DIRS.has(e.name)) walk(full); continue; }
+      if (!EXTS.has(path.extname(e.name))) continue;
+      let txt: string;
+      try { txt = fs.readFileSync(full, 'utf8').toLowerCase(); } catch { continue; }
+      count += 1;
+      let distinct = 0; let occ = 0;
+      for (const n of lows) { const c = txt.split(n).length - 1; if (c > 0) { distinct += 1; occ += c; } }
+      if (distinct > 0) scores.set(full, distinct * 100 + occ);
+    }
+  };
+  walk(repoPath);
+  return Array.from(scores.entries()).sort((a, b) => b[1] - a[1]).map(([p]) => path.relative(repoPath, p).replace(/\\/g, '/')).slice(0, opts?.maxReturn ?? 8);
 }
 
 /** A compact, prompt-ready rendering of the selector map for grounding the coder/verifier. */
@@ -106,4 +138,59 @@ export function mapHas(map: SelectorMap, target: string): boolean {
     }
   }
   return false;
+}
+
+/**
+ * The CORRECT Playwright locator method for a target, derived from HOW the code defines it.
+ * The category a selector appears in IS its resolution method — so a field defined as a
+ * placeholder must use getByPlaceholder, a test id getByTestId, etc. Returns the canonical
+ * selector for that target, preferring the most specific/reliable method. Code-truth, no guessing.
+ */
+export function methodFor(map: SelectorMap, target: string): { by: 'testid' | 'placeholder' | 'label' | 'role' | 'text'; value: string; role?: string } | null {
+  const t = String(target || '').toLowerCase().trim();
+  if (!t) return null;
+  // EXACT (case-insensitive) match only — fuzzy substring matching produced garbage
+  // (e.g. "New" matching "Enter a new password"). Method rewriting must be confident.
+  const find = (arr: string[]) => arr.find((v) => v.toLowerCase() === t);
+  const tid = find(map.testIds); if (tid) return { by: 'testid', value: tid };
+  const ph = find(map.placeholders); if (ph) return { by: 'placeholder', value: ph };
+  const lbl = find(map.labels); if (lbl) return { by: 'label', value: lbl };
+  const role = map.roleNames.find((r) => r.name.toLowerCase() === t);
+  if (role) return { by: 'role', value: role.name, role: role.role };
+  const aria = find(map.ariaLabels); if (aria) return { by: 'label', value: aria };
+  return null;
+}
+
+const esc = (s: string) => JSON.stringify(s);
+function canonicalLocator(m: { by: string; value: string; role?: string }): string {
+  switch (m.by) {
+    case 'testid': return `getByTestId(${esc(m.value)})`;
+    case 'placeholder': return `getByPlaceholder(${esc(m.value)})`;
+    case 'label': return `getByLabel(${esc(m.value)})`;
+    case 'role': return `getByRole(${esc(m.role || 'button')}, { name: ${esc(m.value)}, exact: true })`;
+    default: return `getByText(${esc(m.value)}, { exact: false })`;
+  }
+}
+
+/**
+ * Deterministically rewrite every getBy* selector in a script to the method the CODE defines
+ * for that target (right name + right method). Returns the corrected code and the number of
+ * method fixes. No LLM, no guessing, no hardcoding — purely the code selector map.
+ */
+export function correctSelectorMethods(code: string, map: SelectorMap): { code: string; fixes: number } {
+  let fixes = 0;
+  const ignorable = /sign ?in|log ?in|^email|^user(name)?$|^password$/i;
+  const out = code.replace(/getBy(Role|Label|Text|Placeholder|TestId)\(([^;]*?)\)(\s*\.first\(\))?/g, (whole, kind: string, args: string, first: string) => {
+    // extract the target string from the call
+    let target = '';
+    const nameMatch = args.match(/name\s*:\s*['"`]([^'"`]{2,60})['"`]/) || args.match(/^\s*['"`]([^'"`]{2,60})['"`]/);
+    if (nameMatch) target = nameMatch[1];
+    if (!target || ignorable.test(target) || /[/^$\\]/.test(args.slice(0, 60))) return whole; // skip regex/login selectors
+    const m = methodFor(map, target);
+    if (!m) return whole; // not in code map — leave for the LLM culprit pass
+    const replacement = `${canonicalLocator(m)}${first || '.first()'}`;
+    if (replacement.replace(/\s+/g, '') !== whole.replace(/\s+/g, '')) fixes += 1;
+    return replacement;
+  });
+  return { code: out, fixes };
 }
