@@ -1105,7 +1105,7 @@ async function generateCasesForFeature(run: any, feature: any, liveCredentials: 
   const result = await caseWriter.generateObject<any>({
     prompt: `Write focused test cases for this specific feature: "${feature.name}".
 ${feature.description ? `Feature description: ${feature.description}` : ''}
-Surface: ${feature.surface || 'Application'}
+This feature is part of the ${feature.surface || 'Application'} side of the app (context only — never put this word in a title).
 Subfeatures to cover:
 ${subfeatureBlock || '  (infer from the feature name and code understanding)'}
 
@@ -1120,7 +1120,8 @@ Rules:
 - Each case covers ONLY "${feature.name}" — do not test unrelated features
 - Use real on-screen element labels from the inspection result for all selectors
 - Include tags: @bvt, @regression, @smoke, @positive/@negative as appropriate
-- Steps must be concrete and automatable — name exact labels, buttons, fields visible in the app`,
+- Steps must be concrete and automatable — name exact labels, buttons, fields visible in the app
+- TITLES must be PLAIN, CLEAR, and INDUSTRY-STANDARD so any reader (QA, developer, or business) understands them at a glance. Use the pattern "<Feature> - <the concrete behavior being verified>", e.g. "List Views - List loads after login", "List Views - Search filters the table", "List Views - Only admins can create records". Use the everyday QA wording a tester would type in a test-management tool. Do NOT use jargon, internal/framing labels, or invented or fancy phrasing (avoid words like "surface", "baseline", "stable baseline", "preserves rendering", "state machine"); plain English only.`,
     schema: testCasesSchema,
     userMessage: run.prompt || '',
   });
@@ -1283,7 +1284,7 @@ ${requestedCaseCount > 0
 When the FEATURE/SUBFEATURE COVERAGE BLUEPRINT is present, it is the case-coverage contract:
 - Generate one focused test case for each testable subfeature unless the user explicitly requested fewer cases; if fewer were requested, choose the highest-risk subfeatures first and state the omitted units in the descriptions/tags.
 - Generate separate @e2e test cases for the E2E flows listed in the feature inventory. Do not merge E2E flows into single-feature cases.
-- Case titles must make the covered unit obvious: use "Feature - Subfeature ..." for feature cases and "E2E - Flow ..." for cross-application flows.
+- Case titles must be PLAIN, CLEAR, and INDUSTRY-STANDARD so any reader (QA, developer, or business) understands them at a glance — the everyday wording a tester types in a test-management tool. Use "<Feature> - <concrete behavior verified>" for feature cases and "E2E - <flow>" for cross-application flows (e.g. "List Views - List loads after login", "List Views - Search filters the table"). Do NOT use jargon, internal/framing labels, or invented or fancy phrasing (avoid words like "surface", "baseline", "stable baseline", "preserves rendering"); plain English only.
 - Each feature case's steps must stay inside that feature/subfeature and test its concrete actions, rules, states, and edge paths.
 - Do not collapse multiple unrelated subfeatures into a broad "validate page" case.
 
