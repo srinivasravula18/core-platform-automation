@@ -13,6 +13,7 @@
  * propose only the gaps" pattern from ../git-agent/analysisService.ts.
  */
 
+import { readFileSync, existsSync } from 'fs';
 import { z } from 'zod';
 import { getOrchestrator } from '../../ai/orchestrator';
 import { deepParallelResearch, relevantSourcePaths, facetCeiling } from '../../ai/research/deepResearch';
@@ -26,6 +27,7 @@ import { analyzeApiAndMetadataFromSource, type ApiAnalysis } from './apiAnalystS
 import { fetchCorePlatformObjectCatalog } from '../../ai/tools/corePlatformData';
 import { getApp } from '../projects/projectService';
 import { resolveCredentials } from '../credentials/credentialsService';
+import { extractSelectorMap } from '../agent/selectorMap';
 
 /* ---------- schemas ---------- */
 
@@ -58,6 +60,19 @@ const sourceFileRefSchema = z.preprocess((value) => {
   if (value && typeof value === 'object' && !Array.isArray(value)) return value;
   return { path: value == null ? '' : String(value), why: '' };
 }, z.object({ path: textField(''), why: textField('') }));
+
+/**
+ * Optional learned-skill text injected into the analyst prompt. This is the SkillOpt
+ * "trainable state": a plain-markdown skill the optimization loop edits and validation-gates.
+ * App-agnostic — it carries only general QA-drafting guidance, never app-specific facts.
+ * Read at request time so loop edits take effect without a restart. Empty unless the env
+ * path is set, so production behavior is unchanged until a skill is deployed.
+ */
+function readDraftingSkill(): string {
+  const p = process.env.DRAFTING_SKILL_PATH;
+  if (!p) return '';
+  try { return existsSync(p) ? readFileSync(p, 'utf8').trim() : ''; } catch { return ''; }
+}
 
 const featureAnalystSchema = z.object({
   title: textField('Feature under test'),
@@ -578,7 +593,7 @@ Search keywords used: ${keywords.join(', ')}
 ${groundingBlock}${metaCatalogBlock}
 
 INFER the application's architecture from the research notes and excerpts above — do NOT assume any specific product, framework, or surface names. Let the code tell you. Use ONLY behaviour the research actually establishes; never invent meta-concepts (CI/seeding/regression scaffolding) that aren't real user features.
-
+${readDraftingSkill() ? `\nLEARNED DRAFTING SKILL (general QA-drafting guidance refined over prior runs — apply it):\n${readDraftingSkill()}\n` : ''}
 SCOPE DISCIPLINE — write the requirement at the altitude the query actually asks for; do not narrow it to a subject the user did not name:
 - If the query NAMES a specific object, section, module, or screen, scope the requirement to THAT subject.
 - If the query asks about a GENERIC, REUSABLE CAPABILITY that applies across many objects/views (e.g. a shared toolbar action, an export / settings / filter / column control, a list-view mechanism) WITHOUT naming a specific object, write the requirement about the CAPABILITY ITSELF as it works generally — describe the shared control and its rules across the surface. Do NOT anchor it to, or title it after, one concrete object you merely found in the code (e.g. don't turn "list view export and settings" into "export and settings for <SomeObject>"); that invents a scope the user did not request. Keep the title and rules about the capability.
@@ -611,6 +626,24 @@ Produce the requirement understanding as strict JSON matching the schema:
     sourceFiles: files.map((f) => ({ path: f.path, why: f.area })),
     candidateScenarios: [],
   };
+  // Attach the REAL UI selectors for this feature, pulled straight from the codebase, so the
+  // requirement RESPONSE itself carries them — downstream agents (cases, scripts, verify-locators)
+  // map them directly instead of guessing. App-agnostic: extracted from whatever source repo is
+  // bound; relevance = selector words that appear in the feature text. Never blocks the draft.
+  try {
+    if (opts.repoPath) {
+      const map = extractSelectorMap(opts.repoPath);
+      const steps = (understanding.candidateScenarios || []).flatMap((s: any) => (s.steps || []).map((x: any) => `${x.action} ${x.expected}`));
+      const hay = `${understanding.title} ${(understanding.businessRules || []).join(' ')} ${steps.join(' ')} ${cleanQuery}`.toLowerCase();
+      const hayWords = new Set(hay.split(/\W+/).filter((w) => w.length > 3));
+      const rel = new Set<string>();
+      for (const s of [...map.ariaLabels, ...map.labels, ...map.placeholders]) {
+        const words = s.toLowerCase().split(/\W+/).filter((w) => w.length > 3);
+        if (words.length && words.some((w) => hayWords.has(w))) rel.add(s);
+      }
+      (understanding as any).relevantSelectors = [...rel].slice(0, 30);
+    }
+  } catch { /* selectors are an enhancement, never block the draft */ }
   opts.onProgress?.('Source-grounded requirement understanding is ready...');
   return { understanding, files, keywords };
 }

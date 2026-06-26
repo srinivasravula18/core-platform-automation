@@ -11,7 +11,19 @@ import { capturePlaywrightEvidence, createAuthStorageState } from '../evidence/e
 import { gitGrep, readRepoFile } from '../git-agent/gitAgentService';
 import { analyzeFeatureFromSource, discoverFeatureInventoryFromSource, proposeGapCases } from '../requirements/requirementService';
 import { executePlaywrightScripts, killRunProcesses, sanitizeTestCode, repairTestCode } from '../playwright/executionService';
-import { promises as fsp } from 'fs';
+import { liveAuthor, emitScript } from './liveAuthor';
+import { inspectFlow, flowToScript } from './flowInspector';
+import { extractSelectorMap, renderSelectorMap, mapHas, type SelectorMap } from './selectorMap';
+
+// Cache the extracted code selector-map per repo (the source rarely changes mid-session).
+const selectorMapCache = new Map<string, SelectorMap>();
+function getSelectorMap(repoPath: string): SelectorMap | null {
+  const key = (repoPath || '').trim();
+  if (!key) return null;
+  if (selectorMapCache.has(key)) return selectorMapCache.get(key)!;
+  try { const m = extractSelectorMap(key); selectorMapCache.set(key, m); return m; } catch { return null; }
+}
+import { promises as fsp, readFileSync, existsSync } from 'fs';
 import path from 'path';
 import { inspectApplicationFlow } from './inspectionService';
 import { getOrchestrator, listConfiguredProviders, resolveProviderForAgent } from '../../ai/orchestrator';
@@ -1099,6 +1111,18 @@ Rules:
   }));
 }
 
+/**
+ * Optional learned-skill text injected into the case-writer and Playwright-coder prompts.
+ * The SkillOpt loop's trainable state for the case/script/test-data agents — a plain-markdown
+ * skill it edits and validation-gates. App-agnostic (general QA-authoring guidance, never app
+ * facts). Read per-request so edits apply without a restart; empty unless the env path is set.
+ */
+function readAgentSkill(): string {
+  const p = process.env.AGENT_SKILL_PATH;
+  if (!p) return '';
+  try { return existsSync(p) ? readFileSync(p, 'utf8').trim() : ''; } catch { return ''; }
+}
+
 async function generateCasesForRun(
   run: any,
   liveCredentials: any,
@@ -1231,7 +1255,7 @@ Playwright target URL: ${targetUrl || 'not provided'}.
 ${credentialContext}
 ${selectedQaPromptText}${conversationBlock}
 Browser inspection result: ${JSON.stringify(compactInspectionContext(inspectionContext))}.${understandingBlock}
-${featureInventoryBlock}${testDataBlock}
+${featureInventoryBlock}${testDataBlock}${readAgentSkill() ? `\nLEARNED QA-AUTHORING SKILL (general case/script guidance refined over prior runs — apply it):\n${readAgentSkill()}\n` : ''}
 Write approximately ${testCaseCount} test case(s) — this target is derived from the feature's real complexity in the source above, so treat it as a guide: cover every distinct business rule, role/permission difference, branch, and negative/edge case the code reveals, and do not pad with trivial duplicates to hit a number. ${requestedCaseCount > 0 ? `The user explicitly asked for ${requestedCaseCount} case(s); honor that count.` : 'The user asked for comprehensive coverage, so err toward thoroughness over brevity.'}
 
 When the FEATURE/SUBFEATURE COVERAGE BLUEPRINT is present, it is the case-coverage contract:
@@ -1404,6 +1428,12 @@ Do NOT write comments such as "Auth is expected to be handled by global setup". 
   const coderTestData = tdPack
     ? `\nREAL TEST DATA (from the live app metadata — use these EXACT field api_names and valid values when the case creates/edits a record; for picklists use one listed option; reference the example existing record for edit/delete; do NOT use placeholder/env-var values for the data the case specifies):\n${tdPack}\n`
     : '';
+  // REAL SELECTORS extracted from the app's source — the code is the source of truth for
+  // selectors, so the coder uses these instead of guessing (no more guessed /save/i timeouts).
+  const codeMap = getSelectorMap((getProject(run.projectId || '')?.repoPath || '').trim());
+  const coderSelectorMap = codeMap
+    ? `\nREAL SELECTORS FROM THE APP SOURCE (the codebase IS the source of truth — use these EXACT labels/names; ground every getByRole name / getByLabel / getByText / getByTestId in one of these; do NOT invent a selector that is not here):\n${renderSelectorMap(codeMap)}\n`
+    : '';
   const coder = await getOrchestrator('playwrightCoder', { workspaceId: run.ownerId || 'default' });
   const caseList = Array.isArray(testCases?.test_cases) ? testCases.test_cases : [];
   const scriptsResult = await coder.generateObject<any>({
@@ -1411,7 +1441,7 @@ Do NOT write comments such as "Auth is expected to be handled by global setup". 
 Approved user-reviewed understanding: ${reviewedUnderstanding || 'not provided'}.
 ${credentialContext}
 ${loginScriptBlock}
-${selectedQaContextText}${coderUnderstanding}${coderFeatureInventory}${coderMemory}${coderTestData}
+${selectedQaContextText}${coderUnderstanding}${coderFeatureInventory}${coderMemory}${coderTestData}${coderSelectorMap}${readAgentSkill() ? `\nLEARNED QA-AUTHORING SKILL (general script guidance refined over prior runs — apply it):\n${readAgentSkill()}\n` : ''}
 Use this browser inspection context as the source of truth for reachable pages, visible labels, forms, navigation actions, tables/lists, buttons, links and final URL: ${JSON.stringify(compactInspectionContext(inspectionContext))}.
 SETUP — NAVIGATE THEN LOG IN IF NEEDED: the MANDATORY FIRST LINES of every test body are (use this EXACT absolute URL — NOT '/', which resolves to the wrong path):
   await page.goto('${targetUrl || '/'}');
@@ -1554,64 +1584,58 @@ Test case payload: ${JSON.stringify({ test_cases: [testCase] })}${coderKnowledge
  * This is the "verify selectors during creation" step — it grounds guessed selectors
  * in the actual DOM/source so the scripts hit real elements instead of timing out.
  */
-async function verifyScriptsWithGitAgent(run: any, scripts: any[], prompt: string): Promise<void> {
+/**
+ * VERIFY-LOCATORS at full potential: the codebase is the source of truth for selectors. Extract
+ * every selector target from each script, cross-check it against the code SELECTOR MAP, flag the
+ * culprits (selectors with no real-element match), and have the verifier rewrite each culprit with
+ * the correct real selector from the code. App-agnostic; no hardcoded labels.
+ */
+async function verifyScriptsWithGitAgent(run: any, scripts: any[], _prompt: string): Promise<void> {
   if (!Array.isArray(scripts) || !scripts.length) return;
   pushPhase(run, { agent: 'SelectorVerifier', status: 'running' });
   try {
-    const allCode = scripts.map((s) => String(s?.code || '')).join('\n');
-    // Candidate selectors used by the generated scripts.
-    const ids = Array.from(new Set((allCode.match(/#([a-zA-Z][\w-]{2,})/g) || []).map((s) => s.slice(1))));
-    const named = Array.from(new Set(
-      [...allCode.matchAll(/getBy(?:Label|Role|Text|Placeholder|TestId)\([^,)]*?['"`/]([^'"`/)]{2,40})/g)].map((m) => m[1].trim()),
-    )).filter((s) => /[a-z]/i.test(s));
-    const promptTerms = (String(prompt || '').toLowerCase().match(/[a-z][a-z0-9-]{2,}/g) || [])
-      .filter((t) => !['the', 'and', 'then', 'app', 'with', 'that', 'verify', 'admin'].includes(t))
-      .slice(0, 8);
-    const patterns = Array.from(new Set([...ids, ...named, ...promptTerms])).slice(0, 18);
-    if (!patterns.length) { pushPhase(run, { agent: 'SelectorVerifier', status: 'skipped', output: 'No selectors to verify.' }); return; }
-
-    // Verify selectors against the SELECTED project's repo (dynamic per app).
     const repoPath = (getProject(run.projectId || '')?.repoPath || '').trim();
-    let files: Array<{ path: string }> = [];
-    try { files = gitGrep(patterns, undefined, undefined, repoPath); } catch { pushPhase(run, { agent: 'SelectorVerifier', status: 'skipped', output: 'Source repo unavailable — selector verification skipped.' }); return; } // target repo missing
-    if (!files.length) { pushPhase(run, { agent: 'SelectorVerifier', status: 'skipped', output: 'No matching source files — selector verification skipped.' }); return; }
+    const map = getSelectorMap(repoPath);
+    if (!map) { pushPhase(run, { agent: 'SelectorVerifier', status: 'skipped', output: 'No source repo bound — cannot cross-verify selectors against the codebase.' }); return; }
+    const mapBlock = renderSelectorMap(map, 220);
 
-    const excerpts = files.slice(0, 4)
-      .map((f) => `// FILE: ${f.path}\n${readRepoFile(f.path, 5000, repoPath)}`)
-      .join('\n\n---\n\n');
+    const targetsOf = (code: string) => {
+      const t = new Set<string>();
+      for (const m of code.matchAll(/getByRole\(\s*['"`]\w+['"`]\s*,\s*\{\s*name\s*:\s*[/]?\s*['"`]?([^'"`/)\n,}]{2,50})/g)) t.add(m[1].trim());
+      for (const m of code.matchAll(/getBy(?:Label|Text|Placeholder|TestId)\(\s*[/]?\s*['"`]?([^'"`/)\n,]{2,50})/g)) t.add(m[1].trim());
+      return [...t];
+    };
+    const ignorable = /sign ?in|log ?in|email|user(name)?|password/i;
 
-    // Use the inspector role for verification so these calls land on a DIFFERENT
-    // model than the coder (spreads load across free per-model rate limits).
     const verifier = await getOrchestrator('appInspector', { workspaceId: run.ownerId || 'default' });
-    let fixed = 0;
-    // Verify scripts with bounded concurrency. Each script is independent, so a small
-    // worker pool turns N sequential LLM round-trips into ~N/CONCURRENCY waves — this
-    // is the gap between "scripts shown" and "evidence starts" on large suites. Per-
-    // script errors are swallowed (keep the original), so a rate-limited call just
-    // leaves that one script unverified rather than failing the run.
-    const SELECTOR_VERIFY_CONCURRENCY = 4;
+    let totalCulprits = 0; let rewritten = 0;
     let cursor = 0;
     const verifyOne = async (s: any) => {
       if (!s?.code) return;
+      const culprits = targetsOf(String(s.code)).filter((t) => !ignorable.test(t) && !mapHas(map, t));
+      if (!culprits.length) return; // every selector is grounded in the codebase — nothing to fix
+      totalCulprits += culprits.length;
       try {
         const res = await verifier.generateObject<any>({
-          prompt: `Verify a Playwright script against the application's ACTUAL source code below. For every selector in the script (CSS #id, getByRole name, getByLabel/getByText/getByPlaceholder/getByTestId string), confirm it exists in the source. Replace any selector that is NOT present in the source with the correct one found in the source (e.g. the real element id, label text, or button name). Keep the test structure, step order, testInfo.attach('step-N',...) screenshots, soft assertions, and the final hard assertion intact. If a selector is already correct, keep it unchanged. Return the corrected full script in the "code" field.
-REAL SOURCE (component code from the app under test):
-${excerpts}
-SCRIPT TO VERIFY AND CORRECT:
+          prompt: `A Playwright script uses selectors that do NOT exist in the application's real UI. The CODEBASE SELECTORS below are the SOURCE OF TRUTH. Replace each CULPRIT selector with the correct real label / role-name / testid from the codebase (closest match by meaning). Keep the test structure, step order, testInfo.attach screenshots, and assertions intact; only fix the selectors. Return the corrected full script in "code".
+CODEBASE SELECTORS (the only valid options — use these EXACT strings):
+${mapBlock}
+CULPRIT selectors in this script (each is NOT in the codebase — fix every one):
+${culprits.join(' | ')}
+SCRIPT:
 ${s.code}`,
           schema: z.object({ code: z.string() }),
-          userMessage: 'Verify and correct Playwright selectors against the real source.',
+          userMessage: 'Rewrite the culprit selectors using the real codebase selectors.',
         });
         const code = res?.object?.code;
-        if (code && code.length > 80 && /test\(/.test(code)) { s.code = code; fixed += 1; }
-      } catch { /* keep the original script if verification fails */ }
+        if (code && code.length > 80 && /test\(/.test(code)) { s.code = code; rewritten += 1; }
+      } catch { /* keep the original on a verifier error */ }
     };
     const worker = async () => { while (cursor < scripts.length) { await verifyOne(scripts[cursor++]); } };
-    await Promise.all(Array.from({ length: Math.min(SELECTOR_VERIFY_CONCURRENCY, scripts.length) }, worker));
-    pushPhase(run, { agent: 'SelectorVerifier', status: 'completed', output: `Checked ${scripts.length} script(s) against ${files.length} source file(s); corrected ${fixed}.` });
+    await Promise.all(Array.from({ length: 4 }, worker));
+    pushPhase(run, { agent: 'SelectorVerifier', status: 'completed', output: `Cross-verified ${scripts.length} script(s) vs ${map.fileCount} source files; ${totalCulprits} culprit selector(s) found, ${rewritten} script(s) rewritten with real selectors.` });
   } catch (e: any) {
-    pushPhase(run, { agent: 'SelectorVerifier', status: 'completed', output: `Selector verification skipped: ${e?.message || e}` });
+    pushPhase(run, { agent: 'SelectorVerifier', status: 'completed', output: `Selector verification error: ${e?.message || e}` });
   }
 }
 
@@ -1926,6 +1950,44 @@ async function runScriptsAndCollectEvidence(run: any, targetUrl: string, testCas
 }
 
 export function registerAgentRoutes(app: Express) {
+  // CODE-FLOW test endpoint: trace the complete flow from SOURCE (no live driving), transcribe
+  // it deterministically into a script, and execute it.
+  app.post('/api/agent/flow-test', async (req, res) => {
+    try {
+      const { goal, app_url, username, password, testData, projectId } = req.body || {};
+      const repoPath = (getProject(String(projectId || ''))?.repoPath || '').trim();
+      if (!repoPath) { res.status(400).json({ error: 'No repo bound to the project — FlowInspector needs source.' }); return; }
+      const url = String(app_url || '');
+      const creds = (username && password) ? { username: String(username), password: String(password) } : undefined;
+      const { flow, sourceFiles, notes } = await inspectFlow({ goal: String(goal || ''), repoPath, testData: String(testData || ''), workspaceId: 'default' });
+      const script = flowToScript(String(goal || 'Flow test').slice(0, 80), { url, credentials: creds }, flow);
+      const exec = await executePlaywrightScripts({ scripts: [{ filename: 'flow.spec.ts', title: 'flow', code: script }], baseUrl: url, runId: `flow-${randomUUID().slice(0, 8)}`, singleSession: true });
+      res.json({
+        steps: (flow.steps || []).length, summary: flow.summary, sourceFiles, notes, script,
+        execution: { passed: exec.passed, failed: exec.failed, total: exec.total, tests: (exec.tests || []).map((t: any) => ({ status: t.status, title: t.title, error: t.error })) },
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message || String(e) });
+    }
+  });
+
+  // AUTHOR-BY-DOING test endpoint: drive the goal live, emit the recorded script, execute it.
+  app.post('/api/agent/author-test', async (req, res) => {
+    try {
+      const { goal, app_url, username, password, testData } = req.body || {};
+      const url = String(app_url || '');
+      const creds = (username && password) ? { username: String(username), password: String(password) } : undefined;
+      const result = await liveAuthor({ goal: String(goal || ''), url, credentials: creds, testData: String(testData || ''), maxSteps: 14 });
+      const script = emitScript(String(goal || 'Authored test').slice(0, 80), { url, credentials: creds }, result.steps);
+      const exec = await executePlaywrightScripts({ scripts: [{ filename: 'authored.spec.ts', title: 'authored', code: script }], baseUrl: url, runId: `author-${randomUUID().slice(0, 8)}`, singleSession: true });
+      res.json({
+        goalReached: result.goalReached, steps: result.steps.length, notes: result.notes, script,
+        execution: { passed: exec.passed, failed: exec.failed, total: exec.total, tests: (exec.tests || []).map((t: any) => ({ status: t.status, title: t.title, error: t.error })) },
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message || String(e) });
+    }
+  });
   app.get('/api/ai/health', (req, res) => {
     res.json({
       providers: listConfiguredProviders(),

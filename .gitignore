@@ -31,6 +31,13 @@ scripts/*.ps1
 scripts/*.csv
 scripts/*-json/
 scripts/backend.log
+# Local testing artifacts in any scripts subfolder (skillopt etc.): result/agent-response
+# JSONs, runner scripts, and logs — never source.
+scripts/**/*.ps1
+scripts/**/*.json
+scripts/**/*.log
+scripts/**/cases-json/
+scripts/**/*-json/
 
 # Claude Code local workspace
 .claude/
