@@ -127,6 +127,12 @@ export async function executePlaywrightScripts(opts: {
   timeoutMs?: number;
   /** Path to a Playwright storageState JSON so every test starts authenticated. */
   storageStatePath?: string;
+  /**
+   * sessionStorage to replay before each page loads. storageState only persists cookies +
+   * localStorage, so SPAs that keep their auth token in sessionStorage (e.g. Core Platform)
+   * appear logged-OUT under storageState alone. Replaying it via addInitScript restores auth.
+   */
+  sessionStorageState?: { origin: string; items: Record<string, string> };
   /** Run specs one-by-one while reusing one browser context/page across all tests. */
   singleSession?: boolean;
 }): Promise<ExecutionResult> {
@@ -148,6 +154,20 @@ export async function executePlaywrightScripts(opts: {
       ${opts.baseUrl ? `baseURL: ${JSON.stringify(opts.baseUrl)},` : ''}
       ${opts.storageStatePath ? `storageState: ${JSON.stringify(opts.storageStatePath)},` : ''}
     }`;
+    // Replay sessionStorage (storageState can't): set the captured auth token before any page
+    // script runs, on the matching origin, only when not already present (don't clobber live writes).
+    const sessionInit = opts.sessionStorageState
+      ? `
+      await sharedContext.addInitScript((data) => {
+        try {
+          if (window.location.origin === data.origin) {
+            for (const k of Object.keys(data.items)) {
+              if (window.sessionStorage.getItem(k) === null) window.sessionStorage.setItem(k, data.items[k]);
+            }
+          }
+        } catch (e) { /* ignore */ }
+      }, ${JSON.stringify(opts.sessionStorageState)});`
+      : '';
     const sharedFixture = `import { test as base, expect, type BrowserContext, type Page } from '@playwright/test';
 
 let sharedContext: BrowserContext | undefined;
@@ -155,7 +175,9 @@ let sharedPage: Page | undefined;
 
 export const test = base.extend<{ context: BrowserContext; page: Page }>({
   context: async ({ browser }, use) => {
-    if (!sharedContext) sharedContext = await browser.newContext(${contextOptions});
+    if (!sharedContext) {
+      sharedContext = await browser.newContext(${contextOptions});${sessionInit}
+    }
     await use(sharedContext);
   },
   page: async ({ context }, use) => {

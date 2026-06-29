@@ -2,7 +2,7 @@ import type { Express } from 'express';
 import { z } from 'zod';
 import { generateObject } from 'ai';
 import { db, addActivity, persistDataInBackground } from '../../shared/storage';
-import { createFolder, folderHasArtifacts, getFolderPath, resolveFolderPath } from '../../shared/folders';
+import { createFolder, getFolderPath, resolveFolderPath } from '../../shared/folders';
 import { buildCaseDescription, normalizeCaseSteps, normalizeCaseTags } from '../../shared/testCases';
 import { findSettingsPlaywrightTargetUrl, normalizeTargetUrl } from '../../shared/url';
 import { getAIErrorMessage } from '../../shared/ai';
@@ -18,6 +18,7 @@ import {
   Reports,
   Scripts,
   Folders,
+  Requirements,
   Activity,
   isPgEnabled,
 } from '../../db/repository';
@@ -93,6 +94,9 @@ export function registerResourceRoutes(app: Express) {
     });
     if (!folder) return res.status(400).json({ error: 'Folder name is required' });
     Object.assign(folder, scopeStamp(reqScope(req)));
+    // Compute the path BEFORE upsert — folders.path is NOT NULL in Postgres, so an unset path
+    // fails the insert (and, unhandled, takes down the whole server).
+    if (!folder.path) folder.path = getFolderPath(folder.id);
     await Folders.upsert(folder);
     if (!isPgEnabled()) persistDataInBackground('folder');
     const allFolders = await Folders.list();
@@ -108,6 +112,7 @@ export function registerResourceRoutes(app: Express) {
     });
     if (!folder) return res.status(400).json({ error: 'Folder path is required' });
     Object.assign(folder, scopeStamp(reqScope(req)));
+    if (!folder.path) folder.path = getFolderPath(folder.id);
     await Folders.upsert(folder);
     if (!isPgEnabled()) persistDataInBackground('folder resolve');
     const allFolders = await Folders.list();
@@ -131,40 +136,80 @@ export function registerResourceRoutes(app: Express) {
     res.json({ success: true, folder: { ...updated, path: updated.path || getFolderPath(updated.id, allFolders) } });
   });
 
+  // CASCADE DELETE: deleting a folder deletes the folder, ALL its descendant subfolders, and
+  // EVERY artifact filed under any of them. "Delete" means delete everything inside — we no
+  // longer block on a non-empty folder.
+  const collectFolderSubtree = async (rootId: string): Promise<Set<string>> => {
+    const all = await Folders.list();
+    const ids = new Set<string>([rootId]);
+    let grew = true;
+    while (grew) {
+      grew = false;
+      for (const f of all as any[]) {
+        if (f.parentId && ids.has(f.parentId) && !ids.has(f.id)) { ids.add(f.id); grew = true; }
+      }
+    }
+    return ids;
+  };
+  const deleteArtifactsInFolders = async (folderIds: Set<string>): Promise<number> => {
+    const repos: any[] = [Plans, Suites, Cases, Runs, Defects, Scripts, Reports, Requirements];
+    let removed = 0;
+    for (const repo of repos) {
+      let items: any[] = [];
+      try { items = await repo.list(); } catch { continue; }
+      for (const it of items) {
+        if (it && folderIds.has(it.folderId)) {
+          try { await repo.remove(it.id); removed += 1; } catch { /* keep going */ }
+        }
+      }
+    }
+    // In-memory deep-run records also carry a folderId.
+    try {
+      const before = (db.agentRuns as any[]).length;
+      db.agentRuns = (db.agentRuns as any[]).filter((r) => !folderIds.has(r.folderId)) as any;
+      removed += before - (db.agentRuns as any[]).length;
+    } catch { /* ignore */ }
+    return removed;
+  };
+  const cascadeDeleteFolderTree = async (rootId: string): Promise<{ folders: number; artifacts: number }> => {
+    const ids = await collectFolderSubtree(rootId);
+    const artifacts = await deleteArtifactsInFolders(ids);
+    // Remove children before parents (deepest-first) for a clean tree teardown.
+    const all = await Folders.list();
+    const depth = (id: string): number => {
+      let d = 0; const seen = new Set<string>();
+      let cur: any = (all as any[]).find((f) => f.id === id);
+      while (cur && cur.parentId && !seen.has(cur.id)) { seen.add(cur.id); cur = (all as any[]).find((f) => f.id === cur.parentId); d += 1; }
+      return d;
+    };
+    const ordered = [...ids].sort((a, b) => depth(b) - depth(a));
+    let folders = 0;
+    for (const fid of ordered) { try { await Folders.remove(fid); folders += 1; } catch { /* ignore */ } }
+    return { folders, artifacts };
+  };
+
   app.delete('/api/folders/:id', async (req, res) => {
     const existing = await Folders.get(req.params.id);
     if (!existing) return res.status(404).json({ error: 'Folder not found' });
-    const allFolders = await Folders.list();
-    const hasChildFolders = allFolders.some((f: any) => f.parentId === req.params.id);
-    if (hasChildFolders || folderHasArtifacts(req.params.id)) {
-      return res.status(409).json({ error: 'Move or delete child folders and artifacts before deleting this folder.' });
-    }
-    await Folders.remove(req.params.id);
-    if (!isPgEnabled()) persistDataInBackground('folder delete');
-    addActivity(`Deleted folder: ${existing.name}`);
-    res.json({ success: true });
+    const { folders, artifacts } = await cascadeDeleteFolderTree(req.params.id);
+    if (!isPgEnabled()) persistDataInBackground('folder cascade delete');
+    addActivity(`Deleted folder "${existing.name}" with ${folders} folder(s) and ${artifacts} item(s)`);
+    res.json({ success: true, folders, artifacts });
   });
 
   app.post('/api/folders/bulk-delete', async (req, res) => {
     const ids: string[] = Array.isArray(req.body?.ids) ? req.body.ids.map(String) : [];
     if (!ids.length) return res.status(400).json({ error: 'ids array is required' });
-    const allFolders = await Folders.list();
-    const blocked: string[] = [];
-    let deleted = 0;
+    let folders = 0; let artifacts = 0;
     for (const id of ids) {
-      const existing = allFolders.find((f: any) => f.id === id);
+      const existing = await Folders.get(id);
       if (!existing) continue;
-      const hasChildFolders = allFolders.some((f: any) => f.parentId === id);
-      if (hasChildFolders || folderHasArtifacts(id)) {
-        blocked.push(existing.name);
-        continue;
-      }
-      await Folders.remove(id);
-      deleted += 1;
+      const r = await cascadeDeleteFolderTree(id);
+      folders += r.folders; artifacts += r.artifacts;
     }
-    if (!isPgEnabled()) persistDataInBackground('folder bulk delete');
-    addActivity(`Deleted ${deleted} folder(s)`);
-    res.json({ success: true, deleted, blocked });
+    if (!isPgEnabled()) persistDataInBackground('folder bulk cascade delete');
+    addActivity(`Deleted ${folders} folder(s) and ${artifacts} item(s)`);
+    res.json({ success: true, deleted: folders, artifacts });
   });
 
   /* ---------- generic CRUD: PUT/DELETE for plans/suites/cases/runs/defects/scripts/reports ---------- */

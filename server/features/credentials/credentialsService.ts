@@ -276,6 +276,42 @@ export interface ResolveOptions {
   ownerId?: string;
 }
 
+/** host:port key for a URL, defaulting the port so http/https compare sensibly. */
+function hostPortKey(url: string): string {
+  try {
+    const u = new URL(url);
+    const port = u.port || (u.protocol === 'https:' ? '443' : '80');
+    return `${u.hostname.toLowerCase()}:${port}`;
+  } catch {
+    return '';
+  }
+}
+
+function hostKey(url: string): string {
+  try { return new URL(url).hostname.toLowerCase(); } catch { return ''; }
+}
+
+/**
+ * Match a website by URL. Prefer an EXACT host:port match so different ports on the
+ * same host never collide — e.g. an Admin app on localhost:5002 and a Keystone app on
+ * localhost:5003 used to both resolve to host "localhost" and pick whichever website
+ * was first, handing a run the WRONG credentials. Fall back to hostname-only for setups
+ * that registered a base URL without a port.
+ */
+function matchWebsiteByUrl(sites: Website[], url: string): Website | null {
+  const hp = hostPortKey(url);
+  if (hp) {
+    const exact = sites.find((w) => hostPortKey(w.baseUrl) === hp);
+    if (exact) return exact;
+  }
+  const h = hostKey(url);
+  if (h) {
+    const byHost = sites.find((w) => hostKey(w.baseUrl) === h);
+    if (byHost) return byHost;
+  }
+  return null;
+}
+
 export function resolveCredentials(opts: ResolveOptions): ResolvedCredential | null {
   ensureTables();
   const inline = opts.inline || {};
@@ -301,34 +337,8 @@ export function resolveCredentials(opts: ResolveOptions): ResolvedCredential | n
     const name = opts.websiteName.toLowerCase();
     website = sites.find((w) => w.name.toLowerCase().includes(name)) || null;
   }
-  if (!website && opts.baseUrl) {
-    try {
-      const host = new URL(opts.baseUrl).hostname.toLowerCase();
-      website = sites.find((w) => {
-        try {
-          return new URL(w.baseUrl).hostname.toLowerCase() === host;
-        } catch {
-          return false;
-        }
-      }) || null;
-    } catch {
-      /* ignore */
-    }
-  }
-  if (!website && opts.targetUrl) {
-    try {
-      const host = new URL(opts.targetUrl).hostname.toLowerCase();
-      website = sites.find((w) => {
-        try {
-          return new URL(w.baseUrl).hostname.toLowerCase() === host;
-        } catch {
-          return false;
-        }
-      }) || null;
-    } catch {
-      /* ignore */
-    }
-  }
+  if (!website && opts.baseUrl) website = matchWebsiteByUrl(sites, opts.baseUrl);
+  if (!website && opts.targetUrl) website = matchWebsiteByUrl(sites, opts.targetUrl);
   if (!website && inline.siteName) {
     const name = inline.siteName.toLowerCase();
     website = sites.find((w) => w.name.toLowerCase().includes(name)) || null;

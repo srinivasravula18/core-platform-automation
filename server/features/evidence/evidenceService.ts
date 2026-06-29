@@ -200,11 +200,16 @@ export async function performLoginIfCredentialsProvided(page: any, credentials: 
  * storageState file. Generated test scripts then start ALREADY logged in, so they
  * never have to re-implement a brittle login against a custom SPA login form.
  */
+export interface CapturedSessionStorage {
+  origin: string;
+  items: Record<string, string>;
+}
+
 export async function createAuthStorageState(
   targetUrl: string,
   credentials: any,
   outPath: string,
-): Promise<{ ok: boolean; reason?: string }> {
+): Promise<{ ok: boolean; reason?: string; sessionStorage?: CapturedSessionStorage }> {
   const normalizedUrl = normalizeTargetUrl(targetUrl);
   if (!normalizedUrl) return { ok: false, reason: 'No target URL.' };
   if (!credentials?.username || !credentials?.password) return { ok: false, reason: 'No credentials.' };
@@ -215,9 +220,33 @@ export async function createAuthStorageState(
     await page.goto(normalizedUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
     const loginResult = await performLoginIfCredentialsProvided(page, credentials);
     await page.waitForLoadState('domcontentloaded', { timeout: 8000 }).catch(() => undefined);
-    await page.waitForTimeout(1500);
+    // Many SPAs (e.g. Core Platform) keep their auth token in sessionStorage, which Playwright's
+    // storageState does NOT persist. Wait for the client to actually establish a token before we
+    // snapshot, so the captured sessionStorage carries real auth instead of a half-logged-in state.
+    await page.waitForFunction(() => {
+      for (let i = 0; i < window.sessionStorage.length; i += 1) {
+        const k = window.sessionStorage.key(i) || '';
+        if (/token|auth|session|jwt/i.test(k)) return true;
+      }
+      return false;
+    }, { timeout: 8000 }).catch(() => undefined);
+    await page.waitForTimeout(800);
     await context.storageState({ path: outPath });
-    return { ok: loginResult?.success !== false, reason: loginResult?.reason };
+    // Capture sessionStorage separately (storageState omits it) so the executor can replay it via
+    // addInitScript — the only way to restore a sessionStorage-based session in Playwright.
+    let captured: CapturedSessionStorage | undefined;
+    try {
+      const items = await page.evaluate(() => {
+        const out: Record<string, string> = {};
+        for (let i = 0; i < window.sessionStorage.length; i += 1) {
+          const k = window.sessionStorage.key(i);
+          if (k) out[k] = window.sessionStorage.getItem(k) ?? '';
+        }
+        return out;
+      });
+      if (items && Object.keys(items).length) captured = { origin: new URL(normalizedUrl).origin, items };
+    } catch { /* sessionStorage capture is best-effort */ }
+    return { ok: loginResult?.success !== false, reason: loginResult?.reason, sessionStorage: captured };
   } catch (err: any) {
     return { ok: false, reason: err?.message || String(err) };
   } finally {

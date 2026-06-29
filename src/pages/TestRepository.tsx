@@ -36,31 +36,46 @@ function buildTree(folders: any[]) {
   return roots;
 }
 
-function FolderTreeItem({ node, selectedId, onSelect, depth = 0 }: { key?: string; node: FolderNode; selectedId: string; onSelect: (id: string) => void; depth?: number }) {
+function FolderTreeItem({ node, selectedId, onSelect, onDelete, depth = 0 }: { key?: string; node: FolderNode; selectedId: string; onSelect: (id: string) => void; onDelete: (id: string, name: string) => void; depth?: number }) {
   const [open, setOpen] = useState(true);
   const hasChildren = node.children.length > 0;
   return (
     <div>
-      <button
-        onClick={() => onSelect(node.id)}
+      <div
         className={cn(
-          'flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-sm transition-colors',
-          selectedId === node.id ? 'bg-[var(--accent)]/10 text-[var(--accent)]' : 'text-[var(--text-muted)] hover:bg-[var(--bg-secondary)] hover:text-[var(--text-primary)]'
+          'group flex items-center rounded-md transition-colors',
+          selectedId === node.id ? 'bg-[var(--accent)]/10' : 'hover:bg-[var(--bg-secondary)]'
         )}
-        style={{ paddingLeft: `${8 + depth * 14}px` }}
       >
-        {hasChildren ? (
-          <ChevronRight onClick={(e) => { e.stopPropagation(); setOpen(!open); }} className={cn('h-4 w-4 shrink-0 transition-transform', open && 'rotate-90')} />
-        ) : (
-          <span className="h-4 w-4 shrink-0" />
-        )}
-        <Folder className="h-4 w-4 shrink-0" />
-        <span className="min-w-0 truncate">{node.name}</span>
-      </button>
+        <button
+          onClick={() => onSelect(node.id)}
+          className={cn(
+            'flex min-w-0 flex-1 items-center gap-2 px-2 py-2 text-left text-sm transition-colors',
+            selectedId === node.id ? 'text-[var(--accent)]' : 'text-[var(--text-muted)] group-hover:text-[var(--text-primary)]'
+          )}
+          style={{ paddingLeft: `${8 + depth * 14}px` }}
+        >
+          {hasChildren ? (
+            <ChevronRight onClick={(e) => { e.stopPropagation(); setOpen(!open); }} className={cn('h-4 w-4 shrink-0 transition-transform', open && 'rotate-90')} />
+          ) : (
+            <span className="h-4 w-4 shrink-0" />
+          )}
+          <Folder className="h-4 w-4 shrink-0" />
+          <span className="min-w-0 truncate">{node.name}</span>
+        </button>
+        <button
+          onClick={(e) => { e.stopPropagation(); onDelete(node.id, node.name); }}
+          title="Delete folder"
+          aria-label={`Delete folder ${node.name}`}
+          className="mr-1 shrink-0 rounded p-1 text-[var(--text-muted)] opacity-0 transition-colors hover:bg-red-500/10 hover:text-red-500 focus:opacity-100 group-hover:opacity-100"
+        >
+          <Trash2 className="h-3.5 w-3.5" />
+        </button>
+      </div>
       {open && hasChildren && (
         <div>
           {node.children.map((child) => (
-            <FolderTreeItem key={child.id} node={child} selectedId={selectedId} onSelect={onSelect} depth={depth + 1} />
+            <FolderTreeItem key={child.id} node={child} selectedId={selectedId} onSelect={onSelect} onDelete={onDelete} depth={depth + 1} />
           ))}
         </div>
       )}
@@ -161,17 +176,20 @@ export default function TestRepository() {
     }
   };
 
-  const deleteFolder = async () => {
-    if (!selectedFolderId) return;
-    const res = await fetch(`/api/folders/${selectedFolderId}`, { method: 'DELETE' });
+  const deleteFolderById = async (id: string, name?: string) => {
+    if (!id) return;
+    if (!await showConfirm(`Delete folder${name ? ` "${name}"` : ''}? This cannot be undone.`, { tone: 'danger' })) return;
+    const res = await fetch(`/api/folders/${id}`, { method: 'DELETE' });
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
-      void showAlert(data.error || 'Folder cannot be deleted.');
+      void showAlert(data.error || 'Folder cannot be deleted (it may still contain items or subfolders).');
       return;
     }
-    setSelectedFolderId('');
+    if (selectedFolderId === id) setSelectedFolderId('');
     fetchData();
   };
+
+  const deleteFolder = () => deleteFolderById(selectedFolderId, selectedFolder?.name);
 
   const toggleSelectMode = () => {
     setSelectMode((prev) => {
@@ -292,7 +310,7 @@ export default function TestRepository() {
           </div>
           <div className="min-h-0 flex-1 overflow-auto p-3">
             {tree.map((node) => (
-              <FolderTreeItem key={node.id} node={node} selectedId={selectedFolderId} onSelect={setSelectedFolderId} />
+              <FolderTreeItem key={node.id} node={node} selectedId={selectedFolderId} onSelect={setSelectedFolderId} onDelete={deleteFolderById} />
             ))}
             {tree.length === 0 && (
               <div className="rounded-md border border-dashed border-[var(--border)] px-3 py-6 text-center text-sm text-[var(--text-muted)]">

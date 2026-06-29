@@ -27,6 +27,16 @@ import { ensureMigrated, isPgEnabled } from './server/db/repository';
 import { runSeedIfEmpty } from './server/db/seed';
 import { hydrateFromPg } from './server/features/credentials/credentialsService';
 
+// Keep the server ALIVE on unexpected async failures. A single unhandled DB error or a
+// provider/CLI rejection (e.g. an AI usage-limit error) was crashing the whole process and
+// dropping every in-flight run. Log it and keep serving instead of dying.
+process.on('unhandledRejection', (reason: any) => {
+  console.error('[unhandledRejection]', reason?.stack || reason?.message || reason);
+});
+process.on('uncaughtException', (err: any) => {
+  console.error('[uncaughtException]', err?.stack || err?.message || err);
+});
+
 async function startServer() {
   await loadPersistedData();
   await loadPersistedSettings();

@@ -12,8 +12,10 @@ import path from 'path';
 export interface SelectorMap {
   ariaLabels: string[];
   testIds: string[];
+  cssIds: string[];
   placeholders: string[];
   labels: string[];                              // getByLabel targets + associated labels
+  fieldIds: Array<{ label: string; id: string }>;
   roleNames: Array<{ role: string; name: string }>;
   fileCount: number;
 }
@@ -22,6 +24,9 @@ const RE = {
   aria: /aria-label\s*=\s*[{]?\s*["'`]([^"'`\n]{1,60})["'`]/g,
   ariaProp: /ariaLabel\s*[:=]\s*["'`]([^"'`\n]{1,60})["'`]/g,
   testid: /data-testid\s*=\s*[{]?\s*["'`]([^"'`\n]{1,60})["'`]/g,
+  id: /\bid\s*=\s*[{]?\s*["'`]([A-Za-z][A-Za-z0-9_-]{1,80})["'`]/g,
+  tagWithId: /<(input|textarea|select|button)\b[^>]*\bid\s*=\s*[{]?\s*["'`]([A-Za-z][A-Za-z0-9_-]{1,80})["'`][^>]*>/g,
+  htmlForLabel: /<label\b[^>]*\bhtmlFor\s*=\s*[{]?\s*["'`]([A-Za-z][A-Za-z0-9_-]{1,80})["'`][^>]*>\s*([^<{][^<]{0,50})</g,
   getByTestId: /getByTestId\(\s*["'`]([^"'`\n]{1,60})/g,
   placeholder: /placeholder\s*=\s*[{]?\s*["'`]([^"'`\n]{1,60})["'`]/g,
   getByRole: /getByRole\(\s*["'`](\w+)["'`]\s*,\s*\{\s*name\s*:\s*[/]?\s*["'`]?([^"'`/)\n]{1,50})/g,
@@ -35,8 +40,10 @@ const EXTS = new Set(['.tsx', '.jsx', '.ts', '.js', '.vue', '.svelte', '.html'])
 export function extractSelectorMap(repoPath: string, opts?: { maxFiles?: number }): SelectorMap {
   const aria = new Set<string>();
   const testIds = new Set<string>();
+  const cssIds = new Set<string>();
   const placeholders = new Set<string>();
   const labels = new Set<string>();
+  const fieldIds: Array<{ label: string; id: string }> = [];
   const roleNames: Array<{ role: string; name: string }> = [];
   const maxFiles = opts?.maxFiles ?? 4000;
   let fileCount = 0;
@@ -45,7 +52,14 @@ export function extractSelectorMap(repoPath: string, opts?: { maxFiles?: number 
     re.lastIndex = 0; let m: RegExpExecArray | null;
     while ((m = re.exec(txt)) && fileCount < maxFiles * 50) sink(m);
   };
-  const add = (s: Set<string>, v: string) => { const t = v.replace(/\s+/g, ' ').trim(); if (t && t.length > 1 && !/^[{}$]/.test(t)) s.add(t); };
+  const add = (s: Set<string>, v: string) => {
+    const t = v.replace(/\s+/g, ' ').trim();
+    // Reject interpolated/expression labels — template literals like `List view: ${name}` or
+    // bare JSX-expression braces. They are captured verbatim ("List view: ${activeListViewName}")
+    // but NEVER match the runtime DOM, and they poison both the coder's grounding and the
+    // verifier's fuzzy mapHas. Only keep clean string literals.
+    if (t && t.length > 1 && !/[`{}]|\$\{/.test(t)) s.add(t);
+  };
 
   const walk = (dir: string) => {
     if (fileCount >= maxFiles) return;
@@ -62,6 +76,22 @@ export function extractSelectorMap(repoPath: string, opts?: { maxFiles?: number 
       grab(RE.aria, txt, (m) => add(aria, m[1]));
       grab(RE.ariaProp, txt, (m) => add(aria, m[1]));
       grab(RE.testid, txt, (m) => add(testIds, m[1]));
+      grab(RE.id, txt, (m) => add(cssIds, m[1]));
+      grab(RE.tagWithId, txt, (m) => {
+        const tag = m[0];
+        const id = m[2].replace(/\s+/g, ' ').trim();
+        const labeled =
+          tag.match(/\baria-label\s*=\s*[{]?\s*["'`]([^"'`\n]{1,60})["'`]/)?.[1] ||
+          tag.match(/\bplaceholder\s*=\s*[{]?\s*["'`]([^"'`\n]{1,60})["'`]/)?.[1] ||
+          '';
+        const label = labeled.replace(/\s+/g, ' ').trim();
+        if (id && label && !/[`{}]|\$\{/.test(label)) fieldIds.push({ label, id });
+      });
+      grab(RE.htmlForLabel, txt, (m) => {
+        const id = m[1].replace(/\s+/g, ' ').trim();
+        const label = m[2].replace(/\s+/g, ' ').trim();
+        if (id && label && !/[`{}]|\$\{/.test(label)) fieldIds.push({ label, id });
+      });
       grab(RE.getByTestId, txt, (m) => add(testIds, m[1]));
       grab(RE.placeholder, txt, (m) => add(placeholders, m[1]));
       grab(RE.getByLabel, txt, (m) => add(labels, m[1]));
@@ -75,8 +105,10 @@ export function extractSelectorMap(repoPath: string, opts?: { maxFiles?: number 
   return {
     ariaLabels: [...aria].sort(),
     testIds: [...testIds].sort(),
+    cssIds: [...cssIds].sort(),
     placeholders: [...placeholders].sort(),
     labels: [...labels].sort(),
+    fieldIds: Array.from(new Map(fieldIds.map((f) => [`${f.label.toLowerCase()}|${f.id}`, f])).values()).sort((a, b) => a.label.localeCompare(b.label) || a.id.localeCompare(b.id)),
     roleNames: dedupeRoles,
     fileCount,
   };
@@ -120,6 +152,8 @@ export function renderSelectorMap(map: SelectorMap, limit = 120): string {
   const lines: string[] = [];
   if (map.ariaLabels.length) lines.push(`aria-labels: ${cap(map.ariaLabels)}`);
   if (map.labels.length) lines.push(`field labels: ${cap(map.labels)}`);
+  if (map.fieldIds.length) lines.push(`field label -> css id: ${map.fieldIds.slice(0, limit).map((f) => `${f.label}=>#${f.id}`).join(' | ')}`);
+  if (map.cssIds.length) lines.push(`css ids: ${cap(map.cssIds.map((id) => `#${id}`))}`);
   if (map.testIds.length) lines.push(`test ids: ${cap(map.testIds)}`);
   if (map.placeholders.length) lines.push(`placeholders: ${cap(map.placeholders)}`);
   if (map.roleNames.length) lines.push(`role+name: ${map.roleNames.slice(0, limit).map((r) => `${r.role}:${r.name}`).join(' | ')}`);
@@ -130,11 +164,15 @@ export function renderSelectorMap(map: SelectorMap, limit = 120): string {
 export function mapHas(map: SelectorMap, target: string): boolean {
   const t = String(target || '').toLowerCase().trim();
   if (!t) return false;
-  const pools = [map.ariaLabels, map.labels, map.testIds, map.placeholders, map.roleNames.map((r) => r.name)];
+  const pools = [map.ariaLabels, map.labels, map.testIds, map.cssIds, map.placeholders, map.roleNames.map((r) => r.name), map.fieldIds.map((f) => f.label)];
   for (const pool of pools) {
     for (const v of pool) {
       const lv = v.toLowerCase();
-      if (lv === t || lv.includes(t) || t.includes(lv)) return true;
+      if (lv === t) return true;
+      // Substring matches only count when the shorter side is specific enough. The old
+      // unbounded bidirectional includes() let a 2-3 char fragment "ground" anything — e.g.
+      // "New" matched "Enter a new password", so hallucinated selectors passed verification.
+      if ((lv.includes(t) || t.includes(lv)) && Math.min(lv.length, t.length) >= 4) return true;
     }
   }
   return false;
@@ -146,13 +184,18 @@ export function mapHas(map: SelectorMap, target: string): boolean {
  * placeholder must use getByPlaceholder, a test id getByTestId, etc. Returns the canonical
  * selector for that target, preferring the most specific/reliable method. Code-truth, no guessing.
  */
-export function methodFor(map: SelectorMap, target: string): { by: 'testid' | 'placeholder' | 'label' | 'role' | 'text'; value: string; role?: string } | null {
+export function methodFor(map: SelectorMap, target: string): { by: 'testid' | 'css' | 'placeholder' | 'label' | 'role' | 'text'; value: string; role?: string } | null {
   const t = String(target || '').toLowerCase().trim();
   if (!t) return null;
   // EXACT (case-insensitive) match only — fuzzy substring matching produced garbage
   // (e.g. "New" matching "Enter a new password"). Method rewriting must be confident.
   const find = (arr: string[]) => arr.find((v) => v.toLowerCase() === t);
   const tid = find(map.testIds); if (tid) return { by: 'testid', value: tid };
+  const css = find(map.cssIds.map((id) => `#${id}`)) || find(map.cssIds); if (css) return { by: 'css', value: css.startsWith('#') ? css : `#${css}` };
+  const linked = map.fieldIds.filter((f) => f.label.toLowerCase() === t);
+  // Use a linked id only when it is unambiguous globally. If several forms share a common label
+  // such as "API Name", the coder needs feature/AOP context to choose the right id.
+  if (linked.length === 1) return { by: 'css', value: `#${linked[0].id}` };
   const ph = find(map.placeholders); if (ph) return { by: 'placeholder', value: ph };
   const lbl = find(map.labels); if (lbl) return { by: 'label', value: lbl };
   const role = map.roleNames.find((r) => r.name.toLowerCase() === t);
@@ -165,6 +208,7 @@ const esc = (s: string) => JSON.stringify(s);
 function canonicalLocator(m: { by: string; value: string; role?: string }): string {
   switch (m.by) {
     case 'testid': return `getByTestId(${esc(m.value)})`;
+    case 'css': return `locator(${esc(m.value)})`;
     case 'placeholder': return `getByPlaceholder(${esc(m.value)})`;
     case 'label': return `getByLabel(${esc(m.value)})`;
     case 'role': return `getByRole(${esc(m.role || 'button')}, { name: ${esc(m.value)}, exact: true })`;
