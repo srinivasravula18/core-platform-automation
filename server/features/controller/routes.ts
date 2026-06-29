@@ -7,6 +7,25 @@ import { reqScope } from '../../shared/scope';
 // An action request mutates/creates/runs something → needs the full tool loop. A plain
 // question can be answered with the FAST single-call git-grounded path.
 const ACTION_RE = /\b(generate|create|write|build|make|run|execute|file\s+(a|the)|add|move|organi[sz]e|re-?run|delete|remove|update|edit|set\s|navigate|open|go\s+to|triage|expand|rework|schedule)\b/i;
+
+// Prefix the recent conversation so the app-knowledge answerer can resolve follow-ups ("rewrite
+// that case", "explain it", a pasted case that follows a prior instruction) instead of answering
+// the lone message blind. Harmless for self-contained questions. App-agnostic.
+function withConversationContext(message: string, history: unknown): string {
+  const turns = Array.isArray(history) ? history : [];
+  if (!turns.length) return message;
+  const recent = turns.slice(-6)
+    .map((h: any) => {
+      const role = h?.role === 'assistant' ? 'Assistant' : 'User';
+      const text = String(h?.content ?? h?.text ?? '').replace(/\s+/g, ' ').trim().slice(0, 700);
+      return text ? `${role}: ${text}` : '';
+    })
+    .filter(Boolean)
+    .join('\n');
+  if (!recent) return message;
+  return `Recent conversation (context — resolve references like "that case", "it", or "this" against it, and honor any earlier instruction such as "rewrite in simple words"):\n${recent}\n\nCurrent message: ${message}`;
+}
+
 import { INTENT_LABELS, type IntentKind, type Plan, type PlanStep } from '../../ai/intents';
 
 function prepareStreamingResponse(res: any) {
@@ -114,9 +133,11 @@ export function registerControllerRoutes(app: Express) {
         return res.json({ reply: quick, accepted: true, fast: true, actions: [], trace: [] });
       }
       // FAST PATH 2: app-knowledge QUESTIONS get a single git-grounded LLM call (retrieval
-      // done deterministically), instead of the slow multi-step tool loop.
+      // done deterministically), instead of the slow multi-step tool loop. Include the recent
+      // conversation so FOLLOW-UPS resolve against context — "rewrite that case", "explain it",
+      // or a pasted case that follows a prior instruction — instead of being answered blind.
       if (!ACTION_RE.test(userMessage)) {
-        const reply = await answerAppQuestionFromCode(userMessage, {
+        const reply = await answerAppQuestionFromCode(withConversationContext(userMessage, history), {
           workspaceId,
           userId: effectiveUserId,
           projectId: scope.projectId,
@@ -174,7 +195,7 @@ export function registerControllerRoutes(app: Express) {
       // retrieval. Emits the search/read progress so the UI still animates the live steps.
       if (!ACTION_RE.test(userMessage)) {
         let i = 0;
-        const reply = await answerAppQuestionFromCode(userMessage, {
+        const reply = await answerAppQuestionFromCode(withConversationContext(userMessage, history), {
           workspaceId,
           userId: effectiveUserId,
           projectId: scope.projectId,

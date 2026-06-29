@@ -158,6 +158,16 @@ export const DEFAULT_MODELS: Record<ProviderName, { default: string; alternative
   anthropic: { default: 'claude-opus-4-8', alternatives: ['claude-sonnet-4-6', 'claude-haiku-4-5'] },
 };
 
+export const LOCAL_ONLY_MODELS: Partial<Record<ProviderName, string[]>> = {
+  openai: ['codex-spark'],
+};
+
+export function listAvailableModels(provider: ProviderName, opts?: { includeLocalOnly?: boolean }): string[] {
+  const base = [DEFAULT_MODELS[provider].default, ...DEFAULT_MODELS[provider].alternatives];
+  if (!opts?.includeLocalOnly) return base;
+  return [...base, ...(LOCAL_ONLY_MODELS[provider] || [])];
+}
+
 export const PRICING_PER_1M_TOKENS: Record<string, { input: number; output: number }> = {
   'gemini-3.5-flash': { input: 0.3, output: 2.5 },
   'gemini-3.1-pro': { input: 2.0, output: 12.0 },
@@ -203,6 +213,7 @@ export const MODEL_CAPS: Record<string, ModelCaps> = {
   'gpt-5.4': { contextWindow: 1_050_000, maxOutput: 128_000 },
   'gpt-5.4-mini': { contextWindow: 400_000, maxOutput: 128_000 },
   'gpt-5.4-nano': { contextWindow: 400_000, maxOutput: 128_000 },
+  'codex-spark': { contextWindow: 400_000, maxOutput: 128_000 },
   // Anthropic Claude 4.x — Opus 4.8 & Sonnet 4.6 are 1M context; Haiku 4.5 is 200k. Max output:
   // Opus 128k, Sonnet & Haiku 64k. (Batch API can extend output to 300k via beta header.)
   'claude-opus-4-8': { contextWindow: 1_000_000, maxOutput: 128_000 },

@@ -8,7 +8,7 @@
 import type { Express } from 'express';
 import { db, persistDataInBackground, persistSettingsInBackground } from '../../shared/storage';
 import { buildProvider, listConfiguredProviders, resolveProviderForAgent, resolveModelForAgent } from '../../ai/orchestrator';
-import { DEFAULT_MODELS, type ProviderAuthMode, type ProviderName } from '../../ai/providers/types';
+import { DEFAULT_MODELS, listAvailableModels, type ProviderAuthMode, type ProviderName } from '../../ai/providers/types';
 import {
   listPrompts,
   getActivePrompt,
@@ -119,7 +119,7 @@ export function registerSettingsRoutes(app: Express) {
       return {
         name: p,
         defaultModel: DEFAULT_MODELS[p].default,
-        alternatives: DEFAULT_MODELS[p].alternatives,
+        alternatives: listAvailableModels(p, { includeLocalOnly: isLocalCliProviderAllowed() }).filter((m) => m !== DEFAULT_MODELS[p].default),
         enabled: stored?.enabled !== false,
         configured: authMode === 'api_key' ? hasApiKey : accountCallable,
         callable: (stored?.enabled !== false) && (authMode === 'api_key' ? hasApiKey : accountCallable),

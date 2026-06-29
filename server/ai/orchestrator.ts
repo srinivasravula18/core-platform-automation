@@ -12,7 +12,7 @@
  */
 
 import type { AIProvider, ProviderAuthMode, ProviderName, ChatMessage, ProviderResponse } from './providers/types';
-import { DEFAULT_MODELS } from './providers/types';
+import { DEFAULT_MODELS, listAvailableModels } from './providers/types';
 import type { AgentStep, AgentRunResult, RunToolLoopOptions, ToolInvocation } from './tools/types';
 import { GeminiProvider } from './providers/gemini';
 import { OpenAIProvider } from './providers/openai';
@@ -123,7 +123,7 @@ export function resolveProviderForAgent(agent: string): ProviderName {
 }
 
 export function resolveModelForAgent(agent: string, provider: ProviderName): string {
-  const validModels = [DEFAULT_MODELS[provider].default, ...DEFAULT_MODELS[provider].alternatives];
+  const validModels = listAvailableModels(provider, { includeLocalOnly: isLocalCliProviderAllowed() });
   // 1) per-agent override (Settings → AI Providers → per-agent model)
   const map = db.settings?.agentModelMap;
   const agentModel = map && (map as any)[agent] ? String((map as any)[agent]) : '';

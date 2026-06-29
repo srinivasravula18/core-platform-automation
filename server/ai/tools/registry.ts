@@ -291,13 +291,22 @@ export async function quickWorkspaceAnswer(
   // Clarification / explanation questions are conversational Q&A, NOT a counts/list query — even
   // when the message (often a pasted case description) mentions "count", "runs", or "cases". Bow
   // out so the assistant answers them using the recent conversation context.
-  if (/\b(explain|clarif\w*|elaborate|describe|walk me through|do(?:es)?n'?t understand|what do you mean|what does (?:this|that|it)|which screen|what screen|tell me about|what is this (?:case|test)|reg(?:arding)? which)\b/.test(t)) return null;
+  if (/\b(explain|clarif\w*|elaborate|describe|rewrite|reword|simpl(?:e|er|ify)|in simple words|walk me through|do(?:es)?n'?t understand|what do you mean|what does (?:this|that|it)|which screen|what screen|tell me about|what is this (?:case|test)|reg(?:arding)? which)\b/.test(t)) return null;
+  // A pasted test case / long descriptive statement is NOT a quick count/list question — it just
+  // happens to contain words like "list view" or "run". Bow out so the assistant handles it with
+  // the conversation context (e.g. the prior "rewrite this case" instruction). Real count/list
+  // asks are short and lead with the intent word.
+  const trimmed = t.trim();
+  if (/^(validat|verif|ensur|confirm|checks?\b|tests?\b|the (?:test )?case|this (?:test )?case|when\b|given\b|it should|as a |scenario)/.test(trimmed)) return null;
+  if (trimmed.length > 120 && !/^(how many|how much|number of|counts?\b|list\b|show me|what are|which |do i have|are there)/.test(trimmed)) return null;
   // The count intent must be a real counting ask — a bare "count" inside "count, sum, or avg" is
   // an aggregation word, not a request. Require how-many phrasing or "count of/the/my/all".
   const isCount = /\b(how many|number of|how much|\btotal\b)\b/.test(t)
     || /\bcounts?\s+(?:of|the|my|all|in)\b/.test(t)
     || /^\s*counts?\b/.test(t);
-  const isList = /\b(list|show me|what are|which|do i have|are there)\b/.test(t);
+  // "list" must be a list COMMAND, not the "list view(s)" feature noun.
+  const isList = /\b(show me|what are|which|do i have|are there)\b/.test(t)
+    || (/\blist\b/.test(t) && !/\blist\s+views?\b/.test(t));
   if (!isCount && !isList) return null;
 
   // Accept a bare userId (legacy callers) or a full {userId, projectId, appId} scope.

@@ -1465,7 +1465,14 @@ Do NOT write comments such as "Auth is expected to be handled by global setup". 
     : '';
   const coder = await getOrchestrator('playwrightCoder', { workspaceId: run.ownerId || 'default' });
   const caseList = Array.isArray(testCases?.test_cases) ? testCases.test_cases : [];
-  const scriptsResult = await coder.generateObject<any>({
+  // The batch call generates ALL scripts in one shot. For 5-6 cases that single response can
+  // exceed a provider's per-call timeout (e.g. the account/CLI runner's cap). If it throws,
+  // do NOT fail the whole run — fall through with an empty batch so the per-case path below
+  // (alignScriptsToCases) regenerates each script in its own small call, well under any single
+  // call timeout. App-agnostic resilience; no prompt/behavior change to the scripts themselves.
+  let scriptsResult: { object: any };
+  try {
+    scriptsResult = await coder.generateObject<any>({
     prompt: `Use this baseURL in the scripts when provided: ${targetUrl || 'not provided'}.
 Approved user-reviewed understanding: ${reviewedUnderstanding || 'not provided'}.
 ${credentialContext}
@@ -1496,7 +1503,15 @@ STEP-BY-STEP EVIDENCE (required): the test signature MUST include testInfo — t
 Test cases: ${JSON.stringify(testCases)}${coderKnowledge}`,
     schema: playwrightScriptsSchema,
     userMessage: 'Generate Playwright scripts for the inspected flow.',
-  });
+    });
+  } catch (batchErr: any) {
+    pushPhase(run, {
+      agent: 'PlaywrightAgent',
+      status: 'running',
+      output: `Batch script generation did not complete (${getAIErrorMessage(batchErr)}); generating scripts one case at a time.`,
+    });
+    scriptsResult = { object: { scripts: [] } };
+  }
   const scripts = scriptsResult.object;
   // Normalize EACH generated script so a truncated/unterminated file (LLM dropping the
   // trailing `});` of test(...)) does not get persisted or break execution. We repair

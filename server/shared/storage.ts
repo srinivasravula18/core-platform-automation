@@ -1,6 +1,6 @@
 import path from 'path';
 import fs from 'fs/promises';
-import { DEFAULT_MODELS, type ProviderName } from '../ai/providers/types';
+import { DEFAULT_MODELS, listAvailableModels, type ProviderName } from '../ai/providers/types';
 
 const PROVIDERS: ProviderName[] = ['gemini', 'openai', 'anthropic'];
 const DEFAULT_PROVIDER_SETTINGS: Record<ProviderName, { apiKey: string; model: string; authMode?: 'api_key' | 'account'; enabled?: boolean }> = {
@@ -31,7 +31,7 @@ function normalizeProviderSettings(settings: any) {
   const agentProviderMap = Object.fromEntries(
     Object.entries(settings?.agentProviderMap || {}).filter(([, provider]) => isProviderName(provider)),
   ) as Record<string, ProviderName>;
-  const validModels = new Set(PROVIDERS.flatMap((provider) => [DEFAULT_MODELS[provider].default, ...DEFAULT_MODELS[provider].alternatives]));
+  const validModels = new Set(PROVIDERS.flatMap((provider) => listAvailableModels(provider, { includeLocalOnly: true })));
   const agentModelMap = Object.fromEntries(
     Object.entries(settings?.agentModelMap || {}).filter(([, model]) => typeof model === 'string' && validModels.has(model)),
   ) as Record<string, string>;

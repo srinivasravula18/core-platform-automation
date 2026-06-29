@@ -42,7 +42,12 @@ function extractJson(text: string): unknown {
   }
 }
 
-async function runProcess(command: string, args: string[], stdin: string, timeoutMs = 300_000): Promise<string> {
+// The default CLI call timeout. A large structured-output call (e.g. generating several
+// full Playwright scripts at once) can legitimately exceed 5 min on the account/CLI
+// provider, so allow raising it via env without code changes. App-agnostic infra knob.
+const DEFAULT_CLI_TIMEOUT_MS = Math.max(60_000, Number(process.env.CLI_PROVIDER_TIMEOUT_MS) || 300_000);
+
+async function runProcess(command: string, args: string[], stdin: string, timeoutMs = DEFAULT_CLI_TIMEOUT_MS): Promise<string> {
   return await new Promise((resolve, reject) => {
     const env: NodeJS.ProcessEnv = { ...process.env, NO_COLOR: '1' };
     // The Test Flow AI backend may be launched from inside a Codex session. Do not
