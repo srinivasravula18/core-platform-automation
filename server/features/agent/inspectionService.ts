@@ -77,24 +77,36 @@ async function collectPageContext(page: any) {
       return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
     };
 
-    const candidates = Array.from(document.querySelectorAll('a, button, [role="button"], [role="link"], [role="menuitem"], input[type="submit"]'))
+    // Capture not just links/buttons but also the INTERACTIVE FORM CONTROLS the coder needs
+    // to ground row-selection, toggles, filters and view switches: checkboxes, radios,
+    // switches, tabs, comboboxes and selects. Excluding these (the old query only had
+    // input[type=submit]) is why "select a row", "toggle view mode" and similar cases were
+    // never grounded and the coder had to guess a selector that then timed out at runtime.
+    const candidates = Array.from(document.querySelectorAll('a, button, [role="button"], [role="link"], [role="menuitem"], [role="tab"], [role="checkbox"], [role="switch"], [role="radio"], [role="combobox"], input[type="submit"], input[type="checkbox"], input[type="radio"], input[type="search"], input[type="text"], select'))
       .filter(visible)
-      .slice(0, 80)
+      .slice(0, 120)
       .map((element, index) => {
         const id = `agent-action-${index}`;
         element.setAttribute('data-agent-id', id);
         const tag = element.tagName.toLowerCase();
-        const text = clean(element.textContent || element.getAttribute('aria-label') || element.getAttribute('title') || (element as HTMLInputElement).value);
+        const inputType = clean(element.getAttribute('type'));
+        const text = clean(element.textContent || element.getAttribute('aria-label') || element.getAttribute('title') || element.getAttribute('placeholder') || (element as HTMLInputElement).value);
         return {
           id,
           tag,
+          // Surface the control kind so the coder picks the right Playwright verb
+          // (.check() for a checkbox, selectOption() for a select, .click() for a button).
+          control: element.getAttribute('role') || (tag === 'input' ? (inputType || 'text') : tag === 'select' ? 'select' : ''),
           role: element.getAttribute('role') || '',
           text,
+          name: clean(element.getAttribute('name')),
           href: element instanceof HTMLAnchorElement ? element.href : '',
-          ariaLabel: clean(element.getAttribute('aria-label')),
+          ariaLabel: clean(element.getAttribute('aria-label') || element.getAttribute('placeholder')),
         };
       })
-      .filter((item) => item.text || item.ariaLabel || item.href);
+      // Keep anything addressable: visible text, an aria-label/placeholder, an href, a form
+      // name, or simply being a form control (a bare checkbox is still worth grounding).
+      .filter((item) => item.text || item.ariaLabel || item.href || item.name || ['checkbox', 'radio', 'switch', 'select'].includes(item.control));
 
     const headings = Array.from(document.querySelectorAll('h1,h2,h3,h4,[role="heading"]'))
       .filter(visible)
@@ -210,27 +222,40 @@ export async function inspectApplicationFlow(options: {
     observedPages.push({ stage: 'after-login', ...compactPageContext(lastContext) });
     let goalStatus: 'satisfied' | 'blocked' | 'partial' = 'partial';
 
-    // #3a Wait for lazy-loaded content: the shell (nav) often renders before the main
-    // data (lists/tables fetched async, shown behind a "Loading…" placeholder). Without
-    // this, we capture nav-only and miss the very table the user wants tested. Bounded +
-    // best-effort: proceed anyway if it never clears.
+    // #3a Wait for the data grid to actually FINISH loading before we read the page.
+    // The shell (nav) renders first; the main grid is fetched async and shows a
+    // "Loading records…" placeholder, mounting the real <table> — and the toolbar controls
+    // that only exist alongside it (export, view-mode, select-all) — once rows arrive.
+    // Reading during that window is the #1 cause of a shallow, ungrounded inspection:
+    // visibleTables comes back empty and half the toolbar is missing, so the coder is left
+    // to GUESS selectors. Wait on the POSITIVE signal (a table/grid with rows, or the
+    // loading placeholder gone with real content present), with a generous budget instead
+    // of a short fixed timeout. Best-effort: proceed anyway if it never clears.
     await page.waitForFunction(
-      () => !/\bloading\b/i.test((document.body && document.body.innerText) || ''),
-      { timeout: 8000 },
+      () => {
+        const body = (document.body && document.body.innerText) || '';
+        const stillLoading = /loading\s+records|\bloading…?\b/i.test(body);
+        const hasGridRows = !!document.querySelector('table tbody tr, [role="grid"] [role="row"], [role="row"] [role="gridcell"]');
+        const hasContent = document.querySelectorAll('table, [role="grid"], form, h1, h2').length > 0;
+        return hasGridRows || (!stillLoading && hasContent);
+      },
+      { timeout: 20000 },
     ).catch(() => undefined);
     await page.waitForTimeout(700);
     lastContext = await collectPageContext(page);
     observedPages.push({ stage: 'post-load', ...compactPageContext(lastContext) });
 
-    // #3 Cheap blind-retry: if the page hasn't rendered its content yet (SPA still
-    // hydrating), re-collect context a couple of times on the SAME page — no browser
-    // relaunch, no re-login, no LLM call. This recovers a "blind" read cheaply, instead of
-    // the caller re-running the whole expensive inspection.
-    for (let r = 0; r < 2; r += 1) {
-      const blank = !((lastContext.actions || []).length || (lastContext.forms || []).length || (lastContext.tables || []).length);
-      if (!blank) break;
+    // #3 Shallow/blind re-collect: if the page still shows a loading placeholder or hasn't
+    // rendered any content yet (SPA hydrating or rows still fetching), re-collect on the SAME
+    // page — no relaunch, no re-login, no LLM call. A page that surfaced nav links but is still
+    // mid-load is treated as NOT ready (not "good enough"), so we never hand the coder a
+    // grid-less snapshot that forces it to guess. Rows can take >8s, so wait longer per round.
+    for (let r = 0; r < 3; r += 1) {
+      const stillLoading = /loading\s+records|\bloading…?\b/i.test(String(lastContext.bodyText || ''));
+      const totallyBlank = !((lastContext.actions || []).length || (lastContext.forms || []).length || (lastContext.tables || []).length);
+      if (!totallyBlank && !stillLoading) break;
       await page.waitForLoadState('networkidle', { timeout: 8000 }).catch(() => undefined);
-      await page.waitForTimeout(1200);
+      await page.waitForTimeout(1500);
       lastContext = await collectPageContext(page);
       observedPages.push({ stage: `recollect-${r + 1}`, ...compactPageContext(lastContext) });
     }
@@ -250,7 +275,7 @@ export async function inspectApplicationFlow(options: {
         listLikeRegions: lastContext.listLikeRegions,
         forms: lastContext.forms,
         bodyText: lastContext.bodyText.slice(0, 1800),
-      })}. Decide whether the user's requested goal is already satisfied, blocked, or whether one visible action should be clicked next to make progress toward it. IMPORTANT — REACH THE CONTROLS THE REQUEST IS ABOUT: the goal is satisfied only once the specific controls the user's request targets are actually visible on screen. If those controls are not on the current view because they live behind a menu, panel, dialog, tab, or other secondary entry point, CLICK to OPEN that container so its controls become visible — do NOT report 'satisfied' merely because a page, list, or table loaded. Opening menus, panels, dialogs, and tabs to REVEAL controls is non-destructive discovery and is expected. Only choose an elementId from actions. Never click a control that MUTATES data or state — delete, remove, save, submit, apply changes — unless the user explicitly asked for that.${options.knowledge || ''}`;
+      })}. Decide whether the user's requested goal is already satisfied, blocked, or whether one visible action should be clicked next to make progress toward it. IMPORTANT — REACH THE CONTROLS THE REQUEST IS ABOUT: the goal is satisfied only once the specific controls the user's request targets are actually visible on screen. If those controls are not on the current view because they live behind a menu, panel, dialog, tab, or other secondary entry point, CLICK to OPEN that container so its controls become visible — do NOT report 'satisfied' merely because a page, list, or table loaded. Opening menus, panels, dialogs, and tabs to REVEAL controls is non-destructive discovery and is expected. If the page still shows a "Loading…/Loading records…" placeholder or the data grid/table has not rendered its rows yet, the goal is NOT satisfied — prefer to keep observing rather than declaring success on a half-loaded page. For list/grid screens, the toolbar controls the request cares about (view-mode toggle, export, column options, bulk/row actions) often live behind a toolbar menu, an overflow ("More"/"⋯"), or an actions button — OPEN that container so those controls become visible. Only choose an elementId from actions. Never click a control that MUTATES data or state — delete, remove, save, submit, apply changes — unless the user explicitly asked for that.${options.knowledge || ''}`;
       // The planner is a structured-output call; smaller / low-effort models occasionally
       // return off-schema JSON. Retry once, then DEGRADE GRACEFULLY — keep the page context
       // we already observed (login + navigation succeeded) instead of throwing away the whole
