@@ -603,45 +603,8 @@ async function executeStep(step: PlanStep, plan: Plan): Promise<any> {
             : full;
           created.push(toInline(rec));
         }
-      } catch {
-        // FALLBACK: discovery unavailable (LLM/source not reachable) — generate
-        // plain cases so the console still works even without traceability.
-        const knowledgeText = `${plan.userMessage} ${params.scope || ''} ${params.requirements || ''} ${params.source || ''}`;
-        const orch = await getOrchestrator('caseWriter', { workspaceId, userId });
-        const { object } = await orch.generateObject<{ cases: any[] }>({
-          prompt: `Generate ${count} test cases.
-User request (verbatim): ${plan.userMessage}
-Scope: ${scope}
-Requirements: ${params.requirements || 'standard QA coverage'}
-${planId ? `Plan ID: ${planId}` : ''}
-${suiteId ? `Suite ID: ${suiteId}` : ''}
-${folderId ? `Folder ID: ${folderId}` : ''}
-
-Generate cases that actually cover the user request above; do not default to unrelated login/auth cases unless the request is about login.
-Return strict JSON: {"cases": [{title, description, priority, type, tags, steps: [{action, expected}]}]}.${buildKnowledgeBlock({ text: knowledgeText }, { maxChars: 9000 })}`,
-          schema: z.object({ cases: z.array(z.object({ title: z.string(), description: z.string(), priority: z.string(), type: z.string(), tags: z.array(z.string()), steps: z.array(z.object({ action: z.string(), expected: z.string() })) })) }),
-          userMessage: String(params.requirements || params.scope || 'generate test cases'),
-        });
-        for (const c of (object as any)?.cases || []) {
-          const id = `TC-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
-          const rec = await Cases.upsert({
-            id,
-            title: c.title,
-            description: c.description || '',
-            steps: c.steps || [],
-            testPlanId: planId,
-            testSuiteId: suiteId,
-            status: 'Draft',
-            tags: c.tags || [],
-            type: c.type || 'Manual',
-            priority: c.priority || 'Medium',
-            captureEvidenceOnManualRun: true,
-            folderId,
-            createdBy: 'AI Controller',
-            createdAt: new Date(),
-          });
-          created.push(toInline(rec));
-        }
+      } catch (err: any) {
+        throw new Error(`Requirement discovery failed; case generation is blocked because fallback must be repo-grounded, not prompt-guessed. ${err?.message || err}`);
       }
 
       const inbox = await pushInboxItem({

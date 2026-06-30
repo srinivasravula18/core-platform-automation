@@ -1,0 +1,30 @@
+{
+  "id": "demo-hist-1",
+  "title": "Generate the test cases and a grounded Playwright script for lea",
+  "createdAt": 1782803968421,
+  "updatedAt": 1782803968421,
+  "messages": [
+    {
+      "role": "user",
+      "content": "Generate the test cases and a grounded Playwright script for leave_request."
+    },
+    {
+      "role": "assistant",
+      "content": "I wasn't able to finish within the step budget for this turn. Could you narrow the request?",
+      "steps": [
+        {
+          "tool": "describe_object",
+          "isError": false
+        },
+        {
+          "tool": "generate_tests",
+          "isError": false
+        },
+        {
+          "tool": "generate_script",
+          "isError": false
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+node_modules/
+dist/
+.next/
+.turbo/
+coverage/
+*.log
+.env
+.env.local
+# agent run workspaces — system-of-record lives in a sibling <app>-tests repo, not here
+workspace/**/runs/**/notes/
+evidence-store/
+test-results/
+playwright-report/

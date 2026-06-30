@@ -85,6 +85,8 @@ export interface RawGoalClassification {
 export interface RoutingContext {
   /** Apps the user selected (top-bar scope + "Apps to test" picker), merged. */
   selectedApps?: RouteTarget[];
+  /** Apps available in the current project, used only when the user names one. */
+  availableApps?: RouteTarget[];
   /** A target already established earlier in THIS conversation. */
   conversationTarget?: RouteTarget | null;
 }

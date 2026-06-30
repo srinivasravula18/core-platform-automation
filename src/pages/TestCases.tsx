@@ -9,6 +9,7 @@ import { Modal } from '@/src/components/Modal';
 import { AIActionModal } from '@/src/components/AIActionModal';
 import { FolderSelect } from '@/src/components/FolderSelect';
 import { showAlert, showConfirm } from '@/src/lib/dialog';
+import { useProjects } from '@/src/store/project';
 
 const CASE_STATUSES = ['Draft', 'Under Review', 'Approved', 'Automated', 'Deprecated'];
 
@@ -19,10 +20,12 @@ export default function TestCases() {
   const [plans, setPlans] = useState<any[]>([]);
   const [suites, setSuites] = useState<any[]>([]);
   const [folders, setFolders] = useState<any[]>([]);
+  const { projects, selectedProjectId, selectedAppId, fetchProjects } = useProjects();
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState(searchParams.get('search') || '');
   const aiSearch = useAiSearch('test cases');
   const [statusFilter, setStatusFilter] = useState('All');
+  const [appFilter, setAppFilter] = useState('All');
   const [isFilterOpen, setIsFilterOpen] = useState(false);
   const [isCaseModalOpen, setIsCaseModalOpen] = useState(false);
   const [isAICaseModalOpen, setIsAICaseModalOpen] = useState(false);
@@ -80,6 +83,7 @@ export default function TestCases() {
     fetchPlans();
     fetchSuites();
     fetchFolders();
+    fetchProjects();
   }, []);
 
   useEffect(() => {
@@ -136,7 +140,7 @@ export default function TestCases() {
       fetch('/api/cases', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ ...formData, tags, steps })
+        body: JSON.stringify({ ...formData, tags, steps, projectId: selectedProjectId || '', appId: selectedAppId || '' })
       }).then(() => {
          setIsCaseModalOpen(false);
          fetchCases();
@@ -186,7 +190,7 @@ export default function TestCases() {
     fetch('/api/cases', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ ...data, tags, steps })
+      body: JSON.stringify({ ...data, tags, steps, projectId: selectedProjectId || '', appId: selectedAppId || '' })
     }).then(() => fetchCases());
   };
 
@@ -250,14 +254,18 @@ export default function TestCases() {
     if (testCase.testSuiteId) return testCase.testSuiteId;
     return suites.find((suite) => testCase.agentRunId && suite.agentRunId === testCase.agentRunId)?.id || '';
   };
+  const apps = projects.flatMap((project) => project.apps || []);
+  const appName = (appId: string) => apps.find((app) => app.id === appId)?.name || (appId ? 'Unknown app' : 'All apps');
   const tagOptions = Array.from(new Set(cases.flatMap((testCase) => Array.isArray(testCase.tags) ? testCase.tags : []).map((tag) => String(tag).trim()).filter(Boolean))).sort();
   const filteredCases = cases.filter((testCase) => {
     const query = searchTerm.toLowerCase();
+    const appLabel = appName(testCase.appId || '');
     const matchesSearch = aiSearch.isAiQuery(searchTerm)
       ? (aiSearch.matchedIds ? aiSearch.matchedIds.has(testCase.id) : true)
-      : (!query || `${testCase.id || ''} ${testCase.title || ''} ${testCase.description || ''} ${(testCase.tags || []).join(' ')}`.toLowerCase().includes(query));
+      : (!query || `${testCase.id || ''} ${testCase.title || ''} ${testCase.description || ''} ${appLabel} ${(testCase.tags || []).join(' ')}`.toLowerCase().includes(query));
     const matchesStatus = statusFilter === 'All' || (testCase.status || 'Draft') === statusFilter;
-    return matchesSearch && matchesStatus;
+    const matchesApp = appFilter === 'All' || (testCase.appId || '') === appFilter;
+    return matchesSearch && matchesStatus && matchesApp;
   });
 
   return (
@@ -279,6 +287,7 @@ export default function TestCases() {
               { key: 'type', label: 'Type', get: (c) => c.type || 'Manual' },
               { key: 'priority', label: 'Priority', get: (c) => c.priority || 'Medium' },
               { key: 'status', label: 'Status', get: (c) => c.status || 'Draft' },
+              { key: 'app', label: 'App', get: (c) => appName(c.appId || '') },
               { key: 'tags', label: 'Tags' },
               { key: 'createdBy', label: 'Created By' },
               { key: 'suite', label: 'Suite', get: (c) => (suites.find((s) => s.id === c.testSuiteId) || {}).name || '' },
@@ -501,6 +510,17 @@ export default function TestCases() {
               </div>
             )}
           </div>
+          <select
+            value={appFilter}
+            onChange={(event) => setAppFilter(event.target.value)}
+            className="min-w-[160px] rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-1.5 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
+            title="Filter by app"
+          >
+            <option value="All">All apps</option>
+            {apps.map((app) => (
+              <option key={app.id} value={app.id}>{app.name}</option>
+            ))}
+          </select>
           {bulk.selectedCount > 0 && (
             <div className="ml-auto flex items-center gap-2">
               <button onClick={() => runSelectedCases()} disabled={isStartingRun} className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
@@ -574,6 +594,7 @@ export default function TestCases() {
                 <th className="font-medium py-3 px-4 w-24">ID</th>
                 <th className="font-medium py-3 px-4">Title</th>
                 <th className="font-medium py-3 px-4">Folder</th>
+                <th className="font-medium py-3 px-4">App</th>
                 <th className="font-medium py-3 px-4">Test Plan</th>
                 <th className="font-medium py-3 px-4">Test Suite</th>
                 <th className="font-medium py-3 px-4 w-32">Status</th>
@@ -584,10 +605,10 @@ export default function TestCases() {
             </thead>
             <tbody className="divide-y divide-[var(--border)]">
               {loading && (
-                <tr><td colSpan={10} className="py-8 text-center text-[var(--text-muted)]">Loading test cases...</td></tr>
+                <tr><td colSpan={11} className="py-8 text-center text-[var(--text-muted)]">Loading test cases...</td></tr>
               )}
               {!loading && filteredCases.length === 0 && (
-                <tr><td colSpan={10} className="py-8 text-center text-[var(--text-muted)]">No test cases found.</td></tr>
+                <tr><td colSpan={11} className="py-8 text-center text-[var(--text-muted)]">No test cases found.</td></tr>
               )}
               {filteredCases.map((tc) => (
                 <tr key={tc.id} onClick={() => openEditModal(tc)} className="hover:bg-[var(--bg-secondary)] transition-colors cursor-pointer">
@@ -616,6 +637,7 @@ export default function TestCases() {
                       ))}
                     </select>
                   </td>
+                  <td className="py-3 px-4 text-xs text-[var(--text-muted)]">{appName(tc.appId || '')}</td>
                   <td className="py-3 px-4">
                     <select
                       value={resolvePlanId(tc)}

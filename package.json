@@ -38,6 +38,8 @@
     "ai": "^6.0.195",
     "clsx": "^2.1.1",
     "dotenv": "^17.2.3",
+    "drizzle-kit": "^0.31.10",
+    "drizzle-orm": "^0.45.2",
     "express": "^4.21.2",
     "firebase": "^12.14.0",
     "html2canvas": "^1.4.1",

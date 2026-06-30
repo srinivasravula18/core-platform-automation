@@ -1,0 +1,11 @@
+# Model routing config for the Vite + Express app.
+default_provider: ${AI_PROVIDER:-local}
+
+role_tiers:
+  orchestrator: balanced
+  application-inspector: fast
+  code-analyst: reasoning
+  requirement-writer: reasoning
+  case-writer: balanced
+  playwright-engineer: balanced
+  reporter: fast

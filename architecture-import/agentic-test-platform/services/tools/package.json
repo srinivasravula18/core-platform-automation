@@ -1,0 +1,22 @@
+{
+  "name": "@atp/tools",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/index.ts" },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "tsx src/tools.test.ts"
+  },
+  "dependencies": {
+    "@atp/shared": "workspace:*",
+    "@atp/generators": "workspace:*",
+    "@atp/grounding": "workspace:*",
+    "@atp/orchestrator": "workspace:*",
+    "@atp/artifacts": "workspace:*",
+    "@atp/evaluation": "workspace:*",
+    "@atp/execution": "workspace:*"
+  },
+  "devDependencies": { "typescript": "^5.7.2", "tsx": "^4.19.2", "@types/node": "^22.10.2" }
+}

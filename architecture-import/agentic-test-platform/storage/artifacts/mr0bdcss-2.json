@@ -1,0 +1,10 @@
+{
+  "id": "mr0bdcss-2",
+  "sessionId": "demo-hist-1",
+  "kind": "script",
+  "object": "leave_request",
+  "title": "Playwright spec — leave_request",
+  "ext": "spec.ts",
+  "createdAt": 1782803832076,
+  "content": "import { test, expect } from '@playwright/test';\n\n// generated for TC-LEAVE_REQUEST-CREATE — locators are grounded against the metadata catalog\ntest('Create a Leave Request', async ({ page }) => {\n  await page.goto('/app/hr/leave_request/new');\n  await page.getByLabel('Start Date').fill('2026-07-01');\n  await page.getByLabel('End Date').fill('2026-07-01');\n  await page.getByRole('button', { name: 'Save' }).click();\n  await expect(page.getByText('Saved')).toBeVisible();\n});"
+}

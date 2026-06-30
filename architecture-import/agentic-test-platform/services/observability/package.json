@@ -1,0 +1,14 @@
+{
+  "name": "@atp/tracing",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/index.ts" },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "tsx src/tracing.test.ts"
+  },
+  "dependencies": {},
+  "devDependencies": { "typescript": "^5.7.2", "tsx": "^4.19.2", "@types/node": "^22.10.2" }
+}

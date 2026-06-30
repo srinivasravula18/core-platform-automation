@@ -1,0 +1,25 @@
+# LLM provider + model routing. Override per-deployment.
+# Production: set provider to anthropic|openai|google + the matching API key.
+# Local dev/testing: provider local-claude or local-codex uses your authenticated CLI (no API key).
+default_provider: ${LLM_PROVIDER:-local-claude}
+
+providers:
+  anthropic:
+    models: [claude-opus-4-8, claude-sonnet-4-6, claude-haiku-4-5-20251001, claude-fable-5]
+  openai:
+    models: [gpt-5.1, gpt-5, gpt-5-mini, o4-mini]
+  google:
+    models: [gemini-2.5-pro, gemini-2.5-flash, gemini-2.0-flash]
+  local-claude:
+    command: claude            # `claude -p "<prompt>"` (headless, local auth)
+  local-codex:
+    command: codex             # `codex exec "<prompt>"` (non-interactive, local auth)
+
+# role -> tier (reasoning | balanced | fast); the model_router maps tier to the chosen provider's list
+role_tiers:
+  orchestrator: balanced       # escalates to reasoning for hard planning
+  analyst-planner: reasoning
+  case-designer: balanced
+  script-engineer: balanced
+  api-test: balanced
+  reporter: fast

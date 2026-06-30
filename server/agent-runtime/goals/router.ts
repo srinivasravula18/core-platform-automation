@@ -52,6 +52,20 @@ function cleanText(value: string): string {
   return String(value || '').toLowerCase().replace(/\s+/g, ' ').trim();
 }
 
+function targetAliases(app: RouteTarget): string[] {
+  const name = cleanText(app?.name || '').replace(/[_-]+/g, ' ');
+  const url = cleanText(app?.url || '');
+  const aliases = new Set<string>();
+  if (name) aliases.add(name);
+  if (/\badmin\b/.test(name) && (/\blocal\b/.test(name) || /\blocalhost\b|127\.0\.0\.1/.test(url))) aliases.add('local admin');
+  if (/\bkeystone\b/.test(name) && (/\blocal\b/.test(name) || /\blocalhost\b|127\.0\.0\.1/.test(url))) aliases.add('local keystone');
+  return [...aliases].sort((a, b) => b.length - a.length);
+}
+
+function textHasAlias(text: string, alias: string): boolean {
+  return !!alias && new RegExp(`\\b${alias.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(text);
+}
+
 function looksLikeQuestionOrCoverageAsk(message: string): boolean {
   const text = cleanText(message);
   if (!text) return false;
@@ -67,17 +81,26 @@ function looksLikeQuestionOrCoverageAsk(message: string): boolean {
 }
 
 function resolveNamedTarget(message: string, ctx: RoutingContext): RouteTarget | undefined {
-  const text = cleanText(message);
-  const selected = Array.isArray(ctx.selectedApps) ? ctx.selectedApps.filter(Boolean) : [];
-  const matched = selected.filter((app) => {
-    const name = cleanText(app?.name || '');
-    return !!name && text.includes(name);
-  });
-  if (matched.length === 1) return matched[0];
+  const text = cleanText(message).replace(/[_-]+/g, ' ');
+  const candidates = [
+    ...(Array.isArray(ctx.selectedApps) ? ctx.selectedApps : []),
+    ...(Array.isArray(ctx.availableApps) ? ctx.availableApps : []),
+  ].filter(Boolean);
+  const seen = new Set<string>();
+  const matched = candidates.map((app) => {
+    const key = cleanText(`${app?.name || ''} ${app?.url || ''}`);
+    if (!key || seen.has(key)) return null;
+    seen.add(key);
+    const alias = targetAliases(app).find((a) => textHasAlias(text, a));
+    return alias ? { app, score: alias.length } : null;
+  }).filter(Boolean) as Array<{ app: RouteTarget; score: number }>;
+  matched.sort((a, b) => b.score - a.score);
+  if (matched.length === 1) return matched[0].app;
+  if (matched.length > 1 && matched[0].score > matched[1].score) return matched[0].app;
   if (matched.length > 1) {
     return {
-      name: matched.map((app) => app.name).filter(Boolean).join(' + '),
-      url: matched.map((app) => app.url).filter(Boolean).join(', ') || undefined,
+      name: matched.map((item) => item.app.name).filter(Boolean).join(' + '),
+      url: matched.map((item) => item.app.url).filter(Boolean).join(', ') || undefined,
     };
   }
   return undefined;
@@ -410,6 +433,12 @@ export async function routeGoal(input: ClassifyGoalInput, ctx: RoutingContext = 
     } catch {
       raw = direct;
     }
+  }
+  if (!raw.target?.url && !raw.target?.name && (direct.target?.url || direct.target?.name)) {
+    raw = { ...raw, target: direct.target };
+  }
+  if (canonicalKind(raw.kind) === 'clarify' && TARGET_REQUIRED.has(canonicalKind(direct.kind)) && (direct.target?.url || direct.target?.name)) {
+    raw = direct;
   }
   return { route: decideRoute(raw, ctx), raw };
 }

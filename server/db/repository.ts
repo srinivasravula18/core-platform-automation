@@ -1251,6 +1251,7 @@ function mapRequirement(r: any) {
     adminBehavior: r.admin_behavior,
     keystoneBehavior: r.keystone_behavior,
     metadataRefs: r.metadata_refs || [],
+    uiSelectors: r.ui_selectors || {},
     sourceFiles: r.source_files || [],
     coverageStatus: r.coverage_status,
     status: r.status,
@@ -1284,13 +1285,13 @@ export const Requirements = {
       return rq;
     }
     const id = rq.id || uid('REQ');
-    const sql = `INSERT INTO requirements (id, title, description, feature_query, business_rules, data_population_notes, admin_behavior, keystone_behavior, metadata_refs, source_files, coverage_status, status, folder_id, approval_state, proposed_by, source_run_id, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9::jsonb,$10::jsonb,$11,$12,$13,$14,$15,$16, now(), now())
+    const sql = `INSERT INTO requirements (id, title, description, feature_query, business_rules, data_population_notes, admin_behavior, keystone_behavior, metadata_refs, ui_selectors, source_files, coverage_status, status, folder_id, approval_state, proposed_by, source_run_id, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9::jsonb,$10::jsonb,$11::jsonb,$12,$13,$14,$15,$16,$17, now(), now())
        ON CONFLICT (id) DO UPDATE SET
          title=EXCLUDED.title, description=EXCLUDED.description, feature_query=EXCLUDED.feature_query,
          business_rules=EXCLUDED.business_rules, data_population_notes=EXCLUDED.data_population_notes,
          admin_behavior=EXCLUDED.admin_behavior, keystone_behavior=EXCLUDED.keystone_behavior,
-         metadata_refs=EXCLUDED.metadata_refs, source_files=EXCLUDED.source_files,
+         metadata_refs=EXCLUDED.metadata_refs, ui_selectors=EXCLUDED.ui_selectors, source_files=EXCLUDED.source_files,
          coverage_status=EXCLUDED.coverage_status, status=EXCLUDED.status, folder_id=EXCLUDED.folder_id,
          approval_state=EXCLUDED.approval_state, proposed_by=EXCLUDED.proposed_by,
          source_run_id=EXCLUDED.source_run_id, updated_at=now()
@@ -1299,7 +1300,8 @@ export const Requirements = {
       id, rq.title || 'Untitled Requirement', rq.description || '', rq.featureQuery || '',
       JSON.stringify(rq.businessRules || []), rq.dataPopulationNotes || '',
       rq.adminBehavior || '', rq.keystoneBehavior || '',
-      JSON.stringify(rq.metadataRefs || []), JSON.stringify(rq.sourceFiles || []),
+      JSON.stringify(rq.metadataRefs || []), JSON.stringify(rq.uiSelectors || {}),
+      JSON.stringify(rq.sourceFiles || []),
       rq.coverageStatus || 'unknown', rq.status || 'Draft', folderId,
       rq.approvalState || 'proposed', rq.proposedBy || rq.createdBy || 'Feature Analyst',
       rq.sourceRunId || null,

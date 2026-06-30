@@ -1,0 +1,1 @@
+ALTER TABLE "connected_repo" ADD COLUMN "base_url" text;

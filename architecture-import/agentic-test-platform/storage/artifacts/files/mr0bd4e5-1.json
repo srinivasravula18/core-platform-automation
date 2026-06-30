@@ -1,0 +1,135 @@
+{
+  "object": "leave_request",
+  "uiCases": [
+    {
+      "code": "TC-LEAVE_REQUEST-CREATE",
+      "title": "Create a Leave Request with valid data",
+      "technique": "crud",
+      "suites": [
+        "sanity",
+        "bvt",
+        "regression"
+      ],
+      "priority": "p1"
+    },
+    {
+      "code": "TC-LEAVE_REQUEST-REQ-START_DATE",
+      "title": "Reject create when required 'Start Date' is missing",
+      "technique": "negative-required",
+      "suites": [
+        "regression"
+      ],
+      "priority": "p2"
+    },
+    {
+      "code": "TC-LEAVE_REQUEST-REQ-END_DATE",
+      "title": "Reject create when required 'End Date' is missing",
+      "technique": "negative-required",
+      "suites": [
+        "regression"
+      ],
+      "priority": "p2"
+    },
+    {
+      "code": "TC-LEAVE_REQUEST-EP-LEAVE_TYPE",
+      "title": "Accept each valid 'Leave Type' option",
+      "technique": "equivalence-partition",
+      "suites": [
+        "regression"
+      ],
+      "priority": "p3"
+    },
+    {
+      "code": "TC-LEAVE_REQUEST-EP-STATUS",
+      "title": "Accept each valid 'Status' option",
+      "technique": "equivalence-partition",
+      "suites": [
+        "regression"
+      ],
+      "priority": "p3"
+    },
+    {
+      "code": "TC-LEAVE_REQUEST-REF-EMPLOYEE_ID",
+      "title": "Reject create when 'Employee' references a non-existent employee",
+      "technique": "reference-integrity",
+      "suites": [
+        "regression"
+      ],
+      "priority": "p2"
+    },
+    {
+      "code": "TC-LEAVE_REQUEST-ACL-VIEWER",
+      "title": "Role 'viewer' cannot edit Leave Request",
+      "technique": "access-control",
+      "suites": [
+        "regression"
+      ],
+      "priority": "p2"
+    }
+  ],
+  "apiCases": [
+    {
+      "caseId": "API-LEAVE_REQUEST-VALID",
+      "variant": "valid",
+      "expect": "2xx"
+    },
+    {
+      "caseId": "API-LEAVE_REQUEST-REQ-START_DATE",
+      "variant": "invalid",
+      "expect": "4xx"
+    },
+    {
+      "caseId": "API-LEAVE_REQUEST-REQ-END_DATE",
+      "variant": "invalid",
+      "expect": "4xx"
+    },
+    {
+      "caseId": "API-LEAVE_REQUEST-TYPE-START_DATE",
+      "variant": "invalid",
+      "expect": "4xx"
+    },
+    {
+      "caseId": "API-LEAVE_REQUEST-TYPE-END_DATE",
+      "variant": "invalid",
+      "expect": "4xx"
+    },
+    {
+      "caseId": "API-LEAVE_REQUEST-TYPE-LEAVE_TYPE",
+      "variant": "invalid",
+      "expect": "4xx"
+    },
+    {
+      "caseId": "API-LEAVE_REQUEST-TYPE-STATUS",
+      "variant": "invalid",
+      "expect": "4xx"
+    },
+    {
+      "caseId": "API-LEAVE_REQUEST-TYPE-EMPLOYEE_ID",
+      "variant": "invalid",
+      "expect": "4xx"
+    },
+    {
+      "caseId": "API-LEAVE_REQUEST-TYPE-APPROVED",
+      "variant": "invalid",
+      "expect": "4xx"
+    },
+    {
+      "caseId": "API-LEAVE_REQUEST-ENUM-LEAVE_TYPE",
+      "variant": "invalid",
+      "expect": "4xx"
+    },
+    {
+      "caseId": "API-LEAVE_REQUEST-ENUM-STATUS",
+      "variant": "invalid",
+      "expect": "4xx"
+    }
+  ],
+  "scriptLintOk": true,
+  "confidence": {
+    "score": 100,
+    "matched": 43,
+    "total": 43,
+    "level": "high",
+    "mismatches": []
+  }
+}

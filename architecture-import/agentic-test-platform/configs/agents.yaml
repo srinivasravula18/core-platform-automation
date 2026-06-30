@@ -1,0 +1,23 @@
+# Agent roster + the tools each may call. The supervisor (conversational orchestrator) is the only
+# agent the user talks to; it delegates to specialists (agents-as-tools) which do all the groundwork.
+agents:
+  orchestrator:          # the single chat front door
+    role: supervisor
+    tools: [list_apps, list_objects, describe_object, generate_tests, generate_script,
+            run_suite, get_run, get_evidence, connect_org, approve_gate, query_records]
+  analyst-planner:
+    tools: [describe_object, list_objects]
+  case-designer:
+    tools: [describe_object, generate_tests]
+  script-engineer:
+    tools: [describe_object, generate_script]
+  api-test:
+    tools: [describe_object, run_suite]
+  reporter:
+    tools: [get_run, get_evidence]
+
+guardrails:
+  block_production_by_default: true   # writes to is_production orgs require explicit approval
+  redact_secrets_in_evidence: true
+  max_agent_call_depth: 8
+  max_tool_steps_per_turn: 12

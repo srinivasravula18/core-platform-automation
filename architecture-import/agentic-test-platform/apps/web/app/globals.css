@@ -1,0 +1,95 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 240 10% 3.9%;
+    --card: 0 0% 100%;
+    --card-foreground: 240 10% 3.9%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 240 10% 3.9%;
+    --primary: 240 5.9% 10%;
+    --primary-foreground: 0 0% 98%;
+    --secondary: 240 4.8% 95.9%;
+    --secondary-foreground: 240 5.9% 10%;
+    --muted: 240 4.8% 95.9%;
+    --muted-foreground: 240 3.8% 46.1%;
+    --accent: 240 4.8% 95.9%;
+    --accent-foreground: 240 5.9% 10%;
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 0 0% 98%;
+    --success: 142 71% 36%;
+    --success-foreground: 0 0% 100%;
+    --warning: 38 92% 45%;
+    --warning-foreground: 0 0% 100%;
+    --border: 240 5.9% 90%;
+    --input: 240 5.9% 90%;
+    --ring: 240 5.9% 10%;
+    --radius: 0.65rem;
+  }
+  .dark {
+    --background: 240 10% 3.9%;
+    --foreground: 0 0% 98%;
+    --card: 240 10% 5.5%;
+    --card-foreground: 0 0% 98%;
+    --popover: 240 10% 5.5%;
+    --popover-foreground: 0 0% 98%;
+    --primary: 0 0% 98%;
+    --primary-foreground: 240 5.9% 10%;
+    --secondary: 240 3.7% 14%;
+    --secondary-foreground: 0 0% 98%;
+    --muted: 240 3.7% 14%;
+    --muted-foreground: 240 5% 64.9%;
+    --accent: 240 3.7% 16%;
+    --accent-foreground: 0 0% 98%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 98%;
+    --success: 142 64% 45%;
+    --success-foreground: 0 0% 100%;
+    --warning: 38 92% 55%;
+    --warning-foreground: 0 0% 0%;
+    --border: 240 3.7% 17%;
+    --input: 240 3.7% 17%;
+    --ring: 240 4.9% 83.9%;
+  }
+}
+
+@layer base {
+  * { @apply border-border; }
+  body { @apply bg-background text-foreground; }
+  /* native scrollbars + form controls follow the active theme */
+  html { color-scheme: light; }
+  html.dark { color-scheme: dark; }
+}
+
+/* themed, slim scrollbars (page-level and panels) — dark in dark mode, light in light mode */
+* { scrollbar-width: thin; scrollbar-color: hsl(var(--muted-foreground) / 0.3) transparent; }
+::-webkit-scrollbar { width: 12px; height: 12px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background-color: hsl(var(--muted-foreground) / 0.3); border-radius: 9999px; border: 3px solid transparent; background-clip: content-box; }
+::-webkit-scrollbar-thumb:hover { background-color: hsl(var(--muted-foreground) / 0.55); }
+::-webkit-scrollbar-corner { background: transparent; }
+
+.skip-link {
+  position: absolute; left: -999px; top: 0; z-index: 50;
+  @apply bg-primary text-primary-foreground px-3 py-2 rounded-b-md;
+}
+.skip-link:focus { left: 0; }
+
+/* markdown rendered inside assistant bubbles */
+.prose-chat :first-child { margin-top: 0; }
+.prose-chat :last-child { margin-bottom: 0; }
+.prose-chat p { margin: 0.4rem 0; }
+.prose-chat h1, .prose-chat h2, .prose-chat h3 { font-weight: 650; margin: 0.6rem 0 0.3rem; }
+.prose-chat ul, .prose-chat ol { margin: 0.4rem 0; padding-left: 1.2rem; }
+.prose-chat table { @apply w-full text-sm my-2 border-collapse; }
+.prose-chat th, .prose-chat td { @apply border border-border px-2.5 py-1.5 text-left; }
+.prose-chat th { @apply bg-muted; }
+.prose-chat code { @apply bg-muted px-1.5 py-0.5 rounded text-[0.85em]; }
+.prose-chat pre { @apply bg-muted p-3 rounded-lg overflow-x-auto my-2; }
+.prose-chat pre code { @apply bg-transparent p-0; }
+.prose-chat a { @apply underline underline-offset-2; }
+
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }

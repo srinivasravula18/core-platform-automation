@@ -61,6 +61,11 @@ const PIPELINE: { key: string; label: string; sub?: boolean }[] = [
 const TERMINAL = ['completed', 'failed', 'review_required', 'coverage_options', 'cancelled'];
 const EXPAND_OPTIONS = [4, 5, 6, 8, 10, 12];
 
+function caseSummary(value?: string) {
+  const clean = String(value || '').split(/\bTest Steps\s*:/i)[0].replace(/\s+/g, ' ').trim();
+  return clean.length > 160 ? `${clean.slice(0, 157)}...` : clean;
+}
+
 type Step = { action: string; expected: string };
 type Case = {
   title: string;
@@ -239,11 +244,20 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
   const removeStep = (i: number, si: number) =>
     patchCase(i, { steps: (list[i]?.steps || []).filter((_, idx) => idx !== si) });
   const addCase = () => {
-    setCases((prev) => [
-      ...(prev || []),
-      { title: 'New test case', description: '', priority: 'Medium', type: 'Manual', tags: [], steps: [{ action: '', expected: '' }], captureEvidence: true },
-    ]);
-    setEditing((prev) => (prev === null ? (cases?.length || 0) : prev));
+    const newCase = {
+      title: 'New test case',
+      description: '',
+      priority: 'Medium',
+      type: 'Manual',
+      tags: [],
+      steps: [{ action: '', expected: '' }],
+      captureEvidence: true,
+    };
+    setCases((prev) => [newCase, ...(prev || [])]);
+    setSelectedCases((prev) => new Set([...prev].map((idx) => idx + 1)));
+    setFeedback((prev) => Object.fromEntries(Object.entries(prev).map(([idx, value]) => [Number(idx) + 1, value])));
+    setExpandCount((prev) => Object.fromEntries(Object.entries(prev).map(([idx, value]) => [Number(idx) + 1, value])));
+    setEditing(0);
     setSaved(false);
   };
   const removeCase = (i: number) => {
@@ -873,9 +887,9 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
                       </span>
                       <span className="min-w-0 flex-1">
                         <span className="block text-xs font-semibold leading-snug text-[var(--text-primary)]">{c.title || 'Untitled'}</span>
-                        {c.description && (
+                        {caseSummary(c.description) && (
                           <span className="mt-0.5 block line-clamp-2 text-[11px] leading-snug text-[var(--text-muted)]">
-                            {c.description}
+                            {caseSummary(c.description)}
                           </span>
                         )}
                       </span>

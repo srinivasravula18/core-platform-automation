@@ -27,7 +27,7 @@ import { analyzeApiAndMetadataFromSource, type ApiAnalysis } from './apiAnalystS
 import { fetchCorePlatformObjectCatalog } from '../../ai/tools/corePlatformData';
 import { getApp } from '../projects/projectService';
 import { resolveCredentials } from '../credentials/credentialsService';
-import { extractSelectorMap } from '../agent/selectorMap';
+import { extractSelectorMap, type SelectorMap } from '../agent/selectorMap';
 
 /* ---------- schemas ---------- */
 
@@ -61,6 +61,29 @@ const sourceFileRefSchema = z.preprocess((value) => {
   return { path: value == null ? '' : String(value), why: '' };
 }, z.object({ path: textField(''), why: textField('') }));
 
+const uiSelectorsSchema = z.object({
+  ariaLabels: arrayField(textField('')),
+  labels: arrayField(textField('')),
+  roleNames: arrayField(z.object({ role: textField(''), name: textField('') })),
+  uiHooks: arrayField(z.object({
+    surface: textField(''),
+    tag: textField(''),
+    id: textField(''),
+    ariaLabel: textField(''),
+    placeholder: textField(''),
+    role: textField(''),
+    type: textField(''),
+    classes: arrayField(textField('')),
+    file: textField(''),
+  })),
+  testIds: arrayField(textField('')),
+  cssIds: arrayField(textField('')),
+  cssClasses: arrayField(textField('')),
+  placeholders: arrayField(textField('')),
+  fieldIds: arrayField(z.object({ label: textField(''), id: textField('') })),
+  fileCount: z.number().default(0),
+});
+
 /**
  * Optional learned-skill text injected into the analyst prompt. This is the SkillOpt
  * "trainable state": a plain-markdown skill the optimization loop edits and validation-gates.
@@ -82,6 +105,18 @@ const featureAnalystSchema = z.object({
   adminBehavior: textField(''),
   keystoneBehavior: textField(''),
   metadataRefs: arrayField(metadataRefSchema),
+  uiSelectors: uiSelectorsSchema.default({
+    ariaLabels: [],
+    labels: [],
+    roleNames: [],
+    uiHooks: [],
+    testIds: [],
+    cssIds: [],
+    cssClasses: [],
+    placeholders: [],
+    fieldIds: [],
+    fileCount: 0,
+  }),
   sourceFiles: arrayField(sourceFileRefSchema),
   candidateScenarios: arrayField(z.object({
     title: textField('Scenario'),
@@ -164,6 +199,100 @@ const reconcileSchema = z.object({
 
 export type FeatureUnderstanding = z.infer<typeof featureAnalystSchema>;
 export type FeatureInventory = z.infer<typeof featureInventorySchema>;
+
+function selectorTokens(text: string): Set<string> {
+  return new Set(String(text || '').toLowerCase().split(/[^a-z0-9_-]+/).filter((w) => w.length > 2));
+}
+
+function selectorRelevant(value: string, tokens: Set<string>): boolean {
+  const raw = String(value || '').trim();
+  if (!raw) return false;
+  const low = raw.toLowerCase();
+  if (tokens.has(low)) return true;
+  const parts = low.split(/[^a-z0-9_-]+/).filter((w) => w.length > 2);
+  if (!parts.length) return false;
+  return parts.some((part) => tokens.has(part)) || [...tokens].some((token) => token.length > 3 && low.includes(token));
+}
+
+function capRelevant(values: string[], tokens: Set<string>, limit: number): string[] {
+  return Array.from(new Set(values.filter((value) => selectorRelevant(value, tokens)))).slice(0, limit);
+}
+
+function buildRequirementUiSelectors(map: SelectorMap, understanding: Partial<FeatureUnderstanding>, query: string) {
+  const scenarioText = (understanding.candidateScenarios || [])
+    .flatMap((scenario: any) => [
+      scenario?.title,
+      scenario?.rationale,
+      ...(Array.isArray(scenario?.steps) ? scenario.steps.flatMap((step: any) => [step?.action, step?.expected]) : []),
+    ])
+    .filter(Boolean)
+    .join(' ');
+  const sourceText = [
+    query,
+    understanding.title,
+    understanding.description,
+    ...(understanding.businessRules || []),
+    understanding.adminBehavior,
+    understanding.keystoneBehavior,
+    understanding.dataPopulationNotes,
+    scenarioText,
+  ].filter(Boolean).join(' ');
+  const tokens = selectorTokens(sourceText);
+  const fieldIds = map.fieldIds
+    .filter((field) => selectorRelevant(field.label, tokens) || selectorRelevant(field.id, tokens))
+    .slice(0, 40);
+  const roleNames = map.roleNames
+    .filter((role) => selectorRelevant(role.name, tokens) || selectorRelevant(role.role, tokens))
+    .slice(0, 40);
+  return {
+    ariaLabels: capRelevant(map.ariaLabels, tokens, 60),
+    labels: capRelevant(map.labels, tokens, 60),
+    roleNames,
+    uiHooks: map.uiHooks.filter((hook) =>
+      selectorRelevant(hook.id || '', tokens)
+      || selectorRelevant(hook.ariaLabel || '', tokens)
+      || selectorRelevant(hook.placeholder || '', tokens)
+      || selectorRelevant(hook.role || '', tokens)
+      || selectorRelevant(hook.type || '', tokens)
+      || (hook.classes || []).some((cls) => selectorRelevant(cls, tokens))
+      || selectorRelevant(hook.file, tokens),
+    ).slice(0, 80),
+    testIds: capRelevant(map.testIds, tokens, 40),
+    cssIds: capRelevant(map.cssIds, tokens, 60),
+    cssClasses: capRelevant(map.cssClasses, tokens, 80),
+    placeholders: capRelevant(map.placeholders, tokens, 40),
+    fieldIds,
+    fileCount: map.fileCount,
+  };
+}
+
+function selectorsSummary(selectors: any): string {
+  if (!selectors || typeof selectors !== 'object') return '';
+  const parts: string[] = [];
+  const push = (label: string, values: string[]) => {
+    const clean = (values || []).map(String).filter(Boolean).slice(0, 30);
+    if (clean.length) parts.push(`${label}: ${clean.join(' | ')}`);
+  };
+  push('aria-labels', selectors.ariaLabels || []);
+  push('labels', selectors.labels || []);
+  push('role names', (selectors.roleNames || []).map((r: any) => `${r.role}:${r.name}`));
+  push('ui hooks', (selectors.uiHooks || []).map((h: any) => {
+    const bits = [`${h.surface}:${h.tag}`];
+    if (h.id) bits.push(`#${h.id}`);
+    if (h.ariaLabel) bits.push(`aria="${h.ariaLabel}"`);
+    if (h.placeholder) bits.push(`placeholder="${h.placeholder}"`);
+    if (h.role) bits.push(`role="${h.role}"`);
+    if (h.type) bits.push(`type="${h.type}"`);
+    if (Array.isArray(h.classes) && h.classes.length) bits.push(`classes=${h.classes.map((c: string) => `.${c}`).join(',')}`);
+    return bits.join(' ');
+  }));
+  push('test ids', selectors.testIds || []);
+  push('css ids', (selectors.cssIds || []).map((id: string) => `#${id}`));
+  push('css classes', (selectors.cssClasses || []).map((cls: string) => `.${cls}`));
+  push('placeholders', selectors.placeholders || []);
+  push('field label -> id', (selectors.fieldIds || []).map((f: any) => `${f.label}=>#${f.id}`));
+  return parts.join('\n');
+}
 export type Reconciliation = z.infer<typeof reconcileSchema>;
 
 /* ---------- keyword derivation ---------- */
@@ -583,6 +712,27 @@ export async function analyzeFeatureFromSource(
     metaCatalogBlock = '';
   }
 
+  let repoSelectorMap: SelectorMap | null = null;
+  let selectorCatalogBlock = '';
+  try {
+    if (repoPath) {
+      repoSelectorMap = extractSelectorMap(repoPath);
+      const querySelectors = buildRequirementUiSelectors(repoSelectorMap, {
+        title: cleanQuery,
+        description: cleanQuery,
+        businessRules: keywords,
+        candidateScenarios: [],
+      } as any, cleanQuery);
+      const rendered = selectorsSummary(querySelectors);
+      selectorCatalogBlock = rendered
+        ? `\n\nREPO UI SELECTOR CATALOG FOR THIS REQUIREMENT - exact strings extracted from source. Candidate scenario steps must use these labels/aria-labels/ids/classes when they refer to UI controls. If a needed control is not listed here, mention the missing hook in preconditions instead of inventing a label:\n${rendered}`
+        : `\n\nREPO UI SELECTOR CATALOG FOR THIS REQUIREMENT - source scan found ${repoSelectorMap.fileCount} UI source files but no selector strings matched this requirement query. Do not invent labels; keep UI-specific steps conditional/preconditioned unless source evidence above proves the control name.`;
+    }
+  } catch {
+    repoSelectorMap = null;
+    selectorCatalogBlock = '\n\nREPO UI SELECTOR CATALOG FOR THIS REQUIREMENT - unavailable. Do not invent labels or ids.';
+  }
+
   const analyst = await getOrchestrator('featureAnalyst', opts);
   opts.onProgress?.('Extracting requirement rules from source evidence...');
   const applicationContextBlock = opts.applicationContextPrompt
@@ -593,7 +743,7 @@ export async function analyzeFeatureFromSource(
 
 Search keywords used: ${keywords.join(', ')}
 
-${groundingBlock}${metaCatalogBlock}${applicationContextBlock}
+${groundingBlock}${metaCatalogBlock}${selectorCatalogBlock}${applicationContextBlock}
 
 INFER the application's architecture from the research notes and excerpts above — do NOT assume any specific product, framework, or surface names. Let the code tell you. Use ONLY behaviour the research actually establishes; never invent meta-concepts (CI/seeding/regression scaffolding) that aren't real user features.
 ${readDraftingSkill() ? `\nLEARNED DRAFTING SKILL (general QA-drafting guidance refined over prior runs — apply it):\n${readDraftingSkill()}\n` : ''}
@@ -647,6 +797,10 @@ Produce the requirement understanding as strict JSON matching the schema:
       (understanding as any).relevantSelectors = [...rel].slice(0, 30);
     }
   } catch { /* selectors are an enhancement, never block the draft */ }
+  try {
+    const map = repoSelectorMap || (opts.repoPath ? extractSelectorMap(opts.repoPath) : null);
+    if (map) (understanding as any).uiSelectors = buildRequirementUiSelectors(map, understanding, cleanQuery);
+  } catch { /* structured selector grounding is an enhancement, never block the draft */ }
   opts.onProgress?.('Source-grounded requirement understanding is ready...');
   return { understanding, files, keywords };
 }
@@ -925,6 +1079,17 @@ function buildRequirementRecord(
     adminBehavior: understanding.adminBehavior || '',
     keystoneBehavior: understanding.keystoneBehavior || '',
     metadataRefs: understanding.metadataRefs || [],
+    uiSelectors: (understanding as any).uiSelectors || {
+      ariaLabels: [],
+      labels: [],
+      roleNames: [],
+      testIds: [],
+      cssIds: [],
+      cssClasses: [],
+      placeholders: [],
+      fieldIds: [],
+      fileCount: 0,
+    },
     sourceFiles: (understanding.sourceFiles && understanding.sourceFiles.length
       ? understanding.sourceFiles
       : files.map((f) => ({ path: f.path, why: f.area }))),
@@ -1043,6 +1208,7 @@ export async function confirmRequirementDraft(
     adminBehavior: String((incoming as any).adminBehavior || ''),
     keystoneBehavior: String((incoming as any).keystoneBehavior || ''),
     metadataRefs: Array.isArray((incoming as any).metadataRefs) ? (incoming as any).metadataRefs : [],
+    uiSelectors: (incoming as any).uiSelectors && typeof (incoming as any).uiSelectors === 'object' ? (incoming as any).uiSelectors : {},
     sourceFiles: Array.isArray((incoming as any).sourceFiles) ? (incoming as any).sourceFiles : [],
     coverageStatus: String((incoming as any).coverageStatus || 'unknown'),
     status: String((incoming as any).status || 'Draft'),

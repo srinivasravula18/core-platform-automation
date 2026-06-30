@@ -18,6 +18,7 @@ import type { ChatTurn, SelectedApp } from '../ai/controller';
 import { buildPlan } from '../ai/controller';
 import { quickWorkspaceAnswer } from '../ai/tools/registry';
 import { reqScope } from '../shared/scope';
+import { listApps } from '../features/projects/projectService';
 
 interface GoalRequestBody {
   message?: string;
@@ -46,7 +47,10 @@ export function registerAgentRuntimeRoutes(app: Express) {
       const selectedApps: RouteTarget[] = (apps || [])
         .filter((a) => a && (a.baseUrl || a.name))
         .map((a) => ({ name: a.name || undefined, url: a.baseUrl || undefined }));
-      const ctx: RoutingContext = { selectedApps, conversationTarget: null };
+      const availableApps: RouteTarget[] = (scope.projectId ? listApps(scope.projectId) : [])
+        .filter((a) => a && (a.baseUrl || a.name))
+        .map((a) => ({ name: a.name || undefined, url: a.baseUrl || undefined }));
+      const ctx: RoutingContext = { selectedApps, availableApps, conversationTarget: null };
 
       const { route } = await routeGoal(
         { message, history, apps, workspaceId, userId: scope.userId },

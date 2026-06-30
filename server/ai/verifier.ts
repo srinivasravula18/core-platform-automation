@@ -35,6 +35,11 @@ export function assessInspection(ctx: any): VerifierVerdict {
   const screenshots = (ctx.screenshots || []).length;
   const navigated = (ctx.actionsTaken || []).some((action: any) => action?.type === 'navigate' && Number(action?.status || 0) > 0);
   const observed = nav + forms + tables + assertionTargets + listRegions;
+  const warnings = Array.isArray(ctx.warnings) ? ctx.warnings.join(' ') : '';
+  const blockedText = `${pageText} ${warnings}`.toLowerCase();
+  if (observed === 0 && /\b(404|not found|page not found|cannot reach|not reachable)\b/.test(blockedText)) {
+    return { ok: false, severity: 'fail', reason: 'Inspector reached a 404/not-found page and observed no application controls, so cases cannot be grounded in the live app.' };
+  }
   // "Blind" means the inspector could not READ the page at all. A 'blocked' GOAL — e.g. the
   // list records were still "Loading…", or one sub-step couldn't complete — is NOT blind when
   // the page WAS observed: captured controls, headings/text, screenshots, or even a login/error

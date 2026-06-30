@@ -388,6 +388,7 @@ CREATE TABLE IF NOT EXISTS requirements (
   admin_behavior         TEXT DEFAULT '',
   keystone_behavior      TEXT DEFAULT '',
   metadata_refs          JSONB DEFAULT '[]'::jsonb,
+  ui_selectors           JSONB DEFAULT '{}'::jsonb,
   source_files           JSONB DEFAULT '[]'::jsonb,
   coverage_status        TEXT DEFAULT 'unknown',
   status                 TEXT DEFAULT 'Draft',
@@ -399,6 +400,8 @@ CREATE TABLE IF NOT EXISTS requirements (
   updated_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
   deleted_at             TIMESTAMPTZ
 );
+
+ALTER TABLE requirements ADD COLUMN IF NOT EXISTS ui_selectors JSONB DEFAULT '{}'::jsonb;
 
 -- Many-to-many coverage links between a requirement and the test cases that cover it.
 -- link_type 'existing' = case already in the repo reconciled as coverage;

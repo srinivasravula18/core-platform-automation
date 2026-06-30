@@ -13,10 +13,12 @@ export interface SelectorMap {
   ariaLabels: string[];
   testIds: string[];
   cssIds: string[];
+  cssClasses: string[];
   placeholders: string[];
   labels: string[];                              // getByLabel targets + associated labels
   fieldIds: Array<{ label: string; id: string }>;
   roleNames: Array<{ role: string; name: string }>;
+  uiHooks: Array<{ surface: string; tag: string; id?: string; ariaLabel?: string; placeholder?: string; role?: string; type?: string; classes?: string[]; file: string }>;
   fileCount: number;
 }
 
@@ -25,6 +27,7 @@ const RE = {
   ariaProp: /ariaLabel\s*[:=]\s*["'`]([^"'`\n]{1,60})["'`]/g,
   testid: /data-testid\s*=\s*[{]?\s*["'`]([^"'`\n]{1,60})["'`]/g,
   id: /\bid\s*=\s*[{]?\s*["'`]([A-Za-z][A-Za-z0-9_-]{1,80})["'`]/g,
+  className: /\bclass(?:Name)?\s*=\s*[{]?\s*["'`]([^"'`\n]{1,220})["'`]/g,
   tagWithId: /<(input|textarea|select|button)\b[^>]*\bid\s*=\s*[{]?\s*["'`]([A-Za-z][A-Za-z0-9_-]{1,80})["'`][^>]*>/g,
   htmlForLabel: /<label\b[^>]*\bhtmlFor\s*=\s*[{]?\s*["'`]([A-Za-z][A-Za-z0-9_-]{1,80})["'`][^>]*>\s*([^<{][^<]{0,50})</g,
   getByTestId: /getByTestId\(\s*["'`]([^"'`\n]{1,60})/g,
@@ -32,6 +35,7 @@ const RE = {
   getByRole: /getByRole\(\s*["'`](\w+)["'`]\s*,\s*\{\s*name\s*:\s*[/]?\s*["'`]?([^"'`/)\n]{1,50})/g,
   getByLabel: /getByLabel\(\s*[/]?\s*["'`]?([^"'`/)\n]{1,50})/g,
   label: /<label[^>]*>\s*([^<{][^<]{0,50})</g,
+  hookTag: /<(form|button|input|textarea|select)\b([^>]*)>/g,
 };
 
 const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'build', 'coverage', '.next', 'out', 'tmp', 'test-results']);
@@ -41,10 +45,12 @@ export function extractSelectorMap(repoPath: string, opts?: { maxFiles?: number 
   const aria = new Set<string>();
   const testIds = new Set<string>();
   const cssIds = new Set<string>();
+  const cssClasses = new Set<string>();
   const placeholders = new Set<string>();
   const labels = new Set<string>();
   const fieldIds: Array<{ label: string; id: string }> = [];
   const roleNames: Array<{ role: string; name: string }> = [];
+  const uiHooks: SelectorMap['uiHooks'] = [];
   const maxFiles = opts?.maxFiles ?? 4000;
   let fileCount = 0;
 
@@ -60,6 +66,12 @@ export function extractSelectorMap(repoPath: string, opts?: { maxFiles?: number 
     // verifier's fuzzy mapHas. Only keep clean string literals.
     if (t && t.length > 1 && !/[`{}]|\$\{/.test(t)) s.add(t);
   };
+  const attr = (attrs: string, name: string) => attrs.match(new RegExp(`\\b${name}\\s*=\\s*[{]?["'\`]([^"'\`\\n]{1,220})["'\`]`))?.[1]?.replace(/\s+/g, ' ').trim() || '';
+  const surfaceFor = (file: string) => /[\\/]apps[\\/]admin[\\/]/i.test(file)
+    ? 'admin'
+    : /[\\/]apps[\\/]shockwave[\\/]/i.test(file)
+      ? 'keystone'
+      : 'shared';
 
   const walk = (dir: string) => {
     if (fileCount >= maxFiles) return;
@@ -73,10 +85,17 @@ export function extractSelectorMap(repoPath: string, opts?: { maxFiles?: number 
       let txt: string;
       try { txt = fs.readFileSync(full, 'utf8'); } catch { continue; }
       fileCount += 1;
+      const relFile = path.relative(repoPath, full).replace(/\\/g, '/');
       grab(RE.aria, txt, (m) => add(aria, m[1]));
       grab(RE.ariaProp, txt, (m) => add(aria, m[1]));
       grab(RE.testid, txt, (m) => add(testIds, m[1]));
       grab(RE.id, txt, (m) => add(cssIds, m[1]));
+      grab(RE.className, txt, (m) => {
+        for (const cls of String(m[1] || '').split(/\s+/)) {
+          const clean = cls.trim();
+          if (/^[A-Za-z][A-Za-z0-9_-]{2,80}$/.test(clean)) add(cssClasses, clean);
+        }
+      });
       grab(RE.tagWithId, txt, (m) => {
         const tag = m[0];
         const id = m[2].replace(/\s+/g, ' ').trim();
@@ -97,6 +116,30 @@ export function extractSelectorMap(repoPath: string, opts?: { maxFiles?: number 
       grab(RE.getByLabel, txt, (m) => add(labels, m[1]));
       grab(RE.label, txt, (m) => add(labels, m[1]));
       grab(RE.getByRole, txt, (m) => { const name = m[2].replace(/\s+/g, ' ').trim(); if (name.length > 1 && !/[|^${}\\]/.test(name)) roleNames.push({ role: m[1], name }); });
+      grab(RE.hookTag, txt, (m) => {
+        const tag = m[1];
+        const attrs = m[2] || '';
+        const id = attr(attrs, 'id');
+        const ariaLabel = attr(attrs, 'aria-label') || attr(attrs, 'ariaLabel');
+        const placeholder = attr(attrs, 'placeholder');
+        const role = attr(attrs, 'role');
+        const type = attr(attrs, 'type');
+        const classText = attr(attrs, 'class') || attr(attrs, 'className');
+        const classes = classText.split(/\s+/).filter((c) => /^[A-Za-z][A-Za-z0-9_-]{2,80}$/.test(c));
+        if (id || ariaLabel || placeholder || role || type || classes.length) {
+          uiHooks.push({
+            surface: surfaceFor(full),
+            tag,
+            id: id || undefined,
+            ariaLabel: ariaLabel || undefined,
+            placeholder: placeholder || undefined,
+            role: role || undefined,
+            type: type || undefined,
+            classes: classes.length ? classes : undefined,
+            file: relFile,
+          });
+        }
+      });
     }
   };
   walk(repoPath);
@@ -106,10 +149,13 @@ export function extractSelectorMap(repoPath: string, opts?: { maxFiles?: number 
     ariaLabels: [...aria].sort(),
     testIds: [...testIds].sort(),
     cssIds: [...cssIds].sort(),
+    cssClasses: [...cssClasses].sort(),
     placeholders: [...placeholders].sort(),
     labels: [...labels].sort(),
     fieldIds: Array.from(new Map(fieldIds.map((f) => [`${f.label.toLowerCase()}|${f.id}`, f])).values()).sort((a, b) => a.label.localeCompare(b.label) || a.id.localeCompare(b.id)),
     roleNames: dedupeRoles,
+    uiHooks: Array.from(new Map(uiHooks.map((h) => [`${h.surface}|${h.tag}|${h.id || ''}|${h.ariaLabel || ''}|${h.placeholder || ''}|${h.role || ''}|${h.type || ''}|${(h.classes || []).join('.')}`, h])).values())
+      .sort((a, b) => a.surface.localeCompare(b.surface) || a.tag.localeCompare(b.tag) || (a.id || a.ariaLabel || a.placeholder || '').localeCompare(b.id || b.ariaLabel || b.placeholder || '')),
     fileCount,
   };
 }
@@ -154,25 +200,38 @@ export function renderSelectorMap(map: SelectorMap, limit = 120): string {
   if (map.labels.length) lines.push(`field labels: ${cap(map.labels)}`);
   if (map.fieldIds.length) lines.push(`field label -> css id: ${map.fieldIds.slice(0, limit).map((f) => `${f.label}=>#${f.id}`).join(' | ')}`);
   if (map.cssIds.length) lines.push(`css ids: ${cap(map.cssIds.map((id) => `#${id}`))}`);
+  if (map.cssClasses.length) lines.push(`css classes: ${cap(map.cssClasses.map((cls) => `.${cls}`))}`);
   if (map.testIds.length) lines.push(`test ids: ${cap(map.testIds)}`);
   if (map.placeholders.length) lines.push(`placeholders: ${cap(map.placeholders)}`);
   if (map.roleNames.length) lines.push(`role+name: ${map.roleNames.slice(0, limit).map((r) => `${r.role}:${r.name}`).join(' | ')}`);
+  if (map.uiHooks.length) {
+    const hooks = map.uiHooks.slice(0, limit).map((h) => {
+      const bits = [`${h.surface}:${h.tag}`];
+      if (h.id) bits.push(`#${h.id}`);
+      if (h.ariaLabel) bits.push(`aria="${h.ariaLabel}"`);
+      if (h.placeholder) bits.push(`placeholder="${h.placeholder}"`);
+      if (h.role) bits.push(`role="${h.role}"`);
+      if (h.type) bits.push(`type="${h.type}"`);
+      if (h.classes?.length) bits.push(`classes=${h.classes.map((c) => `.${c}`).join(',')}`);
+      bits.push(`file=${h.file}`);
+      return bits.join(' ');
+    });
+    lines.push(`admin/keystone forms-buttons-inputs-searchboxes: ${hooks.join(' | ')}`);
+  }
   return lines.join('\n');
 }
 
-/** Is a selector target present (fuzzy) in the code selector map? Used by verify-locators. */
+/** Is a selector target present in the code selector map? Used by verify-locators. */
 export function mapHas(map: SelectorMap, target: string): boolean {
   const t = String(target || '').toLowerCase().trim();
   if (!t) return false;
-  const pools = [map.ariaLabels, map.labels, map.testIds, map.cssIds, map.placeholders, map.roleNames.map((r) => r.name), map.fieldIds.map((f) => f.label)];
+  const pools = [map.ariaLabels, map.labels, map.testIds, map.cssIds, map.cssClasses, map.placeholders, map.roleNames.map((r) => r.name), map.fieldIds.map((f) => f.label)];
   for (const pool of pools) {
     for (const v of pool) {
       const lv = v.toLowerCase();
       if (lv === t) return true;
-      // Substring matches only count when the shorter side is specific enough. The old
       // unbounded bidirectional includes() let a 2-3 char fragment "ground" anything — e.g.
       // "New" matched "Enter a new password", so hallucinated selectors passed verification.
-      if ((lv.includes(t) || t.includes(lv)) && Math.min(lv.length, t.length) >= 4) return true;
     }
   }
   return false;

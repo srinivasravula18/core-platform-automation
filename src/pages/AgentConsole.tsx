@@ -105,12 +105,29 @@ function lastAssistantAnswer(history: Array<{ role: 'user' | 'assistant'; conten
 function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
+function normalizeAppMention(value: string): string {
+  return String(value || '').toLowerCase().replace(/[_-]+/g, ' ').replace(/\s+/g, ' ').trim();
+}
+function appMentionAliases(app: { name?: string; baseUrl?: string }): string[] {
+  const name = normalizeAppMention(app.name || '');
+  const url = String(app.baseUrl || '').toLowerCase();
+  const aliases = new Set<string>();
+  if (name) aliases.add(name);
+  if (/\badmin\b/.test(name) && (/\blocal\b/.test(name) || /\blocalhost\b|127\.0\.0\.1/.test(url))) aliases.add('local admin');
+  if (/\bkeystone\b/.test(name) && (/\blocal\b/.test(name) || /\blocalhost\b|127\.0\.0\.1/.test(url))) aliases.add('local keystone');
+  return [...aliases].sort((a, b) => b.length - a.length);
+}
+function hasAppMention(text: string, alias: string): boolean {
+  return !!alias && new RegExp(`\\b${escapeRegExp(alias)}\\b`).test(text);
+}
 // Find a stored website whose name is mentioned in the message (longest match wins).
 function findWebsiteInText(text: string, websites: Array<{ id: string; name: string; baseUrl: string }>): { id: string; name: string; baseUrl: string } | null {
-  const lower = (text || '').toLowerCase();
-  const matches = (websites || []).filter((w) => w?.name && new RegExp(`\\b${escapeRegExp(String(w.name).toLowerCase())}\\b`).test(lower));
-  matches.sort((a, b) => (b.name?.length || 0) - (a.name?.length || 0));
-  return matches[0] || null;
+  const q = normalizeAppMention(text);
+  const matches = (websites || [])
+    .map((w) => ({ w, score: appMentionAliases(w).find((a) => hasAppMention(q, a))?.length || 0 }))
+    .filter((m) => m.score > 0)
+    .sort((a, b) => b.score - a.score);
+  return matches[0]?.w || null;
 }
 
 // An explicit number in the prompt ("write 12 cases") is honored as-is (capped at
@@ -825,6 +842,7 @@ export default function AgentConsole() {
     prompt: string;
     targetUrl: string;
     websiteId?: string;
+    websiteName?: string;
     approvedUnderstanding?: string;
     understandingSource?: string;
     priorGrounding?: string;
@@ -839,6 +857,7 @@ export default function AgentConsole() {
       body: JSON.stringify({
         app_url: args.targetUrl,
         websiteId: args.websiteId || undefined,
+        websiteName: args.websiteName || undefined,
         prompt: args.prompt,
         approvedUnderstanding: args.approvedUnderstanding || '',
         understandingSource: args.understandingSource || '',
@@ -1105,6 +1124,17 @@ export default function AgentConsole() {
     for (const a of selectedAppsRef.current) add(a);
     return out;
   }, []);
+  const getRoutingApps = useCallback((text: string): Array<{ name: string; baseUrl: string }> => {
+    const selected = getSelectedApps();
+    if (selected.length) return selected;
+    const q = normalizeAppMention(text);
+    const named = websites
+      .filter((w) => w.baseUrl)
+      .map((w) => ({ name: w.name, baseUrl: w.baseUrl, score: appMentionAliases(w).find((a) => hasAppMention(q, a))?.length || 0 }))
+      .filter((w) => w.score > 0)
+      .sort((a, b) => b.score - a.score);
+    return named.length && (named.length === 1 || named[0].score > named[1].score) ? [{ name: named[0].name, baseUrl: named[0].baseUrl }] : [];
+  }, [getSelectedApps, websites]);
 
   // Route a message to the SupervisorAgent (dynamic tool-loop: query_workspace,
   // search_codebase, create_* …) and STREAM its live steps into the thinking turn, so the
@@ -1331,6 +1361,7 @@ export default function AgentConsole() {
             prompt: activePending.contextPrompt || activePending.prompt,
             targetUrl: activePending.targetUrl,
             websiteId: activePending.websiteId,
+            websiteName: activePending.websiteName,
             approvedUnderstanding,
             understandingSource: activePending.understandingSource,
             priorGrounding: approvedUnderstanding,
@@ -1384,8 +1415,10 @@ export default function AgentConsole() {
           body: JSON.stringify({
             message: text,
             history: historyForRouting,
-            apps: getSelectedApps(),
+            apps: getRoutingApps(text),
             pageContext: { path: location.pathname },
+            projectId: selectedProjectId || undefined,
+            appId: selectedAppId || undefined,
           }),
         });
         const goal = await res.json().catch(() => ({}));
@@ -1622,11 +1655,11 @@ export default function AgentConsole() {
   // the Proceed buttons working even if the user typed other messages after the card
   // appeared (which clears pendingDeep), so they never misfire into the planner.
   const proceedDeepFromTurn = useCallback(
-    async (turn: { id: string; understanding?: string; understandingSource?: string; originalPrompt?: string; contextPrompt?: string; caseCountPrompt?: string; targetUrl?: string; websiteId?: string }, folderName?: string) => {
+    async (turn: { id: string; understanding?: string; understandingSource?: string; originalPrompt?: string; contextPrompt?: string; caseCountPrompt?: string; targetUrl?: string; websiteId?: string; websiteName?: string }, folderName?: string) => {
       if (busy) return;
       setBusy(true);
       setPendingDeep(null);
-      if (turn.targetUrl || turn.websiteId) convTargetRef.current = { targetUrl: turn.targetUrl || '', websiteId: turn.websiteId };
+      if (turn.targetUrl || turn.websiteId) convTargetRef.current = { targetUrl: turn.targetUrl || '', websiteId: turn.websiteId, websiteName: turn.websiteName };
       // Keep the confirmed understanding visible in the chat as a record, and add the run
       // card BELOW it — so clicking Proceed never makes the dialog vanish with nothing shown.
       const runTurnId = nextId();
@@ -1638,6 +1671,7 @@ export default function AgentConsole() {
           prompt: turn.contextPrompt || turn.originalPrompt || '',
           targetUrl: turn.targetUrl || '',
           websiteId: turn.websiteId || undefined,
+          websiteName: turn.websiteName || undefined,
           approvedUnderstanding: turn.understanding || '',
           understandingSource: turn.understandingSource || '',
           priorGrounding: turn.understanding || '',

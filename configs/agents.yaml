@@ -1,0 +1,33 @@
+# Vite/Express-compatible agent roster.
+agents:
+  orchestrator:
+    role: supervisor
+    tools:
+      - inspect_app
+      - understand_code
+      - discover_features
+      - write_requirements
+      - find_existing_coverage
+      - write_cases
+      - generate_scripts
+      - verify_selectors
+      - capture_evidence
+  application-inspector:
+    tools: [inspect_app]
+  code-analyst:
+    tools: [understand_code, search_repo]
+  requirement-writer:
+    tools: [write_requirements, map_features]
+  case-writer:
+    tools: [find_existing_coverage, write_cases]
+  playwright-engineer:
+    tools: [generate_scripts, verify_selectors, run_scripts]
+  reporter:
+    tools: [capture_evidence, write_report]
+
+guardrails:
+  runtime_stack: vite_express
+  block_production_writes_by_default: true
+  redact_secrets_in_evidence: true
+  max_agent_call_depth: 8
+  max_tool_steps_per_turn: 12

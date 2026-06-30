@@ -37,6 +37,22 @@ const COVERAGE_BADGE: Record<string, { label: string; cls: string }> = {
   unknown: { label: 'Coverage unknown', cls: 'border-slate-500/30 bg-slate-500/10 text-slate-400' },
 };
 
+function selectorRows(selectors: any): Array<{ label: string; values: string[] }> {
+  if (!selectors || typeof selectors !== 'object') return [];
+  const rows = [
+    { label: 'aria-labels', values: selectors.ariaLabels || [] },
+    { label: 'labels', values: selectors.labels || [] },
+    { label: 'role names', values: (selectors.roleNames || []).map((r: any) => `${r.role}:${r.name}`) },
+    { label: 'ui hooks', values: (selectors.uiHooks || []).map((h: any) => [h.surface && `${h.surface}:${h.tag}`, h.id && `#${h.id}`, h.ariaLabel && `aria="${h.ariaLabel}"`, h.placeholder && `placeholder="${h.placeholder}"`, h.role && `role="${h.role}"`, h.type && `type="${h.type}"`].filter(Boolean).join(' ')) },
+    { label: 'test ids', values: selectors.testIds || [] },
+    { label: 'css ids', values: (selectors.cssIds || []).map((id: string) => `#${id}`) },
+    { label: 'css classes', values: (selectors.cssClasses || []).map((cls: string) => `.${cls}`) },
+    { label: 'placeholders', values: selectors.placeholders || [] },
+    { label: 'field ids', values: (selectors.fieldIds || []).map((f: any) => `${f.label}=>#${f.id}`) },
+  ];
+  return rows.map((row) => ({ ...row, values: (row.values || []).filter(Boolean).slice(0, 24) })).filter((row) => row.values.length);
+}
+
 export function RequirementDiscoveryResult({ result, onGenerateTests }: { result: any; onGenerateTests?: (context: string) => void }) {
   const [openCase, setOpenCase] = useState<number | null>(null);
   const [openApi, setOpenApi] = useState<number | null>(null);
@@ -50,6 +66,7 @@ export function RequirementDiscoveryResult({ result, onGenerateTests }: { result
   const generatedCases: any[] = result?.generatedCases || [];
   const businessRules: string[] = understanding?.businessRules || [];
   const metadataRefs: any[] = understanding?.metadataRefs || [];
+  const uiSelectorRows = selectorRows(understanding?.uiSelectors || requirement?.uiSelectors);
   const sourceFiles: any[] = understanding?.sourceFiles || [];
   const scenarios: any[] = understanding?.candidateScenarios || [];
   const badge = COVERAGE_BADGE[requirement?.coverageStatus || 'unknown'] || COVERAGE_BADGE.unknown;
@@ -117,6 +134,20 @@ export function RequirementDiscoveryResult({ result, onGenerateTests }: { result
               <span key={i} className="rounded border border-[var(--border)] bg-[var(--bg-secondary)] px-1.5 py-0.5 text-[10px] text-[var(--text-primary)]" title={m.note}>
                 {m.object}
               </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {uiSelectorRows.length > 0 && (
+        <div className="mb-3">
+          <div className="mb-1 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]"><FileCode2 className="h-3.5 w-3.5" /> Repo UI hooks for testing</div>
+          <div className="space-y-1 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] p-2">
+            {uiSelectorRows.map((row) => (
+              <div key={row.label} className="text-[11px]">
+                <span className="mr-1 font-semibold text-[var(--text-muted)]">{row.label}:</span>
+                <span className="font-mono text-[var(--text-primary)]">{row.values.join(' | ')}</span>
+              </div>
             ))}
           </div>
         </div>
@@ -427,6 +458,10 @@ export function RequirementDiscoveryResult({ result, onGenerateTests }: { result
                   .map((m) => typeof m === 'string' ? m : (m.object || m.name || m.api_name || m.apiName || ''))
                   .filter(Boolean)
                   .join(', '));
+              }
+              if (uiSelectorRows.length) {
+                lines.push('Repo UI hooks for testing:');
+                uiSelectorRows.forEach((row) => lines.push(`  - ${row.label}: ${row.values.join(' | ')}`));
               }
               if (sourceFiles.length) {
                 lines.push('Key source files: ' + sourceFiles.slice(0, 6).map((f: any) => f.path || f).join(', '));

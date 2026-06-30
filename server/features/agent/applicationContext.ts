@@ -37,6 +37,7 @@ export interface CorePlatformApplicationContext {
     roots: Array<{ name: string; path: string; exists: boolean; entries: string[] }>;
     packageSummary?: { name?: string; scripts: string[]; dependencies: string[]; devDependencies: string[] };
   };
+  docs: Array<{ path: string; title: string; excerpt: string }>;
   catalog: Array<{ app: string; api_name: string; label: string }>;
   testDataPack: string;
   knowledgeBlock: string;
@@ -101,6 +102,54 @@ function readPackageSummary(appRoot: string): NonNullable<CorePlatformApplicatio
   } catch {
     return undefined;
   }
+}
+
+const DOC_EXTS = new Set(['.md', '.mdx', '.txt']);
+const DOC_SKIP = new Set(['node_modules', '.git', '.next', 'dist', 'build', 'coverage']);
+
+function listDocFiles(dir: string, root: string, out: string[] = []): string[] {
+  if (!dir || !existsSync(dir) || out.length >= 1200) return out;
+  let entries: any[] = [];
+  try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return out; }
+  for (const entry of entries) {
+    if (out.length >= 1200) break;
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      if (!DOC_SKIP.has(entry.name)) listDocFiles(full, root, out);
+    } else if (DOC_EXTS.has(path.extname(entry.name).toLowerCase())) {
+      out.push(safeRelative(root, full).replace(/\\/g, '/'));
+    }
+  }
+  return out;
+}
+
+function buildDocsContext(repoPath: string, hintText: string): CorePlatformApplicationContext['docs'] {
+  if (!repoPath || !existsSync(repoPath)) return [];
+  const files = [
+    ...listDocFiles(path.join(repoPath, 'docs'), repoPath),
+    ...['README.md', 'AGENTS.md'].filter((name) => existsSync(path.join(repoPath, name))),
+  ];
+  const terms = new Set(clean(hintText).toLowerCase().split(/[^a-z0-9_]+/).filter((w) => w.length > 3));
+  const scored = files.map((rel) => {
+    let text = '';
+    try { text = readFileSync(path.join(repoPath, rel), 'utf8').slice(0, 12000); } catch { return null; }
+    const low = `${rel}\n${text}`.toLowerCase();
+    let score = 0;
+    for (const term of terms) if (low.includes(term)) score += 1;
+    if (/docs\/(overview|product|architecture|api)\//i.test(rel)) score += 2;
+    const title = text.match(/^#\s+(.+)$/m)?.[1]?.trim() || path.basename(rel);
+    const excerpt = text
+      .replace(/```[\s\S]*?```/g, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 900);
+    return { path: rel, title, excerpt, score };
+  }).filter(Boolean) as Array<{ path: string; title: string; excerpt: string; score: number }>;
+  return scored
+    .sort((a, b) => b.score - a.score || a.path.localeCompare(b.path))
+    .slice(0, 8)
+    .filter((d) => d.excerpt)
+    .map(({ score: _score, ...doc }) => doc);
 }
 
 function buildRepoContext(project?: Project, app?: AppRecord): CorePlatformApplicationContext['repo'] {
@@ -201,6 +250,7 @@ export async function buildCorePlatformApplicationContext(input: {
     input.understanding,
     (() => { try { return JSON.stringify(input.inspectionContext || ''); } catch { return ''; } })(),
   ].filter(Boolean).join('\n');
+  const docs = buildDocsContext(normalizePath(project?.repoPath || ''), hintText);
   const objectHints = Array.from(new Set([...(input.objectHints || []), ...extractMetadataObjectHints(input.understanding)])).slice(0, 12);
 
   let catalog: CorePlatformApplicationContext['catalog'] = [];
@@ -255,6 +305,7 @@ export async function buildCorePlatformApplicationContext(input: {
       knowledgePackId: app.knowledgePackId || '',
     } : null,
     repo,
+    docs,
     catalog,
     testDataPack,
     knowledgeBlock,
@@ -268,6 +319,7 @@ export function applicationContextCacheKey(context: CorePlatformApplicationConte
   if (!context) return 'no-app-context';
   const catalogSig = (context.catalog || []).slice(0, 80).map((o) => `${o.app}:${o.api_name}`).join(',');
   const repoSig = context.repo?.roots?.map((r) => `${r.name}:${r.path}:${r.exists}`).join('|') || '';
+  const docsSig = (context.docs || []).map((d) => d.path).join('|');
   return [
     context.project?.id || '',
     context.project?.repoPath || '',
@@ -277,6 +329,7 @@ export function applicationContextCacheKey(context: CorePlatformApplicationConte
     context.app?.catalogStrategy || '',
     context.app?.knowledgePackId || '',
     repoSig,
+    docsSig,
     catalogSig,
   ].join('::').toLowerCase();
 }
@@ -316,6 +369,13 @@ export function renderCorePlatformApplicationContext(context: CorePlatformApplic
       lines.push(`- ${obj.api_name} (${obj.label || obj.api_name}) [app=${obj.app || 'core'}]`);
     }
     if (context.catalog.length > 160) lines.push(`- ... ${context.catalog.length - 160} additional catalog object(s) omitted from this bounded prompt block.`);
+  }
+  if (context.docs.length) {
+    lines.push('Repository documentation excerpts (supporting context only; code/live metadata/live inspection override docs on conflicts):');
+    for (const doc of context.docs) {
+      lines.push(`- ${doc.path} :: ${doc.title}`);
+      lines.push(`  ${doc.excerpt}`);
+    }
   }
   if (context.testDataPack) {
     lines.push('Live schema and sample data pack (use exact field api_names and valid values):');

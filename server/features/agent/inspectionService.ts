@@ -50,6 +50,9 @@ function compactPageContext(context: any) {
       text: action.text || action.ariaLabel || '',
       tag: action.tag,
       role: action.role,
+      control: action.control,
+      dom: action.dom,
+      selectorHints: action.selectorHints,
       href: action.href,
     })),
     forms: context.forms || [],
@@ -71,10 +74,35 @@ async function collectPageContext(page: any) {
 
   return page.evaluate(() => {
     const clean = (value: string | null | undefined) => String(value || '').replace(/\s+/g, ' ').trim();
+    const css = (value: string) => {
+      if (window.CSS && typeof window.CSS.escape === 'function') return window.CSS.escape(value);
+      return value.replace(/[^a-zA-Z0-9_-]/g, '\\$&');
+    };
     const visible = (element: Element) => {
       const rect = element.getBoundingClientRect();
       const style = window.getComputedStyle(element);
       return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+    };
+    const domFor = (element: Element) => {
+      const tag = element.tagName.toLowerCase();
+      const type = clean(element.getAttribute('type'));
+      const id = clean(element.getAttribute('id'));
+      const testId = clean(element.getAttribute('data-testid') || element.getAttribute('data-test-id') || element.getAttribute('data-test'));
+      const ariaLabel = clean(element.getAttribute('aria-label'));
+      const placeholder = clean(element.getAttribute('placeholder'));
+      const name = clean(element.getAttribute('name'));
+      const role = clean(element.getAttribute('role'));
+      const className = clean(element.getAttribute('class'));
+      const text = clean(element.textContent || ariaLabel || placeholder || (element as HTMLInputElement).value);
+      const selectorHints = [
+        testId && `getByTestId(${JSON.stringify(testId)})`,
+        role && (ariaLabel || text) && `getByRole(${JSON.stringify(role)}, { name: ${JSON.stringify(ariaLabel || text)} })`,
+        ariaLabel && `getByLabel(${JSON.stringify(ariaLabel)})`,
+        placeholder && `getByPlaceholder(${JSON.stringify(placeholder)})`,
+        id && `locator('#${css(id)}')`,
+        name && `locator('${tag}[name="${css(name)}"]')`,
+      ].filter(Boolean);
+      return { tag, type, id, testId, ariaLabel, placeholder, name, role, className, text, selectorHints };
     };
 
     // Capture not just links/buttons but also the INTERACTIVE FORM CONTROLS the coder needs
@@ -90,6 +118,7 @@ async function collectPageContext(page: any) {
         element.setAttribute('data-agent-id', id);
         const tag = element.tagName.toLowerCase();
         const inputType = clean(element.getAttribute('type'));
+        const dom = domFor(element);
         const text = clean(element.textContent || element.getAttribute('aria-label') || element.getAttribute('title') || element.getAttribute('placeholder') || (element as HTMLInputElement).value);
         return {
           id,
@@ -102,6 +131,8 @@ async function collectPageContext(page: any) {
           name: clean(element.getAttribute('name')),
           href: element instanceof HTMLAnchorElement ? element.href : '',
           ariaLabel: clean(element.getAttribute('aria-label') || element.getAttribute('placeholder')),
+          dom,
+          selectorHints: dom.selectorHints,
         };
       })
       // Keep anything addressable: visible text, an aria-label/placeholder, an href, a form
@@ -123,6 +154,7 @@ async function collectPageContext(page: any) {
           type: clean(field.getAttribute('type') || field.tagName.toLowerCase()),
           name: clean(field.getAttribute('name')),
           label: clean(field.getAttribute('aria-label') || field.getAttribute('placeholder')),
+          dom: domFor(field),
         })),
       }));
 
@@ -203,7 +235,7 @@ export async function inspectApplicationFlow(options: {
     };
   }
 
-  const browser = await chromium.launch(chromiumLaunchOptions());
+  const browser = await chromium.launch(chromiumLaunchOptions({ headless: true }));
   const page = await browser.newPage({ viewport: { width: 1365, height: 768 } });
 
   try {
@@ -351,6 +383,7 @@ export async function inspectApplicationFlow(options: {
     ].slice(0, 20);
 
     return {
+      inspectionEngine: 'playwright-headless-dom',
       goalStatus,
       currentUrl: lastContext.url,
       pageSummary: lastContext.bodyText.slice(0, 1200),

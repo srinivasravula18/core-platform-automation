@@ -1,0 +1,45 @@
+{
+  "id": "w280f53eend",
+  "title": "hloo",
+  "createdAt": 1782804081989,
+  "updatedAt": 1782804440309,
+  "messages": [
+    {
+      "role": "user",
+      "content": "hloo"
+    },
+    {
+      "role": "assistant",
+      "content": "Hey! I'm your test-automation orchestrator. Tell me what you want and I'll do the legwork — e.g. *\"generate tests for Account\"*, *\"run a sanity suite on Contact\"*, or *\"what apps/objects are available?\"*. Want me to list what's in the connected platform to get started?",
+      "steps": []
+    },
+    {
+      "role": "user",
+      "content": "test list view in end ot end"
+    },
+    {
+      "role": "assistant",
+      "content": "I can run an end-to-end list-view test, but a list view belongs to a specific object — and I won't guess object names. Which one do you want?\n\nApps available: **Core, CRM, HR, LIMS, Ops Hub**.\n\nTell me an app (e.g. *\"CRM\"*) and I'll list its objects, or name the object directly (e.g. *\"list view for Account\"*) and I'll get going: describe it → generate cases → generate the grounded Playwright script → run the suite → pull evidence.",
+      "steps": [
+        {
+          "tool": "list_apps",
+          "isError": false
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": "in admin"
+    },
+    {
+      "role": "assistant",
+      "content": "There's no **admin** app on this platform — `list_objects` for it came back empty. Valid apps are: **core, crm, hr, lims, ops_hub**.\n\nPick one and I'll list its objects, or name the object directly (e.g. *\"list view for Account in crm\"*) and I'll run the full end-to-end: describe → generate cases → grounded Playwright script → run suite → pull evidence.",
+      "steps": [
+        {
+          "tool": "list_objects",
+          "isError": false
+        }
+      ]
+    }
+  ]
+}

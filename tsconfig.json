@@ -26,6 +26,7 @@
   "exclude": [
     "dist",
     "node_modules",
-    ".playwright-mcp"
+    ".playwright-mcp",
+    "architecture-import"
   ]
 }

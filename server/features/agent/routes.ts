@@ -136,6 +136,90 @@ function buildFallbackArtifactName(prompt: string, targetUrl: string) {
   return `${appName.replace(/\b\w/g, (char) => char.toUpperCase())} ${scope} Validation`.replace(/\s+/g, ' ').trim();
 }
 
+const caseUrlPattern = /\b(?:https?:\/\/|www\.)[^\s),]+|\b(?:localhost|127\.0\.0\.1)(?::\d+)?(?:\/[^\s),]*)?/gi;
+function cleanCaseText(value: any, run: any): string {
+  const appName = String(run?.appName || 'Application').trim() || 'Application';
+  const targetUrl = String(run?.app_url || '').trim();
+  return String(value || '')
+    .replace(targetUrl, appName)
+    .replace(caseUrlPattern, appName)
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function conciseCaseTitle(value: any, run: any): string {
+  const appName = String(run?.appName || '').replace(/\bautomations?\b/gi, 'Admin').trim();
+  let title = cleanCaseText(value, run)
+    .replace(/\bautomations?\b\s*[-:–—]?\s*/gi, '')
+    .replace(/^verif(?:y|ies)\s+that\s+/i, 'verify ')
+    .replace(/^test\s+/i, 'verify ');
+  if (appName && !title.toLowerCase().includes(appName.toLowerCase())) title = `${appName} - ${title}`;
+  const words = title.split(/\s+/).filter(Boolean);
+  return words.slice(0, 20).join(' ');
+}
+
+function readableCaseTitle(value: any, run: any, extraText = ''): string {
+  const raw = cleanCaseText(value, run);
+  const prompt = String(run?.prompt || '').toLowerCase();
+  const source = `${raw} ${extraText}`.toLowerCase();
+  const explicitApp = String(run?.appName || '').replace(/\bautomations?\b/gi, 'Admin').trim();
+  const area = explicitApp || (/\badmin\b/.test(prompt) ? 'Admin' : 'Application');
+  const objectPrefix = /\bobjects?\b/.test(source) ? 'objects ' : '';
+
+  let behavior = '';
+  if (/\b(404|not found|unreachable|cannot reach|route is reachable)\b/.test(source)) behavior = 'list view route is reachable';
+  else if (/\b(admin sections?|stable list region|list region)\b/.test(source)) behavior = 'list sections open';
+  else if (/\bsearch\b/.test(source)) behavior = `${objectPrefix}list search works`;
+  else if (/\bexport|csv|pdf|xlsx|download\b/.test(source)) behavior = /\bemail\b/.test(source) ? 'email log export works' : 'list export works';
+  else if (/\bselect all|selected rows?|bulk delete|delete availability\b/.test(source)) behavior = `${objectPrefix}row selection enables delete`;
+  else if (/\bdelete cannot proceed|without selection|without selecting|no row is selected\b/.test(source)) behavior = 'delete is blocked without selection';
+  else if (/\btoolbar|controls?|disabled states?\b/.test(source)) behavior = `${objectPrefix}list toolbar controls are correct`;
+  else if (/\bsort|sorting\b/.test(source)) behavior = `${objectPrefix}list sorting works`;
+  else if (/\bfilter|filters\b/.test(source)) behavior = `${objectPrefix}list filters work`;
+  else if (/\bcolumn|columns|resize|fit columns\b/.test(source)) behavior = `${objectPrefix}column controls work`;
+  else if (/\blist-view shell|list view shell|list shell|admin-specific list-view surfaces|table mode|adapter-backed surface|stable table\b/.test(source)) behavior = 'admin list sections open';
+  else if (/\b(?:log in|login|sign in|signin|authentication)\b/.test(source)) behavior = 'login works';
+
+  if (behavior) return `${area} - verify ${behavior}`.replace(/\s+/g, ' ').trim();
+
+  let title = conciseCaseTitle(raw, { ...run, appName: area });
+  if (!/^verify\b/i.test(title) && !title.toLowerCase().includes(' - verify ')) title = title.replace(`${area} - `, `${area} - verify `);
+  return title.split(/\s+/).filter(Boolean).slice(0, 12).join(' ');
+}
+
+function testCaseText(run: any): string {
+  return [run?.description, run?.preconditions, run?.prompt].filter(Boolean).join(' ');
+}
+
+function normalizeGeneratedCaseText(testCase: any, run: any) {
+  return {
+    ...testCase,
+    title: readableCaseTitle(
+      testCase?.title || 'verify application behavior',
+      run,
+      `${testCase?.description || ''} ${testCase?.preconditions || ''}`,
+    ),
+    description: cleanCaseText(testCase?.description || '', run),
+    preconditions: cleanCaseText(testCase?.preconditions || '', run),
+    steps: normalizeCaseSteps(testCase?.steps || []).map((step) => ({
+      action: cleanCaseText(step.action, run),
+      expected: cleanCaseText(step.expected, run),
+    })),
+  };
+}
+
+function normalizeGeneratedCasesText(cases: any[], run: any): any[] {
+  const seen = new Set<string>();
+  return (Array.isArray(cases) ? cases : [])
+    .map((testCase) => normalizeGeneratedCaseText(testCase, run))
+    .filter((testCase) => {
+      const key = String(testCase?.title || '').toLowerCase().replace(/\s+/g, ' ').trim();
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+}
+
 function buildSelectedQaContext(input: { testPlanId?: string; testSuiteId?: string; testCaseId?: string }) {
   const selectedPlan = input.testPlanId ? db.plans.find((item: any) => item.id === input.testPlanId) : null;
   const selectedSuite = input.testSuiteId ? db.suites.find((item: any) => item.id === input.testSuiteId) : null;
@@ -656,7 +740,7 @@ function complexityDrivenCaseCount(understanding: any, requested: number): numbe
 // flow/complexity decides. App-agnostic — pure language parsing, no app specifics.
 function parseCaseCount(prompt: string): number {
   const text = String(prompt || '').toLowerCase();
-  const m = text.match(/\b(\d{1,3})\s+(?:test\s*)?(?:cases?|tests?|scenarios?)\b/)
+  const m = text.match(/\b(\d{1,3})(?:\s+[a-z][a-z-]*){0,5}\s+(?:test\s*)?(?:cases?|tests?|scenarios?)\b/)
     || text.match(/\b(?:generate|create|write|add|make|need|want|give\s+me)\s+(\d{1,3})\b/);
   if (m) { const n = parseInt(m[1], 10); if (n >= 1 && n <= 200) return n; }
   return 0;
@@ -1002,6 +1086,22 @@ function summarizeUnderstanding(u: any, maxChars = 4000): string {
   if (u.keystoneBehavior) lines.push(`End-user-surface behavior: ${u.keystoneBehavior}`);
   if (u.dataPopulationNotes) lines.push(`Background data/preconditions: ${u.dataPopulationNotes}`);
   if (Array.isArray(u.metadataRefs) && u.metadataRefs.length) lines.push(`Metadata source of truth: ${u.metadataRefs.map((m: any) => m.object).filter(Boolean).join(', ')}`);
+  if (u.uiSelectors && typeof u.uiSelectors === 'object') {
+    const selectorLines: string[] = [];
+    const push = (label: string, values: string[]) => {
+      const clean = (values || []).map(String).filter(Boolean).slice(0, 30);
+      if (clean.length) selectorLines.push(`${label}: ${clean.join(' | ')}`);
+    };
+    push('aria-labels', u.uiSelectors.ariaLabels || []);
+    push('labels', u.uiSelectors.labels || []);
+    push('role names', (u.uiSelectors.roleNames || []).map((r: any) => `${r.role}:${r.name}`));
+    push('test ids', u.uiSelectors.testIds || []);
+    push('css ids', (u.uiSelectors.cssIds || []).map((id: string) => `#${id}`));
+    push('css classes', (u.uiSelectors.cssClasses || []).map((cls: string) => `.${cls}`));
+    push('placeholders', u.uiSelectors.placeholders || []);
+    push('field ids', (u.uiSelectors.fieldIds || []).map((f: any) => `${f.label}=>#${f.id}`));
+    if (selectorLines.length) lines.push(`Repo UI hooks for testing:\n- ${selectorLines.join('\n- ')}`);
+  }
   if (Array.isArray(u.sourceFiles) && u.sourceFiles.length) lines.push(`Grounded in source files: ${u.sourceFiles.map((f: any) => f.path).filter(Boolean).slice(0, 10).join(', ')}`);
   if (Array.isArray(u.candidateScenarios) && u.candidateScenarios.length) {
     lines.push(`Candidate scenarios (${u.candidateScenarios.length}):\n- ${u.candidateScenarios.map((s: any) => s.title || s).filter(Boolean).join('\n- ')}`);
@@ -1276,7 +1376,7 @@ async function generateCasesForFeature(run: any, feature: any, liveCredentials: 
 ${feature.description ? `Feature description: ${feature.description}` : ''}
 This feature is part of the ${feature.surface || 'Application'} side of the app (context only — never put this word in a title).
 Subfeatures to cover:
-${subfeatureBlock || '  (infer from the feature name and code understanding)'}
+${subfeatureBlock || '  (no repo-grounded subfeatures were provided; do not infer extra behavior)'}
 
 User request context: ${run.prompt || 'not provided'}
 Target URL: ${targetUrl || 'not provided'}
@@ -1286,6 +1386,9 @@ App inspection result: ${JSON.stringify(compactInspectionContext(inspectionConte
 Code understanding: ${approvedUnderstanding ? approvedUnderstanding.slice(0, 3000) : 'not provided'}
 
 Rules:
+- Never put URLs in titles, descriptions, or steps. Mention the selected app name instead.
+- Never use "Automations" in a case title. Use "Admin" or the selected app/area instead.
+- Titles must be simple and 15-20 words max. Use the selected app/area first, then the behavior, e.g. "Admin - verify login" or "Admin list view - verify search works with text". Put detailed setup and expectations in steps, not the title.
 - Generate ONE test case per subfeature (or per distinct business rule if no subfeatures)
 - Each case covers ONLY "${feature.name}" — do not test unrelated features
 - Use real on-screen element labels from the inspection result for all selectors
@@ -1295,11 +1398,7 @@ Rules:
     schema: testCasesSchema,
     userMessage: run.prompt || '',
   });
-  return (result.object.test_cases as any[]).map((tc: any) => ({
-    ...tc,
-    captureEvidence: true,
-    _feature: feature.name,
-  }));
+  return normalizeGeneratedCasesText(result.object.test_cases as any[], run).map((tc: any) => ({ ...tc, captureEvidence: true, _feature: feature.name }));
 }
 
 /**
@@ -1325,9 +1424,11 @@ async function generateCasesForRun(
   // "coverage" that masquerades as real — the exact fake-green failure we are removing.
   // Stop the pipeline here instead of writing cases from the prompt alone. (Respect an
   // explicit user cancel — never overwrite a cancelled run; markRunDone already guards.)
-  if ((run as any).inspection_blind && run.status !== 'cancelled') {
+  const liveInspectionVerdict = assessInspection(run.inspection_context);
+  if (((run as any).inspection_blind || !liveInspectionVerdict.ok) && run.status !== 'cancelled') {
     const why = 'Inspection saw nothing on the page — cannot ground test cases in the live app; not generating ungrounded cases.';
-    pushPhase(run, { agent: 'System', status: 'failed', output: why });
+    const finalWhy = liveInspectionVerdict.ok ? why : liveInspectionVerdict.reason;
+    pushPhase(run, { agent: 'System', status: 'failed', output: finalWhy });
     markRunDone(run, 'failed');
     // Record an honest verdict so downstream consumers/UI never read this as verified.
     (run as any).cases_grounding = { ok: false, reason: why };
@@ -1340,6 +1441,15 @@ async function generateCasesForRun(
   const featureUnderstanding = run.feature_understanding || null;
   const featureInventory = run.feature_inventory || null;
   const prompt = run.prompt || '';
+  if (!featureUnderstanding && !featureInventory && run.understandingSource !== 'requirement') {
+    const why = 'Case generation blocked: repo-grounded code understanding is unavailable, so fallback cannot be limited to repository facts.';
+    pushPhase(run, { agent: 'TestGenerationAgent', status: 'failed', output: why });
+    (run as any).cases_grounding = { ok: false, reason: why };
+    markRunDone(run, 'failed');
+    await persistAgentQualityArtifacts(run).catch((err) => console.warn('Failed to persist source-grounding-blocked artifacts:', err));
+    persistDataInBackground('source-grounding blocked case generation');
+    return;
+  }
   // Resolve the ONE understanding shared by every worker (Strike 3). resolveUnderstanding
   // centralizes the former inline logic: prefer the human-approved understanding, else fall
   // back to the richest grounded answer the agent gave earlier in THIS chat (e.g. the feature
@@ -1469,11 +1579,14 @@ When REVIEWED REQUIREMENT CANDIDATE SCENARIOS are present and no exact user coun
 When the FEATURE/SUBFEATURE COVERAGE BLUEPRINT is present, it is the case-coverage contract:
 - Generate one focused test case for each testable subfeature unless the user explicitly requested fewer cases; if fewer were requested, choose the highest-risk subfeatures first and state the omitted units in the descriptions/tags.
 - Generate separate @e2e test cases for the E2E flows listed in the feature inventory. Do not merge E2E flows into single-feature cases.
+- Never put URLs in titles, descriptions, or steps. Mention the selected app name instead.
+- Never use "Automations" in a case title. Use "Admin" or the selected app/area instead.
+- Case titles must be simple and 15-20 words max. Use the selected app/area first, then the behavior, e.g. "Admin - verify login", "Admin - verify list view is visible after successful login", or "Admin list view - verify search works with text". Put detailed setup and expectations in steps, not the title.
 - Case titles must be clear enough to understand WITHOUT opening the case. Prefer a complete plain-English behavior sentence over a tiny label. Use "<short feature area> - <condition/action> <expected result>" when helpful, about 10-18 words, and include the reason or outcome when that is what makes the case understandable. Do NOT use compressed fragments like "404 blocks admin entry" or "Default view bootstraps when missing"; write "List Views - A 404 admin target prevents reaching admin list views" or "List Views - A missing default view is recreated before the table loads". Do NOT stack feature + subfeature + behavior into a long chain or repeat a long feature name. Everyday QA wording only; no jargon, internal/framing labels, or invented or fancy words.
 - Each feature case's steps must stay inside that feature/subfeature and test its concrete actions, rules, states, and edge paths.
 - Do not collapse multiple unrelated subfeatures into a broad "validate page" case.
 
-Use the inspection result as the source of truth for reachable pages, post-login state, visible navigation, forms, tables, list-like regions, and assertion targets. Do not invent unrelated admin pages or menu names. If the inspector reached the requested goal, at least one @bvt test case must cover that exact inspected end-to-end path, including any login and navigation actions recorded in actionsTaken. If the inspector was partial or blocked, generate cases for the reachable context and include clear preconditions/steps that show what needs to be verified next.
+Use the inspection result as the source of truth for reachable pages, post-login state, visible navigation, forms, tables, list-like regions, and assertion targets. Do not invent unrelated admin pages or menu names. If live inspection is partial or missing a detail, fall back ONLY to the SOURCE-GROUNDED UNDERSTANDING / FEATURE BLUEPRINT / application repo context above; if the repo-grounded context also does not prove the detail, mark that detail as blocked in the case preconditions instead of guessing. If the inspector reached the requested goal, at least one @bvt test case must cover that exact inspected end-to-end path, including any login and navigation actions recorded in actionsTaken. If the inspector was partial or blocked, generate cases only for the reachable or repo-proven context and include clear preconditions/steps that show what needs to be verified next.
 
 For authenticated flows, steps must explicitly say to enter username/email "${credentials.username || '<provided username>'}" and password "${credentials.password || '<provided password>'}", click the relevant sign-in/login control, and then continue to the user-requested inspected target. When the request involves verifying data views, include steps that verify the visible table/list/grid container, headers, rows or empty-state, and absence of loading/error state using the labels found by inspection.
 
@@ -1488,6 +1601,7 @@ Each test case must include automation tags in @ format, for example @bvt, @sani
   // over-produce. If it produced more, keep the first N (the prompt ordered them highest-value
   // first). When no count is fixed, the count follows the flow/complexity (untouched here).
   generated = ensureScenarioCoverage(generated, candidateScenarios, requestedCaseCount);
+  generated = normalizeGeneratedCasesText(generated, run);
 
   if (requestedCaseCount > 0 && Array.isArray(generated) && generated.length > requestedCaseCount) {
     generated = generated.slice(0, requestedCaseCount);
@@ -1618,7 +1732,11 @@ async function resolveControlsPerCase(
     try {
       const ctx: any = await inspectApplicationFlow({ targetUrl, prompt: goal, credentials, runId: `${runId}-resolve-${i + 1}`, workspaceId });
       const controls = (ctx.visibleNavigation || [])
-        .map((a: any) => ({ label: String(a.ariaLabel || a.text || a.name || '').trim(), role: String(a.role || a.control || a.tag || '').trim() }))
+        .map((a: any) => ({
+          label: String(a.ariaLabel || a.text || a.name || '').trim(),
+          role: String(a.role || a.control || a.tag || '').trim(),
+          selectors: Array.isArray(a.selectorHints) ? a.selectorHints.slice(0, 3) : [],
+        }))
         .filter((x: any) => x.label)
         .slice(0, 30);
       if (!controls.length) return;
@@ -1626,7 +1744,7 @@ async function resolveControlsPerCase(
         .filter((a: any) => a.type === 'click')
         .map((a: any) => String(a.text || a.elementId || '').trim())
         .filter(Boolean);
-      const ctrls = controls.map((c2: any) => `"${c2.label}"${c2.role ? ` (${c2.role})` : ''}`).join(' | ');
+      const ctrls = controls.map((c2: any) => `"${c2.label}"${c2.role ? ` (${c2.role})` : ''}${c2.selectors.length ? ` selectors: ${c2.selectors.join(', ')}` : ''}`).join(' | ');
       const pathStr = path.length ? path.map((p: string) => `"${p}"`).join(' -> ') : '(already visible — no extra navigation needed)';
       out[i] = `\nLIVE-RESOLVED CONTROLS for case "${c?.title || `Case ${i + 1}`}" (a live exploration drove the app toward THIS case and opened any menus needed to REVEAL the controls — these are CONFIRMED to exist on the page right now at ${ctx.currentUrl || targetUrl}). Reproduce the access path, then operate the controls by their EXACT labels via getByRole/getByLabel — never invent or paraphrase a label:\n   access path to reveal the controls: ${pathStr}\n   confirmed real controls now visible: ${ctrls}\n`;
     } catch { /* leave '' — falls back to shared inspection context */ }
@@ -1771,6 +1889,16 @@ Do NOT write comments such as "Auth is expected to be handled by global setup". 
   const coderSelectorMap = codeMap
     ? `\nREAL SELECTORS FROM THE APP SOURCE (the codebase IS the source of truth — use these EXACT labels/names; ground every getByRole name / getByLabel / getByText / getByTestId in one of these; do NOT invent a selector that is not here):\n${renderSelectorMap(codeMap)}\n`
     : '';
+  if (!codeMap) {
+    const why = 'Script generation blocked: no repo selector map is available, so the coder cannot fall back to repo-grounded labels/selectors.';
+    pushPhase(run, { agent: 'PlaywrightAgent', status: 'failed', output: why });
+    (run as any).execution_result = { ok: false, total: 0, passed: 0, failed: 0, skipped: 0, error: why, tests: [] };
+    await persistAgentScripts(run);
+    markRunDone(run, 'failed');
+    await persistAgentQualityArtifacts(run).catch((err) => console.warn('Failed to persist selector-map-blocked agent artifacts:', err));
+    persistDataInBackground('selector-map blocked script generation');
+    return;
+  }
   const coder = await getOrchestrator('playwrightCoder', { workspaceId: run.ownerId || 'default' });
   const caseList = Array.isArray(testCases?.test_cases) ? testCases.test_cases : [];
   // DISCOVER-THEN-BIND: resolve each case's real controls + access flow on the LIVE app BEFORE the
@@ -1928,7 +2056,16 @@ Test case payload: ${JSON.stringify({ test_cases: [testCase] })}${coderKnowledge
   pushPhase(run, { agent: 'PlaywrightAgent', status: 'completed', output: { scripts: run.playwright_scripts } });
   // GIT-AGENT GATE: verify every selector against the app's REAL source before running
   // (its own visible "Verify selectors" phase so the wait before evidence is explained).
-  await verifyScriptsWithGitAgent(run, run.playwright_scripts, run.prompt || '');
+  const selectorVerification = await verifyScriptsWithGitAgent(run, run.playwright_scripts, run.prompt || '');
+  if (!selectorVerification.ok) {
+    const why = selectorVerification.reason || 'Selector verification failed.';
+    (run as any).execution_result = { ok: false, total: 0, passed: 0, failed: 0, skipped: 0, error: why, tests: [] };
+    await persistAgentScripts(run);
+    markRunDone(run, 'failed');
+    await persistAgentQualityArtifacts(run).catch((err) => console.warn('Failed to persist selector verification artifacts:', err));
+    persistDataInBackground('selector verification blocked evidence');
+    return;
+  }
   run.playwright_scripts = (run.playwright_scripts || []).map((script: any) => ({
     ...script,
     code: script?.code ? normalizeSelectorsFromInspection(String(script.code), run.inspection_context) : script?.code,
@@ -1983,13 +2120,19 @@ Test case payload: ${JSON.stringify({ test_cases: [testCase] })}${coderKnowledge
  * culprits (selectors with no real-element match), and have the verifier rewrite each culprit with
  * the correct real selector from the code. App-agnostic; no hardcoded labels.
  */
-async function verifyScriptsWithGitAgent(run: any, scripts: any[], _prompt: string): Promise<void> {
-  if (!Array.isArray(scripts) || !scripts.length) return;
+type SelectorVerificationResult = { ok: boolean; reason?: string; unresolved?: string[] };
+
+async function verifyScriptsWithGitAgent(run: any, scripts: any[], _prompt: string): Promise<SelectorVerificationResult> {
+  if (!Array.isArray(scripts) || !scripts.length) return { ok: true };
   pushPhase(run, { agent: 'SelectorVerifier', status: 'running' });
   try {
     const repoPath = (getProject(run.projectId || '')?.repoPath || '').trim();
     const map = getSelectorMap(repoPath);
-    if (!map) { pushPhase(run, { agent: 'SelectorVerifier', status: 'skipped', output: 'No source repo bound — cannot cross-verify selectors against the codebase.' }); return; }
+    if (!map) {
+      const reason = 'Selector verification failed: no source repo selector map is available, so fallback cannot be grounded in the repository.';
+      pushPhase(run, { agent: 'SelectorVerifier', status: 'failed', output: reason });
+      return { ok: false, reason };
+    }
     const mapBlock = renderSelectorMap(map, 220);
 
     const targetsOf = (code: string) => {
@@ -2063,11 +2206,21 @@ ${s.code}`,
     const worker = async () => { while (cursor < scripts.length) { await verifyOne(scripts[cursor++]); } };
     await Promise.all(Array.from({ length: 4 }, worker));
     const residualNote = residualUngrounded > 0
-      ? ` ${residualUngrounded} selector(s) could not be grounded in the codebase and were left for execution-repair to catch.`
+      ? ` ${residualUngrounded} selector(s) could not be grounded in the codebase. Evidence execution is blocked until every selector is repo-grounded.`
       : ' every selector is now grounded in the codebase.';
+    const unresolved = scripts.flatMap((s: any) => s?.code ? culpritsOf(String(s.code)) : []);
+    if (unresolved.length) {
+      const uniqueUnresolved = [...new Set(unresolved)].slice(0, 40);
+      const reason = `Selector verification blocked: unresolved selector(s) not found in repo source: ${uniqueUnresolved.join(' | ')}`;
+      pushPhase(run, { agent: 'SelectorVerifier', status: 'failed', output: `${reason}. Cross-verified ${scripts.length} script(s) vs ${map.fileCount} source files; ${methodFixes} selector method(s) corrected from code, ${totalCulprits} culprit name(s) found, ${rewritten} rewrite(s) applied;${residualNote}` });
+      return { ok: false, reason, unresolved: uniqueUnresolved };
+    }
     pushPhase(run, { agent: 'SelectorVerifier', status: 'completed', output: `Cross-verified ${scripts.length} script(s) vs ${map.fileCount} source files; ${methodFixes} selector method(s) corrected from code, ${totalCulprits} culprit name(s) found, ${rewritten} rewrite(s) applied;${residualNote}` });
+    return { ok: true };
   } catch (e: any) {
-    pushPhase(run, { agent: 'SelectorVerifier', status: 'completed', output: `Selector verification error: ${e?.message || e}` });
+    const reason = `Selector verification failed: ${e?.message || e}`;
+    pushPhase(run, { agent: 'SelectorVerifier', status: 'failed', output: reason });
+    return { ok: false, reason };
   }
 }
 
@@ -2662,14 +2815,17 @@ export function registerAgentRoutes(app: Express) {
 
   app.get('/api/agent-runs', (req, res) => {
     res.set('Cache-Control', 'no-store');
-    res.json(scopeFilter(db.agentRuns, reqScope(req)));
+    res.json(scopeFilter(db.agentRuns, reqScope(req)).map((run: any) => ({
+      ...run,
+      generated_cases: normalizeGeneratedCasesText(run.generated_cases || [], run),
+    })));
   });
 
   app.get('/api/agent-runs/:id', (req, res) => {
     res.set('Cache-Control', 'no-store');
     const run = db.agentRuns.find(r => r.id === req.params.id);
     if (!run) return res.status(404).json({ error: 'Run not found' });
-    res.json(run);
+    res.json({ ...run, generated_cases: normalizeGeneratedCasesText(run.generated_cases || [], run) });
   });
 
   app.post('/api/agent/action', async (req, res) => {
@@ -2818,6 +2974,7 @@ export function registerAgentRoutes(app: Express) {
       password: credentials.password ? maskPassword(credentials.password) : '',
     };
 
+    const exactAppName = String(req.body.websiteName || (resolvedCreds as any)?.websiteName || (resolvedCreds as any)?.siteName || selectedApp?.name || '').trim();
     const selectedQaContext = buildSelectedQaContext({
       testPlanId: req.body.testPlanId,
       testSuiteId: req.body.testSuiteId,
@@ -2849,7 +3006,7 @@ export function registerAgentRoutes(app: Express) {
       appId: scope.appId || '',
       ownerId: scope.userId || '',
       projectName: selectedProject?.name || '',
-      appName: selectedApp?.name || '',
+      appName: exactAppName,
       status: 'running',
       messages: [] as any[],
       generated_cases: [],
@@ -3058,6 +3215,15 @@ export function registerAgentRoutes(app: Express) {
       const sourceUnderstanding = await understandTask;
       newRun.feature_understanding = sourceUnderstanding?.understanding || null;
       newRun.feature_inventory = sourceUnderstanding?.featureInventory || null;
+      if (!newRun.feature_understanding && newRun.understandingSource !== 'requirement') {
+        const why = 'CodeAnalyst could not produce repo-grounded understanding. Generation is blocked because agents must not fall back to guessed behavior.';
+        pushPhase(newRun, { agent: 'System', status: 'failed', output: why });
+        (newRun as any).cases_grounding = { ok: false, reason: why };
+        markRunDone(newRun, 'failed');
+        await persistAgentQualityArtifacts(newRun).catch((persistErr) => console.warn('Failed to persist failed code-grounding agent artifacts:', persistErr));
+        persistDataInBackground('code-grounding blocked agent run');
+        return;
+      }
 
       // ── Phase 3: Find Existing Features ────────────────────────────────────
       pushPhase(newRun, { agent: 'FeatureDiscoveryAgent', status: 'running' });
@@ -3223,12 +3389,12 @@ export function registerAgentRoutes(app: Express) {
         }
 
         // Commit all accumulated cases and go straight to script generation
-        newRun.generated_cases = allGeneratedCases;
+        newRun.generated_cases = normalizeGeneratedCasesText(allGeneratedCases, newRun);
         newRun.existing_matches = [];
         pushPhase(newRun, {
           agent: 'TestGenerationAgent',
           status: 'completed',
-          output: { test_cases: allGeneratedCases, grounded: true, grounding: 'Per-feature case generation complete.' },
+          output: { test_cases: newRun.generated_cases, grounded: true, grounding: 'Per-feature case generation complete.' },
         });
         await persistAgentCaseArtifacts(newRun);
         await persistAgentRequirementArtifacts(newRun);
@@ -3249,7 +3415,7 @@ export function registerAgentRoutes(app: Express) {
           persistDataInBackground('review-required agent run');
           return;
         }
-        await runPostCaseAgentFlow(newRun, undefined as any, { test_cases: allGeneratedCases }, targetUrl, credentials);
+        await runPostCaseAgentFlow(newRun, undefined as any, { test_cases: newRun.generated_cases }, targetUrl, credentials);
       } else {
         // No feature inventory — fall back to single-batch generation with coverage-options gate
         pushPhase(newRun, { agent: 'CoverageScout', status: 'running' });
@@ -3436,16 +3602,20 @@ export function registerAgentRoutes(app: Express) {
   app.post('/api/agent/rework-case', async (req, res) => {
     try {
       const { testCase, feedback, targetUrl } = req.body;
+      const scope = reqScope(req);
+      const reworkRunScope = { appName: (scope.appId ? getApp(scope.appId)?.name : '') || '', app_url: targetUrl || '' };
       const ai = await getOrchestrator('caseReworker', { workspaceId: reqScope(req).userId || 'default' });
       const result = await ai.generateObject<any>({
-        prompt: `Target URL: ${targetUrl || 'not provided'}. Current case: ${JSON.stringify(testCase)}. Feedback: ${feedback || 'Improve clarity and coverage.'}`,
+        prompt: `Target URL: ${targetUrl || 'not provided'}. Current case: ${JSON.stringify(testCase)}. Feedback: ${feedback || 'Improve clarity and coverage.'}
+
+Return a complete test case object. Preserve any useful existing fields. If no explicit preconditions are needed, return preconditions as an empty string. Do not omit required keys.`,
         schema: z.object({
           title: z.string(),
-          description: z.string(),
-          preconditions: z.string(),
-          tags: z.array(z.string()),
-          priority: z.enum(['Low', 'Medium', 'High', 'Critical']),
-          type: z.enum(['Manual', 'Automated', 'Both']),
+          description: z.string().optional().default(''),
+          preconditions: z.string().optional().default(''),
+          tags: z.array(z.string()).optional().default([]),
+          priority: z.enum(['Low', 'Medium', 'High', 'Critical']).optional().default('Medium'),
+          type: z.enum(['Manual', 'Automated', 'Both']).optional().default('Manual'),
           steps: z.array(z.object({
             action: z.string(),
             expected: z.string(),
@@ -3453,7 +3623,18 @@ export function registerAgentRoutes(app: Express) {
         }),
         userMessage: feedback || 'Rework the case for clarity and coverage.',
       });
-      res.json(result.object);
+      const reworked = result.object || {};
+      res.json(normalizeGeneratedCaseText({
+        ...testCase,
+        ...reworked,
+        title: String(reworked.title || testCase?.title || 'Reworked test case'),
+        description: String(reworked.description ?? testCase?.description ?? ''),
+        preconditions: String(reworked.preconditions ?? testCase?.preconditions ?? ''),
+        tags: Array.isArray(reworked.tags) ? reworked.tags : Array.isArray(testCase?.tags) ? testCase.tags : [],
+        priority: reworked.priority || testCase?.priority || 'Medium',
+        type: reworked.type || testCase?.type || 'Manual',
+        steps: normalizeCaseSteps(reworked.steps || testCase?.steps || []),
+      }, reworkRunScope));
     } catch (err: any) {
       console.error('AI Rework Error:', err);
       res.status(500).json({ error: getAIErrorMessage(err) });
@@ -3463,6 +3644,8 @@ export function registerAgentRoutes(app: Express) {
   app.post('/api/agent/expand-case-steps', async (req, res) => {
     try {
       const { testCase, targetStepCount, targetUrl, stepIndex } = req.body;
+      const scope = reqScope(req);
+      const stepRunScope = { appName: (scope.appId ? getApp(scope.appId)?.name : '') || '', app_url: targetUrl || '' };
       const requestedCount = Math.max(2, Math.min(20, Number(targetStepCount) || 8));
       const normalizedSteps = normalizeCaseSteps(testCase?.steps || []);
       const selectedStepIndex = Number.isInteger(stepIndex) ? Number(stepIndex) : null;
@@ -3481,7 +3664,10 @@ export function registerAgentRoutes(app: Express) {
         }),
         userMessage: `Expand case steps to ${requestedCount}.`,
       });
-      const steps = normalizeCaseSteps(result.object.steps).slice(0, requestedCount);
+      const steps = normalizeCaseSteps(result.object.steps).slice(0, requestedCount).map((step) => ({
+        action: cleanCaseText(step.action, stepRunScope),
+        expected: cleanCaseText(step.expected, stepRunScope),
+      }));
       res.json({ steps });
     } catch (err: any) {
       console.error('AI Step Expansion Error:', err);
