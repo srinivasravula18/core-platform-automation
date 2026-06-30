@@ -80,6 +80,7 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
   const [expandedScript, setExpandedScript] = useState<number | null>(null);
   const [feedback, setFeedback] = useState<Record<number, string>>({});
   const [expandCount, setExpandCount] = useState<Record<number, number>>({});
+  const [selectedCases, setSelectedCases] = useState<Set<number>>(new Set());
   const [busy, setBusy] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
   const [pwRunning, setPwRunning] = useState(false);
@@ -139,6 +140,7 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
   useEffect(() => {
     if (cases === null && run?.generated_cases?.length) {
       setCases(run.generated_cases.map((c: Case) => ({ ...c, steps: (c.steps || []).map((s) => ({ ...s })) })));
+      setSelectedCases(new Set());
     }
   }, [run, cases]);
 
@@ -246,6 +248,38 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
   };
   const removeCase = (i: number) => {
     setCases((prev) => (prev ? prev.filter((_, idx) => idx !== i) : prev));
+    setSelectedCases((prev) => {
+      if (!prev.size) return prev;
+      const next = new Set<number>();
+      prev.forEach((idx) => {
+        if (idx < i) next.add(idx);
+        else if (idx > i) next.add(idx - 1);
+      });
+      return next;
+    });
+    setEditing(null);
+    setSaved(false);
+  };
+  const toggleCaseSelection = (i: number) => {
+    setSelectedCases((prev) => {
+      const next = new Set(prev);
+      if (next.has(i)) next.delete(i);
+      else next.add(i);
+      return next;
+    });
+  };
+  const visibleCaseIndexes = list.map((_, i) => i);
+  const allCasesSelected = visibleCaseIndexes.length > 0 && visibleCaseIndexes.every((i) => selectedCases.has(i));
+  const toggleAllCases = () => {
+    setSelectedCases((prev) => {
+      if (visibleCaseIndexes.length > 0 && visibleCaseIndexes.every((i) => prev.has(i))) return new Set();
+      return new Set(visibleCaseIndexes);
+    });
+  };
+  const deleteSelectedCases = () => {
+    if (!selectedCases.size) return;
+    setCases((prev) => (prev ? prev.filter((_, idx) => !selectedCases.has(idx)) : prev));
+    setSelectedCases(new Set());
     setEditing(null);
     setSaved(false);
   };
@@ -746,6 +780,24 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
           {tab === 'cases' && (
             <div>
               <div className="mb-2 flex flex-wrap items-center gap-2">
+                <label className="inline-flex items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2.5 py-1.5 text-xs font-medium text-[var(--text-primary)]">
+                  <input
+                    type="checkbox"
+                    checked={allCasesSelected}
+                    onChange={toggleAllCases}
+                    disabled={!list.length}
+                    className="h-3.5 w-3.5 accent-[var(--accent)] disabled:opacity-50"
+                  />
+                  Select all
+                </label>
+                {selectedCases.size > 0 && (
+                  <button
+                    onClick={deleteSelectedCases}
+                    className="inline-flex items-center gap-1 rounded-md border border-red-500/30 bg-red-500/10 px-2.5 py-1.5 text-xs font-medium text-red-400 hover:bg-red-500/20"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" /> Delete selected ({selectedCases.size})
+                  </button>
+                )}
                 <button
                   onClick={addCase}
                   className="inline-flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2.5 py-1.5 text-xs font-medium text-[var(--text-primary)] hover:border-[var(--accent)]"
@@ -808,6 +860,14 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
                       onClick={() => setEditing(editing === i ? null : i)}
                       className="flex cursor-pointer items-center gap-2 px-3 py-2"
                     >
+                      <input
+                        type="checkbox"
+                        checked={selectedCases.has(i)}
+                        onChange={() => toggleCaseSelection(i)}
+                        onClick={(e) => e.stopPropagation()}
+                        className="h-3.5 w-3.5 shrink-0 accent-[var(--accent)]"
+                        aria-label={`Select case ${i + 1}`}
+                      />
                       <span className="rounded bg-[var(--bg-card)] px-1.5 py-0.5 text-[10px] font-bold uppercase text-[var(--text-muted)]">
                         {c.priority || 'Med'}
                       </span>
