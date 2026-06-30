@@ -168,7 +168,7 @@ export async function executePlaywrightScripts(opts: {
         } catch (e) { /* ignore */ }
       }, ${JSON.stringify(opts.sessionStorageState)});`
       : '';
-    const sharedFixture = `import { test as base, expect, type BrowserContext, type Page } from '@playwright/test';
+    const sharedFixture = `import { test as base, expect, request, type BrowserContext, type Page } from '@playwright/test';
 
 let sharedContext: BrowserContext | undefined;
 let sharedPage: Page | undefined;
@@ -186,7 +186,7 @@ export const test = base.extend<{ context: BrowserContext; page: Page }>({
   },
 });
 
-export { expect };
+export { expect, request };
 export type { BrowserContext, Page } from '@playwright/test';
 `;
     await fs.writeFile(path.join(runDir, 'shared-session.ts'), sharedFixture, 'utf8');

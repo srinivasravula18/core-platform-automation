@@ -28,18 +28,25 @@ export function assessInspection(ctx: any): VerifierVerdict {
   const nav = (ctx.visibleNavigation || []).length;
   const forms = (ctx.visibleForms || []).length;
   const tables = (ctx.visibleTables || []).length;
-  const observed = nav + forms + tables;
+  const assertionTargets = (ctx.assertionTargets || []).length;
+  const listRegions = (ctx.visibleListRegions || ctx.listLikeRegions || []).length;
+  const pageText = String(ctx.pageSummary || '').replace(/\s+/g, ' ').trim();
+  const meaningfulText = pageText.length >= 20 && !/^(loading|signing in|please wait)[.\s…]*$/i.test(pageText);
+  const screenshots = (ctx.screenshots || []).length;
+  const navigated = (ctx.actionsTaken || []).some((action: any) => action?.type === 'navigate' && Number(action?.status || 0) > 0);
+  const observed = nav + forms + tables + assertionTargets + listRegions;
   // "Blind" means the inspector could not READ the page at all. A 'blocked' GOAL — e.g. the
   // list records were still "Loading…", or one sub-step couldn't complete — is NOT blind when
-  // the page WAS observed: the captured navigation/forms/tables are valid grounding for cases.
+  // the page WAS observed: captured controls, headings/text, screenshots, or even a login/error
+  // shell are valid grounding for cases and for an honest blocked-state report.
   // Only treat it as blind when nothing at all was observed (the real blind-inspection class).
-  if (observed === 0) {
+  if (observed === 0 && !meaningfulText && !screenshots && !navigated) {
     const why = Array.isArray(ctx.warnings) && ctx.warnings.length ? `: ${ctx.warnings.join('; ')}` : '';
     return { ok: false, reason: `Inspector observed no navigation, forms, or tables — it could not read the live page${why}.` };
   }
   return {
     ok: true,
-    reason: `Observed ${nav} navigation item(s), ${forms} form(s), ${tables} table(s)${ctx.goalStatus === 'blocked' ? ' (goal only partially reached — grounding on the observed page)' : ''}.`,
+    reason: `Observed ${nav} navigation item(s), ${forms} form(s), ${tables} table(s), ${assertionTargets} assertion target(s)${meaningfulText ? ', and readable page text' : ''}${ctx.goalStatus === 'blocked' ? ' (goal only partially reached — grounding on the observed page)' : ''}.`,
   };
 }
 

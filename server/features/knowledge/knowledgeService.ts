@@ -132,6 +132,7 @@ export function deleteKnowledge(id: string): boolean {
  * Returns the matched pack's content, or '' when nothing matches.
  */
 export function resolveKnowledgeForContext(ctx: {
+  knowledgePackId?: string;
   websiteId?: string;
   targetUrl?: string;
   text?: string;
@@ -139,6 +140,11 @@ export function resolveKnowledgeForContext(ctx: {
 }): { content: string; packName: string } {
   const packs = ownedPacks(ctx.ownerId);
   if (!packs.length) return { content: '', packName: '' };
+
+  if (ctx.knowledgePackId) {
+    const byPack = packs.find((p) => p.id === ctx.knowledgePackId);
+    if (byPack) return { content: byPack.content, packName: byPack.name };
+  }
 
   if (ctx.websiteId) {
     const byId = packs.find((p) => p.websiteIds?.includes(ctx.websiteId!));
@@ -158,8 +164,12 @@ export function resolveKnowledgeForContext(ctx: {
 }
 
 /** Find the pack that matches a context (same precedence as resolution). */
-function matchPack(ctx: { websiteId?: string; targetUrl?: string; text?: string; ownerId?: string }): AppKnowledgePack | undefined {
+function matchPack(ctx: { knowledgePackId?: string; websiteId?: string; targetUrl?: string; text?: string; ownerId?: string }): AppKnowledgePack | undefined {
   const packs = ownedPacks(ctx.ownerId);
+  if (ctx.knowledgePackId) {
+    const p = packs.find((x) => x.id === ctx.knowledgePackId);
+    if (p) return p;
+  }
   if (ctx.websiteId) {
     const p = packs.find((x) => x.websiteIds?.includes(ctx.websiteId!));
     if (p) return p;
@@ -278,7 +288,7 @@ function selectRelevantSlice(content: string, query: string, maxChars: number): 
  * message) and generous for the deep pipeline / inspector where accuracy matters.
  */
 export function buildKnowledgeBlock(
-  ctx: { websiteId?: string; targetUrl?: string; text?: string; ownerId?: string },
+  ctx: { knowledgePackId?: string; websiteId?: string; targetUrl?: string; text?: string; ownerId?: string },
   opts?: { maxChars?: number },
 ): string {
   const { content } = resolveKnowledgeForContext(ctx);

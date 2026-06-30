@@ -20,6 +20,35 @@ function baseUrl(): string {
   return String(process.env.TARGET_BASE_URL || '').replace(/\/+$/, '');
 }
 
+function trimBaseUrl(value: string): string {
+  return String(value || '').replace(/\/+$/, '');
+}
+
+function serviceBaseUrl(conn?: CatalogConn): string {
+  const raw = trimBaseUrl(conn?.baseUrl || baseUrl() || '');
+  if (!raw) return '';
+  const specPath = String(conn?.specPath || process.env.TARGET_SPEC_PATH || '');
+  // App base URLs often point at a browser surface such as /admin-ui/ while the
+  // platform API and OpenAPI spec are mounted at the origin (/api/...). A
+  // root-relative spec path is an explicit signal to resolve API calls there.
+  if (specPath.startsWith('/')) {
+    try {
+      const rawUrl = new URL(raw);
+      const fallback = trimBaseUrl(baseUrl());
+      if (fallback) {
+        try {
+          const fallbackUrl = new URL(fallback);
+          const rawLocal = ['localhost', '127.0.0.1', '::1'].includes(rawUrl.hostname.toLowerCase());
+          const fallbackLocal = ['localhost', '127.0.0.1', '::1'].includes(fallbackUrl.hostname.toLowerCase());
+          if (rawLocal && fallbackLocal) return fallback;
+        } catch { /* keep origin fallback */ }
+      }
+      return rawUrl.origin;
+    } catch { /* keep raw */ }
+  }
+  return raw;
+}
+
 // Cache a logged-in token so we don't re-auth on every call. Cleared on a 401 so the next call
 // re-logs-in. A static TARGET_TOKEN (if set) is always preferred and never cached/cleared.
 let cachedToken: string | null = null;
@@ -263,7 +292,7 @@ async function fetchObjectCatalogViaSwagger(
   conn?: CatalogConn,
 ): Promise<Array<{ app: string; api_name: string; label: string }>> {
   try {
-    const url = (conn?.baseUrl || baseUrl() || '').replace(/\/+$/, '');
+    const url = serviceBaseUrl(conn);
     if (!url) return [];
     const business = await fetchObjectCatalogViaApi(conn);
     const spec = await fetchSwaggerSpec(url, conn?.specPath || process.env.TARGET_SPEC_PATH || undefined);
@@ -312,7 +341,7 @@ async function resolveConnToken(conn: CatalogConn, url: string): Promise<string 
  */
 async function fetchObjectCatalogViaApi(conn?: CatalogConn): Promise<Array<{ app: string; api_name: string; label: string }>> {
   try {
-    const url = (conn?.baseUrl || baseUrl() || '').replace(/\/+$/, '');
+    const url = serviceBaseUrl(conn);
     if (!url) return [];
     const token = await resolveConnToken(conn || {}, url);
     if (!token) return [];
@@ -349,7 +378,7 @@ async function fetchObjectCatalogViaApi(conn?: CatalogConn): Promise<Array<{ app
  */
 export async function fetchTestDataPack(conn: CatalogConn, hintText: string, objectHints: string[] = []): Promise<string> {
   try {
-    const url = (conn?.baseUrl || baseUrl() || '').replace(/\/+$/, '');
+    const url = serviceBaseUrl(conn);
     if (!url) return '';
     const token = await resolveConnToken(conn || {}, url);
     if (!token) return '';

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type MouseEvent } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import {
   BrainCircuit,
@@ -655,7 +655,7 @@ export default function AgentConsole() {
     } catch { /* ignore */ }
   }, [favorites]);
 
-  const toggleFavorite = useCallback((id: string, e: React.MouseEvent) => {
+  const toggleFavorite = useCallback((id: string, e: MouseEvent) => {
     e.stopPropagation();
     setFavorites((prev) => {
       const next = new Set(prev);
@@ -664,7 +664,7 @@ export default function AgentConsole() {
     });
   }, []);
 
-  const deleteConversation = useCallback(async (id: string, e: React.MouseEvent) => {
+  const deleteConversation = useCallback(async (id: string, e: MouseEvent) => {
     e.stopPropagation();
     try {
       await fetch(`/api/chat/conversations/${id}`, { method: 'DELETE' });

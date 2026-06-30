@@ -423,7 +423,10 @@ export function RequirementDiscoveryResult({ result, onGenerateTests }: { result
               if (understanding.adminBehavior) lines.push(`Admin surface: ${understanding.adminBehavior}`);
               if (understanding.keystoneBehavior) lines.push(`End-user surface: ${understanding.keystoneBehavior}`);
               if ((understanding.metadataRefs || []).length) {
-                lines.push('Metadata objects: ' + (understanding.metadataRefs as any[]).map((m) => m.name || m).join(', '));
+                lines.push('Metadata objects: ' + (understanding.metadataRefs as any[])
+                  .map((m) => typeof m === 'string' ? m : (m.object || m.name || m.api_name || m.apiName || ''))
+                  .filter(Boolean)
+                  .join(', '));
               }
               if (sourceFiles.length) {
                 lines.push('Key source files: ' + sourceFiles.slice(0, 6).map((f: any) => f.path || f).join(', '));

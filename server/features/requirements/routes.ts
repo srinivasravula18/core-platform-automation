@@ -4,10 +4,30 @@ import { addActivity, persistDataInBackground } from '../../shared/storage';
 import { getAIErrorMessage } from '../../shared/ai';
 import { confirmRequirementDraft, discoverRequirement, draftRequirement, getRequirementWithCases } from './requirementService';
 import { reqScope, scopeFilter } from '../../shared/scope';
-import { getProject } from '../projects/projectService';
+import { getApp, getProject } from '../projects/projectService';
+import { resolveCredentials } from '../credentials/credentialsService';
+import { buildCorePlatformApplicationContext } from '../agent/applicationContext';
 
 function repoPathForScope(scope: ReturnType<typeof reqScope>): string {
   return scope.projectId ? (getProject(scope.projectId)?.repoPath || '') : '';
+}
+
+async function applicationContextPromptForScope(scope: ReturnType<typeof reqScope>, query: string): Promise<string> {
+  const app = scope.appId ? getApp(scope.appId) : undefined;
+  const targetUrl = app?.baseUrl || '';
+  const credentials = targetUrl
+    ? resolveCredentials({ targetUrl, ownerId: scope.userId || undefined }) || undefined
+    : undefined;
+  const built = await buildCorePlatformApplicationContext({
+    projectId: scope.projectId,
+    appId: scope.appId || '',
+    targetUrl,
+    prompt: query,
+    ownerId: scope.userId,
+    credentials,
+    maxChars: 22000,
+  });
+  return built.promptText;
 }
 
 function prepareStreamingResponse(res: any) {
@@ -47,6 +67,7 @@ export function registerRequirementRoutes(app: Express) {
         flushStream(res);
       };
       onProgress('Starting requirement drafting agent...');
+      const applicationContextPrompt = await applicationContextPromptForScope(scope, query).catch(() => '');
       const result = await draftRequirement(query, {
         workspaceId: req.body?.workspaceId || 'default',
         userId: scope.userId,
@@ -54,6 +75,7 @@ export function registerRequirementRoutes(app: Express) {
         repoPath: repoPathForScope(scope),
         projectId: scope.projectId,
         appId: scope.appId || '',
+        applicationContextPrompt,
         requirementsOnly: true,
         onProgress,
       });
@@ -72,7 +94,8 @@ export function registerRequirementRoutes(app: Express) {
       const query = String(req.body?.query || '').trim();
       if (!query) return res.status(400).json({ error: 'Tell me which feature or section to test.' });
       const scope = reqScope(req);
-      const result = await draftRequirement(query, { workspaceId: req.body?.workspaceId || 'default', userId: scope.userId, role: scope.role, repoPath: repoPathForScope(scope), projectId: scope.projectId, appId: scope.appId || '', requirementsOnly: true });
+      const applicationContextPrompt = await applicationContextPromptForScope(scope, query).catch(() => '');
+      const result = await draftRequirement(query, { workspaceId: req.body?.workspaceId || 'default', userId: scope.userId, role: scope.role, repoPath: repoPathForScope(scope), projectId: scope.projectId, appId: scope.appId || '', applicationContextPrompt, requirementsOnly: true });
       res.json(result);
     } catch (error: any) {
       res.status(500).json({ error: getAIErrorMessage(error) || error?.message || 'Failed to draft requirement.' });
@@ -96,7 +119,8 @@ export function registerRequirementRoutes(app: Express) {
       if (!query) return res.status(400).json({ error: 'Tell me which feature or section to test.' });
       const scope = reqScope(req);
       const requirementsOnly = req.body?.requirementsOnly === true || req.body?.mode === 'requirements_only';
-      const result = await discoverRequirement(query, { workspaceId: req.body?.workspaceId || 'default', userId: scope.userId, role: scope.role, repoPath: repoPathForScope(scope), projectId: scope.projectId, appId: scope.appId || '', requirementsOnly });
+      const applicationContextPrompt = await applicationContextPromptForScope(scope, query).catch(() => '');
+      const result = await discoverRequirement(query, { workspaceId: req.body?.workspaceId || 'default', userId: scope.userId, role: scope.role, repoPath: repoPathForScope(scope), projectId: scope.projectId, appId: scope.appId || '', applicationContextPrompt, requirementsOnly });
       res.json(result);
     } catch (error: any) {
       res.status(500).json({ error: getAIErrorMessage(error) || error?.message || 'Failed to discover requirement.' });

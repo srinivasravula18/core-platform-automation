@@ -487,7 +487,7 @@ function summarizeFeatureInventoryForPrompt(inventory: FeatureInventory): string
  */
 export async function analyzeFeatureFromSource(
   query: string,
-  opts: { workspaceId?: string; userId?: string; repoPath?: string; onProgress?: (label: string) => void } = {},
+  opts: { workspaceId?: string; userId?: string; repoPath?: string; projectId?: string; appId?: string; applicationContextPrompt?: string; onProgress?: (label: string) => void } = {},
 ): Promise<{ understanding: FeatureUnderstanding; files: Array<{ path: string; area: string; surface: string }>; keywords: string[] }> {
   const cleanQuery = String(query || '').trim();
   const keywords = deriveKeywords(cleanQuery);
@@ -585,12 +585,15 @@ export async function analyzeFeatureFromSource(
 
   const analyst = await getOrchestrator('featureAnalyst', opts);
   opts.onProgress?.('Extracting requirement rules from source evidence...');
+  const applicationContextBlock = opts.applicationContextPrompt
+    ? `\n\nSELECTED APPLICATION CONTEXT - authoritative. Use this to avoid guessing app identity, repo roots, object api_names, field api_names, sample data, and knowledge-pack rules. If a detail is not present here or in source evidence, leave it unknown instead of inventing it:\n${opts.applicationContextPrompt}`
+    : '';
   const analystRes = await analyst.generateObject<FeatureUnderstanding>({
     prompt: `Feature/section to analyze (user query): "${cleanQuery}"
 
 Search keywords used: ${keywords.join(', ')}
 
-${groundingBlock}${metaCatalogBlock}
+${groundingBlock}${metaCatalogBlock}${applicationContextBlock}
 
 INFER the application's architecture from the research notes and excerpts above — do NOT assume any specific product, framework, or surface names. Let the code tell you. Use ONLY behaviour the research actually establishes; never invent meta-concepts (CI/seeding/regression scaffolding) that aren't real user features.
 ${readDraftingSkill() ? `\nLEARNED DRAFTING SKILL (general QA-drafting guidance refined over prior runs — apply it):\n${readDraftingSkill()}\n` : ''}
@@ -656,7 +659,7 @@ Produce the requirement understanding as strict JSON matching the schema:
  */
 export async function discoverFeatureInventoryFromSource(
   query: string,
-  opts: { workspaceId?: string; userId?: string; repoPath?: string; onProgress?: (label: string) => void } = {},
+  opts: { workspaceId?: string; userId?: string; repoPath?: string; projectId?: string; appId?: string; applicationContextPrompt?: string; onProgress?: (label: string) => void } = {},
 ): Promise<{ inventory: FeatureInventory; files: Array<{ path: string; area: string; surface: string }>; keywords: string[] }> {
   const cleanQuery = String(query || '').trim() || 'Discover all testable features, subfeatures, and end-to-end flows in this application.';
   const keywords = deriveInventoryKeywords(cleanQuery);
@@ -708,6 +711,9 @@ Discover feature-level, subfeature-level, and end-to-end QA coverage across the 
 
   const featureAgent = await getOrchestrator('featureDiscoveryAgent', opts);
   opts.onProgress?.('Mapping features and subfeatures from code...');
+  const applicationContextBlock = opts.applicationContextPrompt
+    ? `\n\nSELECTED APPLICATION CONTEXT - authoritative. Use this to avoid guessing app identity, repo roots, object api_names, field api_names, sample data, and knowledge-pack rules. If a detail is not present here or in source evidence, leave it unknown instead of inventing it:\n${opts.applicationContextPrompt}`
+    : '';
   const featureRes = await featureAgent.generateObject<FeatureInventory>({
     prompt: `You are FeatureDiscoveryAgent. Build a granular QA feature inventory from the target application's REAL source.
 
@@ -717,7 +723,7 @@ ${cleanQuery}
 Search keywords:
 ${keywords.join(', ')}
 
-${groundingBlock}
+${groundingBlock}${applicationContextBlock}
 
 Return strict JSON matching the schema.
 
@@ -759,7 +765,7 @@ FEATURE INVENTORY FROM FEATUREDISCOVERYAGENT:
 ${summarizeFeatureInventoryForPrompt(inventory)}
 
 SOURCE GROUNDING:
-${groundingBlock}
+${groundingBlock}${applicationContextBlock}
 
 Return strict JSON matching the schema.
 
@@ -990,7 +996,7 @@ function mergeInventoryIntoUnderstanding(base: FeatureUnderstanding, inventory: 
 
 export async function draftRequirement(
   query: string,
-  opts: { workspaceId?: string; userId?: string; role?: string; repoPath?: string; projectId?: string; appId?: string; requirementsOnly?: boolean; onProgress?: (label: string) => void } = {},
+  opts: { workspaceId?: string; userId?: string; role?: string; repoPath?: string; projectId?: string; appId?: string; applicationContextPrompt?: string; requirementsOnly?: boolean; onProgress?: (label: string) => void } = {},
 ): Promise<RequirementDraftResult> {
   const ownerId = opts.userId || '';
   const cleanQuery = String(query || '').trim();
@@ -1072,7 +1078,7 @@ export async function confirmRequirementDraft(
 
 export async function discoverRequirement(
   query: string,
-  opts: { workspaceId?: string; userId?: string; role?: string; repoPath?: string; projectId?: string; appId?: string; requirementsOnly?: boolean } = {},
+  opts: { workspaceId?: string; userId?: string; role?: string; repoPath?: string; projectId?: string; appId?: string; applicationContextPrompt?: string; requirementsOnly?: boolean } = {},
 ): Promise<DiscoverResult> {
   const workspaceId = opts.workspaceId || 'default';
   const ownerId = opts.userId || '';
@@ -1119,6 +1125,8 @@ export async function discoverRequirement(
       createdBy: 'Feature Analyst',
       proposedBy: 'Feature Analyst',
       approvalState: 'pending_review',
+      projectId: opts.projectId || '',
+      appId: opts.appId || '',
       ownerId,
     });
     generatedCases.push({ id: caseId, title: pc.title });

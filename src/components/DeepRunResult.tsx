@@ -372,7 +372,7 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
           app_url: run?.app_url || '',
           websiteId: run?.website_id || run?.websiteId || undefined,
           prompt: run?.prompt || '',
-          testCaseCount: run?.generated_cases?.length || 3,
+          testCaseCount: Number(run?.requested_case_count || run?.requestedCaseCount || 0) || 0,
           flowMode: 'review_cases',
           folderMention: run?.folder_path && run.folder_path !== 'Uncategorized' ? run.folder_path : undefined,
         }),

@@ -41,6 +41,7 @@ import { retrieveRunMemories, summarizeMemoriesForPrompt, recordRunMemory } from
 import { reqScope, scopeFilter } from '../../shared/scope';
 import { getApp, getProject } from '../projects/projectService';
 import { fetchTestDataPack } from '../../ai/tools/corePlatformData';
+import { applicationContextCacheKey, buildCorePlatformApplicationContext } from './applicationContext';
 // Strike 3: the single, shared source of grounding for every deep-run worker.
 // isNoiseTurn / deriveUnderstandingFromChat live here now (were duplicated below)
 // and resolveUnderstanding is the one place that decides the run's understanding,
@@ -601,8 +602,12 @@ const inspectionCache = new Map<string, { at: number; value: any }>();
 const understandingCache = new Map<string, { at: number; value: any }>();
 const featureInventoryCache = new Map<string, { at: number; value: any }>();
 
-function featureCacheKey(targetUrl: string, prompt: string): string {
-  return `${String(targetUrl || '').toLowerCase()}::${String(prompt || '').toLowerCase().replace(/\s+/g, ' ').trim().slice(0, 200)}`;
+function featureCacheKey(targetUrl: string, prompt: string, contextKey = ''): string {
+  return [
+    String(contextKey || '').toLowerCase(),
+    String(targetUrl || '').toLowerCase(),
+    String(prompt || '').toLowerCase().replace(/\s+/g, ' ').trim().slice(0, 500),
+  ].join('::');
 }
 function getCached(cache: Map<string, { at: number; value: any }>, key: string): any | null {
   const hit = cache.get(key);
@@ -688,6 +693,96 @@ function meaningfulGroundingLines(value: string, limit = 40): string[] {
     .slice(0, limit);
 }
 
+function splitRequirementList(value: string): string[] {
+  return String(value || '')
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^\s*(?:[-*\u2022]|\d+[.)])\s*/, '').trim())
+    .filter((line) => line.length >= 3);
+}
+
+function requirementSection(value: string, start: RegExp, endMarkers: RegExp[]): string {
+  const text = String(value || '');
+  const match = start.exec(text);
+  if (!match) return '';
+  const from = match.index + match[0].length;
+  let to = text.length;
+  for (const marker of endMarkers) {
+    marker.lastIndex = 0;
+    const rest = text.slice(from);
+    const end = marker.exec(rest);
+    if (end && end.index >= 0) to = Math.min(to, from + end.index);
+  }
+  return text.slice(from, to).trim();
+}
+
+function parseRequirementContextText(prompt: string, targetUrl: string, grounding: string): any | null {
+  const text = String(grounding || '').trim();
+  if (!/\bRequirement\s*:/i.test(text) && !/\bCandidate scenarios\s*\(/i.test(text)) return null;
+
+  const title = (text.match(/^\s*Requirement\s*:?\s*(.+)$/im)?.[1] || titleFromPrompt(prompt, targetUrl)).trim();
+  const description = requirementSection(text, /^\s*Description\s*:?\s*/im, [
+    /^\s*Business rules\s*:?\s*$/im,
+    /^\s*Admin surface\s*:?/im,
+    /^\s*End-user surface\s*:?/im,
+    /^\s*Metadata objects\s*:?/im,
+    /^\s*Key source files\s*:?/im,
+    /^\s*Candidate scenarios\s*\(/im,
+  ]);
+  const businessRules = splitRequirementList(requirementSection(text, /^\s*Business rules\s*:?\s*/im, [
+    /^\s*Admin surface\s*:?/im,
+    /^\s*End-user surface\s*:?/im,
+    /^\s*Metadata objects\s*:?/im,
+    /^\s*Key source files\s*:?/im,
+    /^\s*Candidate scenarios\s*\(/im,
+  ]));
+  const adminBehavior = requirementSection(text, /^\s*Admin surface\s*:?\s*/im, [
+    /^\s*End-user surface\s*:?/im,
+    /^\s*Metadata objects\s*:?/im,
+    /^\s*Key source files\s*:?/im,
+    /^\s*Candidate scenarios\s*\(/im,
+  ]);
+  const keystoneBehavior = requirementSection(text, /^\s*End-user surface\s*:?\s*/im, [
+    /^\s*Metadata objects\s*:?/im,
+    /^\s*Key source files\s*:?/im,
+    /^\s*Candidate scenarios\s*\(/im,
+  ]);
+  const metadataLine = text.match(/^\s*Metadata objects\s*:?\s*(.+)$/im)?.[1] || '';
+  const metadataRefs = metadataLine
+    .split(',')
+    .map((part) => part.trim())
+    .filter((part) => part && part !== '[object Object]')
+    .map((object) => ({ object, note: 'From reviewed requirement context.' }));
+  const sourceLine = text.match(/^\s*Key source files\s*:?\s*(.+)$/im)?.[1] || '';
+  const sourceFiles = sourceLine
+    .split(',')
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .map((pathValue) => ({ path: pathValue, why: 'From reviewed requirement context.' }));
+  const scenarios = splitRequirementList(requirementSection(text, /^\s*Candidate scenarios\s*\(\d+\)\s*:?\s*/im, []))
+    .map((scenario) => ({
+      title: scenario,
+      priority: /unauth|unknown|non-admin|block|delete|disabled|invalid|unsupported|not found|permission|403|404|409|401/i.test(scenario) ? 'High' : 'Medium',
+      rationale: 'Candidate scenario from reviewed requirement context.',
+      steps: [
+        { action: `Exercise: ${scenario}`, expected: 'The behavior matches the reviewed requirement and source-defined rule.' },
+      ],
+    }));
+
+  return {
+    title,
+    description,
+    businessRules,
+    dataPopulationNotes: '',
+    adminBehavior,
+    keystoneBehavior,
+    metadataRefs,
+    sourceFiles,
+    candidateScenarios: scenarios,
+    reusedPriorGrounding: true,
+    groundingSource: 'requirement_context',
+  };
+}
+
 function titleFromPrompt(prompt: string, targetUrl: string): string {
   const clean = String(prompt || '').replace(/\s+/g, ' ').trim();
   if (clean) return clean.slice(0, 90);
@@ -698,6 +793,9 @@ function titleFromPrompt(prompt: string, targetUrl: string): string {
 }
 
 function buildUnderstandingFromPriorGrounding(prompt: string, targetUrl: string, grounding: string): any {
+  const parsedRequirement = parseRequirementContextText(prompt, targetUrl, grounding);
+  if (parsedRequirement) return parsedRequirement;
+
   const lines = meaningfulGroundingLines(grounding, 50);
   const title = titleFromPrompt(prompt, targetUrl);
   return {
@@ -905,6 +1003,9 @@ function summarizeUnderstanding(u: any, maxChars = 4000): string {
   if (u.dataPopulationNotes) lines.push(`Background data/preconditions: ${u.dataPopulationNotes}`);
   if (Array.isArray(u.metadataRefs) && u.metadataRefs.length) lines.push(`Metadata source of truth: ${u.metadataRefs.map((m: any) => m.object).filter(Boolean).join(', ')}`);
   if (Array.isArray(u.sourceFiles) && u.sourceFiles.length) lines.push(`Grounded in source files: ${u.sourceFiles.map((f: any) => f.path).filter(Boolean).slice(0, 10).join(', ')}`);
+  if (Array.isArray(u.candidateScenarios) && u.candidateScenarios.length) {
+    lines.push(`Candidate scenarios (${u.candidateScenarios.length}):\n- ${u.candidateScenarios.map((s: any) => s.title || s).filter(Boolean).join('\n- ')}`);
+  }
   return lines.join('\n').slice(0, maxChars);
 }
 
@@ -929,6 +1030,70 @@ function summarizeFeatureInventory(inventory: any, maxChars = 12000): string {
     }
   }
   return lines.join('\n').slice(0, maxChars);
+}
+
+function scenarioCoverageBlock(scenarios: any[], maxChars = 16000): string {
+  const lines = scenarios
+    .map((scenario, index) => `${index + 1}. ${String(scenario?.title || scenario || '').trim()}`)
+    .filter((line) => /\S/.test(line));
+  return lines.join('\n').slice(0, maxChars);
+}
+
+function normalizeScenarioTitle(value: string): string {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\b(the|a|an|and|or|for|with|to|of|in|on|is|are|view|views|list|lists)\b/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function caseMentionsScenario(testCase: any, scenarioTitle: string): boolean {
+  const scenario = normalizeScenarioTitle(scenarioTitle);
+  if (!scenario) return true;
+  const scenarioTerms = scenario.split(' ').filter((term) => term.length >= 4);
+  if (!scenarioTerms.length) return true;
+  const hay = normalizeScenarioTitle([
+    testCase?.title,
+    testCase?.description,
+    ...(Array.isArray(testCase?.steps) ? testCase.steps.flatMap((step: any) => [step?.action, step?.expected]) : []),
+  ].filter(Boolean).join(' '));
+  const matched = scenarioTerms.filter((term) => hay.includes(term)).length;
+  return matched >= Math.min(3, scenarioTerms.length);
+}
+
+function fallbackCaseForScenario(scenario: any): any {
+  const title = String(scenario?.title || scenario || 'Requirement scenario').trim();
+  const negative = /reject|block|invalid|unsupported|unknown|unauth|non-admin|cannot|disabled|not found|403|404|409|401/i.test(title);
+  return {
+    title: title.length > 90 ? title.slice(0, 87).trimEnd() + '...' : title,
+    description: `Covers the reviewed requirement scenario: ${title}`,
+    preconditions: 'User has the role, app, records, and metadata configuration required by the reviewed requirement.',
+    priority: scenario?.priority || (negative ? 'High' : 'Medium'),
+    type: 'Automated',
+    tags: normalizeCaseTags(['@regression', negative ? '@negative' : '@positive', negative ? '@smoke' : '@bvt']),
+    steps: normalizeCaseSteps(Array.isArray(scenario?.steps) && scenario.steps.length
+      ? scenario.steps
+      : [
+          { action: `Exercise the scenario: ${title}`, expected: 'The application behavior matches the reviewed requirement.' },
+          { action: 'Capture the visible response, table state, API response, or confirmation message for this scenario.', expected: 'The observed result is traceable to the requirement rule.' },
+        ]),
+    captureEvidence: true,
+    generatedFallback: true,
+  };
+}
+
+function ensureScenarioCoverage(generated: any[], scenarios: any[], explicitCount: number): any[] {
+  if (explicitCount > 0 || !Array.isArray(scenarios) || !scenarios.length) return generated;
+  const output = Array.isArray(generated) ? [...generated] : [];
+  for (const scenario of scenarios) {
+    const title = String(scenario?.title || scenario || '').trim();
+    if (!title) continue;
+    if (!output.some((testCase) => caseMentionsScenario(testCase, title))) {
+      output.push(fallbackCaseForScenario(scenario));
+    }
+  }
+  return output;
 }
 
 function inventoryGroundingTokens(inventory: any): Set<string> {
@@ -1097,6 +1262,9 @@ async function generateCasesForFeature(run: any, feature: any, liveCredentials: 
   const inspectionContext = run.inspection_context || null;
   const approvedUnderstanding = resolveUnderstanding(run);
   const targetUrl = run.app_url || '';
+  const applicationContextBlock = run.application_context_prompt
+    ? `\n${String(run.application_context_prompt)}\n`
+    : '';
 
   const subfeatureBlock = (feature.subfeatures || []).map((s: any) =>
     `  • ${s.name}: ${s.description || ''}\n    Rules: ${(s.businessRules || []).join('; ') || 'none'}\n    Actions: ${(s.userActions || []).join('; ') || 'none'}`,
@@ -1113,6 +1281,7 @@ ${subfeatureBlock || '  (infer from the feature name and code understanding)'}
 User request context: ${run.prompt || 'not provided'}
 Target URL: ${targetUrl || 'not provided'}
 ${credentialContext}
+${applicationContextBlock}
 App inspection result: ${JSON.stringify(compactInspectionContext(inspectionContext))}
 Code understanding: ${approvedUnderstanding ? approvedUnderstanding.slice(0, 3000) : 'not provided'}
 
@@ -1180,8 +1349,11 @@ async function generateCasesForRun(
   const targetUrl = run.app_url || '';
   const requestedCaseCount = Math.max(0, Math.floor(Number(run.requested_case_count) || 0));
   const selectedQaPromptText = run.selected_qa_prompt_text || 'No selected QA repository context was provided for this automation scope.';
+  const applicationContextBlock = run.application_context_prompt
+    ? `\n${String(run.application_context_prompt)}\n`
+    : '';
   const knowledgeBlock = buildKnowledgeBlock(
-    { websiteId: run.websiteId, targetUrl, text: `${run.scope_context_text || ''} ${prompt} ${approvedUnderstanding}`.trim(), ownerId: run.ownerId },
+    { knowledgePackId: run.application_context?.app?.knowledgePackId || undefined, websiteId: run.websiteId, targetUrl, text: `${run.scope_context_text || ''} ${prompt} ${approvedUnderstanding}`.trim(), ownerId: run.ownerId },
     { maxChars: 12000 },
   );
   const effectiveUnderstanding = featureInventory
@@ -1193,6 +1365,10 @@ async function generateCasesForRun(
     : '';
   const featureInventoryBlock = featureInventory
     ? `\nFEATURE/SUBFEATURE COVERAGE BLUEPRINT (from the requirement-based feature inventory; use this to structure cases, not just the top-level feature summary):\n${summarizeFeatureInventory(featureInventory)}\n`
+    : '';
+  const candidateScenarios = Array.isArray(featureUnderstanding?.candidateScenarios) ? featureUnderstanding.candidateScenarios : [];
+  const scenarioBlock = candidateScenarios.length
+    ? `\nREVIEWED REQUIREMENT CANDIDATE SCENARIOS (${candidateScenarios.length}) - this is a coverage contract when no exact user count was requested:\n${scenarioCoverageBlock(candidateScenarios)}\n`
     : '';
   // The actual chat that led to this run. AUTHORITATIVE for scope — the cases must cover
   // what the user and agent discussed (e.g. specific objects/users/permissions), not a
@@ -1214,7 +1390,9 @@ async function generateCasesForRun(
   // required, picklist options) + a sample record for the object(s) this prompt is about, so the
   // cases use valid concrete values instead of placeholder guesses. Per-app + access-enforced;
   // best-effort — never blocks generation.
-  let testDataBlock = '';
+  let testDataBlock = (run as any).test_data_pack
+    ? `\nREAL TEST DATA (from the run's application context - AUTHORITATIVE). Use these EXACT field api_names and valid values when steps create/edit a record; for picklists choose one of the listed options; to edit/delete, act on the example existing record. Do NOT invent field names or placeholder values:\n${(run as any).test_data_pack}\n`
+    : '';
   try {
     const activeApp = run.appId ? getApp(run.appId) : undefined;
     let apiBase = activeApp?.baseUrl || '';
@@ -1275,12 +1453,18 @@ async function generateCasesForRun(
 Approved user-reviewed understanding: ${approvedUnderstanding || 'not provided'}.
 Playwright target URL: ${targetUrl || 'not provided'}.
 ${credentialContext}
+${applicationContextBlock}
 ${selectedQaPromptText}${conversationBlock}
 Browser inspection result: ${JSON.stringify(compactInspectionContext(inspectionContext))}.${understandingBlock}
-${featureInventoryBlock}${testDataBlock}${readAgentSkill() ? `\nLEARNED QA-AUTHORING SKILL (general case/script guidance refined over prior runs — apply it):\n${readAgentSkill()}\n` : ''}
+${featureInventoryBlock}${scenarioBlock}${testDataBlock}${readAgentSkill() ? `\nLEARNED QA-AUTHORING SKILL (general case/script guidance refined over prior runs — apply it):\n${readAgentSkill()}\n` : ''}
 ${requestedCaseCount > 0
   ? `Produce EXACTLY ${requestedCaseCount} test case(s) — no more and no fewer. The user FIXED this count, so make every case COUNT: cover the MOST IMPORTANT ones for this feature / scenario / business logic / flow FIRST — the critical primary user flows, the core business rules, the highest-risk and most-used behavior, and the key negative / permission / edge cases that matter most. ORDER the cases from most important to least so the ${requestedCaseCount} you return are genuinely the highest-value tests (the set is kept in order). Skip trivial or duplicate checks; do not exceed the count or pad to reach it.`
   : `Write approximately ${testCaseCount} test case(s) — this target is derived from the feature's real complexity in the source above, so treat it as a guide: cover every distinct business rule, role/permission difference, branch, and negative/edge case the code reveals, and do not pad with trivial duplicates to hit a number. The user asked for comprehensive coverage, so err toward thoroughness over brevity.`}
+
+When REVIEWED REQUIREMENT CANDIDATE SCENARIOS are present and no exact user count was requested:
+- Generate at least one test case for every listed candidate scenario.
+- Keep the scenario title or its key behavior visible in the case title or description so coverage can be audited.
+- Do not collapse positive, negative, permission, API validation, admin adapter, and specialized-list-view scenarios into one broad case.
 
 When the FEATURE/SUBFEATURE COVERAGE BLUEPRINT is present, it is the case-coverage contract:
 - Generate one focused test case for each testable subfeature unless the user explicitly requested fewer cases; if fewer were requested, choose the highest-risk subfeatures first and state the omitted units in the descriptions/tags.
@@ -1303,6 +1487,8 @@ Each test case must include automation tags in @ format, for example @bvt, @sani
   // FIXED COUNT (user wish): when the user fixed a case count, enforce it EXACTLY — the model can
   // over-produce. If it produced more, keep the first N (the prompt ordered them highest-value
   // first). When no count is fixed, the count follows the flow/complexity (untouched here).
+  generated = ensureScenarioCoverage(generated, candidateScenarios, requestedCaseCount);
+
   if (requestedCaseCount > 0 && Array.isArray(generated) && generated.length > requestedCaseCount) {
     generated = generated.slice(0, requestedCaseCount);
   }
@@ -1556,8 +1742,11 @@ Do NOT write comments such as "Auth is expected to be handled by global setup". 
   // writer had the chat-derived understanding — the two agents diverged. resolveUnderstanding
   // applies the identical chat fallback, so coder and case writer now agree.
   const reviewedUnderstanding = resolveUnderstanding(run);
+  const applicationContextBlock = run.application_context_prompt
+    ? `\n${String(run.application_context_prompt)}\n`
+    : '';
 
-  const coderKnowledge = buildKnowledgeBlock({ targetUrl, text: run.prompt || '', ownerId: run.ownerId }, { maxChars: 9000 });
+  const coderKnowledge = buildKnowledgeBlock({ knowledgePackId: run.application_context?.app?.knowledgePackId || undefined, targetUrl, text: run.prompt || '', ownerId: run.ownerId }, { maxChars: 9000 });
   // EPISODIC MEMORY (book Ch 8/9): recall selectors that were flaky/broken on prior runs of
   // this feature so the coder avoids them instead of re-discovering the same flakiness.
   let coderMemory = '';
@@ -1615,6 +1804,7 @@ Do NOT write comments such as "Auth is expected to be handled by global setup". 
 Approved user-reviewed understanding: ${reviewedUnderstanding || 'not provided'}.
 ${credentialContext}
 ${loginScriptBlock}
+${applicationContextBlock}
 ${selectedQaContextText}${coderUnderstanding}${coderFeatureInventory}${coderMemory}${coderTestData}${coderSelectorMap}${featureGrounding}${readAgentSkill() ? `\nLEARNED QA-AUTHORING SKILL (general script guidance refined over prior runs — apply it):\n${readAgentSkill()}\n` : ''}
 Use this browser inspection context as the source of truth for reachable pages, visible labels, forms, navigation actions, tables/lists, buttons, links and final URL: ${JSON.stringify(compactInspectionContext(inspectionContext))}.${allCaseControls}
 SETUP — NAVIGATE THEN LOG IN IF NEEDED: the MANDATORY FIRST LINES of every test body are (use this EXACT absolute URL — NOT '/', which resolves to the wrong path):
@@ -1680,6 +1870,7 @@ Use this baseURL in the script when provided: ${targetUrl || 'not provided'}.
 Approved user-reviewed understanding: ${reviewedUnderstanding || 'not provided'}.
 ${credentialContext}
 ${loginScriptBlock}
+${applicationContextBlock}
 ${selectedQaContextText}${coderUnderstanding}${coderSelectorMap}${featureGrounding}
 Use this browser inspection context as the source of truth for reachable pages, visible labels, forms, navigation actions, tables/lists, buttons, links and final URL: ${JSON.stringify(compactInspectionContext(inspectionContext))}.${perCaseControlBlocks[index] || ''}
 
@@ -2642,9 +2833,8 @@ export function registerAgentRoutes(app: Express) {
     const runProvider = resolveProviderForAgent('chatAssistant');
     // Ground the run in the relevant slice of the app-knowledge pack (retrieved per request).
     // Smaller budget for the inspector (it runs in a loop), generous for the one-shot case writer.
-    const knowledgeCtx = { websiteId: req.body.websiteId, targetUrl, text: `${scopeContextText} ${prompt || ''} ${approvedUnderstanding}`.trim(), ownerId: scope.userId || '' };
+    const knowledgeCtx = { knowledgePackId: selectedApp?.knowledgePackId || undefined, websiteId: req.body.websiteId, targetUrl, text: `${scopeContextText} ${prompt || ''} ${approvedUnderstanding}`.trim(), ownerId: scope.userId || '' };
     const inspectorKnowledge = buildKnowledgeBlock(knowledgeCtx, { maxChars: 3500 });
-    const knowledgeBlock = buildKnowledgeBlock(knowledgeCtx, { maxChars: 12000 });
 
     const newRun = {
       id: taskId,
@@ -2680,6 +2870,9 @@ export function registerAgentRoutes(app: Express) {
       paused_ms: 0,
       feature_understanding: null as any,
       feature_inventory: null as any,
+      application_context: null as any,
+      application_context_prompt: '',
+      application_context_cache_key: '',
       requested_case_count: 0,
       selected_qa_prompt_text: '',
       scope_context_text: '',
@@ -2723,7 +2916,42 @@ export function registerAgentRoutes(app: Express) {
       // #1: NamingAgent removed from the critical path — newRun.artifactName already holds
       // a deterministic name (buildFallbackArtifactName), saving a ~30s codex call up front.
       const credentialContext = buildCredentialContext(credentials);
-      const cacheKey = featureCacheKey(targetUrl, `${prompt || ''} ${approvedUnderstanding}`);
+      pushPhase(newRun, { agent: 'ApplicationContext', status: 'running' });
+      try {
+        const appContext = await buildCorePlatformApplicationContext({
+          projectId: newRun.projectId,
+          appId: newRun.appId,
+          websiteId: newRun.websiteId,
+          targetUrl,
+          prompt: prompt || '',
+          understanding: approvedUnderstanding || priorGrounding || '',
+          ownerId: newRun.ownerId,
+          credentials,
+          maxChars: 24000,
+        });
+        newRun.application_context = appContext.context;
+        newRun.application_context_prompt = appContext.promptText;
+        newRun.application_context_cache_key = appContext.cacheKey;
+        if (appContext.context.testDataPack) (newRun as any).test_data_pack = appContext.context.testDataPack;
+        pushPhase(newRun, {
+          agent: 'ApplicationContext',
+          status: 'completed',
+          output: {
+            project: appContext.context.project?.name || '',
+            app: appContext.context.app?.name || '',
+            repo: appContext.context.repo?.appRoot || '',
+            catalogObjects: appContext.context.catalog.length,
+            hasTestData: !!appContext.context.testDataPack,
+            hasKnowledge: !!appContext.context.knowledgeBlock,
+            warnings: appContext.context.warnings,
+          },
+        });
+      } catch (err: any) {
+        pushPhase(newRun, { agent: 'ApplicationContext', status: 'completed', output: `Application context unavailable: ${getAIErrorMessage(err)}. Downstream agents must rely only on inspection/source evidence and must not guess missing details.` });
+      }
+      const appContextPrompt = String(newRun.application_context_prompt || '');
+      const appContextKey = String(newRun.application_context_cache_key || applicationContextCacheKey(newRun.application_context));
+      const cacheKey = featureCacheKey(targetUrl, `${prompt || ''} ${approvedUnderstanding}`, appContextKey);
 
       // Inspection is the hard grounding gate. If the live app cannot be read, stop here
       // before spending tokens on code understanding or generating ungrounded cases.
@@ -2741,7 +2969,7 @@ export function registerAgentRoutes(app: Express) {
           credentials,
           model: undefined as any,
           runId: taskId,
-          knowledge: inspectorKnowledge,
+          knowledge: `${appContextPrompt}\n\n${inspectorKnowledge}`.trim(),
           workspaceId: newRun.ownerId || 'default',
         });
         const verdict = assessInspection(ctx);
@@ -2805,7 +3033,14 @@ export function registerAgentRoutes(app: Express) {
           // writer/coder use (resolveUnderstanding applies the chat fallback) instead of the
           // raw request-body approvedUnderstanding, so all three workers share one grounding.
           const analystUnderstanding = resolveUnderstanding(newRun);
-          const analysis = await analyzeFeatureFromSource(`${scopeContextText} ${prompt || ''} ${analystUnderstanding}`.trim(), { workspaceId: newRun.ownerId || 'default', userId: newRun.ownerId, repoPath });
+          const analysis = await analyzeFeatureFromSource(`${scopeContextText} ${prompt || ''} ${analystUnderstanding}`.trim(), {
+            workspaceId: newRun.ownerId || 'default',
+            userId: newRun.ownerId,
+            repoPath,
+            projectId: newRun.projectId,
+            appId: newRun.appId,
+            applicationContextPrompt: appContextPrompt,
+          });
           const rawUnderstanding = (analysis.understanding || {}) as any;
           const { sourceFiles: _sourceFiles, files: _files, searchedFiles: _searchedFiles, ...visibleUnderstanding } = rawUnderstanding;
           pushPhase(newRun, { agent: 'CodeAnalyst', status: 'completed', output: visibleUnderstanding });
@@ -2841,7 +3076,7 @@ export function registerAgentRoutes(app: Express) {
       let featureInventory = newRun.feature_inventory;
       if (!featureInventory && newRun.understandingSource !== 'requirement') {
         const analystUnderstanding = resolveUnderstanding(newRun);
-        const inventoryKey = featureCacheKey(targetUrl, `feature-inventory ${scopeContextText} ${prompt || ''} ${analystUnderstanding}`.trim());
+        const inventoryKey = featureCacheKey(targetUrl, `feature-inventory ${scopeContextText} ${prompt || ''} ${analystUnderstanding}`.trim(), appContextKey);
         const cachedInventory = getCached(featureInventoryCache, inventoryKey);
         if (cachedInventory) {
           featureInventory = cachedInventory;
@@ -2853,7 +3088,14 @@ export function registerAgentRoutes(app: Express) {
             const repoPath = (getProject(newRun.projectId || '')?.repoPath || '').trim();
             const inventoryResult = await discoverFeatureInventoryFromSource(
               `${scopeContextText} ${prompt || ''} ${analystUnderstanding}`.trim(),
-              { workspaceId: newRun.ownerId || 'default', userId: newRun.ownerId, repoPath },
+              {
+                workspaceId: newRun.ownerId || 'default',
+                userId: newRun.ownerId,
+                repoPath,
+                projectId: newRun.projectId,
+                appId: newRun.appId,
+                applicationContextPrompt: appContextPrompt,
+              },
             );
             featureInventory = inventoryResult.inventory;
             newRun.feature_inventory = featureInventory;
@@ -2903,7 +3145,11 @@ export function registerAgentRoutes(app: Express) {
       // produces one case per subfeature) and use the focused single-batch path below, which
       // honors the exact requested count.
       const inventoryFeatures = (featureInventory?.features as any[] || []);
-      if (inventoryFeatures.length > 0 && !requestedCaseCount) {
+      const requirementScenarioCount = Array.isArray(newRun.feature_understanding?.candidateScenarios)
+        ? newRun.feature_understanding.candidateScenarios.length
+        : 0;
+      const useRequirementScenarioContract = newRun.understandingSource === 'requirement' && requirementScenarioCount > 0;
+      if (inventoryFeatures.length > 0 && !requestedCaseCount && !useRequirementScenarioContract) {
         const existingTitles = existingFeatureRequirements.map((r: any) => (r.title || '').toLowerCase());
         const newFeatures = inventoryFeatures.filter((f: any) =>
           !existingTitles.some((t) => t.includes((f.name || '').toLowerCase().slice(0, 10))),
@@ -3047,6 +3293,7 @@ export function registerAgentRoutes(app: Express) {
       run.review_started_at = null;
     }
     run.status = 'running';
+    delete (run as any).cancelRequested;
     persistDataInBackground('coverage decision');
     res.json({ success: true, action: act });
 
@@ -3096,6 +3343,7 @@ export function registerAgentRoutes(app: Express) {
 
     run.status = 'running';
     // The human just finished reviewing cases — fold that idle gap into paused_ms
+    delete (run as any).cancelRequested;
     // so the reported total reflects automation time, not how long they deliberated.
     if (run.review_started_at) {
       run.paused_ms = (run.paused_ms || 0) + Math.max(0, Date.parse(nowIso()) - Date.parse(run.review_started_at));
