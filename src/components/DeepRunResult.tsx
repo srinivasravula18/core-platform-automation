@@ -871,7 +871,14 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
                       <span className="rounded bg-[var(--bg-card)] px-1.5 py-0.5 text-[10px] font-bold uppercase text-[var(--text-muted)]">
                         {c.priority || 'Med'}
                       </span>
-                      <span className="min-w-0 flex-1 truncate text-xs font-medium text-[var(--text-primary)]">{c.title || 'Untitled'}</span>
+                      <span className="min-w-0 flex-1">
+                        <span className="block text-xs font-semibold leading-snug text-[var(--text-primary)]">{c.title || 'Untitled'}</span>
+                        {c.description && (
+                          <span className="mt-0.5 block line-clamp-2 text-[11px] leading-snug text-[var(--text-muted)]">
+                            {c.description}
+                          </span>
+                        )}
+                      </span>
                       {(c.tags || []).slice(0, 4).map((t) => (
                         <span key={t} className="hidden shrink-0 rounded border border-[var(--border)] bg-[var(--bg-card)] px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-[var(--text-muted)] sm:inline">
                           {String(t).startsWith('@') ? t : `@${t}`}
