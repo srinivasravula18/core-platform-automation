@@ -36,7 +36,24 @@ function buildTree(folders: any[]) {
   return roots;
 }
 
-function FolderTreeItem({ node, selectedId, onSelect, onDelete, depth = 0 }: { key?: string; node: FolderNode; selectedId: string; onSelect: (id: string) => void; onDelete: (id: string, name: string) => void; depth?: number }) {
+function FolderTreeItem({
+  node,
+  selectedId,
+  selectedFolderIds,
+  onSelect,
+  onToggleFolder,
+  onDelete,
+  depth = 0,
+}: {
+  key?: string;
+  node: FolderNode;
+  selectedId: string;
+  selectedFolderIds: Set<string>;
+  onSelect: (id: string) => void;
+  onToggleFolder: (id: string) => void;
+  onDelete: (id: string, name: string) => void;
+  depth?: number;
+}) {
   const [open, setOpen] = useState(true);
   const hasChildren = node.children.length > 0;
   return (
@@ -55,6 +72,14 @@ function FolderTreeItem({ node, selectedId, onSelect, onDelete, depth = 0 }: { k
           )}
           style={{ paddingLeft: `${8 + depth * 14}px` }}
         >
+          <input
+            type="checkbox"
+            checked={selectedFolderIds.has(node.id)}
+            onClick={(e) => e.stopPropagation()}
+            onChange={() => onToggleFolder(node.id)}
+            className="shrink-0"
+            title={`Select ${node.name}`}
+          />
           {hasChildren ? (
             <ChevronRight onClick={(e) => { e.stopPropagation(); setOpen(!open); }} className={cn('h-4 w-4 shrink-0 transition-transform', open && 'rotate-90')} />
           ) : (
@@ -75,7 +100,7 @@ function FolderTreeItem({ node, selectedId, onSelect, onDelete, depth = 0 }: { k
       {open && hasChildren && (
         <div>
           {node.children.map((child) => (
-            <FolderTreeItem key={child.id} node={child} selectedId={selectedId} onSelect={onSelect} onDelete={onDelete} depth={depth + 1} />
+            <FolderTreeItem key={child.id} node={child} selectedId={selectedId} selectedFolderIds={selectedFolderIds} onSelect={onSelect} onToggleFolder={onToggleFolder} onDelete={onDelete} depth={depth + 1} />
           ))}
         </div>
       )}
@@ -94,6 +119,7 @@ export default function TestRepository() {
   const [searchTerm, setSearchTerm] = useState('');
   const [selectMode, setSelectMode] = useState(false);
   const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set());
+  const [selectedFolderIds, setSelectedFolderIds] = useState<Set<string>>(new Set());
   const [deleting, setDeleting] = useState(false);
 
   const fetchData = () => {
@@ -135,6 +161,8 @@ export default function TestRepository() {
 
   const selectedFolder = folders.find((folder) => folder.id === selectedFolderId) || null;
   const tree = useMemo(() => buildTree(folders), [folders]);
+  const allFolderIds = useMemo(() => folders.map((folder) => folder.id), [folders]);
+  const allFoldersSelected = allFolderIds.length > 0 && allFolderIds.every((id) => selectedFolderIds.has(id));
   const visibleItems = (key: string) => {
     const query = searchTerm.toLowerCase();
     return (artifacts[key] || []).filter((item) => {
@@ -190,6 +218,42 @@ export default function TestRepository() {
   };
 
   const deleteFolder = () => deleteFolderById(selectedFolderId, selectedFolder?.name);
+
+  const toggleFolderSelection = (id: string) => {
+    setSelectedFolderIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleAllFolders = () => {
+    setSelectedFolderIds(allFoldersSelected ? new Set() : new Set(allFolderIds));
+  };
+
+  const deleteSelectedFolders = async () => {
+    const ids = Array.from(selectedFolderIds);
+    if (!ids.length) return;
+    if (!await showConfirm(`Delete ${ids.length} selected folder${ids.length === 1 ? '' : 's'} and everything inside? This cannot be undone.`, { tone: 'danger' })) return;
+    setDeleting(true);
+    try {
+      const res = await fetch('/api/folders/bulk-delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids }),
+      });
+      if (!res.ok) throw new Error('Failed to delete folders');
+      setSelectedFolderIds(new Set());
+      if (ids.includes(selectedFolderId)) setSelectedFolderId('');
+      fetchData();
+    } catch (error) {
+      console.error(error);
+      void showAlert('Failed to delete selected folders.');
+    } finally {
+      setDeleting(false);
+    }
+  };
 
   const toggleSelectMode = () => {
     setSelectMode((prev) => {
@@ -308,9 +372,29 @@ export default function TestRepository() {
               </div>
             </div>
           </div>
+          <div className="flex items-center gap-2 border-b border-[var(--border)] p-3">
+            <button
+              onClick={toggleAllFolders}
+              disabled={allFolderIds.length === 0}
+              className="inline-flex items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2.5 py-1.5 text-xs font-medium text-[var(--text-primary)] hover:border-[var(--accent)] disabled:opacity-50"
+            >
+              <CheckSquare className="h-3.5 w-3.5" />
+              {allFoldersSelected ? 'Clear all' : 'Select all'}
+            </button>
+            {selectedFolderIds.size > 0 && (
+              <button
+                onClick={deleteSelectedFolders}
+                disabled={deleting}
+                className="inline-flex items-center gap-1.5 rounded-md bg-red-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-50"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                Delete ({selectedFolderIds.size})
+              </button>
+            )}
+          </div>
           <div className="min-h-0 flex-1 overflow-auto p-3">
             {tree.map((node) => (
-              <FolderTreeItem key={node.id} node={node} selectedId={selectedFolderId} onSelect={setSelectedFolderId} onDelete={deleteFolderById} />
+              <FolderTreeItem key={node.id} node={node} selectedId={selectedFolderId} selectedFolderIds={selectedFolderIds} onSelect={setSelectedFolderId} onToggleFolder={toggleFolderSelection} onDelete={deleteFolderById} />
             ))}
             {tree.length === 0 && (
               <div className="rounded-md border border-dashed border-[var(--border)] px-3 py-6 text-center text-sm text-[var(--text-muted)]">
