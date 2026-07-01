@@ -563,6 +563,17 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
               <XCircle className="h-3.5 w-3.5" /> Stop
             </button>
           )}
+          {status === 'cancelled' && (
+            <button
+              onClick={retry}
+              disabled={retrying}
+              title="Retry this run"
+              className="inline-flex items-center gap-1 rounded-md border border-[var(--accent)]/30 bg-[var(--accent)]/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--accent)] hover:bg-[var(--accent)]/20 disabled:opacity-50"
+            >
+              {retrying ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RotateCcw className="h-3.5 w-3.5" />}
+              Retry
+            </button>
+          )}
           {totalMs != null && (
             <span
               className="inline-flex items-center gap-1 text-[11px] font-medium text-[var(--text-muted)]"
