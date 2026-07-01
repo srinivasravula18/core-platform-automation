@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Download, Loader2, Radio, RefreshCcw, Square } from 'lucide-react';
 import { showAlert } from '@/src/lib/dialog';
 
@@ -10,6 +10,21 @@ export default function RecordPlay() {
   const [outputPath, setOutputPath] = useState('');
   const [status, setStatus] = useState('');
   const [isBusy, setIsBusy] = useState(false);
+  const [websites, setWebsites] = useState<any[]>([]);
+  const [isProduction, setIsProduction] = useState(false);
+  const isRemoteHost = typeof window !== 'undefined' && !/^(localhost|127\.0\.0\.1|::1)$/i.test(window.location.hostname);
+  const codegenUnavailable = isProduction || isRemoteHost;
+
+  useEffect(() => {
+    fetch('/api/app-config')
+      .then((res) => res.json())
+      .then((data) => setIsProduction(data?.deploymentMode === 'production'))
+      .catch(() => setIsProduction(false));
+    fetch('/api/credentials/websites')
+      .then((res) => res.json())
+      .then((data) => setWebsites(Array.isArray(data?.websites) ? data.websites : []))
+      .catch(() => setWebsites([]));
+  }, []);
 
   const startRecorder = async () => {
     const url = targetUrl.trim();
@@ -92,6 +107,12 @@ export default function RecordPlay() {
       <div className="grid min-h-0 flex-1 gap-4 lg:grid-cols-[minmax(18rem,24rem)_1fr]">
         <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-card)] p-4">
           <div className="space-y-4">
+            {codegenUnavailable && (
+              <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-700 dark:text-amber-300">
+                Playwright Codegen needs a local desktop session. The deployed server cannot open a headed browser on your machine.
+              </div>
+            )}
+
             <label className="block text-xs font-medium text-[var(--text-muted)]">
               Target URL
               <input
@@ -101,6 +122,26 @@ export default function RecordPlay() {
                 className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
               />
             </label>
+
+            {websites.length > 0 && (
+              <label className="block text-xs font-medium text-[var(--text-muted)]">
+                Saved URL
+                <select
+                  value={targetUrl}
+                  onChange={(e) => {
+                    const site = websites.find((item) => item.baseUrl === e.target.value);
+                    setTargetUrl(e.target.value);
+                    if (site && !scriptName.trim()) setScriptName(String(site.name || 'recorded-flow').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, ''));
+                  }}
+                  className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
+                >
+                  <option value="">Select saved URL</option>
+                  {websites.map((site) => (
+                    <option key={site.id} value={site.baseUrl}>{site.name} - {site.baseUrl}</option>
+                  ))}
+                </select>
+              </label>
+            )}
 
             <label className="block text-xs font-medium text-[var(--text-muted)]">
               Script name
@@ -115,7 +156,7 @@ export default function RecordPlay() {
             <div className="flex flex-wrap gap-2">
               <button
                 onClick={startRecorder}
-                disabled={isBusy || !targetUrl.trim()}
+                disabled={codegenUnavailable || isBusy || !targetUrl.trim()}
                 className="inline-flex items-center gap-2 rounded-md bg-[var(--accent)] px-3 py-2 text-sm font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50"
               >
                 {isBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Radio className="h-4 w-4" />}

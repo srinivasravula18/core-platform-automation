@@ -3043,9 +3043,15 @@ export function registerAgentRoutes(app: Express) {
       userId: req.body.credentialUserId,
       role: req.body.credentialRole,
       websiteId: req.body.websiteId,
+      websiteName: req.body.websiteName || selectedApp?.name,
       inline: req.body.inlineCredentials,
       ownerId: scope.userId || undefined,
-    });
+    }) || (req.body.websiteName ? resolveCredentials({
+      websiteName: req.body.websiteName,
+      role: req.body.credentialRole,
+      inline: req.body.inlineCredentials,
+      ownerId: scope.userId || undefined,
+    }) : null);
     const credentials = resolvedCreds || {
       username: '',
       password: '',

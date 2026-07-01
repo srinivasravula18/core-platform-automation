@@ -11,6 +11,10 @@ function safeId(value: string) {
   return String(value || '').replace(/[^a-zA-Z0-9._-]/g, '-').slice(0, 80) || randomUUID();
 }
 
+function isLocalHost(host = '') {
+  return /^(localhost|127\.0\.0\.1|\[::1\]|::1)(:\d+)?$/i.test(host);
+}
+
 function stopProcessTree(child: ChildProcess) {
   if (!child.pid) return Promise.resolve();
   if (process.platform !== 'win32') {
@@ -40,6 +44,11 @@ export function registerPlaywrightRoutes(app: Express) {
 
   app.post('/api/playwright/codegen/start', async (req, res) => {
     try {
+      const deploymentMode = String(process.env.DEPLOYMENT_MODE || process.env.NODE_ENV || '').toLowerCase();
+      const allowRemote = String(process.env.ALLOW_REMOTE_CODEGEN || '').toLowerCase() === 'true';
+      if (!allowRemote && (deploymentMode === 'production' || !isLocalHost(req.headers.host || ''))) {
+        return res.status(400).json({ error: 'Playwright Codegen requires a local desktop session. It cannot open a headed browser from the deployed server.' });
+      }
       const url = String(req.body?.url || '').trim();
       if (!url) return res.status(400).json({ error: 'url is required' });
       const id = safeId(req.body?.id || `codegen-${randomUUID().slice(0, 8)}`);
