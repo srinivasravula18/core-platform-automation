@@ -203,6 +203,55 @@ async function saveInspectionScreenshot(page: any, runId: string, label: string)
   return `/evidence/${filename}`;
 }
 
+/**
+ * DETERMINISTIC REVEAL (no LLM): SPA list/detail views hide their real controls — the "List view
+ * actions" menu items, column/filter/settings popovers, the app launcher — behind overflow/menu
+ * buttons. Only-visible capture therefore misses them, which is what forces the coder/verifier to
+ * fall back to guessing (the "thin live index → repo fallback" failure). This opens every SAFE menu
+ * opener currently on the page and returns the DOM revealed after each, so the live index the whole
+ * pipeline grounds on is complete. It NEVER clicks a control that could mutate data, and it presses
+ * Escape after each open so the page is left as it was found.
+ */
+async function revealHiddenControls(page: any): Promise<any[]> {
+  const openerIds: string[] = await page.evaluate(() => {
+    const destructive = /delete|remove|save|submit|apply|create|\bnew\b|confirm|discard|sign ?out|log ?out|trash|archive|publish/i;
+    const looksLikeOpener = (el: Element) => {
+      const label = (el.getAttribute('aria-label') || el.getAttribute('title') || el.textContent || '').trim();
+      if (destructive.test(label)) return false;
+      const hasPopup = el.getAttribute('aria-haspopup');
+      const expanded = el.getAttribute('aria-expanded');
+      const menuish = /actions|menu|\bmore\b|overflow|options|settings|columns?|filter|views?|⋯|⋮|▾|▼/i.test(label);
+      return hasPopup === 'menu' || hasPopup === 'true' || hasPopup === 'listbox' || expanded === 'false' || menuish;
+    };
+    const els = Array.from(document.querySelectorAll('button, [role="button"], [aria-haspopup]'));
+    const ids: string[] = [];
+    els.forEach((el, i) => {
+      const rect = el.getBoundingClientRect();
+      const visible = rect.width > 0 && rect.height > 0 && window.getComputedStyle(el).visibility !== 'hidden';
+      if (visible && looksLikeOpener(el)) {
+        const id = `agent-reveal-${i}`;
+        el.setAttribute('data-agent-reveal', id);
+        ids.push(id);
+      }
+    });
+    return ids.slice(0, 6);
+  }).catch(() => [] as string[]);
+
+  const revealed: any[] = [];
+  for (const id of openerIds) {
+    try {
+      const target = page.locator(`[data-agent-reveal="${id}"]`).first();
+      if (!(await target.count())) continue;
+      await target.click({ timeout: 4000 }).catch(() => undefined);
+      await page.waitForTimeout(400);
+      revealed.push(await collectPageContext(page));
+      await page.keyboard.press('Escape').catch(() => undefined);
+      await page.waitForTimeout(150);
+    } catch { /* this opener didn't open cleanly — skip it, keep going */ }
+  }
+  return revealed;
+}
+
 export async function inspectApplicationFlow(options: {
   targetUrl: string;
   prompt: string;
@@ -290,6 +339,16 @@ export async function inspectApplicationFlow(options: {
       await page.waitForTimeout(1500);
       lastContext = await collectPageContext(page);
       observedPages.push({ stage: `recollect-${r + 1}`, ...compactPageContext(lastContext) });
+    }
+
+    // #3b DETERMINISTIC REVEAL: proactively open every safe menu/overflow/actions/settings control
+    // and capture what it reveals, so controls hidden behind menus reach the live index instead of
+    // being guessed. This is what stops the "thin live capture → repo fallback" seen in the field.
+    try {
+      const revealedContexts = await revealHiddenControls(page);
+      for (const ctx of revealedContexts) observedPages.push({ stage: 'reveal', ...compactPageContext(ctx) });
+    } catch (err: any) {
+      warnings.push(`Menu reveal skipped: ${String(err?.message || err).slice(0, 100)}`);
     }
 
     // #4 Cap the LLM planner loop at 4 steps. It still breaks early when the goal is
