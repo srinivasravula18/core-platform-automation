@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { BrowserRouter, Routes, Route, Link, useLocation, useNavigate } from 'react-router-dom';
-import { LayoutDashboard, TestTube2, Bug, Settings, BrainCircuit, PlayCircle, FolderTree, Sun, Moon, Search, CircleUser, Layers, Menu, ClipboardList, GitBranch, Command, MessagesSquare, ChevronDown, LogOut, Target, ScrollText } from 'lucide-react';
+import { LayoutDashboard, TestTube2, Bug, Settings, BrainCircuit, PlayCircle, FolderTree, Sun, Moon, Search, CircleUser, Layers, Menu, ClipboardList, GitBranch, Command, MessagesSquare, ChevronDown, LogOut, Target, ScrollText, Radio } from 'lucide-react';
 import { cn } from '@/src/lib/utils';
 import { useTheme } from '@/src/store/theme';
 import { CommandBar } from '@/src/components/CommandBar';
@@ -25,6 +25,7 @@ import GitAgent from '@/src/pages/GitAgent';
 import TestRepository from '@/src/pages/TestRepository';
 import Requirements from '@/src/pages/Requirements';
 import Traceability from '@/src/pages/Traceability';
+import RecordPlay from '@/src/pages/RecordPlay';
 
 function Sidebar({ isOpen }: { isOpen: boolean }) {
   const location = useLocation();
@@ -58,7 +59,10 @@ function Sidebar({ isOpen }: { isOpen: boolean }) {
     },
     {
       label: 'Automation',
-      items: [{ name: 'Git Agent', href: '/git-agent', icon: GitBranch }],
+      items: [
+        { name: 'Record & Play', href: '/record-play', icon: Radio },
+        { name: 'Git Agent', href: '/git-agent', icon: GitBranch },
+      ],
     },
   ];
 
@@ -364,6 +368,7 @@ export default function App() {
           <Route path="/agent" element={<AgentConsole />} />
           <Route path="/agent/chat/:chatId" element={<AgentConsole />} />
           <Route path="/studio" element={<AgentPanel />} />
+          <Route path="/record-play" element={<RecordPlay />} />
           <Route path="/git-agent" element={<GitAgent />} />
           <Route path="/settings" element={<SettingsPage />} />
           <Route path="*" element={

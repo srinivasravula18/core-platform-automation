@@ -18,6 +18,7 @@ let pool: Pool | null = null;
 let schemaApplied = false;
 
 function readEnv(): { connectionString: string } | null {
+  if (String(process.env.DISABLE_POSTGRES || '').toLowerCase() === 'true') return null;
   if (process.env.DATABASE_URL) return { connectionString: process.env.DATABASE_URL };
   const host = process.env.PGHOST;
   const port = process.env.PGPORT;

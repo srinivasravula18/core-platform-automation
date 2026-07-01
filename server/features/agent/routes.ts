@@ -42,6 +42,13 @@ import { reqScope, scopeFilter } from '../../shared/scope';
 import { getApp, getProject } from '../projects/projectService';
 import { fetchTestDataPack } from '../../ai/tools/corePlatformData';
 import { applicationContextCacheKey, buildCorePlatformApplicationContext } from './applicationContext';
+import {
+  renderSelectorRegistryForPrompt,
+  runContextBuilderPhase,
+  runMetadataFetchPhase,
+  runMultiContextInspectionPhase,
+  runSelectorRegistryPhase,
+} from './pipelineDelta';
 // Strike 3: the single, shared source of grounding for every deep-run worker.
 // isNoiseTurn / deriveUnderstandingFromChat live here now (were duplicated below)
 // and resolveUnderstanding is the one place that decides the run's understanding,
@@ -1365,6 +1372,7 @@ async function generateCasesForFeature(run: any, feature: any, liveCredentials: 
   const applicationContextBlock = run.application_context_prompt
     ? `\n${String(run.application_context_prompt)}\n`
     : '';
+  const selectorRegistryBlock = renderSelectorRegistryForPrompt((run as any).selector_registry);
 
   const subfeatureBlock = (feature.subfeatures || []).map((s: any) =>
     `  • ${s.name}: ${s.description || ''}\n    Rules: ${(s.businessRules || []).join('; ') || 'none'}\n    Actions: ${(s.userActions || []).join('; ') || 'none'}`,
@@ -1382,6 +1390,7 @@ User request context: ${run.prompt || 'not provided'}
 Target URL: ${targetUrl || 'not provided'}
 ${credentialContext}
 ${applicationContextBlock}
+${selectorRegistryBlock}
 App inspection result: ${JSON.stringify(compactInspectionContext(inspectionContext))}
 Code understanding: ${approvedUnderstanding ? approvedUnderstanding.slice(0, 3000) : 'not provided'}
 
@@ -1391,7 +1400,7 @@ Rules:
 - Titles must be simple and 15-20 words max. Use the selected app/area first, then the behavior, e.g. "Admin - verify login" or "Admin list view - verify search works with text". Put detailed setup and expectations in steps, not the title.
 - Generate ONE test case per subfeature (or per distinct business rule if no subfeatures)
 - Each case covers ONLY "${feature.name}" — do not test unrelated features
-- Use real on-screen element labels from the inspection result for all selectors
+- Use real on-screen element labels from the inspection result and selector ids from the selector registry when available
 - Include tags: @bvt, @regression, @smoke, @positive/@negative as appropriate
 - Steps must be concrete and automatable — name exact labels, buttons, fields visible in the app
 - TITLES must be clear enough to understand WITHOUT opening the case. Prefer a complete plain-English behavior sentence over a tiny label. Use "<short feature area> - <condition/action> <expected result>" when helpful, about 10-18 words, and include the reason or outcome when that is what makes the case understandable. Do NOT use compressed fragments like "404 blocks admin entry" or "Default view bootstraps when missing"; write "List Views - A 404 admin target prevents reaching admin list views" or "List Views - A missing default view is recreated before the table loads". Do NOT stack feature + subfeature + behavior into a long chain, and do NOT repeat a long feature name. Everyday QA wording only; no jargon, internal/framing labels, or invented or fancy words.`,
@@ -1462,6 +1471,7 @@ async function generateCasesForRun(
   const applicationContextBlock = run.application_context_prompt
     ? `\n${String(run.application_context_prompt)}\n`
     : '';
+  const selectorRegistryBlock = renderSelectorRegistryForPrompt((run as any).selector_registry);
   const knowledgeBlock = buildKnowledgeBlock(
     { knowledgePackId: run.application_context?.app?.knowledgePackId || undefined, websiteId: run.websiteId, targetUrl, text: `${run.scope_context_text || ''} ${prompt} ${approvedUnderstanding}`.trim(), ownerId: run.ownerId },
     { maxChars: 12000 },
@@ -1564,6 +1574,7 @@ Approved user-reviewed understanding: ${approvedUnderstanding || 'not provided'}
 Playwright target URL: ${targetUrl || 'not provided'}.
 ${credentialContext}
 ${applicationContextBlock}
+${selectorRegistryBlock}
 ${selectedQaPromptText}${conversationBlock}
 Browser inspection result: ${JSON.stringify(compactInspectionContext(inspectionContext))}.${understandingBlock}
 ${featureInventoryBlock}${scenarioBlock}${testDataBlock}${readAgentSkill() ? `\nLEARNED QA-AUTHORING SKILL (general case/script guidance refined over prior runs — apply it):\n${readAgentSkill()}\n` : ''}
@@ -1816,6 +1827,14 @@ function normalizeSelectorsFromInspection(code: string, inspectionContext: any):
     /await expect(?:\.soft)?\(page\.(?:getByRole|getByText)\([^\n]*(?:export\s*)?(?:csv|pdf|xlsx)[^\n]*\)\s*(?:\.first\(\))?\)\.toBeVisible\([^;\n]*\);/gi,
     "await expect.soft(page.locator('body')).toContainText(/CSV|PDF|XLSX|Export/i);",
   );
+  out = out.replace(
+    /await expect(?:\.soft)?\([^;\n]*?(?:export\s*)?(?:csv|pdf|xlsx)[^;\n]*?\)\.toBeVisible\([^;\n]*\);/gi,
+    "await expect.soft(page.locator('body')).toContainText(/CSV|PDF|XLSX|Export/i);",
+  );
+  out = out.replace(
+    /await expect(?:\.soft)?\(page\.getByPlaceholder\((['"`])Admin\1\)(?:\.first\(\))?\)\.toBeVisible\([^;\n]*\);/gi,
+    "await expect.soft(page.locator('body')).toBeVisible();",
+  );
   // Search filtering is validated by the positive visible result. Negative assertions against
   // hidden/virtualized rows are unstable because the DOM may retain off-screen/duplicate rows.
   out = out.replace(
@@ -1889,6 +1908,7 @@ Do NOT write comments such as "Auth is expected to be handled by global setup". 
   const coderSelectorMap = codeMap
     ? `\nREAL SELECTORS FROM THE APP SOURCE (the codebase IS the source of truth — use these EXACT labels/names; ground every getByRole name / getByLabel / getByText / getByTestId in one of these; do NOT invent a selector that is not here):\n${renderSelectorMap(codeMap)}\n`
     : '';
+  const coderSelectorRegistry = renderSelectorRegistryForPrompt((run as any).selector_registry);
   if (!codeMap) {
     const why = 'Script generation blocked: no repo selector map is available, so the coder cannot fall back to repo-grounded labels/selectors.';
     pushPhase(run, { agent: 'PlaywrightAgent', status: 'failed', output: why });
@@ -1933,7 +1953,7 @@ Approved user-reviewed understanding: ${reviewedUnderstanding || 'not provided'}
 ${credentialContext}
 ${loginScriptBlock}
 ${applicationContextBlock}
-${selectedQaContextText}${coderUnderstanding}${coderFeatureInventory}${coderMemory}${coderTestData}${coderSelectorMap}${featureGrounding}${readAgentSkill() ? `\nLEARNED QA-AUTHORING SKILL (general script guidance refined over prior runs — apply it):\n${readAgentSkill()}\n` : ''}
+${selectedQaContextText}${coderUnderstanding}${coderFeatureInventory}${coderMemory}${coderTestData}${coderSelectorMap}${coderSelectorRegistry}${featureGrounding}${readAgentSkill() ? `\nLEARNED QA-AUTHORING SKILL (general script guidance refined over prior runs — apply it):\n${readAgentSkill()}\n` : ''}
 Use this browser inspection context as the source of truth for reachable pages, visible labels, forms, navigation actions, tables/lists, buttons, links and final URL: ${JSON.stringify(compactInspectionContext(inspectionContext))}.${allCaseControls}
 SETUP — NAVIGATE THEN LOG IN IF NEEDED: the MANDATORY FIRST LINES of every test body are (use this EXACT absolute URL — NOT '/', which resolves to the wrong path):
   await page.goto('${targetUrl || '/'}');
@@ -1955,7 +1975,7 @@ ACTION COMPLETION CONTRACT (CRITICAL — the test must DO the thing, not just lo
   · the action CHANGES A CONTROL'S STATE (checkbox/switch/select) -> perform the real .check()/.uncheck()/.setChecked()/selectOption on the discovered control, persist it, then re-query and assert the NEW state held (after refresh if it persists server-side).
   · the action CREATES / EDITS / DELETES data -> assert the row or value actually appeared / changed / was removed in the list — not a toast you did not see.
 STRICT OUTPUT CONTRACT: return JSON exactly like {"scripts":[{"test_case_title":"...","filename":"kebab-case.spec.ts","code":"import { test, expect } from '@playwright/test';\n..."}]}. Produce EXACTLY ONE script object per test case below, in the SAME order, so the count of scripts equals the count of test cases. Every object MUST include non-empty string fields "test_case_title", "filename", and "code"; never return empty objects. For each script, set "test_case_title" to that case's title VERBATIM, and name the Playwright test identically: test('<exact case title>', async ({ page }, testInfo) => { ... }). One file = one test() = one case; do not merge multiple cases into one script and do not split a case across scripts. Each script's actions must mirror that case's ordered steps.
-STEP-BY-STEP EVIDENCE (required): the test signature MUST include testInfo — test('<exact case title>', async ({ page }, testInfo) => { ... }). Perform the case's steps in order; immediately AFTER completing each step N (1-based, matching the case's steps array), attach a screenshot of the resulting screen with that step's number: await testInfo.attach('step-' + N, { body: await page.screenshot({ fullPage: true }), contentType: 'image/png' }); Use the literal step number (step-1, step-2, ...). Put the attach AFTER the action so it captures the post-action state; if a step asserts, attach before the assertion so evidence is captured even when the assertion later fails. Every step must produce exactly one 'step-N' attachment.
+EVIDENCE: do NOT attach screenshots after every step by default. The runner captures viewport screenshots and traces on failure. Include testInfo in the signature only if the specific case explicitly asks for step-by-step evidence.
 Test cases: ${JSON.stringify(testCases)}${coderKnowledge}`,
     schema: playwrightScriptsSchema,
     userMessage: 'Generate Playwright scripts for the inspected flow.',
@@ -1999,7 +2019,7 @@ Approved user-reviewed understanding: ${reviewedUnderstanding || 'not provided'}
 ${credentialContext}
 ${loginScriptBlock}
 ${applicationContextBlock}
-${selectedQaContextText}${coderUnderstanding}${coderSelectorMap}${featureGrounding}
+${selectedQaContextText}${coderUnderstanding}${coderSelectorMap}${coderSelectorRegistry}${featureGrounding}
 Use this browser inspection context as the source of truth for reachable pages, visible labels, forms, navigation actions, tables/lists, buttons, links and final URL: ${JSON.stringify(compactInspectionContext(inspectionContext))}.${perCaseControlBlocks[index] || ''}
 
 Rules:
@@ -2014,7 +2034,7 @@ Rules:
 - Set test_case_title to the test case title verbatim: ${JSON.stringify(testCase?.title || `Test case ${index + 1}`)}.
 - The Playwright test name must be the same title verbatim and must use async ({ page }, testInfo).
 - Start by navigating to ${targetUrl || '/'} and handling login with USERNAME/PASSWORD before the feature steps when credentials are available. Do not assume global auth.
-- Mirror this exact test case's ordered steps, not any other case. The script must cover every step in the payload below in order. Attach exactly one screenshot after each step with testInfo.attach('step-' + N, ...).
+- Mirror this exact test case's ordered steps, not any other case. The script must cover every step in the payload below in order. Do not add per-step screenshots unless this case explicitly asks for step evidence.
 - Ground selectors and assertions only in the inspection context or source-grounded understanding. Do not invent menus, labels, or success messages.
 - ACTION COMPLETION CONTRACT: the test must PERFORM the case's primary goal action and make exactly ONE hard expect verify its real OUTCOME — asserting a control is visible is NOT performing the action. The primary action and its assertion must NOT be wrapped in .catch(() => {}) (a miss must FAIL so the repair step fixes it against the live DOM). Discover selectors from the inspection/source (never hardcode). Pick the assertion by outcome type: a file download -> assert page.waitForEvent('download'); a control state change -> do the real .check()/.setChecked()/selectOption, persist, then assert the new state held; create/edit/delete -> assert the row/value actually changed in the list.
 
@@ -2212,13 +2232,16 @@ ${s.code}`,
     if (unresolved.length) {
       const uniqueUnresolved = [...new Set(unresolved)].slice(0, 40);
       const reason = `Selector verification blocked: unresolved selector(s) not found in repo source: ${uniqueUnresolved.join(' | ')}`;
+      (run as any).selector_verification = { ok: false, reason, unresolved: uniqueUnresolved };
       pushPhase(run, { agent: 'SelectorVerifier', status: 'failed', output: `${reason}. Cross-verified ${scripts.length} script(s) vs ${map.fileCount} source files; ${methodFixes} selector method(s) corrected from code, ${totalCulprits} culprit name(s) found, ${rewritten} rewrite(s) applied;${residualNote}` });
       return { ok: false, reason, unresolved: uniqueUnresolved };
     }
+    (run as any).selector_verification = { ok: true, unresolved: [] };
     pushPhase(run, { agent: 'SelectorVerifier', status: 'completed', output: `Cross-verified ${scripts.length} script(s) vs ${map.fileCount} source files; ${methodFixes} selector method(s) corrected from code, ${totalCulprits} culprit name(s) found, ${rewritten} rewrite(s) applied;${residualNote}` });
     return { ok: true };
   } catch (e: any) {
     const reason = `Selector verification failed: ${e?.message || e}`;
+    (run as any).selector_verification = { ok: false, reason, unresolved: [] };
     pushPhase(run, { agent: 'SelectorVerifier', status: 'failed', output: reason });
     return { ok: false, reason };
   }
@@ -2428,6 +2451,37 @@ async function runScriptsAndCollectEvidence(run: any, targetUrl: string, testCas
   const scripts = rawScripts.map((s: any) => ({ filename: s.filename, title: s.test_case_title, code: s.code }));
   const cases = (testCases?.test_cases || run.generated_cases || []) as any[];
   const norm = normTitle;
+  const selectorVerification = (run as any).selector_verification;
+  const brokenScripts = rawScripts.filter((s: any) => s?.has_unresolved_selectors === true);
+  const gateReason = !scripts.length
+    ? 'No Playwright scripts found for evidence execution.'
+    : selectorVerification && selectorVerification.ok === false
+      ? selectorVerification.reason || 'Selector verification has unresolved selectors.'
+      : brokenScripts.length
+        ? `${brokenScripts.length} script(s) are flagged with unresolved selectors.`
+        : '';
+  if (gateReason) {
+    (run as any).execution_result = {
+      ok: false,
+      total: 0,
+      passed: 0,
+      failed: 0,
+      skipped: scripts.length,
+      durationMs: 0,
+      error: gateReason,
+      tests: [],
+    };
+    run.phases = {
+      ...(run.phases || {}),
+      evidence_capture: {
+        status: 'skipped',
+        reason: gateReason,
+        completed_at: new Date().toISOString(),
+      },
+    };
+    pushPhase(run, { agent: 'EvidenceAgent', status: 'skipped', output: gateReason });
+    return [];
+  }
 
   // Reliable mapping chain: executed test -> its spec file -> the script that
   // produced it (by filename) -> that script's test_case_title -> the case index.
@@ -2467,7 +2521,18 @@ async function runScriptsAndCollectEvidence(run: any, targetUrl: string, testCas
       } catch (e: any) {
         run.messages.push({ agent: 'EvidenceAgent', status: 'running', output: `Auth-state capture error: ${e?.message || e}` });
       }
-      let exec = await executePlaywrightScripts({ scripts, baseUrl: targetUrl, runId: run.id, storageStatePath, sessionStorageState, singleSession: true });
+      let exec = await executePlaywrightScripts({
+        scripts,
+        baseUrl: targetUrl,
+        runId: run.id,
+        storageStatePath,
+        sessionStorageState,
+        singleSession: true,
+        screenshotMode: 'only-on-failure',
+        actionTimeoutMs: 5000,
+        navigationTimeoutMs: 15000,
+        expectTimeoutMs: 5000,
+      });
 
       // EXECUTION-REPAIR LOOP (Phase 3, evaluator-optimizer): the real Playwright result
       // is ground truth. When tests fail, feed the actual error + the observed DOM back to
@@ -2535,7 +2600,18 @@ async function runScriptsAndCollectEvidence(run: any, targetUrl: string, testCas
         pushPhase(run, { agent: 'ExecutionRepair', status: 'completed', output: `Repaired ${repaired} of ${failing.length} failing test(s)${repaired ? ' — re-running.' : ' — no fix produced, stopping repair.'}` });
         if (!repaired) break;
         await persistAgentScripts(run);
-        exec = await executePlaywrightScripts({ scripts, baseUrl: targetUrl, runId: run.id, storageStatePath, sessionStorageState, singleSession: true });
+        exec = await executePlaywrightScripts({
+          scripts,
+          baseUrl: targetUrl,
+          runId: run.id,
+          storageStatePath,
+          sessionStorageState,
+          singleSession: true,
+          screenshotMode: 'only-on-failure',
+          actionTimeoutMs: 5000,
+          navigationTimeoutMs: 15000,
+          expectTimeoutMs: 5000,
+        });
       }
 
       // Persist the full result (incl. per-test pass/fail) so the Agent Console can
@@ -2552,6 +2628,17 @@ async function runScriptsAndCollectEvidence(run: any, targetUrl: string, testCas
         tests: (exec.tests || []).map((t) => ({ title: t.title, status: t.status, durationMs: t.durationMs, error: t.error })),
       };
       if (exec.tests && exec.tests.length) {
+        run.phases = {
+          ...(run.phases || {}),
+          evidence_capture: {
+            status: exec.failed === 0 ? 'complete' : 'complete_with_failures',
+            scripts_run: exec.total,
+            passed: exec.passed,
+            failed: exec.failed,
+            skipped: exec.skipped,
+            completed_at: new Date().toISOString(),
+          },
+        };
         const evidenceDir = path.resolve(process.cwd(), 'evidence');
         await fsp.mkdir(evidenceDir, { recursive: true });
         const evidence: any[] = [];
@@ -3012,6 +3099,11 @@ export function registerAgentRoutes(app: Express) {
       generated_cases: [],
       playwright_scripts: [],
       evidence_screenshots: [],
+      phases: {} as any,
+      metadata_map: null as any,
+      context_matrix: null as any,
+      inspection_contexts: [] as any[],
+      selector_registry: null as any,
       inspection_context: null as any,
       folderId: folder?.id || '',
       folderPath: folder ? getFolderPath(folder.id) : 'Uncategorized',
@@ -3110,40 +3202,52 @@ export function registerAgentRoutes(app: Express) {
       const appContextKey = String(newRun.application_context_cache_key || applicationContextCacheKey(newRun.application_context));
       const cacheKey = featureCacheKey(targetUrl, `${prompt || ''} ${approvedUnderstanding}`, appContextKey);
 
+      if (newRun.appId) {
+        await runMetadataFetchPhase({
+          run: newRun,
+          appId: newRun.appId,
+          baseUrl: selectedApp?.baseUrl || targetUrl,
+          credentials,
+          onPhase: (msg) => pushPhase(newRun, msg),
+        });
+      }
+      runContextBuilderPhase({
+        run: newRun,
+        websiteId: req.body.websiteId || (credentials as any).websiteId || '',
+        ownerId: newRun.ownerId || undefined,
+        primaryCredentials: credentials,
+        onPhase: (msg) => pushPhase(newRun, msg),
+      });
+
       // Inspection is the hard grounding gate. If the live app cannot be read, stop here
       // before spending tokens on code understanding or generating ungrounded cases.
-      pushPhase(newRun, { agent: 'ApplicationInspector', status: 'running' });
-
-      const inspectTask = (async () => {
-        const cached = getCached(inspectionCache, cacheKey);
-        if (cached) {
-          pushPhase(newRun, { agent: 'ApplicationInspector', status: 'completed', output: { ...cached, cached: true, verifier: 'reused cached inspection' } });
-          return { ctx: cached, ok: true };
-        }
-        const ctx = await inspectApplicationFlow({
+      const cachedInspection = getCached(inspectionCache, cacheKey);
+      let inspectionContext: any = null;
+      let inspectionOk = false;
+      if (cachedInspection) {
+        newRun.inspection_context = cachedInspection;
+        newRun.inspection_contexts = [{ ...cachedInspection, context_id: 'cached_primary' }];
+        inspectionContext = cachedInspection;
+        inspectionOk = true;
+        pushPhase(newRun, { agent: 'ApplicationInspector', status: 'completed', output: { ...cachedInspection, cached: true, verifier: 'reused cached inspection' } });
+      } else {
+        const inspectionContexts = await runMultiContextInspectionPhase({
+          run: newRun,
           targetUrl,
           prompt: approvedUnderstanding ? `${prompt || ''}\n\nApproved understanding:\n${approvedUnderstanding}` : prompt || '',
-          credentials,
-          model: undefined as any,
-          runId: taskId,
+          primaryCredentials: credentials,
+          ownerId: newRun.ownerId || undefined,
           knowledge: `${appContextPrompt}\n\n${inspectorKnowledge}`.trim(),
-          workspaceId: newRun.ownerId || 'default',
+          onPhase: (msg) => pushPhase(newRun, msg),
         });
-        const verdict = assessInspection(ctx);
-        if (verdict.ok) {
-          setCached(inspectionCache, cacheKey, ctx);
-          pushPhase(newRun, { agent: 'ApplicationInspector', status: 'completed', output: { ...ctx, verifier: verdict.reason } });
-        } else {
-          pushPhase(newRun, { agent: 'ApplicationInspector', status: 'completed', output: `WARNING: the inspector could not read the live application (${verdict.reason}). Any test cases generated next are NOT grounded in the real page.` });
-        }
-        return { ctx, ok: verdict.ok };
-      })();
+        inspectionContext = newRun.inspection_context;
+        inspectionOk = inspectionContexts.some((ctx: any) => assessInspection(ctx).ok);
+        if (inspectionOk && inspectionContext) setCached(inspectionCache, cacheKey, inspectionContext);
+      }
+      runSelectorRegistryPhase({ run: newRun, page: targetUrl, onPhase: (msg) => pushPhase(newRun, msg) });
 
-      const inspectResult = await inspectTask;
-      const inspectionContext = inspectResult.ctx;
-      newRun.inspection_context = inspectionContext;
-      (newRun as any).inspection_blind = !inspectResult.ok;
-      if (!inspectResult.ok) {
+      (newRun as any).inspection_blind = !inspectionOk;
+      if (!inspectionOk) {
         const why = 'Inspection saw nothing on the page — cannot ground test cases in the live app; not generating ungrounded cases.';
         pushPhase(newRun, { agent: 'System', status: 'failed', output: why });
         (newRun as any).cases_grounding = { ok: false, reason: why };

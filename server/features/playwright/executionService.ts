@@ -125,6 +125,10 @@ export async function executePlaywrightScripts(opts: {
   baseUrl?: string;
   runId?: string;
   timeoutMs?: number;
+  screenshotMode?: 'off' | 'only-on-failure' | 'on';
+  actionTimeoutMs?: number;
+  navigationTimeoutMs?: number;
+  expectTimeoutMs?: number;
   /** Path to a Playwright storageState JSON so every test starts authenticated. */
   storageStatePath?: string;
   /**
@@ -229,13 +233,18 @@ export type { BrowserContext, Page } from '@playwright/test';
   // optionally pin a system Chromium via PLAYWRIGHT_CHROMIUM_PATH.
   const execPath = chromiumExecutablePath();
   const launchOptions = `{ args: ${JSON.stringify(CHROMIUM_LAUNCH_ARGS)}${execPath ? `, executablePath: ${JSON.stringify(execPath)}` : ''} }`;
+  const screenshotMode = opts.screenshotMode || 'only-on-failure';
+  const actionTimeoutMs = opts.actionTimeoutMs ?? 5000;
+  const navigationTimeoutMs = opts.navigationTimeoutMs ?? 15000;
+  const expectTimeoutMs = opts.expectTimeoutMs ?? 5000;
   const config = `import { defineConfig } from '@playwright/test';
 export default defineConfig({
   testDir: './tests',
   fullyParallel: ${opts.singleSession ? 'false' : 'true'},
   ${opts.singleSession ? 'workers: 1,' : ''}
   retries: 0,
-  timeout: 120000,
+  timeout: 90000,
+  expect: { timeout: ${expectTimeoutMs} },
   reporter: [['json', { outputFile: 'results.json' }]],
   outputDir: './artifacts',
   use: {
@@ -243,12 +252,12 @@ export default defineConfig({
     ${opts.storageStatePath ? `storageState: ${JSON.stringify(opts.storageStatePath)},` : ''}
     headless: true,
     launchOptions: ${launchOptions},
-    screenshot: 'on',
+    screenshot: ${JSON.stringify(screenshotMode)},
     trace: 'retain-on-failure',
     // Bound individual actions/navigations so a single missing element fails fast
     // (and a soft-asserted script can keep going) instead of consuming the whole test budget.
-    actionTimeout: 15000,
-    navigationTimeout: 30000,
+    actionTimeout: ${actionTimeoutMs},
+    navigationTimeout: ${navigationTimeoutMs},
   },
 });
 `;
@@ -311,9 +320,11 @@ export default defineConfig({
                 else failed++;
                 const errMsg = last.error?.message || (last.errors && last.errors[0]?.message) || '';
                 const atts = (last.attachments || []) as any[];
-                const rawStepAtts = atts
-                  .filter((a) => /^step-\d+$/i.test(String(a?.name || '')) && (a?.path || a?.body))
-                  .sort((a, b) => (parseInt(String(a.name).replace(/\D/g, ''), 10) || 0) - (parseInt(String(b.name).replace(/\D/g, ''), 10) || 0));
+                const rawStepAtts = screenshotMode === 'only-on-failure' && status === 'passed'
+                  ? []
+                  : atts
+                    .filter((a) => /^step-\d+$/i.test(String(a?.name || '')) && (a?.path || a?.body))
+                    .sort((a, b) => (parseInt(String(a.name).replace(/\D/g, ''), 10) || 0) - (parseInt(String(b.name).replace(/\D/g, ''), 10) || 0));
                 const shot = atts.find((a) => a?.name === 'screenshot' && a?.path);
                 const trace = atts.find((a) => a?.name === 'trace' && a?.path);
                 rawStepAttsByTest.push(rawStepAtts);

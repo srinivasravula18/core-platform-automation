@@ -121,7 +121,9 @@ function heuristicClassifyGoal(message: string, ctx: RoutingContext = {}): RawGo
     reason: 'heuristic target resolution',
   }, ctx) || {};
   const scope = String(message || '').trim();
-  const hasExecutionVerb = /\b(run|execute|rerun|re-run|playwright|e2e|end to end|end-to-end)\b/.test(text);
+  const wantsAllAboveTested = /\btest\b/.test(text)
+    && /\b(?:all\s+(?:of\s+)?(?:the\s+)?above|all\s+(?:of\s+)?(?:these|those)|above\s+cases?|listed\s+cases?)\b/.test(text);
+  const hasExecutionVerb = wantsAllAboveTested || /\b(run|execute|rerun|re-run|playwright|e2e|end to end|end-to-end)\b/.test(text);
   const hasGenerationVerb = /\b(generate|draft|write|author|create|build|make)\b/.test(text);
   const hasCodeVerb = /\b(analy[sz]e|review|diff|recent changes|repo|repository|codebase|code changes?)\b/.test(text);
   const hasWorkspaceVerb = /\b(plan|suite|folder|report|defect|move|organize|organise|navigate|open|go to)\b/.test(text);

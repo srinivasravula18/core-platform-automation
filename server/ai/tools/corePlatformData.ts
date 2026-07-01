@@ -14,6 +14,7 @@
  *   TARGET_TOKEN                        bearer token to act as, OR
  *   TARGET_USERNAME + _PASSWORD         credentials to log in for a token
  */
+import { createHash } from 'crypto';
 import type { AgentTool, ToolContext } from './types';
 
 function baseUrl(): string {
@@ -215,6 +216,36 @@ export interface CatalogConn {
   password?: string;
 }
 
+export interface CorePlatformMetadataMap {
+  app_id: string;
+  fetched_at: string;
+  schema_version: string;
+  objects: Array<{
+    api_name: string;
+    label: string;
+    object_id: string;
+    fields: Array<{
+      api_name: string;
+      label: string;
+      type: string;
+      required: boolean;
+      readonly: boolean;
+      permission_sensitive: boolean;
+      appears_in_layouts: string[];
+      appears_in_list_views: string[];
+      appears_in_forms: string[];
+    }>;
+    list_views: Array<Record<string, unknown>>;
+    layouts: unknown[];
+    forms: unknown[];
+  }>;
+  total_fields: number;
+  permission_sensitive_count: number;
+}
+
+const metadataMapCache = new Map<string, { at: number; value: CorePlatformMetadataMap }>();
+const METADATA_MAP_CACHE_MS = 60 * 60 * 1000;
+
 /**
  * Fetch the live catalog of metadata objects for an app, as ground-truth vocabulary for
  * requirement drafting (so `metadataRefs` are exact, real api_names instead of guesses).
@@ -365,6 +396,169 @@ async function fetchObjectCatalogViaApi(conn?: CatalogConn): Promise<Array<{ app
     return out;
   } catch {
     return [];
+  }
+}
+
+function fieldApiName(field: any): string {
+  return String(field?.api_name || field?.apiName || field?.name || '').trim();
+}
+
+function fieldLabel(field: any): string {
+  return String(field?.label || field?.display_name || fieldApiName(field)).trim();
+}
+
+function fieldType(field: any): string {
+  return String(field?.type || field?.data_type || field?.field_type || 'text').trim();
+}
+
+function listViewApiName(view: any): string {
+  return String(view?.api_name || view?.apiName || view?.name || view?.id || '').trim();
+}
+
+function listViewColumns(view: any): string[] {
+  const columns = Array.isArray(view?.columns) ? view.columns : Array.isArray(view?.fields) ? view.fields : [];
+  return columns
+    .map((col: any) => String(col?.api_name || col?.field || col?.name || col || '').trim())
+    .filter(Boolean);
+}
+
+function layoutApiName(layout: any): string {
+  return String(layout?.api_name || layout?.apiName || layout?.name || layout?.id || 'default_layout').trim();
+}
+
+function layoutFieldNames(layout: any): string[] {
+  const fields = Array.isArray(layout?.fields) ? layout.fields
+    : Array.isArray(layout?.sections) ? layout.sections.flatMap((s: any) => s?.fields || [])
+    : [];
+  return fields.map(fieldApiName).filter(Boolean);
+}
+
+function formApiName(form: any): string {
+  return String(form?.api_name || form?.apiName || form?.name || form?.id || 'default_form').trim();
+}
+
+function formFieldNames(form: any): string[] {
+  const fields = Array.isArray(form?.fields) ? form.fields
+    : Array.isArray(form?.sections) ? form.sections.flatMap((s: any) => s?.fields || [])
+    : [];
+  return fields.map(fieldApiName).filter(Boolean);
+}
+
+export async function fetchCorePlatformMetadataMap(conn: CatalogConn, appId: string): Promise<CorePlatformMetadataMap | null> {
+  try {
+    const url = serviceBaseUrl(conn);
+    const app = String(appId || '').trim();
+    if (!url || !app) return null;
+    const cacheKey = `${url}::${app}::${conn.username || ''}::${conn.token ? 'token' : ''}`;
+    const cached = metadataMapCache.get(cacheKey);
+    if (cached && Date.now() - cached.at < METADATA_MAP_CACHE_MS) return cached.value;
+
+    const token = await resolveConnToken(conn || {}, url);
+    if (!token) return null;
+    const authGet = async (path: string) => {
+      const res = await fetch(`${url}${path}`, { headers: { authorization: `Bearer ${token}` } });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return res.json();
+    };
+    const tryGet = async (path: string) => {
+      try { return await authGet(path); } catch { return null; }
+    };
+
+    const rawObjects = items(await authGet(`/api/apps/${enc(app)}/objects`)) as any[];
+    const objects: CorePlatformMetadataMap['objects'] = [];
+
+    for (const obj of Array.isArray(rawObjects) ? rawObjects : []) {
+      const apiName = String(obj?.api_name || obj?.apiName || obj?.name || '').trim();
+      if (!apiName) continue;
+      const objectId = String(obj?.id || obj?.object_id || obj?.objectId || '').trim();
+      const [describe, listViewsRaw, fieldsRaw, layoutsRaw, formRaw] = await Promise.all([
+        tryGet(`/api/apps/${enc(app)}/objects/${enc(apiName)}/describe`),
+        tryGet(`/api/apps/${enc(app)}/objects/${enc(apiName)}/list-views`),
+        objectId ? tryGet(`/admin/objects/${enc(objectId)}/fields`) : Promise.resolve(null),
+        objectId ? tryGet(`/admin/objects/${enc(objectId)}/layouts`) : Promise.resolve(null),
+        objectId ? tryGet(`/admin/objects/${enc(objectId)}/form`) : Promise.resolve(null),
+      ]);
+
+      const rawFields = [
+        ...(Array.isArray((describe as any)?.fields) ? (describe as any).fields : []),
+        ...(Array.isArray(items(fieldsRaw)) ? items(fieldsRaw) as any[] : []),
+      ];
+      const fieldMap = new Map<string, any>();
+      for (const field of rawFields) {
+        const name = fieldApiName(field);
+        if (name) fieldMap.set(name, { ...(fieldMap.get(name) || {}), ...field });
+      }
+
+      const listViews = (Array.isArray(items(listViewsRaw)) ? items(listViewsRaw) as any[] : [])
+        .map((view) => ({
+          api_name: listViewApiName(view),
+          label: String(view?.label || view?.name || listViewApiName(view)).trim(),
+          sharing: view?.sharing || view?.visibility || null,
+          columns: listViewColumns(view),
+          user_specific: Boolean(view?.user_specific || view?.userSpecific || view?.owner_user_id || view?.is_private),
+        }));
+      const layouts = Array.isArray(items(layoutsRaw)) ? items(layoutsRaw) as any[] : [];
+      const forms = (Array.isArray(items(formRaw)) ? items(formRaw) as any[] : formRaw ? [formRaw] : []) as any[];
+      const layoutMembership = new Map<string, string[]>();
+      const formMembership = new Map<string, string[]>();
+      const listViewMembership = new Map<string, string[]>();
+
+      for (const layout of layouts) {
+        const layoutName = layoutApiName(layout);
+        for (const name of layoutFieldNames(layout)) layoutMembership.set(name, [...(layoutMembership.get(name) || []), layoutName]);
+      }
+      for (const form of forms) {
+        const formName = formApiName(form);
+        for (const name of formFieldNames(form)) formMembership.set(name, [...(formMembership.get(name) || []), formName]);
+      }
+      for (const view of listViews) {
+        const viewName = String(view.api_name || view.label || '').trim();
+        for (const name of listViewColumns(view)) listViewMembership.set(name, [...(listViewMembership.get(name) || []), viewName]);
+      }
+
+      const fields = [...fieldMap.values()].map((field) => {
+        const name = fieldApiName(field);
+        const readonly = Boolean(field?.readonly || field?.read_only || field?.is_readonly || field?.calculated || field?.system);
+        const required = Boolean(field?.required || field?.is_required);
+        const appearsInLayouts = layoutMembership.get(name) || [];
+        const permissionSensitive = readonly || required || appearsInLayouts.length > 0 || Boolean(field?.sharing || field?.access || field?.permissions);
+        return {
+          api_name: name,
+          label: fieldLabel(field),
+          type: fieldType(field),
+          required,
+          readonly,
+          permission_sensitive: permissionSensitive,
+          appears_in_layouts: appearsInLayouts,
+          appears_in_list_views: listViewMembership.get(name) || [],
+          appears_in_forms: formMembership.get(name) || [],
+        };
+      });
+
+      objects.push({
+        api_name: apiName,
+        label: String(obj?.label || (describe as any)?.object?.label || apiName).trim(),
+        object_id: objectId,
+        fields,
+        list_views: listViews,
+        layouts,
+        forms,
+      });
+    }
+
+    const totalFields = objects.reduce((sum, obj) => sum + obj.fields.length, 0);
+    const value: CorePlatformMetadataMap = {
+      app_id: app,
+      fetched_at: new Date().toISOString(),
+      schema_version: createHash('sha1').update(JSON.stringify(objects)).digest('hex'),
+      objects,
+      total_fields: totalFields,
+      permission_sensitive_count: objects.reduce((sum, obj) => sum + obj.fields.filter((f) => f.permission_sensitive).length, 0),
+    };
+    metadataMapCache.set(cacheKey, { at: Date.now(), value });
+    return value;
+  } catch {
+    return null;
   }
 }
 

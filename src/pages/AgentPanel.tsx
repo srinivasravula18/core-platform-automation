@@ -331,7 +331,10 @@ export default function AgentPanel() {
           <div className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">Agent Pipeline</div>
           <div className="flex flex-wrap items-center gap-3">
             {[
+              ['MetadataFetch', 'Fetch metadata'],
+              ['ContextBuilder', 'Build contexts'],
               ['ApplicationInspector', 'Inspect app'],
+              ['SelectorRegistry', 'Build selector registry'],
               ['CodeAnalyst', 'Understand code'],
               ['FeatureDiscoveryAgent', 'Find Existing Features'],
               ['FeatureWriter', 'Write New Features (missing)'],
@@ -825,6 +828,7 @@ export default function AgentPanel() {
               />
             </div>
           )}
+
         </div>
       </div>
       </div>

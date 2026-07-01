@@ -1,0 +1,298 @@
+import { inspectApplicationFlow } from './inspectionService';
+import { getWebsite, listUsersForWebsite, resolveCredentials } from '../credentials/credentialsService';
+import { fetchCorePlatformMetadataMap, type CorePlatformMetadataMap } from '../../ai/tools/corePlatformData';
+
+type PhaseSink = (msg: any) => void;
+
+function clean(value: unknown): string {
+  return String(value || '').replace(/\s+/g, ' ').trim();
+}
+
+function escAttr(value: string): string {
+  return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+}
+
+function roleCapabilities(role: string) {
+  const r = role.toLowerCase();
+  const admin = /admin|owner|super|service/.test(r);
+  const guest = /guest|viewer|read/.test(r);
+  return {
+    can_create: admin || !guest,
+    can_edit: admin || !guest,
+    can_delete: admin,
+    readonly_fields: guest ? ['*'] : [],
+    hidden_fields: [],
+    visible_list_views: [] as string[],
+  };
+}
+
+function phaseSummary(run: any, key: string, value: Record<string, unknown>) {
+  run.phases = { ...(run.phases || {}), [key]: value };
+}
+
+export async function runMetadataFetchPhase(input: {
+  run: any;
+  appId: string;
+  baseUrl: string;
+  credentials: any;
+  onPhase: PhaseSink;
+}) {
+  input.onPhase({ agent: 'MetadataFetch', status: 'running' });
+  const map = await fetchCorePlatformMetadataMap({
+    baseUrl: input.baseUrl,
+    token: input.credentials?.token,
+    username: input.credentials?.username,
+    password: input.credentials?.password,
+  }, input.appId);
+  if (!map) {
+    const output = 'Metadata map unavailable; continuing with live inspection and source grounding.';
+    input.onPhase({ agent: 'MetadataFetch', status: 'skipped', output });
+    phaseSummary(input.run, 'metadata_fetch', { status: 'skipped', completed_at: new Date().toISOString() });
+    return null;
+  }
+  input.run.metadata_map = map;
+  const output = {
+    objects_found: map.objects.length,
+    total_fields: map.total_fields,
+    permission_sensitive: map.permission_sensitive_count,
+    schema_version: map.schema_version,
+  };
+  input.onPhase({ agent: 'MetadataFetch', status: 'completed', output });
+  phaseSummary(input.run, 'metadata_fetch', { status: 'complete', ...output, completed_at: new Date().toISOString() });
+  return map;
+}
+
+export function runContextBuilderPhase(input: {
+  run: any;
+  websiteId?: string;
+  ownerId?: string;
+  primaryCredentials: any;
+  onPhase: PhaseSink;
+}) {
+  input.onPhase({ agent: 'ContextBuilder', status: 'running' });
+  const website = input.websiteId ? getWebsite(input.websiteId) : null;
+  const canUseWebsite = !!website && (!input.ownerId || (website.ownerId || '') === input.ownerId);
+  const users = canUseWebsite ? listUsersForWebsite(input.websiteId!) : [];
+  const contexts = users.length
+    ? users.map((user) => {
+      const role = clean(user.customRole || user.role || user.label || 'default');
+      const caps = roleCapabilities(role);
+      return {
+        context_id: role.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '') || 'default',
+        description: `${user.label || role} (${role})`,
+        credential_user_id: user.id,
+        roles_covered: [role],
+        permission_fingerprint: JSON.stringify(caps),
+        expected_capabilities: caps,
+      };
+    })
+    : [{
+      context_id: clean(input.primaryCredentials?.role || 'primary_user').toLowerCase().replace(/[^a-z0-9]+/g, '_') || 'primary_user',
+      description: clean(input.primaryCredentials?.role || input.primaryCredentials?.username || 'Primary user'),
+      credential_user_id: input.primaryCredentials?.userId || '',
+      roles_covered: [clean(input.primaryCredentials?.role || 'primary')],
+      permission_fingerprint: JSON.stringify(roleCapabilities(clean(input.primaryCredentials?.role || 'primary'))),
+      expected_capabilities: roleCapabilities(clean(input.primaryCredentials?.role || 'primary')),
+    }];
+
+  const grouped = new Map<string, any>();
+  for (const context of contexts) {
+    const existing = grouped.get(context.permission_fingerprint);
+    if (existing) {
+      existing.roles_covered = [...new Set([...existing.roles_covered, ...context.roles_covered])];
+      continue;
+    }
+    grouped.set(context.permission_fingerprint, context);
+  }
+  const uniqueContexts = [...grouped.values()];
+  const matrix = {
+    total_roles_found: contexts.length,
+    unique_contexts: uniqueContexts.length,
+    contexts: uniqueContexts,
+    missing_tokens: [],
+  };
+  input.run.context_matrix = matrix;
+  const output = {
+    total_roles: matrix.total_roles_found,
+    unique_contexts: matrix.unique_contexts,
+    context_ids: uniqueContexts.map((c) => c.context_id),
+    missing_tokens: matrix.missing_tokens,
+  };
+  input.onPhase({ agent: 'ContextBuilder', status: 'completed', output });
+  phaseSummary(input.run, 'context_builder', { status: 'complete', ...output, completed_at: new Date().toISOString() });
+  return matrix;
+}
+
+export async function runMultiContextInspectionPhase(input: {
+  run: any;
+  targetUrl: string;
+  prompt: string;
+  primaryCredentials: any;
+  ownerId?: string;
+  knowledge?: string;
+  onPhase: PhaseSink;
+}) {
+  const contexts = Array.isArray(input.run.context_matrix?.contexts) && input.run.context_matrix.contexts.length
+    ? input.run.context_matrix.contexts
+    : [{ context_id: 'primary_user', description: 'Primary user', expected_capabilities: {}, credential_user_id: input.primaryCredentials?.userId || '' }];
+  input.onPhase({ agent: 'ApplicationInspector', status: 'running', output: `Inspecting ${contexts.length} permission context(s).` });
+  const inspections: any[] = [];
+  for (const context of contexts) {
+    const creds = (context.credential_user_id
+      ? resolveCredentials({ userId: context.credential_user_id, ownerId: input.ownerId })
+      : null) || input.primaryCredentials;
+    if (!creds?.username || !creds?.password) {
+      inspections.push({ context_id: context.context_id, goalStatus: 'blocked', warnings: ['No credentials resolved for this context.'] });
+      continue;
+    }
+    const metadataSummary = metadataForPrompt(input.run.metadata_map);
+    const ctx = await inspectApplicationFlow({
+      targetUrl: input.targetUrl,
+      prompt: `${input.prompt}\n\nPermission context: ${context.context_id} ${context.description}\nExpected capabilities: ${JSON.stringify(context.expected_capabilities || {})}\n${metadataSummary}`,
+      credentials: creds,
+      runId: `${input.run.id}-${context.context_id}`,
+      knowledge: input.knowledge,
+      workspaceId: input.ownerId || 'default',
+    });
+    inspections.push({ ...ctx, context_id: context.context_id, context_description: context.description, expected_capabilities: context.expected_capabilities });
+  }
+  input.run.inspection_contexts = inspections;
+  input.run.inspection_context = inspections[0] || null;
+  const output = { contexts_inspected: inspections.length };
+  input.onPhase({ agent: 'ApplicationInspector', status: 'completed', output });
+  phaseSummary(input.run, 'inspection', { status: 'complete', ...output, completed_at: new Date().toISOString() });
+  return inspections;
+}
+
+function metadataForPrompt(map?: CorePlatformMetadataMap | null): string {
+  if (!map?.objects?.length) return '';
+  const lines = map.objects.slice(0, 12).map((obj) => {
+    const fields = obj.fields.slice(0, 30).map((f) => `${f.api_name}:${f.label}${f.required ? ':required' : ''}${f.readonly ? ':readonly' : ''}`).join(', ');
+    return `- ${obj.api_name} (${obj.label}): ${fields}`;
+  });
+  return `Metadata fields expected to drive this UI:\n${lines.join('\n')}`;
+}
+
+function fieldsFromInspection(ctx: any) {
+  const fields: any[] = [];
+  for (const page of Array.isArray(ctx?.observedPages) ? ctx.observedPages : []) {
+    for (const form of Array.isArray(page?.forms) ? page.forms : []) {
+      for (const field of Array.isArray(form?.fields) ? form.fields : []) fields.push(field);
+    }
+  }
+  for (const form of Array.isArray(ctx?.visibleForms) ? ctx.visibleForms : []) {
+    for (const field of Array.isArray(form?.fields) ? form.fields : []) fields.push(field);
+  }
+  return fields;
+}
+
+function actionsFromInspection(ctx: any) {
+  const actions: any[] = [];
+  for (const page of Array.isArray(ctx?.observedPages) ? ctx.observedPages : []) {
+    if (Array.isArray(page?.actions)) actions.push(...page.actions);
+  }
+  if (Array.isArray(ctx?.visibleNavigation)) actions.push(...ctx.visibleNavigation);
+  return actions;
+}
+
+function elementKey(label: string, suffix: string) {
+  return `${clean(label).toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 70) || 'element'}_${suffix}`;
+}
+
+export function runSelectorRegistryPhase(input: { run: any; page?: string; onPhase: PhaseSink }) {
+  input.onPhase({ agent: 'SelectorRegistry', status: 'running' });
+  const inspections = Array.isArray(input.run.inspection_contexts) ? input.run.inspection_contexts : [input.run.inspection_context].filter(Boolean);
+  const selectors: Record<string, any> = {};
+  const unresolvable: any[] = [];
+
+  for (const obj of input.run.metadata_map?.objects || []) {
+    for (const field of obj.fields || []) {
+      const key = `${field.api_name}_field`;
+      const behavior: Record<string, any> = {};
+      let seen = 0;
+      for (const ctx of inspections) {
+        const found = fieldsFromInspection(ctx).some((domField) => {
+          const dom = domField?.dom || {};
+          const hay = [domField?.name, domField?.label, dom?.name, dom?.ariaLabel, dom?.placeholder, dom?.text].map(clean);
+          return hay.some((v) => v === field.api_name || v.toLowerCase() === clean(field.label).toLowerCase());
+        });
+        if (found) seen += 1;
+        behavior[ctx.context_id || 'primary_user'] = {
+          visible: found,
+          readonly: field.readonly || (ctx.expected_capabilities?.readonly_fields || []).includes('*') || (ctx.expected_capabilities?.readonly_fields || []).includes(field.api_name),
+          required: field.required,
+        };
+      }
+      selectors[key] = {
+        metadata_api_name: field.api_name,
+        primary_selector: `[name="${escAttr(field.api_name)}"]`,
+        selector_strategy: 'name_attribute',
+        fallback_selector: field.label ? `getByLabel(${JSON.stringify(field.label)})` : '',
+        works_across_all_contexts: inspections.length > 0 && seen === inspections.length,
+        context_overrides: {},
+        permission_behavior: behavior,
+        context_specific: seen > 0 && seen < inspections.length,
+        verified: seen > 0,
+      };
+      if (!seen) unresolvable.push({ element_id: key, metadata_api_name: field.api_name, reason: 'Not found in inspected DOM contexts.' });
+    }
+  }
+
+  const seenActions = new Set<string>();
+  for (const ctx of inspections) {
+    for (const action of actionsFromInspection(ctx)) {
+      const label = clean(action.text || action.ariaLabel || action.name || action.href);
+      if (!label) continue;
+      const key = elementKey(label, 'action');
+      if (seenActions.has(`${ctx.context_id}|${key}`)) continue;
+      seenActions.add(`${ctx.context_id}|${key}`);
+      const dom = action.dom || {};
+      const primary = (Array.isArray(action.selectorHints) && action.selectorHints[0])
+        || (dom.testId ? `getByTestId(${JSON.stringify(dom.testId)})` : '')
+        || (dom.ariaLabel ? `getByLabel(${JSON.stringify(dom.ariaLabel)})` : '')
+        || (label ? `getByRole(${JSON.stringify(action.role || 'button')}, { name: ${JSON.stringify(label)} })` : '');
+      if (!selectors[key]) {
+        selectors[key] = {
+          metadata_api_name: null,
+          primary_selector: primary,
+          selector_strategy: primary.includes('getByTestId') ? 'testid' : primary.includes('getByLabel') ? 'aria_label' : 'role_or_text',
+          fallback_selector: label ? `getByText(${JSON.stringify(label)})` : '',
+          works_across_all_contexts: false,
+          context_overrides: {},
+          permission_behavior: {},
+          context_specific: true,
+          verified: Boolean(primary),
+        };
+      }
+      selectors[key].permission_behavior[ctx.context_id || 'primary_user'] = { visible: true };
+    }
+  }
+
+  const values = Object.values(selectors);
+  const registry = {
+    registry_version: new Date().toISOString(),
+    page: input.page || '',
+    selectors,
+    unresolvable,
+    coverage: {
+      total_elements: values.length,
+      verified: values.filter((s: any) => s.verified).length,
+      context_specific: values.filter((s: any) => s.context_specific).length,
+      unresolvable: unresolvable.length,
+    },
+  };
+  input.run.selector_registry = registry;
+  input.onPhase({ agent: 'SelectorRegistry', status: 'completed', output: registry.coverage });
+  phaseSummary(input.run, 'selector_registry', { status: 'complete', ...registry.coverage, completed_at: new Date().toISOString() });
+  return registry;
+}
+
+export function renderSelectorRegistryForPrompt(registry: any): string {
+  const selectors = registry?.selectors || {};
+  const lines = Object.entries(selectors).slice(0, 160).map(([id, value]: any) =>
+    `${id}: primary=${value.primary_selector || '(none)'} fallback=${value.fallback_selector || '(none)'} api=${value.metadata_api_name || ''} context_specific=${Boolean(value.context_specific)}`,
+  );
+  return lines.length
+    ? `\nPRE-VERIFIED SELECTOR REGISTRY (use these element ids/selectors before inventing anything):\n${lines.join('\n')}\n`
+    : '';
+}

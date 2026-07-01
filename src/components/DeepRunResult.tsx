@@ -41,7 +41,10 @@ import {
  */
 
 const PIPELINE: { key: string; label: string; sub?: boolean }[] = [
+  { key: 'MetadataFetch', label: 'Fetch metadata' },
+  { key: 'ContextBuilder', label: 'Build contexts' },
   { key: 'ApplicationInspector', label: 'Inspect app' },
+  { key: 'SelectorRegistry', label: 'Build selector registry' },
   { key: 'CodeAnalyst', label: 'Understand code' },
   { key: 'FeatureDiscoveryAgent', label: 'Find Existing Features' },
   { key: 'FeatureWriter', label: 'Write New Features (missing)' },
