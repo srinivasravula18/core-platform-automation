@@ -70,24 +70,12 @@
 }
 
 @layer components {
+  /* Every section page fills the full available width, matching the Agent Console (which uses a
+     plain w-full root). The old min(100%,1280px)+auto-margins capped content and centered it,
+     leaving side gaps once the nav collapses and the viewport widens. */
   .app-page-shell {
-    width: min(100%, 1280px);
-    margin-left: auto;
-    margin-right: auto;
-  }
-
-  @media (min-width: 1600px) {
-    .app-page-shell {
-      width: calc(100vw - 96px);
-      max-width: 1840px;
-    }
-  }
-
-  @media (min-width: 2200px) {
-    .app-page-shell {
-      width: calc(100vw - 120px);
-      max-width: 2360px;
-    }
+    width: 100%;
+    max-width: none;
   }
 
   .app-page-shell-fluid {

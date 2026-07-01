@@ -983,7 +983,14 @@ ${JSON.stringify(understanding || {}, null, 2)}
 EXISTING related test cases already in the QA repository (do NOT re-propose these):
 ${JSON.stringify(existingCases)}
 
-Return strict JSON matching the schema. In coverage.gaps list the behaviors the existing cases miss; in proposedCases add only NEW cases (with concrete, executable steps and expected results) that close those gaps. If the existing cases already cover the feature, return an empty proposedCases array.`,
+Return strict JSON matching the schema. In coverage.gaps list the behaviors the existing cases miss; in proposedCases add only NEW cases (with concrete, executable steps and expected results) that close those gaps. If the existing cases already cover the feature, return an empty proposedCases array.
+
+WRITING STYLE (must follow for the rationale AND every step action and expected result):
+- Write in plain, simple, everyday English that a non-technical person can read at a glance. Short sentences, common words.
+- Do NOT use heavy or technical words, internal jargon, or invented terms. Say what a real user sees and does on the screen.
+- BANNED in steps and expected results: internal field/column names (e.g. "created_at", "appId", "app id and object pair"), implementation/database terms (e.g. "AND filters", "descending", "Table mode", "bootstrap", "deduplication", "session", "context", "persisted", "detected"), and developer phrasing. Describe the visible outcome instead — e.g. say "the list is sorted with the newest item first" not "sorts by created_at descending"; "a default view is created automatically" not "a bootstrap view is created"; "opening it again does not create a duplicate view" not "a second bootstrap view is not created for the same appId and object pair".
+- Each step action is one thing the user clicks/types/opens; each expected result is what the user then sees on screen. Keep both concrete and plain.
+- Each case's "rationale" must start with ONE short plain sentence saying what the case checks and why it matters, then INCLUDE the "Test Steps:" with each numbered step and its "Expected:" result in plain words on separate lines, so it reads clearly on its own.`,
     schema: reconcileSchema,
     userMessage: 'propose only the gap cases to extend coverage',
   });

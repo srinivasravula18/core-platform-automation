@@ -592,9 +592,9 @@ export default function TestPlans() {
                 </th>
                 <th className="font-medium py-3 px-4 w-24">ID</th>
                 <th className="font-medium py-3 px-4">Name</th>
-                <th className="font-medium py-3 px-4">Folder</th>
+                <th className="font-medium py-3 px-4 w-56">Folder</th>
                 <th className="font-medium py-3 px-4 w-32">Status</th>
-                <th className="font-medium py-3 px-4">Risk Level</th>
+                <th className="font-medium py-3 px-4 w-44">Risk Level</th>
                 <th className="font-medium py-3 px-4 w-24 text-right">Actions</th>
               </tr>
             </thead>
@@ -622,8 +622,8 @@ export default function TestPlans() {
                     </td>
                     <td className="py-3 px-4 font-mono text-xs text-[var(--text-muted)]">{plan.id}</td>
                     <td className="py-3 px-4">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className="font-medium">{plan.name}</span>
+                      <div className="min-w-0 max-w-[420px]">
+                        <span className="block truncate font-medium" title={plan.name}>{plan.name}</span>
                         <span className="text-xs text-[var(--text-muted)]">
                           {planSuites.length} suites / {planCases.length} cases
                         </span>

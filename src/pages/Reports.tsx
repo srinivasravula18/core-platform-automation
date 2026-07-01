@@ -415,7 +415,7 @@ export default function Reports() {
     : 'No reports logged';
 
   return (
-    <div className="mx-auto flex h-full min-h-0 max-w-[1680px] flex-col px-4 pb-4">
+    <div className="flex h-full min-h-0 w-full flex-col px-4 pb-4">
       {/* Header Info */}
       <div className="flex items-center justify-between mb-5 flex-shrink-0">
         <div>

@@ -35,7 +35,7 @@ export default function TestCases() {
   const [isStartingRun, setIsStartingRun] = useState(false);
   const emptyStep = { action: '', expected: '' };
   const [formData, setFormData] = useState({ title: '', description: '', testPlanId: '', testSuiteId: '', createdBy: 'Admin', tags: '', type: 'Manual', priority: 'Medium', status: 'Draft', folderId: '', captureEvidenceOnManualRun: true, steps: [emptyStep] });
-  const inlineSelectClass = "w-full min-w-[140px] rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs font-medium text-[var(--text-primary)] outline-none transition-colors hover:border-[var(--accent)] focus:border-[var(--accent)]";
+  const inlineSelectClass = "w-full min-w-0 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs font-medium text-[var(--text-primary)] outline-none transition-colors hover:border-[var(--accent)] focus:border-[var(--accent)]";
 
   const [selectedCaseId, setSelectedCaseId] = useState<string | null>(null);
   const stepEditorRef = useRef<HTMLDivElement | null>(null);
@@ -579,7 +579,7 @@ export default function TestCases() {
         </div>
         
         <div className="flex-1 overflow-auto">
-          <table className="w-full text-left text-sm whitespace-nowrap">
+          <table className="w-full min-w-[1100px] table-fixed text-left text-sm">
             <thead className="sticky top-0 bg-[var(--bg-secondary)] border-b border-[var(--border)] z-10">
               <tr className="text-[var(--text-muted)]">
                 <th className="font-medium py-3 px-4 w-10">
@@ -591,15 +591,15 @@ export default function TestCases() {
                     title="Select all visible cases"
                   />
                 </th>
-                <th className="font-medium py-3 px-4 w-24">ID</th>
+                <th className="font-medium py-3 px-4 w-20">ID</th>
                 <th className="font-medium py-3 px-4">Title</th>
-                <th className="font-medium py-3 px-4">Folder</th>
-                <th className="font-medium py-3 px-4">App</th>
-                <th className="font-medium py-3 px-4">Test Plan</th>
-                <th className="font-medium py-3 px-4">Test Suite</th>
-                <th className="font-medium py-3 px-4 w-32">Status</th>
-                <th className="font-medium py-3 px-4">Evidence</th>
-                <th className="font-medium py-3 px-4">Tags</th>
+                <th className="font-medium py-3 px-4 w-44">Folder</th>
+                <th className="font-medium py-3 px-4 w-24">App</th>
+                <th className="font-medium py-3 px-4 w-40">Test Plan</th>
+                <th className="font-medium py-3 px-4 w-40">Test Suite</th>
+                <th className="font-medium py-3 px-4 w-28">Status</th>
+                <th className="font-medium py-3 px-4 w-32">Evidence</th>
+                <th className="font-medium py-3 px-4 w-28">Tags</th>
                 <th className="font-medium py-3 px-4 w-24 text-right">Actions</th>
               </tr>
             </thead>
@@ -621,8 +621,8 @@ export default function TestCases() {
                       title={`Select ${tc.title}`}
                     />
                   </td>
-                  <td className="py-3 px-4 font-mono text-xs text-[var(--text-muted)]">{tc.id}</td>
-                  <td className="py-3 px-4 font-medium max-w-sm truncate">{tc.title}</td>
+                  <td className="py-3 px-4 font-mono text-xs text-[var(--text-muted)] truncate">{tc.id}</td>
+                  <td className="py-3 px-4 font-medium truncate" title={tc.title}>{tc.title}</td>
                   <td className="py-3 px-4">
                     <select
                       value={tc.folderId || ''}
@@ -637,7 +637,7 @@ export default function TestCases() {
                       ))}
                     </select>
                   </td>
-                  <td className="py-3 px-4 text-xs text-[var(--text-muted)]">{appName(tc.appId || '')}</td>
+                  <td className="py-3 px-4 text-xs text-[var(--text-muted)] truncate" title={appName(tc.appId || '')}>{appName(tc.appId || '')}</td>
                   <td className="py-3 px-4">
                     <select
                       value={resolvePlanId(tc)}
@@ -678,7 +678,7 @@ export default function TestCases() {
                       value={tc.status || 'Draft'}
                       onClick={(event) => event.stopPropagation()}
                       onChange={(event) => updateCaseInline(tc, { status: event.target.value })}
-                      className="w-full min-w-[120px] rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs font-medium text-[var(--text-primary)] outline-none transition-colors hover:border-[var(--accent)] focus:border-[var(--accent)]"
+                      className="w-full min-w-0 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs font-medium text-[var(--text-primary)] outline-none transition-colors hover:border-[var(--accent)] focus:border-[var(--accent)]"
                       title="Update status"
                     >
                       {CASE_STATUSES.map((status) => (
@@ -691,7 +691,7 @@ export default function TestCases() {
                       value={tc.captureEvidenceOnManualRun !== false ? 'on' : 'off'}
                       onClick={(event) => event.stopPropagation()}
                       onChange={(event) => updateCaseInline(tc, { captureEvidenceOnManualRun: event.target.value === 'on' })}
-                      className="w-full min-w-[130px] rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs font-medium text-[var(--text-primary)] outline-none transition-colors hover:border-[var(--accent)] focus:border-[var(--accent)]"
+                      className="w-full min-w-0 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs font-medium text-[var(--text-primary)] outline-none transition-colors hover:border-[var(--accent)] focus:border-[var(--accent)]"
                       title="Update evidence capture"
                     >
                       <option value="on">Snapshot On</option>

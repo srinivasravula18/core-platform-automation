@@ -24,6 +24,10 @@ export function buildCaseDescription(testCase: any) {
 
   if (!steps.length) return baseDescription;
 
+  // The description already carries a "Test Steps:" list (the model now writes it inline) — don't
+  // append a second copy from the structured steps, which would duplicate every step.
+  if (/\b(?:test\s+)?steps\s*:/i.test(baseDescription)) return baseDescription;
+
   const stepLines = steps.map((step, index) => {
     return `${index + 1}. ${step.action}\n   Expected: ${step.expected}`;
   });

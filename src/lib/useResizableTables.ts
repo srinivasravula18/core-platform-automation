@@ -201,10 +201,19 @@ export function useResizableTables() {
     window.addEventListener('resize', scheduleEnhance);
     document.addEventListener('pointerdown', onPointerDown, true);
 
+    // Collapsing the side nav changes the main content width via a CSS class/width change, not a
+    // childList mutation or a window resize — so neither observer above fires and tables stay stuck
+    // at their old width, leaving a gap. A ResizeObserver on the content area re-fits every table
+    // (applyTableWidth stretches the table to the new container width) whenever that width changes.
+    const contentEl = document.querySelector('main') || document.body;
+    const resizeObserver = new ResizeObserver(scheduleEnhance);
+    resizeObserver.observe(contentEl);
+
     return () => {
       activeCleanup?.();
       window.cancelAnimationFrame(frame);
       observer.disconnect();
+      resizeObserver.disconnect();
       window.removeEventListener('resize', scheduleEnhance);
       document.removeEventListener('pointerdown', onPointerDown, true);
     };

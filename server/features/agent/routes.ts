@@ -165,33 +165,22 @@ function conciseCaseTitle(value: any, run: any): string {
   return words.slice(0, 20).join(' ');
 }
 
-function readableCaseTitle(value: any, run: any, extraText = ''): string {
+function readableCaseTitle(value: any, run: any, _extraText = ''): string {
   const raw = cleanCaseText(value, run);
   const prompt = String(run?.prompt || '').toLowerCase();
-  const source = `${raw} ${extraText}`.toLowerCase();
   const explicitApp = String(run?.appName || '').replace(/\bautomations?\b/gi, 'Admin').trim();
   const area = explicitApp || (/\badmin\b/.test(prompt) ? 'Admin' : 'Application');
-  const objectPrefix = /\bobjects?\b/.test(source) ? 'objects ' : '';
 
-  let behavior = '';
-  if (/\b(404|not found|unreachable|cannot reach|route is reachable)\b/.test(source)) behavior = 'list view route is reachable';
-  else if (/\b(admin sections?|stable list region|list region)\b/.test(source)) behavior = 'list sections open';
-  else if (/\bsearch\b/.test(source)) behavior = `${objectPrefix}list search works`;
-  else if (/\bexport|csv|pdf|xlsx|download\b/.test(source)) behavior = /\bemail\b/.test(source) ? 'email log export works' : 'list export works';
-  else if (/\bselect all|selected rows?|bulk delete|delete availability\b/.test(source)) behavior = `${objectPrefix}row selection enables delete`;
-  else if (/\bdelete cannot proceed|without selection|without selecting|no row is selected\b/.test(source)) behavior = 'delete is blocked without selection';
-  else if (/\btoolbar|controls?|disabled states?\b/.test(source)) behavior = `${objectPrefix}list toolbar controls are correct`;
-  else if (/\bsort|sorting\b/.test(source)) behavior = `${objectPrefix}list sorting works`;
-  else if (/\bfilter|filters\b/.test(source)) behavior = `${objectPrefix}list filters work`;
-  else if (/\bcolumn|columns|resize|fit columns\b/.test(source)) behavior = `${objectPrefix}column controls work`;
-  else if (/\blist-view shell|list view shell|list shell|admin-specific list-view surfaces|table mode|adapter-backed surface|stable table\b/.test(source)) behavior = 'admin list sections open';
-  else if (/\b(?:log in|login|sign in|signin|authentication)\b/.test(source)) behavior = 'login works';
-
-  if (behavior) return `${area} - verify ${behavior}`.replace(/\s+/g, ' ').trim();
-
+  // Use the model's OWN title — it is written from the real codebase understanding + live
+  // inspection, so it names what the repo actually does. We only tidy it (strip app-word noise,
+  // ensure it reads as a "verify …" behaviour, cap the length). No keyword→canned-title mapping:
+  // that discarded the case's real specifics and collapsed distinct cases onto identical titles,
+  // which the title de-dupe then silently dropped.
   let title = conciseCaseTitle(raw, { ...run, appName: area });
-  if (!/^verify\b/i.test(title) && !title.toLowerCase().includes(' - verify ')) title = title.replace(`${area} - `, `${area} - verify `);
-  return title.split(/\s+/).filter(Boolean).slice(0, 12).join(' ');
+  if (!/^verify\b/i.test(title) && !title.toLowerCase().includes(' - verify ')) {
+    title = title.replace(`${area} - `, `${area} - verify `);
+  }
+  return title.split(/\s+/).filter(Boolean).slice(0, 16).join(' ');
 }
 
 function testCaseText(run: any): string {
@@ -525,7 +514,7 @@ async function persistAgentRunAndReportArtifacts(run: any) {
       status: 'Open',
       linkedRunId: runRecordId,
       evidence: run.evidence_screenshots || [],
-      tags: ['@agent', '@failure'],
+      tags: ['@failure'],
       folderId: run.folderId || null,
       approvalState: 'approved',
       proposedBy: 'QA Assistant',
@@ -575,6 +564,12 @@ async function persistAgentCaseArtifacts(run: any) {
     });
   }
 
+  // The suite's tags should reflect the coverage it actually holds — reuse the real tags the
+  // cases were generated with (deduped), not a generic "@agent" label the user doesn't recognize.
+  const suiteTags = Array.from(new Set(
+    (run.generated_cases || []).flatMap((c: any) => normalizeCaseTags(c.tags || [])),
+  ));
+
   if (!run.testSuiteId) {
     await Suites.upsert({
       id: suiteId,
@@ -584,7 +579,7 @@ async function persistAgentCaseArtifacts(run: any) {
       parentSuite: '',
       module: 'QA Assistant',
       owner: 'QA Assistant',
-      tags: ['@agent', '@generated'],
+      tags: suiteTags.length ? suiteTags : ['@generated'],
       priority: 'Medium',
       status: 'Active',
       folderId: run.folderId || null,
@@ -1436,7 +1431,7 @@ Rules:
 - Use real on-screen element labels from the inspection result and selector ids from the selector registry when available
 - Include tags: @bvt, @regression, @smoke, @positive/@negative as appropriate
 - Steps must be concrete and automatable — name exact labels, buttons, fields visible in the app
-- TITLES must be clear enough to understand WITHOUT opening the case. Prefer a complete plain-English behavior sentence over a tiny label. Use "<short feature area> - <condition/action> <expected result>" when helpful, about 10-18 words, and include the reason or outcome when that is what makes the case understandable. Do NOT use compressed fragments like "404 blocks admin entry" or "Default view bootstraps when missing"; write "List Views - A 404 admin target prevents reaching admin list views" or "List Views - A missing default view is recreated before the table loads". Do NOT stack feature + subfeature + behavior into a long chain, and do NOT repeat a long feature name. Everyday QA wording only; no jargon, internal/framing labels, or invented or fancy words.`,
+- TITLES must be clear enough to understand WITHOUT opening the case. Prefer a complete plain-English behavior sentence over a tiny label. Use "<short feature area> - <condition/action> <expected result>" when helpful, about 10-18 words, and include the reason or outcome when that is what makes the case understandable. Do NOT use compressed fragments like "404 blocks admin entry" or "Default view bootstraps when missing"; write "List Views - A 404 admin target prevents reaching admin list views" or "List Views - A missing default view is recreated before the table loads". Do NOT stack feature + subfeature + behavior into a long chain, and do NOT repeat a long feature name. Everyday QA wording only; no jargon, internal/framing labels, or invented or fancy words. Write titles, descriptions, AND every step action and expected result in plain, simple, everyday English a non-technical person can read at a glance — short sentences, common words. Do NOT use heavy or technical words. In steps and expected results, NEVER use internal field/column names (e.g. "created_at", "appId"), database/implementation terms (e.g. "AND filters", "descending", "Table mode", "bootstrap", "deduplication", "context", "persisted", "detected"), or developer phrasing — describe the visible on-screen outcome instead (say "sorted with the newest first", not "created_at descending"; "a default view appears automatically", not "a bootstrap view is created"; "opening it again does not add a duplicate", not "no second bootstrap view for the same appId"). The description must start with ONE short plain sentence saying what the case checks and why, and then INCLUDE the "Test Steps:" with each numbered step and its "Expected:" result, written in plain words on separate lines so the description reads clearly on its own.`,
     schema: testCasesSchema,
     userMessage: run.prompt || '',
   });
@@ -1628,7 +1623,7 @@ When the FEATURE/SUBFEATURE COVERAGE BLUEPRINT is present, it is the case-covera
 - Never use "Automations" in a case title. Use "Admin" or the selected app/area instead.
 - Case titles must be simple and 15-20 words max. Use the selected app/area first, then the behavior, e.g. "Admin list view - verify search works with text". Put detailed setup and expectations in steps, not the title.
 - Do not mention authentication, login, sign-in, credentials, username, or password in case titles, descriptions, steps, summaries, or agent-facing case output unless the user explicitly asks for authentication/login coverage.
-- Case titles must be clear enough to understand WITHOUT opening the case. Prefer a complete plain-English behavior sentence over a tiny label. Use "<short feature area> - <condition/action> <expected result>" when helpful, about 10-18 words, and include the reason or outcome when that is what makes the case understandable. Do NOT use compressed fragments like "404 blocks admin entry" or "Default view bootstraps when missing"; write "List Views - A 404 admin target prevents reaching admin list views" or "List Views - A missing default view is recreated before the table loads". Do NOT stack feature + subfeature + behavior into a long chain or repeat a long feature name. Everyday QA wording only; no jargon, internal/framing labels, or invented or fancy words.
+- Case titles must be clear enough to understand WITHOUT opening the case. Prefer a complete plain-English behavior sentence over a tiny label. Use "<short feature area> - <condition/action> <expected result>" when helpful, about 10-18 words, and include the reason or outcome when that is what makes the case understandable. Do NOT use compressed fragments like "404 blocks admin entry" or "Default view bootstraps when missing"; write "List Views - A 404 admin target prevents reaching admin list views" or "List Views - A missing default view is recreated before the table loads". Do NOT stack feature + subfeature + behavior into a long chain or repeat a long feature name. Everyday QA wording only; no jargon, internal/framing labels, or invented or fancy words. Write titles, descriptions, AND every step action and expected result in plain, simple, everyday English a non-technical person can read at a glance — short sentences, common words. Do NOT use heavy or technical words. In steps and expected results, NEVER use internal field/column names (e.g. "created_at", "appId"), database/implementation terms (e.g. "AND filters", "descending", "Table mode", "bootstrap", "deduplication", "context", "persisted", "detected"), or developer phrasing — describe the visible on-screen outcome instead (say "sorted with the newest first", not "created_at descending"; "a default view appears automatically", not "a bootstrap view is created"; "opening it again does not add a duplicate", not "no second bootstrap view for the same appId"). The description must start with ONE short plain sentence saying what the case checks and why, and then INCLUDE the "Test Steps:" with each numbered step and its "Expected:" result, written in plain words on separate lines so the description reads clearly on its own.
 - Each feature case's steps must stay inside that feature/subfeature and test its concrete actions, rules, states, and edge paths.
 - Do not collapse multiple unrelated subfeatures into a broad "validate page" case.
 
@@ -2104,10 +2099,14 @@ Test case payload: ${JSON.stringify({ test_cases: [testCase] })}${coderKnowledge
     return;
   }
   const preVerifiedMap = getSelectorMap((getProject(run.projectId || '')?.repoPath || '').trim());
+  // Only let the STATIC repo map rewrite selector methods when we lack a usable live DOM capture.
+  // With live truth available, this static rewrite corrupts correct role selectors toward repo
+  // homonyms; the DOM-first verifier below grounds them from the real page instead.
+  const preVerifyLiveUsable = buildLiveSelectorIndex(run).usable;
   run.playwright_scripts = (caseList.length ? aligned.scripts : initialScripts)
     .map((script: any) => {
       const guarded = ensureExecutableLogin(script, liveCreds, targetUrl);
-      if (preVerifiedMap && guarded?.code) {
+      if (preVerifiedMap && !preVerifyLiveUsable && guarded?.code) {
         guarded.code = correctSelectorMethods(String(guarded.code), preVerifiedMap).code;
       }
       if (guarded?.code) {
@@ -2184,18 +2183,82 @@ Test case payload: ${JSON.stringify({ test_cases: [testCase] })}${coderKnowledge
  */
 type SelectorVerificationResult = { ok: boolean; reason?: string; unresolved?: string[] };
 
+/**
+ * The LIVE DOM is the only ground truth for selectors — it IS the running page the generated test
+ * binds to at execution time. Repo source is a lossy, ambiguous, unscoped proxy: a prop fallback
+ * ("searchPlaceholder ?? 'Search results'"), an i18n key, or a string that's real but on a DIFFERENT
+ * page (the "Global Search" false-pass) all read as "grounded" against a repo-wide regex dump.
+ *
+ * This harvests every exact accessible string + ready-made Playwright hint the inspector captured
+ * across every permission context and every observed page state (incl. controls revealed by opening
+ * menus/overflows during the drill, now unioned into visibleNavigation). It is THIS page's real DOM,
+ * so a selector is trustworthy only if it appears here.
+ */
+function buildLiveSelectorIndex(ic: any): { names: Set<string>; hints: string[]; usable: boolean } {
+  const names = new Set<string>();
+  const hints = new Set<string>();
+  const addName = (v: any) => {
+    const s = String(v || '').replace(/\s+/g, ' ').trim();
+    if (s.length >= 2) names.add(s.toLowerCase());
+  };
+  const addDom = (d: any) => {
+    if (!d) return;
+    addName(d.ariaLabel); addName(d.placeholder); addName(d.id); addName(d.testId);
+    addName(d.name); addName(d.text); addName(d.role);
+    for (const h of d.selectorHints || []) if (h) hints.add(String(h));
+  };
+  const addAction = (a: any) => {
+    if (!a) return;
+    addDom(a.dom || a);
+    for (const h of a.selectorHints || []) if (h) hints.add(String(h));
+    addName(a.ariaLabel); addName(a.text); addName(a.name);
+  };
+  // Accept either a run (has inspection_contexts / inspection_context) or a single context object.
+  const contexts = Array.isArray(ic?.inspection_contexts) && ic.inspection_contexts.length
+    ? ic.inspection_contexts
+    : [ic?.inspection_context || ic].filter(Boolean);
+  for (const ctx of contexts) {
+    for (const a of ctx?.visibleNavigation || []) addAction(a);
+    for (const p of ctx?.observedPages || []) for (const a of p?.actions || []) addAction(a);
+    for (const f of ctx?.visibleForms || []) for (const fld of f?.fields || []) { addDom(fld?.dom); addName(fld?.label); addName(fld?.name); }
+    for (const t of ctx?.visibleTables || []) for (const h of t?.headers || []) addName(h);
+    for (const at of ctx?.assertionTargets || []) { addName(at?.text); addName(at?.label); }
+    for (const h of ctx?.headings || []) addName(h);
+  }
+  return { names, hints: [...hints], usable: names.size >= 8 };
+}
+
 async function verifyScriptsWithGitAgent(run: any, scripts: any[], _prompt: string): Promise<SelectorVerificationResult> {
   if (!Array.isArray(scripts) || !scripts.length) return { ok: true };
   pushPhase(run, { agent: 'SelectorVerifier', status: 'running' });
   try {
     const repoPath = (getProject(run.projectId || '')?.repoPath || '').trim();
     const map = getSelectorMap(repoPath);
-    if (!map) {
-      const reason = 'Selector verification failed: no source repo selector map is available, so fallback cannot be grounded in the repository.';
+    // DOM-first: the live inspection of THIS page is the primary authority; the repo map is only a
+    // fallback for when live capture is too thin to trust. Fail only when we have NEITHER.
+    const live = buildLiveSelectorIndex(run);
+    if (!map && !live.usable) {
+      const reason = 'Selector verification failed: no live-DOM capture and no source repo selector map are available to ground selectors.';
       pushPhase(run, { agent: 'SelectorVerifier', status: 'failed', output: reason });
       return { ok: false, reason };
     }
-    const mapBlock = renderSelectorMap(map, 220);
+    const mapBlock = map ? renderSelectorMap(map, 220) : '';
+    // Page-scoped, so substring matching safely accepts partial/regex selectors (code target
+    // "search" for the real "search results" placeholder) WITHOUT the repo-wide false positives
+    // (e.g. "New" ⊆ "Enter a new password") that forced exact-only matching against the static map.
+    const groundedInLive = (t: string) => {
+      const lt = String(t || '').toLowerCase().trim();
+      if (!lt) return false;
+      if (live.names.has(lt)) return true;
+      if (lt.length >= 4) for (const n of live.names) if (n.includes(lt)) return true;
+      return false;
+    };
+    // The rewrite pass draws from the REAL running-page selectors when we have them (ready-made
+    // Playwright hints like getByPlaceholder("Search results")), falling back to repo strings only
+    // when live capture is thin. This is what makes real on-page selectors reach the coder verbatim.
+    const liveBlock = live.usable
+      ? `LIVE PAGE SELECTORS — the ACTUAL running DOM this test executes against. These are the ONLY valid options; pick the closest by meaning and use it EXACTLY:\nReady-made locators:\n${live.hints.slice(0, 140).join('\n')}\nReal on-page names/labels: ${[...live.names].slice(0, 160).join(' | ')}`
+      : mapBlock;
 
     // A regex-literal target like /^More$/ gets captured WITH its anchors ("^More$") because
     // capture stops at the closing '/'. Left un-stripped, that garbled string can't exact-match
@@ -2223,12 +2286,17 @@ async function verifyScriptsWithGitAgent(run: any, scripts: any[], _prompt: stri
 
     // PASS 1 (deterministic): rewrite every selector to the METHOD the code defines for it
     // (placeholder->getByPlaceholder, testid->getByTestId, etc.) — right name AND right method,
-    // straight from the code map. No LLM, no guessing.
+    // straight from the code map. No LLM, no guessing. SKIPPED when we have a usable live DOM
+    // capture: the static map rewrites a name toward a repo homonym under a possibly-wrong method
+    // (e.g. corrupting a correct getByRole('button',{name:'Apps'}) into a getByText/getByLabel that
+    // doesn't match the live page). With live truth available, live grounding below is authoritative.
     let methodFixes = 0;
-    for (const s of scripts) {
-      if (!s?.code) continue;
-      const r = correctSelectorMethods(String(s.code), map);
-      if (r.fixes > 0) { s.code = r.code; methodFixes += r.fixes; }
+    if (map && !live.usable) {
+      for (const s of scripts) {
+        if (!s?.code) continue;
+        const r = correctSelectorMethods(String(s.code), map);
+        if (r.fixes > 0) { s.code = r.code; methodFixes += r.fixes; }
+      }
     }
 
     // PASS 2 (LLM, REJECT-AND-REGENERATE): for selectors whose NAME is still not in the code map,
@@ -2238,7 +2306,18 @@ async function verifyScriptsWithGitAgent(run: any, scripts: any[], _prompt: stri
     // culprits remain or no further progress is made. Any selector that STILL isn't in the
     // codebase after the gate is reported honestly (it will be caught again by execution-repair).
     const verifier = await getOrchestrator('appInspector', { workspaceId: run.ownerId || 'default' });
-    const culpritsOf = (code: string) => targetsOf(String(code)).filter((t) => !ignorable.test(t) && !mapHas(map, t));
+    // DOM-first culprit test: when we have a real live capture of this page, it is the SOLE
+    // authority — a selector absent from the live DOM is a culprit even if the repo mentions it
+    // somewhere (that is exactly the "Global Search" false-pass: real string, wrong page). Fall
+    // back to the static repo map only when the live capture is too thin to trust.
+    // Skip JS code artifacts the extractor can accidentally capture from dynamic locators
+    // (e.g. getByText(new RegExp(...)) yields the garbage target "new RegExp(") — these are not
+    // UI labels, can never be "grounded", and must not be treated as culprits.
+    const looksLikeCode = (t: string) => /new\s|regexp|=>|[(){}\\]|\$\{|\bfunction\b/i.test(t);
+    const culpritsOf = (code: string) => targetsOf(String(code)).filter((t) => {
+      if (ignorable.test(t) || looksLikeCode(t)) return false;
+      return live.usable ? !groundedInLive(t) : !mapHas(map!, t);
+    });
     const MAX_VERIFY_ROUNDS = 3;
     let totalCulprits = 0; let rewritten = 0; let residualUngrounded = 0;
     let cursor = 0;
@@ -2250,15 +2329,14 @@ async function verifyScriptsWithGitAgent(run: any, scripts: any[], _prompt: stri
       for (let round = 0; round < MAX_VERIFY_ROUNDS && culprits.length; round += 1) {
         try {
           const res = await verifier.generateObject<any>({
-            prompt: `A Playwright script uses selectors that do NOT exist in the application's real UI. The CODEBASE SELECTORS below are the SOURCE OF TRUTH. Replace each CULPRIT selector with the correct real label / role-name / testid from the codebase (closest match by meaning) — you MUST pick from the codebase list; do NOT invent a new one. Keep the test structure, step order, testInfo.attach screenshots, and assertions intact; only fix the selectors. Return the corrected full script in "code".
-CODEBASE SELECTORS (the only valid options — use these EXACT strings):
-${mapBlock}
-CULPRIT selectors in this script (each is NOT in the codebase — fix every one):
+            prompt: `A Playwright script uses selectors that do NOT exist on the application's real, running page. The SELECTORS below are the SOURCE OF TRUTH — they are what the live DOM this test runs against actually exposes. Replace each CULPRIT selector with the correct real locator / label / role-name / testid from that list (closest match by meaning) — you MUST pick from the list; do NOT invent a new one. Keep the test structure, step order, testInfo.attach screenshots, and assertions intact; only fix the selectors. Return the corrected full script in "code".
+${liveBlock}
+CULPRIT selectors in this script (each is NOT on the real page — fix every one):
 ${culprits.join(' | ')}
 SCRIPT:
 ${s.code}`,
             schema: z.object({ code: z.string() }),
-            userMessage: 'Rewrite the culprit selectors using ONLY the real codebase selectors.',
+            userMessage: 'Rewrite the culprit selectors using ONLY the real on-page selectors listed.',
           });
           const code = res?.object?.code;
           if (!(code && code.length > 80 && /test\(/.test(code))) break; // unusable output — stop
@@ -2276,19 +2354,20 @@ ${s.code}`,
     };
     const worker = async () => { while (cursor < scripts.length) { await verifyOne(scripts[cursor++]); } };
     await Promise.all(Array.from({ length: 4 }, worker));
-    const residualNote = residualUngrounded > 0
-      ? ` ${residualUngrounded} selector(s) could not be grounded in the codebase. Evidence execution is blocked until every selector is repo-grounded.`
-      : ' every selector is now grounded in the codebase.';
-    const unresolved = scripts.flatMap((s: any) => s?.code ? culpritsOf(String(s.code)) : []);
-    if (unresolved.length) {
-      const uniqueUnresolved = [...new Set(unresolved)].slice(0, 40);
-      const reason = `Selector verification blocked: unresolved selector(s) not found in repo source: ${uniqueUnresolved.join(' | ')}`;
-      (run as any).selector_verification = { ok: false, reason, unresolved: uniqueUnresolved };
-      pushPhase(run, { agent: 'SelectorVerifier', status: 'failed', output: `${reason}. Cross-verified ${scripts.length} script(s) vs ${map.fileCount} source files; ${methodFixes} selector method(s) corrected from code, ${totalCulprits} culprit name(s) found, ${rewritten} rewrite(s) applied;${residualNote}` });
-      return { ok: false, reason, unresolved: uniqueUnresolved };
-    }
-    (run as any).selector_verification = { ok: true, unresolved: [] };
-    pushPhase(run, { agent: 'SelectorVerifier', status: 'completed', output: `Cross-verified ${scripts.length} script(s) vs ${map.fileCount} source files; ${methodFixes} selector method(s) corrected from code, ${totalCulprits} culprit name(s) found, ${rewritten} rewrite(s) applied;${residualNote}` });
+    const groundLabel = live.usable ? 'the live page DOM' : 'the codebase';
+    const crossRef = live.usable
+      ? `${live.names.size} live on-page selector(s)`
+      : `${map?.fileCount ?? 0} source files`;
+    // DOM-first: this pass is ADVISORY, never a hard gate. The real page is the arbiter — the
+    // script runs and the execution-repair step re-inspects the live DOM to fix any selector that
+    // still misses. Blocking evidence here (especially on a non-authoritative repo match) is what
+    // produced the "not found in the codebase" dead-ends; we best-effort rewrite and always proceed.
+    const unresolved = [...new Set(scripts.flatMap((s: any) => s?.code ? culpritsOf(String(s.code)) : []))].slice(0, 40);
+    (run as any).selector_verification = { ok: true, unresolved };
+    const note = unresolved.length
+      ? ` ${unresolved.length} selector(s) not pre-matched (${unresolved.slice(0, 8).join(' | ')}); execution + live re-grounding will resolve them against the real page.`
+      : ` every selector matched ${groundLabel}.`;
+    pushPhase(run, { agent: 'SelectorVerifier', status: 'completed', output: `Cross-verified ${scripts.length} script(s) vs ${crossRef}; ${methodFixes} method fix(es), ${totalCulprits} culprit(s) found, ${rewritten} rewrite(s) applied.${note}` });
     return { ok: true };
   } catch (e: any) {
     const reason = `Selector verification failed: ${e?.message || e}`;
@@ -2489,7 +2568,7 @@ function compactInspectionContext(ic: any) {
     goalStatus: ic.goalStatus,
     currentUrl: ic.currentUrl,
     pageSummary: typeof ic.pageSummary === 'string' ? ic.pageSummary.slice(0, 800) : ic.pageSummary,
-    visibleNavigation: cap(ic.visibleNavigation, 24),
+    visibleNavigation: cap(ic.visibleNavigation, 40),
     visibleForms: cap(ic.visibleForms, 12),
     visibleTables: cap(ic.visibleTables, 12),
     assertionTargets: cap(ic.assertionTargets, 24),
@@ -2638,8 +2717,13 @@ async function runScriptsAndCollectEvidence(run: any, targetUrl: string, testCas
               // URL) + structural repair so a repair can never re-introduce the login hang.
               const guarded = ensureExecutableLogin({ ...scripts[idx], code }, liveCreds, targetUrl);
               code = repairTestCode(sanitizeTestCode(guarded.code)) || guarded.code;
+              // Only apply the static repo method-rewrite when the fresh live re-inspection of THIS
+              // failing control was too thin to trust — otherwise it drags the selector the coder
+              // just grounded against the real page back toward a repo homonym (re-introducing the
+              // exact failure repair is meant to fix).
+              const repairLiveUsable = buildLiveSelectorIndex({ inspection_context: groundingContext }).usable;
               const repairMap = getSelectorMap((getProject(run.projectId || '')?.repoPath || '').trim());
-              if (repairMap) code = correctSelectorMethods(code, repairMap).code;
+              if (repairMap && !repairLiveUsable) code = correctSelectorMethods(code, repairMap).code;
               code = normalizeSelectorsFromInspection(code, groundingContext || run.inspection_context);
               scripts[idx].code = code;
               const orig = (run.playwright_scripts || []).find((ps: any) => baseName(ps.filename) === baseName(scripts[idx].filename));

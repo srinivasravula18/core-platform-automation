@@ -32,7 +32,10 @@ export default defineConfig(({ mode }) => {
         },
       },
       hmr: process.env.DISABLE_HMR !== 'true',
-      watch: process.env.DISABLE_HMR === 'true' ? null : {},
+      // .testflow-pw is the scratch dir Playwright execution writes/deletes trace files in
+      // while a run is in flight — watching it crashes Vite's watcher with EBUSY when a file
+      // disappears mid-write.
+      watch: process.env.DISABLE_HMR === 'true' ? null : { ignored: ['**/.testflow-pw/**'] },
     },
     preview: {
       host: '0.0.0.0',

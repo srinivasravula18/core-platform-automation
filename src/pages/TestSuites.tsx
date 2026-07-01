@@ -27,6 +27,9 @@ export default function TestSuites() {
   const [isAISuiteModalOpen, setIsAISuiteModalOpen] = useState(false);
   const [isStartingRun, setIsStartingRun] = useState(false);
   const [formData, setFormData] = useState({ name: '', description: '', testPlanId: '', parentSuite: '', module: '', owner: '', tags: '', priority: 'Medium', status: 'Active', folderId: '' });
+  // Set only when the modal was opened via a suite's "Add subsuite" action, so the modal can say
+  // it's adding under that specific parent instead of showing a generic parent-suite picker.
+  const [subsuiteParentId, setSubsuiteParentId] = useState('');
 
   const [selectedSuiteId, setSelectedSuiteId] = useState<string | null>(null);
   const inlineSelectClass = "w-full min-w-[140px] rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs font-medium text-[var(--text-primary)] outline-none transition-colors hover:border-[var(--accent)] focus:border-[var(--accent)]";
@@ -71,12 +74,14 @@ export default function TestSuites() {
 
   const openNewModal = () => {
     setSelectedSuiteId(null);
+    setSubsuiteParentId('');
     setFormData({ name: '', description: '', testPlanId: '', parentSuite: '', module: '', owner: '', tags: '', priority: 'Medium', status: 'Active', folderId: '' });
     setIsSuiteModalOpen(true);
   };
 
   const openEditModal = (suite: any) => {
     setSelectedSuiteId(suite.id);
+    setSubsuiteParentId('');
     setFormData({
       name: suite.name || '', description: suite.description || '', testPlanId: suite.testPlanId || '', parentSuite: suite.parentSuite || '', 
       module: suite.module || '', owner: suite.owner || '', tags: Array.isArray(suite.tags) ? suite.tags.join(', ') : suite.tags || '', 
@@ -87,6 +92,7 @@ export default function TestSuites() {
 
   const openSubsuiteModal = (parent: any) => {
     setSelectedSuiteId(null);
+    setSubsuiteParentId(parent.id);
     setFormData({
       name: '', description: '', testPlanId: parent.testPlanId || '', parentSuite: parent.id,
       module: parent.module || '', owner: parent.owner || '', tags: '', priority: 'Medium', status: 'Active', folderId: parent.folderId || '',
@@ -235,7 +241,7 @@ export default function TestSuites() {
       <Modal
         isOpen={isSuiteModalOpen}
         onClose={() => setIsSuiteModalOpen(false)}
-        title={selectedSuiteId ? "Edit Test Suite" : "Create New Test Suite"}
+        title={selectedSuiteId ? "Edit Test Suite" : subsuiteParentId ? `Add Suite under "${getParentName(subsuiteParentId)}"` : "Create New Test Suite"}
         footer={
           <div className="flex justify-between items-center">
             <div>
@@ -256,6 +262,7 @@ export default function TestSuites() {
           <FolderSelect
             value={formData.folderId}
             onChange={(folderId) => setFormData({ ...formData, folderId })}
+            allowCreate={!selectedSuiteId}
           />
           <div>
              <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Test Plan (Optional)</label>
@@ -276,13 +283,24 @@ export default function TestSuites() {
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
              <div>
-                <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Parent Suite (makes this a subsuite)</label>
-                <select value={formData.parentSuite} onChange={(e) => setFormData({...formData, parentSuite: e.target.value})} className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]">
-                  <option value="">None (top-level suite)</option>
-                  {suites.filter((s: any) => s.id !== selectedSuiteId).map((s: any) => (
-                    <option key={s.id} value={s.id}>{s.name}</option>
-                  ))}
-                </select>
+                {subsuiteParentId ? (
+                  <>
+                    <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Adding under the current suite</label>
+                    <div className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm text-[var(--text-primary)] flex items-center gap-1">
+                      <span className="text-[var(--accent)]">↳</span> {getParentName(subsuiteParentId)}
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Parent Suite (makes this a subsuite)</label>
+                    <select value={formData.parentSuite} onChange={(e) => setFormData({...formData, parentSuite: e.target.value})} className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]">
+                      <option value="">None (top-level suite)</option>
+                      {suites.filter((s: any) => s.id !== selectedSuiteId).map((s: any) => (
+                        <option key={s.id} value={s.id}>{s.name}</option>
+                      ))}
+                    </select>
+                  </>
+                )}
              </div>
              <div>
                 <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Module / Feature</label>
@@ -389,7 +407,7 @@ export default function TestSuites() {
                 <th className="font-medium py-3 px-4">Folder</th>
                 <th className="font-medium py-3 px-4">Parent Test Plan</th>
                 <th className="font-medium py-3 px-4 w-32">Module</th>
-                <th className="font-medium py-3 px-4">Tags</th>
+                <th className="font-medium py-3 px-4 w-28">Tags</th>
                 <th className="font-medium py-3 px-4 w-24 text-right">Actions</th>
               </tr>
             </thead>
@@ -418,9 +436,9 @@ export default function TestSuites() {
                           >
                             {isExpanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
                           </button>
-                          <button onClick={() => openEditModal(suite)} className="min-w-0 text-left">
-                            <span className="block font-medium hover:text-[var(--accent)] transition-colors">{suite.name}</span>
-                            <span className="block text-xs text-[var(--text-muted)] font-normal truncate max-w-[240px]">{suite.description}</span>
+                          <button onClick={() => openEditModal(suite)} className="block min-w-0 max-w-[240px] text-left">
+                            <span className="block font-medium hover:text-[var(--accent)] transition-colors truncate" title={suite.name}>{suite.name}</span>
+                            <span className="block text-xs text-[var(--text-muted)] font-normal truncate">{suite.description}</span>
                             <span className="block text-xs text-[var(--text-muted)]">{suiteCases.length} related cases</span>
                             {suite.parentSuite && (
                               <span className="mt-0.5 block text-[10px] font-medium text-[var(--accent)]">↳ Subsuite of {getParentName(suite.parentSuite)}</span>
@@ -475,7 +493,7 @@ export default function TestSuites() {
                           value={Array.isArray(suite.tags) && suite.tags.length > 0 ? suite.tags[0] : ''}
                           onClick={(event) => event.stopPropagation()}
                           onChange={(event) => updateSuiteInline(suite, { tags: event.target.value ? [event.target.value] : [] })}
-                          className={inlineSelectClass}
+                          className="w-full min-w-[90px] max-w-[120px] rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs font-medium text-[var(--text-primary)] outline-none transition-colors hover:border-[var(--accent)] focus:border-[var(--accent)]"
                           title="Update tags"
                         >
                           <option value="">No tags</option>
