@@ -104,6 +104,15 @@ const featureAnalystSchema = z.object({
   dataPopulationNotes: textField(''),
   adminBehavior: textField(''),
   keystoneBehavior: textField(''),
+  sharedComponents: arrayField(z.object({
+    name: textField(''),
+    kind: textField('component'),
+    sourceFiles: arrayField(sourceFileRefSchema),
+    reusedBy: arrayField(textField('')),
+    controlsOrBehaviors: arrayField(textField('')),
+    metadataOrPermissionGates: arrayField(textField('')),
+    testFocus: arrayField(textField('')),
+  })),
   metadataRefs: arrayField(metadataRefSchema),
   uiSelectors: uiSelectorsSchema.default({
     ariaLabels: [],
@@ -751,6 +760,7 @@ SCOPE DISCIPLINE — write the requirement at the altitude the query actually as
 - If the query NAMES a specific object, section, module, or screen, scope the requirement to THAT subject.
 - If the query asks about a GENERIC, REUSABLE CAPABILITY that applies across many objects/views (e.g. a shared toolbar action, an export / settings / filter / column control, a list-view mechanism) WITHOUT naming a specific object, write the requirement about the CAPABILITY ITSELF as it works generally — describe the shared control and its rules across the surface. Do NOT anchor it to, or title it after, one concrete object you merely found in the code (e.g. don't turn "list view export and settings" into "export and settings for <SomeObject>"); that invents a scope the user did not request. Keep the title and rules about the capability.
 - In the generic case, metadataRefs should be the generic config object(s) the capability operates on (e.g. the list-view / view-definition object) if the catalog has them, and you should leave specific business-object refs empty unless the query named one.
+- Before writing scenarios, group the source evidence by reusable UI/component modules that implement the requested capability. Search related imports, child components, hooks, adapters, metadata gates, and permission gates. If a reusable component is used by many apps/objects/views, describe that shared component instead of anchoring coverage to one object. Do not hardcode a universal control list: include only controls and behaviours proven by source evidence or live selector evidence.
 
 Produce the requirement understanding as strict JSON matching the schema:
 - title: a concise requirement title for this feature.
@@ -758,6 +768,7 @@ Produce the requirement understanding as strict JSON matching the schema:
 - businessRules: the concrete, testable rules the code enforces.
 - dataPopulationNotes: what the backend populates/seeds/syncs in the background as preconditions for this feature (only if the research shows it).
 - adminBehavior vs keystoneBehavior: if the app has distinct surfaces, put the configuration/admin-surface behavior in adminBehavior and the end-user-surface behavior in keystoneBehavior; if it has only one surface, describe it in whichever fits and leave the other empty. Do not invent a surface the code does not show.
+- sharedComponents: reusable components/modules discovered by code search. For each one, include its real source files, where it is reused, the controls/behaviors the code proves, metadata/permission gates, and the exact test focus. This is the main way downstream agents avoid searching the whole repo again.
 - metadataRefs: the EXACT metadata object api_names that are the source of truth for this feature. Each entry's "object" MUST be a verbatim api_name taken from the LIVE METADATA OBJECT CATALOG provided above — never a descriptive phrase, label, invented name, or DB-table/column name. List ONLY the 1-5 objects that are the PRIMARY source of truth for THIS specific feature — do NOT list every object that is loosely or indirectly related, and do NOT dump the catalog. Prefer fewer, highly-relevant refs. Put any table/column-level detail in businessRules or dataPopulationNotes instead. If no catalog was provided above, or none of its objects are the source of truth for this feature, leave metadataRefs empty rather than inventing entries.
 - sourceFiles: the specific files (real paths from the research/excerpts) that justify your understanding, each with a one-line reason.
 - candidateScenarios: cover the feature in proportion to its real complexity — every distinct business rule, branch, role/permission difference, and edge/negative case visible in the code should get a scenario. Each scenario's steps must be DETAILED and concrete: each step a specific user/system action with the REAL on-screen label/field/button and a matching observable expected result (not vague "verify it works"). Do not pad with trivial duplicates; do not under-cover a complex feature.`,
@@ -775,6 +786,7 @@ Produce the requirement understanding as strict JSON matching the schema:
     dataPopulationNotes: '',
     adminBehavior: '',
     keystoneBehavior: '',
+    sharedComponents: [],
     metadataRefs: [],
     sourceFiles: files.map((f) => ({ path: f.path, why: f.area })),
     candidateScenarios: [],

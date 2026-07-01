@@ -602,7 +602,7 @@ async function persistAgentCaseArtifacts(run: any) {
   for (let index = 0; index < cases.length; index++) {
     const testCase = cases[index];
     if (testCase?.reused && testCase?.existingCaseId) continue;
-    const caseId = agentCaseId(run, index);
+    const caseId = testCase?.id || agentCaseId(run, index);
     await Cases.upsert({
       id: caseId,
       title: testCase.title,
@@ -1092,6 +1092,19 @@ function summarizeUnderstanding(u: any, maxChars = 4000): string {
   if (u.adminBehavior) lines.push(`Configuration/admin-surface behavior: ${u.adminBehavior}`);
   if (u.keystoneBehavior) lines.push(`End-user-surface behavior: ${u.keystoneBehavior}`);
   if (u.dataPopulationNotes) lines.push(`Background data/preconditions: ${u.dataPopulationNotes}`);
+  if (Array.isArray(u.sharedComponents) && u.sharedComponents.length) {
+    const componentLines = u.sharedComponents.slice(0, 12).map((c: any) => {
+      const parts = [
+        c.name || 'Shared component',
+        Array.isArray(c.reusedBy) && c.reusedBy.length ? `reused by ${c.reusedBy.slice(0, 8).join(', ')}` : '',
+        Array.isArray(c.controlsOrBehaviors) && c.controlsOrBehaviors.length ? `behaviors: ${c.controlsOrBehaviors.slice(0, 12).join('; ')}` : '',
+        Array.isArray(c.metadataOrPermissionGates) && c.metadataOrPermissionGates.length ? `gates: ${c.metadataOrPermissionGates.slice(0, 8).join('; ')}` : '',
+        Array.isArray(c.testFocus) && c.testFocus.length ? `test focus: ${c.testFocus.slice(0, 10).join('; ')}` : '',
+      ].filter(Boolean);
+      return parts.join(' | ');
+    });
+    lines.push(`Reusable components discovered by code search:\n- ${componentLines.join('\n- ')}`);
+  }
   if (Array.isArray(u.metadataRefs) && u.metadataRefs.length) lines.push(`Metadata source of truth: ${u.metadataRefs.map((m: any) => m.object).filter(Boolean).join(', ')}`);
   if (u.uiSelectors && typeof u.uiSelectors === 'object') {
     const selectorLines: string[] = [];
@@ -1397,8 +1410,11 @@ Code understanding: ${approvedUnderstanding ? approvedUnderstanding.slice(0, 300
 Rules:
 - Never put URLs in titles, descriptions, or steps. Mention the selected app name instead.
 - Never use "Automations" in a case title. Use "Admin" or the selected app/area instead.
-- Titles must be simple and 15-20 words max. Use the selected app/area first, then the behavior, e.g. "Admin - verify login" or "Admin list view - verify search works with text". Put detailed setup and expectations in steps, not the title.
+- Titles must be simple and 15-20 words max. Use the selected app/area first, then the behavior, e.g. "Admin list view - verify search works with text". Put detailed setup and expectations in steps, not the title.
+- Do not mention authentication, login, sign-in, credentials, username, or password in case titles, descriptions, steps, summaries, or agent-facing case output unless the user explicitly asks for authentication/login coverage.
 - Generate ONE test case per subfeature (or per distinct business rule if no subfeatures)
+- Default to normal UI tests only. Do NOT generate API validation/API contract/backend endpoint cases unless the user explicitly asks for API testing.
+- For generic/reusable UI features, use the reusable component groups discovered by CodeAnalyst. Target only controls and behaviours proven in source, live inspection, or selector registry. If metadata or permissions hide/disable a discovered control, cover that observed state; do not replace it with unrelated object/API behavior.
 - Each case covers ONLY "${feature.name}" — do not test unrelated features
 - Use real on-screen element labels from the inspection result and selector ids from the selector registry when available
 - Include tags: @bvt, @regression, @smoke, @positive/@negative as appropriate
@@ -1585,21 +1601,23 @@ ${requestedCaseCount > 0
 When REVIEWED REQUIREMENT CANDIDATE SCENARIOS are present and no exact user count was requested:
 - Generate at least one test case for every listed candidate scenario.
 - Keep the scenario title or its key behavior visible in the case title or description so coverage can be audited.
-- Do not collapse positive, negative, permission, API validation, admin adapter, and specialized-list-view scenarios into one broad case.
+- Default to normal UI tests only. Do NOT generate API validation/API contract/backend endpoint cases unless the user explicitly asks for API testing. Do not collapse positive, negative, permission, admin adapter, and specialized-list-view scenarios into one broad case.
 
 When the FEATURE/SUBFEATURE COVERAGE BLUEPRINT is present, it is the case-coverage contract:
 - Generate one focused test case for each testable subfeature unless the user explicitly requested fewer cases; if fewer were requested, choose the highest-risk subfeatures first and state the omitted units in the descriptions/tags.
 - Generate separate @e2e test cases for the E2E flows listed in the feature inventory. Do not merge E2E flows into single-feature cases.
+- For generic/reusable UI requests across apps/objects, target the shared component groups discovered by CodeAnalyst. Cover only source-proven or inspection-proven controls/behaviours. If metadata or permissions hide/disable a discovered control, cover that observed state; do not replace it with unrelated object/API behavior.
 - Never put URLs in titles, descriptions, or steps. Mention the selected app name instead.
 - Never use "Automations" in a case title. Use "Admin" or the selected app/area instead.
-- Case titles must be simple and 15-20 words max. Use the selected app/area first, then the behavior, e.g. "Admin - verify login", "Admin - verify list view is visible after successful login", or "Admin list view - verify search works with text". Put detailed setup and expectations in steps, not the title.
+- Case titles must be simple and 15-20 words max. Use the selected app/area first, then the behavior, e.g. "Admin list view - verify search works with text". Put detailed setup and expectations in steps, not the title.
+- Do not mention authentication, login, sign-in, credentials, username, or password in case titles, descriptions, steps, summaries, or agent-facing case output unless the user explicitly asks for authentication/login coverage.
 - Case titles must be clear enough to understand WITHOUT opening the case. Prefer a complete plain-English behavior sentence over a tiny label. Use "<short feature area> - <condition/action> <expected result>" when helpful, about 10-18 words, and include the reason or outcome when that is what makes the case understandable. Do NOT use compressed fragments like "404 blocks admin entry" or "Default view bootstraps when missing"; write "List Views - A 404 admin target prevents reaching admin list views" or "List Views - A missing default view is recreated before the table loads". Do NOT stack feature + subfeature + behavior into a long chain or repeat a long feature name. Everyday QA wording only; no jargon, internal/framing labels, or invented or fancy words.
 - Each feature case's steps must stay inside that feature/subfeature and test its concrete actions, rules, states, and edge paths.
 - Do not collapse multiple unrelated subfeatures into a broad "validate page" case.
 
-Use the inspection result as the source of truth for reachable pages, post-login state, visible navigation, forms, tables, list-like regions, and assertion targets. Do not invent unrelated admin pages or menu names. If live inspection is partial or missing a detail, fall back ONLY to the SOURCE-GROUNDED UNDERSTANDING / FEATURE BLUEPRINT / application repo context above; if the repo-grounded context also does not prove the detail, mark that detail as blocked in the case preconditions instead of guessing. If the inspector reached the requested goal, at least one @bvt test case must cover that exact inspected end-to-end path, including any login and navigation actions recorded in actionsTaken. If the inspector was partial or blocked, generate cases only for the reachable or repo-proven context and include clear preconditions/steps that show what needs to be verified next.
+Use the inspection result as the source of truth for reachable pages, visible navigation, forms, tables, list-like regions, and assertion targets. Do not invent unrelated admin pages or menu names. If live inspection is partial or missing a detail, fall back ONLY to the SOURCE-GROUNDED UNDERSTANDING / FEATURE BLUEPRINT / application repo context above; if the repo-grounded context also does not prove the detail, mark that detail as blocked in the case preconditions instead of guessing. If the inspector reached the requested goal, at least one @bvt test case must cover that exact inspected end-to-end path — but that case must be about the FEATURE at the end of the path (e.g. the list view, the form, the record), never about login/authentication itself. Login is only ever a silent precondition/setup step, never the subject, title, or description of a case, unless the user explicitly asked for login/authentication test coverage. If the inspector was partial or blocked, generate cases only for the reachable or repo-proven context and include clear preconditions/steps that show what needs to be verified next.
 
-For authenticated flows, steps must explicitly say to enter username/email "${credentials.username || '<provided username>'}" and password "${credentials.password || '<provided password>'}", click the relevant sign-in/login control, and then continue to the user-requested inspected target. When the request involves verifying data views, include steps that verify the visible table/list/grid container, headers, rows or empty-state, and absence of loading/error state using the labels found by inspection.
+When the request involves verifying data views, include steps that verify the visible table/list/grid container, headers, rows or empty-state, and absence of loading/error state using the labels found by inspection.
 
 Each test case must include automation tags in @ format, for example @bvt, @sanity, @regression, @smoke, @ui, @positive, @negative. If the user requested specific tag types (for example "@smoke cases" or "regression coverage"), apply those exact tags to every generated case. Each test case must include a steps array with ordered rows. STEPS MUST BE DETAILED AND CONCRETE: each step is ONE specific user/system action that names the REAL on-screen element (the exact label/field/button/menu from the inspection or source-grounded understanding) and a matching OBSERVABLE expected result. No vague steps ("verify it works", "check the page"), no invented labels, and no meta/setup scaffolding (CI, seeding, regression jobs) that isn't a real user action. A reviewer must be able to follow the steps by hand and a Playwright script must be able to mirror them 1:1.${knowledgeBlock}`,
       schema: testCasesSchema,
@@ -1617,6 +1635,13 @@ Each test case must include automation tags in @ format, for example @bvt, @sani
   if (requestedCaseCount > 0 && Array.isArray(generated) && generated.length > requestedCaseCount) {
     generated = generated.slice(0, requestedCaseCount);
   }
+  // Stamp a stable id now, at the ONE point where array order is final. Everything downstream
+  // (chat output, review UI, save-cases) must key off this id instead of re-deriving one from
+  // array position later — position shifts the moment a case is deleted in the review UI, which
+  // previously caused save-cases to overwrite the wrong row and orphan another.
+  generated = generated.map((tc: any, i: number) => (
+    tc.id ? tc : { ...tc, id: tc.reused && tc.existingCaseId ? tc.existingCaseId : agentCaseId(run, i) }
+  ));
   run.generated_cases = generated;
   // GROUNDING GATE (Phase 2): verify the generated cases actually reference what the
   // inspector saw on the live page. If they don't (and the page WAS readable), the
@@ -2514,12 +2539,12 @@ async function runScriptsAndCollectEvidence(run: any, targetUrl: string, testCas
         // captured sessionStorage so SPAs that keep auth there (Core Platform) are truly logged in.
         storageStatePath = authPath;
         if (auth.ok || sessionStorageState) {
-          run.messages.push({ agent: 'EvidenceAgent', status: 'running', output: `Authenticated session captured — scripts run logged in${sessionStorageState ? ' (incl. sessionStorage auth token)' : ''}.` });
+          run.messages.push({ agent: 'EvidenceAgent', status: 'running', output: 'Browser session prepared for script execution.' });
         } else {
-          run.messages.push({ agent: 'EvidenceAgent', status: 'running', output: `Pre-login for auth state failed (${auth.reason || 'unknown'}); scripts must log in themselves.` });
+          run.messages.push({ agent: 'EvidenceAgent', status: 'running', output: 'Browser session setup was incomplete; scripts will continue with their own setup.' });
         }
       } catch (e: any) {
-        run.messages.push({ agent: 'EvidenceAgent', status: 'running', output: `Auth-state capture error: ${e?.message || e}` });
+        run.messages.push({ agent: 'EvidenceAgent', status: 'running', output: `Browser session setup error: ${e?.message || e}` });
       }
       let exec = await executePlaywrightScripts({
         scripts,
@@ -3137,7 +3162,7 @@ export function registerAgentRoutes(app: Express) {
     newRun.messages.push({
       agent: 'System',
       status: 'completed',
-      output: `${selectedApp ? `Context: ${selectedProject?.name || 'project'} › ${selectedApp.name}. ` : selectedProject ? `Context: ${selectedProject.name} (project-level). ` : ''}Resolved target: ${targetUrl || 'none'}. Repository folder: ${folder ? getFolderPath(folder.id) : 'Uncategorized'}. QA scope: ${selectedQaContext.hasContext ? 'selected plan/suite/case context' : 'prompt only'}. Credentials: ${credentials.username && credentials.password ? `${(credentials as any).source || 'provided'} for ${(credentials as any).siteName || credentials.username} (role: ${(credentials as any).role || 'default'})` : 'none'}.`,
+      output: `${selectedApp ? `Context: ${selectedProject?.name || 'project'} > ${selectedApp.name}. ` : selectedProject ? `Context: ${selectedProject.name} (project-level). ` : ''}Resolved target: ${targetUrl || 'none'}. Repository folder: ${folder ? getFolderPath(folder.id) : 'Uncategorized'}. QA scope: ${selectedQaContext.hasContext ? 'selected plan/suite/case context' : 'prompt only'}.`,
     });
 
     if (approvedUnderstanding) {
@@ -3216,6 +3241,12 @@ export function registerAgentRoutes(app: Express) {
           credentials,
           onPhase: (msg) => pushPhase(newRun, msg),
         });
+      } else {
+        pushPhase(newRun, { agent: 'MetadataFetch', status: 'skipped', output: 'No selected app id; metadata fetch skipped.' });
+        newRun.phases = {
+          ...(newRun.phases || {}),
+          metadata_fetch: { status: 'skipped', reason: 'No selected app id', completed_at: nowIso() },
+        };
       }
       runContextBuilderPhase({
         run: newRun,
@@ -3798,6 +3829,15 @@ Return a complete test case object. Preserve any useful existing fields. If no e
       // The linked run already created its plan/suite/folder at the review pause;
       // re-ensure the folder so the FK resolves even if PG was reset since.
       if (linkedRun) await ensureFolderInPg(linkedRun.folderId || '');
+      // Cases deleted in the review UI before saving must be deleted here too — otherwise
+      // they stay in the DB as orphaned stale rows (previously mis-attributed to the wrong
+      // case when index-derived ids shifted after a deletion).
+      if (linkedRun) {
+        const keepIds = new Set(cases.map((c: any) => c.id).filter(Boolean));
+        const allCases = await Cases.list();
+        const toRemove = allCases.filter((existing: any) => existing.agentRunId === linkedRun.id && !keepIds.has(existing.id));
+        for (const existing of toRemove) await Cases.remove(existing.id);
+      }
       for (let index = 0; index < cases.length; index++) {
         const c = cases[index];
         const caseId = c.id || (linkedRun ? `TC-${linkedRun.id.substring(0, 4).toUpperCase()}-${index + 1}` : `TC-${Math.random().toString(36).substring(2, 6).toUpperCase()}`);

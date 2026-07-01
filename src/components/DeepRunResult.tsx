@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { cn } from '@/src/lib/utils';
 import { withBasePath } from '@/src/lib/base-path';
+import { MarkdownText } from '@/src/components/MarkdownText';
 import {
   Loader2,
   CheckCircle2,
@@ -422,6 +423,8 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
         body: JSON.stringify({
           app_url: run?.app_url || '',
           websiteId: run?.website_id || run?.websiteId || undefined,
+          projectId: run?.project_id || run?.projectId || undefined,
+          appId: run?.app_id || run?.appId || undefined,
           prompt: run?.prompt || '',
           testCaseCount: Number(run?.requested_case_count || run?.requestedCaseCount || 0) || 0,
           flowMode: 'review_cases',
@@ -681,9 +684,9 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
 
       {failed && (
         <div className="rounded-md bg-red-500/10 p-2 text-xs text-red-400">
-          <div className="whitespace-pre-wrap">
-            {(run?.messages || []).findLast?.((m: any) => m.status === 'failed')?.output ||
-              'The pipeline failed. Check the server console for details.'}
+          <div>
+            <MarkdownText value={(run?.messages || []).findLast?.((m: any) => m.status === 'failed')?.output ||
+              'The pipeline failed. Check the server console for details.'} />
           </div>
           <div className="mt-2 flex justify-end">
             <button

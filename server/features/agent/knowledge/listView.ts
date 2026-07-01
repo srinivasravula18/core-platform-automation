@@ -18,6 +18,7 @@ export const listViewKnowledge: FeatureKnowledge = {
     'fit columns', 'resize column', 'bulk', 'records', 'settings',
   ],
   uiLevel: `TOOLBAR CONTROLS (real accessible names — these are mostly ICON buttons with NO visible text, so locate by getByRole/getByLabel, NEVER getByText):
+- SOURCE-BACKED COMPONENT HINT: this knowledge pack documents controls seen in the shared ListView source. Treat the bullets below as candidate evidence for the CodeAnalyst to confirm against the selected repo/app, metadata, inspection, and selector registry. Do not turn this into a fixed universal checklist; generate cases only for controls that are source-proven or inspection-proven for the current request. Do not create API-level or object-specific scenarios unless the user explicitly asks for API or object business behavior.
 - Named-view dropdown: aria-label="List view: <name>" (visible <label> "List view"); opens role="listbox" "List views" with role="option" per view.
 - Pin/Unpin: "Pin list view" / "Unpin list view" (icon).
 - View mode: "Select view mode" (icon) → menu items "Table" / "Kanban" / "Chart". (There is NO "Summary" mode.)

@@ -5,6 +5,8 @@ import { withBasePath } from '@/src/lib/base-path';
 import { useSpeechToText } from '@/src/lib/useSpeechToText';
 import { PlanList, WorkflowRunner } from '@/src/components/WorkflowRunner';
 import { showAlert } from '@/src/lib/dialog';
+import { MarkdownText } from '@/src/components/MarkdownText';
+import { useProjects } from '@/src/store/project';
 
 const casualGreetingPattern = /^(hi+|h+i+|hlo+|hello+|hey+|good\s+(morning|afternoon|evening)|thanks?|thank\s+you|ok(?:ay)?)\b[\s!.?]*$/i;
 const identityQuestionPattern = /\b(who\s+are\s+you|what\s+can\s+you\s+do|help|your\s+purpose)\b/i;
@@ -42,6 +44,9 @@ function getGuardrailResponse(message: string) {
 }
 
 export default function AgentPanel() {
+  const selectedProjectId = useProjects((s) => s.selectedProjectId);
+  const selectedAppId = useProjects((s) => s.selectedAppId);
+  const selectedApp = useProjects((s) => s.selectedApp());
   const [input, setInput] = useState('');
   const [taskId, setTaskId] = useState<string | null>(null);
   const [runData, setRunData] = useState<any>(null);
@@ -115,11 +120,13 @@ export default function AgentPanel() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          app_url: appUrl,
+          app_url: appUrl || selectedApp?.baseUrl || '',
           prompt: userMessage,
           testCaseCount,
           flowMode,
           folderId: selectedFolderId,
+          projectId: selectedProjectId || undefined,
+          appId: selectedAppId || undefined,
         })
       });
       const data = await res.json();
@@ -375,7 +382,7 @@ export default function AgentPanel() {
             {messages.map((m, i) => (
               <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
                 <div className={`max-w-[85%] p-3 rounded-lg text-sm ${m.role === 'user' ? 'bg-[var(--accent)] text-white' : m.role === 'system' ? 'bg-[var(--bg-primary)] border border-dashed border-[var(--border)] text-[var(--text-muted)] w-full text-center' : 'bg-[var(--bg-secondary)] border border-[var(--border)] text-[var(--text-primary)]'}`}>
-                  {m.content}
+                  <MarkdownText value={m.content} />
                 </div>
               </div>
             ))}
