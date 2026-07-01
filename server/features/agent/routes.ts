@@ -672,9 +672,26 @@ function pushPhase(run: any, msg: any): void {
   }
   run.messages.push({ ...msg, at: nowIso() });
 }
+// A phase only gets its 'completed'/'skipped' follow-up if its step runs to the end. If the
+// run is cancelled/errored mid-phase, or a retry resumes past a phase without re-running it,
+// that phase's last message stays 'running' forever and its UI chip spins indefinitely with
+// no way to tell "still working" from "orphaned". Call this wherever a run moves on without
+// re-running the phase, so every chip lands on an honest terminal state.
+function resolveDanglingPhases(run: any, note: string): void {
+  const lastByAgent = new Map<string, any>();
+  for (const msg of run.messages || []) {
+    if (msg?.agent) lastByAgent.set(msg.agent, msg);
+  }
+  for (const [agent, msg] of lastByAgent) {
+    if (msg.status === 'running') {
+      run.messages.push({ agent, status: 'skipped', output: note, at: nowIso() });
+    }
+  }
+}
 // Mark the run as finished (or failed) and record the wall-clock end so the UI
 // can compute total time. paused_ms (human review gap) is excluded by the UI.
 function markRunDone(run: any, status: 'completed' | 'failed' | 'cancelled'): void {
+  resolveDanglingPhases(run, 'Run ended before this phase reported a final status.');
   // Never override an explicit user cancel with completed/failed.
   if (run.status === 'cancelled') return;
   run.status = status;
@@ -2180,10 +2197,15 @@ async function verifyScriptsWithGitAgent(run: any, scripts: any[], _prompt: stri
     }
     const mapBlock = renderSelectorMap(map, 220);
 
+    // A regex-literal target like /^More$/ gets captured WITH its anchors ("^More$") because
+    // capture stops at the closing '/'. Left un-stripped, that garbled string can't exact-match
+    // anything in the selector map OR anything a rewrite produces, so it silently rides through
+    // as a "different but still ungrounded" string instead of being cleanly recognized as "More".
+    const cleanRegexTarget = (s: string) => s.trim().replace(/^\^/, '').replace(/\$$/, '').trim();
     const targetsOf = (code: string) => {
       const t = new Set<string>();
-      for (const m of code.matchAll(/getByRole\(\s*['"`]\w+['"`]\s*,\s*\{\s*name\s*:\s*[/]?\s*['"`]?([^'"`/)\n,}]{2,50})/g)) t.add(m[1].trim());
-      for (const m of code.matchAll(/getBy(?:Label|Text|Placeholder|TestId)\(\s*[/]?\s*['"`]?([^'"`/)\n,]{2,50})/g)) t.add(m[1].trim());
+      for (const m of code.matchAll(/getByRole\(\s*['"`]\w+['"`]\s*,\s*\{\s*name\s*:\s*[/]?\s*['"`]?([^'"`/)\n,}]{2,50})/g)) t.add(cleanRegexTarget(m[1]));
+      for (const m of code.matchAll(/getBy(?:Label|Text|Placeholder|TestId)\(\s*[/]?\s*['"`]?([^'"`/)\n,]{2,50})/g)) t.add(cleanRegexTarget(m[1]));
       // Attribute/CSS locators the coder loves to invent — locator('[aria-label="…"]'),
       // [placeholder="…"], [data-testid="…"] — were NEVER cross-checked before, so a
       // hallucinated aria-label (e.g. "List view: All Apps") sailed straight through to a
@@ -2191,6 +2213,10 @@ async function verifyScriptsWithGitAgent(run: any, scripts: any[], _prompt: stri
       for (const m of code.matchAll(/\[(?:aria-label|placeholder|title|name|data-testid|alt)\s*[*^$|~]?=\s*['"]([^'"\n]{2,60})['"]\s*\]/g)) t.add(m[1].trim());
       // .filter({ hasText: '…' }) row/text grounding (data-coupled assertions like "Revenue Hub").
       for (const m of code.matchAll(/hasText\s*:\s*['"`]([^'"`\n]{2,60})['"`]/g)) t.add(m[1].trim());
+      // hasText also commonly uses a JS regex literal (hasText: /^More$/) instead of a quoted
+      // string — the pattern above only caught quoted values, so a hallucinated regex-literal
+      // hasText (the exact "More" toolbar-button bug) slipped through verification untouched.
+      for (const m of code.matchAll(/hasText\s*:\s*\/\^?([^/\n]{2,60}?)\$?\//g)) t.add(cleanRegexTarget(m[1]));
       return [...t];
     };
     const ignorable = /sign ?in|log ?in|email|user(name)?|password/i;
@@ -2625,10 +2651,15 @@ async function runScriptsAndCollectEvidence(run: any, targetUrl: string, testCas
         pushPhase(run, { agent: 'ExecutionRepair', status: 'completed', output: `Repaired ${repaired} of ${failing.length} failing test(s)${repaired ? ' — re-running.' : ' — no fix produced, stopping repair.'}` });
         if (!repaired) break;
         await persistAgentScripts(run);
-        exec = await executePlaywrightScripts({
-          scripts,
+        // Re-run ONLY the repaired scripts, not the whole suite — re-running every already-passing
+        // test on every repair round was multiplying wall time by up to MAX_REPAIR_ROUNDS+1 for no
+        // reason. A distinct runId gives this subset its own empty tests dir (no stale spec files).
+        const repairedFilenames = new Set(failing.map((t) => baseName(t.file)));
+        const rerunScripts = scripts.filter((s) => s.filename && repairedFilenames.has(baseName(s.filename)));
+        const rerunExec = await executePlaywrightScripts({
+          scripts: rerunScripts.length ? rerunScripts : scripts,
           baseUrl: targetUrl,
-          runId: run.id,
+          runId: `${run.id}-repair-${round}`,
           storageStatePath,
           sessionStorageState,
           singleSession: true,
@@ -2637,6 +2668,19 @@ async function runScriptsAndCollectEvidence(run: any, targetUrl: string, testCas
           navigationTimeoutMs: 15000,
           expectTimeoutMs: 5000,
         });
+        const mergedByTitle = new Map((exec.tests || []).map((t) => [normTitle(t.title), t]));
+        for (const t of rerunExec.tests || []) mergedByTitle.set(normTitle(t.title), t);
+        const mergedTests = Array.from(mergedByTitle.values());
+        exec = {
+          ...exec,
+          tests: mergedTests,
+          total: mergedTests.length,
+          passed: mergedTests.filter((t) => t.status === 'passed').length,
+          failed: mergedTests.filter((t) => /fail|timedout|interrupted/i.test(String(t.status))).length,
+          skipped: mergedTests.filter((t) => t.status === 'skipped').length,
+          durationMs: (exec.durationMs || 0) + (rerunExec.durationMs || 0),
+          ok: mergedTests.every((t) => t.status === 'passed' || t.status === 'skipped'),
+        };
       }
 
       // Persist the full result (incl. per-test pass/fail) so the Agent Console can
@@ -2938,6 +2982,14 @@ export function registerAgentRoutes(app: Express) {
     const run = db.agentRuns.find(r => r.id === req.params.id);
     if (!run) return res.status(404).json({ error: 'Run not found' });
     res.json({ ...run, generated_cases: normalizeGeneratedCasesText(run.generated_cases || [], run) });
+  });
+
+  app.delete('/api/agent-runs/:id', (req, res) => {
+    const idx = db.agentRuns.findIndex((r: any) => r.id === req.params.id);
+    if (idx < 0) return res.status(404).json({ error: 'Run not found' });
+    db.agentRuns.splice(idx, 1);
+    persistDataInBackground('agent run delete');
+    res.json({ success: true });
   });
 
   app.post('/api/agent/action', async (req, res) => {
@@ -3718,6 +3770,10 @@ export function registerAgentRoutes(app: Express) {
       run.review_started_at = null;
     }
     const resumedFrom = hasCases ? 'scripts' : 'write_cases';
+    // Earlier phases (metadata fetch, context build, inspection, etc.) are being reused, not
+    // re-run — resolve any that were left stuck at 'running' from the stopped attempt so their
+    // chips don't spin forever.
+    resolveDanglingPhases(run, 'Reused from the previous attempt; not re-run on retry.');
     pushPhase(run, { agent: 'System', status: 'running', output: `Retrying — resuming from ${hasCases ? 'script generation' : 'case writing'} (reusing the completed inspection${run.feature_understanding ? ' + code understanding' : ''}).` });
     persistDataInBackground('retry agent run');
     res.json({ success: true, resumedFrom });
