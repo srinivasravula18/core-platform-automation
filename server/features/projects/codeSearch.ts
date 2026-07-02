@@ -1,6 +1,6 @@
-import { getApp, getProject } from './projectService';
+import { getApp, getProject, resolveRepoPath } from './projectService';
 import { projectRepo } from './projectRepo';
-import { classifyChangedFile, GIT_AGENT_TARGET_REPO, gitGrep, readRepoFile } from '../git-agent/gitAgentService';
+import { classifyChangedFile, resolveTargetRepo, gitGrep, readRepoFile } from '../git-agent/gitAgentService';
 
 export interface CodeSearchScopeInput {
   projectId?: string;
@@ -95,16 +95,19 @@ export function resolveCodeSearchScope(input: CodeSearchScopeInput = {}): CodeSe
     // caller's project scope — surface it as an empty/unknown scope instead.
     return {
       mode: 'global',
-      repoLabel: projectId ? `unknown project ${projectId}` : GIT_AGENT_TARGET_REPO,
+      repoLabel: projectId ? `unknown project ${projectId}` : resolveTargetRepo(),
       roots: projectId ? ['__none__'] : [],
       projectId: '',
       appId: null,
     };
   }
 
+  // Resolve the local path to the folder that actually exists on THIS host (under the Settings
+  // server repo root on a deployed server), so the label matches what's really searched — never the
+  // stale dev-machine path (e.g. D:\core-platform) that doesn't exist in production.
   const repoLabel = project.repoKind === 'remote'
     ? (project.repoUrl || project.name)
-    : (project.repoPath || project.name);
+    : (resolveRepoPath(project.repoPath || '', project.slug) || project.name);
 
   return {
     mode: 'project',

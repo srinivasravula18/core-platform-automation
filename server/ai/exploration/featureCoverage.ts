@@ -19,7 +19,7 @@
 import { z } from 'zod';
 import { getOrchestrator } from '../orchestrator';
 import { discoverFeatureInventoryFromSource, type FeatureInventory } from '../../features/requirements/requirementService';
-import { gitGrep, readRepoFile } from '../../features/git-agent/gitAgentService';
+import { gitGrep, readRepoFile, resolveTargetRepo } from '../../features/git-agent/gitAgentService';
 import { expandByReferences, graphSummary } from './referenceGraph';
 
 /**
@@ -49,7 +49,7 @@ const graphInventorySchema = z.object({
 async function discoverViaGraph(feature: string, opts: {
   workspaceId?: string; userId?: string; repoPath?: string; onProgress?: (label: string) => void;
 }): Promise<FeatureInventory> {
-  const repoPath = opts.repoPath || process.env.GIT_AGENT_TARGET_REPO || process.env.TARGET_REPO || '';
+  const repoPath = opts.repoPath || resolveTargetRepo();
   const orch = await getOrchestrator('featureDiscoveryAgent', { workspaceId: opts.workspaceId, userId: opts.userId });
 
   // The AGENT decides WHERE to look — it proposes the code-search terms for this feature. No

@@ -8,7 +8,7 @@
 
 import { z } from 'zod';
 import { getOrchestrator } from '../../ai/orchestrator';
-import { gitGrep, readRepoFile, GIT_AGENT_TARGET_REPO } from '../git-agent/gitAgentService';
+import { gitGrep, readRepoFile, resolveTargetRepo } from '../git-agent/gitAgentService';
 import { resolveCredentials, getWebsite } from '../credentials/credentialsService';
 
 /* ─── Schema ─────────────────────────────────────────────────────────────── */
@@ -273,7 +273,7 @@ export async function analyzeApiAndMetadataFromSource(
   } = {},
 ): Promise<ApiAnalysis> {
   const cleanQuery = String(query || '').trim();
-  const repoPath = opts.repoPath || GIT_AGENT_TARGET_REPO;
+  const repoPath = opts.repoPath || resolveTargetRepo();
   const keywords = deriveApiKeywords(cleanQuery);
 
   opts.onProgress?.('Scanning API routes, models, and service files...');

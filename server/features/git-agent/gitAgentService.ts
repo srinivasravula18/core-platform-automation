@@ -16,7 +16,15 @@ import { buildCaseDescription, normalizeCaseSteps, normalizeCaseTags } from '../
  * No application's path is hardcoded anywhere.
  */
 export function resolveTargetRepo(explicit?: string): string {
-  return (explicit || '').trim() || (process.env.GIT_AGENT_TARGET_REPO || process.env.TARGET_REPO || '').trim();
+  const explicitPath = (explicit || '').trim();
+  if (explicitPath) return explicitPath;
+  // Repo access is UI-configured: the Settings "server repository root" is the source of truth, so
+  // the end user sets where code is searched without touching env. Read it lazily (db.settings is
+  // populated after module load). The env var is only a last-resort for headless single-repo deploys
+  // that were never configured in the UI — it never overrides a UI value. (Env stays for DB/keys.)
+  const fromSettings = String((db as any).settings?.serverRepoRoot || '').trim();
+  if (fromSettings) return fromSettings;
+  return (process.env.GIT_AGENT_TARGET_REPO || process.env.TARGET_REPO || '').trim();
 }
 // The standalone Git Agent dashboard (status/diff/sync) operates on the env-configured
 // default repo; the PER-APP research path (gitGrep/readRepoFile) passes an explicit

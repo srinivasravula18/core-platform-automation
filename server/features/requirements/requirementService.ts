@@ -22,7 +22,7 @@ import { Cases, Requirements, RequirementLinks, isPgEnabled } from '../../db/rep
 import { persistDataInBackground, addActivity } from '../../shared/storage';
 import { normalizeCaseSteps, normalizeCaseTags } from '../../shared/testCases';
 import { pushInboxItem } from '../inbox/routes';
-import { gitGrep, listRepoSourceFiles, readRepoFile, GIT_AGENT_TARGET_REPO } from '../git-agent/gitAgentService';
+import { gitGrep, listRepoSourceFiles, readRepoFile, resolveTargetRepo } from '../git-agent/gitAgentService';
 import { analyzeApiAndMetadataFromSource, type ApiAnalysis } from './apiAnalystService';
 import { fetchCorePlatformObjectCatalog } from '../../ai/tools/corePlatformData';
 import { getApp } from '../projects/projectService';
@@ -1206,7 +1206,7 @@ export async function draftRequirement(
     existingLinks: [],
     generatedCases: [],
     searchedFiles: files,
-    repoPath: opts.repoPath || GIT_AGENT_TARGET_REPO,
+    repoPath: opts.repoPath || resolveTargetRepo(),
   };
 }
 
@@ -1257,7 +1257,7 @@ export async function confirmRequirementDraft(
     existingLinks,
     generatedCases: [],
     searchedFiles: draft?.searchedFiles || [],
-    repoPath: draft?.repoPath || GIT_AGENT_TARGET_REPO,
+    repoPath: draft?.repoPath || resolveTargetRepo(),
   };
 }
 
@@ -1366,7 +1366,7 @@ export async function discoverRequirement(
     generatedCases,
     inboxItemId,
     searchedFiles: files,
-    repoPath: opts.repoPath || GIT_AGENT_TARGET_REPO,
+    repoPath: opts.repoPath || resolveTargetRepo(),
     apiAnalysis,
   };
 }
