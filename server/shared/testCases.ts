@@ -19,20 +19,9 @@ export function normalizeCaseTags(tags: any[] = []) {
 }
 
 export function buildCaseDescription(testCase: any) {
-  const baseDescription = String(testCase?.description || '').trim();
-  const steps = normalizeCaseSteps(testCase?.steps);
-
-  if (!steps.length) return baseDescription;
-
-  // The description already carries a "Test Steps:" list (the model now writes it inline) — don't
-  // append a second copy from the structured steps, which would duplicate every step.
-  if (/\b(?:test\s+)?steps\s*:/i.test(baseDescription)) return baseDescription;
-
-  const stepLines = steps.map((step, index) => {
-    return `${index + 1}. ${step.action}\n   Expected: ${step.expected}`;
-  });
-
-  return [baseDescription, 'Test Steps:', ...stepLines].filter(Boolean).join('\n\n');
+  // The description is a short summary only. Steps are stored/shown separately (the steps column and
+  // the UI's Steps section), so appending them here would duplicate every step in the description.
+  return String(testCase?.description || '').trim();
 }
 
 export function buildAgentExecutionSteps(run: any) {

@@ -399,6 +399,66 @@ async function fetchObjectCatalogViaApi(conn?: CatalogConn): Promise<Array<{ app
   }
 }
 
+/**
+ * List the platform's apps (id, label, api_name, prefix, parent) via the access-enforced App
+ * Service, using THIS run's baseUrl + credentials. Best-effort: returns [] on any failure so the
+ * caller can fall back to surface-wide targeting. The `id` (e.g. app0000006) is the routing key.
+ */
+export async function fetchCorePlatformApps(
+  conn: CatalogConn,
+): Promise<Array<{ id: string; label: string; api_name: string; app_prefix: string; parent_app_id: string | null }>> {
+  try {
+    const url = serviceBaseUrl(conn);
+    if (!url) return [];
+    const token = await resolveConnToken(conn, url);
+    if (!token) return [];
+    const res = await fetch(`${url}/api/apps`, { headers: { authorization: `Bearer ${token}` } });
+    if (!res.ok) return [];
+    const apps = items(await res.json()) as any[];
+    return (Array.isArray(apps) ? apps : [])
+      .map((a) => ({
+        id: String(a?.id || ''),
+        label: String(a?.label || a?.api_name || a?.id || ''),
+        api_name: String(a?.api_name || ''),
+        app_prefix: String(a?.app_prefix || ''),
+        parent_app_id: a?.parent_app_id ? String(a.parent_app_id) : null,
+      }))
+      .filter((a) => a.id);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * The OBJECT-BOUND tabs of an app — what an end-user actually navigates (each tab is one object's
+ * list view). Used to pick the app's primary object (first tab) and the set of list views worth
+ * testing. Best-effort: [] on failure.
+ */
+export async function fetchCorePlatformAppTabs(
+  conn: CatalogConn,
+  appId: string,
+): Promise<Array<{ id: string; label: string; object_api_name: string }>> {
+  try {
+    const url = serviceBaseUrl(conn);
+    const app = String(appId || '').trim();
+    if (!url || !app) return [];
+    const token = await resolveConnToken(conn, url);
+    if (!token) return [];
+    const res = await fetch(`${url}/api/apps/${enc(app)}/tabs`, { headers: { authorization: `Bearer ${token}` } });
+    if (!res.ok) return [];
+    const tabs = items(await res.json()) as any[];
+    return (Array.isArray(tabs) ? tabs : [])
+      .map((t) => ({
+        id: String(t?.id || ''),
+        label: String(t?.label || ''),
+        object_api_name: String(t?.object_api_name || t?.object?.api_name || ''),
+      }))
+      .filter((t) => t.object_api_name);
+  } catch {
+    return [];
+  }
+}
+
 function fieldApiName(field: any): string {
   return String(field?.api_name || field?.apiName || field?.name || '').trim();
 }

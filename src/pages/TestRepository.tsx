@@ -1,11 +1,15 @@
 import { useEffect, useMemo, useState } from 'react';
-import { ChevronRight, FileText, Folder, FolderPlus, Layers, PlayCircle, Search, Trash2, ClipboardList, TestTube2, Code2, Copy, Download, Check, CheckSquare, X } from 'lucide-react';
+import { ChevronRight, FileText, Folder, FolderPlus, Layers, PlayCircle, Search, Trash2, ClipboardList, TestTube2, Code2, Copy, Download, Check, CheckSquare, X, Bug, ScrollText } from 'lucide-react';
 import { cn } from '@/src/lib/utils';
 import { Modal } from '@/src/components/Modal';
 import { showAlert, showConfirm } from '@/src/lib/dialog';
 
 // Artifact groups backed by a real DELETE/bulk-delete endpoint (evidence is derived, not deletable).
-const DELETABLE_KEYS = new Set(['plans', 'suites', 'cases', 'runs', 'reports', 'scripts']);
+const DELETABLE_KEYS = new Set(['plans', 'suites', 'cases', 'runs', 'reports', 'scripts', 'requirements', 'defects']);
+
+// Synthetic folder for artifacts with no folderId (legacy items created before the folder gate),
+// so they remain viewable instead of being hidden by the first-folder auto-select.
+const UNCATEGORIZED_ID = '__uncategorized__';
 
 type FolderNode = any & { children: FolderNode[] };
 
@@ -13,8 +17,10 @@ const artifactConfig = [
   { key: 'plans', label: 'Plans', icon: FileText },
   { key: 'suites', label: 'Suites', icon: Layers },
   { key: 'cases', label: 'Cases', icon: TestTube2 },
+  { key: 'requirements', label: 'Requirements', icon: ScrollText },
   { key: 'runs', label: 'Runs', icon: PlayCircle },
   { key: 'reports', label: 'Reports', icon: ClipboardList },
+  { key: 'defects', label: 'Defects', icon: Bug },
   { key: 'scripts', label: 'Scripts', icon: FileText },
   { key: 'evidence', label: 'Evidence', icon: ClipboardList },
 ] as const;
@@ -132,8 +138,10 @@ export default function TestRepository() {
       fetch('/api/reports').then((r) => r.json()),
       fetch('/api/scripts').then((r) => r.json()),
       fetch('/api/agent-runs').then((r) => r.json()),
+      fetch('/api/requirements').then((r) => r.json()),
+      fetch('/api/defects').then((r) => r.json()),
     ])
-      .then(([folderData, plans, suites, cases, runs, reports, scripts, agentRuns]) => {
+      .then(([folderData, plans, suites, cases, runs, reports, scripts, agentRuns, requirements, defects]) => {
         const evidence = (Array.isArray(agentRuns) ? agentRuns : []).flatMap((run: any) =>
           (run.evidence_screenshots || []).map((shot: any, index: number) => ({
             id: `${run.id}-evidence-${index + 1}`,
@@ -144,7 +152,13 @@ export default function TestRepository() {
           }))
         );
         setFolders(Array.isArray(folderData) ? folderData : []);
-        setArtifacts({ plans, suites, cases, runs, reports, scripts: Array.isArray(scripts) ? scripts : [], evidence });
+        setArtifacts({
+          plans, suites, cases, runs, reports,
+          scripts: Array.isArray(scripts) ? scripts : [],
+          requirements: Array.isArray(requirements) ? requirements : [],
+          defects: Array.isArray(defects) ? defects : [],
+          evidence,
+        });
       })
       .catch(console.error);
   };
@@ -160,13 +174,21 @@ export default function TestRepository() {
   }, [folders, selectedFolderId]);
 
   const selectedFolder = folders.find((folder) => folder.id === selectedFolderId) || null;
-  const tree = useMemo(() => buildTree(folders), [folders]);
+  // Prepend an "Uncategorized" node so artifacts with no folderId (legacy items) stay reachable.
+  const tree = useMemo(
+    () => buildTree([{ id: UNCATEGORIZED_ID, name: 'Uncategorized', parentId: null }, ...folders]),
+    [folders],
+  );
   const allFolderIds = useMemo(() => folders.map((folder) => folder.id), [folders]);
   const allFoldersSelected = allFolderIds.length > 0 && allFolderIds.every((id) => selectedFolderIds.has(id));
   const visibleItems = (key: string) => {
     const query = searchTerm.toLowerCase();
     return (artifacts[key] || []).filter((item) => {
-      const inFolder = selectedFolderId ? item.folderId === selectedFolderId : !item.folderId;
+      const inFolder = selectedFolderId === UNCATEGORIZED_ID
+        ? !item.folderId
+        : selectedFolderId
+          ? item.folderId === selectedFolderId
+          : !item.folderId;
       const matchesSearch = !query || `${item.id || ''} ${item.name || ''} ${item.title || ''} ${item.description || ''}`.toLowerCase().includes(query);
       return inFolder && matchesSearch;
     });
@@ -205,7 +227,7 @@ export default function TestRepository() {
   };
 
   const deleteFolderById = async (id: string, name?: string) => {
-    if (!id) return;
+    if (!id || id === UNCATEGORIZED_ID) return; // "Uncategorized" is a synthetic view, not deletable
     if (!await showConfirm(`Delete folder${name ? ` "${name}"` : ''}? This cannot be undone.`, { tone: 'danger' })) return;
     const res = await fetch(`/api/folders/${id}`, { method: 'DELETE' });
     if (!res.ok) {

@@ -332,7 +332,9 @@ Hard rules (these prevent doing the wrong thing):
 - Informational requests about the application — "list/show/describe/what are the features|pages|fields|flows|columns of X", "how does Y work", "do we have Z" — are kind="answer". They are answered by RESEARCHING the selected project's source code, so they do NOT need a specific sub-app to be named: when a project is in scope, answer (research) rather than clarify. Only the app TARGET for an actual test ACTION (generate_cases/deep_test_run) requires a concrete app.
 - A bare demonstrative ("this", "that feature", "it") with no named feature/app/url and nothing resolvable from the conversation is NOT enough scope — use kind="clarify". But a NAMED feature (e.g. "the list view", "the login flow") IS enough scope to answer about, even if no app is named.
 - workspace_action (create/modify a plan, suite, run, folder, report, defect; organize; move) does NOT require an app target or pre-resolved artifact ids. Route a clear command like "file a defect: …", "generate a report for the last run", or "move the login cases into the Auth folder" to workspace_action — the downstream handler resolves the specifics (or asks). Do NOT clarify just because ids, a target app, or a plan name were not spelled out; only a real target app matters, and only for generate_cases/deep_test_run.
-- Reserve "clarify" for a message with NO actionable scope (a bare demonstrative, or a target-requiring test action with no app anywhere). When genuinely unsure between answering and acting, choose "answer".
+- A clear test ACTION ("test the list view", "generate cases for X", "run the login tests") is "generate_cases" (or "deep_test_run" when the user wants them actually RUN) EVEN IF no specific app is named. Do NOT "clarify" just because the app or folder is missing — the run pipeline asks "which app?" (listing the real apps) and "which folder?" itself. Naming a feature ("list view") is enough intent to route the action.
+- CONTINUATION: if the recent conversation shows a pending test request (you or the pipeline asked which app, which folder, or to confirm) and the latest message answers it — an app name ("CRM", "Revenue Hub"), a folder ("save under Regression"), or "proceed"/"go ahead" — route to the SAME test action (generate_cases or deep_test_run), NOT clarify or answer.
+- Reserve "clarify" only for a message with NO actionable intent at all — a bare demonstrative ("this", "it", "that") with nothing nameable and nothing resolvable from the conversation. When genuinely unsure between answering and acting, choose "answer".
 - Set confidence honestly: 70+ only when the intent is clear, 40-69 when ambiguous, <40 when guessing.
 
 Return only the JSON object defined by the task. Do not add commentary.`,
@@ -441,6 +443,40 @@ Grounding rules:
 - sourceFiles must contain real repo-relative paths from the evidence and a short reason.
 - If the evidence does not establish any cross-feature journey, return an empty e2eFlows array.
 - Never duplicate FeatureDiscoveryAgent subfeatures as E2E flows unless they genuinely cross a boundary.`,
+
+  explainer: `You explain what a generated QA artifact does — a test case, a single step, or a Playwright script — to a NON-TECHNICAL person. Imagine you are explaining it to a smart 12th-grade student who has never written code or used a testing tool. Your only goal is that they fully understand it.
+
+For this agent, plain language OVERRIDES the general "use professional QA terminology" rule.
+
+What you are given:
+- ONE artifact the user is pointing at (a case, a step, or a script) plus their question ("what does this do", "why this", "explain this step/script"). Explain THAT exact artifact using its real content. Never give a generic lecture and never invent details that are not in it.
+
+How to explain (audience: a 12th-grade student):
+- Short sentences, everyday words. Prefer common words over technical ones: "open the page", "click the button", "type into the box", "check that the list shows up" — not "navigate", "assert", "DOM", "locator", "selector", "fixture".
+- If a technical word is unavoidable, use it once and explain it in plain words right after, in brackets — e.g. "it waits for the table (the grid of rows) to load".
+- Start with ONE plain summary line: what this checks and why it matters to a real user.
+- Then walk through it in order, one idea per line: "First it …, then it …, finally it checks that …".
+- A short real-world comparison (analogy) is welcome when it makes an idea click — keep it to one line.
+- End with "In short: …" — one sentence a beginner will remember.
+
+Explaining a TEST CASE:
+- Say which screen/feature it is about, what a person would do, and what should happen if the app works correctly.
+- Explain each step as "the tester does X, and the app should show Y", in plain words.
+
+Explaining a STEP:
+- Explain the one action and what its expected result means in real terms — what the user would actually see on the screen.
+
+Explaining a PLAYWRIGHT SCRIPT:
+- Do NOT assume the reader knows code or Playwright. Translate the code into plain English, section by section: what it opens, what it types or clicks, and what it checks.
+- Translate common patterns plainly: opening a URL = "open this web page"; finding a button by its label and clicking = "find the button labelled 'New' and click it"; a visibility check = "make sure this actually appears on the screen"; a login block = "sign in first — this is just setup, not the thing being tested"; a download check = "confirm a file actually downloaded".
+- Say WHY a check exists ("this proves the record was really created, not just that a message flashed").
+- Only show a small code snippet if the user explicitly asks to see the code; otherwise describe it in words.
+
+Rules:
+- Ground every explanation strictly in the artifact given. If part of it is unclear or looks wrong, say so plainly — do not pretend.
+- Never expose file paths, internal ids, credentials, tokens, or repository locations in the explanation.
+- No jargon dumps, no long walls of text, no marketing. Be clear, friendly, and correct — like a good teacher.
+- Keep it as short as it can be while still complete. If the artifact is long, explain the important parts and group the rest ("the remaining steps just repeat this for each row").`,
 } as const;
 
 export type AgentName = keyof typeof AGENT_PROMPTS;
@@ -461,6 +497,7 @@ export const CANONICAL_AGENTS: AgentName[] = [
   'featureAnalyst',
   'featureDiscoveryAgent',
   'e2eFlowAgent',
+  'explainer',
 ];
 
 export const AGENT_ALIASES: Record<string, AgentName> = {
@@ -503,6 +540,7 @@ export function systemPromptFor(agent: AgentName): string {
     featureAnalyst: 'analyze a product feature from application source code and produce a grounded requirement understanding',
     featureDiscoveryAgent: 'discover source-grounded features and subfeatures for application-wide QA coverage',
     e2eFlowAgent: 'identify source-grounded end-to-end journeys that cross multiple features or states',
+    explainer: 'explain a generated test case, step, or Playwright script in plain, beginner-friendly language',
   };
   return composeSystemPrompt({
     agentName: agent,

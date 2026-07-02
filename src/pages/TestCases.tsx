@@ -20,6 +20,9 @@ export default function TestCases() {
   const [plans, setPlans] = useState<any[]>([]);
   const [suites, setSuites] = useState<any[]>([]);
   const [folders, setFolders] = useState<any[]>([]);
+  // agentRunId → { platform, app } for the platform + individual app the run targeted, so each
+  // agent-generated case can show the exact app the user chose (e.g. "Core Platform / CRM").
+  const [runInfo, setRunInfo] = useState<Record<string, { platform: string; app: string }>>({});
   const { projects, selectedProjectId, selectedAppId, fetchProjects } = useProjects();
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState(searchParams.get('search') || '');
@@ -73,6 +76,24 @@ export default function TestCases() {
       .catch(console.error);
   };
 
+  // Map each run to the platform + individual app it targeted, so cases can display them.
+  const fetchRunInfo = () => {
+    fetch('/api/agent-runs')
+      .then(r => r.json())
+      .then((runs) => {
+        const map: Record<string, { platform: string; app: string }> = {};
+        (Array.isArray(runs) ? runs : []).forEach((run: any) => {
+          if (!run?.id) return;
+          map[run.id] = {
+            platform: String(run.projectName || '').trim(),
+            app: String(run.target_app_label || '').trim(),
+          };
+        });
+        setRunInfo(map);
+      })
+      .catch(console.error);
+  };
+
   const bulk = useBulkDelete('cases', fetchCases, 'case');
   // The always-on checkbox column drives a single selection that powers BOTH
   // bulk-delete and the AI multi-select action below.
@@ -84,6 +105,7 @@ export default function TestCases() {
     fetchSuites();
     fetchFolders();
     fetchProjects();
+    fetchRunInfo();
   }, []);
 
   useEffect(() => {
@@ -256,6 +278,14 @@ export default function TestCases() {
   };
   const apps = projects.flatMap((project) => project.apps || []);
   const appName = (appId: string) => apps.find((app) => app.id === appId)?.name || (appId ? 'Unknown app' : 'All apps');
+  // "Platform / App" the user chose for a case: the run's platform (project) + the individual app
+  // (e.g. Core Platform / CRM). Falls back to the surface app when a case has no run-resolved app.
+  const caseScopeLabel = (testCase: any) => {
+    const info = runInfo[testCase.agentRunId || testCase.sourceRunId || ''];
+    const platform = info?.platform || '';
+    const app = info?.app || appName(testCase.appId || '');
+    return [platform, app].filter(Boolean).join(' / ') || appName(testCase.appId || '');
+  };
   const tagOptions = Array.from(new Set(cases.flatMap((testCase) => Array.isArray(testCase.tags) ? testCase.tags : []).map((tag) => String(tag).trim()).filter(Boolean))).sort();
   const filteredCases = cases.filter((testCase) => {
     const query = searchTerm.toLowerCase();
@@ -287,7 +317,7 @@ export default function TestCases() {
               { key: 'type', label: 'Type', get: (c) => c.type || 'Manual' },
               { key: 'priority', label: 'Priority', get: (c) => c.priority || 'Medium' },
               { key: 'status', label: 'Status', get: (c) => c.status || 'Draft' },
-              { key: 'app', label: 'App', get: (c) => appName(c.appId || '') },
+              { key: 'app', label: 'Platform / App', get: (c) => caseScopeLabel(c) },
               { key: 'tags', label: 'Tags' },
               { key: 'createdBy', label: 'Created By' },
               { key: 'suite', label: 'Suite', get: (c) => (suites.find((s) => s.id === c.testSuiteId) || {}).name || '' },
@@ -594,7 +624,7 @@ export default function TestCases() {
                 <th className="font-medium py-3 px-4 w-20">ID</th>
                 <th className="font-medium py-3 px-4">Title</th>
                 <th className="font-medium py-3 px-4 w-44">Folder</th>
-                <th className="font-medium py-3 px-4 w-24">App</th>
+                <th className="font-medium py-3 px-4 w-44">Platform / App</th>
                 <th className="font-medium py-3 px-4 w-40">Test Plan</th>
                 <th className="font-medium py-3 px-4 w-40">Test Suite</th>
                 <th className="font-medium py-3 px-4 w-28">Status</th>
@@ -637,7 +667,7 @@ export default function TestCases() {
                       ))}
                     </select>
                   </td>
-                  <td className="py-3 px-4 text-xs text-[var(--text-muted)] truncate" title={appName(tc.appId || '')}>{appName(tc.appId || '')}</td>
+                  <td className="py-3 px-4 text-xs text-[var(--text-muted)] truncate" title={caseScopeLabel(tc)}>{caseScopeLabel(tc)}</td>
                   <td className="py-3 px-4">
                     <select
                       value={resolvePlanId(tc)}

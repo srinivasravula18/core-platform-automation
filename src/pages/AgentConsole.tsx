@@ -2238,8 +2238,9 @@ export default function AgentConsole() {
                           />
                         )}
                         <p className="text-[var(--text-primary)]">{turn.text}</p>
-                        {/* Results folder + actions, all in a single row: pick an existing folder,
-                            or type a new name (blank = auto-named), then proceed/cancel. */}
+                        {/* Results folder + actions: a folder is REQUIRED before the run can start —
+                            pick an existing folder or type a new name, then proceed/cancel. No
+                            auto-named/blank folder, so every result is saved where the user chose. */}
                         <div className="mt-2 flex items-center gap-2">
                           <select
                             value={folderOptions.some((f) => (f.path || f.name) === turn.folderName) ? turn.folderName : ''}
@@ -2251,7 +2252,7 @@ export default function AgentConsole() {
                             }}
                             className="shrink-0 max-w-[150px] rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
                           >
-                            <option value="">Auto-named new folder</option>
+                            <option value="">Select an existing folder…</option>
                             {folderOptions.map((f) => (
                               <option key={f.id} value={f.path || f.name}>{f.path || f.name}</option>
                             ))}
@@ -2268,10 +2269,16 @@ export default function AgentConsole() {
                             className="min-w-0 flex-1 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2.5 py-1.5 text-xs text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
                           />
                           <button
-                            onClick={() => proceedDeepFromTurn(turn, (turn.folderName || '').trim() || undefined)}
-                            className="inline-flex shrink-0 items-center gap-1.5 rounded-md bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-white hover:bg-[var(--accent-hover)]"
+                            onClick={() => {
+                              const chosen = (turn.folderName || '').trim();
+                              if (!chosen) return; // a folder is required — nothing starts without it
+                              proceedDeepFromTurn(turn, chosen);
+                            }}
+                            disabled={!(turn.folderName || '').trim()}
+                            title={(turn.folderName || '').trim() ? 'Start the run in this folder' : 'Pick or name a folder first'}
+                            className="inline-flex shrink-0 items-center gap-1.5 rounded-md bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50 disabled:hover:bg-[var(--accent)]"
                           >
-                            <Sparkles className="h-3.5 w-3.5" /> {(turn.folderName || '').trim() ? 'Proceed' : 'Proceed (auto)'}
+                            <Sparkles className="h-3.5 w-3.5" /> Proceed
                           </button>
                           <button
                             onClick={() => {
@@ -2373,6 +2380,22 @@ export default function AgentConsole() {
             ref={inputRef}
             value={input}
             onChange={(e) => setInput(e.target.value)}
+            onPaste={(e) => {
+              // Clipboard text from Windows / browsers / rich sources carries CRLF (\r\n) or bare
+              // \r, which shows up as an extra blank line. Normalize to \n and insert at the caret
+              // so pasted text lands exactly as it looks — no phantom newline.
+              const raw = e.clipboardData.getData('text');
+              if (!/\r/.test(raw)) return; // clean text — let the browser paste normally
+              e.preventDefault();
+              const clean = raw.replace(/\r\n?/g, '\n');
+              const el = e.currentTarget;
+              const start = el.selectionStart ?? input.length;
+              const end = el.selectionEnd ?? input.length;
+              const next = input.slice(0, start) + clean + input.slice(end);
+              setInput(next);
+              const caret = start + clean.length;
+              requestAnimationFrame(() => { try { el.selectionStart = el.selectionEnd = caret; } catch { /* ignore */ } });
+            }}
             onKeyDown={(e) => {
               if (e.key === 'Tab' && e.shiftKey) {
                 e.preventDefault();

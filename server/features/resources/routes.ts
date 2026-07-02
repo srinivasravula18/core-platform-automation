@@ -667,6 +667,7 @@ Rules:
       title,
       severity: req.body.severity || 'High',
       status: 'Open',
+      folderId: req.body.folderId || '',
     };
     await Defects.upsert(newDefect);
     if (!isPgEnabled()) persistDataInBackground('defect');

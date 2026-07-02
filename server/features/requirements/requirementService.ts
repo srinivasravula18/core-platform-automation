@@ -990,7 +990,7 @@ WRITING STYLE (must follow for the rationale AND every step action and expected 
 - Do NOT use heavy or technical words, internal jargon, or invented terms. Say what a real user sees and does on the screen.
 - BANNED in steps and expected results: internal field/column names (e.g. "created_at", "appId", "app id and object pair"), implementation/database terms (e.g. "AND filters", "descending", "Table mode", "bootstrap", "deduplication", "session", "context", "persisted", "detected"), and developer phrasing. Describe the visible outcome instead — e.g. say "the list is sorted with the newest item first" not "sorts by created_at descending"; "a default view is created automatically" not "a bootstrap view is created"; "opening it again does not create a duplicate view" not "a second bootstrap view is not created for the same appId and object pair".
 - Each step action is one thing the user clicks/types/opens; each expected result is what the user then sees on screen. Keep both concrete and plain.
-- Each case's "rationale" must start with ONE short plain sentence saying what the case checks and why it matters, then INCLUDE the "Test Steps:" with each numbered step and its "Expected:" result in plain words on separate lines, so it reads clearly on its own.`,
+- Each case's "rationale" must be ONE short plain sentence saying what the case checks and why it matters. Do NOT restate the steps in it and do NOT include a "Test Steps:" or "Expected:" list — the steps belong only in the steps field, so repeating them in the rationale just duplicates.`,
     schema: reconcileSchema,
     userMessage: 'propose only the gap cases to extend coverage',
   });

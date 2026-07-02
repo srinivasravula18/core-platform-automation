@@ -48,6 +48,10 @@ import { getOrchestrator, listConfiguredProviders, resolveProviderForAgent } fro
 import { answerAppQuestionFromCode, stripCodebaseLocationsForAgentConsole } from '../../ai/supervisor';
 import { buildKnowledgeBlock, recordObservation } from '../knowledge/knowledgeService';
 import { resolveCredentials, maskPassword } from '../credentials/credentialsService';
+import {
+  detectSurfaceKind, resolveTargetApp, buildAppScopedUrl, connForRun,
+  fetchCorePlatformApps, fetchCorePlatformAppTabs, ALL_APPS_ID,
+} from './appTargeting';
 import { pushInboxItem } from '../inbox/routes';
 import { Plans, Suites, Cases, Runs, Reports, Scripts, Folders, Requirements, RequirementLinks, Defects } from '../../db/repository';
 import { runGuardrailPipeline } from '../../ai/guardrails';
@@ -164,11 +168,37 @@ const caseUrlPattern = /\b(?:https?:\/\/|www\.)[^\s),]+|\b(?:localhost|127\.0\.0
 function cleanCaseText(value: any, run: any): string {
   const appName = String(run?.appName || 'Application').trim() || 'Application';
   const targetUrl = String(run?.app_url || '').trim();
-  return String(value || '')
-    .replace(targetUrl, appName)
+  let out = String(value || '');
+  // Guard: replacing an EMPTY targetUrl matches the empty string at position 0 and PREPENDS appName
+  // to every value ("Application" + text). Only substitute when there is an actual URL to replace.
+  if (targetUrl) out = out.replace(targetUrl, appName);
+  return out
     .replace(caseUrlPattern, appName)
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+// The steps live in their own Steps section, so the description must not repeat them. If the model
+// still embeds a "Test Steps: 1. … Expected: …" block (or a bare "1. … 2. …" list) in the
+// description, strip it and keep only the short lead summary — otherwise the same steps show twice.
+function stripEmbeddedSteps(text: string): string {
+  let out = String(text || '');
+  out = out.split(/\b(?:test\s+)?steps\s*:/i)[0];
+  out = out.split(/\bexpected\s*:/i)[0];
+  out = out.replace(/\s+\d+[.)]\s+\S.*$/s, ''); // bare "1. … 2. …" enumeration with no header
+  return out.replace(/\s+/g, ' ').trim();
+}
+
+// Cap a title's length WITHOUT ending mid-thought. A plain word-slice left dangling connectors
+// ("… name validation and", "… loads automatically with", "… support lookup") that read as broken.
+// Trim to the word cap, then drop any trailing connector / article / dash so the title stops on a
+// complete word.
+const TITLE_DANGLING = /^(and|or|but|with|to|for|of|in|on|at|by|the|a|an|that|when|which|while|so|is|are|was|were|as|from|into|per|via|no)$/i;
+function capTitleWords(title: string, maxWords = 18): string {
+  const words = String(title || '').split(/\s+/).filter(Boolean);
+  const kept = words.slice(0, maxWords);
+  while (kept.length > 4 && (TITLE_DANGLING.test(kept[kept.length - 1]) || /^[-–—:]$/.test(kept[kept.length - 1]))) kept.pop();
+  return kept.join(' ').replace(/[\s\-–—:]+$/, '').trim();
 }
 
 function conciseCaseTitle(value: any, run: any): string {
@@ -178,8 +208,7 @@ function conciseCaseTitle(value: any, run: any): string {
     .replace(/^verif(?:y|ies)\s+that\s+/i, 'verify ')
     .replace(/^test\s+/i, 'verify ');
   if (appName && !title.toLowerCase().includes(appName.toLowerCase())) title = `${appName} - ${title}`;
-  const words = title.split(/\s+/).filter(Boolean);
-  return words.slice(0, 20).join(' ');
+  return capTitleWords(title, 20);
 }
 
 function readableCaseTitle(value: any, run: any, _extraText = ''): string {
@@ -197,7 +226,7 @@ function readableCaseTitle(value: any, run: any, _extraText = ''): string {
   if (!/^verify\b/i.test(title) && !title.toLowerCase().includes(' - verify ')) {
     title = title.replace(`${area} - `, `${area} - verify `);
   }
-  return title.split(/\s+/).filter(Boolean).slice(0, 16).join(' ');
+  return capTitleWords(title, 18);
 }
 
 function testCaseText(run: any): string {
@@ -212,7 +241,7 @@ function normalizeGeneratedCaseText(testCase: any, run: any) {
       run,
       `${testCase?.description || ''} ${testCase?.preconditions || ''}`,
     ),
-    description: cleanCaseText(testCase?.description || '', run),
+    description: stripEmbeddedSteps(cleanCaseText(testCase?.description || '', run)),
     preconditions: cleanCaseText(testCase?.preconditions || '', run),
     steps: normalizeCaseSteps(testCase?.steps || []).map((step) => ({
       action: cleanCaseText(step.action, run),
@@ -1449,7 +1478,7 @@ Rules:
 - Use real on-screen element labels from the inspection result and selector ids from the selector registry when available
 - Include tags: @bvt, @regression, @smoke, @positive/@negative as appropriate
 - Steps must be concrete and automatable — name exact labels, buttons, fields visible in the app
-- TITLES must be clear enough to understand WITHOUT opening the case. Prefer a complete plain-English behavior sentence over a tiny label. Use "<short feature area> - <condition/action> <expected result>" when helpful, about 10-18 words, and include the reason or outcome when that is what makes the case understandable. Do NOT use compressed fragments like "404 blocks admin entry" or "Default view bootstraps when missing"; write "List Views - A 404 admin target prevents reaching admin list views" or "List Views - A missing default view is recreated before the table loads". Do NOT stack feature + subfeature + behavior into a long chain, and do NOT repeat a long feature name. Everyday QA wording only; no jargon, internal/framing labels, or invented or fancy words. Write titles, descriptions, AND every step action and expected result in plain, simple, everyday English a non-technical person can read at a glance — short sentences, common words. Do NOT use heavy or technical words. In steps and expected results, NEVER use internal field/column names (e.g. "created_at", "appId"), database/implementation terms (e.g. "AND filters", "descending", "Table mode", "bootstrap", "deduplication", "context", "persisted", "detected"), or developer phrasing — describe the visible on-screen outcome instead (say "sorted with the newest first", not "created_at descending"; "a default view appears automatically", not "a bootstrap view is created"; "opening it again does not add a duplicate", not "no second bootstrap view for the same appId"). The description must start with ONE short plain sentence saying what the case checks and why, and then INCLUDE the "Test Steps:" with each numbered step and its "Expected:" result, written in plain words on separate lines so the description reads clearly on its own.`,
+- TITLES must be clear enough to understand WITHOUT opening the case. Prefer a complete plain-English behavior sentence over a tiny label. Use "<short feature area> - <condition/action> <expected result>" when helpful, about 10-18 words, and include the reason or outcome when that is what makes the case understandable. Do NOT use compressed fragments like "404 blocks admin entry" or "Default view bootstraps when missing"; write "List Views - A 404 admin target prevents reaching admin list views" or "List Views - A missing default view is recreated before the table loads". Do NOT stack feature + subfeature + behavior into a long chain, and do NOT repeat a long feature name. Everyday QA wording only; no jargon, internal/framing labels, or invented or fancy words. Write titles, descriptions, AND every step action and expected result in plain, simple, everyday English a non-technical person can read at a glance — short sentences, common words. Do NOT use heavy or technical words. In steps and expected results, NEVER use internal field/column names (e.g. "created_at", "appId"), database/implementation terms (e.g. "AND filters", "descending", "Table mode", "bootstrap", "deduplication", "context", "persisted", "detected"), or developer phrasing — describe the visible on-screen outcome instead (say "sorted with the newest first", not "created_at descending"; "a default view appears automatically", not "a bootstrap view is created"; "opening it again does not add a duplicate", not "no second bootstrap view for the same appId"). The description must be ONE short plain sentence saying what the case checks and why. Do NOT restate the steps in it and do NOT include a "Test Steps:" or "Expected:" list — the case has a separate Steps section that shows every step and its expected result, so repeating them in the description just duplicates.`,
     schema: testCasesSchema,
     userMessage: run.prompt || '',
   });
@@ -1641,7 +1670,7 @@ When the FEATURE/SUBFEATURE COVERAGE BLUEPRINT is present, it is the case-covera
 - Never use "Automations" in a case title. Use "Admin" or the selected app/area instead.
 - Case titles must be simple and 15-20 words max. Use the selected app/area first, then the behavior, e.g. "Admin list view - verify search works with text". Put detailed setup and expectations in steps, not the title.
 - Do not mention authentication, login, sign-in, credentials, username, or password in case titles, descriptions, steps, summaries, or agent-facing case output unless the user explicitly asks for authentication/login coverage.
-- Case titles must be clear enough to understand WITHOUT opening the case. Prefer a complete plain-English behavior sentence over a tiny label. Use "<short feature area> - <condition/action> <expected result>" when helpful, about 10-18 words, and include the reason or outcome when that is what makes the case understandable. Do NOT use compressed fragments like "404 blocks admin entry" or "Default view bootstraps when missing"; write "List Views - A 404 admin target prevents reaching admin list views" or "List Views - A missing default view is recreated before the table loads". Do NOT stack feature + subfeature + behavior into a long chain or repeat a long feature name. Everyday QA wording only; no jargon, internal/framing labels, or invented or fancy words. Write titles, descriptions, AND every step action and expected result in plain, simple, everyday English a non-technical person can read at a glance — short sentences, common words. Do NOT use heavy or technical words. In steps and expected results, NEVER use internal field/column names (e.g. "created_at", "appId"), database/implementation terms (e.g. "AND filters", "descending", "Table mode", "bootstrap", "deduplication", "context", "persisted", "detected"), or developer phrasing — describe the visible on-screen outcome instead (say "sorted with the newest first", not "created_at descending"; "a default view appears automatically", not "a bootstrap view is created"; "opening it again does not add a duplicate", not "no second bootstrap view for the same appId"). The description must start with ONE short plain sentence saying what the case checks and why, and then INCLUDE the "Test Steps:" with each numbered step and its "Expected:" result, written in plain words on separate lines so the description reads clearly on its own.
+- Case titles must be clear enough to understand WITHOUT opening the case. Prefer a complete plain-English behavior sentence over a tiny label. Use "<short feature area> - <condition/action> <expected result>" when helpful, about 10-18 words, and include the reason or outcome when that is what makes the case understandable. Do NOT use compressed fragments like "404 blocks admin entry" or "Default view bootstraps when missing"; write "List Views - A 404 admin target prevents reaching admin list views" or "List Views - A missing default view is recreated before the table loads". Do NOT stack feature + subfeature + behavior into a long chain or repeat a long feature name. Everyday QA wording only; no jargon, internal/framing labels, or invented or fancy words. Write titles, descriptions, AND every step action and expected result in plain, simple, everyday English a non-technical person can read at a glance — short sentences, common words. Do NOT use heavy or technical words. In steps and expected results, NEVER use internal field/column names (e.g. "created_at", "appId"), database/implementation terms (e.g. "AND filters", "descending", "Table mode", "bootstrap", "deduplication", "context", "persisted", "detected"), or developer phrasing — describe the visible on-screen outcome instead (say "sorted with the newest first", not "created_at descending"; "a default view appears automatically", not "a bootstrap view is created"; "opening it again does not add a duplicate", not "no second bootstrap view for the same appId"). The description must be ONE short plain sentence saying what the case checks and why. Do NOT restate the steps in it and do NOT include a "Test Steps:" or "Expected:" list — the case has a separate Steps section that shows every step and its expected result, so repeating them in the description just duplicates.
 - Each feature case's steps must stay inside that feature/subfeature and test its concrete actions, rules, states, and edge paths.
 - TEST DESIGN — design coverage deliberately like a senior QA engineer, not just one "happy path" case. When the requested count and the feature's real behaviour allow, apply the techniques that fit: happy path; equivalence partitioning (one case per valid input class); boundary values (empty, minimum, maximum, over-maximum, max-length); decision tables for combined conditions; state transitions (create → edit → delete); negative / invalid input and error states; permission / role (RBAC) differences; and empty / loading / error and basic accessibility (correct roles and labels) states. Cover the highest-value techniques first; never pad past the requested count.
 - Do not collapse multiple unrelated subfeatures into a broad "validate page" case.
@@ -3216,7 +3245,9 @@ export function registerAgentRoutes(app: Express) {
     const scopeContextText = [selectedProject?.name, selectedApp?.name].filter(Boolean).join(' ');
 
     // Precedence: an explicit URL the user typed > the selected app's base URL > prompt parsing.
-    const targetUrl = resolveAgentTargetUrl(prompt || '', app_url || selectedApp?.baseUrl || '');
+    // `let` because app-within-surface targeting (below) may deep-link this into a specific app.
+    let targetUrl = resolveAgentTargetUrl(prompt || '', app_url || selectedApp?.baseUrl || '');
+    const surfaceBaseUrl = app_url || selectedApp?.baseUrl || targetUrl;
 
     // Resolve credentials through the new multi-website, multi-user model.
     // Fall back to inline credentials if the user pasted them in chat.
@@ -3242,6 +3273,50 @@ export function registerAgentRoutes(app: Express) {
       environment: 'unknown',
       source: 'none' as any,
     };
+    // ── App-within-surface targeting ──────────────────────────────────────────────────────────
+    // The platforms (Core Platform, Shockwave) host many individual apps (Revenue Hub, CRM, …).
+    // The user names one in the prompt; resolve it to the platform's real app id (from the live
+    // apps API using this surface's creds), then deep-link the target URL into that app so every
+    // downstream phase (inspection, metadata, evidence) runs INSIDE it. Best-effort: on any failure
+    // we fall back to targeting the bare surface. If the surface has apps but the prompt names none
+    // (and doesn't ask for "all apps"), we ASK which app instead of guessing.
+    let targetCoreAppId = '';
+    let targetAppLabel = '';
+    let targetAppObjects: string[] = [];
+    if (surfaceBaseUrl && (credentials.username || (credentials as any).token)) {
+      const surfaceKind = detectSurfaceKind(selectedApp?.name || '', surfaceBaseUrl);
+      const conn = connForRun(surfaceBaseUrl, credentials, selectedApp?.specPath);
+      const apps = await fetchCorePlatformApps(conn).catch(() => []);
+      if (apps.length) {
+        // Resolve from the prompt AND recent user turns, so a follow-up reply naming the app
+        // ("CRM") resolves against the earlier intent ("test list view") across chat turns.
+        const historyText = (chatHistory || [])
+          .filter((m) => m.role === 'user')
+          .map((m) => String(m.content || ''))
+          .slice(-4)
+          .join(' ');
+        const picked = resolveTargetApp(apps, `${prompt || ''} ${historyText}`.trim());
+        if (picked.allApps) {
+          targetCoreAppId = ALL_APPS_ID;
+        } else if (picked.app) {
+          targetCoreAppId = picked.app.id;
+          targetAppLabel = picked.app.label;
+          const tabs = await fetchCorePlatformAppTabs(conn, picked.app.id).catch(() => []);
+          targetAppObjects = [...new Set(tabs.map((t) => t.object_api_name).filter(Boolean))];
+          targetUrl = buildAppScopedUrl(surfaceBaseUrl, surfaceKind, picked.app.id, {
+            nav: 'objects',
+            objectApiName: surfaceKind === 'keystone' ? targetAppObjects[0] : undefined,
+          });
+        } else {
+          // No app named (and not an "all apps" sweep) — ask which one, listing the real apps.
+          const names = picked.candidates.map((a) => a.label).filter(Boolean);
+          return res.json({
+            chat_response: `Which app should I test in ${selectedApp?.name || 'this platform'}?\n\nAvailable apps: ${names.join(' · ')}\n\nReply with the app name (e.g. "test the list view in CRM"), or say "all apps" to sweep every app.`,
+          });
+        }
+      }
+    }
+
     // Mask passwords in any persisted run record; the live agent gets the real
     // value from the resolved credential in memory only.
     const safeCredentialsForLog = {
@@ -3255,6 +3330,25 @@ export function registerAgentRoutes(app: Express) {
       testSuiteId: req.body.testSuiteId,
       testCaseId: req.body.testCaseId,
     });
+    // ── Folder gate: nothing starts without a folder to save into ──────────────────────────────
+    // Require an EXPLICIT folder — a selected folder id, or a folder name the user mentioned — and
+    // do NOT silently auto-create an inferred one. This guarantees every artifact this run produces
+    // (plan, suite, cases, run, requirements, reports, defects) lands in a folder the user chose and
+    // can find, instead of a machine-named folder they never see.
+    // Only an EXPLICIT folder the user chose counts: a selected folder id, or a folder name they
+    // supplied in the folderMention field. Do NOT infer one from the prompt text — the prompt is the
+    // test request (and derived context can contain stray @tokens like "@bvt" that would falsely
+    // look like an @folder mention and bypass this gate).
+    const explicitFolderId = !!(req.body.folderId && db.folders.some((f: any) => f.id === req.body.folderId));
+    const explicitFolderMention = !!String(req.body.folderMention || '').trim();
+    if (!explicitFolderId && !explicitFolderMention) {
+      const existing = [...new Set((db.folders as any[]).map((f: any) => getFolderPath(f.id)).filter(Boolean))].slice(0, 25);
+      const listing = existing.length ? `\n\nExisting folders: ${existing.join(' · ')}` : '';
+      return res.json({
+        chat_response: `Before I start, which folder should I save this under? Pick an existing folder or name a new one — I won't begin a run without a folder, so every test plan, suite, case, run, requirement, report and defect stays together and easy to find.${listing}\n\nTip: say it in the prompt, e.g. "test the CRM list view, save under Regression/Admin".`,
+      });
+    }
+
     const folder = resolveFolderForAgent({
       folderId: req.body.folderId,
       folderMention: req.body.folderMention,
@@ -3315,6 +3409,11 @@ export function registerAgentRoutes(app: Express) {
       scope_context_text: '',
       chat_history: chatHistory,
       existing_matches: [] as any[],
+      // Resolved individual app within the surface (platform app id, e.g. app0000006), so every
+      // phase scopes to that app. Empty when targeting the bare surface / all apps.
+      target_core_app_id: targetCoreAppId,
+      target_app_label: targetAppLabel,
+      target_app_objects: targetAppObjects,
     };
     newRun.messages.push({
       agent: 'System',
@@ -3386,23 +3485,39 @@ export function registerAgentRoutes(app: Express) {
       } catch (err: any) {
         pushPhase(newRun, { agent: 'ApplicationContext', status: 'completed', output: `Application context unavailable: ${getAIErrorMessage(err)}. Downstream agents must rely only on inspection/source evidence and must not guess missing details.` });
       }
+      // Ground the case writer to the resolved app: cover ONLY that app's list-view objects (from
+      // its tabs), not the whole surface. Threads through application_context_prompt, which the
+      // case/coder prompts already include.
+      if (targetAppLabel) {
+        const objectsLine = targetAppObjects.length
+          ? ` Its user-facing list views are for these objects (from the app's tabs): ${targetAppObjects.join(', ')}.`
+          : '';
+        // Reflection window: Admin (metadata) and Keystone (runtime) share one store behind a short
+        // (~60s) metadata cache, so a change made on Admin can take a moment to appear on Keystone.
+        const reflectionLine = ' If a case changes metadata on the Admin surface and then checks it on the Keystone runtime, allow up to ~60 seconds for the change to appear (wait and re-check) rather than asserting it instantly.';
+        newRun.application_context_prompt = `TARGET APP: Every test case must cover ONLY the "${targetAppLabel}" app within this surface — not other apps.${objectsLine} Some objects may be inherited from a parent app; that is expected (the app shows its whole scope).${reflectionLine}\n${String(newRun.application_context_prompt || '')}`;
+      }
       const appContextPrompt = String(newRun.application_context_prompt || '');
       const appContextKey = String(newRun.application_context_cache_key || applicationContextCacheKey(newRun.application_context));
       const cacheKey = featureCacheKey(targetUrl, `${prompt || ''} ${approvedUnderstanding}`, appContextKey);
 
-      if (newRun.appId) {
+      // Metadata fetch is scoped to the RESOLVED platform app id (app0NNNNNN). Note: newRun.appId is
+      // our internal surface id (APP-xxxx), which is NOT a platform app id — feeding it here was a
+      // no-op/mismatch, so we only fetch when a real platform app was resolved.
+      if (targetCoreAppId && targetCoreAppId !== ALL_APPS_ID) {
         await runMetadataFetchPhase({
           run: newRun,
-          appId: newRun.appId,
-          baseUrl: selectedApp?.baseUrl || targetUrl,
+          appId: targetCoreAppId,
+          baseUrl: surfaceBaseUrl || selectedApp?.baseUrl || targetUrl,
           credentials,
           onPhase: (msg) => pushPhase(newRun, msg),
         });
       } else {
-        pushPhase(newRun, { agent: 'MetadataFetch', status: 'skipped', output: 'No selected app id; metadata fetch skipped.' });
+        const why = targetCoreAppId === ALL_APPS_ID ? 'All-apps sweep; per-app metadata skipped.' : 'No individual app resolved; metadata fetch skipped.';
+        pushPhase(newRun, { agent: 'MetadataFetch', status: 'skipped', output: why });
         newRun.phases = {
           ...(newRun.phases || {}),
-          metadata_fetch: { status: 'skipped', reason: 'No selected app id', completed_at: nowIso() },
+          metadata_fetch: { status: 'skipped', reason: why, completed_at: nowIso() },
         };
       }
       runContextBuilderPhase({
@@ -3943,36 +4058,58 @@ Return a complete test case object. Preserve any useful existing fields. If no e
     }
   });
 
+  // AI step editing for the case editor: EXPAND selected steps into finer sub-steps, or MERGE
+  // selected steps into one — both driven by the ticked step indexes and both returning the FULL
+  // new ordered step list so the client just replaces its steps. Falls back to whole-case expansion
+  // (targetStepCount) when no steps are selected.
   app.post('/api/agent/expand-case-steps', async (req, res) => {
     try {
-      const { testCase, targetStepCount, targetUrl, stepIndex } = req.body;
+      const { testCase, targetStepCount, targetUrl, stepIndex, op, selectedStepIndexes } = req.body;
       const scope = reqScope(req);
       const stepRunScope = { appName: (scope.appId ? getApp(scope.appId)?.name : '') || '', app_url: targetUrl || '' };
-      const requestedCount = Math.max(2, Math.min(20, Number(targetStepCount) || 8));
-      const normalizedSteps = normalizeCaseSteps(testCase?.steps || []);
-      const selectedStepIndex = Number.isInteger(stepIndex) ? Number(stepIndex) : null;
-      const selectedStep = selectedStepIndex !== null ? normalizedSteps[selectedStepIndex] : null;
-      const expansionPrompt = selectedStep
-        ? `Break only this selected QA test step into exactly ${requestedCount} smaller executable sub-steps. Preserve the selected step intent and do not expand unrelated test case steps. Return only replacement rows for the selected step. Target URL: ${targetUrl || 'not provided'}. Full test case context: ${JSON.stringify(testCase)}. Selected step ${selectedStepIndex + 1}: ${JSON.stringify(selectedStep)}`
-        : `Break this QA test case into exactly ${requestedCount} clear, granular, executable test steps. Preserve the original intent, credentials, target URL, assertions, and coverage. Do not add unrelated scenarios. Each step must have one specific user/system action and one matching expected result. Target URL: ${targetUrl || 'not provided'}. Test case: ${JSON.stringify(testCase)}`;
-      const ai = await getOrchestrator('stepExpander', { workspaceId: reqScope(req).userId || 'default' });
+      const steps = normalizeCaseSteps(testCase?.steps || []);
+      // Accept a list of ticked indexes; also honour the legacy single stepIndex.
+      const rawIndexes = Array.isArray(selectedStepIndexes)
+        ? selectedStepIndexes
+        : (Number.isInteger(stepIndex) ? [stepIndex] : []);
+      const indexes = [...new Set(rawIndexes.map((i: any) => Number(i)).filter((i: number) => Number.isInteger(i) && i >= 0 && i < steps.length))].sort((a, b) => a - b);
+      const mode = op === 'merge' ? 'merge' : 'expand';
+      const numbered = steps.map((s, i) => `${i + 1}. ${s.action}  =>  Expected: ${s.expected}`).join('\n');
+      const plain = 'Write every action and expected result in plain, simple, everyday English a non-technical person can read — short sentences, common words, no jargon or internal field names.';
+
+      let prompt: string;
+      let userMessage: string;
+      if (mode === 'merge' && indexes.length >= 2) {
+        const picks = indexes.map((i) => i + 1).join(', ');
+        prompt = `Here are a QA test case's steps (numbered):\n${numbered}\n\nMerge ONLY the steps at positions ${picks} into a SINGLE step — one action and one matching expected result that together capture what those steps did. Keep every OTHER step exactly as it is and in the same order; the merged step takes the position of the earliest merged step. ${plain} Return the COMPLETE new ordered list of steps.`;
+        userMessage = 'Merge the selected steps into one.';
+      } else if (indexes.length >= 1) {
+        const picks = indexes.map((i) => i + 1).join(', ');
+        prompt = `Here are a QA test case's steps (numbered):\n${numbered}\n\nExpand ONLY the steps at positions ${picks}: break each of those into a few smaller, concrete, executable sub-steps (one specific action and one observable expected result each). Keep every OTHER step exactly as it is and in the same order. ${plain} Return the COMPLETE new ordered list of steps. Target URL: ${targetUrl || 'not provided'}.`;
+        userMessage = 'Expand the selected steps into finer sub-steps.';
+      } else {
+        const requestedCount = Math.max(2, Math.min(20, Number(targetStepCount) || 8));
+        prompt = `Break this QA test case into exactly ${requestedCount} clear, granular, executable test steps. Preserve the original intent, credentials, assertions, and coverage. Each step is one specific action and one matching expected result. ${plain} Return the complete ordered list. Target URL: ${targetUrl || 'not provided'}. Test case: ${JSON.stringify(testCase)}`;
+        userMessage = `Expand case steps to ${requestedCount}.`;
+      }
+
+      const ai = await getOrchestrator('stepExpander', { workspaceId: scope.userId || 'default' });
       const result = await ai.generateObject<any>({
-        prompt: expansionPrompt,
-        schema: z.object({
-          steps: z.array(z.object({
-            action: z.string(),
-            expected: z.string(),
-          })),
-        }),
-        userMessage: `Expand case steps to ${requestedCount}.`,
+        prompt,
+        schema: z.object({ steps: z.array(z.object({ action: z.string(), expected: z.string() })) }),
+        userMessage,
       });
-      const steps = normalizeCaseSteps(result.object.steps).slice(0, requestedCount).map((step) => ({
+      const out = normalizeCaseSteps(result.object.steps).slice(0, 40).map((step) => ({
         action: cleanCaseText(step.action, stepRunScope),
         expected: cleanCaseText(step.expected, stepRunScope),
       }));
-      res.json({ steps });
+      // Never wipe the case: if the model returned nothing usable, keep the original steps.
+      const finalSteps = out.length
+        ? out
+        : steps.map((step) => ({ action: cleanCaseText(step.action, stepRunScope), expected: cleanCaseText(step.expected, stepRunScope) }));
+      res.json({ steps: finalSteps });
     } catch (err: any) {
-      console.error('AI Step Expansion Error:', err);
+      console.error('AI Step Edit Error:', err);
       res.status(500).json({ error: getAIErrorMessage(err) });
     }
   });

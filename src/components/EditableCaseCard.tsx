@@ -93,26 +93,23 @@ export default function EditableCaseCard({ initial, linkType, selected, onToggle
     if (next.has(si)) next.delete(si); else next.add(si);
     return next;
   });
-  // Merge the ticked steps (2+) into ONE editable step: their actions become the combined action,
-  // their expected results the combined expected. The merged step takes the position of the first
-  // picked step; the rest are removed. No AI call — the result is plain and stays editable so you
-  // can tidy the wording. A single joined space between sentences reads naturally (each ends in ".").
-  const mergePicked = () => {
-    const picks = [...mergePick].sort((a, b) => a - b);
-    if (picks.length < 2) return;
-    const steps = c.steps || [];
-    const join = (parts: string[]) => parts.map((p) => String(p || '').trim()).filter(Boolean).join(' ');
-    const merged = {
-      action: join(picks.map((i) => steps[i]?.action || '')),
-      expected: join(picks.map((i) => steps[i]?.expected || '')),
-    };
-    const firstAt = picks[0];
-    const pickSet = new Set(picks);
-    const next = steps
-      .map((s, i) => (i === firstAt ? merged : s))
-      .filter((_, i) => i === firstAt || !pickSet.has(i));
-    patch({ steps: next });
-    setMergePick(new Set());
+  // AI edit of the ticked steps: op='merge' combines 2+ into one clean step; op='expand' breaks each
+  // ticked step into finer sub-steps. The AI returns the FULL new ordered list (others untouched).
+  const editPickedSteps = async (op: 'expand' | 'merge') => {
+    const picks = [...mergePick];
+    if (op === 'merge' ? picks.length < 2 : picks.length < 1) return;
+    setBusy(op);
+    try {
+      const res = await fetch('/api/agent/expand-case-steps', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ testCase: c, op, selectedStepIndexes: picks, targetUrl: '' }),
+      });
+      const data = await res.json();
+      if (res.ok && Array.isArray(data.steps) && data.steps.length) { patch({ steps: data.steps }); setMergePick(new Set()); }
+    } finally {
+      setBusy(null);
+    }
   };
 
   /* ---------- persistence ---------- */
@@ -312,9 +309,15 @@ export default function EditableCaseCard({ initial, linkType, selected, onToggle
             <div className="flex flex-wrap items-center justify-between gap-2">
               <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">Test Steps</span>
               <div className="flex items-center gap-1.5">
+                {mergePick.size >= 1 && (
+                  <button onClick={() => editPickedSteps('expand')} disabled={busy === 'expand'} title="Break the ticked steps into finer sub-steps (AI)" className="inline-flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-card)] px-2 py-1 text-[11px] font-medium text-[var(--text-primary)] hover:border-[var(--accent)] disabled:opacity-50">
+                    {busy === 'expand' ? <Loader2 className="h-3 w-3 animate-spin" /> : <SplitSquareHorizontal className="h-3 w-3" />}
+                    Expand {mergePick.size} step{mergePick.size === 1 ? '' : 's'}
+                  </button>
+                )}
                 {mergePick.size >= 2 && (
-                  <button onClick={mergePicked} title="Combine the ticked steps into one" className="inline-flex items-center gap-1 rounded-md border border-[var(--accent)] bg-[var(--accent)]/10 px-2 py-1 text-[11px] font-medium text-[var(--accent)] hover:bg-[var(--accent)]/20">
-                    <SplitSquareHorizontal className="h-3 w-3 rotate-180" />
+                  <button onClick={() => editPickedSteps('merge')} disabled={busy === 'merge'} title="Combine the ticked steps into one (AI)" className="inline-flex items-center gap-1 rounded-md border border-[var(--accent)] bg-[var(--accent)]/10 px-2 py-1 text-[11px] font-medium text-[var(--accent)] hover:bg-[var(--accent)]/20 disabled:opacity-50">
+                    {busy === 'merge' ? <Loader2 className="h-3 w-3 animate-spin" /> : <SplitSquareHorizontal className="h-3 w-3 rotate-180" />}
                     Merge {mergePick.size} steps
                   </button>
                 )}
@@ -322,7 +325,7 @@ export default function EditableCaseCard({ initial, linkType, selected, onToggle
             </div>
             {(c.steps || []).map((s, si) => (
               <div key={si} className="grid grid-cols-1 gap-1.5 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] p-1.5 lg:grid-cols-[auto_1fr_1fr_auto]">
-                <label className="flex items-start justify-center pt-1" title="Tick 2+ steps, then Merge">
+                <label className="flex items-start justify-center pt-1" title="Tick steps, then Expand (finer sub-steps) or Merge (combine into one)">
                   <input type="checkbox" checked={mergePick.has(si)} onChange={() => toggleMergePick(si)} className="h-3.5 w-3.5 accent-[var(--accent)]" />
                 </label>
                 <textarea value={s.action || ''} onChange={(e) => patchStep(si, { action: e.target.value })} placeholder={`Step ${si + 1} action`} className="min-h-[3rem] resize-y rounded border border-[var(--border)] bg-[var(--bg-card)] px-2 py-1 text-[11px] text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
