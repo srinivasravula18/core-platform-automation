@@ -359,11 +359,10 @@ function DeploymentSection() {
       <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-card)] p-6 shadow-sm">
         <h2 className="text-lg font-medium">Server repository root</h2>
         <p className="mt-1 text-sm text-[var(--text-muted)]">
-          The base folder on THIS server where project repositories live. Each project stores the
-          absolute path from wherever it was created (often a dev machine, e.g. <code>D:\core-platform</code>).
-          On a deployed server that exact path usually does not exist — set the server's repo root here
-          and the agent will find each project's repo folder under it (matched by folder name, then by
-          project slug). Leave blank to always use each project's stored path.
+          The folder on this server that holds your project repositories. A project keeps the path it
+          was created with, which usually doesn't exist on the deployed server. Set that base folder
+          here and the agent finds each project's repo under it — matched by folder name, then by
+          project slug. Leave blank to use each project's stored path as-is.
         </p>
         <div className="mt-4 flex flex-col gap-2 sm:flex-row">
           <input
@@ -396,8 +395,8 @@ function DeploymentSection() {
           </div>
         )}
         <p className="mt-3 text-xs text-[var(--text-muted)]">
-          Example: a project whose stored repo path is <code>D:\core-platform</code> resolves to
-          {' '}<code>&lt;root&gt;/core-platform</code> on the server whenever the original path is not present.
+          Example: with the root set to <code>/home/ubuntu/projects</code>, a project's repo folder is
+          found at <code>/home/ubuntu/projects/&lt;repo-folder&gt;</code> when its stored path isn't present.
         </p>
         <div className="mt-3"><StatusBanner status={status} /></div>
       </div>

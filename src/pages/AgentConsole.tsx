@@ -202,6 +202,20 @@ function extractRequirementOnlyQuery(text: string): string {
     .trim();
 }
 
+// Suggest a readable default folder name from the task, so Proceed is enabled immediately and the
+// user can keep it or type their own — every run still lands in a real, named folder.
+function suggestFolderName(text: string): string {
+  let s = String(text || '').trim()
+    .replace(/^(?:please\s+)?(?:can you\s+|could you\s+)?(?:test|verify|check|validate|run|execute|generate\s+cases?\s+for|create\s+cases?\s+for|write\s+cases?\s+for)\s+/i, '')
+    .replace(/\bthe\b/gi, ' ')
+    .replace(/[^\w\s/-]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!s) s = 'Test run';
+  s = s.charAt(0).toUpperCase() + s.slice(1);
+  return s.slice(0, 60);
+}
+
 function isRequirementDraftApprove(text: string): boolean {
   return /^(?:yes|ok|okay|approve|approved|save|create|confirm|looks good|proceed|go ahead)\b/i.test(text.trim());
 }
@@ -971,7 +985,9 @@ export default function AgentConsole() {
       websiteId,
       websiteName,
       revisionCount: 0,
-      text: 'Look right? Pick a folder for the results (type a name below), or proceed with an auto-named folder.',
+      // Pre-fill a suggested folder name so Proceed is enabled right away — keep it or type your own.
+      folderName: suggestFolderName(originalRequest || prompt),
+      text: 'Look right? A folder name is suggested below — keep it and Proceed, or pick an existing folder / type your own first.',
     });
   }, [buildDeepContextPrompt, requestDeepUnderstanding, replaceTurn, updateThinkingLabel]);
 
@@ -1346,7 +1362,8 @@ export default function AgentConsole() {
               websiteId: nextPending.websiteId,
               websiteName: nextPending.websiteName,
               revisionCount: nextPending.revisionCount,
-              text: 'I updated what I understood. You can edit it, correct me again, pick a folder, or proceed with an auto-named folder.',
+              folderName: suggestFolderName(nextPending.originalRequest || nextPending.prompt),
+              text: 'I updated what I understood. Keep the suggested folder below and Proceed, or edit it / correct me again.',
             });
           } catch (err: any) {
             replaceTurn(thinkingId, {
