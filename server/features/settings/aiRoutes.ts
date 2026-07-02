@@ -20,7 +20,7 @@ import {
   AGENT_PROMPTS,
 } from '../../ai/promptStore';
 import { type AgentName, CANONICAL_AGENTS } from '../../ai/systemPrompts';
-import { setDailyLimit, getDailyLimit, listUsage, getDailyCost } from '../../ai/costTracker';
+import { setDailyLimit, getDailyLimit, listUsage, getDailyCost, getSpendSummary, getCostCaps, setCostCaps } from '../../ai/costTracker';
 import { recentGuardrailLogs } from '../../ai/guardrails';
 import { reqScope } from '../../shared/scope';
 
@@ -312,6 +312,38 @@ export function registerSettingsRoutes(app: Express) {
     const workspaceId = usageWorkspace(req);
     const limit = Math.min(500, Number(req.query.limit) || 100);
     res.json({ usage: listUsage(workspaceId, limit) });
+  });
+
+  // All-time-through-now spend analysis: per-window token+cost totals, per-model breakdown, caps.
+  // ?scope=all (default) aggregates the whole deployment; ?scope=project uses the request's project.
+  app.get('/api/ai/usage/summary', async (req, res) => {
+    try {
+      const scoped = String(req.query.scope || 'all') === 'project';
+      const workspaceId = scoped ? usageWorkspace(req) : undefined;
+      res.json(await getSpendSummary(workspaceId));
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || 'Failed to compute usage summary.' });
+    }
+  });
+
+  // Configure per-window spend caps (USD). Any subset of { day, week, month, year }.
+  app.put('/api/ai/cost/caps', (req, res) => {
+    const body = req.body || {};
+    const caps: any = {};
+    for (const k of ['day', 'week', 'month', 'year']) {
+      if (body[k] !== undefined) {
+        const n = Number(body[k]);
+        if (!Number.isFinite(n) || n < 0) return res.status(400).json({ error: `${k} cap must be a non-negative number` });
+        caps[k] = n;
+      }
+    }
+    const next = setCostCaps(caps);
+    persistSettingsInBackground('cost caps');
+    res.json({ ok: true, caps: next });
+  });
+
+  app.get('/api/ai/cost/caps', (_req, res) => {
+    res.json({ caps: getCostCaps() });
   });
 
   app.get('/api/ai/health', async (_req, res) => {

@@ -23,6 +23,16 @@ import type {
 } from './types';
 import { classifyError, DEFAULT_MODELS, estimateCost } from './types';
 
+/** Build a ProviderUsage (with cost) from the Vercel AI SDK usage shape, splitting cached input out. */
+function geminiSdkUsage(modelId: string, usage: any) {
+  const cacheReadTokens = usage.cachedInputTokens ?? 0;
+  const inputTokens = Math.max(0, (usage.promptTokens ?? 0) - cacheReadTokens);
+  const outputTokens = usage.completionTokens ?? 0;
+  const totalTokens = usage.totalTokens ?? inputTokens + outputTokens + cacheReadTokens;
+  const u = { inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens: 0, totalTokens };
+  return { ...u, costUsd: estimateCost(modelId, u) };
+}
+
 /** Map a provider-agnostic ChatMessage to a @google/genai Content entry. */
 function toGeminiContent(m: ChatMessage): { role: string; parts: any[] } {
   if (m.role === 'tool') {
@@ -96,15 +106,18 @@ export class GeminiProvider implements AIProvider {
         arguments: (c.args as Record<string, unknown>) || {},
       }));
       const u: any = resp.usageMetadata || {};
-      const inputTokens = u.promptTokenCount ?? 0;
+      // Gemini's promptTokenCount INCLUDES cached content; split it out so it bills at the cache-read rate.
+      const cacheReadTokens = u.cachedContentTokenCount ?? 0;
+      const inputTokens = Math.max(0, (u.promptTokenCount ?? 0) - cacheReadTokens);
       const outputTokens = u.candidatesTokenCount ?? 0;
-      const totalTokens = u.totalTokenCount ?? (inputTokens + outputTokens);
+      const totalTokens = u.totalTokenCount ?? (inputTokens + outputTokens + cacheReadTokens);
       let text: string | undefined;
       try { text = resp.text || undefined; } catch { text = undefined; }
+      const usageObj = { inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens: 0, totalTokens };
       return {
         text: toolCalls.length ? undefined : text,
         toolCalls,
-        usage: { inputTokens, outputTokens, totalTokens, costUsd: estimateCost(modelId, { inputTokens, outputTokens, totalTokens }) },
+        usage: { ...usageObj, costUsd: estimateCost(modelId, usageObj) },
         model: modelId,
         provider: 'gemini',
         stopReason: toolCalls.length ? 'tool_calls' : 'stop',
@@ -155,14 +168,7 @@ export class GeminiProvider implements AIProvider {
         abortSignal: opts.signal,
       } as any);
       const text = JSON.stringify(object);
-      const usageObj = usage
-        ? {
-            inputTokens: (usage as any).promptTokens,
-            outputTokens: (usage as any).completionTokens,
-            totalTokens: (usage as any).totalTokens,
-            costUsd: estimateCost(modelId, (usage as any)),
-          }
-        : undefined;
+      const usageObj = usage ? geminiSdkUsage(modelId, usage as any) : undefined;
       return {
         object: object as T,
         text,
@@ -203,14 +209,7 @@ export class GeminiProvider implements AIProvider {
         maxOutputTokens: opts.maxTokens,
         abortSignal: opts.signal,
       } as any);
-      const usageObj = usage
-        ? {
-            inputTokens: (usage as any).promptTokens,
-            outputTokens: (usage as any).completionTokens,
-            totalTokens: (usage as any).totalTokens,
-            costUsd: estimateCost(modelId, (usage as any)),
-          }
-        : undefined;
+      const usageObj = usage ? geminiSdkUsage(modelId, usage as any) : undefined;
       return {
         object: text,
         text,

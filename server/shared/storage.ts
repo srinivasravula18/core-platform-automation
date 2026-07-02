@@ -57,6 +57,7 @@ export const db: any = {
     agentProviderMap: {} as Record<string, ProviderName>,
     agentModelMap: {} as Record<string, string>,
     dailyCostLimit: 50,
+    costCaps: { day: 50, week: 0, month: 0, year: 0 } as { day: number; week: number; month: number; year: number },
     autonomyLevel: 'review' as 'autonomous' | 'review' | 'manual',
   },
   reports: [] as any[],
@@ -159,6 +160,7 @@ export async function loadPersistedSettings() {
       siteCredentials: Array.isArray(settings.siteCredentials) ? settings.siteCredentials : [],
       ...normalizedAiSettings,
       dailyCostLimit: typeof settings.dailyCostLimit === 'number' ? settings.dailyCostLimit : db.settings.dailyCostLimit,
+      costCaps: (settings.costCaps && typeof settings.costCaps === 'object') ? { ...db.settings.costCaps, ...settings.costCaps } : db.settings.costCaps,
       autonomyLevel: settings.autonomyLevel || db.settings.autonomyLevel,
     };
   } catch {

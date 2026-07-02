@@ -36,8 +36,13 @@ export interface GenerateTextOptions {
 }
 
 export interface ProviderUsage {
+  /** Non-cached (freshly-processed) input tokens, billed at the base input rate. */
   inputTokens?: number;
   outputTokens?: number;
+  /** Tokens served from the prompt cache (billed at the cheaper cache-read rate). */
+  cacheReadTokens?: number;
+  /** Tokens written INTO the cache this call (billed at the cache-write rate; 0 for auto-cache providers). */
+  cacheWriteTokens?: number;
   totalTokens?: number;
   costUsd?: number;
 }
@@ -168,16 +173,43 @@ export function listAvailableModels(provider: ProviderName, opts?: { includeLoca
   return [...base, ...(LOCAL_ONLY_MODELS[provider] || [])];
 }
 
-export const PRICING_PER_1M_TOKENS: Record<string, { input: number; output: number }> = {
-  'gemini-3.5-flash': { input: 0.3, output: 2.5 },
-  'gemini-3.1-pro': { input: 2.0, output: 12.0 },
-  'gemini-3.1-flash-lite': { input: 0.1, output: 0.4 },
-  'gemini-2.5-flash': { input: 0.075, output: 0.3 },
-  'gemini-2.5-pro': { input: 1.25, output: 5.0 },
-  'gemini-2.5-flash-lite': { input: 0.1, output: 0.4 },
-  'claude-opus-4-8': { input: 5.0, output: 25.0 },
-  'claude-sonnet-4-6': { input: 3.0, output: 15.0 },
-  'claude-haiku-4-5': { input: 1.0, output: 5.0 },
+export interface ModelPricing {
+  /** Base (non-cached) input, per 1M tokens. */
+  input: number;
+  /** Output, per 1M tokens. */
+  output: number;
+  /** Cache-read (hit), per 1M tokens. Defaults to 0.1× input when unset. */
+  cacheRead?: number;
+  /** Cache-write (5-minute creation), per 1M tokens. For auto-cache providers (OpenAI/Gemini) this
+   *  equals the input rate (no extra write charge). Defaults to 1.25× input when unset. */
+  cacheWrite?: number;
+}
+
+// Per-1M-token prices from each provider's OFFICIAL pricing page (verified July 2026):
+//   OpenAI  developers.openai.com/api/docs/pricing  (cache-write = input; only cached READS are discounted)
+//   Anthropic platform.claude.com/docs/en/about-claude/pricing (5m cache-write = 1.25× input, read = 0.1× input)
+//   Google  ai.google.dev/gemini-api/docs/pricing  (standard tier; cache-write billed as hourly storage, approximated as input here)
+export const PRICING_PER_1M_TOKENS: Record<string, ModelPricing> = {
+  // OpenAI GPT-5.x
+  'gpt-5.5': { input: 5.0, output: 30.0, cacheRead: 0.5, cacheWrite: 5.0 },
+  'gpt-5.4': { input: 2.5, output: 15.0, cacheRead: 0.25, cacheWrite: 2.5 },
+  'gpt-5.4-mini': { input: 0.75, output: 4.5, cacheRead: 0.075, cacheWrite: 0.75 },
+  'gpt-5.4-nano': { input: 0.2, output: 1.25, cacheRead: 0.02, cacheWrite: 0.2 },
+  // Anthropic Claude
+  'claude-fable-5': { input: 10.0, output: 50.0, cacheRead: 1.0, cacheWrite: 12.5 },
+  'claude-opus-4-8': { input: 5.0, output: 25.0, cacheRead: 0.5, cacheWrite: 6.25 },
+  'claude-opus-4-7': { input: 5.0, output: 25.0, cacheRead: 0.5, cacheWrite: 6.25 },
+  'claude-opus-4-6': { input: 5.0, output: 25.0, cacheRead: 0.5, cacheWrite: 6.25 },
+  'claude-sonnet-5': { input: 2.0, output: 10.0, cacheRead: 0.2, cacheWrite: 2.5 }, // intro thru 2026-08-31
+  'claude-sonnet-4-6': { input: 3.0, output: 15.0, cacheRead: 0.3, cacheWrite: 3.75 },
+  'claude-haiku-4-5': { input: 1.0, output: 5.0, cacheRead: 0.1, cacheWrite: 1.25 },
+  // Google Gemini (standard tier)
+  'gemini-3.5-flash': { input: 1.5, output: 9.0, cacheRead: 0.15, cacheWrite: 1.5 },
+  'gemini-3.1-pro': { input: 2.0, output: 12.0, cacheRead: 0.2, cacheWrite: 2.0 },
+  'gemini-3.1-flash-lite': { input: 0.25, output: 1.5, cacheRead: 0.025, cacheWrite: 0.25 },
+  'gemini-2.5-flash': { input: 0.3, output: 2.5, cacheRead: 0.03, cacheWrite: 0.3 },
+  'gemini-2.5-pro': { input: 1.25, output: 10.0, cacheRead: 0.125, cacheWrite: 1.25 },
+  'gemini-2.5-flash-lite': { input: 0.1, output: 0.4, cacheRead: 0.01, cacheWrite: 0.1 },
 };
 
 /* ----------------------------------------------------------------------------
@@ -245,10 +277,29 @@ export function contextWindowFor(model: string): number {
   return modelCaps(model).contextWindow;
 }
 
+/** Resolved pricing for a model, filling cache rates from the standard multipliers when a model
+ *  omits them (5m write = 1.25× input, read = 0.1× input). Unknown models get a conservative default. */
+export function pricingFor(model: string): Required<ModelPricing> {
+  const p = PRICING_PER_1M_TOKENS[model] ?? { input: 1.0, output: 3.0 };
+  return {
+    input: p.input,
+    output: p.output,
+    cacheRead: p.cacheRead ?? p.input * 0.1,
+    cacheWrite: p.cacheWrite ?? p.input * 1.25,
+  };
+}
+
+/** Cost in USD for a call, pricing each token class separately: non-cached input, output, cache
+ *  reads (cheap), and cache writes (dearer). inputTokens must already EXCLUDE cached tokens. */
 export function estimateCost(model: string, usage: ProviderUsage | undefined): number {
   if (!usage || usage.totalTokens === undefined) return 0;
-  const pricing = PRICING_PER_1M_TOKENS[model] ?? { input: 1.0, output: 3.0 };
-  const inCost = ((usage.inputTokens ?? usage.totalTokens / 2) / 1_000_000) * pricing.input;
-  const outCost = ((usage.outputTokens ?? usage.totalTokens / 2) / 1_000_000) * pricing.output;
-  return inCost + outCost;
+  const p = pricingFor(model);
+  const input = usage.inputTokens ?? usage.totalTokens / 2;
+  const output = usage.outputTokens ?? usage.totalTokens / 2;
+  return (
+    (input / 1_000_000) * p.input +
+    (output / 1_000_000) * p.output +
+    ((usage.cacheReadTokens ?? 0) / 1_000_000) * p.cacheRead +
+    ((usage.cacheWriteTokens ?? 0) / 1_000_000) * p.cacheWrite
+  );
 }

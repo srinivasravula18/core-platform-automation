@@ -2626,6 +2626,91 @@ function compactInspectionContext(ic: any) {
   };
 }
 
+function summarizeExecutionTests(tests: any[], durationMs = 0, error?: string) {
+  const failed = tests.filter((t) => /fail|timedout|interrupted/i.test(String(t.status))).length;
+  const skipped = tests.filter((t) => t.status === 'skipped').length;
+  const passed = tests.filter((t) => t.status === 'passed').length;
+  return {
+    ok: failed === 0,
+    total: tests.length,
+    passed,
+    failed,
+    skipped,
+    durationMs,
+    error,
+    tests: tests.map((t) => ({ title: t.title, status: t.status, durationMs: t.durationMs, error: t.error })),
+  };
+}
+
+async function publishAgentRunSnapshot(run: any, reason: string) {
+  run.updated_at = new Date().toISOString();
+  persistDataInBackground(reason);
+}
+
+async function copyTestEvidenceToRun(opts: {
+  run: any;
+  tests: any[];
+  cases: any[];
+  targetUrl: string;
+  evidence: any[];
+  usedCaseIndexes: Set<number>;
+  resolveCaseIndex: (t: any, fallbackPos: number) => number;
+  startIndex: number;
+}) {
+  const { run, tests, cases, targetUrl, evidence, usedCaseIndexes, resolveCaseIndex, startIndex } = opts;
+  const evidenceDir = path.resolve(process.cwd(), 'evidence');
+  await fsp.mkdir(evidenceDir, { recursive: true });
+
+  for (let offset = 0; offset < tests.length; offset += 1) {
+    const t = tests[offset];
+    const evidenceIndex = startIndex + offset;
+    let caseIndex = resolveCaseIndex(t, evidenceIndex);
+    if (usedCaseIndexes.has(caseIndex)) {
+      const free = cases.findIndex((_, idx) => !usedCaseIndexes.has(idx));
+      if (free >= 0) caseIndex = free;
+    }
+    usedCaseIndexes.add(caseIndex);
+
+    let screenshotUrl = '';
+    if (t.screenshotPath) {
+      const dest = `${run.id}-case-${evidenceIndex + 1}.png`;
+      const copied = await fsp.copyFile(t.screenshotPath, path.join(evidenceDir, dest))
+        .then(() => true)
+        .catch((e) => { console.warn(`[evidence] failed to copy screenshot for "${t.title}":`, e?.message || e); return false; });
+      if (copied) screenshotUrl = `/evidence/${dest}`;
+    }
+
+    const stepScreenshots: string[] = [];
+    const stepPaths = t.stepScreenshotPaths || [];
+    for (let k = 0; k < stepPaths.length; k += 1) {
+      const dest = `${run.id}-case-${evidenceIndex + 1}-step-${k + 1}.png`;
+      const ok = await fsp.copyFile(stepPaths[k], path.join(evidenceDir, dest)).then(() => true).catch(() => false);
+      stepScreenshots.push(ok ? `/evidence/${dest}` : '');
+    }
+
+    let traceUrl = '';
+    if (t.tracePath) {
+      const dest = `${run.id}-case-${evidenceIndex + 1}-trace.zip`;
+      const ok = await fsp.copyFile(t.tracePath, path.join(evidenceDir, dest)).then(() => true).catch(() => false);
+      if (ok) traceUrl = `/evidence/${dest}`;
+    }
+
+    evidence.push({
+      title: t.title || cases[caseIndex]?.title || `Test case ${evidenceIndex + 1}`,
+      testCaseIndex: caseIndex,
+      url: targetUrl,
+      screenshotUrl,
+      stepScreenshots,
+      traceUrl,
+      status: t.status,
+      reason: t.error || '',
+      durationMs: t.durationMs,
+      executed: true,
+      capturedAt: new Date().toISOString(),
+    });
+  }
+}
+
 async function runScriptsAndCollectEvidence(run: any, targetUrl: string, testCases: any, liveCreds: any) {
   const rawScripts = (run.playwright_scripts || []) as any[];
   const scripts = rawScripts.map((s: any) => ({ filename: s.filename, title: s.test_case_title, code: s.code }));
@@ -2701,6 +2786,93 @@ async function runScriptsAndCollectEvidence(run: any, targetUrl: string, testCas
       } catch (e: any) {
         run.messages.push({ agent: 'EvidenceAgent', status: 'running', output: `Browser session setup error: ${e?.message || e}` });
       }
+
+      if (scripts.length > 1) {
+        const allTests: any[] = [];
+        const evidence: any[] = [];
+        const usedCaseIndexes = new Set<number>();
+        let totalDurationMs = 0;
+        let lastError = '';
+
+        run.evidence_screenshots = evidence as any;
+        for (let i = 0; i < scripts.length; i += 1) {
+          const script = scripts[i];
+          pushPhase(run, { agent: 'EvidenceAgent', status: 'running', output: `Running script ${i + 1}/${scripts.length}: ${script.title || script.filename || `script ${i + 1}`}` });
+          const execOne = await executePlaywrightScripts({
+            scripts: [script],
+            baseUrl: targetUrl,
+            runId: `${run.id}-script-${i + 1}`,
+            storageStatePath,
+            sessionStorageState,
+            singleSession: true,
+            screenshotMode: 'on',
+            actionTimeoutMs: 5000,
+            navigationTimeoutMs: 15000,
+            expectTimeoutMs: 5000,
+          });
+
+          totalDurationMs += execOne.durationMs || 0;
+          if (execOne.error) lastError = execOne.error;
+          const before = evidence.length;
+          allTests.push(...(execOne.tests || []));
+          await copyTestEvidenceToRun({
+            run,
+            tests: execOne.tests || [],
+            cases,
+            targetUrl,
+            evidence,
+            usedCaseIndexes,
+            resolveCaseIndex,
+            startIndex: before,
+          });
+
+          run.execution_result = summarizeExecutionTests(allTests, totalDurationMs, lastError || undefined);
+          run.evidence_screenshots = evidence as any;
+          run.phases = {
+            ...(run.phases || {}),
+            evidence_capture: {
+              status: i === scripts.length - 1 ? 'complete' : 'running',
+              scripts_run: allTests.length,
+              passed: run.execution_result.passed,
+              failed: run.execution_result.failed,
+              skipped: run.execution_result.skipped,
+              updated_at: new Date().toISOString(),
+            },
+          };
+          await publishAgentRunSnapshot(run, `agent evidence script ${i + 1}`);
+        }
+
+        cases.forEach((c, idx) => {
+          if (!usedCaseIndexes.has(idx)) {
+            evidence.push({
+              title: c.title || `Test case ${idx + 1}`,
+              testCaseIndex: idx,
+              url: targetUrl,
+              screenshotUrl: '',
+              status: 'not_executed',
+              reason: 'No Playwright script was generated for this case, so it was not executed.',
+              executed: false,
+              capturedAt: new Date().toISOString(),
+            });
+          }
+        });
+        run.execution_result = summarizeExecutionTests(allTests, totalDurationMs, lastError || undefined);
+        run.evidence_screenshots = evidence as any;
+        run.phases = {
+          ...(run.phases || {}),
+          evidence_capture: {
+            status: run.execution_result.failed === 0 ? 'complete' : 'complete_with_failures',
+            scripts_run: run.execution_result.total,
+            passed: run.execution_result.passed,
+            failed: run.execution_result.failed,
+            skipped: run.execution_result.skipped,
+            completed_at: new Date().toISOString(),
+          },
+        };
+        await publishAgentRunSnapshot(run, 'agent evidence complete');
+        return evidence;
+      }
+
       let exec = await executePlaywrightScripts({
         scripts,
         baseUrl: targetUrl,

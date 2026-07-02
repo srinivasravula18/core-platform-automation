@@ -188,18 +188,17 @@ export class OpenAIProvider implements AIProvider {
     }
   }
 
-  private toUsageObj(modelId: string, usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number }) {
+  private toUsageObj(modelId: string, usage?: any) {
     if (!usage) return undefined;
-    return {
-      inputTokens: usage.prompt_tokens,
-      outputTokens: usage.completion_tokens,
-      totalTokens: usage.total_tokens,
-      costUsd: estimateCost(modelId, {
-        inputTokens: usage.prompt_tokens,
-        outputTokens: usage.completion_tokens,
-        totalTokens: usage.total_tokens,
-      }),
-    };
+    // OpenAI's `prompt_tokens` INCLUDES cached tokens; the cached portion is billed at the cheaper
+    // cached-input rate, so split it out and bill only the remainder at the base input rate. OpenAI
+    // auto-caches — there is no separate cache-WRITE charge.
+    const cacheReadTokens = usage.prompt_tokens_details?.cached_tokens ?? 0;
+    const inputTokens = Math.max(0, (usage.prompt_tokens ?? 0) - cacheReadTokens);
+    const outputTokens = usage.completion_tokens ?? 0;
+    const totalTokens = usage.total_tokens ?? inputTokens + outputTokens + cacheReadTokens;
+    const usageObj = { inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens: 0, totalTokens };
+    return { ...usageObj, costUsd: estimateCost(modelId, usageObj) };
   }
 
   async *generateTextStream(opts: GenerateTextOptions): AsyncIterable<string> {

@@ -1409,22 +1409,36 @@ function AutonomySection() {
   );
 }
 
+const emptyWin = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, totalTokens: 0, costUsd: 0, calls: 0 };
+const WINDOW_META: Array<{ key: string; capKey: string; label: string }> = [
+  { key: 'today', capKey: 'day', label: 'Today' },
+  { key: 'week', capKey: 'week', label: 'Last 7 days' },
+  { key: 'month', capKey: 'month', label: 'Last 30 days' },
+  { key: 'year', capKey: 'year', label: 'Last 365 days' },
+  { key: 'all', capKey: '', label: 'All time' },
+];
+const fmtInt = (n: number) => Number(n || 0).toLocaleString();
+const fmtUsd = (n: number) => `$${Number(n || 0).toFixed(Number(n) >= 1 ? 2 : 4)}`;
+
 function CostSection() {
-  const [cost, setCost] = useState<{ used: number; limit: number; guardrailLogs: any[] }>({ used: 0, limit: 50, guardrailLogs: [] });
+  const [cost, setCost] = useState<{ guardrailLogs: any[] }>({ guardrailLogs: [] });
+  const [summary, setSummary] = useState<any>(null);
   const [usage, setUsage] = useState<any[]>([]);
-  const [limit, setLimit] = useState(50);
+  const [caps, setCaps] = useState<{ day: number; week: number; month: number; year: number }>({ day: 50, week: 0, month: 0, year: 0 });
   const [loading, setLoading] = useState(true);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [c, u] = await Promise.all([
+      const [c, s, u] = await Promise.all([
         fetch('/api/ai/cost').then((r) => r.json()),
+        fetch('/api/ai/usage/summary').then((r) => r.json()),
         fetch('/api/ai/usage').then((r) => r.json()),
       ]);
       setCost(c);
+      setSummary(s);
       setUsage(u.usage || []);
-      setLimit(c.limit || 50);
+      if (s?.caps) setCaps(s.caps);
     } finally {
       setLoading(false);
     }
@@ -1432,51 +1446,131 @@ function CostSection() {
 
   useEffect(() => { load(); }, [load]);
 
-  const saveLimit = async () => {
-    await fetch('/api/ai/cost/limit', {
+  const saveCaps = async () => {
+    await fetch('/api/ai/cost/caps', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ limit }),
+      body: JSON.stringify(caps),
     });
     await load();
   };
 
-  if (loading) return <SkeletonCard />;
+  if (loading || !summary) return <SkeletonCard />;
 
-  const usedPct = cost.limit > 0 ? Math.min(100, (cost.used / cost.limit) * 100) : 0;
+  const windows = summary.windows || {};
+  const capStatus = summary.capStatus || {};
+  const byModel: any[] = summary.byModel || [];
+  const allTime = windows.all || emptyWin;
 
   return (
     <div className="space-y-6">
+      {/* Spend by window, each with its cap progress. */}
       <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-card)] p-4 sm:p-6 shadow-sm">
-        <h2 className="text-lg font-medium">Daily AI Cost</h2>
-        <p className="mt-1 text-sm text-[var(--text-muted)]">Track what Test Flow AI spends on AI providers and set a hard cap.</p>
-        <div className="mt-4">
-          <div className="flex items-baseline gap-2">
-            <span className="text-3xl font-bold">${cost.used.toFixed(4)}</span>
-            <span className="text-sm text-[var(--text-muted)]">/ ${cost.limit.toFixed(2)} today</span>
-          </div>
-          <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-[var(--bg-secondary)]">
-            <div
-              className={`h-full transition-all ${usedPct > 90 ? 'bg-red-500' : usedPct > 60 ? 'bg-amber-500' : 'bg-emerald-500'}`}
-              style={{ width: `${usedPct}%` }}
-            />
-          </div>
+        <h2 className="text-lg font-medium">Spend</h2>
+        <p className="mt-1 text-sm text-[var(--text-muted)]">Real cost across every AI call, priced from each provider's official rates for the model you selected. Deployment-wide.</p>
+        <div className="mt-4 grid grid-cols-2 gap-3 lg:grid-cols-5">
+          {WINDOW_META.map(({ key, capKey, label }) => {
+            const w = windows[key] || emptyWin;
+            const cap = capKey ? (capStatus[capKey]?.limit || 0) : 0;
+            const over = capKey ? capStatus[capKey]?.over : false;
+            const pct = cap > 0 ? Math.min(100, (w.costUsd / cap) * 100) : 0;
+            return (
+              <div key={key} className="rounded-lg border border-[var(--border)] bg-[var(--bg-primary)] p-3">
+                <div className="text-[11px] uppercase tracking-wide text-[var(--text-muted)]">{label}</div>
+                <div className={`mt-1 text-xl font-bold ${over ? 'text-red-500' : ''}`}>{fmtUsd(w.costUsd)}</div>
+                <div className="text-[11px] text-[var(--text-muted)]">{fmtInt(w.totalTokens)} tokens · {fmtInt(w.calls)} calls</div>
+                {cap > 0 && (
+                  <>
+                    <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-[var(--bg-secondary)]">
+                      <div className={`h-full ${pct > 90 ? 'bg-red-500' : pct > 60 ? 'bg-amber-500' : 'bg-emerald-500'}`} style={{ width: `${pct}%` }} />
+                    </div>
+                    <div className="mt-1 text-[10px] text-[var(--text-muted)]">cap {fmtUsd(cap)}</div>
+                  </>
+                )}
+              </div>
+            );
+          })}
         </div>
-        <div className="mt-4 flex flex-wrap items-end gap-2">
-          <div>
-            <label className="mb-1 block text-xs text-[var(--text-muted)]">Daily limit (USD)</label>
-            <input
-              type="number"
-              min="0"
-              step="1"
-              value={limit}
-              onChange={(e) => setLimit(Number(e.target.value))}
-              className="w-32 rounded-md border border-[var(--border)] bg-[var(--bg-primary)] px-3 py-2 text-sm"
-            />
-          </div>
-          <button onClick={saveLimit} className="inline-flex items-center gap-1 rounded-md bg-[var(--accent)] px-3 py-2 text-xs font-medium text-white">
-            <Save className="h-3 w-3" /> Save limit
+      </div>
+
+      {/* All-time token breakdown: input / output / cache read / cache write. */}
+      <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-card)] p-4 sm:p-6 shadow-sm">
+        <h2 className="text-lg font-medium">Tokens by type (all time)</h2>
+        <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
+          {[
+            { k: 'inputTokens', label: 'Input' },
+            { k: 'outputTokens', label: 'Output' },
+            { k: 'cacheReadTokens', label: 'Cache read' },
+            { k: 'cacheWriteTokens', label: 'Cache write' },
+          ].map(({ k, label }) => (
+            <div key={k} className="rounded-lg border border-[var(--border)] bg-[var(--bg-primary)] p-3">
+              <div className="text-[11px] uppercase tracking-wide text-[var(--text-muted)]">{label}</div>
+              <div className="mt-1 text-lg font-semibold">{fmtInt(allTime[k])}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Per-window spend caps. 0 = no cap. */}
+      <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-card)] p-4 sm:p-6 shadow-sm">
+        <h2 className="text-lg font-medium">Spend caps</h2>
+        <p className="mt-1 text-sm text-[var(--text-muted)]">Set a USD cap per window. 0 means no cap. The daily cap also gates new agent runs.</p>
+        <div className="mt-4 flex flex-wrap items-end gap-3">
+          {[
+            { k: 'day', label: 'Per day' },
+            { k: 'week', label: 'Per 7 days' },
+            { k: 'month', label: 'Per 30 days' },
+            { k: 'year', label: 'Per 365 days' },
+          ].map(({ k, label }) => (
+            <div key={k}>
+              <label className="mb-1 block text-xs text-[var(--text-muted)]">{label} (USD)</label>
+              <input
+                type="number" min="0" step="1"
+                value={(caps as any)[k]}
+                onChange={(e) => setCaps((c) => ({ ...c, [k]: Number(e.target.value) }))}
+                className="w-28 rounded-md border border-[var(--border)] bg-[var(--bg-primary)] px-3 py-2 text-sm"
+              />
+            </div>
+          ))}
+          <button onClick={saveCaps} className="inline-flex items-center gap-1 rounded-md bg-[var(--accent)] px-3 py-2 text-xs font-medium text-white">
+            <Save className="h-3 w-3" /> Save caps
           </button>
+        </div>
+      </div>
+
+      {/* Per-model breakdown. */}
+      <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-card)] p-4 sm:p-6 shadow-sm">
+        <h2 className="text-lg font-medium">By model (all time)</h2>
+        <div className="mt-3 max-h-96 overflow-auto">
+          <table className="w-full text-sm whitespace-nowrap">
+            <thead className="sticky top-0 z-10 bg-[var(--bg-card)] text-xs text-[var(--text-muted)]">
+              <tr>
+                <th className="px-2 py-1 text-left">Model</th>
+                <th className="px-2 py-1 text-right">Input</th>
+                <th className="px-2 py-1 text-right">Output</th>
+                <th className="px-2 py-1 text-right">Cache read</th>
+                <th className="px-2 py-1 text-right">Cache write</th>
+                <th className="px-2 py-1 text-right">Calls</th>
+                <th className="px-2 py-1 text-right">Cost</th>
+              </tr>
+            </thead>
+            <tbody>
+              {byModel.length === 0 && (
+                <tr><td colSpan={7} className="px-2 py-4 text-center text-xs text-[var(--text-muted)]">No usage recorded yet.</td></tr>
+              )}
+              {byModel.map((m) => (
+                <tr key={m.model} className="border-t border-[var(--border)]">
+                  <td className="px-2 py-1 text-xs font-medium">{m.model}</td>
+                  <td className="px-2 py-1 text-right text-xs">{fmtInt(m.inputTokens)}</td>
+                  <td className="px-2 py-1 text-right text-xs">{fmtInt(m.outputTokens)}</td>
+                  <td className="px-2 py-1 text-right text-xs">{fmtInt(m.cacheReadTokens)}</td>
+                  <td className="px-2 py-1 text-right text-xs">{fmtInt(m.cacheWriteTokens)}</td>
+                  <td className="px-2 py-1 text-right text-xs">{fmtInt(m.calls)}</td>
+                  <td className="px-2 py-1 text-right text-xs font-medium">{fmtUsd(m.costUsd)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       </div>
 
@@ -1490,13 +1584,15 @@ function CostSection() {
                 <th className="px-2 py-1 text-left">Agent</th>
                 <th className="px-2 py-1 text-left">Provider</th>
                 <th className="px-2 py-1 text-left">Model</th>
-                <th className="px-2 py-1 text-right">Tokens</th>
+                <th className="px-2 py-1 text-right">In</th>
+                <th className="px-2 py-1 text-right">Out</th>
+                <th className="px-2 py-1 text-right">Cache r/w</th>
                 <th className="px-2 py-1 text-right">Cost</th>
               </tr>
             </thead>
             <tbody>
               {usage.length === 0 && (
-                <tr><td colSpan={6} className="px-2 py-4 text-center text-xs text-[var(--text-muted)]">No usage recorded yet.</td></tr>
+                <tr><td colSpan={8} className="px-2 py-4 text-center text-xs text-[var(--text-muted)]">No usage recorded yet.</td></tr>
               )}
               {usage.map((u) => (
                 <tr key={u.id} className="border-t border-[var(--border)]">
@@ -1504,8 +1600,10 @@ function CostSection() {
                   <td className="px-2 py-1 text-xs">{u.agent}</td>
                   <td className="px-2 py-1 text-xs">{u.provider}</td>
                   <td className="px-2 py-1 text-xs">{u.model}</td>
-                  <td className="px-2 py-1 text-right text-xs">{(u.inputTokens || 0) + (u.outputTokens || 0)}</td>
-                  <td className="px-2 py-1 text-right text-xs">${(u.costUsd || 0).toFixed(4)}</td>
+                  <td className="px-2 py-1 text-right text-xs">{fmtInt(u.inputTokens)}</td>
+                  <td className="px-2 py-1 text-right text-xs">{fmtInt(u.outputTokens)}</td>
+                  <td className="px-2 py-1 text-right text-xs">{fmtInt(u.cacheReadTokens)}/{fmtInt(u.cacheWriteTokens)}</td>
+                  <td className="px-2 py-1 text-right text-xs">{fmtUsd(u.costUsd)}</td>
                 </tr>
               ))}
             </tbody>

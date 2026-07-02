@@ -183,15 +183,16 @@ export class AnthropicProvider implements AIProvider {
     }
   }
 
-  private toUsageObj(modelId: string, usage?: { input_tokens: number; output_tokens: number }) {
+  private toUsageObj(modelId: string, usage?: any) {
     if (!usage) return undefined;
-    const totalTokens = usage.input_tokens + usage.output_tokens;
-    return {
-      inputTokens: usage.input_tokens,
-      outputTokens: usage.output_tokens,
-      totalTokens,
-      costUsd: estimateCost(modelId, { inputTokens: usage.input_tokens, outputTokens: usage.output_tokens, totalTokens }),
-    };
+    // Anthropic's `input_tokens` already EXCLUDES cached tokens; cache read/write are separate fields.
+    const inputTokens = usage.input_tokens ?? 0;
+    const outputTokens = usage.output_tokens ?? 0;
+    const cacheReadTokens = usage.cache_read_input_tokens ?? 0;
+    const cacheWriteTokens = usage.cache_creation_input_tokens ?? 0;
+    const totalTokens = inputTokens + outputTokens + cacheReadTokens + cacheWriteTokens;
+    const usageObj = { inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, totalTokens };
+    return { ...usageObj, costUsd: estimateCost(modelId, usageObj) };
   }
 
   async *generateTextStream(opts: GenerateTextOptions): AsyncIterable<string> {

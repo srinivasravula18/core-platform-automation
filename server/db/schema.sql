@@ -280,11 +280,17 @@ CREATE TABLE IF NOT EXISTS usage_log (
   model         TEXT NOT NULL,
   input_tokens  INT DEFAULT 0,
   output_tokens INT DEFAULT 0,
+  cache_read_tokens  INT DEFAULT 0,
+  cache_write_tokens INT DEFAULT 0,
   cost_usd      NUMERIC(12, 6) DEFAULT 0,
   request_id    TEXT,
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS usage_log_workspace_day ON usage_log(workspace_id, created_at);
+CREATE INDEX IF NOT EXISTS usage_log_created_at ON usage_log(created_at);
+-- Backfill cache columns on an existing deployment (no-op if already present).
+ALTER TABLE usage_log ADD COLUMN IF NOT EXISTS cache_read_tokens  INT DEFAULT 0;
+ALTER TABLE usage_log ADD COLUMN IF NOT EXISTS cache_write_tokens INT DEFAULT 0;
 
 -- AI Inbox
 CREATE TABLE IF NOT EXISTS inbox (

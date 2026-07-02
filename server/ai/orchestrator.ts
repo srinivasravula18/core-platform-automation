@@ -197,6 +197,8 @@ export class AgentOrchestrator {
       model: result.model,
       inputTokens: result.usage?.inputTokens ?? 0,
       outputTokens: result.usage?.outputTokens ?? 0,
+      cacheReadTokens: result.usage?.cacheReadTokens ?? 0,
+      cacheWriteTokens: result.usage?.cacheWriteTokens ?? 0,
       costUsd: result.usage?.costUsd ?? 0,
       requestId: pipeline.requestId,
     });
@@ -236,6 +238,8 @@ export class AgentOrchestrator {
       model: result.model,
       inputTokens: result.usage?.inputTokens ?? 0,
       outputTokens: result.usage?.outputTokens ?? 0,
+      cacheReadTokens: result.usage?.cacheReadTokens ?? 0,
+      cacheWriteTokens: result.usage?.cacheWriteTokens ?? 0,
       costUsd: result.usage?.costUsd ?? 0,
       requestId: pipeline.requestId,
     });
@@ -349,6 +353,8 @@ export class AgentOrchestrator {
         model: res.model,
         inputTokens: res.usage?.inputTokens ?? 0,
         outputTokens: res.usage?.outputTokens ?? 0,
+        cacheReadTokens: res.usage?.cacheReadTokens ?? 0,
+        cacheWriteTokens: res.usage?.cacheWriteTokens ?? 0,
         costUsd: res.usage?.costUsd ?? 0,
         requestId: pipeline.requestId,
       });
