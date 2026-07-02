@@ -4,12 +4,12 @@ import { addActivity, persistDataInBackground } from '../../shared/storage';
 import { getAIErrorMessage } from '../../shared/ai';
 import { confirmRequirementDraft, discoverRequirement, draftRequirement, getRequirementWithCases } from './requirementService';
 import { reqScope, scopeFilter } from '../../shared/scope';
-import { getApp, getProject } from '../projects/projectService';
+import { getApp, getProjectRepoPath } from '../projects/projectService';
 import { resolveCredentials } from '../credentials/credentialsService';
 import { buildCorePlatformApplicationContext } from '../agent/applicationContext';
 
 function repoPathForScope(scope: ReturnType<typeof reqScope>): string {
-  return scope.projectId ? (getProject(scope.projectId)?.repoPath || '') : '';
+  return scope.projectId ? getProjectRepoPath(scope.projectId) : '';
 }
 
 async function applicationContextPromptForScope(scope: ReturnType<typeof reqScope>, query: string): Promise<string> {

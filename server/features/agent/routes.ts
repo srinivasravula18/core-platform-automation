@@ -15,13 +15,30 @@ import { liveAuthor, emitScript } from './liveAuthor';
 import { inspectFlow, flowToScript } from './flowInspector';
 import { extractSelectorMap, renderSelectorMap, mapHas, correctSelectorMethods, type SelectorMap } from './selectorMap';
 
-// Cache the extracted code selector-map per repo (the source rarely changes mid-session).
+// Cache the extracted code selector-map per repo+app (the source rarely changes mid-session).
+// Keyed by the SCOPED path AND appId so two apps that share one repo (e.g. Admin on :5002 and
+// Keystone on :5003, both under D:\core-platform) never get each other's selector map. When an app
+// declares a repoSubpath, extraction is scoped to that subtree so its selectors don't include the
+// sibling app's. Falls back to the whole repo when no subpath is set (shared-source apps).
 const selectorMapCache = new Map<string, SelectorMap>();
-function getSelectorMap(repoPath: string): SelectorMap | null {
-  const key = (repoPath || '').trim();
-  if (!key) return null;
+function getSelectorMap(repoPath: string, opts: { appId?: string; subpath?: string } = {}): SelectorMap | null {
+  const base = (repoPath || '').trim();
+  if (!base) return null;
+  const scopedPath = opts.subpath ? path.join(base, opts.subpath) : base;
+  const key = `${scopedPath}::${opts.appId || ''}`;
   if (selectorMapCache.has(key)) return selectorMapCache.get(key)!;
-  try { const m = extractSelectorMap(key); selectorMapCache.set(key, m); return m; } catch { return null; }
+  try {
+    const target = existsSync(scopedPath) ? scopedPath : base;
+    const m = extractSelectorMap(target);
+    selectorMapCache.set(key, m);
+    return m;
+  } catch { return null; }
+}
+/** Selector map scoped to the run's selected app (its repo subpath + appId) — never the sibling app's. */
+function getRunSelectorMap(run: any): SelectorMap | null {
+  const repoPath = getProjectRepoPath(run?.projectId || '').trim();
+  const app = run?.appId ? getApp(run.appId) : undefined;
+  return getSelectorMap(repoPath, { appId: run?.appId || '', subpath: (app as any)?.repoSubpath || '' });
 }
 import { promises as fsp, readFileSync, existsSync } from 'fs';
 import path from 'path';
@@ -39,7 +56,7 @@ import { classifyFailure } from '../../ai/recovery';
 import { isProjectOverQuota } from '../../ai/costTracker';
 import { retrieveRunMemories, summarizeMemoriesForPrompt, recordRunMemory } from '../../ai/memory/runMemory';
 import { reqScope, scopeFilter } from '../../shared/scope';
-import { getApp, getProject } from '../projects/projectService';
+import { getApp, getProject, getProjectRepoPath } from '../projects/projectService';
 import { fetchTestDataPack } from '../../ai/tools/corePlatformData';
 import { applicationContextCacheKey, buildCorePlatformApplicationContext } from './applicationContext';
 import {
@@ -1943,7 +1960,7 @@ Do NOT write comments such as "Auth is expected to be handled by global setup". 
     : '';
   // REAL SELECTORS extracted from the app's source — the code is the source of truth for
   // selectors, so the coder uses these instead of guessing (no more guessed /save/i timeouts).
-  const codeMap = getSelectorMap((getProject(run.projectId || '')?.repoPath || '').trim());
+  const codeMap = getRunSelectorMap(run);
   const coderSelectorMap = codeMap
     ? `\nREAL SELECTORS FROM THE APP SOURCE (the codebase IS the source of truth — use these EXACT labels/names; ground every getByRole name / getByLabel / getByText / getByTestId in one of these; do NOT invent a selector that is not here):\n${renderSelectorMap(codeMap)}\n`
     : '';
@@ -2102,7 +2119,7 @@ Test case payload: ${JSON.stringify({ test_cases: [testCase] })}${coderKnowledge
     persistDataInBackground('incomplete agent scripts');
     return;
   }
-  const preVerifiedMap = getSelectorMap((getProject(run.projectId || '')?.repoPath || '').trim());
+  const preVerifiedMap = getRunSelectorMap(run);
   // Only let the STATIC repo map rewrite selector methods when we lack a usable live DOM capture.
   // With live truth available, this static rewrite corrupts correct role selectors toward repo
   // homonyms; the DOM-first verifier below grounds them from the real page instead.
@@ -2236,8 +2253,8 @@ async function verifyScriptsWithGitAgent(run: any, scripts: any[], _prompt: stri
   if (!Array.isArray(scripts) || !scripts.length) return { ok: true };
   pushPhase(run, { agent: 'SelectorVerifier', status: 'running' });
   try {
-    const repoPath = (getProject(run.projectId || '')?.repoPath || '').trim();
-    const map = getSelectorMap(repoPath);
+    const repoPath = getProjectRepoPath(run.projectId || '').trim();
+    const map = getRunSelectorMap(run);
     // DOM-first: the live inspection of THIS page is the primary authority; the repo map is only a
     // fallback for when live capture is too thin to trust. Fail only when we have NEITHER.
     const live = buildLiveSelectorIndex(run);
@@ -2726,7 +2743,7 @@ async function runScriptsAndCollectEvidence(run: any, targetUrl: string, testCas
               // just grounded against the real page back toward a repo homonym (re-introducing the
               // exact failure repair is meant to fix).
               const repairLiveUsable = buildLiveSelectorIndex({ inspection_context: groundingContext }).usable;
-              const repairMap = getSelectorMap((getProject(run.projectId || '')?.repoPath || '').trim());
+              const repairMap = getRunSelectorMap(run);
               if (repairMap && !repairLiveUsable) code = correctSelectorMethods(code, repairMap).code;
               code = normalizeSelectorsFromInspection(code, groundingContext || run.inspection_context);
               scripts[idx].code = code;
@@ -2891,7 +2908,7 @@ export function registerAgentRoutes(app: Express) {
   app.post('/api/agent/flow-test', async (req, res) => {
     try {
       const { goal, app_url, username, password, testData, projectId } = req.body || {};
-      const repoPath = (getProject(String(projectId || ''))?.repoPath || '').trim();
+      const repoPath = getProjectRepoPath(String(projectId || '')).trim();
       if (!repoPath) { res.status(400).json({ error: 'No repo bound to the project — FlowInspector needs source.' }); return; }
       const url = String(app_url || '');
       const creds = (username && password) ? { username: String(username), password: String(password) } : undefined;
@@ -3466,7 +3483,7 @@ export function registerAgentRoutes(app: Express) {
         }
         try {
           // Research the SELECTED project's repo — dynamic per app, no hardcoded path.
-          const repoPath = (getProject(newRun.projectId || '')?.repoPath || '').trim();
+          const repoPath = getProjectRepoPath(newRun.projectId || '').trim();
           // Strike 3: ground the CodeAnalyst on the SAME resolved understanding the case
           // writer/coder use (resolveUnderstanding applies the chat fallback) instead of the
           // raw request-body approvedUnderstanding, so all three workers share one grounding.
@@ -3532,7 +3549,7 @@ export function registerAgentRoutes(app: Express) {
         } else if (wantsFeatureInventory(prompt || '', analystUnderstanding || approvedUnderstanding || '')) {
           pushPhase(newRun, { agent: 'FeatureWriter', status: 'running' });
           try {
-            const repoPath = (getProject(newRun.projectId || '')?.repoPath || '').trim();
+            const repoPath = getProjectRepoPath(newRun.projectId || '').trim();
             const inventoryResult = await discoverFeatureInventoryFromSource(
               `${scopeContextText} ${prompt || ''} ${analystUnderstanding}`.trim(),
               {

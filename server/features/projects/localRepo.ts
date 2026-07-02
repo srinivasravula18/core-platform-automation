@@ -10,7 +10,7 @@
 import path from 'path';
 import fs from 'fs';
 import { spawnSync } from 'child_process';
-import { DEFAULT_PROJECT_ID, getProject, resolveDefaultProjectRepoPath } from './projectService';
+import { DEFAULT_PROJECT_ID, getProject, resolveDefaultProjectRepoPath, resolveRepoPath } from './projectService';
 import type { TreeEntry, CommitSummary, DiffFile } from './githubApi';
 
 function repoError(message: string, status = 400): Error {
@@ -28,6 +28,12 @@ function repoPathOf(projectId: string): string {
   const configuredPath = String(project.repoPath || '').trim();
   if (fs.existsSync(configuredPath)) {
     return configuredPath;
+  }
+  // Deployed host: the configured (dev-machine) path won't exist here — resolve the repo folder
+  // under the Settings "server repository root" by its folder name / project slug.
+  const resolvedUnderRoot = resolveRepoPath(configuredPath, project.slug);
+  if (resolvedUnderRoot && resolvedUnderRoot !== configuredPath && fs.existsSync(resolvedUnderRoot)) {
+    return resolvedUnderRoot;
   }
   const fallbackPath = project.id === DEFAULT_PROJECT_ID ? resolveDefaultProjectRepoPath(configuredPath) : configuredPath;
   if (fallbackPath && fallbackPath !== configuredPath && fs.existsSync(fallbackPath)) {

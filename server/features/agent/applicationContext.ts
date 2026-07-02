@@ -2,7 +2,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from 'fs';
 import path from 'path';
 import { fetchCorePlatformObjectCatalog, fetchTestDataPack, type CatalogConn } from '../../ai/tools/corePlatformData';
 import { buildKnowledgeBlock } from '../knowledge/knowledgeService';
-import { getApp, getProject, type AppRecord, type Project } from '../projects/projectService';
+import { getApp, getProject, resolveRepoPath, type AppRecord, type Project } from '../projects/projectService';
 
 type CredentialsLike = { username?: string; password?: string; token?: string };
 
@@ -153,7 +153,7 @@ function buildDocsContext(repoPath: string, hintText: string): CorePlatformAppli
 }
 
 function buildRepoContext(project?: Project, app?: AppRecord): CorePlatformApplicationContext['repo'] {
-  const repoPath = normalizePath(project?.repoPath || '');
+  const repoPath = normalizePath(resolveRepoPath(project?.repoPath || '', project?.slug));
   if (!repoPath) return null;
   const appRoot = app?.repoSubpath ? path.join(repoPath, app.repoSubpath) : repoPath;
   const rootSpecs: Array<{ name: string; rel: string }> = [{ name: 'appRoot', rel: app?.repoSubpath || '' }];
@@ -232,7 +232,8 @@ export async function buildCorePlatformApplicationContext(input: {
   const repo = buildRepoContext(project, app);
   if (!project) warnings.push('No selected project was resolved.');
   if (!app) warnings.push('No selected app was resolved; using target URL only.');
-  if (project?.repoPath && !existsSync(project.repoPath)) warnings.push(`Selected project repo path does not exist: ${project.repoPath}`);
+  const resolvedProjectRepo = project ? resolveRepoPath(project.repoPath || '', project.slug) : '';
+  if (project?.repoPath && !existsSync(resolvedProjectRepo)) warnings.push(`Selected project repo path does not exist: ${resolvedProjectRepo || project.repoPath}`);
   if (repo && !repo.appRootExists) warnings.push(`Selected app repo root does not exist: ${repo.appRoot}`);
 
   const credentialConn: CatalogConn = {
@@ -250,7 +251,7 @@ export async function buildCorePlatformApplicationContext(input: {
     input.understanding,
     (() => { try { return JSON.stringify(input.inspectionContext || ''); } catch { return ''; } })(),
   ].filter(Boolean).join('\n');
-  const docs = buildDocsContext(normalizePath(project?.repoPath || ''), hintText);
+  const docs = buildDocsContext(normalizePath(resolvedProjectRepo || project?.repoPath || ''), hintText);
   const objectHints = Array.from(new Set([...(input.objectHints || []), ...extractMetadataObjectHints(input.understanding)])).slice(0, 12);
 
   let catalog: CorePlatformApplicationContext['catalog'] = [];
@@ -287,8 +288,8 @@ export async function buildCorePlatformApplicationContext(input: {
       name: project.name,
       slug: project.slug,
       repoKind: project.repoKind,
-      repoPath: project.repoPath || '',
-      repoExists: !!project.repoPath && existsSync(project.repoPath),
+      repoPath: resolvedProjectRepo || project.repoPath || '',
+      repoExists: !!resolvedProjectRepo && existsSync(resolvedProjectRepo),
       description: project.description || '',
     } : null,
     app: app ? {

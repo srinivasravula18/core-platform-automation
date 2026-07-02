@@ -63,7 +63,6 @@ const PIPELINE: { key: string; label: string; sub?: boolean }[] = [
 
 // Statuses that halt polling and await a human decision or are final.
 const TERMINAL = ['completed', 'failed', 'review_required', 'coverage_options', 'cancelled'];
-const EXPAND_OPTIONS = [4, 5, 6, 8, 10, 12];
 
 function caseSummary(value?: string) {
   const clean = String(value || '').split(/\bTest Steps\s*:/i)[0].replace(/\s+/g, ' ').trim();
@@ -88,8 +87,9 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
   const [editing, setEditing] = useState<number | null>(null);
   const [expandedScript, setExpandedScript] = useState<number | null>(null);
   const [feedback, setFeedback] = useState<Record<number, string>>({});
-  const [expandCount, setExpandCount] = useState<Record<number, number>>({});
   const [selectedCases, setSelectedCases] = useState<Set<number>>(new Set());
+  // Per-case set of step indices ticked for merging into one.
+  const [mergePick, setMergePick] = useState<Record<number, number[]>>({});
   const [busy, setBusy] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
   const [pwRunning, setPwRunning] = useState(false);
@@ -245,8 +245,37 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
     patchCase(i, { steps });
   };
   const addStep = (i: number) => patchCase(i, { steps: [...(list[i]?.steps || []), { action: '', expected: '' }] });
-  const removeStep = (i: number, si: number) =>
+  const clearMergePick = (i: number) => setMergePick((p) => ({ ...p, [i]: [] }));
+  const removeStep = (i: number, si: number) => {
     patchCase(i, { steps: (list[i]?.steps || []).filter((_, idx) => idx !== si) });
+    clearMergePick(i); // indices shift after a removal — clear the selection
+  };
+  const toggleMergePick = (i: number, si: number) => setMergePick((p) => {
+    const cur = new Set(p[i] || []);
+    if (cur.has(si)) cur.delete(si); else cur.add(si);
+    return { ...p, [i]: [...cur] };
+  });
+  // Merge the ticked steps (2+) of a case into ONE editable step: their actions become the combined
+  // action, their expected results the combined expected. The merged step takes the position of the
+  // first picked step; the rest are removed. No AI call — the result is plain and stays editable so
+  // you can tidy the wording. Steps end in "." so a single joining space reads as separate sentences.
+  const mergePicked = (i: number) => {
+    const picks = [...(mergePick[i] || [])].sort((a, b) => a - b);
+    if (picks.length < 2) return;
+    const steps = list[i]?.steps || [];
+    const join = (parts: string[]) => parts.map((p) => String(p || '').trim()).filter(Boolean).join(' ');
+    const merged = {
+      action: join(picks.map((idx) => steps[idx]?.action || '')),
+      expected: join(picks.map((idx) => steps[idx]?.expected || '')),
+    };
+    const firstAt = picks[0];
+    const pickSet = new Set(picks);
+    const next = steps
+      .map((s, idx) => (idx === firstAt ? merged : s))
+      .filter((_, idx) => idx === firstAt || !pickSet.has(idx));
+    patchCase(i, { steps: next });
+    clearMergePick(i);
+  };
   const addCase = () => {
     const newCase = {
       title: 'New test case',
@@ -260,7 +289,7 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
     setCases((prev) => [newCase, ...(prev || [])]);
     setSelectedCases((prev) => new Set([...prev].map((idx) => idx + 1)));
     setFeedback((prev) => Object.fromEntries(Object.entries(prev).map(([idx, value]) => [Number(idx) + 1, value])));
-    setExpandCount((prev) => Object.fromEntries(Object.entries(prev).map(([idx, value]) => [Number(idx) + 1, value])));
+    setMergePick((prev) => Object.fromEntries(Object.entries(prev).map(([idx, value]) => [Number(idx) + 1, value])));
     setEditing(0);
     setSaved(false);
   };
@@ -303,22 +332,6 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
   };
 
   /* ---------- AI actions ---------- */
-  const expandSteps = async (i: number) => {
-    const c = list[i];
-    if (!c) return;
-    setBusy(`expand-${i}`);
-    try {
-      const res = await fetch('/api/agent/expand-case-steps', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ testCase: c, targetStepCount: expandCount[i] || 8, targetUrl }),
-      });
-      const data = await res.json();
-      if (res.ok && Array.isArray(data.steps)) patchCase(i, { steps: data.steps });
-    } finally {
-      setBusy(null);
-    }
-  };
   const reworkCase = async (i: number) => {
     const c = list[i];
     if (!c) return;
@@ -970,27 +983,23 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
                           <div className="flex flex-wrap items-center justify-between gap-2">
                             <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">Steps</span>
                             <div className="flex items-center gap-1.5">
-                              <select
-                                value={expandCount[i] || 8}
-                                onChange={(e) => setExpandCount((p) => ({ ...p, [i]: Number(e.target.value) }))}
-                                className="rounded-md border border-[var(--border)] bg-[var(--bg-card)] px-1.5 py-1 text-[11px] text-[var(--text-primary)] outline-none"
-                              >
-                                {EXPAND_OPTIONS.map((n) => (
-                                  <option key={n} value={n}>{n} steps</option>
-                                ))}
-                              </select>
-                              <button
-                                onClick={() => expandSteps(i)}
-                                disabled={busy === `expand-${i}`}
-                                className="inline-flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-card)] px-2 py-1 text-[11px] font-medium text-[var(--text-primary)] hover:border-[var(--accent)] disabled:opacity-50"
-                              >
-                                {busy === `expand-${i}` ? <Loader2 className="h-3 w-3 animate-spin" /> : <SplitSquareHorizontal className="h-3 w-3" />}
-                                Expand with AI
-                              </button>
+                              {(mergePick[i] || []).length >= 2 && (
+                                <button
+                                  onClick={() => mergePicked(i)}
+                                  title="Combine the ticked steps into one"
+                                  className="inline-flex items-center gap-1 rounded-md border border-[var(--accent)] bg-[var(--accent)]/10 px-2 py-1 text-[11px] font-medium text-[var(--accent)] hover:bg-[var(--accent)]/20"
+                                >
+                                  <SplitSquareHorizontal className="h-3 w-3 rotate-180" />
+                                  Merge {(mergePick[i] || []).length} steps
+                                </button>
+                              )}
                             </div>
                           </div>
                           {(c.steps || []).map((s, si) => (
-                            <div key={si} className="grid grid-cols-1 gap-1.5 rounded-md border border-[var(--border)] bg-[var(--bg-card)] p-1.5 lg:grid-cols-[1fr_1fr_auto]">
+                            <div key={si} className="grid grid-cols-1 gap-1.5 rounded-md border border-[var(--border)] bg-[var(--bg-card)] p-1.5 lg:grid-cols-[auto_1fr_1fr_auto]">
+                              <label className="flex items-start justify-center pt-1" title="Tick 2+ steps, then Merge">
+                                <input type="checkbox" checked={(mergePick[i] || []).includes(si)} onChange={() => toggleMergePick(i, si)} className="h-3.5 w-3.5 accent-[var(--accent)]" />
+                              </label>
                               <textarea
                                 value={s.action || ''}
                                 onChange={(e) => patchStep(i, si, { action: e.target.value })}

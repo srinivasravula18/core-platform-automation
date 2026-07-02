@@ -11,6 +11,7 @@
 
 import { randomUUID } from 'crypto';
 import { existsSync } from 'fs';
+import path from 'path';
 import { db, persistDataInBackground, savePersistedData } from '../../shared/storage';
 import { isPostgresEnabled, query } from '../../db/pool';
 
@@ -103,6 +104,37 @@ export function resolveDefaultProjectRepoPath(currentPath = ''): string {
   if (existsSync(current)) return current;
   if (isLegacyWindowsDefaultRepoPath(current) && preferred && preferred !== current) return preferred;
   return current;
+}
+
+/**
+ * Resolve a project's on-disk repo folder for THIS host. A repoPath is stored as the absolute path
+ * from wherever the project was created (usually a dev machine, e.g. "D:\core-platform"). On a
+ * deployed server that exact path won't exist — so when a "server repository root" is configured in
+ * Settings, we look for the same repo folder under that root by its folder name (and the project
+ * slug). This lets the deployed instance find the correct folders without re-entering every path.
+ * Falls back to the raw path when nothing resolves, so callers still get a clear "not found" signal.
+ */
+export function resolveRepoPath(rawPath: string, slug = ''): string {
+  const raw = String(rawPath || '').trim();
+  if (raw && existsSync(raw)) return raw;
+  const root = String((db as any).settings?.serverRepoRoot || '').trim();
+  if (!root) return raw;
+  // basename must handle a Windows path evaluated on a POSIX host (\ is not a separator there),
+  // so split on BOTH separators rather than relying on path.basename alone.
+  const folder = raw.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || '';
+  const candidates = [
+    folder ? path.join(root, folder) : '',
+    slug ? path.join(root, slug) : '',
+    root, // the configured root may itself be the repo
+  ].filter(Boolean) as string[];
+  for (const candidate of candidates) if (existsSync(candidate)) return candidate;
+  return candidates[0] || raw;
+}
+
+/** Convenience: the resolved on-disk repo path for a project id (empty string if unknown). */
+export function getProjectRepoPath(id: string): string {
+  const project = getProject(id);
+  return project ? resolveRepoPath(project.repoPath || '', project.slug) : '';
 }
 
 /** Make a slug unique within a set of existing slugs. */

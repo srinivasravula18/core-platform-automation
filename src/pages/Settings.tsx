@@ -3,7 +3,7 @@ import { useTheme } from '@/src/store/theme';
 import {
   Moon, Sun, CheckCircle, AlertCircle, Plus, Trash2, RefreshCw, Bot, Key,
   Globe, Users, Sparkles, MessageSquare, ChevronDown, ChevronUp, Send, Shield,
-  Eye, EyeOff, Zap, RotateCcw, Save, BookOpen, Pencil, Check, X, Activity, Loader2,
+  Eye, EyeOff, Zap, RotateCcw, Save, BookOpen, Pencil, Check, X, Activity, Loader2, FolderTree,
 } from 'lucide-react';
 import { GoogleSheetsIntegration } from '../components/GoogleSheetsIntegration';
 import { isAdmin } from '../components/AuthGate';
@@ -80,7 +80,7 @@ const AGENT_LABELS: Record<string, { label: string; description: string }> = {
 
 export default function Settings() {
   const { theme, setTheme } = useTheme();
-  const [tab, setTab] = useState<'appearance' | 'providers' | 'prompts' | 'credentials' | 'cost' | 'profiles'>('providers');
+  const [tab, setTab] = useState<'appearance' | 'providers' | 'prompts' | 'credentials' | 'cost' | 'profiles' | 'deployment'>('providers');
   const admin = isAdmin();
 
   const tabs: Array<[typeof tab, string, any]> = [
@@ -90,6 +90,8 @@ export default function Settings() {
     ['cost', 'Cost & Logs', Activity],
     // Admin-only: create/manage the people who can log in and use the app.
     ...(admin ? [['profiles', 'Profiles', Users] as [typeof tab, string, any]] : []),
+    // Admin-only: where repos live on THIS server (so a deployed instance finds the right folders).
+    ...(admin ? [['deployment', 'Deployment', FolderTree] as [typeof tab, string, any]] : []),
     ['appearance', 'Appearance', Sun],
   ];
 
@@ -123,6 +125,7 @@ export default function Settings() {
       {tab === 'credentials' && <CredentialsSection />}
       {tab === 'cost' && <CostSection />}
       {tab === 'profiles' && admin && <ProfilesSection />}
+      {tab === 'deployment' && admin && <DeploymentSection />}
     </div>
   );
 }
@@ -288,6 +291,75 @@ function ProfilesSection() {
             ))}
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+function DeploymentSection() {
+  const [root, setRoot] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState<SaveStatus>({ type: 'idle', message: '' });
+
+  useEffect(() => {
+    fetch('/api/settings')
+      .then((r) => r.json())
+      .then((s) => setRoot(String(s?.serverRepoRoot || '')))
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, []);
+
+  const save = async () => {
+    setBusy(true);
+    setStatus({ type: 'idle', message: '' });
+    try {
+      const res = await fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ serverRepoRoot: root.trim() }),
+      });
+      if (!res.ok) throw new Error('Save failed');
+      setStatus({ type: 'success', message: 'Server repository root saved.' });
+    } catch (e: any) {
+      setStatus({ type: 'error', message: e?.message || 'Could not save.' });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-card)] p-6 shadow-sm">
+        <h2 className="text-lg font-medium">Server repository root</h2>
+        <p className="mt-1 text-sm text-[var(--text-muted)]">
+          The base folder on THIS server where project repositories live. Each project stores the
+          absolute path from wherever it was created (often a dev machine, e.g. <code>D:\core-platform</code>).
+          On a deployed server that exact path usually does not exist — set the server's repo root here
+          and the agent will find each project's repo folder under it (matched by folder name, then by
+          project slug). Leave blank to always use each project's stored path.
+        </p>
+        <div className="mt-4 flex flex-col gap-2 sm:flex-row">
+          <input
+            value={root}
+            onChange={(e) => setRoot(e.target.value)}
+            placeholder="/srv/repos  or  /home/deploy/projects"
+            disabled={loading}
+            className="min-w-0 flex-1 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
+          />
+          <button
+            onClick={save}
+            disabled={busy || loading}
+            className="inline-flex items-center justify-center gap-2 rounded-md bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50"
+          >
+            {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />} Save
+          </button>
+        </div>
+        <p className="mt-3 text-xs text-[var(--text-muted)]">
+          Example: a project whose stored repo path is <code>D:\core-platform</code> resolves to
+          {' '}<code>&lt;root&gt;/core-platform</code> on the server whenever the original path is not present.
+        </p>
+        <div className="mt-3"><StatusBanner status={status} /></div>
       </div>
     </div>
   );
