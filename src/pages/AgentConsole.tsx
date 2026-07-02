@@ -32,7 +32,7 @@ import {
   Info,
 } from 'lucide-react';
 import { cn } from '@/src/lib/utils';
-import { useProjects } from '@/src/store/project';
+import { useProjects, type ProjectApp } from '@/src/store/project';
 import { useSpeechToText } from '@/src/lib/useSpeechToText';
 import { showToast } from '@/src/lib/dialog';
 import { WorkflowRunner } from '@/src/components/WorkflowRunner';
@@ -128,6 +128,16 @@ function findWebsiteInText(text: string, websites: Array<{ id: string; name: str
     .filter((m) => m.score > 0)
     .sort((a, b) => b.score - a.score);
   return matches[0]?.w || null;
+}
+
+function findTargetInText(text: string, targets: Array<{ id?: string; name: string; baseUrl?: string }>): { id?: string; name: string; baseUrl: string } | null {
+  const q = normalizeAppMention(text);
+  const matches = (targets || [])
+    .filter((t) => t.baseUrl)
+    .map((t) => ({ t: { id: t.id, name: t.name, baseUrl: t.baseUrl! }, score: appMentionAliases(t).find((a) => hasAppMention(q, a))?.length || 0 }))
+    .filter((m) => m.score > 0)
+    .sort((a, b) => b.score - a.score);
+  return matches[0]?.t || null;
 }
 
 // An explicit number in the prompt ("write 12 cases") is honored as-is (capped at
@@ -1104,6 +1114,8 @@ export default function AgentConsole() {
   const allAppsSelected = websites.length > 0 && selectedAppIds.size === websites.length;
   const selectedAppsRef = useRef<Array<{ name: string; baseUrl: string }>>([]);
   useEffect(() => { selectedAppsRef.current = selectedApps; });
+  const projectAppsRef = useRef<ProjectApp[]>([]);
+  useEffect(() => { projectAppsRef.current = scopeProject?.apps || []; });
   // The top-bar scope app, mirrored to a ref so callbacks read the latest.
   const scopeAppRef = useRef<{ name: string; baseUrl: string } | null>(null);
   useEffect(() => { scopeAppRef.current = scopeApp ? { name: scopeApp.name, baseUrl: scopeApp.baseUrl } : null; });
@@ -1128,7 +1140,7 @@ export default function AgentConsole() {
     const selected = getSelectedApps();
     if (selected.length) return selected;
     const q = normalizeAppMention(text);
-    const named = websites
+    const named = [...websites, ...projectAppsRef.current]
       .filter((w) => w.baseUrl)
       .map((w) => ({ name: w.name, baseUrl: w.baseUrl, score: appMentionAliases(w).find((a) => hasAppMention(q, a))?.length || 0 }))
       .filter((w) => w.score > 0)
@@ -1351,7 +1363,7 @@ export default function AgentConsole() {
           return;
         }
         // Folder-like reply → start the deep run with the reviewed understanding.
-        const folderMention = isAutoFolderResponse(text) ? '' : stripFolderPrefix(text);
+        const folderMention = isAutoFolderResponse(text) ? 'auto' : stripFolderPrefix(text);
         const approvedUnderstanding = activePending.understanding || lastAssistantAnswer(buildHistory());
         setPendingDeep(null);
         try {
@@ -1529,15 +1541,20 @@ export default function AgentConsole() {
             findWebsiteInText(routedName, websites) ||
             findWebsiteInText(routedUrl, websites) ||
             findWebsiteInText(text, websites);
+          const namedTarget =
+            findTargetInText(routedName, [...websites, ...projectAppsRef.current]) ||
+            findTargetInText(routedUrl, [...websites, ...projectAppsRef.current]) ||
+            findTargetInText(text, [...websites, ...projectAppsRef.current]);
           const targetUrl =
             routedUrl ||
+            namedTarget?.baseUrl ||
             namedSite?.baseUrl ||
             scopeAppUrl ||
             (getSelectedApps()[0]?.baseUrl || '') ||
             convTargetRef.current?.targetUrl ||
             '';
           const websiteId = namedSite?.id || convTargetRef.current?.websiteId;
-          const websiteName = routedName || namedSite?.name || convTargetRef.current?.websiteName;
+          const websiteName = routedName || namedTarget?.name || namedSite?.name || convTargetRef.current?.websiteName;
           if (!targetUrl && !websiteId) {
             replaceTurn(thinkingId, {
               id: thinkingId,
@@ -1675,7 +1692,7 @@ export default function AgentConsole() {
           approvedUnderstanding: turn.understanding || '',
           understandingSource: turn.understandingSource || '',
           priorGrounding: turn.understanding || '',
-          folderMention: folderName || undefined,
+          folderMention: folderName || 'auto',
           caseCountPrompt: turn.caseCountPrompt || turn.originalPrompt || '',
         });
       } catch (err: any) {

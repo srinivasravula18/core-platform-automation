@@ -300,6 +300,8 @@ function DeploymentSection() {
   const [root, setRoot] = useState('');
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [verifying, setVerifying] = useState(false);
+  const [verifyResult, setVerifyResult] = useState<{ ok: boolean; message: string } | null>(null);
   const [status, setStatus] = useState<SaveStatus>({ type: 'idle', message: '' });
 
   useEffect(() => {
@@ -328,6 +330,30 @@ function DeploymentSection() {
     }
   };
 
+  // Verify the folder exists on THIS server and report how many files it holds — so you can confirm
+  // the deployed instance can actually read your code, entirely from the UI.
+  const verify = async () => {
+    setVerifying(true);
+    setVerifyResult(null);
+    try {
+      const res = await fetch('/api/settings/verify-repo-root', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: root.trim() }),
+      });
+      const data = await res.json();
+      if (data?.ok) {
+        setVerifyResult({ ok: true, message: `Verified — ${Number(data.fileCount).toLocaleString()} file${data.fileCount === 1 ? '' : 's'} found${data.truncated ? '+ (stopped counting at the cap)' : ''}.` });
+      } else {
+        setVerifyResult({ ok: false, message: data?.reason || 'Could not verify the folder.' });
+      }
+    } catch {
+      setVerifyResult({ ok: false, message: 'Verification request failed.' });
+    } finally {
+      setVerifying(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
       <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-card)] p-6 shadow-sm">
@@ -348,6 +374,14 @@ function DeploymentSection() {
             className="min-w-0 flex-1 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
           />
           <button
+            onClick={verify}
+            disabled={verifying || loading || !root.trim()}
+            title="Check the folder exists on this server and count its files"
+            className="inline-flex items-center justify-center gap-2 rounded-md border border-[var(--border)] bg-[var(--bg-card)] px-4 py-2 text-sm font-medium text-[var(--text-primary)] hover:border-[var(--accent)] disabled:opacity-50"
+          >
+            {verifying ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle className="h-4 w-4" />} Verify
+          </button>
+          <button
             onClick={save}
             disabled={busy || loading}
             className="inline-flex items-center justify-center gap-2 rounded-md bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50"
@@ -355,6 +389,12 @@ function DeploymentSection() {
             {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />} Save
           </button>
         </div>
+        {verifyResult && (
+          <div className={`mt-3 flex items-center gap-2 rounded-md border px-3 py-2 text-sm ${verifyResult.ok ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400' : 'border-red-500/30 bg-red-500/10 text-red-400'}`}>
+            {verifyResult.ok ? <CheckCircle className="h-4 w-4 shrink-0" /> : <AlertCircle className="h-4 w-4 shrink-0" />}
+            <span>{verifyResult.message}</span>
+          </div>
+        )}
         <p className="mt-3 text-xs text-[var(--text-muted)]">
           Example: a project whose stored repo path is <code>D:\core-platform</code> resolves to
           {' '}<code>&lt;root&gt;/core-platform</code> on the server whenever the original path is not present.

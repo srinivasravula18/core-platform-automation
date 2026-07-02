@@ -10,6 +10,7 @@ coverage/
 .testflow-settings.json
 .testflow-git-agent-state.json
 .testflow-data.json
+.testflow-data.json.bak-project-cleanup
 
 # Playwright MCP + browser-automation artifacts
 .playwright-mcp/
@@ -42,3 +43,5 @@ scripts/**/*-json/
 # Claude Code local workspace
 .claude/
 .testflow-run-memory.json
+
+**/json.bak-project-cleanup/

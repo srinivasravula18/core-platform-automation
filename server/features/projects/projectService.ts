@@ -309,6 +309,10 @@ const SCOPED_PG_TABLES = ['plans', 'suites', 'cases', 'runs', 'defects', 'report
  * team already has lives under one project. Runs once (guarded by a settings flag).
  */
 export async function seedDefaultProjectAndBackfill(): Promise<void> {
+  // User-configured only. The top-bar project/app switcher must not create or
+  // auto-adopt projects on startup; end users configure these records explicitly.
+  return;
+
   const defaultRepoPath = resolveDefaultProjectRepoPath();
   // 1) Seed the default project if there are none yet.
   if (projects().length === 0) {

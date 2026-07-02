@@ -53,13 +53,13 @@ import {
   fetchCorePlatformApps, fetchCorePlatformAppTabs, ALL_APPS_ID,
 } from './appTargeting';
 import { pushInboxItem } from '../inbox/routes';
-import { Plans, Suites, Cases, Runs, Reports, Scripts, Folders, Requirements, RequirementLinks, Defects } from '../../db/repository';
+import { Plans, Suites, Cases, Runs, Reports, Scripts, Folders, Requirements, RequirementLinks, Defects, isPgEnabled } from '../../db/repository';
 import { runGuardrailPipeline } from '../../ai/guardrails';
 import { assessInspection, assessCasesGrounding, assessExecution, assessFeatureCompleteness } from '../../ai/verifier';
 import { classifyFailure } from '../../ai/recovery';
 import { isProjectOverQuota } from '../../ai/costTracker';
 import { retrieveRunMemories, summarizeMemoriesForPrompt, recordRunMemory } from '../../ai/memory/runMemory';
-import { reqScope, scopeFilter } from '../../shared/scope';
+import { reqScope, scopeFilter, scopeStamp } from '../../shared/scope';
 import { getApp, getProject, getProjectRepoPath } from '../projects/projectService';
 import { fetchTestDataPack } from '../../ai/tools/corePlatformData';
 import { applicationContextCacheKey, buildCorePlatformApplicationContext } from './applicationContext';
@@ -3355,6 +3355,13 @@ export function registerAgentRoutes(app: Express) {
       prompt: prompt || '',
       targetUrl,
     });
+    if (folder) {
+      Object.assign(folder, scopeStamp(scope));
+      folder.path = getFolderPath(folder.id);
+      await ensureFolderInPg(folder.id);
+      if (!isPgEnabled()) persistDataInBackground('agent folder');
+      addActivity(`Agent folder ready: ${folder.path}`);
+    }
     const taskId = randomUUID();
     const runProvider = resolveProviderForAgent('chatAssistant');
     // Ground the run in the relevant slice of the app-knowledge pack (retrieved per request).
