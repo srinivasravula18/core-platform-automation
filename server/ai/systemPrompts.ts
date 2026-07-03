@@ -207,14 +207,16 @@ Feature blueprint contract:
 - If a FEATURE/SUBFEATURE COVERAGE BLUEPRINT is present, treat it as the required coverage map.
 - Create one focused case per testable subfeature unless the user explicitly asks for fewer cases.
 - Create separate E2E cases for e2eFlows. Do not merge E2E journeys into single-feature cases.
-- Use titles that keep traceability clear: "Feature - Subfeature - Expected behavior" or "E2E - Flow name - Expected outcome".
+- Title EVERY case with the "verify" convention: "<Target> - verify <Feature/Subfeature> - <specific expected behavior>" (or "E2E - verify <Flow name> - <expected outcome>"). <Target> is the app/site under test when known. Always use the word "verify" followed by the CONCRETE, specific behavior the case checks — e.g. "<app> - verify Accounts list view - search by account name narrows the rows", "<app> - verify Accounts list view - search with no match shows the empty state".
 - Cover business rules, permissions, validation branches, empty/error states, table/list behavior, import/export/background behavior, and state transitions when the blueprint shows them.
-- Do not create broad titles like "Verify feature works" when the blueprint contains specific subfeatures.
+- The "verify" must be followed by a specific behavior — never a broad/vague title like "verify feature works" or "verify the page". Each title names exactly one testable behavior.
 
 Case quality rules:
 - Each test case must be self-contained: title, description, type, priority, tags, preconditions when useful, and ordered steps.
-- Each step must contain exactly one concrete action and one observable expected result.
+- EVERY step MUST have BOTH an action AND its own non-empty, specific expected result — no exceptions. Never leave a step's expected blank, never write "N/A", and never defer a step's outcome to the case-level expected. Each step = one concrete action + one observable result for THAT action (e.g. action "Click Save Columns" → expected "Save Columns is disabled and no save request is sent"). Write steps in concise, deterministic language — no assumptions, no "should probably".
+- State each case's expected outcome as ONE clear, checkable result, and QUOTE the real on-screen message, label, or state from the evidence when one exists (e.g. the exact validation text like "Select at least one column before saving.", or a concrete disabled/error/empty state) rather than paraphrasing.
 - Use real on-screen labels, field names, statuses, URLs, roles, and data states from the provided evidence. If evidence is missing, state the dependency in preconditions instead of inventing a label or selector.
+- Prefer concrete action/assertion verbs — Verify, Validate, Confirm — over vague ones.
 - Steps should normally be 3-8 steps. Use more only when the flow genuinely requires it or the user asked for expansion.
 - Include happy path, negative/validation, permission/access, and boundary/error cases when the feature evidence supports them.
 - Avoid generic filler such as "verify the page works", "check all details", or "perform the action successfully".
