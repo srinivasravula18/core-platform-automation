@@ -57,6 +57,24 @@ export function registerAgentRuntimeRoutes(app: Express) {
         ctx,
       );
 
+      // Option A: an explicit request to GENERATE/CREATE/WRITE test cases for a feature is an
+      // ACTION — it must run the deep pipeline (which previews the coverage areas, then generates
+      // cases for review with an optional continue-to-execution), NOT be answered as a chat question
+      // with a terse "Created N cases" summary. This holds even when politely phrased "can you …?".
+      // Info questions ABOUT existing cases ("how many cases do I have", "list my cases") are excluded.
+      // With no resolvable live target, fall back to codebase-only requirement drafting (still grounded,
+      // still shows coverage) rather than the terse supervisor path.
+      const wantsCaseGen =
+        /\b(generate|create|write|draft|author|add|build|make)\b[\s\S]{0,40}\b(test\s*cases?|cases?|coverage|scenarios?)\b/i.test(message)
+        // Exclude info questions ABOUT existing artifacts. "list" must be followed by an artifact
+        // word ("list my cases") so it does NOT swallow "list view" in a real generation request.
+        && !(/\b(how many|how much|do (?:we|i) have|which cases|what cases|count)\b/i.test(message)
+          || /\b(?:list|show(?:\s+me)?)\s+(?:(?:my|the|all|our)\s+)?(?:test\s+)?(?:cases?|suites?|plans?|runs?|scripts?)\b/i.test(message));
+      if (wantsCaseGen && (route.kind === 'answer' || route.kind === 'workspace_action')) {
+        const hasTarget = !!(route.target?.url || route.target?.name || selectedApps.some((a) => a.url || a.name));
+        route.kind = hasTarget ? 'generate_cases' : 'requirement_draft';
+      }
+
       switch (route.kind) {
         case 'answer': {
           // FAST PATH: questions about the user's OWN QA artifacts (counts/lists of test cases,
