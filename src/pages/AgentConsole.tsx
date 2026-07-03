@@ -204,16 +204,30 @@ function extractRequirementOnlyQuery(text: string): string {
 
 // Suggest a readable default folder name from the task, so Proceed is enabled immediately and the
 // user can keep it or type their own — every run still lands in a real, named folder.
+// Filler words dropped when deriving a folder name from the prompt, so the name is the SUBJECT
+// (the feature under test), not the raw sentence. Real feature words ("list", "view") are kept.
+const FOLDER_STOPWORDS = new Set([
+  'please', 'can', 'could', 'would', 'will', 'you', 'kindly', 'pls',
+  'generate', 'create', 'write', 'draft', 'author', 'make', 'build', 'add', 'give',
+  'test', 'tests', 'testing', 'case', 'cases', 'scenario', 'scenarios', 'coverage',
+  'verify', 'check', 'validate', 'run', 'execute', 'do', 'help', 'me', 'us', 'i',
+  'for', 'the', 'a', 'an', 'of', 'on', 'in', 'to', 'and', 'some', 'few', 'couple', 'all',
+]);
+
+// Suggest a short, generic folder name from the user's prompt: strip filler, keep the feature
+// subject, Title-Case it, and cap at ~8 words — never the raw prompt sentence.
 function suggestFolderName(text: string): string {
-  let s = String(text || '').trim()
-    .replace(/^(?:please\s+)?(?:can you\s+|could you\s+)?(?:test|verify|check|validate|run|execute|generate\s+cases?\s+for|create\s+cases?\s+for|write\s+cases?\s+for)\s+/i, '')
-    .replace(/\bthe\b/gi, ' ')
-    .replace(/[^\w\s/-]/g, ' ')
+  const words = String(text || '')
+    .replace(/[^\w\s-]/g, ' ') // drop punctuation (incl. "/") so "settings/actions" → two words
     .replace(/\s+/g, ' ')
-    .trim();
-  if (!s) s = 'Test run';
-  s = s.charAt(0).toUpperCase() + s.slice(1);
-  return s.slice(0, 60);
+    .trim()
+    .split(' ')
+    .filter(Boolean);
+  const kept = words.filter((w) => !FOLDER_STOPWORDS.has(w.toLowerCase()));
+  const use = (kept.length ? kept : words).slice(0, 8);
+  if (!use.length) return 'Test Run';
+  const name = use.map((w) => (/^[a-z]/.test(w) ? w.charAt(0).toUpperCase() + w.slice(1) : w)).join(' ');
+  return name.slice(0, 60);
 }
 
 function isRequirementDraftApprove(text: string): boolean {
