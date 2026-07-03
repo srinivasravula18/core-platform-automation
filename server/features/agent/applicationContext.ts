@@ -337,7 +337,7 @@ export function applicationContextCacheKey(context: CorePlatformApplicationConte
 
 export function renderCorePlatformApplicationContext(context: CorePlatformApplicationContext, maxChars = 24000): string {
   const lines: string[] = [];
-  lines.push('CORE PLATFORM APPLICATION CONTEXT - AUTHORITATIVE RUN CONTEXT');
+  lines.push('APPLICATION CONTEXT');
   lines.push('Use this block, the live inspection, and source-grounded analysis as the source of truth. If a detail is missing here, say it is unknown or verify it from the app/source; do not guess labels, objects, fields, APIs, roles, routes, or data values.');
   if (context.project) {
     lines.push(`Project: ${context.project.name} (${context.project.id}) repoKind=${context.project.repoKind} repoPath=${context.project.repoPath || 'not configured'} repoExists=${context.project.repoExists}`);
@@ -365,9 +365,9 @@ export function renderCorePlatformApplicationContext(context: CorePlatformApplic
     }
   }
   if (context.catalog.length) {
-    lines.push('Live object/API catalog (valid object api_names only; use exact values):');
+    lines.push('Live object/API catalog:');
     for (const obj of context.catalog.slice(0, 160)) {
-      lines.push(`- ${obj.api_name} (${obj.label || obj.api_name}) [app=${obj.app || 'core'}]`);
+      lines.push(`- ${obj.api_name} (${obj.label || obj.api_name}) [app=${obj.app || ''}]`);
     }
     if (context.catalog.length > 160) lines.push(`- ... ${context.catalog.length - 160} additional catalog object(s) omitted from this bounded prompt block.`);
   }
@@ -379,7 +379,7 @@ export function renderCorePlatformApplicationContext(context: CorePlatformApplic
     }
   }
   if (context.testDataPack) {
-    lines.push('Live schema and sample data pack (use exact field api_names and valid values):');
+    lines.push('Live schema and sample data pack:');
     lines.push(context.testDataPack);
   }
   if (context.knowledgeBlock) lines.push(context.knowledgeBlock.trim());

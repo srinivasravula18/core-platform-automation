@@ -3,10 +3,10 @@ import fs from 'fs/promises';
 import { DEFAULT_MODELS, listAvailableModels, type ProviderName } from '../ai/providers/types';
 
 const PROVIDERS: ProviderName[] = ['gemini', 'openai', 'anthropic'];
-const DEFAULT_PROVIDER_SETTINGS: Record<ProviderName, { apiKey: string; model: string; authMode?: 'api_key' | 'account'; enabled?: boolean }> = {
-  gemini: { apiKey: '', model: '', authMode: 'api_key', enabled: true },
-  openai: { apiKey: '', model: '', authMode: 'api_key', enabled: false },
-  anthropic: { apiKey: '', model: '', authMode: 'api_key', enabled: false },
+const DEFAULT_PROVIDER_SETTINGS: Record<ProviderName, { apiKey: string; model: string; authMode?: 'api_key' | 'account'; enabled?: boolean; effort?: 'low' | 'medium' | 'high' }> = {
+  gemini: { apiKey: '', model: '', authMode: 'api_key', enabled: true, effort: 'medium' },
+  openai: { apiKey: '', model: '', authMode: 'api_key', enabled: false, effort: 'medium' },
+  anthropic: { apiKey: '', model: '', authMode: 'api_key', enabled: false, effort: 'medium' },
 };
 
 function isProviderName(value: unknown): value is ProviderName {
@@ -15,7 +15,7 @@ function isProviderName(value: unknown): value is ProviderName {
 
 function normalizeProviderSettings(settings: any) {
   const existing = settings?.providerSettings || {};
-  const providerSettings = {} as Record<ProviderName, { apiKey: string; model: string; authMode?: 'api_key' | 'account'; enabled?: boolean }>;
+  const providerSettings = {} as Record<ProviderName, { apiKey: string; model: string; authMode?: 'api_key' | 'account'; enabled?: boolean; effort?: 'low' | 'medium' | 'high' }>;
   for (const provider of PROVIDERS) {
     const stored = existing[provider] || {};
     providerSettings[provider] = {
@@ -24,6 +24,7 @@ function normalizeProviderSettings(settings: any) {
       model: typeof stored.model === 'string' ? stored.model : '',
       authMode: stored.authMode === 'account' ? 'account' : 'api_key',
       enabled: typeof stored.enabled === 'boolean' ? stored.enabled : DEFAULT_PROVIDER_SETTINGS[provider].enabled,
+      effort: ['low', 'medium', 'high'].includes(stored.effort) ? stored.effort : 'medium',
     };
   }
 
@@ -76,6 +77,7 @@ export const db: any = {
   apps: [] as any[],
   // projectId -> AES-GCM-encrypted repo access token (private-repo auth). Ciphertext only.
   repoSecrets: {} as Record<string, string>,
+  blackboard: [] as any[],
 };
 
 const settingsFilePath = path.resolve(process.cwd(), '.testflow-settings.json');
@@ -107,6 +109,7 @@ function getPersistableDbSnapshot() {
     projects: db.projects,
     apps: db.apps,
     repoSecrets: db.repoSecrets,
+    blackboard: db.blackboard,
   };
 }
 
@@ -138,6 +141,7 @@ export async function loadPersistedData() {
     db.projects = Array.isArray(data.projects) ? data.projects : [];
     db.apps = Array.isArray(data.apps) ? data.apps : [];
     db.repoSecrets = data.repoSecrets && typeof data.repoSecrets === 'object' ? data.repoSecrets : {};
+    db.blackboard = Array.isArray(data.blackboard) ? data.blackboard : [];
   } catch (error: any) {
     if (error?.code !== 'ENOENT') {
       console.error(`Failed to load persisted data from ${dataFilePath}:`, error);

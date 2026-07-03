@@ -251,9 +251,17 @@ function canonicalKind(raw: string): RouteKind {
 export function resolveTarget(raw: RawGoalClassification, ctx: RoutingContext): RouteTarget | null {
   const url = raw.target?.url?.trim();
   const name = raw.target?.name?.trim();
-  if (url || name) return { url: url || undefined, name: name || undefined };
-  const sel = (ctx.selectedApps || []).find((a) => a && (a.url?.trim() || a.name?.trim()));
-  if (sel) return { url: sel.url?.trim() || undefined, name: sel.name?.trim() || undefined };
+  // A concrete URL from the model wins — the user named or pasted a real address.
+  if (url) return { url, name: name || undefined };
+  // No model URL: an explicitly SELECTED app (which carries a real URL) beats the model's bare
+  // NAME guess, which is often a feature/tab label ("Accounts CRM") rather than a configured app.
+  // This makes the user's selection authoritative — never ask "which app?" when one is selected.
+  const selWithUrl = (ctx.selectedApps || []).find((a) => a && a.url?.trim());
+  if (selWithUrl) return { url: selWithUrl.url!.trim(), name: selWithUrl.name?.trim() || name || undefined };
+  // Otherwise the model's bare name, then any selected app, then the remembered conversation target.
+  if (name) return { url: undefined, name };
+  const selAny = (ctx.selectedApps || []).find((a) => a && a.name?.trim());
+  if (selAny) return { url: undefined, name: selAny.name!.trim() };
   if (ctx.conversationTarget && (ctx.conversationTarget.url || ctx.conversationTarget.name)) {
     return ctx.conversationTarget;
   }

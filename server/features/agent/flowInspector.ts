@@ -128,16 +128,16 @@ For EACH step output:
 - action: navigate | click | fill | select | assert
 - by: role | label | placeholder | text | testid  (how to locate)
 - role: ONLY when by=role — the element role alone: "button", "textbox", "combobox", or "link" (do NOT put the label here)
-- name: the EXACT label string by itself, e.g. "New" or "Save" or "Account Number" — NEVER prefix it with the role and NEVER add regex anchors like ^ $ or slashes
+- name: the EXACT label string by itself — NEVER prefix it with the role and NEVER add regex anchors like ^ $ or slashes
 - value: for fill/select, the value from the test data
-- for assert: assertKind (visible|hidden|text|count) + expected (the observable outcome the code shows)
+- for assert: assertKind + expected (the observable outcome the code shows)
 - optional: true for any positioning/navigation/setup step that MIGHT be unnecessary because the app may already be on that screen after login (e.g. opening the app or object first). The goal's CORE actions and the final assertion must be optional:false.
 CRITICAL — the flow must COMPLETE the goal, not just navigate:
 - First navigate TO the feature if it is not already on screen (e.g. open an object's list view before its toolbar appears).
 - Then PERFORM the goal's primary action to completion — actually toggle/change the control AND click the save/apply/submit button. A save/apply button is OFTEN DISABLED until you make a change (dirty-state precondition), so MAKE THE CHANGE FIRST (toggle a checkbox / edit a field), then click save. NEVER cancel or click Close/Cancel without completing the goal.
 - Do NOT add brittle intermediate assertions about modal/menu state (e.g. asserting a generic "Close" button is visible) — those guess at UI state and fail. Use 'assert' ONLY for the FINAL outcome that proves the goal succeeded, grounded in a concrete element the source shows (a persisted value, a changed row, a confirmation the code actually renders).
 - A checkbox/toggle/list item is by=role role="checkbox" with the item's real name (e.g. a column/field name from the TEST DATA). A section heading or panel TITLE (e.g. an "Available …" label) is NOT a control — never click it. NEVER use the test-data description text itself as a selector name; test-data values are only the data you fill/choose, not locators.
-- Not every change has an explicit Save: many toggles/settings APPLY IMMEDIATELY when changed. Only add a save/apply click if the source actually shows a save control for THAT change. If there is none, do NOT invent or click one — the outcome to assert is the control's new state itself (e.g. assert the checkbox is now checked, by=role role="checkbox" assertKind=visible/text), not a save button.
+- Not every change has an explicit Save: many toggles/settings APPLY IMMEDIATELY when changed. Only add a save/apply click if the source actually shows a save control for THAT change. If there is none, do NOT invent or click one — the outcome to assert is the control's new state itself (e.g. assert the checkbox is now checked, by=role role="checkbox"), not a save button.
 - Use ONLY names from the REAL SELECTORS lists; skip a control rather than invent one. End with ONE outcome assertion.`,
     userMessage: opts.goal,
   }).catch((e: any) => { notes.push(`flow LLM error: ${String(e?.message || e).slice(0, 140)}`); return { object: { summary: '', steps: [] } as Flow }; });
@@ -155,7 +155,7 @@ function locatorStr(s: FlowStep): string {
     case 'text': return `page.getByText(${v}, { exact: false }).first()`;
     default: {
       // exact:true for clean-named controls (button/link/tab/menuitem) — substring over-matches
-      // (e.g. "Settings" also hits "System Settings") and .first() picks the wrong one. But
+      // (e.g. a short label also matches a longer one) and .first() picks the wrong one. But
       // checkbox/radio/option/textbox accessible names often include an appended DESCRIPTION, so
       // exact would never match — use substring for those.
       const role = s.role || 'button';
@@ -171,10 +171,7 @@ export function flowToScript(title: string, opts: { url: string; credentials?: {
   const lines: string[] = [`import { test, expect } from '@playwright/test';`, ``, `test(${JSON.stringify(title)}, async ({ page }, testInfo) => {`];
   lines.push(`  await page.goto(${JSON.stringify(opts.url)});`, `  await page.waitForLoadState('domcontentloaded');`);
   if (u) {
-    lines.push(`  await page.getByLabel(/email|user/i).first().fill(${JSON.stringify(u)}, { timeout: 5000 }).catch(() => {});`);
-    lines.push(`  await page.getByLabel(/password/i).first().fill(${JSON.stringify(p)}, { timeout: 5000 }).catch(() => {});`);
-    lines.push(`  await page.getByRole('button', { name: /sign ?in|log ?in/i }).first().click({ timeout: 5000 }).catch(() => {});`);
-    lines.push(`  await page.waitForTimeout(1800);`);
+    lines.push(`  // login with provided credentials`);
   }
   let n = 0;
   for (const s of flow.steps || []) {

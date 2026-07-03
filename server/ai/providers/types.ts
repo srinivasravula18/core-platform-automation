@@ -22,6 +22,7 @@ export interface GenerateObjectOptions<T> {
   schema: T;
   temperature?: number;
   maxTokens?: number;
+  effort?: 'low' | 'medium' | 'high';
   model?: string;
   signal?: AbortSignal;
 }
@@ -31,6 +32,7 @@ export interface GenerateTextOptions {
   prompt: string;
   temperature?: number;
   maxTokens?: number;
+  effort?: 'low' | 'medium' | 'high';
   model?: string;
   signal?: AbortSignal;
 }
@@ -109,6 +111,7 @@ export interface ChatWithToolsOptions {
   tools?: ToolSpec[];
   temperature?: number;
   maxTokens?: number;
+  effort?: 'low' | 'medium' | 'high';
   model?: string;
   signal?: AbortSignal;
 }

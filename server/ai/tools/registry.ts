@@ -17,6 +17,11 @@ import { corePlatformDataTools } from './corePlatformData';
 import { corePlatformMetaTools } from './corePlatformMeta';
 import { expandByReferences } from '../exploration/referenceGraph';
 import { searchCodeWithContext } from '../../features/git-agent/gitAgentService';
+import {
+  explorePageTool, getBlackboardTool, verifySelectorsTool,
+  listSurfacesTool, discoverAppsTool,
+} from './domTools';
+import { agentWorkflowTools } from './agentTools';
 
 type Lister = { list: () => Promise<any[]> };
 const COLLECTIONS: Record<string, Lister> = {
@@ -357,12 +362,20 @@ export async function quickWorkspaceAnswer(
 export function coreTools(): AgentTool[] {
   return [
     queryWorkspaceTool, searchCodebaseTool, readCodeFileTool, followImportsTool, findUntestedEdgesTool, analyzeFeatureCoverageTool,
-    // Core Platform DATA tools (real schema + records via the App Service) — only when configured.
+    // DATA tools (real schema + records via the App Service) — only when configured.
     ...corePlatformDataTools(),
-    // Core Platform META tools — object discovery, field inspection, sample records, route search.
+    // META tools — object discovery, field inspection, sample records, route search.
     // Available to all models (OpenAI, Claude API, Codex, etc.) via the native tool-calling loop.
     ...corePlatformMetaTools,
+    // DOM exploration & test execution tools (ported from agentic-test-platform)
+    ...domTools(),
+    // Agent workflow tools — run tests, generate scripts, fetch evidence, read packages
+    ...agentWorkflowTools(),
   ];
+}
+
+export function domTools(): AgentTool[] {
+  return [explorePageTool, getBlackboardTool, verifySelectorsTool, listSurfacesTool, discoverAppsTool];
 }
 
 export function toolByName(name: string): AgentTool | undefined {

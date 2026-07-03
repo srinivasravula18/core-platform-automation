@@ -254,6 +254,7 @@ function Topbar({ onMenuClick, onCommandBarOpen }: { onMenuClick: () => void; on
           )}
         </div>
       </div>
+      <div id="topbar-actions" className="flex items-center gap-2" />
       <div className="flex items-center gap-2 sm:gap-4">
         <ProjectSwitcher />
         <button

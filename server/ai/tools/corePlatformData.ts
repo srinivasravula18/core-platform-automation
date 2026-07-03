@@ -1,7 +1,7 @@
 /**
- * Core Platform DATA tools — direct, in-process (no MCP). These give the agent the SAME
+ * Platform DATA tools — direct, in-process (no MCP). These give the agent the SAME
  * capabilities as @core-platform/mcp-server, but as native function-calling tools: each is a
- * thin proxy to the Core Platform App Service HTTP API, which remains the single enforcement
+ * thin proxy to the App Service HTTP API, which remains the single enforcement
  * point for permissions, record/field access, validations, and audit. We hold no authority of
  * our own — we can only do what the configured token's user can do.
  *
@@ -61,7 +61,7 @@ async function loginForToken(url: string, username: string, password: string): P
     body: JSON.stringify({ username, password }),
   });
   const json = (await res.json().catch(() => null)) as { access_token?: string } | null;
-  if (!res.ok || !json?.access_token) throw new Error(`Core Platform login failed (${res.status}).`);
+  if (!res.ok || !json?.access_token) throw new Error(`Login failed (${res.status}).`);
   return json.access_token;
 }
 
@@ -72,7 +72,7 @@ async function resolveToken(url: string, forceRefresh = false): Promise<string> 
   const username = String(process.env.TARGET_USERNAME || '').trim();
   const password = String(process.env.TARGET_PASSWORD || '').trim();
   if (!username || !password) {
-    throw new Error('Core Platform data tools are not configured. Set TARGET_BASE_URL and TARGET_TOKEN (or TARGET_USERNAME + TARGET_PASSWORD).');
+    throw new Error('Data tools are not configured. Set TARGET_BASE_URL and TARGET_TOKEN (or TARGET_USERNAME + TARGET_PASSWORD).');
   }
   cachedToken = await loginForToken(url, username, password);
   return cachedToken;
@@ -81,7 +81,7 @@ async function resolveToken(url: string, forceRefresh = false): Promise<string> 
 /** One App Service request with the user's bearer token. Retries once on 401 (token expired). */
 async function cpRequest(method: string, path: string, body?: unknown): Promise<unknown> {
   const url = baseUrl();
-  if (!url) throw new Error('Core Platform data tools are not configured: TARGET_BASE_URL is not set.');
+  if (!url) throw new Error('Data tools are not configured: TARGET_BASE_URL is not set.');
   const call = async (token: string) => {
     const res = await fetch(`${url}${path}`, {
       method,
@@ -119,14 +119,14 @@ const str = { type: 'string' };
 const num = { type: 'integer' };
 
 export const listAppsTool: AgentTool = {
-  spec: { name: 'list_apps', description: 'List the Core Platform applications the configured user can access. Use to discover real app ids before describing schema or querying records.', parameters: { type: 'object', properties: {} } },
+  spec: { name: 'list_apps', description: 'List the applications the configured user can access. Use to discover real app ids before describing schema or querying records.', parameters: { type: 'object', properties: {} } },
   async execute() { return { apps: items(await cpRequest('GET', '/api/apps')) }; },
 };
 
 export const describeAppSchemaTool: AgentTool = {
   spec: {
     name: 'describe_app_schema',
-    description: 'List the objects in a Core Platform app (access-scoped). Pass object_api_names to also fetch those objects\' FIELDS (api_names, types, validations) so you can write tests/queries against the REAL data model.',
+    description: 'List the objects in an app (access-scoped). Pass object_api_names to also fetch those objects\' FIELDS (api_names, types, validations) so you can write tests/queries against the REAL data model.',
     parameters: { type: 'object', properties: { app_id: { ...str, description: 'The application id (from list_apps).' }, object_api_names: { type: 'array', items: str, description: 'Objects to include field details for.' } }, required: ['app_id'] },
   },
   async execute(args) {
@@ -149,7 +149,7 @@ export const describeAppSchemaTool: AgentTool = {
 export const queryRecordsTool: AgentTool = {
   spec: {
     name: 'query_records',
-    description: 'Query REAL records of a Core Platform object with optional filters and paging (row/field access enforced server-side). Filter shape: { logic: "AND"|"OR", filters: [{ field, op, value }] }. Use to ground tests in actual data.',
+    description: 'Query REAL records of an object with optional filters and paging (row/field access enforced server-side). Filter shape: { logic: "AND"|"OR", filters: [{ field, op, value }] }. Use to ground tests in actual data.',
     parameters: { type: 'object', properties: { app_id: str, object_api_name: str, filters: { type: 'object', description: 'Filter tree; omit for all accessible records.' }, page: num, page_size: num }, required: ['app_id', 'object_api_name'] },
   },
   async execute(args) {
@@ -163,7 +163,7 @@ export const queryRecordsTool: AgentTool = {
 export const countRecordsTool: AgentTool = {
   spec: {
     name: 'count_records',
-    description: 'Return the exact, access-correct COUNT of Core Platform records matching optional filters. Use for "how many" questions.',
+    description: 'Return the exact, access-correct COUNT of records matching optional filters. Use for "how many" questions.',
     parameters: { type: 'object', properties: { app_id: str, object_api_name: str, filters: { type: 'object' } }, required: ['app_id', 'object_api_name'] },
   },
   async execute(args) {
@@ -177,7 +177,7 @@ export const countRecordsTool: AgentTool = {
 export const aggregateRecordsTool: AgentTool = {
   spec: {
     name: 'aggregate_records',
-    description: 'Group Core Platform records by a field and count/sum/avg per group in one query (access-enforced).',
+    description: 'Group records by a field and count/sum/avg per group in one query (access-enforced).',
     parameters: { type: 'object', properties: { app_id: str, object_api_name: str, group_by: str, operation: { type: 'string', enum: ['count', 'sum', 'avg'] }, value_field: { ...str, description: 'Numeric field for sum/avg.' }, filters: { type: 'object' } }, required: ['app_id', 'object_api_name', 'group_by'] },
   },
   async execute(args) {
@@ -197,7 +197,7 @@ export const aggregateRecordsTool: AgentTool = {
 export const createRecordTool: AgentTool = {
   spec: {
     name: 'create_record',
-    description: 'Create a REAL record in a Core Platform object (subject to the user\'s create permission + validations). Use to seed test data. WRITE operation — only when the task asks to create data.',
+    description: 'Create a REAL record in an object (subject to the user\'s create permission + validations). Use to seed test data. WRITE operation — only when the task asks to create data.',
     parameters: { type: 'object', properties: { app_id: str, object_api_name: str, values: { type: 'object', description: 'field api_name -> value map for the new record.' } }, required: ['app_id', 'object_api_name', 'values'] },
   },
   async execute(args) {
@@ -710,7 +710,7 @@ export async function fetchTestDataPack(conn: CatalogConn, hintText: string, obj
   }
 }
 
-/** Whether the Core Platform data tools are configured (base URL + a token/credential). */
+/** Whether the data tools are configured (base URL + a token/credential). */
 export function corePlatformDataConfigured(): boolean {
   if (!baseUrl()) return false;
   if (String(process.env.TARGET_TOKEN || '').trim()) return true;
@@ -721,7 +721,7 @@ export function corePlatformDataConfigured(): boolean {
 export const corePlatformReadTools: AgentTool[] = [listAppsTool, describeAppSchemaTool, queryRecordsTool, countRecordsTool, aggregateRecordsTool];
 export const corePlatformWriteTools: AgentTool[] = [createRecordTool];
 
-/** All Core Platform data tools, only when configured (else the agent shouldn't see broken tools). */
+/** All data tools, only when configured (else the agent shouldn't see broken tools). */
 export function corePlatformDataTools(includeWrite = true): AgentTool[] {
   if (!corePlatformDataConfigured()) return [];
   return includeWrite ? [...corePlatformReadTools, ...corePlatformWriteTools] : [...corePlatformReadTools];

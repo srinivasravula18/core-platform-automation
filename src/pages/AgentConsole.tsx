@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useRef, useState, type MouseEvent } from 'react';
+import { createPortal } from 'react-dom';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
+import { TopbarActions } from '@/src/components/TopbarActions';
+import { MarkdownText } from '@/src/components/MarkdownText';
 import {
   BrainCircuit,
   Mic,
@@ -108,6 +111,20 @@ function escapeRegExp(s: string): string {
 function normalizeAppMention(value: string): string {
   return String(value || '').toLowerCase().replace(/[_-]+/g, ' ').replace(/\s+/g, ' ').trim();
 }
+// URL path segments are meaningful per-app identifiers here (e.g. a Keystone service lives at
+// `…/shockwave/`), so the user naming "shockwave" should resolve that app even though it isn't the
+// app's display name. Generic infra segments are skipped so they never become an alias.
+const URL_ALIAS_STOP = new Set(['app', 'apps', 'api', 'index', 'home', 'public', 'static', 'assets', 'dashboard', 'en', 'us']);
+function urlPathAliases(url: string): string[] {
+  try {
+    return new URL(url).pathname
+      .split('/')
+      .map((s) => normalizeAppMention(s))
+      .filter((s) => s.length >= 3 && !URL_ALIAS_STOP.has(s));
+  } catch {
+    return [];
+  }
+}
 function appMentionAliases(app: { name?: string; baseUrl?: string }): string[] {
   const name = normalizeAppMention(app.name || '');
   const url = String(app.baseUrl || '').toLowerCase();
@@ -115,6 +132,7 @@ function appMentionAliases(app: { name?: string; baseUrl?: string }): string[] {
   if (name) aliases.add(name);
   if (/\badmin\b/.test(name) && (/\blocal\b/.test(name) || /\blocalhost\b|127\.0\.0\.1/.test(url))) aliases.add('local admin');
   if (/\bkeystone\b/.test(name) && (/\blocal\b/.test(name) || /\blocalhost\b|127\.0\.0\.1/.test(url))) aliases.add('local keystone');
+  for (const seg of urlPathAliases(app.baseUrl || '')) aliases.add(seg);
   return [...aliases].sort((a, b) => b.length - a.length);
 }
 function hasAppMention(text: string, alias: string): boolean {
@@ -128,6 +146,13 @@ function findWebsiteInText(text: string, websites: Array<{ id: string; name: str
     .filter((m) => m.score > 0)
     .sort((a, b) => b.score - a.score);
   return matches[0]?.w || null;
+}
+
+// A literal URL the user typed in THIS message is an explicit target — honor it (the "paste the
+// target URL here" promise) even if the router didn't extract it into goal.target.url.
+function firstUrlInText(text: string): string {
+  const m = String(text || '').match(/https?:\/\/[^\s"'<>)\]]+/i);
+  return m ? m[0].replace(/[.,;]+$/, '') : '';
 }
 
 function findTargetInText(text: string, targets: Array<{ id?: string; name: string; baseUrl?: string }>): { id?: string; name: string; baseUrl: string } | null {
@@ -505,11 +530,32 @@ export default function AgentConsole() {
   const [copiedTurnId, setCopiedTurnId] = useState<string | null>(null);
   const [editingTurnId, setEditingTurnId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState('');
+  const [providers, setProviders] = useState<any[]>([]);
+  const [selectedProvider, setSelectedProvider] = useState('gemini');
+  const [selectedModel, setSelectedModel] = useState('');
+  const [selectedEffort, setSelectedEffort] = useState('medium');
   // Existing repository folders, for the deep-run "save results to folder" picker.
   const [folderOptions, setFolderOptions] = useState<Array<{ id: string; name: string; path?: string }>>([]);
   // Requirement mode: toggled with Shift+Tab. When on, every message is routed to
   // the requirement-discovery pipeline regardless of phrasing.
   const [reqMode, setReqMode] = useState(false);
+  const handleProviderChange = useCallback((provider: string) => {
+    setSelectedProvider(provider);
+    const p = providers.find((x: any) => x.name === provider);
+    if (p) {
+      setSelectedModel(p.model || p.defaultModel);
+      setSelectedEffort(p.effort || 'medium');
+    }
+  }, [providers]);
+
+  const handleModelChange = useCallback((model: string) => {
+    setSelectedModel(model);
+  }, []);
+
+  const handleEffortChange = useCallback((effort: string) => {
+    setSelectedEffort(effort);
+  }, []);
+
   const navigate = useNavigate();
   const location = useLocation();
   const { chatId: urlChatId } = useParams<{ chatId?: string }>();
@@ -650,6 +696,20 @@ export default function AgentConsole() {
     fetch('/api/credentials/websites')
       .then((r) => r.json())
       .then((d) => setWebsites(Array.isArray(d?.websites) ? d.websites : []))
+      .catch(() => {});
+    fetch('/api/ai/providers')
+      .then((r) => r.json())
+      .then((data) => {
+        const list = Array.isArray(data?.providers) ? data.providers : [];
+        setProviders(list);
+        const callable = list.filter((p: any) => p.callable);
+        if (callable.length > 0) {
+          const def = callable.find((p: any) => p.name === (data.defaultProvider || 'gemini')) || callable[0];
+          setSelectedProvider(def.name);
+          setSelectedModel(def.model || def.defaultModel);
+          setSelectedEffort(def.effort || 'medium');
+        }
+      })
       .catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -892,7 +952,7 @@ export default function AgentConsole() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       signal: activeAbortRef.current?.signal,
-      body: JSON.stringify({
+        body: JSON.stringify({
         app_url: args.targetUrl,
         websiteId: args.websiteId || undefined,
         websiteName: args.websiteName || undefined,
@@ -903,6 +963,9 @@ export default function AgentConsole() {
         testCaseCount: parseCaseCount(args.caseCountPrompt || args.prompt),
         flowMode: 'review_cases',
         folderMention: args.folderMention || undefined,
+        provider: selectedProvider,
+        model: selectedModel,
+        effort: selectedEffort,
         // Carry the conversation so case generation is grounded in what was actually
         // discussed — not just the (sometimes generic) prompt.
         history: buildHistory(),
@@ -922,7 +985,7 @@ export default function AgentConsole() {
         text: data?.error || 'I could not start the generation. Check that an AI provider key is set in Settings.',
       });
     }
-  }, [replaceTurn, buildHistory, updateThinkingLabel]);
+  }, [replaceTurn, buildHistory, updateThinkingLabel, selectedProvider, selectedModel, selectedEffort]);
 
   const requestDeepUnderstanding = useCallback(async (args: {
     prompt: string;
@@ -1578,20 +1641,41 @@ export default function AgentConsole() {
             findTargetInText(text, [...websites, ...projectAppsRef.current]);
           const targetUrl =
             routedUrl ||
+            firstUrlInText(text) ||
             namedTarget?.baseUrl ||
             namedSite?.baseUrl ||
             scopeAppUrl ||
             (getSelectedApps()[0]?.baseUrl || '') ||
             convTargetRef.current?.targetUrl ||
             '';
-          const websiteId = namedSite?.id || convTargetRef.current?.websiteId;
-          const websiteName = routedName || namedTarget?.name || namedSite?.name || convTargetRef.current?.websiteName;
+          // Recover the websiteId by matching the RESOLVED url against configured websites (exact
+          // baseUrl, trailing-slash-insensitive). Credentials pin by websiteId — matching by host
+          // alone collides on localhost:5002 vs :5003 — so this is what lets creds resolve when the
+          // target came from the selected app rather than a name mention.
+          const normUrl = (u: string) => String(u || '').trim().replace(/\/+$/, '').toLowerCase();
+          const urlSite = targetUrl ? websites.find((w) => normUrl(w.baseUrl) === normUrl(targetUrl)) : undefined;
+          const websiteId = namedSite?.id || urlSite?.id || convTargetRef.current?.websiteId;
+          const websiteName = routedName || namedTarget?.name || namedSite?.name || urlSite?.name || convTargetRef.current?.websiteName;
           if (!targetUrl && !websiteId) {
+            // Don't loop the same vague prompt: list the apps we CAN target so the user picks a real
+            // one (by name, URL, or the top-bar switcher) instead of guessing again.
+            const available: Array<{ name: string; baseUrl: string }> = [];
+            const seenUrl = new Set<string>();
+            for (const a of [...projectAppsRef.current, ...websites]) {
+              const url = String(a.baseUrl || '').trim();
+              if (!url || seenUrl.has(url.toLowerCase())) continue;
+              seenUrl.add(url.toLowerCase());
+              available.push({ name: a.name, baseUrl: url });
+            }
+            const tried = routedName || text.trim();
+            const listText = available.length
+              ? `${available.slice(0, 8).map((a) => `• ${a.name} — ${a.baseUrl}`).join('\n')}\n\nReply with one of these names, paste a URL, or pick an app in the top-bar switcher.`
+              : 'No apps are configured yet. Add one in the project switcher (top bar) or paste the target URL here.';
             replaceTurn(thinkingId, {
               id: thinkingId,
               role: 'assistant',
               kind: 'text',
-              text: 'Which app should I run this against? Select an app in the project switcher (top bar) so I can use its URL, or paste the target URL here — then I will inspect it, generate the cases and Playwright scripts, and capture evidence.',
+              text: `I couldn't match "${tried}" to a configured app.\n\n${available.length ? 'Apps I can target right now:\n' : ''}${listText}`,
             });
             setBusy(false);
             inputRef.current?.focus();
@@ -1844,8 +1928,12 @@ export default function AgentConsole() {
 
   const isEmpty = turns.length === 0;
 
+  const providerPortal = providers.length > 0
+    ? document.getElementById('topbar-actions')
+    : null;
+
   return (
-    <div className="flex h-full w-full flex-col px-4 sm:px-6">
+    <><div className="flex h-full w-full flex-col px-4 sm:px-6">
       {/* Header */}
       <div className="mb-2 flex items-center justify-between gap-3">
         <div className="flex items-center gap-2">
@@ -2356,8 +2444,8 @@ export default function AgentConsole() {
                       <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[var(--accent)]/10 text-[var(--accent)]">
                         <BrainCircuit className="h-4 w-4" />
                       </div>
-                      <div className="whitespace-pre-wrap rounded-2xl rounded-bl-sm border border-[var(--border)] bg-[var(--bg-card)] px-4 py-2.5 text-sm text-[var(--text-primary)]">
-                        {turn.text}
+                      <div className="min-w-0 rounded-2xl rounded-bl-sm border border-[var(--border)] bg-[var(--bg-card)] px-4 py-2.5 text-sm text-[var(--text-primary)]">
+                        <MarkdownText value={turn.text} />
                       </div>
                     </div>
                   </div>
@@ -2569,5 +2657,17 @@ export default function AgentConsole() {
         </div>
       </div>
     </div>
-  );
+    {providerPortal && createPortal(
+      <TopbarActions
+        providers={providers}
+        selectedProvider={selectedProvider}
+        selectedModel={selectedModel}
+        selectedEffort={selectedEffort}
+        onProviderChange={handleProviderChange}
+        onModelChange={handleModelChange}
+        onEffortChange={handleEffortChange}
+      />,
+      providerPortal,
+    )}
+  </>);
 }

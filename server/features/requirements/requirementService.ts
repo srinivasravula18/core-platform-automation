@@ -2,8 +2,8 @@
  * Requirement-based testing — discovery service.
  *
  * Given a feature/section query, the agent team searches the target application's
- * git source (D:\core-platform) to understand the feature: business logic in the
- * Service module, background data population, what Admin vs Keystone do, and the
+ * git source to understand the feature: business logic in the
+ * Service module, background data population, what each surface does, and the
  * metadata source of truth. It then reconciles that understanding against the
  * EXISTING test cases (so we don't duplicate) and proposes NEW cases for the gaps.
  * The result is a first-class Requirement with traceability links to both the
@@ -309,7 +309,7 @@ export type Reconciliation = z.infer<typeof reconcileSchema>;
 const STOP = new Set([
   'test', 'tests', 'testing', 'feature', 'features', 'section', 'sections', 'module', 'modules',
   'the', 'for', 'do', 'and', 'requirement', 'requirements', 'based', 'please', 'can', 'you',
-  'flow', 'flows', 'functionality', 'coverage', 'check', 'verify', 'validate', 'about', 'what',
+  'functionality', 'coverage', 'check', 'verify', 'validate', 'about', 'what',
   'happens', 'want', 'need', 'app', 'application', 'how', 'does', 'work', 'works', 'this',
 ]);
 
@@ -335,8 +335,6 @@ const SYNONYMS: Record<string, string[]> = {
   triggers: ['trigger'],
   validation: ['validations'],
   validations: ['validation'],
-  flow: ['flows'],
-  flows: ['flow'],
   field: ['fields'],
   fields: ['field'],
   metadata: ['schema'],
@@ -614,9 +612,9 @@ function summarizeFeatureInventoryForPrompt(inventory: FeatureInventory): string
 /* ---------- reusable feature understanding (git-agent deep read) ---------- */
 
 /**
- * Read the target application's REAL source (git agent over D:\core-platform) and
+ * Read the target application's REAL source and
  * produce a grounded, structured understanding of the requested feature: the
- * business rules the code enforces, Admin vs Keystone/Shockwave behavior, the
+ * business rules the code enforces, surface-specific behavior, the
  * metadata source of truth, and a first cut of scenarios scaled to what the code
  * actually does. This is the depth-of-understanding step the Agent Console uses to
  * drive how many cases to write, the steps, and the scripts — instead of a fixed

@@ -1,9 +1,9 @@
 /**
- * Core Platform META tools — available to EVERY agent model (OpenAI, Claude API,
+ * Application META tools — available to EVERY agent model (OpenAI, Claude API,
  * Codex subscription, or any future provider). These are native AgentTool entries in
  * the tool-calling loop, NOT MCP-only.
  *
- * Actual API routes (verified from core-platform source):
+ * Actual API routes (verified from source):
  *   GET /api/apps/__all_apps__/objects                           → { items: [...] }
  *   GET /api/apps/:appId/objects/:object/describe               → { object:{}, fields:[] }
  *   GET /api/apps/__all_apps__/objects/:object/records?page_size=N  → { items:[], page, page_size }
@@ -11,8 +11,8 @@
  *
  * Connection resolution (multi-tenant):
  *   1. ctx.appId → Websites table (per-workspace baseUrl + credentials)
- *   2. CORE_PLATFORM_* env vars   (single-tenant / local dev)
- *   3. http://localhost:5001       (last resort — local dev fallback)
+ *   2. TARGET_* env vars          (single-tenant / local dev)
+ *   3. last resort                (when nothing else is configured)
  */
 
 import { execSync } from 'child_process';
@@ -42,16 +42,16 @@ function resolveConnection(ctx?: ToolContext): AppConn {
     if (site?.baseUrl) {
       return {
         baseUrl: site.baseUrl.replace(/\/$/, ''),
-        username: process.env.TARGET_USERNAME || 'admin',
-        password: process.env.TARGET_PASSWORD || 'admin',
+        username: process.env.TARGET_USERNAME || '',
+        password: process.env.TARGET_PASSWORD || '',
       };
     }
   }
   // 2. env vars
   return {
-    baseUrl: (process.env.TARGET_BASE_URL || 'http://localhost:5001').replace(/\/$/, ''),
-    username: process.env.TARGET_USERNAME || 'admin',
-    password: process.env.TARGET_PASSWORD || 'admin',
+    baseUrl: (process.env.TARGET_BASE_URL || '').replace(/\/$/, ''),
+    username: process.env.TARGET_USERNAME || '',
+    password: process.env.TARGET_PASSWORD || '',
   };
 }
 
@@ -69,7 +69,7 @@ async function getToken(conn: AppConn, forceRefresh = false): Promise<string> {
   });
   const json = (await res.json().catch(() => null)) as any;
   const token: string = json?.access_token || json?.token || json?.accessToken || '';
-  if (!res.ok || !token) throw new Error(`Core Platform login failed (${res.status})`);
+  if (!res.ok || !token) throw new Error(`Login failed (${res.status})`);
   tokenCache.set(conn.baseUrl, token);
   return token;
 }
@@ -95,7 +95,7 @@ async function cpFetch(method: string, path: string, body: unknown, ctx?: ToolCo
   if (!res.ok) {
     let detail = `HTTP ${res.status}`;
     try { const d = JSON.parse(text); detail = d?.message ?? d?.detail ?? detail; } catch { /* keep default */ }
-    throw new Error(`Core Platform ${method} ${path} failed (${res.status}): ${detail}`);
+    throw new Error(`${method} ${path} failed (${res.status}): ${detail}`);
   }
   try { return text ? JSON.parse(text) : null; } catch { return text; }
 }
@@ -118,7 +118,7 @@ function keywords(query: string): string[] {
 export const searchRelevantObjectsTool: AgentTool = {
   spec: {
     name: 'search_relevant_objects',
-    description: 'Find Core Platform metadata objects (tables/models) relevant to a natural language query. Returns object api_name, label, table_name, app_prefix, and app_id. Always call this first to discover which objects are relevant to a feature before calling get_object_fields.',
+    description: 'Find metadata objects (tables/models) relevant to a natural language query. Returns object api_name, label, table_name, app_prefix, and app_id. Always call this first to discover which objects are relevant to a feature before calling get_object_fields.',
     parameters: {
       type: 'object',
       properties: {
@@ -136,7 +136,7 @@ export const searchRelevantObjectsTool: AgentTool = {
       const data = (await cpRequest('GET', '/api/apps/__all_apps__/objects', ctx)) as any;
       const allObjects: any[] = Array.isArray(data?.items) ? data.items : (Array.isArray(data) ? data : []);
 
-      if (!allObjects.length) return { note: 'no objects found — check Core Platform connection', objects: [] };
+      if (!allObjects.length) return { note: 'no objects found — check connection', objects: [] };
 
       const scored = allObjects
         .map((o: any) => {
@@ -169,7 +169,7 @@ export const searchRelevantObjectsTool: AgentTool = {
 export const getObjectFieldsTool: AgentTool = {
   spec: {
     name: 'get_object_fields',
-    description: 'Get all fields (api_name, type, label, required, searchable, reference_object_id) for a Core Platform object. Requires the object api_name AND the app_id (UUID) from search_relevant_objects. Returns the full field list including relationships.',
+    description: 'Get all fields (api_name, type, label, required, searchable, reference_object_id) for a metadata object. Requires the object api_name AND the app_id (UUID) from search_relevant_objects. Returns the full field list including relationships.',
     parameters: {
       type: 'object',
       properties: {
@@ -225,7 +225,7 @@ export const getObjectFieldsTool: AgentTool = {
 export const querySampleRecordsTool: AgentTool = {
   spec: {
     name: 'query_sample_records',
-    description: 'Fetch a small sample of real records from a Core Platform object using the list-views query engine (access-enforced). Supports optional filters. Use object api_name (e.g. "vendor") from search_relevant_objects.',
+    description: 'Fetch a small sample of real records from an object using the list-views query engine (access-enforced). Supports optional filters. Use object api_name (e.g. "vendor") from search_relevant_objects.',
     parameters: {
       type: 'object',
       properties: {
@@ -264,7 +264,7 @@ export const querySampleRecordsTool: AgentTool = {
 export const countRecordsTool: AgentTool = {
   spec: {
     name: 'count_records',
-    description: 'Return the exact access-enforced count of records in a Core Platform object, with optional filters. Use for "how many X exist" questions before writing data population requirements.',
+    description: 'Return the exact access-enforced count of records in an object, with optional filters. Use for "how many X exist" questions before writing data population requirements.',
     parameters: {
       type: 'object',
       properties: {
@@ -302,7 +302,7 @@ export const countRecordsTool: AgentTool = {
 export const createRecordTool: AgentTool = {
   spec: {
     name: 'create_record',
-    description: 'Create a record in a Core Platform object. Subject to user create permissions, field rules, and validations enforced by App Service. Use for populating test data during requirement or test case analysis.',
+    description: 'Create a record in an object. Subject to user create permissions, field rules, and validations enforced by App Service. Use for populating test data during requirement or test case analysis.',
     parameters: {
       type: 'object',
       properties: {
@@ -338,7 +338,7 @@ export const createRecordTool: AgentTool = {
 export const getApiRoutesTool: AgentTool = {
   spec: {
     name: 'get_api_routes',
-    description: 'Search the Core Platform source code for HTTP route definitions relevant to a query. Returns route paths with their source file paths. Use to discover what API endpoints exist for a feature.',
+    description: 'Search the source code for HTTP route definitions relevant to a query. Returns route paths with their source file paths. Use to discover what API endpoints exist for a feature.',
     parameters: {
       type: 'object',
       properties: {

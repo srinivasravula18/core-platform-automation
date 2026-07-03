@@ -24,6 +24,15 @@ export function resolveTargetRepo(explicit?: string): string {
   // that were never configured in the UI — it never overrides a UI value. (Env stays for DB/keys.)
   const fromSettings = String((db as any).settings?.serverRepoRoot || '').trim();
   if (fromSettings) return fromSettings;
+  // Fall back to a configured LOCAL project's repoPath (set per project in the UI: Edit project →
+  // Repository → Local folder). Without this, a code path that DIDN'T thread the project's repoPath
+  // (e.g. case generation) fails with "no repo configured" even though the project has one — the
+  // exact contradiction where scope grounding read the files but case-gen then claimed no repo.
+  const projects = Array.isArray((db as any).projects) ? (db as any).projects : [];
+  for (const p of projects) {
+    const rp = String(p?.repoPath || '').trim();
+    if (p?.repoKind !== 'remote' && rp && existsSync(path.join(rp, '.git'))) return rp;
+  }
   return (process.env.GIT_AGENT_TARGET_REPO || process.env.TARGET_REPO || '').trim();
 }
 // The standalone Git Agent dashboard (status/diff/sync) operates on the env-configured
@@ -101,10 +110,9 @@ function writeGitAgentState(nextState: any) {
 // Falls back to the file's own top-level directory so any project is classified.
 function classifyChangedFile(filePath: string) {
   const n = filePath.replace(/\\/g, '/').toLowerCase();
-  if (/(^|\/)(admin|backoffice|console)(\/|$)/.test(n)) return { area: 'Admin', surface: 'admin', suite: 'admin-changes' };
-  if (/(^|\/)(api|service|services|server|backend|functions|lambda)(\/|$)/.test(n)) return { area: 'API / Service', surface: 'api', suite: 'api-changes' };
-  if (/(^|\/)(web|www|frontend|front-end|client|ui|webapp)(\/|$)/.test(n)) return { area: 'Frontend', surface: 'frontend', suite: 'frontend-changes' };
-  if (/(^|\/)(schema|migrations?|seeds?|metadata|config)(\/|$)/.test(n)) return { area: 'Data / Config', surface: 'all', suite: 'data-config-changes' };
+  if (/(^|\/)(admin|backoffice|console)(\/|$)/.test(n)) return { area: 'Admin', surface: '', suite: 'admin-changes' };
+  if (/(^|\/)(api|service|services|server|backend|functions|lambda)(\/|$)/.test(n)) return { area: 'API / Service', surface: '', suite: 'api-changes' };
+  if (/(^|\/)(web|www|frontend|front-end|client|ui|webapp)(\/|$)/.test(n)) return { area: 'Frontend', surface: '', suite: 'frontend-changes' };
   // Otherwise name the area after the file's top-level directory (repo-derived).
   const top = n.split('/').filter(Boolean)[0] || 'application';
   const label = top.replace(/[-_]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
@@ -116,7 +124,7 @@ function riskForChangedFile(filePath: string) {
   if (/routes|auth|permission|access|validation|trigger|bulk|delete|recycle|migration|schema/.test(normalized)) {
     return { risk: 'High', reason: 'Touches authorization, validation, destructive flow, schema, or backend route behavior.' };
   }
-  if (/list-view|table|record|layout|form|search|export|workflow|flow/.test(normalized)) {
+  if (/list-view|table|record|layout|form|search|export|workflow/.test(normalized)) {
     return { risk: 'Medium', reason: 'Touches user-visible workflow, records, table, search, export, or layout behavior.' };
   }
   return { risk: 'Low', reason: 'Change is outside the main E2E risk keywords.' };
@@ -129,7 +137,7 @@ function inferFeatureFromPath(filePath: string, area: string) {
   if (normalized.includes('permission') || normalized.includes('access') || normalized.includes('auth')) return 'Security';
   if (normalized.includes('validation') || normalized.includes('schema') || normalized.includes('form') || normalized.includes('modal')) return 'Validation';
   if (normalized.includes('list-view') || normalized.includes('table')) return 'List View';
-  if (normalized.includes('flow') || normalized.includes('workflow')) return 'Workflow';
+  if (normalized.includes('workflow')) return 'Workflow';
   if (normalized.includes('settings')) return 'Settings';
   return area;
 }
@@ -141,7 +149,7 @@ function sanitizeTag(tag: string) {
 
 function buildGitAgentSteps(change: any, scenarioFamily: string, feature: string) {
   const fileName = path.basename(change.path);
-  const surface = change.surface === 'api' ? 'API' : change.surface === 'keystone' ? 'Keystone' : 'Admin';
+  const surface = change.surface || 'application';
   const baseSteps =
     surface === 'API'
       ? [
@@ -185,7 +193,7 @@ function buildGitAgentScenarioTemplates(change: any, index: number) {
   const feature = inferFeatureFromPath(change.path, change.area);
   const fileName = path.basename(change.path);
   const baseId = `GIT-${String(index + 1).padStart(3, '0')}`;
-  const surfaceLabel = change.surface === 'api' ? 'API' : change.surface === 'keystone' ? 'Keystone' : change.surface === 'admin' ? 'Admin' : 'Application';
+  const surfaceLabel = change.surface;
   const baseTags = [sanitizeTag(change.area), sanitizeTag(feature), '@git-change'].filter(Boolean);
   const scenarios = [
     {
@@ -610,7 +618,7 @@ export interface CodeMatch { path: string; matchCount: number; snippet: string; 
 function ripgrepWithContext(patterns: string[], repo: string, ctx: number, maxFiles: number, maxLinesPerFile: number): CodeMatch[] | null {
   // Pass the repo as ripgrep's search PATH (forward-slashed) instead of using cwd. On Windows,
   // spawnSync with an absolute exe + a changed cwd throws ENOENT, and a backslash path arg gets
-  // mangled ("D:\repo" -> "D:repo"); a forward-slashed path argument with no cwd works correctly.
+  // mangled (e.g. "D:\repo" -> "D:repo"); a forward-slashed path argument with no cwd works correctly.
   const searchPath = repo.replace(/\\/g, '/').replace(/\/+$/, '');
   const prefix = `${searchPath}/`;
   const orArgs = patterns.flatMap((p) => ['-e', p]);

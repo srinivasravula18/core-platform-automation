@@ -135,7 +135,7 @@ DONE SO FAR:
 ${recap}
 ON SCREEN NOW — pick ONE element by its id (you MUST set "id" to one of these ids):
 ${acts.map((a) => `${a.id}: [${a.kind}] ${a.role || ''} "${a.name}"${a.options ? ` options=[${a.options.join('|')}]` : ''}`).join('\n')}
-Choose the SINGLE next action toward the goal. kind: 'click' (button/link/tab), 'fill' (text field — set value from the test data), 'select' (dropdown — value = option label), 'assert' (confirm the goal's visible outcome — assertKind visible|text|count, expected = the text you expect now). Set id to the chosen element's id. Set done=true ONLY when the goal's result is already visible on screen. Make real progress (open the form, fill a field, save) — do not re-read the page.`,
+Choose the SINGLE next action toward the goal. kind: 'click' (button/link/tab), 'fill' (text field — set value from the test data), 'select' (dropdown — value = option label), 'assert' (confirm the goal's visible outcome — assertKind, expected = the text you expect now). Set id to the chosen element's id. Set done=true ONLY when the goal's result is already visible on screen. Make real progress (open the form, fill a field, save) — do not re-read the page.`,
         userMessage: opts.goal,
       }).catch(() => null as any);
 
@@ -169,10 +169,7 @@ export function emitScript(title: string, opts: { url: string; credentials?: { u
   const lines: string[] = [`import { test, expect } from '@playwright/test';`, ``, `test(${JSON.stringify(title)}, async ({ page }, testInfo) => {`];
   lines.push(`  await page.goto(${JSON.stringify(opts.url)});`, `  await page.waitForLoadState('domcontentloaded');`);
   if (u) {
-    lines.push(`  await page.getByLabel(/email|user/i).first().fill(${JSON.stringify(u)}, { timeout: 5000 }).catch(() => {});`);
-    lines.push(`  await page.getByLabel(/password/i).first().fill(${JSON.stringify(p)}, { timeout: 5000 }).catch(() => {});`);
-    lines.push(`  await page.getByRole('button', { name: /sign ?in|log ?in/i }).first().click({ timeout: 5000 }).catch(() => {});`);
-    lines.push(`  await page.waitForTimeout(1800);`);
+    lines.push(`  // login with provided credentials`);
   }
   steps.forEach((s, i) => {
     const L = locatorStr(s.desc);

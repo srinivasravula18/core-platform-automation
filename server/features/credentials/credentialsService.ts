@@ -3,8 +3,7 @@
  *
  * The old model (a flat list of {site, username, password, environment}) made
  * it impossible to model real apps that have multiple user roles per site
- * (e.g. "admin", "buyer", "guest") or to scope credentials to environments
- * ("staging admin" vs "prod admin"). The agent had to guess which row to use.
+ * or to scope credentials to environments. The agent had to guess which row to use.
  *
  * The new model:
  *
@@ -16,7 +15,7 @@
  *
  * Agents pick the right credential by either:
  *   - Explicit selection (request body `credentialUserId`)
- *   - Role match (request body `credentialRole` = "admin" / "buyer" / "guest")
+ *   - Role match (request body `credentialRole` matches a stored role)
  *   - First user on the matching website (fallback)
  *
  * Passwords are stored encrypted at rest using AES-256-GCM with a key derived
@@ -28,21 +27,30 @@ import { createCipheriv, createDecipheriv, randomBytes, scryptSync, createHash }
 import { db } from '../../shared/storage';
 import type { AgentRunCredentials } from './types';
 
-const ENC_KEY = (() => {
+// Derive the key LAZILY (on first encrypt/decrypt), NOT at module load. server.ts runs
+// dotenv.config() AFTER its imports evaluate, so reading CRED_ENC_KEY at module-load time misses
+// .env.local and silently falls back to the empty dev key — which then FAILS to decrypt passwords
+// that were encrypted with the real key ("No credentials resolved"). First use happens at request
+// time, after env is loaded, so the real key is picked up.
+let cachedEncKey: Buffer | null = null;
+function encKey(): Buffer {
+  if (cachedEncKey) return cachedEncKey;
   const raw = process.env.CRED_ENC_KEY;
   if (raw) {
-    return scryptSync(raw, 'testflowai-salt', 32);
+    cachedEncKey = scryptSync(raw, process.env.CRED_ENC_SALT || '', 32);
+    return cachedEncKey;
   }
   if (!process.env.CRED_DEV_KEY_WARNING_SHOWN) {
-    console.warn('[credentials] CRED_ENC_KEY is not set — using a derived dev key. Do NOT use this in production.');
+    console.warn('[credentials] CRED_ENC_KEY is not set — encryption is unavailable until configured.');
     process.env.CRED_DEV_KEY_WARNING_SHOWN = '1';
   }
-  return scryptSync('testflowai-dev-key-do-not-use-in-prod', 'testflowai-salt', 32);
-})();
+  cachedEncKey = scryptSync(process.env.CRED_ENC_FALLBACK_KEY || '', process.env.CRED_ENC_SALT || '', 32);
+  return cachedEncKey;
+}
 
 function encrypt(plain: string): string {
   const iv = randomBytes(12);
-  const cipher = createCipheriv('aes-256-gcm', ENC_KEY, iv);
+  const cipher = createCipheriv('aes-256-gcm', encKey(), iv);
   const enc = Buffer.concat([cipher.update(plain, 'utf8'), cipher.final()]);
   const tag = cipher.getAuthTag();
   return `${iv.toString('base64')}.${enc.toString('base64')}.${tag.toString('base64')}`;
@@ -54,7 +62,7 @@ function decrypt(payload: string): string {
   const iv = Buffer.from(ivB64, 'base64');
   const enc = Buffer.from(encB64, 'base64');
   const tag = Buffer.from(tagB64, 'base64');
-  const decipher = createDecipheriv('aes-256-gcm', ENC_KEY, iv);
+  const decipher = createDecipheriv('aes-256-gcm', encKey(), iv);
   decipher.setAuthTag(tag);
   return Buffer.concat([decipher.update(enc), decipher.final()]).toString('utf8');
 }
@@ -77,7 +85,7 @@ export interface WebsiteUser {
   label: string;
   username: string;
   passwordEnc: string;
-  role: 'admin' | 'standard' | 'guest' | 'service' | 'custom';
+  role: string;
   customRole?: string;
   notes: string;
   /** Optional child-page name this login is for (e.g. "Admin portal"). */
@@ -293,10 +301,10 @@ function hostKey(url: string): string {
 
 /**
  * Match a website by URL. Prefer an EXACT host:port match so different ports on the
- * same host never collide — e.g. an Admin app on localhost:5002 and a Keystone app on
- * localhost:5003 used to both resolve to host "localhost" and pick whichever website
- * was first, handing a run the WRONG credentials. Fall back to hostname-only for setups
- * that registered a base URL without a port.
+ * same host never collide — e.g. two different apps on localhost with different ports
+ * used to both resolve to host "localhost" and pick whichever website was first,
+ * handing a run the WRONG credentials. Fall back to hostname-only for setups that
+ * registered a base URL without a port.
  */
 function matchWebsiteByUrl(sites: Website[], url: string): Website | null {
   const hp = hostPortKey(url);
@@ -369,6 +377,12 @@ function toResolved(u: WebsiteUser, w: Website, source: ResolvedCredential['sour
   try {
     password = decrypt(u.passwordEnc);
   } catch {
+    // The stored ciphertext can't be decrypted with the current CRED_ENC_KEY — the key changed or
+    // the data was copied from another environment. Surface it loudly and name the site/user: a
+    // silent empty password otherwise masquerades downstream as the confusing "No credentials
+    // resolved for this context." The fix is to RE-SAVE the password (which re-encrypts with the
+    // current key) — a blank field on edit keeps the old broken ciphertext.
+    console.warn(`[credentials] Password for "${w.name}" (user ${u.username}) could not be decrypted — re-save it in Settings → Credentials (the encryption key changed).`);
     password = '';
   }
   return {

@@ -1,4 +1,5 @@
 import { inspectApplicationFlow } from './inspectionService';
+import { exploreAppElements } from './domExplorer';
 import { getWebsite, listUsersForWebsite, resolveCredentials } from '../credentials/credentialsService';
 import { fetchCorePlatformMetadataMap, type CorePlatformMetadataMap } from '../../ai/tools/corePlatformData';
 
@@ -12,15 +13,12 @@ function escAttr(value: string): string {
   return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 }
 
-function roleCapabilities(role: string) {
-  const r = role.toLowerCase();
-  const admin = /admin|owner|super|service/.test(r);
-  const guest = /guest|viewer|read/.test(r);
+function roleCapabilities(_role: string) {
   return {
-    can_create: admin || !guest,
-    can_edit: admin || !guest,
-    can_delete: admin,
-    readonly_fields: guest ? ['*'] : [],
+    can_create: null,
+    can_edit: null,
+    can_delete: null,
+    readonly_fields: [],
     hidden_fields: [],
     visible_list_views: [] as string[],
   };
@@ -75,10 +73,10 @@ export function runContextBuilderPhase(input: {
   const users = canUseWebsite ? listUsersForWebsite(input.websiteId!) : [];
   const contexts = users.length
     ? users.map((user) => {
-      const role = clean(user.customRole || user.role || user.label || 'default');
+      const role = clean(user.customRole || user.role || user.label || '');
       const caps = roleCapabilities(role);
       return {
-        context_id: role.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '') || 'default',
+        context_id: role.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '') || '',
         description: `${user.label || role} (${role})`,
         credential_user_id: user.id,
         roles_covered: [role],
@@ -87,12 +85,12 @@ export function runContextBuilderPhase(input: {
       };
     })
     : [{
-      context_id: clean(input.primaryCredentials?.role || 'primary_user').toLowerCase().replace(/[^a-z0-9]+/g, '_') || 'primary_user',
-      description: clean(input.primaryCredentials?.role || input.primaryCredentials?.username || 'Primary user'),
+      context_id: clean(input.primaryCredentials?.role || '').toLowerCase().replace(/[^a-z0-9]+/g, '_') || '',
+      description: clean(input.primaryCredentials?.role || input.primaryCredentials?.username || ''),
       credential_user_id: input.primaryCredentials?.userId || '',
-      roles_covered: [clean(input.primaryCredentials?.role || 'primary')],
-      permission_fingerprint: JSON.stringify(roleCapabilities(clean(input.primaryCredentials?.role || 'primary'))),
-      expected_capabilities: roleCapabilities(clean(input.primaryCredentials?.role || 'primary')),
+      roles_covered: [clean(input.primaryCredentials?.role || '')],
+      permission_fingerprint: JSON.stringify(roleCapabilities(clean(input.primaryCredentials?.role || ''))),
+      expected_capabilities: roleCapabilities(clean(input.primaryCredentials?.role || '')),
     }];
 
   const grouped = new Map<string, any>();
@@ -134,7 +132,7 @@ export async function runMultiContextInspectionPhase(input: {
 }) {
   const contexts = Array.isArray(input.run.context_matrix?.contexts) && input.run.context_matrix.contexts.length
     ? input.run.context_matrix.contexts
-    : [{ context_id: 'primary_user', description: 'Primary user', expected_capabilities: {}, credential_user_id: input.primaryCredentials?.userId || '' }];
+    : [{ context_id: '', description: '', expected_capabilities: {}, credential_user_id: input.primaryCredentials?.userId || '' }];
   input.onPhase({ agent: 'ApplicationInspector', status: 'running', output: `Inspecting ${contexts.length} permission context(s).` });
   const inspections: any[] = [];
   for (const context of contexts) {
@@ -152,7 +150,7 @@ export async function runMultiContextInspectionPhase(input: {
       credentials: creds,
       runId: `${input.run.id}-${context.context_id}`,
       knowledge: input.knowledge,
-      workspaceId: input.ownerId || 'default',
+      workspaceId: input.ownerId || '',
     });
     inspections.push({ ...ctx, context_id: context.context_id, context_description: context.description, expected_capabilities: context.expected_capabilities });
   }
@@ -161,6 +159,29 @@ export async function runMultiContextInspectionPhase(input: {
   const output = { contexts_inspected: inspections.length };
   input.onPhase({ agent: 'ApplicationInspector', status: 'completed', output });
   phaseSummary(input.run, 'inspection', { status: 'complete', ...output, completed_at: new Date().toISOString() });
+
+  // DETERMINISTIC DOM EXPLORATION: capture EVERY interactive element with ALL attributes,
+  // with no LLM planner bottleneck and no truncation. This runs alongside the existing
+  // LLM-driven inspection and provides the raw element dataset for the script generator.
+  try {
+    input.onPhase({ agent: 'DOMExplorer', status: 'running' });
+    const exploreResult = await exploreAppElements({
+      targetUrl: input.targetUrl,
+      credentials: input.primaryCredentials?.username && input.primaryCredentials?.password
+        ? { username: input.primaryCredentials.username, password: input.primaryCredentials.password }
+        : undefined,
+    });
+    input.run.dom_exploration = exploreResult;
+    input.onPhase({
+      agent: 'DOMExplorer',
+      status: 'completed',
+      output: `Captured ${exploreResult.count} elements from ${exploreResult.url || ''}`,
+    });
+    phaseSummary(input.run, 'dom_exploration', { status: 'complete', total_elements: exploreResult.count, completed_at: new Date().toISOString() });
+  } catch (e: any) {
+    input.onPhase({ agent: 'DOMExplorer', status: 'failed', output: `DOM exploration failed: ${e?.message || String(e)}` });
+  }
+
   return inspections;
 }
 
@@ -217,7 +238,7 @@ export function runSelectorRegistryPhase(input: { run: any; page?: string; onPha
           return hay.some((v) => v === field.api_name || v.toLowerCase() === clean(field.label).toLowerCase());
         });
         if (found) seen += 1;
-        behavior[ctx.context_id || 'primary_user'] = {
+        behavior[ctx.context_id || ''] = {
           visible: found,
           readonly: field.readonly || (ctx.expected_capabilities?.readonly_fields || []).includes('*') || (ctx.expected_capabilities?.readonly_fields || []).includes(field.api_name),
           required: field.required,
@@ -264,7 +285,7 @@ export function runSelectorRegistryPhase(input: { run: any; page?: string; onPha
           verified: Boolean(primary),
         };
       }
-      selectors[key].permission_behavior[ctx.context_id || 'primary_user'] = { visible: true };
+      selectors[key].permission_behavior[ctx.context_id || ''] = { visible: true };
     }
   }
 

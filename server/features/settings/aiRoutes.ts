@@ -125,6 +125,7 @@ export function registerSettingsRoutes(app: Express) {
         callable: (stored?.enabled !== false) && (authMode === 'api_key' ? hasApiKey : accountCallable),
         model: stored?.model || DEFAULT_MODELS[p].default,
         authMode,
+        effort: stored?.effort || 'medium',
         accountTool: authMode === 'account' && p === 'openai' ? 'codex' : authMode === 'account' && p === 'anthropic' ? 'claude' : '',
         runtime: authMode === 'api_key' ? 'sdk' : 'cli',
         accountCliAllowed: isLocalCliProviderAllowed(),

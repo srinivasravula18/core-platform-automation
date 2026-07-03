@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   FolderGit2, ChevronDown, ChevronRight, Plus, Pencil, Trash2, Check, Globe,
-  Layers, Boxes, Loader2, AlertCircle, HardDrive, GitBranch,
+  Layers, Boxes, Loader2, AlertCircle, HardDrive, GitBranch, Square, CheckSquare, X,
 } from 'lucide-react';
 import { cn } from '@/src/lib/utils';
 import { useProjects, type Project, type ProjectApp } from '@/src/store/project';
@@ -21,6 +21,9 @@ export function ProjectSwitcher() {
   const [expanded, setExpanded] = useState<string | null>(selectedProjectId);
   const [wizard, setWizard] = useState<WizardSpec | null>(null);
   const [confirm, setConfirm] = useState<{ type: 'project' | 'app'; id: string; name: string } | null>(null);
+  const [bulkConfirm, setBulkConfirm] = useState<{ type: 'project' | 'app'; ids: string[]; count: number } | null>(null);
+  const [selectedProjects, setSelectedProjects] = useState<Set<string>>(new Set());
+  const [selectedApps, setSelectedApps] = useState<Set<string>>(new Set());
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -52,6 +55,53 @@ export function ProjectSwitcher() {
     setConfirm(null);
   };
 
+  const doBulkDelete = async () => {
+    if (!bulkConfirm) return;
+    for (const id of bulkConfirm.ids) {
+      if (bulkConfirm.type === 'project') await deleteProject(id);
+      else await deleteApp(id);
+    }
+    setBulkConfirm(null);
+    if (bulkConfirm.type === 'project') setSelectedProjects(new Set());
+    else setSelectedApps(new Set());
+  };
+
+  const toggleProjectSelection = (projectId: string) => {
+    const newSet = new Set(selectedProjects);
+    if (newSet.has(projectId)) newSet.delete(projectId);
+    else newSet.add(projectId);
+    setSelectedProjects(newSet);
+  };
+
+  const toggleAppSelection = (appId: string) => {
+    const newSet = new Set(selectedApps);
+    if (newSet.has(appId)) newSet.delete(appId);
+    else newSet.add(appId);
+    setSelectedApps(newSet);
+  };
+
+  const selectAllProjects = () => {
+    if (selectedProjects.size === projects.length) {
+      setSelectedProjects(new Set());
+    } else {
+      setSelectedProjects(new Set(projects.map((p) => p.id)));
+    }
+  };
+
+  const selectAllAppsInProject = (projectId: string) => {
+    const project = projects.find((p) => p.id === projectId);
+    if (!project) return;
+    const appIds = project.apps.map((a) => a.id);
+    const newSet = new Set(selectedApps);
+    const allSelected = appIds.every((id) => newSet.has(id));
+    if (allSelected) {
+      appIds.forEach((id) => newSet.delete(id));
+    } else {
+      appIds.forEach((id) => newSet.add(id));
+    }
+    setSelectedApps(newSet);
+  };
+
   return (
     <div ref={ref} className="relative">
       {/* Trigger */}
@@ -73,14 +123,71 @@ export function ProjectSwitcher() {
       {/* Dropdown */}
       {open && (
         <div className="absolute left-0 top-full mt-2 w-[min(20rem,calc(100vw-2rem))] rounded-xl border border-[var(--border)] bg-[var(--bg-card)] shadow-2xl z-50 overflow-hidden">
-          <div className="flex items-center justify-between px-3 py-2.5 border-b border-[var(--border)]">
-            <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">Projects</span>
-            <button
-              onClick={() => setWizard({ kind: 'project' })}
-              className="flex items-center gap-1 rounded-md bg-[var(--accent)]/10 px-2 py-1 text-[11px] font-semibold text-[var(--accent)] hover:bg-[var(--accent)]/20 transition-colors"
-            >
-              <Plus className="w-3.5 h-3.5" /> New project
-            </button>
+          <div className="px-3 py-2.5 border-b border-[var(--border)]">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">Projects</span>
+              <div className="flex items-center gap-1.5">
+                {projects.length > 0 && (
+                  <button
+                    onClick={selectAllProjects}
+                    className="flex items-center gap-1 rounded-md border border-[var(--border)] px-2 py-1 text-[11px] font-semibold text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-secondary)] transition-colors"
+                    title={selectedProjects.size === projects.length ? 'Deselect all projects' : 'Select all projects'}
+                  >
+                    {selectedProjects.size === projects.length ? (
+                      <CheckSquare className="w-3.5 h-3.5 text-[var(--accent)]" />
+                    ) : (
+                      <Square className="w-3.5 h-3.5" />
+                    )}
+                    Select all
+                  </button>
+                )}
+                <button
+                  onClick={() => setWizard({ kind: 'project' })}
+                  className="flex items-center gap-1 rounded-md bg-[var(--accent)]/10 px-2 py-1 text-[11px] font-semibold text-[var(--accent)] hover:bg-[var(--accent)]/20 transition-colors"
+                >
+                  <Plus className="w-3.5 h-3.5" /> New project
+                </button>
+              </div>
+            </div>
+            {/* Bulk actions bar */}
+            {selectedProjects.size > 0 && (
+              <div className="flex items-center justify-between gap-2 text-[10px] bg-[var(--bg-secondary)] rounded px-2 py-1.5">
+                <span className="text-[var(--text-muted)]">{selectedProjects.size} project(s) selected</span>
+                <div className="flex items-center gap-3">
+                  <button
+                    onClick={() => setSelectedProjects(new Set())}
+                    className="flex items-center gap-1 text-[var(--text-muted)] hover:text-[var(--text-primary)] font-medium"
+                  >
+                    <X className="w-3 h-3" /> Clear
+                  </button>
+                  <button
+                    onClick={() => setBulkConfirm({ type: 'project', ids: Array.from(selectedProjects), count: selectedProjects.size })}
+                    className="flex items-center gap-1 text-red-400 hover:text-red-300 font-medium"
+                  >
+                    <Trash2 className="w-3 h-3" /> Delete
+                  </button>
+                </div>
+              </div>
+            )}
+            {selectedApps.size > 0 && (
+              <div className="mt-1 flex items-center justify-between gap-2 text-[10px] bg-[var(--bg-secondary)] rounded px-2 py-1.5">
+                <span className="text-[var(--text-muted)]">{selectedApps.size} app(s) selected</span>
+                <div className="flex items-center gap-3">
+                  <button
+                    onClick={() => setSelectedApps(new Set())}
+                    className="flex items-center gap-1 text-[var(--text-muted)] hover:text-[var(--text-primary)] font-medium"
+                  >
+                    <X className="w-3 h-3" /> Clear
+                  </button>
+                  <button
+                    onClick={() => setBulkConfirm({ type: 'app', ids: Array.from(selectedApps), count: selectedApps.size })}
+                    className="flex items-center gap-1 text-red-400 hover:text-red-300 font-medium"
+                  >
+                    <Trash2 className="w-3 h-3" /> Delete
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
 
           <div className="max-h-[min(24rem,60dvh)] overflow-y-auto py-1">
@@ -122,6 +229,17 @@ export function ProjectSwitcher() {
                     )}
                   >
                     <button
+                      onClick={(e) => { e.stopPropagation(); toggleProjectSelection(project.id); }}
+                      className="p-0.5 text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+                      title="Select project"
+                    >
+                      {selectedProjects.has(project.id) ? (
+                        <CheckSquare className="w-3.5 h-3.5 text-[var(--accent)]" />
+                      ) : (
+                        <Square className="w-3.5 h-3.5" />
+                      )}
+                    </button>
+                    <button
                       onClick={() => setExpanded(isExpanded ? null : project.id)}
                       className="p-0.5 text-[var(--text-muted)] hover:text-[var(--text-primary)]"
                     >
@@ -150,6 +268,20 @@ export function ProjectSwitcher() {
                   {/* Apps */}
                   {isExpanded && (
                     <div className="ml-5 pl-2 border-l border-[var(--border)] my-0.5 space-y-0.5">
+                      {/* Select all apps in this project */}
+                      <button
+                        onClick={(e) => { e.stopPropagation(); selectAllAppsInProject(project.id); }}
+                        className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[10px] text-[var(--text-muted)] hover:bg-[var(--bg-secondary)]"
+                        title="Select all apps in this project"
+                      >
+                        {project.apps.every((a) => selectedApps.has(a.id)) ? (
+                          <CheckSquare className="w-3.5 h-3.5 text-[var(--accent)]" />
+                        ) : (
+                          <Square className="w-3.5 h-3.5" />
+                        )}
+                        <span className="font-medium">Select all ({project.apps.length})</span>
+                      </button>
+
                       {/* Project-level (all apps) */}
                       <button
                         onClick={() => { selectProject(project.id); selectApp(null); setOpen(false); }}
@@ -174,6 +306,17 @@ export function ProjectSwitcher() {
                               isSelApp ? 'bg-[var(--accent)]/10' : 'hover:bg-[var(--bg-secondary)]',
                             )}
                           >
+                            <button
+                              onClick={(e) => { e.stopPropagation(); toggleAppSelection(app.id); }}
+                              className="p-0 text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+                              title="Select app"
+                            >
+                              {selectedApps.has(app.id) ? (
+                                <CheckSquare className="w-3.5 h-3.5 text-[var(--accent)]" />
+                              ) : (
+                                <Square className="w-3.5 h-3.5" />
+                              )}
+                            </button>
                             <button
                               onClick={() => { selectProject(project.id); selectApp(app.id); setOpen(false); }}
                               className="flex flex-1 items-center gap-2 min-w-0 text-left"
@@ -234,7 +377,8 @@ export function ProjectSwitcher() {
             </div>
             <p className="text-xs text-[var(--text-muted)] leading-relaxed">
               Delete <span className="font-medium text-[var(--text-primary)]">{confirm.name}</span>?
-              {confirm.type === 'project' && ' All of its apps will be removed too.'} This can’t be undone.
+              {confirm.type === "project" && " All of its apps will be removed too. "}
+              This cannot be undone.
             </p>
             <div className="flex justify-end gap-2 mt-4">
               <button onClick={() => setConfirm(null)} className="rounded-md px-3 py-1.5 text-xs font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]">
@@ -242,6 +386,43 @@ export function ProjectSwitcher() {
               </button>
               <button onClick={() => void doDelete()} className="rounded-md bg-red-500 px-3 py-1.5 text-xs font-semibold text-white hover:bg-red-600">
                 Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Bulk delete confirm */}
+      {bulkConfirm && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/50" onMouseDown={() => setBulkConfirm(null)}>
+          <div
+            className="w-full max-w-sm rounded-2xl border border-[var(--border)] bg-[var(--bg-card)] shadow-2xl p-5"
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center gap-2.5 mb-2">
+              <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-red-500/10 text-red-400">
+                <Trash2 className="w-4.5 h-4.5" />
+              </span>
+              <h3 className="text-sm font-semibold text-[var(--text-primary)]">
+                Delete {bulkConfirm.count} {bulkConfirm.type}
+                {bulkConfirm.count > 1 ? "s" : ""}
+              </h3>
+            </div>
+            <p className="text-xs text-[var(--text-muted)] leading-relaxed">
+              Permanently delete{" "}
+              <span className="font-medium text-red-400">
+                {bulkConfirm.count} {bulkConfirm.type}
+                {bulkConfirm.count > 1 ? "s" : ""}
+              </span>
+              ? {bulkConfirm.type === "project" && "All their apps will be removed too. "}
+              This cannot be undone.
+            </p>
+            <div className="flex justify-end gap-2 mt-4">
+              <button onClick={() => setBulkConfirm(null)} className="rounded-md px-3 py-1.5 text-xs font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]">
+                Cancel
+              </button>
+              <button onClick={() => void doBulkDelete()} className="rounded-md bg-red-500 px-3 py-1.5 text-xs font-semibold text-white hover:bg-red-600">
+                Delete all
               </button>
             </div>
           </div>

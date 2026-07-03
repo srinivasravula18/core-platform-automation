@@ -122,12 +122,6 @@ function expandFeatureTerms(question: string): string[] {
       'pagination', 'toolbar', 'row actions', 'selected count',
     ].forEach((term) => extra.add(term));
   }
-  if (hasAny('feature', 'object', 'objects', 'entity', 'entities', 'tab', 'tabs', 'app', 'apps')) {
-    [
-      'metadata', 'object', 'objects', 'api_name', 'field', 'fields', 'tab', 'tabs',
-      'navigation', 'route', 'routes',
-    ].forEach((term) => extra.add(term));
-  }
   return Array.from(new Set(extra));
 }
 
@@ -142,6 +136,16 @@ function isBroadCoverageQuestion(question: string): boolean {
   const multiSurface = /\b(admin|keystone)\b/.test(text) && /\b(admin\b.*\bkeystone|keystone\b.*\badmin)\b/.test(text);
   const crossFlow = /\b(end to end|end-to-end|e2e)\b/.test(text);
   return coverageAsk && (broadScope || multiSurface || crossFlow);
+}
+
+// A model sometimes returns a tool invocation as TEXT rather than a native tool call
+// (`{"action":"tool_call","name":"search_codebase","arguments":{…}}`). That must never be shown to
+// the user as an "answer" — detect it so callers can fall back to a real synthesized response.
+function looksLikeRawToolCall(text: string): boolean {
+  const t = String(text || '').trim();
+  if (!t.startsWith('{') && !t.startsWith('[')) return false;
+  return /"action"\s*:\s*"tool_call"/.test(t)
+    || /"name"\s*:\s*"(search_codebase|read_code_file|follow_imports)"/.test(t);
 }
 
 function numberLines(content: string): string {
@@ -390,7 +394,11 @@ export async function answerAppQuestionFromCode(question: string, opts: {
       signal: opts.signal,
     });
     const loopAnswer = (loop.finalText || '').trim();
-    if (loopAnswer) return stripCodebaseLocationsForAgentConsole(loopAnswer);
+    // Guard against a leaked tool-call: some models emit a tool invocation as TEXT
+    // (`{"action":"tool_call","name":"search_codebase",...}`) instead of a native call, which the
+    // loop can't execute and returns verbatim as finalText. Never surface that raw JSON as the
+    // answer — fall through to the parallel-research synthesis, which returns readable prose.
+    if (loopAnswer && !looksLikeRawToolCall(loopAnswer)) return stripCodebaseLocationsForAgentConsole(loopAnswer);
   } catch {
     // provider without tool-calling, or the loop failed → fall through to parallel research.
   }

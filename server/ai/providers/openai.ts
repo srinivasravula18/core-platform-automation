@@ -119,6 +119,7 @@ export class OpenAIProvider implements AIProvider {
             { role: 'user' as const, content: opts.prompt },
           ],
           ...this.sampling(modelId, opts.maxTokens, opts.temperature),
+          ...(opts.effort ? { reasoning_effort: opts.effort } : {}),
           ...(jsonMode ? { response_format: { type: 'json_object' as const } } : {}),
         },
         { signal: opts.signal },
@@ -157,6 +158,7 @@ export class OpenAIProvider implements AIProvider {
           messages,
           ...(tools ? { tools, tool_choice: 'auto' as const } : {}),
           ...this.sampling(modelId, opts.maxTokens, opts.temperature),
+          ...(opts.effort ? { reasoning_effort: opts.effort } : {}),
         },
         { signal: opts.signal },
       );
@@ -210,6 +212,7 @@ export class OpenAIProvider implements AIProvider {
           { role: 'user' as const, content: opts.prompt },
         ],
         ...this.sampling(this.modelId(opts), opts.maxTokens, opts.temperature),
+        ...(opts.effort ? { reasoning_effort: opts.effort } : {}),
         stream: true,
       },
       { signal: opts.signal },

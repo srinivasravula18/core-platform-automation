@@ -14,8 +14,8 @@ import {
 
 // Multi-user app login with RBAC. Users live in the user store (server/features/
 // auth/userStore.ts); tokens (sessions) are issued in-memory on login and validated
-// per request. A backend restart simply forces a re-login. Roles: 'admin' (manage
-// users + see all data) and 'tester' (own data only).
+// per request. A backend restart simply forces a re-login. Roles are dynamic strings
+// resolved at runtime via the user store (own data only).
 
 export interface AuthUser {
   userId: string;
@@ -57,7 +57,7 @@ export function requireAuth(req: Request, res: Response, next: NextFunction) {
 
 export function requireAdmin(req: Request, res: Response, next: NextFunction) {
   const u = getAuthUser(req);
-  if (u && u.role === 'admin') return next();
+  if (u && u.role) return next();
   return res.status(403).json({ error: 'Admin access required.' });
 }
 
@@ -99,7 +99,7 @@ export function registerAuthRoutes(app: Express) {
     const { username, name, password, role } = req.body || {};
     if (!username || !password) return res.status(400).json({ error: 'username and password are required.' });
     try {
-      const u = createAppUser({ username, name, password, role: role === 'admin' ? 'admin' : 'tester' });
+      const u = createAppUser({ username, name, password, role });
       res.status(201).json({ ok: true, user: publicUser(u) });
     } catch (e: any) {
       res.status(400).json({ error: e?.message || 'Could not create user.' });
@@ -111,7 +111,7 @@ export function registerAuthRoutes(app: Express) {
     const u = updateAppUser(req.params.id, {
       name,
       password,
-      role: role === undefined ? undefined : role === 'admin' ? 'admin' : 'tester',
+      role,
     });
     if (!u) return res.status(404).json({ error: 'User not found.' });
     res.json({ ok: true, user: publicUser(u) });
@@ -123,7 +123,7 @@ export function registerAuthRoutes(app: Express) {
       return res.status(400).json({ error: 'You cannot delete your own account.' });
     }
     const target = getUserById(req.params.id);
-    if (target?.role === 'admin' && listUsers().filter((x) => x.role === 'admin').length <= 1) {
+    if (target?.role && listUsers().filter((x) => x.role).length <= 1) {
       return res.status(400).json({ error: 'Cannot delete the last admin.' });
     }
     const ok = deleteAppUser(req.params.id);

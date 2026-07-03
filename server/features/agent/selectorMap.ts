@@ -67,11 +67,7 @@ export function extractSelectorMap(repoPath: string, opts?: { maxFiles?: number 
     if (t && t.length > 1 && !/[`{}]|\$\{/.test(t)) s.add(t);
   };
   const attr = (attrs: string, name: string) => attrs.match(new RegExp(`\\b${name}\\s*=\\s*[{]?["'\`]([^"'\`\\n]{1,220})["'\`]`))?.[1]?.replace(/\s+/g, ' ').trim() || '';
-  const surfaceFor = (file: string) => /[\\/]apps[\\/]admin[\\/]/i.test(file)
-    ? 'admin'
-    : /[\\/]apps[\\/]shockwave[\\/]/i.test(file)
-      ? 'keystone'
-      : 'shared';
+  const surfaceFor = (_file: string) => 'admin';
 
   const walk = (dir: string) => {
     if (fileCount >= maxFiles) return;
@@ -216,7 +212,7 @@ export function renderSelectorMap(map: SelectorMap, limit = 120): string {
       bits.push(`file=${h.file}`);
       return bits.join(' ');
     });
-    lines.push(`admin/keystone forms-buttons-inputs-searchboxes: ${hooks.join(' | ')}`);
+    lines.push(`ui-hooks: ${hooks.join(' | ')}`);
   }
   return lines.join('\n');
 }
@@ -230,8 +226,7 @@ export function mapHas(map: SelectorMap, target: string): boolean {
     for (const v of pool) {
       const lv = v.toLowerCase();
       if (lv === t) return true;
-      // unbounded bidirectional includes() let a 2-3 char fragment "ground" anything — e.g.
-      // "New" matched "Enter a new password", so hallucinated selectors passed verification.
+      // unbounded bidirectional includes() let short fragments "ground" everything.
     }
   }
   return false;
@@ -246,8 +241,7 @@ export function mapHas(map: SelectorMap, target: string): boolean {
 export function methodFor(map: SelectorMap, target: string): { by: 'testid' | 'css' | 'placeholder' | 'label' | 'role' | 'text'; value: string; role?: string } | null {
   const t = String(target || '').toLowerCase().trim();
   if (!t) return null;
-  // EXACT (case-insensitive) match only — fuzzy substring matching produced garbage
-  // (e.g. "New" matching "Enter a new password"). Method rewriting must be confident.
+  // EXACT (case-insensitive) match only — fuzzy substring matching produced garbage.
   const find = (arr: string[]) => arr.find((v) => v.toLowerCase() === t);
   const tid = find(map.testIds); if (tid) return { by: 'testid', value: tid };
   const css = find(map.cssIds.map((id) => `#${id}`)) || find(map.cssIds); if (css) return { by: 'css', value: css.startsWith('#') ? css : `#${css}` };

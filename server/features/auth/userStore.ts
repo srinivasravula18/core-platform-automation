@@ -16,7 +16,7 @@ import { randomUUID, scryptSync, randomBytes, timingSafeEqual } from 'crypto';
 import { db, persistDataInBackground } from '../../shared/storage';
 import { isPostgresEnabled, query } from '../../db/pool';
 
-export type Role = 'admin' | 'tester';
+export type Role = string;
 
 export interface AppUser {
   id: string;
@@ -71,7 +71,7 @@ export function createAppUser(opts: { username: string; name?: string; password:
     username,
     name: (opts.name || '').trim() || username,
     passwordHash: hashPassword(opts.password),
-    role: opts.role === 'admin' ? 'admin' : 'tester',
+    role: opts.role,
     createdAt: new Date().toISOString(),
   };
   users().unshift(rec);
@@ -86,7 +86,7 @@ export function updateAppUser(
   const u = getUserById(id);
   if (!u) return null;
   if (patch.name !== undefined) u.name = patch.name;
-  if (patch.role !== undefined) u.role = patch.role === 'admin' ? 'admin' : 'tester';
+  if (patch.role !== undefined) u.role = patch.role;
   if (patch.password) u.passwordHash = hashPassword(patch.password);
   persistDataInBackground('update app user');
   return u;
@@ -113,14 +113,12 @@ export function publicUser(u: AppUser) {
  * with its own (empty) data. Idempotent — only creates what's missing.
  */
 export function seedAuthUsersIfEmpty(): void {
-  const adminUsername = process.env.ADMIN_USERNAME || 'admin';
-  const adminPassword = process.env.ADMIN_PASSWORD || 'admin@2026';
+  const adminUsername = process.env.ADMIN_USERNAME || '';
+  const adminPassword = process.env.ADMIN_PASSWORD || '';
   if (!findByUsername(adminUsername)) {
     createAppUser({ username: adminUsername, name: 'Administrator', password: adminPassword, role: 'admin' });
   }
-  if (!findByUsername('mark')) {
-    createAppUser({ username: 'mark', name: 'Mark', password: 'mark@2026', role: 'tester' });
-  }
+  // Tester seed accounts are configured per-deployment — no hardcoded defaults.
 }
 
 /**
@@ -133,7 +131,7 @@ export function seedAuthUsersIfEmpty(): void {
  * in-memory store and Postgres.
  */
 export async function claimLegacyDataForAdmin(): Promise<{ adminId: string; claimedInMemory: number } | null> {
-  const admin = listUsers().find((u) => u.role === 'admin');
+  const admin = listUsers().find((u) => u.role);
   if (!admin) return null;
   const adminId = admin.id;
   // Ids that belong to a real current user — their data must be preserved.

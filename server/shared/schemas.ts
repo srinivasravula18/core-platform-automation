@@ -17,7 +17,7 @@ function scriptFilename(value: string, fallback: string): string {
 }
 
 function fallbackScript(title: string): string {
-  return `import { test, expect } from '@playwright/test';\n\ntest('${title.replace(/'/g, "\\'")}', async ({ page }) => {\n  await page.goto('/');\n  await expect(page.locator('body')).toBeVisible();\n});`;
+  return `import { test, expect } from '@playwright/test';\n\ntest('${title.replace(/'/g, "\\'")}', async ({ page }) => {\n  await page.goto('/');\n  // Add your assertions here\n});`;
 }
 
 export const appFlowsSchema = z.object({

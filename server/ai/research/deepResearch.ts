@@ -63,12 +63,6 @@ function intentExpansionTerms(words: string[]): string[] {
       'pagination', 'toolbar', 'row actions', 'selected count', 'empty state',
     ].forEach((term) => terms.add(term));
   }
-  if (hasAny('feature', 'object', 'objects', 'entity', 'entities', 'tab', 'tabs', 'app', 'apps')) {
-    [
-      'metadata', 'object', 'objects', 'api_name', 'field', 'fields', 'tab', 'tabs',
-      'navigation', 'route', 'routes',
-    ].forEach((term) => terms.add(term));
-  }
   return Array.from(terms);
 }
 
