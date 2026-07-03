@@ -45,7 +45,10 @@ function extractJson(text: string): unknown {
 // The default CLI call timeout. A large structured-output call (e.g. generating several
 // full Playwright scripts at once) can legitimately exceed 5 min on the account/CLI
 // provider, so allow raising it via env without code changes. App-agnostic infra knob.
-const DEFAULT_CLI_TIMEOUT_MS = Math.max(60_000, Number(process.env.CLI_PROVIDER_TIMEOUT_MS) || 300_000);
+// Default raised to 10 min: quality-critical agents now run at HIGH reasoning effort on the
+// full Settings-selected model, and a single large structured-output call (a full case set or
+// several Playwright scripts) can legitimately take longer than the old 5-min ceiling.
+const DEFAULT_CLI_TIMEOUT_MS = Math.max(60_000, Number(process.env.CLI_PROVIDER_TIMEOUT_MS) || 600_000);
 
 async function runProcess(command: string, args: string[], stdin: string, timeoutMs = DEFAULT_CLI_TIMEOUT_MS): Promise<string> {
   return await new Promise((resolve, reject) => {
@@ -104,11 +107,16 @@ export class AccountCliProvider implements AIProvider {
   readonly name: ProviderName;
   private defaultModel: string;
   private tool: CliTool;
+  /** True only when the user EXPLICITLY chose a model in Settings. Codex account auth
+   * must not receive an app-side SDK default it may not recognize — with no explicit
+   * choice we let the CLI's own local config pick the model. */
+  private explicitModel: boolean;
 
-  constructor(name: ProviderName, tool: CliTool, defaultModel: string) {
+  constructor(name: ProviderName, tool: CliTool, defaultModel: string, opts?: { explicitModel?: boolean }) {
     this.name = name;
     this.tool = tool;
     this.defaultModel = defaultModel;
+    this.explicitModel = !!opts?.explicitModel;
   }
 
   private modelId(opts: { model?: string }) {
@@ -123,9 +131,17 @@ export class AccountCliProvider implements AIProvider {
     const model = this.modelId(opts);
     if (this.tool === 'codex') {
       const outFile = path.join(os.tmpdir(), `testflow-codex-${randomUUID()}.txt`);
-      // In ChatGPT subscription auth mode, Codex should use its own local config
-      // model/provider. Passing the app's SDK model can force API-key auth.
-      const args = ['exec', '--cd', process.cwd(), '--sandbox', 'read-only', '--color', 'never', '--output-last-message', outFile, '-'];
+      const args = ['exec', '--cd', process.cwd(), '--sandbox', 'read-only', '--color', 'never', '--output-last-message', outFile];
+      // Honour the model the user EXPLICITLY selected in Settings. Without this the CLI
+      // silently ran its local default (often a small/fast tier), which is the single
+      // biggest quality gap vs. the same prompt in ChatGPT. Never pass an app-side SDK
+      // default the user did not choose (it can force API-key auth), and treat the
+      // 'codex-spark' sentinel as "use the CLI's local default".
+      if (this.explicitModel && model && model !== 'codex-spark') args.push('-m', model);
+      // Reasoning effort: quality-critical agents request 'high'; codex otherwise runs
+      // at its local default (typically medium), which produces shallower output.
+      if (opts.effort) args.push('-c', `model_reasoning_effort="${opts.effort}"`);
+      args.push('-');
       try {
         await runProcess(
           commandFor('codex'),
@@ -199,7 +215,7 @@ Decide the single next action. Reply with EXACTLY ONE JSON object and NOTHING el
 
     let raw = '';
     try {
-      raw = await this.run({ system: opts.system, prompt, model, signal: opts.signal });
+      raw = await this.run({ system: opts.system, prompt, model, effort: opts.effort, signal: opts.signal });
     } catch (err: any) {
       throw classifyError(this.name, undefined, err?.message || String(err));
     }

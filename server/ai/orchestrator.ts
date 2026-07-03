@@ -74,22 +74,24 @@ function isLocalCliProviderAllowed(): boolean {
   );
 }
 
-export function buildProvider(provider: ProviderName): AIProvider {
+export function buildProvider(provider: ProviderName, modelOverride?: string): AIProvider {
   const creds = getProviderCredentials(provider);
   if (!creds) {
     throw new Error(
       `No credentials configured for provider "${provider}". Add an API key in Settings → AI Providers.`,
     );
   }
-  const model = creds.model || DEFAULT_MODELS[provider].default;
+  const model = modelOverride || creds.model || DEFAULT_MODELS[provider].default;
   if (creds.authMode === 'account') {
     if (!isLocalCliProviderAllowed()) {
       throw new Error(
         `Provider "${provider}" is configured for local subscription/account CLI auth, but CLI providers are disabled outside local development. Use API key mode in test and production.`,
       );
     }
-    if (provider === 'openai') return new AccountCliProvider('openai', 'codex', model);
-    if (provider === 'anthropic') return new AccountCliProvider('anthropic', 'claude', model);
+    // explicitModel: only forward a model id to the CLI when the user actually chose
+    // one in Settings — the CLI's own local config is the default otherwise.
+    if (provider === 'openai') return new AccountCliProvider('openai', 'codex', model, { explicitModel: !!(modelOverride || creds.model) });
+    if (provider === 'anthropic') return new AccountCliProvider('anthropic', 'claude', model, { explicitModel: !!(modelOverride || creds.model) });
     throw new Error(
       `Provider "${provider}" does not support subscription/account CLI auth in Test Flow AI. Use API key mode for this provider.`,
     );
@@ -137,12 +139,46 @@ export function resolveModelForAgent(agent: string, provider: ProviderName): str
   return DEFAULT_MODELS[provider].default;
 }
 
+type ReasoningEffort = 'low' | 'medium' | 'high';
+
+/**
+ * Agents whose output quality depends directly on reasoning depth. These run at
+ * 'high' effort unless the user explicitly configured an effort for them — the
+ * shallow default was a major source of thin, low-coverage generated artifacts
+ * (test cases, feature inventories) compared to the same prompt run manually in
+ * a full reasoning model. Role-based, app-agnostic.
+ */
+const HIGH_EFFORT_AGENTS = new Set(['caseWriter', 'featureAnalyst', 'featureDiscoveryAgent', 'e2eFlowAgent', 'testPlanner']);
+
+function isEffort(v: unknown): v is ReasoningEffort {
+  return v === 'low' || v === 'medium' || v === 'high';
+}
+
+/**
+ * Resolve the reasoning effort for an agent:
+ *   explicit caller override (the topbar effort selector, carried on the run)
+ *   → per-agent settings override → high-effort role floor → provider setting → medium.
+ * The caller override is authoritative: when the user picks an effort in the Agent
+ * Console topbar, that choice governs every agent in that run.
+ */
+export function resolveEffortForAgent(agent: string, provider: ProviderName, override?: string): ReasoningEffort {
+  if (isEffort(override)) return override;
+  const map = (db.settings as any)?.agentEffortMap;
+  const perAgent = map && map[agent];
+  if (isEffort(perAgent)) return perAgent;
+  if (HIGH_EFFORT_AGENTS.has(agent)) return 'high';
+  const stored = (db.settings?.providerSettings?.[provider] as any)?.effort;
+  if (isEffort(stored)) return stored;
+  return 'medium';
+}
+
 export class AgentOrchestrator {
   constructor(
     private provider: AIProvider,
     private agent: string,
     private workspaceId: string,
     private userId?: string,
+    private effort?: ReasoningEffort,
   ) {}
 
   private async assembleSystem(pipeline: PipelineResult): Promise<string> {
@@ -183,11 +219,11 @@ export class AgentOrchestrator {
     const isBadOutput = (e: any) => /schema|invalid_type|invalid_value|expected .*received|did not match|valid json|received undefined|unexpected token|unexpected end of (json|input)|in json at position|after property value|not valid json|json\.parse/i.test(String(e?.message || ''));
     let result: ProviderResponse<T>;
     try {
-      result = await this.provider.generateObject<T>({ system, prompt: opts.prompt, schema: opts.schema, temperature: opts.temperature, maxTokens: opts.maxTokens });
+      result = await this.provider.generateObject<T>({ system, prompt: opts.prompt, schema: opts.schema, temperature: opts.temperature, maxTokens: opts.maxTokens, effort: this.effort });
     } catch (err: any) {
       if (!isBadOutput(err)) throw err;
       const retrySystem = `${system}\n\nIMPORTANT: Your previous reply was not usable — it was not a single valid JSON object matching the required schema (it was malformed, truncated, or off-schema). Reply with ONLY one complete, valid JSON object that exactly matches the schema — all required fields present, correct types, properly closed braces/brackets, no prose, no markdown, no code fences.`;
-      result = await this.provider.generateObject<T>({ system: retrySystem, prompt: opts.prompt, schema: opts.schema, temperature: opts.temperature, maxTokens: opts.maxTokens });
+      result = await this.provider.generateObject<T>({ system: retrySystem, prompt: opts.prompt, schema: opts.schema, temperature: opts.temperature, maxTokens: opts.maxTokens, effort: this.effort });
     }
     await recordUsage({
       workspaceId: this.workspaceId,
@@ -229,6 +265,7 @@ export class AgentOrchestrator {
       prompt: opts.prompt,
       temperature: opts.temperature,
       maxTokens: opts.maxTokens,
+      effort: this.effort,
     });
     await recordUsage({
       workspaceId: this.workspaceId,
@@ -271,7 +308,7 @@ export class AgentOrchestrator {
       // answer at once. Emit it in small word-grouped chunks so the UI still renders
       // progressively instead of dumping a wall of text. (True low-latency token
       // streaming still requires an API-key/SDK provider.)
-      const result = await this.provider.generateText({ system, prompt: opts.prompt, temperature: opts.temperature, maxTokens: opts.maxTokens });
+      const result = await this.provider.generateText({ system, prompt: opts.prompt, temperature: opts.temperature, maxTokens: opts.maxTokens, effort: this.effort });
       const full = result.text || '';
       const tokens = full.match(/\S+\s*/g) || (full ? [full] : []);
       let buf = '';
@@ -283,7 +320,7 @@ export class AgentOrchestrator {
       if (buf) yield buf;
       return;
     }
-    for await (const delta of this.provider.generateTextStream({ system, prompt: opts.prompt, temperature: opts.temperature, maxTokens: opts.maxTokens })) {
+    for await (const delta of this.provider.generateTextStream({ system, prompt: opts.prompt, temperature: opts.temperature, maxTokens: opts.maxTokens, effort: this.effort })) {
       if (delta) yield delta;
     }
   }
@@ -337,6 +374,7 @@ export class AgentOrchestrator {
         tools: toolSpecs,
         temperature: opts.temperature,
         maxTokens: opts.maxTokensPerCall,
+        effort: this.effort,
         signal: opts.signal,
       }), opts.signal);
       if (res.usage) {
@@ -488,7 +526,7 @@ function safeJson(value: unknown): string {
  * when it can do tools; if it is in account/CLI mode (no function-calling), we fall back
  * to the first configured API-key provider that can, so the loop still runs.
  */
-export async function getToolCapableOrchestrator(agent: string, opts: { workspaceId?: string; userId?: string } = {}): Promise<AgentOrchestrator> {
+export async function getToolCapableOrchestrator(agent: string, opts: { workspaceId?: string; userId?: string; effort?: string } = {}): Promise<AgentOrchestrator> {
   const canonical = canonicalAgent(agent);
   const preferred = resolveProviderForAgent(canonical);
   const order: ProviderName[] = [preferred, ...listConfiguredProviders().filter((p) => p !== preferred)];
@@ -502,14 +540,14 @@ export async function getToolCapableOrchestrator(agent: string, opts: { workspac
     if (!base.chatWithTools) continue;
     const model = resolveModelForAgent(canonical, provider);
     if (model && (base as any).defaultModel !== model) (base as any).defaultModel = model;
-    return new AgentOrchestrator(base, canonical, opts.workspaceId || 'default', opts.userId);
+    return new AgentOrchestrator(base, canonical, opts.workspaceId || 'default', opts.userId, resolveEffortForAgent(canonical, provider, opts.effort));
   }
   throw new Error(
     'No tool-capable AI provider is configured. Enable a provider in Settings → AI Providers (Gemini/OpenAI/Anthropic API key, or codex/claude in account mode).',
   );
 }
 
-export async function getOrchestrator(agent: string, opts: { workspaceId?: string; userId?: string } = {}): Promise<AgentOrchestrator> {
+export async function getOrchestrator(agent: string, opts: { workspaceId?: string; userId?: string; effort?: string } = {}): Promise<AgentOrchestrator> {
   // Resolve legacy agent names onto the 7 canonical roles so prompt overrides,
   // provider/model routing, and usage logging all use one consolidated identity.
   const canonical = canonicalAgent(agent);
@@ -519,5 +557,5 @@ export async function getOrchestrator(agent: string, opts: { workspaceId?: strin
   if (model && (base as any).defaultModel !== model) {
     (base as any).defaultModel = model;
   }
-  return new AgentOrchestrator(base, canonical, opts.workspaceId || 'default', opts.userId);
+  return new AgentOrchestrator(base, canonical, opts.workspaceId || 'default', opts.userId, resolveEffortForAgent(canonical, provider, opts.effort));
 }

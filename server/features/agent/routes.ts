@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { db, addActivity, persistDataInBackground } from '../../shared/storage';
 import { getFolderPath, resolveFolderForAgent } from '../../shared/folders';
 import { getAIErrorMessage } from '../../shared/ai';
-import { buildCredentialContext, resolveAgentTargetUrl } from '../../shared/url';
+import { buildCredentialContext, resolveAgentTargetUrl, findSettingsCredentials } from '../../shared/url';
 import { playwrightScriptsSchema, testCasesSchema } from '../../shared/schemas';
 import { buildAgentExecutionSteps, buildCaseDescription, normalizeCaseSteps, normalizeCaseTags } from '../../shared/testCases';
 import { capturePlaywrightEvidence, createAuthStorageState } from '../evidence/evidenceService';
@@ -16,8 +16,8 @@ import { inspectFlow, flowToScript } from './flowInspector';
 import { extractSelectorMap, renderSelectorMap, mapHas, correctSelectorMethods, type SelectorMap } from './selectorMap';
 
 // Cache the extracted code selector-map per repo+app (the source rarely changes mid-session).
-// Keyed by the SCOPED path AND appId so two apps that share one repo (e.g. Admin on :5002 and
-// Keystone on :5003, both under D:\core-platform) never get each other's selector map. When an app
+// Keyed by the SCOPED path AND appId so two apps that share one repo never get each other's
+// selector map. When an app
 // declares a repoSubpath, extraction is scoped to that subtree so its selectors don't include the
 // sibling app's. Falls back to the whole repo when no subpath is set (shared-source apps).
 const selectorMapCache = new Map<string, SelectorMap>();
@@ -43,6 +43,7 @@ function getRunSelectorMap(run: any): SelectorMap | null {
 import { promises as fsp, readFileSync, existsSync } from 'fs';
 import path from 'path';
 import { inspectApplicationFlow } from './inspectionService';
+import { exploreAppElements } from './domExplorer';
 import { getFeatureGrounding } from './knowledge';
 import { getOrchestrator, listConfiguredProviders, resolveProviderForAgent } from '../../ai/orchestrator';
 import { answerAppQuestionFromCode, stripCodebaseLocationsForAgentConsole } from '../../ai/supervisor';
@@ -78,7 +79,10 @@ import { isNoiseTurn, deriveUnderstandingFromChat, resolveUnderstanding } from '
 
 function wantsCodeGroundedTestUnderstanding(value: string): boolean {
   const text = String(value || '').toLowerCase();
-  return /\b(test\s*cases?|cases?|test\s*areas?|coverage|scenarios?|qa|regression|what\s+(?:can|should)\s+i\s+test|write|create|generate|draft)\b/.test(text)
+  // A bare "test <feature>" verb (e.g. "test list view at Accounts CRM") is a test-generation
+  // request too — not just literal "test cases"/"coverage" — so include `test` as a trigger.
+  // Without it those requests skip code grounding and fall back to the terse understanding.
+  return /\b(test|cases?|test\s*areas?|coverage|scenarios?|qa|regression|what\s+(?:can|should)\s+i\s+test|write|create|generate|draft)\b/.test(text)
     && /\b(test|case|cases|qa|coverage|scenario|scenarios|regression)\b/.test(text);
 }
 
@@ -135,11 +139,11 @@ function getAgentPlanRiskLevel(run: any) {
     .join(' ')
     .toLowerCase();
 
-  if (priorities.includes('critical') || /\b(payment|checkout|security|auth|login|admin|production|delete|permission|access)\b/.test(`${prompt} ${tagsAndText}`)) {
+  if (priorities.includes('critical')) {
     return 'High';
   }
 
-  if (priorities.includes('high') || /\b(regression|integration|api|data|workflow|list|table)\b/.test(`${prompt} ${tagsAndText}`)) {
+  if (priorities.includes('high')) {
     return 'Medium';
   }
 
@@ -150,15 +154,11 @@ function buildFallbackArtifactName(prompt: string, targetUrl: string) {
   const source = `${prompt || ''} ${targetUrl || ''}`.toLowerCase();
   // App name is DERIVED from the target URL host (works for any app), never a hardcoded
   // per-app guess. Falls back to a neutral label when there is no usable URL.
-  let appName = 'Application';
+  let appName = '';
   if (targetUrl) {
-    try { appName = new URL(targetUrl).hostname.replace(/^www\./, '').split('.')[0].replace(/[-_]/g, ' ') || 'Application'; } catch { /* keep default */ }
+    try { appName = new URL(targetUrl).hostname.replace(/^www\./, '').split('.')[0].replace(/[-_]/g, ' ') || ''; } catch { /* keep default */ }
   }
   const scopeParts = [];
-  if (/\blogin|log in|signin|sign in|credential|auth/.test(source)) scopeParts.push('Login');
-  if (/\blist|table|grid|row|column|apps\b/.test(source)) scopeParts.push('List View');
-  if (/\blanding|home page/.test(source)) scopeParts.push('Landing Page');
-  if (/\bcontact/.test(source)) scopeParts.push('Contact Form');
   if (/\bsmoke/.test(source)) scopeParts.push('Smoke');
   const scope = scopeParts.length ? scopeParts.join(' and ') : 'Functional';
   return `${appName.replace(/\b\w/g, (char) => char.toUpperCase())} ${scope} Validation`.replace(/\s+/g, ' ').trim();
@@ -166,7 +166,7 @@ function buildFallbackArtifactName(prompt: string, targetUrl: string) {
 
 const caseUrlPattern = /\b(?:https?:\/\/|www\.)[^\s),]+|\b(?:localhost|127\.0\.0\.1)(?::\d+)?(?:\/[^\s),]*)?/gi;
 function cleanCaseText(value: any, run: any): string {
-  const appName = String(run?.appName || 'Application').trim() || 'Application';
+  const appName = String(run?.appName || '').trim();
   const targetUrl = String(run?.app_url || '').trim();
   let out = String(value || '');
   // Guard: replacing an EMPTY targetUrl matches the empty string at position 0 and PREPENDS appName
@@ -194,7 +194,12 @@ function stripEmbeddedSteps(text: string): string {
 // Trim to the word cap, then drop any trailing connector / article / dash so the title stops on a
 // complete word.
 const TITLE_DANGLING = /^(and|or|but|with|to|for|of|in|on|at|by|the|a|an|that|when|which|while|so|is|are|was|were|as|from|into|per|via|no)$/i;
-function capTitleWords(title: string, maxWords = 18): string {
+// The cap is a RUNAWAY guard, not a style enforcer. Verify-convention titles carry an
+// "<app> - <feature area> - verify …" prefix that alone uses ~6-8 words, so a tight cap
+// (the old 18) chopped the behavior clause mid-sentence ("… verify reordering a visible
+// column is treated"), which is worse than a slightly long title. Style-level brevity is
+// the case writer's job (see CASE_AUTHORING_CONTRACT); this only stops true runaways.
+function capTitleWords(title: string, maxWords = 30): string {
   const words = String(title || '').split(/\s+/).filter(Boolean);
   const kept = words.slice(0, maxWords);
   while (kept.length > 4 && (TITLE_DANGLING.test(kept[kept.length - 1]) || /^[-–—:]$/.test(kept[kept.length - 1]))) kept.pop();
@@ -202,20 +207,18 @@ function capTitleWords(title: string, maxWords = 18): string {
 }
 
 function conciseCaseTitle(value: any, run: any): string {
-  const appName = String(run?.appName || '').replace(/\bautomations?\b/gi, 'Admin').trim();
+  const appName = String(run?.appName || '').trim();
   let title = cleanCaseText(value, run)
-    .replace(/\bautomations?\b\s*[-:–—]?\s*/gi, '')
     .replace(/^verif(?:y|ies)\s+that\s+/i, 'verify ')
     .replace(/^test\s+/i, 'verify ');
   if (appName && !title.toLowerCase().includes(appName.toLowerCase())) title = `${appName} - ${title}`;
-  return capTitleWords(title, 20);
+  return capTitleWords(title);
 }
 
 function readableCaseTitle(value: any, run: any, _extraText = ''): string {
   const raw = cleanCaseText(value, run);
   const prompt = String(run?.prompt || '').toLowerCase();
-  const explicitApp = String(run?.appName || '').replace(/\bautomations?\b/gi, 'Admin').trim();
-  const area = explicitApp || (/\badmin\b/.test(prompt) ? 'Admin' : 'Application');
+  const area = String(run?.appName || '').trim();
 
   // Use the model's OWN title — it is written from the real codebase understanding + live
   // inspection, so it names what the repo actually does. We only tidy it (strip app-word noise,
@@ -226,7 +229,7 @@ function readableCaseTitle(value: any, run: any, _extraText = ''): string {
   if (!/^verify\b/i.test(title) && !title.toLowerCase().includes(' - verify ')) {
     title = title.replace(`${area} - `, `${area} - verify `);
   }
-  return capTitleWords(title, 18);
+  return capTitleWords(title);
 }
 
 function testCaseText(run: any): string {
@@ -989,7 +992,7 @@ function buildInventoryFromPriorGrounding(prompt: string, targetUrl: string, gro
     const material = related.length ? related : lines.slice(0, 8);
     return {
       name,
-      surface: /admin/i.test(`${name} ${grounding}`) ? 'Admin' : 'Application',
+      surface: '',
       description: material[0] || name,
       sourceFiles: [],
       subfeatures: material.slice(0, 6).map((line) => ({
@@ -1005,7 +1008,7 @@ function buildInventoryFromPriorGrounding(prompt: string, targetUrl: string, gro
   });
   const wantsE2E = /\b(end\s*to\s*end|e2e|workflow|journey|flow)\b/i.test(`${prompt} ${grounding}`);
   return {
-    appName: targetUrl || 'Application',
+    appName: targetUrl || '',
     summary: `Reused from prior code-grounded chat answer for: ${title}`,
     coverageAudit: {
       structuralFilesReviewed: [],
@@ -1194,7 +1197,7 @@ function summarizeFeatureInventory(inventory: any, maxChars = 12000): string {
   if (inventory.summary) lines.push(`Summary: ${inventory.summary}`);
   const features = Array.isArray(inventory.features) ? inventory.features : [];
   for (const feature of features.slice(0, 35)) {
-    lines.push(`Feature: ${feature?.name || 'Feature'} [${feature?.surface || 'Application'}] - ${feature?.description || ''}`.trim());
+    lines.push(`Feature: ${feature?.name || 'Feature'} [${feature?.surface || ''}] - ${feature?.description || ''}`.trim());
     const subfeatures = Array.isArray(feature?.subfeatures) ? feature.subfeatures : [];
     for (const sub of subfeatures.slice(0, 14)) {
       lines.push(`  Subfeature: ${sub?.name || 'Subfeature'} | priority=${sub?.priority || 'Medium'} | actions=${(sub?.userActions || []).join('; ')} | rules=${(sub?.businessRules || []).join('; ')} | testIdeas=${(sub?.testIdeas || []).join('; ')} | tags=${(sub?.tags || []).join(', ')}`);
@@ -1433,6 +1436,24 @@ async function persistAgentRunArtifacts(run: any) {
  * the matched existing cases and appends only the scenarios they don't cover.
  */
 
+/**
+ * The ONE shared authoring-style contract appended to every case-writer prompt.
+ * Kept in a single constant so the per-feature and whole-run prompts cannot drift
+ * into conflicting conventions: previously each embedded its own title rules
+ * ("15-20 words max" vs "10-18 words" vs the system prompt's verify convention),
+ * and the contradictions + rule noise measurably degraded output quality by
+ * crowding out the actual evidence. App-agnostic — style only, no app facts.
+ */
+const CASE_AUTHORING_CONTRACT = `CASE TEXT RULES (apply to every case):
+- Titles use the verify convention from your instructions: "<Feature/Subfeature area> - verify <one specific behavior, condition, and outcome>" — plain English, one testable behavior per title, understandable without opening the case. Example shape: "List View Actions - verify Delete is disabled for the default list view". Never a vague label ("verify the page works") or a compressed fragment ("404 blocks admin entry").
+- Never put URLs in titles, descriptions, or steps; mention the selected app/area name instead. Never use "Automations" in a case title.
+- Do not mention authentication, login, sign-in, credentials, username, or password anywhere in the case text unless the user explicitly asked for authentication coverage — login is only ever a silent setup/precondition step, never the subject of a case.
+- Write titles, descriptions, preconditions, and every step action and expected result in plain, black-box, user-facing English: what a user does and sees on screen, in short sentences with common words. NEVER use internal identifiers (camelCase/snake_case names like "created_at" or "appId", component/file/prop names), database or implementation terms ("bootstrap", "deduplication", "persisted", "AND filters", "descending"), or developer phrasing — describe the visible on-screen outcome instead (say "sorted with the newest first", not "created_at descending"; "a default view appears automatically", not "a bootstrap view is created"; "opening it again does not add a duplicate").
+- The description is ONE short plain sentence saying what the case checks and why. Do not restate the steps in it and do not embed a "Test Steps:" or "Expected:" list — the case has a separate Steps section.
+- STEPS MUST BE DETAILED AND CONCRETE: each step is ONE specific user/system action naming the REAL on-screen element (the exact label/field/button/menu from the evidence) paired with its own specific, OBSERVABLE expected result for that action. No vague steps ("verify it works", "check the page"), no invented labels, no meta/setup scaffolding (CI, seeding, regression jobs). A reviewer must be able to follow the steps by hand and a Playwright script must be able to mirror them 1:1.
+- TEST DESIGN — design coverage deliberately like a senior QA engineer, not just one happy path. Apply the techniques the feature's real behaviour supports: happy path; equivalence partitioning (one case per valid input class); boundary values (empty, minimum, maximum, over-maximum, max-length); decision tables for combined conditions; state transitions (create → edit → delete); negative/invalid input and error states; permission/role (RBAC) differences; and disabled/empty/loading/error states, including WHEN an action is unavailable (e.g. disabled while busy, disabled without permission, disabled for a protected/default item). Cover the highest-value behaviors first; never pad past the requested count.
+- Each case includes automation tags in @ format (@bvt, @sanity, @regression, @smoke, @ui, @positive, @negative, ...). If the user requested specific tag types, apply those exact tags to every generated case.`;
+
 /** Generate test cases focused on ONE specific feature from the feature inventory. */
 async function generateCasesForFeature(run: any, feature: any, liveCredentials: any): Promise<any[]> {
   const credentials = liveCredentials || run.credentials || {};
@@ -1449,11 +1470,11 @@ async function generateCasesForFeature(run: any, feature: any, liveCredentials: 
     `  • ${s.name}: ${s.description || ''}\n    Rules: ${(s.businessRules || []).join('; ') || 'none'}\n    Actions: ${(s.userActions || []).join('; ') || 'none'}`,
   ).join('\n');
 
-  const caseWriter = await getOrchestrator('caseWriter', { workspaceId: run.ownerId || 'default' });
+  const caseWriter = await getOrchestrator('caseWriter', { workspaceId: run.ownerId || 'default', effort: run.requestedEffort });
   const result = await caseWriter.generateObject<any>({
     prompt: `Write focused test cases for this specific feature: "${feature.name}".
 ${feature.description ? `Feature description: ${feature.description}` : ''}
-This feature is part of the ${feature.surface || 'Application'} side of the app (context only — never put this word in a title).
+This feature is part of the ${feature.surface || ''} side of the app (context only — never put this word in a title).
 Subfeatures to cover:
 ${subfeatureBlock || '  (no repo-grounded subfeatures were provided; do not infer extra behavior)'}
 
@@ -1465,20 +1486,14 @@ ${selectorRegistryBlock}
 App inspection result: ${JSON.stringify(compactInspectionContext(inspectionContext))}
 Code understanding: ${approvedUnderstanding ? approvedUnderstanding.slice(0, 3000) : 'not provided'}
 
-Rules:
-- Never put URLs in titles, descriptions, or steps. Mention the selected app name instead.
-- Never use "Automations" in a case title. Use "Admin" or the selected app/area instead.
-- Titles must be simple and 15-20 words max. Use the selected app/area first, then the behavior, e.g. "Admin list view - verify search works with text". Put detailed setup and expectations in steps, not the title.
-- Do not mention authentication, login, sign-in, credentials, username, or password in case titles, descriptions, steps, summaries, or agent-facing case output unless the user explicitly asks for authentication/login coverage.
-- Generate ONE test case per subfeature (or per distinct business rule if no subfeatures)
-- TEST DESIGN — design coverage deliberately like a senior QA engineer, not just one "happy path" case. When the requested count and the feature's real behaviour allow, apply the techniques that fit: happy path; equivalence partitioning (one case per valid input class); boundary values (empty, minimum, maximum, over-maximum, max-length); decision tables for combined conditions; state transitions (create → edit → delete); negative / invalid input and error states; permission / role (RBAC) differences; and empty / loading / error and basic accessibility (correct roles and labels) states. Cover the highest-value techniques first; never pad past the requested count.
+Feature-scope rules:
+- Generate ONE test case per subfeature (or per distinct business rule if no subfeatures).
+- Each case covers ONLY "${feature.name}" — do not test unrelated features.
 - Default to normal UI tests only. Do NOT generate API validation/API contract/backend endpoint cases unless the user explicitly asks for API testing.
 - For generic/reusable UI features, use the reusable component groups discovered by CodeAnalyst. Target only controls and behaviours proven in source, live inspection, or selector registry. If metadata or permissions hide/disable a discovered control, cover that observed state; do not replace it with unrelated object/API behavior.
-- Each case covers ONLY "${feature.name}" — do not test unrelated features
-- Use real on-screen element labels from the inspection result and selector ids from the selector registry when available
-- Include tags: @bvt, @regression, @smoke, @positive/@negative as appropriate
-- Steps must be concrete and automatable — name exact labels, buttons, fields visible in the app
-- TITLES must be clear enough to understand WITHOUT opening the case. Prefer a complete plain-English behavior sentence over a tiny label. Use "<short feature area> - <condition/action> <expected result>" when helpful, about 10-18 words, and include the reason or outcome when that is what makes the case understandable. Do NOT use compressed fragments like "404 blocks admin entry" or "Default view bootstraps when missing"; write "List Views - A 404 admin target prevents reaching admin list views" or "List Views - A missing default view is recreated before the table loads". Do NOT stack feature + subfeature + behavior into a long chain, and do NOT repeat a long feature name. Everyday QA wording only; no jargon, internal/framing labels, or invented or fancy words. Write titles, descriptions, AND every step action and expected result in plain, simple, everyday English a non-technical person can read at a glance — short sentences, common words. Do NOT use heavy or technical words. In steps and expected results, NEVER use internal field/column names (e.g. "created_at", "appId"), database/implementation terms (e.g. "AND filters", "descending", "Table mode", "bootstrap", "deduplication", "context", "persisted", "detected"), or developer phrasing — describe the visible on-screen outcome instead (say "sorted with the newest first", not "created_at descending"; "a default view appears automatically", not "a bootstrap view is created"; "opening it again does not add a duplicate", not "no second bootstrap view for the same appId"). The description must be ONE short plain sentence saying what the case checks and why. Do NOT restate the steps in it and do NOT include a "Test Steps:" or "Expected:" list — the case has a separate Steps section that shows every step and its expected result, so repeating them in the description just duplicates.`,
+- Use real on-screen element labels from the inspection result and selector ids from the selector registry when available.
+
+${CASE_AUTHORING_CONTRACT}`,
     schema: testCasesSchema,
     userMessage: run.prompt || '',
   });
@@ -1642,7 +1657,7 @@ async function generateCasesForRun(
     }));
     generated = [...opts.existingCases, ...gapCases];
   } else {
-    const caseWriter = await getOrchestrator('caseWriter', { workspaceId: run.ownerId || 'default' });
+    const caseWriter = await getOrchestrator('caseWriter', { workspaceId: run.ownerId || 'default', effort: run.requestedEffort });
     const caseResult = await caseWriter.generateObject<any>({
       prompt: `User prompt: ${prompt || 'not provided'}.
 Approved user-reviewed understanding: ${approvedUnderstanding || 'not provided'}.
@@ -1666,20 +1681,15 @@ When the FEATURE/SUBFEATURE COVERAGE BLUEPRINT is present, it is the case-covera
 - Generate one focused test case for each testable subfeature unless the user explicitly requested fewer cases; if fewer were requested, choose the highest-risk subfeatures first and state the omitted units in the descriptions/tags.
 - Generate separate @e2e test cases for the E2E flows listed in the feature inventory. Do not merge E2E flows into single-feature cases.
 - For generic/reusable UI requests across apps/objects, target the shared component groups discovered by CodeAnalyst. Cover only source-proven or inspection-proven controls/behaviours. If metadata or permissions hide/disable a discovered control, cover that observed state; do not replace it with unrelated object/API behavior.
-- Never put URLs in titles, descriptions, or steps. Mention the selected app name instead.
-- Never use "Automations" in a case title. Use "Admin" or the selected app/area instead.
-- Case titles must be simple and 15-20 words max. Use the selected app/area first, then the behavior, e.g. "Admin list view - verify search works with text". Put detailed setup and expectations in steps, not the title.
-- Do not mention authentication, login, sign-in, credentials, username, or password in case titles, descriptions, steps, summaries, or agent-facing case output unless the user explicitly asks for authentication/login coverage.
-- Case titles must be clear enough to understand WITHOUT opening the case. Prefer a complete plain-English behavior sentence over a tiny label. Use "<short feature area> - <condition/action> <expected result>" when helpful, about 10-18 words, and include the reason or outcome when that is what makes the case understandable. Do NOT use compressed fragments like "404 blocks admin entry" or "Default view bootstraps when missing"; write "List Views - A 404 admin target prevents reaching admin list views" or "List Views - A missing default view is recreated before the table loads". Do NOT stack feature + subfeature + behavior into a long chain or repeat a long feature name. Everyday QA wording only; no jargon, internal/framing labels, or invented or fancy words. Write titles, descriptions, AND every step action and expected result in plain, simple, everyday English a non-technical person can read at a glance — short sentences, common words. Do NOT use heavy or technical words. In steps and expected results, NEVER use internal field/column names (e.g. "created_at", "appId"), database/implementation terms (e.g. "AND filters", "descending", "Table mode", "bootstrap", "deduplication", "context", "persisted", "detected"), or developer phrasing — describe the visible on-screen outcome instead (say "sorted with the newest first", not "created_at descending"; "a default view appears automatically", not "a bootstrap view is created"; "opening it again does not add a duplicate", not "no second bootstrap view for the same appId"). The description must be ONE short plain sentence saying what the case checks and why. Do NOT restate the steps in it and do NOT include a "Test Steps:" or "Expected:" list — the case has a separate Steps section that shows every step and its expected result, so repeating them in the description just duplicates.
 - Each feature case's steps must stay inside that feature/subfeature and test its concrete actions, rules, states, and edge paths.
-- TEST DESIGN — design coverage deliberately like a senior QA engineer, not just one "happy path" case. When the requested count and the feature's real behaviour allow, apply the techniques that fit: happy path; equivalence partitioning (one case per valid input class); boundary values (empty, minimum, maximum, over-maximum, max-length); decision tables for combined conditions; state transitions (create → edit → delete); negative / invalid input and error states; permission / role (RBAC) differences; and empty / loading / error and basic accessibility (correct roles and labels) states. Cover the highest-value techniques first; never pad past the requested count.
 - Do not collapse multiple unrelated subfeatures into a broad "validate page" case.
+- Default to normal UI tests only. Do NOT generate API validation/API contract/backend endpoint cases unless the user explicitly asks for API testing.
 
-Use the inspection result as the source of truth for reachable pages, visible navigation, forms, tables, list-like regions, and assertion targets. Do not invent unrelated admin pages or menu names. If live inspection is partial or missing a detail, fall back ONLY to the SOURCE-GROUNDED UNDERSTANDING / FEATURE BLUEPRINT / application repo context above; if the repo-grounded context also does not prove the detail, mark that detail as blocked in the case preconditions instead of guessing. If the inspector reached the requested goal, at least one @bvt test case must cover that exact inspected end-to-end path — but that case must be about the FEATURE at the end of the path (e.g. the list view, the form, the record), never about login/authentication itself. Login is only ever a silent precondition/setup step, never the subject, title, or description of a case, unless the user explicitly asked for login/authentication test coverage. If the inspector was partial or blocked, generate cases only for the reachable or repo-proven context and include clear preconditions/steps that show what needs to be verified next.
+Use the inspection result as the source of truth for reachable pages, visible navigation, forms, tables, list-like regions, and assertion targets. Do not invent unrelated admin pages or menu names. If live inspection is partial or missing a detail, fall back ONLY to the SOURCE-GROUNDED UNDERSTANDING / FEATURE BLUEPRINT / application repo context above; if the repo-grounded context also does not prove the detail, mark that detail as blocked in the case preconditions instead of guessing. If the inspector reached the requested goal, at least one @bvt test case must cover that exact inspected end-to-end path — but that case must be about the FEATURE at the end of the path (e.g. the list view, the form, the record), never about login/authentication itself. If the inspector was partial or blocked, generate cases only for the reachable or repo-proven context and include clear preconditions/steps that show what needs to be verified next.
 
 When the request involves verifying data views, include steps that verify the visible table/list/grid container, headers, rows or empty-state, and absence of loading/error state using the labels found by inspection.
 
-Each test case must include automation tags in @ format, for example @bvt, @sanity, @regression, @smoke, @ui, @positive, @negative. If the user requested specific tag types (for example "@smoke cases" or "regression coverage"), apply those exact tags to every generated case. Each test case must include a steps array with ordered rows. STEPS MUST BE DETAILED AND CONCRETE: each step is ONE specific user/system action that names the REAL on-screen element (the exact label/field/button/menu from the inspection or source-grounded understanding) and a matching OBSERVABLE expected result. No vague steps ("verify it works", "check the page"), no invented labels, and no meta/setup scaffolding (CI, seeding, regression jobs) that isn't a real user action. A reviewer must be able to follow the steps by hand and a Playwright script must be able to mirror them 1:1.${knowledgeBlock}`,
+${CASE_AUTHORING_CONTRACT}${knowledgeBlock}`,
       schema: testCasesSchema,
       userMessage: prompt || '',
     });
@@ -1854,30 +1864,14 @@ async function resolveControlsPerCase(
 function normalizeSelectorsFromInspection(code: string, inspectionContext: any): string {
   if (!code || !inspectionContext) return code;
   const labels = new Map<string, string>();
-  const visibleText = new Map<string, string>();
   const add = (value: any) => {
     const label = String(value || '').replace(/\s+/g, ' ').trim();
     if (label.length > 1) labels.set(label.toLowerCase(), label);
   };
-  const addText = (value: any) => {
-    const text = String(value || '').replace(/\s+/g, ' ').trim();
-    if (text.length > 1) visibleText.set(text.toLowerCase(), text);
-  };
   for (const item of inspectionContext.visibleNavigation || []) {
     add(item?.ariaLabel || item?.text || item?.name);
-  }
-  for (const table of inspectionContext.visibleTables || []) {
-    const headerText = String(table?.headers || '');
-    addText(table?.sampleRows);
-    for (const header of headerText.split(/\s+/)) add(header.replace(/W$/, ''));
-    for (const known of ['Label', 'API Name', 'Version', 'App Prefix', 'Parent App', 'Created At']) {
-      if (headerText.toLowerCase().includes(known.toLowerCase())) add(known);
-    }
-  }
-  for (const target of inspectionContext.assertionTargets || []) addText(target?.text);
-  for (const known of ['Core Platform', 'Revenue Hub', 'Operations Hub', 'LIMS', 'HR', 'CRM', 'core', 'cpl', '1.0.0']) {
-    const found = [...visibleText.values()].some((text) => text.toLowerCase().includes(known.toLowerCase()));
-    if (found) visibleText.set(known.toLowerCase(), known);
+    if (item?.dom?.placeholder) add(item.dom.placeholder);
+    if (item?.placeholder) add(item.placeholder);
   }
   let out = code.replace(/name:\s*(['"`])([^'"`]{2,80})\1/g, (whole, q, raw) => {
     const exact = labels.get(String(raw).toLowerCase().trim());
@@ -1887,45 +1881,6 @@ function normalizeSelectorsFromInspection(code: string, inspectionContext: any):
     const exact = labels.get(String(raw).toLowerCase().trim());
     return exact ? `getByRole(${q}button${q}, { name: ${q}${exact}${q}, exact: true })` : whole;
   });
-  out = out.replace(/getByPlaceholder\((['"`])([^'"`]{2,80})\1\)(\s*\.first\(\))?(\s*\.click\()/g, (whole, q, raw, first = '.first()', click) => {
-    const exact = labels.get(String(raw).toLowerCase().trim());
-    return exact ? `getByRole('button', { name: ${q}${exact}${q}, exact: true })${first}${click}` : whole;
-  });
-  if (labels.has('apps')) {
-    out = out.replace(/name:\s*(['"`])apps\1/g, (_m, q) => `name: ${q}${labels.get('apps') || 'Apps'}${q}`);
-  }
-  if (labels.has('list view actions')) {
-    out = out.replace(/name:\s*(['"`])list view actions\1/g, (_m, q) => `name: ${q}${labels.get('list view actions') || 'List view actions'}${q}`);
-    out = out.replace(/name:\s*\/list view actions\/i/g, `name: '${labels.get('list view actions') || 'List view actions'}', exact: true`);
-  }
-  if (labels.has('label')) {
-    out = out.replace(/getByPlaceholder\((['"`])Label\1\)(\s*\.first\(\))?/g, (_m, q, first = '.first()') => `getByRole('button', { name: ${q}${labels.get('label') || 'Label'}${q}, exact: true })${first}`);
-  }
-  out = out.replace(/getByPlaceholder\((['"`])([^'"`]{2,80})\1\)(\s*\.first\(\))?/g, (whole, q, raw, first = '.first()') => {
-    const text = visibleText.get(String(raw).toLowerCase().trim());
-    return text ? `getByText(${q}${text}${q}, { exact: true })${first}` : whole;
-  });
-  // Avoid brittle assertions on guessed menu item wording. Different list-view implementations
-  // expose export items as "CSV"/"PDF"/"XLSX" or "Export CSV" etc.; the grounded behavior is that
-  // opening the export menu reveals at least one export choice without starting a download.
-  out = out.replace(
-    /await expect(?:\.soft)?\(page\.(?:getByRole|getByText)\([^\n]*(?:export\s*)?(?:csv|pdf|xlsx)[^\n]*\)\s*(?:\.first\(\))?\)\.toBeVisible\([^;\n]*\);/gi,
-    "await expect.soft(page.locator('body')).toContainText(/CSV|PDF|XLSX|Export/i);",
-  );
-  out = out.replace(
-    /await expect(?:\.soft)?\([^;\n]*?(?:export\s*)?(?:csv|pdf|xlsx)[^;\n]*?\)\.toBeVisible\([^;\n]*\);/gi,
-    "await expect.soft(page.locator('body')).toContainText(/CSV|PDF|XLSX|Export/i);",
-  );
-  out = out.replace(
-    /await expect(?:\.soft)?\(page\.getByPlaceholder\((['"`])Admin\1\)(?:\.first\(\))?\)\.toBeVisible\([^;\n]*\);/gi,
-    "await expect.soft(page.locator('body')).toBeVisible();",
-  );
-  // Search filtering is validated by the positive visible result. Negative assertions against
-  // hidden/virtualized rows are unstable because the DOM may retain off-screen/duplicate rows.
-  out = out.replace(
-    /await expect(?:\.soft)?\(page\.(?:getByText|locator)\([^\n]*(?:Operations Hub|LIMS|HR|CRM)[^\n]*\)[^\n]*\)\.(?:toHaveCount\(0\)|toBeHidden\([^)]*\));/g,
-    "await expect.soft(page.getByText('Core Platform', { exact: true }).first()).toBeVisible();",
-  );
   return out;
 }
 
@@ -2004,7 +1959,7 @@ Do NOT write comments such as "Auth is expected to be handled by global setup". 
     persistDataInBackground('selector-map blocked script generation');
     return;
   }
-  const coder = await getOrchestrator('playwrightCoder', { workspaceId: run.ownerId || 'default' });
+  const coder = await getOrchestrator('playwrightCoder', { workspaceId: run.ownerId || 'default', effort: run.requestedEffort });
   const caseList = Array.isArray(testCases?.test_cases) ? testCases.test_cases : [];
   // DISCOVER-THEN-BIND: resolve each case's real controls + access flow on the LIVE app BEFORE the
   // coder writes selectors, so it binds to confirmed controls (incl. ones hidden behind menus)
@@ -2039,17 +1994,13 @@ ${credentialContext}
 ${loginScriptBlock}
 ${applicationContextBlock}
 ${selectedQaContextText}${coderUnderstanding}${coderFeatureInventory}${coderMemory}${coderTestData}${coderSelectorMap}${coderSelectorRegistry}${featureGrounding}${readAgentSkill() ? `\nLEARNED QA-AUTHORING SKILL (general script guidance refined over prior runs — apply it):\n${readAgentSkill()}\n` : ''}
-Use this browser inspection context as the source of truth for reachable pages, visible labels, forms, navigation actions, tables/lists, buttons, links and final URL: ${JSON.stringify(compactInspectionContext(inspectionContext))}.${allCaseControls}
+Use this browser inspection context as the source of truth for reachable pages, visible labels, forms, navigation actions, tables/lists, buttons, links and final URL: ${JSON.stringify(compactInspectionContext(inspectionContext))}.
+${renderRawElementsForPrompt((run as any).dom_exploration)}${allCaseControls}
 SETUP — NAVIGATE THEN LOG IN IF NEEDED: the MANDATORY FIRST LINES of every test body are (use this EXACT absolute URL — NOT '/', which resolves to the wrong path):
   await page.goto('${targetUrl || '/'}');
   await page.waitForLoadState('domcontentloaded'); await page.waitForTimeout(1500);
-Then handle login GUARDED (a session may already be injected, so these must be safe no-ops if no login form is present): if the page shows a login form, fill the email/username field and the password field with USERNAME and PASSWORD and click the Sign in button — wrap EACH in .catch(() => {}) and give them short timeouts, e.g.:
-  await page.getByLabel(/email|user/i).first().fill(USERNAME, { timeout: 4000 }).catch(() => {});
-  await page.getByLabel(/password/i).first().fill(PASSWORD, { timeout: 4000 }).catch(() => {});
-  await page.getByRole('button', { name: /sign ?in|log ?in/i }).first().click({ timeout: 4000 }).catch(() => {});
-  await page.waitForTimeout(2000);
-Use the REAL login field/button selectors from the source (the verifier will correct them). Do NOT assert anything about the login form. WAIT FOR ASYNC CONTENT BEFORE ASSERTING: list/grid screens render a "Loading…/Loading records…" placeholder and only mount the real <table> and its toolbar once rows arrive — so after login, before any assertion that depends on grid/table/toolbar content, wait for it to be ready and NEVER assert a table/grid/row is visible immediately after navigation. Use a guarded wait, e.g.: await page.locator('table tbody tr, [role="row"], [role="gridcell"]').first().waitFor({ state: 'visible', timeout: 15000 }).catch(() => {}); After this, go straight to the substantive task. NEVER use waitForLoadState('networkidle'). NEVER call APIs with undefined variables. Never leave USERNAME or PASSWORD undefined. Never use a relative URL such as '/shockwave/' when an absolute target URL is provided — verify only through the page UI.
-GUARDED ACTIONS: every SETUP / navigation / intermediate click or fill whose exact selector is uncertain MUST be guarded so a missing element does not hang or abort the run: await page.getByRole('button', { name: /New/i }).first().click({ timeout: 8000 }).catch(() => {}); Prefer getByRole/getByText using the EXACT visible labels from the inspection context. After a guarded action, take the step screenshot regardless of whether it succeeded. EXCEPTION: the case's PRIMARY GOAL action and its outcome assertion are NEVER guarded — see the ACTION COMPLETION CONTRACT below.
+Then handle login GUARDED (a session may already be injected, so these must be safe no-ops if no login form is present): if the page shows a login form, fill the email/username field and the password field with USERNAME and PASSWORD and click the Sign in button — wrap EACH in .catch(() => {}) and give them short timeouts. Use the REAL login field/button selectors from the inspection context / source (the verifier will correct them). Do NOT assert anything about the login form. WAIT FOR ASYNC CONTENT BEFORE ASSERTING: list/grid screens render a "Loading…/Loading records…" placeholder and only mount the real <table> and its toolbar once rows arrive — so after login, before any assertion that depends on grid/table/toolbar content, wait for it to be ready and NEVER assert a table/grid/row is visible immediately after navigation. Use a guarded wait, e.g.: await page.locator('table tbody tr, [role="row"], [role="gridcell"]').first().waitFor({ state: 'visible', timeout: 15000 }).catch(() => {}); After this, go straight to the substantive task. NEVER use waitForLoadState('networkidle'). NEVER call APIs with undefined variables. Never leave USERNAME or PASSWORD undefined. Never use a relative URL when an absolute target URL is provided — verify only through the page UI.
+GUARDED ACTIONS: every SETUP / navigation / intermediate click or fill whose exact selector is uncertain MUST be guarded so a missing element does not hang or abort the run. Prefer getByRole/getByText using the EXACT visible labels from the inspection context. After a guarded action, take the step screenshot regardless of whether it succeeded. EXCEPTION: the case's PRIMARY GOAL action and its outcome assertion are NEVER guarded — see the ACTION COMPLETION CONTRACT below.
 GROUNDING (no hallucination): only assert text, labels, headings, buttons, or table/list content that ACTUALLY appears in the inspection context above. NEVER assert "assumed" UI — no guessed success toasts (e.g. "created successfully"), menu names, or headings you did not see in the inspection context. If unsure an element exists, do not assert it; prefer asserting a URL change or a landmark the inspector recorded. SELECTOR PRIORITY (choose the HIGHEST that actually resolves in the inspection context, never a lower one when a higher exists): 1) getByTestId (data-testid), 2) getByRole(role, { name }) with the accessible name, 3) getByLabel, 4) getByPlaceholder, 5) a stable #id via page.locator('#id'), 6) exact visible text via getByText, 7) a scoped attribute/CSS selector only as a last resort. NEVER use XPath, nth-child/positional chains, or generated/utility (e.g. Tailwind) class names. SCRIPT QUALITY (web-first, auto-waiting): assert with await expect(locator).toBeVisible()/toHaveText()/toHaveValue()/toBeEnabled()/toHaveURL(); do NOT use waitForTimeout or fixed sleeps to wait for elements or content (the only allowed fixed wait is the short post-navigation settle in SETUP); scope locators to the relevant region and store reused ones in named consts. ICON / TOOLBAR / HEADER CONTROLS: these expose their name via aria-label or title with NO visible text — locate them with getByRole(role, { name }) or getByLabel using the EXACT aria-label from the REAL SELECTORS / inspection context; NEVER use getByText(...) for a button or icon control (it matches visible text, which icon buttons lack, so it can never resolve). GENERIC WORDS ARE NOT SELECTORS — "More", "⋯", "Options", "Actions", "resize", "settings" are almost never the real accessible name (often only a hidden responsive label); an overflow/actions menu's real label is the feature it controls (e.g. "List view actions") and column auto-resize is typically "Fit columns" — take the EXACT aria-label from the inspection/map and use getByRole/getByLabel, and to reach an item inside an actions menu (e.g. Settings) click the actions button first then the item by its exact text. DISAMBIGUATE REPEATED TEXT: when a record name / cell value can appear on multiple rows, scope to one row (page.locator('tr', { hasText }) ) or add .first() so the locator is not strict-mode-ambiguous. SECTION NAVIGATION (avoid drift): to open an Admin section, navigate DIRECTLY by URL — preserve the appId already in the URL and set nav to the section's nav key from FEATURE GROUNDING, e.g. { const u = new URL(page.url()); u.searchParams.set('nav', 'objects'); await page.goto(u.toString()); await page.waitForTimeout(1200); }. Do NOT click the left sidebar to navigate (a sidebar click can land on the WRONG section). Use the EXACT navKey (objects, tabs, users, permissions, access_controls, sharing_settings, flows). STABLE IDS: when FEATURE GROUNDING gives a control's stable #id (e.g. #create-object-label, #field-type), locate it with page.locator('#<id>') — never guess its placeholder or text. TRANSIENT / HOVER-ONLY ELEMENTS: never assert .toBeVisible() on a tooltip, popover, or hover hint (it is hidden until hovered, so the assert will flake-fail) — instead trigger it explicitly (await locator.hover()) before asserting, OR assert the durable state it reflects (e.g. a disabled action button, or a persistent "N selected" counter) rather than the floating hint itself. CONTROL NOT IN CONTEXT: if a control the case needs is NOT present in the inspection context, do NOT fall back to a selector you "remember" or guessed earlier — reach it through the UI the inspector DID record (open the toolbar/overflow/actions menu that would contain it), then operate the now-visible control; if it genuinely cannot be reached, assert the closest grounded landmark instead of inventing a locator. When asserting a URL, match only a STABLE fragment with a loose regex (e.g. expect(page).toHaveURL(/nav=apps/) or expect(page.url()).toContain('nav=apps')) — NEVER assert the full URL or a pattern that includes query separators (?, &) or generated ids (appId, record ids) which vary every run.
 RESILIENCE (the user's intent MUST actually be performed): use await expect.soft(...) for every intermediate per-step verification so a single mismatched locator does NOT abort the test before the user's real goal (e.g. creating the record) is carried out. Always run each ACTION step (goto/fill/click/submit) regardless of whether a prior soft assertion failed. Then follow the user-requested path discovered by the inspector; do not invent unrelated pages or menu names.
 ACTION COMPLETION CONTRACT (CRITICAL — the test must DO the thing, not just look at it): identify the case's PRIMARY GOAL action from its title/steps, actually PERFORM it, then make exactly ONE hard expect verify its real OUTCOME. Discover every selector from the inspection context / source — NEVER hardcode element names; the patterns below show only the Playwright technique per outcome type, not which element to use.
@@ -2105,16 +2056,17 @@ ${credentialContext}
 ${loginScriptBlock}
 ${applicationContextBlock}
 ${selectedQaContextText}${coderUnderstanding}${coderSelectorMap}${coderSelectorRegistry}${featureGrounding}
-Use this browser inspection context as the source of truth for reachable pages, visible labels, forms, navigation actions, tables/lists, buttons, links and final URL: ${JSON.stringify(compactInspectionContext(inspectionContext))}.${perCaseControlBlocks[index] || ''}
+Use this browser inspection context as the source of truth for reachable pages, visible labels, forms, navigation actions, tables/lists, buttons, links and final URL: ${JSON.stringify(compactInspectionContext(inspectionContext))}.
+${renderRawElementsForPrompt((run as any).dom_exploration)}${perCaseControlBlocks[index] || ''}
 
 Rules:
-- SELECTOR PRIORITY (choose the HIGHEST that actually resolves in the inspection context — never a lower one when a higher exists): 1) getByTestId (data-testid), 2) getByRole(role, { name }) with the accessible name, 3) getByLabel, 4) getByPlaceholder, 5) a stable #id via page.locator('#id'), 6) exact visible text via getByText, 7) a scoped attribute/CSS selector only as a last resort. NEVER use XPath, nth-child/positional chains, or generated/utility (e.g. Tailwind) class names — they break on any re-render.
+- SELECTOR PRIORITY: use the highest-priority selector that actually resolves in the inspection context. NEVER use XPath, nth-child/positional chains, or generated/utility (e.g. Tailwind) class names — they break on any re-render.
 - SCRIPT QUALITY (web-first, auto-waiting): assert with await expect(locator).toBeVisible()/toHaveText()/toHaveValue()/toBeEnabled()/toHaveURL() — these auto-wait. Do NOT use waitForTimeout or fixed sleeps to wait for elements or content (the only allowed fixed wait is the short post-navigation settle in SETUP). Scope locators to the relevant region (e.g. page.getByRole('table').getByRole('row').filter({ hasText })) and store reused locators in named consts so the test reads clearly.
 - ICON / TOOLBAR / HEADER CONTROLS expose their name via aria-label or title with NO visible text — locate them with getByRole(role, { name }) or getByLabel using the EXACT aria-label from the REAL SELECTORS / inspection context above. NEVER use getByText(...) for a button or icon control (it matches visible text, which icon buttons do not have, so it will never resolve).
 - GENERIC WORDS ARE NOT SELECTORS: "More", "⋯", "Options", "Actions", "resize", "settings" are almost never the real accessible name (they often exist only as a hidden responsive label). An overflow / actions menu's real label is the feature it controls (e.g. "List view actions"); column auto-resize ("fit columns" / "resize columns") is typically labeled "Fit columns". For ANY such control, take the EXACT aria-label from the inspection/map and use getByRole/getByLabel — never the generic word. To operate an item inside an actions menu (e.g. Settings), click the actions button (e.g. "List view actions") FIRST, then click the item by its exact text.
 - DISAMBIGUATE REPEATED TEXT: when a label/cell text can appear on multiple rows or cells (record names, column values), scope to a single row (e.g. page.locator('tr', { hasText: '...' })) or add .first() so the locator is not strict-mode-ambiguous (matching 2+ elements fails).
-- SECTION NAVIGATION (avoid drift): open an Admin section DIRECTLY by URL — preserve the appId in the current URL and set nav to the section's nav key from FEATURE GROUNDING: { const u = new URL(page.url()); u.searchParams.set('nav', 'objects'); await page.goto(u.toString()); await page.waitForTimeout(1200); }. Do NOT click the left sidebar to navigate (it can drift to the wrong section). navKeys: objects, tabs, users, permissions, access_controls, sharing_settings, flows.
-- STABLE IDS: when FEATURE GROUNDING lists a control's stable #id (e.g. #create-object-label, #field-type), use page.locator('#<id>') — never guess a placeholder/text for it.
+- SECTION NAVIGATION (avoid drift): open an Admin section DIRECTLY by URL — preserve the appId in the current URL and set nav to the section's URL param from the ROUTES / BLACKBOARD context: { const u = new URL(page.url()); u.searchParams.set('nav', discoverableSectionKey); await page.goto(u.toString()); await page.waitForTimeout(1200); }. Do NOT click the left sidebar to navigate (it can drift to the wrong section). Discover section keys from the browser's DOM exploration — every accessible nav tab/link is recorded in the inspection context above.
+- STABLE IDS: when the DOM exploration lists a control's stable #id, use page.locator('#<id>') — never guess a placeholder/text for it.
 - HIDDEN CONTROLS: if a control the case needs (settings, export, column options, a row action) is not in the inspection context, it lives inside an overflow / actions menu — open the menu the inspector DID record (e.g. the actions/overflow/"More"-style button by its real aria-label) first, then operate the now-visible item.
 - Return JSON exactly like {"scripts":[{"test_case_title":"...","filename":"kebab-case.spec.ts","code":"import { test, expect } from '@playwright/test';\\n..."}]}.
 - Return exactly one script object. No combined scripts. No empty placeholder scripts.
@@ -2221,7 +2173,7 @@ Test case payload: ${JSON.stringify({ test_cases: [testCase] })}${coderKnowledge
 /**
  * GIT-AGENT SELECTOR VERIFICATION GATE.
  * Before any script runs, check its selectors against the application's REAL source
- * code (the git-agent target repo, D:\core-platform) and repair any that don't match.
+ * code (the git-agent target repo) and repair any that don't match.
  * This is the "verify selectors during creation" step — it grounds guessed selectors
  * in the actual DOM/source so the scripts hit real elements instead of timing out.
  */
@@ -2293,9 +2245,8 @@ async function verifyScriptsWithGitAgent(run: any, scripts: any[], _prompt: stri
       return { ok: false, reason };
     }
     const mapBlock = map ? renderSelectorMap(map, 220) : '';
-    // Page-scoped, so substring matching safely accepts partial/regex selectors (code target
-    // "search" for the real "search results" placeholder) WITHOUT the repo-wide false positives
-    // (e.g. "New" ⊆ "Enter a new password") that forced exact-only matching against the static map.
+    // Page-scoped, so substring matching safely accepts partial/regex selectors without the
+    // repo-wide false positives that forced exact-only matching against the static map.
     const groundedInLive = (t: string) => {
       const lt = String(t || '').toLowerCase().trim();
       if (!lt) return false;
@@ -2303,9 +2254,9 @@ async function verifyScriptsWithGitAgent(run: any, scripts: any[], _prompt: stri
       if (lt.length >= 4) for (const n of live.names) if (n.includes(lt)) return true;
       return false;
     };
-    // The rewrite pass draws from the REAL running-page selectors when we have them (ready-made
-    // Playwright hints like getByPlaceholder("Search results")), falling back to repo strings only
-    // when live capture is thin. This is what makes real on-page selectors reach the coder verbatim.
+    // The rewrite pass draws from the REAL running-page selectors when we have them, falling back
+    // to repo strings only when live capture is thin. This is what makes real on-page selectors
+    // reach the coder verbatim.
     const liveBlock = live.usable
       ? `LIVE PAGE SELECTORS — the ACTUAL running DOM this test executes against. These are the ONLY valid options; pick the closest by meaning and use it EXACTLY:\nReady-made locators:\n${live.hints.slice(0, 140).join('\n')}\nReal on-page names/labels: ${[...live.names].slice(0, 160).join(' | ')}`
       : mapBlock;
@@ -2324,7 +2275,7 @@ async function verifyScriptsWithGitAgent(run: any, scripts: any[], _prompt: stri
       // hallucinated aria-label (e.g. "List view: All Apps") sailed straight through to a
       // 15s "element not found" timeout. Extract them so they get grounded like the rest.
       for (const m of code.matchAll(/\[(?:aria-label|placeholder|title|name|data-testid|alt)\s*[*^$|~]?=\s*['"]([^'"\n]{2,60})['"]\s*\]/g)) t.add(m[1].trim());
-      // .filter({ hasText: '…' }) row/text grounding (data-coupled assertions like "Revenue Hub").
+      // .filter({ hasText: '…' }) row/text grounding (data-coupled assertions).
       for (const m of code.matchAll(/hasText\s*:\s*['"`]([^'"`\n]{2,60})['"`]/g)) t.add(m[1].trim());
       // hasText also commonly uses a JS regex literal (hasText: /^More$/) instead of a quoted
       // string — the pattern above only caught quoted values, so a hallucinated regex-literal
@@ -2338,7 +2289,7 @@ async function verifyScriptsWithGitAgent(run: any, scripts: any[], _prompt: stri
     // (placeholder->getByPlaceholder, testid->getByTestId, etc.) — right name AND right method,
     // straight from the code map. No LLM, no guessing. SKIPPED when we have a usable live DOM
     // capture: the static map rewrites a name toward a repo homonym under a possibly-wrong method
-    // (e.g. corrupting a correct getByRole('button',{name:'Apps'}) into a getByText/getByLabel that
+    // (e.g. corrupting a correct getByRole into a getByText/getByLabel that
     // doesn't match the live page). With live truth available, live grounding below is authoritative.
     let methodFixes = 0;
     if (map && !live.usable) {
@@ -2355,7 +2306,7 @@ async function verifyScriptsWithGitAgent(run: any, scripts: any[], _prompt: stri
     // for another and have it pass silently). Re-verify after every rewrite and loop until zero
     // culprits remain or no further progress is made. Any selector that STILL isn't in the
     // codebase after the gate is reported honestly (it will be caught again by execution-repair).
-    const verifier = await getOrchestrator('appInspector', { workspaceId: run.ownerId || 'default' });
+    const verifier = await getOrchestrator('appInspector', { workspaceId: run.ownerId || 'default', effort: run.requestedEffort });
     // DOM-first culprit test: when we have a real live capture of this page, it is the SOLE
     // authority — a selector absent from the live DOM is a culprit even if the repo mentions it
     // somewhere (that is exactly the "Global Search" false-pass: real string, wrong page). Fall
@@ -2494,8 +2445,8 @@ function guardLoginInteractions(code: string): string {
 
 /**
  * Remove assertions ABOUT the login UI. The harness injects an authenticated storageState,
- * so the login screen/fields/headings are ABSENT at run time — any assertion that the
- * "Sign in" heading is visible, or that a username/password field holds a value, is then
+ * so the login screen/fields/headings are ABSENT at run time — any assertion that
+ * the login UI is visible or that a credential field holds a value, is then
  * guaranteed to fail (and is irrelevant to the feature under test). A single failed soft
  * assertion marks the whole test failed even when every feature step passed, so these
  * login-UI assertions are the dominant remaining failure once login ACTIONS are guarded.
@@ -2549,7 +2500,8 @@ function ensureExecutableLogin(script: any, credentials: any, targetUrl: string)
   const hasLoginFill = /\.fill\(\s*USERNAME\b/.test(code) && /\.fill\(\s*PASSWORD\b/.test(code);
   if (!hasLoginFill) {
     const loginSnippet =
-      `\n  await page.getByLabel(/email|user|login/i).first().fill(USERNAME, { timeout: 4000 }).catch(() => {});\n` +
+      `\n  // Discover login field selectors from the inspection context; fallback to common patterns if unknown.\n` +
+      `  await page.getByLabel(/email|user|login/i).first().fill(USERNAME, { timeout: 4000 }).catch(() => {});\n` +
       `  await page.getByLabel(/password/i).first().fill(PASSWORD, { timeout: 4000 }).catch(() => {});\n` +
       `  await page.getByRole('button', { name: /sign ?in|log ?in/i }).first().click({ timeout: 4000 }).catch(() => {});\n` +
       `  await page.waitForTimeout(2000);\n`;
@@ -2624,6 +2576,34 @@ function compactInspectionContext(ic: any) {
     assertionTargets: cap(ic.assertionTargets, 24),
     actionsTaken: cap(ic.actionsTaken, 24),
   };
+}
+
+function renderRawElementsForPrompt(exploration: any): string {
+  if (!exploration?.elements?.length) return '';
+  const seen = new Set<string>();
+  const lines: string[] = [];
+  for (const el of exploration.elements) {
+    const text = (el.text || '').slice(0, 60);
+    const placeholder = (el.placeholder || '').slice(0, 40);
+    const label = (el.ariaLabel || '').slice(0, 60);
+    const name = (el.name || '').slice(0, 40);
+    const id = (el.id || '').slice(0, 40);
+    const role = el.role || '';
+    const tag = el.tag;
+    const key = `${tag}|${role}|${label}|${placeholder}|${text}|${name}`;
+    if (seen.has(key) || (!text && !label && !placeholder && !name && !id)) continue;
+    seen.add(key);
+    const summary = [tag, role, text, label, placeholder, name, id].filter(Boolean).slice(0, 4).join(' ');
+    const hints: string[] = [];
+    if (label) hints.push(`getByLabel("${label}")`);
+    if (placeholder) hints.push(`getByPlaceholder("${placeholder}")`);
+    if (role && (label || text)) hints.push(`getByRole("${role}", { name: "${label || text}" })`);
+    if (name) hints.push(`locator('[name="${name}"]')`);
+    if (id) hints.push(`page.locator('#${id}')`);
+    // Prefer the highest-priority selector from the inspection context — these are illustrative.
+    lines.push(`  ${summary.padEnd(50)} ${hints[0] || ''}`);
+  }
+  return lines.length ? `\nRAW DOM ELEMENTS (every interactive control with attributes — use these EXACT labels/placeholders/roles — never invent):\n${lines.slice(0, 120).join('\n')}\n` : '';
 }
 
 function summarizeExecutionTests(tests: any[], durationMs = 0, error?: string) {
@@ -2776,7 +2756,7 @@ async function runScriptsAndCollectEvidence(run: any, targetUrl: string, testCas
         const auth = await createAuthStorageState(targetUrl, liveCreds, authPath);
         sessionStorageState = auth.sessionStorage;
         // The storageState file is always written (cookies + localStorage); pair it with the
-        // captured sessionStorage so SPAs that keep auth there (Core Platform) are truly logged in.
+        // captured sessionStorage so SPAs that keep auth there are truly logged in.
         storageStatePath = authPath;
         if (auth.ok || sessionStorageState) {
           run.messages.push({ agent: 'EvidenceAgent', status: 'running', output: 'Browser session prepared for script execution.' });
@@ -2927,7 +2907,7 @@ async function runScriptsAndCollectEvidence(run: any, targetUrl: string, testCas
           const groundingContext = freshContext || run.inspection_context;
 
           try {
-            const coder = await getOrchestrator('playwrightCoder', { workspaceId: run.ownerId || 'default' });
+            const coder = await getOrchestrator('playwrightCoder', { workspaceId: run.ownerId || 'default', effort: run.requestedEffort });
             const res = await coder.generateObject<{ code: string }>({
               prompt: `A generated Playwright test FAILED when executed against the live app. Fix it.\n\nFailure error:\n${String(t.error || 'unknown failure').slice(0, 1500)}\n\nThe browser session is ALREADY AUTHENTICATED via an injected storage state, so there is usually NO login form at run time. Do NOT depend on logging in: if login steps exist, keep them but ensure EVERY login fill/click/waitForURL is guarded with .catch(() => {}) and a short timeout so it is a harmless no-op when no login form is present. NEVER use waitForLoadState('networkidle').\n\nWhat a fresh inspection of the LIVE page for THIS test's goal actually observed (use these REAL selectors/labels — do not invent; if a control you need is here, use its exact label/role/text):\n${JSON.stringify(compactInspectionContext(groundingContext))}\n\nCurrent failing test code:\n${String(scripts[idx].code || '').slice(0, 6000)}\n\nReturn the corrected full test file as {"code":"..."}. Keep the same test title. Prefer role/label/text selectors grounded in the observed page. Add resilient waits. Do not change what the test verifies. CRITICAL: if the failure is that the PRIMARY action did not happen (e.g. the export produced no download, or the setting toggle/save did not persist), fix the SELECTOR or interaction so the action ACTUALLY executes and its outcome assertion PASSES — you must NOT remove, soften, or wrap that primary action/assertion in .catch(() => {}) just to make the test green. Faking a pass is forbidden; the real action must occur.`,
               schema: z.object({ code: z.string() }),
@@ -3437,16 +3417,20 @@ export function registerAgentRoutes(app: Express) {
       inline: req.body.inlineCredentials,
       ownerId: scope.userId || undefined,
     }) : null);
-    const credentials = resolvedCreds || {
-      username: '',
-      password: '',
-      siteName: '',
-      baseUrl: targetUrl,
-      environment: 'unknown',
-      source: 'none' as any,
-    };
+    const credentials = resolvedCreds || (() => {
+      const settingsCreds = findSettingsCredentials(targetUrl);
+      if (settingsCreds.username && settingsCreds.password) {
+        return { ...settingsCreds, siteName: '', baseUrl: targetUrl, environment: 'unknown' };
+      }
+      const envUser = process.env.TARGET_USERNAME || process.env.ADMIN_USERNAME || '';
+      const envPass = process.env.TARGET_PASSWORD || process.env.ADMIN_PASSWORD || '';
+      if (envUser && envPass) {
+        return { username: envUser, password: envPass, siteName: '', baseUrl: targetUrl, environment: 'unknown', source: 'env' };
+      }
+      return { username: '', password: '', siteName: '', baseUrl: targetUrl, environment: 'unknown', source: 'none' };
+    })();
     // ── App-within-surface targeting ──────────────────────────────────────────────────────────
-    // The platforms (Core Platform, Shockwave) host many individual apps (Revenue Hub, CRM, …).
+    // The platform surface hosts many individual apps (resolved from the live API).
     // The user names one in the prompt; resolve it to the platform's real app id (from the live
     // apps API using this surface's creds), then deep-link the target URL into that app so every
     // downstream phase (inspection, metadata, evidence) runs INSIDE it. Best-effort: on any failure
@@ -3461,7 +3445,7 @@ export function registerAgentRoutes(app: Express) {
       const apps = await fetchCorePlatformApps(conn).catch(() => []);
       if (apps.length) {
         // Resolve from the prompt AND recent user turns, so a follow-up reply naming the app
-        // ("CRM") resolves against the earlier intent ("test list view") across chat turns.
+        // matches against the earlier intent across chat turns.
         const historyText = (chatHistory || [])
           .filter((m) => m.role === 'user')
           .map((m) => String(m.content || ''))
@@ -3483,7 +3467,7 @@ export function registerAgentRoutes(app: Express) {
           // No app named (and not an "all apps" sweep) — ask which one, listing the real apps.
           const names = picked.candidates.map((a) => a.label).filter(Boolean);
           return res.json({
-            chat_response: `Which app should I test in ${selectedApp?.name || 'this platform'}?\n\nAvailable apps: ${names.join(' · ')}\n\nReply with the app name (e.g. "test the list view in CRM"), or say "all apps" to sweep every app.`,
+            chat_response: `Which app should I test in ${selectedApp?.name || 'this platform'}?\n\nAvailable apps: ${names.join(' · ')}\n\nReply with the app name (e.g. "test the list view"), or say "all apps" to sweep every app.`,
           });
         }
       }
@@ -3517,7 +3501,7 @@ export function registerAgentRoutes(app: Express) {
       const existing = [...new Set((db.folders as any[]).map((f: any) => getFolderPath(f.id)).filter(Boolean))].slice(0, 25);
       const listing = existing.length ? `\n\nExisting folders: ${existing.join(' · ')}` : '';
       return res.json({
-        chat_response: `Before I start, which folder should I save this under? Pick an existing folder or name a new one — I won't begin a run without a folder, so every test plan, suite, case, run, requirement, report and defect stays together and easy to find.${listing}\n\nTip: say it in the prompt, e.g. "test the CRM list view, save under Regression/Admin".`,
+        chat_response: `Before I start, which folder should I save this under? Pick an existing folder or name a new one — I won't begin a run without a folder, so every test plan, suite, case, run, requirement, report and defect stays together and easy to find.${listing}\n\nTip: say it in the prompt, e.g. "test the list view, save under Regression".`,
       });
     }
 
@@ -3535,7 +3519,10 @@ export function registerAgentRoutes(app: Express) {
       addActivity(`Agent folder ready: ${folder.path}`);
     }
     const taskId = randomUUID();
-    const runProvider = resolveProviderForAgent('chatAssistant');
+    const requestedProvider = req.body.provider || '';
+    const requestedModel = req.body.model || '';
+    const requestedEffort = req.body.effort || '';
+    const runProvider = requestedProvider || resolveProviderForAgent('chatAssistant');
     // Ground the run in the relevant slice of the app-knowledge pack (retrieved per request).
     // Smaller budget for the inspector (it runs in a loop), generous for the one-shot case writer.
     const knowledgeCtx = { knowledgePackId: selectedApp?.knowledgePackId || undefined, websiteId: req.body.websiteId, targetUrl, text: `${scopeContextText} ${prompt || ''} ${approvedUnderstanding}`.trim(), ownerId: scope.userId || '' };
@@ -3593,6 +3580,9 @@ export function registerAgentRoutes(app: Express) {
       target_core_app_id: targetCoreAppId,
       target_app_label: targetAppLabel,
       target_app_objects: targetAppObjects,
+      requestedProvider,
+      requestedModel,
+      requestedEffort,
     };
     newRun.messages.push({
       agent: 'System',
@@ -3671,9 +3661,9 @@ export function registerAgentRoutes(app: Express) {
         const objectsLine = targetAppObjects.length
           ? ` Its user-facing list views are for these objects (from the app's tabs): ${targetAppObjects.join(', ')}.`
           : '';
-        // Reflection window: Admin (metadata) and Keystone (runtime) share one store behind a short
-        // (~60s) metadata cache, so a change made on Admin can take a moment to appear on Keystone.
-        const reflectionLine = ' If a case changes metadata on the Admin surface and then checks it on the Keystone runtime, allow up to ~60 seconds for the change to appear (wait and re-check) rather than asserting it instantly.';
+        // Reflection window: metadata and runtime share a store behind a short (~60s) metadata cache,
+        // so a change made in metadata can take a moment to appear in runtime.
+        const reflectionLine = ' If a case changes metadata and then checks it in runtime, allow up to ~60 seconds for the change to appear (wait and re-check) rather than asserting it instantly.';
         newRun.application_context_prompt = `TARGET APP: Every test case must cover ONLY the "${targetAppLabel}" app within this surface — not other apps.${objectsLine} Some objects may be inherited from a parent app; that is expected (the app shows its whole scope).${reflectionLine}\n${String(newRun.application_context_prompt || '')}`;
       }
       const appContextPrompt = String(newRun.application_context_prompt || '');
@@ -3736,7 +3726,11 @@ export function registerAgentRoutes(app: Express) {
 
       (newRun as any).inspection_blind = !inspectionOk;
       if (!inspectionOk) {
-        const why = 'Inspection saw nothing on the page — cannot ground test cases in the live app; not generating ungrounded cases.';
+        // Surface the REAL reason (login failure, unreachable page, browser error captured in the
+        // inspection warnings) instead of only the generic line — otherwise the failure is
+        // undiagnosable from the UI.
+        const detail = (assessInspection(inspectionContext).reason || '').trim();
+        const why = `Inspection saw nothing on the page — cannot ground test cases in the live app; not generating ungrounded cases.${detail ? ` Details: ${detail}` : ''}`;
         pushPhase(newRun, { agent: 'System', status: 'failed', output: why });
         (newRun as any).cases_grounding = { ok: false, reason: why };
         markRunDone(newRun, 'failed');
@@ -4342,5 +4336,17 @@ Return a complete test case object. Preserve any useful existing fields. If no e
       persistDataInBackground('saved generated cases');
     }
     res.json({ success: true });
+  });
+
+  app.post('/api/agent/explore-dom', async (req, res) => {
+    try {
+      const { targetUrl, username, password, open, interactions } = req.body;
+      if (!targetUrl) return res.status(400).json({ error: 'targetUrl is required' });
+      const credentials = username && password ? { username, password } : undefined;
+      const result = await exploreAppElements({ targetUrl, credentials, open, interactions });
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ error: getAIErrorMessage(err) });
+    }
   });
 }
