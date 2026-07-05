@@ -149,8 +149,32 @@ export async function loadPersistedData() {
   }
 }
 
+// Per-file write queue: serialize writes to the same target so concurrent
+// persistDataInBackground() calls can't interleave, and write a temp sibling then
+// atomically rename — a crash mid-write leaves the previous good file intact instead of a
+// half-written, unparseable one (this JSON file is the entire source of truth in JSON mode).
+const writeChains = new Map<string, Promise<void>>();
+
+async function atomicWrite(target: string, content: string): Promise<void> {
+  const tmp = path.join(
+    path.dirname(target),
+    `.${path.basename(target)}.tmp-${process.pid}-${Math.random().toString(36).slice(2)}`,
+  );
+  await fs.writeFile(tmp, content, 'utf-8');
+  await fs.rename(tmp, target);
+}
+
+function serializedAtomicWrite(target: string, getContent: () => string): Promise<void> {
+  const prev = writeChains.get(target) ?? Promise.resolve();
+  // getContent() runs at write time (not enqueue time) so the freshest state is written.
+  const next = prev.catch(() => {}).then(() => atomicWrite(target, getContent()));
+  writeChains.set(target, next);
+  void next.finally(() => { if (writeChains.get(target) === next) writeChains.delete(target); });
+  return next;
+}
+
 export async function savePersistedData() {
-  await fs.writeFile(dataFilePath, JSON.stringify(getPersistableDbSnapshot(), null, 2), 'utf-8');
+  await serializedAtomicWrite(dataFilePath, () => JSON.stringify(getPersistableDbSnapshot(), null, 2));
 }
 
 export async function loadPersistedSettings() {
@@ -173,7 +197,7 @@ export async function loadPersistedSettings() {
 }
 
 export async function savePersistedSettings() {
-  await fs.writeFile(settingsFilePath, JSON.stringify(db.settings, null, 2), 'utf-8');
+  await serializedAtomicWrite(settingsFilePath, () => JSON.stringify(db.settings, null, 2));
 }
 
 export function persistDataInBackground(reason: string) {

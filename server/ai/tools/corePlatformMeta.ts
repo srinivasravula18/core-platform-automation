@@ -15,7 +15,7 @@
  *   3. last resort                (when nothing else is configured)
  */
 
-import { execSync } from 'child_process';
+import { spawnSync } from 'child_process';
 import * as fs from 'fs';
 import type { AgentTool, ToolContext } from './types';
 import { resolveCredentials, getWebsite } from '../../features/credentials/credentialsService';
@@ -354,11 +354,19 @@ export const getApiRoutesTool: AgentTool = {
       const routePattern = /app\.(get|post|put|patch|delete)\s*\(\s*["'`]/i;
 
       let allFiles: string[] = [];
-      try {
-        const raw = execSync(`git -C "${repoPath}" grep -rl "app\\.get\|app\\.post\|app\\.put\|app\\.patch\|app\\.delete" -- "*.ts"`, { encoding: 'utf8', timeout: 10000 });
-        allFiles = raw.split('\n').filter((f) => f.trim());
-      } catch (err: any) {
-        return { error: `git grep failed: ${err?.message ?? String(err)}` };
+      {
+        // Arg-array spawn (no shell) — avoids the injection/quoting hazards of a string command
+        // and matches the safe git-invocation pattern used elsewhere (gitAgentService/localRepo).
+        // git grep exits 1 when there are simply no matches; that is not an error.
+        const res = spawnSync(
+          'git',
+          ['-C', repoPath, 'grep', '-rl', '-E', 'app\\.(get|post|put|patch|delete)', '--', '*.ts'],
+          { encoding: 'utf8', timeout: 10000 },
+        );
+        if (res.error || (res.status !== 0 && res.status !== 1)) {
+          return { error: `git grep failed: ${res.error?.message ?? res.stderr ?? `exit ${res.status}`}` };
+        }
+        allFiles = String(res.stdout || '').split('\n').filter((f) => f.trim());
       }
 
       const relevant = kws.length

@@ -27,6 +27,7 @@
     "dist",
     "node_modules",
     ".playwright-mcp",
-    "architecture-import"
+    "architecture-import",
+    "mcp-servers"
   ]
 }

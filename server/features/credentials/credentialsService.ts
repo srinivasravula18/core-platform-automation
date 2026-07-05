@@ -33,6 +33,13 @@ import type { AgentRunCredentials } from './types';
 // that were encrypted with the real key ("No credentials resolved"). First use happens at request
 // time, after env is loaded, so the real key is picked up.
 let cachedEncKey: Buffer | null = null;
+
+function isProductionRuntime(): boolean {
+  const mode = (process.env.DEPLOYMENT_MODE || '').toLowerCase();
+  if (mode) return mode === 'production';
+  return String(process.env.NODE_ENV || '').toLowerCase() === 'production';
+}
+
 function encKey(): Buffer {
   if (cachedEncKey) return cachedEncKey;
   const raw = process.env.CRED_ENC_KEY;
@@ -40,8 +47,13 @@ function encKey(): Buffer {
     cachedEncKey = scryptSync(raw, process.env.CRED_ENC_SALT || '', 32);
     return cachedEncKey;
   }
+  // In production, refuse to fall back to a derivable key: "encrypting" credentials under an
+  // empty-derived key is effectively storing them in the clear. Fail loud, not silent.
+  if (isProductionRuntime()) {
+    throw new Error('CRED_ENC_KEY must be set in production — refusing to encrypt/decrypt credentials with a derivable dev key.');
+  }
   if (!process.env.CRED_DEV_KEY_WARNING_SHOWN) {
-    console.warn('[credentials] CRED_ENC_KEY is not set — encryption is unavailable until configured.');
+    console.warn('[credentials] CRED_ENC_KEY is not set — using a derived dev key (NOT for production).');
     process.env.CRED_DEV_KEY_WARNING_SHOWN = '1';
   }
   cachedEncKey = scryptSync(process.env.CRED_ENC_FALLBACK_KEY || '', process.env.CRED_ENC_SALT || '', 32);

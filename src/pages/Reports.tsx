@@ -762,66 +762,6 @@ export default function Reports() {
         </div>
       </div>
 
-      {/* Evidence is shown inline below the selected report row. */}
-      {false && activeStep && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-4 backdrop-blur-md" onClick={() => setActiveStep(null)}>
-          <div className="flex max-h-[92dvh] w-full max-w-6xl flex-col overflow-hidden rounded-xl border border-slate-800 bg-slate-950 shadow-2xl" onClick={(e) => e.stopPropagation()}>
-            <div className="flex items-center justify-between gap-3 border-b border-slate-800 bg-slate-900 px-4 py-3">
-              <div className="flex min-w-0 items-center gap-2">
-                <span className="h-3 w-3 rounded-full bg-red-500/80"></span>
-                <span className="h-3 w-3 rounded-full bg-yellow-500/80"></span>
-                <span className="h-3 w-3 rounded-full bg-emerald-500/80"></span>
-                <span className="ml-3 min-w-0 max-w-3xl truncate rounded border border-slate-800 bg-slate-950 px-3 py-1 font-mono text-xs text-slate-400">
-                  {SCREENSHOT_PRESETS[activeStep.step.screenshot]?.url || activeStep.step.screenshot || 'No screenshot URL'}
-                </span>
-              </div>
-              <div className="flex shrink-0 items-center gap-3">
-                <span className="hidden rounded border border-emerald-500/25 bg-emerald-950/30 px-2 py-1 font-mono text-[10px] font-bold text-emerald-400 sm:inline-flex">
-                  PLAYWRIGHT SCREENSHOT ENGINE
-                </span>
-                <button
-                  type="button"
-                  onClick={() => setActiveStep(null)}
-                  className="rounded-md border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs font-semibold text-slate-300 hover:bg-slate-800"
-                >
-                  Close
-                </button>
-              </div>
-            </div>
-
-            {activeStep.step.outcome === 'Fail' && activeStep.step.reason && (
-              <div className="border-b border-red-500/20 bg-red-950/20 px-4 py-3 text-xs text-red-300">
-                <span className="font-bold uppercase tracking-wider text-red-400">Failure reason: </span>
-                <span className="font-mono">{activeStep.step.reason}</span>
-              </div>
-            )}
-
-            <div className="flex min-h-[360px] flex-1 items-center justify-center overflow-auto bg-slate-100 dark:bg-slate-950">
-              {activeStep.step.screenshot ? (
-                <img
-                  src={withBasePath(`/api/screenshot?url=${encodeURIComponent(activeStep.step.screenshot)}`)}
-                  alt={SCREENSHOT_PRESETS[activeStep.step.screenshot]?.title || `Live Verification of ${activeStep.step.screenshot}`}
-                  className="max-h-[76dvh] w-full object-contain"
-                  referrerPolicy="no-referrer"
-                  onError={(e) => {
-                    e.currentTarget.src = "https://images.unsplash.com/photo-1541560052-5e137f229371?w=1280&q=80";
-                  }}
-                />
-              ) : (
-                <div className="p-10 text-center font-mono text-xs text-slate-500">No screenshot path loaded for this execution step.</div>
-              )}
-            </div>
-
-            <div className="flex items-center justify-between gap-4 border-t border-slate-800 bg-slate-900 px-4 py-3 text-xs">
-              <span className="min-w-0 truncate font-semibold text-slate-200">
-                {SCREENSHOT_PRESETS[activeStep.step.screenshot]?.title || `Automated live screen of ${activeStep.step.screenshot}`}
-              </span>
-              <span className="shrink-0 font-mono text-slate-400">Step {activeStep.step.step} Evidence Screenshot</span>
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* Lightbox Modal for Screenshots Evidence */}
       {lightboxKey && (
         <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-md flex items-center justify-center z-50 p-6" onClick={() => setLightboxKey(null)}>

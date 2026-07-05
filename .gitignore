@@ -11,6 +11,13 @@ coverage/
 .testflow-git-agent-state.json
 .testflow-data.json
 .testflow-data.json.bak-project-cleanup
+# Atomic-write temp siblings (written then renamed by savePersistedData/Settings)
+*.tmp-*
+
+# Local run artifacts (test evidence, generated output, runtime state) — not source
+evidences/
+output/
+.runtime/
 
 # Playwright MCP + browser-automation artifacts
 .playwright-mcp/
