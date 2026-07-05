@@ -20,6 +20,7 @@
     "eval:agents": "tsx scripts/agent-evals.ts",
     "eval:routing": "tsx scripts/eval-routing.ts",
     "eval:coercion": "tsx scripts/eval-coercion.ts",
+    "eval:prioritization": "tsx scripts/eval-prioritization.ts",
     "benchmark:agents": "tsx scripts/benchmark-agents.ts",
     "benchmark:behavior": "tsx scripts/benchmark-behavior.ts",
     "playwright:install": "node scripts/ensure-playwright.mjs",

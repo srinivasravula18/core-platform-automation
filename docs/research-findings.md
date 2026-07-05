@@ -222,9 +222,21 @@ SHA** (`repository.ts:1288`); no scheduler exists (the only `setInterval`s are S
 Pin requirements to a commit SHA, add git-agent drift detection, and surface the full
 requirement→case→run→defect chain (the schema already supports it — see A8.4).
 
-**B5 — `ai/prioritization.ts` is dead code** — zero imports in `server/`. Wire it into the run
-queue or delete it. And build the end-to-end evalset (the accuracy doc's own #1 item) before adding
-more pattern modules.
+**B5 — `ai/prioritization.ts` is unwired** — zero imports in `server/`. Investigation showed
+there is **no run queue or concurrency gate anywhere** to wire it into (the accuracy doc's "per-
+project semaphore" is aspirational, not implemented); that queue is the B7 background-execution
+layer. **Resolved (2026-07-04):** kept the module (the policy is the hard part and is correct),
+added `scripts/eval-prioritization.ts` + `npm run eval:prioritization` (17/17) to lock its
+contract, and documented that wiring waits on B7. Do **not** treat it as dead — it is
+verified-and-pending. Separately: the eval scripts referenced in `package.json`
+(`eval:routing`/`eval:agents`/`eval:coercion`) point to files that do **not** exist in the repo —
+broken script references worth cleaning up. And the end-to-end evalset (the accuracy doc's own #1
+item) is still the highest-leverage reliability investment before adding more pattern modules.
+
+**B7 — no background-execution layer** (new, split out from B5). No scheduler/queue exists (the
+only `setInterval`s are SSE heartbeats). This is the shared dependency of prioritization (B5),
+drift detection (B4), and "AI runs continuously" (the redesign plan's core promise). When built,
+run it as a separate worker process (the first `services/` boundary worth enforcing — see B2).
 
 **B6 — Code is the only requirements source** (`requirementService.ts:1-14`) → tests can't catch
 "code is wrong vs intent" bugs. Add a spec/ticket ingestion channel with per-rule provenance

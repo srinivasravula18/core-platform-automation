@@ -10,6 +10,11 @@
  *   scoreRun()        — a single number combining urgency, age, deps, intent, cost.
  *   assignPriority()  — bucket that score into P0/P1/P2 (manual override wins).
  *   prioritizeQueue() — sort a NEW copy of the queue, annotated with reasons.
+ *
+ * Status: verified by `npm run eval:prioritization` (offline). NOT yet wired into a
+ * caller — there is no run queue/concurrency gate today; this plugs into that layer
+ * (background execution / scheduler) when it is built. Kept because the policy is the
+ * hard part and is already correct; wiring is mechanical once a queue exists.
  */
 
 export type Priority = 'P0' | 'P1' | 'P2';
