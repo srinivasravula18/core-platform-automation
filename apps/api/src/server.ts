@@ -4,7 +4,7 @@ import path from 'path';
 import { loadPersistedData, loadPersistedSettings, scopeMiddleware } from '../../../core/shared';
 import { ensureMigrated, isPgEnabled, runSeedIfEmpty } from '../../../core/persistence';
 import { registerAgentRoutes } from '../../../services/agents';
-import { registerAuthRoutes, authContextMiddleware, seedAuthUsersIfEmpty, claimLegacyDataForAdmin } from '../../../services/auth';
+import { registerAuthRoutes, authContextMiddleware, apiAuthGate, seedAuthUsersIfEmpty, claimLegacyDataForAdmin } from '../../../services/auth';
 import { registerChatRoutes } from '../../../services/chat';
 import { registerControllerRoutes } from '../../../services/controller';
 import { registerCredentialsRoutes, hydrateFromPg } from '../../../services/credentials';
@@ -66,6 +66,7 @@ export async function createExpressApp() {
 
   app.use(express.json({ limit: '5mb' }));
   app.use(authContextMiddleware);
+  app.use(apiAuthGate);
   app.use(scopeMiddleware);
   app.use('/evidence', express.static(path.resolve(process.cwd(), 'evidence')));
 

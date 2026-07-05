@@ -27,10 +27,14 @@ clean (exit 0), where before it failed with 4 errors.
 | A5 execSync | `corePlatformMeta.ts:358` → arg-array `spawnSync` (no shell) | lint |
 | A6 cred key | `encKey()` now throws in production when `CRED_ENC_KEY` unset (`credentialsService.ts`) | lint |
 | A7 dead code | Removed `{false && ...}` block from `Reports.tsx` | lint |
+| A3 auth gate | Global `apiAuthGate` — every `/api/*` requires auth except `health`, `app-config`, `auth/login`, `screenshot` (`<img>` can't send a bearer). Wired after `authContextMiddleware` in `apps/api/src/server.ts` | 9/9 gate unit tests + lint |
 | F8 hygiene | `.gitignore` now covers `evidences/`, `output/`, `.runtime/`, `*.tmp-*` | — |
 
-**Not yet applied (need a decision or larger change):** A3 (wire `requireAuth` — behavior change,
-confirm single-user vs hosted intent first), B1–B6 (architecture-scale work).
+**Residual after A3:** `/api/screenshot` stays unauthenticated (consumed by `<img>` tags) and also
+takes an arbitrary `url=` — a pre-existing SSRF surface tracked separately; A3 does not worsen it.
+A hardening follow-up would sign screenshot URLs or route them through `/evidence` static.
+
+**Not yet applied (architecture-scale, some need a product decision):** B1–B6.
 
 ---
 

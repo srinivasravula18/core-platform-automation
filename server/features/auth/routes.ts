@@ -55,6 +55,34 @@ export function requireAuth(req: Request, res: Response, next: NextFunction) {
   return res.status(401).json({ error: 'Authentication required.' });
 }
 
+/**
+ * Endpoints under /api that must work WITHOUT a logged-in user:
+ *  - health / app-config: probed before login (app boot decides deployment mode).
+ *  - auth/login: the login call itself.
+ *  - screenshot: requested by <img> tags, which cannot send an Authorization header,
+ *    so it stays unauthenticated as before (residual: it is also an SSRF surface —
+ *    tracked separately; this gate does not make it worse).
+ */
+const PUBLIC_API_PREFIXES = [
+  '/api/health',
+  '/api/app-config',
+  '/api/auth/login',
+  '/api/screenshot',
+];
+
+/**
+ * Global gate: every /api route requires an authenticated user except the small
+ * public allowlist above. Non-/api paths (static UI, /evidence) pass through untouched.
+ * Register this once, after authContextMiddleware, so per-route wiring isn't needed.
+ */
+export function apiAuthGate(req: Request, res: Response, next: NextFunction) {
+  const p = req.path;
+  if (!p.startsWith('/api/')) return next();
+  if (PUBLIC_API_PREFIXES.some((prefix) => p === prefix || p.startsWith(`${prefix}/`))) return next();
+  if (getAuthUser(req)) return next();
+  return res.status(401).json({ error: 'Authentication required.' });
+}
+
 export function requireAdmin(req: Request, res: Response, next: NextFunction) {
   const u = getAuthUser(req);
   if (u && u.role) return next();
