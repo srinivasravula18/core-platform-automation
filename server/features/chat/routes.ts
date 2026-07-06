@@ -13,16 +13,23 @@ import { reqScope, scopeFilter } from '../../shared/scope';
 import { AgentRuns, ChatConversations } from '../../db/repository';
 import { runSupervisor } from '../../ai/supervisor';
 
+// Anti-buffering pad: defeats proxies that ignore X-Accel-Buffering by filling their
+// ~4-8KB upstream buffer on every event (SSE comment lines are ignored by the client).
+// See the same constant in controller/routes.ts for the full rationale.
+const STREAM_PROXY_PAD = `: ${' '.repeat(4096)}\n\n`;
+
 function sse(res: any) {
   res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
   res.setHeader('Cache-Control', 'no-cache, no-transform');
   res.setHeader('Connection', 'keep-alive');
   res.setHeader('X-Accel-Buffering', 'no');
   res.flushHeaders?.();
+  // Prime the proxy buffer so the FIRST real event isn't held back either.
+  try { res.write(STREAM_PROXY_PAD); } catch { /* client gone */ }
 }
 
 function writeEvent(res: any, event: Record<string, unknown>) {
-  res.write(`data: ${JSON.stringify(event)}\n\n`);
+  res.write(`data: ${JSON.stringify(event)}\n\n${STREAM_PROXY_PAD}`);
   res.flush?.();
 }
 

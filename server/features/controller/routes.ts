@@ -28,6 +28,17 @@ function withConversationContext(message: string, history: unknown): string {
 
 import { INTENT_LABELS, type IntentKind, type Plan, type PlanStep } from '../../ai/intents';
 
+/**
+ * Anti-buffering pad. A reverse proxy that ignores X-Accel-Buffering (forced
+ * proxy_buffering, proxy_ignore_headers, some LBs) holds small writes until its
+ * ~4-8KB upstream buffer fills — live progress then arrives all at once at the
+ * end, which is exactly the "streaming works locally but not deployed" failure.
+ * Padding each event with an SSE comment line (clients ignore ':' lines; ours
+ * JSON.parse-and-skip them) fills that buffer immediately so every event is
+ * flushed through even a misconfigured proxy. ~4KB per event is negligible here.
+ */
+const STREAM_PROXY_PAD = `: ${' '.repeat(4096)}\n\n`;
+
 function prepareStreamingResponse(res: any) {
   // text/event-stream discourages buffering in production proxies/CDNs even though
   // the client still consumes raw chunks with fetch().getReader().
@@ -39,6 +50,8 @@ function prepareStreamingResponse(res: any) {
   res.setHeader('Connection', 'keep-alive');
   res.socket?.setNoDelay?.(true);
   res.flushHeaders?.();
+  // Prime the proxy buffer so the FIRST real event isn't held back either.
+  try { res.write(STREAM_PROXY_PAD); } catch { /* client gone */ }
 }
 
 function flushStream(res: any) {
@@ -183,7 +196,7 @@ export function registerControllerRoutes(app: Express) {
       return res.status(400).json({ error: 'userMessage is required' });
     }
     prepareStreamingResponse(res);
-    const send = (obj: any) => { try { res.write(`data: ${JSON.stringify(obj)}\n\n`); } catch { /* client gone */ } };
+    const send = (obj: any) => { try { res.write(`data: ${JSON.stringify(obj)}\n\n${STREAM_PROXY_PAD}`); } catch { /* client gone */ } };
     const heartbeat = startStreamHeartbeat(res, send);
     try {
       send({ type: 'step', index: 0, text: 'Starting...', toolCalls: [] });

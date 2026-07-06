@@ -30,6 +30,11 @@ async function applicationContextPromptForScope(scope: ReturnType<typeof reqScop
   return built.promptText;
 }
 
+// Anti-buffering pad: defeats proxies that ignore X-Accel-Buffering by filling their
+// ~4-8KB upstream buffer on every event (SSE comment lines are ignored by the client).
+// See the same constant in controller/routes.ts for the full rationale.
+const STREAM_PROXY_PAD = `: ${' '.repeat(4096)}\n\n`;
+
 function prepareStreamingResponse(res: any) {
   res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
   res.setHeader('Cache-Control', 'no-cache, no-transform');
@@ -39,6 +44,8 @@ function prepareStreamingResponse(res: any) {
   res.setHeader('Connection', 'keep-alive');
   res.socket?.setNoDelay?.(true);
   res.flushHeaders?.();
+  // Prime the proxy buffer so the FIRST real event isn't held back either.
+  try { res.write(STREAM_PROXY_PAD); } catch { /* client gone */ }
 }
 
 function flushStream(res: any) {
@@ -52,7 +59,7 @@ export function registerRequirementRoutes(app: Express) {
 
     prepareStreamingResponse(res);
     const send = (obj: any) => {
-      try { res.write(`data: ${JSON.stringify(obj)}\n\n`); } catch { /* client gone */ }
+      try { res.write(`data: ${JSON.stringify(obj)}\n\n${STREAM_PROXY_PAD}`); } catch { /* client gone */ }
     };
     const heartbeat = setInterval(() => {
       send({ type: 'heartbeat', at: Date.now() });
