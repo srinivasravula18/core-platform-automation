@@ -25,6 +25,58 @@ function trimBaseUrl(value: string): string {
   return String(value || '').replace(/\/+$/, '');
 }
 
+/**
+ * AUTO-DISCOVER the App Service (API) origin for a target — no env vars, no per-target
+ * hardcoding, scales to any number of connected apps/repos. The configured base URL is
+ * often a browser SURFACE (e.g. https://host/shockwave/ or http://localhost:5002/) while
+ * the platform API lives at the origin or another configured base. We probe the small
+ * set of candidates ONCE per target (a well-known platform endpoint answering anything
+ * but 404 proves the API is there — 401 is a perfect signal) and cache the winner.
+ */
+const serviceBaseCache = new Map<string, { url: string; at: number }>();
+const SERVICE_BASE_TTL_MS = 10 * 60 * 1000;
+
+async function probeServiceBase(candidate: string): Promise<boolean> {
+  // The App Service answers /api/apps with JSON (401 for anonymous callers). A browser SPA
+  // server answers ANY path with 200 + index.html (history fallback), so a response only
+  // counts as "the API is here" when the BODY is actually JSON — never HTML.
+  const isJsonResponse = async (res: any): Promise<boolean> => {
+    if (String(res.headers.get('content-type') || '').includes('json')) return true;
+    try { JSON.parse(await res.text()); return true; } catch { return false; }
+  };
+  try {
+    const res = await fetch(`${candidate}/api/apps`, { signal: AbortSignal.timeout(5000), headers: { accept: 'application/json' } });
+    if (res.status !== 404 && await isJsonResponse(res)) return true;
+  } catch { /* try the spec next */ }
+  try {
+    const res = await fetch(`${candidate}/api/openapi.json`, { signal: AbortSignal.timeout(5000), headers: { accept: 'application/json' } });
+    return res.ok && await isJsonResponse(res);
+  } catch { return false; }
+}
+
+async function resolveServiceBase(conn?: CatalogConn): Promise<string> {
+  const raw = trimBaseUrl(conn?.baseUrl || baseUrl() || '');
+  if (!raw) return '';
+  const cached = serviceBaseCache.get(raw);
+  if (cached && Date.now() - cached.at <= SERVICE_BASE_TTL_MS) return cached.url;
+  const candidates: string[] = [];
+  const push = (u: string) => { const t = trimBaseUrl(u); if (t && !candidates.includes(t)) candidates.push(t); };
+  push(serviceBaseUrl(conn)); // configured resolution first (specPath/env aware)
+  push(raw);
+  try { push(new URL(raw).origin); } catch { /* not a URL */ }
+  const envBase = trimBaseUrl(baseUrl());
+  if (envBase) push(envBase);
+  for (const candidate of candidates) {
+    if (await probeServiceBase(candidate)) {
+      serviceBaseCache.set(raw, { url: candidate, at: Date.now() });
+      return candidate;
+    }
+  }
+  // Nothing answered — keep the configured resolution (old behavior) but don't cache the miss,
+  // so a target that comes online is picked up on the next call.
+  return candidates[0] || raw;
+}
+
 function serviceBaseUrl(conn?: CatalogConn): string {
   const raw = trimBaseUrl(conn?.baseUrl || baseUrl() || '');
   if (!raw) return '';
@@ -323,7 +375,7 @@ async function fetchObjectCatalogViaSwagger(
   conn?: CatalogConn,
 ): Promise<Array<{ app: string; api_name: string; label: string }>> {
   try {
-    const url = serviceBaseUrl(conn);
+    const url = await resolveServiceBase(conn);
     if (!url) return [];
     const business = await fetchObjectCatalogViaApi(conn);
     const spec = await fetchSwaggerSpec(url, conn?.specPath || process.env.TARGET_SPEC_PATH || undefined);
@@ -372,7 +424,7 @@ async function resolveConnToken(conn: CatalogConn, url: string): Promise<string 
  */
 async function fetchObjectCatalogViaApi(conn?: CatalogConn): Promise<Array<{ app: string; api_name: string; label: string }>> {
   try {
-    const url = serviceBaseUrl(conn);
+    const url = await resolveServiceBase(conn);
     if (!url) return [];
     const token = await resolveConnToken(conn || {}, url);
     if (!token) return [];
@@ -408,7 +460,7 @@ export async function fetchCorePlatformApps(
   conn: CatalogConn,
 ): Promise<Array<{ id: string; label: string; api_name: string; app_prefix: string; parent_app_id: string | null }>> {
   try {
-    const url = serviceBaseUrl(conn);
+    const url = await resolveServiceBase(conn);
     if (!url) return [];
     const token = await resolveConnToken(conn, url);
     if (!token) return [];
@@ -439,7 +491,7 @@ export async function fetchCorePlatformAppTabs(
   appId: string,
 ): Promise<Array<{ id: string; label: string; object_api_name: string }>> {
   try {
-    const url = serviceBaseUrl(conn);
+    const url = await resolveServiceBase(conn);
     const app = String(appId || '').trim();
     if (!url || !app) return [];
     const token = await resolveConnToken(conn, url);
@@ -506,7 +558,7 @@ function formFieldNames(form: any): string[] {
 
 export async function fetchCorePlatformMetadataMap(conn: CatalogConn, appId: string): Promise<CorePlatformMetadataMap | null> {
   try {
-    const url = serviceBaseUrl(conn);
+    const url = await resolveServiceBase(conn);
     const app = String(appId || '').trim();
     if (!url || !app) return null;
     const cacheKey = `${url}::${app}::${conn.username || ''}::${conn.token ? 'token' : ''}`;
@@ -632,7 +684,7 @@ export async function fetchCorePlatformMetadataMap(conn: CatalogConn, appId: str
  */
 export async function fetchTestDataPack(conn: CatalogConn, hintText: string, objectHints: string[] = []): Promise<string> {
   try {
-    const url = serviceBaseUrl(conn);
+    const url = await resolveServiceBase(conn);
     if (!url) return '';
     const token = await resolveConnToken(conn || {}, url);
     if (!token) return '';
