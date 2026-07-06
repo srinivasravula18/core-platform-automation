@@ -68,7 +68,12 @@ export function registerAgentRuntimeRoutes(app: Express) {
         // word ("list my cases") so it does NOT swallow "list view" in a real generation request.
         && !(/\b(how many|how much|do (?:we|i) have|which cases|what cases|count)\b/i.test(message)
           || /\b(?:list|show(?:\s+me)?)\s+(?:(?:my|the|all|our)\s+)?(?:test\s+)?(?:cases?|suites?|plans?|runs?|scripts?)\b/i.test(message));
-      if (wantsCaseGen && (route.kind === 'answer' || route.kind === 'workspace_action')) {
+      // Intercept answer/workspace_action AND requirement_draft: the LLM router sometimes classifies
+      // a clear "write test cases for X" as requirement_draft (the words "write"/"feature" tip it that
+      // way), which then silently drafts a codebase requirement on the wrong feature. wantsCaseGen only
+      // matches messages that explicitly ask for test cases/coverage/scenarios, so a genuine
+      // "create a requirement for X" (no "cases") is never caught here.
+      if (wantsCaseGen && (route.kind === 'answer' || route.kind === 'workspace_action' || route.kind === 'requirement_draft')) {
         const hasTarget = !!(route.target?.url || route.target?.name || selectedApps.some((a) => a.url || a.name));
         if (hasTarget) {
           route.kind = 'generate_cases';
@@ -82,8 +87,10 @@ export function registerAgentRuntimeRoutes(app: Express) {
             ? `Which app should I generate these test cases for? ${names.join(' · ')}`
             : 'Which app should I generate these test cases for? Pick one in the top-bar app switcher (or the "Apps to test" picker).';
         } else {
-          // Genuinely no live app to target (codebase-only project) — fall back to requirement drafting.
-          route.kind = 'requirement_draft';
+          // No app resolvable at all — a clear "write test cases" request must NEVER silently become a
+          // codebase requirement draft (which drifts to the wrong feature). Ask for the app/URL instead.
+          route.kind = 'clarify';
+          (route as any).clarifyingQuestion = 'Which app should I generate these test cases for? Select one in the top-bar app switcher or the "Apps to test" picker, or paste the app URL.';
         }
       }
 
