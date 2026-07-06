@@ -1452,7 +1452,8 @@ const CASE_AUTHORING_CONTRACT = `CASE TEXT RULES (apply to every case):
 - The description is ONE short plain sentence saying what the case checks and why. Do not restate the steps in it and do not embed a "Test Steps:" or "Expected:" list — the case has a separate Steps section.
 - STEPS MUST BE DETAILED AND CONCRETE: each step is ONE specific user/system action naming the REAL on-screen element (the exact label/field/button/menu from the evidence) paired with its own specific, OBSERVABLE expected result for that action. No vague steps ("verify it works", "check the page"), no invented labels, no meta/setup scaffolding (CI, seeding, regression jobs). A reviewer must be able to follow the steps by hand and a Playwright script must be able to mirror them 1:1.
 - TEST DESIGN — design coverage deliberately like a senior QA engineer, not just one happy path. Apply the techniques the feature's real behaviour supports: happy path; equivalence partitioning (one case per valid input class); boundary values (empty, minimum, maximum, over-maximum, max-length); decision tables for combined conditions; state transitions (create → edit → delete); negative/invalid input and error states; permission/role (RBAC) differences; and disabled/empty/loading/error states, including WHEN an action is unavailable (e.g. disabled while busy, disabled without permission, disabled for a protected/default item). Cover the highest-value behaviors first; never pad past the requested count.
-- Each case includes automation tags in @ format (@bvt, @sanity, @regression, @smoke, @ui, @positive, @negative, ...). If the user requested specific tag types, apply those exact tags to every generated case.`;
+- Each case includes automation tags in @ format (@bvt, @sanity, @regression, @smoke, @ui, @positive, @negative, ...). If the user requested specific tag types, apply those exact tags to every generated case.
+- Every case tests the TARGET APPLICATION's own UI/behavior. NEVER write cases about the QA assistant, the chat/conversation, app-selection replies ("verify a follow-up of X applies to the request"), request routing/scoping, or test-generation itself — none of that is application behavior a user can perform in the app under test.`;
 
 /** Generate test cases focused on ONE specific feature from the feature inventory. */
 async function generateCasesForFeature(run: any, feature: any, liveCredentials: any): Promise<any[]> {
@@ -1593,7 +1594,7 @@ async function generateCasesForRun(
     .map((m: any) => `${m.role === 'assistant' ? 'assistant' : 'user'}: ${String(m.content).replace(/\s+/g, ' ').trim().slice(0, m.role === 'assistant' ? 2400 : 600)}`)
     .join('\n');
   const conversationBlock = conv
-    ? `\nCONVERSATION THAT LED TO THIS RUN (authoritative scope — the test cases MUST cover exactly what was discussed here; do not substitute a generic feature set):\n${conv}\n`
+    ? `\nCONVERSATION THAT LED TO THIS RUN (authoritative for WHICH application features to cover — cover the features/objects/behaviors discussed here, in the TARGET APPLICATION's UI; do not substitute a generic feature set. The conversation itself is NOT a test subject: never write cases about the QA assistant, this chat, app-selection replies, prompts, or how the request was interpreted/scoped — those are not application behavior):\n${conv}\n`
     : '';
 
   // REAL TEST DATA grounding (MCP/data tools): pull the actual field schema (api_names, types,
