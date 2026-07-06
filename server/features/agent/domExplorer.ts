@@ -17,6 +17,8 @@ export interface DomElement {
   required: boolean;
   ariaExpanded: string | null;
   ariaHasPopup: string | null;
+  /** the element's title ATTRIBUTE (tooltip text) — assertable only via toHaveAttribute */
+  title?: string | null;
   visible: boolean;
   labelText: string | null;
   /** accessibility-tree enrichment (a11y-first capture) */
@@ -214,6 +216,9 @@ const pullAttrs = (el: any) => {
     required: Boolean(e.required),
     ariaExpanded: e.getAttribute('aria-expanded'),
     ariaHasPopup: e.getAttribute('aria-haspopup'),
+    // Tooltip text lives in the title ATTRIBUTE — it never appears as page text, so tests
+    // must assert it via toHaveAttribute('title', ...). Capture the REAL value here.
+    title: e.getAttribute('title'),
     visible: cs.visibility !== 'hidden' && cs.display !== 'none' && e.getClientRects().length > 0,
     labelText: e.labels && e.labels[0] ? (e.labels[0].innerText || '').trim().slice(0, 80) : null,
   };
@@ -427,12 +432,133 @@ export function resolveBestSelector(el: DomElement): ResolvedSelector {
   return { key, strategy: cands[0].strategy, selector: cands[0].selector, fallback: cands[1]?.selector ?? null };
 }
 
+// ---- explore + verify + record (the sister-project "explore_page" pipeline, reusable) ----
+// One call produces the page's FULL grounded element table: every element extracted
+// (a11y-first), its best stable selector resolved, then EVERY selector verified against
+// the live DOM and status-tagged. This is what generated scripts must be written from —
+// a selector that is not "verified" here will fail at execution time.
+
+export interface VerifiedElement {
+  id: string;
+  tag: string;
+  role: string | null;
+  /** best human name: accName → aria-label → text */
+  name: string | null;
+  text: string | null;
+  aria_label: string | null;
+  placeholder: string | null;
+  input_name: string | null;
+  data_field: string | null;
+  element_id: string | null;
+  type: string | null;
+  href: string | null;
+  /** REAL tooltip text from the title attribute (assert via toHaveAttribute('title', ...)) */
+  tooltip: string | null;
+  interactive: boolean;
+  resolved_selector: string | null;
+  selector_strategy: SelectorStrategy;
+  fallback_selector: string | null;
+  unique: boolean;
+  visible: boolean;
+  status: 'verified' | 'not_unique' | 'broken' | 'unresolvable';
+  state: { disabled: boolean; readonly: boolean; required: boolean };
+}
+
+export interface VerifiedPage {
+  url: string;
+  outline: string | null;
+  opened?: { label: string; opened: boolean }[];
+  elements: VerifiedElement[];
+  coverage: { total_extracted: number; verified: number; not_unique: number; unresolvable: number; broken: number; loggedIn: boolean };
+  warnings: string[];
+}
+
+/** Most useful first: verified+unique interactive controls, then the long tail. (Ported ranking.) */
+export function rankVerifiedElements<T extends { status?: string; interactive?: boolean; visible?: boolean }>(elements: T[]): T[] {
+  const score = (e: { status?: string; interactive?: boolean; visible?: boolean }) =>
+    (e.status === 'verified' ? 0 : e.status === 'not_unique' ? 2 : 4) + (e.interactive === false ? 3 : 0) + (e.visible ? 0 : 1);
+  return [...elements].sort((a, b) => score(a) - score(b));
+}
+
+export async function exploreAndVerifyPage(opts: {
+  targetUrl: string;
+  credentials?: { username: string; password: string };
+  loginUrl?: string;
+  open?: string[];
+  interactions?: { action: 'click' | 'hover' | 'type' | 'scroll' | 'wait'; selector?: string; value?: string; ms?: number }[];
+  apiBase?: string;
+  maxElements?: number;
+}): Promise<VerifiedPage> {
+  const extracted = await exploreAppElements({
+    targetUrl: opts.targetUrl,
+    credentials: opts.credentials,
+    loginUrl: opts.loginUrl,
+    open: opts.open,
+    interactions: opts.interactions,
+    apiBase: opts.apiBase,
+    maxElements: opts.maxElements ?? 300,
+  });
+
+  const resolved = extracted.elements.map((el) => ({ el, sel: resolveBestSelector(el) }));
+  const toVerify = [...new Set(resolved.filter((r) => r.sel.selector).map((r) => r.sel.selector as string))];
+  const login = opts.credentials ? { ...opts.credentials, loginUrl: opts.loginUrl } : undefined;
+  const ver = toVerify.length
+    ? await verifyResolvedSelectors({ targetUrl: opts.targetUrl, selectors: toVerify, open: opts.open, login, apiBase: opts.apiBase })
+    : { url: extracted.url, results: [] as { selector: string; count: number; unique: boolean; visible: boolean }[] };
+  const verMap = new Map(ver.results.map((r) => [r.selector, r]));
+
+  const elements: VerifiedElement[] = resolved.map(({ el, sel }) => {
+    const v = sel.selector ? verMap.get(sel.selector) : undefined;
+    const status: VerifiedElement['status'] = !sel.selector ? 'unresolvable' : v && v.count === 0 ? 'broken' : v && !v.unique ? 'not_unique' : 'verified';
+    return {
+      id: sel.key,
+      tag: el.tag,
+      role: el.role,
+      name: el.accName ?? el.ariaLabel ?? el.text,
+      text: el.text,
+      aria_label: el.ariaLabel,
+      placeholder: el.placeholder,
+      input_name: el.name,
+      data_field: el.dataField,
+      element_id: el.id,
+      type: el.type,
+      href: el.href,
+      tooltip: el.title ?? null,
+      interactive: el.interactive !== false,
+      resolved_selector: sel.selector,
+      selector_strategy: sel.strategy,
+      fallback_selector: sel.fallback,
+      unique: v?.unique ?? false,
+      visible: v?.visible ?? el.visible,
+      status,
+      state: { disabled: el.disabled, readonly: el.readonly, required: el.required },
+    };
+  });
+
+  return {
+    url: extracted.url,
+    outline: extracted.outline ?? null,
+    opened: extracted.opened,
+    elements,
+    coverage: {
+      total_extracted: elements.length,
+      verified: elements.filter((e) => e.status === 'verified').length,
+      not_unique: elements.filter((e) => e.status === 'not_unique').length,
+      unresolvable: elements.filter((e) => e.status === 'unresolvable').length,
+      broken: elements.filter((e) => e.status === 'broken').length,
+      loggedIn: Boolean(opts.credentials),
+    },
+    warnings: extracted.warnings,
+  };
+}
+
 export async function verifyResolvedSelectors(opts: {
   targetUrl: string;
   selectors: string[];
   open?: string[];
   login?: { username: string; password: string; loginUrl?: string };
   loginUrl?: string;
+  apiBase?: string;
 }): Promise<{ url: string; results: { selector: string; count: number; unique: boolean; visible: boolean }[] }> {
   const browser = await launchChromiumWithRetry({ headless: true });
   const page = await browser.newPage({ viewport: { width: 1365, height: 768 } });
@@ -440,9 +566,10 @@ export async function verifyResolvedSelectors(opts: {
   const results: { selector: string; count: number; unique: boolean; visible: boolean }[] = [];
   try {
     if (opts.login) {
-      await genericLogin(page, opts.login.loginUrl || opts.targetUrl, opts.login.username, opts.login.password);
+      await genericLogin(page, opts.login.loginUrl || opts.targetUrl, opts.login.username, opts.login.password, opts.apiBase);
     }
     await page.goto(opts.targetUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
+    await ensureAppLoaded(page, opts.login, opts.targetUrl, opts.apiBase);
     await settle(page);
     await openPath(page, opts.open);
     for (const selector of opts.selectors) {

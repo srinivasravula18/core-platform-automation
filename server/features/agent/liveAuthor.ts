@@ -9,9 +9,9 @@
  * script is a recording of a run that actually worked — every selector resolved live by
  * construction. App-agnostic: it operates on the live accessibility tree, no hardcoding.
  */
-import { chromium, type Page, type Locator } from 'playwright';
+import { type Page, type Locator } from 'playwright';
 import { z } from 'zod';
-import { chromiumLaunchOptions } from '../../shared/browser';
+import { launchChromiumWithRetry } from '../../shared/browser';
 import { normalizeTargetUrl } from '../../shared/url';
 import { performLoginIfCredentialsProvided } from '../evidence/evidenceService';
 import { getOrchestrator } from '../../ai/orchestrator';
@@ -104,7 +104,7 @@ export async function liveAuthor(opts: LiveAuthorOptions): Promise<{ steps: Reco
   const notes: string[] = [];
   const steps: RecordedStep[] = [];
   const maxSteps = opts.maxSteps ?? 16;
-  const browser = await chromium.launch(chromiumLaunchOptions());
+  const browser = await launchChromiumWithRetry();
   try {
     const ctx = await browser.newContext();
     const page = await ctx.newPage();

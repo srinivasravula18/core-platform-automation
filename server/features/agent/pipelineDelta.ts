@@ -1,5 +1,6 @@
 import { inspectApplicationFlow } from './inspectionService';
-import { exploreAppElements } from './domExplorer';
+import { exploreAndVerifyPage } from './domExplorer';
+import { writeBlackboard } from './blackboard';
 import { getWebsite, listUsersForWebsite, resolveCredentials } from '../credentials/credentialsService';
 import { fetchCorePlatformMetadataMap, type CorePlatformMetadataMap } from '../../ai/tools/corePlatformData';
 
@@ -151,6 +152,7 @@ export async function runMultiContextInspectionPhase(input: {
       runId: `${input.run.id}-${context.context_id}`,
       knowledge: input.knowledge,
       workspaceId: input.ownerId || '',
+      testData: (input.run as any).test_data_pack || '',
     });
     inspections.push({ ...ctx, context_id: context.context_id, context_description: context.description, expected_capabilities: context.expected_capabilities });
   }
@@ -160,24 +162,43 @@ export async function runMultiContextInspectionPhase(input: {
   input.onPhase({ agent: 'ApplicationInspector', status: 'completed', output });
   phaseSummary(input.run, 'inspection', { status: 'complete', ...output, completed_at: new Date().toISOString() });
 
-  // DETERMINISTIC DOM EXPLORATION: capture EVERY interactive element with ALL attributes,
-  // with no LLM planner bottleneck and no truncation. This runs alongside the existing
-  // LLM-driven inspection and provides the raw element dataset for the script generator.
+  // DETERMINISTIC DOM EXPLORATION + LIVE VERIFICATION (sister-project explore_page pipeline):
+  // capture EVERY interactive element (a11y-first), resolve the best stable selector for each,
+  // VERIFY every selector against the real DOM, and persist the status-tagged table to the
+  // blackboard. The script generator must author from these verified records — an unverified
+  // selector is exactly what fails later during evidence/execution.
   try {
     input.onPhase({ agent: 'DOMExplorer', status: 'running' });
-    const exploreResult = await exploreAppElements({
-      targetUrl: input.targetUrl,
+    // Explore the DEEP page the inspector actually reached, not the bare target shell. The
+    // inspector drills into the real feature (e.g. …&view=list&object=account); the shell URL
+    // only renders the app frame. Exploring the shell yields a handful of nav elements and
+    // starves the coder of verified selectors — it then guesses and the scripts fail. Prefer
+    // the inspector's landed currentUrl when it is deeper (longer) than the target.
+    const landedUrl = String(inspections[0]?.currentUrl || '').trim();
+    const exploreUrl = landedUrl && landedUrl.length >= input.targetUrl.length ? landedUrl : input.targetUrl;
+    const verifiedPage = await exploreAndVerifyPage({
+      targetUrl: exploreUrl,
       credentials: input.primaryCredentials?.username && input.primaryCredentials?.password
         ? { username: input.primaryCredentials.username, password: input.primaryCredentials.password }
         : undefined,
     });
-    input.run.dom_exploration = exploreResult;
+    input.run.dom_exploration = verifiedPage;
+    try {
+      writeBlackboard({
+        id: `${exploreUrl}`,
+        baseUrl: exploreUrl,
+        route: (() => { try { return new URL(verifiedPage.url || exploreUrl).pathname; } catch { return '/'; } })(),
+        elements: verifiedPage.elements,
+        coverage: verifiedPage.coverage,
+      });
+    } catch { /* blackboard persistence is best-effort */ }
+    const c = verifiedPage.coverage;
     input.onPhase({
       agent: 'DOMExplorer',
       status: 'completed',
-      output: `Captured ${exploreResult.count} elements from ${exploreResult.url || ''}`,
+      output: `Captured ${c.total_extracted} elements from ${verifiedPage.url || ''} — ${c.verified} verified, ${c.not_unique} not unique, ${c.broken} broken, ${c.unresolvable} unresolvable.`,
     });
-    phaseSummary(input.run, 'dom_exploration', { status: 'complete', total_elements: exploreResult.count, completed_at: new Date().toISOString() });
+    phaseSummary(input.run, 'dom_exploration', { status: 'complete', ...c, completed_at: new Date().toISOString() });
   } catch (e: any) {
     input.onPhase({ agent: 'DOMExplorer', status: 'failed', output: `DOM exploration failed: ${e?.message || String(e)}` });
   }
@@ -226,6 +247,24 @@ export function runSelectorRegistryPhase(input: { run: any; page?: string; onPha
   const selectors: Record<string, any> = {};
   const unresolvable: any[] = [];
 
+  // Also match against the DOMExplorer element pool — it captures form controls (New/Edit dialog
+  // fields, filter inputs) that the permission-context inspections never opened, so fields that
+  // were "Not found in inspected DOM contexts" can still resolve from what was really seen.
+  const domPool: string[] = [];
+  for (const el of Array.isArray(input.run.dom_exploration?.elements) ? input.run.dom_exploration.elements : []) {
+    // dom_exploration now stores VerifiedElement records (snake_case); keep the old camelCase
+    // reads as fallbacks so a run persisted by an older build still resolves.
+    for (const v of [el?.input_name ?? el?.name, el?.aria_label ?? el?.ariaLabel, el?.placeholder, el?.text, el?.data_field ?? el?.dataField, el?.element_id ?? el?.id]) {
+      const c = clean(v);
+      if (c) domPool.push(c.toLowerCase());
+    }
+  }
+  const inDomPool = (apiName: string, label: string) => {
+    const a = clean(apiName).toLowerCase();
+    const l = clean(label).toLowerCase();
+    return (a && domPool.includes(a)) || (l && domPool.includes(l));
+  };
+
   for (const obj of input.run.metadata_map?.objects || []) {
     for (const field of obj.fields || []) {
       const key = `${field.api_name}_field`;
@@ -244,6 +283,7 @@ export function runSelectorRegistryPhase(input: { run: any; page?: string; onPha
           required: field.required,
         };
       }
+      const domSeen = inDomPool(field.api_name, field.label);
       selectors[key] = {
         metadata_api_name: field.api_name,
         primary_selector: `[name="${escAttr(field.api_name)}"]`,
@@ -253,9 +293,10 @@ export function runSelectorRegistryPhase(input: { run: any; page?: string; onPha
         context_overrides: {},
         permission_behavior: behavior,
         context_specific: seen > 0 && seen < inspections.length,
-        verified: seen > 0,
+        verified: seen > 0 || domSeen,
+        seen_in_dom_pool: domSeen,
       };
-      if (!seen) unresolvable.push({ element_id: key, metadata_api_name: field.api_name, reason: 'Not found in inspected DOM contexts.' });
+      if (!seen && !domSeen) unresolvable.push({ element_id: key, metadata_api_name: field.api_name, reason: 'Not found in inspected DOM contexts.' });
     }
   }
 

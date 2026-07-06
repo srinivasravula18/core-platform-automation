@@ -234,9 +234,12 @@ export type { BrowserContext, Page } from '@playwright/test';
   const execPath = chromiumExecutablePath();
   const launchOptions = `{ args: ${JSON.stringify(CHROMIUM_LAUNCH_ARGS)}${execPath ? `, executablePath: ${JSON.stringify(execPath)}` : ''} }`;
   const screenshotMode = opts.screenshotMode || 'only-on-failure';
-  const actionTimeoutMs = opts.actionTimeoutMs ?? 5000;
-  const navigationTimeoutMs = opts.navigationTimeoutMs ?? 15000;
-  const expectTimeoutMs = opts.expectTimeoutMs ?? 5000;
+  // Generous defaults matched to a real client-rendered SPA: a data grid can legitimately
+  // take 6-10s to fetch + render its rows, so a 5s expect flake-failed valid tests. Auto-waiting
+  // assertions cost nothing when the element is already there, so a roomy ceiling only helps.
+  const actionTimeoutMs = opts.actionTimeoutMs ?? 10000;
+  const navigationTimeoutMs = opts.navigationTimeoutMs ?? 20000;
+  const expectTimeoutMs = opts.expectTimeoutMs ?? 15000;
   const config = `import { defineConfig } from '@playwright/test';
 export default defineConfig({
   testDir: './tests',

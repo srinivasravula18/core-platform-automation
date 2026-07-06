@@ -43,7 +43,7 @@ function getRunSelectorMap(run: any): SelectorMap | null {
 import { promises as fsp, readFileSync, existsSync } from 'fs';
 import path from 'path';
 import { inspectApplicationFlow } from './inspectionService';
-import { exploreAppElements } from './domExplorer';
+import { exploreAppElements, rankVerifiedElements } from './domExplorer';
 import { getFeatureGrounding } from './knowledge';
 import { getOrchestrator, listConfiguredProviders, resolveProviderForAgent } from '../../ai/orchestrator';
 import { answerAppQuestionFromCode, stripCodebaseLocationsForAgentConsole } from '../../ai/supervisor';
@@ -1081,7 +1081,7 @@ function caseMatchKeywords(run: any): string[] {
 // Find EXISTING test cases (scoped to the run's project/app) that look related to
 // this request, so the agent can offer reuse instead of regenerating from scratch.
 // Cheap keyword-overlap scorer — surfaces candidates for the human to confirm.
-async function findRelatedExistingCases(run: any, limit = 6): Promise<any[]> {
+async function findRelatedExistingCases(run: any): Promise<any[]> {
   let all: any[] = [];
   try { all = await Cases.list(); } catch { return []; }
   if (!Array.isArray(all) || !all.length) return [];
@@ -1097,7 +1097,6 @@ async function findRelatedExistingCases(run: any, limit = 6): Promise<any[]> {
     })
     .filter((x) => x.score >= 2)
     .sort((a, b) => b.score - a.score)
-    .slice(0, limit)
     .map((x) => ({ ...x.c, _matchScore: x.score }));
 }
 
@@ -1445,8 +1444,9 @@ async function persistAgentRunArtifacts(run: any) {
  * crowding out the actual evidence. App-agnostic — style only, no app facts.
  */
 const CASE_AUTHORING_CONTRACT = `CASE TEXT RULES (apply to every case):
-- Titles use the verify convention from your instructions: "<Feature/Subfeature area> - verify <one specific behavior, condition, and outcome>" — plain English, one testable behavior per title, understandable without opening the case. Example shape: "List View Actions - verify Delete is disabled for the default list view". Never a vague label ("verify the page works") or a compressed fragment ("404 blocks admin entry").
+- Titles must be short, plain-English, QA/business-readable, and name one behavior. Do not force prefixes like app name, surface name, feature name, or "verify" into every title. Prefer titles like "Actions menu shows core options", "Refresh is disabled while loading", or "New is disabled without permission". Never a vague label like "page works" or a compressed fragment like "404 blocks admin entry".
 - Never put URLs in titles, descriptions, or steps; mention the selected app/area name instead. Never use "Automations" in a case title.
+- If the selected target/surface conflicts with the source-grounded owner of the requested feature, do NOT blend the names. State the mismatch plainly in the reviewed understanding and generate cases for the actual owning surface only if the user approves that target; mention the originally selected target only when it has a real post-flow behavior to verify.
 - Do not mention authentication, login, sign-in, credentials, username, or password anywhere in the case text unless the user explicitly asked for authentication coverage — login is only ever a silent setup/precondition step, never the subject of a case.
 - Write titles, descriptions, preconditions, and every step action and expected result in plain, black-box, user-facing English: what a user does and sees on screen, in short sentences with common words. NEVER use internal identifiers (camelCase/snake_case names like "created_at" or "appId", component/file/prop names), database or implementation terms ("bootstrap", "deduplication", "persisted", "AND filters", "descending"), or developer phrasing — describe the visible on-screen outcome instead (say "sorted with the newest first", not "created_at descending"; "a default view appears automatically", not "a bootstrap view is created"; "opening it again does not add a duplicate").
 - The description is ONE short plain sentence saying what the case checks and why. Do not restate the steps in it and do not embed a "Test Steps:" or "Expected:" list — the case has a separate Steps section.
@@ -1997,7 +1997,7 @@ ${loginScriptBlock}
 ${applicationContextBlock}
 ${selectedQaContextText}${coderUnderstanding}${coderFeatureInventory}${coderMemory}${coderTestData}${coderSelectorMap}${coderSelectorRegistry}${featureGrounding}${readAgentSkill() ? `\nLEARNED QA-AUTHORING SKILL (general script guidance refined over prior runs — apply it):\n${readAgentSkill()}\n` : ''}
 Use this browser inspection context as the source of truth for reachable pages, visible labels, forms, navigation actions, tables/lists, buttons, links and final URL: ${JSON.stringify(compactInspectionContext(inspectionContext))}.
-${renderPageOutlineForPrompt((run as any).dom_exploration)}${renderRawElementsForPrompt((run as any).dom_exploration)}${allCaseControls}
+${renderPageOutlineForPrompt((run as any).dom_exploration)}${renderVerifiedElementsForPrompt((run as any).dom_exploration)}${allCaseControls}
 SETUP — NAVIGATE THEN LOG IN IF NEEDED: the MANDATORY FIRST LINES of every test body are (use this EXACT absolute URL — NOT '/', which resolves to the wrong path):
   await page.goto('${targetUrl || '/'}');
   await page.waitForLoadState('domcontentloaded'); await page.waitForTimeout(1500);
@@ -2059,7 +2059,7 @@ ${loginScriptBlock}
 ${applicationContextBlock}
 ${selectedQaContextText}${coderUnderstanding}${coderSelectorMap}${coderSelectorRegistry}${featureGrounding}
 Use this browser inspection context as the source of truth for reachable pages, visible labels, forms, navigation actions, tables/lists, buttons, links and final URL: ${JSON.stringify(compactInspectionContext(inspectionContext))}.
-${renderPageOutlineForPrompt((run as any).dom_exploration)}${renderRawElementsForPrompt((run as any).dom_exploration)}${perCaseControlBlocks[index] || ''}
+${renderPageOutlineForPrompt((run as any).dom_exploration)}${renderVerifiedElementsForPrompt((run as any).dom_exploration)}${perCaseControlBlocks[index] || ''}
 
 Rules:
 - SELECTOR PRIORITY: use the highest-priority selector that actually resolves in the inspection context. NEVER use XPath, nth-child/positional chains, or generated/utility (e.g. Tailwind) class names — they break on any re-render.
@@ -2595,6 +2595,61 @@ function renderPageOutlineForPrompt(exploration: any, maxChars = 6000): string {
   return `\nSEMANTIC PAGE OUTLINE (the live page's accessibility tree — exactly what a user sees, with real labels and structure; use these labels verbatim, never invent):\n${body}\n`;
 }
 
+/**
+ * The VERIFIED SELECTOR TABLE (sister-project blackboard architecture): every selector in
+ * it was resolved from a live-extracted element and then re-checked against the real DOM
+ * (existence + uniqueness + visibility). Scripts written from this table cannot fail on
+ * "element not found" for the elements it lists — that failure class comes from invented
+ * or unverified selectors. Falls back to the raw element dump for runs recorded by an
+ * older build without verification data.
+ */
+function renderVerifiedElementsForPrompt(exploration: any): string {
+  const elements = Array.isArray(exploration?.elements) ? exploration.elements : [];
+  const hasVerification = elements.some((e: any) => typeof e?.status === 'string' && e?.resolved_selector !== undefined);
+  if (!hasVerification) return renderRawElementsForPrompt(exploration);
+  const ranked = rankVerifiedElements(elements);
+  const usable = ranked.filter((e: any) => (e.status === 'verified' || e.status === 'not_unique') && e.resolved_selector);
+  if (!usable.length) return renderRawElementsForPrompt(exploration);
+  const lines = usable.slice(0, 120).map((e: any) => {
+    const label = e.name || e.placeholder || e.input_name || e.text || '';
+    const flags = [
+      e.status === 'not_unique' ? 'NOT UNIQUE — scope it or use .first()' : '',
+      e.state?.disabled ? 'disabled' : '',
+      e.state?.required ? 'required' : '',
+      !e.visible ? 'not visible' : '',
+      e.tooltip ? `tooltip title="${String(e.tooltip).slice(0, 70)}" — assert via toHaveAttribute('title', ...)` : '',
+    ].filter(Boolean).join('; ');
+    return `  ${e.role || e.tag} "${String(label).slice(0, 60)}" -> ${e.resolved_selector}${e.fallback_selector ? ` | fallback: ${e.fallback_selector}` : ''}${flags ? ` [${flags}]` : ''}`;
+  });
+  const broken = elements.filter((e: any) => e.status === 'broken').length;
+  return `\nVERIFIED SELECTOR TABLE (each selector below was CHECKED against the LIVE page — existence, uniqueness, visibility. Build EVERY locator from this table using the selector or its fallback EXACTLY as written; the quoted name is the element's real accessible label, verbatim. Do NOT invent, paraphrase, re-case, or guess any selector or label that is not in this table${broken ? `; ${broken} candidate selector(s) FAILED live verification and were removed — do not reconstruct them` : ''}):\n${lines.join('\n')}\n${renderOnPageTextForPrompt(exploration)}`;
+}
+
+/**
+ * EXACT ON-PAGE TEXT — every real string the live page displayed at capture time, harvested
+ * from the a11y outline (names + text nodes) and the captured element texts. This is the
+ * assertion whitelist: a text expectation that is not in this list (and not typed by the
+ * test itself) is a guess about a conditional source-string branch — the exact class behind
+ * "expected 'Showing N rows for M records.' but the page said 'Showing N rows.'".
+ */
+function renderOnPageTextForPrompt(exploration: any, maxItems = 80): string {
+  const texts = new Set<string>();
+  const add = (v: any) => {
+    const t = String(v || '').replace(/\s+/g, ' ').trim();
+    if (t.length >= 3 && t.length <= 120) texts.add(t);
+  };
+  for (const e of Array.isArray(exploration?.elements) ? exploration.elements : []) {
+    add(e?.text); add(e?.name); add(e?.tooltip);
+  }
+  const outline = String(exploration?.outline || '');
+  // outline lines carry real strings two ways:  - button "Apps" …   and   - paragraph: Some text
+  for (const m of outline.matchAll(/"((?:[^"\\]|\\.){3,120})"/g)) add(m[1]);
+  for (const m of outline.matchAll(/\]:\s*([^\n]{3,120})$/gm)) add(m[1]);
+  if (!texts.size) return '';
+  const list = [...texts].slice(0, maxItems).map((t) => `  "${t}"`).join('\n');
+  return `\nEXACT ON-PAGE TEXT at capture time (text assertions may ONLY expect strings from this list — verbatim or a substring/regex of one — or values the test itself typed. Anything else is a guessed conditional branch and WILL fail):\n${list}\n`;
+}
+
 function renderRawElementsForPrompt(exploration: any): string {
   if (!exploration?.elements?.length) return '';
   const seen = new Set<string>();
@@ -2803,9 +2858,9 @@ async function runScriptsAndCollectEvidence(run: any, targetUrl: string, testCas
             sessionStorageState,
             singleSession: true,
             screenshotMode: 'on',
-            actionTimeoutMs: 5000,
-            navigationTimeoutMs: 15000,
-            expectTimeoutMs: 5000,
+            actionTimeoutMs: 10000,
+            navigationTimeoutMs: 20000,
+            expectTimeoutMs: 15000,
           });
 
           totalDurationMs += execOne.durationMs || 0;
@@ -2878,9 +2933,9 @@ async function runScriptsAndCollectEvidence(run: any, targetUrl: string, testCas
         sessionStorageState,
         singleSession: true,
         screenshotMode: 'only-on-failure',
-        actionTimeoutMs: 5000,
-        navigationTimeoutMs: 15000,
-        expectTimeoutMs: 5000,
+        actionTimeoutMs: 10000,
+        navigationTimeoutMs: 20000,
+        expectTimeoutMs: 15000,
       });
 
       // EXECUTION-REPAIR LOOP (Phase 3, evaluator-optimizer): the real Playwright result
@@ -2967,9 +3022,9 @@ async function runScriptsAndCollectEvidence(run: any, targetUrl: string, testCas
           sessionStorageState,
           singleSession: true,
           screenshotMode: 'only-on-failure',
-          actionTimeoutMs: 5000,
-          navigationTimeoutMs: 15000,
-          expectTimeoutMs: 5000,
+          actionTimeoutMs: 10000,
+          navigationTimeoutMs: 20000,
+          expectTimeoutMs: 15000,
         });
         const mergedByTitle = new Map((exec.tests || []).map((t) => [normTitle(t.title), t]));
         for (const t of rerunExec.tests || []) mergedByTitle.set(normTitle(t.title), t);
@@ -4408,3 +4463,5 @@ Return a complete test case object. Preserve any useful existing fields. If no e
     }
   });
 }
+
+

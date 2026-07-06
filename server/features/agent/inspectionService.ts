@@ -60,7 +60,7 @@ function compactPageContext(context: any) {
   };
 }
 
-async function collectPageContext(page: any) {
+export async function collectPageContext(page: any) {
   // The bundler (esbuild via tsx, with keepNames) rewrites the helpers inside the
   // page.evaluate() callback below into `__name(...)` wrappers. That `__name` helper
   // lives in the Node module scope and is NOT shipped to the browser when Playwright
@@ -193,7 +193,7 @@ async function collectPageContext(page: any) {
   });
 }
 
-async function saveInspectionScreenshot(page: any, runId: string, label: string) {
+export async function saveInspectionScreenshot(page: any, runId: string, label: string) {
   const evidenceDir = path.resolve(process.cwd(), 'evidence');
   await fs.mkdir(evidenceDir, { recursive: true });
   const filename = `${runId}-inspection-${label}.png`;
@@ -258,9 +258,24 @@ export async function inspectApplicationFlow(options: {
   model?: any;
   runId: string;
   knowledge?: string;
+  /** Real test-data pack (field api_names + valid values) so the tool-loop inspector can fill forms. */
+  testData?: string;
   /** Acting user's id, so the inspector's LLM usage is billed to the right profile. */
   workspaceId?: string;
 }) {
+  // Option A (flagged): let the model drive the inspection itself via observe_page/act_on_page
+  // in the native tool loop. Same result shape; any failure falls back to the classic path below.
+  const toolLoopEnabled = String(process.env.INSPECTOR_TOOL_LOOP || '').toLowerCase() === 'true'
+    || (await import('../../shared/storage')).db.settings?.inspectorToolLoop === true;
+  if (toolLoopEnabled) {
+    try {
+      const { inspectApplicationFlowViaTools } = await import('./toolLoopInspector');
+      return await inspectApplicationFlowViaTools(options);
+    } catch (err: any) {
+      console.warn('[inspector] tool-loop path failed, falling back to classic:', err?.message || err);
+    }
+  }
+
   const normalizedUrl = normalizeTargetUrl(options.targetUrl);
   const warnings: string[] = [];
   const actionsTaken: any[] = [];
