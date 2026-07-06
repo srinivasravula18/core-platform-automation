@@ -122,6 +122,25 @@ async function injectToken(page: any, uiBaseUrl: string, tok: CachedToken, usern
   }, { access: tok.access, refresh: tok.refresh, family: tok.family, user: username });
 }
 
+/**
+ * Resolve an auth token for a target by probing its candidate API origins — the SAME headless
+ * login the DOM explorer uses, exposed for other harness paths (e.g. the MCP inspector, which
+ * injects the token into the browser's sessionStorage itself). Returns null when no token
+ * endpoint answers (caller should fall back to form login). App-agnostic.
+ */
+export async function resolveAuthTokenForTarget(
+  uiUrl: string,
+  username: string,
+  password: string,
+  apiBase?: string,
+): Promise<{ access: string; refresh?: string; family?: string } | null> {
+  for (const origin of tokenOriginCandidates(uiUrl, apiBase)) {
+    const tok = await fetchAuthToken(origin, username, password);
+    if (tok) return { access: tok.access, refresh: tok.refresh, family: tok.family };
+  }
+  return null;
+}
+
 /** Candidate API origins for the token endpoint, best-first. */
 function tokenOriginCandidates(uiUrl: string, apiBase?: string): string[] {
   const out: string[] = [];

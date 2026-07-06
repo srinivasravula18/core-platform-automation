@@ -263,10 +263,26 @@ export async function inspectApplicationFlow(options: {
   /** Acting user's id, so the inspector's LLM usage is billed to the right profile. */
   workspaceId?: string;
 }) {
+  const settings = (await import('../../shared/storage')).db.settings;
+
+  // Option B (flagged): drive inspection through the REAL @playwright/mcp server (headless).
+  // The model calls the Playwright MCP browser tools directly. Same result shape; any failure
+  // falls back to the tool-loop / classic path below. Try MCP first when enabled.
+  const mcpEnabled = String(process.env.INSPECTOR_MCP || '').toLowerCase() === 'true'
+    || (settings as any)?.inspectorMcp === true;
+  if (mcpEnabled) {
+    try {
+      const { inspectApplicationFlowViaMcp } = await import('./mcpInspector');
+      return await inspectApplicationFlowViaMcp(options);
+    } catch (err: any) {
+      console.warn('[inspector] MCP path failed, falling back:', err?.message || err);
+    }
+  }
+
   // Option A (flagged): let the model drive the inspection itself via observe_page/act_on_page
   // in the native tool loop. Same result shape; any failure falls back to the classic path below.
   const toolLoopEnabled = String(process.env.INSPECTOR_TOOL_LOOP || '').toLowerCase() === 'true'
-    || (await import('../../shared/storage')).db.settings?.inspectorToolLoop === true;
+    || settings?.inspectorToolLoop === true;
   if (toolLoopEnabled) {
     try {
       const { inspectApplicationFlowViaTools } = await import('./toolLoopInspector');

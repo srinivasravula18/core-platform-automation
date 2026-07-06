@@ -86,6 +86,11 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
   const [cases, setCases] = useState<Case[] | null>(null);
   const [editing, setEditing] = useState<number | null>(null);
   const [expandedScript, setExpandedScript] = useState<number | null>(null);
+  // Inline script editing: editedScriptCode maps a script filename -> the user's edited code.
+  // Keyed by filename (stable across polls) so edits survive run-record refreshes. editingScript
+  // holds the filename currently in edit mode with its draft text.
+  const [editedScriptCode, setEditedScriptCode] = useState<Record<string, string>>({});
+  const [editingScript, setEditingScript] = useState<{ key: string; draft: string } | null>(null);
   const [feedback, setFeedback] = useState<Record<number, string>>({});
   const [selectedCases, setSelectedCases] = useState<Set<number>>(new Set());
   // Per-case set of step indices ticked for merging into one.
@@ -163,7 +168,13 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
   }, [run, pwResult]);
 
   const status = run?.status;
-  const scripts: any[] = run?.playwright_scripts || [];
+  const rawScripts: any[] = run?.playwright_scripts || [];
+  // Apply any inline edits so the viewer AND every run use the edited code.
+  const scriptKey = (s: any, i: number) => String(s?.filename || s?.test_case_title || s?.title || `script-${i + 1}`);
+  const scripts: any[] = rawScripts.map((s, i) => {
+    const edited = editedScriptCode[scriptKey(s, i)];
+    return edited !== undefined ? { ...s, code: edited } : s;
+  });
   const evidence: any[] = run?.evidence_screenshots || [];
   const targetUrl: string = run?.app_url || '';
   const isRunning = !status || !TERMINAL.includes(status);
@@ -460,29 +471,55 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
     }
   };
 
-  const runScripts = async () => {
+  const runScripts = async (onlyFailed = false) => {
     if (!scripts.length || pwRunning) return;
+    // Re-run only the scripts whose latest result FAILED (or was not executed). Match a script
+    // to its result by test title; when nothing has run yet, "only failed" runs everything.
+    let toRun = scripts;
+    if (onlyFailed) {
+      const priorTests: any[] = (pwResult?.tests?.length ? pwResult.tests : (run?.execution_result?.tests || [])) as any[];
+      const passedTitles = new Set(
+        priorTests.filter((t) => /pass/i.test(String(t.status || ''))).map((t) => String(t.title || '').trim()),
+      );
+      const failed = scripts.filter((s: any) => !passedTitles.has(String(s.title || '').trim()));
+      if (failed.length) toRun = failed;
+    }
     setPwRunning(true);
-    setPwResult(null);
+    setPwResult(onlyFailed ? pwResult : null);
     try {
       const res = await fetch('/api/playwright/run', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          scripts: scripts.map((s: any) => ({ filename: s.filename, title: s.title, code: s.code })),
+          scripts: toRun.map((s: any) => ({ filename: s.filename, title: s.title, code: s.code })),
           baseUrl: targetUrl,
           runId: `${activeTaskId}-pw`,
         }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error || `Playwright run failed (${res.status})`);
-      setPwResult(data);
+      // Merge re-run results over the prior ones so passed tests aren't lost from the view.
+      if (onlyFailed && pwResult?.tests?.length) {
+        const byTitle = new Map<string, any>();
+        for (const t of pwResult.tests) byTitle.set(String(t.title || '').trim(), t);
+        for (const t of (data.tests || [])) byTitle.set(String(t.title || '').trim(), t);
+        const merged = [...byTitle.values()];
+        setPwResult({ ...data, tests: merged, ok: merged.every((t) => /pass/i.test(String(t.status || ''))) });
+      } else {
+        setPwResult(data);
+      }
     } catch (e: any) {
       setPwResult({ ok: false, error: e?.message || 'Run failed', tests: [] });
     } finally {
       setPwRunning(false);
     }
   };
+  // Count how many cases currently show a failed/non-passed execution result.
+  const failedCount = (() => {
+    const tests: any[] = (pwResult?.tests?.length ? pwResult.tests : (run?.execution_result?.tests || [])) as any[];
+    if (!tests.length) return 0;
+    return tests.filter((t) => !/pass/i.test(String(t.status || ''))).length;
+  })();
 
   const downloadScripts = () => {
     if (!scripts.length) return;
@@ -1076,7 +1113,7 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
                     {pwResult ? `Ran ${pwResult.total ?? 0} test(s)` : 'Drafts — not executed yet.'}
                   </span>
                   <button
-                    onClick={runScripts}
+                    onClick={() => runScripts(false)}
                     disabled={pwRunning}
                     className="inline-flex items-center gap-1.5 rounded-md bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50"
                   >
@@ -1137,23 +1174,76 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
 
               {scripts.length ? (
                 <div className="max-h-[min(24rem,60dvh)] space-y-1.5 overflow-y-auto pr-1">
-                  {scripts.map((s, i) => (
+                  {scripts.map((s, i) => {
+                    const key = scriptKey(s, i);
+                    const isEditing = editingScript?.key === key;
+                    const isEdited = editedScriptCode[key] !== undefined;
+                    return (
                     <div key={i} className="overflow-hidden rounded-md border border-[var(--border)]">
-                      <button
-                        onClick={() => setExpandedScript(expandedScript === i ? null : i)}
-                        className="flex w-full items-center gap-2 bg-[var(--bg-secondary)] px-3 py-2 text-left"
-                      >
-                        <Code2 className="h-3.5 w-3.5 shrink-0 text-indigo-400" />
-                        <span className="min-w-0 flex-1 truncate font-mono text-xs text-[var(--text-primary)]">{s.filename || `script-${i + 1}.spec.ts`}</span>
-                        <ChevronDown className={cn('h-3.5 w-3.5 text-[var(--text-muted)] transition-transform', expandedScript === i && 'rotate-180')} />
-                      </button>
+                      <div className="flex w-full items-center gap-2 bg-[var(--bg-secondary)] px-3 py-2 text-left">
+                        <button onClick={() => setExpandedScript(expandedScript === i ? null : i)} className="flex min-w-0 flex-1 items-center gap-2">
+                          <Code2 className="h-3.5 w-3.5 shrink-0 text-indigo-400" />
+                          <span className="min-w-0 flex-1 truncate font-mono text-xs text-[var(--text-primary)]">{s.filename || `script-${i + 1}.spec.ts`}</span>
+                          {isEdited && <span className="shrink-0 rounded border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[9px] font-semibold uppercase text-amber-400">edited</span>}
+                        </button>
+                        {expandedScript === i && !isEditing && (
+                          <button
+                            type="button"
+                            onClick={(e) => { e.stopPropagation(); setEditingScript({ key, draft: s.code || '' }); }}
+                            title="Edit this script, then Save and run it"
+                            className="inline-flex shrink-0 items-center gap-1 rounded border border-[var(--border)] bg-[var(--bg-card)] px-2 py-0.5 text-[10px] font-medium text-[var(--text-secondary)] hover:bg-[var(--bg-secondary)]"
+                          >
+                            <Pencil className="h-3 w-3" /> Edit
+                          </button>
+                        )}
+                        <button onClick={() => setExpandedScript(expandedScript === i ? null : i)} className="shrink-0">
+                          <ChevronDown className={cn('h-3.5 w-3.5 text-[var(--text-muted)] transition-transform', expandedScript === i && 'rotate-180')} />
+                        </button>
+                      </div>
                       {expandedScript === i && (
-                        <pre className="max-h-72 overflow-auto bg-slate-950 p-3 font-mono text-[11px] leading-5 text-slate-200">
-                          <code>{s.code}</code>
-                        </pre>
+                        isEditing ? (
+                          <div className="bg-slate-950 p-2">
+                            <textarea
+                              value={editingScript!.draft}
+                              onChange={(e) => setEditingScript({ key, draft: e.target.value })}
+                              spellCheck={false}
+                              className="h-72 w-full resize-y rounded border border-[var(--border)] bg-slate-950 p-2 font-mono text-[11px] leading-5 text-slate-200 outline-none focus:border-[var(--accent)]"
+                            />
+                            <div className="mt-1.5 flex items-center justify-end gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => setEditingScript(null)}
+                                className="rounded border border-[var(--border)] bg-[var(--bg-card)] px-2 py-1 text-[11px] text-[var(--text-secondary)] hover:bg-[var(--bg-secondary)]"
+                              >
+                                Cancel
+                              </button>
+                              {isEdited && (
+                                <button
+                                  type="button"
+                                  onClick={() => { setEditedScriptCode((m) => { const n = { ...m }; delete n[key]; return n; }); setEditingScript(null); }}
+                                  className="rounded border border-[var(--border)] bg-[var(--bg-card)] px-2 py-1 text-[11px] text-[var(--text-secondary)] hover:bg-[var(--bg-secondary)]"
+                                >
+                                  Reset
+                                </button>
+                              )}
+                              <button
+                                type="button"
+                                onClick={() => { setEditedScriptCode((m) => ({ ...m, [key]: editingScript!.draft })); setEditingScript(null); }}
+                                className="inline-flex items-center gap-1 rounded bg-[var(--accent)] px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-[var(--accent-hover)]"
+                              >
+                                <Save className="h-3 w-3" /> Save
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <pre className="max-h-72 overflow-auto bg-slate-950 p-3 font-mono text-[11px] leading-5 text-slate-200">
+                            <code>{s.code}</code>
+                          </pre>
+                        )
                       )}
                     </div>
-                  ))}
+                    );
+                  })}
                 </div>
               ) : (
                 <div className="py-4 text-center text-xs text-[var(--text-muted)]">
@@ -1166,6 +1256,37 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
           {/* EVIDENCE */}
           {tab === 'evidence' && (
             <div className="max-h-[min(28rem,60dvh)] overflow-y-auto pr-1">
+              {(scripts.length > 0 && (failedCount > 0 || evidence.length > 0)) && (
+                <div className="mb-2 flex items-center justify-between gap-2 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-1.5">
+                  <span className="text-[11px] text-[var(--text-muted)]">
+                    {failedCount > 0 ? `${failedCount} test(s) failed` : 'All tests passed'}
+                  </span>
+                  <div className="flex items-center gap-1.5">
+                    {failedCount > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => runScripts(true)}
+                        disabled={pwRunning}
+                        title="Re-run only the failed tests against the live app"
+                        className="inline-flex items-center gap-1 rounded border border-[var(--accent)]/30 bg-[var(--accent)]/10 px-2 py-1 text-[11px] font-semibold text-[var(--accent)] hover:bg-[var(--accent)]/20 disabled:opacity-50"
+                      >
+                        {pwRunning ? <Loader2 className="h-3 w-3 animate-spin" /> : <RotateCcw className="h-3 w-3" />}
+                        {pwRunning ? 'Re-running…' : `Re-run failed (${failedCount})`}
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => runScripts(false)}
+                      disabled={pwRunning}
+                      title="Re-run all tests against the live app"
+                      className="inline-flex items-center gap-1 rounded border border-[var(--border)] bg-[var(--bg-card)] px-2 py-1 text-[11px] font-medium text-[var(--text-secondary)] hover:bg-[var(--bg-secondary)] disabled:opacity-50"
+                    >
+                      {pwRunning ? <Loader2 className="h-3 w-3 animate-spin" /> : <RotateCcw className="h-3 w-3" />}
+                      Re-run all
+                    </button>
+                  </div>
+                </div>
+              )}
               {evidence.length ? (
                 <div className="space-y-2">
                   {evidence.map((shot, i) => (
