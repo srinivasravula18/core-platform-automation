@@ -1484,7 +1484,7 @@ ${credentialContext}
 ${applicationContextBlock}
 ${selectorRegistryBlock}
 App inspection result: ${JSON.stringify(compactInspectionContext(inspectionContext))}
-Code understanding: ${approvedUnderstanding ? approvedUnderstanding.slice(0, 3000) : 'not provided'}
+${renderPageOutlineForPrompt((run as any).dom_exploration)}Code understanding: ${approvedUnderstanding ? approvedUnderstanding.slice(0, 3000) : 'not provided'}
 
 Feature-scope rules:
 - Generate ONE test case per subfeature (or per distinct business rule if no subfeatures).
@@ -1666,7 +1666,8 @@ ${credentialContext}
 ${applicationContextBlock}
 ${selectorRegistryBlock}
 ${selectedQaPromptText}${conversationBlock}
-Browser inspection result: ${JSON.stringify(compactInspectionContext(inspectionContext))}.${understandingBlock}
+Browser inspection result: ${JSON.stringify(compactInspectionContext(inspectionContext))}.
+${renderPageOutlineForPrompt((run as any).dom_exploration)}${understandingBlock}
 ${featureInventoryBlock}${scenarioBlock}${testDataBlock}${readAgentSkill() ? `\nLEARNED QA-AUTHORING SKILL (general case/script guidance refined over prior runs — apply it):\n${readAgentSkill()}\n` : ''}
 ${requestedCaseCount > 0
   ? `Produce EXACTLY ${requestedCaseCount} test case(s) — no more and no fewer. The user FIXED this count, so make every case COUNT: cover the MOST IMPORTANT ones for this feature / scenario / business logic / flow FIRST — the critical primary user flows, the core business rules, the highest-risk and most-used behavior, and the key negative / permission / edge cases that matter most. ORDER the cases from most important to least so the ${requestedCaseCount} you return are genuinely the highest-value tests (the set is kept in order). Skip trivial or duplicate checks; do not exceed the count or pad to reach it.`
@@ -1995,7 +1996,7 @@ ${loginScriptBlock}
 ${applicationContextBlock}
 ${selectedQaContextText}${coderUnderstanding}${coderFeatureInventory}${coderMemory}${coderTestData}${coderSelectorMap}${coderSelectorRegistry}${featureGrounding}${readAgentSkill() ? `\nLEARNED QA-AUTHORING SKILL (general script guidance refined over prior runs — apply it):\n${readAgentSkill()}\n` : ''}
 Use this browser inspection context as the source of truth for reachable pages, visible labels, forms, navigation actions, tables/lists, buttons, links and final URL: ${JSON.stringify(compactInspectionContext(inspectionContext))}.
-${renderRawElementsForPrompt((run as any).dom_exploration)}${allCaseControls}
+${renderPageOutlineForPrompt((run as any).dom_exploration)}${renderRawElementsForPrompt((run as any).dom_exploration)}${allCaseControls}
 SETUP — NAVIGATE THEN LOG IN IF NEEDED: the MANDATORY FIRST LINES of every test body are (use this EXACT absolute URL — NOT '/', which resolves to the wrong path):
   await page.goto('${targetUrl || '/'}');
   await page.waitForLoadState('domcontentloaded'); await page.waitForTimeout(1500);
@@ -2057,7 +2058,7 @@ ${loginScriptBlock}
 ${applicationContextBlock}
 ${selectedQaContextText}${coderUnderstanding}${coderSelectorMap}${coderSelectorRegistry}${featureGrounding}
 Use this browser inspection context as the source of truth for reachable pages, visible labels, forms, navigation actions, tables/lists, buttons, links and final URL: ${JSON.stringify(compactInspectionContext(inspectionContext))}.
-${renderRawElementsForPrompt((run as any).dom_exploration)}${perCaseControlBlocks[index] || ''}
+${renderPageOutlineForPrompt((run as any).dom_exploration)}${renderRawElementsForPrompt((run as any).dom_exploration)}${perCaseControlBlocks[index] || ''}
 
 Rules:
 - SELECTOR PRIORITY: use the highest-priority selector that actually resolves in the inspection context. NEVER use XPath, nth-child/positional chains, or generated/utility (e.g. Tailwind) class names — they break on any re-render.
@@ -2576,6 +2577,21 @@ function compactInspectionContext(ic: any) {
     assertionTargets: cap(ic.assertionTargets, 24),
     actionsTaken: cap(ic.actionsTaken, 24),
   };
+}
+
+/**
+ * The semantic page OUTLINE from the a11y-first DOM exploration — the browser's own
+ * accessibility tree as compact YAML. This is the "what a user actually sees, with real
+ * labels and hierarchy" picture (menu structure, grouped toolbars, table composition)
+ * that the flat element list cannot convey. [ref=eN] markers are stripped: they die with
+ * the page and must never leak into cases/scripts as selectors.
+ */
+function renderPageOutlineForPrompt(exploration: any, maxChars = 6000): string {
+  const outline = String(exploration?.outline || '').trim();
+  if (!outline) return '';
+  const cleaned = outline.replace(/\s*\[ref=e\d+\]/g, '');
+  const body = cleaned.length > maxChars ? `${cleaned.slice(0, maxChars)}\n  … (outline truncated)` : cleaned;
+  return `\nSEMANTIC PAGE OUTLINE (the live page's accessibility tree — exactly what a user sees, with real labels and structure; use these labels verbatim, never invent):\n${body}\n`;
 }
 
 function renderRawElementsForPrompt(exploration: any): string {

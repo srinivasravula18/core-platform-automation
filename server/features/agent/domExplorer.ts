@@ -19,12 +19,17 @@ export interface DomElement {
   ariaHasPopup: string | null;
   visible: boolean;
   labelText: string | null;
+  /** accessibility-tree enrichment (a11y-first capture) */
+  accName?: string | null; // computed accessible name from the aria snapshot
+  interactive?: boolean; // true for elements a user can act on (button/link/input/menuitem/…)
 }
 
 export interface ExploreResult {
   url: string;
   count: number;
   elements: DomElement[];
+  /** aria snapshot (mode:"ai") — compact semantic YAML outline of the whole page */
+  outline?: string | null;
   opened?: { label: string; opened: boolean }[];
   warnings: string[];
 }
@@ -62,7 +67,96 @@ async function openPath(page: any, open?: string[]): Promise<{ label: string; op
   return trail;
 }
 
-async function genericLogin(page: any, url: string, username: string, password: string) {
+// ---- API-token login (ported from agentic-test-platform) ----
+// Bypasses the login FORM entirely when the platform exposes a token endpoint: POST /auth/login
+// on the API origin, then inject the session token into the UI page's sessionStorage. This avoids
+// the login form's rate limiter ("Too many requests") and any location/extra-step gates in the UI.
+// Fully app-agnostic at the call layer: origins are PROBED (explicit apiBase → same origin →
+// TARGET_BASE_URL env) and a 404 simply falls through to the classic form login.
+
+type CachedToken = { access: string; refresh?: string; family?: string; ts: number };
+const tokenCache = new Map<string, CachedToken>();
+const TOKEN_TTL_MS = 8 * 60 * 1000;
+// While the auth limiter has us blocked (429 + retry-after), do NOT re-POST — every attempt
+// during the window extends the lockout.
+const authBlockedUntil = new Map<string, number>();
+
+async function fetchAuthToken(origin: string, username: string, password: string): Promise<CachedToken | null> {
+  const key = `${origin}:${username}`;
+  const cached = tokenCache.get(key);
+  if (cached && Date.now() - cached.ts <= TOKEN_TTL_MS) return cached;
+  if ((authBlockedUntil.get(key) ?? 0) > Date.now()) return null; // limiter window still open
+  try {
+    const res = await fetch(`${origin}/auth/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username, password }),
+      signal: AbortSignal.timeout(10000),
+    });
+    if (res.status === 429) {
+      const retryAfter = Number(res.headers.get('retry-after')) || 60;
+      authBlockedUntil.set(key, Date.now() + retryAfter * 1000);
+      return null;
+    }
+    if (!res.ok) return null; // no token endpoint here → caller falls back to form login
+    const s = (await res.json()) as { access_token?: string; refresh_token?: string; refresh_family_id?: string };
+    if (!s.access_token) return null;
+    const tok: CachedToken = { access: s.access_token, refresh: s.refresh_token, family: s.refresh_family_id, ts: Date.now() };
+    tokenCache.set(key, tok);
+    return tok;
+  } catch { return null; }
+}
+
+/** Inject an auth token into the page's sessionStorage (platform session keys) and land on the shell. */
+async function injectToken(page: any, uiBaseUrl: string, tok: CachedToken, username: string): Promise<void> {
+  await page.goto(new URL('/', uiBaseUrl).toString(), { waitUntil: 'domcontentloaded', timeout: 15000 });
+  await page.evaluate((t: { access: string; refresh?: string; family?: string; user: string }) => {
+    const set = (k: string, v?: string) => { if (v) sessionStorage.setItem(k, v); };
+    sessionStorage.setItem('shockwave.auth_namespace_v1', '1');
+    set('shockwave.auth_token', t.access); set('core_platform.auth_token', t.access);
+    set('shockwave.current_username', t.user); set('core_platform.current_username', t.user);
+    set('shockwave.refresh_token', t.refresh); set('core_platform.refresh_token', t.refresh);
+    set('shockwave.refresh_family_id', t.family); set('core_platform.refresh_family_id', t.family);
+  }, { access: tok.access, refresh: tok.refresh, family: tok.family, user: username });
+}
+
+/** Candidate API origins for the token endpoint, best-first. */
+function tokenOriginCandidates(uiUrl: string, apiBase?: string): string[] {
+  const out: string[] = [];
+  const push = (u?: string) => {
+    if (!u) return;
+    try { const o = new URL(u).origin; if (!out.includes(o)) out.push(o); } catch { /* skip */ }
+  };
+  push(apiBase);
+  push(uiUrl);
+  push(process.env.TARGET_BASE_URL);
+  return out;
+}
+
+async function apiTokenLogin(page: any, uiUrl: string, username: string, password: string, apiBase?: string): Promise<boolean> {
+  for (const origin of tokenOriginCandidates(uiUrl, apiBase)) {
+    const tok = await fetchAuthToken(origin, username, password);
+    if (!tok) continue;
+    try {
+      await injectToken(page, uiUrl, tok, username);
+      // VERIFY the app accepted the session — a cached token may have been revoked server-side.
+      const wall = await page.locator('input[type="password"]').first().isVisible({ timeout: 1500 }).catch(() => false);
+      if (!wall) return true;
+      tokenCache.delete(`${origin}:${username}`); // dead cached token — drop it and retry fresh
+      const fresh = await fetchAuthToken(origin, username, password);
+      if (fresh) {
+        await injectToken(page, uiUrl, fresh, username);
+        const stillWall = await page.locator('input[type="password"]').first().isVisible({ timeout: 1500 }).catch(() => false);
+        if (!stillWall) return true;
+      }
+    } catch { /* try next origin */ }
+  }
+  return false;
+}
+
+async function genericLogin(page: any, url: string, username: string, password: string, apiBase?: string) {
+  // Prefer API-token login: it skips the login form (and its rate limiter / extra gates).
+  if (await apiTokenLogin(page, url, username, password, apiBase)) return;
   await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
   await page.locator('input[type="email"], input[name="email" i], input[name="username" i], input[id*="user" i], input[id*="email" i]').first().fill(username, { timeout: 8000 });
   await page.locator('input[type="password"]').first().fill(password, { timeout: 8000 });
@@ -72,43 +166,142 @@ async function genericLogin(page: any, url: string, username: string, password: 
   await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
 }
 
-const EXPLORE_SELECTOR = [
-  'button', 'a[href]', 'input', 'select', 'textarea',
-  "[role='button']", "[role='link']", "[role='menuitem']", "[role='menuitemcheckbox']", "[role='menuitemradio']",
-  "[role='tab']", "[role='checkbox']", "[role='radio']", "[role='combobox']", "[role='switch']", "[role='option']",
-  "[role='columnheader']", "[role='gridcell']", "th[role='columnheader']", "th",
-  '[aria-label]', '[data-testid]', '[data-field]', '[name]', '[placeholder]', '[aria-haspopup]',
-].join(', ');
+/** If the current page is a login wall, sign in and wait until the real app renders, then return
+ *  to the ORIGINAL target route. Returns true if a login was performed. */
+async function ensureAppLoaded(page: any, login: { username: string; password: string; loginUrl?: string } | undefined, targetUrl: string, apiBase?: string): Promise<boolean> {
+  const onLogin = await page.locator('input[type="password"]').first().isVisible({ timeout: 1200 }).catch(() => false);
+  if (!login || !onLogin) return false;
+  await genericLogin(page, login.loginUrl || targetUrl, login.username, login.password, apiBase).catch(() => {});
+  await page.waitForFunction(() => !document.querySelector('input[type="password"]'), { timeout: 15000 }).catch(() => {});
+  await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
+  return true;
+}
 
-function collectElements(page: any): Promise<DomElement[]> {
-  return page.evaluate((selector: string) => {
-    const seen = new Set<Element>();
-    return Array.from(document.querySelectorAll(selector))
-      .filter((el) => !seen.has(el) && seen.add(el))
-      .map((el) => {
-        const e = el as HTMLElement & { readOnly?: boolean; disabled?: boolean; required?: boolean; labels?: NodeListOf<HTMLElement> };
+// ---- semantic page capture (a11y-tree-first, DOM-enriched, heuristic sweep as safety net) ----
+// Architecture follows the industry pattern (playwright-mcp / Stagehand / browser-use), ported
+// from agentic-test-platform's explore.ts:
+//   1. ariaSnapshot(mode:"ai") — the browser's own accessibility tree; semantic, 80-90% smaller
+//      than raw DOM, includes ONLY meaningful elements, each tagged with a live [ref=eN].
+//   2. Each ref is resolved back to its DOM node to pull durable attributes (testid/id/aria/name)
+//      — refs die with the page, but generated specs need selectors that survive reloads.
+//   3. A heuristic DOM sweep (shadow-DOM aware; cursor/onclick/tabindex/contenteditable) catches
+//      interactive elements the a11y tree hides, and is the full fallback if ariaSnapshot fails.
+
+const INTERACTIVE_ROLES = new Set([
+  'button', 'link', 'textbox', 'searchbox', 'combobox', 'checkbox', 'radio', 'switch', 'slider', 'spinbutton',
+  'tab', 'menuitem', 'menuitemcheckbox', 'menuitemradio', 'option', 'listbox', 'columnheader', 'gridcell', 'row',
+]);
+
+/** Attribute puller shared by ref-resolution and the sweep. Runs INSIDE the page (serialized). */
+const pullAttrs = (el: any) => {
+  const e = el;
+  const win = e.ownerDocument.defaultView || window;
+  const cs = win.getComputedStyle(e);
+  return {
+    tag: e.tagName.toLowerCase(),
+    text: (e.innerText || '').trim().slice(0, 80) || null,
+    role: e.getAttribute('role'),
+    ariaLabel: e.getAttribute('aria-label'),
+    testId: e.getAttribute('data-testid'),
+    dataField: e.getAttribute('data-field'),
+    name: e.getAttribute('name'),
+    id: e.id || null,
+    href: e.getAttribute('href'),
+    type: e.getAttribute('type'),
+    placeholder: e.getAttribute('placeholder'),
+    disabled: Boolean(e.disabled),
+    readonly: Boolean(e.readOnly),
+    required: Boolean(e.required),
+    ariaExpanded: e.getAttribute('aria-expanded'),
+    ariaHasPopup: e.getAttribute('aria-haspopup'),
+    visible: cs.visibility !== 'hidden' && cs.display !== 'none' && e.getClientRects().length > 0,
+    labelText: e.labels && e.labels[0] ? (e.labels[0].innerText || '').trim().slice(0, 80) : null,
+  };
+};
+
+/** Resolve every [ref=eN] in an aria snapshot to its DOM node and pull durable attributes. */
+async function resolveSnapshotRefs(page: any, outline: string): Promise<DomElement[]> {
+  const refs: { ref: string; role: string; name: string | null }[] = [];
+  // snapshot lines look like:  - button "Refresh list view" [ref=e12]
+  // Container/prose nodes (generic/paragraph/…) stay in the OUTLINE only — resolving them clutters
+  // the element table with concatenated inner text and they're never script targets.
+  const KEEP = new Set([...INTERACTIVE_ROLES, 'heading', 'img', 'alert', 'status', 'dialog']);
+  for (const m of outline.matchAll(/-\s+([a-z]+)(?:\s+"((?:[^"\\]|\\.)*)")?[^\n]*\[ref=(e\d+)\]/g)) {
+    if (!KEEP.has(m[1]!)) continue;
+    // An image with no accessible name is a decorative icon — never a test target, pure noise.
+    if (m[1] === 'img' && !m[2]) continue;
+    refs.push({ role: m[1]!, name: m[2] || null, ref: m[3]! });
+  }
+  const out: DomElement[] = [];
+  const CHUNK = 25; // bounded parallel CDP round-trips
+  for (let i = 0; i < refs.length && i < 600; i += CHUNK) {
+    const settled = await Promise.all(refs.slice(i, i + CHUNK).map(async (r) => {
+      try {
+        const a = await page.locator(`aria-ref=${r.ref}`).evaluate(pullAttrs, undefined, { timeout: 3000 });
         return {
-          tag: e.tagName.toLowerCase(),
-          text: (e.innerText || '').trim().slice(0, 80) || null,
-          role: e.getAttribute('role'),
-          ariaLabel: e.getAttribute('aria-label'),
-          testId: e.getAttribute('data-testid'),
-          dataField: e.getAttribute('data-field'),
-          name: e.getAttribute('name'),
-          id: e.id || null,
-          href: e.getAttribute('href'),
-          type: e.getAttribute('type'),
-          placeholder: e.getAttribute('placeholder'),
-          disabled: Boolean(e.disabled),
-          readonly: Boolean(e.readOnly),
-          required: Boolean(e.required),
-          ariaExpanded: e.getAttribute('aria-expanded'),
-          ariaHasPopup: e.getAttribute('aria-haspopup'),
-          visible: e.offsetParent !== null,
-          labelText: e.labels && e.labels[0] ? (e.labels[0].innerText || '').trim().slice(0, 80) : null,
-        } as any;
-      });
-  }, EXPLORE_SELECTOR);
+          ...a,
+          role: a.role ?? r.role,
+          accName: r.name ?? a.ariaLabel ?? a.text,
+          interactive: INTERACTIVE_ROLES.has(r.role),
+        } as DomElement;
+      } catch { return null; } // ref went stale (page mutated) — the sweep still covers it
+    }));
+    out.push(...settled.filter((x): x is DomElement => Boolean(x)));
+  }
+  return out;
+}
+
+/** Heuristic full-DOM sweep (shadow-DOM aware). Catches interactives the a11y tree misses. */
+function sweepDom(page: any): Promise<DomElement[]> {
+  return page.evaluate(`(() => {
+    const pull = ${pullAttrs.toString()};
+    const INTERACTIVE_TAGS = new Set(["button", "a", "input", "select", "textarea", "summary", "option"]);
+    const INTERACTIVE_ROLES = new Set(${JSON.stringify([...INTERACTIVE_ROLES])});
+    const SKIP = new Set(["meta", "link", "script", "style", "title", "base", "noscript", "template", "html", "head", "body", "svg", "path"]);
+    const out = [];
+    const visit = (root) => {
+      for (const e of root.querySelectorAll("*")) {
+        if (e.shadowRoot) visit(e.shadowRoot); // pierce open shadow DOM
+        const tag = e.tagName.toLowerCase();
+        if (SKIP.has(tag)) continue;
+        const role = e.getAttribute("role");
+        const ti = e.getAttribute("tabindex");
+        const parentPointer = e.parentElement && getComputedStyle(e.parentElement).cursor === "pointer";
+        const interactive =
+          INTERACTIVE_TAGS.has(tag) || (role && INTERACTIVE_ROLES.has(role)) ||
+          e.hasAttribute("onclick") || e.hasAttribute("aria-haspopup") || e.isContentEditable ||
+          (ti !== null && Number(ti) >= 0) ||
+          (getComputedStyle(e).cursor === "pointer" && !parentPointer && !e.closest("a, button")); // pointer style not inherited from a clickable ancestor
+        const identity = e.getAttribute("data-testid") || e.getAttribute("data-field") || e.getAttribute("aria-label") || e.getAttribute("placeholder") || (tag === "th" && e.textContent);
+        if (!interactive && !identity) continue;
+        // skip presentation-only children of an already-clickable ancestor (icon/label spans inside a button)
+        const clickAncestor = e.closest("button, a, [role='button'], [role='link'], [role='menuitem']");
+        if (clickAncestor && clickAncestor !== e && !identity) continue;
+        out.push({ ...pull(e), interactive: Boolean(interactive) });
+        if (out.length >= 600) return;
+      }
+    };
+    visit(document);
+    return out;
+  })()`);
+}
+
+/** a11y-tree capture merged with the heuristic sweep; sweep-only when ariaSnapshot is unavailable. */
+async function captureSemanticSnapshot(page: any): Promise<{ outline: string | null; elements: DomElement[] }> {
+  let outline: string | null = null;
+  let elements: DomElement[] = [];
+  try {
+    outline = await page.locator('body').ariaSnapshot({ mode: 'ai' });
+    if (outline) elements = await resolveSnapshotRefs(page, outline);
+  } catch { outline = null; }
+  const swept: DomElement[] = await sweepDom(page).catch(() => []);
+  const sig = (e: DomElement) => [e.tag, e.id, e.testId, e.ariaLabel, e.name, e.dataField, e.placeholder, e.text?.slice(0, 40)].join('|');
+  const have = new Set(elements.map(sig));
+  for (const s of swept) {
+    const k = sig(s);
+    if (!have.has(k)) { have.add(k); elements.push({ ...s, accName: s.ariaLabel ?? s.labelText ?? s.text }); }
+  }
+  return { outline, elements };
 }
 
 export async function exploreAppElements(opts: {
@@ -118,20 +311,32 @@ export async function exploreAppElements(opts: {
   open?: string[];
   interactions?: { action: 'click' | 'hover' | 'type' | 'scroll' | 'wait'; selector?: string; value?: string; ms?: number }[];
   maxElements?: number;
+  /** API/service origin for token login when it differs from the UI origin. */
+  apiBase?: string;
 }): Promise<ExploreResult> {
   const warnings: string[] = [];
   const browser = await launchChromiumWithRetry({ headless: true });
   const page = await browser.newPage({ viewport: { width: 1365, height: 768 } });
   page.setDefaultTimeout(8000);
+  const login = opts.credentials
+    ? { username: opts.credentials.username, password: opts.credentials.password, loginUrl: opts.loginUrl }
+    : undefined;
 
   try {
-    if (opts.credentials) {
-      await genericLogin(page, opts.loginUrl || opts.targetUrl, opts.credentials.username, opts.credentials.password);
+    if (login) {
+      await genericLogin(page, login.loginUrl || opts.targetUrl, login.username, login.password, opts.apiBase).catch(() => {});
     }
     await page.goto(opts.targetUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
+    // Login wall on the requested route → sign in with the stored creds, return to the route.
+    await ensureAppLoaded(page, login, opts.targetUrl, opts.apiBase);
     await settle(page);
 
-    const opened = await openPath(page, opts.open);
+    let opened = await openPath(page, opts.open);
+    // A login wall can also appear mid-flow (session expiry / protected route) — sign in and redo the path once.
+    if (await ensureAppLoaded(page, login, opts.targetUrl, opts.apiBase)) {
+      await settle(page);
+      opened = await openPath(page, opts.open);
+    }
 
     for (const step of opts.interactions ?? []) {
       try {
@@ -145,17 +350,22 @@ export async function exploreAppElements(opts: {
     }
     await settle(page);
 
-    let elements = await collectElements(page);
+    const { outline, elements: captured } = await captureSemanticSnapshot(page);
+    let elements = captured;
     const max = opts.maxElements ?? 200;
     if (elements.length > max) {
       warnings.push(`explored ${elements.length} elements, capped to ${max} for prompt size`);
-      elements = elements.slice(0, max);
+      // Keep the elements that matter for test authoring first — interactive and visible ones —
+      // instead of the first N in document order (which crowded out below-the-fold controls).
+      const score = (e: DomElement) => (e.interactive ? 0 : 2) + (e.visible ? 0 : 1);
+      elements = [...elements].sort((a, b) => score(a) - score(b)).slice(0, max);
     }
 
     return {
       url: page.url(),
       count: elements.length,
       elements,
+      outline,
       opened,
       warnings,
     };

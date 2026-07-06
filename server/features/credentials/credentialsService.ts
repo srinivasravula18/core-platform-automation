@@ -40,9 +40,16 @@ function isProductionRuntime(): boolean {
   return String(process.env.NODE_ENV || '').toLowerCase() === 'production';
 }
 
+// TEMPORARY built-in key, used ONLY when CRED_ENC_KEY is not set in the environment.
+// TODO: move this value into the deployment's env/secret store as CRED_ENC_KEY and delete
+// this constant. IMPORTANT: when migrating, set CRED_ENC_KEY to THIS EXACT value — any other
+// value cannot decrypt passwords that were saved while this fallback was active (they would
+// all need to be re-entered in Settings → Credentials).
+const BUILT_IN_ENC_KEY = '680c8f5b27b19f4d01e18065bffb2b365bf90e95cc4051ba6c168f41cf64ad10';
+
 function encKey(): Buffer {
   if (cachedEncKey) return cachedEncKey;
-  const raw = process.env.CRED_ENC_KEY;
+  const raw = process.env.CRED_ENC_KEY || BUILT_IN_ENC_KEY;
   if (raw) {
     cachedEncKey = scryptSync(raw, process.env.CRED_ENC_SALT || '', 32);
     return cachedEncKey;
