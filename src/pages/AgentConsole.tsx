@@ -996,10 +996,15 @@ export default function AgentConsole() {
     currentUnderstanding?: string;
     correction?: string;
   }) => {
+    // Deep understanding runs for MINUTES server-side (repo research + model calls). A single
+    // long HTTP request dies at any reverse proxy's read timeout (prod 504'd at 60s and every
+    // understanding silently degraded to the terse fallback card). So the server now returns a
+    // job id immediately and we poll — each poll is a fast request no proxy can kill.
+    const signal = activeAbortRef.current?.signal;
     const res = await fetch('/api/agent/understand-request', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      signal: activeAbortRef.current?.signal,
+      signal,
       body: JSON.stringify({
         ...args,
         history: buildHistory(),
@@ -1007,9 +1012,19 @@ export default function AgentConsole() {
         appId: selectedAppId || undefined,
       }),
     });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data?.error || 'Failed to understand request');
-    return data;
+    const started = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(started?.error || 'Failed to understand request');
+    if (!started?.job_id) return started; // older backend replied synchronously — use it as-is
+    const deadline = Date.now() + 20 * 60 * 1000;
+    while (Date.now() < deadline) {
+      if (signal?.aborted) throw new Error('aborted');
+      await new Promise((r) => setTimeout(r, 2500));
+      const poll = await fetch(`/api/agent/understand-request/${started.job_id}`, { cache: 'no-store', signal });
+      const data = await poll.json().catch(() => ({}));
+      if (!poll.ok) throw new Error(data?.error || 'Understanding job was lost');
+      if (data?.status === 'done') return data.result || {};
+    }
+    throw new Error('Understanding timed out');
   }, [buildHistory, selectedProjectId, selectedAppId]);
 
   // Present the "Here's what I understood" review card for a deep generation/run request:

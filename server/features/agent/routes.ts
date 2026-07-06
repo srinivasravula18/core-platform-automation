@@ -3154,8 +3154,23 @@ export function registerAgentRoutes(app: Express) {
     });
   });
 
-  app.post('/api/agent/understand-request', async (req, res) => {
-    const { prompt, originalRequest, contextPrompt, targetName, targetUrl, currentUnderstanding, correction, history } = req.body || {};
+  /**
+   * Deep understanding is a LONG call (repo research + several model calls — minutes).
+   * A single synchronous HTTP request dies at any reverse proxy's read timeout (the
+   * production 504-at-60s failure that silently degraded every prod understanding to
+   * the terse fallback card). So it now follows the same pattern as /api/agent/start:
+   * POST returns a job id immediately; the client polls GET /:jobId (each poll is a
+   * fast request, so no proxy timeout can kill the work).
+   */
+  const understandingJobs = new Map<string, { status: 'running' | 'done'; result?: any; createdAt: number }>();
+  const UNDERSTANDING_JOB_TTL_MS = 30 * 60 * 1000;
+  function pruneUnderstandingJobs() {
+    const cutoff = Date.now() - UNDERSTANDING_JOB_TTL_MS;
+    for (const [id, job] of understandingJobs) if (job.createdAt < cutoff) understandingJobs.delete(id);
+  }
+
+  async function computeUnderstanding(body: any, scope: { userId?: string; projectId?: string | null; appId?: string | null }): Promise<any> {
+    const { prompt, originalRequest, contextPrompt, targetName, targetUrl, currentUnderstanding, correction, history } = body || {};
     const rawPrompt = String(prompt || '').trim();
     const rawOriginalRequest = String(originalRequest || '').trim();
     const rawContextPrompt = String(contextPrompt || '').trim();
@@ -3168,7 +3183,6 @@ export function registerAgentRoutes(app: Express) {
       : '';
     const rawTargetUrl = String(targetUrl || '').trim();
     const rawTargetName = String(targetName || '').trim();
-    if (!rawPrompt && !rawContextPrompt) return res.status(400).json({ error: 'prompt is required' });
 
     const fallback = {
       understanding:
@@ -3187,7 +3201,7 @@ export function registerAgentRoutes(app: Express) {
 
     const carriedScope = extractCarriedForwardScope(rawContextPrompt);
     if (!correction && carriedScope && isShortFollowUpAction(rawOriginalRequest || rawPrompt)) {
-      return res.json({
+      return {
         ...fallback,
         understanding: buildCarriedForwardUnderstanding({
           task: rawPrompt,
@@ -3201,12 +3215,11 @@ export function registerAgentRoutes(app: Express) {
         confidence: 90,
         missingInfo: [],
         source: 'conversation_context',
-      });
+      };
     }
 
     if (!correction && wantsCodeGroundedTestUnderstanding(intentPrompt)) {
       try {
-        const scope = reqScope(req);
         const targetLabel = rawTargetName || rawTargetUrl;
         const apps = targetLabel
           ? [{ name: rawTargetName || targetLabel, baseUrl: rawTargetUrl || targetLabel }]
@@ -3220,7 +3233,7 @@ export function registerAgentRoutes(app: Express) {
         });
         const understanding = stripCodebaseLocationsForAgentConsole(String(grounded || '').trim());
         if (understanding) {
-          return res.json({
+          return {
             ...fallback,
             understanding,
             task: rawPrompt,
@@ -3228,7 +3241,7 @@ export function registerAgentRoutes(app: Express) {
             confidence: 85,
             missingInfo: [],
             source: 'codebase',
-          });
+          };
         }
       } catch {
         // Fall through to the concise confirmation generator/fallback below.
@@ -3236,7 +3249,7 @@ export function registerAgentRoutes(app: Express) {
     }
 
     try {
-      const ai = await getOrchestrator('chatAssistant', { workspaceId: reqScope(req).userId || 'default' });
+      const ai = await getOrchestrator('chatAssistant', { workspaceId: scope.userId || 'default' });
       const result = await ai.generateObject<any>({
         prompt:
           `Interpret this QA automation request for a human confirmation card.\n\n` +
@@ -3260,15 +3273,43 @@ export function registerAgentRoutes(app: Express) {
         }),
         userMessage: rawPrompt,
       });
-      res.json({
+      return {
         ...fallback,
         ...result.object,
         understanding: stripCodebaseLocationsForAgentConsole(String(result.object?.understanding || fallback.understanding)),
         source: 'ai',
-      });
+      };
     } catch (err: any) {
-      res.json({ ...fallback, source: 'fallback', error: getAIErrorMessage(err) });
+      return { ...fallback, source: 'fallback', error: getAIErrorMessage(err) };
     }
+  }
+
+  app.post('/api/agent/understand-request', (req, res) => {
+    const body = req.body || {};
+    if (!String(body.prompt || '').trim() && !String(body.contextPrompt || '').trim()) {
+      return res.status(400).json({ error: 'prompt is required' });
+    }
+    pruneUnderstandingJobs();
+    const scope = reqScope(req);
+    const jobId = randomUUID();
+    understandingJobs.set(jobId, { status: 'running', createdAt: Date.now() });
+    // Run in the background; the job NEVER fails hard — computeUnderstanding already
+    // degrades to the deterministic fallback payload on any model/research error.
+    computeUnderstanding(body, { userId: scope.userId, projectId: scope.projectId, appId: scope.appId })
+      .catch((err: any) => ({ understanding: '', source: 'fallback', error: getAIErrorMessage(err) }))
+      .then((result) => {
+        const job = understandingJobs.get(jobId);
+        if (job) { job.status = 'done'; job.result = result; }
+      });
+    res.json({ job_id: jobId });
+  });
+
+  app.get('/api/agent/understand-request/:jobId', (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    const job = understandingJobs.get(String(req.params.jobId));
+    if (!job) return res.status(404).json({ error: 'Unknown or expired understanding job.' });
+    if (job.status !== 'done') return res.json({ status: 'running' });
+    res.json({ status: 'done', result: job.result });
   });
 
   app.get('/api/agent-runs', (req, res) => {
