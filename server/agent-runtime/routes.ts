@@ -62,8 +62,6 @@ export function registerAgentRuntimeRoutes(app: Express) {
       // cases for review with an optional continue-to-execution), NOT be answered as a chat question
       // with a terse "Created N cases" summary. This holds even when politely phrased "can you …?".
       // Info questions ABOUT existing cases ("how many cases do I have", "list my cases") are excluded.
-      // With no resolvable live target, fall back to codebase-only requirement drafting (still grounded,
-      // still shows coverage) rather than the terse supervisor path.
       const wantsCaseGen =
         /\b(generate|create|write|draft|author|add|build|make)\b[\s\S]{0,40}\b(test\s*cases?|cases?|coverage|scenarios?)\b/i.test(message)
         // Exclude info questions ABOUT existing artifacts. "list" must be followed by an artifact
@@ -72,7 +70,21 @@ export function registerAgentRuntimeRoutes(app: Express) {
           || /\b(?:list|show(?:\s+me)?)\s+(?:(?:my|the|all|our)\s+)?(?:test\s+)?(?:cases?|suites?|plans?|runs?|scripts?)\b/i.test(message));
       if (wantsCaseGen && (route.kind === 'answer' || route.kind === 'workspace_action')) {
         const hasTarget = !!(route.target?.url || route.target?.name || selectedApps.some((a) => a.url || a.name));
-        route.kind = hasTarget ? 'generate_cases' : 'requirement_draft';
+        if (hasTarget) {
+          route.kind = 'generate_cases';
+        } else if (availableApps.length) {
+          // No app resolved but the project HAS apps — ASK which one (deterministic), instead of
+          // silently drafting a codebase-only requirement that can drift to the wrong feature. This
+          // makes "write test cases for X" behave the same regardless of the LLM's answer/action call.
+          const names = [...new Set(availableApps.map((a) => a.name).filter(Boolean))];
+          route.kind = 'clarify';
+          (route as any).clarifyingQuestion = names.length
+            ? `Which app should I generate these test cases for? ${names.join(' · ')}`
+            : 'Which app should I generate these test cases for? Pick one in the top-bar app switcher (or the "Apps to test" picker).';
+        } else {
+          // Genuinely no live app to target (codebase-only project) — fall back to requirement drafting.
+          route.kind = 'requirement_draft';
+        }
       }
 
       switch (route.kind) {
