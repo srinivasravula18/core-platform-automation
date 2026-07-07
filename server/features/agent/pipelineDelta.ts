@@ -285,6 +285,10 @@ export function runSelectorRegistryPhase(input: { run: any; page?: string; onPha
       }
       const domSeen = inDomPool(field.api_name, field.label);
       selectors[key] = {
+        proof_id: key,
+        label: field.label || field.api_name,
+        evidence_type: seen > 0 ? 'inspection' : domSeen ? 'live-dom-pool' : 'none',
+        confidence: (seen > 0 || domSeen) ? 'verified' : 'blocked',
         metadata_api_name: field.api_name,
         primary_selector: `[name="${escAttr(field.api_name)}"]`,
         selector_strategy: 'name_attribute',
@@ -315,6 +319,11 @@ export function runSelectorRegistryPhase(input: { run: any; page?: string; onPha
         || (label ? `getByRole(${JSON.stringify(action.role || 'button')}, { name: ${JSON.stringify(label)} })` : '');
       if (!selectors[key]) {
         selectors[key] = {
+          proof_id: key,
+          label,
+          role: action.role || 'button',
+          evidence_type: 'inspection',
+          confidence: 'verified',
           metadata_api_name: null,
           primary_selector: primary,
           selector_strategy: primary.includes('getByTestId') ? 'testid' : primary.includes('getByLabel') ? 'aria_label' : 'role_or_text',
@@ -351,10 +360,13 @@ export function runSelectorRegistryPhase(input: { run: any; page?: string; onPha
 
 export function renderSelectorRegistryForPrompt(registry: any): string {
   const selectors = registry?.selectors || {};
-  const lines = Object.entries(selectors).slice(0, 160).map(([id, value]: any) =>
-    `${id}: primary=${value.primary_selector || '(none)'} fallback=${value.fallback_selector || '(none)'} api=${value.metadata_api_name || ''} context_specific=${Boolean(value.context_specific)}`,
+  const lines = Object.entries(selectors)
+    .filter(([, value]: any) => value?.verified && (value.primary_selector || value.fallback_selector))
+    .slice(0, 160)
+    .map(([id, value]: any) =>
+      `${id}: proof=${value.proof_id || id} label=${value.label || value.metadata_api_name || ''} primary=${value.primary_selector || '(none)'} fallback=${value.fallback_selector || '(none)'} source=${value.evidence_type || 'inspection'} confidence=${value.confidence || 'verified'}`,
   );
   return lines.length
-    ? `\nPRE-VERIFIED SELECTOR REGISTRY (use these element ids/selectors before inventing anything):\n${lines.join('\n')}\n`
+    ? `\nVERIFIED SELECTOR REGISTRY (STRICT AGENT HANDOFF): use ONLY these proof ids/selectors for automatable UI steps. Repo labels not listed here are hints only. If a needed selector is missing, block instead of inventing.\n${lines.join('\n')}\n`
     : '';
 }

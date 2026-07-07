@@ -35,30 +35,21 @@ import {
  *   - add / remove / edit individual steps
  *   - AI-expand a case to N steps
  *   - AI-rework a case from feedback
- *   - the review gate: Continue (generate scripts + evidence) / Save all
  *
  * The run is started in `review_cases` mode, so the pipeline pauses after the
  * cases are written. The human curates them, then continues.
  */
 
 const PIPELINE: { key: string; label: string; sub?: boolean }[] = [
-  { key: 'MetadataFetch', label: 'Fetch metadata' },
-  { key: 'ContextBuilder', label: 'Build contexts' },
-  { key: 'ApplicationInspector', label: 'Inspect app' },
-  { key: 'SelectorRegistry', label: 'Build selector registry' },
-  { key: 'CodeAnalyst', label: 'Understand code' },
-  { key: 'FeatureDiscoveryAgent', label: 'Find Existing Features' },
-  { key: 'FeatureWriter', label: 'Write New Features (missing)' },
-  { key: 'RequirementWriter', label: 'Write New Requirements (missing)' },
-  { key: 'FeatureMapper', label: 'Map features', sub: true },
-  { key: 'FeatureCoverageScout', label: 'Find existing', sub: true },
-  { key: 'FeatureTestWriter', label: 'Write cases', sub: true },
-  { key: 'CoverageGapChecker', label: 'Recheck coverage' },
-  { key: 'CoverageScout', label: 'Find existing coverage' },
-  { key: 'TestGenerationAgent', label: 'Write missing cases' },
-  { key: 'PlaywrightAgent', label: 'Generate scripts on new/updated' },
-  { key: 'SelectorVerifier', label: 'Verify selectors' },
-  { key: 'EvidenceAgent', label: 'Capture evidence' },
+  { key: 'ScopeAgent', label: 'Scope gate' },
+  { key: 'AuthSessionAgent', label: 'Auth session' },
+  { key: 'MetadataFetch', label: 'Metadata agent' },
+  { key: 'ApplicationInspector', label: 'Live inspector' },
+  { key: 'SelectorRegistry', label: 'Selector registry' },
+  { key: 'TestGenerationAgent', label: 'Case writer' },
+  { key: 'PlaywrightAgent', label: 'Script author' },
+  { key: 'SelectorVerifier', label: 'Script verifier' },
+  { key: 'EvidenceAgent', label: 'Evidence runner' },
 ];
 
 // Statuses that halt polling and await a human decision or are final.
@@ -180,6 +171,8 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
   const isRunning = !status || !TERMINAL.includes(status);
   const failed = status === 'failed';
   const reviewing = status === 'review_required';
+  const reviewStage = String((run as any)?.review_stage || 'cases');
+  const scriptReviewing = reviewing && reviewStage === 'scripts';
   const coverageGate = status === 'coverage_options';
   const existingMatches: Case[] = run?.existing_matches || [];
   // Cases the user removed from the coverage card (by index) — dropped before reuse/gaps.
@@ -376,13 +369,13 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
     }
   };
   const continueFlow = async () => {
-    if (!list.length) return;
+    if (!list.length && !scriptReviewing) return;
     setBusy('continue');
     try {
       const res = await fetch('/api/agent/continue', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ taskId: activeTaskId, cases: list }),
+        body: JSON.stringify({ taskId: activeTaskId, cases: list, scripts: scriptReviewing ? scripts : undefined }),
       });
       if (res.ok) {
         setRun((prev: any) => (prev ? { ...prev, status: 'running' } : prev));
@@ -917,11 +910,11 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
                   {reviewing && (
                     <button
                       onClick={continueFlow}
-                      disabled={busy === 'continue' || !list.length}
+                      disabled={busy === 'continue' || (!list.length && !scriptReviewing)}
                       className="inline-flex items-center gap-1 rounded-md bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50"
                     >
                       {busy === 'continue' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
-                      Continue → scripts & evidence
+                      {scriptReviewing ? 'Run scripts & capture evidence' : 'Continue -> scripts'}
                     </button>
                   )}
                 </div>
@@ -1169,6 +1162,21 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
                       </div>
                     </>
                   )}
+                </div>
+              )}
+
+              {scriptReviewing && scripts.length > 0 && (
+                <div className="mb-2 flex items-center justify-between gap-2 rounded-md border border-[var(--accent)]/30 bg-[var(--accent)]/10 px-3 py-2">
+                  <span className="text-xs text-[var(--text-secondary)]">Review the generated scripts before evidence capture.</span>
+                  <button
+                    type="button"
+                    onClick={continueFlow}
+                    disabled={busy === 'continue'}
+                    className="inline-flex items-center gap-1 rounded-md bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50"
+                  >
+                    {busy === 'continue' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
+                    Run scripts & capture evidence
+                  </button>
                 </div>
               )}
 

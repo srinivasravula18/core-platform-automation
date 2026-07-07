@@ -152,14 +152,18 @@ export async function performLoginIfCredentialsProvided(page: any, credentials: 
         await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => undefined);
         await page.waitForTimeout(1000);
         const bodyText = await page.locator('body').innerText({ timeout: 3000 }).catch(() => '');
-        const success = page.url() !== beforeUrl || !/sign\s*in|login|404\s+not\s+found/i.test(bodyText);
+        const rateLimited = /too many requests|rate[-\s]?limit|please retry later|try again later/i.test(bodyText);
+        const success = !rateLimited && (page.url() !== beforeUrl || !/sign\s*in|login|404\s+not\s+found/i.test(bodyText));
         return {
           attempted: true,
           success,
+          rateLimited,
           usernameFilled,
           passwordFilled,
           reason: success
             ? 'Credentials populated and submitted.'
+            : rateLimited
+              ? 'Authentication was rate-limited by the target app; scripts were not allowed to keep retrying login.'
             : 'Credentials were populated and submitted, but the target app stayed on login or returned an error.',
           beforeUrl,
           afterUrl: page.url(),
@@ -176,14 +180,18 @@ export async function performLoginIfCredentialsProvided(page: any, credentials: 
     await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => undefined);
     await page.waitForTimeout(1000);
     const bodyText = await page.locator('body').innerText({ timeout: 3000 }).catch(() => '');
-    const success = page.url() !== beforeUrl || !/sign\s*in|login|404\s+not\s+found/i.test(bodyText);
+    const rateLimited = /too many requests|rate[-\s]?limit|please retry later|try again later/i.test(bodyText);
+    const success = !rateLimited && (page.url() !== beforeUrl || !/sign\s*in|login|404\s+not\s+found/i.test(bodyText));
     return {
       attempted: true,
       success,
+      rateLimited,
       usernameFilled,
       passwordFilled,
       reason: success
         ? 'Credentials populated and submitted with Enter key.'
+        : rateLimited
+          ? 'Authentication was rate-limited by the target app; scripts were not allowed to keep retrying login.'
         : 'Credentials were populated and submitted with Enter key, but the target app stayed on login or returned an error.',
       beforeUrl,
       afterUrl: page.url(),
@@ -218,6 +226,9 @@ export async function createAuthStorageState(
     const page = await context.newPage();
     await page.goto(normalizedUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
     const loginResult = await performLoginIfCredentialsProvided(page, credentials);
+    if ((loginResult as any)?.rateLimited) {
+      return { ok: false, reason: loginResult.reason || 'Authentication was rate-limited by the target app.' };
+    }
     await page.waitForLoadState('domcontentloaded', { timeout: 8000 }).catch(() => undefined);
     // Many SPAs (e.g. Core Platform) keep their auth token in sessionStorage, which Playwright's
     // storageState does NOT persist. Wait for the client to actually establish a token before we

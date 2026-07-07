@@ -40,7 +40,7 @@ function getRunSelectorMap(run: any): SelectorMap | null {
   const app = run?.appId ? getApp(run.appId) : undefined;
   return getSelectorMap(repoPath, { appId: run?.appId || '', subpath: (app as any)?.repoSubpath || '' });
 }
-import { promises as fsp, readFileSync, existsSync } from 'fs';
+import { promises as fsp, readFileSync, existsSync, readdirSync } from 'fs';
 import path from 'path';
 import { inspectApplicationFlow } from './inspectionService';
 import { exploreAppElements, rankVerifiedElements } from './domExplorer';
@@ -84,6 +84,50 @@ function wantsCodeGroundedTestUnderstanding(value: string): boolean {
   // Without it those requests skip code grounding and fall back to the terse understanding.
   return /\b(test|cases?|test\s*areas?|coverage|scenarios?|qa|regression|what\s+(?:can|should)\s+i\s+test|write|create|generate|draft)\b/.test(text)
     && /\b(test|case|cases|qa|coverage|scenario|scenarios|regression)\b/.test(text);
+}
+
+function listRepoSrcApps(repoPath: string): string[] {
+  const root = String(repoPath || '');
+  if (!root || !existsSync(root)) return [];
+  try {
+    const roots = ['apps', 'packages', 'src'].map((name) => path.join(root, name)).filter((p) => existsSync(p));
+    const ignored = /^(__tests__|test|tests|types|utils?|shared|common|components?|node_modules|dist|build|coverage)$/i;
+    const found: string[] = [];
+    for (const base of roots) {
+      const baseName = path.basename(base);
+      const top = readdirSync(base, { withFileTypes: true }).filter((d) => d.isDirectory() && !ignored.test(d.name)).map((d) => d.name);
+      found.push(...top.map((name) => `${baseName}/${name}`));
+      for (const name of top) {
+        const p = path.join(base, name);
+        try {
+          found.push(...readdirSync(p, { withFileTypes: true }).filter((d) => d.isDirectory() && !ignored.test(d.name)).map((d) => `${baseName}/${name}/${d.name}`));
+        } catch { /* ignore */ }
+      }
+    }
+    return found;
+  } catch { return []; }
+}
+
+function needsExplicitAppScope(prompt: string, selectedApp: any, explicitUrl: string, repoPath = ''): string {
+  const text = String(prompt || '').toLowerCase();
+  if (selectedApp || explicitUrl) return '';
+  if (!/\b(test|run|generate|create|write|draft|validate)\b/.test(text)) return '';
+  if (!/\b(list\s*view|grid|table|record\s*list|saved\s*view|view\s*columns?)\b/.test(text)) return '';
+  const apps = [
+    ...(db.apps as any[] || []).map((a) => String(a?.name || '').trim()).filter(Boolean),
+    ...listRepoSrcApps(repoPath),
+  ];
+  if (apps.some((name) => text.includes(name.toLowerCase()))) return '';
+  const names = [...new Set(apps)].slice(0, 20);
+  return `Which app should I test the List View in?${names.length ? ` Available apps: ${names.join(' · ')}.` : ''} Please include the app and tab/object if needed.`;
+}
+
+function latestRunForConversation(conversationId: string, scope: any) {
+  const id = String(conversationId || '').trim();
+  if (!id) return null;
+  return scopeFilter(db.agentRuns as any[], scope)
+    .filter((run: any) => run.conversationId === id)
+    .sort((a: any, b: any) => String(b.created_at || '').localeCompare(String(a.created_at || '')))[0] || null;
 }
 
 function extractCarriedForwardScope(value: string): string {
@@ -1784,6 +1828,7 @@ ${CASE_AUTHORING_CONTRACT}${knowledgeBlock}`,
 
   if (opts.flowMode === 'review_cases') {
     run.status = 'review_required';
+    (run as any).review_stage = 'cases';
     run.review_started_at = nowIso();
     pushPhase(run, { agent: 'System', status: 'review_required', output: 'Review and edit generated test cases, then continue the agent flow.' });
     await persistAgentRunAndReportArtifacts(run);
@@ -1886,6 +1931,13 @@ function normalizeSelectorsFromInspection(code: string, inspectionContext: any):
   return out;
 }
 
+function pauseForScriptReview(run: any) {
+  run.status = 'review_required';
+  (run as any).review_stage = 'scripts';
+  run.review_started_at = nowIso();
+  pushPhase(run, { agent: 'System', status: 'review_required', output: 'Review generated Playwright scripts, then continue to capture evidence.' });
+}
+
 async function runPostCaseAgentFlow(run: any, model: any, testCases: any, targetUrl: string, liveCredentials?: any) {
   // The run record stores a MASKED password for safe persistence/logging. The live
   // browser (login + evidence) must use the REAL resolved credentials, so prefer the
@@ -1951,6 +2003,13 @@ Do NOT write comments such as "Auth is expected to be handled by global setup". 
     ? `\nREAL SELECTORS FROM THE APP SOURCE (the codebase IS the source of truth — use these EXACT labels/names; ground every getByRole name / getByLabel / getByText / getByTestId in one of these; do NOT invent a selector that is not here):\n${renderSelectorMap(codeMap)}\n`
     : '';
   const coderSelectorRegistry = renderSelectorRegistryForPrompt((run as any).selector_registry);
+  const repoLabelHints = codeMap ? [
+    ...(codeMap.ariaLabels || []),
+    ...(codeMap.labels || []),
+    ...(codeMap.placeholders || []),
+    ...(codeMap.roleNames || []).map((r: any) => r.name),
+    ...(codeMap.fieldIds || []).map((f: any) => f.label),
+  ].filter(Boolean).slice(0, 120) : [];
   if (!codeMap) {
     const why = 'Script generation blocked: no repo selector map is available, so the coder cannot fall back to repo-grounded labels/selectors.';
     pushPhase(run, { agent: 'PlaywrightAgent', status: 'failed', output: why });
@@ -1963,6 +2022,65 @@ Do NOT write comments such as "Auth is expected to be handled by global setup". 
   }
   const coder = await getOrchestrator('playwrightCoder', { workspaceId: run.ownerId || 'default', effort: run.requestedEffort });
   const caseList = Array.isArray(testCases?.test_cases) ? testCases.test_cases : [];
+  if (targetUrl && caseList.length) {
+    pushPhase(run, { agent: 'LiveAuthor', status: 'running', output: 'Driving the live app first so scripts are recorded from verified selectors instead of guessed.' });
+    const authoredScripts: any[] = [];
+    const authoredNotes: string[] = [];
+    const authoredEvidence: any[] = [];
+    const safeFileName = (value: string) => String(value || 'test-case').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80) || 'test-case';
+    for (let i = 0; i < caseList.length; i += 1) {
+      const tc = caseList[i] || {};
+      const steps = normalizeCaseSteps(tc.steps || []);
+      const goal = [
+        tc.title || `Test case ${i + 1}`,
+        tc.description || '',
+        steps.length ? `Steps: ${steps.map((s: any, n: number) => `${n + 1}. ${s.action}${s.expected ? ` => ${s.expected}` : ''}`).join(' ')}` : '',
+      ].filter(Boolean).join('. ');
+      const authored = await liveAuthor({
+        goal,
+        url: targetUrl,
+        credentials: liveCreds,
+        testData: tdPack,
+        repoLabels: repoLabelHints,
+        workspaceId: run.ownerId || 'default',
+        maxSteps: 14,
+      }).catch((err: any) => ({ steps: [], evidence: [], goalReached: false, notes: [`${err?.message || err}`] }));
+      authoredEvidence.push(...((authored.evidence || []).map((ev: any) => ({ ...ev, caseIndex: i, caseTitle: tc.title || `Test case ${i + 1}` }))));
+      if (authored.goalReached && authored.evidence?.length) {
+        tc.evidenceSource = 'live-author';
+        tc.confidence = 'verified';
+        tc.proofIds = authored.evidence.map((ev: any) => ev.id);
+      }
+      authoredNotes.push(`case ${i + 1}: ${authored.goalReached ? 'reached' : 'partial'}; ${authored.steps.length} step(s); ${(authored.notes || []).join('; ')}`.slice(0, 500));
+      if (!authored.goalReached || !authored.steps.length) break;
+      authoredScripts.push({
+        test_case_title: tc.title || `Test case ${i + 1}`,
+        filename: `${safeFileName(tc.title || `test-case-${i + 1}`)}.spec.ts`,
+        code: emitScript(tc.title || `Test case ${i + 1}`, { url: targetUrl, credentials: liveCreds }, authored.steps),
+      });
+    }
+    if (authoredScripts.length === caseList.length) {
+      run.playwright_scripts = authoredScripts;
+      (run as any).live_author_evidence = authoredEvidence;
+      pushPhase(run, { agent: 'LiveAuthor', status: 'completed', output: authoredNotes });
+      pushPhase(run, { agent: 'PlaywrightAgent', status: 'completed', output: { scripts: run.playwright_scripts, source: 'live-author' } });
+      await persistAgentScripts(run);
+      pauseForScriptReview(run);
+      await persistAgentQualityArtifacts(run).catch((err) => console.warn('Failed to persist script-review agent artifacts:', err));
+      persistDataInBackground('script review required');
+      return;
+    }
+    const why = `Live authoring completed ${authoredScripts.length}/${caseList.length} case(s). Stopping instead of generating guessed scripts; rerun with clearer steps/test data or inspect the blocked case live. ${authoredNotes.join(' | ')}`.slice(0, 1600);
+    run.playwright_scripts = authoredScripts;
+    (run as any).live_author_evidence = authoredEvidence;
+    pushPhase(run, { agent: 'LiveAuthor', status: 'failed', output: why });
+    (run as any).execution_result = { ok: false, total: 0, passed: 0, failed: caseList.length - authoredScripts.length, skipped: authoredScripts.length, error: why, tests: [] };
+    await persistAgentScripts(run);
+    markRunDone(run, 'failed');
+    await persistAgentQualityArtifacts(run).catch((err) => console.warn('Failed to persist live-author blocked agent artifacts:', err));
+    persistDataInBackground('live-author blocked script generation');
+    return;
+  }
   // DISCOVER-THEN-BIND: resolve each case's real controls + access flow on the LIVE app BEFORE the
   // coder writes selectors, so it binds to confirmed controls (incl. ones hidden behind menus)
   // instead of guessing. Best-effort; on failure a case just uses the shared inspection context.
@@ -2149,15 +2267,10 @@ Test case payload: ${JSON.stringify({ test_cases: [testCase] })}${coderKnowledge
     code: script?.code ? normalizeSelectorsFromInspection(String(script.code), run.inspection_context) : script?.code,
   }));
   await persistAgentScripts(run);
-
-  pushPhase(run, { agent: 'EvidenceAgent', status: 'running' });
-  if (targetUrl) {
-    const evidence = await runScriptsAndCollectEvidence(run, targetUrl, testCases, liveCreds);
-    run.evidence_screenshots = evidence as any;
-    pushPhase(run, { agent: 'EvidenceAgent', status: 'completed', output: evidence });
-  } else {
-    pushPhase(run, { agent: 'EvidenceAgent', status: 'skipped', output: 'No target URL was provided in chat and no Website Credentials row is selected for Playwright.' });
-  }
+  pauseForScriptReview(run);
+  await persistAgentQualityArtifacts(run).catch((err) => console.warn('Failed to persist script-review agent artifacts:', err));
+  persistDataInBackground('script review required');
+  return;
 
   // EPISODIC MEMORY (book Ch 8/9): record this run's outcome so future runs of the same
   // feature recall whether it was stable / flaky / broken and why. Best-effort — never blocks.
@@ -2245,21 +2358,61 @@ function buildLiveSelectorIndex(ic: any): { names: Set<string>; hints: string[];
   return { names, hints: [...hints], usable: names.size >= 8 };
 }
 
+function buildSelectorRegistryIndex(registry: any): { names: Set<string>; hints: string[]; usable: boolean } {
+  const names = new Set<string>();
+  const hints = new Set<string>();
+  const add = (v: any) => {
+    const s = String(v || '').replace(/\s+/g, ' ').trim();
+    if (s.length >= 2) names.add(s.toLowerCase());
+  };
+  const addSelector = (selector: any) => {
+    const s = String(selector || '').trim();
+    if (!s) return;
+    hints.add(s);
+    for (const m of s.matchAll(/getBy(?:Role|Label|Text|Placeholder|TestId)\([^'"`]*['"`]([^'"`\n]{2,80})['"`]/g)) add(m[1]);
+    for (const m of s.matchAll(/name\s*:\s*['"`]([^'"`\n]{2,80})['"`]/g)) add(m[1]);
+    for (const m of s.matchAll(/\[(?:aria-label|placeholder|title|name|data-testid|alt)\s*[*^$|~]?=\s*['"]([^'"\n]{2,80})['"]\s*\]/g)) add(m[1]);
+    for (const m of s.matchAll(/#([a-zA-Z][\w:-]{1,80})/g)) add(m[1]);
+  };
+  for (const [id, value] of Object.entries(registry?.selectors || {}) as any[]) {
+    if (!value?.verified) continue;
+    add(id);
+    add(value.proof_id);
+    add(value.label);
+    add(value.metadata_api_name);
+    add(value.role);
+    addSelector(value.primary_selector);
+    addSelector(value.fallback_selector);
+  }
+  return { names, hints: [...hints], usable: names.size > 0 || hints.size > 0 };
+}
+
 async function verifyScriptsWithGitAgent(run: any, scripts: any[], _prompt: string): Promise<SelectorVerificationResult> {
   if (!Array.isArray(scripts) || !scripts.length) return { ok: true };
   pushPhase(run, { agent: 'SelectorVerifier', status: 'running' });
   try {
     const repoPath = getProjectRepoPath(run.projectId || '').trim();
     const map = getRunSelectorMap(run);
+    const registry = buildSelectorRegistryIndex((run as any).selector_registry);
+    if (!registry.usable) {
+      const reason = 'Selector verification blocked: selector registry is empty, so script writer has no verified agent handoff to use.';
+      (run as any).selector_verification = { ok: false, reason, unresolved: [] };
+      pushPhase(run, { agent: 'SelectorVerifier', status: 'failed', output: reason });
+      return { ok: false, reason };
+    }
     // DOM-first: the live inspection of THIS page is the primary authority; the repo map is only a
     // fallback for when live capture is too thin to trust. Fail only when we have NEITHER.
     const live = buildLiveSelectorIndex(run);
-    if (!map && !live.usable) {
+    if (!registry.usable && !map && !live.usable) {
       const reason = 'Selector verification failed: no live-DOM capture and no source repo selector map are available to ground selectors.';
       pushPhase(run, { agent: 'SelectorVerifier', status: 'failed', output: reason });
       return { ok: false, reason };
     }
     const mapBlock = map ? renderSelectorMap(map, 220) : '';
+    const groundedInRegistry = (t: string) => {
+      const lt = String(t || '').toLowerCase().trim();
+      return !!lt && registry.names.has(lt);
+    };
     // Page-scoped, so substring matching safely accepts partial/regex selectors without the
     // repo-wide false positives that forced exact-only matching against the static map.
     const groundedInLive = (t: string) => {
@@ -2275,13 +2428,16 @@ async function verifyScriptsWithGitAgent(run: any, scripts: any[], _prompt: stri
     const liveBlock = live.usable
       ? `LIVE PAGE SELECTORS — the ACTUAL running DOM this test executes against. These are the ONLY valid options; pick the closest by meaning and use it EXACTLY:\nReady-made locators:\n${live.hints.slice(0, 140).join('\n')}\nReal on-page names/labels: ${[...live.names].slice(0, 160).join(' | ')}`
       : mapBlock;
+    const selectorAuthorityBlock = registry.usable
+      ? `VERIFIED SELECTOR REGISTRY - the ONLY valid selector handoff from Inspector/Registry to ScriptWriter. Pick from these proof-backed selectors exactly; do not invent replacements:\n${registry.hints.slice(0, 160).join('\n')}\nValid proof ids/names: ${[...registry.names].slice(0, 180).join(' | ')}`
+      : liveBlock;
 
     // A regex-literal target like /^More$/ gets captured WITH its anchors ("^More$") because
     // capture stops at the closing '/'. Left un-stripped, that garbled string can't exact-match
     // anything in the selector map OR anything a rewrite produces, so it silently rides through
     // as a "different but still ungrounded" string instead of being cleanly recognized as "More".
     const cleanRegexTarget = (s: string) => s.trim().replace(/^\^/, '').replace(/\$$/, '').trim();
-    const targetsOf = (code: string) => {
+    const targetsOf = (code: string, includeDataText = false) => {
       const t = new Set<string>();
       for (const m of code.matchAll(/getByRole\(\s*['"`]\w+['"`]\s*,\s*\{\s*name\s*:\s*[/]?\s*['"`]?([^'"`/)\n,}]{2,50})/g)) t.add(cleanRegexTarget(m[1]));
       for (const m of code.matchAll(/getBy(?:Label|Text|Placeholder|TestId)\(\s*[/]?\s*['"`]?([^'"`/)\n,]{2,50})/g)) t.add(cleanRegexTarget(m[1]));
@@ -2291,11 +2447,11 @@ async function verifyScriptsWithGitAgent(run: any, scripts: any[], _prompt: stri
       // 15s "element not found" timeout. Extract them so they get grounded like the rest.
       for (const m of code.matchAll(/\[(?:aria-label|placeholder|title|name|data-testid|alt)\s*[*^$|~]?=\s*['"]([^'"\n]{2,60})['"]\s*\]/g)) t.add(m[1].trim());
       // .filter({ hasText: '…' }) row/text grounding (data-coupled assertions).
-      for (const m of code.matchAll(/hasText\s*:\s*['"`]([^'"`\n]{2,60})['"`]/g)) t.add(m[1].trim());
+      if (includeDataText) for (const m of code.matchAll(/hasText\s*:\s*['"`]([^'"`\n]{2,60})['"`]/g)) t.add(m[1].trim());
       // hasText also commonly uses a JS regex literal (hasText: /^More$/) instead of a quoted
       // string — the pattern above only caught quoted values, so a hallucinated regex-literal
       // hasText (the exact "More" toolbar-button bug) slipped through verification untouched.
-      for (const m of code.matchAll(/hasText\s*:\s*\/\^?([^/\n]{2,60}?)\$?\//g)) t.add(cleanRegexTarget(m[1]));
+      if (includeDataText) for (const m of code.matchAll(/hasText\s*:\s*\/\^?([^/\n]{2,60}?)\$?\//g)) t.add(cleanRegexTarget(m[1]));
       return [...t];
     };
     const ignorable = /sign ?in|log ?in|email|user(name)?|password/i;
@@ -2330,9 +2486,9 @@ async function verifyScriptsWithGitAgent(run: any, scripts: any[], _prompt: stri
     // (e.g. getByText(new RegExp(...)) yields the garbage target "new RegExp(") — these are not
     // UI labels, can never be "grounded", and must not be treated as culprits.
     const looksLikeCode = (t: string) => /new\s|regexp|=>|[(){}\\]|\$\{|\bfunction\b/i.test(t);
-    const culpritsOf = (code: string) => targetsOf(String(code)).filter((t) => {
+    const culpritsOf = (code: string) => targetsOf(String(code), !registry.usable).filter((t) => {
       if (ignorable.test(t) || looksLikeCode(t)) return false;
-      return live.usable ? !groundedInLive(t) : !mapHas(map!, t);
+      return registry.usable ? !groundedInRegistry(t) : live.usable ? !groundedInLive(t) : !mapHas(map!, t);
     });
     const MAX_VERIFY_ROUNDS = 3;
     let totalCulprits = 0; let rewritten = 0; let residualUngrounded = 0;
@@ -2346,7 +2502,7 @@ async function verifyScriptsWithGitAgent(run: any, scripts: any[], _prompt: stri
         try {
           const res = await verifier.generateObject<any>({
             prompt: `A Playwright script uses selectors that do NOT exist on the application's real, running page. The SELECTORS below are the SOURCE OF TRUTH — they are what the live DOM this test runs against actually exposes. Replace each CULPRIT selector with the correct real locator / label / role-name / testid from that list (closest match by meaning) — you MUST pick from the list; do NOT invent a new one. Keep the test structure, step order, testInfo.attach screenshots, and assertions intact; only fix the selectors. Return the corrected full script in "code".
-${liveBlock}
+${selectorAuthorityBlock}
 CULPRIT selectors in this script (each is NOT on the real page — fix every one):
 ${culprits.join(' | ')}
 SCRIPT:
@@ -2370,15 +2526,23 @@ ${s.code}`,
     };
     const worker = async () => { while (cursor < scripts.length) { await verifyOne(scripts[cursor++]); } };
     await Promise.all(Array.from({ length: 4 }, worker));
-    const groundLabel = live.usable ? 'the live page DOM' : 'the codebase';
-    const crossRef = live.usable
-      ? `${live.names.size} live on-page selector(s)`
-      : `${map?.fileCount ?? 0} source files`;
+    const groundLabel = registry.usable ? 'the selector registry' : live.usable ? 'the live page DOM' : 'the codebase';
+    const crossRef = registry.usable
+      ? `${registry.names.size} registry selector proof(s)`
+      : live.usable
+        ? `${live.names.size} live on-page selector(s)`
+        : `${map?.fileCount ?? 0} source files`;
     // DOM-first: this pass is ADVISORY, never a hard gate. The real page is the arbiter — the
     // script runs and the execution-repair step re-inspects the live DOM to fix any selector that
     // still misses. Blocking evidence here (especially on a non-authoritative repo match) is what
     // produced the "not found in the codebase" dead-ends; we best-effort rewrite and always proceed.
     const unresolved = [...new Set(scripts.flatMap((s: any) => s?.code ? culpritsOf(String(s.code)) : []))].slice(0, 40);
+    if (registry.usable && unresolved.length) {
+      const reason = `Selector verification blocked: ${unresolved.length} selector(s) are not in the verified selector registry: ${unresolved.slice(0, 12).join(' | ')}`;
+      (run as any).selector_verification = { ok: false, reason, unresolved };
+      pushPhase(run, { agent: 'SelectorVerifier', status: 'failed', output: reason });
+      return { ok: false, reason };
+    }
     (run as any).selector_verification = { ok: true, unresolved };
     const note = unresolved.length
       ? ` ${unresolved.length} selector(s) not pre-matched (${unresolved.slice(0, 8).join(' | ')}); execution + live re-grounding will resolve them against the real page.`
@@ -2835,77 +2999,98 @@ async function runScriptsAndCollectEvidence(run: any, targetUrl: string, testCas
       // generated tests never have to re-implement a brittle login against the SPA.
       let storageStatePath: string | undefined;
       let sessionStorageState: { origin: string; items: Record<string, string> } | undefined;
+      let authStorageReady = false;
+      let authSetupReason = '';
       try {
         const authPath = path.join(process.cwd(), '.testflow-pw', `${run.id}-auth.json`);
         await fsp.mkdir(path.dirname(authPath), { recursive: true });
         const auth = await createAuthStorageState(targetUrl, liveCreds, authPath);
         sessionStorageState = auth.sessionStorage;
-        // The storageState file is always written (cookies + localStorage); pair it with the
-        // captured sessionStorage so SPAs that keep auth there are truly logged in.
-        storageStatePath = authPath;
-        if (auth.ok || sessionStorageState) {
+        authStorageReady = !!(auth.ok || sessionStorageState);
+        authSetupReason = auth.reason || '';
+        // When login succeeds, the storageState file contains cookies + localStorage; pair it
+        // with captured sessionStorage so SPAs that keep auth there are truly logged in.
+        if (authStorageReady) storageStatePath = authPath;
+        if (authStorageReady) {
           run.messages.push({ agent: 'EvidenceAgent', status: 'running', output: 'Browser session prepared for script execution.' });
+          pushPhase(run, { agent: 'AuthSessionAgent', status: 'completed', output: 'Browser session prepared for script execution.' });
         } else {
           run.messages.push({ agent: 'EvidenceAgent', status: 'running', output: 'Browser session setup was incomplete; scripts will continue with their own setup.' });
+          pushPhase(run, { agent: 'AuthSessionAgent', status: 'failed', output: authSetupReason || 'Browser session setup was incomplete.' });
         }
       } catch (e: any) {
+        authSetupReason = e?.message || String(e);
         run.messages.push({ agent: 'EvidenceAgent', status: 'running', output: `Browser session setup error: ${e?.message || e}` });
+        pushPhase(run, { agent: 'AuthSessionAgent', status: 'failed', output: authSetupReason });
+      }
+
+      const credentialsProvided = !!(liveCreds?.username && liveCreds?.password);
+      const authPrepared = !credentialsProvided || !!(storageStatePath && authStorageReady);
+      if (credentialsProvided && !authPrepared) {
+        const reason = `Authentication setup failed before script execution${authSetupReason ? `: ${authSetupReason}` : ''}. Scripts were blocked to avoid repeated login attempts and account throttling.`;
+        const evidence = cases.map((c, idx) => ({
+          title: c.title || `Test case ${idx + 1}`,
+          testCaseIndex: idx,
+          url: targetUrl,
+          screenshotUrl: '',
+          status: 'not_executed',
+          reason,
+          executed: false,
+          capturedAt: new Date().toISOString(),
+        }));
+        run.execution_result = {
+          ok: false,
+          total: 0,
+          passed: 0,
+          failed: 0,
+          skipped: scripts.length,
+          durationMs: 0,
+          error: reason,
+          tests: [],
+        };
+        run.evidence_screenshots = evidence as any;
+        run.phases = {
+          ...(run.phases || {}),
+          evidence_capture: {
+            status: 'skipped',
+            reason,
+            completed_at: new Date().toISOString(),
+          },
+        };
+        pushPhase(run, { agent: 'EvidenceAgent', status: 'skipped', output: reason });
+        await publishAgentRunSnapshot(run, 'agent evidence auth blocked');
+        return evidence;
       }
 
       if (scripts.length > 1) {
-        const allTests: any[] = [];
+        pushPhase(run, { agent: 'EvidenceAgent', status: 'running', output: `Running ${scripts.length} scripts in one authenticated browser session.` });
+        const execAll = await executePlaywrightScripts({
+          scripts,
+          baseUrl: targetUrl,
+          runId: `${run.id}-suite`,
+          storageStatePath,
+          sessionStorageState,
+          singleSession: true,
+          screenshotMode: 'on',
+          actionTimeoutMs: 10000,
+          navigationTimeoutMs: 20000,
+          expectTimeoutMs: 15000,
+          timeoutMs: Math.max(180000, scripts.length * 90000),
+        });
+
         const evidence: any[] = [];
         const usedCaseIndexes = new Set<number>();
-        let totalDurationMs = 0;
-        let lastError = '';
-
         run.evidence_screenshots = evidence as any;
-        for (let i = 0; i < scripts.length; i += 1) {
-          const script = scripts[i];
-          pushPhase(run, { agent: 'EvidenceAgent', status: 'running', output: `Running script ${i + 1}/${scripts.length}: ${script.title || script.filename || `script ${i + 1}`}` });
-          const execOne = await executePlaywrightScripts({
-            scripts: [script],
-            baseUrl: targetUrl,
-            runId: `${run.id}-script-${i + 1}`,
-            storageStatePath,
-            sessionStorageState,
-            singleSession: true,
-            screenshotMode: 'on',
-            actionTimeoutMs: 10000,
-            navigationTimeoutMs: 20000,
-            expectTimeoutMs: 15000,
-          });
-
-          totalDurationMs += execOne.durationMs || 0;
-          if (execOne.error) lastError = execOne.error;
-          const before = evidence.length;
-          allTests.push(...(execOne.tests || []));
-          await copyTestEvidenceToRun({
-            run,
-            tests: execOne.tests || [],
-            cases,
-            targetUrl,
-            evidence,
-            usedCaseIndexes,
-            resolveCaseIndex,
-            startIndex: before,
-          });
-
-          run.execution_result = summarizeExecutionTests(allTests, totalDurationMs, lastError || undefined);
-          run.evidence_screenshots = evidence as any;
-          run.phases = {
-            ...(run.phases || {}),
-            evidence_capture: {
-              status: i === scripts.length - 1 ? 'complete' : 'running',
-              scripts_run: allTests.length,
-              passed: run.execution_result.passed,
-              failed: run.execution_result.failed,
-              skipped: run.execution_result.skipped,
-              updated_at: new Date().toISOString(),
-            },
-          };
-          await publishAgentRunSnapshot(run, `agent evidence script ${i + 1}`);
-        }
+        await copyTestEvidenceToRun({
+          run,
+          tests: execAll.tests || [],
+          cases,
+          targetUrl,
+          evidence,
+          usedCaseIndexes,
+          resolveCaseIndex,
+          startIndex: 0,
+        });
 
         cases.forEach((c, idx) => {
           if (!usedCaseIndexes.has(idx)) {
@@ -2915,13 +3100,13 @@ async function runScriptsAndCollectEvidence(run: any, targetUrl: string, testCas
               url: targetUrl,
               screenshotUrl: '',
               status: 'not_executed',
-              reason: 'No Playwright script was generated for this case, so it was not executed.',
+              reason: 'No Playwright result was produced for this case, so it was not executed.',
               executed: false,
               capturedAt: new Date().toISOString(),
             });
           }
         });
-        run.execution_result = summarizeExecutionTests(allTests, totalDurationMs, lastError || undefined);
+        run.execution_result = summarizeExecutionTests(execAll.tests || [], execAll.durationMs || 0, execAll.error || undefined);
         run.evidence_screenshots = evidence as any;
         run.phases = {
           ...(run.phases || {}),
@@ -3488,9 +3673,10 @@ export function registerAgentRoutes(app: Express) {
 
   app.post('/api/agent/start', async (req, res) => {
     const { app_url, prompt } = req.body;
-    const approvedUnderstanding = String(req.body.approvedUnderstanding || '').trim();
+    const conversationId = String(req.body.conversationId || req.body.agentConsoleId || req.body.sessionId || '').trim();
+    let approvedUnderstanding = String(req.body.approvedUnderstanding || '').trim();
     const understandingSource = String(req.body.understandingSource || '').trim();
-    const priorGrounding = String(req.body.priorGrounding || approvedUnderstanding || '').trim();
+    let priorGrounding = String(req.body.priorGrounding || approvedUnderstanding || '').trim();
     // The conversation that led here, so case generation is grounded in what was actually
     // discussed (e.g. the Admin objects/users/permissions), not just the prompt string.
     const chatHistory: Array<{ role: string; content: string }> = Array.isArray(req.body.history) ? req.body.history : [];
@@ -3520,7 +3706,16 @@ export function registerAgentRoutes(app: Express) {
     const scope = reqScope(req);
     const selectedApp = scope.appId ? getApp(scope.appId) : undefined;
     const selectedProject = scope.projectId ? getProject(scope.projectId) : undefined;
+    const priorSessionRun = latestRunForConversation(conversationId, scope);
+    if (priorSessionRun) {
+      approvedUnderstanding ||= String(priorSessionRun.approvedUnderstanding || '').trim();
+      priorGrounding ||= String(priorSessionRun.priorGrounding || priorSessionRun.approvedUnderstanding || '').trim();
+    }
     const scopeContextText = [selectedProject?.name, selectedApp?.name].filter(Boolean).join(' ');
+    const appScopeQuestion = needsExplicitAppScope(prompt || '', selectedApp, app_url || '', getProjectRepoPath(scope.projectId || '').trim());
+    if (appScopeQuestion) {
+      return res.json({ chat_response: appScopeQuestion });
+    }
 
     // Precedence: an explicit URL the user typed > the selected app's base URL > prompt parsing.
     // `let` because app-within-surface targeting (below) may deep-link this into a specific app.
@@ -3662,6 +3857,8 @@ export function registerAgentRoutes(app: Express) {
       approvedUnderstanding,
       understandingSource,
       priorGrounding,
+      conversationId,
+      previousAgentRunId: priorSessionRun?.id || '',
       websiteId: req.body.websiteId || '',
       projectId: scope.projectId || '',
       appId: scope.appId || '',
@@ -3676,9 +3873,9 @@ export function registerAgentRoutes(app: Express) {
       phases: {} as any,
       metadata_map: null as any,
       context_matrix: null as any,
-      inspection_contexts: [] as any[],
-      selector_registry: null as any,
-      inspection_context: null as any,
+      inspection_contexts: priorSessionRun?.inspection_contexts || [] as any[],
+      selector_registry: priorSessionRun?.selector_registry || null as any,
+      inspection_context: priorSessionRun?.inspection_context || null as any,
       folderId: folder?.id || '',
       folderPath: folder ? getFolderPath(folder.id) : 'Uncategorized',
       selectedQaContext: selectedQaContext.context,
@@ -3692,15 +3889,27 @@ export function registerAgentRoutes(app: Express) {
       review_started_at: null as string | null,
       paused_ms: 0,
       feature_understanding: null as any,
-      feature_inventory: null as any,
-      application_context: null as any,
-      application_context_prompt: '',
-      application_context_cache_key: '',
+      feature_inventory: priorSessionRun?.feature_inventory || null as any,
+      application_context: priorSessionRun?.application_context || null as any,
+      application_context_prompt: priorSessionRun?.application_context_prompt || '',
+      application_context_cache_key: priorSessionRun?.application_context_cache_key || '',
       requested_case_count: 0,
       selected_qa_prompt_text: '',
-      scope_context_text: '',
+      scope_context_text: priorSessionRun?.scope_context_text || '',
       chat_history: chatHistory,
       existing_matches: [] as any[],
+      session_context: priorSessionRun ? {
+        runId: priorSessionRun.id,
+        approvedUnderstanding: priorSessionRun.approvedUnderstanding || '',
+        priorGrounding: priorSessionRun.priorGrounding || '',
+        inspection_context: priorSessionRun.inspection_context || null,
+        inspection_contexts: priorSessionRun.inspection_contexts || [],
+        selector_registry: priorSessionRun.selector_registry || null,
+        generated_cases: priorSessionRun.generated_cases || [],
+        playwright_scripts: priorSessionRun.playwright_scripts || [],
+        evidence_screenshots: priorSessionRun.evidence_screenshots || [],
+        execution_result: priorSessionRun.execution_result || null,
+      } : null,
       // Resolved individual app within the surface (platform app id, e.g. app0000006), so every
       // phase scopes to that app. Empty when targeting the bare surface / all apps.
       target_core_app_id: targetCoreAppId,
@@ -3714,6 +3923,11 @@ export function registerAgentRoutes(app: Express) {
       agent: 'System',
       status: 'completed',
       output: `${selectedApp ? `Context: ${selectedProject?.name || 'project'} > ${selectedApp.name}. ` : selectedProject ? `Context: ${selectedProject.name} (project-level). ` : ''}Resolved target: ${targetUrl || 'none'}. Repository folder: ${folder ? getFolderPath(folder.id) : 'Uncategorized'}. QA scope: ${selectedQaContext.hasContext ? 'selected plan/suite/case context' : 'prompt only'}.`,
+    });
+    pushPhase(newRun, {
+      agent: 'ScopeAgent',
+      status: 'completed',
+      output: `${targetAppLabel || selectedApp?.name || selectedProject?.name || 'Target'} -> ${targetUrl || 'none'}`,
     });
 
     if (approvedUnderstanding) {
@@ -4121,6 +4335,7 @@ export function registerAgentRoutes(app: Express) {
         });
         if (flowMode === 'review_cases') {
           newRun.status = 'review_required';
+          (newRun as any).review_stage = 'cases';
           newRun.review_started_at = nowIso();
           pushPhase(newRun, { agent: 'System', status: 'review_required', output: 'Review and edit generated test cases, then continue the agent flow.' });
           await persistAgentRunAndReportArtifacts(newRun);
@@ -4192,6 +4407,7 @@ export function registerAgentRoutes(app: Express) {
         run.generated_cases = matched;
         pushPhase(run, { agent: 'TestGenerationAgent', status: 'completed', output: { test_cases: matched, reused: true } });
         run.status = 'review_required';
+        (run as any).review_stage = 'cases';
         run.review_started_at = nowIso();
         pushPhase(run, { agent: 'System', status: 'review_required', output: `Reusing ${matched.length} existing case(s) — review and continue to run scripts + evidence.` });
         await persistAgentQualityArtifacts(run);
@@ -4211,10 +4427,56 @@ export function registerAgentRoutes(app: Express) {
   });
 
   app.post('/api/agent/continue', async (req, res) => {
-    const { taskId, cases } = req.body;
+    const { taskId, cases, scripts } = req.body;
     const run = db.agentRuns.find((item: any) => item.id === taskId);
 
     if (!run) return res.status(404).json({ error: 'Run not found' });
+    if ((run as any).review_stage === 'scripts') {
+      if (Array.isArray(scripts) && scripts.length) run.playwright_scripts = scripts;
+      if (!Array.isArray(run.playwright_scripts) || run.playwright_scripts.length === 0) {
+        return res.status(400).json({ error: 'Generated scripts are required to continue.' });
+      }
+      run.status = 'running';
+      delete (run as any).cancelRequested;
+      if (run.review_started_at) {
+        run.paused_ms = (run.paused_ms || 0) + Math.max(0, Date.parse(nowIso()) - Date.parse(run.review_started_at));
+        run.review_started_at = null;
+      }
+      (run as any).review_stage = '';
+      persistDataInBackground('continued script review');
+      res.json({ success: true });
+
+      try {
+        const liveCreds = resolveCredentials({ targetUrl: run.app_url, websiteId: run.websiteId, role: (run.credentials || {}).role, ownerId: ownerScopeForRun(run) }) || undefined;
+        await persistAgentScripts(run);
+        const selectorVerification = await verifyScriptsWithGitAgent(run, run.playwright_scripts, run.prompt || '');
+        if (!selectorVerification.ok) {
+          const why = selectorVerification.reason || 'Selector verification failed.';
+          (run as any).execution_result = { ok: false, total: 0, passed: 0, failed: 0, skipped: 0, error: why, tests: [] };
+          markRunDone(run, 'failed');
+          await persistAgentQualityArtifacts(run).catch((persistErr) => console.warn('Failed to persist failed script verification:', persistErr));
+          persistDataInBackground('script verification blocked evidence');
+          return;
+        }
+        pushPhase(run, { agent: 'EvidenceAgent', status: 'running' });
+        if (run.app_url) {
+          const evidence = await runScriptsAndCollectEvidence(run, run.app_url || '', { test_cases: run.generated_cases || [] }, liveCreds);
+          run.evidence_screenshots = evidence as any;
+          pushPhase(run, { agent: 'EvidenceAgent', status: 'completed', output: evidence });
+        } else {
+          pushPhase(run, { agent: 'EvidenceAgent', status: 'skipped', output: 'No target URL was provided in chat and no Website Credentials row is selected for Playwright.' });
+        }
+        markRunDone(run, 'completed');
+        await persistAgentRunArtifacts(run);
+      } catch (err: any) {
+        console.error('AI Script Continue Error:', err);
+        markRunDone(run, 'failed');
+        pushPhase(run, { agent: 'System', status: 'failed', output: getAIErrorMessage(err) });
+        await persistAgentQualityArtifacts(run).catch((persistErr) => console.warn('Failed to persist failed script continued agent run:', persistErr));
+        persistDataInBackground('failed script continued agent run');
+      }
+      return;
+    }
     if (!Array.isArray(cases) || cases.length === 0) {
       return res.status(400).json({ error: 'Reviewed cases are required to continue.' });
     }
@@ -4228,6 +4490,7 @@ export function registerAgentRoutes(app: Express) {
       run.review_started_at = null;
     }
     run.generated_cases = cases;
+    (run as any).review_stage = '';
     run.playwright_scripts = [];
     run.evidence_screenshots = [];
     await persistAgentQualityArtifacts(run);
@@ -4476,5 +4739,3 @@ Return a complete test case object. Preserve any useful existing fields. If no e
     }
   });
 }
-
-

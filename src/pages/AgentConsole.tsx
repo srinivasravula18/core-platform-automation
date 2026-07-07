@@ -957,6 +957,7 @@ export default function AgentConsole() {
         websiteId: args.websiteId || undefined,
         websiteName: args.websiteName || undefined,
         prompt: args.prompt,
+        conversationId,
         approvedUnderstanding: args.approvedUnderstanding || '',
         understandingSource: args.understandingSource || '',
         priorGrounding: args.priorGrounding || args.approvedUnderstanding || '',
@@ -985,7 +986,7 @@ export default function AgentConsole() {
         text: data?.error || 'I could not start the generation. Check that an AI provider key is set in Settings.',
       });
     }
-  }, [replaceTurn, buildHistory, updateThinkingLabel, selectedProvider, selectedModel, selectedEffort]);
+  }, [replaceTurn, buildHistory, updateThinkingLabel, selectedProvider, selectedModel, selectedEffort, conversationId]);
 
   const requestDeepUnderstanding = useCallback(async (args: {
     prompt: string;
