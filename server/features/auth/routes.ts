@@ -27,7 +27,13 @@ const sessions = new Map<string, AuthUser>();
 
 export function getTokenFromRequest(req: Request): string {
   const header = req.headers.authorization || '';
-  return header.startsWith('Bearer ') ? header.slice(7).trim() : '';
+  if (header.startsWith('Bearer ')) return header.slice(7).trim();
+  // EventSource cannot set Authorization headers. Accept token query only for
+  // same-origin SSE callers; normal fetches still use the Bearer header.
+  if (String(req.headers.accept || '').includes('text/event-stream')) {
+    return String(req.query.token || '').trim();
+  }
+  return '';
 }
 
 /** Resolve the logged-in user for a request, or null. */

@@ -3,6 +3,7 @@ import { Bot, Save, Download, Loader2, Plus, CheckCircle2, Mic, Send, SplitSquar
 import { cn } from '@/src/lib/utils';
 import { withBasePath } from '@/src/lib/base-path';
 import { useSpeechToText } from '@/src/lib/useSpeechToText';
+import { useAgentRun } from '@/src/lib/useAgentRun';
 import { PlanList, WorkflowRunner } from '@/src/components/WorkflowRunner';
 import { showAlert } from '@/src/lib/dialog';
 import { MarkdownText } from '@/src/components/MarkdownText';
@@ -51,6 +52,7 @@ export default function AgentPanel() {
   const [taskId, setTaskId] = useState<string | null>(null);
   const [runData, setRunData] = useState<any>(null);
   const [isGenerating, setIsGenerating] = useState(false);
+  const { run: streamedRun } = useAgentRun(taskId || '');
   const [isReworkingCase, setIsReworkingCase] = useState(false);
   const [activeTab, setActiveTab] = useState<'cases' | 'code' | 'evidence' | 'workflows'>('cases');
   const [testCaseCount, setTestCaseCount] = useState(0);
@@ -147,33 +149,22 @@ export default function AgentPanel() {
   };
 
   useEffect(() => {
-    let interval: any;
-    if (taskId && isGenerating) {
-      interval = setInterval(() => {
-        fetch(`/api/agent-runs/${taskId}`)
-          .then(r => r.json())
-          .then(data => {
-            setRunData(data);
-            if (data.status === 'completed' || data.status === 'failed' || data.status === 'review_required') {
-              setIsGenerating(false);
-              clearInterval(interval);
-              
-              if (data.status === 'completed') {
-                  setMessages(prev => [...prev, { role: 'agent', content: 'Finished! I have generated the test cases and Playwright scripts. Check the tabs on the right.' }]);
-              } else if (data.status === 'review_required') {
-                  setActiveTab('cases');
-                  setMessages(prev => [...prev, { role: 'agent', content: 'Test cases are ready for review. Edit anything needed, then click Continue Agent Flow.' }]);
-              } else {
-                  const failure = data.messages?.findLast?.((message: any) => message.status === 'failed')?.output;
-                  setMessages(prev => [...prev, { role: 'agent', content: failure ? `Task failed: ${failure}` : 'Task failed. Check the server console for details.' }]);
-              }
-            }
-          })
-          .catch(console.error);
-      }, 2000);
+    if (!streamedRun || !taskId) return;
+    setRunData(streamedRun);
+    if (!isGenerating) return;
+    if (streamedRun.status === 'completed' || streamedRun.status === 'failed' || streamedRun.status === 'review_required') {
+      setIsGenerating(false);
+      if (streamedRun.status === 'completed') {
+        setMessages(prev => [...prev, { role: 'agent', content: 'Finished! I have generated the test cases and Playwright scripts. Check the tabs on the right.' }]);
+      } else if (streamedRun.status === 'review_required') {
+        setActiveTab('cases');
+        setMessages(prev => [...prev, { role: 'agent', content: 'Test cases are ready for review. Edit anything needed, then click Continue Agent Flow.' }]);
+      } else {
+        const failure = streamedRun.messages?.findLast?.((message: any) => message.status === 'failed')?.output;
+        setMessages(prev => [...prev, { role: 'agent', content: failure ? `Task failed: ${failure}` : 'Task failed. Check the server console for details.' }]);
+      }
     }
-    return () => clearInterval(interval);
-  }, [taskId, isGenerating]);
+  }, [streamedRun, taskId, isGenerating]);
 
   const saveCases = async () => {
     if (!runData?.generated_cases?.length) return;

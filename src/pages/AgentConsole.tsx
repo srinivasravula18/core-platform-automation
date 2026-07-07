@@ -35,6 +35,7 @@ import {
   Info,
 } from 'lucide-react';
 import { cn } from '@/src/lib/utils';
+import { withEventSourceAuth } from '@/src/lib/base-path';
 import { useProjects, type ProjectApp } from '@/src/store/project';
 import { useSpeechToText } from '@/src/lib/useSpeechToText';
 import { showToast } from '@/src/lib/dialog';
@@ -241,7 +242,7 @@ const FOLDER_STOPWORDS = new Set([
 
 // Suggest a short, generic folder name from the user's prompt: strip filler, keep the feature
 // subject, Title-Case it, and cap at ~8 words — never the raw prompt sentence.
-function suggestFolderName(text: string): string {
+function suggestFolderName(text: string, appName = ''): string {
   const words = String(text || '')
     .replace(/[^\w\s-]/g, ' ') // drop punctuation (incl. "/") so "settings/actions" → two words
     .replace(/\s+/g, ' ')
@@ -250,9 +251,15 @@ function suggestFolderName(text: string): string {
     .filter(Boolean);
   const kept = words.filter((w) => !FOLDER_STOPWORDS.has(w.toLowerCase()));
   const use = (kept.length ? kept : words).slice(0, 8);
-  if (!use.length) return 'Test Run';
-  const name = use.map((w) => (/^[a-z]/.test(w) ? w.charAt(0).toUpperCase() + w.slice(1) : w)).join(' ');
-  return name.slice(0, 60);
+  const title = (value: string) => value
+    .replace(/[_-]+/g, ' ')
+    .replace(/\b\w/g, (char) => char.toUpperCase())
+    .replace(/\s+/g, ' ')
+    .trim();
+  const feature = use.length ? title(use.join(' ')) : 'Test Run';
+  const app = title(appName.replace(/\blocal\b/ig, '').trim());
+  const name = app && !feature.toLowerCase().includes(app.toLowerCase()) ? `${app} - ${feature}` : feature;
+  return name.slice(0, 72);
 }
 
 function isRequirementDraftApprove(text: string): boolean {
@@ -1016,16 +1023,25 @@ export default function AgentConsole() {
     const started = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(started?.error || 'Failed to understand request');
     if (!started?.job_id) return started; // older backend replied synchronously — use it as-is
-    const deadline = Date.now() + 20 * 60 * 1000;
-    while (Date.now() < deadline) {
-      if (signal?.aborted) throw new Error('aborted');
-      await new Promise((r) => setTimeout(r, 2500));
-      const poll = await fetch(`/api/agent/understand-request/${started.job_id}`, { cache: 'no-store', signal });
-      const data = await poll.json().catch(() => ({}));
-      if (!poll.ok) throw new Error(data?.error || 'Understanding job was lost');
-      if (data?.status === 'done') return data.result || {};
-    }
-    throw new Error('Understanding timed out');
+    return await new Promise((resolve, reject) => {
+      const es = new EventSource(withEventSourceAuth(`/api/agent/understand-request/${started.job_id}/events`));
+      let settled = false;
+      const timeout = window.setTimeout(() => { es.close(); reject(new Error('Understanding timed out')); }, 20 * 60 * 1000);
+      const cleanup = () => { window.clearTimeout(timeout); es.close(); };
+      signal?.addEventListener('abort', () => { settled = true; cleanup(); reject(new Error('aborted')); }, { once: true });
+      es.addEventListener('done', (ev) => {
+        settled = true;
+        cleanup();
+        const data = JSON.parse((ev as MessageEvent).data || '{}');
+        resolve(data.result || {});
+      });
+      es.onerror = async () => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(new Error('Understanding stream disconnected before completion'));
+      };
+    });
   }, [buildHistory, selectedProjectId, selectedAppId]);
 
   // Present the "Here's what I understood" review card for a deep generation/run request:
@@ -1053,10 +1069,12 @@ export default function AgentConsole() {
       `Plan: log in to the target → perform the steps on the live app → verify the result → capture screenshots as evidence.`;
     let understanding = fallbackUnderstanding;
     let understandingSource = 'fallback';
+    let suggestedFolderName = '';
     try {
       const generated = await requestDeepUnderstanding({ prompt, originalRequest: originalRequest || prompt, contextPrompt, targetUrl, targetName: websiteName || '' });
       understanding = generated.understanding || fallbackUnderstanding;
       understandingSource = generated.source || understandingSource;
+      suggestedFolderName = String(generated?.suggestedFolderName || '').trim();
     } catch {
       /* use deterministic fallback */
     }
@@ -1079,7 +1097,7 @@ export default function AgentConsole() {
       websiteName,
       revisionCount: 0,
       // Pre-fill a suggested folder name so Proceed is enabled right away — keep it or type your own.
-      folderName: suggestFolderName(originalRequest || prompt),
+      folderName: suggestedFolderName || suggestFolderName(originalRequest || prompt, websiteName),
       text: 'Look right? A folder name is suggested below — keep it and Proceed, or pick an existing folder / type your own first.',
     });
   }, [buildDeepContextPrompt, requestDeepUnderstanding, replaceTurn, updateThinkingLabel]);
@@ -1455,7 +1473,7 @@ export default function AgentConsole() {
               websiteId: nextPending.websiteId,
               websiteName: nextPending.websiteName,
               revisionCount: nextPending.revisionCount,
-              folderName: suggestFolderName(nextPending.originalRequest || nextPending.prompt),
+              folderName: String(revised?.suggestedFolderName || '').trim() || suggestFolderName(nextPending.originalRequest || nextPending.prompt, nextPending.websiteName),
               text: 'I updated what I understood. Keep the suggested folder below and Proceed, or edit it / correct me again.',
             });
           } catch (err: any) {

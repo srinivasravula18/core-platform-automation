@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { cn } from '@/src/lib/utils';
 import { withBasePath } from '@/src/lib/base-path';
+import { useAgentRun } from '@/src/lib/useAgentRun';
 import { MarkdownText } from '@/src/components/MarkdownText';
 import {
   Loader2,
@@ -72,7 +73,6 @@ type Case = {
 };
 
 export function DeepRunResult({ taskId }: { taskId: string }) {
-  const [run, setRun] = useState<any>(null);
   const [tab, setTab] = useState<'cases' | 'code' | 'evidence'>('cases');
   const [cases, setCases] = useState<Case[] | null>(null);
   const [editing, setEditing] = useState<number | null>(null);
@@ -95,51 +95,8 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
   // the same card switches to the new run without the parent re-rendering it.
   const [activeTaskId, setActiveTaskId] = useState(taskId);
   const [retrying, setRetrying] = useState(false);
-  const activeRef = useRef(true);
   const navigate = useNavigate();
-
-  const tick = useCallback(async () => {
-    if (!activeRef.current) return;
-    try {
-      const r = await fetch(`/api/agent-runs/${activeTaskId}`, { cache: 'no-store' });
-      if (!r.ok) {
-        if (!activeRef.current) return;
-        setRun((prev: any) => prev || {
-          id: activeTaskId,
-          status: 'failed',
-          messages: [{ agent: 'System', status: 'failed', output: r.status === 404 ? 'This agent run is no longer available. Start a new run to continue.' : `Failed to load run (${r.status}).` }],
-          generated_cases: [],
-          playwright_scripts: [],
-          evidence_screenshots: [],
-        });
-        return;
-      }
-      const data = await r.json();
-      if (!activeRef.current) return;
-      setRun(data);
-      if (TERMINAL.includes(data?.status)) return;
-    } catch (error: any) {
-      if (!activeRef.current) return;
-      setRun((prev: any) => prev || {
-        id: activeTaskId,
-        status: 'failed',
-        messages: [{ agent: 'System', status: 'failed', output: error?.message || 'Failed to reach the backend for this run.' }],
-        generated_cases: [],
-        playwright_scripts: [],
-        evidence_screenshots: [],
-      });
-      return;
-    }
-    if (activeRef.current) setTimeout(tick, 2000);
-  }, [activeTaskId]);
-
-  useEffect(() => {
-    activeRef.current = true;
-    tick();
-    return () => {
-      activeRef.current = false;
-    };
-  }, [tick]);
+  const { run, setRun, pollStatus } = useAgentRun(activeTaskId);
 
   // Seed the editable copy once the pipeline has written cases.
   useEffect(() => {
@@ -379,8 +336,7 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
       });
       if (res.ok) {
         setRun((prev: any) => (prev ? { ...prev, status: 'running' } : prev));
-        activeRef.current = true;
-        setTimeout(tick, 800); // resume polling for scripts + evidence
+        setTimeout(pollStatus, 800); // resume polling for scripts + evidence
       }
     } finally {
       setBusy(null);
@@ -400,8 +356,7 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
       });
       if (res.ok) {
         setRun((prev: any) => (prev ? { ...prev, status: 'running' } : prev));
-        activeRef.current = true;
-        setTimeout(tick, 800); // resume polling for cases → scripts → evidence
+        setTimeout(pollStatus, 800); // resume polling for cases -> scripts -> evidence
       }
     } finally {
       setBusy(null);
@@ -427,8 +382,7 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
         setPwResult(null);
         setRun((prev: any) => (prev ? { ...prev, status: 'running', completed_at: null } : prev));
         setTab('cases');
-        activeRef.current = true;
-        setTimeout(tick, 800);
+        setTimeout(pollStatus, 800);
         return;
       }
 
@@ -456,7 +410,6 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
         setEditing(null);
         setSaved(false);
         setTab('cases');
-        activeRef.current = true;
         setActiveTaskId(data.task_id);
       }
     } finally {

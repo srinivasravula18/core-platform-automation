@@ -64,12 +64,16 @@ function sanitizeFilename(name: string, index: number): string {
 // correct form is `async ({ page }, testInfo) => ...`. We rewrite it so the run
 // is robust regardless of how the model formatted the signature.
 export function sanitizeTestCode(code: string): string {
-  if (!code || !/testInfo/.test(code)) return code;
-  return code.replace(/async\s*\(\s*\{([^})]*)\}\s*\)\s*=>/g, (match, inner: string) => {
+  if (!code) return code;
+  const fixedSignature = code.replace(/async\s*\(\s*\{([^})]*)\}\s*\)\s*=>/g, (match, inner: string) => {
     if (!/\btestInfo\b/.test(inner)) return match;
     const fixtures = inner.split(',').map((s) => s.trim()).filter((s) => s && s !== 'testInfo');
     return `async ({ ${fixtures.join(', ')} }, testInfo) =>`;
   });
+  return fixedSignature.replace(
+    /^\s*await page\.(getByText|getByLabel|getByRole|getByPlaceholder)\((?!\/.*(?:loading|please wait|fetching|syncing|refreshing|processing|preparing)|["'`](?:loading|loading records|loading data|please wait|fetching|syncing|refreshing|processing|preparing)["'`])[\s\S]*?\.waitFor\(\{\s*state:\s*['"]hidden['"][^}]*\}\)\.catch\(\(\)\s*=>\s*\{\}\);\s*$/gmi,
+    '',
+  );
 }
 
 /** True if the TypeScript source parses cleanly (esbuild transpile = real parser, no type checks). */

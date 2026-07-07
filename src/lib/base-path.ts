@@ -11,6 +11,21 @@ export function withBasePath(path: string): string {
   return `${appBasePath}${path}`;
 }
 
+export function withEventSourceAuth(path: string): string {
+  const url = new URL(withBasePath(path), window.location.origin);
+  try {
+    const projectId = localStorage.getItem('tfa_project_id');
+    const appId = localStorage.getItem('tfa_app_id');
+    const token = localStorage.getItem('tfa_auth_token');
+    if (projectId) url.searchParams.set('projectId', projectId);
+    if (appId) url.searchParams.set('appId', appId);
+    if (token) url.searchParams.set('token', token);
+  } catch {
+    // ignore storage access failures; backend will return 401 if auth is missing
+  }
+  return `${url.pathname}${url.search}`;
+}
+
 /**
  * Headers attached to every same-origin API call: the selected project/app scope
  * AND the auth token. The token lets the backend resolve the logged-in user and

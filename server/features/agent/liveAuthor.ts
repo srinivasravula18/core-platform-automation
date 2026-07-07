@@ -235,6 +235,49 @@ async function waitForUiReady(page: Page, timeout = 20000): Promise<void> {
   await page.waitForLoadState('domcontentloaded').catch(() => undefined);
 }
 
+function targetTerms(goal: string, repoLabels: string[] = []): string[] {
+  const seen = new Set<string>();
+  const terms = [...String(goal || '').matchAll(/[A-Za-z][A-Za-z0-9 ]{2,40}/g)].map((m) => m[0]).concat(repoLabels);
+  return terms
+    .map((v) => String(v || '').replace(/\s+/g, ' ').trim())
+    .filter((v) => v.length >= 3 && v.length <= 50)
+    .filter((v) => {
+      const key = v.toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return !/^(verify|should|when|then|user|page|screen|click|open|select|enter|list view|test case)$/i.test(v);
+    })
+    .slice(0, 18);
+}
+
+async function pageState(page: Page, targets: string[]): Promise<{ state: string; url: string; title: string; visible: string[]; missing: string[]; actionables: number }> {
+  return page.evaluate((labels) => {
+    const text = document.body?.innerText || '';
+    const has = (re: RegExp) => re.test(text);
+    const password = !!document.querySelector('input[type="password"]');
+    const loading = has(/\b(loading|loading records|please wait|fetching|syncing|refreshing|processing)\b/i)
+      || !!document.querySelector('[aria-busy="true"], [data-loading="true"], [data-state="loading"], [role="progressbar"], [class*="spinner" i], [class*="loading" i], [class*="skeleton" i]');
+    const actionables = document.querySelectorAll('a, button, [role="button"], [role="link"], [role="menuitem"], [role="tab"], input, textarea, select, [contenteditable="true"]').length;
+    const visible = labels.filter((label) => text.toLowerCase().includes(String(label).toLowerCase())).slice(0, 8);
+    const missing = labels.filter((label) => !text.toLowerCase().includes(String(label).toLowerCase())).slice(0, 8);
+    const state = password ? 'login_page' : loading ? 'loading_page' : visible.length ? 'target_page_ready' : actionables < 4 ? 'empty_or_partial_dom' : 'wrong_or_unconfirmed_page';
+    return { state, url: location.href, title: document.title, visible, missing, actionables };
+  }, targets).catch(() => ({ state: 'unknown_page', url: page.url(), title: '', visible: [], missing: targets.slice(0, 8), actionables: 0 }));
+}
+
+async function waitForTargetReady(page: Page, targets: string[], notes: string[], timeout = 30000): Promise<void> {
+  const start = Date.now();
+  let last = await pageState(page, targets);
+  while (Date.now() - start < timeout) {
+    await waitForUiReady(page, 5000);
+    last = await pageState(page, targets);
+    if (last.state === 'target_page_ready') return;
+    if (last.state === 'login_page') break;
+    await page.waitForTimeout(750);
+  }
+  notes.push(`page state: ${last.state}; url=${last.url}; title=${last.title || 'n/a'}; actionables=${last.actionables}; visible target labels=${last.visible.join(', ') || 'none'}; missing target labels=${last.missing.join(', ') || 'none'}`);
+}
+
 function addReplayEvidence(evidence: Evidence[], step: { desc: Desc; note: string }, action: string, success: boolean, beforeSnapshot: string, pageUrl: string): string {
   const id = `ev_replay_${randomUUID().slice(0, 8)}`;
   evidence.push({
@@ -257,6 +300,7 @@ export async function liveAuthor(opts: LiveAuthorOptions): Promise<{ steps: Reco
   const steps: RecordedStep[] = [];
   const evidence: Evidence[] = [];
   const maxSteps = opts.maxSteps ?? 16;
+  const targets = targetTerms(opts.goal, opts.repoLabels);
   const browser = await launchChromiumWithRetry();
   try {
     const ctx = await browser.newContext();
@@ -264,12 +308,13 @@ export async function liveAuthor(opts: LiveAuthorOptions): Promise<{ steps: Reco
     const url = normalizeTargetUrl(opts.url);
     await page.goto(url, { waitUntil: 'domcontentloaded' }).catch(() => undefined);
     await waitForUiReady(page);
-    if (opts.credentials?.username) { await performLoginIfCredentialsProvided(page, opts.credentials as any).catch(() => undefined); await waitForUiReady(page); }
+    if (opts.credentials?.username) { await performLoginIfCredentialsProvided(page, opts.credentials as any).catch(() => undefined); await waitForTargetReady(page, targets, notes); }
+    else await waitForTargetReady(page, targets, notes);
     const orchestrator = await getOrchestrator('appInspector', { workspaceId: opts.workspaceId || 'default' });
     let goalReached = false;
 
     let warm: Actionable[] = [];
-    for (let w = 0; w < 8; w += 1) { await waitForUiReady(page); warm = await snapshot(page, evidence, notes); if (warm.length >= 4) break; }
+    for (let w = 0; w < 8; w += 1) { await waitForTargetReady(page, targets, notes, 8000); warm = await snapshot(page, evidence, notes); if (warm.length >= 4) break; }
     notes.push(`post-login actionables: ${warm.length}`);
     const repoLabels = Array.from(new Set((opts.repoLabels || []).map((s) => String(s || '').replace(/\s+/g, ' ').trim()).filter((s) => s.length >= 2))).slice(0, 80);
 
