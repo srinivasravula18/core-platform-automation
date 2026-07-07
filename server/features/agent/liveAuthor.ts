@@ -28,7 +28,7 @@ export interface LiveAuthorOptions {
 }
 
 // A structured, re-resolvable locator — used BOTH to act live and to emit the script line.
-interface Desc { by: 'role' | 'label' | 'placeholder' | 'testid' | 'text'; role?: string; value: string; }
+interface Desc { by: 'role' | 'label' | 'placeholder' | 'testid' | 'text' | 'css'; role?: string; value: string; }
 interface Evidence {
   id: string;
   type: 'live-element' | 'action-replay';
@@ -63,6 +63,7 @@ function buildLocatorAll(page: Page, d: Desc): Locator {
     case 'testid': return page.getByTestId(d.value);
     case 'label': return page.getByLabel(d.value, { exact: true });
     case 'placeholder': return page.getByPlaceholder(d.value, { exact: true });
+    case 'css': return page.locator(d.value);
     case 'role': return page.getByRole(d.role as any, { name: d.value, exact: true });
     default: return page.getByText(d.value, { exact: true });
   }
@@ -74,6 +75,7 @@ function locatorStr(d: Desc): string {
     case 'testid': return `page.getByTestId(${v}).first()`;
     case 'label': return `page.getByLabel(${v}, { exact: true }).first()`;
     case 'placeholder': return `page.getByPlaceholder(${v}, { exact: true }).first()`;
+    case 'css': return `page.locator(${v}).first()`;
     case 'role': return `page.getByRole(${JSON.stringify(d.role)}, { name: ${v}, exact: true }).first()`;
     default: return `page.getByText(${v}, { exact: true }).first()`;
   }
@@ -89,7 +91,9 @@ async function snapshot(page: Page, evidence: Evidence[], notes: string[] = []):
     const accName = (el: Element) => clean(el.getAttribute('aria-label') || (el as HTMLInputElement).labels?.[0]?.textContent || el.getAttribute('placeholder') || el.getAttribute('title') || el.textContent || (el as HTMLInputElement).value || el.getAttribute('name'));
     const roleOf = (el: Element) => { const r = el.getAttribute('role'); if (r) return r; const t = el.tagName.toLowerCase(); if (t === 'a') return 'link'; if (t === 'button') return 'button'; if (t === 'select') return 'combobox'; if (t === 'textarea') return 'textbox'; if (t === 'input') { const it = (el.getAttribute('type') || 'text').toLowerCase(); if (it === 'checkbox') return 'checkbox'; if (it === 'radio') return 'radio'; if (it === 'submit' || it === 'button') return 'button'; return 'textbox'; } return ''; };
     const out: any[] = [];
-    const els = Array.from(document.querySelectorAll('a, button, [role="button"], [role="link"], [role="menuitem"], [role="tab"], input, textarea, select, [contenteditable="true"]')).filter(isVisible);
+    const els = Array.from(document.querySelectorAll(
+      'a, button, [role="button"], [role="link"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"], [role="tab"], [role="checkbox"], [role="switch"], [role="radio"], [role="combobox"], [role="option"], input, textarea, select, [contenteditable="true"]',
+    )).filter(isVisible);
     els.forEach((el) => {
       const role = roleOf(el); const name = accName(el); if (!name) return;
       const tag = el.tagName.toLowerCase();
@@ -98,9 +102,13 @@ async function snapshot(page: Page, evidence: Evidence[], notes: string[] = []):
       const tid = el.getAttribute('data-testid');
       const lbl = clean(el.getAttribute('aria-label') || (el as HTMLInputElement).labels?.[0]?.textContent);
       const ph = clean(el.getAttribute('placeholder'));
+      const id = clean(el.getAttribute('id'));
+      const inputName = clean(el.getAttribute('name'));
       if (tid) desc = { by: 'testid', value: tid };
       else if (kind !== 'clickable' && lbl) desc = { by: 'label', value: lbl };
       else if (kind !== 'clickable' && ph) desc = { by: 'placeholder', value: ph };
+      else if (kind !== 'clickable' && id) desc = { by: 'css', value: `#${id}` };
+      else if (kind !== 'clickable' && inputName) desc = { by: 'css', value: `[name="${inputName.replace(/"/g, '\\"')}"]` };
       else if (role) desc = { by: 'role', role, value: name };
       else desc = { by: 'text', value: name };
       const options = tag === 'select' ? Array.from((el as HTMLSelectElement).options).map((o) => clean(o.textContent)).slice(0, 12) : undefined;

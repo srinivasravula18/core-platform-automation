@@ -241,11 +241,48 @@ function elementKey(label: string, suffix: string) {
   return `${clean(label).toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 70) || 'element'}_${suffix}`;
 }
 
+function isVerifiedDomElement(el: any): boolean {
+  return !!el && el.status === 'verified' && !!el.resolved_selector;
+}
+
+function matchVerifiedDomField(field: any, domElements: any[]): any | null {
+  const api = clean(field?.api_name).toLowerCase();
+  const label = clean(field?.label).toLowerCase();
+  if (!api && !label) return null;
+  const candidates = domElements.filter(isVerifiedDomElement);
+  const exact = (value: any) => clean(value).toLowerCase();
+  const score = (el: any) => {
+    let total = 0;
+    if (api && exact(el?.data_field) === api) total += 9;
+    if (api && exact(el?.input_name) === api) total += 8;
+    if (label && exact(el?.aria_label) === label) total += 7;
+    if (label && exact(el?.name) === label) total += 6;
+    if (label && exact(el?.placeholder) === label) total += 5;
+    if (label && exact(el?.text) === label) total += 4;
+    if (label && exact(el?.tooltip) === label) total += 3;
+    if (api && exact(el?.element_id) === api) total += 2;
+    return total;
+  };
+  let best: any = null;
+  let bestScore = 0;
+  for (const el of candidates) {
+    const next = score(el);
+    if (next > bestScore) {
+      best = el;
+      bestScore = next;
+    }
+  }
+  return bestScore > 0 ? best : null;
+}
+
 export function runSelectorRegistryPhase(input: { run: any; page?: string; onPhase: PhaseSink }) {
   input.onPhase({ agent: 'SelectorRegistry', status: 'running' });
   const inspections = Array.isArray(input.run.inspection_contexts) ? input.run.inspection_contexts : [input.run.inspection_context].filter(Boolean);
   const selectors: Record<string, any> = {};
   const unresolvable: any[] = [];
+  const verifiedDomElements = Array.isArray(input.run.dom_exploration?.elements)
+    ? input.run.dom_exploration.elements.filter(isVerifiedDomElement)
+    : [];
 
   // Also match against the DOMExplorer element pool — it captures form controls (New/Edit dialog
   // fields, filter inputs) that the permission-context inspections never opened, so fields that
@@ -283,24 +320,34 @@ export function runSelectorRegistryPhase(input: { run: any; page?: string; onPha
           required: field.required,
         };
       }
+      const domMatch = matchVerifiedDomField(field, verifiedDomElements);
       const domSeen = inDomPool(field.api_name, field.label);
       selectors[key] = {
         proof_id: key,
         label: field.label || field.api_name,
-        evidence_type: seen > 0 ? 'inspection' : domSeen ? 'live-dom-pool' : 'none',
-        confidence: (seen > 0 || domSeen) ? 'verified' : 'blocked',
+        evidence_type: domMatch ? 'live-dom-verified' : seen > 0 ? 'inspection' : domSeen ? 'live-dom-pool' : 'none',
+        confidence: domMatch || seen > 0 ? 'verified' : 'blocked',
         metadata_api_name: field.api_name,
-        primary_selector: `[name="${escAttr(field.api_name)}"]`,
-        selector_strategy: 'name_attribute',
-        fallback_selector: field.label ? `getByLabel(${JSON.stringify(field.label)})` : '',
+        primary_selector: domMatch?.resolved_selector || '',
+        selector_strategy: domMatch?.selector_strategy || 'metadata_only',
+        fallback_selector: domMatch?.fallback_selector || '',
         works_across_all_contexts: inspections.length > 0 && seen === inspections.length,
         context_overrides: {},
         permission_behavior: behavior,
         context_specific: seen > 0 && seen < inspections.length,
-        verified: seen > 0 || domSeen,
+        verified: Boolean(domMatch || seen > 0),
         seen_in_dom_pool: domSeen,
+        dom_status: domMatch?.status || null,
       };
-      if (!seen && !domSeen) unresolvable.push({ element_id: key, metadata_api_name: field.api_name, reason: 'Not found in inspected DOM contexts.' });
+      if (!seen && !domMatch) {
+        unresolvable.push({
+          element_id: key,
+          metadata_api_name: field.api_name,
+          reason: domSeen
+            ? 'The field text appeared in the live DOM pool, but no verified unique selector was proven for it.'
+            : 'Not found in inspected DOM contexts or verified live DOM selectors.',
+        });
+      }
     }
   }
 
