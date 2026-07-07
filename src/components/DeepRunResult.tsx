@@ -13,6 +13,8 @@ import {
   Code2,
   Image as ImageIcon,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   ArrowRight,
   PlayCircle,
   ClipboardList,
@@ -59,6 +61,10 @@ const TERMINAL = ['completed', 'failed', 'review_required', 'coverage_options', 
 function caseSummary(value?: string) {
   const clean = String(value || '').split(/\bTest Steps\s*:/i)[0].replace(/\s+/g, ' ').trim();
   return clean.length > 160 ? `${clean.slice(0, 157)}...` : clean;
+}
+
+function priorityRank(p?: string) {
+  return ['low', 'medium', 'high', 'critical'].indexOf(String(p || 'medium').toLowerCase());
 }
 
 type Step = { action: string; expected: string };
@@ -264,7 +270,7 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
       });
       return next;
     });
-    setEditing(null);
+    setEditing((cur) => (cur == null ? cur : cur === i ? null : cur > i ? cur - 1 : cur));
     setSaved(false);
   };
   const toggleCaseSelection = (i: number) => {
@@ -288,6 +294,28 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
     setCases((prev) => (prev ? prev.filter((_, idx) => !selectedCases.has(idx)) : prev));
     setSelectedCases(new Set());
     setEditing(null);
+    setSaved(false);
+  };
+  const mergeSelectedCases = () => {
+    const picked = [...selectedCases].sort((a, b) => a - b).filter((i) => list[i]);
+    if (picked.length < 2) return;
+    const source = picked.map((i) => list[i]);
+    const merged: Case = {
+      ...source[0],
+      title: source[0].title || 'Merged test case',
+      description: source.map((c) => c.description).filter(Boolean).join('\n\n'),
+      priority: source.reduce((best, c) => (priorityRank(c.priority) > priorityRank(best) ? c.priority : best), source[0].priority) || 'Medium',
+      tags: [...new Set(source.flatMap((c) => c.tags || []))],
+      steps: source.flatMap((c) => c.steps || []),
+      captureEvidence: source.some((c) => c.captureEvidence !== false),
+    };
+    const first = picked[0];
+    const pickedSet = new Set(picked);
+    setCases((prev) => prev ? prev.flatMap((c, idx) => idx === first ? [merged] : pickedSet.has(idx) ? [] : [c]) : prev);
+    setSelectedCases(new Set([first]));
+    setMergePick({});
+    setFeedback({});
+    setEditing(first);
     setSaved(false);
   };
 
@@ -824,6 +852,14 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
                     <Trash2 className="h-3.5 w-3.5" /> Delete selected ({selectedCases.size})
                   </button>
                 )}
+                {selectedCases.size > 1 && (
+                  <button
+                    onClick={mergeSelectedCases}
+                    className="inline-flex items-center gap-1 rounded-md border border-[var(--accent)] bg-[var(--accent)]/10 px-2.5 py-1.5 text-xs font-medium text-[var(--accent)] hover:bg-[var(--accent)]/20"
+                  >
+                    <SplitSquareHorizontal className="h-3.5 w-3.5 rotate-180" /> Merge selected ({selectedCases.size})
+                  </button>
+                )}
                 <button
                   onClick={addCase}
                   className="inline-flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2.5 py-1.5 text-xs font-medium text-[var(--text-primary)] hover:border-[var(--accent)]"
@@ -883,7 +919,7 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
                 {list.map((c, i) => (
                   <div key={i} className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)]">
                     <div
-                      onClick={() => setEditing(editing === i ? null : i)}
+                      onClick={() => setEditing(i)}
                       className="flex cursor-pointer items-center gap-2 px-3 py-2"
                     >
                       <input
@@ -912,11 +948,11 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
                       ))}
                       <span className="text-[10px] text-[var(--text-muted)]">{(c.steps || []).length} steps</span>
                       <button
-                        onClick={(e) => { e.stopPropagation(); setEditing(editing === i ? null : i); }}
+                        onClick={(e) => { e.stopPropagation(); setEditing(i); }}
                         className="rounded p-1 text-[var(--text-muted)] hover:text-[var(--accent)]"
-                        title={editing === i ? 'Collapse' : 'Open'}
+                        title="Open case"
                       >
-                        <ChevronDown className={cn('h-3.5 w-3.5 transition-transform', editing === i && 'rotate-180')} />
+                        <Pencil className="h-3.5 w-3.5" />
                       </button>
                       <button
                         onClick={(e) => { e.stopPropagation(); removeCase(i); }}
@@ -927,7 +963,7 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
                       </button>
                     </div>
 
-                    {editing === i && (
+                    {false && editing === i && (
                       <div className="space-y-3 border-t border-[var(--border)] p-3">
                         <input
                           value={c.title || ''}
@@ -1047,6 +1083,162 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
                   </div>
                 ))}
               </div>
+              {editing != null && list[editing] && (() => {
+                const i = editing;
+                const c = list[i];
+                return (
+                  <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={() => setEditing(null)}>
+                    <div className="flex max-h-[90dvh] w-full max-w-5xl flex-col overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--bg-card)] shadow-2xl" onClick={(e) => e.stopPropagation()}>
+                      <div className="flex items-center gap-2 border-b border-[var(--border)] px-3 py-2">
+                        <button
+                          type="button"
+                          onClick={() => setEditing(Math.max(0, i - 1))}
+                          disabled={i === 0}
+                          title="Previous case"
+                          className="rounded border border-[var(--border)] bg-[var(--bg-secondary)] p-1.5 text-[var(--text-secondary)] hover:border-[var(--accent)] disabled:opacity-40"
+                        >
+                          <ChevronLeft className="h-4 w-4" />
+                        </button>
+                        <div className="min-w-0 flex-1">
+                          <div className="truncate text-sm font-semibold text-[var(--text-primary)]">{c.title || 'Untitled case'}</div>
+                          <div className="text-[10px] text-[var(--text-muted)]">Case {i + 1} of {list.length}</div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setEditing(Math.min(list.length - 1, i + 1))}
+                          disabled={i >= list.length - 1}
+                          title="Next case"
+                          className="rounded border border-[var(--border)] bg-[var(--bg-secondary)] p-1.5 text-[var(--text-secondary)] hover:border-[var(--accent)] disabled:opacity-40"
+                        >
+                          <ChevronRight className="h-4 w-4" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setEditing(null)}
+                          title="Close"
+                          className="rounded border border-[var(--border)] bg-[var(--bg-secondary)] p-1.5 text-[var(--text-secondary)] hover:border-red-500 hover:text-red-400"
+                        >
+                          <XCircle className="h-4 w-4" />
+                        </button>
+                      </div>
+
+                      <div className="space-y-3 overflow-y-auto p-3">
+                        <input
+                          value={c.title || ''}
+                          onChange={(e) => patchCase(i, { title: e.target.value })}
+                          placeholder="Title"
+                          className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
+                        />
+                        <textarea
+                          value={c.description || ''}
+                          onChange={(e) => patchCase(i, { description: e.target.value })}
+                          placeholder="Description"
+                          className="h-20 w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
+                        />
+                        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                          <select
+                            value={c.priority || 'Medium'}
+                            onChange={(e) => patchCase(i, { priority: e.target.value })}
+                            className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
+                          >
+                            <option>Low</option>
+                            <option>Medium</option>
+                            <option>High</option>
+                            <option>Critical</option>
+                          </select>
+                          <input
+                            value={Array.isArray(c.tags) ? c.tags.join(', ') : c.tags || ''}
+                            onChange={(e) => patchCase(i, { tags: e.target.value.split(',').map((t) => t.trim()).filter(Boolean) })}
+                            placeholder="Tags (comma separated)"
+                            className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
+                          />
+                        </div>
+
+                        <div className="space-y-1.5">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">Steps</span>
+                            <div className="flex items-center gap-1.5">
+                              {(mergePick[i] || []).length >= 1 && (
+                                <button
+                                  onClick={() => editPickedSteps(i, 'expand')}
+                                  disabled={busy === `expand-${i}`}
+                                  title="Break the ticked steps into finer sub-steps (AI)"
+                                  className="inline-flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-[11px] font-medium text-[var(--text-primary)] hover:border-[var(--accent)] disabled:opacity-50"
+                                >
+                                  {busy === `expand-${i}` ? <Loader2 className="h-3 w-3 animate-spin" /> : <SplitSquareHorizontal className="h-3 w-3" />}
+                                  Expand {(mergePick[i] || []).length} step{(mergePick[i] || []).length === 1 ? '' : 's'}
+                                </button>
+                              )}
+                              {(mergePick[i] || []).length >= 2 && (
+                                <button
+                                  onClick={() => editPickedSteps(i, 'merge')}
+                                  disabled={busy === `merge-${i}`}
+                                  title="Combine the ticked steps into one (AI)"
+                                  className="inline-flex items-center gap-1 rounded-md border border-[var(--accent)] bg-[var(--accent)]/10 px-2 py-1 text-[11px] font-medium text-[var(--accent)] hover:bg-[var(--accent)]/20 disabled:opacity-50"
+                                >
+                                  {busy === `merge-${i}` ? <Loader2 className="h-3 w-3 animate-spin" /> : <SplitSquareHorizontal className="h-3 w-3 rotate-180" />}
+                                  Merge {(mergePick[i] || []).length} steps
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                          {(c.steps || []).map((s, si) => (
+                            <div key={si} className="grid grid-cols-1 gap-1.5 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] p-1.5 lg:grid-cols-[auto_1fr_1fr_auto]">
+                              <label className="flex items-start justify-center pt-1" title="Tick steps, then Expand or Merge">
+                                <input type="checkbox" checked={(mergePick[i] || []).includes(si)} onChange={() => toggleMergePick(i, si)} className="h-3.5 w-3.5 accent-[var(--accent)]" />
+                              </label>
+                              <textarea
+                                value={s.action || ''}
+                                onChange={(e) => patchStep(i, si, { action: e.target.value })}
+                                placeholder={`Step ${si + 1} action`}
+                                className="min-h-[3rem] resize-y rounded border border-[var(--border)] bg-[var(--bg-card)] px-2 py-1 text-[11px] text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
+                              />
+                              <textarea
+                                value={s.expected || ''}
+                                onChange={(e) => patchStep(i, si, { expected: e.target.value })}
+                                placeholder="Expected result"
+                                className="min-h-[3rem] resize-y rounded border border-[var(--border)] bg-[var(--bg-card)] px-2 py-1 text-[11px] text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
+                              />
+                              <button onClick={() => removeStep(i, si)} className="rounded px-2 text-[11px] text-red-400 hover:bg-red-500/10">
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </button>
+                            </div>
+                          ))}
+                          <button onClick={() => addStep(i)} className="text-[11px] font-medium text-[var(--accent)] hover:underline">
+                            + Add step
+                          </button>
+                        </div>
+
+                        <div className="space-y-1.5 border-t border-[var(--border)] pt-2">
+                          <textarea
+                            value={feedback[i] || ''}
+                            onChange={(e) => setFeedback((p) => ({ ...p, [i]: e.target.value }))}
+                            placeholder="Tell the AI how to rework this case (e.g. add negative + boundary checks)..."
+                            className="h-14 w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-[11px] text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
+                          />
+                          <div className="flex justify-end gap-2">
+                            <button
+                              onClick={() => { setFeedback((p) => ({ ...p, [i]: '' })); setEditing(null); }}
+                              disabled={busy === `rework-${i}`}
+                              className="inline-flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-1.5 text-[11px] font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:border-[var(--accent)] disabled:opacity-50"
+                            >
+                              <XCircle className="h-3 w-3" /> Close
+                            </button>
+                            <button
+                              onClick={() => reworkCase(i)}
+                              disabled={busy === `rework-${i}`}
+                              className="inline-flex items-center gap-1 rounded-md bg-[var(--accent)] px-3 py-1.5 text-[11px] font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50"
+                            >
+                              {busy === `rework-${i}` ? <Loader2 className="h-3 w-3 animate-spin" /> : <Send className="h-3 w-3" />}
+                              Rework with AI
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
             </div>
           )}
 
