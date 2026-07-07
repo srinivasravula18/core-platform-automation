@@ -19,16 +19,69 @@
 import { type ChildProcess } from 'child_process';
 import { join } from 'path';
 import { existsSync } from 'fs';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import type { AgentTool } from './types';
 import type { ToolSpec } from '../providers/types';
 import { chromiumExecutablePath, CHROMIUM_LAUNCH_ARGS } from '../../shared/browser';
 
+type McpToolDescriptor = {
+  name?: string;
+  description?: string;
+  inputSchema?: Record<string, unknown>;
+};
+
+type McpListToolsResult = {
+  tools?: McpToolDescriptor[];
+};
+
+type McpCallToolResult = {
+  content?: Array<{ type?: string; text?: string }>;
+  isError?: boolean;
+};
+
+type McpClientLike = {
+  connect(transport: unknown): Promise<void>;
+  listTools(): Promise<McpListToolsResult>;
+  callTool(args: { name: string; arguments: Record<string, unknown> }): Promise<McpCallToolResult>;
+  close(): Promise<void>;
+};
+
 export interface McpSession {
-  client: Client;
+  client: McpClientLike;
   child: ChildProcess;
   tools: AgentTool[];
+}
+
+type McpSdkModule = {
+  Client: new (...args: any[]) => McpClientLike;
+};
+
+type McpStdioModule = {
+  StdioClientTransport: new (...args: any[]) => { _process?: ChildProcess };
+};
+
+async function importOptionalModule<T>(specifier: string): Promise<T | null> {
+  try {
+    return await new Function('s', 'return import(s)')(specifier) as Promise<T>;
+  } catch {
+    return null;
+  }
+}
+
+async function loadMcpSdk(): Promise<{ ClientCtor: McpSdkModule['Client']; TransportCtor: McpStdioModule['StdioClientTransport'] }> {
+  const clientModule = await importOptionalModule<McpSdkModule>('@modelcontextprotocol/sdk/client/index.js')
+    || await importOptionalModule<McpSdkModule>('@modelcontextprotocol/sdk/client/index')
+    || await importOptionalModule<McpSdkModule>('@modelcontextprotocol/sdk/dist/esm/client/index.js');
+  const stdioModule = await importOptionalModule<McpStdioModule>('@modelcontextprotocol/sdk/client/stdio.js')
+    || await importOptionalModule<McpStdioModule>('@modelcontextprotocol/sdk/client/stdio')
+    || await importOptionalModule<McpStdioModule>('@modelcontextprotocol/sdk/dist/esm/client/stdio.js');
+
+  if (!clientModule?.Client || !stdioModule?.StdioClientTransport) {
+    throw new Error('@modelcontextprotocol/sdk client runtime is unavailable. Run npm install to restore the MCP SDK.');
+  }
+  return {
+    ClientCtor: clientModule.Client,
+    TransportCtor: stdioModule.StdioClientTransport,
+  };
 }
 
 /** Resolve the @playwright/mcp CLI entry (cli.js) from node_modules, cross-platform.
@@ -57,6 +110,7 @@ export async function startMcpSession(opts: {
   extraArgs?: string[];
   timeoutMs?: number;
 } = {}): Promise<McpSession> {
+  const { ClientCtor, TransportCtor } = await loadMcpSdk();
   const cli = resolveMcpCli();
   const execPath = chromiumExecutablePath();
   const args = [
@@ -71,7 +125,7 @@ export async function startMcpSession(opts: {
   ];
 
   // stdio transport: the SDK spawns and owns the child process lifecycle.
-  const transport = new StdioClientTransport({
+  const transport = new TransportCtor({
     command: process.execPath, // the current node binary — portable across OSes
     args,
     // Forward the server-safe Chromium launch flags so the MCP-launched browser matches ours.
@@ -82,7 +136,7 @@ export async function startMcpSession(opts: {
     } as Record<string, string>,
   });
 
-  const client = new Client({ name: 'core-platform-inspector', version: '1.0.0' }, { capabilities: {} });
+  const client = new ClientCtor({ name: 'core-platform-inspector', version: '1.0.0' }, { capabilities: {} });
 
   const timeoutMs = opts.timeoutMs ?? 30_000;
   await withTimeout(client.connect(transport), timeoutMs, 'MCP connect timed out');
@@ -90,8 +144,8 @@ export async function startMcpSession(opts: {
   const listed = await withTimeout(client.listTools(), timeoutMs, 'MCP listTools timed out');
   const filter = opts.toolFilter || (() => true);
   const tools: AgentTool[] = (listed.tools || [])
-    .filter((t: any) => filter(String(t.name)))
-    .map((t: any): AgentTool => {
+    .filter((t) => filter(String(t.name)))
+    .map((t): AgentTool => {
       const spec: ToolSpec = {
         name: String(t.name),
         description: String(t.description || `Playwright MCP tool ${t.name}`),
@@ -102,12 +156,12 @@ export async function startMcpSession(opts: {
       return {
         spec,
         async execute(argsIn: Record<string, unknown>) {
-          const res: any = await client.callTool({ name: spec.name, arguments: argsIn || {} });
+          const res = await client.callTool({ name: spec.name, arguments: argsIn || {} });
           // MCP returns { content: [{type:'text', text}|{type:'image',...}], isError? }.
           // Collapse to a compact string the model can read; keep it bounded.
           const parts = Array.isArray(res?.content) ? res.content : [];
           const text = parts
-            .map((c: any) => (c?.type === 'text' ? c.text : c?.type === 'image' ? '[image omitted]' : ''))
+            .map((c) => (c?.type === 'text' ? c.text : c?.type === 'image' ? '[image omitted]' : ''))
             .filter(Boolean)
             .join('\n')
             .slice(0, 12_000);
@@ -117,7 +171,7 @@ export async function startMcpSession(opts: {
       };
     });
 
-  const child = (transport as any)._process as ChildProcess;
+  const child = transport._process as ChildProcess;
   return { client, child, tools };
 }
 
