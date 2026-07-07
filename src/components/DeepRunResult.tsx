@@ -1088,30 +1088,30 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
                 const c = list[i];
                 return (
                   <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={() => setEditing(null)}>
-                    <div className="flex max-h-[90dvh] w-full max-w-5xl flex-col overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--bg-card)] shadow-2xl" onClick={(e) => e.stopPropagation()}>
+                    <div className="relative flex max-h-[90dvh] w-full max-w-5xl flex-col overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--bg-card)] shadow-2xl" onClick={(e) => e.stopPropagation()}>
+                      <button
+                        type="button"
+                        onClick={() => setEditing(Math.max(0, i - 1))}
+                        disabled={i === 0}
+                        title="Previous case"
+                        className="absolute left-3 top-1/2 z-10 -translate-y-1/2 rounded border border-[var(--border)] bg-[var(--bg-secondary)] p-2 text-[var(--text-secondary)] shadow-lg hover:border-[var(--accent)] disabled:opacity-40"
+                      >
+                        <ChevronLeft className="h-4 w-4" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setEditing(Math.min(list.length - 1, i + 1))}
+                        disabled={i >= list.length - 1}
+                        title="Next case"
+                        className="absolute right-3 top-1/2 z-10 -translate-y-1/2 rounded border border-[var(--border)] bg-[var(--bg-secondary)] p-2 text-[var(--text-secondary)] shadow-lg hover:border-[var(--accent)] disabled:opacity-40"
+                      >
+                        <ChevronRight className="h-4 w-4" />
+                      </button>
                       <div className="flex items-center gap-2 border-b border-[var(--border)] px-3 py-2">
-                        <button
-                          type="button"
-                          onClick={() => setEditing(Math.max(0, i - 1))}
-                          disabled={i === 0}
-                          title="Previous case"
-                          className="rounded border border-[var(--border)] bg-[var(--bg-secondary)] p-1.5 text-[var(--text-secondary)] hover:border-[var(--accent)] disabled:opacity-40"
-                        >
-                          <ChevronLeft className="h-4 w-4" />
-                        </button>
                         <div className="min-w-0 flex-1">
                           <div className="truncate text-sm font-semibold text-[var(--text-primary)]">{c.title || 'Untitled case'}</div>
                           <div className="text-[10px] text-[var(--text-muted)]">Case {i + 1} of {list.length}</div>
                         </div>
-                        <button
-                          type="button"
-                          onClick={() => setEditing(Math.min(list.length - 1, i + 1))}
-                          disabled={i >= list.length - 1}
-                          title="Next case"
-                          className="rounded border border-[var(--border)] bg-[var(--bg-secondary)] p-1.5 text-[var(--text-secondary)] hover:border-[var(--accent)] disabled:opacity-40"
-                        >
-                          <ChevronRight className="h-4 w-4" />
-                        </button>
                         <button
                           type="button"
                           onClick={() => setEditing(null)}
@@ -1122,7 +1122,7 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
                         </button>
                       </div>
 
-                      <div className="space-y-3 overflow-y-auto p-3">
+                      <div className="space-y-3 overflow-y-auto px-12 py-3">
                         <input
                           value={c.title || ''}
                           onChange={(e) => patchCase(i, { title: e.target.value })}
