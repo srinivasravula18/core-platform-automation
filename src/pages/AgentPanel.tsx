@@ -44,6 +44,19 @@ function getGuardrailResponse(message: string) {
   return null;
 }
 
+function proofBadgeClasses(status?: string) {
+  switch ((status || '').toLowerCase()) {
+    case 'verified':
+      return 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400';
+    case 'metadata-backed':
+      return 'border-amber-500/30 bg-amber-500/10 text-amber-400';
+    case 'blocked':
+      return 'border-red-500/30 bg-red-500/10 text-red-400';
+    default:
+      return 'border-[var(--border)] bg-[var(--bg-secondary)] text-[var(--text-muted)]';
+  }
+}
+
 export default function AgentPanel() {
   const selectedProjectId = useProjects((s) => s.selectedProjectId);
   const selectedAppId = useProjects((s) => s.selectedAppId);
@@ -66,7 +79,7 @@ export default function AgentPanel() {
   const [selectedFolderId, setSelectedFolderId] = useState('');
   const [isFolderPickerOpen, setIsFolderPickerOpen] = useState(false);
   const [plans, setPlans] = useState<any[]>([]);
-  
+
   const [messages, setMessages] = useState<{role: 'user' | 'agent' | 'system', content: string}[]>([
     { role: 'agent', content: 'Hi! I am the AI Test Agent. I can help you generate test cases and Playwright scripts. Tell me what application you want to test and any specific requirements.' }
   ]);
@@ -585,6 +598,18 @@ export default function AgentPanel() {
                     </label>
                   </div>
                   <div className="text-xs text-[var(--text-muted)] mb-3">{c.description}</div>
+                  {(c.automationReadiness || c.proofSummary) && (
+                    <div className="mb-3 flex flex-wrap items-center gap-2">
+                      {c.automationReadiness && (
+                        <span className={cn('rounded border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider', proofBadgeClasses(c.automationReadiness))}>
+                          {c.automationReadiness}
+                        </span>
+                      )}
+                      {c.proofSummary && (
+                        <span className="text-[11px] text-[var(--text-muted)]">{c.proofSummary}</span>
+                      )}
+                    </div>
+                  )}
                   {c.tags?.length > 0 && (
                     <div className="mb-3 flex flex-wrap gap-1.5">
                       {c.tags.map((tag: string, tagIndex: number) => (
@@ -603,7 +628,19 @@ export default function AgentPanel() {
                       {c.steps.map((step: any, stepIndex: number) => (
                         <div key={stepIndex} className="grid grid-cols-2 text-xs border-t border-[var(--border)]">
                           <div className="px-3 py-2 border-r border-[var(--border)] text-[var(--text-primary)]">
-                            {stepIndex + 1}. {step.action}
+                            <div className="space-y-1">
+                              <div>{stepIndex + 1}. {step.action}</div>
+                              {step.proofStatus && (
+                                <div className="flex flex-wrap items-center gap-1.5">
+                                  <span className={cn('rounded border px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider', proofBadgeClasses(step.proofStatus))}>
+                                    {step.proofStatus}
+                                  </span>
+                                  {Array.isArray(step.proofTokens) && step.proofTokens.length > 0 && (
+                                    <span className="text-[10px] text-[var(--text-muted)]">{step.proofTokens.join(', ')}</span>
+                                  )}
+                                </div>
+                              )}
+                            </div>
                           </div>
                           <div className="px-3 py-2 text-[var(--text-muted)]">
                             {stepIndex + 1}. {step.expected}

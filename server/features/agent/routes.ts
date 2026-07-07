@@ -391,6 +391,77 @@ function normalizeGeneratedCasesText(cases: any[], run: any): any[] {
     });
 }
 
+function metadataProofTerms(run: any): Set<string> {
+  const out = new Set<string>();
+  const add = (value: unknown) => {
+    String(value || '')
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter((word) => word.length >= 3 && !CASE_MATCH_STOP.has(word))
+      .forEach((word) => out.add(word));
+  };
+  for (const obj of Array.isArray(run?.metadata_map?.objects) ? run.metadata_map.objects : []) {
+    add(obj?.api_name);
+    add(obj?.label);
+    for (const field of Array.isArray(obj?.fields) ? obj.fields : []) {
+      add(field?.api_name);
+      add(field?.label);
+      for (const option of Array.isArray(field?.picklist_options) ? field.picklist_options : []) add(option);
+    }
+  }
+  return out;
+}
+
+function proofTerms(text: string): string[] {
+  return String(text || '')
+    .toLowerCase()
+    .match(/[a-z][a-z0-9-]{2,}/g)
+    ?.filter((word) => !CASE_MATCH_STOP.has(word)) || [];
+}
+
+function buildCaseProofIndex(run: any) {
+  const live = buildLiveSelectorIndex(run);
+  const registry = buildSelectorRegistryIndex((run as any).selector_registry);
+  const metadata = metadataProofTerms(run);
+  return { live: live.names, registry: registry.names, metadata };
+}
+
+function classifyProofForText(text: string, proof: { live: Set<string>; registry: Set<string>; metadata: Set<string> }) {
+  const tokens = proofTerms(text);
+  const liveHits = tokens.filter((token) => proof.live.has(token) || proof.registry.has(token));
+  const metadataHits = tokens.filter((token) => proof.metadata.has(token));
+  if (liveHits.length > 0) return { status: 'verified', hits: liveHits };
+  if (metadataHits.length > 0) return { status: 'metadata-backed', hits: metadataHits };
+  return { status: 'blocked', hits: [] as string[] };
+}
+
+function annotateGeneratedCasesWithProof(cases: any[], run: any): any[] {
+  const proof = buildCaseProofIndex(run);
+  return (Array.isArray(cases) ? cases : []).map((testCase: any) => {
+    const steps = normalizeCaseSteps(testCase?.steps || []).map((step) => {
+      const verdict = classifyProofForText(`${step?.action || ''} ${step?.expected || ''}`, proof);
+      return {
+        ...step,
+        proofStatus: verdict.status,
+        proofTokens: verdict.hits.slice(0, 8),
+      };
+    });
+    const verifiedCount = steps.filter((step: any) => step.proofStatus === 'verified').length;
+    const metadataCount = steps.filter((step: any) => step.proofStatus === 'metadata-backed').length;
+    const blockedCount = steps.filter((step: any) => step.proofStatus === 'blocked').length;
+    const automationReadiness = blockedCount === 0 && verifiedCount > 0
+      ? 'verified'
+      : (verifiedCount > 0 || metadataCount > 0 ? 'metadata-backed' : 'blocked');
+    return {
+      ...testCase,
+      steps,
+      confidence: automationReadiness,
+      automationReadiness,
+      proofSummary: `${verifiedCount} verified step(s), ${metadataCount} metadata-backed, ${blockedCount} blocked`,
+      proofCounts: { verified: verifiedCount, metadataBacked: metadataCount, blocked: blockedCount },
+    };
+  });
+}
 function lightOutput(value: any) {
   if (typeof value === 'string') return value.slice(0, 1200);
   if (value == null) return value;
@@ -1691,7 +1762,10 @@ ${CASE_AUTHORING_CONTRACT}`,
     schema: testCasesSchema,
     userMessage: run.prompt || '',
   });
-  return normalizeGeneratedCasesText(result.object.test_cases as any[], run).map((tc: any) => ({ ...tc, captureEvidence: true, _feature: feature.name }));
+  return annotateGeneratedCasesWithProof(
+    normalizeGeneratedCasesText(result.object.test_cases as any[], run).map((tc: any) => ({ ...tc, captureEvidence: true, _feature: feature.name })),
+    run,
+  );
 }
 
 /**
@@ -1901,7 +1975,7 @@ ${CASE_AUTHORING_CONTRACT}${knowledgeBlock}`,
   // over-produce. If it produced more, keep the first N (the prompt ordered them highest-value
   // first). When no count is fixed, the count follows the flow/complexity (untouched here).
   generated = ensureScenarioCoverage(generated, candidateScenarios, requestedCaseCount);
-  generated = normalizeGeneratedCasesText(generated, run);
+  generated = annotateGeneratedCasesWithProof(normalizeGeneratedCasesText(generated, run), run);
 
   if (requestedCaseCount > 0 && Array.isArray(generated) && generated.length > requestedCaseCount) {
     generated = generated.slice(0, requestedCaseCount);
@@ -2177,7 +2251,16 @@ Do NOT write comments such as "Auth is expected to be handled by global setup". 
   }
   const coder = await getOrchestrator('playwrightCoder', { workspaceId: run.ownerId || 'default', effort: run.requestedEffort });
   const caseList = Array.isArray(testCases?.test_cases) ? testCases.test_cases : [];
-  if (targetUrl && caseList.length) {
+  const verifiedCaseCount = caseList.filter((testCase: any) => testCase?.automationReadiness === 'verified').length;
+  if (caseList.length && verifiedCaseCount === 0) {
+    const why = 'Script generation blocked: no generated case has verified UI proof yet. Review the cases, narrow the scope, or gather deeper live inspection before authoring Playwright.';
+    pushPhase(run, { agent: 'PlaywrightAgent', status: 'failed', output: why });
+    (run as any).execution_result = { ok: false, total: 0, passed: 0, failed: 0, skipped: caseList.length, error: why, tests: [] };
+    markRunDone(run, 'failed');
+    await persistAgentQualityArtifacts(run).catch((err) => console.warn('Failed to persist proof-gated script-generation artifacts:', err));
+    persistDataInBackground('proof-gated script generation blocked');
+    return;
+  }  if (targetUrl && caseList.length) {
     pushPhase(run, { agent: 'LiveAuthor', status: 'running', output: 'Driving the live app first so scripts are recorded from verified selectors instead of guessed.' });
     const authoredScripts: any[] = [];
     const authoredNotes: string[] = [];
@@ -2549,6 +2632,8 @@ function buildSelectorRegistryIndex(registry: any): { names: Set<string>; hints:
   };
   for (const [id, value] of Object.entries(registry?.selectors || {}) as any[]) {
     if (!value?.verified) continue;
+    const hasConcreteSelector = !!(String(value.primary_selector || '').trim() || String(value.fallback_selector || '').trim());
+    if (!hasConcreteSelector) continue;
     add(id);
     add(value.proof_id);
     add(value.label);
@@ -3801,7 +3886,7 @@ export function registerAgentRoutes(app: Express) {
     res.set('Cache-Control', 'no-store');
     res.json(scopeFilter(db.agentRuns, reqScope(req)).map((run: any) => ({
       ...run,
-      generated_cases: normalizeGeneratedCasesText(run.generated_cases || [], run),
+      generated_cases: annotateGeneratedCasesWithProof(normalizeGeneratedCasesText(run.generated_cases || [], run), run),
     })));
   });
 
@@ -3857,7 +3942,7 @@ export function registerAgentRoutes(app: Express) {
     res.set('Cache-Control', 'no-store');
     const run = db.agentRuns.find(r => r.id === req.params.id);
     if (!run) return res.status(404).json({ error: 'Run not found' });
-    res.json({ ...run, generated_cases: normalizeGeneratedCasesText(run.generated_cases || [], run) });
+    res.json({ ...run, generated_cases: annotateGeneratedCasesWithProof(normalizeGeneratedCasesText(run.generated_cases || [], run), run) });
   });
 
   app.get('/api/agent-runs/:id', (req, res) => {
@@ -3865,7 +3950,7 @@ export function registerAgentRoutes(app: Express) {
     const run = db.agentRuns.find(r => r.id === req.params.id);
     if (!run) return res.status(404).json({ error: 'Run not found' });
     if (req.query.include === 'details') {
-      return res.json({ ...run, generated_cases: normalizeGeneratedCasesText(run.generated_cases || [], run) });
+      return res.json({ ...run, generated_cases: annotateGeneratedCasesWithProof(normalizeGeneratedCasesText(run.generated_cases || [], run), run) });
     }
     res.json(runStatusSnapshot(run));
   });
@@ -4611,7 +4696,7 @@ export function registerAgentRoutes(app: Express) {
         }
 
         // Commit all accumulated cases and go straight to script generation
-        newRun.generated_cases = normalizeGeneratedCasesText(allGeneratedCases, newRun);
+        newRun.generated_cases = annotateGeneratedCasesWithProof(normalizeGeneratedCasesText(allGeneratedCases, newRun), newRun);
         newRun.existing_matches = [];
         pushPhase(newRun, {
           agent: 'TestGenerationAgent',

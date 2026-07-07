@@ -16,6 +16,8 @@ import { CheckSquare, Square, Pencil, Trash2, SplitSquareHorizontal, Send, Loade
 interface Step {
   action: string;
   expected: string;
+  proofStatus?: 'verified' | 'metadata-backed' | 'blocked';
+  proofTokens?: string[];
 }
 interface Case {
   id: string;
@@ -26,6 +28,14 @@ interface Case {
   tags?: string[];
   steps?: Step[];
   captureEvidenceOnManualRun?: boolean;
+  confidence?: string;
+  automationReadiness?: 'verified' | 'metadata-backed' | 'blocked';
+  proofSummary?: string;
+  proofCounts?: {
+    verified?: number;
+    metadataBacked?: number;
+    blocked?: number;
+  };
 }
 
 const EXPAND_OPTIONS = [4, 6, 8, 10, 12, 15];
@@ -39,6 +49,19 @@ function priorityClasses(p?: string): string {
       return 'border-slate-500/30 text-slate-400 bg-slate-500/10';
     default:
       return 'border-amber-500/30 text-amber-400 bg-amber-500/10';
+  }
+}
+
+function proofClasses(status?: string): string {
+  switch ((status || '').toLowerCase()) {
+    case 'verified':
+      return 'border-emerald-500/30 text-emerald-400 bg-emerald-500/10';
+    case 'metadata-backed':
+      return 'border-amber-500/30 text-amber-400 bg-amber-500/10';
+    case 'blocked':
+      return 'border-red-500/30 text-red-400 bg-red-500/10';
+    default:
+      return 'border-slate-500/30 text-slate-400 bg-slate-500/10';
   }
 }
 
@@ -154,6 +177,16 @@ export function GeneratedCases({ cases: initial }: { cases: Case[] }) {
             </span>
           </div>
           {c.description && editing !== i && <p className="mt-1 text-xs text-[var(--text-muted)]">{c.description}</p>}
+          {editing !== i && (c.automationReadiness || c.proofSummary) && (
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              {c.automationReadiness && (
+                <span className={`rounded-md border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${proofClasses(c.automationReadiness)}`}>
+                  {c.automationReadiness}
+                </span>
+              )}
+              {c.proofSummary && <span className="text-[11px] text-[var(--text-muted)]">{c.proofSummary}</span>}
+            </div>
+          )}
 
           {/* tags (read) */}
           {editing !== i && !!c.tags?.length && (
@@ -182,7 +215,21 @@ export function GeneratedCases({ cases: initial }: { cases: Case[] }) {
                       {c.steps.map((s, si) => (
                         <tr key={si} className="align-top">
                           <td className="border-b border-[var(--border)] px-3 py-2 text-[var(--text-primary)]">
-                            <span className="text-[var(--text-muted)]">{si + 1}.</span> {s.action}
+                            <div className="space-y-1">
+                              <div>
+                                <span className="text-[var(--text-muted)]">{si + 1}.</span> {s.action}
+                              </div>
+                              {s.proofStatus && (
+                                <div className="flex flex-wrap items-center gap-1.5">
+                                  <span className={`rounded-md border px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider ${proofClasses(s.proofStatus)}`}>
+                                    {s.proofStatus}
+                                  </span>
+                                  {!!s.proofTokens?.length && (
+                                    <span className="text-[10px] text-[var(--text-muted)]">{s.proofTokens.join(', ')}</span>
+                                  )}
+                                </div>
+                              )}
+                            </div>
                           </td>
                           <td className="border-b border-[var(--border)] px-3 py-2 text-[var(--text-muted)]">{s.expected}</td>
                         </tr>
