@@ -355,12 +355,13 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
   };
   const continueFlow = async () => {
     if (!list.length && !scriptReviewing) return;
+    const reviewedCases = selectedCases.size ? list.filter((_, idx) => selectedCases.has(idx)) : list;
     setBusy('continue');
     try {
       const res = await fetch('/api/agent/continue', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ taskId: activeTaskId, cases: list, scripts: scriptReviewing ? scripts : undefined }),
+        body: JSON.stringify({ taskId: activeTaskId, cases: reviewedCases, scripts: scriptReviewing ? scripts : undefined }),
       });
       if (res.ok) {
         setRun((prev: any) => (prev ? { ...prev, status: 'running' } : prev));
@@ -903,7 +904,7 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
                       className="inline-flex items-center gap-1 rounded-md bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50"
                     >
                       {busy === 'continue' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
-                      {scriptReviewing ? 'Run scripts & capture evidence' : 'Continue -> scripts'}
+                      {scriptReviewing ? 'Run scripts & capture evidence' : selectedCases.size ? `Continue selected (${selectedCases.size}) -> scripts` : 'Continue -> scripts'}
                     </button>
                   )}
                 </div>
