@@ -1070,6 +1070,20 @@ function saveAgentRunStateSoon(run: any, reason: string): void {
   void saveAgentRunState(run, reason).catch((err) => console.warn(`Failed to persist ${reason}:`, err?.message || err));
 }
 
+async function loadAgentRun(id: string): Promise<any | null> {
+  const live = db.agentRuns.find((run: any) => run.id === id);
+  if (live) return live;
+  const stored = await AgentRuns.get(id);
+  if (!stored) return null;
+  const idx = db.agentRuns.findIndex((run: any) => run.id === id);
+  if (idx >= 0) {
+    db.agentRuns[idx] = { ...db.agentRuns[idx], ...stored };
+    return db.agentRuns[idx];
+  }
+  db.agentRuns.unshift(stored);
+  return stored;
+}
+
 function throwIfCancelled(run: any): void {
   if (run?.cancelRequested || run?.status === 'cancelled') throw new Error('RUN_CANCELLED');
 }
@@ -4331,23 +4345,24 @@ Rules:
     });
   });
 
-  app.get('/api/agent-runs', (req, res) => {
+  app.get('/api/agent-runs', async (req, res) => {
     res.set('Cache-Control', 'no-store');
-    res.json(scopeFilter(db.agentRuns, reqScope(req)).map((run: any) => ({
+    const runs = await AgentRuns.list();
+    res.json(scopeFilter(runs, reqScope(req)).map((run: any) => ({
       ...run,
       generated_cases: annotateGeneratedCasesWithProof(normalizeGeneratedCasesText(run.generated_cases || [], run), run),
     })));
   });
 
-  app.get('/api/agent-runs/:id/status', (req, res) => {
+  app.get('/api/agent-runs/:id/status', async (req, res) => {
     res.set('Cache-Control', 'no-store');
-    const run = db.agentRuns.find(r => r.id === req.params.id);
+    const run = await loadAgentRun(req.params.id);
     if (!run) return res.status(404).json({ error: 'Run not found' });
     res.json(runStatusSnapshot(run));
   });
 
-  app.get('/api/agent-runs/:id/events', (req, res) => {
-    const run = db.agentRuns.find(r => r.id === req.params.id);
+  app.get('/api/agent-runs/:id/events', async (req, res) => {
+    const run = await loadAgentRun(req.params.id);
     if (!run) return res.status(404).json({ error: 'Run not found' });
     res.set({
       'Content-Type': 'text/event-stream',
@@ -4358,9 +4373,9 @@ Rules:
     res.flushHeaders?.();
     let last = '';
     let closed = false;
-    const send = () => {
+    const send = async () => {
       if (closed) return;
-      const current = db.agentRuns.find(r => r.id === req.params.id);
+      const current = await loadAgentRun(req.params.id);
       if (!current) {
         res.write(`event: deleted\ndata: {}\n\n`);
         res.end();
@@ -4379,24 +4394,24 @@ Rules:
         res.end();
       }
     };
-    send();
-    const timer = setInterval(send, 1500);
+    void send();
+    const timer = setInterval(() => { void send(); }, 1500);
     req.on('close', () => {
       closed = true;
       clearInterval(timer);
     });
   });
 
-  app.get('/api/agent-runs/:id/details', (req, res) => {
+  app.get('/api/agent-runs/:id/details', async (req, res) => {
     res.set('Cache-Control', 'no-store');
-    const run = db.agentRuns.find(r => r.id === req.params.id);
+    const run = await loadAgentRun(req.params.id);
     if (!run) return res.status(404).json({ error: 'Run not found' });
     res.json(runDetailsPayload(run));
   });
 
-  app.get('/api/agent-runs/:id', (req, res) => {
+  app.get('/api/agent-runs/:id', async (req, res) => {
     res.set('Cache-Control', 'no-store');
-    const run = db.agentRuns.find(r => r.id === req.params.id);
+    const run = await loadAgentRun(req.params.id);
     if (!run) return res.status(404).json({ error: 'Run not found' });
     if (req.query.include === 'details') {
       return res.json(runDetailsPayload(run));
@@ -4404,11 +4419,11 @@ Rules:
     res.json(runStatusSnapshot(run));
   });
 
-  app.delete('/api/agent-runs/:id', (req, res) => {
+  app.delete('/api/agent-runs/:id', async (req, res) => {
     const idx = db.agentRuns.findIndex((r: any) => r.id === req.params.id);
-    if (idx < 0) return res.status(404).json({ error: 'Run not found' });
-    db.agentRuns.splice(idx, 1);
-    void AgentRuns.remove(req.params.id).catch(() => undefined);
+    if (idx >= 0) db.agentRuns.splice(idx, 1);
+    const removed = await AgentRuns.remove(req.params.id).catch(() => false);
+    if (idx < 0 && !removed) return res.status(404).json({ error: 'Run not found' });
     persistDataInBackground('agent run delete');
     res.json({ success: true });
   });
