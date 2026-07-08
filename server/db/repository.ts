@@ -373,17 +373,24 @@ export const WebsiteUsers = {
 
 function mapAgentRun(r: any) {
   if (!r) return null;
+  const raw = r.raw && typeof r.raw === 'object' ? r.raw : {};
   return {
+    ...raw,
     id: r.id,
+    app_url: r.app_url,
     appUrl: r.app_url,
     provider: r.provider,
     model: r.model,
     prompt: r.prompt,
     status: r.status,
     messages: r.messages,
+    generated_cases: r.generated_cases,
     generatedCases: r.generated_cases,
+    playwright_scripts: r.playwright_scripts,
     playwrightScripts: r.playwright_scripts,
+    evidence_screenshots: r.evidence_screenshots,
     evidenceScreenshots: r.evidence_screenshots,
+    inspection_context: r.inspection_context,
     inspectionContext: r.inspection_context,
     folderId: r.folder_id,
     folderPath: r.folder_path,
@@ -392,7 +399,9 @@ function mapAgentRun(r: any) {
     testCaseId: r.test_case_id,
     credentials: r.credentials,
     artifactName: r.artifact_name,
+    created_at: r.created_at,
     createdAt: r.created_at,
+    updated_at: r.updated_at,
     updatedAt: r.updated_at,
     ...scopeFields(r),
   };
@@ -409,6 +418,15 @@ export const AgentRuns = {
     const r = await queryOne('SELECT * FROM agent_runs WHERE id = $1', [id]);
     return mapAgentRun(r);
   },
+  async remove(id: string): Promise<boolean> {
+    if (!isPgEnabled()) {
+      const before = db.agentRuns.length;
+      db.agentRuns = db.agentRuns.filter((a: any) => a.id !== id);
+      return db.agentRuns.length < before;
+    }
+    const res = await query('DELETE FROM agent_runs WHERE id = $1 RETURNING id', [id]);
+    return res.length > 0;
+  },
   async upsert(a: any): Promise<any> {
     if (!isPgEnabled()) {
       const idx = db.agentRuns.findIndex((x: any) => x.id === a.id);
@@ -417,9 +435,21 @@ export const AgentRuns = {
       return a;
     }
     const id = a.id || uid('AGENT');
+    const appUrl = a.appUrl ?? a.app_url ?? '';
+    const generatedCases = a.generatedCases ?? a.generated_cases ?? [];
+    const playwrightScripts = a.playwrightScripts ?? a.playwright_scripts ?? [];
+    const evidenceScreenshots = a.evidenceScreenshots ?? a.evidence_screenshots ?? [];
+    const inspectionContext = a.inspectionContext ?? a.inspection_context ?? {};
+    const artifactName = a.artifactName ?? a.artifact_name ?? '';
+    const folderId = a.folderId ?? a.folder_id ?? null;
+    const folderPath = a.folderPath ?? a.folder_path ?? 'Uncategorized';
+    const testPlanId = a.testPlanId ?? a.test_plan_id ?? null;
+    const testSuiteId = a.testSuiteId ?? a.test_suite_id ?? null;
+    const testCaseId = a.testCaseId ?? a.test_case_id ?? null;
+    const raw = { ...a, id, app_url: appUrl, generated_cases: generatedCases, playwright_scripts: playwrightScripts, evidence_screenshots: evidenceScreenshots, inspection_context: inspectionContext, artifactName, artifact_name: artifactName };
     const row = await queryOne(
-      `INSERT INTO agent_runs (id, app_url, provider, model, prompt, status, messages, generated_cases, playwright_scripts, evidence_screenshots, inspection_context, folder_id, folder_path, test_plan_id, test_suite_id, test_case_id, credentials, artifact_name, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8::jsonb,$9::jsonb,$10::jsonb,$11::jsonb,$12,$13,$14,$15,$16,$17::jsonb,$18, now(), now())
+      `INSERT INTO agent_runs (id, app_url, provider, model, prompt, status, messages, generated_cases, playwright_scripts, evidence_screenshots, inspection_context, folder_id, folder_path, test_plan_id, test_suite_id, test_case_id, credentials, artifact_name, raw, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8::jsonb,$9::jsonb,$10::jsonb,$11::jsonb,$12,$13,$14,$15,$16,$17::jsonb,$18,$19::jsonb, COALESCE($20::timestamptz, now()), now())
        ON CONFLICT (id) DO UPDATE SET
          app_url=EXCLUDED.app_url, provider=EXCLUDED.provider, model=EXCLUDED.model,
          prompt=EXCLUDED.prompt, status=EXCLUDED.status, messages=EXCLUDED.messages,
@@ -428,14 +458,14 @@ export const AgentRuns = {
          folder_id=EXCLUDED.folder_id, folder_path=EXCLUDED.folder_path,
          test_plan_id=EXCLUDED.test_plan_id, test_suite_id=EXCLUDED.test_suite_id,
          test_case_id=EXCLUDED.test_case_id, credentials=EXCLUDED.credentials,
-         artifact_name=EXCLUDED.artifact_name, updated_at=now()
+         artifact_name=EXCLUDED.artifact_name, raw=EXCLUDED.raw, updated_at=now()
        RETURNING *`,
-      [id, a.appUrl || '', a.provider || '', a.model || '', a.prompt || '',
-       a.status || 'running', JSON.stringify(a.messages || []), JSON.stringify(a.generatedCases || []),
-       JSON.stringify(a.playwrightScripts || []), JSON.stringify(a.evidenceScreenshots || []),
-       JSON.stringify(a.inspectionContext || {}), a.folderId || null, a.folderPath || 'Uncategorized',
-       a.testPlanId || null, a.testSuiteId || null, a.testCaseId || null,
-       JSON.stringify(a.credentials || {}), a.artifactName || ''],
+      [id, appUrl, a.provider || '', a.model || '', a.prompt || '',
+       a.status || 'running', JSON.stringify(a.messages || []), JSON.stringify(generatedCases),
+       JSON.stringify(playwrightScripts), JSON.stringify(evidenceScreenshots),
+       JSON.stringify(inspectionContext), folderId, folderPath,
+       testPlanId, testSuiteId, testCaseId,
+       JSON.stringify(a.credentials || {}), artifactName, JSON.stringify(raw), a.createdAt || a.created_at || null],
     );
     await writeScopeCols('agent_runs', id, a);
     return mapAgentRun(row);

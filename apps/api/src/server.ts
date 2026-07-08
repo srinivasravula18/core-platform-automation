@@ -2,7 +2,8 @@ import '../../../core/shared/env';
 import express from 'express';
 import path from 'path';
 import { loadPersistedData, loadPersistedSettings, scopeMiddleware } from '../../../core/shared';
-import { ensureMigrated, isPgEnabled, runSeedIfEmpty } from '../../../core/persistence';
+import { AgentRuns, ensureMigrated, isPgEnabled, runSeedIfEmpty } from '../../../core/persistence';
+import { db } from '../../../server/shared/storage';
 import { registerAgentRoutes } from '../../../services/agents';
 import { registerAuthRoutes, authContextMiddleware, apiAuthGate, seedAuthUsersIfEmpty, claimLegacyDataForAdmin } from '../../../services/auth';
 import { registerChatRoutes } from '../../../services/chat';
@@ -42,6 +43,7 @@ export async function createExpressApp() {
       await ensureMigrated();
       const seed = await runSeedIfEmpty();
       const creds = await hydrateFromPg();
+      db.agentRuns = await AgentRuns.list();
       console.log(`[pg] connected, schema applied, seed: ${seed.seeded ? 'populated' : 'skipped (' + seed.reason + ')'}, credentials: ${creds.websites} sites / ${creds.users} users hydrated`);
     } catch (err: any) {
       console.error('[pg] startup error:', err?.message || err);

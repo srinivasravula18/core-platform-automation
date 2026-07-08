@@ -107,11 +107,14 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
 
   // Seed the editable copy once the pipeline has written cases.
   useEffect(() => {
-    if (cases === null && run?.generated_cases?.length) {
-      const seeded = run.generated_cases.map((c: Case) => ({ ...c, steps: (c.steps || []).map((s) => ({ ...s })) }));
+    const incomingCases = Array.isArray((run as any)?.all_generated_cases) && (run as any).all_generated_cases.length
+      ? (run as any).all_generated_cases
+      : run?.generated_cases;
+    if (incomingCases?.length && (cases === null || incomingCases.length > cases.length)) {
+      const seeded = incomingCases.map((c: Case) => ({ ...c, steps: (c.steps || []).map((s) => ({ ...s })) }));
       setCases(seeded);
       setReworkBaseline(seeded);
-      setSelectedCases(new Set());
+      if (cases === null) setSelectedCases(new Set());
     }
   }, [run, cases]);
 
@@ -146,6 +149,8 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
   const keptMatches = existingMatches.filter((_, i) => !removedMatches.has(i));
   const matchKey = (c: any) => String(c?.id ?? c?.existingCaseId ?? c?.title);
   const list = cases || [];
+  const executionCaseCount = Number((run as any)?.execution_case_count || 0) || selectedCases.size;
+  const scopedExecution = executionCaseCount > 0 && list.length > executionCaseCount;
   const caseSig = (c: any) => JSON.stringify({
     title: c?.title || '',
     description: c?.description || '',
@@ -377,7 +382,12 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
       const res = await fetch('/api/agent/continue', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ taskId: activeTaskId, cases: reviewedCases, scripts: scriptReviewing ? scripts : undefined }),
+        body: JSON.stringify({
+          taskId: activeTaskId,
+          cases: list,
+          executionCases: reviewedCases,
+          scripts: scriptReviewing ? scripts : undefined,
+        }),
       });
       if (res.ok) {
         setRun((prev: any) => (prev ? { ...prev, status: 'running' } : prev));
@@ -820,8 +830,8 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
           <div className="mb-2 flex gap-1 border-b border-[var(--border)]">
             {[
               { id: 'cases', label: `Cases (${list.length})`, icon: FlaskConical },
-              { id: 'code', label: `Scripts (${scripts.length})`, icon: Code2 },
-              { id: 'evidence', label: `Evidence (${evidence.length})`, icon: ImageIcon },
+              { id: 'code', label: scopedExecution ? `Scripts (${scripts.length}/${executionCaseCount} selected)` : `Scripts (${scripts.length})`, icon: Code2 },
+              { id: 'evidence', label: scopedExecution ? `Evidence (${evidence.length}/${executionCaseCount} selected)` : `Evidence (${evidence.length})`, icon: ImageIcon },
             ].map((t) => (
               <button
                 key={t.id}
@@ -846,6 +856,11 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
               </button>
             )}
           </div>
+          {scopedExecution && (
+            <div className="mb-2 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-xs text-[var(--text-secondary)]">
+              Showing all {list.length} cases. Scripts and evidence are scoped to the {executionCaseCount} selected case{executionCaseCount === 1 ? '' : 's'}.
+            </div>
+          )}
 
           {/* CASES (editable) */}
           {tab === 'cases' && (

@@ -3,6 +3,7 @@ import { exploreAndVerifyPage } from './domExplorer';
 import { writeBlackboard } from './blackboard';
 import { getWebsite, listUsersForWebsite, resolveCredentials } from '../credentials/credentialsService';
 import { fetchCorePlatformMetadataMap, type CorePlatformMetadataMap } from '../../ai/tools/corePlatformData';
+import { collectMcpDomFacts } from './mcpDomFacts';
 
 type PhaseSink = (msg: any) => void;
 
@@ -164,18 +165,8 @@ export async function runMultiContextInspectionPhase(input: {
   input.onPhase({ agent: 'ApplicationInspector', status: 'completed', output });
   phaseSummary(input.run, 'inspection', { status: 'complete', ...output, completed_at: new Date().toISOString() });
 
-  // DETERMINISTIC DOM EXPLORATION + LIVE VERIFICATION (sister-project explore_page pipeline):
-  // capture EVERY interactive element (a11y-first), resolve the best stable selector for each,
-  // VERIFY every selector against the real DOM, and persist the status-tagged table to the
-  // blackboard. The script generator must author from these verified records  -  an unverified
-  // selector is exactly what fails later during evidence/execution.
   try {
     input.onPhase({ agent: 'DOMExplorer', status: 'running' });
-    // Explore the DEEP page the inspector actually reached, not the bare target shell. The
-    // inspector drills into the real feature (e.g. ...&view=list&object=account); the shell URL
-    // only renders the app frame. Exploring the shell yields a handful of nav elements and
-    // starves the coder of verified selectors  -  it then guesses and the scripts fail. Prefer
-    // the inspector's landed currentUrl when it is deeper (longer) than the target.
     const landedUrl = String(inspections[0]?.currentUrl || '').trim();
     const exploreUrl = landedUrl && landedUrl.length >= input.targetUrl.length ? landedUrl : input.targetUrl;
     const open = domOpenPathForPrompt(input.prompt);
@@ -198,7 +189,7 @@ export async function runMultiContextInspectionPhase(input: {
         coverage: verifiedPage.coverage,
       });
       input.run.blackboard_id = blackboardId;
-    } catch { /* blackboard persistence is best-effort */ }
+    } catch { /* best effort */ }
     const c = verifiedPage.coverage;
     input.onPhase({
       agent: 'DOMExplorer',
@@ -208,6 +199,29 @@ export async function runMultiContextInspectionPhase(input: {
     phaseSummary(input.run, 'dom_exploration', { status: 'complete', ...c, completed_at: new Date().toISOString() });
   } catch (e: any) {
     input.onPhase({ agent: 'DOMExplorer', status: 'failed', output: `DOM exploration failed: ${e?.message || String(e)}` });
+  }
+
+  try {
+    input.onPhase({ agent: 'MCPDOMFacts', status: 'running' });
+    const landedUrl = String(inspections[0]?.currentUrl || '').trim();
+    const factUrl = landedUrl && landedUrl.length >= input.targetUrl.length ? landedUrl : input.targetUrl;
+    const facts = await collectMcpDomFacts({
+      targetUrl: factUrl,
+      goal: input.prompt,
+      credentials: input.primaryCredentials?.username && input.primaryCredentials?.password
+        ? { username: input.primaryCredentials.username, password: input.primaryCredentials.password }
+        : undefined,
+    });
+    input.run.mcp_dom_facts = facts;
+    input.onPhase({
+      agent: 'MCPDOMFacts',
+      status: 'completed',
+      output: `Captured ${facts.coverage.actionables} actionables, ${facts.coverage.assertions} assertion targets, and ${facts.coverage.tables} table(s) through Playwright MCP.`,
+    });
+    phaseSummary(input.run, 'mcp_dom_facts', { status: 'complete', ...facts.coverage, completed_at: new Date().toISOString() });
+  } catch (e: any) {
+    input.onPhase({ agent: 'MCPDOMFacts', status: 'skipped', output: `MCP DOM facts unavailable: ${e?.message || String(e)}` });
+    phaseSummary(input.run, 'mcp_dom_facts', { status: 'skipped', completed_at: new Date().toISOString() });
   }
 
   return inspections;

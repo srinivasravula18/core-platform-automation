@@ -200,29 +200,26 @@ async function ensureAppLoaded(page: any, login: { username: string; password: s
   return true;
 }
 
-// ---- semantic page capture (a11y-tree-first, DOM-enriched, heuristic sweep as safety net) ----
-// Architecture follows the industry pattern (playwright-mcp / Stagehand / browser-use), ported
-// from agentic-test-platform's explore.ts:
-//   1. ariaSnapshot(mode:"ai") — the browser's own accessibility tree; semantic, 80-90% smaller
-//      than raw DOM, includes ONLY meaningful elements, each tagged with a live [ref=eN].
-//   2. Each ref is resolved back to its DOM node to pull durable attributes (testid/id/aria/name)
-//      — refs die with the page, but generated specs need selectors that survive reloads.
-//   3. A heuristic DOM sweep (shadow-DOM aware; cursor/onclick/tabindex/contenteditable) catches
-//      interactive elements the a11y tree hides, and is the full fallback if ariaSnapshot fails.
-
 const INTERACTIVE_ROLES = new Set([
   'button', 'link', 'textbox', 'searchbox', 'combobox', 'checkbox', 'radio', 'switch', 'slider', 'spinbutton',
   'tab', 'menuitem', 'menuitemcheckbox', 'menuitemradio', 'option', 'listbox', 'columnheader', 'gridcell', 'row',
 ]);
 
-/** Attribute puller shared by ref-resolution and the sweep. Runs INSIDE the page (serialized). */
 const pullAttrs = (el: any) => {
   const e = el;
   const win = e.ownerDocument.defaultView || window;
   const cs = win.getComputedStyle(e);
+  const clean = (v: any) => String(v || '').replace(/\s+/g, ' ').trim();
+  const tableText = () => {
+    if (!e.matches?.('tr,[role="row"]')) return '';
+    const cells = Array.from(e.querySelectorAll('th,td,[role="columnheader"],[role="cell"],[role="gridcell"]'))
+      .map((cell: any) => clean(cell.innerText || cell.textContent))
+      .filter(Boolean);
+    return cells.join(' | ');
+  };
   return {
     tag: e.tagName.toLowerCase(),
-    text: (e.innerText || '').trim().slice(0, 80) || null,
+    text: (tableText() || clean(e.innerText)).slice(0, 120) || null,
     role: e.getAttribute('role'),
     ariaLabel: e.getAttribute('aria-label'),
     testId: e.getAttribute('data-testid'),
@@ -254,7 +251,6 @@ const pullAttrs = (el: any) => {
   };
 };
 
-/** Resolve every [ref=eN] in an aria snapshot to its DOM node and pull durable attributes. */
 async function resolveSnapshotRefs(page: any, outline: string): Promise<DomElement[]> {
   const refs: { ref: string; role: string; name: string | null }[] = [];
   // snapshot lines look like:  - button "Refresh list view" [ref=e12]
@@ -286,7 +282,6 @@ async function resolveSnapshotRefs(page: any, outline: string): Promise<DomEleme
   return out;
 }
 
-/** Heuristic full-DOM sweep (shadow-DOM aware). Catches interactives the a11y tree misses. */
 function sweepDom(page: any): Promise<DomElement[]> {
   return page.evaluate(`(() => {
     const pull = ${pullAttrs.toString()};
@@ -321,7 +316,6 @@ function sweepDom(page: any): Promise<DomElement[]> {
   })()`);
 }
 
-/** a11y-tree capture merged with the heuristic sweep; sweep-only when ariaSnapshot is unavailable. */
 async function captureSemanticSnapshot(page: any): Promise<{ outline: string | null; elements: DomElement[] }> {
   let outline: string | null = null;
   let elements: DomElement[] = [];
@@ -461,12 +455,6 @@ export function resolveBestSelector(el: DomElement): ResolvedSelector {
   }
   return { key, strategy: cands[0].strategy, selector: cands[0].selector, fallback: cands[1]?.selector ?? null };
 }
-
-// ---- explore + verify + record (the sister-project "explore_page" pipeline, reusable) ----
-// One call produces the page's FULL grounded element table: every element extracted
-// (a11y-first), its best stable selector resolved, then EVERY selector verified against
-// the live DOM and status-tagged. This is what generated scripts must be written from —
-// a selector that is not "verified" here will fail at execution time.
 
 export interface VerifiedElement {
   id: string;

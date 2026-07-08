@@ -12,7 +12,7 @@ import { capturePlaywrightEvidence, createAuthStorageState } from '../evidence/e
 import { gitGrep, readRepoFile, searchCodeWithContext } from '../git-agent/gitAgentService';
 import { analyzeFeatureFromSource, discoverFeatureInventoryFromSource, proposeGapCases } from '../requirements/requirementService';
 import { executePlaywrightScripts, killRunProcesses, sanitizeTestCode, repairTestCode } from '../playwright/executionService';
-import { liveAuthor, emitScript } from './liveAuthor';
+import { liveAuthor, emitScript, canLiveAuthorGoal } from './liveAuthor';
 import { inspectFlow, flowToScript } from './flowInspector';
 import { extractSelectorMap, renderSelectorMap, mapHas, correctSelectorMethods, type SelectorMap } from './selectorMap';
 
@@ -55,12 +55,12 @@ import {
   fetchCorePlatformApps, fetchCorePlatformAppTabs, ALL_APPS_ID,
 } from './appTargeting';
 import { pushInboxItem } from '../inbox/routes';
-import { Plans, Suites, Cases, Runs, Reports, Scripts, Folders, Requirements, RequirementLinks, Defects, isPgEnabled } from '../../db/repository';
+import { AgentRuns, Plans, Suites, Cases, Runs, Reports, Scripts, Folders, Requirements, RequirementLinks, Defects, isPgEnabled } from '../../db/repository';
 import { runGuardrailPipeline } from '../../ai/guardrails';
 import { assessInspection, assessCasesGrounding, assessExecution, assessFeatureCompleteness } from '../../ai/verifier';
 import { classifyFailure } from '../../ai/recovery';
 import { isProjectOverQuota } from '../../ai/costTracker';
-import { retrieveRunMemories, summarizeMemoriesForPrompt, recordRunMemory } from '../../ai/memory/runMemory';
+import { retrieveRunMemories, summarizeMemoriesForPrompt } from '../../ai/memory/runMemory';
 import { reqScope, scopeFilter, scopeStamp } from '../../shared/scope';
 import { getApp, getProject, getProjectRepoPath } from '../projects/projectService';
 import { fetchTestDataPack } from '../../ai/tools/corePlatformData';
@@ -72,6 +72,7 @@ import {
   runMultiContextInspectionPhase,
   runSelectorRegistryPhase,
 } from './pipelineDelta';
+import { renderMcpDomFactsForPrompt } from './mcpDomFacts';
 // Strike 3: the single, shared source of grounding for every deep-run worker.
 // isNoiseTurn / deriveUnderstandingFromChat live here now (were duplicated below)
 // and resolveUnderstanding is the one place that decides the run's understanding,
@@ -500,18 +501,6 @@ function annotateGeneratedCasesWithProof(cases: any[], run: any): any[] {
   });
 }
 
-function failUnrecordedScriptAuthoring(run: any, caseList: any[], authoredScripts: any[], notes: string[]): string {
-  const missing = caseList
-    .map((c: any, i: number) => ({ i, title: c?.title || `Case ${i + 1}` }))
-    .filter((_, i) => !authoredScripts[i]);
-  const reason = `Script authoring blocked: live recording proved ${authoredScripts.length}/${caseList.length} case(s). ` +
-    `Unrecorded case(s): ${missing.map((m) => `${m.i + 1}. ${m.title}`).join(' | ')}. ` +
-    `No LLM fallback was used because unrecorded scripts are selector guesses. ${notes.join(' | ')}`.slice(0, 1800);
-  run.playwright_scripts = authoredScripts;
-  (run as any).execution_result = { ok: false, total: 0, passed: 0, failed: 0, skipped: 0, error: reason, tests: [] };
-  return reason;
-}
-
 function lightOutput(value: any) {
   if (typeof value === 'string') return value.slice(0, 1200);
   if (value == null) return value;
@@ -892,6 +881,7 @@ async function persistAgentQualityArtifacts(run: any) {
   await persistAgentCaseArtifacts(run);
   await persistAgentRequirementArtifacts(run);
   await persistAgentRunAndReportArtifacts(run);
+  await saveAgentRunState(run, 'agent quality artifacts');
 }
 
 async function persistAgentCaseArtifacts(run: any) {
@@ -1029,6 +1019,21 @@ function pushPhase(run: any, msg: any): void {
   }
   run.messages.push({ ...msg, at: nowIso() });
 }
+
+function allCasesForRun(run: any): any[] {
+  if (Array.isArray(run?.all_generated_cases) && run.all_generated_cases.length) return run.all_generated_cases;
+  const msg = [...(run?.messages || [])].reverse().find((m: any) => m?.agent === 'TestGenerationAgent' && Array.isArray(m?.output?.test_cases));
+  return msg?.output?.test_cases || run?.generated_cases || [];
+}
+
+function runDetailsPayload(run: any): any {
+  return {
+    ...run,
+    generated_cases: annotateGeneratedCasesWithProof(normalizeGeneratedCasesText(run.generated_cases || [], run), run),
+    all_generated_cases: annotateGeneratedCasesWithProof(normalizeGeneratedCasesText(allCasesForRun(run), run), run),
+  };
+}
+
 // A phase only gets its 'completed'/'skipped' follow-up if its step runs to the end. If the
 // run is cancelled/errored mid-phase, or a retry resumes past a phase without re-running it,
 // that phase's last message stays 'running' forever and its UI chip spins indefinitely with
@@ -1053,6 +1058,25 @@ function markRunDone(run: any, status: 'completed' | 'failed' | 'cancelled'): vo
   if (run.status === 'cancelled') return;
   run.status = status;
   run.completed_at = nowIso();
+}
+
+async function saveAgentRunState(run: any, reason: string): Promise<void> {
+  run.updated_at = nowIso();
+  if (isPgEnabled()) await AgentRuns.upsert(run);
+  persistDataInBackground(reason);
+}
+
+function saveAgentRunStateSoon(run: any, reason: string): void {
+  void saveAgentRunState(run, reason).catch((err) => console.warn(`Failed to persist ${reason}:`, err?.message || err));
+}
+
+function throwIfCancelled(run: any): void {
+  if (run?.cancelRequested || run?.status === 'cancelled') throw new Error('RUN_CANCELLED');
+}
+
+function groundingIsFresh(run: any): boolean {
+  const at = Date.parse(String(run?.phases?.inspection?.completed_at || run?.updated_at || run?.created_at || ''));
+  return Number.isFinite(at) && Date.now() - at < INSPECT_CACHE_TTL_MS;
 }
 
 /* ---------------------------------------------------------------------------
@@ -1607,7 +1631,7 @@ function renderBlackboardForPrompt(run: any, maxItems = 80): string {
     return `- ${e.role || e.tag || 'element'} "${String(label).slice(0, 80)}" -> ${selector}${state ? ` [${state}]` : ''}${opts}`;
   });
   const id = entry?.id || run?.blackboard_id || 'current-run-dom';
-  return `\nVERIFIED BLACKBOARD (source of truth from explore_page/DOMExplorer; use these exact labels/selectors and do not invent controls not listed here):\nblackboard_id: ${id}\n${lines.join('\n')}\n`;
+  return `\nVERIFIED BLACKBOARD: use these labels/selectors only.\nblackboard_id: ${id}\n${lines.join('\n')}\n`;
 }
 function inventoryGroundingTokens(inventory: any): Set<string> {
   const tokens = new Set<string>();
@@ -1754,7 +1778,7 @@ async function persistAgentRunArtifacts(run: any) {
 
   run.persisted = true;
   addActivity(`Agent artifacts saved to ${run.folderId ? getFolderPath(run.folderId) : 'Uncategorized'}: ${baseName}`);
-  persistDataInBackground('agent run artifacts');
+  await saveAgentRunState(run, 'agent run artifacts');
 }
 
 // isNoiseTurn and deriveUnderstandingFromChat moved to agent-runtime/context/goalContext.ts
@@ -2047,6 +2071,8 @@ Use the inspection result as the source of truth for reachable pages, visible na
 
 When the request involves verifying data views, include steps that verify the visible table/list/grid container, headers, rows or empty-state, and absence of loading/error state using the labels found by inspection.
 
+For metadata/list rows with columns such as Label, API Name, Version, App Prefix, and Parent App, use the Label column as the human-facing row/search value. Never combine Label with API Name or App Prefix (for example, use "Revenue Hub", not "Revenue Hubrev").
+
 ${SOURCE_BOUNDARY_CONTRACT}
 
 ${CASE_AUTHORING_CONTRACT}${knowledgeBlock}`,
@@ -2073,6 +2099,7 @@ ${CASE_AUTHORING_CONTRACT}${knowledgeBlock}`,
     tc.id ? tc : { ...tc, id: tc.reused && tc.existingCaseId ? tc.existingCaseId : agentCaseId(run, i) }
   ));
   run.generated_cases = generated;
+  (run as any).all_generated_cases = generated;
   // GROUNDING GATE (Phase 2): verify the generated cases actually reference what the
   // inspector saw on the live page. If they don't (and the page WAS readable), the
   // cases were written from the prompt alone  -  flag it honestly so the run isn't sold
@@ -2317,6 +2344,7 @@ Do NOT write comments such as "Auth is expected to be handled by global setup". 
     ? `\nREAL SELECTORS FROM THE APP SOURCE (the codebase IS the source of truth  -  use these EXACT labels/names; ground every getByRole name / getByLabel / getByText / getByTestId in one of these; do NOT invent a selector that is not here):\n${renderSelectorMap(codeMap)}\n`
     : '';
   const coderSelectorRegistry = renderSelectorRegistryForPrompt((run as any).selector_registry);
+  const coderMcpDomFacts = renderMcpDomFactsForPrompt((run as any).mcp_dom_facts);
   const repoLabelHints = codeMap ? [
     ...(codeMap.ariaLabels || []),
     ...(codeMap.labels || []),
@@ -2338,7 +2366,11 @@ Do NOT write comments such as "Auth is expected to be handled by global setup". 
   const rawCaseList = Array.isArray(testCases?.test_cases) ? testCases.test_cases : [];
   const caseList = annotateGeneratedCasesWithProof(normalizeGeneratedCasesText(rawCaseList, run), run);
   run.generated_cases = caseList;
-  if (targetUrl && caseList.length) {
+  if (targetUrl && caseList.length && caseList.every((tc: any) => canLiveAuthorGoal([
+    tc?.title || '',
+    tc?.description || '',
+    normalizeCaseSteps(tc?.steps || []).map((s: any) => `${s.action || ''} ${s.expected || ''}`).join(' '),
+  ].join(' ')))) {
     pushPhase(run, { agent: 'LiveAuthor', status: 'running', output: 'Driving the live app first so scripts are recorded from verified selectors instead of guessed.' });
     const authoredScripts: any[] = [];
     const authoredNotes: string[] = [];
@@ -2384,14 +2416,17 @@ Do NOT write comments such as "Auth is expected to be handled by global setup". 
       return;
     }
     (run as any).live_author_evidence = authoredEvidence;
-    const why = failUnrecordedScriptAuthoring(run, caseList, authoredScripts, authoredNotes);
-    pushPhase(run, { agent: 'LiveAuthor', status: 'failed', output: why });
-    pushPhase(run, { agent: 'PlaywrightAgent', status: 'failed', output: why });
-    await persistAgentScripts(run);
-    markRunDone(run, 'failed');
-    await persistAgentQualityArtifacts(run).catch((err) => console.warn('Failed to persist unrecorded-script agent artifacts:', err));
-    persistDataInBackground('unrecorded script authoring blocked');
-    return;
+    pushPhase(run, {
+      agent: 'LiveAuthor',
+      status: 'completed',
+      output: `Live recording proved ${authoredScripts.length}/${caseList.length} case(s); continuing with source-grounded script generation for the rest. ${authoredNotes.join(' | ')}`.slice(0, 1800),
+    });
+  } else if (targetUrl && caseList.length) {
+    pushPhase(run, {
+      agent: 'LiveAuthor',
+      status: 'skipped',
+      output: 'Skipped live recording because at least one case requires external setup or failure simulation; using source-grounded script generation instead.',
+    });
   }
   // DISCOVER-THEN-BIND: resolve each case's real controls + access flow on the LIVE app BEFORE the
   // coder writes selectors, so it binds to confirmed controls (incl. ones hidden behind menus)
@@ -2431,7 +2466,7 @@ Approved user-reviewed understanding: ${reviewedUnderstanding || 'not provided'}
 ${credentialContext}
 ${loginScriptBlock}
 ${applicationContextBlock}
-${selectedQaContextText}${coderUnderstanding}${coderFeatureInventory}${coderMemory}${coderTestData}${coderSelectorMap}${coderSelectorRegistry}${coderBlackboard}${featureGrounding}${readAgentSkill() ? `\nLEARNED QA-AUTHORING SKILL (general script guidance refined over prior runs  -  apply it):\n${readAgentSkill()}\n` : ''}
+${selectedQaContextText}${coderUnderstanding}${coderFeatureInventory}${coderMemory}${coderTestData}${coderMcpDomFacts}${coderSelectorMap}${coderSelectorRegistry}${coderBlackboard}${featureGrounding}${readAgentSkill() ? `\nLEARNED QA-AUTHORING SKILL (general script guidance refined over prior runs  -  apply it):\n${readAgentSkill()}\n` : ''}
 Use this browser inspection context as the source of truth for reachable pages, visible labels, forms, navigation actions, tables/lists, buttons, links and final URL: ${JSON.stringify(compactInspectionContext(inspectionContext))}.
 ${renderPageOutlineForPrompt((run as any).dom_exploration)}${renderVerifiedElementsForPrompt((run as any).dom_exploration)}${allCaseControls}
 SETUP  -  NAVIGATE THEN LOG IN IF NEEDED: the MANDATORY FIRST LINES of every test body are (use this EXACT absolute URL  -  NOT '/', which resolves to the wrong path):
@@ -2506,7 +2541,7 @@ Approved user-reviewed understanding: ${reviewedUnderstanding || 'not provided'}
 ${credentialContext}
 ${loginScriptBlock}
 ${applicationContextBlock}
-${selectedQaContextText}${coderUnderstanding}${coderSelectorMap}${coderSelectorRegistry}${coderBlackboard}${featureGrounding}
+${selectedQaContextText}${coderUnderstanding}${coderMcpDomFacts}${coderSelectorMap}${coderSelectorRegistry}${coderBlackboard}${featureGrounding}
 Use this browser inspection context as the source of truth for reachable pages, visible labels, forms, navigation actions, tables/lists, buttons, links and final URL: ${JSON.stringify(compactInspectionContext(inspectionContext))}.
 ${renderPageOutlineForPrompt((run as any).dom_exploration)}${renderVerifiedElementsForPrompt((run as any).dom_exploration)}${perCaseControlBlocks[index] || ''}
 
@@ -2594,31 +2629,6 @@ Test case payload: ${JSON.stringify({ test_cases: [testCase] })}${coderKnowledge
   }));
   await completeScriptProofFlow(run, targetUrl, { test_cases: caseList }, liveCreds);
   return;
-
-  // EPISODIC MEMORY (book Ch 8/9): record this run's outcome so future runs of the same
-  // feature recall whether it was stable / flaky / broken and why. Best-effort  -  never blocks.
-  try {
-    const exec = (run as any).execution_result;
-    const failed = Number(exec?.failed) || 0;
-    const passed = Number(exec?.passed) || 0;
-    const total = Number(exec?.total) || 0;
-    const stability: 'stable' | 'flaky' | 'broken' = total === 0 ? 'broken' : failed > 0 ? (passed > 0 ? 'flaky' : 'broken') : 'stable';
-    const firstFail = Array.isArray(exec?.tests) ? exec.tests.find((t: any) => /fail|timedout|interrupted/i.test(String(t?.status))) : null;
-    await recordRunMemory({
-      feature: String(run.prompt || run.artifactName || '').slice(0, 120),
-      stability,
-      failureCause: firstFail?.error ? String(firstFail.error).slice(0, 300) : undefined,
-      runId: run.id,
-      projectId: run.projectId || undefined,
-      appId: run.appId || undefined,
-      ownerId: run.ownerId || undefined,
-    });
-  } catch (err: any) {
-    console.warn('run-memory record failed (non-fatal):', err?.message || err);
-  }
-
-  markRunDone(run, 'completed');
-  await persistAgentRunArtifacts(run);
 }
 
 /**
@@ -2647,17 +2657,24 @@ type SelectorVerificationResult = { ok: boolean; reason?: string; unresolved?: s
  * menus/overflows during the drill, now unioned into visibleNavigation). It is THIS page's real DOM,
  * so a selector is trustworthy only if it appears here.
  */
-function buildLiveSelectorIndex(ic: any): { names: Set<string>; hints: string[]; usable: boolean } {
+function buildLiveSelectorIndex(ic: any): { names: Set<string>; roles: Set<string>; hints: string[]; usable: boolean } {
   const names = new Set<string>();
+  const roles = new Set<string>();
   const hints = new Set<string>();
   const addName = (v: any) => {
     const s = String(v || '').replace(/\s+/g, ' ').trim();
     if (s.length >= 2) names.add(s.toLowerCase());
   };
+  const addRole = (role: any, name: any) => {
+    const r = String(role || '').replace(/\s+/g, ' ').trim().toLowerCase();
+    const n = String(name || '').replace(/\s+/g, ' ').trim().toLowerCase();
+    if (r && n.length >= 2) roles.add(`${r}|${n}`);
+  };
   const addDom = (d: any) => {
     if (!d) return;
     addName(d.ariaLabel); addName(d.placeholder); addName(d.id); addName(d.testId);
     addName(d.name); addName(d.text); addName(d.role);
+    addRole(d.role, d.ariaLabel || d.name || d.text);
     for (const h of d.selectorHints || []) if (h) hints.add(String(h));
   };
   const addAction = (a: any) => {
@@ -2665,6 +2682,7 @@ function buildLiveSelectorIndex(ic: any): { names: Set<string>; hints: string[];
     addDom(a.dom || a);
     for (const h of a.selectorHints || []) if (h) hints.add(String(h));
     addName(a.ariaLabel); addName(a.text); addName(a.name);
+    addRole(a.role || a.control || a.tag, a.ariaLabel || a.name || a.text);
   };
   // Accept either a run (has inspection_contexts / inspection_context) or a single context object.
   const contexts = Array.isArray(ic?.inspection_contexts) && ic.inspection_contexts.length
@@ -2678,20 +2696,27 @@ function buildLiveSelectorIndex(ic: any): { names: Set<string>; hints: string[];
     for (const at of ctx?.assertionTargets || []) { addName(at?.text); addName(at?.label); }
     for (const h of ctx?.headings || []) addName(h);
   }
-  return { names, hints: [...hints], usable: names.size >= 8 };
+  return { names, roles, hints: [...hints], usable: names.size >= 8 };
 }
 
-function buildSelectorRegistryIndex(registry: any): { names: Set<string>; hints: string[]; usable: boolean } {
+function buildSelectorRegistryIndex(registry: any): { names: Set<string>; roles: Set<string>; hints: string[]; usable: boolean } {
   const names = new Set<string>();
+  const roles = new Set<string>();
   const hints = new Set<string>();
   const add = (v: any) => {
     const s = String(v || '').replace(/\s+/g, ' ').trim();
     if (s.length >= 2) names.add(s.toLowerCase());
   };
+  const addRole = (role: any, name: any) => {
+    const r = String(role || '').replace(/\s+/g, ' ').trim().toLowerCase();
+    const n = String(name || '').replace(/\s+/g, ' ').trim().toLowerCase();
+    if (r && n.length >= 2) roles.add(`${r}|${n}`);
+  };
   const addSelector = (selector: any) => {
     const s = String(selector || '').trim();
     if (!s) return;
     hints.add(s);
+    for (const m of s.matchAll(/getByRole\(\s*['"`](\w+)['"`]\s*,\s*\{\s*name\s*:\s*['"`]([^'"`\n]{2,80})['"`]/g)) addRole(m[1], m[2]);
     for (const m of s.matchAll(/getBy(?:Role|Label|Text|Placeholder|TestId)\([^'"`]*['"`]([^'"`\n]{2,80})['"`]/g)) add(m[1]);
     for (const m of s.matchAll(/name\s*:\s*['"`]([^'"`\n]{2,80})['"`]/g)) add(m[1]);
     for (const m of s.matchAll(/\[(?:aria-label|placeholder|title|name|data-testid|alt)\s*[*^$|~]?=\s*['"]([^'"\n]{2,80})['"]\s*\]/g)) add(m[1]);
@@ -2706,10 +2731,11 @@ function buildSelectorRegistryIndex(registry: any): { names: Set<string>; hints:
     add(value.label);
     add(value.metadata_api_name);
     add(value.role);
+    addRole(value.role, value.label);
     addSelector(value.primary_selector);
     addSelector(value.fallback_selector);
   }
-  return { names, hints: [...hints], usable: names.size > 0 || hints.size > 0 };
+  return { names, roles, hints: [...hints], usable: names.size > 0 || hints.size > 0 };
 }
 
 function findVerifiedControl(run: any, selector: string): any | null {
@@ -2808,6 +2834,17 @@ async function verifyScriptsWithGitAgent(run: any, scripts: any[], _prompt: stri
       if (lt.length >= 4) for (const n of live.names) if (n.includes(lt)) return true;
       return false;
     };
+    const badRoleLocatorsOf = (code: string) => {
+      const out: string[] = [];
+      const roleAuthority = registry.roles.size ? registry.roles : live.roles;
+      if (!roleAuthority.size) return out;
+      for (const m of String(code || '').matchAll(/getByRole\(\s*['"`](\w+)['"`]\s*,\s*\{\s*name\s*:\s*['"`]([^'"`\n]{2,80})['"`]/g)) {
+        const role = m[1].toLowerCase();
+        const name = cleanRegexTarget(m[2]).toLowerCase();
+        if (!roleAuthority.has(`${role}|${name}`)) out.push(`${role}:${m[2]}`);
+      }
+      return out;
+    };
     // The rewrite pass draws from the REAL running-page selectors when we have them, falling back
     // to repo strings only when live capture is thin. This is what makes real on-page selectors
     // reach the coder verbatim.
@@ -2825,8 +2862,16 @@ async function verifyScriptsWithGitAgent(run: any, scripts: any[], _prompt: stri
     const cleanRegexTarget = (s: string) => s.trim().replace(/^\^/, '').replace(/\$$/, '').trim();
     const targetsOf = (code: string, includeDataText = false) => {
       const t = new Set<string>();
+      const addSelectorLiteral = (raw: string) => {
+        const s = String(raw || '').trim();
+        if (!s) return;
+        for (const m of s.matchAll(/(?:text|has-text|:text)\s*[=:(]\s*["']([^"'\n]{2,80})["']/g)) t.add(cleanRegexTarget(m[1]));
+        for (const m of s.matchAll(/role\s*=\s*\w+\s*\[\s*name\s*=\s*["']([^"'\n]{2,80})["']\s*\]/g)) t.add(cleanRegexTarget(m[1]));
+        for (const m of s.matchAll(/#([A-Za-z][\w-]{1,80})/g)) t.add(m[1].trim());
+      };
       for (const m of code.matchAll(/getByRole\(\s*['"`]\w+['"`]\s*,\s*\{\s*name\s*:\s*[/]?\s*['"`]?([^'"`/)\n,}]{2,50})/g)) t.add(cleanRegexTarget(m[1]));
       for (const m of code.matchAll(/getBy(?:Label|Text|Placeholder|TestId)\(\s*[/]?\s*['"`]?([^'"`/)\n,]{2,50})/g)) t.add(cleanRegexTarget(m[1]));
+      for (const m of code.matchAll(/(?:page|\w+)\.locator\(\s*['"`]([^'"`\n]{2,180})['"`]\s*\)/g)) addSelectorLiteral(m[1]);
       // Attribute/CSS locators the coder loves to invent  -  locator('[aria-label="..."]'),
       // [placeholder="..."], [data-testid="..."]  -  were NEVER cross-checked before, so a
       // hallucinated aria-label (e.g. "List view: All Apps") sailed straight through to a
@@ -2872,10 +2917,12 @@ async function verifyScriptsWithGitAgent(run: any, scripts: any[], _prompt: stri
     // (e.g. getByText(new RegExp(...)) yields the garbage target "new RegExp(")  -  these are not
     // UI labels, can never be "grounded", and must not be treated as culprits.
     const looksLikeCode = (t: string) => /new\s|regexp|=>|[(){}\\]|\$\{|\bfunction\b/i.test(t);
-    const culpritsOf = (code: string) => targetsOf(String(code), !registry.usable).filter((t) => {
+    const culpritsOf = (code: string) => targetsOf(String(code), true).filter((t) => {
+      const typed = new Set([...String(code).matchAll(/\.fill\(\s*['"`]([^'"`]*)['"`]/g)].map((m) => String(m[1]).toLowerCase().trim()));
       if (ignorable.test(t) || looksLikeCode(t)) return false;
+      if (typed.has(String(t).toLowerCase().trim())) return false;
       return registry.usable ? !groundedInRegistry(t) : live.usable ? !groundedInLive(t) : !mapHas(map!, t);
-    });
+    }).concat(badRoleLocatorsOf(code));
     const MAX_VERIFY_ROUNDS = 3;
     let totalCulprits = 0; let rewritten = 0; let residualUngrounded = 0;
     let cursor = 0;
@@ -3143,29 +3190,14 @@ function compactInspectionContext(ic: any) {
   };
 }
 
-/**
- * The semantic page OUTLINE from the a11y-first DOM exploration  -  the browser's own
- * accessibility tree as compact YAML. This is the "what a user actually sees, with real
- * labels and hierarchy" picture (menu structure, grouped toolbars, table composition)
- * that the flat element list cannot convey. [ref=eN] markers are stripped: they die with
- * the page and must never leak into cases/scripts as selectors.
- */
 function renderPageOutlineForPrompt(exploration: any, maxChars = 6000): string {
   const outline = String(exploration?.outline || '').trim();
   if (!outline) return '';
   const cleaned = outline.replace(/\s*\[ref=e\d+\]/g, '');
   const body = cleaned.length > maxChars ? `${cleaned.slice(0, maxChars)}\n  ... (outline truncated)` : cleaned;
-  return `\nSEMANTIC PAGE OUTLINE (the live page's accessibility tree  -  exactly what a user sees, with real labels and structure; use these labels verbatim, never invent):\n${body}\n`;
+  return `\nPAGE OUTLINE:\n${body}\n`;
 }
 
-/**
- * The VERIFIED SELECTOR TABLE (sister-project blackboard architecture): every selector in
- * it was resolved from a live-extracted element and then re-checked against the real DOM
- * (existence + uniqueness + visibility). Scripts written from this table cannot fail on
- * "element not found" for the elements it lists  -  that failure class comes from invented
- * or unverified selectors. Falls back to the raw element dump for runs recorded by an
- * older build without verification data.
- */
 function renderVerifiedElementsForPrompt(exploration: any): string {
   const elements = Array.isArray(exploration?.elements) ? exploration.elements : [];
   const hasVerification = elements.some((e: any) => typeof e?.status === 'string' && e?.resolved_selector !== undefined);
@@ -3189,16 +3221,9 @@ function renderVerifiedElementsForPrompt(exploration: any): string {
     return `  ${e.role || e.tag} "${String(label).slice(0, 60)}" -> ${e.resolved_selector}${e.fallback_selector ? ` | fallback: ${e.fallback_selector}` : ''}${flags ? ` [${flags}]` : ''}${options}`;
   });
   const broken = elements.filter((e: any) => e.status === 'broken').length;
-  return `\nVERIFIED SELECTOR TABLE (each selector below was CHECKED against the LIVE page  -  existence, uniqueness, visibility. Build EVERY locator from this table using the selector or its fallback EXACTLY as written; the quoted name is the element's real accessible label, verbatim. Do NOT invent, paraphrase, re-case, or guess any selector or label that is not in this table${broken ? `; ${broken} candidate selector(s) FAILED live verification and were removed  -  do not reconstruct them` : ''}):\n${lines.join('\n')}\n${renderOnPageTextForPrompt(exploration)}`;
+  return `\nVERIFIED SELECTORS: use these exact labels/selectors${broken ? `; ${broken} failed candidate(s) removed` : ''}.\n${lines.join('\n')}\n${renderOnPageTextForPrompt(exploration)}`;
 }
 
-/**
- * EXACT ON-PAGE TEXT  -  every real string the live page displayed at capture time, harvested
- * from the a11y outline (names + text nodes) and the captured element texts. This is the
- * assertion whitelist: a text expectation that is not in this list (and not typed by the
- * test itself) is a guess about a conditional source-string branch  -  the exact class behind
- * "expected 'Showing N rows for M records.' but the page said 'Showing N rows.'".
- */
 function renderOnPageTextForPrompt(exploration: any, maxItems = 80): string {
   const texts = new Set<string>();
   const add = (v: any) => {
@@ -3209,12 +3234,11 @@ function renderOnPageTextForPrompt(exploration: any, maxItems = 80): string {
     add(e?.text); add(e?.name); add(e?.tooltip);
   }
   const outline = String(exploration?.outline || '');
-  // outline lines carry real strings two ways:  - button "Apps" ...   and   - paragraph: Some text
   for (const m of outline.matchAll(/"((?:[^"\\]|\\.){3,120})"/g)) add(m[1]);
   for (const m of outline.matchAll(/\]:\s*([^\n]{3,120})$/gm)) add(m[1]);
   if (!texts.size) return '';
   const list = [...texts].slice(0, maxItems).map((t) => `  "${t}"`).join('\n');
-  return `\nEXACT ON-PAGE TEXT at capture time (text assertions may ONLY expect strings from this list  -  verbatim or a substring/regex of one  -  or values the test itself typed. Anything else is a guessed conditional branch and WILL fail):\n${list}\n`;
+  return `\nON-PAGE TEXT:\n${list}\n`;
 }
 
 function renderRawElementsForPrompt(exploration: any): string {
@@ -3239,31 +3263,30 @@ function renderRawElementsForPrompt(exploration: any): string {
     if (role && (label || text)) hints.push(`getByRole("${role}", { name: "${label || text}" })`);
     if (name) hints.push(`locator('[name="${name}"]')`);
     if (id) hints.push(`page.locator('#${id}')`);
-    // Prefer the highest-priority selector from the inspection context  -  these are illustrative.
     lines.push(`  ${summary.padEnd(50)} ${hints[0] || ''}`);
   }
-  return lines.length ? `\nRAW DOM ELEMENTS (every interactive control with attributes  -  use these EXACT labels/placeholders/roles  -  never invent):\n${lines.slice(0, 120).join('\n')}\n` : '';
+  return lines.length ? `\nRAW DOM ELEMENTS:\n${lines.slice(0, 120).join('\n')}\n` : '';
 }
 
 function summarizeExecutionTests(tests: any[], durationMs = 0, error?: string) {
   const failed = tests.filter((t) => /fail|timedout|interrupted/i.test(String(t.status))).length;
   const skipped = tests.filter((t) => t.status === 'skipped').length;
   const passed = tests.filter((t) => t.status === 'passed').length;
+  const total = tests.length;
   return {
-    ok: failed === 0,
-    total: tests.length,
+    ok: total > 0 && failed === 0 && passed > 0,
+    total,
     passed,
     failed,
     skipped,
     durationMs,
-    error,
+    error: error || (total === 0 ? 'Execution produced zero tests.' : passed === 0 ? 'Execution produced no passing tests.' : undefined),
     tests: tests.map((t) => ({ title: t.title, status: t.status, durationMs: t.durationMs, error: t.error })),
   };
 }
 
 async function publishAgentRunSnapshot(run: any, reason: string) {
-  run.updated_at = new Date().toISOString();
-  persistDataInBackground(reason);
+  await saveAgentRunState(run, reason);
 }
 
 async function copyTestEvidenceToRun(opts: {
@@ -3457,12 +3480,14 @@ async function runScriptsAndCollectEvidence(run: any, targetUrl: string, testCas
         const evidence: any[] = [];
         const usedCaseIndexes = new Set<number>();
         const allTests: any[] = [];
+        const executionErrors: string[] = [];
         const startedAt = Date.now();
         run.evidence_screenshots = evidence as any;
         const q = (run as any).script_queue;
         if (q?.items) q.status = 'evidence_running';
 
         for (let i = 0; i < scripts.length; i += 1) {
+          throwIfCancelled(run);
           const script = scripts[i];
           if (q?.items?.[i]) q.items[i] = { ...q.items[i], status: 'evidence_running' };
           pushPhase(run, { agent: 'EvidenceQueue', status: 'running', output: 'Running evidence ' + (i + 1) + '/' + scripts.length + ': ' + (script.filename || script.title || 'script') });
@@ -3479,6 +3504,8 @@ async function runScriptsAndCollectEvidence(run: any, targetUrl: string, testCas
             expectTimeoutMs: 15000,
             timeoutMs: 90000,
           });
+          throwIfCancelled(run);
+          if (!execOne.ok) executionErrors.push(`${script.filename || script.title || `script ${i + 1}`}: ${execOne.error || 'no passing test result'}`);
           allTests.push(...(execOne.tests || []));
           await copyTestEvidenceToRun({
             run,
@@ -3490,12 +3517,12 @@ async function runScriptsAndCollectEvidence(run: any, targetUrl: string, testCas
             resolveCaseIndex,
             startIndex: i,
           });
-          const failed = (execOne.tests || []).some((t: any) => /fail|timedout|interrupted/i.test(String(t.status)));
+          const failed = !execOne.ok || (execOne.tests || []).some((t: any) => /fail|timedout|interrupted/i.test(String(t.status)));
           if (q?.items?.[i]) {
             q.items[i] = { ...q.items[i], status: failed ? 'failed' : 'evidence_ready' };
             q.evidenced = q.items.filter((x: any) => ['evidence_ready', 'failed'].includes(String(x.status))).length;
           }
-          run.execution_result = summarizeExecutionTests(allTests, Date.now() - startedAt);
+          run.execution_result = summarizeExecutionTests(allTests, Date.now() - startedAt, executionErrors.join(' | ') || undefined);
           run.evidence_screenshots = evidence as any;
           await publishAgentRunSnapshot(run, 'queued evidence progress');
         }
@@ -3514,12 +3541,12 @@ async function runScriptsAndCollectEvidence(run: any, targetUrl: string, testCas
             });
           }
         });
-        run.execution_result = summarizeExecutionTests(allTests, Date.now() - startedAt);
+        run.execution_result = summarizeExecutionTests(allTests, Date.now() - startedAt, executionErrors.join(' | ') || undefined);
         run.evidence_screenshots = evidence as any;
         run.phases = {
           ...(run.phases || {}),
           evidence_capture: {
-            status: run.execution_result.failed === 0 ? 'complete' : 'complete_with_failures',
+            status: run.execution_result.ok ? 'complete' : 'complete_with_failures',
             scripts_run: run.execution_result.total,
             passed: run.execution_result.passed,
             failed: run.execution_result.failed,
@@ -3554,11 +3581,13 @@ async function runScriptsAndCollectEvidence(run: any, targetUrl: string, testCas
       // Re-inspect each failing case against the LIVE page at most once, then reuse across rounds.
       const freshContextByFile = new Map<string, any>();
       for (let round = 1; round <= MAX_REPAIR_ROUNDS && (exec.failed || 0) > 0; round += 1) {
+        throwIfCancelled(run);
         const failing = (exec.tests || []).filter((t) => /fail|timedout|interrupted/i.test(String(t.status)));
         if (!failing.length) break;
         pushPhase(run, { agent: 'ExecutionRepair', status: 'running', output: `Round ${round}/${MAX_REPAIR_ROUNDS}: ${failing.length} failing test(s)  -  re-grounding against the live page, then repairing against the real failure.` });
         let repaired = 0;
         for (const t of failing) {
+          throwIfCancelled(run);
           const idx = scripts.findIndex((s) => (s.filename && baseName(s.filename) === baseName(t.file)) || normTitle(s.title) === normTitle(t.title));
           if (idx < 0) continue;
 
@@ -3745,6 +3774,16 @@ async function runScriptsAndCollectEvidence(run: any, targetUrl: string, testCas
         });
         return evidence;
       }
+      run.execution_result = {
+        ok: false,
+        total: 0,
+        passed: 0,
+        failed: 0,
+        skipped: scripts.length,
+        durationMs: exec.durationMs || 0,
+        error: exec.error || 'Script execution produced no test results.',
+        tests: [],
+      };
       run.messages.push({ agent: 'EvidenceAgent', status: 'running', output: `Script execution produced no test results${exec.error ? `: ${exec.error}` : ''}. Falling back to base-URL evidence.` });
     } catch (err: any) {
       // Classify the failure (book Ch 12 taxonomy) so the degradation is reported honestly:
@@ -3756,6 +3795,16 @@ async function runScriptsAndCollectEvidence(run: any, targetUrl: string, testCas
         output: `Script execution failed [${decision.action}: ${decision.reason}]: ${err?.message || err}. Falling back to base-URL evidence.`,
       });
       (run as any).execution_recovery = decision;
+      run.execution_result = {
+        ok: false,
+        total: 0,
+        passed: 0,
+        failed: 0,
+        skipped: scripts.length,
+        durationMs: 0,
+        error: err?.message || String(err),
+        tests: [],
+      };
     }
   }
   // FALLBACK / graceful degradation: base-URL login + screenshot (original behaviour) when
@@ -3781,12 +3830,17 @@ async function completeScriptProofFlow(run: any, targetUrl: string, testCases: a
     run.evidence_screenshots = evidence as any;
     pushPhase(run, { agent: 'EvidenceAgent', status: 'completed', output: evidence });
   } else {
+    (run as any).execution_result = { ok: false, total: 0, passed: 0, failed: 0, skipped: 0, error: 'No target URL was provided, so no browser proof was executed.', tests: [] };
     pushPhase(run, { agent: 'EvidenceAgent', status: 'skipped', output: 'No target URL was provided in chat and no Website Credentials row is selected for Playwright.' });
   }
 
-  markRunDone(run, 'completed');
+  const proof = assessExecution((run as any).execution_result);
+  if (!proof.ok && (run as any).execution_result && !(run as any).execution_result.error) {
+    (run as any).execution_result.error = proof.reason;
+  }
+  markRunDone(run, proof.ok ? 'completed' : 'failed');
   await persistAgentRunArtifacts(run);
-  persistDataInBackground('agent proof flow completed');
+  await saveAgentRunState(run, 'agent proof flow completed');
 }
 
 async function copyExecutionScreenshots(runId: string, tests: any[]) {
@@ -4207,7 +4261,7 @@ Rules:
     res.set('Cache-Control', 'no-store');
     const run = db.agentRuns.find(r => r.id === req.params.id);
     if (!run) return res.status(404).json({ error: 'Run not found' });
-    res.json({ ...run, generated_cases: annotateGeneratedCasesWithProof(normalizeGeneratedCasesText(run.generated_cases || [], run), run) });
+    res.json(runDetailsPayload(run));
   });
 
   app.get('/api/agent-runs/:id', (req, res) => {
@@ -4215,7 +4269,7 @@ Rules:
     const run = db.agentRuns.find(r => r.id === req.params.id);
     if (!run) return res.status(404).json({ error: 'Run not found' });
     if (req.query.include === 'details') {
-      return res.json({ ...run, generated_cases: annotateGeneratedCasesWithProof(normalizeGeneratedCasesText(run.generated_cases || [], run), run) });
+      return res.json(runDetailsPayload(run));
     }
     res.json(runStatusSnapshot(run));
   });
@@ -4224,6 +4278,7 @@ Rules:
     const idx = db.agentRuns.findIndex((r: any) => r.id === req.params.id);
     if (idx < 0) return res.status(404).json({ error: 'Run not found' });
     db.agentRuns.splice(idx, 1);
+    void AgentRuns.remove(req.params.id).catch(() => undefined);
     persistDataInBackground('agent run delete');
     res.json({ success: true });
   });
@@ -4589,7 +4644,7 @@ Rules:
     }
 
     db.agentRuns.unshift(newRun);
-    persistDataInBackground('new agent run');
+    saveAgentRunStateSoon(newRun, 'new agent run');
     res.json({ task_id: taskId });
 
     // COST QUOTA (book Ch 16: Resource-Aware Optimization): if this project has already burned
@@ -4966,6 +5021,7 @@ Rules:
 
         // Commit all accumulated cases and go straight to script generation
         newRun.generated_cases = annotateGeneratedCasesWithProof(normalizeGeneratedCasesText(allGeneratedCases, newRun), newRun);
+        (newRun as any).all_generated_cases = newRun.generated_cases;
         newRun.existing_matches = [];
         pushPhase(newRun, {
           agent: 'TestGenerationAgent',
@@ -5077,7 +5133,7 @@ Rules:
   });
 
   app.post('/api/agent/continue', async (req, res) => {
-    const { taskId, cases, scripts } = req.body;
+    const { taskId, cases, executionCases, scripts } = req.body;
     const run = db.agentRuns.find((item: any) => item.id === taskId);
 
     if (!run) return res.status(404).json({ error: 'Run not found' });
@@ -5111,6 +5167,7 @@ Rules:
     if (!Array.isArray(cases) || cases.length === 0) {
       return res.status(400).json({ error: 'Reviewed cases are required to continue.' });
     }
+    const selectedExecutionCases = Array.isArray(executionCases) && executionCases.length ? executionCases : cases;
 
     run.status = 'running';
     // The human just finished reviewing cases  -  fold that idle gap into paused_ms
@@ -5120,6 +5177,8 @@ Rules:
       run.paused_ms = (run.paused_ms || 0) + Math.max(0, Date.parse(nowIso()) - Date.parse(run.review_started_at));
       run.review_started_at = null;
     }
+    (run as any).all_generated_cases = cases;
+    (run as any).execution_case_count = selectedExecutionCases.length;
     run.generated_cases = cases;
     (run as any).review_stage = '';
     run.playwright_scripts = [];
@@ -5132,7 +5191,7 @@ Rules:
       // Re-resolve the real credentials (the run only stores a masked copy) so the
       // evidence run can actually log in.
       const liveCreds = resolveCredentials({ targetUrl: run.app_url, websiteId: run.websiteId, role: (run.credentials || {}).role, ownerId: ownerScopeForRun(run) }) || undefined;
-      await runPostCaseAgentFlow(run, undefined as any, { test_cases: cases }, run.app_url || '', liveCreds);
+      await runPostCaseAgentFlow(run, undefined as any, { test_cases: selectedExecutionCases }, run.app_url || '', liveCreds);
     } catch (err: any) {
       console.error('AI Continue Error:', err);
       markRunDone(run, 'failed');
@@ -5158,7 +5217,7 @@ Rules:
     const killed = killRunProcesses(run.id);
     pushPhase(run, { agent: 'System', status: 'cancelled', output: `Run stopped by user.${killed ? ` Terminated ${killed} running process(es).` : ''}` });
     await persistAgentQualityArtifacts(run).catch((err) => console.warn('Failed to persist cancelled agent run:', err));
-    persistDataInBackground('cancel agent run');
+    await saveAgentRunState(run, 'cancel agent run');
     res.json({ success: true, status: 'cancelled', killed });
   });
 
@@ -5169,7 +5228,7 @@ Rules:
 
     const hasInspection = !!run.inspection_context;
     const hasCases = Array.isArray(run.generated_cases) && run.generated_cases.length > 0;
-    if (!hasInspection) {
+    if (!hasInspection || !groundingIsFresh(run)) {
       // Inspection never produced usable context  -  nothing cheap to resume from; the
       // client should kick off a fresh run (which re-inspects).
       return res.json({ success: false, needsFullRestart: true });
@@ -5237,6 +5296,7 @@ Rules:
     if (!hits.length) return '\nREPO CONTEXT: searched the selected repository, but no matching source lines were found.\n';
     return `\nREPO CONTEXT: source lines from the selected project. Use these as the source of truth for exact behavior; if they do not prove a detail, keep it generic.\n${hits.map((h) => `FILE ${h.path}\n${h.snippet}`).join('\n\n')}\n`;
   }
+
   app.post('/api/agent/rework-case', async (req, res) => {
     try {
       const { testCase, feedback, targetUrl } = req.body;

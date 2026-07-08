@@ -211,6 +211,7 @@ CREATE TABLE IF NOT EXISTS agent_runs (
   test_case_id      TEXT,
   credentials       JSONB DEFAULT '{}'::jsonb,
   artifact_name     TEXT DEFAULT '',
+  raw               JSONB DEFAULT '{}'::jsonb,
   created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -431,6 +432,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS requirement_case_links_unique ON requirement_c
 DO $$
 DECLARE t text;
 BEGIN
+  ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS raw JSONB DEFAULT '{}'::jsonb;
   FOREACH t IN ARRAY ARRAY['plans','suites','cases','runs','defects','reports','scripts','folders','requirements','agent_runs'] LOOP
     EXECUTE format('ALTER TABLE %I ADD COLUMN IF NOT EXISTS project_id TEXT', t);
     EXECUTE format('ALTER TABLE %I ADD COLUMN IF NOT EXISTS app_id TEXT', t);

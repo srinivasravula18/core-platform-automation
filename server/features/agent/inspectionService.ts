@@ -161,8 +161,14 @@ export async function collectPageContext(page: any) {
       .filter(visible)
       .slice(0, 12)
       .map((table) => {
+        const cellText = (row: Element) => {
+          const cells = Array.from(row.querySelectorAll('th,td,[role="columnheader"],[role="cell"],[role="gridcell"]'))
+            .map((cell) => clean(cell.textContent))
+            .filter(Boolean);
+          return cells.length ? cells.join(' | ') : clean(row.textContent);
+        };
         const headers = Array.from(table.querySelectorAll('th, [role="columnheader"]')).slice(0, 20).map((cell) => clean(cell.textContent));
-        const rows = Array.from(table.querySelectorAll('tr, [role="row"]')).slice(0, 8).map((row) => clean(row.textContent));
+        const rows = Array.from(table.querySelectorAll('tr, [role="row"]')).slice(0, 8).map(cellText);
         return {
           label: clean(table.getAttribute('aria-label') || table.closest('section,main,div')?.querySelector('h1,h2,h3')?.textContent || ''),
           headers: headers.filter(Boolean),
