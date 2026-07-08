@@ -1435,6 +1435,103 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
                   {isRunning ? 'Scripts appear after you Continue.' : 'No scripts yet — click Continue on the Cases tab.'}
                 </div>
               )}
+              {expandedScript != null && scripts[expandedScript] && (() => {
+                const i = expandedScript;
+                const s = scripts[i];
+                const key = scriptKey(s, i);
+                const isEditing = editingScript?.key === key;
+                const isEdited = editedScriptCode[key] !== undefined;
+                return (
+                  <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={() => { setExpandedScript(null); setEditingScript(null); }}>
+                    <div className="relative flex max-h-[90dvh] w-full max-w-5xl flex-col overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--bg-card)] shadow-2xl" onClick={(e) => e.stopPropagation()}>
+                      <button
+                        type="button"
+                        onClick={() => { setExpandedScript(Math.max(0, i - 1)); setEditingScript(null); }}
+                        disabled={i === 0}
+                        title="Previous script"
+                        className="absolute left-3 top-1/2 z-10 -translate-y-1/2 rounded border border-[var(--border)] bg-[var(--bg-secondary)] p-2 text-[var(--text-secondary)] shadow-lg hover:border-[var(--accent)] disabled:opacity-40"
+                      >
+                        <ChevronLeft className="h-4 w-4" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => { setExpandedScript(Math.min(scripts.length - 1, i + 1)); setEditingScript(null); }}
+                        disabled={i >= scripts.length - 1}
+                        title="Next script"
+                        className="absolute right-3 top-1/2 z-10 -translate-y-1/2 rounded border border-[var(--border)] bg-[var(--bg-secondary)] p-2 text-[var(--text-secondary)] shadow-lg hover:border-[var(--accent)] disabled:opacity-40"
+                      >
+                        <ChevronRight className="h-4 w-4" />
+                      </button>
+                      <div className="flex items-center gap-2 border-b border-[var(--border)] px-3 py-2">
+                        <div className="min-w-0 flex-1">
+                          <div className="truncate font-mono text-sm font-semibold text-[var(--text-primary)]">{s.filename || `script-${i + 1}.spec.ts`}</div>
+                          <div className="text-[10px] text-[var(--text-muted)]">Script {i + 1} of {scripts.length}</div>
+                        </div>
+                        {isEdited && <span className="rounded border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[9px] font-semibold uppercase text-amber-400">edited</span>}
+                        {!isEditing && (
+                          <button
+                            type="button"
+                            onClick={() => setEditingScript({ key, draft: s.code || '' })}
+                            className="inline-flex items-center gap-1 rounded border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-[11px] font-medium text-[var(--text-secondary)] hover:bg-[var(--bg-card)]"
+                          >
+                            <Pencil className="h-3 w-3" /> Edit
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => { setExpandedScript(null); setEditingScript(null); }}
+                          title="Close"
+                          className="rounded border border-[var(--border)] bg-[var(--bg-secondary)] p-1.5 text-[var(--text-secondary)] hover:border-red-500 hover:text-red-400"
+                        >
+                          <XCircle className="h-4 w-4" />
+                        </button>
+                      </div>
+
+                      <div className="overflow-y-auto px-12 py-3">
+                        {isEditing ? (
+                          <div className="bg-slate-950 p-2">
+                            <textarea
+                              value={editingScript!.draft}
+                              onChange={(e) => setEditingScript({ key, draft: e.target.value })}
+                              spellCheck={false}
+                              className="h-[70dvh] min-h-72 w-full resize-y rounded border border-[var(--border)] bg-slate-950 p-2 font-mono text-[11px] leading-5 text-slate-200 outline-none focus:border-[var(--accent)]"
+                            />
+                            <div className="mt-1.5 flex items-center justify-end gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => setEditingScript(null)}
+                                className="rounded border border-[var(--border)] bg-[var(--bg-card)] px-2 py-1 text-[11px] text-[var(--text-secondary)] hover:bg-[var(--bg-secondary)]"
+                              >
+                                Cancel
+                              </button>
+                              {isEdited && (
+                                <button
+                                  type="button"
+                                  onClick={() => { setEditedScriptCode((m) => { const n = { ...m }; delete n[key]; return n; }); setEditingScript(null); }}
+                                  className="rounded border border-[var(--border)] bg-[var(--bg-card)] px-2 py-1 text-[11px] text-[var(--text-secondary)] hover:bg-[var(--bg-secondary)]"
+                                >
+                                  Reset
+                                </button>
+                              )}
+                              <button
+                                type="button"
+                                onClick={() => { setEditedScriptCode((m) => ({ ...m, [key]: editingScript!.draft })); setEditingScript(null); }}
+                                className="inline-flex items-center gap-1 rounded bg-[var(--accent)] px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-[var(--accent-hover)]"
+                              >
+                                <Save className="h-3 w-3" /> Save
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <pre className="max-h-[75dvh] overflow-auto rounded bg-slate-950 p-3 font-mono text-[11px] leading-5 text-slate-200">
+                            <code>{s.code}</code>
+                          </pre>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
             </div>
           )}
 

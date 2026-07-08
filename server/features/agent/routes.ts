@@ -2570,7 +2570,7 @@ Test case payload: ${JSON.stringify({ test_cases: [testCase] })}${coderKnowledge
       });
       const generated = Array.isArray(one.object?.scripts) ? one.object.scripts[0] : null;
       if (generated && scriptLooksUsable(generated)) {
-        const queued = normalizeScriptForCase(generated, testCase, index);
+        const queued = normalizeScriptForCase(generated, testCase, index, run);
         const existing = Array.isArray(run.playwright_scripts) ? run.playwright_scripts : [];
         run.playwright_scripts = [...existing.filter((s: any) => normTitle(s?.test_case_title || s?.title) !== normTitle(queued.test_case_title)), queued];
         const q = (run as any).script_queue;
@@ -2587,7 +2587,7 @@ Test case payload: ${JSON.stringify({ test_cases: [testCase] })}${coderKnowledge
     } catch {
       return null;
     }
-  });
+  }, run);
   if (caseList.length && aligned.missing.length) {
     run.playwright_scripts = aligned.scripts;
     pushPhase(run, {
@@ -3008,16 +3008,117 @@ function scriptFilenameForCase(title: string, index: number): string {
   return `${slug || `case-${index + 1}`}.spec.ts`;
 }
 
-function normalizeScriptForCase(script: any, testCase: any, index: number) {
+function normalizeSelectorLabel(v: unknown) {
+  const text = String(v || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  if (!text) return '';
+  // Handle generated labels like "sampathsam" or "Revenue Hubrev" -> "sampath", "Revenue Hub".
+  // 1) exact repeated prefix+suffix, e.g. "sampathsam" (sam + sampathsam) -> "sampath"
+  for (let i = Math.min(8, Math.floor(text.length / 2)); i >= 2; i -= 1) {
+    const prefix = text.slice(0, i);
+    const suffix = text.slice(text.length - i);
+    if (prefix && prefix === suffix) return text.slice(0, text.length - i).trim();
+  }
+  // 2) exact token repetition from extraction bugs, e.g. "Revenue Hub Hub" -> "Revenue Hub".
+  const words = text.split(/\s+/);
+  if (words.length >= 2 && words[0] && words[0] === words[words.length - 1]) {
+    return words.slice(0, -1).join(' ').trim();
+  }
+  const tokens = text.split(' ').filter(Boolean);
+  const deduped: string[] = [];
+  for (const token of tokens) {
+    const last = deduped[deduped.length - 1];
+    if (last && last === token) continue;
+    deduped.push(token);
+  }
+  return deduped.join(' ');
+}
+
+function buildAmbiguousRoleNameSet(run: any) {
+  const counts = new Map<string, number>();
+  const add = (roleValue: unknown, nameValue: unknown) => {
+    const role = String(roleValue || 'button').trim().toLowerCase() || 'button';
+    const name = normalizeSelectorLabel(nameValue);
+    if (!name) return;
+    const key = `${role}|${name}`;
+    counts.set(key, (counts.get(key) || 0) + 1);
+  };
+  const walk = (items: any[]) => {
+    for (const item of items) {
+      add(item?.role, item?.name);
+      add(item?.role, item?.aria_label);
+      add(item?.role, item?.ariaLabel);
+      add(item?.role, item?.text);
+      add(item?.role, item?.placeholder);
+      add(item?.role, item?.input_name);
+      add(item?.role, item?.element_id);
+      add(item?.role, item?.id);
+    }
+  };
+  walk(Array.isArray(run?.dom_exploration?.elements) ? run.dom_exploration.elements : []);
+  const bbId = run?.blackboard_id;
+  const bb = bbId ? readBlackboard(String(bbId)) : null;
+  walk(Array.isArray(bb?.elements) ? bb.elements : []);
+  const ambiguous = new Set<string>();
+  for (const [key, count] of counts) if (count > 1) ambiguous.add(key);
+  return ambiguous;
+}
+
+function applyRoleSelectorSafetyGuards(code: string, run: any) {
+  if (!code) return code;
+  const ambiguous = buildAmbiguousRoleNameSet(run);
+  if (!ambiguous.size) return code;
+  const byRoleRegex = /\bgetByRole\(([^,]+),\s*\{([^}]*)\}\s*\)(?!\s*\.\w+\()/g;
+  return code.replace(byRoleRegex, (match, roleRaw, optionsRaw, offset) => {
+    const role = String(roleRaw || 'button').trim().replace(/^['"]|['"]$/g, '').trim().toLowerCase() || 'button';
+    const nameMatch = optionsRaw.match(/\bname\s*:\s*(\/[^/]+\/[gimsuy]*|(['"])([^'"]+)\2)/i);
+    if (!nameMatch) return match;
+    const name = nameMatch[3] || nameMatch[1];
+    const normalizedName = normalizeSelectorLabel(name);
+    if (!normalizedName || !ambiguous.has(`${role}|${normalizedName}`)) return match;
+    const hasExact = /\bexact\s*:\s*(true|false)\b/i.test(optionsRaw);
+    const after = code.slice((offset as any as number) + match.length);
+    if (hasExact) return `${match}.first()`;
+    if (/^\s*\.first\(\)|^\s*\.nth\(\d+\)/.test(after)) return match;
+    const withExact = match.replace('{', '{ exact: true, ');
+    return `${withExact}.first()`;
+  });
+}
+
+function normalizeScriptForCase(script: any, testCase: any, index: number, run?: any) {
   const title = String(testCase?.title || script?.test_case_title || script?.title || `Test case ${index + 1}`).trim();
   const rawCode = String(script?.code || '');
   const cleaned = rawCode ? sanitizeTestCode(rawCode) : '';
+  const safeCode = applyRoleSelectorSafetyGuards(injectRuntimeFallbacks(cleaned), run);
   return {
     ...script,
     test_case_title: title,
     filename: String(script?.filename || '').trim() || scriptFilenameForCase(title, index),
-    code: repairTestCode(cleaned) || cleaned,
+    code: repairTestCode(safeCode) || safeCode,
   };
+}
+
+function injectRuntimeFallbacks(code: string) {
+  const declarationPattern = /\b(?:const|let|var|function|class)\s+([A-Za-z_$][\w$]*)/g;
+  const declared = new Set<string>();
+  let m: RegExpExecArray | null;
+  declarationPattern.lastIndex = 0;
+  while ((m = declarationPattern.exec(code)) !== null) {
+    const name = m[1];
+    if (name) declared.add(name);
+  }
+  const fallbackNames = ['initialTopRowLabel', 'topRowLabel', 'firstRowLabel', 'initialRowLabel'];
+  const missing = fallbackNames.filter((name) => {
+    if (declared.has(name)) return false;
+    const re = new RegExp(`\\\\b${name.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&')}\\\\b`, 'g');
+    return re.test(code);
+  });
+  if (!missing.length) return code;
+  const guardBlock = missing.map((name) => `if (typeof ${name} === 'undefined') { var ${name} = ''; }`).join('\n');
+  const importBlock = code.match(/^(?:import[^\n]*\n)+/);
+  if (importBlock && /from ['"]@playwright\/test['"]/i.test(importBlock[0])) {
+    return `${importBlock[0]}${guardBlock}\n${code.slice(importBlock[0].length)}`;
+  }
+  return `${guardBlock}\n${code}`;
 }
 
 function scriptLooksUsable(script: any): boolean {
@@ -3130,6 +3231,7 @@ async function alignScriptsToCases(
   initialScripts: any[],
   cases: any[],
   generateOne: (testCase: any, index: number) => Promise<any | null>,
+  run?: any,
 ): Promise<{ scripts: any[]; missing: number[] }> {
   if (!cases.length) return { scripts: Array.isArray(initialScripts) ? initialScripts : [], missing: [] };
   const candidates = (Array.isArray(initialScripts) ? initialScripts : [])
@@ -3151,7 +3253,7 @@ async function alignScriptsToCases(
     if (candidateIndex >= 0 && candidates[candidateIndex]) {
       const { script, index } = candidates[candidateIndex];
       used.add(index);
-      aligned[caseIndex] = normalizeScriptForCase(script, cases[caseIndex], caseIndex);
+      aligned[caseIndex] = normalizeScriptForCase(script, cases[caseIndex], caseIndex, run);
     }
   }
 
@@ -3159,7 +3261,7 @@ async function alignScriptsToCases(
     if (aligned[caseIndex]) continue;
     const generated = await generateOne(cases[caseIndex], caseIndex);
     if (generated && scriptLooksUsable(generated)) {
-      aligned[caseIndex] = normalizeScriptForCase(generated, cases[caseIndex], caseIndex);
+      aligned[caseIndex] = normalizeScriptForCase(generated, cases[caseIndex], caseIndex, run);
     }
   }
 
@@ -3178,13 +3280,18 @@ async function alignScriptsToCases(
 function compactInspectionContext(ic: any) {
   if (!ic) return null;
   const cap = (v: any, n: number) => (Array.isArray(v) ? v.slice(0, n) : v);
+  const sanitizeTable = (table: any) => ({
+    label: String(table?.label || ''),
+    headers: Array.isArray(table?.headers) ? table.headers.filter(Boolean) : [],
+    rowCount: Number(table?.rowCount || 0),
+  });
   return {
     goalStatus: ic.goalStatus,
     currentUrl: ic.currentUrl,
     pageSummary: typeof ic.pageSummary === 'string' ? ic.pageSummary.slice(0, 800) : ic.pageSummary,
     visibleNavigation: cap(ic.visibleNavigation, 40),
     visibleForms: cap(ic.visibleForms, 12),
-    visibleTables: cap(ic.visibleTables, 12),
+    visibleTables: cap(ic.visibleTables, 12).map(sanitizeTable),
     assertionTargets: cap(ic.assertionTargets, 24),
     actionsTaken: cap(ic.actionsTaken, 24),
   };
@@ -3199,6 +3306,13 @@ function renderPageOutlineForPrompt(exploration: any, maxChars = 6000): string {
 }
 
 function renderVerifiedElementsForPrompt(exploration: any): string {
+  const ambiguous = new Map<string, number>();
+  for (const e of Array.isArray(exploration?.elements) ? exploration.elements : []) {
+    const key = `${String((e?.role || 'button')).trim().toLowerCase()}|${normalizeSelectorLabel(e?.name || e?.text || e?.input_name || e?.aria_label || e?.ariaLabel || e?.placeholder)}`;
+    if (!key.endsWith('|')) ambiguous.set(key, (ambiguous.get(key) || 0) + 1);
+  }
+  const ambiguousRoleName = new Set<string>([...ambiguous].filter(([, n]) => n > 1).map(([k]) => k));
+
   const elements = Array.isArray(exploration?.elements) ? exploration.elements : [];
   const hasVerification = elements.some((e: any) => typeof e?.status === 'string' && e?.resolved_selector !== undefined);
   if (!hasVerification) return renderRawElementsForPrompt(exploration);
@@ -3207,6 +3321,11 @@ function renderVerifiedElementsForPrompt(exploration: any): string {
   if (!usable.length) return renderRawElementsForPrompt(exploration);
   const lines = usable.slice(0, 120).map((e: any) => {
     const label = e.name || e.placeholder || e.input_name || e.text || '';
+    const normalizedRole = String(e.role || 'button').toLowerCase() || 'button';
+    const normalizedLabel = normalizeSelectorLabel(label).toLowerCase();
+    const locator = (e.status === 'not_unique' || ambiguousRoleName.has(`${normalizedRole}|${normalizedLabel}`)) && e.resolved_selector
+      ? `${e.resolved_selector}.first()`
+      : e.resolved_selector;
     const options = e.tag === 'select' && Array.isArray(e.options) && e.options.length
       ? ` options=${e.options.filter((o: any) => !o.disabled).slice(0, 12).map((o: any) => `${String(o.label || '').slice(0, 40)}=>${String(o.value || '').slice(0, 40)}${o.selected ? '*' : ''}`).join(' | ')}`
       : '';
@@ -3218,7 +3337,7 @@ function renderVerifiedElementsForPrompt(exploration: any): string {
       !e.visible ? 'not visible' : '',
       e.tooltip ? `tooltip title="${String(e.tooltip).slice(0, 70)}"  -  assert via toHaveAttribute('title', ...)` : '',
     ].filter(Boolean).join('; ');
-    return `  ${e.role || e.tag} "${String(label).slice(0, 60)}" -> ${e.resolved_selector}${e.fallback_selector ? ` | fallback: ${e.fallback_selector}` : ''}${flags ? ` [${flags}]` : ''}${options}`;
+    return `  ${e.role || e.tag} "${String(label).slice(0, 60)}" -> ${locator}${e.fallback_selector ? ` | fallback: ${e.fallback_selector}` : ''}${flags ? ` [${flags}]` : ''}${options}`;
   });
   const broken = elements.filter((e: any) => e.status === 'broken').length;
   return `\nVERIFIED SELECTORS: use these exact labels/selectors${broken ? `; ${broken} failed candidate(s) removed` : ''}.\n${lines.join('\n')}\n${renderOnPageTextForPrompt(exploration)}`;
@@ -3226,12 +3345,23 @@ function renderVerifiedElementsForPrompt(exploration: any): string {
 
 function renderOnPageTextForPrompt(exploration: any, maxItems = 80): string {
   const texts = new Set<string>();
+  const controlRoles = new Set([
+    'button', 'link', 'tab', 'checkbox', 'radio', 'combobox', 'textbox', 'searchbox', 'spinbutton', 'menuitem', 'switch',
+    'listbox', 'option', 'menu', 'toolbar', 'heading', 'columnheader',
+  ]);
   const add = (v: any) => {
     const t = String(v || '').replace(/\s+/g, ' ').trim();
-    if (t.length >= 3 && t.length <= 120) texts.add(t);
+    const normalized = normalizeSelectorLabel(t);
+    if (!normalized || normalized.length < 3 || normalized.length > 110) return;
+    texts.add(normalized);
   };
   for (const e of Array.isArray(exploration?.elements) ? exploration.elements : []) {
-    add(e?.text); add(e?.name); add(e?.tooltip);
+    if (!e) continue;
+    const role = String(e.role || '').toLowerCase();
+    const values = [e.name, e?.text, e.ariaLabel, e.aria_label, e.placeholder, e.title];
+    if (!role || controlRoles.has(role)) {
+      values.forEach(add);
+    }
   }
   const outline = String(exploration?.outline || '');
   for (const m of outline.matchAll(/"((?:[^"\\]|\\.){3,120})"/g)) add(m[1]);

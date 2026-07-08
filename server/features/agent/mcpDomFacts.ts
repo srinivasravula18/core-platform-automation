@@ -23,7 +23,7 @@ type McpDomFacts = {
   missingIntentTerms: string[];
   actionables: McpDomFact[];
   assertions: McpDomFact[];
-  tables: { label: string; headers: string[]; sampleRows: Record<string, string>[] }[];
+  tables: { label: string; headers: string[]; rowCount: number }[];
   accessibilitySnapshot: string;
   coverage: { actionables: number; assertions: number; tables: number };
 };
@@ -98,6 +98,43 @@ export async function collectMcpDomFacts(opts: {
     const snapshot = textFromMcp(await session.client.callTool({ name: 'browser_snapshot', arguments: {} }).catch(() => null)).slice(0, 12_000);
     const facts = await evaluateJson(session, `() => {
       const clean = (v) => String(v || '').replace(/\\s+/g, ' ').trim();
+      const collapseRepeatedSuffix = (value) => {
+        const text = clean(value);
+        if (!text) return '';
+        for (let i = Math.min(8, Math.floor(text.length / 2)); i >= 2; i -= 1) {
+          const prefix = text.slice(0, i).toLowerCase();
+          const suffix = text.slice(text.length - i).toLowerCase();
+          if (prefix && suffix === prefix) return text.slice(0, text.length - i);
+        }
+        return text;
+      };
+      const dedupeRepeated = (value) => {
+        const text = collapseRepeatedSuffix(value);
+        if (!text) return '';
+        for (let i = Math.floor(text.length / 2); i >= 2; i -= 1) {
+          const head = text.slice(0, i);
+          if (head && text.slice(i, 2 * i).toLowerCase() === head.toLowerCase()) return head;
+        }
+        return text;
+      };
+      const normalizeLabel = (value) => {
+        const text = dedupeRepeated(value);
+        const tokens = text.split(' ').filter(Boolean);
+        const deduped = [];
+        for (const token of tokens) {
+          if (deduped.length && deduped[deduped.length - 1] === token) continue;
+          deduped.push(token);
+        }
+        return deduped.join(' ');
+      };
+      const directText = (el) => {
+        const nodes = Array.from(el.childNodes || []);
+        const pieces = nodes
+          .filter((node) => node.nodeType === Node.TEXT_NODE)
+          .map((node) => clean(node.textContent || ''))
+          .filter(Boolean);
+        return clean(pieces.join(' '));
+      };
       const visible = (el) => { const r = el.getBoundingClientRect(); const s = getComputedStyle(el); return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none'; };
       const roleOf = (el) => {
         const r = el.getAttribute('role'); if (r) return r;
@@ -106,7 +143,18 @@ export async function collectMcpDomFacts(opts: {
         if (t === 'textarea') return 'textbox'; if (t === 'input') return it === 'checkbox' ? 'checkbox' : it === 'radio' ? 'radio' : 'textbox';
         return '';
       };
-      const labelOf = (el) => clean(el.getAttribute('aria-label') || el.labels?.[0]?.textContent || el.getAttribute('placeholder') || el.getAttribute('title') || el.innerText || el.textContent || el.value || el.getAttribute('name')).slice(0, 90);
+      const labelOf = (el) => {
+        const raw = clean(
+          el.getAttribute('aria-label') ||
+          el.getAttribute('title') ||
+          directText(el) ||
+          el.getAttribute('placeholder') ||
+          clean(el.innerText || el.textContent) ||
+          el.value ||
+          el.getAttribute('name'),
+        );
+        return normalizeLabel(raw).slice(0, 90);
+      };
       const loc = (el, role, label) => {
         const tid = el.getAttribute('data-testid'); if (tid) return 'page.getByTestId(' + JSON.stringify(tid) + ')';
         const id = el.id || ''; if (/^[A-Za-z][\\w-]{1,80}$/.test(id) && !/[a-f0-9]{8,}|\\d{5,}/i.test(id)) return 'page.locator(' + JSON.stringify('#' + id) + ')';
@@ -119,7 +167,8 @@ export async function collectMcpDomFacts(opts: {
         const role = roleOf(el); const label = labelOf(el); if (!label) return null;
         const tag = el.tagName.toLowerCase();
         const kind = role === 'tab' ? 'tab' : role === 'menuitem' ? 'menuitem' : role === 'checkbox' ? 'checkbox' : role === 'radio' ? 'radio' : tag === 'a' ? 'link' : tag === 'select' ? 'select' : tag === 'textarea' ? 'textarea' : tag === 'input' ? 'input' : 'button';
-        return { kind, role: role || tag, label, locator: loc(el, role, label), visible: visible(el), enabled: !el.disabled, value: typeof el.value === 'string' ? el.value : undefined, options: tag === 'select' ? Array.from(el.options || []).map((o) => clean(o.textContent)).filter(Boolean).slice(0, 20) : undefined };
+        const cleanValue = typeof el.value === 'string' ? clean(el.value) : '';
+        return { kind, role: role || tag, label, locator: loc(el, role, label), visible: visible(el), enabled: !el.disabled, value: cleanValue || undefined, options: tag === 'select' ? Array.from(el.options || []).map((o) => clean(o.textContent)).filter(Boolean).slice(0, 20) : undefined };
       };
       const actionables = Array.from(document.querySelectorAll('a,button,input,select,textarea,[role="button"],[role="link"],[role="menuitem"],[role="tab"],[contenteditable="true"]'))
         .map(toFact).filter((x) => x && x.visible && x.locator).slice(0, 120);
@@ -132,7 +181,11 @@ export async function collectMcpDomFacts(opts: {
           const cells = Array.from(row.querySelectorAll('td,[role="gridcell"],[role="cell"]')).map((c) => clean(c.innerText || c.textContent)).slice(0, headers.length || 12);
           const out = {}; cells.forEach((v, i) => out[headers[i] || 'col_' + (i + 1)] = v); return out;
         });
-        return { label: clean(table.getAttribute('aria-label') || table.getAttribute('caption') || ''), headers, sampleRows: rows };
+        return {
+          label: clean(table.getAttribute('aria-label') || table.getAttribute('caption') || ''),
+          headers,
+          rowCount: rows.length,
+        };
       });
       return { page: { url: location.href, title: document.title, headings: Array.from(document.querySelectorAll('h1,h2,h3,[role="heading"]')).map((h) => clean(h.innerText || h.textContent)).filter(Boolean).slice(0, 30) }, actionables, assertions, tables, bodyText: clean(document.body?.innerText).slice(0, 5000) };
     }`);
@@ -162,6 +215,6 @@ export function renderMcpDomFactsForPrompt(facts: any): string {
   if (!facts?.source) return '';
   const actionables = (facts.actionables || []).slice(0, 80).map((f: any) => `- ${f.kind} ${JSON.stringify(f.label)} role=${f.role}`).join('\n');
   const assertions = (facts.assertions || []).slice(0, 60).map((f: any) => `- ${f.role} ${JSON.stringify(f.label)}`).join('\n');
-  const tables = (facts.tables || []).slice(0, 6).map((t: any) => `- table ${JSON.stringify(t.label || '')} headers=${(t.headers || []).join(' | ')} rows=${(t.sampleRows || []).length}`).join('\n');
+  const tables = (facts.tables || []).slice(0, 6).map((t: any) => `- table ${JSON.stringify(t.label || '')} headers=${(t.headers || []).join(' | ')} rows=${Number(t.rowCount || 0)}`).join('\n');
   return `\nPLAYWRIGHT MCP DOM FACTS: live labels/text only. Use selectors only from the verified selector registry.\nPage: ${facts.page?.url || ''} title=${facts.page?.title || ''}\nMissing terms: ${(facts.missingIntentTerms || []).join(', ') || 'none'}\nActionables:\n${actionables || '(none)'}\nAssertions:\n${assertions || '(none)'}\nTables:\n${tables || '(none)'}\n`;
 }

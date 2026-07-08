@@ -205,21 +205,80 @@ const INTERACTIVE_ROLES = new Set([
   'tab', 'menuitem', 'menuitemcheckbox', 'menuitemradio', 'option', 'listbox', 'columnheader', 'gridcell', 'row',
 ]);
 
+function cleanLabel(value: string | null | undefined): string {
+  const clean = (v: any) => String(v || '').replace(/\s+/g, ' ').trim();
+  const text = clean(value);
+  if (!text) return '';
+  for (let i = Math.min(8, Math.floor(text.length / 2)); i >= 2; i -= 1) {
+    const prefix = text.slice(0, i).toLowerCase();
+    if (prefix && text.slice(text.length - i).toLowerCase() === prefix) return text.slice(0, text.length - i);
+  }
+  for (let i = Math.floor(text.length / 2); i >= 2; i -= 1) {
+    const head = text.slice(0, i);
+    if (head && text.slice(i, 2 * i).toLowerCase() === head.toLowerCase()) return head;
+  }
+  const tokens = text.split(' ').filter(Boolean);
+  const out = tokens.filter((token, index, arr) => index === 0 || arr[index - 1] !== token);
+  return out.join(' ');
+}
+
+function directText(el: Element): string {
+  const nodes = Array.from(el.childNodes || []);
+  const pieces = nodes
+    .filter((node) => node.nodeType === Node.TEXT_NODE)
+    .map((node) => String(node.textContent || '').replace(/\s+/g, ' ').trim())
+    .filter(Boolean);
+  return pieces.join(' ').replace(/\s+/g, ' ').trim();
+}
+
 const pullAttrs = (el: any) => {
   const e = el;
   const win = e.ownerDocument.defaultView || window;
   const cs = win.getComputedStyle(e);
   const clean = (v: any) => String(v || '').replace(/\s+/g, ' ').trim();
+  const collapseRepeatedSuffix = (value: string) => {
+    const text = clean(value);
+    if (!text) return '';
+    for (let i = Math.min(8, Math.floor(text.length / 2)); i >= 2; i -= 1) {
+      const prefix = text.slice(0, i).toLowerCase();
+      const suffix = text.slice(text.length - i).toLowerCase();
+      if (prefix && suffix === prefix) return text.slice(0, text.length - i);
+    }
+    return text;
+  };
+  const dedupeRepeated = (value: string) => {
+    const text = collapseRepeatedSuffix(value);
+    if (!text) return '';
+    for (let i = Math.floor(text.length / 2); i >= 2; i -= 1) {
+      const head = text.slice(0, i);
+      if (head && text.slice(i, 2 * i).toLowerCase() === head.toLowerCase()) return head;
+    }
+    return text;
+  };
+  const normalizeLabel = (value: any) => {
+    const text = clean(dedupeRepeated(value));
+    const tokens = text.split(' ').filter(Boolean);
+    const out = tokens.filter((token, index, arr) => index === 0 || arr[index - 1] !== token);
+    return out.join(' ');
+  };
+  const directText = (element: any) => {
+    const nodes = Array.from(element.childNodes || []);
+    const pieces = nodes
+      .filter((node: any) => node.nodeType === win.Node.TEXT_NODE)
+      .map((node: any) => clean(node.textContent || ''))
+      .filter(Boolean);
+    return clean(pieces.join(' '));
+  };
   const tableText = () => {
     if (!e.matches?.('tr,[role="row"]')) return '';
     const cells = Array.from(e.querySelectorAll('th,td,[role="columnheader"],[role="cell"],[role="gridcell"]'))
-      .map((cell: any) => clean(cell.innerText || cell.textContent))
+      .map((cell: any) => normalizeLabel(cell.innerText || cell.textContent))
       .filter(Boolean);
     return cells.join(' | ');
   };
   return {
     tag: e.tagName.toLowerCase(),
-    text: (tableText() || clean(e.innerText)).slice(0, 120) || null,
+    text: (tableText() || normalizeLabel(directText(e))).slice(0, 120) || null,
     role: e.getAttribute('role'),
     ariaLabel: e.getAttribute('aria-label'),
     testId: e.getAttribute('data-testid'),
@@ -228,10 +287,10 @@ const pullAttrs = (el: any) => {
     id: e.id || null,
     href: e.getAttribute('href'),
     type: e.getAttribute('type'),
-    value: typeof e.value === 'string' ? e.value : null,
+    value: typeof e.value === 'string' ? normalizeLabel(e.value) : null,
     options: e.tagName === 'SELECT'
       ? Array.from(e.options || []).map((o: any) => ({
-          label: (o.textContent || '').trim(),
+          label: normalizeLabel(o.textContent || ''),
           value: String(o.value ?? ''),
           selected: Boolean(o.selected),
           disabled: Boolean(o.disabled),
@@ -247,7 +306,7 @@ const pullAttrs = (el: any) => {
     // must assert it via toHaveAttribute('title', ...). Capture the REAL value here.
     title: e.getAttribute('title'),
     visible: cs.visibility !== 'hidden' && cs.display !== 'none' && e.getClientRects().length > 0,
-    labelText: e.labels && e.labels[0] ? (e.labels[0].innerText || '').trim().slice(0, 80) : null,
+    labelText: e.labels && e.labels[0] ? normalizeLabel(e.labels[0].innerText || '').slice(0, 80) : null,
   };
 };
 
@@ -272,7 +331,7 @@ async function resolveSnapshotRefs(page: any, outline: string): Promise<DomEleme
         return {
           ...a,
           role: a.role ?? r.role,
-          accName: r.name ?? a.ariaLabel ?? a.text,
+          accName: cleanLabel(r.name ?? a.ariaLabel ?? a.text),
           interactive: INTERACTIVE_ROLES.has(r.role),
         } as DomElement;
       } catch { return null; } // ref went stale (page mutated) — the sweep still covers it
@@ -328,7 +387,7 @@ async function captureSemanticSnapshot(page: any): Promise<{ outline: string | n
   const have = new Set(elements.map(sig));
   for (const s of swept) {
     const k = sig(s);
-    if (!have.has(k)) { have.add(k); elements.push({ ...s, accName: s.ariaLabel ?? s.labelText ?? s.text }); }
+    if (!have.has(k)) { have.add(k); elements.push({ ...s, accName: cleanLabel((s.ariaLabel ?? s.labelText ?? s.text) as string) }); }
   }
   return { outline, elements };
 }
@@ -440,7 +499,7 @@ function candidatesFor(el: DomElement): { strategy: SelectorStrategy; selector: 
   if (el.dataField) out.push({ strategy: 'data-field', selector: `[data-field="${q(el.dataField)}"]` });
   if (el.ariaLabel) out.push({ strategy: 'aria-label', selector: `[aria-label="${q(el.ariaLabel)}"]` });
   if (el.placeholder) out.push({ strategy: 'placeholder', selector: `[placeholder="${q(el.placeholder)}"]` });
-  const accName = el.ariaLabel || el.text || el.labelText;
+  const accName = cleanLabel(el.ariaLabel || el.text || el.labelText || '');
   if (el.role && accName) out.push({ strategy: 'role+name', selector: `role=${el.role}[name="${q(accName)}"]` });
   if (!el.role && el.tag === 'th' && el.text) out.push({ strategy: 'role+name', selector: `role=columnheader[name="${q(el.text)}"]` });
   if (el.text && el.text.length <= 40) out.push({ strategy: 'text', selector: `text="${q(el.text)}"` });

@@ -39,6 +39,11 @@ const plannerSchema = z.object({
 const destructiveActionPattern = /\b(delete|remove|archive|deactivate|disable|reset|purge|drop|destroy|cancel\s+subscription|purchase|pay\s+now|submit\s+order|confirm\s+delete)\b/i;
 
 function compactPageContext(context: any) {
+  const sanitizeTable = (table: any) => ({
+    label: String(table?.label || ''),
+    headers: Array.isArray(table?.headers) ? table.headers.filter(Boolean) : [],
+    rowCount: Number(table?.rowCount || table?.sampleRows?.length || 0),
+  });
   return {
     url: context.url,
     title: context.title,
@@ -55,7 +60,7 @@ function compactPageContext(context: any) {
       href: action.href,
     })),
     forms: context.forms || [],
-    tables: context.tables || [],
+    tables: Array.isArray(context.tables) ? context.tables.map(sanitizeTable) : [],
     listLikeRegions: context.listLikeRegions || [],
   };
 }
@@ -73,6 +78,59 @@ export async function collectPageContext(page: any) {
 
   return page.evaluate(() => {
     const clean = (value: string | null | undefined) => String(value || '').replace(/\s+/g, ' ').trim();
+    const collapseRepeatedSuffix = (value: string) => {
+      const text = clean(value);
+      if (!text) return '';
+      for (let i = Math.min(8, Math.floor(text.length / 2)); i >= 2; i -= 1) {
+        const prefix = text.slice(0, i).toLowerCase();
+        const end = text.slice(text.length - i).toLowerCase();
+        if (prefix && end === prefix) return text.slice(0, text.length - i);
+      }
+      return text;
+    };
+    const dedupePrefix = (value: string) => {
+      const text = collapseRepeatedSuffix(value);
+      const chars = text.toLowerCase();
+      const maxLen = Math.floor(chars.length / 2);
+      for (let i = 1; i <= maxLen; i += 1) {
+        const head = chars.slice(0, i);
+        if (head && chars.slice(i, 2 * i) === head) return text.slice(0, i);
+      }
+      return text;
+    };
+    const dedupeLabel = (value: string) => {
+      const text = dedupePrefix(String(value || ''));
+      const tokens = text.split(' ').filter(Boolean);
+      if (!tokens.length) return '';
+      const out: string[] = [];
+      for (const token of tokens) {
+        if (out.length && out[out.length - 1] === token) continue;
+        out.push(token);
+      }
+      return out.join(' ');
+    };
+    const cleanLabel = (value: string | null | undefined) => dedupeLabel(String(value || '').replace(/\s+/g, ' ').trim());
+    const directText = (element: Element) => {
+      const nodes = Array.from(element.childNodes || []);
+      const pieces = nodes
+        .filter((node) => node.nodeType === Node.TEXT_NODE)
+        .map((node) => clean(node.textContent || ''))
+        .filter(Boolean);
+      return clean(pieces.join(' '));
+    };
+    const labelFromFormControl = (field: Element) => {
+      const withId = field.getAttribute('id');
+      if (withId) {
+        const explicitLabel = document.querySelector(`label[for="${withId}"]`)?.textContent;
+        const fromExplicit = cleanLabel(explicitLabel);
+        if (fromExplicit) return fromExplicit;
+      }
+      const parentLabel = field.closest('label')?.textContent;
+      const fromParent = cleanLabel(parentLabel);
+      if (fromParent) return fromParent;
+      const nearest = (field as HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement).labels?.[0]?.textContent;
+      return cleanLabel(nearest);
+    };
     const css = (value: string) => {
       if (window.CSS && typeof window.CSS.escape === 'function') return window.CSS.escape(value);
       return value.replace(/[^a-zA-Z0-9_-]/g, '\\$&');
@@ -92,10 +150,10 @@ export async function collectPageContext(page: any) {
       const name = clean(element.getAttribute('name'));
       const role = clean(element.getAttribute('role'));
       const className = clean(element.getAttribute('class'));
-      const text = clean(element.textContent || ariaLabel || placeholder || (element as HTMLInputElement).value);
+      const text = cleanLabel(ariaLabel || placeholder || directText(element) || clean(element.textContent || (element as HTMLInputElement).value));
       const selectorHints = [
         testId && `getByTestId(${JSON.stringify(testId)})`,
-        role && (ariaLabel || text) && `getByRole(${JSON.stringify(role)}, { name: ${JSON.stringify(ariaLabel || text)} })`,
+        role && (ariaLabel || text) && `getByRole(${JSON.stringify(role)}, { name: ${JSON.stringify(cleanLabel(ariaLabel || text))} })`,
         ariaLabel && `getByLabel(${JSON.stringify(ariaLabel)})`,
         placeholder && `getByPlaceholder(${JSON.stringify(placeholder)})`,
         id && `locator('#${css(id)}')`,
@@ -118,7 +176,7 @@ export async function collectPageContext(page: any) {
         const tag = element.tagName.toLowerCase();
         const inputType = clean(element.getAttribute('type'));
         const dom = domFor(element);
-        const text = clean(element.textContent || element.getAttribute('aria-label') || element.getAttribute('title') || element.getAttribute('placeholder') || (element as HTMLInputElement).value);
+        const text = cleanLabel(element.getAttribute('aria-label') || element.getAttribute('title') || element.getAttribute('placeholder') || directText(element) || clean(element.textContent || (element as HTMLInputElement).value));
         return {
           id,
           tag,
@@ -129,7 +187,7 @@ export async function collectPageContext(page: any) {
           text,
           name: clean(element.getAttribute('name')),
           href: element instanceof HTMLAnchorElement ? element.href : '',
-          ariaLabel: clean(element.getAttribute('aria-label') || element.getAttribute('placeholder')),
+          ariaLabel: cleanLabel(element.getAttribute('aria-label') || element.getAttribute('placeholder')),
           dom,
           selectorHints: dom.selectorHints,
         };
@@ -152,7 +210,7 @@ export async function collectPageContext(page: any) {
           tag: field.tagName.toLowerCase(),
           type: clean(field.getAttribute('type') || field.tagName.toLowerCase()),
           name: clean(field.getAttribute('name')),
-          label: clean(field.getAttribute('aria-label') || field.getAttribute('placeholder')),
+          label: cleanLabel(labelFromFormControl(field)),
           dom: domFor(field),
         })),
       }));
@@ -163,16 +221,15 @@ export async function collectPageContext(page: any) {
       .map((table) => {
         const cellText = (row: Element) => {
           const cells = Array.from(row.querySelectorAll('th,td,[role="columnheader"],[role="cell"],[role="gridcell"]'))
-            .map((cell) => clean(cell.textContent))
+            .map((cell) => cleanLabel(cell.textContent))
             .filter(Boolean);
-          return cells.length ? cells.join(' | ') : clean(row.textContent);
+          return cells.length ? cells.join(' | ') : cleanLabel(row.textContent);
         };
         const headers = Array.from(table.querySelectorAll('th, [role="columnheader"]')).slice(0, 20).map((cell) => clean(cell.textContent));
         const rows = Array.from(table.querySelectorAll('tr, [role="row"]')).slice(0, 8).map(cellText);
         return {
           label: clean(table.getAttribute('aria-label') || table.closest('section,main,div')?.querySelector('h1,h2,h3')?.textContent || ''),
           headers: headers.filter(Boolean),
-          sampleRows: rows.filter(Boolean),
           rowCount: rows.length,
         };
       });

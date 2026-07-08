@@ -11,6 +11,28 @@ function clean(value: unknown): string {
   return String(value || '').replace(/\s+/g, ' ').trim();
 }
 
+function dedupeRepeated(value: string): string {
+  const text = clean(value);
+  if (!text) return '';
+  for (let i = 1; i <= Math.floor(text.length / 2); i += 1) {
+    const head = text.slice(0, i);
+    if (head && text.slice(i, 2 * i) === head) return head;
+  }
+  return text;
+}
+
+function normalizeActionLabel(value: unknown): string {
+  const text = clean(dedupeRepeated(String(value || '')));
+  if (!text) return '';
+  const tokens = text.split(' ').filter(Boolean);
+  const deduped: string[] = [];
+  for (const token of tokens) {
+    if (deduped.length && deduped[deduped.length - 1] === token) continue;
+    deduped.push(token);
+  }
+  return deduped.join(' ');
+}
+
 function roleCapabilities(_role: string) {
   return {
     can_create: null,
@@ -375,21 +397,27 @@ export function runSelectorRegistryPhase(input: { run: any; page?: string; onPha
   const seenActions = new Set<string>();
   for (const ctx of inspections) {
     for (const action of actionsFromInspection(ctx)) {
-      const label = clean(action.text || action.ariaLabel || action.name || action.href);
+      const label = normalizeActionLabel(action.text || action.ariaLabel || action.name || action.href);
       if (!label) continue;
-      const key = elementKey(label, 'action');
+      const role = clean(action.role || action.tag || 'button');
+      const normalizedRole = role.toLowerCase() || 'button';
+      const key = elementKey(`${normalizedRole}-${label}`, 'action');
       if (seenActions.has(`${ctx.context_id}|${key}`)) continue;
       seenActions.add(`${ctx.context_id}|${key}`);
       const dom = action.dom || {};
-      const primary = (Array.isArray(action.selectorHints) && action.selectorHints[0])
-        || (dom.testId ? `getByTestId(${JSON.stringify(dom.testId)})` : '')
-        || (dom.ariaLabel ? `getByLabel(${JSON.stringify(dom.ariaLabel)})` : '')
-        || (label ? `getByRole(${JSON.stringify(action.role || 'button')}, { name: ${JSON.stringify(label)} })` : '');
+      const domHints = [
+        ...(Array.isArray(action.selectorHints) ? action.selectorHints : []),
+        dom.testId ? `getByTestId(${JSON.stringify(dom.testId)})` : '',
+        dom.ariaLabel ? `getByLabel(${JSON.stringify(normalizeActionLabel(dom.ariaLabel))})` : '',
+        dom.fieldLabel ? `getByLabel(${JSON.stringify(normalizeActionLabel(dom.fieldLabel))})` : '',
+        label ? `getByRole(${JSON.stringify(normalizedRole || 'button')}, { name: ${JSON.stringify(label)} })` : '',
+      ].filter(Boolean);
+      const primary = domHints[0] || '';
       if (!selectors[key]) {
         selectors[key] = {
           proof_id: key,
           label,
-          role: action.role || 'button',
+          role: action.role || normalizedRole || 'button',
           evidence_type: 'inspection',
           confidence: 'verified',
           metadata_api_name: null,
