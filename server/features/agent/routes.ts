@@ -9,7 +9,7 @@ import { buildCredentialContext, resolveAgentTargetUrl, findSettingsCredentials 
 import { playwrightScriptsSchema, testCasesSchema } from '../../shared/schemas';
 import { buildAgentExecutionSteps, buildCaseDescription, normalizeCaseSteps, normalizeCaseTags } from '../../shared/testCases';
 import { capturePlaywrightEvidence, createAuthStorageState } from '../evidence/evidenceService';
-import { gitGrep, readRepoFile } from '../git-agent/gitAgentService';
+import { gitGrep, readRepoFile, searchCodeWithContext } from '../git-agent/gitAgentService';
 import { analyzeFeatureFromSource, discoverFeatureInventoryFromSource, proposeGapCases } from '../requirements/requirementService';
 import { executePlaywrightScripts, killRunProcesses, sanitizeTestCode, repairTestCode } from '../playwright/executionService';
 import { liveAuthor, emitScript } from './liveAuthor';
@@ -5209,14 +5209,44 @@ Rules:
     }
   });
 
+  function reworkNeedsRepoRead(text: string): boolean {
+    return /\b(repo|code|source|implementation|actual|exact|business rules?|validation|permission|role|api|endpoint|schema|field|selector|label|component|route|logic|behavior)\b/i.test(text);
+  }
+
+  function reworkTerms(text: string): string[] {
+    const stop = new Set(['test', 'case', 'step', 'expected', 'result', 'should', 'when', 'then', 'with', 'this', 'that', 'from', 'into', 'user', 'page']);
+    return [...String(text || '').matchAll(/[A-Za-z][A-Za-z0-9_-]{2,}/g)]
+      .map((m) => m[0])
+      .filter((w) => !stop.has(w.toLowerCase()))
+      .slice(0, 12);
+  }
+
+  function buildReworkRepoContext(input: { scope: any; testCase: any; feedback: string }): string {
+    const hay = `${input.feedback || ''}\n${JSON.stringify(input.testCase || {})}`;
+    if (!reworkNeedsRepoRead(hay)) return '';
+    const repoPath = getProjectRepoPath(input.scope.projectId || '').trim();
+    if (!repoPath) return '\nREPO CONTEXT: requested by intent, but no repository is configured for the selected project.\n';
+    const app = input.scope.appId ? getApp(input.scope.appId) : undefined;
+    const sub = String((app as any)?.repoSubpath || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+    const hits = searchCodeWithContext(reworkTerms(hay), repoPath, {
+      maxFiles: 5,
+      contextLines: 2,
+      maxLinesPerFile: 24,
+      pathspecs: sub ? [`${sub}/**`] : undefined,
+    });
+    if (!hits.length) return '\nREPO CONTEXT: searched the selected repository, but no matching source lines were found.\n';
+    return `\nREPO CONTEXT: source lines from the selected project. Use these as the source of truth for exact behavior; if they do not prove a detail, keep it generic.\n${hits.map((h) => `FILE ${h.path}\n${h.snippet}`).join('\n\n')}\n`;
+  }
   app.post('/api/agent/rework-case', async (req, res) => {
     try {
       const { testCase, feedback, targetUrl } = req.body;
       const scope = reqScope(req);
       const reworkRunScope = { appName: (scope.appId ? getApp(scope.appId)?.name : '') || '', app_url: targetUrl || '' };
+      const repoContext = buildReworkRepoContext({ scope, testCase, feedback: String(feedback || '') });
       const ai = await getOrchestrator('caseReworker', { workspaceId: reqScope(req).userId || 'default' });
       const result = await ai.generateObject<any>({
         prompt: `Target URL: ${targetUrl || 'not provided'}. Current case: ${JSON.stringify(testCase)}. Feedback: ${feedback || 'Improve clarity and coverage.'}
+${repoContext}
 
 Return a complete test case object. Preserve any useful existing fields. If no explicit preconditions are needed, return preconditions as an empty string. Do not omit required keys.`,
         schema: z.object({
