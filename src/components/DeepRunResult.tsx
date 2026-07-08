@@ -81,6 +81,7 @@ type Case = {
 export function DeepRunResult({ taskId }: { taskId: string }) {
   const [tab, setTab] = useState<'cases' | 'code' | 'evidence'>('cases');
   const [cases, setCases] = useState<Case[] | null>(null);
+  const [reworkBaseline, setReworkBaseline] = useState<Case[]>([]);
   const [editing, setEditing] = useState<number | null>(null);
   const [expandedScript, setExpandedScript] = useState<number | null>(null);
   // Inline script editing: editedScriptCode maps a script filename -> the user's edited code.
@@ -107,7 +108,9 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
   // Seed the editable copy once the pipeline has written cases.
   useEffect(() => {
     if (cases === null && run?.generated_cases?.length) {
-      setCases(run.generated_cases.map((c: Case) => ({ ...c, steps: (c.steps || []).map((s) => ({ ...s })) })));
+      const seeded = run.generated_cases.map((c: Case) => ({ ...c, steps: (c.steps || []).map((s) => ({ ...s })) }));
+      setCases(seeded);
+      setReworkBaseline(seeded);
       setSelectedCases(new Set());
     }
   }, [run, cases]);
@@ -143,6 +146,16 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
   const keptMatches = existingMatches.filter((_, i) => !removedMatches.has(i));
   const matchKey = (c: any) => String(c?.id ?? c?.existingCaseId ?? c?.title);
   const list = cases || [];
+  const caseSig = (c: any) => JSON.stringify({
+    title: c?.title || '',
+    description: c?.description || '',
+    preconditions: c?.preconditions || '',
+    priority: c?.priority || '',
+    type: c?.type || '',
+    tags: c?.tags || [],
+    steps: (c?.steps || []).map((s: any) => ({ action: s?.action || '', expected: s?.expected || '' })),
+  });
+  const canReworkCase = (i: number) => Boolean((feedback[i] || '').trim()) || caseSig(list[i]) !== caseSig(reworkBaseline[i]);
 
   const messages = run?.messages || [];
   const latestAgentMessage = (agent: string) => messages.filter((m: any) => m.agent === agent).pop();
@@ -253,6 +266,7 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
       captureEvidence: true,
     };
     setCases((prev) => [newCase, ...(prev || [])]);
+    setReworkBaseline((prev) => [newCase, ...prev]);
     setSelectedCases((prev) => new Set([...prev].map((idx) => idx + 1)));
     setFeedback((prev) => Object.fromEntries(Object.entries(prev).map(([idx, value]) => [Number(idx) + 1, value])));
     setMergePick((prev) => Object.fromEntries(Object.entries(prev).map(([idx, value]) => [Number(idx) + 1, value])));
@@ -261,6 +275,7 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
   };
   const removeCase = (i: number) => {
     setCases((prev) => (prev ? prev.filter((_, idx) => idx !== i) : prev));
+    setReworkBaseline((prev) => prev.filter((_, idx) => idx !== i));
     setSelectedCases((prev) => {
       if (!prev.size) return prev;
       const next = new Set<number>();
@@ -322,7 +337,7 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
   /* ---------- AI actions ---------- */
   const reworkCase = async (i: number) => {
     const c = list[i];
-    if (!c) return;
+    if (!c || !canReworkCase(i)) return;
     setBusy(`rework-${i}`);
     try {
       const res = await fetch('/api/agent/rework-case', {
@@ -333,6 +348,7 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
       const data = await res.json();
       if (res.ok) {
         patchCase(i, data);
+        setReworkBaseline((prev) => prev.map((c, idx) => (idx === i ? data : c)));
         setFeedback((p) => ({ ...p, [i]: '' }));
       }
     } finally {
@@ -1071,7 +1087,7 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
                             </button>
                             <button
                               onClick={() => reworkCase(i)}
-                              disabled={busy === `rework-${i}`}
+                              disabled={busy === `rework-${i}` || !canReworkCase(i)}
                               className="inline-flex items-center gap-1 rounded-md bg-[var(--accent)] px-3 py-1.5 text-[11px] font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50"
                             >
                               {busy === `rework-${i}` ? <Loader2 className="h-3 w-3 animate-spin" /> : <Send className="h-3 w-3" />}
@@ -1227,7 +1243,7 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
                             </button>
                             <button
                               onClick={() => reworkCase(i)}
-                              disabled={busy === `rework-${i}`}
+                              disabled={busy === `rework-${i}` || !canReworkCase(i)}
                               className="inline-flex items-center gap-1 rounded-md bg-[var(--accent)] px-3 py-1.5 text-[11px] font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50"
                             >
                               {busy === `rework-${i}` ? <Loader2 className="h-3 w-3 animate-spin" /> : <Send className="h-3 w-3" />}
