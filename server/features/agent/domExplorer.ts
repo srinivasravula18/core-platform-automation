@@ -11,6 +11,8 @@ export interface DomElement {
   id: string | null;
   href: string | null;
   type: string | null;
+  value?: string | null;
+  options?: { label: string; value: string; selected: boolean; disabled: boolean }[];
   placeholder: string | null;
   disabled: boolean;
   readonly: boolean;
@@ -229,6 +231,15 @@ const pullAttrs = (el: any) => {
     id: e.id || null,
     href: e.getAttribute('href'),
     type: e.getAttribute('type'),
+    value: typeof e.value === 'string' ? e.value : null,
+    options: e.tagName === 'SELECT'
+      ? Array.from(e.options || []).map((o: any) => ({
+          label: (o.textContent || '').trim(),
+          value: String(o.value ?? ''),
+          selected: Boolean(o.selected),
+          disabled: Boolean(o.disabled),
+        }))
+      : [],
     placeholder: e.getAttribute('placeholder'),
     disabled: Boolean(e.disabled),
     readonly: Boolean(e.readOnly),
@@ -470,6 +481,8 @@ export interface VerifiedElement {
   data_field: string | null;
   element_id: string | null;
   type: string | null;
+  value: string | null;
+  options: { label: string; value: string; selected: boolean; disabled: boolean }[];
   href: string | null;
   /** REAL tooltip text from the title attribute (assert via toHaveAttribute('title', ...)) */
   tooltip: string | null;
@@ -541,6 +554,8 @@ export async function exploreAndVerifyPage(opts: {
       data_field: el.dataField,
       element_id: el.id,
       type: el.type,
+      value: el.value ?? null,
+      options: Array.isArray(el.options) ? el.options : [],
       href: el.href,
       tooltip: el.title ?? null,
       interactive: el.interactive !== false,

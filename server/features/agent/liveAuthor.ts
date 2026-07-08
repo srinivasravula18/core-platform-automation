@@ -79,6 +79,11 @@ function locatorStr(d: Desc): string {
   }
 }
 
+function isLoginStep(s: RecordedStep): boolean {
+  const text = `${s.desc.by} ${s.desc.role || ''} ${s.desc.value} ${s.note}`.toLowerCase();
+  return /\b(sign\s*in|log\s*in|login|password|email|username|user name)\b/.test(text);
+}
+
 /** Snapshot the live page into a CLEAN, capped list of actionables with structured locators. */
 async function snapshot(page: Page, evidence: Evidence[], notes: string[] = []): Promise<Actionable[]> {
   const snapshotId = `snap_${randomUUID().slice(0, 8)}`;
@@ -430,7 +435,7 @@ export function emitScript(title: string, opts: { url: string; credentials?: { u
       `  await waitForUiReady();`,
     );
   }
-  steps.forEach((s, i) => {
+  steps.filter((s) => !(u && isLoginStep(s))).forEach((s, i) => {
     const L = locatorStr(s.desc);
     lines.push(`  // proof: selector=${s.selectorProofId}${s.actionProofId ? ` action=${s.actionProofId}` : ''}${s.expectedProofId ? ` expected=${s.expectedProofId}` : ''}`);
     if (s.kind === 'fill') lines.push(`  await ${L}.fill(${JSON.stringify(s.value || '')});`);

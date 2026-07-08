@@ -80,7 +80,7 @@ const AGENT_LABELS: Record<string, { label: string; description: string }> = {
 
 export default function Settings() {
   const { theme, setTheme } = useTheme();
-  const [tab, setTab] = useState<'appearance' | 'providers' | 'prompts' | 'credentials' | 'cost' | 'profiles' | 'deployment'>('providers');
+  const [tab, setTab] = useState<'appearance' | 'providers' | 'prompts' | 'credentials' | 'cost' | 'data' | 'profiles' | 'deployment'>('providers');
   const admin = isAdmin();
 
   const tabs: Array<[typeof tab, string, any]> = [
@@ -88,6 +88,7 @@ export default function Settings() {
     ['prompts', 'System Prompts', MessageSquare],
     ['credentials', 'Credentials', Globe],
     ['cost', 'Cost & Logs', Activity],
+    ...(admin ? [['data', 'Data', Trash2] as [typeof tab, string, any]] : []),
     // Admin-only: create/manage the people who can log in and use the app.
     ...(admin ? [['profiles', 'Profiles', Users] as [typeof tab, string, any]] : []),
     // Admin-only: where repos live on THIS server (so a deployed instance finds the right folders).
@@ -124,8 +125,55 @@ export default function Settings() {
       {tab === 'prompts' && <PromptsSection />}
       {tab === 'credentials' && <CredentialsSection />}
       {tab === 'cost' && <CostSection />}
+      {tab === 'data' && admin && <DataSection />}
       {tab === 'profiles' && admin && <ProfilesSection />}
       {tab === 'deployment' && admin && <DeploymentSection />}
+    </div>
+  );
+}
+
+function DataSection() {
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState<SaveStatus>({ type: 'idle', message: '' });
+
+  const clearArtifacts = async () => {
+    if (!await showConfirm('Delete all folders, plans, suites, cases, runs, scripts, reports, requirements, defects, and generated evidence records? Chat history will be kept.', { tone: 'danger' })) return;
+    setBusy(true);
+    setStatus({ type: 'idle', message: '' });
+    try {
+      const res = await fetch('/api/settings/artifacts', { method: 'DELETE' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || 'Failed to delete artifacts');
+      const total = Object.values(data.removed || {}).reduce((sum: number, value: any) => sum + Number(value || 0), 0);
+      setStatus({ type: 'success', message: `Deleted ${total} stored artifact${total === 1 ? '' : 's'}. Chat history was kept.` });
+    } catch (error: any) {
+      setStatus({ type: 'error', message: error?.message || 'Failed to delete artifacts' });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      <StatusBanner status={status} />
+      <div className="rounded-xl border border-red-500/40 bg-[var(--bg-card)] p-4 shadow-sm sm:p-6">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <h2 className="text-lg font-medium text-red-400">Delete Stored Artifacts</h2>
+            <p className="mt-1 max-w-2xl text-sm text-[var(--text-muted)]">
+              Clears folders, plans, suites, test cases, runs, scripts, reports, requirements, links, defects, agent runs, and selector blackboards. Chat history, settings, credentials, users, projects, and apps are kept.
+            </p>
+          </div>
+          <button
+            onClick={clearArtifacts}
+            disabled={busy}
+            className="inline-flex items-center justify-center gap-2 rounded-md border border-red-500 bg-red-500/10 px-3 py-2 text-sm font-medium text-red-300 hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+            Delete artifacts
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

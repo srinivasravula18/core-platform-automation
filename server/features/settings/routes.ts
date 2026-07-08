@@ -2,7 +2,48 @@ import type { Express } from 'express';
 import { randomUUID } from 'crypto';
 import fs from 'fs';
 import path from 'path';
-import { db, savePersistedSettings, addActivity } from '../../shared/storage';
+import { db, savePersistedData, savePersistedSettings, addActivity } from '../../shared/storage';
+import { isPostgresEnabled, query } from '../../db/pool';
+
+const ARTIFACT_KEYS = [
+  'folders',
+  'plans',
+  'suites',
+  'cases',
+  'runs',
+  'defects',
+  'scripts',
+  'agentRuns',
+  'reports',
+  'requirements',
+  'requirementLinks',
+  'blackboard',
+] as const;
+
+const PG_SOFT_DELETE_TABLES = [
+  'plans',
+  'suites',
+  'cases',
+  'runs',
+  'defects',
+  'scripts',
+  'reports',
+  'requirements',
+  'folders',
+] as const;
+
+async function clearPostgresArtifacts(): Promise<Record<string, number>> {
+  const removed: Record<string, number> = {};
+  const linkRows = await query('DELETE FROM requirement_case_links RETURNING id');
+  removed.requirementLinks = linkRows.length;
+  const agentRows = await query('DELETE FROM agent_runs RETURNING id');
+  removed.agentRuns = agentRows.length;
+  for (const table of PG_SOFT_DELETE_TABLES) {
+    const rows = await query(`UPDATE ${table} SET deleted_at = now() WHERE deleted_at IS NULL RETURNING id`);
+    removed[table] = rows.length;
+  }
+  return removed;
+}
 
 // Count files under a folder (recursively), skipping heavy/irrelevant dirs. Bounded so a huge tree
 // can't hang the request. Used to verify a configured server repo root actually points at real code.
@@ -72,5 +113,22 @@ export function registerSettingsRoutes(app: Express) {
     }
     const { files, truncated } = countRepoFiles(target);
     res.json({ ok: true, exists: true, path: target, fileCount: files, truncated });
+  });
+
+  app.delete('/api/settings/artifacts', async (req, res) => {
+    if ((req as any).authUser?.role !== 'admin') {
+      return res.status(403).json({ error: 'Admin access required.' });
+    }
+    const removed = isPostgresEnabled() ? await clearPostgresArtifacts() : {};
+    const memoryRemoved = Object.fromEntries(
+      ARTIFACT_KEYS.map((key) => {
+        const count = Array.isArray(db[key]) ? db[key].length : 0;
+        db[key] = [];
+        return [key, count];
+      }),
+    );
+    addActivity('Deleted QA artifacts');
+    await savePersistedData();
+    res.json({ ok: true, removed: { ...memoryRemoved, ...removed }, preserved: ['chat history', 'settings', 'users', 'sessions', 'websites', 'projects', 'apps'] });
   });
 }

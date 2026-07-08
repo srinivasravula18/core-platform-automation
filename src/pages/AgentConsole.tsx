@@ -270,9 +270,25 @@ function isRequirementDraftCancel(text: string): boolean {
   return /^(?:cancel|discard|stop|never mind|nevermind)\b/i.test(text.trim());
 }
 
+function isDirectScriptAuthoringRequest(text: string): boolean {
+  const value = String(text || '').toLowerCase();
+  const asksScript = /\b(?:author|record|generate|create|write)\b[\s\S]{0,40}\b(?:playwright\s+)?script\b/.test(value)
+    || /\bspecific\s+script\s+generation\b/.test(value);
+  const hasLiveSteps = /\b(?:open|login|log in|go to|click|fill|select|submit|create|save)\b/.test(value);
+  return asksScript && hasLiveSteps;
+}
+
+function authoredScriptFromTurn(turn: { text?: string; authoredScript?: string }): string {
+  if (turn.authoredScript) return turn.authoredScript;
+  const m = String(turn.text || '').match(/```(?:ts|typescript)?\s*([\s\S]*?)```/i);
+  const code = m?.[1]?.trim() || '';
+  return /\btest\s*\(/.test(code) && /\bpage\./.test(code) ? code : '';
+}
+
 function initialThinkingLabel(text: string, opts: { selectedApps: number; requirementDraftPending: boolean }): string {
   const value = (text || '').toLowerCase();
   if (opts.requirementDraftPending) return 'Updating requirement draft...';
+  if (isDirectScriptAuthoringRequest(text)) return 'Authoring script in a live browser...';
   if (isExplicitRequirementOnlyRequest(text)) return 'Reading source for requirement draft...';
   if (isRequirementWord(value)) return 'Preparing requirement review...';
   if (/\b(?:test\s*)?(?:cases?|scripts?|playwright|suite|plan|run)\b/.test(value)) return 'Preparing test workflow...';
@@ -292,7 +308,7 @@ function initialThinkingLabel(text: string, opts: { selectedApps: number; requir
 
 type Turn =
   | { id: string; role: 'user'; text: string }
-  | { id: string; role: 'assistant'; kind: 'text'; text: string }
+  | { id: string; role: 'assistant'; kind: 'text'; text: string; authoredScript?: string; authoredTargetUrl?: string; screenshotUrls?: string[] }
   | { id: string; role: 'assistant'; kind: 'plan'; plan: any }
   | { id: string; role: 'assistant'; kind: 'deeprun'; taskId: string }
   | { id: string; role: 'assistant'; kind: 'codereview'; analysis: any }
@@ -546,6 +562,7 @@ export default function AgentConsole() {
   // Requirement mode: toggled with Shift+Tab. When on, every message is routed to
   // the requirement-discovery pipeline regardless of phrasing.
   const [reqMode, setReqMode] = useState(false);
+  const [scriptAuthorMode, setScriptAuthorMode] = useState(false);
   const handleProviderChange = useCallback((provider: string) => {
     setSelectedProvider(provider);
     const p = providers.find((x: any) => x.name === provider);
@@ -1275,6 +1292,105 @@ export default function AgentConsole() {
     return named.length && (named.length === 1 || named[0].score > named[1].score) ? [{ name: named[0].name, baseUrl: named[0].baseUrl }] : [];
   }, [getSelectedApps, websites]);
 
+  const authorScriptFromSteps = useCallback(async (thinkingId: string, text: string) => {
+    const namedSite = findWebsiteInText(text, websites);
+    const namedTarget = findTargetInText(text, [...websites, ...projectAppsRef.current]);
+    const selectedTarget = getSelectedApps()[0];
+    const targetUrl =
+      firstUrlInText(text) ||
+      selectedTarget?.baseUrl ||
+      (scopeApp?.baseUrl || '').trim() ||
+      namedTarget?.baseUrl ||
+      namedSite?.baseUrl ||
+      convTargetRef.current?.targetUrl ||
+      '';
+    const normUrl = (u: string) => String(u || '').trim().replace(/\/+$/, '').toLowerCase();
+    const urlSite = targetUrl ? websites.find((w) => normUrl(w.baseUrl) === normUrl(targetUrl)) : undefined;
+    const websiteId = namedSite?.id || urlSite?.id || convTargetRef.current?.websiteId;
+    const websiteName = namedTarget?.name || namedSite?.name || urlSite?.name || convTargetRef.current?.websiteName;
+    if (!targetUrl) {
+      replaceTurn(thinkingId, {
+        id: thinkingId,
+        role: 'assistant',
+        kind: 'text',
+        text: 'Which app should I author the script against? Select an app, mention a saved app name, or paste the URL.',
+      });
+      return;
+    }
+    convTargetRef.current = { targetUrl, websiteId, websiteName };
+    updateThinkingLabel(thinkingId, 'Driving the live app and recording selectors...');
+    const res = await fetch('/api/agent/author-test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: activeAbortRef.current?.signal,
+      body: JSON.stringify({
+        goal: text,
+        app_url: targetUrl,
+        websiteId,
+        projectId: selectedProjectId || undefined,
+        appId: selectedAppId || undefined,
+      }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data?.error || 'Failed to author script from live steps.');
+    const tests = Array.isArray(data?.execution?.tests) ? data.execution.tests : [];
+    const status = data?.execution
+      ? `${data.execution.passed || 0} passed, ${data.execution.failed || 0} failed, ${data.execution.total || 0} total`
+      : 'not executed';
+    const notes = Array.isArray(data?.notes) && data.notes.length
+      ? `\n\nNotes:\n${data.notes.slice(0, 8).map((n: string) => `- ${n}`).join('\n')}`
+      : '';
+    const failures = tests.filter((t: any) => String(t?.status || '').toLowerCase() !== 'passed' && t?.error)
+      .slice(0, 3)
+      .map((t: any) => `- ${t.title || 'test'}: ${String(t.error).split('\n')[0]}`)
+      .join('\n');
+    const screenshots = Array.isArray(data?.screenshotUrls) && data.screenshotUrls.length
+      ? `\n\nScreenshots:\n${data.screenshotUrls.slice(0, 8).map((url: string, i: number) => `![Step ${i + 1}](${url})`).join('\n')}`
+      : '';
+    const attention = data?.attention?.understoodGoal
+      ? `\n\nUnderstanding:\n${data.attention.understoodGoal}${Array.isArray(data.attention.workflow) && data.attention.workflow.length ? `\n${data.attention.workflow.map((s: string, i: number) => `${i + 1}. ${s}`).join('\n')}` : ''}`
+      : '';
+    replaceTurn(thinkingId, {
+      id: thinkingId,
+      role: 'assistant',
+      kind: 'text',
+      authoredScript: data?.script || '',
+      authoredTargetUrl: targetUrl,
+      screenshotUrls: Array.isArray(data?.screenshotUrls) ? data.screenshotUrls : [],
+      text: `Authored script from live browser actions for ${websiteName || targetUrl}.${attention}\n\nExecution: ${status}${data?.goalReached ? '\nGoal reached: yes' : '\nGoal reached: partial'}${failures ? `\n\nFailures:\n${failures}` : ''}${notes}${screenshots}\n\n\`\`\`ts\n${data?.script || ''}\n\`\`\``,
+    });
+  }, [replaceTurn, updateThinkingLabel, websites, scopeApp, getSelectedApps, selectedProjectId, selectedAppId]);
+
+  const rerunAuthoredForScreenshots = useCallback(async (turn: Extract<Turn, { role: 'assistant'; kind: 'text' }>) => {
+    const script = authoredScriptFromTurn(turn);
+    if (!script || busy) return;
+    setBusy(true);
+    try {
+      const res = await fetch('/api/playwright/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          scripts: [{ filename: 'authored-rerun.spec.ts', title: 'authored rerun', code: script }],
+          baseUrl: turn.authoredTargetUrl || convTargetRef.current?.targetUrl || '',
+          runId: `author-rerun-${Date.now()}`,
+          singleSession: true,
+          screenshotMode: 'on',
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || 'Failed to rerun script.');
+      const urls = Array.isArray(data?.screenshotUrls) ? data.screenshotUrls : [];
+      const shots = urls.length
+        ? `\n\nScreenshots:\n${urls.slice(0, 8).map((url: string, i: number) => `![Step ${i + 1}](${url})`).join('\n')}`
+        : '\n\nNo screenshots were produced by the headless rerun.';
+      replaceTurn(turn.id, { ...turn, screenshotUrls: urls, text: `${turn.text.replace(/\n\nNo screenshots were produced by the headless rerun\.$/, '')}${shots}` });
+    } catch (err: any) {
+      replaceTurn(turn.id, { ...turn, text: `${turn.text}\n\nHeadless screenshot run failed: ${err?.message || 'unknown error'}` });
+    } finally {
+      setBusy(false);
+    }
+  }, [busy, replaceTurn]);
+
   // Route a message to the SupervisorAgent (dynamic tool-loop: query_workspace,
   // search_codebase, create_* …) and STREAM its live steps into the thinking turn, so the
   // user sees what the agent is actually doing in real time instead of a static label.
@@ -1528,6 +1644,25 @@ export default function AgentConsole() {
       //    - Plain-text requests like "create requirements only for list view" also bypass
       //      the goal router, so the console drafts a requirement without starting a deep run.
       const requirementOnly = isExplicitRequirementOnlyRequest(text);
+      if (scriptAuthorMode || isDirectScriptAuthoringRequest(text)) {
+        try {
+          updateThinkingLabel(thinkingId, 'Authoring script in a live browser...');
+          await authorScriptFromSteps(thinkingId, text);
+        } catch (err: any) {
+          replaceTurn(thinkingId, {
+            id: thinkingId,
+            role: 'assistant',
+            kind: 'text',
+            text: err?.name === 'AbortError' ? 'Stopped.' : `I could not author that script: ${err?.message || 'unknown error'}.`,
+          });
+        } finally {
+          clearActiveRequest();
+          setBusy(false);
+          inputRef.current?.focus();
+        }
+        return;
+      }
+
       if (reqMode || requirementOnly) {
         try {
           updateThinkingLabel(thinkingId, 'Starting requirement drafting agent...');
@@ -1813,7 +1948,7 @@ export default function AgentConsole() {
         inputRef.current?.focus();
       }
     },
-    [input, busy, editingTurnId, location.pathname, stopListening, replaceTurn, updateThinkingLabel, requestDeepUnderstanding, presentDeepUnderstanding, runRequirementDraft, reqMode, pendingDeep, pendingRequirementDraft, websites, scopeApp, buildHistory, buildDeepContextPrompt, startDeepRun, runViaSupervisor, getSelectedApps],
+    [input, busy, editingTurnId, location.pathname, stopListening, replaceTurn, updateThinkingLabel, requestDeepUnderstanding, presentDeepUnderstanding, runRequirementDraft, reqMode, scriptAuthorMode, pendingDeep, pendingRequirementDraft, websites, scopeApp, buildHistory, buildDeepContextPrompt, startDeepRun, runViaSupervisor, getSelectedApps, authorScriptFromSteps],
   );
 
   // Start the deep run directly from a "Here's what I understood" card's OWN stored data
@@ -2480,6 +2615,17 @@ export default function AgentConsole() {
                       </div>
                       <div className="min-w-0 rounded-2xl rounded-bl-sm border border-[var(--border)] bg-[var(--bg-card)] px-4 py-2.5 text-sm text-[var(--text-primary)]">
                         <MarkdownText value={turn.text} />
+                        {authoredScriptFromTurn(turn) && !(turn.screenshotUrls || []).length && (
+                          <button
+                            type="button"
+                            onClick={() => void rerunAuthoredForScreenshots(turn)}
+                            disabled={busy}
+                            className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2.5 py-1.5 text-xs font-semibold text-[var(--text-primary)] hover:border-[var(--accent)] disabled:opacity-50"
+                          >
+                            <PlayCircle className="h-3.5 w-3.5 text-[var(--accent)]" />
+                            Run headless for screenshots
+                          </button>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -2643,13 +2789,27 @@ export default function AgentConsole() {
                   </div>
                 )}
               </div>
+              <button
+                type="button"
+                onClick={() => setScriptAuthorMode((m) => !m)}
+                title="Author one Playwright script by driving the live app from your exact steps"
+                className={cn(
+                  'inline-flex items-center gap-1 rounded-md border px-2 py-1 text-[11px] font-medium transition-colors',
+                  scriptAuthorMode
+                    ? 'border-[var(--accent)] bg-[var(--accent)]/10 text-[var(--accent)]'
+                    : 'border-[var(--border)] text-[var(--text-muted)] hover:border-[var(--accent)]',
+                )}
+              >
+                <Code2 className="h-3.5 w-3.5" />
+                Script author
+              </button>
               {isListening || interimTranscript || speechError ? (
                 <span className={cn(speechError ? 'text-red-400' : 'text-[var(--text-muted)]')}>
                   {speechError || (interimTranscript ? `Listening: ${interimTranscript}` : 'Listening…')}
                 </span>
               ) : (
                 <span className="hidden sm:inline">
-                  Enter to send · Shift+Enter for a new line · Shift+Tab for {reqMode ? 'normal' : 'requirement'} mode
+                  {scriptAuthorMode ? 'Script author mode: enter exact UI steps' : `Enter to send · Shift+Enter for a new line · Shift+Tab for ${reqMode ? 'normal' : 'requirement'} mode`}
                 </span>
               )}
             </div>

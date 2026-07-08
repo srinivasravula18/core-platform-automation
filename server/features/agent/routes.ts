@@ -2,6 +2,7 @@ import type { Express } from 'express';
 import { randomUUID } from 'crypto';
 import { z } from 'zod';
 import { db, addActivity, persistDataInBackground } from '../../shared/storage';
+import { readBlackboard } from './blackboard';
 import { getFolderPath, resolveFolderForAgent } from '../../shared/folders';
 import { getAIErrorMessage } from '../../shared/ai';
 import { buildCredentialContext, resolveAgentTargetUrl, findSettingsCredentials } from '../../shared/url';
@@ -34,7 +35,7 @@ function getSelectorMap(repoPath: string, opts: { appId?: string; subpath?: stri
     return m;
   } catch { return null; }
 }
-/** Selector map scoped to the run's selected app (its repo subpath + appId) — never the sibling app's. */
+/** Selector map scoped to the run's selected app (its repo subpath + appId)  -  never the sibling app's. */
 function getRunSelectorMap(run: any): SelectorMap | null {
   const repoPath = getProjectRepoPath(run?.projectId || '').trim();
   const app = run?.appId ? getApp(run.appId) : undefined;
@@ -80,7 +81,7 @@ import { isNoiseTurn, deriveUnderstandingFromChat, resolveUnderstanding } from '
 function wantsCodeGroundedTestUnderstanding(value: string): boolean {
   const text = String(value || '').toLowerCase();
   // A bare "test <feature>" verb (e.g. "test list view at Accounts CRM") is a test-generation
-  // request too — not just literal "test cases"/"coverage" — so include `test` as a trigger.
+  // request too  -  not just literal "test cases"/"coverage"  -  so include `test` as a trigger.
   // Without it those requests skip code grounding and fall back to the terse understanding.
   return /\b(test|cases?|test\s*areas?|coverage|scenarios?|qa|regression|what\s+(?:can|should)\s+i\s+test|write|create|generate|draft)\b/.test(text)
     && /\b(test|case|cases|qa|coverage|scenario|scenarios|regression)\b/.test(text);
@@ -110,6 +111,14 @@ function listRepoSrcApps(repoPath: string): string[] {
 
 function wantsGenericOrAllApps(text: string): boolean {
   return /\b(all apps?|every app|generic(?:ally)?|common feature|shared feature|not app specific|app[-\s]?agnostic|irrespective of (?:the )?app|everywhere)\b/i.test(String(text || ''));
+}
+
+function wantsPlatformAdminScope(value: string): boolean {
+  const text = String(value || '').toLowerCase();
+  return /\b(?:create|add|new|edit|update|delete)\s+(?:an?\s+)?app\b/.test(text)
+    || /\bapp\s+(?:creation|catalog|management|manager|list|settings?|configuration)\b/.test(text)
+    || /\b(?:parent\s+app|child\s+app|api\s*name|icon[_\s-]*id)\b/.test(text)
+    || (/\bprefix\b/.test(text) && /\blabel\b/.test(text) && /\bapp\b/.test(text));
 }
 
 function platformCandidates(repoPath = ''): string[] {
@@ -197,12 +206,13 @@ function needsExplicitAppScope(prompt: string, selectedApp: any, explicitUrl: st
   const text = String(prompt || '').toLowerCase();
   if (selectedApp || explicitUrl) return '';
   if (wantsGenericOrAllApps(text)) return '';
+  if (wantsPlatformAdminScope(text)) return '';
   if (!/\b(test|run|generate|create|write|draft|validate)\b/.test(text)) return '';
   const configured = platformCandidates(repoPath);
   if (configured.some((name) => text.includes(name.toLowerCase()))) return '';
   const names = repoFeaturePlatforms(prompt, repoPath);
   if (names.length < 2) return '';
-  return `The requested feature appears in multiple repo targets. Which platform should I test it in?\n\nAvailable platforms: ${names.join(' � ')}\n\nReply with a platform name, or say "generic/common/all platforms" to generate shared coverage without choosing one.`;
+  return `The requested feature appears in multiple repo targets. Which platform should I test it in?\n\nAvailable platforms: ${names.join(' · ')}\n\nReply with a platform name, or say "generic/common/all platforms" to generate shared coverage without choosing one.`;
 }
 function latestRunForConversation(conversationId: string, scope: any) {
   const id = String(conversationId || '').trim();
@@ -212,12 +222,25 @@ function latestRunForConversation(conversationId: string, scope: any) {
     .sort((a: any, b: any) => String(b.created_at || '').localeCompare(String(a.created_at || '')))[0] || null;
 }
 
+function stripScriptBlocksFromScope(value: string): string {
+  const stripped = String(value || '')
+    .replace(/```[\s\S]*?```/g, '\n')
+    .split(/\r?\n/)
+    .filter((line) => !/\b(import\s+\{?\s*test|test\.describe\(|test\(|page\.|expect\(|const\s+USERNAME|const\s+PASSWORD)\b/.test(line))
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+  return /\bskipped new selector invention\b/i.test(stripped) && !/\b(?:flow|case|scenario|requirement|expected|steps?)\b/i.test(stripped)
+    ? ''
+    : stripped;
+}
+
 function extractCarriedForwardScope(value: string): string {
   const text = String(value || '');
   const marker = 'Carry forward this prior agent answer as authoritative scope:';
   const idx = text.indexOf(marker);
   if (idx === -1) return '';
-  return stripCodebaseLocationsForAgentConsole(text.slice(idx + marker.length).trim());
+  return stripScriptBlocksFromScope(stripCodebaseLocationsForAgentConsole(text.slice(idx + marker.length).trim()));
 }
 
 function isShortFollowUpAction(value: string): boolean {
@@ -305,31 +328,31 @@ function cleanCaseText(value: any, run: any): string {
 }
 
 // The steps live in their own Steps section, so the description must not repeat them. If the model
-// still embeds a "Test Steps: 1. … Expected: …" block (or a bare "1. … 2. …" list) in the
-// description, strip it and keep only the short lead summary — otherwise the same steps show twice.
+// still embeds a "Test Steps: 1. ... Expected: ..." block (or a bare "1. ... 2. ..." list) in the
+// description, strip it and keep only the short lead summary  -  otherwise the same steps show twice.
 function stripEmbeddedSteps(text: string): string {
   let out = String(text || '');
   out = out.split(/\b(?:test\s+)?steps\s*:/i)[0];
   out = out.split(/\bexpected\s*:/i)[0];
-  out = out.replace(/\s+\d+[.)]\s+\S.*$/s, ''); // bare "1. … 2. …" enumeration with no header
+  out = out.replace(/\s+\d+[.)]\s+\S.*$/s, ''); // bare "1. ... 2. ..." enumeration with no header
   return out.replace(/\s+/g, ' ').trim();
 }
 
 // Cap a title's length WITHOUT ending mid-thought. A plain word-slice left dangling connectors
-// ("… name validation and", "… loads automatically with", "… support lookup") that read as broken.
+// ("... name validation and", "... loads automatically with", "... support lookup") that read as broken.
 // Trim to the word cap, then drop any trailing connector / article / dash so the title stops on a
 // complete word.
 const TITLE_DANGLING = /^(and|or|but|with|to|for|of|in|on|at|by|the|a|an|that|when|which|while|so|is|are|was|were|as|from|into|per|via|no)$/i;
 // The cap is a RUNAWAY guard, not a style enforcer. Verify-convention titles carry an
-// "<app> - <feature area> - verify …" prefix that alone uses ~6-8 words, so a tight cap
-// (the old 18) chopped the behavior clause mid-sentence ("… verify reordering a visible
+// "<app> - <feature area> - verify ..." prefix that alone uses ~6-8 words, so a tight cap
+// (the old 18) chopped the behavior clause mid-sentence ("... verify reordering a visible
 // column is treated"), which is worse than a slightly long title. Style-level brevity is
 // the case writer's job (see CASE_AUTHORING_CONTRACT); this only stops true runaways.
 function capTitleWords(title: string, maxWords = 30): string {
   const words = String(title || '').split(/\s+/).filter(Boolean);
   const kept = words.slice(0, maxWords);
-  while (kept.length > 4 && (TITLE_DANGLING.test(kept[kept.length - 1]) || /^[-–—:]$/.test(kept[kept.length - 1]))) kept.pop();
-  return kept.join(' ').replace(/[\s\-–—:]+$/, '').trim();
+  while (kept.length > 4 && (TITLE_DANGLING.test(kept[kept.length - 1]) || /^[-:]$/.test(kept[kept.length - 1]))) kept.pop();
+  return kept.join(' ').replace(/[\s\-:]+$/, '').trim();
 }
 
 function conciseCaseTitle(value: any, run: any): string {
@@ -346,9 +369,9 @@ function readableCaseTitle(value: any, run: any, _extraText = ''): string {
   const prompt = String(run?.prompt || '').toLowerCase();
   const area = String(run?.appName || '').trim();
 
-  // Use the model's OWN title — it is written from the real codebase understanding + live
+  // Use the model's OWN title  -  it is written from the real codebase understanding + live
   // inspection, so it names what the repo actually does. We only tidy it (strip app-word noise,
-  // ensure it reads as a "verify …" behaviour, cap the length). No keyword→canned-title mapping:
+  // ensure it reads as a "verify ..." behaviour, cap the length). No keyword->canned-title mapping:
   // that discarded the case's real specifics and collapsed distinct cases onto identical titles,
   // which the title de-dupe then silently dropped.
   let title = conciseCaseTitle(raw, { ...run, appName: area });
@@ -415,15 +438,29 @@ function metadataProofTerms(run: any): Set<string> {
 function proofTerms(text: string): string[] {
   return String(text || '')
     .toLowerCase()
-    .match(/[a-z][a-z0-9-]{2,}/g)
+    .split(/[^a-z0-9]+/)
     ?.filter((word) => !CASE_MATCH_STOP.has(word)) || [];
+}
+
+function expandProofTokens(values: Set<string>): Set<string> {
+  const out = new Set(values);
+  for (const value of values) for (const token of proofTerms(value)) out.add(token);
+  return out;
 }
 
 function buildCaseProofIndex(run: any) {
   const live = buildLiveSelectorIndex(run);
   const registry = buildSelectorRegistryIndex((run as any).selector_registry);
   const metadata = metadataProofTerms(run);
-  return { live: live.names, registry: registry.names, metadata };
+  const dom = new Set<string>();
+  const addDom = (e: any) => {
+    [e?.name, e?.aria_label, e?.ariaLabel, e?.text, e?.placeholder, e?.input_name, e?.element_id, e?.id, e?.role, e?.tag, e?.resolved_selector, e?.fallback_selector]
+      .forEach((v) => { const s = String(v || '').replace(/\s+/g, ' ').trim(); if (s) dom.add(s.toLowerCase()); });
+  };
+  for (const e of Array.isArray(run?.dom_exploration?.elements) ? run.dom_exploration.elements : []) addDom(e);
+  const bb = run?.blackboard_id ? readBlackboard(String(run.blackboard_id)) : null;
+  for (const e of Array.isArray(bb?.elements) ? bb.elements : []) addDom(e);
+  return { live: expandProofTokens(new Set([...live.names, ...dom])), registry: expandProofTokens(registry.names), metadata };
 }
 
 function classifyProofForText(text: string, proof: { live: Set<string>; registry: Set<string>; metadata: Set<string> }) {
@@ -462,6 +499,19 @@ function annotateGeneratedCasesWithProof(cases: any[], run: any): any[] {
     };
   });
 }
+
+function failUnrecordedScriptAuthoring(run: any, caseList: any[], authoredScripts: any[], notes: string[]): string {
+  const missing = caseList
+    .map((c: any, i: number) => ({ i, title: c?.title || `Case ${i + 1}` }))
+    .filter((_, i) => !authoredScripts[i]);
+  const reason = `Script authoring blocked: live recording proved ${authoredScripts.length}/${caseList.length} case(s). ` +
+    `Unrecorded case(s): ${missing.map((m) => `${m.i + 1}. ${m.title}`).join(' | ')}. ` +
+    `No LLM fallback was used because unrecorded scripts are selector guesses. ${notes.join(' | ')}`.slice(0, 1800);
+  run.playwright_scripts = authoredScripts;
+  (run as any).execution_result = { ok: false, total: 0, passed: 0, failed: 0, skipped: 0, error: reason, tests: [] };
+  return reason;
+}
+
 function lightOutput(value: any) {
   if (typeof value === 'string') return value.slice(0, 1200);
   if (value == null) return value;
@@ -876,7 +926,7 @@ async function persistAgentCaseArtifacts(run: any) {
     });
   }
 
-  // The suite's tags should reflect the coverage it actually holds — reuse the real tags the
+  // The suite's tags should reflect the coverage it actually holds  -  reuse the real tags the
   // cases were generated with (deduped), not a generic "@agent" label the user doesn't recognize.
   const suiteTags = Array.from(new Set(
     (run.generated_cases || []).flatMap((c: any) => normalizeCaseTags(c.tags || [])),
@@ -1035,7 +1085,7 @@ function setCached(cache: Map<string, { at: number; value: any }>, key: string, 
 }
 
 // Decide how many cases to write. An explicit number the user typed always wins.
-// Otherwise (requested === 0 → "auto" / "as many as possible" / "comprehensive")
+// Otherwise (requested === 0 -> "auto" / "as many as possible" / "comprehensive")
 // scale to the feature's REAL complexity as understood from the source: roughly one
 // case per distinct business rule and candidate scenario, within a sane floor/ceiling
 // so a trivial feature isn't padded and a complex one isn't starved.
@@ -1068,7 +1118,7 @@ function complexityDrivenCaseCount(understanding: any, requested: number): numbe
 
 // Parse an explicit case count the user typed in natural language ("generate 5 test cases",
 // "10 cases", "write 3 tests", "give me 8 scenarios"). Returns 0 when none is stated, so the
-// flow/complexity decides. App-agnostic — pure language parsing, no app specifics.
+// flow/complexity decides. App-agnostic  -  pure language parsing, no app specifics.
 function parseCaseCount(prompt: string): number {
   const text = String(prompt || '').toLowerCase();
   const m = text.match(/\b(\d{1,3})(?:\s+[a-z][a-z-]*){0,5}\s+(?:test\s*)?(?:cases?|tests?|scenarios?)\b/)
@@ -1080,7 +1130,7 @@ function parseCaseCount(prompt: string): number {
 function wantsFeatureInventory(prompt: string, approvedUnderstanding: string): boolean {
   const text = `${prompt || ''} ${approvedUnderstanding || ''}`.toLowerCase();
   // The inventory path fans a request out across MANY units (one case per object/subfeature). Only
-  // a genuinely BROAD request should trigger it — broad intent ("all/every/each/entire/whole/
+  // a genuinely BROAD request should trigger it  -  broad intent ("all/every/each/entire/whole/
   // across/comprehensive/complete") combined with a scope noun (features/modules/app/...), or an
   // explicit end-to-end/coverage ask. A SINGULAR feature request ("the list view feature") must
   // NOT trigger it, or it sprays cases over every object that has that feature (the bug the user
@@ -1091,8 +1141,8 @@ function wantsFeatureInventory(prompt: string, approvedUnderstanding: string): b
   return (broadIntent && broadScope) || (e2e && broadScope);
 }
 
-// Keywords that describe what this run is about — drawn from the prompt and the
-// source understanding — used to find existing test cases that already cover it.
+// Keywords that describe what this run is about  -  drawn from the prompt and the
+// source understanding  -  used to find existing test cases that already cover it.
 function canReusePriorCodeGrounding(source: string, grounding: string): boolean {
   const normalized = String(source || '').toLowerCase();
   // 'requirement' source already has deep code grounding baked into the context string.
@@ -1102,7 +1152,7 @@ function canReusePriorCodeGrounding(source: string, grounding: string): boolean 
 function meaningfulGroundingLines(value: string, limit = 40): string[] {
   return String(value || '')
     .split(/\r?\n/)
-    .map((line) => line.replace(/^\s*(?:[-*•]|\d+[.)])\s*/, '').trim())
+    .map((line) => line.replace(/^\s*(?:[-**]|\d+[.)])\s*/, '').trim())
     .filter((line) => line.length >= 18)
     .filter((line) => !/^(here'?s what i understood|target|task|plan|grounding i found|good test areas)$/i.test(line))
     .slice(0, limit);
@@ -1343,7 +1393,7 @@ function caseMatchKeywords(run: any): string[] {
 
 // Find EXISTING test cases (scoped to the run's project/app) that look related to
 // this request, so the agent can offer reuse instead of regenerating from scratch.
-// Cheap keyword-overlap scorer — surfaces candidates for the human to confirm.
+// Cheap keyword-overlap scorer  -  surfaces candidates for the human to confirm.
 async function findRelatedExistingCases(run: any): Promise<any[]> {
   let all: any[] = [];
   try { all = await Cases.list(); } catch { return []; }
@@ -1539,6 +1589,26 @@ function ensureScenarioCoverage(generated: any[], scenarios: any[], explicitCoun
   return output;
 }
 
+function renderBlackboardForPrompt(run: any, maxItems = 80): string {
+  const entry = run?.blackboard_id ? readBlackboard(String(run.blackboard_id)) : null;
+  const elements = Array.isArray(entry?.elements) ? entry.elements : Array.isArray(run?.dom_exploration?.elements) ? run.dom_exploration.elements : [];
+  if (!elements.length) return '';
+  const usable = elements
+    .filter((e: any) => (e.status === 'verified' || e.status === 'not_unique') && (e.resolved_selector || e.fallback_selector))
+    .slice(0, maxItems);
+  if (!usable.length) return '';
+  const lines = usable.map((e: any) => {
+    const label = e.name || e.aria_label || e.text || e.placeholder || e.element_id || e.id || '';
+    const selector = e.resolved_selector || e.fallback_selector;
+    const opts = e.tag === 'select' && Array.isArray(e.options) && e.options.length
+      ? ` options=${e.options.filter((o: any) => !o.disabled).slice(0, 12).map((o: any) => `${String(o.label || '').slice(0, 40)}=>${String(o.value || '').slice(0, 40)}${o.selected ? '*' : ''}`).join(' | ')}`
+      : '';
+    const state = [e.status === 'not_unique' ? 'not_unique' : '', e.state?.disabled ? 'disabled' : '', e.state?.required ? 'required' : '', e.value ? `value=${e.value}` : ''].filter(Boolean).join(', ');
+    return `- ${e.role || e.tag || 'element'} "${String(label).slice(0, 80)}" -> ${selector}${state ? ` [${state}]` : ''}${opts}`;
+  });
+  const id = entry?.id || run?.blackboard_id || 'current-run-dom';
+  return `\nVERIFIED BLACKBOARD (source of truth from explore_page/DOMExplorer; use these exact labels/selectors and do not invent controls not listed here):\nblackboard_id: ${id}\n${lines.join('\n')}\n`;
+}
 function inventoryGroundingTokens(inventory: any): Set<string> {
   const tokens = new Set<string>();
   const add = (value: unknown) => {
@@ -1595,7 +1665,7 @@ async function persistAgentRunArtifacts(run: any) {
 
   const executionSteps = buildAgentExecutionSteps(run);
   // Count only REAL verdicts. "Not Executed"/"Blocked"/"Skipped" are neither a pass
-  // nor a fail — counting them as passed is the false-green bug we are removing.
+  // nor a fail  -  counting them as passed is the false-green bug we are removing.
   const failed = executionSteps.filter((s: any) => /fail/i.test(String(s.outcome || ''))).length;
   const passed = executionSteps.filter((s: any) => /pass/i.test(String(s.outcome || ''))).length;
   const notVerified = executionSteps.length - passed - failed;
@@ -1653,7 +1723,7 @@ async function persistAgentRunArtifacts(run: any) {
     status: reportStatus,
     failureReason: firstFailure
       ? String(firstFailure.reason || firstFailure.expected || '')
-      : (reportStatus === 'Inconclusive' ? `${notVerified} case(s) were generated but never executed against the target — no verdict.` : ''),
+      : (reportStatus === 'Inconclusive' ? `${notVerified} case(s) were generated but never executed against the target  -  no verdict.` : ''),
     date,
     targetUrl: run.app_url || '',
     folderId: run.folderId || null,
@@ -1669,7 +1739,7 @@ async function persistAgentRunArtifacts(run: any) {
   // Console can show the truth instead of an unconditional green.
   const inspectionOk = !(run as any).inspection_blind;
   // Grounding can only be "ok" if we actually SAW the app AND the cases reference it.
-  // A blind inspection means the cases are NOT grounded — never report grounded:ok then.
+  // A blind inspection means the cases are NOT grounded  -  never report grounded:ok then.
   const groundingOk = inspectionOk && ((run as any).cases_grounding ? (run as any).cases_grounding.ok : true);
   const execVerdict = assessExecution(run.execution_result);
   const overall = inspectionOk && groundingOk && execVerdict.ok ? 'verified'
@@ -1704,20 +1774,27 @@ async function persistAgentRunArtifacts(run: any) {
  * into conflicting conventions: previously each embedded its own title rules
  * ("15-20 words max" vs "10-18 words" vs the system prompt's verify convention),
  * and the contradictions + rule noise measurably degraded output quality by
- * crowding out the actual evidence. App-agnostic — style only, no app facts.
+ * crowding out the actual evidence. App-agnostic  -  style only, no app facts.
  */
+const SOURCE_BOUNDARY_CONTRACT = `SOURCE BOUNDARY RULES (non-negotiable):
+- Production repo code, live DOM/inspection, selector registry, metadata, and the approved agent understanding are the only evidence for application behavior.
+- Existing test cases, previous runs, generated reports, QA artifacts, scripts, fixtures, and conversation memory are NOT product evidence. Use them only as reuse candidates after strict matching; never let them introduce new behavior into cases.
+- Before asking for a child app/object/tab, use the selected platform plus repo/live evidence to decide whether the requested feature is platform-level or app-scoped. If the repo/live evidence shows the feature is global/platform-level, do not ask for an app. If it shows the feature is app-scoped and the user did not name the app/object/tab, ask for that missing scope instead of guessing.
+- For generic feature requests, ground the reusable/shared implementation first, then the selected platform/app integration. Do not choose a convenient default entity, section, object, tab, or record type unless the user named it or the approved understanding names it.
+- If repo/live evidence is missing for a behavior, mark it blocked/manual or omit it. Never fill the gap from old cases, similar apps, model memory, or assumed product conventions.
+- CaseWriter must write only from the approved understanding and current evidence. Any case outside that boundary is invalid and must be dropped before saving.`;
 const CASE_AUTHORING_CONTRACT = `CASE TEXT RULES (apply to every case):
 - Titles must be short, plain-English, QA/business-readable, and name one behavior. Do not force prefixes like app name, surface name, feature name, or "verify" into every title. Prefer titles like "Actions menu shows core options", "Refresh is disabled while loading", or "New is disabled without permission". Never a vague label like "page works" or a compressed fragment like "404 blocks admin entry".
 - When the request or reviewed understanding names a business app/object such as CRM Accounts, use that business name in titles/descriptions; do not expose environment ids such as keystone_local unless that is the only user-facing name available.
 - Never put URLs in titles, descriptions, or steps; mention the selected app/area name instead. Never use "Automations" in a case title.
 - If the selected target/surface conflicts with the source-grounded owner of the requested feature, do NOT blend the names. State the mismatch plainly in the reviewed understanding and generate cases for the actual owning surface only if the user approves that target; mention the originally selected target only when it has a real post-flow behavior to verify.
-- Do not mention authentication, login, sign-in, credentials, username, or password anywhere in the case text unless the user explicitly asked for authentication coverage — login is only ever a silent setup/precondition step, never the subject of a case.
-- Write titles, descriptions, preconditions, and every step action and expected result in plain, black-box, user-facing English: what a user does and sees on screen, in short sentences with common words. NEVER use internal identifiers (camelCase/snake_case names like "created_at" or "appId", component/file/prop names), database or implementation terms ("bootstrap", "deduplication", "persisted", "AND filters", "descending"), or developer phrasing — describe the visible on-screen outcome instead (say "sorted with the newest first", not "created_at descending"; "a default view appears automatically", not "a bootstrap view is created"; "opening it again does not add a duplicate").
-- The description is ONE short plain sentence saying what the case checks and why. Do not restate the steps in it and do not embed a "Test Steps:" or "Expected:" list — the case has a separate Steps section.
+- Do not mention authentication, login, sign-in, credentials, username, or password anywhere in the case text unless the user explicitly asked for authentication coverage  -  login is only ever a silent setup/precondition step, never the subject of a case.
+- Write titles, descriptions, preconditions, and every step action and expected result in plain, black-box, user-facing English: what a user does and sees on screen, in short sentences with common words. NEVER use internal identifiers (camelCase/snake_case names like "created_at" or "appId", component/file/prop names), database or implementation terms ("bootstrap", "deduplication", "persisted", "AND filters", "descending"), or developer phrasing  -  describe the visible on-screen outcome instead (say "sorted with the newest first", not "created_at descending"; "a default view appears automatically", not "a bootstrap view is created"; "opening it again does not add a duplicate").
+- The description is ONE short plain sentence saying what the case checks and why. Do not restate the steps in it and do not embed a "Test Steps:" or "Expected:" list  -  the case has a separate Steps section.
 - STEPS MUST BE DETAILED AND CONCRETE: each step is ONE specific user/system action naming the REAL on-screen element (the exact label/field/button/menu from the evidence) paired with its own specific, OBSERVABLE expected result for that action. No vague steps ("verify it works", "check the page"), no invented labels, no meta/setup scaffolding (CI, seeding, regression jobs). A reviewer must be able to follow the steps by hand and a Playwright script must be able to mirror them 1:1.
-- TEST DESIGN — design coverage deliberately like a senior QA engineer, not just one happy path. Apply the techniques the feature's real behaviour supports: happy path; equivalence partitioning (one case per valid input class); boundary values (empty, minimum, maximum, over-maximum, max-length); decision tables for combined conditions; state transitions (create → edit → delete); negative/invalid input and error states; permission/role (RBAC) differences; and disabled/empty/loading/error states, including WHEN an action is unavailable (e.g. disabled while busy, disabled without permission, disabled for a protected/default item). Cover the highest-value behaviors first; never pad past the requested count.
+- TEST DESIGN  -  design coverage deliberately like a senior QA engineer, not just one happy path. Apply the techniques the feature's real behaviour supports: happy path; equivalence partitioning (one case per valid input class); boundary values (empty, minimum, maximum, over-maximum, max-length); decision tables for combined conditions; state transitions (create -> edit -> delete); negative/invalid input and error states; permission/role (RBAC) differences; and disabled/empty/loading/error states, including WHEN an action is unavailable (e.g. disabled while busy, disabled without permission, disabled for a protected/default item). Cover the highest-value behaviors first; never pad past the requested count.
 - Each case includes automation tags in @ format (@bvt, @sanity, @regression, @smoke, @ui, @positive, @negative, ...). If the user requested specific tag types, apply those exact tags to every generated case.
-- Every case tests the TARGET APPLICATION's own UI/behavior. NEVER write cases about the QA assistant, the chat/conversation, app-selection replies ("verify a follow-up of X applies to the request"), request routing/scoping, or test-generation itself — none of that is application behavior a user can perform in the app under test.`;
+- Every case tests the TARGET APPLICATION's own UI/behavior. NEVER write cases about the QA assistant, the chat/conversation, app-selection replies ("verify a follow-up of X applies to the request"), request routing/scoping, or test-generation itself  -  none of that is application behavior a user can perform in the app under test.`;
 
 /** Generate test cases focused on ONE specific feature from the feature inventory. */
 async function generateCasesForFeature(run: any, feature: any, liveCredentials: any): Promise<any[]> {
@@ -1730,16 +1807,17 @@ async function generateCasesForFeature(run: any, feature: any, liveCredentials: 
     ? `\n${String(run.application_context_prompt)}\n`
     : '';
   const selectorRegistryBlock = renderSelectorRegistryForPrompt((run as any).selector_registry);
+  const blackboardBlock = renderBlackboardForPrompt(run);
 
   const subfeatureBlock = (feature.subfeatures || []).map((s: any) =>
-    `  • ${s.name}: ${s.description || ''}\n    Rules: ${(s.businessRules || []).join('; ') || 'none'}\n    Actions: ${(s.userActions || []).join('; ') || 'none'}`,
+    `  * ${s.name}: ${s.description || ''}\n    Rules: ${(s.businessRules || []).join('; ') || 'none'}\n    Actions: ${(s.userActions || []).join('; ') || 'none'}`,
   ).join('\n');
 
   const caseWriter = await getOrchestrator('caseWriter', { workspaceId: run.ownerId || 'default', effort: run.requestedEffort });
   const result = await caseWriter.generateObject<any>({
     prompt: `Write focused test cases for this specific feature: "${feature.name}".
 ${feature.description ? `Feature description: ${feature.description}` : ''}
-This feature is part of the ${feature.surface || ''} side of the app (context only — never put this word in a title).
+This feature is part of the ${feature.surface || ''} side of the app (context only  -  never put this word in a title).
 Subfeatures to cover:
 ${subfeatureBlock || '  (no repo-grounded subfeatures were provided; do not infer extra behavior)'}
 
@@ -1748,15 +1826,18 @@ Target URL: ${targetUrl || 'not provided'}
 ${credentialContext}
 ${applicationContextBlock}
 ${selectorRegistryBlock}
+${blackboardBlock}
 App inspection result: ${JSON.stringify(compactInspectionContext(inspectionContext))}
 ${renderPageOutlineForPrompt((run as any).dom_exploration)}Code understanding: ${approvedUnderstanding ? approvedUnderstanding.slice(0, 3000) : 'not provided'}
 
 Feature-scope rules:
 - Generate ONE test case per subfeature (or per distinct business rule if no subfeatures).
-- Each case covers ONLY "${feature.name}" — do not test unrelated features.
+- Each case covers ONLY "${feature.name}"  -  do not test unrelated features.
 - Default to normal UI tests only. Do NOT generate API validation/API contract/backend endpoint cases unless the user explicitly asks for API testing.
 - For generic/reusable UI features, use the reusable component groups discovered by CodeAnalyst. Target only controls and behaviours proven in source, live inspection, or selector registry. If metadata or permissions hide/disable a discovered control, cover that observed state; do not replace it with unrelated object/API behavior.
 - Use real on-screen element labels from the inspection result and selector ids from the selector registry when available.
+
+${SOURCE_BOUNDARY_CONTRACT}
 
 ${CASE_AUTHORING_CONTRACT}`,
     schema: testCasesSchema,
@@ -1770,7 +1851,7 @@ ${CASE_AUTHORING_CONTRACT}`,
 
 /**
  * Optional learned-skill text injected into the case-writer and Playwright-coder prompts.
- * The SkillOpt loop's trainable state for the case/script/test-data agents — a plain-markdown
+ * The SkillOpt loop's trainable state for the case/script/test-data agents  -  a plain-markdown
  * skill it edits and validation-gates. App-agnostic (general QA-authoring guidance, never app
  * facts). Read per-request so edits apply without a restart; empty unless the env path is set.
  */
@@ -1788,12 +1869,12 @@ async function generateCasesForRun(
   const credentials = liveCredentials || run.credentials || {};
   // BLOCKING HONESTY GATE (Phase 1): if the inspector saw nothing on the live page, the
   // cases CANNOT be grounded in the real app. Generating them anyway produces ungrounded
-  // "coverage" that masquerades as real — the exact fake-green failure we are removing.
+  // "coverage" that masquerades as real  -  the exact fake-green failure we are removing.
   // Stop the pipeline here instead of writing cases from the prompt alone. (Respect an
-  // explicit user cancel — never overwrite a cancelled run; markRunDone already guards.)
+  // explicit user cancel  -  never overwrite a cancelled run; markRunDone already guards.)
   const liveInspectionVerdict = assessInspection(run.inspection_context);
   if (((run as any).inspection_blind || !liveInspectionVerdict.ok) && run.status !== 'cancelled') {
-    const why = 'Inspection saw nothing on the page — cannot ground test cases in the live app; not generating ungrounded cases.';
+    const why = 'Inspection saw nothing on the page  -  cannot ground test cases in the live app; not generating ungrounded cases.';
     const finalWhy = liveInspectionVerdict.ok ? why : liveInspectionVerdict.reason;
     pushPhase(run, { agent: 'System', status: 'failed', output: finalWhy });
     markRunDone(run, 'failed');
@@ -1830,6 +1911,7 @@ async function generateCasesForRun(
     ? `\n${String(run.application_context_prompt)}\n`
     : '';
   const selectorRegistryBlock = renderSelectorRegistryForPrompt((run as any).selector_registry);
+  const blackboardBlock = renderBlackboardForPrompt(run);
   const knowledgeBlock = buildKnowledgeBlock(
     { knowledgePackId: run.application_context?.app?.knowledgePackId || undefined, websiteId: run.websiteId, targetUrl, text: `${run.scope_context_text || ''} ${prompt} ${approvedUnderstanding}`.trim(), ownerId: run.ownerId },
     { maxChars: 12000 },
@@ -1839,7 +1921,7 @@ async function generateCasesForRun(
     : featureUnderstanding;
   const testCaseCount = complexityDrivenCaseCount(effectiveUnderstanding, requestedCaseCount);
   const understandingBlock = featureUnderstanding
-    ? `\nSOURCE-GROUNDED UNDERSTANDING (from the application's real code — treat as authoritative for business rules, roles, and edge cases):\n${summarizeUnderstanding(featureUnderstanding)}\n`
+    ? `\nSOURCE-GROUNDED UNDERSTANDING (from the application's real code  -  treat as authoritative for business rules, roles, and edge cases):\n${summarizeUnderstanding(featureUnderstanding)}\n`
     : '';
   const featureInventoryBlock = featureInventory
     ? `\nFEATURE/SUBFEATURE COVERAGE BLUEPRINT (from the requirement-based feature inventory; use this to structure cases, not just the top-level feature summary):\n${summarizeFeatureInventory(featureInventory)}\n`
@@ -1848,7 +1930,7 @@ async function generateCasesForRun(
   const scenarioBlock = candidateScenarios.length
     ? `\nREVIEWED REQUIREMENT CANDIDATE SCENARIOS (${candidateScenarios.length}) - this is a coverage contract when no exact user count was requested:\n${scenarioCoverageBlock(candidateScenarios)}\n`
     : '';
-  // The actual chat that led to this run. AUTHORITATIVE for scope — the cases must cover
+  // The actual chat that led to this run. AUTHORITATIVE for scope  -  the cases must cover
   // what the user and agent discussed (e.g. specific objects/users/permissions), not a
   // generic template. Prevents the "cases don't match the conversation" disconnect.
   const conv = (Array.isArray((run as any).chat_history) ? (run as any).chat_history : [])
@@ -1856,18 +1938,18 @@ async function generateCasesForRun(
     // (what the user actually asked for, what the agent actually found) isn't buried.
     .filter((m: any) => m && m.content && !(m.role === 'assistant' && isNoiseTurn(m.content)))
     .slice(-12)
-    // Give substantive assistant answers (e.g. a feature inventory) room to survive —
+    // Give substantive assistant answers (e.g. a feature inventory) room to survive -
     // 800 chars truncated the very inventory the cases must cover.
     .map((m: any) => `${m.role === 'assistant' ? 'assistant' : 'user'}: ${String(m.content).replace(/\s+/g, ' ').trim().slice(0, m.role === 'assistant' ? 2400 : 600)}`)
     .join('\n');
   const conversationBlock = conv
-    ? `\nCONVERSATION THAT LED TO THIS RUN (authoritative for WHICH application features to cover — cover the features/objects/behaviors discussed here, in the TARGET APPLICATION's UI; do not substitute a generic feature set. The conversation itself is NOT a test subject: never write cases about the QA assistant, this chat, app-selection replies, prompts, or how the request was interpreted/scoped — those are not application behavior):\n${conv}\n`
+    ? `\nCONVERSATION THAT LED TO THIS RUN (authoritative for WHICH application features to cover  -  cover the features/objects/behaviors discussed here, in the TARGET APPLICATION's UI; do not substitute a generic feature set. The conversation itself is NOT a test subject: never write cases about the QA assistant, this chat, app-selection replies, prompts, or how the request was interpreted/scoped  -  those are not application behavior):\n${conv}\n`
     : '';
 
   // REAL TEST DATA grounding (MCP/data tools): pull the actual field schema (api_names, types,
   // required, picklist options) + a sample record for the object(s) this prompt is about, so the
   // cases use valid concrete values instead of placeholder guesses. Per-app + access-enforced;
-  // best-effort — never blocks generation.
+  // best-effort  -  never blocks generation.
   let testDataBlock = (run as any).test_data_pack
     ? `\nREAL TEST DATA (from the run's application context - AUTHORITATIVE). Use these EXACT field api_names and valid values when steps create/edit a record; for picklists choose one of the listed options; to edit/delete, act on the example existing record. Do NOT invent field names or placeholder values:\n${(run as any).test_data_pack}\n`
     : '';
@@ -1894,7 +1976,7 @@ async function generateCasesForRun(
         objectHints,
       );
       if (pack) {
-        testDataBlock = `\nREAL TEST DATA (from the live app metadata — AUTHORITATIVE). Use these EXACT field api_names and valid values when steps create/edit a record; for picklists choose one of the listed options; to edit/delete, act on the example existing record. Do NOT invent field names or placeholder values:\n${pack}\n`;
+        testDataBlock = `\nREAL TEST DATA (from the live app metadata  -  AUTHORITATIVE). Use these EXACT field api_names and valid values when steps create/edit a record; for picklists choose one of the listed options; to edit/delete, act on the example existing record. Do NOT invent field names or placeholder values:\n${pack}\n`;
         (run as any).test_data_pack = pack; // shared with the coder so generated code uses the same real values
       }
     }
@@ -1933,13 +2015,14 @@ Playwright target URL: ${targetUrl || 'not provided'}.
 ${credentialContext}
 ${applicationContextBlock}
 ${selectorRegistryBlock}
+${blackboardBlock}
 ${selectedQaPromptText}${conversationBlock}
 Browser inspection result: ${JSON.stringify(compactInspectionContext(inspectionContext))}.
 ${renderPageOutlineForPrompt((run as any).dom_exploration)}${understandingBlock}
-${featureInventoryBlock}${scenarioBlock}${testDataBlock}${readAgentSkill() ? `\nLEARNED QA-AUTHORING SKILL (general case/script guidance refined over prior runs — apply it):\n${readAgentSkill()}\n` : ''}
+${featureInventoryBlock}${scenarioBlock}${testDataBlock}${readAgentSkill() ? `\nLEARNED QA-AUTHORING SKILL (general case/script guidance refined over prior runs  -  apply it):\n${readAgentSkill()}\n` : ''}
 ${requestedCaseCount > 0
-  ? `Produce EXACTLY ${requestedCaseCount} test case(s) — no more and no fewer. The user FIXED this count, so make every case COUNT: cover the MOST IMPORTANT ones for this feature / scenario / business logic / flow FIRST — the critical primary user flows, the core business rules, the highest-risk and most-used behavior, and the key negative / permission / edge cases that matter most. ORDER the cases from most important to least so the ${requestedCaseCount} you return are genuinely the highest-value tests (the set is kept in order). Skip trivial or duplicate checks; do not exceed the count or pad to reach it.`
-  : `Write approximately ${testCaseCount} test case(s) — this target is derived from the feature's real complexity in the source above, so treat it as a guide: cover every distinct business rule, role/permission difference, branch, and negative/edge case the code reveals, and do not pad with trivial duplicates to hit a number. The user asked for comprehensive coverage, so err toward thoroughness over brevity.`}
+  ? `Produce EXACTLY ${requestedCaseCount} test case(s)  -  no more and no fewer. The user FIXED this count, so make every case COUNT: cover the MOST IMPORTANT ones for this feature / scenario / business logic / flow FIRST  -  the critical primary user flows, the core business rules, the highest-risk and most-used behavior, and the key negative / permission / edge cases that matter most. ORDER the cases from most important to least so the ${requestedCaseCount} you return are genuinely the highest-value tests (the set is kept in order). Skip trivial or duplicate checks; do not exceed the count or pad to reach it.`
+  : `Write approximately ${testCaseCount} test case(s)  -  this target is derived from the feature's real complexity in the source above, so treat it as a guide: cover every distinct business rule, role/permission difference, branch, and negative/edge case the code reveals, and do not pad with trivial duplicates to hit a number. The user asked for comprehensive coverage, so err toward thoroughness over brevity.`}
 
 When REVIEWED REQUIREMENT CANDIDATE SCENARIOS are present and no exact user count was requested:
 - Generate at least one test case for every listed candidate scenario.
@@ -1960,9 +2043,11 @@ When the FEATURE/SUBFEATURE COVERAGE BLUEPRINT is present, it is the case-covera
 - Do not collapse multiple unrelated subfeatures into a broad "validate page" case.
 - Default to normal UI tests only. Do NOT generate API validation/API contract/backend endpoint cases unless the user explicitly asks for API testing.
 
-Use the inspection result as the source of truth for reachable pages, visible navigation, forms, tables, list-like regions, and assertion targets. Do not invent unrelated admin pages or menu names. If live inspection is partial or missing a detail, fall back ONLY to the SOURCE-GROUNDED UNDERSTANDING / FEATURE BLUEPRINT / application repo context above; if the repo-grounded context also does not prove the detail, mark that detail as blocked in the case preconditions instead of guessing. If the inspector reached the requested goal, at least one @bvt test case must cover that exact inspected end-to-end path — but that case must be about the FEATURE at the end of the path (e.g. the list view, the form, the record), never about login/authentication itself. If the inspector was partial or blocked, generate cases only for the reachable or repo-proven context and include clear preconditions/steps that show what needs to be verified next.
+Use the inspection result as the source of truth for reachable pages, visible navigation, forms, tables, list-like regions, and assertion targets. Do not invent unrelated admin pages or menu names. If live inspection is partial or missing a detail, fall back ONLY to the SOURCE-GROUNDED UNDERSTANDING / FEATURE BLUEPRINT / application repo context above; if the repo-grounded context also does not prove the detail, mark that detail as blocked in the case preconditions instead of guessing. If the inspector reached the requested goal, at least one @bvt test case must cover that exact inspected end-to-end path  -  but that case must be about the FEATURE at the end of the path (e.g. the list view, the form, the record), never about login/authentication itself. If the inspector was partial or blocked, generate cases only for the reachable or repo-proven context and include clear preconditions/steps that show what needs to be verified next.
 
 When the request involves verifying data views, include steps that verify the visible table/list/grid container, headers, rows or empty-state, and absence of loading/error state using the labels found by inspection.
+
+${SOURCE_BOUNDARY_CONTRACT}
 
 ${CASE_AUTHORING_CONTRACT}${knowledgeBlock}`,
       schema: testCasesSchema,
@@ -1971,7 +2056,7 @@ ${CASE_AUTHORING_CONTRACT}${knowledgeBlock}`,
     generated = (caseResult.object.test_cases as any[]).map((testCase) => ({ ...testCase, captureEvidence: true }));
   }
 
-  // FIXED COUNT (user wish): when the user fixed a case count, enforce it EXACTLY — the model can
+  // FIXED COUNT (user wish): when the user fixed a case count, enforce it EXACTLY  -  the model can
   // over-produce. If it produced more, keep the first N (the prompt ordered them highest-value
   // first). When no count is fixed, the count follows the flow/complexity (untouched here).
   generated = ensureScenarioCoverage(generated, candidateScenarios, requestedCaseCount);
@@ -1982,7 +2067,7 @@ ${CASE_AUTHORING_CONTRACT}${knowledgeBlock}`,
   }
   // Stamp a stable id now, at the ONE point where array order is final. Everything downstream
   // (chat output, review UI, save-cases) must key off this id instead of re-deriving one from
-  // array position later — position shifts the moment a case is deleted in the review UI, which
+  // array position later  -  position shifts the moment a case is deleted in the review UI, which
   // previously caused save-cases to overwrite the wrong row and orphan another.
   generated = generated.map((tc: any, i: number) => (
     tc.id ? tc : { ...tc, id: tc.reused && tc.existingCaseId ? tc.existingCaseId : agentCaseId(run, i) }
@@ -1990,7 +2075,7 @@ ${CASE_AUTHORING_CONTRACT}${knowledgeBlock}`,
   run.generated_cases = generated;
   // GROUNDING GATE (Phase 2): verify the generated cases actually reference what the
   // inspector saw on the live page. If they don't (and the page WAS readable), the
-  // cases were written from the prompt alone — flag it honestly so the run isn't sold
+  // cases were written from the prompt alone  -  flag it honestly so the run isn't sold
   // as grounded coverage.
   const liveGroundingVerdict = assessCasesGrounding(generated, run.inspection_context);
   const inventoryGroundingVerdict = assessCasesInventoryGrounding(generated, run.feature_inventory);
@@ -2005,7 +2090,7 @@ ${CASE_AUTHORING_CONTRACT}${knowledgeBlock}`,
   // SUB-FEATURE COMPLETENESS (book Ch 7/11/19): a feature must not read "tested" while some
   // of its discovered sub-features have zero cases (the silent-coverage-gap failure). We
   // check every sub-feature in the source-discovered inventory against the generated cases
-  // and surface any uncovered ones. Non-blocking on purpose — like the grounding "weak"
+  // and surface any uncovered ones. Non-blocking on purpose  -  like the grounding "weak"
   // flag, this informs the human/report rather than failing an otherwise valid run.
   try {
     const inv: any = run.feature_inventory;
@@ -2024,7 +2109,7 @@ ${CASE_AUTHORING_CONTRACT}${knowledgeBlock}`,
         status: completeness.ok ? 'completed' : 'running',
         output: completeness.ok
           ? `Sub-feature coverage: ${completeness.reason}`
-          : `COVERAGE GAP — ${completeness.reason} Consider find_untested_edges or another generation pass for the uncovered sub-features.`,
+          : `COVERAGE GAP  -  ${completeness.reason} Consider find_untested_edges or another generation pass for the uncovered sub-features.`,
       });
     }
   } catch (err: any) {
@@ -2066,7 +2151,7 @@ ${CASE_AUTHORING_CONTRACT}${knowledgeBlock}`,
   }
 
   // BLOCKING GROUNDING GATE: in the automatic (no-human-review) flow, ungrounded cases
-  // must NOT proceed to script generation/execution as if they were valid — that would
+  // must NOT proceed to script generation/execution as if they were valid  -  that would
   // produce "passes" against cases that don't reflect the live app. Stop here with an
   // honest non-verified verdict instead of executing scripts for ungrounded cases.
   // (review_cases flow already routes through a human, who is the gate there.)
@@ -2074,7 +2159,7 @@ ${CASE_AUTHORING_CONTRACT}${knowledgeBlock}`,
     pushPhase(run, {
       agent: 'System',
       status: 'failed',
-      output: `Generated cases are not grounded in the live application (${groundingVerdict.reason}) — not executing scripts for ungrounded cases.`,
+      output: `Generated cases are not grounded in the live application (${groundingVerdict.reason})  -  not executing scripts for ungrounded cases.`,
     });
     markRunDone(run, 'failed');
     await persistAgentQualityArtifacts(run).catch((err) => console.warn('Failed to persist failed agent artifacts:', err));
@@ -2087,7 +2172,7 @@ ${CASE_AUTHORING_CONTRACT}${knowledgeBlock}`,
 
 /**
  * DISCOVER-THEN-BIND per-case control resolver. Before the coder writes selectors, drive the LIVE
- * app toward EACH case's specific goal — the inspection planner opens menus/overflows/dialogs to
+ * app toward EACH case's specific goal  -  the inspection planner opens menus/overflows/dialogs to
  * REVEAL the controls that case operates (e.g. it opens "List view actions" to expose "Settings").
  * Returns, per case, the access PATH the inspector took plus the CONFIRMED real control labels, so
  * the coder binds to what genuinely exists instead of guessing a hidden control's name. This is the
@@ -2110,7 +2195,7 @@ async function resolveControlsPerCase(
     const steps = Array.isArray(c?.steps)
       ? c.steps.map((s: any) => (typeof s === 'string' ? s : (s?.action || s?.description || ''))).filter(Boolean).join('; ')
       : '';
-    const goal = `${c?.title || `Case ${i + 1}`}.${steps ? ` Steps: ${steps}.` : ''} Reach and REVEAL the exact controls this case operates — open any actions / overflow / settings menu, dialog, or tab needed so the target control is visible.`;
+    const goal = `${c?.title || `Case ${i + 1}`}.${steps ? ` Steps: ${steps}.` : ''} Reach and REVEAL the exact controls this case operates  -  open any actions / overflow / settings menu, dialog, or tab needed so the target control is visible.`;
     try {
       const ctx: any = await inspectApplicationFlow({ targetUrl, prompt: goal, credentials, runId: `${runId}-resolve-${i + 1}`, workspaceId });
       const controls = (ctx.visibleNavigation || [])
@@ -2127,9 +2212,9 @@ async function resolveControlsPerCase(
         .map((a: any) => String(a.text || a.elementId || '').trim())
         .filter(Boolean);
       const ctrls = controls.map((c2: any) => `"${c2.label}"${c2.role ? ` (${c2.role})` : ''}${c2.selectors.length ? ` selectors: ${c2.selectors.join(', ')}` : ''}`).join(' | ');
-      const pathStr = path.length ? path.map((p: string) => `"${p}"`).join(' -> ') : '(already visible — no extra navigation needed)';
-      out[i] = `\nLIVE-RESOLVED CONTROLS for case "${c?.title || `Case ${i + 1}`}" (a live exploration drove the app toward THIS case and opened any menus needed to REVEAL the controls — these are CONFIRMED to exist on the page right now at ${ctx.currentUrl || targetUrl}). Reproduce the access path, then operate the controls by their EXACT labels via getByRole/getByLabel — never invent or paraphrase a label:\n   access path to reveal the controls: ${pathStr}\n   confirmed real controls now visible: ${ctrls}\n`;
-    } catch { /* leave '' — falls back to shared inspection context */ }
+      const pathStr = path.length ? path.map((p: string) => `"${p}"`).join(' -> ') : '(already visible  -  no extra navigation needed)';
+      out[i] = `\nLIVE-RESOLVED CONTROLS for case "${c?.title || `Case ${i + 1}`}" (a live exploration drove the app toward THIS case and opened any menus needed to REVEAL the controls  -  these are CONFIRMED to exist on the page right now at ${ctx.currentUrl || targetUrl}). Reproduce the access path, then operate the controls by their EXACT labels via getByRole/getByLabel  -  never invent or paraphrase a label:\n   access path to reveal the controls: ${pathStr}\n   confirmed real controls now visible: ${ctrls}\n`;
+    } catch { /* leave ''  -  falls back to shared inspection context */ }
   };
   for (let s = 0; s < indexes.length; s += 3) {
     await Promise.all(indexes.slice(s, s + 3).map(resolveOne));
@@ -2176,7 +2261,7 @@ async function runPostCaseAgentFlow(run: any, model: any, testCases: any, target
     : (run.credentials || {});
   pushPhase(run, { agent: 'PlaywrightAgent', status: 'running' });
   // Use the REAL (live) credentials so the generated scripts contain a working
-  // login — run.credentials stores a MASKED password unsuitable for execution.
+  // login  -  run.credentials stores a MASKED password unsuitable for execution.
   const credentialContext = buildCredentialContext(liveCreds);
   const hasLoginCredentials = !!(liveCreds?.username && liveCreds?.password);
   const loginScriptBlock = hasLoginCredentials
@@ -2191,7 +2276,7 @@ Do NOT write comments such as "Auth is expected to be handled by global setup". 
     ? `Selected QA repository context for this automation scope: ${JSON.stringify(run.selectedQaContext)}`
     : 'No selected QA repository context was provided for this automation scope.';
   const coderUnderstanding = run.feature_understanding
-    ? `\nSOURCE-GROUNDED UNDERSTANDING (from the app's real code — use it to assert the right business rules and pick meaningful selectors, but only assert what the inspection context confirms is on screen):\n${summarizeUnderstanding(run.feature_understanding, 2500)}\n`
+    ? `\nSOURCE-GROUNDED UNDERSTANDING (from the app's real code  -  use it to assert the right business rules and pick meaningful selectors, but only assert what the inspection context confirms is on screen):\n${summarizeUnderstanding(run.feature_understanding, 2500)}\n`
     : '';
   const coderFeatureInventory = run.feature_inventory
     ? `\nFEATURE/SUBFEATURE + E2E COVERAGE BLUEPRINT (keep generated scripts aligned to these reviewed case units):\n${summarizeFeatureInventory(run.feature_inventory, 5000)}\n`
@@ -2199,7 +2284,7 @@ Do NOT write comments such as "Auth is expected to be handled by global setup". 
   // CRITICAL FIX (Strike 3): ground the coder on the SAME understanding the case writer
   // used. Previously this prompt printed raw run.approvedUnderstanding, so on the common
   // path where approvedUnderstanding is empty the coder saw "not provided" while the case
-  // writer had the chat-derived understanding — the two agents diverged. resolveUnderstanding
+  // writer had the chat-derived understanding  -  the two agents diverged. resolveUnderstanding
   // applies the identical chat fallback, so coder and case writer now agree.
   const reviewedUnderstanding = resolveUnderstanding(run);
   const applicationContextBlock = run.application_context_prompt
@@ -2223,13 +2308,13 @@ Do NOT write comments such as "Auth is expected to be handled by global setup". 
   } catch { /* memory is an enhancement, never a hard dependency */ }
   const tdPack = (run as any).test_data_pack || '';
   const coderTestData = tdPack
-    ? `\nREAL TEST DATA (from the live app metadata — use these EXACT field api_names and valid values when the case creates/edits a record; for picklists use one listed option; reference the example existing record for edit/delete; do NOT use placeholder/env-var values for the data the case specifies):\n${tdPack}\n`
+    ? `\nREAL TEST DATA (from the live app metadata  -  use these EXACT field api_names and valid values when the case creates/edits a record; for picklists use one listed option; reference the example existing record for edit/delete; do NOT use placeholder/env-var values for the data the case specifies):\n${tdPack}\n`
     : '';
-  // REAL SELECTORS extracted from the app's source — the code is the source of truth for
+  // REAL SELECTORS extracted from the app's source  -  the code is the source of truth for
   // selectors, so the coder uses these instead of guessing (no more guessed /save/i timeouts).
   const codeMap = getRunSelectorMap(run);
   const coderSelectorMap = codeMap
-    ? `\nREAL SELECTORS FROM THE APP SOURCE (the codebase IS the source of truth — use these EXACT labels/names; ground every getByRole name / getByLabel / getByText / getByTestId in one of these; do NOT invent a selector that is not here):\n${renderSelectorMap(codeMap)}\n`
+    ? `\nREAL SELECTORS FROM THE APP SOURCE (the codebase IS the source of truth  -  use these EXACT labels/names; ground every getByRole name / getByLabel / getByText / getByTestId in one of these; do NOT invent a selector that is not here):\n${renderSelectorMap(codeMap)}\n`
     : '';
   const coderSelectorRegistry = renderSelectorRegistryForPrompt((run as any).selector_registry);
   const repoLabelHints = codeMap ? [
@@ -2250,17 +2335,10 @@ Do NOT write comments such as "Auth is expected to be handled by global setup". 
     return;
   }
   const coder = await getOrchestrator('playwrightCoder', { workspaceId: run.ownerId || 'default', effort: run.requestedEffort });
-  const caseList = Array.isArray(testCases?.test_cases) ? testCases.test_cases : [];
-  const verifiedCaseCount = caseList.filter((testCase: any) => testCase?.automationReadiness === 'verified').length;
-  if (caseList.length && verifiedCaseCount === 0) {
-    const why = 'Script generation blocked: no generated case has verified UI proof yet. Review the cases, narrow the scope, or gather deeper live inspection before authoring Playwright.';
-    pushPhase(run, { agent: 'PlaywrightAgent', status: 'failed', output: why });
-    (run as any).execution_result = { ok: false, total: 0, passed: 0, failed: 0, skipped: caseList.length, error: why, tests: [] };
-    markRunDone(run, 'failed');
-    await persistAgentQualityArtifacts(run).catch((err) => console.warn('Failed to persist proof-gated script-generation artifacts:', err));
-    persistDataInBackground('proof-gated script generation blocked');
-    return;
-  }  if (targetUrl && caseList.length) {
+  const rawCaseList = Array.isArray(testCases?.test_cases) ? testCases.test_cases : [];
+  const caseList = annotateGeneratedCasesWithProof(normalizeGeneratedCasesText(rawCaseList, run), run);
+  run.generated_cases = caseList;
+  if (targetUrl && caseList.length) {
     pushPhase(run, { agent: 'LiveAuthor', status: 'running', output: 'Driving the live app first so scripts are recorded from verified selectors instead of guessed.' });
     const authoredScripts: any[] = [];
     const authoredNotes: string[] = [];
@@ -2302,15 +2380,18 @@ Do NOT write comments such as "Auth is expected to be handled by global setup". 
       (run as any).live_author_evidence = authoredEvidence;
       pushPhase(run, { agent: 'LiveAuthor', status: 'completed', output: authoredNotes });
       pushPhase(run, { agent: 'PlaywrightAgent', status: 'completed', output: { scripts: run.playwright_scripts, source: 'live-author' } });
-      await persistAgentScripts(run);
-      pauseForScriptReview(run);
-      await persistAgentQualityArtifacts(run).catch((err) => console.warn('Failed to persist script-review agent artifacts:', err));
-      persistDataInBackground('script review required');
+      await completeScriptProofFlow(run, targetUrl, { test_cases: caseList }, liveCreds);
       return;
     }
-    const why = `Live authoring completed ${authoredScripts.length}/${caseList.length} case(s). Continuing to selector-registry script writing instead of blocking on full live-author completion. ${authoredNotes.join(' | ')}`.slice(0, 1600);
     (run as any).live_author_evidence = authoredEvidence;
-    pushPhase(run, { agent: 'LiveAuthor', status: 'skipped', output: why });
+    const why = failUnrecordedScriptAuthoring(run, caseList, authoredScripts, authoredNotes);
+    pushPhase(run, { agent: 'LiveAuthor', status: 'failed', output: why });
+    pushPhase(run, { agent: 'PlaywrightAgent', status: 'failed', output: why });
+    await persistAgentScripts(run);
+    markRunDone(run, 'failed');
+    await persistAgentQualityArtifacts(run).catch((err) => console.warn('Failed to persist unrecorded-script agent artifacts:', err));
+    persistDataInBackground('unrecorded script authoring blocked');
+    return;
   }
   // DISCOVER-THEN-BIND: resolve each case's real controls + access flow on the LIVE app BEFORE the
   // coder writes selectors, so it binds to confirmed controls (incl. ones hidden behind menus)
@@ -2331,9 +2412,10 @@ Do NOT write comments such as "Auth is expected to be handled by global setup". 
   // is about (objects, permissions, sharing, tabs, flows, users, list view, cross-app propagation)
   // from the app-knowledge modules, so the coder binds to real labels instead of guessing.
   const featureGrounding = getFeatureGrounding({ prompt: `${run.prompt || ''} ${reviewedUnderstanding || ''}` });
+  const coderBlackboard = renderBlackboardForPrompt(run, 140);
   // The batch call generates ALL scripts in one shot. For 5-6 cases that single response can
   // exceed a provider's per-call timeout (e.g. the account/CLI runner's cap). If it throws,
-  // do NOT fail the whole run — fall through with an empty batch so the per-case path below
+  // do NOT fail the whole run  -  fall through with an empty batch so the per-case path below
   // (alignScriptsToCases) regenerates each script in its own small call, well under any single
   // call timeout. App-agnostic resilience; no prompt/behavior change to the scripts themselves.
   let scriptsResult: { object: any };
@@ -2349,18 +2431,18 @@ Approved user-reviewed understanding: ${reviewedUnderstanding || 'not provided'}
 ${credentialContext}
 ${loginScriptBlock}
 ${applicationContextBlock}
-${selectedQaContextText}${coderUnderstanding}${coderFeatureInventory}${coderMemory}${coderTestData}${coderSelectorMap}${coderSelectorRegistry}${featureGrounding}${readAgentSkill() ? `\nLEARNED QA-AUTHORING SKILL (general script guidance refined over prior runs — apply it):\n${readAgentSkill()}\n` : ''}
+${selectedQaContextText}${coderUnderstanding}${coderFeatureInventory}${coderMemory}${coderTestData}${coderSelectorMap}${coderSelectorRegistry}${coderBlackboard}${featureGrounding}${readAgentSkill() ? `\nLEARNED QA-AUTHORING SKILL (general script guidance refined over prior runs  -  apply it):\n${readAgentSkill()}\n` : ''}
 Use this browser inspection context as the source of truth for reachable pages, visible labels, forms, navigation actions, tables/lists, buttons, links and final URL: ${JSON.stringify(compactInspectionContext(inspectionContext))}.
 ${renderPageOutlineForPrompt((run as any).dom_exploration)}${renderVerifiedElementsForPrompt((run as any).dom_exploration)}${allCaseControls}
-SETUP — NAVIGATE THEN LOG IN IF NEEDED: the MANDATORY FIRST LINES of every test body are (use this EXACT absolute URL — NOT '/', which resolves to the wrong path):
+SETUP  -  NAVIGATE THEN LOG IN IF NEEDED: the MANDATORY FIRST LINES of every test body are (use this EXACT absolute URL  -  NOT '/', which resolves to the wrong path):
   await page.goto('${targetUrl || '/'}');
   await page.waitForLoadState('domcontentloaded'); await page.waitForTimeout(1500);
-Then handle login with a ROBUST, DYNAMIC-WAIT helper (a session may already be injected, so it must be a safe no-op when no login form is present, but when a login form IS present it must ACTUALLY log in and WAIT until the app has loaded — not fail fast). Define and call this exact helper shape:
+Then handle login with a ROBUST, DYNAMIC-WAIT helper (a session may already be injected, so it must be a safe no-op when no login form is present, but when a login form IS present it must ACTUALLY log in and WAIT until the app has loaded  -  not fail fast). Define and call this exact helper shape:
   async function loginIfNeeded() {
     const pw = page.locator('input[type="password"]');
     // Dynamic wait: only treat this as a login page if the password field APPEARS within a real window.
     const onLogin = await pw.first().waitFor({ state: 'visible', timeout: 8000 }).then(() => true).catch(() => false);
-    if (!onLogin) return; // already authenticated (session injected) — nothing to do
+    if (!onLogin) return; // already authenticated (session injected)  -  nothing to do
     await page.locator('input[type="email"], input[name="email" i], input[name="username" i], input[id*="user" i], input[id*="email" i], #username').first().fill(USERNAME, { timeout: 8000 });
     await pw.first().fill(PASSWORD, { timeout: 8000 });
     await page.getByRole('button', { name: /sign ?in|log ?in|submit|continue/i }).first().click({ timeout: 8000 }).catch(async () => { await pw.first().press('Enter'); });
@@ -2368,17 +2450,17 @@ Then handle login with a ROBUST, DYNAMIC-WAIT helper (a session may already be i
     await page.locator('input[type="password"]').first().waitFor({ state: 'detached', timeout: 20000 }).catch(() => {});
   }
 Call await loginIfNeeded(); right after the goto/settle. Use the REAL login field/button selectors from the inspection context when they differ (the verifier corrects them). Do NOT assert anything about the login form.
-WAIT FOR ASYNC CONTENT BEFORE ASSERTING (dynamic, never fixed sleeps): list/grid screens render a "Loading…/Loading records…" placeholder and only mount the real <table> and its toolbar once rows arrive — so after login, before any assertion that depends on grid/table/toolbar content, WAIT for the actual content to appear and, if a REAL loading indicator was observed, wait for that loading indicator to disappear. Use guarded dynamic waits only for loading/busy signals, e.g.: await page.getByText(/loading|please wait|fetching/i).first().waitFor({ state: 'hidden', timeout: 20000 }).catch(() => {}); then await page.locator('table tbody tr, [role="row"], [role="gridcell"]').first().waitFor({ state: 'visible', timeout: 20000 }).catch(() => {}); NEVER wait for a normal persistent control/label to become hidden (examples: Refresh list view, Search results, Unpin list view, Tabs, Accounts, Created At) because those are target UI, not loading indicators. Only after the target content is READY do you proceed to the substantive task. NEVER use waitForLoadState('networkidle'). NEVER call APIs with undefined variables. Never leave USERNAME or PASSWORD undefined. Never use a relative URL when an absolute target URL is provided — verify only through the page UI.
-GUARDED ACTIONS: every SETUP / navigation / intermediate click or fill whose exact selector is uncertain MUST be guarded so a missing element does not hang or abort the run. Prefer getByRole/getByText using the EXACT visible labels from the inspection context. After a guarded action, take the step screenshot regardless of whether it succeeded. EXCEPTION: the case's PRIMARY GOAL action and its outcome assertion are NEVER guarded — see the ACTION COMPLETION CONTRACT below.
-GROUNDING (no hallucination): only assert text, labels, headings, buttons, or table/list content that ACTUALLY appears in the inspection context above. NEVER assert "assumed" UI — no guessed success toasts (e.g. "created successfully"), menu names, or headings you did not see in the inspection context. If unsure an element exists, do not assert it; prefer asserting a URL change or a landmark the inspector recorded. SELECTOR PRIORITY (choose the HIGHEST that actually resolves in the inspection context, never a lower one when a higher exists): 1) getByTestId (data-testid), 2) getByRole(role, { name }) with the accessible name, 3) getByLabel, 4) getByPlaceholder, 5) a stable #id via page.locator('#id'), 6) exact visible text via getByText, 7) a scoped attribute/CSS selector only as a last resort. NEVER use XPath, nth-child/positional chains, or generated/utility (e.g. Tailwind) class names. SCRIPT QUALITY (web-first, auto-waiting): assert with await expect(locator).toBeVisible()/toHaveText()/toHaveValue()/toBeEnabled()/toHaveURL(); do NOT use waitForTimeout or fixed sleeps to wait for elements or content (the only allowed fixed wait is the short post-navigation settle in SETUP); scope locators to the relevant region and store reused ones in named consts. ICON / TOOLBAR / HEADER CONTROLS: these expose their name via aria-label or title with NO visible text — locate them with getByRole(role, { name }) or getByLabel using the EXACT aria-label from the REAL SELECTORS / inspection context; NEVER use getByText(...) for a button or icon control (it matches visible text, which icon buttons lack, so it can never resolve). GENERIC WORDS ARE NOT SELECTORS — "More", "⋯", "Options", "Actions", "resize", "settings" are almost never the real accessible name (often only a hidden responsive label); an overflow/actions menu's real label is the feature it controls (e.g. "List view actions") and column auto-resize is typically "Fit columns" — take the EXACT aria-label from the inspection/map and use getByRole/getByLabel, and to reach an item inside an actions menu (e.g. Settings) click the actions button first then the item by its exact text. DISAMBIGUATE REPEATED TEXT: when a record name / cell value can appear on multiple rows, scope to one row (page.locator('tr', { hasText }) ) or add .first() so the locator is not strict-mode-ambiguous. SECTION NAVIGATION (avoid drift): to open an Admin section, navigate DIRECTLY by URL — preserve the appId already in the URL and set nav to the section's nav key from FEATURE GROUNDING, e.g. { const u = new URL(page.url()); u.searchParams.set('nav', 'objects'); await page.goto(u.toString()); await page.waitForTimeout(1200); }. Do NOT click the left sidebar to navigate (a sidebar click can land on the WRONG section). Use the EXACT navKey (objects, tabs, users, permissions, access_controls, sharing_settings, flows). STABLE IDS: when FEATURE GROUNDING gives a control's stable #id (e.g. #create-object-label, #field-type), locate it with page.locator('#<id>') — never guess its placeholder or text. TRANSIENT / HOVER-ONLY ELEMENTS: never assert .toBeVisible() on a tooltip, popover, or hover hint (it is hidden until hovered, so the assert will flake-fail) — instead trigger it explicitly (await locator.hover()) before asserting, OR assert the durable state it reflects (e.g. a disabled action button, or a persistent "N selected" counter) rather than the floating hint itself. CONTROL NOT IN CONTEXT: if a control the case needs is NOT present in the inspection context, do NOT fall back to a selector you "remember" or guessed earlier — reach it through the UI the inspector DID record (open the toolbar/overflow/actions menu that would contain it), then operate the now-visible control; if it genuinely cannot be reached, assert the closest grounded landmark instead of inventing a locator. When asserting a URL, match only a STABLE fragment with a loose regex (e.g. expect(page).toHaveURL(/nav=apps/) or expect(page.url()).toContain('nav=apps')) — NEVER assert the full URL or a pattern that includes query separators (?, &) or generated ids (appId, record ids) which vary every run.
+WAIT FOR ASYNC CONTENT BEFORE ASSERTING (dynamic, never fixed sleeps): list/grid screens render a "Loading.../Loading records..." placeholder and only mount the real <table> and its toolbar once rows arrive  -  so after login, before any assertion that depends on grid/table/toolbar content, WAIT for the actual content to appear and, if a REAL loading indicator was observed, wait for that loading indicator to disappear. Use guarded dynamic waits only for loading/busy signals, e.g.: await page.getByText(/loading|please wait|fetching/i).first().waitFor({ state: 'hidden', timeout: 20000 }).catch(() => {}); then await page.locator('table tbody tr, [role="row"], [role="gridcell"]').first().waitFor({ state: 'visible', timeout: 20000 }).catch(() => {}); NEVER wait for a normal persistent control/label to become hidden (examples: Refresh list view, Search results, Unpin list view, Tabs, Accounts, Created At) because those are target UI, not loading indicators. Only after the target content is READY do you proceed to the substantive task. NEVER use waitForLoadState('networkidle'). NEVER call APIs with undefined variables. Never leave USERNAME or PASSWORD undefined. Never use a relative URL when an absolute target URL is provided  -  verify only through the page UI.
+GUARDED ACTIONS: every SETUP / navigation / intermediate click or fill whose exact selector is uncertain MUST be guarded so a missing element does not hang or abort the run. Prefer getByRole/getByText using the EXACT visible labels from the inspection context. After a guarded action, take the step screenshot regardless of whether it succeeded. EXCEPTION: the case's PRIMARY GOAL action and its outcome assertion are NEVER guarded  -  see the ACTION COMPLETION CONTRACT below.
+GROUNDING (no hallucination): only assert text, labels, headings, buttons, or table/list content that ACTUALLY appears in the inspection context above. NEVER assert "assumed" UI  -  no guessed success toasts (e.g. "created successfully"), menu names, or headings you did not see in the inspection context. If unsure an element exists, do not assert it; prefer asserting a URL change or a landmark the inspector recorded. SELECTOR PRIORITY (choose the HIGHEST that actually resolves in the inspection context, never a lower one when a higher exists): 1) getByTestId (data-testid), 2) getByRole(role, { name }) with the accessible name, 3) getByLabel, 4) getByPlaceholder, 5) a stable #id via page.locator('#id'), 6) exact visible text via getByText, 7) a scoped attribute/CSS selector only as a last resort. NEVER use XPath, nth-child/positional chains, or generated/utility (e.g. Tailwind) class names. SCRIPT QUALITY (web-first, auto-waiting): assert with await expect(locator).toBeVisible()/toHaveText()/toHaveValue()/toBeEnabled()/toHaveURL(); do NOT use waitForTimeout or fixed sleeps to wait for elements or content (the only allowed fixed wait is the short post-navigation settle in SETUP); scope locators to the relevant region and store reused ones in named consts. ICON / TOOLBAR / HEADER CONTROLS: these expose their name via aria-label or title with NO visible text  -  locate them with getByRole(role, { name }) or getByLabel using the EXACT aria-label from the REAL SELECTORS / inspection context; NEVER use getByText(...) for a button or icon control (it matches visible text, which icon buttons lack, so it can never resolve). GENERIC WORDS ARE NOT SELECTORS  -  "More", "...", "Options", "Actions", "resize", "settings" are almost never the real accessible name (often only a hidden responsive label); an overflow/actions menu's real label is the feature it controls (e.g. "List view actions") and column auto-resize is typically "Fit columns"  -  take the EXACT aria-label from the inspection/map and use getByRole/getByLabel, and to reach an item inside an actions menu (e.g. Settings) click the actions button first then the item by its exact text. DISAMBIGUATE REPEATED TEXT: when a record name / cell value can appear on multiple rows, scope to one row (page.locator('tr', { hasText }) ) or add .first() so the locator is not strict-mode-ambiguous. SECTION NAVIGATION (avoid drift): to open an Admin section, navigate DIRECTLY by URL  -  preserve the appId already in the URL and set nav to the section's nav key from FEATURE GROUNDING, e.g. { const u = new URL(page.url()); u.searchParams.set('nav', 'objects'); await page.goto(u.toString()); await page.waitForTimeout(1200); }. Do NOT click the left sidebar to navigate (a sidebar click can land on the WRONG section). Use the EXACT navKey (objects, tabs, users, permissions, access_controls, sharing_settings, flows). STABLE IDS: when FEATURE GROUNDING gives a control's stable #id (e.g. #create-object-label, #field-type), locate it with page.locator('#<id>')  -  never guess its placeholder or text. TRANSIENT / HOVER-ONLY ELEMENTS: never assert .toBeVisible() on a tooltip, popover, or hover hint (it is hidden until hovered, so the assert will flake-fail)  -  instead trigger it explicitly (await locator.hover()) before asserting, OR assert the durable state it reflects (e.g. a disabled action button, or a persistent "N selected" counter) rather than the floating hint itself. CONTROL NOT IN CONTEXT: if a control the case needs is NOT present in the inspection context, do NOT fall back to a selector you "remember" or guessed earlier  -  reach it through the UI the inspector DID record (open the toolbar/overflow/actions menu that would contain it), then operate the now-visible control; if it genuinely cannot be reached, assert the closest grounded landmark instead of inventing a locator. When asserting a URL, match only a STABLE fragment with a loose regex (e.g. expect(page).toHaveURL(/nav=apps/) or expect(page.url()).toContain('nav=apps'))  -  NEVER assert the full URL or a pattern that includes query separators (?, &) or generated ids (appId, record ids) which vary every run.
 RESILIENCE (the user's intent MUST actually be performed): use await expect.soft(...) for every intermediate per-step verification so a single mismatched locator does NOT abort the test before the user's real goal (e.g. creating the record) is carried out. Always run each ACTION step (goto/fill/click/submit) regardless of whether a prior soft assertion failed. Then follow the user-requested path discovered by the inspector; do not invent unrelated pages or menu names.
-ACTION COMPLETION CONTRACT (CRITICAL — the test must DO the thing, not just look at it): identify the case's PRIMARY GOAL action from its title/steps, actually PERFORM it, then make exactly ONE hard expect verify its real OUTCOME. Discover every selector from the inspection context / source — NEVER hardcode element names; the patterns below show only the Playwright technique per outcome type, not which element to use.
+ACTION COMPLETION CONTRACT (CRITICAL  -  the test must DO the thing, not just look at it): identify the case's PRIMARY GOAL action from its title/steps, actually PERFORM it, then make exactly ONE hard expect verify its real OUTCOME. Discover every selector from the inspection context / source  -  NEVER hardcode element names; the patterns below show only the Playwright technique per outcome type, not which element to use.
 - Asserting that a control/page is visible (toBeVisible) is NOT performing the action and is NEVER an acceptable primary assertion. Operate the control and verify what it PRODUCED.
-- The primary goal action AND its outcome assertion must NOT be wrapped in .catch(() => {}). If the real selector is uncertain, still attempt it UN-guarded so a miss FAILS the test — the execution-repair step then fixes the selector against the live DOM. (Guarding the goal makes the test pass without doing the work, which is forbidden.)
+- The primary goal action AND its outcome assertion must NOT be wrapped in .catch(() => {}). If the real selector is uncertain, still attempt it UN-guarded so a miss FAILS the test  -  the execution-repair step then fixes the selector against the live DOM. (Guarding the goal makes the test pass without doing the work, which is forbidden.)
 - Pick the assertion by the action's OUTCOME TYPE:
-  · the action produces a FILE DOWNLOAD -> const [ d ] = await Promise.all([ page.waitForEvent('download', { timeout: 15000 }), <the discovered trigger>.click() ]); expect(d.suggestedFilename()).toBeTruthy();  (if it instead produces an in-app success result, assert that concrete result element).
-  · the action CHANGES A CONTROL'S STATE (checkbox/switch/select) -> perform the real .check()/.uncheck()/.setChecked()/selectOption on the discovered control, persist it, then re-query and assert the NEW state held (after refresh if it persists server-side).
-  · the action CREATES / EDITS / DELETES data -> assert the row or value actually appeared / changed / was removed in the list — not a toast you did not see.
+  - the action produces a FILE DOWNLOAD -> const [ d ] = await Promise.all([ page.waitForEvent('download', { timeout: 15000 }), <the discovered trigger>.click() ]); expect(d.suggestedFilename()).toBeTruthy();  (if it instead produces an in-app success result, assert that concrete result element).
+  - the action CHANGES A CONTROL'S STATE (checkbox/switch/select) -> perform the real .check()/.uncheck()/.setChecked()/selectOption on the discovered control, persist it, then re-query and assert the NEW state held (after refresh if it persists server-side).
+  - the action CREATES / EDITS / DELETES data -> assert the row or value actually appeared / changed / was removed in the list  -  not a toast you did not see.
 STRICT OUTPUT CONTRACT: return JSON exactly like {"scripts":[{"test_case_title":"...","filename":"kebab-case.spec.ts","code":"import { test, expect } from '@playwright/test';\n..."}]}. Produce EXACTLY ONE script object per test case below, in the SAME order, so the count of scripts equals the count of test cases. Every object MUST include non-empty string fields "test_case_title", "filename", and "code"; never return empty objects. For each script, set "test_case_title" to that case's title VERBATIM, and name the Playwright test identically: test('<exact case title>', async ({ page }, testInfo) => { ... }). One file = one test() = one case; do not merge multiple cases into one script and do not split a case across scripts. Each script's actions must mirror that case's ordered steps.
 EVIDENCE: do NOT attach screenshots after every step by default. The runner captures viewport screenshots and traces on failure. Include testInfo in the signature only if the specific case explicitly asks for step-by-step evidence.
 Test cases: ${JSON.stringify(testCases)}${coderKnowledge}`,
@@ -2424,19 +2506,19 @@ Approved user-reviewed understanding: ${reviewedUnderstanding || 'not provided'}
 ${credentialContext}
 ${loginScriptBlock}
 ${applicationContextBlock}
-${selectedQaContextText}${coderUnderstanding}${coderSelectorMap}${coderSelectorRegistry}${featureGrounding}
+${selectedQaContextText}${coderUnderstanding}${coderSelectorMap}${coderSelectorRegistry}${coderBlackboard}${featureGrounding}
 Use this browser inspection context as the source of truth for reachable pages, visible labels, forms, navigation actions, tables/lists, buttons, links and final URL: ${JSON.stringify(compactInspectionContext(inspectionContext))}.
 ${renderPageOutlineForPrompt((run as any).dom_exploration)}${renderVerifiedElementsForPrompt((run as any).dom_exploration)}${perCaseControlBlocks[index] || ''}
 
 Rules:
-- SELECTOR PRIORITY: use the highest-priority selector that actually resolves in the inspection context. NEVER use XPath, nth-child/positional chains, or generated/utility (e.g. Tailwind) class names — they break on any re-render.
-- SCRIPT QUALITY (web-first, auto-waiting): assert with await expect(locator).toBeVisible()/toHaveText()/toHaveValue()/toBeEnabled()/toHaveURL() — these auto-wait. Do NOT use waitForTimeout or fixed sleeps to wait for elements or content (the only allowed fixed wait is the short post-navigation settle in SETUP). Scope locators to the relevant region (e.g. page.getByRole('table').getByRole('row').filter({ hasText })) and store reused locators in named consts so the test reads clearly.
-- ICON / TOOLBAR / HEADER CONTROLS expose their name via aria-label or title with NO visible text — locate them with getByRole(role, { name }) or getByLabel using the EXACT aria-label from the REAL SELECTORS / inspection context above. NEVER use getByText(...) for a button or icon control (it matches visible text, which icon buttons do not have, so it will never resolve).
-- GENERIC WORDS ARE NOT SELECTORS: "More", "⋯", "Options", "Actions", "resize", "settings" are almost never the real accessible name (they often exist only as a hidden responsive label). An overflow / actions menu's real label is the feature it controls (e.g. "List view actions"); column auto-resize ("fit columns" / "resize columns") is typically labeled "Fit columns". For ANY such control, take the EXACT aria-label from the inspection/map and use getByRole/getByLabel — never the generic word. To operate an item inside an actions menu (e.g. Settings), click the actions button (e.g. "List view actions") FIRST, then click the item by its exact text.
+- SELECTOR PRIORITY: use the highest-priority selector that actually resolves in the inspection context. NEVER use XPath, nth-child/positional chains, or generated/utility (e.g. Tailwind) class names  -  they break on any re-render.
+- SCRIPT QUALITY (web-first, auto-waiting): assert with await expect(locator).toBeVisible()/toHaveText()/toHaveValue()/toBeEnabled()/toHaveURL()  -  these auto-wait. Do NOT use waitForTimeout or fixed sleeps to wait for elements or content (the only allowed fixed wait is the short post-navigation settle in SETUP). Scope locators to the relevant region (e.g. page.getByRole('table').getByRole('row').filter({ hasText })) and store reused locators in named consts so the test reads clearly.
+- ICON / TOOLBAR / HEADER CONTROLS expose their name via aria-label or title with NO visible text  -  locate them with getByRole(role, { name }) or getByLabel using the EXACT aria-label from the REAL SELECTORS / inspection context above. NEVER use getByText(...) for a button or icon control (it matches visible text, which icon buttons do not have, so it will never resolve).
+- GENERIC WORDS ARE NOT SELECTORS: "More", "...", "Options", "Actions", "resize", "settings" are almost never the real accessible name (they often exist only as a hidden responsive label). An overflow / actions menu's real label is the feature it controls (e.g. "List view actions"); column auto-resize ("fit columns" / "resize columns") is typically labeled "Fit columns". For ANY such control, take the EXACT aria-label from the inspection/map and use getByRole/getByLabel  -  never the generic word. To operate an item inside an actions menu (e.g. Settings), click the actions button (e.g. "List view actions") FIRST, then click the item by its exact text.
 - DISAMBIGUATE REPEATED TEXT: when a label/cell text can appear on multiple rows or cells (record names, column values), scope to a single row (e.g. page.locator('tr', { hasText: '...' })) or add .first() so the locator is not strict-mode-ambiguous (matching 2+ elements fails).
-- SECTION NAVIGATION (avoid drift): open an Admin section DIRECTLY by URL — preserve the appId in the current URL and set nav to the section's URL param from the ROUTES / BLACKBOARD context: { const u = new URL(page.url()); u.searchParams.set('nav', discoverableSectionKey); await page.goto(u.toString()); await page.waitForTimeout(1200); }. Do NOT click the left sidebar to navigate (it can drift to the wrong section). Discover section keys from the browser's DOM exploration — every accessible nav tab/link is recorded in the inspection context above.
-- STABLE IDS: when the DOM exploration lists a control's stable #id, use page.locator('#<id>') — never guess a placeholder/text for it.
-- HIDDEN CONTROLS: if a control the case needs (settings, export, column options, a row action) is not in the inspection context, it lives inside an overflow / actions menu — open the menu the inspector DID record (e.g. the actions/overflow/"More"-style button by its real aria-label) first, then operate the now-visible item.
+- SECTION NAVIGATION (avoid drift): open an Admin section DIRECTLY by URL  -  preserve the appId in the current URL and set nav to the section's URL param from the ROUTES / BLACKBOARD context: { const u = new URL(page.url()); u.searchParams.set('nav', discoverableSectionKey); await page.goto(u.toString()); await page.waitForTimeout(1200); }. Do NOT click the left sidebar to navigate (it can drift to the wrong section). Discover section keys from the browser's DOM exploration  -  every accessible nav tab/link is recorded in the inspection context above.
+- STABLE IDS: when the DOM exploration lists a control's stable #id, use page.locator('#<id>')  -  never guess a placeholder/text for it.
+- HIDDEN CONTROLS: if a control the case needs (settings, export, column options, a row action) is not in the inspection context, it lives inside an overflow / actions menu  -  open the menu the inspector DID record (e.g. the actions/overflow/"More"-style button by its real aria-label) first, then operate the now-visible item.
 - Return JSON exactly like {"scripts":[{"test_case_title":"...","filename":"kebab-case.spec.ts","code":"import { test, expect } from '@playwright/test';\\n..."}]}.
 - Return exactly one script object. No combined scripts. No empty placeholder scripts.
 - Set test_case_title to the test case title verbatim: ${JSON.stringify(testCase?.title || `Test case ${index + 1}`)}.
@@ -2445,7 +2527,7 @@ Rules:
 - Mirror this exact test case's ordered steps, not any other case. The script must cover every step in the payload below in order. Do not add per-step screenshots unless this case explicitly asks for step evidence.
 - Ground selectors and assertions only in the inspection context or source-grounded understanding. Do not invent menus, labels, or success messages.
 - WAIT RULE: only wait for real loading/busy indicators to become hidden. Never wait for normal controls, labels, tabs, fields, columns, toolbar buttons, or selected-view labels to become hidden; those should be asserted visible or used directly.
-- ACTION COMPLETION CONTRACT: the test must PERFORM the case's primary goal action and make exactly ONE hard expect verify its real OUTCOME — asserting a control is visible is NOT performing the action. The primary action and its assertion must NOT be wrapped in .catch(() => {}) (a miss must FAIL so the repair step fixes it against the live DOM). Discover selectors from the inspection/source (never hardcode). Pick the assertion by outcome type: a file download -> assert page.waitForEvent('download'); a control state change -> do the real .check()/.setChecked()/selectOption, persist, then assert the new state held; create/edit/delete -> assert the row/value actually changed in the list.
+- ACTION COMPLETION CONTRACT: the test must PERFORM the case's primary goal action and make exactly ONE hard expect verify its real OUTCOME  -  asserting a control is visible is NOT performing the action. The primary action and its assertion must NOT be wrapped in .catch(() => {}) (a miss must FAIL so the repair step fixes it against the live DOM). Discover selectors from the inspection/source (never hardcode). Pick the assertion by outcome type: a file download -> assert page.waitForEvent('download'); a control state change -> do the real .check()/.setChecked()/selectOption, persist, then assert the new state held; create/edit/delete -> assert the row/value actually changed in the list.
 
 Test case payload: ${JSON.stringify({ test_cases: [testCase] })}${coderKnowledge}`,
         schema: playwrightScriptsSchema,
@@ -2506,30 +2588,15 @@ Test case payload: ${JSON.stringify({ test_cases: [testCase] })}${coderKnowledge
     pushPhase(run, { agent: 'ScriptQueue', status: 'completed', output: String((run as any).script_queue.generated) + '/' + caseList.length + ' script(s) ready for verification.' });
   }
   pushPhase(run, { agent: 'PlaywrightAgent', status: 'completed', output: { scripts: run.playwright_scripts } });
-  // GIT-AGENT GATE: verify every selector against the app's REAL source before running
-  // (its own visible "Verify selectors" phase so the wait before evidence is explained).
-  const selectorVerification = await verifyScriptsWithGitAgent(run, run.playwright_scripts, run.prompt || '');
-  if (!selectorVerification.ok) {
-    const why = selectorVerification.reason || 'Selector verification failed.';
-    (run as any).execution_result = { ok: false, total: 0, passed: 0, failed: 0, skipped: 0, error: why, tests: [] };
-    await persistAgentScripts(run);
-    markRunDone(run, 'failed');
-    await persistAgentQualityArtifacts(run).catch((err) => console.warn('Failed to persist selector verification artifacts:', err));
-    persistDataInBackground('selector verification blocked evidence');
-    return;
-  }
   run.playwright_scripts = (run.playwright_scripts || []).map((script: any) => ({
     ...script,
     code: script?.code ? normalizeSelectorsFromInspection(String(script.code), run.inspection_context) : script?.code,
   }));
-  await persistAgentScripts(run);
-  pauseForScriptReview(run);
-  await persistAgentQualityArtifacts(run).catch((err) => console.warn('Failed to persist script-review agent artifacts:', err));
-  persistDataInBackground('script review required');
+  await completeScriptProofFlow(run, targetUrl, { test_cases: caseList }, liveCreds);
   return;
 
   // EPISODIC MEMORY (book Ch 8/9): record this run's outcome so future runs of the same
-  // feature recall whether it was stable / flaky / broken and why. Best-effort — never blocks.
+  // feature recall whether it was stable / flaky / broken and why. Best-effort  -  never blocks.
   try {
     const exec = (run as any).execution_result;
     const failed = Number(exec?.failed) || 0;
@@ -2558,7 +2625,7 @@ Test case payload: ${JSON.stringify({ test_cases: [testCase] })}${coderKnowledge
  * GIT-AGENT SELECTOR VERIFICATION GATE.
  * Before any script runs, check its selectors against the application's REAL source
  * code (the git-agent target repo) and repair any that don't match.
- * This is the "verify selectors during creation" step — it grounds guessed selectors
+ * This is the "verify selectors during creation" step  -  it grounds guessed selectors
  * in the actual DOM/source so the scripts hit real elements instead of timing out.
  */
 /**
@@ -2570,7 +2637,7 @@ Test case payload: ${JSON.stringify({ test_cases: [testCase] })}${coderKnowledge
 type SelectorVerificationResult = { ok: boolean; reason?: string; unresolved?: string[] };
 
 /**
- * The LIVE DOM is the only ground truth for selectors — it IS the running page the generated test
+ * The LIVE DOM is the only ground truth for selectors  -  it IS the running page the generated test
  * binds to at execution time. Repo source is a lossy, ambiguous, unscoped proxy: a prop fallback
  * ("searchPlaceholder ?? 'Search results'"), an i18n key, or a string that's real but on a DIFFERENT
  * page (the "Global Search" false-pass) all read as "grounded" against a repo-wide regex dump.
@@ -2645,10 +2712,71 @@ function buildSelectorRegistryIndex(registry: any): { names: Set<string>; hints:
   return { names, hints: [...hints], usable: names.size > 0 || hints.size > 0 };
 }
 
+function findVerifiedControl(run: any, selector: string): any | null {
+  const elements = [
+    ...(Array.isArray(run?.dom_exploration?.elements) ? run.dom_exploration.elements : []),
+    ...(run?.blackboard_id ? (readBlackboard(String(run.blackboard_id))?.elements || []) : []),
+  ];
+  const wanted = String(selector || '').trim();
+  if (!wanted) return null;
+  return elements.find((e: any) =>
+    e?.resolved_selector === wanted ||
+    e?.fallback_selector === wanted ||
+    (wanted.startsWith('#') && e?.element_id === wanted.slice(1)) ||
+    (wanted.startsWith('[name=') && wanted.includes(String(e?.input_name || '')))
+  ) || null;
+}
+
+function validateControlActions(run: any, scripts: any[]): string[] {
+  const issues: string[] = [];
+  const typed = new Set<string>();
+  for (const script of scripts || []) {
+    const code = String(script?.code || '');
+    for (const m of code.matchAll(/\.fill\(\s*['"`]([^'"`]*)['"`]/g)) typed.add(m[1]);
+    for (const m of code.matchAll(/page\.locator\(\s*['"`]([^'"`]+)['"`]\s*\)\.(fill|selectOption)\(\s*([^)]*)\)/g)) {
+      const [, selector, action, rawArg] = m;
+      const el = findVerifiedControl(run, selector);
+      if (!el) continue;
+      if (action === 'fill' && el.tag === 'select') {
+        issues.push(`${script?.filename || script?.test_case_title || 'script'} uses fill() on select ${selector}`);
+        continue;
+      }
+      if (action === 'selectOption' && el.tag === 'select' && Array.isArray(el.options)) {
+        const literal = String(rawArg || '').match(/['"`]([^'"`]*)['"`]/)?.[1];
+        if (literal && !el.options.some((o: any) => !o.disabled && (String(o.value) === literal || String(o.label).trim() === literal))) {
+          issues.push(`${script?.filename || script?.test_case_title || 'script'} selects missing option "${literal}" for ${selector}`);
+        }
+      }
+    }
+    for (const m of code.matchAll(/expect\(\s*page\.locator\(\s*['"`]([^'"`]+)['"`]\s*\)\s*\)\.toHaveValue\(\s*['"`]([^'"`]*)['"`]/g)) {
+      const [, selector, expected] = m;
+      const el = findVerifiedControl(run, selector);
+      if (el?.tag === 'select' && expected === '' && el.value && !code.includes(`selectOption('')`) && !code.includes(`selectOption("")`)) {
+        issues.push(`${script?.filename || script?.test_case_title || 'script'} expects select ${selector} to be blank, but live value is "${el.value}"`);
+      }
+    }
+    for (const m of code.matchAll(/getByRole\(\s*['"`]row['"`]\s*\)\.filter\(\s*\{\s*hasText\s*:\s*\/([^/\n]{8,120})\//g)) {
+      const expected = m[1].replace(/\\s\+/g, ' ').replace(/\\/g, '').trim();
+      const liveText = JSON.stringify(run?.dom_exploration || '').toLowerCase();
+      if (expected && !typed.has(expected) && !liveText.includes(expected.toLowerCase().slice(0, 40))) {
+        issues.push(`${script?.filename || script?.test_case_title || 'script'} asserts row data not captured from live DOM: ${expected.slice(0, 80)}`);
+      }
+    }
+  }
+  return issues.slice(0, 20);
+}
+
 async function verifyScriptsWithGitAgent(run: any, scripts: any[], _prompt: string): Promise<SelectorVerificationResult> {
   if (!Array.isArray(scripts) || !scripts.length) return { ok: true };
   pushPhase(run, { agent: 'SelectorVerifier', status: 'running' });
   try {
+    const controlIssues = validateControlActions(run, scripts);
+    if (controlIssues.length) {
+      const reason = `Script verification blocked invalid live-control actions: ${controlIssues.slice(0, 8).join(' | ')}`;
+      (run as any).selector_verification = { ok: false, reason, unresolved: controlIssues };
+      pushPhase(run, { agent: 'SelectorVerifier', status: 'failed', output: reason });
+      return { ok: false, reason, unresolved: controlIssues };
+    }
     const repoPath = getProjectRepoPath(run.projectId || '').trim();
     const map = getRunSelectorMap(run);
     const registry = buildSelectorRegistryIndex((run as any).selector_registry);
@@ -2684,7 +2812,7 @@ async function verifyScriptsWithGitAgent(run: any, scripts: any[], _prompt: stri
     // to repo strings only when live capture is thin. This is what makes real on-page selectors
     // reach the coder verbatim.
     const liveBlock = live.usable
-      ? `LIVE PAGE SELECTORS — the ACTUAL running DOM this test executes against. These are the ONLY valid options; pick the closest by meaning and use it EXACTLY:\nReady-made locators:\n${live.hints.slice(0, 140).join('\n')}\nReal on-page names/labels: ${[...live.names].slice(0, 160).join(' | ')}`
+      ? `LIVE PAGE SELECTORS  -  the ACTUAL running DOM this test executes against. These are the ONLY valid options; pick the closest by meaning and use it EXACTLY:\nReady-made locators:\n${live.hints.slice(0, 140).join('\n')}\nReal on-page names/labels: ${[...live.names].slice(0, 160).join(' | ')}`
       : mapBlock;
     const selectorAuthorityBlock = registry.usable
       ? `VERIFIED SELECTOR REGISTRY - the ONLY valid selector handoff from Inspector/Registry to ScriptWriter. Pick from these proof-backed selectors exactly; do not invent replacements:\n${registry.hints.slice(0, 160).join('\n')}\nValid proof ids/names: ${[...registry.names].slice(0, 180).join(' | ')}`
@@ -2699,15 +2827,15 @@ async function verifyScriptsWithGitAgent(run: any, scripts: any[], _prompt: stri
       const t = new Set<string>();
       for (const m of code.matchAll(/getByRole\(\s*['"`]\w+['"`]\s*,\s*\{\s*name\s*:\s*[/]?\s*['"`]?([^'"`/)\n,}]{2,50})/g)) t.add(cleanRegexTarget(m[1]));
       for (const m of code.matchAll(/getBy(?:Label|Text|Placeholder|TestId)\(\s*[/]?\s*['"`]?([^'"`/)\n,]{2,50})/g)) t.add(cleanRegexTarget(m[1]));
-      // Attribute/CSS locators the coder loves to invent — locator('[aria-label="…"]'),
-      // [placeholder="…"], [data-testid="…"] — were NEVER cross-checked before, so a
+      // Attribute/CSS locators the coder loves to invent  -  locator('[aria-label="..."]'),
+      // [placeholder="..."], [data-testid="..."]  -  were NEVER cross-checked before, so a
       // hallucinated aria-label (e.g. "List view: All Apps") sailed straight through to a
       // 15s "element not found" timeout. Extract them so they get grounded like the rest.
       for (const m of code.matchAll(/\[(?:aria-label|placeholder|title|name|data-testid|alt)\s*[*^$|~]?=\s*['"]([^'"\n]{2,60})['"]\s*\]/g)) t.add(m[1].trim());
-      // .filter({ hasText: '…' }) row/text grounding (data-coupled assertions).
+      // .filter({ hasText: '...' }) row/text grounding (data-coupled assertions).
       if (includeDataText) for (const m of code.matchAll(/hasText\s*:\s*['"`]([^'"`\n]{2,60})['"`]/g)) t.add(m[1].trim());
       // hasText also commonly uses a JS regex literal (hasText: /^More$/) instead of a quoted
-      // string — the pattern above only caught quoted values, so a hallucinated regex-literal
+      // string  -  the pattern above only caught quoted values, so a hallucinated regex-literal
       // hasText (the exact "More" toolbar-button bug) slipped through verification untouched.
       if (includeDataText) for (const m of code.matchAll(/hasText\s*:\s*\/\^?([^/\n]{2,60}?)\$?\//g)) t.add(cleanRegexTarget(m[1]));
       return [...t];
@@ -2715,7 +2843,7 @@ async function verifyScriptsWithGitAgent(run: any, scripts: any[], _prompt: stri
     const ignorable = /sign ?in|log ?in|email|user(name)?|password/i;
 
     // PASS 1 (deterministic): rewrite every selector to the METHOD the code defines for it
-    // (placeholder->getByPlaceholder, testid->getByTestId, etc.) — right name AND right method,
+    // (placeholder->getByPlaceholder, testid->getByTestId, etc.)  -  right name AND right method,
     // straight from the code map. No LLM, no guessing. SKIPPED when we have a usable live DOM
     // capture: the static map rewrites a name toward a repo homonym under a possibly-wrong method
     // (e.g. corrupting a correct getByRole into a getByText/getByLabel that
@@ -2730,18 +2858,18 @@ async function verifyScriptsWithGitAgent(run: any, scripts: any[], _prompt: stri
     }
 
     // PASS 2 (LLM, REJECT-AND-REGENERATE): for selectors whose NAME is still not in the code map,
-    // rewrite them — but HARD-ENFORCE the result. A rewrite is accepted ONLY when it actually
+    // rewrite them  -  but HARD-ENFORCE the result. A rewrite is accepted ONLY when it actually
     // reduces the count of un-grounded selectors (so the model can't swap one invented selector
     // for another and have it pass silently). Re-verify after every rewrite and loop until zero
     // culprits remain or no further progress is made. Any selector that STILL isn't in the
     // codebase after the gate is reported honestly (it will be caught again by execution-repair).
     const verifier = await getOrchestrator('appInspector', { workspaceId: run.ownerId || 'default', effort: run.requestedEffort });
     // DOM-first culprit test: when we have a real live capture of this page, it is the SOLE
-    // authority — a selector absent from the live DOM is a culprit even if the repo mentions it
+    // authority  -  a selector absent from the live DOM is a culprit even if the repo mentions it
     // somewhere (that is exactly the "Global Search" false-pass: real string, wrong page). Fall
     // back to the static repo map only when the live capture is too thin to trust.
     // Skip JS code artifacts the extractor can accidentally capture from dynamic locators
-    // (e.g. getByText(new RegExp(...)) yields the garbage target "new RegExp(") — these are not
+    // (e.g. getByText(new RegExp(...)) yields the garbage target "new RegExp(")  -  these are not
     // UI labels, can never be "grounded", and must not be treated as culprits.
     const looksLikeCode = (t: string) => /new\s|regexp|=>|[(){}\\]|\$\{|\bfunction\b/i.test(t);
     const culpritsOf = (code: string) => targetsOf(String(code), !registry.usable).filter((t) => {
@@ -2754,14 +2882,14 @@ async function verifyScriptsWithGitAgent(run: any, scripts: any[], _prompt: stri
     const verifyOne = async (s: any) => {
       if (!s?.code) return;
       let culprits = culpritsOf(String(s.code));
-      if (!culprits.length) return; // every selector is grounded in the codebase — nothing to fix
+      if (!culprits.length) return; // every selector is grounded in the codebase  -  nothing to fix
       totalCulprits += culprits.length;
       for (let round = 0; round < MAX_VERIFY_ROUNDS && culprits.length; round += 1) {
         try {
           const res = await verifier.generateObject<any>({
-            prompt: `A Playwright script uses selectors that do NOT exist on the application's real, running page. The SELECTORS below are the SOURCE OF TRUTH — they are what the live DOM this test runs against actually exposes. Replace each CULPRIT selector with the correct real locator / label / role-name / testid from that list (closest match by meaning) — you MUST pick from the list; do NOT invent a new one. Keep the test structure, step order, testInfo.attach screenshots, and assertions intact; only fix the selectors. Return the corrected full script in "code".
+            prompt: `A Playwright script uses selectors that do NOT exist on the application's real, running page. The SELECTORS below are the SOURCE OF TRUTH  -  they are what the live DOM this test runs against actually exposes. Replace each CULPRIT selector with the correct real locator / label / role-name / testid from that list (closest match by meaning)  -  you MUST pick from the list; do NOT invent a new one. Keep the test structure, step order, testInfo.attach screenshots, and assertions intact; only fix the selectors. Return the corrected full script in "code".
 ${selectorAuthorityBlock}
-CULPRIT selectors in this script (each is NOT on the real page — fix every one):
+CULPRIT selectors in this script (each is NOT on the real page  -  fix every one):
 ${culprits.join(' | ')}
 SCRIPT:
 ${s.code}`,
@@ -2769,14 +2897,14 @@ ${s.code}`,
             userMessage: 'Rewrite the culprit selectors using ONLY the real on-page selectors listed.',
           });
           const code = res?.object?.code;
-          if (!(code && code.length > 80 && /test\(/.test(code))) break; // unusable output — stop
+          if (!(code && code.length > 80 && /test\(/.test(code))) break; // unusable output  -  stop
           const newCulprits = culpritsOf(code);
           // Accept ONLY a genuine improvement; a rewrite that doesn't reduce un-grounded
           // selectors (or introduces new ones) is rejected so we never regress.
           if (newCulprits.length < culprits.length) {
             s.code = code; rewritten += 1; culprits = newCulprits;
           } else {
-            break; // no progress — keep the best version so far
+            break; // no progress  -  keep the best version so far
           }
         } catch { break; /* keep the best version on a verifier error */ }
       }
@@ -2790,7 +2918,7 @@ ${s.code}`,
       : live.usable
         ? `${live.names.size} live on-page selector(s)`
         : `${map?.fileCount ?? 0} source files`;
-    // DOM-first: this pass is ADVISORY, never a hard gate. The real page is the arbiter — the
+    // DOM-first: this pass is ADVISORY, never a hard gate. The real page is the arbiter  -  the
     // script runs and the execution-repair step re-inspects the live DOM to fix any selector that
     // still misses. Blocking evidence here (especially on a non-authoritative repo match) is what
     // produced the "not found in the codebase" dead-ends; we best-effort rewrite and always proceed.
@@ -2817,7 +2945,7 @@ ${s.code}`,
 
 /**
  * Actually EXECUTE the generated Playwright scripts (so the user's intent is
- * performed in a real browser) and build evidence from that run — one real
+ * performed in a real browser) and build evidence from that run  -  one real
  * screenshot per executed case, with true pass/fail and failure reasons.
  * Falls back to a base-URL login screenshot if the scripts can't be executed.
  */
@@ -2854,7 +2982,7 @@ function scriptLooksUsable(script: any): boolean {
  * Make every LOGIN interaction a safe no-op. The runner injects an authenticated
  * storageState, so at execution time there is usually NO login form. An UNGUARDED login
  * fill/click/redirect-wait then BLOCKS for the full actionTimeout (15s) and fails the test
- * before it ever reaches the feature — the #1 cause of the "label not found / fill timeout"
+ * before it ever reaches the feature  -  the #1 cause of the "label not found / fill timeout"
  * failures. Guarding is idempotent and harmless when a login form IS present (the action
  * still runs; only a miss is swallowed). Line-based so we only touch single-line statements
  * the model actually wrote this way; multi-line login blocks are left untouched (no harm).
@@ -2882,7 +3010,7 @@ function guardLoginInteractions(code: string): string {
 
 /**
  * Remove assertions ABOUT the login UI. The harness injects an authenticated storageState,
- * so the login screen/fields/headings are ABSENT at run time — any assertion that
+ * so the login screen/fields/headings are ABSENT at run time  -  any assertion that
  * the login UI is visible or that a credential field holds a value, is then
  * guaranteed to fail (and is irrelevant to the feature under test). A single failed soft
  * assertion marks the whole test failed even when every feature step passed, so these
@@ -2900,9 +3028,9 @@ function neutralizeLoginAssertions(code: string): string {
     const t = line.trim();
     if (!isAssert.test(line)) continue;
     if (!/;\s*$/.test(t)) continue;          // complete single-line statement only
-    if (!/\.to[A-Z]/.test(line)) continue;   // must be an actual matcher (.toBeVisible/.toHaveValue/…)
+    if (!/\.to[A-Z]/.test(line)) continue;   // must be an actual matcher (.toBeVisible/.toHaveValue/...)
     if (loginRef.test(line) || credValueAssert.test(line)) {
-      lines[i] = line.replace(/\S.*/, '// [auth-neutralized] login-UI assertion removed — session is pre-authenticated');
+      lines[i] = line.replace(/\S.*/, '// [auth-neutralized] login-UI assertion removed  -  session is pre-authenticated');
     }
   }
   return lines.join('\n');
@@ -3016,7 +3144,7 @@ function compactInspectionContext(ic: any) {
 }
 
 /**
- * The semantic page OUTLINE from the a11y-first DOM exploration — the browser's own
+ * The semantic page OUTLINE from the a11y-first DOM exploration  -  the browser's own
  * accessibility tree as compact YAML. This is the "what a user actually sees, with real
  * labels and hierarchy" picture (menu structure, grouped toolbars, table composition)
  * that the flat element list cannot convey. [ref=eN] markers are stripped: they die with
@@ -3026,15 +3154,15 @@ function renderPageOutlineForPrompt(exploration: any, maxChars = 6000): string {
   const outline = String(exploration?.outline || '').trim();
   if (!outline) return '';
   const cleaned = outline.replace(/\s*\[ref=e\d+\]/g, '');
-  const body = cleaned.length > maxChars ? `${cleaned.slice(0, maxChars)}\n  … (outline truncated)` : cleaned;
-  return `\nSEMANTIC PAGE OUTLINE (the live page's accessibility tree — exactly what a user sees, with real labels and structure; use these labels verbatim, never invent):\n${body}\n`;
+  const body = cleaned.length > maxChars ? `${cleaned.slice(0, maxChars)}\n  ... (outline truncated)` : cleaned;
+  return `\nSEMANTIC PAGE OUTLINE (the live page's accessibility tree  -  exactly what a user sees, with real labels and structure; use these labels verbatim, never invent):\n${body}\n`;
 }
 
 /**
  * The VERIFIED SELECTOR TABLE (sister-project blackboard architecture): every selector in
  * it was resolved from a live-extracted element and then re-checked against the real DOM
  * (existence + uniqueness + visibility). Scripts written from this table cannot fail on
- * "element not found" for the elements it lists — that failure class comes from invented
+ * "element not found" for the elements it lists  -  that failure class comes from invented
  * or unverified selectors. Falls back to the raw element dump for runs recorded by an
  * older build without verification data.
  */
@@ -3047,24 +3175,28 @@ function renderVerifiedElementsForPrompt(exploration: any): string {
   if (!usable.length) return renderRawElementsForPrompt(exploration);
   const lines = usable.slice(0, 120).map((e: any) => {
     const label = e.name || e.placeholder || e.input_name || e.text || '';
+    const options = e.tag === 'select' && Array.isArray(e.options) && e.options.length
+      ? ` options=${e.options.filter((o: any) => !o.disabled).slice(0, 12).map((o: any) => `${String(o.label || '').slice(0, 40)}=>${String(o.value || '').slice(0, 40)}${o.selected ? '*' : ''}`).join(' | ')}`
+      : '';
     const flags = [
-      e.status === 'not_unique' ? 'NOT UNIQUE — scope it or use .first()' : '',
+      e.status === 'not_unique' ? 'NOT UNIQUE  -  scope it or use .first()' : '',
       e.state?.disabled ? 'disabled' : '',
       e.state?.required ? 'required' : '',
+      e.value ? `value=${e.value}` : '',
       !e.visible ? 'not visible' : '',
-      e.tooltip ? `tooltip title="${String(e.tooltip).slice(0, 70)}" — assert via toHaveAttribute('title', ...)` : '',
+      e.tooltip ? `tooltip title="${String(e.tooltip).slice(0, 70)}"  -  assert via toHaveAttribute('title', ...)` : '',
     ].filter(Boolean).join('; ');
-    return `  ${e.role || e.tag} "${String(label).slice(0, 60)}" -> ${e.resolved_selector}${e.fallback_selector ? ` | fallback: ${e.fallback_selector}` : ''}${flags ? ` [${flags}]` : ''}`;
+    return `  ${e.role || e.tag} "${String(label).slice(0, 60)}" -> ${e.resolved_selector}${e.fallback_selector ? ` | fallback: ${e.fallback_selector}` : ''}${flags ? ` [${flags}]` : ''}${options}`;
   });
   const broken = elements.filter((e: any) => e.status === 'broken').length;
-  return `\nVERIFIED SELECTOR TABLE (each selector below was CHECKED against the LIVE page — existence, uniqueness, visibility. Build EVERY locator from this table using the selector or its fallback EXACTLY as written; the quoted name is the element's real accessible label, verbatim. Do NOT invent, paraphrase, re-case, or guess any selector or label that is not in this table${broken ? `; ${broken} candidate selector(s) FAILED live verification and were removed — do not reconstruct them` : ''}):\n${lines.join('\n')}\n${renderOnPageTextForPrompt(exploration)}`;
+  return `\nVERIFIED SELECTOR TABLE (each selector below was CHECKED against the LIVE page  -  existence, uniqueness, visibility. Build EVERY locator from this table using the selector or its fallback EXACTLY as written; the quoted name is the element's real accessible label, verbatim. Do NOT invent, paraphrase, re-case, or guess any selector or label that is not in this table${broken ? `; ${broken} candidate selector(s) FAILED live verification and were removed  -  do not reconstruct them` : ''}):\n${lines.join('\n')}\n${renderOnPageTextForPrompt(exploration)}`;
 }
 
 /**
- * EXACT ON-PAGE TEXT — every real string the live page displayed at capture time, harvested
+ * EXACT ON-PAGE TEXT  -  every real string the live page displayed at capture time, harvested
  * from the a11y outline (names + text nodes) and the captured element texts. This is the
  * assertion whitelist: a text expectation that is not in this list (and not typed by the
- * test itself) is a guess about a conditional source-string branch — the exact class behind
+ * test itself) is a guess about a conditional source-string branch  -  the exact class behind
  * "expected 'Showing N rows for M records.' but the page said 'Showing N rows.'".
  */
 function renderOnPageTextForPrompt(exploration: any, maxItems = 80): string {
@@ -3077,12 +3209,12 @@ function renderOnPageTextForPrompt(exploration: any, maxItems = 80): string {
     add(e?.text); add(e?.name); add(e?.tooltip);
   }
   const outline = String(exploration?.outline || '');
-  // outline lines carry real strings two ways:  - button "Apps" …   and   - paragraph: Some text
+  // outline lines carry real strings two ways:  - button "Apps" ...   and   - paragraph: Some text
   for (const m of outline.matchAll(/"((?:[^"\\]|\\.){3,120})"/g)) add(m[1]);
   for (const m of outline.matchAll(/\]:\s*([^\n]{3,120})$/gm)) add(m[1]);
   if (!texts.size) return '';
   const list = [...texts].slice(0, maxItems).map((t) => `  "${t}"`).join('\n');
-  return `\nEXACT ON-PAGE TEXT at capture time (text assertions may ONLY expect strings from this list — verbatim or a substring/regex of one — or values the test itself typed. Anything else is a guessed conditional branch and WILL fail):\n${list}\n`;
+  return `\nEXACT ON-PAGE TEXT at capture time (text assertions may ONLY expect strings from this list  -  verbatim or a substring/regex of one  -  or values the test itself typed. Anything else is a guessed conditional branch and WILL fail):\n${list}\n`;
 }
 
 function renderRawElementsForPrompt(exploration: any): string {
@@ -3107,10 +3239,10 @@ function renderRawElementsForPrompt(exploration: any): string {
     if (role && (label || text)) hints.push(`getByRole("${role}", { name: "${label || text}" })`);
     if (name) hints.push(`locator('[name="${name}"]')`);
     if (id) hints.push(`page.locator('#${id}')`);
-    // Prefer the highest-priority selector from the inspection context — these are illustrative.
+    // Prefer the highest-priority selector from the inspection context  -  these are illustrative.
     lines.push(`  ${summary.padEnd(50)} ${hints[0] || ''}`);
   }
-  return lines.length ? `\nRAW DOM ELEMENTS (every interactive control with attributes — use these EXACT labels/placeholders/roles — never invent):\n${lines.slice(0, 120).join('\n')}\n` : '';
+  return lines.length ? `\nRAW DOM ELEMENTS (every interactive control with attributes  -  use these EXACT labels/placeholders/roles  -  never invent):\n${lines.slice(0, 120).join('\n')}\n` : '';
 }
 
 function summarizeExecutionTests(tests: any[], durationMs = 0, error?: string) {
@@ -3416,7 +3548,7 @@ async function runScriptsAndCollectEvidence(run: any, targetUrl: string, testCas
 
       // EXECUTION-REPAIR LOOP (Phase 3, evaluator-optimizer): the real Playwright result
       // is ground truth. When tests fail, feed the actual error + the observed DOM back to
-      // the coder to fix the failing script, then re-run — up to a bounded budget. This is
+      // the coder to fix the failing script, then re-run  -  up to a bounded budget. This is
       // the agent "fixing itself until the tests pass" instead of reporting a broken result.
       const MAX_REPAIR_ROUNDS = 2;
       // Re-inspect each failing case against the LIVE page at most once, then reuse across rounds.
@@ -3424,7 +3556,7 @@ async function runScriptsAndCollectEvidence(run: any, targetUrl: string, testCas
       for (let round = 1; round <= MAX_REPAIR_ROUNDS && (exec.failed || 0) > 0; round += 1) {
         const failing = (exec.tests || []).filter((t) => /fail|timedout|interrupted/i.test(String(t.status)));
         if (!failing.length) break;
-        pushPhase(run, { agent: 'ExecutionRepair', status: 'running', output: `Round ${round}/${MAX_REPAIR_ROUNDS}: ${failing.length} failing test(s) — re-grounding against the live page, then repairing against the real failure.` });
+        pushPhase(run, { agent: 'ExecutionRepair', status: 'running', output: `Round ${round}/${MAX_REPAIR_ROUNDS}: ${failing.length} failing test(s)  -  re-grounding against the live page, then repairing against the real failure.` });
         let repaired = 0;
         for (const t of failing) {
           const idx = scripts.findIndex((s) => (s.filename && baseName(s.filename) === baseName(t.file)) || normTitle(s.title) === normTitle(t.title));
@@ -3457,7 +3589,7 @@ async function runScriptsAndCollectEvidence(run: any, targetUrl: string, testCas
           try {
             const coder = await getOrchestrator('playwrightCoder', { workspaceId: run.ownerId || 'default', effort: run.requestedEffort });
             const res = await coder.generateObject<{ code: string }>({
-              prompt: `A generated Playwright test FAILED when executed against the live app. Fix it.\n\nFailure error:\n${String(t.error || 'unknown failure').slice(0, 1500)}\n\nThe browser session is ALREADY AUTHENTICATED via an injected storage state, so there is usually NO login form at run time. Do NOT depend on logging in: if login steps exist, keep them but ensure EVERY login fill/click/waitForURL is guarded with .catch(() => {}) and a short timeout so it is a harmless no-op when no login form is present. NEVER use waitForLoadState('networkidle').\n\nWhat a fresh inspection of the LIVE page for THIS test's goal actually observed (use these REAL selectors/labels — do not invent; if a control you need is here, use its exact label/role/text):\n${JSON.stringify(compactInspectionContext(groundingContext))}\n\nCurrent failing test code:\n${String(scripts[idx].code || '').slice(0, 6000)}\n\nReturn the corrected full test file as {"code":"..."}. Keep the same test title. Prefer role/label/text selectors grounded in the observed page. Add resilient waits. Do not change what the test verifies. CRITICAL: if the failure is that the PRIMARY action did not happen (e.g. the export produced no download, or the setting toggle/save did not persist), fix the SELECTOR or interaction so the action ACTUALLY executes and its outcome assertion PASSES — you must NOT remove, soften, or wrap that primary action/assertion in .catch(() => {}) just to make the test green. Faking a pass is forbidden; the real action must occur.`,
+              prompt: `A generated Playwright test FAILED when executed against the live app. Fix it.\n\nFailure error:\n${String(t.error || 'unknown failure').slice(0, 1500)}\n\nThe browser session is ALREADY AUTHENTICATED via an injected storage state, so there is usually NO login form at run time. Do NOT depend on logging in: if login steps exist, keep them but ensure EVERY login fill/click/waitForURL is guarded with .catch(() => {}) and a short timeout so it is a harmless no-op when no login form is present. NEVER use waitForLoadState('networkidle').\n\nWhat a fresh inspection of the LIVE page for THIS test's goal actually observed (use these REAL selectors/labels  -  do not invent; if a control you need is here, use its exact label/role/text):\n${JSON.stringify(compactInspectionContext(groundingContext))}\n\nCurrent failing test code:\n${String(scripts[idx].code || '').slice(0, 6000)}\n\nReturn the corrected full test file as {"code":"..."}. Keep the same test title. Prefer role/label/text selectors grounded in the observed page. Add resilient waits. Do not change what the test verifies. CRITICAL: if the failure is that the PRIMARY action did not happen (e.g. the export produced no download, or the setting toggle/save did not persist), fix the SELECTOR or interaction so the action ACTUALLY executes and its outcome assertion PASSES  -  you must NOT remove, soften, or wrap that primary action/assertion in .catch(() => {}) just to make the test green. Faking a pass is forbidden; the real action must occur.`,
               schema: z.object({ code: z.string() }),
               userMessage: 'Repair a failing Playwright test against the real execution error.',
             });
@@ -3468,7 +3600,7 @@ async function runScriptsAndCollectEvidence(run: any, targetUrl: string, testCas
               const guarded = ensureExecutableLogin({ ...scripts[idx], code }, liveCreds, targetUrl);
               code = repairTestCode(sanitizeTestCode(guarded.code)) || guarded.code;
               // Only apply the static repo method-rewrite when the fresh live re-inspection of THIS
-              // failing control was too thin to trust — otherwise it drags the selector the coder
+              // failing control was too thin to trust  -  otherwise it drags the selector the coder
               // just grounded against the real page back toward a repo homonym (re-introducing the
               // exact failure repair is meant to fix).
               const repairLiveUsable = buildLiveSelectorIndex({ inspection_context: groundingContext }).usable;
@@ -3482,10 +3614,10 @@ async function runScriptsAndCollectEvidence(run: any, targetUrl: string, testCas
             }
           } catch { /* keep the original script if repair fails */ }
         }
-        pushPhase(run, { agent: 'ExecutionRepair', status: 'completed', output: `Repaired ${repaired} of ${failing.length} failing test(s)${repaired ? ' — re-running.' : ' — no fix produced, stopping repair.'}` });
+        pushPhase(run, { agent: 'ExecutionRepair', status: 'completed', output: `Repaired ${repaired} of ${failing.length} failing test(s)${repaired ? '  -  re-running.' : '  -  no fix produced, stopping repair.'}` });
         if (!repaired) break;
         await persistAgentScripts(run);
-        // Re-run ONLY the repaired scripts, not the whole suite — re-running every already-passing
+        // Re-run ONLY the repaired scripts, not the whole suite  -  re-running every already-passing
         // test on every repair round was multiplying wall time by up to MAX_REPAIR_ROUNDS+1 for no
         // reason. A distinct runId gives this subset its own empty tests dir (no stale spec files).
         const repairedFilenames = new Set(failing.map((t) => baseName(t.file)));
@@ -3518,7 +3650,7 @@ async function runScriptsAndCollectEvidence(run: any, targetUrl: string, testCas
       }
 
       // Persist the full result (incl. per-test pass/fail) so the Agent Console can
-      // show it directly — no need to press "Run all scripts" a second time (G6).
+      // show it directly  -  no need to press "Run all scripts" a second time (G6).
       run.execution_result = {
         ok: exec.ok,
         total: exec.total,
@@ -3574,7 +3706,7 @@ async function runScriptsAndCollectEvidence(run: any, targetUrl: string, testCas
             stepScreenshots.push(ok ? `/evidence/${dest}` : '');
           }
           // Surface the Playwright trace (retain-on-failure) so a failed test can be
-          // replayed step-by-step in the Trace Viewer — real, debuggable evidence.
+          // replayed step-by-step in the Trace Viewer  -  real, debuggable evidence.
           let traceUrl = '';
           if (t.tracePath) {
             const dest = `${run.id}-case-${i + 1}-trace.zip`;
@@ -3627,8 +3759,49 @@ async function runScriptsAndCollectEvidence(run: any, targetUrl: string, testCas
     }
   }
   // FALLBACK / graceful degradation: base-URL login + screenshot (original behaviour) when
-  // scripts can't run — partial, honest evidence instead of a hard failure or a fake green.
+  // scripts can't run  -  partial, honest evidence instead of a hard failure or a fake green.
   return capturePlaywrightEvidence(targetUrl, run.id, cases, liveCreds);
+}
+
+async function completeScriptProofFlow(run: any, targetUrl: string, testCases: any, liveCreds: any) {
+  await persistAgentScripts(run);
+  const selectorVerification = await verifyScriptsWithGitAgent(run, run.playwright_scripts, run.prompt || '');
+  if (!selectorVerification.ok) {
+    const why = selectorVerification.reason || 'Selector verification failed.';
+    (run as any).execution_result = { ok: false, total: 0, passed: 0, failed: 0, skipped: 0, error: why, tests: [] };
+    markRunDone(run, 'failed');
+    await persistAgentQualityArtifacts(run).catch((err) => console.warn('Failed to persist selector verification artifacts:', err));
+    persistDataInBackground('selector verification blocked evidence');
+    return;
+  }
+
+  pushPhase(run, { agent: 'EvidenceAgent', status: 'running' });
+  if (targetUrl) {
+    const evidence = await runScriptsAndCollectEvidence(run, targetUrl, testCases, liveCreds);
+    run.evidence_screenshots = evidence as any;
+    pushPhase(run, { agent: 'EvidenceAgent', status: 'completed', output: evidence });
+  } else {
+    pushPhase(run, { agent: 'EvidenceAgent', status: 'skipped', output: 'No target URL was provided in chat and no Website Credentials row is selected for Playwright.' });
+  }
+
+  markRunDone(run, 'completed');
+  await persistAgentRunArtifacts(run);
+  persistDataInBackground('agent proof flow completed');
+}
+
+async function copyExecutionScreenshots(runId: string, tests: any[]) {
+  const evidenceDir = path.resolve(process.cwd(), 'evidence');
+  await fsp.mkdir(evidenceDir, { recursive: true });
+  const screenshotUrls: string[] = [];
+  for (const t of tests || []) {
+    const paths = [...(t.stepScreenshotPaths || []), t.screenshotPath].filter(Boolean);
+    for (let i = 0; i < paths.length; i += 1) {
+      const dest = `${runId}-shot-${screenshotUrls.length + 1}.png`;
+      const ok = await fsp.copyFile(paths[i], path.join(evidenceDir, dest)).then(() => true).catch(() => false);
+      if (ok) screenshotUrls.push(`/evidence/${dest}`);
+    }
+  }
+  return screenshotUrls;
 }
 
 export function registerAgentRoutes(app: Express) {
@@ -3638,15 +3811,15 @@ export function registerAgentRoutes(app: Express) {
     try {
       const { goal, app_url, username, password, testData, projectId } = req.body || {};
       const repoPath = getProjectRepoPath(String(projectId || '')).trim();
-      if (!repoPath) { res.status(400).json({ error: 'No repo bound to the project — FlowInspector needs source.' }); return; }
+      if (!repoPath) { res.status(400).json({ error: 'No repo bound to the project  -  FlowInspector needs source.' }); return; }
       const url = String(app_url || '');
       const creds = (username && password) ? { username: String(username), password: String(password) } : undefined;
       const { flow, sourceFiles, notes } = await inspectFlow({ goal: String(goal || ''), repoPath, testData: String(testData || ''), workspaceId: 'default' });
       const stepCount = (flow.steps || []).length;
       // A flow with no steps is a FAILURE of the tracer (e.g. the prompt overflowed), NOT a passing
-      // test — the emitted script would be login-only and "pass" trivially. Report it honestly.
+      // test  -  the emitted script would be login-only and "pass" trivially. Report it honestly.
       if (stepCount === 0) {
-        res.json({ steps: 0, summary: flow.summary, sourceFiles, notes, script: '', execution: { passed: 0, failed: 1, total: 1, tests: [{ status: 'failed', title: String(goal || ''), error: 'FlowInspector produced 0 steps (no flow traced) — not a real test.' }] } });
+        res.json({ steps: 0, summary: flow.summary, sourceFiles, notes, script: '', execution: { passed: 0, failed: 1, total: 1, tests: [{ status: 'failed', title: String(goal || ''), error: 'FlowInspector produced 0 steps (no flow traced)  -  not a real test.' }] } });
         return;
       }
       const script = flowToScript(String(goal || 'Flow test').slice(0, 80), { url, credentials: creds }, flow);
@@ -3660,17 +3833,109 @@ export function registerAgentRoutes(app: Express) {
     }
   });
 
+  async function planAuthorGoal(input: { goal: string; url: string; hasCredentials: boolean; testData: string; workspaceId: string }) {
+    const fallback = {
+      understoodGoal: input.goal,
+      workflow: [input.goal].filter(Boolean),
+      testData: input.testData,
+      blockers: [] as string[],
+    };
+    try {
+      const ai = await getOrchestrator('appInspector', { workspaceId: input.workspaceId || 'default' });
+      const result = await ai.generateObject<any>({
+        schema: z.object({
+          understoodGoal: z.string().default(''),
+          workflow: z.array(z.string()).default([]),
+          testData: z.string().default(''),
+          blockers: z.array(z.string()).default([]),
+        }),
+        userMessage: input.goal,
+        prompt: `Turn this browser automation request into an execution plan before any browser action.
+Target URL: ${input.url}
+Saved credentials available: ${input.hasCredentials ? 'yes' : 'no'}
+Existing test data hint: ${input.testData || '(none)'}
+
+Rules:
+- Understand the target app/module/tab/object from the wording.
+- If the user asks for random test data, create concrete valid-looking values.
+- Login is a silent setup step when saved credentials are available.
+- If login is required but saved credentials are not available, add one blocker.
+- Return only the real app workflow. Do not include QA assistant/chat/UI behavior.`,
+      });
+      const obj = result.object || {};
+      return {
+        understoodGoal: String(obj.understoodGoal || input.goal),
+        workflow: Array.isArray(obj.workflow) ? obj.workflow.map(String).filter(Boolean).slice(0, 12) : fallback.workflow,
+        testData: String(obj.testData || input.testData || ''),
+        blockers: Array.isArray(obj.blockers) ? obj.blockers.map(String).filter(Boolean).slice(0, 4) : [],
+      };
+    } catch {
+      return fallback;
+    }
+  }
+
   // AUTHOR-BY-DOING test endpoint: drive the goal live, emit the recorded script, execute it.
   app.post('/api/agent/author-test', async (req, res) => {
     try {
-      const { goal, app_url, username, password, testData } = req.body || {};
+      const { goal, app_url, username, password, testData, websiteId } = req.body || {};
       const url = String(app_url || '');
-      const creds = (username && password) ? { username: String(username), password: String(password) } : undefined;
-      const result = await liveAuthor({ goal: String(goal || ''), url, credentials: creds, testData: String(testData || ''), maxSteps: 14 });
-      const script = emitScript(String(goal || 'Authored test').slice(0, 80), { url, credentials: creds }, result.steps);
-      const exec = await executePlaywrightScripts({ scripts: [{ filename: 'authored.spec.ts', title: 'authored', code: script }], baseUrl: url, runId: `author-${randomUUID().slice(0, 8)}`, singleSession: true });
+      const resolved = resolveCredentials({ targetUrl: url, websiteId: String(websiteId || ''), ownerId: reqScope(req).userId })
+        || resolveCredentials({ targetUrl: url, websiteId: String(websiteId || '') })
+        || undefined;
+      const settingsCreds = findSettingsCredentials(url);
+      const creds = (username && password)
+        ? { username: String(username), password: String(password) }
+        : resolved?.username && resolved?.password
+          ? { username: String(resolved.username), password: String(resolved.password) }
+          : settingsCreds.username && settingsCreds.password
+            ? { username: settingsCreds.username, password: settingsCreds.password }
+          : undefined;
+      const attention = await planAuthorGoal({ goal: String(goal || ''), url, hasCredentials: !!(creds?.username && creds?.password), testData: String(testData || ''), workspaceId: reqScope(req).userId || 'default' });
+      if (attention.blockers.length) return res.status(400).json({ error: attention.blockers.join(' ') });
+      const plannedGoal = `${attention.understoodGoal}\nWorkflow:\n${attention.workflow.map((s, i) => `${i + 1}. ${s}`).join('\n')}`;
+      const result = await liveAuthor({ goal: plannedGoal, url, credentials: creds, testData: attention.testData, maxSteps: 14 });
+      const script = emitScript(String(attention.understoodGoal || goal || 'Authored test').slice(0, 80), { url, credentials: creds }, result.steps);
+      const runId = `author-${randomUUID().slice(0, 8)}`;
+      const exec = await executePlaywrightScripts({ scripts: [{ filename: 'authored.spec.ts', title: 'authored', code: script }], baseUrl: url, runId, singleSession: true, screenshotMode: 'on' });
+      const screenshotUrls = await copyExecutionScreenshots(runId, exec.tests || []);
+      if (!screenshotUrls.length) {
+        const fallback = await capturePlaywrightEvidence(url, runId, [{ title: String(goal || 'Authored script') }], creds).catch(() => []);
+        for (const shot of fallback || []) if (shot?.screenshotUrl) screenshotUrls.push(shot.screenshotUrl);
+      }
       res.json({
-        goalReached: result.goalReached, steps: result.steps.length, notes: result.notes, script,
+        attention,
+        goalReached: result.goalReached, steps: result.steps.length, notes: result.notes, script, screenshotUrls,
+        execution: { passed: exec.passed, failed: exec.failed, total: exec.total, tests: (exec.tests || []).map((t: any) => ({ status: t.status, title: t.title, error: t.error })) },
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message || String(e) });
+    }
+  });
+
+  app.post('/api/agent/author-test/screenshots', async (req, res) => {
+    try {
+      const { script, app_url } = req.body || {};
+      const code = String(script || '');
+      const url = String(app_url || '');
+      if (!code.trim()) return res.status(400).json({ error: 'script is required' });
+      const settingsCreds = findSettingsCredentials(url);
+      const runnableCode = settingsCreds.username && settingsCreds.password
+        ? code
+            .replace(/const\s+USERNAME\s*=\s*(['"]).*?\1\s*;?/m, `const USERNAME = ${JSON.stringify(settingsCreds.username)};`)
+            .replace(/const\s+PASSWORD\s*=\s*(['"]).*?\1\s*;?/m, `const PASSWORD = ${JSON.stringify(settingsCreds.password)};`)
+            .replace(/(getBy(?:Label|Placeholder)\([^)]*(?:email|user(?:name)?|login)[^)]*\)[\s\S]{0,80}\.fill\()\s*(['"]).*?\2(\s*[,)]?)/gi, `$1${JSON.stringify(settingsCreds.username)}$3`)
+            .replace(/(getBy(?:Label|Placeholder)\([^)]*password[^)]*\)[\s\S]{0,80}\.fill\()\s*(['"]).*?\2(\s*[,)]?)/gi, `$1${JSON.stringify(settingsCreds.password)}$3`)
+        : code;
+      const runId = `author-rerun-${randomUUID().slice(0, 8)}`;
+      const exec = await executePlaywrightScripts({
+        scripts: [{ filename: 'authored-rerun.spec.ts', title: 'authored rerun', code: runnableCode }],
+        baseUrl: url,
+        runId,
+        singleSession: true,
+        screenshotMode: 'on',
+      });
+      res.json({
+        screenshotUrls: await copyExecutionScreenshots(runId, exec.tests || []),
         execution: { passed: exec.passed, failed: exec.failed, total: exec.total, tests: (exec.tests || []).map((t: any) => ({ status: t.status, title: t.title, error: t.error })) },
       });
     } catch (e: any) {
@@ -3687,7 +3952,7 @@ export function registerAgentRoutes(app: Express) {
   });
 
   /**
-   * Deep understanding is a LONG call (repo research + several model calls — minutes).
+   * Deep understanding is a LONG call (repo research + several model calls  -  minutes).
    * A single synchronous HTTP request dies at any reverse proxy's read timeout (the
    * production 504-at-60s failure that silently degraded every prod understanding to
    * the terse fallback card). So it now follows the same pattern as /api/agent/start:
@@ -3829,7 +4094,7 @@ export function registerAgentRoutes(app: Express) {
     const scope = reqScope(req);
     const jobId = randomUUID();
     understandingJobs.set(jobId, { status: 'running', createdAt: Date.now() });
-    // Run in the background; the job NEVER fails hard — computeUnderstanding already
+    // Run in the background; the job NEVER fails hard  -  computeUnderstanding already
     // degrades to the deterministic fallback payload on any model/research error.
     computeUnderstanding(body, { userId: scope.userId, projectId: scope.projectId, appId: scope.appId })
       .catch((err: any) => ({ understanding: '', source: 'fallback', error: getAIErrorMessage(err) }))
@@ -4054,10 +4319,10 @@ export function registerAgentRoutes(app: Express) {
     // The conversation that led here, so case generation is grounded in what was actually
     // discussed (e.g. the Admin objects/users/permissions), not just the prompt string.
     const chatHistory: Array<{ role: string; content: string }> = Array.isArray(req.body.history) ? req.body.history : [];
-    // 0 (or absent) means "auto" — let the depth of the source understanding decide
+    // 0 (or absent) means "auto"  -  let the depth of the source understanding decide
     // the count. A positive number is an explicit user request and is honored as-is.
     // Honor the user's wish: an explicit count from the UI field OR parsed from the prompt
-    // ("Generate 5 test cases ...") wins. 0 means "auto" — the flow/complexity decides.
+    // ("Generate 5 test cases ...") wins. 0 means "auto"  -  the flow/complexity decides.
     const requestedCaseCount = Math.max(0, Math.floor(Number(req.body.testCaseCount) || 0)) || parseCaseCount(prompt || '');
     const flowMode = req.body.flowMode === 'review_cases' ? 'review_cases' : 'complete';
 
@@ -4085,6 +4350,8 @@ export function registerAgentRoutes(app: Express) {
       approvedUnderstanding ||= String(priorSessionRun.approvedUnderstanding || '').trim();
       priorGrounding ||= String(priorSessionRun.priorGrounding || priorSessionRun.approvedUnderstanding || '').trim();
     }
+    approvedUnderstanding = stripScriptBlocksFromScope(approvedUnderstanding);
+    priorGrounding = stripScriptBlocksFromScope(priorGrounding);
     const scopeContextText = [selectedProject?.name, selectedApp?.name].filter(Boolean).join(' ');
     const appScopeQuestion = needsExplicitAppScope(prompt || '', selectedApp, app_url || '', getProjectRepoPath(scope.projectId || '').trim());
     if (appScopeQuestion) {
@@ -4124,7 +4391,7 @@ export function registerAgentRoutes(app: Express) {
       }
       return { username: '', password: '', siteName: '', baseUrl: targetUrl, environment: 'unknown', source: 'none' };
     })();
-    // ── App-within-surface targeting ──────────────────────────────────────────────────────────
+    // -- App-within-surface targeting ----------------------------------------------------------
     // The platform surface hosts many individual apps (resolved from the live API).
     // The user names one in the prompt; resolve it to the platform's real app id (from the live
     // apps API using this surface's creds), then deep-link the target URL into that app so every
@@ -4150,7 +4417,9 @@ export function registerAgentRoutes(app: Express) {
         const picked = wantsGenericOrAllApps(targetText)
           ? { allApps: true, app: null, candidates: apps }
           : resolveTargetApp(apps, targetText);
-        if (picked.allApps) {
+        if (wantsPlatformAdminScope(targetText)) {
+          targetCoreAppId = '';
+        } else if (picked.allApps) {
           targetCoreAppId = ALL_APPS_ID;
         } else if (picked.app) {
           targetCoreAppId = picked.app.id;
@@ -4169,7 +4438,7 @@ export function registerAgentRoutes(app: Express) {
           // No app named (and not an "all apps" sweep) - ask which one, listing the real apps.
           const names = picked.candidates.map((a) => a.label).filter(Boolean);
           return res.json({
-            chat_response: `Which app should I test in ${selectedApp?.name || 'this platform'}?\n\nAvailable apps: ${names.join(' · ')}\n\nReply with the app name (e.g. "test the list view"), or say "all apps" to sweep every app.`,
+            chat_response: `Which app should I test in ${selectedApp?.name || 'this platform'}?\n\nAvailable apps: ${names.join(' - ')}\n\nReply with the app name (e.g. "test the list view"), or say "all apps" to sweep every app.`,
           });
         }
       }
@@ -4188,22 +4457,22 @@ export function registerAgentRoutes(app: Express) {
       testSuiteId: req.body.testSuiteId,
       testCaseId: req.body.testCaseId,
     });
-    // ── Folder gate: nothing starts without a folder to save into ──────────────────────────────
-    // Require an EXPLICIT folder — a selected folder id, or a folder name the user mentioned — and
+    // -- Folder gate: nothing starts without a folder to save into ------------------------------
+    // Require an EXPLICIT folder  -  a selected folder id, or a folder name the user mentioned  -  and
     // do NOT silently auto-create an inferred one. This guarantees every artifact this run produces
     // (plan, suite, cases, run, requirements, reports, defects) lands in a folder the user chose and
     // can find, instead of a machine-named folder they never see.
     // Only an EXPLICIT folder the user chose counts: a selected folder id, or a folder name they
-    // supplied in the folderMention field. Do NOT infer one from the prompt text — the prompt is the
+    // supplied in the folderMention field. Do NOT infer one from the prompt text  -  the prompt is the
     // test request (and derived context can contain stray @tokens like "@bvt" that would falsely
     // look like an @folder mention and bypass this gate).
     const explicitFolderId = !!(req.body.folderId && db.folders.some((f: any) => f.id === req.body.folderId));
     const explicitFolderMention = !!String(req.body.folderMention || '').trim();
     if (!explicitFolderId && !explicitFolderMention) {
       const existing = [...new Set((db.folders as any[]).map((f: any) => getFolderPath(f.id)).filter(Boolean))].slice(0, 25);
-      const listing = existing.length ? `\n\nExisting folders: ${existing.join(' · ')}` : '';
+      const listing = existing.length ? `\n\nExisting folders: ${existing.join(' - ')}` : '';
       return res.json({
-        chat_response: `Before I start, which folder should I save this under? Pick an existing folder or name a new one — I won't begin a run without a folder, so every test plan, suite, case, run, requirement, report and defect stays together and easy to find.${listing}\n\nTip: say it in the prompt, e.g. "test the list view, save under Regression".`,
+        chat_response: `Before I start, which folder should I save this under? Pick an existing folder or name a new one  -  I won't begin a run without a folder, so every test plan, suite, case, run, requirement, report and defect stays together and easy to find.${listing}\n\nTip: say it in the prompt, e.g. "test the list view, save under Regression".`,
       });
     }
 
@@ -4339,7 +4608,7 @@ export function registerAgentRoutes(app: Express) {
     }
 
     try {
-      // #1: NamingAgent removed from the critical path — newRun.artifactName already holds
+      // #1: NamingAgent removed from the critical path  -  newRun.artifactName already holds
       // a deterministic name (buildFallbackArtifactName), saving a ~30s codex call up front.
       const credentialContext = buildCredentialContext(credentials);
       pushPhase(newRun, { agent: 'ApplicationContext', status: 'running' });
@@ -4385,14 +4654,14 @@ export function registerAgentRoutes(app: Express) {
         // Reflection window: metadata and runtime share a store behind a short (~60s) metadata cache,
         // so a change made in metadata can take a moment to appear in runtime.
         const reflectionLine = ' If a case changes metadata and then checks it in runtime, allow up to ~60 seconds for the change to appear (wait and re-check) rather than asserting it instantly.';
-        newRun.application_context_prompt = `TARGET APP: Every test case must cover ONLY the "${targetAppLabel}" app within this surface — not other apps.${objectsLine} Some objects may be inherited from a parent app; that is expected (the app shows its whole scope).${reflectionLine}\n${String(newRun.application_context_prompt || '')}`;
+        newRun.application_context_prompt = `TARGET APP: Every test case must cover ONLY the "${targetAppLabel}" app within this surface  -  not other apps.${objectsLine} Some objects may be inherited from a parent app; that is expected (the app shows its whole scope).${reflectionLine}\n${String(newRun.application_context_prompt || '')}`;
       }
       const appContextPrompt = String(newRun.application_context_prompt || '');
       const appContextKey = String(newRun.application_context_cache_key || applicationContextCacheKey(newRun.application_context));
       const cacheKey = featureCacheKey(targetUrl, `${prompt || ''} ${approvedUnderstanding}`, appContextKey);
 
       // Metadata fetch is scoped to the RESOLVED platform app id (app0NNNNNN). Note: newRun.appId is
-      // our internal surface id (APP-xxxx), which is NOT a platform app id — feeding it here was a
+      // our internal surface id (APP-xxxx), which is NOT a platform app id  -  feeding it here was a
       // no-op/mismatch, so we only fetch when a real platform app was resolved.
       if (targetCoreAppId && targetCoreAppId !== ALL_APPS_ID) {
         await runMetadataFetchPhase({
@@ -4448,10 +4717,10 @@ export function registerAgentRoutes(app: Express) {
       (newRun as any).inspection_blind = !inspectionOk;
       if (!inspectionOk) {
         // Surface the REAL reason (login failure, unreachable page, browser error captured in the
-        // inspection warnings) instead of only the generic line — otherwise the failure is
+        // inspection warnings) instead of only the generic line  -  otherwise the failure is
         // undiagnosable from the UI.
         const detail = (assessInspection(inspectionContext).reason || '').trim();
-        const why = `Inspection saw nothing on the page — cannot ground test cases in the live app; not generating ungrounded cases.${detail ? ` Details: ${detail}` : ''}`;
+        const why = `Inspection saw nothing on the page  -  cannot ground test cases in the live app; not generating ungrounded cases.${detail ? ` Details: ${detail}` : ''}`;
         pushPhase(newRun, { agent: 'System', status: 'failed', output: why });
         (newRun as any).cases_grounding = { ok: false, reason: why };
         markRunDone(newRun, 'failed');
@@ -4486,12 +4755,12 @@ export function registerAgentRoutes(app: Express) {
               note: 'Reused the prior code-grounded chat answer; source files were not reread for this stage.',
             },
           });
-          // FeatureWriter phase is emitted after FeatureDiscoveryAgent — not here
+          // FeatureWriter phase is emitted after FeatureDiscoveryAgent  -  not here
           setCached(understandingCache, cacheKey, { understanding: reusedUnderstanding, featureInventory: reusedInventory });
           return { understanding: reusedUnderstanding, featureInventory: reusedInventory };
         }
         try {
-          // Research the SELECTED project's repo — dynamic per app, no hardcoded path.
+          // Research the SELECTED project's repo  -  dynamic per app, no hardcoded path.
           const repoPath = getProjectRepoPath(newRun.projectId || '').trim();
           // Strike 3: ground the CodeAnalyst on the SAME resolved understanding the case
           // writer/coder use (resolveUnderstanding applies the chat fallback) instead of the
@@ -4509,7 +4778,7 @@ export function registerAgentRoutes(app: Express) {
           const { sourceFiles: _sourceFiles, files: _files, searchedFiles: _searchedFiles, ...visibleUnderstanding } = rawUnderstanding;
           pushPhase(newRun, { agent: 'CodeAnalyst', status: 'completed', output: visibleUnderstanding });
           // FeatureWriter now runs AFTER FeatureDiscoveryAgent (post understandTask) so phases
-          // emit in the correct order: Find Existing → Write New (missing). Cache the inventory
+          // emit in the correct order: Find Existing -> Write New (missing). Cache the inventory
           // key here so FeatureWriter can retrieve it without re-running the LLM.
           setCached(understandingCache, cacheKey, { understanding: analysis.understanding, featureInventory: null });
           return { understanding: analysis.understanding, featureInventory: null };
@@ -4532,7 +4801,7 @@ export function registerAgentRoutes(app: Express) {
         return;
       }
 
-      // ── Phase 3: Find Existing Features ────────────────────────────────────
+      // -- Phase 3: Find Existing Features ------------------------------------
       pushPhase(newRun, { agent: 'FeatureDiscoveryAgent', status: 'running' });
       const existingFeatureRequirements = await findExistingFeatureRequirements(newRun);
       (newRun as any).existing_feature_matches = existingFeatureRequirements;
@@ -4544,7 +4813,7 @@ export function registerAgentRoutes(app: Express) {
           : 'No existing feature/requirement records found for this scope.',
       });
 
-      // ── Phase 4: Write New Features (missing) ──────────────────────────────
+      // -- Phase 4: Write New Features (missing) ------------------------------
       // FeatureWriter now runs here (after discovery) so the phase order in the UI is correct.
       let featureInventory = newRun.feature_inventory;
       if (!featureInventory && newRun.understandingSource !== 'requirement') {
@@ -4578,17 +4847,17 @@ export function registerAgentRoutes(app: Express) {
             pushPhase(newRun, { agent: 'FeatureWriter', status: 'skipped', output: `Feature inventory unavailable: ${getAIErrorMessage(inventoryErr)}` });
           }
         } else {
-          pushPhase(newRun, { agent: 'FeatureWriter', status: 'skipped', output: 'Focused scope — no broad feature inventory needed.' });
+          pushPhase(newRun, { agent: 'FeatureWriter', status: 'skipped', output: 'Focused scope  -  no broad feature inventory needed.' });
         }
       } else if (featureInventory) {
         pushPhase(newRun, { agent: 'FeatureWriter', status: 'completed', output: featureWriterOutput(featureInventory, { reused: true }) });
       } else {
-        pushPhase(newRun, { agent: 'FeatureWriter', status: 'skipped', output: 'Requirement context already available — feature discovery skipped.' });
+        pushPhase(newRun, { agent: 'FeatureWriter', status: 'skipped', output: 'Requirement context already available  -  feature discovery skipped.' });
       }
 
-      // ── Phase 5: Write New Requirements (missing) — per-feature loop ────────
+      // -- Phase 5: Write New Requirements (missing)  -  per-feature loop --------
       if (newRun.understandingSource === 'requirement') {
-        pushPhase(newRun, { agent: 'RequirementWriter', status: 'skipped', output: 'Requirement already exists — skipping draft phase.' });
+        pushPhase(newRun, { agent: 'RequirementWriter', status: 'skipped', output: 'Requirement already exists  -  skipping draft phase.' });
       } else {
         pushPhase(newRun, { agent: 'RequirementWriter', status: 'running' });
         await persistAgentRequirementArtifacts(newRun);
@@ -4613,7 +4882,7 @@ export function registerAgentRoutes(app: Express) {
       newRun.selected_qa_prompt_text = selectedQaContext.promptText;
       newRun.scope_context_text = scopeContextText;
 
-      // Per-feature sub-loop: for each NEW feature → Map → Find existing → Write cases.
+      // Per-feature sub-loop: for each NEW feature -> Map -> Find existing -> Write cases.
       // BUT when the user FIXED a case count, skip the comprehensive per-feature expansion (which
       // produces one case per subfeature) and use the focused single-batch path below, which
       // honors the exact requested count.
@@ -4661,7 +4930,7 @@ export function registerAgentRoutes(app: Express) {
           }
         }
 
-        // ── Phase 6: Recheck coverage — fill any gaps ──────────────────────────
+        // -- Phase 6: Recheck coverage  -  fill any gaps --------------------------
         pushPhase(newRun, { agent: 'CoverageGapChecker', status: 'running' });
         const allSubFeatures = inventoryFeatures
           .flatMap((f: any) => (Array.isArray(f?.subfeatures) ? f.subfeatures : []))
@@ -4725,7 +4994,7 @@ export function registerAgentRoutes(app: Express) {
         }
         await runPostCaseAgentFlow(newRun, undefined as any, { test_cases: newRun.generated_cases }, targetUrl, credentials);
       } else {
-        // No feature inventory — fall back to single-batch generation with coverage-options gate
+        // No feature inventory  -  fall back to single-batch generation with coverage-options gate
         pushPhase(newRun, { agent: 'CoverageScout', status: 'running' });
         const relatedExisting = await findRelatedExistingCases(newRun);
         newRun.existing_matches = relatedExisting.map(mapExistingToRunCase);
@@ -4783,14 +5052,14 @@ export function registerAgentRoutes(app: Express) {
       }
 
       if (act === 'reuse' && matched.length) {
-        // No generation — load the existing cases and let the human review, then
+        // No generation  -  load the existing cases and let the human review, then
         // Continue runs scripts + evidence against them like any other case set.
         run.generated_cases = matched;
         pushPhase(run, { agent: 'TestGenerationAgent', status: 'completed', output: { test_cases: matched, reused: true } });
         run.status = 'review_required';
         (run as any).review_stage = 'cases';
         run.review_started_at = nowIso();
-        pushPhase(run, { agent: 'System', status: 'review_required', output: `Reusing ${matched.length} existing case(s) — review and continue to run scripts + evidence.` });
+        pushPhase(run, { agent: 'System', status: 'review_required', output: `Reusing ${matched.length} existing case(s)  -  review and continue to run scripts + evidence.` });
         await persistAgentQualityArtifacts(run);
         persistDataInBackground('reuse existing cases');
       } else if (act === 'gaps' && matched.length) {
@@ -4829,26 +5098,7 @@ export function registerAgentRoutes(app: Express) {
 
       try {
         const liveCreds = resolveCredentials({ targetUrl: run.app_url, websiteId: run.websiteId, role: (run.credentials || {}).role, ownerId: ownerScopeForRun(run) }) || undefined;
-        await persistAgentScripts(run);
-        const selectorVerification = await verifyScriptsWithGitAgent(run, run.playwright_scripts, run.prompt || '');
-        if (!selectorVerification.ok) {
-          const why = selectorVerification.reason || 'Selector verification failed.';
-          (run as any).execution_result = { ok: false, total: 0, passed: 0, failed: 0, skipped: 0, error: why, tests: [] };
-          markRunDone(run, 'failed');
-          await persistAgentQualityArtifacts(run).catch((persistErr) => console.warn('Failed to persist failed script verification:', persistErr));
-          persistDataInBackground('script verification blocked evidence');
-          return;
-        }
-        pushPhase(run, { agent: 'EvidenceAgent', status: 'running' });
-        if (run.app_url) {
-          const evidence = await runScriptsAndCollectEvidence(run, run.app_url || '', { test_cases: run.generated_cases || [] }, liveCreds);
-          run.evidence_screenshots = evidence as any;
-          pushPhase(run, { agent: 'EvidenceAgent', status: 'completed', output: evidence });
-        } else {
-          pushPhase(run, { agent: 'EvidenceAgent', status: 'skipped', output: 'No target URL was provided in chat and no Website Credentials row is selected for Playwright.' });
-        }
-        markRunDone(run, 'completed');
-        await persistAgentRunArtifacts(run);
+        await completeScriptProofFlow(run, run.app_url || '', { test_cases: run.generated_cases || [] }, liveCreds);
       } catch (err: any) {
         console.error('AI Script Continue Error:', err);
         markRunDone(run, 'failed');
@@ -4863,7 +5113,7 @@ export function registerAgentRoutes(app: Express) {
     }
 
     run.status = 'running';
-    // The human just finished reviewing cases — fold that idle gap into paused_ms
+    // The human just finished reviewing cases  -  fold that idle gap into paused_ms
     delete (run as any).cancelRequested;
     // so the reported total reflects automation time, not how long they deliberated.
     if (run.review_started_at) {
@@ -4920,7 +5170,7 @@ export function registerAgentRoutes(app: Express) {
     const hasInspection = !!run.inspection_context;
     const hasCases = Array.isArray(run.generated_cases) && run.generated_cases.length > 0;
     if (!hasInspection) {
-      // Inspection never produced usable context — nothing cheap to resume from; the
+      // Inspection never produced usable context  -  nothing cheap to resume from; the
       // client should kick off a fresh run (which re-inspects).
       return res.json({ success: false, needsFullRestart: true });
     }
@@ -4934,10 +5184,10 @@ export function registerAgentRoutes(app: Express) {
     }
     const resumedFrom = hasCases ? 'scripts' : 'write_cases';
     // Earlier phases (metadata fetch, context build, inspection, etc.) are being reused, not
-    // re-run — resolve any that were left stuck at 'running' from the stopped attempt so their
+    // re-run  -  resolve any that were left stuck at 'running' from the stopped attempt so their
     // chips don't spin forever.
     resolveDanglingPhases(run, 'Reused from the previous attempt; not re-run on retry.');
-    pushPhase(run, { agent: 'System', status: 'running', output: `Retrying — resuming from ${hasCases ? 'script generation' : 'case writing'} (reusing the completed inspection${run.feature_understanding ? ' + code understanding' : ''}).` });
+    pushPhase(run, { agent: 'System', status: 'running', output: `Retrying  -  resuming from ${hasCases ? 'script generation' : 'case writing'} (reusing the completed inspection${run.feature_understanding ? ' + code understanding' : ''}).` });
     persistDataInBackground('retry agent run');
     res.json({ success: true, resumedFrom });
 
@@ -5002,7 +5252,7 @@ Return a complete test case object. Preserve any useful existing fields. If no e
   });
 
   // AI step editing for the case editor: EXPAND selected steps into finer sub-steps, or MERGE
-  // selected steps into one — both driven by the ticked step indexes and both returning the FULL
+  // selected steps into one  -  both driven by the ticked step indexes and both returning the FULL
   // new ordered step list so the client just replaces its steps. Falls back to whole-case expansion
   // (targetStepCount) when no steps are selected.
   app.post('/api/agent/expand-case-steps', async (req, res) => {
@@ -5018,13 +5268,13 @@ Return a complete test case object. Preserve any useful existing fields. If no e
       const indexes = [...new Set(rawIndexes.map((i: any) => Number(i)).filter((i: number) => Number.isInteger(i) && i >= 0 && i < steps.length))].sort((a, b) => a - b);
       const mode = op === 'merge' ? 'merge' : 'expand';
       const numbered = steps.map((s, i) => `${i + 1}. ${s.action}  =>  Expected: ${s.expected}`).join('\n');
-      const plain = 'Write every action and expected result in plain, simple, everyday English a non-technical person can read — short sentences, common words, no jargon or internal field names.';
+      const plain = 'Write every action and expected result in plain, simple, everyday English a non-technical person can read  -  short sentences, common words, no jargon or internal field names.';
 
       let prompt: string;
       let userMessage: string;
       if (mode === 'merge' && indexes.length >= 2) {
         const picks = indexes.map((i) => i + 1).join(', ');
-        prompt = `Here are a QA test case's steps (numbered):\n${numbered}\n\nMerge ONLY the steps at positions ${picks} into a SINGLE step — one action and one matching expected result that together capture what those steps did. Keep every OTHER step exactly as it is and in the same order; the merged step takes the position of the earliest merged step. ${plain} Return the COMPLETE new ordered list of steps.`;
+        prompt = `Here are a QA test case's steps (numbered):\n${numbered}\n\nMerge ONLY the steps at positions ${picks} into a SINGLE step  -  one action and one matching expected result that together capture what those steps did. Keep every OTHER step exactly as it is and in the same order; the merged step takes the position of the earliest merged step. ${plain} Return the COMPLETE new ordered list of steps.`;
         userMessage = 'Merge the selected steps into one.';
       } else if (indexes.length >= 1) {
         const picks = indexes.map((i) => i + 1).join(', ');
@@ -5070,7 +5320,7 @@ Return a complete test case object. Preserve any useful existing fields. If no e
       // The linked run already created its plan/suite/folder at the review pause;
       // re-ensure the folder so the FK resolves even if PG was reset since.
       if (linkedRun) await ensureFolderInPg(linkedRun.folderId || '');
-      // Cases deleted in the review UI before saving must be deleted here too — otherwise
+      // Cases deleted in the review UI before saving must be deleted here too  -  otherwise
       // they stay in the DB as orphaned stale rows (previously mis-attributed to the wrong
       // case when index-derived ids shifted after a deletion).
       if (linkedRun) {
@@ -5120,4 +5370,3 @@ Return a complete test case object. Preserve any useful existing fields. If no e
     }
   });
 }
-

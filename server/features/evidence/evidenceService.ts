@@ -134,6 +134,12 @@ export async function performLoginIfCredentialsProvided(page: any, credentials: 
   }
 
   const beforeUrl = page.url();
+  let sawRateLimitStatus = false;
+  const onResponse = (response: any) => {
+    try { if (response.status() === 429) sawRateLimitStatus = true; } catch { /* ignore */ }
+  };
+  page.on?.('response', onResponse);
+  const isRateLimited = (bodyText: string) => sawRateLimitStatus || /too many requests|too many login attempts|rate[-\s]?limit/i.test(bodyText);
   const submitSelectors = [
     'button[type="submit"]',
     'input[type="submit"]',
@@ -152,8 +158,9 @@ export async function performLoginIfCredentialsProvided(page: any, credentials: 
         await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => undefined);
         await page.waitForTimeout(1000);
         const bodyText = await page.locator('body').innerText({ timeout: 3000 }).catch(() => '');
-        const rateLimited = /too many requests|rate[-\s]?limit|please retry later|try again later/i.test(bodyText);
+        const rateLimited = isRateLimited(bodyText);
         const success = !rateLimited && (page.url() !== beforeUrl || !/sign\s*in|login|404\s+not\s+found/i.test(bodyText));
+        page.off?.('response', onResponse);
         return {
           attempted: true,
           success,
@@ -180,8 +187,9 @@ export async function performLoginIfCredentialsProvided(page: any, credentials: 
     await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => undefined);
     await page.waitForTimeout(1000);
     const bodyText = await page.locator('body').innerText({ timeout: 3000 }).catch(() => '');
-    const rateLimited = /too many requests|rate[-\s]?limit|please retry later|try again later/i.test(bodyText);
+    const rateLimited = isRateLimited(bodyText);
     const success = !rateLimited && (page.url() !== beforeUrl || !/sign\s*in|login|404\s+not\s+found/i.test(bodyText));
+    page.off?.('response', onResponse);
     return {
       attempted: true,
       success,
@@ -197,6 +205,7 @@ export async function performLoginIfCredentialsProvided(page: any, credentials: 
       afterUrl: page.url(),
     };
   } catch {
+    page.off?.('response', onResponse);
     return { attempted: true, success: false, usernameFilled, passwordFilled, reason: 'Credentials filled, but submit failed.' };
   }
 }
@@ -222,48 +231,64 @@ export async function createAuthStorageState(
   if (!credentials?.username || !credentials?.password) return { ok: false, reason: 'No credentials.' };
   const browser = await launchChromiumWithRetry();
   try {
-    const context = await browser.newContext({ viewport: { width: 1365, height: 768 } });
-    const page = await context.newPage();
-    await page.goto(normalizedUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
-    const loginResult = await performLoginIfCredentialsProvided(page, credentials);
-    if ((loginResult as any)?.rateLimited) {
-      return { ok: false, reason: loginResult.reason || 'Authentication was rate-limited by the target app.' };
-    }
-    await page.waitForLoadState('domcontentloaded', { timeout: 8000 }).catch(() => undefined);
-    // Many SPAs (e.g. Core Platform) keep their auth token in sessionStorage, which Playwright's
-    // storageState does NOT persist. Wait for the client to actually establish a token before we
-    // snapshot, so the captured sessionStorage carries real auth instead of a half-logged-in state.
-    await page.waitForFunction(() => {
-      for (let i = 0; i < window.sessionStorage.length; i += 1) {
-        const k = window.sessionStorage.key(i) || '';
-        if (/token|auth|session|jwt/i.test(k)) return true;
-      }
-      return false;
-    }, { timeout: 8000 }).catch(() => undefined);
-    await page.waitForTimeout(800);
-    await context.storageState({ path: outPath });
-    // Capture sessionStorage separately (storageState omits it) so the executor can replay it via
-    // addInitScript — the only way to restore a sessionStorage-based session in Playwright.
-    let captured: CapturedSessionStorage | undefined;
-    try {
-      const items = await page.evaluate(() => {
-        const out: Record<string, string> = {};
-        for (let i = 0; i < window.sessionStorage.length; i += 1) {
-          const k = window.sessionStorage.key(i);
-          if (k) out[k] = window.sessionStorage.getItem(k) ?? '';
+    const retryDelayMs = Math.max(1000, Number(process.env.AUTH_RATE_LIMIT_RETRY_MS) || 15000);
+    let lastReason = '';
+
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      const context = await browser.newContext({ viewport: { width: 1365, height: 768 } });
+      try {
+        const page = await context.newPage();
+        await page.goto(normalizedUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        const loginResult = await performLoginIfCredentialsProvided(page, credentials);
+        lastReason = loginResult?.reason || '';
+
+        if ((loginResult as any)?.rateLimited) {
+          if (attempt === 1) {
+            await page.waitForTimeout(retryDelayMs);
+            continue;
+          }
+          return { ok: false, reason: `${lastReason || 'Authentication was rate-limited by the target app.'} Retried once after ${Math.round(retryDelayMs / 1000)}s.` };
         }
-        return out;
-      });
-      if (items && Object.keys(items).length) captured = { origin: new URL(normalizedUrl).origin, items };
-    } catch { /* sessionStorage capture is best-effort */ }
-    return { ok: loginResult?.success !== false, reason: loginResult?.reason, sessionStorage: captured };
+
+        await page.waitForLoadState('domcontentloaded', { timeout: 8000 }).catch(() => undefined);
+        // Many SPAs (e.g. Core Platform) keep their auth token in sessionStorage, which Playwright's
+        // storageState does NOT persist. Wait for the client to actually establish a token before we
+        // snapshot, so the captured sessionStorage carries real auth instead of a half-logged-in state.
+        await page.waitForFunction(() => {
+          for (let i = 0; i < window.sessionStorage.length; i += 1) {
+            const k = window.sessionStorage.key(i) || '';
+            if (/token|auth|session|jwt/i.test(k)) return true;
+          }
+          return false;
+        }, { timeout: 8000 }).catch(() => undefined);
+        await page.waitForTimeout(800);
+        await context.storageState({ path: outPath });
+
+        let captured: CapturedSessionStorage | undefined;
+        try {
+          const items = await page.evaluate(() => {
+            const out: Record<string, string> = {};
+            for (let i = 0; i < window.sessionStorage.length; i += 1) {
+              const k = window.sessionStorage.key(i);
+              if (k) out[k] = window.sessionStorage.getItem(k) ?? '';
+            }
+            return out;
+          });
+          if (items && Object.keys(items).length) captured = { origin: new URL(normalizedUrl).origin, items };
+        } catch { /* sessionStorage capture is best-effort */ }
+        return { ok: loginResult?.success !== false, reason: loginResult?.reason, sessionStorage: captured };
+      } finally {
+        await context.close().catch(() => undefined);
+      }
+    }
+
+    return { ok: false, reason: lastReason || 'Authentication setup failed.' };
   } catch (err: any) {
     return { ok: false, reason: err?.message || String(err) };
   } finally {
     await browser.close();
   }
 }
-
 export async function capturePlaywrightEvidence(targetUrl: string, runId: string, testCases: any[] = [], credentials: any = {}) {
   const normalizedUrl = normalizeTargetUrl(targetUrl);
   if (!normalizedUrl) return [];

@@ -4,6 +4,7 @@ import { randomUUID } from 'crypto';
 import path from 'path';
 import fs from 'fs/promises';
 import { executePlaywrightScripts } from './executionService';
+import { findSettingsCredentials } from '../../shared/url';
 
 const codegenRuns = new Map<string, { child: ChildProcess; outputPath: string; url: string; startedAt: string }>();
 
@@ -28,15 +29,37 @@ function stopProcessTree(child: ChildProcess) {
   });
 }
 
+function applySettingsCredentials(code: string, baseUrl: string) {
+  const creds = findSettingsCredentials(baseUrl);
+  if (!creds.username || !creds.password) return code;
+  let next = code;
+  next = next.replace(/const\s+USERNAME\s*=\s*(['"]).*?\1\s*;?/m, `const USERNAME = ${JSON.stringify(creds.username)};`);
+  next = next.replace(/const\s+PASSWORD\s*=\s*(['"]).*?\1\s*;?/m, `const PASSWORD = ${JSON.stringify(creds.password)};`);
+  next = next.replace(/(getBy(?:Label|Placeholder)\([^)]*(?:email|user(?:name)?|login)[^)]*\)[\s\S]{0,80}\.fill\()\s*(['"]).*?\2(\s*[,)]?)/gi, `$1${JSON.stringify(creds.username)}$3`);
+  next = next.replace(/(getBy(?:Label|Placeholder)\([^)]*password[^)]*\)[\s\S]{0,80}\.fill\()\s*(['"]).*?\2(\s*[,)]?)/gi, `$1${JSON.stringify(creds.password)}$3`);
+  return next;
+}
+
 export function registerPlaywrightRoutes(app: Express) {
   app.post('/api/playwright/run', async (req, res) => {
     try {
-      const { scripts, baseUrl, runId, singleSession } = req.body || {};
+      const { scripts, baseUrl, runId, singleSession, screenshotMode } = req.body || {};
       if (!Array.isArray(scripts) || scripts.length === 0) {
         return res.status(400).json({ error: 'scripts[] is required' });
       }
-      const result = await executePlaywrightScripts({ scripts, baseUrl, runId, singleSession: !!singleSession });
-      res.json(result);
+      const runnableScripts = scripts.map((script: any) => ({ ...script, code: applySettingsCredentials(String(script?.code || ''), String(baseUrl || '')) }));
+      const result = await executePlaywrightScripts({ scripts: runnableScripts, baseUrl, runId, singleSession: !!singleSession, screenshotMode: screenshotMode === 'on' ? 'on' : undefined });
+      const evidenceDir = path.resolve(process.cwd(), 'evidence');
+      await fs.mkdir(evidenceDir, { recursive: true });
+      const screenshotUrls: string[] = [];
+      for (const t of result.tests || []) {
+        for (const fp of [...(t.stepScreenshotPaths || []), t.screenshotPath].filter(Boolean)) {
+          const dest = `${result.runId}-shot-${screenshotUrls.length + 1}.png`;
+          const ok = await fs.copyFile(fp, path.join(evidenceDir, dest)).then(() => true).catch(() => false);
+          if (ok) screenshotUrls.push(`/evidence/${dest}`);
+        }
+      }
+      res.json({ ...result, screenshotUrls });
     } catch (err: any) {
       res.status(500).json({ error: err?.message || 'Failed to run Playwright scripts.' });
     }

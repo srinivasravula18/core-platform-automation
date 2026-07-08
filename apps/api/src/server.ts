@@ -36,9 +36,6 @@ export function installApiProcessGuards() {
 
 export async function createExpressApp() {
   await loadPersistedData();
-  await loadPersistedSettings();
-  seedDefaultKnowledgeIfEmpty();
-  seedAuthUsersIfEmpty();
 
   if (isPgEnabled()) {
     try {
@@ -52,6 +49,10 @@ export async function createExpressApp() {
   } else {
     console.log('[storage] using JSON file persistence (no DATABASE_URL set)');
   }
+
+  await loadPersistedSettings();
+  seedDefaultKnowledgeIfEmpty();
+  seedAuthUsersIfEmpty();
 
   await seedDefaultProjectAndBackfill();
 

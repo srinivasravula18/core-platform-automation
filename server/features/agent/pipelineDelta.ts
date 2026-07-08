@@ -25,6 +25,12 @@ function phaseSummary(run: any, key: string, value: Record<string, unknown>) {
   run.phases = { ...(run.phases || {}), [key]: value };
 }
 
+function domOpenPathForPrompt(prompt: string): string[] | undefined {
+  const text = String(prompt || '').toLowerCase();
+  if (/\b(?:create|add|new)\s+(?:an?\s+)?app\b/.test(text) || /\bapp\s+creation\b/.test(text)) return ['New'];
+  return undefined;
+}
+
 export async function runMetadataFetchPhase(input: {
   run: any;
   appId: string;
@@ -161,38 +167,43 @@ export async function runMultiContextInspectionPhase(input: {
   // DETERMINISTIC DOM EXPLORATION + LIVE VERIFICATION (sister-project explore_page pipeline):
   // capture EVERY interactive element (a11y-first), resolve the best stable selector for each,
   // VERIFY every selector against the real DOM, and persist the status-tagged table to the
-  // blackboard. The script generator must author from these verified records — an unverified
+  // blackboard. The script generator must author from these verified records  -  an unverified
   // selector is exactly what fails later during evidence/execution.
   try {
     input.onPhase({ agent: 'DOMExplorer', status: 'running' });
     // Explore the DEEP page the inspector actually reached, not the bare target shell. The
-    // inspector drills into the real feature (e.g. …&view=list&object=account); the shell URL
+    // inspector drills into the real feature (e.g. ...&view=list&object=account); the shell URL
     // only renders the app frame. Exploring the shell yields a handful of nav elements and
-    // starves the coder of verified selectors — it then guesses and the scripts fail. Prefer
+    // starves the coder of verified selectors  -  it then guesses and the scripts fail. Prefer
     // the inspector's landed currentUrl when it is deeper (longer) than the target.
     const landedUrl = String(inspections[0]?.currentUrl || '').trim();
     const exploreUrl = landedUrl && landedUrl.length >= input.targetUrl.length ? landedUrl : input.targetUrl;
+    const open = domOpenPathForPrompt(input.prompt);
     const verifiedPage = await exploreAndVerifyPage({
       targetUrl: exploreUrl,
+      open,
       credentials: input.primaryCredentials?.username && input.primaryCredentials?.password
         ? { username: input.primaryCredentials.username, password: input.primaryCredentials.password }
         : undefined,
     });
     input.run.dom_exploration = verifiedPage;
     try {
+      const blackboardId = String(exploreUrl);
       writeBlackboard({
-        id: `${exploreUrl}`,
+        id: blackboardId,
         baseUrl: exploreUrl,
         route: (() => { try { return new URL(verifiedPage.url || exploreUrl).pathname; } catch { return '/'; } })(),
+        opened: verifiedPage.opened?.map((item: any) => String(item?.label || '')).filter(Boolean),
         elements: verifiedPage.elements,
         coverage: verifiedPage.coverage,
       });
+      input.run.blackboard_id = blackboardId;
     } catch { /* blackboard persistence is best-effort */ }
     const c = verifiedPage.coverage;
     input.onPhase({
       agent: 'DOMExplorer',
       status: 'completed',
-      output: `Captured ${c.total_extracted} elements from ${verifiedPage.url || ''} — ${c.verified} verified, ${c.not_unique} not unique, ${c.broken} broken, ${c.unresolvable} unresolvable.`,
+      output: `Captured ${c.total_extracted} elements from ${verifiedPage.url || ''}  -  ${c.verified} verified, ${c.not_unique} not unique, ${c.broken} broken, ${c.unresolvable} unresolvable.`,
     });
     phaseSummary(input.run, 'dom_exploration', { status: 'complete', ...c, completed_at: new Date().toISOString() });
   } catch (e: any) {
@@ -280,7 +291,7 @@ export function runSelectorRegistryPhase(input: { run: any; page?: string; onPha
     ? input.run.dom_exploration.elements.filter(isVerifiedDomElement)
     : [];
 
-  // Also match against the DOMExplorer element pool — it captures form controls (New/Edit dialog
+  // Also match against the DOMExplorer element pool  -  it captures form controls (New/Edit dialog
   // fields, filter inputs) that the permission-context inspections never opened, so fields that
   // were "Not found in inspected DOM contexts" can still resolve from what was really seen.
   const domPool: string[] = [];

@@ -1,6 +1,7 @@
 import path from 'path';
 import fs from 'fs/promises';
 import { DEFAULT_MODELS, listAvailableModels, type ProviderName } from '../ai/providers/types';
+import { isPostgresEnabled, query } from '../db/pool';
 
 const PROVIDERS: ProviderName[] = ['gemini', 'openai', 'anthropic'];
 const DEFAULT_PROVIDER_SETTINGS: Record<ProviderName, { apiKey: string; model: string; authMode?: 'api_key' | 'account'; enabled?: boolean; effort?: 'low' | 'medium' | 'high' }> = {
@@ -178,6 +179,39 @@ export async function savePersistedData() {
 }
 
 export async function loadPersistedSettings() {
+  if (isPostgresEnabled()) {
+    try {
+      let rows = await query('SELECT key, value FROM settings');
+      if (rows.length === 0) {
+        const raw = await fs.readFile(settingsFilePath, 'utf-8').catch(() => '');
+        if (raw) {
+          const fromFile = JSON.parse(raw);
+          for (const [key, value] of Object.entries(fromFile)) {
+            await query(
+              `INSERT INTO settings (key, value, updated_at) VALUES ($1, $2::jsonb, now())
+               ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`,
+              [key, JSON.stringify(value)],
+            );
+          }
+          rows = await query('SELECT key, value FROM settings');
+        }
+      }
+      const settings = Object.fromEntries(rows.map((row: any) => [row.key, row.value]));
+      const normalizedAiSettings = normalizeProviderSettings(settings);
+      db.settings = {
+        ...db.settings,
+        ...settings,
+        siteCredentials: Array.isArray(settings.siteCredentials) ? settings.siteCredentials : [],
+        ...normalizedAiSettings,
+        dailyCostLimit: typeof settings.dailyCostLimit === 'number' ? settings.dailyCostLimit : db.settings.dailyCostLimit,
+        costCaps: (settings.costCaps && typeof settings.costCaps === 'object') ? { ...db.settings.costCaps, ...settings.costCaps } : db.settings.costCaps,
+        autonomyLevel: settings.autonomyLevel || db.settings.autonomyLevel,
+      };
+    } catch {
+      // Settings table may be empty on first boot.
+    }
+    return;
+  }
   try {
     const raw = await fs.readFile(settingsFilePath, 'utf-8');
     const settings = JSON.parse(raw);
@@ -197,6 +231,17 @@ export async function loadPersistedSettings() {
 }
 
 export async function savePersistedSettings() {
+  if (isPostgresEnabled()) {
+    const entries = Object.entries(db.settings || {});
+    for (const [key, value] of entries) {
+      await query(
+        `INSERT INTO settings (key, value, updated_at) VALUES ($1, $2::jsonb, now())
+         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`,
+        [key, JSON.stringify(value)],
+      );
+    }
+    return;
+  }
   await serializedAtomicWrite(settingsFilePath, () => JSON.stringify(db.settings, null, 2));
 }
 

@@ -6,7 +6,7 @@
 
 import type { AgentTool, ToolContext } from './types';
 import { exploreAppElements, resolveBestSelector, verifyResolvedSelectors } from '../../features/agent/domExplorer';
-import { writeBlackboard, readBlackboard, latestBlackboard } from '../../features/agent/blackboard';
+import { writeBlackboard, readBlackboard, latestBlackboard, listBlackboard } from '../../features/agent/blackboard';
 import { normalizeTargetUrl } from '../../shared/url';
 import { db } from '../../shared/storage';
 
@@ -151,6 +151,12 @@ export const getBlackboardTool: AgentTool = {
         route: { type: 'string', description: 'The route path explored' },
         open: { type: 'array', items: { type: 'string' }, description: 'The in-app nav labels used during exploration' },
         surface: { type: 'string', description: 'Surface name used during exploration' },
+        id: { type: 'string', description: 'Exact blackboard_id returned by explore_page or the run pipeline' },
+        filter: { type: 'string', description: 'Case-insensitive text filter over label/text/name/selector fields' },
+        role: { type: 'string', description: 'Optional accessible role/tag filter' },
+        limit: { type: 'number', description: 'Maximum returned elements; default 80' },
+        offset: { type: 'number', description: 'Offset for paging through large blackboards; default 0' },
+        full: { type: 'boolean', description: 'Return full element records instead of compact selector rows' },
       },
     },
   },
@@ -159,10 +165,43 @@ export const getBlackboardTool: AgentTool = {
     const route = typeof args.route === 'string' ? args.route : '/';
     const open = Array.isArray(args.open) ? args.open.filter((x: any): x is string => typeof x === 'string') : undefined;
     const blackboardId = `${baseUrl}${route}${open?.length ? `#${open.join('>')}` : ''}`;
-    let entry = readBlackboard(blackboardId);
+    let entry = typeof args.id === 'string' && args.id.trim() ? readBlackboard(args.id.trim()) : readBlackboard(blackboardId);
     if (!entry) entry = latestBlackboard();
-    if (!entry) return { found: false, note: 'No blackboard for this route yet — run explore_page first.' };
-    return { found: true, route: entry.route, elements: entry.elements, coverage: entry.coverage };
+    if (!entry) return { found: false, available: listBlackboard().map((b) => ({ id: b.id, route: b.route, createdAt: b.createdAt })), note: 'No blackboard for this route yet — run explore_page first.' };
+    const filter = String(args.filter || '').trim().toLowerCase();
+    const role = String(args.role || '').trim().toLowerCase();
+    const limit = Math.max(1, Math.min(500, Number(args.limit) || 80));
+    const offset = Math.max(0, Number(args.offset) || 0);
+    const labelOf = (e: any) => String(e.name || e.aria_label || e.ariaLabel || e.text || e.placeholder || e.element_id || e.id || '').replace(/\s+/g, ' ').trim();
+    const selectorOf = (e: any) => String(e.resolved_selector || e.fallback_selector || e.selector || '');
+    let elements = Array.isArray(entry.elements) ? entry.elements : [];
+    if (role) elements = elements.filter((e: any) => String(e.role || e.tag || '').toLowerCase() === role);
+    if (filter) elements = elements.filter((e: any) => `${labelOf(e)} ${selectorOf(e)} ${e.role || ''} ${e.tag || ''}`.toLowerCase().includes(filter));
+    const slice = elements.slice(offset, offset + limit);
+    const compact = slice.map((e: any, index: number) => ({
+      index: offset + index,
+      role: e.role || e.tag || 'element',
+      label: labelOf(e),
+      selector: selectorOf(e),
+      status: e.status,
+      visible: e.state?.visible,
+      enabled: e.state?.enabled,
+      disabled: e.state?.disabled,
+      required: e.state?.required,
+    }));
+    return {
+      found: true,
+      id: entry.id,
+      route: entry.route,
+      baseUrl: entry.baseUrl,
+      opened: entry.opened || [],
+      coverage: entry.coverage,
+      total: elements.length,
+      offset,
+      limit,
+      elements: args.full ? slice : compact,
+      available: listBlackboard().slice(0, 10).map((b) => ({ id: b.id, route: b.route, createdAt: b.createdAt })),
+    };
   },
 };
 

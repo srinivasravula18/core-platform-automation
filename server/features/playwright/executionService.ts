@@ -76,6 +76,24 @@ export function sanitizeTestCode(code: string): string {
   );
 }
 
+function autoScreenshotFixtureSource(shotsDir: string) {
+  return `
+async function tfaiAttachFinalScreenshot(page: any, testInfo: any) {
+  try {
+    const fs = await import('fs/promises');
+    const path = await import('path');
+    await fs.mkdir(${JSON.stringify(shotsDir)}, { recursive: true });
+    const safeTitle = String(testInfo.title || 'test').replace(/[^a-zA-Z0-9._-]/g, '-').slice(0, 80) || 'test';
+    const file = path.join(${JSON.stringify(shotsDir)}, \`final-\${testInfo.workerIndex || 0}-\${Date.now()}-\${safeTitle}.png\`);
+    await page.screenshot({ path: file, fullPage: true });
+    await testInfo.attach('step-999', { path: file, contentType: 'image/png' });
+  } catch {
+    // Screenshot capture is evidence-only; never turn a passing test into a failure.
+  }
+}
+`;
+}
+
 /** True if the TypeScript source parses cleanly (esbuild transpile = real parser, no type checks). */
 function isParseable(code: string): boolean {
   try { transformSync(code, { loader: 'ts', sourcemap: false }); return true; }
@@ -155,6 +173,8 @@ export async function executePlaywrightScripts(opts: {
   const runDir = path.join(RUN_ROOT, runId.replace(/[^a-zA-Z0-9._-]/g, '-'));
   const testsDir = path.join(runDir, 'tests');
   const resultsFile = path.join(runDir, 'results.json');
+  const screenshotMode = opts.screenshotMode || 'only-on-failure';
+  const stepShotsDir = path.join(runDir, 'step-shots');
   await fs.mkdir(testsDir, { recursive: true });
 
   if (opts.singleSession) {
@@ -176,12 +196,14 @@ export async function executePlaywrightScripts(opts: {
         } catch (e) { /* ignore */ }
       }, ${JSON.stringify(opts.sessionStorageState)});`
       : '';
+    const finalScreenshotFixture = screenshotMode === 'on' ? autoScreenshotFixtureSource(stepShotsDir) : '';
     const sharedFixture = `import { test as base, expect, request, type BrowserContext, type Page } from '@playwright/test';
+${finalScreenshotFixture}
 
 let sharedContext: BrowserContext | undefined;
 let sharedPage: Page | undefined;
 
-export const test = base.extend<{ context: BrowserContext; page: Page }>({
+export const test = base.extend<{ context: BrowserContext; page: Page; tfaiFinalScreenshot: void }>({
   context: async ({ browser }, use) => {
     if (!sharedContext) {
       sharedContext = await browser.newContext(${contextOptions});${sessionInit}
@@ -192,12 +214,30 @@ export const test = base.extend<{ context: BrowserContext; page: Page }>({
     if (!sharedPage || sharedPage.isClosed()) sharedPage = await context.newPage();
     await use(sharedPage);
   },
+  ${screenshotMode === 'on' ? `tfaiFinalScreenshot: [async ({ page }, use, testInfo) => {
+    await use();
+    await tfaiAttachFinalScreenshot(page, testInfo);
+  }, { auto: true }],` : ''}
 });
 
 export { expect, request };
 export type { BrowserContext, Page } from '@playwright/test';
 `;
     await fs.writeFile(path.join(runDir, 'shared-session.ts'), sharedFixture, 'utf8');
+  } else if (screenshotMode === 'on') {
+    const fixture = `import { test as base, expect, request } from '@playwright/test';
+${autoScreenshotFixtureSource(stepShotsDir)}
+
+export const test = base.extend<{ tfaiFinalScreenshot: void }>({
+  tfaiFinalScreenshot: [async ({ page }, use, testInfo) => {
+    await use();
+    await tfaiAttachFinalScreenshot(page, testInfo);
+  }, { auto: true }],
+});
+
+export { expect, request };
+`;
+    await fs.writeFile(path.join(runDir, 'tfai-fixtures.ts'), fixture, 'utf8');
   }
 
   // Validate & repair EACH script before writing. Playwright collects every spec file
@@ -215,6 +255,8 @@ export type { BrowserContext, Page } from '@playwright/test';
     let code = sanitizeTestCode(scripts[i].code);
     if (opts.singleSession) {
       code = code.replace(/from\s+['"]@playwright\/test['"]/g, "from '../shared-session'");
+    } else if (screenshotMode === 'on') {
+      code = code.replace(/from\s+['"]@playwright\/test['"]/g, "from '../tfai-fixtures'");
     }
     if (!isParseable(code)) {
       const repaired = repairTestCode(code);
@@ -237,7 +279,6 @@ export type { BrowserContext, Page } from '@playwright/test';
   // optionally pin a system Chromium via PLAYWRIGHT_CHROMIUM_PATH.
   const execPath = chromiumExecutablePath();
   const launchOptions = `{ args: ${JSON.stringify(CHROMIUM_LAUNCH_ARGS)}${execPath ? `, executablePath: ${JSON.stringify(execPath)}` : ''} }`;
-  const screenshotMode = opts.screenshotMode || 'only-on-failure';
   // Generous defaults matched to a real client-rendered SPA: a data grid can legitimately
   // take 6-10s to fetch + render its rows, so a 5s expect flake-failed valid tests. Auto-waiting
   // assertions cost nothing when the element is already there, so a roomy ceiling only helps.

@@ -1,4 +1,5 @@
 import { Fragment } from 'react';
+import { withBasePath } from '@/src/lib/base-path';
 
 function inlineParts(text: string) {
   const parts = String(text || '').split(/(`[^`]+`|\*\*[^*]+\*\*)/g);
@@ -83,6 +84,12 @@ export function MarkdownText({ value }: { value: unknown }) {
     }
     if (code) {
       code.push(line);
+      return;
+    }
+
+    const image = line.match(/^!\[([^\]]*)\]\(([^)]+)\)$/);
+    if (image) {
+      blocks.push(<img key={i} src={withBasePath(image[2])} alt={image[1] || 'evidence'} className="my-2 max-h-80 w-full rounded-md border border-[var(--border)] object-contain" />);
       return;
     }
 
