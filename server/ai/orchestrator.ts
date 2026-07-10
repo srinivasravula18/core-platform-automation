@@ -23,6 +23,7 @@ import { getActivePrompt } from './promptStore';
 import { recordUsage, getDailyCost } from './costTracker';
 import { canonicalAgent } from './systemPrompts';
 import { db } from '../shared/storage';
+import { logExecutionTrace, serializePrompt } from './tracer';
 
 export interface ProviderCredentials {
   apiKey: string;
@@ -238,6 +239,26 @@ export class AgentOrchestrator {
       costUsd: result.usage?.costUsd ?? 0,
       requestId: pipeline.requestId,
     });
+    
+    // --- Trace Execution (generateObject) ---
+    logExecutionTrace({
+      stepNumber: 1,
+      agentName: this.agent,
+      toolInvoked: null,
+      toolInputs: null,
+      toolOutputs: result.object,
+      contextReceived: opts.userMessage || opts.prompt,
+      contextPassed: result.object,
+      tokenUsage: result.usage ? { promptTokens: result.usage.inputTokens ?? 0, completionTokens: result.usage.outputTokens ?? 0 } : null,
+      informationTruncated: false,
+      evidenceDiscarded: false,
+      assumptionsMade: "Not explicitly provided by model",
+      whyNextToolSelected: "Single-shot generation",
+      finalPromptSent: serializePrompt(system, [{ role: 'user', content: opts.prompt }]),
+      runId: pipeline.requestId
+    }).catch(console.error);
+    // ----------------------------------------
+    
     return { object: result.object, usage: result.usage, model: result.model, latencyMs: result.latencyMs, provider: this.provider.name };
   }
 
@@ -280,6 +301,26 @@ export class AgentOrchestrator {
       costUsd: result.usage?.costUsd ?? 0,
       requestId: pipeline.requestId,
     });
+    
+    // --- Trace Execution (generateText) ---
+    logExecutionTrace({
+      stepNumber: 1,
+      agentName: this.agent,
+      toolInvoked: null,
+      toolInputs: null,
+      toolOutputs: result.text,
+      contextReceived: opts.userMessage || opts.prompt,
+      contextPassed: result.text,
+      tokenUsage: result.usage ? { promptTokens: result.usage.inputTokens ?? 0, completionTokens: result.usage.outputTokens ?? 0 } : null,
+      informationTruncated: false,
+      evidenceDiscarded: false,
+      assumptionsMade: "Not explicitly provided by model",
+      whyNextToolSelected: "Single-shot generation",
+      finalPromptSent: serializePrompt(system, [{ role: 'user', content: opts.prompt }]),
+      runId: pipeline.requestId
+    }).catch(console.error);
+    // ----------------------------------------
+    
     return { text: result.text, usage: result.usage, model: result.model, latencyMs: result.latencyMs, provider: this.provider.name };
   }
 
@@ -428,6 +469,26 @@ export class AgentOrchestrator {
               ? `ERROR: ${inv.error}`
               : safeJson(inv.result),
           });
+          
+          // --- Trace Execution (Tool Call) ---
+          const assumptionText = (res.text || '').trim();
+          logExecutionTrace({
+            stepNumber: i + 1,
+            agentName: this.agent,
+            toolInvoked: call.name,
+            toolInputs: call.arguments,
+            toolOutputs: inv.result || inv.error,
+            contextReceived: opts.task,
+            contextPassed: inv.result || inv.error,
+            tokenUsage: res.usage ? { promptTokens: res.usage.inputTokens ?? 0, completionTokens: res.usage.outputTokens ?? 0 } : null,
+            informationTruncated: res.stopReason === 'length',
+            evidenceDiscarded: false, // We log it all
+            assumptionsMade: assumptionText ? "Implied by reasoning" : "Not explicitly provided by model",
+            whyNextToolSelected: assumptionText || "Not explicitly provided by model",
+            finalPromptSent: serializePrompt(system, messages),
+            runId: pipeline.requestId
+          }).catch(console.error);
+          // -----------------------------------
         }
         steps.push(step);
         opts.onStep?.(step);
@@ -439,6 +500,25 @@ export class AgentOrchestrator {
       messages.push({ role: 'assistant', content: finalText });
       steps.push(step);
       opts.onStep?.(step);
+
+      // --- Trace Execution (Final Answer) ---
+      logExecutionTrace({
+        stepNumber: i + 1,
+        agentName: this.agent,
+        toolInvoked: null,
+        toolInputs: null,
+        toolOutputs: finalText,
+        contextReceived: opts.task,
+        contextPassed: finalText,
+        tokenUsage: res.usage ? { promptTokens: res.usage.inputTokens ?? 0, completionTokens: res.usage.outputTokens ?? 0 } : null,
+        informationTruncated: res.stopReason === 'length',
+        evidenceDiscarded: false,
+        assumptionsMade: "Not explicitly provided by model",
+        whyNextToolSelected: "Goal is complete",
+        finalPromptSent: serializePrompt(system, messages),
+        runId: pipeline.requestId
+      }).catch(console.error);
+      // --------------------------------------
 
       // HONESTY GATE: an empty/whitespace final answer is NOT a success, and neither is a
       // response the provider flagged as truncated (stopReason === 'length'). Reporting

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Bot, Save, Download, Loader2, Plus, CheckCircle2, Mic, Send, SplitSquareHorizontal, FolderTree } from 'lucide-react';
+import { Bot, Save, Download, Loader2, Plus, CheckCircle2, Mic, Send, SplitSquareHorizontal, FolderTree, MessageSquareText } from 'lucide-react';
 import { cn } from '@/src/lib/utils';
 import { withBasePath } from '@/src/lib/base-path';
 import { useSpeechToText } from '@/src/lib/useSpeechToText';
@@ -57,6 +57,24 @@ function proofBadgeClasses(status?: string) {
   }
 }
 
+function renderAgentOutput(output: any): string {
+  if (output === null || output === undefined || output === '') return 'No details reported.';
+  if (typeof output === 'string') return output;
+  const lines: string[] = [];
+  if (output.prompt) lines.push(`Prompt: ${output.prompt}`);
+  if (output.targetUrl || output.app_url) lines.push(`Target URL: ${output.targetUrl || output.app_url}`);
+  if (output.provider) lines.push(`Provider: ${output.provider}`);
+  if (output.model) lines.push(`Model: ${output.model}`);
+  if (output.status) lines.push(`Status: ${output.status}`);
+  if (output.agent) lines.push(`Agent: ${output.agent}`);
+  if (output.at) lines.push(`Time: ${new Date(output.at).toLocaleString()}`);
+  if (output.output) lines.push(`Message: ${renderAgentOutput(output.output)}`);
+  if (Array.isArray(output.test_cases)) lines.push(`Test cases: ${output.test_cases.length}`);
+  if (Array.isArray(output.scripts)) lines.push(`Scripts: ${output.scripts.length}`);
+  if (Array.isArray(output.evidence)) lines.push(`Evidence items: ${output.evidence.length}`);
+  return lines.length ? lines.join('\n') : 'Background data recorded.';
+}
+
 export default function AgentPanel() {
   const selectedProjectId = useProjects((s) => s.selectedProjectId);
   const selectedAppId = useProjects((s) => s.selectedAppId);
@@ -67,7 +85,7 @@ export default function AgentPanel() {
   const [isGenerating, setIsGenerating] = useState(false);
   const { run: streamedRun } = useAgentRun(taskId || '');
   const [isReworkingCase, setIsReworkingCase] = useState(false);
-  const [activeTab, setActiveTab] = useState<'cases' | 'code' | 'evidence' | 'workflows'>('cases');
+  const [activeTab, setActiveTab] = useState<'cases' | 'code' | 'evidence' | 'transcript' | 'workflows'>('cases');
   const [testCaseCount, setTestCaseCount] = useState(0);
   const [flowMode, setFlowMode] = useState<'review_cases' | 'complete'>('review_cases');
   const [editingCaseIndex, setEditingCaseIndex] = useState<number | null>(null);
@@ -530,6 +548,12 @@ export default function AgentPanel() {
               >
                 Evidence
               </button>
+              <button
+                onClick={() => setActiveTab('transcript')}
+                className={cn("py-4 text-sm font-medium border-b-2 transition-colors", activeTab === 'transcript' ? "border-[var(--accent)] text-[var(--accent)]" : "border-transparent text-[var(--text-muted)] hover:text-[var(--text-primary)]")}
+              >
+                Agent Transcript
+              </button>
               <button 
                 onClick={() => setActiveTab('workflows')}
                 className={cn("py-4 text-sm font-medium border-b-2 transition-colors", activeTab === 'workflows' ? "border-[var(--accent)] text-[var(--accent)]" : "border-transparent text-[var(--text-muted)] hover:text-[var(--text-primary)]")}
@@ -832,6 +856,57 @@ export default function AgentPanel() {
 
           {activeTab === 'evidence' && runData?.status === 'completed' && (!runData?.evidence_screenshots?.length) && (
              <div className="text-sm text-[var(--text-muted)] text-center mt-10">No Playwright evidence screenshots captured. Add a URL in chat or select a Website Credentials row for Playwright in Settings.</div>
+          )}
+
+          {activeTab === 'transcript' && (
+            <div className="space-y-3">
+              <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-primary)] p-3 text-xs text-[var(--text-muted)]">
+                This shows the recorded background communication: run prompt, agent steps, handoffs, outputs, and raw message payloads. Private model reasoning is not exposed by the provider.
+              </div>
+              {runData && (
+                <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-primary)] p-3">
+                  <div className="mb-2 font-mono text-xs font-semibold text-[var(--text-primary)]">Run request</div>
+                  <pre className="custom-scrollbar max-h-56 overflow-auto whitespace-pre-wrap break-words rounded-md bg-[var(--bg-secondary)] p-3 text-xs leading-5 text-[var(--text-primary)]">
+                    {renderAgentOutput({
+                      prompt: runData.prompt,
+                      targetUrl: runData.app_url,
+                      provider: runData.provider,
+                      model: runData.model,
+                      status: runData.status,
+                    })}
+                  </pre>
+                </div>
+              )}
+              {(runData?.messages || []).length === 0 ? (
+                <div className="flex h-64 flex-col items-center justify-center text-center text-[var(--text-muted)]">
+                  <MessageSquareText className="mb-3 h-10 w-10 opacity-50" />
+                  <p>No agent transcript yet.</p>
+                </div>
+              ) : (
+                (runData.messages || []).map((message: any, index: number) => (
+                  <div key={`${message.agent || 'agent'}-${message.at || index}-${index}`} className="rounded-lg border border-[var(--border)] bg-[var(--bg-primary)] p-3">
+                    <div className="mb-2 flex flex-wrap items-center gap-2">
+                      <span className="font-mono text-xs font-semibold text-[var(--text-primary)]">{index + 1}. {message.agent || 'Agent'}</span>
+                      <span className={cn('rounded border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider', proofBadgeClasses(message.status))}>
+                        {message.status || 'logged'}
+                      </span>
+                      {message.at && (
+                        <span className="text-[11px] text-[var(--text-muted)]">{new Date(message.at).toLocaleString()}</span>
+                      )}
+                    </div>
+                    <pre className="custom-scrollbar max-h-56 overflow-auto whitespace-pre-wrap break-words rounded-md bg-[var(--bg-secondary)] p-3 text-xs leading-5 text-[var(--text-primary)]">
+                      {renderAgentOutput(message.output)}
+                    </pre>
+                    <details className="mt-2 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-xs text-[var(--text-muted)]">
+                      <summary className="cursor-pointer font-semibold text-[var(--text-primary)]">Recorded details</summary>
+                      <pre className="custom-scrollbar mt-2 max-h-72 overflow-auto whitespace-pre-wrap break-words text-[11px] leading-5 text-[var(--text-primary)]">
+                        {renderAgentOutput(message)}
+                      </pre>
+                    </details>
+                  </div>
+                ))
+              )}
+            </div>
           )}
 
           {activeTab === 'workflows' && (

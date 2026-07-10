@@ -12,9 +12,7 @@ Use it as operational context for Admin (`http://localhost:5002`) and Keystone /
   - App Service: `http://localhost:5001`
   - Admin: `http://localhost:5002`
   - Keystone runtime: `http://localhost:5003`
-- Default working local credentials observed in `.env`:
-  - username: `adminacc`
-  - password: `adminacc@2026`
+- Credentials must come from the configured credential store or authenticated storage-state setup, not from this knowledge pack.
 - Authentication is rate-limited. Repeated fresh UI logins will trigger `Too many requests. Please retry later.`
 - Preferred automation pattern:
   - create one authenticated storage state per run
@@ -357,6 +355,11 @@ Shared patterns from live exploration and test coverage:
 - actions menu: button name `/list view actions/i`
 - menu panel class: `.settings-menu-panel`
 - empty state class: `.empty-state`
+- table containers: `.object-home .list-view-table-wrap > table`, `.object-home .table-wrap > table`
+- toolbar containers: `.list-view-toolbar`, `.list-view-bar`
+- selection counter: `.list-view-selection-count`
+- view-mode trigger: button name `/select view mode/i`
+- export actions: button names `/export csv/i` and `/export pdf/i`
 
 Capabilities verified from tests/source:
 
@@ -384,6 +387,82 @@ Recommended wait pattern:
   - first table visibility
   - empty-state visibility
   - permission-denied / error visibility
+
+## List-view contracts
+
+These contracts are verified by Core Platform list-view regression coverage and should be preferred before inventing selectors.
+
+### UI selectors
+
+- current list view selector: `select#list-view`
+- search input: `.list-view-search input.input`
+- toolbar scope: `.list-view-toolbar, .list-view-bar`
+- table scope: `.object-home .list-view-table-wrap > table, .object-home .table-wrap > table`
+- object-home scope: `.object-home`
+- object api marker: `.object-home[data-object-api-name]`
+- empty state: `.empty-state`
+- selection count: `.list-view-selection-count`
+- settings/action menu panel: `.settings-menu-panel`
+- list actions trigger: `getByRole("button", { name: /list view actions/i })`
+- list view trigger fallback: `getByRole("button", { name: /^list view:/i })`
+- refresh trigger: `getByRole("button", { name: /refresh list view|refresh/i })`
+- view mode trigger: `getByRole("button", { name: /select view mode/i })`
+- table mode option: `getByRole("button", { name: "Table" })`
+- export CSV trigger: `getByRole("button", { name: /export csv/i })`
+- export PDF trigger: `getByRole("button", { name: /export pdf/i })`
+- inline edit trigger: `button[aria-label="Edit cell"]`
+- permission/error fallback: `.permission-denied, [role="alert"], .error`
+
+### Settings modal
+
+- modal heading: `getByRole("heading", { name: /list view settings/i })`
+- tabs: `Filters`, `Columns`, `Sharing`, `Preferences`, `Grouping`, `Hierarchy`
+- columns expanders: buttons named `/available columns/i` and `/selected columns/i`
+- save buttons: `/save columns/i`, `/save sharing/i`
+- sharing control: `getByLabel(/sharing scope/i)`
+- preferences section: `.preferences-section`
+- pin controls: buttons named `/pin|unpin/i`
+
+### List-view CRUD dialogs
+
+- open actions first: click `getByRole("button", { name: /list view actions/i })`, then wait for `.settings-menu-panel`
+- scope all menu item clicks to `.settings-menu-panel`; do not click unscoped `New`, `Delete`, `Settings`, or `Rename`
+- create action: `.settings-menu-panel` scoped button named `/new|create/i`
+- rename action: `.settings-menu-panel` scoped button named `Rename`
+- clone action: `.settings-menu-panel` scoped button named `Clone`
+- delete action: `.settings-menu-panel` scoped button named `Delete`
+- settings action: `.settings-menu-panel` scoped button named `Settings`
+- export actions can appear either as toolbar buttons or `.settings-menu-panel` scoped buttons named `/export csv/i` or `/export pdf/i`
+- dialog/headings after actions: `/new list view/i`, `/rename list view/i`, `/clone list view/i`, `/delete list view/i`, `/list view settings/i`
+- name field: `getByLabel(/list view name/i)`
+- successful create/rename/clone proof: `select#list-view` contains the expected name
+- successful delete proof: `select#list-view` no longer contains the deleted name
+
+### API contracts
+
+- list apps: `GET /api/apps`
+- list objects: `GET /api/apps/{appId}/objects`
+- object describe: `GET /api/apps/{appId}/objects/{objectApi}`
+- list views: `GET /api/apps/{appId}/objects/{objectApi}/list-views`
+- create list view: `POST /api/apps/{appId}/objects/{objectApi}/list-views`
+- update list view: `PATCH /api/apps/{appId}/objects/{objectApi}/list-views/{listViewId}`
+- delete list view: `DELETE /api/apps/{appId}/objects/{objectApi}/list-views/{listViewId}`
+- clone list view: `POST /api/apps/{appId}/objects/{objectApi}/list-views/{listViewId}/clone`
+- preferences: `GET/PUT /api/apps/{appId}/objects/{objectApi}/list-views/preferences`
+- query rows/cards/chart data: `POST /api/apps/{appId}/objects/{objectApi}/list-views/query`
+- export: `POST /api/apps/{appId}/objects/{objectApi}/list-views/export`
+- bulk actions: `POST /api/apps/{appId}/objects/{objectApi}/list-views/bulk`
+
+### Query payload facts
+
+- pagination uses `pagination.page` and `pagination.page_size`
+- search uses `search`
+- sort uses `sort: [{ field, direction: "asc" | "desc" }]`
+- filters use `filters.logic`, `filters.filters`, and nested `filters.groups`
+- date filters support `op: "date_expr"` with values such as `THIS_YEAR`
+- summary supports `summary.fields` and `summary.operations`
+- chart mode uses `view_mode: "chart"` with `chart.group_by`, `chart.operation`, and `chart.bucket`
+- kanban mode uses `view_mode: "kanban"` with `kanban.group_by` and `kanban.limit_per_lane`
 
 ## Forms, dialogs, and drawers
 
@@ -457,6 +536,76 @@ Good structural selectors when role/text is insufficient:
 - `.shockwave-info-dialog-list`
 - `.new-app-modal`
 - `.tab-icon-picker-modal-body`
+
+## Stable DOM selector contracts
+
+These selectors are source/test-backed and stable enough to use as scoped anchors. They should guide script generation, but live DOM or Playwright MCP must still verify visibility, uniqueness, and current page state before execution.
+
+### Admin shell
+
+- shell sidebar: `.admin-sidebar`
+- shell main area: `.admin-main`
+- sidebar nav: `page.locator(".admin-sidebar").getByRole("button", { name: "<section>" })`
+- list panel scope: `page.locator("section.panel").filter({ has: page.getByRole("heading", { name: "<panel>" }) })`
+- generic modal scope: `.modal, [role="dialog"]`
+
+### Admin app and metadata modals
+
+- app create/edit modal: `.new-app-modal`
+- icon picker body: `.tab-icon-picker-modal-body`
+- icon cards: `.tab-icon-picker-modal-body .icon-card`
+- icon select button: `.tab-icon-picker-select`
+- icon picker actions: `.tab-icon-picker-actions`
+
+### Admin flow and layout designers
+
+- flow section name input: `input.flow-section-input`
+- flow section add button: `button.flow-section-add-button`
+- flow section controls: `.flow-section-controls select`
+- flow field span control: `.flow-field-span-control select`
+- layout designer section: `.layout-designer-section`
+- layout section input: `.layout-designer-section-input`
+- layout section controls: `.layout-designer-section-controls select`
+
+### Keystone shell and launchers
+
+- permissions ready marker: `[data-permissions-loaded="true"]`
+- app launcher panel: `.launcher:not(.tabs-picker) .launcher-panel`
+- tab launcher panel: `.launcher.tabs-picker .launcher-panel`
+- launcher items: `.launcher-panel .launcher-list .launcher-item`
+- app/tab launcher item fallback: `.launcher-item`
+
+### Keystone list and object home
+
+- object home root: `.object-home`
+- current object API name: `.object-home[data-object-api-name]`
+- table fallback: `.object-home .list-view-table-wrap > table, .object-home .table-wrap > table`
+- list toolbar: `.list-view-toolbar, .list-view-bar`
+- list search: `.list-view-search input.input`
+- list actions button: `getByRole("button", { name: /list view actions/i })`
+- view-mode menu button: `getByRole("button", { name: /select view mode/i })`
+- export CSV action: `getByRole("button", { name: /export csv/i })`
+- settings menu panel: `.settings-menu-panel`
+- empty state: `.empty-state`
+- permission/error fallback: `.permission-denied, [role="alert"], .error`
+- inline cell edit: `button[aria-label="Edit cell"]`
+
+### Keystone records and forms
+
+- record page anchors: `.record-tabs, .record-panel, .record-page`
+- record field container: `.record-field`
+- record displayed value: `.record-value`
+- field assertion pattern: `.record-field` scoped by exact field label, then `.record-value`
+- lookup select action: button text such as `Select Site`
+- lookup clear action: button text such as `Clear selected lookup`
+
+### Keystone flows and custom panels
+
+- flow panel roots: `.shockwave-flow-panel, .shockwave-flows-home`
+- flow step fields: `.shockwave-flow-step-fields input`
+- data import panel: `.data-import-panel`
+- custom tab panel: `.custom-tab-panel`
+- agent workspace: `[aria-label="Keystone Agent workspace"]`
 
 ## Dynamic locator strategies for hard surfaces
 

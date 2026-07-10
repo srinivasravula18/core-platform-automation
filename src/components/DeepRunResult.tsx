@@ -27,6 +27,7 @@ import {
   RotateCcw,
   Clock,
   Recycle,
+  MessageSquareText,
 } from 'lucide-react';
 
 /**
@@ -63,6 +64,74 @@ function caseSummary(value?: string) {
   return clean.length > 160 ? `${clean.slice(0, 157)}...` : clean;
 }
 
+function renderAgentOutput(output: any): string {
+  if (output === null || output === undefined || output === '') return 'No details reported.';
+  if (typeof output === 'string') return output;
+  const lines: string[] = [];
+  if (output.prompt) lines.push(`Prompt: ${output.prompt}`);
+  if (output.targetUrl || output.app_url) lines.push(`Target URL: ${output.targetUrl || output.app_url}`);
+  if (output.provider) lines.push(`Provider: ${output.provider}`);
+  if (output.model) lines.push(`Model: ${output.model}`);
+  if (output.status) lines.push(`Status: ${output.status}`);
+  if (output.agent) lines.push(`Agent: ${output.agent}`);
+  if (output.at) lines.push(`Time: ${new Date(output.at).toLocaleString()}`);
+  if (output.output) lines.push(`Message: ${renderAgentOutput(output.output)}`);
+  if (Array.isArray(output.test_cases)) lines.push(`Test cases: ${output.test_cases.length}`);
+  if (Array.isArray(output.scripts)) lines.push(`Scripts: ${output.scripts.length}`);
+  if (Array.isArray(output.evidence)) lines.push(`Evidence items: ${output.evidence.length}`);
+  return lines.length ? lines.join('\n') : 'Background data recorded.';
+}
+
+function phaseAudit(message: any, index: number): { title: string; status: string; body: string[]; detail: string } {
+  const agent = String(message?.agent || 'Agent');
+  const status = String(message?.status || 'logged');
+  const output = renderAgentOutput(message?.output);
+  const title = `${index + 1}. ${agent}`;
+  const lower = `${agent} ${output}`.toLowerCase();
+  const body: string[] = [];
+  if (agent === 'System') {
+    body.push('Thinking step: I am setting up the run context.');
+    body.push('Reason: the downstream agents need the selected project, target URL, folder, and QA scope.');
+    body.push('Decision: use this resolved context as the source for the run.');
+    body.push('Next: hand off to the scope gate.');
+  } else if (agent === 'ScopeAgent') {
+    body.push('Thinking step: I need to confirm the target before deeper work starts.');
+    body.push('Reason: cases and scripts must point at the selected application.');
+    body.push('Decision: lock the resolved target for this run.');
+    body.push('Next: collect app/session/metadata context.');
+  } else if (lower.includes('inspector') || agent === 'ApplicationInspector') {
+    body.push('Thinking step: I need live application context.');
+    body.push('Reason: generated tests should match what the app actually exposes.');
+    body.push('Decision: inspect the target app before writing cases.');
+    body.push('Next: pass observed screens and controls to later agents.');
+  } else if (lower.includes('selector')) {
+    body.push('Thinking step: I need reliable selectors before automation.');
+    body.push('Reason: scripts fail when selectors are guessed.');
+    body.push('Decision: build or verify selector grounding.');
+    body.push('Next: use verified selectors for script generation.');
+  } else if (lower.includes('case') || lower.includes('testgeneration')) {
+    body.push('Thinking step: I need to write cases within the requested scope.');
+    body.push('Reason: the prompt and run context define what should and should not be tested.');
+    body.push('Decision: generate reviewable cases from the grounded scope.');
+    body.push('Next: wait for review or continue to script authoring.');
+  } else if (lower.includes('playwright') || lower.includes('script')) {
+    body.push('Thinking step: I need executable automation for the reviewed cases.');
+    body.push('Reason: each script should map back to a generated case and grounded selectors.');
+    body.push('Decision: author Playwright scripts from the approved case set.');
+    body.push('Next: verify scripts and collect evidence.');
+  } else if (lower.includes('evidence')) {
+    body.push('Thinking step: I need proof of execution.');
+    body.push('Reason: screenshots/results make the run auditable.');
+    body.push('Decision: execute scripts and capture evidence where possible.');
+    body.push('Next: summarize pass/fail results.');
+  } else {
+    body.push(`Thinking step: ${output.split('\n')[0] || 'Processing this phase.'}`);
+    body.push(`Decision: mark ${agent} as ${status}.`);
+    body.push('Next: continue to the next pipeline phase.');
+  }
+  return { title, status, body, detail: output };
+}
+
 function priorityRank(p?: string) {
   return ['low', 'medium', 'high', 'critical'].indexOf(String(p || 'medium').toLowerCase());
 }
@@ -91,6 +160,7 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
   const [editingScript, setEditingScript] = useState<{ key: string; draft: string } | null>(null);
   const [feedback, setFeedback] = useState<Record<number, string>>({});
   const [selectedCases, setSelectedCases] = useState<Set<number>>(new Set());
+  const [selectedScripts, setSelectedScripts] = useState<Set<number>>(new Set());
   // Per-case set of step indices ticked for merging into one.
   const [mergePick, setMergePick] = useState<Record<number, number[]>>({});
   const [busy, setBusy] = useState<string | null>(null);
@@ -135,6 +205,9 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
     const edited = editedScriptCode[scriptKey(s, i)];
     return edited !== undefined ? { ...s, code: edited } : s;
   });
+  useEffect(() => {
+    setSelectedScripts((prev) => new Set([...prev].filter((idx) => idx < scripts.length)));
+  }, [scripts.length]);
   const evidence: any[] = run?.evidence_screenshots || [];
   const targetUrl: string = run?.app_url || '';
   const isRunning = !status || !TERMINAL.includes(status);
@@ -484,7 +557,10 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
       );
       const failed = scripts.filter((s: any) => !passedTitles.has(String(s.title || '').trim()));
       if (failed.length) toRun = failed;
+    } else if (selectedScripts.size) {
+      toRun = scripts.filter((_, i) => selectedScripts.has(i));
     }
+    if (!toRun.length) return;
     setPwRunning(true);
     setPwResult(onlyFailed ? pwResult : null);
     try {
@@ -731,6 +807,55 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
           );
         })}
       </div>
+
+      <details className="mb-3 rounded-lg border border-[var(--border)] bg-[var(--bg-primary)]">
+        <summary className="flex cursor-pointer items-center gap-2 px-3 py-2 text-xs font-semibold text-[var(--text-primary)]">
+          <MessageSquareText className="h-4 w-4 text-[var(--accent)]" />
+          Background communication
+          <span className="text-[11px] font-normal text-[var(--text-muted)]">({messages.length} messages)</span>
+        </summary>
+        <div className="border-t border-[var(--border)] p-3">
+          <div className="mb-3 grid gap-2 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] p-3 text-xs text-[var(--text-primary)] md:grid-cols-2">
+            <div><span className="text-[var(--text-muted)]">Prompt:</span> {run?.prompt || 'none'}</div>
+            <div><span className="text-[var(--text-muted)]">Target:</span> {run?.app_url || 'none'}</div>
+            <div><span className="text-[var(--text-muted)]">Provider:</span> {run?.provider || 'default'}</div>
+            <div><span className="text-[var(--text-muted)]">Status:</span> {run?.status || 'working'}</div>
+          </div>
+          {messages.length === 0 ? (
+            <div className="py-6 text-center text-xs text-[var(--text-muted)]">No background messages recorded yet.</div>
+          ) : (
+            <div className="space-y-2">
+              {messages.map((message: any, index: number) => {
+                const audit = phaseAudit(message, index);
+                return (
+                  <div key={`${message.agent || 'agent'}-${message.at || index}-${index}`} className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] p-3">
+                    <div className="mb-2 flex flex-wrap items-center gap-2">
+                      <span className="font-mono text-xs font-semibold text-[var(--text-primary)]">{audit.title}</span>
+                      <span className="rounded border border-[var(--border)] bg-[var(--bg-primary)] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+                        {audit.status}
+                      </span>
+                      {message.at && <span className="text-[11px] text-[var(--text-muted)]">{new Date(message.at).toLocaleTimeString()}</span>}
+                    </div>
+                    <div className="grid gap-1 text-xs leading-5 text-[var(--text-primary)] md:grid-cols-2">
+                      {audit.body.map((line) => (
+                        <div key={line} className="rounded border border-[var(--border)] bg-[var(--bg-primary)] px-2 py-1">
+                          {line}
+                        </div>
+                      ))}
+                    </div>
+                    <details className="mt-2 text-xs">
+                      <summary className="cursor-pointer text-[var(--accent)]">Recorded message</summary>
+                      <pre className="custom-scrollbar mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-md bg-[var(--bg-primary)] p-2 text-[11px] leading-5 text-[var(--text-primary)]">
+                        {audit.detail}
+                      </pre>
+                    </details>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </details>
 
       {failed && (
         <div className="rounded-md bg-red-500/10 p-2 text-xs text-red-400">
@@ -1279,6 +1404,27 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
             <div>
               {scripts.length > 0 && (
                 <div className="mb-2 flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 text-[11px] text-[var(--text-muted)]">
+                    <button
+                      type="button"
+                      onClick={() => setSelectedScripts(new Set(scripts.map((_, idx) => idx)))}
+                      className="rounded border border-[var(--border)] px-1.5 py-0.5 hover:bg-[var(--bg-secondary)]"
+                    >
+                      Select all
+                    </button>
+                    {selectedScripts.size > 0 && (
+                      <>
+                        <span>{selectedScripts.size} selected</span>
+                        <button
+                          type="button"
+                          onClick={() => setSelectedScripts(new Set())}
+                          className="rounded border border-[var(--border)] px-1.5 py-0.5 hover:bg-[var(--bg-secondary)]"
+                        >
+                          Clear
+                        </button>
+                      </>
+                    )}
+                  </div>
                   <span className="text-[11px] text-[var(--text-muted)]">
                     {pwResult ? `Ran ${pwResult.total ?? 0} test(s)` : 'Drafts — not executed yet.'}
                   </span>
@@ -1288,7 +1434,7 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
                     className="inline-flex items-center gap-1.5 rounded-md bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50"
                   >
                     {pwRunning ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <PlayCircle className="h-3.5 w-3.5" />}
-                    {pwRunning ? 'Running…' : pwResult ? 'Re-run all scripts' : 'Run all scripts'}
+                    {pwRunning ? 'Running...' : selectedScripts.size ? `Run selected (${selectedScripts.size})` : pwResult ? 'Re-run all scripts' : 'Run all scripts'}
                   </button>
                 </div>
               )}
@@ -1366,6 +1512,21 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
                     return (
                     <div key={i} className="overflow-hidden rounded-md border border-[var(--border)]">
                       <div className="flex w-full items-center gap-2 bg-[var(--bg-secondary)] px-3 py-2 text-left">
+                        <input
+                          type="checkbox"
+                          checked={selectedScripts.has(i)}
+                          onChange={(e) => {
+                            setSelectedScripts((prev) => {
+                              const next = new Set(prev);
+                              if (e.target.checked) next.add(i);
+                              else next.delete(i);
+                              return next;
+                            });
+                          }}
+                          onClick={(e) => e.stopPropagation()}
+                          aria-label={`Select script ${i + 1}`}
+                          className="h-3.5 w-3.5 shrink-0"
+                        />
                         <button onClick={() => setExpandedScript(expandedScript === i ? null : i)} className="flex min-w-0 flex-1 items-center gap-2">
                           <Code2 className="h-3.5 w-3.5 shrink-0 text-indigo-400" />
                           <span className="min-w-0 flex-1 truncate font-mono text-xs text-[var(--text-primary)]">{s.filename || `script-${i + 1}.spec.ts`}</span>

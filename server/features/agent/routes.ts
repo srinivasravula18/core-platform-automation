@@ -440,7 +440,7 @@ function proofTerms(text: string): string[] {
   return String(text || '')
     .toLowerCase()
     .split(/[^a-z0-9]+/)
-    ?.filter((word) => !CASE_MATCH_STOP.has(word)) || [];
+    ?.filter((word) => word.length >= 3 && !CASE_MATCH_STOP.has(word) && !/^\d+$/.test(word)) || [];
 }
 
 function expandProofTokens(values: Set<string>): Set<string> {
@@ -465,11 +465,11 @@ function buildCaseProofIndex(run: any) {
 }
 
 function classifyProofForText(text: string, proof: { live: Set<string>; registry: Set<string>; metadata: Set<string> }) {
-  const tokens = proofTerms(text);
+  const tokens = [...new Set(proofTerms(text))];
   const liveHits = tokens.filter((token) => proof.live.has(token) || proof.registry.has(token));
   const metadataHits = tokens.filter((token) => proof.metadata.has(token));
-  if (liveHits.length > 0) return { status: 'verified', hits: liveHits };
-  if (metadataHits.length > 0) return { status: 'metadata-backed', hits: metadataHits };
+  if (liveHits.length >= 3) return { status: 'verified', hits: liveHits };
+  if (liveHits.length > 0 || metadataHits.length > 0) return { status: 'metadata-backed', hits: [...liveHits, ...metadataHits] };
   return { status: 'blocked', hits: [] as string[] };
 }
 
@@ -1160,7 +1160,9 @@ function complexityDrivenCaseCount(understanding: any, requested: number): numbe
 function parseCaseCount(prompt: string): number {
   const text = String(prompt || '').toLowerCase();
   const m = text.match(/\b(\d{1,3})(?:\s+[a-z][a-z-]*){0,5}\s+(?:test\s*)?(?:cases?|tests?|scenarios?)\b/)
-    || text.match(/\b(?:generate|create|write|add|make|need|want|give\s+me)\s+(\d{1,3})\b/);
+    || text.match(/\b(?:generate|create|write|add|make|need|want|give\s+me)\s+(\d{1,3})\b/)
+    || text.match(/\b(?:only|just|limit(?:ed)?\s+to|exactly|maximum|max|top)\s+(\d{1,3})\b/)
+    || text.match(/\b(\d{1,3})\s*(?:only|please)?\s*$/);
   if (m) { const n = parseInt(m[1], 10); if (n >= 1 && n <= 200) return n; }
   return 0;
 }
@@ -1614,12 +1616,23 @@ function fallbackCaseForScenario(scenario: any): any {
   };
 }
 
+function isInvalidGeneratedCase(testCase: any): boolean {
+  const title = String(testCase?.title || '').trim();
+  const description = String(testCase?.description || '').trim();
+  const steps = normalizeCaseSteps(testCase?.steps || []);
+  const hay = `${title}\n${description}\n${steps.map((s) => `${s.action} ${s.expected}`).join('\n')}`;
+  if (/preconditions?:|setup:|edge\/negative checks?:|edge cases?:|negative checks?:|risks?:|notes?:/i.test(title)) return true;
+  if (steps.length === 1 && /\bexercise\b/i.test(steps[0]?.action || '') && /matches the .*understanding|traceable to the requirement/i.test(steps[0]?.expected || '')) return true;
+  return /\bCovers the reviewed requirement scenario:\s*(Preconditions?|Setup|Edge\/negative checks?|Edge cases?|Negative checks?|Risks?|Notes)\s*:/i.test(hay);
+}
+
 function ensureScenarioCoverage(generated: any[], scenarios: any[], explicitCount: number): any[] {
   if (explicitCount > 0 || !Array.isArray(scenarios) || !scenarios.length) return generated;
   const output = Array.isArray(generated) ? [...generated] : [];
   for (const scenario of scenarios) {
     const title = String(scenario?.title || scenario || '').trim();
     if (!title) continue;
+    if (/^(preconditions?|setup|edge\/negative checks?|edge cases?|negative checks?)\s*:/i.test(title)) continue;
     if (!output.some((testCase) => caseMentionsScenario(testCase, title))) {
       output.push(fallbackCaseForScenario(scenario));
     }
@@ -2099,9 +2112,16 @@ ${CASE_AUTHORING_CONTRACT}${knowledgeBlock}`,
   // FIXED COUNT (user wish): when the user fixed a case count, enforce it EXACTLY  -  the model can
   // over-produce. If it produced more, keep the first N (the prompt ordered them highest-value
   // first). When no count is fixed, the count follows the flow/complexity (untouched here).
+  generated = (Array.isArray(generated) ? generated : []).filter((testCase) => !isInvalidGeneratedCase(testCase));
+  if (requestedCaseCount > 0 && generated.length > requestedCaseCount) {
+    generated = generated.slice(0, requestedCaseCount);
+  }
   generated = ensureScenarioCoverage(generated, candidateScenarios, requestedCaseCount);
+  generated = (Array.isArray(generated) ? generated : []).filter((testCase) => !isInvalidGeneratedCase(testCase));
+  if (requestedCaseCount > 0 && generated.length > requestedCaseCount) {
+    generated = generated.slice(0, requestedCaseCount);
+  }
   generated = annotateGeneratedCasesWithProof(normalizeGeneratedCasesText(generated, run), run);
-
   if (requestedCaseCount > 0 && Array.isArray(generated) && generated.length > requestedCaseCount) {
     generated = generated.slice(0, requestedCaseCount);
   }
@@ -2984,12 +3004,6 @@ ${s.code}`,
     // still misses. Blocking evidence here (especially on a non-authoritative repo match) is what
     // produced the "not found in the codebase" dead-ends; we best-effort rewrite and always proceed.
     const unresolved = [...new Set(scripts.flatMap((s: any) => s?.code ? culpritsOf(String(s.code)) : []))].slice(0, 40);
-    if (registry.usable && unresolved.length) {
-      const reason = `Selector verification blocked: ${unresolved.length} selector(s) are not in the verified selector registry: ${unresolved.slice(0, 12).join(' | ')}`;
-      (run as any).selector_verification = { ok: false, reason, unresolved };
-      pushPhase(run, { agent: 'SelectorVerifier', status: 'failed', output: reason });
-      return { ok: false, reason };
-    }
     (run as any).selector_verification = { ok: true, unresolved };
     const note = unresolved.length
       ? ` ${unresolved.length} selector(s) not pre-matched (${unresolved.slice(0, 8).join(' | ')}); execution + live re-grounding will resolve them against the real page.`

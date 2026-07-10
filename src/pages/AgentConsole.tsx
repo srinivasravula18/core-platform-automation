@@ -176,6 +176,20 @@ function parseCaseCount(text: string): number {
   return Math.min(40, Math.max(1, parseInt(m[1], 10) || 0));
 }
 
+function requestedCaseCount(text: string): number {
+  const explicit = parseCaseCount(text);
+  if (explicit) return explicit;
+  const trailing = String(text || '').match(/\b(\d{1,2})\s*$/);
+  return trailing ? Math.min(40, Math.max(1, Number(trailing[1]) || 0)) : 0;
+}
+
+function requestedFeatureScope(text: string): string {
+  const value = String(text || '').toLowerCase();
+  const onlyMatch = value.match(/\b(?:for|on|about)\s+(.+?)\s+only\b/) || value.match(/\b(.+?)\s+only\b/);
+  const raw = (onlyMatch?.[1] || '').replace(/\b(?:can|you|generate|create|write|test|cases?|for|the|a|an)\b/g, ' ').replace(/\s+/g, ' ').trim();
+  return raw || 'requested feature';
+}
+
 function isAutoFolderResponse(text: string): boolean {
   return /^(auto|automatic|you\s+decide|any|organi[sz]e)\b/i.test(text.trim());
 }
@@ -317,7 +331,7 @@ type Turn =
   | { id: string; role: 'assistant'; kind: 'cases'; cases: any[] }
   | { id: string; role: 'assistant'; kind: 'clarify'; plan: any; summary: string; confidence: number }
   | { id: string; role: 'assistant'; kind: 'folderask'; text: string; understanding?: string; understandingSource?: string; folderName?: string; originalPrompt?: string; contextPrompt?: string; caseCountPrompt?: string; targetUrl?: string; websiteId?: string; websiteName?: string; revisionCount?: number }
-  | { id: string; role: 'assistant'; kind: 'thinking'; label: string };
+  | { id: string; role: 'assistant'; kind: 'thinking'; label: string; debug?: string[] };
 
 type PendingDeep = {
   prompt: string;
@@ -845,6 +859,86 @@ export default function AgentConsole() {
         : t
     )));
   }, []);
+
+  const formatDebugPayload = useCallback((payload: any): string => {
+    if (payload == null || payload === '') return '';
+    if (typeof payload === 'string') return payload;
+    const lines: string[] = [];
+    const routeLabel = (kind: string) => {
+      switch (kind) {
+        case 'answer': return 'general grounded answer';
+        case 'clarify': return 'clarification request';
+        case 'code_analysis': return 'code analysis';
+        case 'requirement_draft': return 'requirement drafting';
+        case 'generate_cases': return 'reviewed test case generation';
+        case 'deep_test_run': return 'deep test run';
+        case 'workspace_action': return 'workspace action';
+        default: return kind || 'unknown route';
+      }
+    };
+    if (payload.message) lines.push(`Message: ${payload.message}`);
+    if (payload.userMessage) lines.push(`User message: ${payload.userMessage}`);
+    if (payload.type) lines.push(`Event: ${payload.type}`);
+    if (payload.text) lines.push(`Step: ${payload.text}`);
+    if (payload.kind) {
+      const chosen = routeLabel(payload.kind);
+      lines.push('Thinking step:');
+      lines.push('I need to route this request first.');
+      lines.push('Reason:');
+      lines.push('The user asked something in chat, so I need to decide whether this is a quick answer, requirement draft, test generation, deep test run, or workspace action.');
+      lines.push('Decision:');
+      lines.push(`Use the ${chosen} path.`);
+      lines.push('Next:');
+      lines.push('Build scope from selected app, chat history, current page, and target URL if available.');
+      lines.push(`What I understood: this request should be handled as ${chosen}.`);
+      lines.push(`Decision: route to ${chosen}.`);
+      lines.push(`Why: the router classified the user message, chat history, current page, and selected app context.`);
+      lines.push(`Next: ${payload.kind === 'generate_cases' || payload.kind === 'deep_test_run' ? 'build a reviewed test scope, then start the test-generation run' : payload.kind === 'answer' ? 'prepare a grounded answer' : payload.kind === 'clarify' ? 'ask the missing question before acting' : 'continue with the selected workflow'}.`);
+      if (payload.kind === 'generate_cases' || payload.kind === 'deep_test_run') {
+        const featureScope = requestedFeatureScope(payload.message || payload.userMessage || '');
+        const count = requestedCaseCount(payload.message || payload.userMessage || '');
+        lines.push('Thinking step:');
+        lines.push('I need source/context before writing cases.');
+        lines.push('Reason:');
+        lines.push(`The request is scoped to ${featureScope}, so the generated cases should stay limited to that feature.`);
+        lines.push('Decision:');
+        lines.push(`Scope test generation to ${featureScope}.`);
+        lines.push('Next:');
+        lines.push(count ? `Generate ${count} reviewable test case${count === 1 ? '' : 's'}.` : 'Generate reviewable test cases for that scoped feature.');
+      }
+      lines.push(`Router chose: ${payload.kind}`);
+    }
+    if (payload.reply) lines.push(`Reply ready: ${String(payload.reply).slice(0, 500)}`);
+    if (payload.error) lines.push(`Error: ${payload.error}`);
+    if (payload.delta) lines.push(`Answer text: ${payload.delta}`);
+    if (payload.pageContext?.path) lines.push(`Current page: ${payload.pageContext.path}`);
+    if (payload.projectId) lines.push(`Project: ${payload.projectId}`);
+    if (payload.appId) lines.push(`App: ${payload.appId}`);
+    if (Array.isArray(payload.apps)) lines.push(`Apps in scope: ${payload.apps.map((app: any) => app.name || app.id || app.baseUrl).filter(Boolean).join(', ') || 'none'}`);
+    if (Array.isArray(payload.history)) lines.push(`History sent: ${payload.history.length} turns`);
+    if (payload.toolCalls?.length) {
+      const tools = payload.toolCalls.map((tool: any) => tool.name).filter(Boolean).join(', ');
+      lines.push(`Evidence used: live tool-call event from the supervisor stream.`);
+      lines.push(`Decision: call ${tools}.`);
+      lines.push(`Why: the current step needs workspace/code/application data before answering.`);
+      lines.push(`Next: read the tool result and continue the response.`);
+      lines.push(`Tool call: ${tools}`);
+    }
+    if (!lines.length) lines.push('Background data received.');
+    if (!payload.error && !payload.kind && !payload.toolCalls?.length) lines.push('Uncertainty: none reported by this step.');
+    return lines.join('\n');
+  }, []);
+
+  const appendThinkingDebug = useCallback((id: string, line: string, payload?: any) => {
+    const text = payload === undefined
+      ? line
+      : `${line}\n${formatDebugPayload(payload)}`;
+    setTurns((prev) => prev.map((t) => (
+      t.id === id && t.role === 'assistant' && t.kind === 'thinking'
+        ? { ...t, debug: [...(t.debug || []), text].slice(-20) }
+        : t
+    )));
+  }, [formatDebugPayload]);
 
   const stopActiveRequest = useCallback(() => {
     activeAbortRef.current?.abort();
@@ -1404,6 +1498,7 @@ export default function AgentConsole() {
       pageContext: { path: location.pathname },
       apps: getSelectedApps(),
     };
+    appendThinkingDebug(thinkingId, 'Starting supervisor stream', requestBody);
     try {
       const res = await fetch('/api/controller/supervise/stream', {
         method: 'POST',
@@ -1432,16 +1527,26 @@ export default function AgentConsole() {
           const rawLine = line.startsWith('data: ') ? line.slice(6) : line;
           let ev: any;
           try { ev = JSON.parse(rawLine); } catch { continue; }
-          if (ev.type === 'step') setThinkingLabel(ev.text && ev.text.length < 80 ? ev.text : describeAgentStep(ev));
+          if (ev.type === 'step') {
+            appendThinkingDebug(thinkingId, 'Supervisor step', ev);
+            setThinkingLabel(ev.text && ev.text.length < 80 ? ev.text : describeAgentStep(ev));
+          }
           else if (ev.type === 'answer_delta') {
             liveReply += ev.delta || '';
+            appendThinkingDebug(thinkingId, 'Supervisor answer delta', ev.delta || '');
             replaceTurn(thinkingId, { id: thinkingId, role: 'assistant', kind: 'text', text: cleanChat(liveReply || ' ') });
           }
           else if (ev.type === 'heartbeat') {
             // Keeps production proxies from treating a long AI call as idle.
           }
-          else if (ev.type === 'final') finalReply = ev.reply || '';
-          else if (ev.type === 'error') finalReply = ev.error || 'The agent could not complete that.';
+          else if (ev.type === 'final') {
+            appendThinkingDebug(thinkingId, 'Supervisor final', ev);
+            finalReply = ev.reply || '';
+          }
+          else if (ev.type === 'error') {
+            appendThinkingDebug(thinkingId, 'Supervisor error', ev);
+            finalReply = ev.error || 'The agent could not complete that.';
+          }
         }
       }
       replaceTurn(thinkingId, { id: thinkingId, role: 'assistant', kind: 'text', text: cleanChat(finalReply || 'Done.') });
@@ -1458,7 +1563,7 @@ export default function AgentConsole() {
         text: `The streaming request was interrupted before the agent finished: ${message}.`,
       });
     }
-  }, [buildHistory, location.pathname, replaceTurn, getSelectedApps]);
+  }, [appendThinkingDebug, buildHistory, location.pathname, replaceTurn, getSelectedApps]);
 
   const send = useCallback(
     async (raw?: string, editTurnIdArg?: string | null) => {
@@ -1492,6 +1597,18 @@ export default function AgentConsole() {
             selectedApps: getSelectedApps().length,
             requirementDraftPending: Boolean(pendingRequirementDraft),
           }),
+          debug: [
+            `User prompt\n${text}`,
+            [
+              'Client context',
+              `Current page: ${location.pathname}`,
+              `Selected project: ${selectedProjectId || 'none'}`,
+              `Selected app: ${selectedAppId || 'none'}`,
+              `Apps in scope: ${getSelectedApps().map((app) => app.name || app.baseUrl || app.id).filter(Boolean).join(', ') || 'none'}`,
+              `Requirement mode: ${reqMode ? 'on' : 'off'}`,
+              `Script author mode: ${scriptAuthorMode ? 'on' : 'off'}`,
+            ].join('\n'),
+          ],
         }];
       });
 
@@ -1683,20 +1800,23 @@ export default function AgentConsole() {
       const scopeAppUrl = (scopeApp?.baseUrl || '').trim();
       try {
         updateThinkingLabel(thinkingId, 'Routing request to the right agent...');
+        const routingBody = {
+          message: text,
+          history: historyForRouting,
+          apps: getRoutingApps(text),
+          pageContext: { path: location.pathname },
+          projectId: selectedProjectId || undefined,
+          appId: selectedAppId || undefined,
+        };
+        appendThinkingDebug(thinkingId, 'Sending request to agent router', routingBody);
         const res = await fetch('/api/agent/goal', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           signal: activeAbortRef.current?.signal,
-          body: JSON.stringify({
-            message: text,
-            history: historyForRouting,
-            apps: getRoutingApps(text),
-            pageContext: { path: location.pathname },
-            projectId: selectedProjectId || undefined,
-            appId: selectedAppId || undefined,
-          }),
+          body: JSON.stringify(routingBody),
         });
         const goal = await res.json().catch(() => ({}));
+        appendThinkingDebug(thinkingId, 'Agent router result', { ...goal, message: text });
         if (!res.ok) {
           replaceTurn(thinkingId, {
             id: thinkingId,
@@ -1948,7 +2068,7 @@ export default function AgentConsole() {
         inputRef.current?.focus();
       }
     },
-    [input, busy, editingTurnId, location.pathname, stopListening, replaceTurn, updateThinkingLabel, requestDeepUnderstanding, presentDeepUnderstanding, runRequirementDraft, reqMode, scriptAuthorMode, pendingDeep, pendingRequirementDraft, websites, scopeApp, buildHistory, buildDeepContextPrompt, startDeepRun, runViaSupervisor, getSelectedApps, authorScriptFromSteps],
+    [input, busy, editingTurnId, location.pathname, stopListening, replaceTurn, updateThinkingLabel, appendThinkingDebug, requestDeepUnderstanding, presentDeepUnderstanding, runRequirementDraft, reqMode, scriptAuthorMode, pendingDeep, pendingRequirementDraft, websites, scopeApp, buildHistory, buildDeepContextPrompt, startDeepRun, runViaSupervisor, getSelectedApps, authorScriptFromSteps, selectedProjectId, selectedAppId],
   );
 
   // Start the deep run directly from a "Here's what I understood" card's OWN stored data
@@ -1965,7 +2085,21 @@ export default function AgentConsole() {
       // card BELOW it — so clicking Proceed never makes the dialog vanish with nothing shown.
       const runTurnId = nextId();
       replaceTurn(turn.id, { id: turn.id, role: 'assistant', kind: 'text', text: turn.understanding || 'Proceeding with the run…' });
-      setTurns((prev) => [...prev, { id: runTurnId, role: 'assistant', kind: 'thinking', label: 'Starting the run…' }]);
+      setTurns((prev) => [...prev, {
+        id: runTurnId,
+        role: 'assistant',
+        kind: 'thinking',
+        label: 'Starting the run...',
+        debug: [
+          `Proceed request\n${turn.contextPrompt || turn.originalPrompt || turn.understanding || ''}`,
+          [
+            'Run target',
+            `Target URL: ${turn.targetUrl || 'none'}`,
+            `Website: ${turn.websiteName || turn.websiteId || 'none'}`,
+            `Folder: ${folderName || 'none'}`,
+          ].join('\n'),
+        ],
+      }]);
       try {
         await startDeepRun({
           thinkingId: runTurnId,
@@ -2343,11 +2477,12 @@ export default function AgentConsole() {
               }
               if (turn.kind === 'thinking') {
                 return (
-                  <div key={turn.id} className="flex items-center gap-2.5 text-sm text-[var(--text-muted)]">
+                  <div key={turn.id} className="text-sm text-[var(--text-muted)]">
                     <style>{`
                       @keyframes tfaStepIn{0%{opacity:0;transform:translateY(4px)}100%{opacity:1;transform:translateY(0)}}
                       @keyframes tfaDot{0%,80%,100%{opacity:.25;transform:translateY(0)}40%{opacity:1;transform:translateY(-3px)}}
                     `}</style>
+                    <div className="flex items-center gap-2.5">
                     <Loader2 className="h-4 w-4 shrink-0 animate-spin text-[var(--accent)]" />
                     {/* key={turn.label} remounts the span on every step so the new
                         activity fades/slides in — the live "what the agent is doing" feed. */}
@@ -2359,6 +2494,17 @@ export default function AgentConsole() {
                         <span key={d} className="inline-block h-1 w-1 rounded-full bg-[var(--accent)]" style={{ animation: 'tfaDot 1s ease-in-out infinite', animationDelay: `${d}ms` }} />
                       ))}
                     </span>
+                    </div>
+                    {(turn.debug || []).length > 0 && (
+                      <details className="ml-6 mt-2 max-w-[95%] rounded-lg border border-[var(--border)] bg-[var(--bg-card)] p-3">
+                        <summary className="cursor-pointer text-xs font-semibold text-[var(--text-primary)]">
+                          Background communication ({turn.debug?.length || 0})
+                        </summary>
+                        <pre className="custom-scrollbar mt-2 max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-md bg-[var(--bg-secondary)] p-3 text-[11px] leading-5 text-[var(--text-primary)]">
+                          {(turn.debug || []).join('\n\n---\n\n')}
+                        </pre>
+                      </details>
+                    )}
                   </div>
                 );
               }

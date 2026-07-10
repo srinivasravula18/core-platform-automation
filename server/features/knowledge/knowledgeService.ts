@@ -11,6 +11,8 @@
  */
 
 import { randomUUID } from 'crypto';
+import { existsSync, readFileSync } from 'fs';
+import path from 'path';
 import { db, persistDataInBackground } from '../../shared/storage';
 
 export interface AppKnowledgePack {
@@ -31,10 +33,10 @@ export interface AppKnowledgePack {
   updatedAt: string;
 }
 
-/** Packs visible to a given owner: their own only when an owner is given, else all. */
+/** Packs visible to a given owner: their own plus shared packs when an owner is given, else all. */
 function ownedPacks(ownerId?: string): AppKnowledgePack[] {
   const all = list();
-  return ownerId ? all.filter((p) => (p.ownerId || '') === ownerId) : all;
+  return ownerId ? all.filter((p) => !p.ownerId || p.ownerId === ownerId) : all;
 }
 
 function host(url: string): string {
@@ -54,7 +56,8 @@ function list(): AppKnowledgePack[] {
 // (git agent) and inspecting the live app — not from a baked-in pack. Knowledge here
 // is purely what the user authors in Settings → App Knowledge, plus observations
 // auto-captured from real runs (recordObservation). There are no default packs.
-const DEFAULT_PACKS: Omit<AppKnowledgePack, 'id' | 'updatedAt'>[] = [];
+const CORE_PLATFORM_KNOWLEDGE_ID = 'KN-core-platform-doc';
+const CORE_PLATFORM_KNOWLEDGE_PATH = path.resolve(process.cwd(), 'docs', 'app-knowledge-core-platform.md');
 
 /**
  * Seed default packs on first run. Intentionally a no-op now (DEFAULT_PACKS is empty):
@@ -63,19 +66,34 @@ const DEFAULT_PACKS: Omit<AppKnowledgePack, 'id' | 'updatedAt'>[] = [];
  */
 export function seedDefaultKnowledgeIfEmpty(): void {
   const packs = list();
-  if (packs.length > 0 || DEFAULT_PACKS.length === 0) return;
+  if (!existsSync(CORE_PLATFORM_KNOWLEDGE_PATH)) return;
+  const content = readFileSync(CORE_PLATFORM_KNOWLEDGE_PATH, 'utf-8').replace(/^\uFEFF/, '');
   const websites: Array<{ id: string; name: string; baseUrl: string }> = db.websites || [];
-  for (const def of DEFAULT_PACKS) {
-    const boundWebsiteIds = websites
-      .filter((w) => {
-        const h = host(w.baseUrl);
-        const n = (w.name || '').toLowerCase();
-        return def.matchHosts.some((mh) => h === mh || h.endsWith(mh)) || def.matchNames.includes(n);
-      })
-      .map((w) => w.id);
-    packs.push({ ...def, websiteIds: boundWebsiteIds, id: `KN-${randomUUID().slice(0, 8)}`, updatedAt: new Date().toISOString() });
+  const matchHosts = ['localhost:5001', 'localhost:5002', 'localhost:5003', 'ops.acchindra.com'];
+  const matchNames = ['core platform', 'admin', 'keystone', 'shockwave', 'list view'];
+  const websiteIds = websites
+    .filter((w) => {
+      const h = host(w.baseUrl);
+      const n = (w.name || '').toLowerCase();
+      return matchHosts.some((mh) => h === mh || h.endsWith(mh)) || matchNames.some((mn) => n.includes(mn));
+    })
+    .map((w) => w.id);
+  const existing = packs.find((p) => p.id === CORE_PLATFORM_KNOWLEDGE_ID);
+  const next = {
+    name: 'Core Platform App Knowledge',
+    matchHosts,
+    matchNames,
+    websiteIds: Array.from(new Set([...(existing?.websiteIds || []), ...websiteIds])),
+    content,
+    ownerId: '',
+    updatedAt: new Date().toISOString(),
+  };
+  if (existing) {
+    Object.assign(existing, next);
+  } else {
+    packs.push({ id: CORE_PLATFORM_KNOWLEDGE_ID, ...next });
   }
-  persistDataInBackground('seed app knowledge');
+  persistDataInBackground('seed core platform app knowledge');
 }
 
 export function listKnowledge(ownerId?: string): AppKnowledgePack[] {

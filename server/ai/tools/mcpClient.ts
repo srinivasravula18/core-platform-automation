@@ -92,7 +92,6 @@ function resolveMcpCli(): string {
   // esbuild CJS prod bundle — both run from the repo root, so node_modules is under cwd.
   const candidates = [
     join(process.cwd(), 'node_modules', '@playwright', 'mcp', 'cli.js'),
-    join(__dirname, '..', '..', '..', 'node_modules', '@playwright', 'mcp', 'cli.js'),
   ];
   for (const c of candidates) if (existsSync(c)) return c;
   throw new Error('@playwright/mcp CLI not found — run npm install. Looked in: ' + candidates.join(', '));
