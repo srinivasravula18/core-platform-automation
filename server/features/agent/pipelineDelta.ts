@@ -54,6 +54,10 @@ function domOpenPathForPrompt(prompt: string): string[] | undefined {
   return undefined;
 }
 
+function mcpDomFactsEnabled(): boolean {
+  return String(process.env.ENABLE_MCP_DOM_FACTS || '').trim().toLowerCase() === 'true';
+}
+
 function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(message)), ms);
@@ -245,31 +249,36 @@ export async function runMultiContextInspectionPhase(input: {
     input.onPhase({ agent: 'DOMExplorer', status: 'failed', output: `DOM exploration failed: ${e?.message || String(e)}` });
   }
 
-  try {
-    input.onPhase({ agent: 'MCPDOMFacts', status: 'running' });
-    const landedUrl = String(inspections[0]?.currentUrl || '').trim();
-    const factUrl = landedUrl && landedUrl.length >= input.targetUrl.length ? landedUrl : input.targetUrl;
-    const facts = await withTimeout(
-      collectMcpDomFacts({
-        targetUrl: factUrl,
-        goal: input.prompt,
-        credentials: input.primaryCredentials?.username && input.primaryCredentials?.password
-          ? { username: input.primaryCredentials.username, password: input.primaryCredentials.password }
-          : undefined,
-      }),
-      30_000,
-      'MCP DOM facts timed out.',
-    );
-    input.run.mcp_dom_facts = facts;
-    input.onPhase({
-      agent: 'MCPDOMFacts',
-      status: 'completed',
-      output: `Captured ${facts.coverage.actionables} actionables, ${facts.coverage.assertions} assertion targets, and ${facts.coverage.tables} table(s) through Playwright MCP.`,
-    });
-    phaseSummary(input.run, 'mcp_dom_facts', { status: 'complete', ...facts.coverage, completed_at: new Date().toISOString() });
-  } catch (e: any) {
-    input.onPhase({ agent: 'MCPDOMFacts', status: 'skipped', output: `MCP DOM facts unavailable: ${e?.message || String(e)}` });
+  if (!mcpDomFactsEnabled()) {
+    input.onPhase({ agent: 'MCPDOMFacts', status: 'skipped', output: 'MCP DOM facts are disabled by default; enable ENABLE_MCP_DOM_FACTS=true to collect them.' });
     phaseSummary(input.run, 'mcp_dom_facts', { status: 'skipped', completed_at: new Date().toISOString() });
+  } else {
+    try {
+      input.onPhase({ agent: 'MCPDOMFacts', status: 'running' });
+      const landedUrl = String(inspections[0]?.currentUrl || '').trim();
+      const factUrl = landedUrl && landedUrl.length >= input.targetUrl.length ? landedUrl : input.targetUrl;
+      const facts = await withTimeout(
+        collectMcpDomFacts({
+          targetUrl: factUrl,
+          goal: input.prompt,
+          credentials: input.primaryCredentials?.username && input.primaryCredentials?.password
+            ? { username: input.primaryCredentials.username, password: input.primaryCredentials.password }
+            : undefined,
+        }),
+        30_000,
+        'MCP DOM facts timed out.',
+      );
+      input.run.mcp_dom_facts = facts;
+      input.onPhase({
+        agent: 'MCPDOMFacts',
+        status: 'completed',
+        output: `Captured ${facts.coverage.actionables} actionables, ${facts.coverage.assertions} assertion targets, and ${facts.coverage.tables} table(s) through Playwright MCP.`,
+      });
+      phaseSummary(input.run, 'mcp_dom_facts', { status: 'complete', ...facts.coverage, completed_at: new Date().toISOString() });
+    } catch (e: any) {
+      input.onPhase({ agent: 'MCPDOMFacts', status: 'skipped', output: `MCP DOM facts unavailable: ${e?.message || String(e)}` });
+      phaseSummary(input.run, 'mcp_dom_facts', { status: 'skipped', completed_at: new Date().toISOString() });
+    }
   }
 
   return inspections;
