@@ -1,6 +1,7 @@
 import { getApp, getProject, resolveRepoPath } from './projectService';
 import { projectRepo } from './projectRepo';
 import { classifyChangedFile, resolveTargetRepo, gitGrep, readRepoFile } from '../git-agent/gitAgentService';
+import { isTestPath, GIT_TEST_EXCLUDES } from '../../shared/testPaths';
 
 export interface CodeSearchScopeInput {
   projectId?: string;
@@ -136,9 +137,10 @@ export async function searchCodeInScope(
 
   if (scope.mode === 'global' || !scope.projectId) {
     const markdownExcludes = [':(exclude)*.md', ':(exclude)*.mdx', ':(exclude)*.markdown'];
-    const pathspecs = [...(scope.roots.length ? scope.roots : ['.']), ...markdownExcludes];
+    // Test artifacts are excluded from agent grounding (never read the repo's tests).
+    const pathspecs = [...(scope.roots.length ? scope.roots : ['.']), ...markdownExcludes, ...GIT_TEST_EXCLUDES];
     const matches = gitGrep(cleanPatterns, pathspecs, Math.max(maxFiles, maxFiles * 3))
-      .filter((match) => !isMarkdownPath(match.path))
+      .filter((match) => !isMarkdownPath(match.path) && !isTestPath(match.path))
       .map((match) => ({
         path: match.path,
         area: match.area,
@@ -155,7 +157,7 @@ export async function searchCodeInScope(
     const rows = await projectRepo.search(scope.projectId, term, perTerm);
     for (const row of rows) {
       if (!withinRoots(row.path, scope.roots)) continue;
-      if (isMarkdownPath(row.path)) continue;
+      if (isMarkdownPath(row.path) || isTestPath(row.path)) continue;
       const r = row as { path: string; line?: number; preview?: string };
       const existing = merged.get(row.path);
       const score = rankMatch(r, cleanPatterns) + rankMatch(r, [term]);
@@ -190,6 +192,10 @@ export async function readCodeFileInScope(
 ): Promise<string> {
   if (isMarkdownPath(relPath)) {
     throw new Error('Markdown files are excluded from agent codebase reads.');
+  }
+  // Never read the repo's tests/specs/fixtures — the agent must ground on app behavior, not tests.
+  if (isTestPath(relPath)) {
+    throw new Error('Test files are excluded from agent codebase reads.');
   }
   // Read the ENTIRE file — no byte cap. Whatever a caller passes for bytes is ignored; agents
   // see the whole file, every line, the way a human (or Claude Code / Codex) reads source.

@@ -9,6 +9,7 @@
 import fs from 'fs';
 import path from 'path';
 import { PROVENANCE, type Provenance } from './evidence/provenance';
+import { isTestPath, isTestDirName } from '../../shared/testPaths';
 
 export interface SelectorMap {
   ariaLabels: string[];
@@ -83,8 +84,8 @@ export function extractSelectorMap(repoPath: string, opts?: { maxFiles?: number 
     for (const e of entries) {
       if (fileCount >= maxFiles) return;
       const full = path.join(dir, e.name);
-      if (e.isDirectory()) { if (!SKIP_DIRS.has(e.name)) walk(full); continue; }
-      if (!EXTS.has(path.extname(e.name))) continue;
+      if (e.isDirectory()) { if (!SKIP_DIRS.has(e.name) && !isTestDirName(e.name)) walk(full); continue; }
+      if (!EXTS.has(path.extname(e.name)) || isTestPath(e.name)) continue; // never scan test files
       let txt: string;
       try { txt = fs.readFileSync(full, 'utf8'); } catch { continue; }
       fileCount += 1;
@@ -182,8 +183,8 @@ export function findSourceFiles(repoPath: string, needles: string[], opts?: { ma
     for (const e of entries) {
       if (count >= maxFiles) return;
       const full = path.join(dir, e.name);
-      if (e.isDirectory()) { if (!SKIP_DIRS.has(e.name)) walk(full); continue; }
-      if (!EXTS.has(path.extname(e.name))) continue;
+      if (e.isDirectory()) { if (!SKIP_DIRS.has(e.name) && !isTestDirName(e.name)) walk(full); continue; }
+      if (!EXTS.has(path.extname(e.name)) || isTestPath(e.name)) continue; // never scan test files
       let txt: string;
       try { txt = fs.readFileSync(full, 'utf8').toLowerCase(); } catch { continue; }
       count += 1;

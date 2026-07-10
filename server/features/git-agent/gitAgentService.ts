@@ -1,4 +1,5 @@
 import '../../shared/env';
+import { isTestPath } from '../../shared/testPaths';
 import path from 'path';
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { spawnSync } from 'child_process';
@@ -601,6 +602,7 @@ export function gitGrep(patterns: string[], pathspecs: string[] = SOURCE_GLOBS, 
   for (const file of files) {
     if (seen.has(file)) continue;
     seen.add(file);
+    if (isTestPath(file)) continue; // never surface the repo's tests/scripts to the agent
     const c = classifyChangedFile(file);
     results.push({ path: file, area: c.area, surface: c.surface });
     if (results.length >= maxFiles) break;
@@ -743,6 +745,7 @@ export function readRepoFile(relPath: string, maxBytes = 6000, repoPath?: string
   }
   const normalized = String(relPath || '').replace(/\\/g, '/').replace(/^\/+/, '');
   if (!normalized) return '';
+  if (isTestPath(normalized)) return ''; // agent must never read the repo's tests/scripts
   // Read the ENTIRE file — every line, no byte cap. Agents must see the whole file (the logic,
   // validations, limits, and error branches live deep in the file, not in the first few KB).
   void maxBytes;
