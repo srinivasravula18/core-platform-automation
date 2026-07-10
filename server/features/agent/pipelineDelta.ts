@@ -4,6 +4,8 @@ import { writeBlackboard } from './blackboard';
 import { getWebsite, listUsersForWebsite, resolveCredentials } from '../credentials/credentialsService';
 import { fetchCorePlatformMetadataMap, type CorePlatformMetadataMap } from '../../ai/tools/corePlatformData';
 import { collectMcpDomFacts } from './mcpDomFacts';
+import { recordEvidence } from './evidence/registry';
+import { PROVENANCE, mapSelectorEvidenceType, type Provenance, type EvidenceConfidence } from './evidence/provenance';
 
 type PhaseSink = (msg: any) => void;
 
@@ -92,9 +94,20 @@ export async function runMetadataFetchPhase(input: {
     const output = 'Metadata map unavailable; continuing with live inspection and source grounding.';
     input.onPhase({ agent: 'MetadataFetch', status: 'skipped', output });
     phaseSummary(input.run, 'metadata_fetch', { status: 'skipped', completed_at: new Date().toISOString() });
+    recordEvidence(input.run, {
+      id: 'metadata', type: 'metadata', status: 'missing',
+      source: PROVENANCE.API, confidence: 'unverified', producer: 'MetadataFetch',
+      artifactCount: 0, payloadRef: 'metadata_map',
+    });
     return null;
   }
   input.run.metadata_map = map;
+  recordEvidence(input.run, {
+    id: 'metadata', type: 'metadata', status: 'present',
+    source: PROVENANCE.API, confidence: 'verified-live', producer: 'MetadataFetch',
+    payload: map, artifactCount: map.objects.length, validationState: 'passed',
+    payloadRef: 'metadata_map',
+  });
   const output = {
     objects_found: map.objects.length,
     total_fields: map.total_fields,
@@ -203,6 +216,16 @@ export async function runMultiContextInspectionPhase(input: {
   }
   input.run.inspection_contexts = inspections;
   input.run.inspection_context = inspections[0] || null;
+  recordEvidence(input.run, {
+    id: 'inspection', type: 'inspection',
+    status: inspections.length ? 'present' : 'missing',
+    source: PROVENANCE.LIVE_DOM,
+    confidence: inspections.length ? 'verified-live' : 'unverified',
+    producer: 'ApplicationInspector', payload: inspections,
+    artifactCount: inspections.length,
+    validationState: inspections.length ? 'passed' : 'failed',
+    payloadRef: 'inspection_context',
+  });
   const output = { contexts_inspected: inspections.length };
   input.onPhase({ agent: 'ApplicationInspector', status: 'completed', output });
   phaseSummary(input.run, 'inspection', { status: 'complete', ...output, completed_at: new Date().toISOString() });
@@ -245,13 +268,34 @@ export async function runMultiContextInspectionPhase(input: {
         : `Captured ${c.total_extracted} elements from ${verifiedPage.url || ''}  -  ${c.verified} verified, ${c.not_unique} not unique, ${c.broken} broken, ${c.unresolvable} unresolvable.${diagnosticNote}`,
     });
     phaseSummary(input.run, 'dom_exploration', { status: c.total_extracted === 0 ? 'failed' : 'complete', ...c, completed_at: new Date().toISOString() });
+    recordEvidence(input.run, {
+      id: 'dom', type: 'dom',
+      status: c.total_extracted === 0 ? 'failed' : (c.verified === 0 ? 'degraded' : 'present'),
+      source: PROVENANCE.LIVE_DOM,
+      confidence: c.verified > 0 ? 'verified-live' : (c.total_extracted > 0 ? 'inferred' : 'unverified'),
+      producer: 'DOMExplorer', payload: verifiedPage.elements,
+      artifactCount: c.total_extracted, dependencies: ['inspection'],
+      validationState: c.verified > 0 ? 'passed' : 'failed',
+      payloadRef: 'dom_exploration',
+    });
   } catch (e: any) {
     input.onPhase({ agent: 'DOMExplorer', status: 'failed', output: `DOM exploration failed: ${e?.message || String(e)}` });
+    recordEvidence(input.run, {
+      id: 'dom', type: 'dom', status: 'failed',
+      source: PROVENANCE.LIVE_DOM, confidence: 'unverified',
+      producer: 'DOMExplorer', artifactCount: 0, dependencies: ['inspection'],
+      validationState: 'failed', payloadRef: 'dom_exploration',
+    });
   }
 
   if (!mcpDomFactsEnabled()) {
     input.onPhase({ agent: 'MCPDOMFacts', status: 'skipped', output: 'MCP DOM facts are disabled by default; enable ENABLE_MCP_DOM_FACTS=true to collect them.' });
     phaseSummary(input.run, 'mcp_dom_facts', { status: 'skipped', completed_at: new Date().toISOString() });
+    recordEvidence(input.run, {
+      id: 'mcp_dom_facts', type: 'dom', status: 'missing',
+      source: PROVENANCE.MCP, confidence: 'unverified', producer: 'MCPDOMFacts',
+      artifactCount: 0, dependencies: ['inspection'], payloadRef: 'mcp_dom_facts',
+    });
   } else {
     try {
       input.onPhase({ agent: 'MCPDOMFacts', status: 'running' });
@@ -275,9 +319,21 @@ export async function runMultiContextInspectionPhase(input: {
         output: `Captured ${facts.coverage.actionables} actionables, ${facts.coverage.assertions} assertion targets, and ${facts.coverage.tables} table(s) through Playwright MCP.`,
       });
       phaseSummary(input.run, 'mcp_dom_facts', { status: 'complete', ...facts.coverage, completed_at: new Date().toISOString() });
+      recordEvidence(input.run, {
+        id: 'mcp_dom_facts', type: 'dom', status: 'present',
+        source: PROVENANCE.MCP, confidence: 'verified-live', producer: 'MCPDOMFacts',
+        payload: facts,
+        artifactCount: facts.coverage.actionables + facts.coverage.assertions + facts.coverage.tables,
+        dependencies: ['inspection'], validationState: 'passed', payloadRef: 'mcp_dom_facts',
+      });
     } catch (e: any) {
       input.onPhase({ agent: 'MCPDOMFacts', status: 'skipped', output: `MCP DOM facts unavailable: ${e?.message || String(e)}` });
       phaseSummary(input.run, 'mcp_dom_facts', { status: 'skipped', completed_at: new Date().toISOString() });
+      recordEvidence(input.run, {
+        id: 'mcp_dom_facts', type: 'dom', status: 'failed',
+        source: PROVENANCE.MCP, confidence: 'unverified', producer: 'MCPDOMFacts',
+        artifactCount: 0, dependencies: ['inspection'], validationState: 'failed', payloadRef: 'mcp_dom_facts',
+      });
     }
   }
 
@@ -351,6 +407,68 @@ function matchVerifiedDomField(field: any, domElements: any[]): any | null {
     }
   }
   return bestScore > 0 ? best : null;
+}
+
+/**
+ * Canonical, strongly-typed selector record. Exposed to workers and prompt builders as a structured
+ * array (`registry.verified_selectors`) so the prompt builder — not the pipeline — decides how to
+ * render it, and so future reranking/filtering/scoring needs no downstream-agent change. The legacy
+ * `registry.selectors` MAP is preserved unchanged alongside it for backward compatibility.
+ */
+export interface VerifiedSelector {
+  id: string;
+  elementType: string | null;
+  role: string | null;
+  label: string | null;
+  selector: string | null;
+  selectorType: string | null;
+  verified: boolean;
+  verificationStatus: string;
+  confidence: EvidenceConfidence;
+  provenance: Provenance;
+  visibility: boolean | null;
+  uniqueness: boolean | null;
+  sourceEvidenceId: string;
+  fallbackSelector: string | null;
+}
+
+/** Which Evidence Registry record (Phase A) a selector's proof came from. */
+function evidenceIdForSource(evidenceType: string): string {
+  if (evidenceType === 'live-dom-verified' || evidenceType === 'live-dom-pool') return 'dom';
+  if (evidenceType === 'inspection') return 'inspection';
+  return 'selector_registry';
+}
+
+function cap1(s: string): string {
+  return s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
+}
+
+/**
+ * Project a legacy selector record into the canonical VerifiedSelector shape — additive, no data
+ * loss. Provenance/confidence come from the unified provenance map (Phase A), which structurally
+ * guarantees a STATIC_SOURCE selector can never be labelled verified-live.
+ */
+function toVerifiedSelector(id: string, r: any): VerifiedSelector {
+  const evidenceType = String(r?.evidence_type || 'inspection');
+  const { source, confidence } = mapSelectorEvidenceType(evidenceType);
+  const selector = String(r?.primary_selector || '') || null;
+  const hasSelector = !!(selector || r?.fallback_selector);
+  return {
+    id: String(r?.proof_id || id),
+    elementType: r?.element_type ?? r?.dom_tag ?? null,
+    role: r?.role ?? null,
+    label: r?.label ?? r?.metadata_api_name ?? null,
+    selector,
+    selectorType: r?.selector_strategy ?? null,
+    verified: Boolean(r?.verified) && hasSelector,
+    verificationStatus: String(r?.dom_status || (r?.verified ? 'verified' : (r?.confidence === 'blocked' ? 'blocked' : 'unverified'))),
+    confidence,
+    provenance: source,
+    visibility: typeof r?.dom_visible === 'boolean' ? r.dom_visible : null,
+    uniqueness: typeof r?.dom_unique === 'boolean' ? r.dom_unique : null,
+    sourceEvidenceId: evidenceIdForSource(evidenceType),
+    fallbackSelector: r?.fallback_selector || null,
+  };
 }
 
 export function runSelectorRegistryPhase(input: { run: any; page?: string; onPhase: PhaseSink }) {
@@ -470,34 +588,119 @@ export function runSelectorRegistryPhase(input: { run: any; page?: string; onPha
     }
   }
 
+  // --- SELECTOR PROMOTION (the confirmed loss-point fix) ---
+  // The metadata + action loops above only mint records for metadata fields and inspected actions.
+  // When no app metadata is resolved (metadata_map skipped) the registry came back EMPTY even though
+  // dom_exploration held N verified live selectors — so downstream workers got only the page outline
+  // and guessed selectors. Promote every DOM element that carries a concrete resolved selector and is
+  // verified-unique (or ambiguous/not_unique, kept for diagnostics) into a real selector record,
+  // unless a metadata/action record already represents that exact selector.
+  const representedSelectors = new Set(
+    Object.values(selectors).map((s: any) => clean(s?.primary_selector)).filter(Boolean),
+  );
+  for (const el of Array.isArray(input.run.dom_exploration?.elements) ? input.run.dom_exploration.elements : []) {
+    const sel = clean(el?.resolved_selector);
+    if (!sel) continue;                                                     // no concrete selector
+    if (el?.status !== 'verified' && el?.status !== 'not_unique') continue; // exclude broken/unresolvable
+    if (representedSelectors.has(sel)) continue;                            // already covered upstream
+    const label = clean(el?.name || el?.aria_label || el?.text || el?.placeholder || el?.input_name);
+    const key = elementKey(String(el?.id || `${el?.role || el?.tag || 'el'}-${label || sel}`), 'dom');
+    if (selectors[key]) continue;
+    const isUniqueVerified = el?.status === 'verified';
+    selectors[key] = {
+      proof_id: key,
+      label: label || sel,
+      role: el?.role || null,
+      element_type: el?.tag || null,
+      evidence_type: 'live-dom-verified',
+      // Only a unique live match is 'verified' (exposed to workers); an ambiguous (not_unique) match
+      // stays in the registry for diagnostics but is clearly marked and withheld from automation.
+      confidence: isUniqueVerified ? 'verified' : 'ambiguous',
+      metadata_api_name: null,
+      primary_selector: sel,
+      selector_strategy: el?.selector_strategy || 'dom',
+      fallback_selector: el?.fallback_selector || '',
+      works_across_all_contexts: false,
+      context_overrides: {},
+      permission_behavior: {},
+      context_specific: false,
+      verified: isUniqueVerified,
+      seen_in_dom_pool: true,
+      dom_status: el?.status,
+      dom_tag: el?.tag || null,
+      dom_visible: typeof el?.visible === 'boolean' ? el.visible : null,
+      dom_unique: typeof el?.unique === 'boolean' ? el.unique : (el?.status === 'verified'),
+    };
+    representedSelectors.add(sel);
+  }
+
   const values = Object.values(selectors);
+  // Strongly-typed structured view of every record (verified + diagnostics), for workers/prompt.
+  const verified_selectors: VerifiedSelector[] = Object.entries(selectors).map(([id, r]) => toVerifiedSelector(id, r));
   const registry = {
     registry_version: new Date().toISOString(),
     page: input.page || '',
     selectors,
+    verified_selectors,
     unresolvable,
     coverage: {
       total_elements: values.length,
       verified: values.filter((s: any) => s.verified).length,
       context_specific: values.filter((s: any) => s.context_specific).length,
       unresolvable: unresolvable.length,
+      promoted_from_dom: verified_selectors.filter((s) => s.sourceEvidenceId === 'dom').length,
     },
   };
   input.run.selector_registry = registry;
+  // Provenance rule: only when at least one selector was verified against the LIVE DOM may this
+  // evidence claim a live source. A registry built purely from static/source signals is tagged
+  // STATIC_SOURCE + verified-static (recordEvidence defensively enforces this too).
+  const hasLiveSelector = values.some((s: any) => s?.evidence_type === 'live-dom-verified' || s?.evidence_type === 'inspection');
+  recordEvidence(input.run, {
+    id: 'selector_registry', type: 'selector',
+    status: registry.coverage.total_elements === 0 ? 'missing' : (registry.coverage.verified === 0 ? 'degraded' : 'present'),
+    source: hasLiveSelector ? PROVENANCE.LIVE_DOM : PROVENANCE.STATIC_SOURCE,
+    confidence: hasLiveSelector ? 'verified-live' : 'verified-static',
+    producer: 'SelectorRegistry', payload: selectors,
+    artifactCount: registry.coverage.total_elements, dependencies: ['dom'],
+    validationState: registry.coverage.verified > 0 ? 'passed' : 'unvalidated',
+    payloadRef: 'selector_registry',
+  });
   input.onPhase({ agent: 'SelectorRegistry', status: 'completed', output: registry.coverage });
   phaseSummary(input.run, 'selector_registry', { status: 'complete', ...registry.coverage, completed_at: new Date().toISOString() });
   return registry;
 }
 
+/**
+ * Render the STRUCTURED Verified Selector Block for a worker prompt from the typed
+ * `registry.verified_selectors` array (falling back to the legacy `selectors` map for runs persisted
+ * before that field existed). Only verified-unique selectors are exposed to the worker; unverified
+ * ones are counted as diagnostics but withheld. This AUGMENTS the page outline — it does not replace
+ * it (the outline is rendered separately by renderPageOutlineForPrompt).
+ */
 export function renderSelectorRegistryForPrompt(registry: any): string {
-  const selectors = registry?.selectors || {};
-  const lines = Object.entries(selectors)
-    .filter(([, value]: any) => value?.verified && (value.primary_selector || value.fallback_selector))
-    .slice(0, 160)
-    .map(([id, value]: any) =>
-      `${id}: proof=${value.proof_id || id} label=${value.label || value.metadata_api_name || ''} primary=${value.primary_selector || '(none)'} fallback=${value.fallback_selector || '(none)'} source=${value.evidence_type || 'inspection'} confidence=${value.confidence || 'verified'}`,
-  );
-  return lines.length
-    ? `\nVERIFIED SELECTOR REGISTRY (STRICT AGENT HANDOFF): use ONLY these proof ids/selectors for automatable UI steps. Repo labels not listed here are hints only. If a needed selector is missing, block instead of inventing.\n${lines.join('\n')}\n`
+  const structured: VerifiedSelector[] = Array.isArray(registry?.verified_selectors)
+    ? registry.verified_selectors
+    : Object.entries(registry?.selectors || {}).map(([id, r]) => toVerifiedSelector(id, r));
+
+  const exposed = structured.filter((s) => s.verified && (s.selector || s.fallbackSelector)).slice(0, 160);
+  if (!exposed.length) return '';
+
+  const blocks = exposed.map((s) => [
+    `- ${cap1(s.elementType || s.role || 'control')}`,
+    `  Label: ${s.label || '(none)'}`,
+    `  Selector: ${s.selector || s.fallbackSelector}`,
+    s.fallbackSelector && s.fallbackSelector !== s.selector ? `  Fallback: ${s.fallbackSelector}` : '',
+    `  Role: ${s.role || '(none)'}`,
+    `  Verified: ${s.verified}`,
+    `  Confidence: ${s.confidence}`,
+    `  Provenance: ${s.provenance}`,
+  ].filter(Boolean).join('\n'));
+
+  const hiddenUnverified = structured.filter((s) => !s.verified).length;
+  const diag = hiddenUnverified
+    ? `\n(${hiddenUnverified} additional selector(s) were captured but are NOT verified-unique — withheld from automation; diagnostics only.)`
     : '';
+
+  return `\nVERIFIED SELECTORS (STRICT AGENT HANDOFF — ${exposed.length} live-proven control(s)): PREFER these EXACT selectors for automatable UI steps over guessing from the page outline or labels. Each was proven unique against the live DOM. If a control you need is not listed here, ground it in the page outline/labels and treat it as unverified rather than inventing a selector.\n${blocks.join('\n\n')}${diag}\n`;
 }

@@ -8,6 +8,7 @@
  */
 import fs from 'fs';
 import path from 'path';
+import { PROVENANCE, type Provenance } from './evidence/provenance';
 
 export interface SelectorMap {
   ariaLabels: string[];
@@ -20,6 +21,12 @@ export interface SelectorMap {
   roleNames: Array<{ role: string; name: string }>;
   uiHooks: Array<{ surface: string; tag: string; id?: string; ariaLabel?: string; placeholder?: string; role?: string; type?: string; classes?: string[]; file: string }>;
   fileCount: number;
+  /**
+   * Provenance of this map. Always STATIC_SOURCE — it is a source-code regex scan and never
+   * reflects the live rendered page. Downstream code must never present these selectors as
+   * live-verified (see evidence/provenance.ts:normalizeConfidence).
+   */
+  provenance: Provenance;
 }
 
 const RE = {
@@ -153,6 +160,7 @@ export function extractSelectorMap(repoPath: string, opts?: { maxFiles?: number 
     uiHooks: Array.from(new Map(uiHooks.map((h) => [`${h.surface}|${h.tag}|${h.id || ''}|${h.ariaLabel || ''}|${h.placeholder || ''}|${h.role || ''}|${h.type || ''}|${(h.classes || []).join('.')}`, h])).values())
       .sort((a, b) => a.surface.localeCompare(b.surface) || a.tag.localeCompare(b.tag) || (a.id || a.ariaLabel || a.placeholder || '').localeCompare(b.id || b.ariaLabel || b.placeholder || '')),
     fileCount,
+    provenance: PROVENANCE.STATIC_SOURCE,
   };
 }
 

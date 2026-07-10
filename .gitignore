@@ -11,6 +11,8 @@ coverage/
 .testflow-git-agent-state.json
 .testflow-data.json
 .testflow-data.json.bak-project-cleanup
+.testflow-traces.jsonl
+docs/diagnostics/*.jsonl
 # Atomic-write temp siblings (written then renamed by savePersistedData/Settings)
 *.tmp-*
 
@@ -24,6 +26,9 @@ output/
 .mcp.json
 evidence/
 e2e/
+# ...but the Evidence Registry SOURCE module is code, not a runtime artifact — keep it tracked.
+!server/features/agent/evidence/
+!server/features/agent/evidence/**
 
 # Generated test-checklist & feature-audit docs
 docs/test-checklists/
