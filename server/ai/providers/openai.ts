@@ -151,6 +151,12 @@ export class OpenAIProvider implements AIProvider {
           function: { name: t.name, description: t.description, parameters: t.parameters },
         }))
       : undefined;
+    // gpt-5.x / o-series reject `reasoning_effort` when function tools are present on
+    // /v1/chat/completions ("Function tools with reasoningeffort are not supported ... set
+    // reasoningeffort to 'none'"). Drop the effort hint on the tool-calling path for those models;
+    // the non-tool paths (generateObject/generateText) keep it. Reasoning still happens by default.
+    const newStyle = /^(gpt-5|o1|o3|o4)/.test((modelId || '').toLowerCase());
+    const includeEffort = Boolean(opts.effort) && !(tools && newStyle);
     try {
       const completion = await this.client.chat.completions.create(
         {
@@ -158,7 +164,7 @@ export class OpenAIProvider implements AIProvider {
           messages,
           ...(tools ? { tools, tool_choice: 'auto' as const } : {}),
           ...this.sampling(modelId, opts.maxTokens, opts.temperature),
-          ...(opts.effort ? { reasoning_effort: opts.effort } : {}),
+          ...(includeEffort ? { reasoning_effort: opts.effort } : {}),
         },
         { signal: opts.signal },
       );
