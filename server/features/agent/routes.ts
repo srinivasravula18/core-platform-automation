@@ -501,6 +501,71 @@ function annotateGeneratedCasesWithProof(cases: any[], run: any): any[] {
   });
 }
 
+function assessScriptGrounding(run: any, cases: any[], hasRepoSelectorMap: boolean) {
+  const live = buildLiveSelectorIndex(run);
+  const registry = buildSelectorRegistryIndex((run as any).selector_registry);
+  const domCoverage = run?.dom_exploration?.coverage || {};
+  const mcpCoverage = (run as any)?.mcp_dom_facts?.coverage || {};
+  const verifiedCases = (Array.isArray(cases) ? cases : []).filter((tc: any) => tc?.automationReadiness === 'verified').length;
+  const metadataBackedCases = (Array.isArray(cases) ? cases : []).filter((tc: any) => tc?.automationReadiness === 'metadata-backed').length;
+  const blockedCases = (Array.isArray(cases) ? cases : []).filter((tc: any) => tc?.automationReadiness === 'blocked').length;
+  const hasLiveDomProof = Number(domCoverage.verified || 0) > 0 || Number(mcpCoverage.actionables || 0) > 0 || live.usable;
+  const hasRegistryProof = registry.usable || Number(run?.selector_registry?.coverage?.verified || 0) > 0;
+  const mode = blockedCases > 0
+    ? 'blocked'
+    : hasLiveDomProof
+      ? (metadataBackedCases > 0 ? 'mixed' : 'live')
+      : (hasRepoSelectorMap && hasRegistryProof ? 'source-only' : 'blocked');
+  const ok = mode !== 'blocked';
+  const reason = mode === 'live'
+    ? `Live grounding is usable (${verifiedCases}/${cases.length} case(s) verified against live proof).`
+    : mode === 'mixed'
+      ? `Mixed grounding: live proof exists, but ${metadataBackedCases}/${cases.length} case(s) still depend partly on source/metadata evidence.`
+      : mode === 'source-only'
+        ? 'Live DOM grounding is weak or unavailable; scripts may still be authored from source-backed selectors and inspection context only.'
+        : blockedCases > 0
+          ? `Blocked script generation: ${blockedCases}/${cases.length} case(s) have no usable automation proof.`
+          : 'Blocked script generation: neither live DOM proof nor usable source-backed selectors were available.';
+  return {
+    ok,
+    mode,
+    reason,
+    liveUsable: hasLiveDomProof,
+    registryUsable: hasRegistryProof,
+    verifiedCases,
+    metadataBackedCases,
+    blockedCases,
+  };
+}
+
+function renderScriptGroundingBlock(grounding: {
+  mode: string;
+  reason: string;
+  liveUsable: boolean;
+  verifiedCases: number;
+  metadataBackedCases: number;
+  blockedCases: number;
+}, cases: any[]): string {
+  const caseLines = (Array.isArray(cases) ? cases : []).slice(0, 40).map((tc: any, index: number) => {
+    const title = String(tc?.title || `Test case ${index + 1}`).slice(0, 120);
+    const readiness = String(tc?.automationReadiness || 'unknown');
+    const proof = String(tc?.proofSummary || '').slice(0, 160);
+    return `- ${title}: readiness=${readiness}${proof ? `; ${proof}` : ''}`;
+  });
+  return `
+SCRIPT GROUNDING MODE: ${grounding.mode}
+GROUNDING SUMMARY: ${grounding.reason}
+GROUNDING RULES:
+- LIVE mode: prefer selectors and assertions proven by the live inspection/DOM evidence.
+- MIXED mode: live evidence is available for some controls, but some cases still rely on source/metadata grounding. Use live evidence first; only use repo/source selectors when the needed control was not proven live.
+- SOURCE-ONLY mode: no trustworthy live DOM proof exists for this run. You may still write scripts, but ONLY from the inspection context, verified selector registry, repo selector map, and metadata-backed case steps. Do NOT claim a selector was live-verified. Do NOT invent menus, labels, success toasts, or page states.
+- BLOCKED mode: do not write scripts.
+- If a case below is marked readiness=blocked, it is not automatable from current evidence and must not receive a script.
+CASE READINESS:
+${caseLines.join('\n') || '(none)'}
+`;
+}
+
 function lightOutput(value: any) {
   if (typeof value === 'string') return value.slice(0, 1200);
   if (value == null) return value;
@@ -1918,28 +1983,30 @@ async function generateCasesForRun(
   opts: { flowMode: 'review_cases' | 'complete'; mode: 'fresh' | 'gaps'; existingCases?: any[] },
 ): Promise<void> {
   const credentials = liveCredentials || run.credentials || {};
-  // BLOCKING HONESTY GATE (Phase 1): if the inspector saw nothing on the live page, the
-  // cases CANNOT be grounded in the real app. Generating them anyway produces ungrounded
-  // "coverage" that masquerades as real  -  the exact fake-green failure we are removing.
-  // Stop the pipeline here instead of writing cases from the prompt alone. (Respect an
-  // explicit user cancel  -  never overwrite a cancelled run; markRunDone already guards.)
   const liveInspectionVerdict = assessInspection(run.inspection_context);
-  if (((run as any).inspection_blind || !liveInspectionVerdict.ok) && run.status !== 'cancelled') {
-    const why = 'Inspection saw nothing on the page  -  cannot ground test cases in the live app; not generating ungrounded cases.';
-    const finalWhy = liveInspectionVerdict.ok ? why : liveInspectionVerdict.reason;
-    pushPhase(run, { agent: 'System', status: 'failed', output: finalWhy });
-    markRunDone(run, 'failed');
-    // Record an honest verdict so downstream consumers/UI never read this as verified.
-    (run as any).cases_grounding = { ok: false, reason: why };
-    await persistAgentQualityArtifacts(run).catch((err) => console.warn('Failed to persist blind-inspection agent artifacts:', err));
-    persistDataInBackground('blind-inspection blocked agent run');
-    return;
-  }
   const credentialContext = buildCredentialContext(credentials);
   const inspectionContext = run.inspection_context || null;
   const featureUnderstanding = run.feature_understanding || null;
   const featureInventory = run.feature_inventory || null;
   const prompt = run.prompt || '';
+  const canFallbackToSourceOnly = !!featureUnderstanding || !!featureInventory || run.understandingSource === 'requirement';
+  if (((run as any).inspection_blind || !liveInspectionVerdict.ok) && run.status !== 'cancelled') {
+    if (!canFallbackToSourceOnly) {
+      const why = 'Inspection saw nothing on the page and no repo-grounded understanding is available, so case generation would be guesswork.';
+      const finalWhy = liveInspectionVerdict.ok ? why : `${liveInspectionVerdict.reason} ${why}`.trim();
+      pushPhase(run, { agent: 'System', status: 'failed', output: finalWhy });
+      markRunDone(run, 'failed');
+      (run as any).cases_grounding = { ok: false, reason: why };
+      await persistAgentQualityArtifacts(run).catch((err) => console.warn('Failed to persist blind-inspection agent artifacts:', err));
+      persistDataInBackground('blind-inspection blocked agent run');
+      return;
+    }
+    pushPhase(run, {
+      agent: 'System',
+      status: 'completed',
+      output: `Live inspection could not reach the authenticated application (${liveInspectionVerdict.reason}). Continuing with source-grounded case generation only; cases must stay inside repo-proven behavior and mark any live-only details as blocked.`,
+    });
+  }
   if (!featureUnderstanding && !featureInventory && run.understandingSource !== 'requirement') {
     const why = 'Case generation blocked: repo-grounded code understanding is unavailable, so fallback cannot be limited to repository facts.';
     pushPhase(run, { agent: 'TestGenerationAgent', status: 'failed', output: why });
@@ -2371,11 +2438,11 @@ Do NOT write comments such as "Auth is expected to be handled by global setup". 
   const coderTestData = tdPack
     ? `\nREAL TEST DATA (from the live app metadata  -  use these EXACT field api_names and valid values when the case creates/edits a record; for picklists use one listed option; reference the example existing record for edit/delete; do NOT use placeholder/env-var values for the data the case specifies):\n${tdPack}\n`
     : '';
-  // REAL SELECTORS extracted from the app's source  -  the code is the source of truth for
-  // selectors, so the coder uses these instead of guessing (no more guessed /save/i timeouts).
+  // REAL SELECTORS extracted from the app's source. These are fallback grounding when the live DOM
+  // did not prove a selector directly; they are not automatically equivalent to live verification.
   const codeMap = getRunSelectorMap(run);
   const coderSelectorMap = codeMap
-    ? `\nREAL SELECTORS FROM THE APP SOURCE (the codebase IS the source of truth  -  use these EXACT labels/names; ground every getByRole name / getByLabel / getByText / getByTestId in one of these; do NOT invent a selector that is not here):\n${renderSelectorMap(codeMap)}\n`
+    ? `\nREPO / SOURCE SELECTOR HINTS (fallback grounding when live DOM proof is incomplete  -  use these EXACT labels/names; ground every getByRole name / getByLabel / getByText / getByTestId in one of these; do NOT invent a selector that is not here):\n${renderSelectorMap(codeMap)}\n`
     : '';
   const coderSelectorRegistry = renderSelectorRegistryForPrompt((run as any).selector_registry);
   const coderMcpDomFacts = renderMcpDomFactsForPrompt((run as any).mcp_dom_facts);
@@ -2399,7 +2466,24 @@ Do NOT write comments such as "Auth is expected to be handled by global setup". 
   const coder = await getOrchestrator('playwrightCoder', { workspaceId: run.ownerId || 'default', effort: run.requestedEffort });
   const rawCaseList = Array.isArray(testCases?.test_cases) ? testCases.test_cases : [];
   const caseList = annotateGeneratedCasesWithProof(normalizeGeneratedCasesText(rawCaseList, run), run);
+  const scriptGrounding = assessScriptGrounding(run, caseList, Boolean(codeMap));
+  const scriptGroundingBlock = renderScriptGroundingBlock(scriptGrounding, caseList);
+  if (!scriptGrounding.ok) {
+    const why = `Script generation blocked: ${scriptGrounding.reason}`;
+    pushPhase(run, { agent: 'PlaywrightAgent', status: 'failed', output: why });
+    (run as any).execution_result = { ok: false, total: 0, passed: 0, failed: 0, skipped: 0, error: why, tests: [] };
+    await persistAgentScripts(run);
+    markRunDone(run, 'failed');
+    await persistAgentQualityArtifacts(run).catch((err) => console.warn('Failed to persist script-grounding-blocked agent artifacts:', err));
+    persistDataInBackground('script-grounding blocked script generation');
+    return;
+  }
   run.generated_cases = caseList;
+  pushPhase(run, {
+    agent: 'PlaywrightAgent',
+    status: 'running',
+    output: `Script grounding mode: ${scriptGrounding.mode}. ${scriptGrounding.reason}`,
+  });
   if (targetUrl && caseList.length && caseList.every((tc: any) => canLiveAuthorGoal([
     tc?.title || '',
     tc?.description || '',
@@ -2500,7 +2584,7 @@ Approved user-reviewed understanding: ${reviewedUnderstanding || 'not provided'}
 ${credentialContext}
 ${loginScriptBlock}
 ${applicationContextBlock}
-${selectedQaContextText}${coderUnderstanding}${coderFeatureInventory}${coderMemory}${coderTestData}${coderMcpDomFacts}${coderSelectorMap}${coderSelectorRegistry}${coderBlackboard}${featureGrounding}${readAgentSkill() ? `\nLEARNED QA-AUTHORING SKILL (general script guidance refined over prior runs  -  apply it):\n${readAgentSkill()}\n` : ''}
+${selectedQaContextText}${coderUnderstanding}${coderFeatureInventory}${coderMemory}${coderTestData}${scriptGroundingBlock}${coderMcpDomFacts}${coderSelectorMap}${coderSelectorRegistry}${coderBlackboard}${featureGrounding}${readAgentSkill() ? `\nLEARNED QA-AUTHORING SKILL (general script guidance refined over prior runs  -  apply it):\n${readAgentSkill()}\n` : ''}
 Use this browser inspection context as the source of truth for reachable pages, visible labels, forms, navigation actions, tables/lists, buttons, links and final URL: ${JSON.stringify(compactInspectionContext(inspectionContext))}.
 ${renderPageOutlineForPrompt((run as any).dom_exploration)}${renderVerifiedElementsForPrompt((run as any).dom_exploration)}${allCaseControls}
 SETUP  -  NAVIGATE THEN LOG IN IF NEEDED: the MANDATORY FIRST LINES of every test body are (use this EXACT absolute URL  -  NOT '/', which resolves to the wrong path):
@@ -2575,7 +2659,7 @@ Approved user-reviewed understanding: ${reviewedUnderstanding || 'not provided'}
 ${credentialContext}
 ${loginScriptBlock}
 ${applicationContextBlock}
-${selectedQaContextText}${coderUnderstanding}${coderMcpDomFacts}${coderSelectorMap}${coderSelectorRegistry}${coderBlackboard}${featureGrounding}
+${selectedQaContextText}${coderUnderstanding}${scriptGroundingBlock}${coderMcpDomFacts}${coderSelectorMap}${coderSelectorRegistry}${coderBlackboard}${featureGrounding}
 Use this browser inspection context as the source of truth for reachable pages, visible labels, forms, navigation actions, tables/lists, buttons, links and final URL: ${JSON.stringify(compactInspectionContext(inspectionContext))}.
 ${renderPageOutlineForPrompt((run as any).dom_exploration)}${renderVerifiedElementsForPrompt((run as any).dom_exploration)}${perCaseControlBlocks[index] || ''}
 
@@ -2591,6 +2675,7 @@ Rules:
 - Return JSON exactly like {"scripts":[{"test_case_title":"...","filename":"kebab-case.spec.ts","code":"import { test, expect } from '@playwright/test';\\n..."}]}.
 - Return exactly one script object. No combined scripts. No empty placeholder scripts.
 - Set test_case_title to the test case title verbatim: ${JSON.stringify(testCase?.title || `Test case ${index + 1}`)}.
+- This specific case currently has readiness=${String(testCase?.automationReadiness || 'unknown')} with proof summary: ${JSON.stringify(String(testCase?.proofSummary || 'none').slice(0, 200))}. If readiness is not "verified", stay inside the grounded selectors and labels above; do not invent missing UI.
 - The Playwright test name must be the same title verbatim and must use async ({ page }, testInfo).
 - Start by navigating to ${targetUrl || '/'} and handling login with USERNAME/PASSWORD before the feature steps when credentials are available. Do not assume global auth.
 - Mirror this exact test case's ordered steps, not any other case. The script must cover every step in the payload below in order. Do not add per-step screenshots unless this case explicitly asks for step evidence.
@@ -4593,7 +4678,21 @@ Rules:
       inline: req.body.inlineCredentials,
       ownerId: scope.userId || undefined,
     }) : null);
-    const credentials = resolvedCreds || (() => {
+    const inlineRequestCreds = (() => {
+      const inline = req.body.inlineCredentials || {};
+      const username = String(inline.username || '').trim();
+      const password = String(inline.password || '');
+      if (!username || !password) return null;
+      return {
+        username,
+        password,
+        siteName: String(inline.siteName || req.body.websiteName || '').trim(),
+        baseUrl: targetUrl,
+        environment: 'unknown',
+        source: 'request-body',
+      };
+    })();
+    const credentials = resolvedCreds || inlineRequestCreds || (() => {
       const settingsCreds = findSettingsCredentials(targetUrl);
       if (settingsCreds.username && settingsCreds.password) {
         return { ...settingsCreds, siteName: '', baseUrl: targetUrl, environment: 'unknown' };
@@ -4930,17 +5029,12 @@ Rules:
 
       (newRun as any).inspection_blind = !inspectionOk;
       if (!inspectionOk) {
-        // Surface the REAL reason (login failure, unreachable page, browser error captured in the
-        // inspection warnings) instead of only the generic line  -  otherwise the failure is
-        // undiagnosable from the UI.
         const detail = (assessInspection(inspectionContext).reason || '').trim();
-        const why = `Inspection saw nothing on the page  -  cannot ground test cases in the live app; not generating ungrounded cases.${detail ? ` Details: ${detail}` : ''}`;
-        pushPhase(newRun, { agent: 'System', status: 'failed', output: why });
-        (newRun as any).cases_grounding = { ok: false, reason: why };
-        markRunDone(newRun, 'failed');
-        await persistAgentQualityArtifacts(newRun).catch((persistErr) => console.warn('Failed to persist failed inspection agent artifacts:', persistErr));
-        persistDataInBackground('inspection-gate blocked agent run');
-        return;
+        pushPhase(newRun, {
+          agent: 'System',
+          status: 'running',
+          output: `Live inspection did not reach the authenticated application.${detail ? ` Details: ${detail}` : ''} Continuing to CodeAnalyst so the run can fall back to repo-grounded generation if source evidence exists.`,
+        });
       }
 
       pushPhase(newRun, { agent: 'CodeAnalyst', status: 'running' });

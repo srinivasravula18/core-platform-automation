@@ -36,6 +36,7 @@ export interface ExploreResult {
   outline?: string | null;
   opened?: { label: string; opened: boolean }[];
   warnings: string[];
+  diagnostics?: { readyState: string; title: string; bodyTextLength: number; htmlLength: number; url: string };
 }
 
 async function settle(page: any, budgetMs = 6000) {
@@ -69,6 +70,27 @@ async function openPath(page: any, open?: string[]): Promise<{ label: string; op
   const trail: { label: string; opened: boolean }[] = [];
   for (const label of open ?? []) trail.push({ label, opened: await clickLabel(page, label) });
   return trail;
+}
+
+async function ensureBrowserEvalCompat(page: any): Promise<void> {
+  await page.evaluate('(() => { if (typeof window.__name !== "function") { window.__name = function (fn) { return fn; }; } })()')
+    .catch(() => undefined);
+}
+
+async function capturePageDiagnostics(page: any): Promise<{ readyState: string; title: string; bodyTextLength: number; htmlLength: number; url: string }> {
+  return page.evaluate(`(() => ({
+    readyState: document.readyState || '',
+    title: document.title || '',
+    bodyTextLength: (document.body?.innerText || '').length,
+    htmlLength: document.documentElement?.outerHTML?.length || 0,
+    url: location.href || '',
+  }))()`).catch(() => ({
+    readyState: '',
+    title: '',
+    bodyTextLength: 0,
+    htmlLength: 0,
+    url: page.url?.() || '',
+  }));
 }
 
 // ---- API-token login (ported from agentic-test-platform) ----
@@ -378,6 +400,7 @@ function sweepDom(page: any): Promise<DomElement[]> {
 async function captureSemanticSnapshot(page: any): Promise<{ outline: string | null; elements: DomElement[] }> {
   let outline: string | null = null;
   let elements: DomElement[] = [];
+  await ensureBrowserEvalCompat(page);
   try {
     outline = await page.locator('body').ariaSnapshot({ mode: 'ai' });
     if (outline) elements = await resolveSnapshotRefs(page, outline);
@@ -440,6 +463,14 @@ export async function exploreAppElements(opts: {
 
     const { outline, elements: captured } = await captureSemanticSnapshot(page);
     let elements = captured;
+    const diagnostics = await capturePageDiagnostics(page);
+    if (elements.length === 0) {
+      warnings.push(
+        `DOM exploration captured 0 elements on ${diagnostics.url || page.url()} ` +
+        `(readyState=${diagnostics.readyState || 'unknown'}, title=${JSON.stringify(diagnostics.title || '')}, ` +
+        `bodyTextLength=${diagnostics.bodyTextLength}, htmlLength=${diagnostics.htmlLength}).`,
+      );
+    }
     const max = opts.maxElements ?? 200;
     if (elements.length > max) {
       warnings.push(`explored ${elements.length} elements, capped to ${max} for prompt size`);
@@ -456,6 +487,7 @@ export async function exploreAppElements(opts: {
       outline,
       opened,
       warnings,
+      diagnostics,
     };
   } catch (e: any) {
     return {
@@ -463,6 +495,7 @@ export async function exploreAppElements(opts: {
       count: 0,
       elements: [],
       warnings: [...warnings, `DOM exploration error: ${e?.message || String(e)}`],
+      diagnostics: await capturePageDiagnostics(page).catch(() => ({ readyState: '', title: '', bodyTextLength: 0, htmlLength: 0, url: page.url() })),
     };
   } finally {
     await page.close().catch(() => {});
@@ -550,6 +583,7 @@ export interface VerifiedPage {
   elements: VerifiedElement[];
   coverage: { total_extracted: number; verified: number; not_unique: number; unresolvable: number; broken: number; loggedIn: boolean };
   warnings: string[];
+  diagnostics?: { readyState: string; title: string; bodyTextLength: number; htmlLength: number; url: string };
 }
 
 /** Most useful first: verified+unique interactive controls, then the long tail. (Ported ranking.) */
@@ -630,6 +664,7 @@ export async function exploreAndVerifyPage(opts: {
       loggedIn: Boolean(opts.credentials),
     },
     warnings: extracted.warnings,
+    diagnostics: extracted.diagnostics,
   };
 }
 

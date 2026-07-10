@@ -342,6 +342,8 @@ function matchWebsiteByUrl(sites: Website[], url: string): Website | null {
 export function resolveCredentials(opts: ResolveOptions): ResolvedCredential | null {
   ensureTables();
   const inline = opts.inline || {};
+  const inlineUsername = String(inline.username || '').trim();
+  const inlinePassword = String(inline.password || '');
   // Per-user isolation: when an owner is given, a run may only resolve against that
   // user's own websites/logins (never another user's credentials).
   const ownerOk = (w: any) => !opts.ownerId || (w?.ownerId || '') === opts.ownerId;
@@ -377,7 +379,23 @@ export function resolveCredentials(opts: ResolveOptions): ResolvedCredential | n
       if (w && ownerOk(w)) return toResolved(u, w, 'website-default');
     }
   }
-  if (!website) return null;
+  if (!website) {
+    if (inlineUsername && inlinePassword) {
+      return {
+        source: 'request-body',
+        websiteId: '',
+        userId: '',
+        websiteName: String(inline.siteName || opts.websiteName || '').trim(),
+        role: String(opts.role || '').trim(),
+        username: inlineUsername,
+        password: inlinePassword,
+        siteName: String(inline.siteName || opts.websiteName || '').trim(),
+        baseUrl: String(opts.baseUrl || opts.targetUrl || '').trim(),
+        environment: 'unknown',
+      };
+    }
+    return null;
+  }
 
   const users = listUsersForWebsite(website.id);
   if (users.length === 0) return null;

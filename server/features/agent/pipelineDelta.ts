@@ -54,6 +54,22 @@ function domOpenPathForPrompt(prompt: string): string[] | undefined {
   return undefined;
 }
 
+function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
 export async function runMetadataFetchPhase(input: {
   run: any;
   appId: string;
@@ -213,12 +229,18 @@ export async function runMultiContextInspectionPhase(input: {
       input.run.blackboard_id = blackboardId;
     } catch { /* best effort */ }
     const c = verifiedPage.coverage;
+    const diagnosticNote = verifiedPage.diagnostics
+      ? ` readyState=${verifiedPage.diagnostics.readyState || 'unknown'} title=${JSON.stringify(verifiedPage.diagnostics.title || '')} bodyTextLength=${verifiedPage.diagnostics.bodyTextLength} htmlLength=${verifiedPage.diagnostics.htmlLength}.`
+      : '';
+    const status = c.total_extracted === 0 ? 'failed' : 'completed';
     input.onPhase({
       agent: 'DOMExplorer',
-      status: 'completed',
-      output: `Captured ${c.total_extracted} elements from ${verifiedPage.url || ''}  -  ${c.verified} verified, ${c.not_unique} not unique, ${c.broken} broken, ${c.unresolvable} unresolvable.`,
+      status,
+      output: c.total_extracted === 0
+        ? `DOM exploration captured 0 elements from ${verifiedPage.url || ''}.${diagnosticNote} ${(verifiedPage.warnings || []).join(' ')}`
+        : `Captured ${c.total_extracted} elements from ${verifiedPage.url || ''}  -  ${c.verified} verified, ${c.not_unique} not unique, ${c.broken} broken, ${c.unresolvable} unresolvable.${diagnosticNote}`,
     });
-    phaseSummary(input.run, 'dom_exploration', { status: 'complete', ...c, completed_at: new Date().toISOString() });
+    phaseSummary(input.run, 'dom_exploration', { status: c.total_extracted === 0 ? 'failed' : 'complete', ...c, completed_at: new Date().toISOString() });
   } catch (e: any) {
     input.onPhase({ agent: 'DOMExplorer', status: 'failed', output: `DOM exploration failed: ${e?.message || String(e)}` });
   }
@@ -227,13 +249,17 @@ export async function runMultiContextInspectionPhase(input: {
     input.onPhase({ agent: 'MCPDOMFacts', status: 'running' });
     const landedUrl = String(inspections[0]?.currentUrl || '').trim();
     const factUrl = landedUrl && landedUrl.length >= input.targetUrl.length ? landedUrl : input.targetUrl;
-    const facts = await collectMcpDomFacts({
-      targetUrl: factUrl,
-      goal: input.prompt,
-      credentials: input.primaryCredentials?.username && input.primaryCredentials?.password
-        ? { username: input.primaryCredentials.username, password: input.primaryCredentials.password }
-        : undefined,
-    });
+    const facts = await withTimeout(
+      collectMcpDomFacts({
+        targetUrl: factUrl,
+        goal: input.prompt,
+        credentials: input.primaryCredentials?.username && input.primaryCredentials?.password
+          ? { username: input.primaryCredentials.username, password: input.primaryCredentials.password }
+          : undefined,
+      }),
+      30_000,
+      'MCP DOM facts timed out.',
+    );
     input.run.mcp_dom_facts = facts;
     input.onPhase({
       agent: 'MCPDOMFacts',

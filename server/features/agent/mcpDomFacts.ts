@@ -28,6 +28,22 @@ type McpDomFacts = {
   coverage: { actionables: number; assertions: number; tables: number };
 };
 
+function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
 function intentTerms(goal: string): string[] {
   const seen = new Set<string>();
   return [...String(goal || '').matchAll(/[A-Za-z][A-Za-z0-9 ]{2,40}/g)]
@@ -53,15 +69,23 @@ async function prepareAuth(url: string, credentials?: { username?: string; passw
 }
 
 async function injectSession(session: McpSession, url: string, items: Record<string, string> | null) {
-  await session.client.callTool({ name: 'browser_navigate', arguments: { url } });
+  await withTimeout(
+    session.client.callTool({ name: 'browser_navigate', arguments: { url } }),
+    15_000,
+    'MCP browser_navigate timed out during session bootstrap.',
+  );
   if (!items || !Object.keys(items).length) return;
-  await session.client.callTool({
+  await withTimeout(session.client.callTool({
     name: 'browser_evaluate',
     arguments: {
       function: `() => { const items = ${JSON.stringify(items)}; for (const k in items) sessionStorage.setItem(k, items[k]); return true; }`,
     },
-  }).catch(() => undefined);
-  await session.client.callTool({ name: 'browser_navigate', arguments: { url } }).catch(() => undefined);
+  }), 10_000, 'MCP browser_evaluate timed out during session bootstrap.').catch(() => undefined);
+  await withTimeout(
+    session.client.callTool({ name: 'browser_navigate', arguments: { url } }),
+    15_000,
+    'MCP browser_navigate timed out while reloading the authenticated page.',
+  ).catch(() => undefined);
 }
 
 function textFromMcp(res: any): string {
@@ -71,11 +95,50 @@ function textFromMcp(res: any): string {
     .join('\n');
 }
 
+function tryParseEmbeddedJson(raw: string): any {
+  const text = String(raw || '').trim();
+  if (!text) return {};
+  const starts: number[] = [];
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    if (ch === '{' || ch === '[') starts.push(i);
+  }
+  for (const start of starts) {
+    const open = text[start];
+    const close = open === '{' ? '}' : ']';
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let i = start; i < text.length; i += 1) {
+      const ch = text[i];
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (ch === '\\') escaped = true;
+        else if (ch === '"') inString = false;
+        continue;
+      }
+      if (ch === '"') { inString = true; continue; }
+      if (ch === open) depth += 1;
+      else if (ch === close) {
+        depth -= 1;
+        if (depth === 0) {
+          const candidate = text.slice(start, i + 1);
+          try { return JSON.parse(candidate); } catch { break; }
+        }
+      }
+    }
+  }
+  throw new Error('No valid JSON object/array found in MCP response text.');
+}
+
 async function evaluateJson(session: McpSession, fn: string) {
-  const res = await session.client.callTool({ name: 'browser_evaluate', arguments: { function: fn } });
+  const res = await withTimeout(
+    session.client.callTool({ name: 'browser_evaluate', arguments: { function: fn } }),
+    15_000,
+    'MCP browser_evaluate timed out while collecting DOM facts.',
+  );
   const raw = textFromMcp(res);
-  const match = raw.match(/\{[\s\S]*\}/);
-  return match ? JSON.parse(match[0]) : {};
+  return tryParseEmbeddedJson(raw);
 }
 
 export async function collectMcpDomFacts(opts: {
@@ -94,8 +157,17 @@ export async function collectMcpDomFacts(opts: {
       timeoutMs: 20_000,
     });
     await injectSession(session, url, auth.sessionItems);
-    await session.client.callTool({ name: 'browser_wait_for', arguments: { time: 1 } }).catch(() => undefined);
-    const snapshot = textFromMcp(await session.client.callTool({ name: 'browser_snapshot', arguments: {} }).catch(() => null)).slice(0, 12_000);
+    await withTimeout(
+      session.client.callTool({ name: 'browser_wait_for', arguments: { time: 1 } }),
+      5_000,
+      'MCP browser_wait_for timed out while settling the page.',
+    ).catch(() => undefined);
+    const snapshotRes = await withTimeout(
+      session.client.callTool({ name: 'browser_snapshot', arguments: {} }),
+      15_000,
+      'MCP browser_snapshot timed out while collecting DOM facts.',
+    ).catch(() => null);
+    const snapshot = textFromMcp(snapshotRes).slice(0, 12_000);
     const facts = await evaluateJson(session, `() => {
       const clean = (v) => String(v || '').replace(/\\s+/g, ' ').trim();
       const collapseRepeatedSuffix = (value) => {

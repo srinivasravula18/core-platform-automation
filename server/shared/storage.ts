@@ -117,6 +117,7 @@ function getPersistableDbSnapshot() {
 export async function loadPersistedData() {
   try {
     const raw = (await fs.readFile(dataFilePath, 'utf-8')).replace(/^\uFEFF/, '');
+    if (!raw.trim()) return;
     const data = JSON.parse(raw);
     db.folders = Array.isArray(data.folders) ? data.folders : [];
     db.plans = Array.isArray(data.plans) ? data.plans : [];
@@ -144,6 +145,10 @@ export async function loadPersistedData() {
     db.repoSecrets = data.repoSecrets && typeof data.repoSecrets === 'object' ? data.repoSecrets : {};
     db.blackboard = Array.isArray(data.blackboard) ? data.blackboard : [];
   } catch (error: any) {
+    if (error instanceof SyntaxError) {
+      console.warn(`Ignoring unreadable persisted data at ${dataFilePath}; starting with an empty in-memory store.`);
+      return;
+    }
     if (error?.code !== 'ENOENT') {
       console.error(`Failed to load persisted data from ${dataFilePath}:`, error);
     }

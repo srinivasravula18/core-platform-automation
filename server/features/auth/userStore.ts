@@ -113,8 +113,8 @@ export function publicUser(u: AppUser) {
  * with its own (empty) data. Idempotent — only creates what's missing.
  */
 export function seedAuthUsersIfEmpty(): void {
-  const adminUsername = process.env.ADMIN_USERNAME || '';
-  const adminPassword = process.env.ADMIN_PASSWORD || '';
+  const adminUsername = String(process.env.ADMIN_USERNAME || 'admin').trim();
+  const adminPassword = String(process.env.ADMIN_PASSWORD || 'admin@2026').trim();
   if (!findByUsername(adminUsername)) {
     createAppUser({ username: adminUsername, name: 'Administrator', password: adminPassword, role: 'admin' });
   }
