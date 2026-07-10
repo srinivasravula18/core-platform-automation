@@ -8,6 +8,16 @@ import { resolveCredentials } from '../credentials/credentialsService';
 import { resolveAuthTokenForTarget } from '../agent/domExplorer';
 import { createApiRun, getApiRun, listApiRuns } from './store';
 import { runApiIntelligence } from './pipeline';
+import { listGraphEndpoints, getGraphEndpoint, graphAround, evidenceChain } from './graph';
+import { listVersions, diffVersions } from './versioning';
+import { listBusinessRules } from './businessRules';
+import { listRisk, overrideRisk } from './risk';
+import { listFlaky } from './flaky';
+import { listFlows } from './flows';
+import { computeCoverage } from './coverage';
+import { getMission } from './mission';
+import { recallForEndpoint } from './memory';
+import { db } from '../../shared/storage';
 import type { ApiRun } from './types';
 
 function scopeOf(req: Request): { projectId?: string; appId?: string; ownerId?: string } {
@@ -102,5 +112,74 @@ export function registerApiIntelligenceRoutes(app: Express): void {
     if (!run) return res.status(404).json({ error: 'Run not found' });
     // Evidence is already redacted; return the full run for the details view.
     res.json(run);
+  });
+
+  // ---- Phase B: Knowledge Graph + Dependencies ----
+  app.get('/api/api-intelligence/endpoints', (req: Request, res: Response) => {
+    res.json(listGraphEndpoints(scopeOf(req)));
+  });
+
+  app.get('/api/api-intelligence/endpoints/:rowId', (req: Request, res: Response) => {
+    const ep = getGraphEndpoint(decodeURIComponent(req.params.rowId));
+    if (!ep) return res.status(404).json({ error: 'Endpoint not found' });
+    res.json({ endpoint: ep, ego: graphAround(ep.rowId, 1) });
+  });
+
+  app.get('/api/api-intelligence/endpoints/:rowId/graph', (req: Request, res: Response) => {
+    const depth = Math.max(0, Math.min(Number(req.query.depth) || 1, 3)); // bounded ego-graph
+    res.json(graphAround(decodeURIComponent(req.params.rowId), depth));
+  });
+
+  app.get('/api/api-intelligence/endpoints/:rowId/chain', (req: Request, res: Response) => {
+    res.json(evidenceChain(decodeURIComponent(req.params.rowId)));
+  });
+
+  app.get('/api/api-intelligence/dependencies', (_req: Request, res: Response) => {
+    res.json((db.apiGraph as any).dependencies || []);
+  });
+
+  // ---- Phase C: contract versions + business rules ----
+  app.get('/api/api-intelligence/endpoints/:rowId/versions', (req: Request, res: Response) => {
+    res.json(listVersions(decodeURIComponent(req.params.rowId)));
+  });
+  app.get('/api/api-intelligence/endpoints/:rowId/diff', (req: Request, res: Response) => {
+    res.json(diffVersions(decodeURIComponent(req.params.rowId), Number(req.query.from), Number(req.query.to)));
+  });
+  app.get('/api/api-intelligence/business-rules', (req: Request, res: Response) => {
+    res.json(listBusinessRules(req.query.endpoint ? String(req.query.endpoint) : undefined));
+  });
+
+  // ---- Phase D: risk + flaky ----
+  app.get('/api/api-intelligence/risk', (req: Request, res: Response) => {
+    res.json(listRisk(scopeOf(req)));
+  });
+  app.post('/api/api-intelligence/endpoints/:rowId/risk/override', (req: Request, res: Response) => {
+    const tier = String(req.body?.tier || '');
+    if (!['Critical', 'High', 'Medium', 'Low'].includes(tier)) return res.status(400).json({ error: 'tier must be Critical|High|Medium|Low' });
+    const ok = overrideRisk(decodeURIComponent(req.params.rowId), tier as any, (req as any).authUser?.userId || 'user');
+    res.status(ok ? 200 : 404).json({ ok });
+  });
+  app.get('/api/api-intelligence/flaky', (_req: Request, res: Response) => {
+    res.json(listFlaky());
+  });
+
+  // ---- Phase E: flows ----
+  app.get('/api/api-intelligence/flows', (req: Request, res: Response) => {
+    res.json(listFlows(scopeOf(req)));
+  });
+
+  // ---- Phase F: coverage + mission + memory ----
+  app.get('/api/api-intelligence/coverage', (req: Request, res: Response) => {
+    res.json(computeCoverage(scopeOf(req)));
+  });
+  app.get('/api/api-intelligence/runs/:id/mission', (req: Request, res: Response) => {
+    const m = getMission(req.params.id);
+    if (!m) return res.status(404).json({ error: 'Mission not found' });
+    res.json(m);
+  });
+  app.get('/api/api-intelligence/memory', (req: Request, res: Response) => {
+    const rowId = String(req.query.endpoint || '');
+    if (!rowId) return res.status(400).json({ error: 'endpoint (rowId) query param required' });
+    res.json(recallForEndpoint(rowId, String(req.query.environment || 'unknown')));
   });
 }

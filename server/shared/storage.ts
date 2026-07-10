@@ -83,6 +83,28 @@ export const db: any = {
   // JSON store (like agentRuns); normalized intelligence tables arrive in later phases (PostgreSQL).
   apiRuns: [] as any[],
   apiBaselines: [] as any[],
+  // API Intelligence (Phase B+): the Knowledge Graph + intelligence signals as TYPED collections
+  // (mirror of the normalized PostgreSQL tables; no polymorphic edges). Idempotent PG DDL for the
+  // same shapes lives in server/db/schema.sql for deployments.
+  apiGraph: {
+    endpoints: [] as any[],           // {rowId, projectId, appId, method, path, contractHash, riskScore, riskTier, riskFactors, source, firstSeen, lastSeen}
+    dtos: [] as any[],                // {rowId, projectId, appId, name, kind, schema, hash}
+    endpointDtos: [] as any[],        // {endpointRowId, dtoRowId, direction}
+    endpointFiles: [] as any[],       // {endpointRowId, repo, filePath, confidence}
+    endpointTables: [] as any[],      // {endpointRowId, tableName, access, confidence}
+    endpointRequirements: [] as any[],// {endpointRowId, requirementId}
+    endpointCases: [] as any[],       // {endpointRowId, caseId}
+    endpointEvidence: [] as any[],    // {endpointRowId, runId, evidenceId, kind}
+    dependencies: [] as any[],        // {fromRowId, toRowId, kind, confidence, fieldMap}
+    contractVersions: [] as any[],    // {endpointRowId, version, contract, contractHash, sourceRunId, createdAt}
+    businessRules: [] as any[],       // {id, endpointRowId, ruleText, severity, source, sourceRef, kind, check}
+    executions: [] as any[],          // redacted history: {endpointRowId, runId, scenarioId, status, statusCode, latencyMs, environment, createdAt}
+    executionDaily: [] as any[],      // rollup: {endpointRowId, day, runs, passes, fails, p50, p95}
+    flakyFlags: [] as any[],          // {endpointRowId, isFlaky, confidence, likelyReason, sampleWindow, lastEvaluated}
+    flows: [] as any[],               // {id, projectId, appId, name, journey, source, status, createdAt}
+    flowRuns: [] as any[],            // {id, flowId, runId, status, stepResults, createdAt}
+    missions: [] as any[],            // {runId, projectId, appId, mission, tasks, coverage, risk, updatedAt}
+  } as Record<string, any[]>,
 };
 
 const settingsFilePath = path.resolve(process.cwd(), '.testflow-settings.json');
@@ -117,6 +139,7 @@ function getPersistableDbSnapshot() {
     blackboard: db.blackboard,
     apiRuns: db.apiRuns,
     apiBaselines: db.apiBaselines,
+    apiGraph: db.apiGraph,
   };
 }
 
@@ -152,6 +175,11 @@ export async function loadPersistedData() {
     db.blackboard = Array.isArray(data.blackboard) ? data.blackboard : [];
     db.apiRuns = Array.isArray(data.apiRuns) ? data.apiRuns : [];
     db.apiBaselines = Array.isArray(data.apiBaselines) ? data.apiBaselines : [];
+    if (data.apiGraph && typeof data.apiGraph === 'object') {
+      for (const k of Object.keys(db.apiGraph)) {
+        db.apiGraph[k] = Array.isArray(data.apiGraph[k]) ? data.apiGraph[k] : [];
+      }
+    }
   } catch (error: any) {
     if (error instanceof SyntaxError) {
       console.warn(`Ignoring unreadable persisted data at ${dataFilePath}; starting with an empty in-memory store.`);

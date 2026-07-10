@@ -10,6 +10,14 @@ import { validateExecution, makeBaseline, baselineKey, regressionDiff } from './
 import { buildApiEvidence, recordApiEvidence } from './evidence';
 import { getBaseline, upsertBaseline, saveApiRun } from './store';
 import { redactRequest } from './redact';
+import { inferDependencies, storeDependencies } from './dependencies';
+import { upsertGraphFromRun, endpointRowId } from './graph';
+import { snapshotContractVersions } from './versioning';
+import { harvestBusinessRules, storeBusinessRules, validateBusinessRules } from './businessRules';
+import { scoreRun } from './risk';
+import { evaluateFlakyForRun } from './flaky';
+import { planFlow, storeFlow, executeFlow } from './flows';
+import { initMission, setTask, finalizeMission } from './mission';
 import type { ApiDeveloperReport, ApiEndpoint, ApiEvidenceRecord, ApiFinding, ApiRun } from './types';
 
 export interface RunApiOptions {
@@ -60,7 +68,10 @@ function buildReport(run: ApiRun): ApiDeveloperReport {
  */
 export async function runApiIntelligence(run: ApiRun, opts: RunApiOptions = {}): Promise<ApiRun> {
   try {
+    initMission(run); // Phase F: mission state, updated at each phase below
+
     // 1) Discovery
+    setTask(run.id, 'Discovery', 'running');
     phase(run, 'ApiDiscovery', 'running');
     const discovery = await discoverApis({
       baseUrl: run.targetUrl,
@@ -73,19 +84,24 @@ export async function runApiIntelligence(run: ApiRun, opts: RunApiOptions = {}):
     phase(run, 'ApiDiscovery', run.endpoints.length ? 'completed' : 'failed', {
       source: discovery.source, endpoints: run.endpoints.length, warnings: discovery.warnings,
     });
+    setTask(run.id, 'Discovery', run.endpoints.length ? 'completed' : 'failed');
     if (!run.endpoints.length) {
       run.status = 'failed';
+      finalizeMission(run);
       run.report = buildReport(run);
       saveApiRun(run);
       return run;
     }
 
     // 2) Plan (deterministic)
+    setTask(run.id, 'Planning', 'running');
     phase(run, 'ApiTestPlanner', 'running');
     run.scenarios = planScenarios(run.endpoints);
     phase(run, 'ApiTestPlanner', 'completed', { scenarios: run.scenarios.length });
+    setTask(run.id, 'Planning', 'completed');
 
     // 3) Execute (redacted, write-safe)
+    setTask(run.id, 'Execution', 'running');
     phase(run, 'ApiExecutor', 'running');
     const execOpts: ExecuteOpts = {
       baseUrl: run.targetUrl,
@@ -97,8 +113,10 @@ export async function runApiIntelligence(run: ApiRun, opts: RunApiOptions = {}):
     run.executions = await executeScenarios(run.scenarios, execOpts);
     const passed = run.executions.filter((e) => e.status === 'pass').length;
     phase(run, 'ApiExecutor', 'completed', { executed: run.executions.length, passed });
+    setTask(run.id, 'Execution', 'completed');
 
-    // 4) Validate + 5) Regression, per scenario
+    // 4) Validate + 5) Regression + business rules (Phase C), per scenario
+    setTask(run.id, 'Validation', 'running');
     phase(run, 'ApiValidator', 'running');
     const byEndpoint = new Map<string, ApiEndpoint>(run.endpoints.map((e) => [e.id, e]));
     const findings: ApiFinding[] = [];
@@ -121,21 +139,59 @@ export async function runApiIntelligence(run: ApiRun, opts: RunApiOptions = {}):
       execution.request = redactRequest(execution.request);
       evidence.push(buildApiEvidence(endpoint, scenario, execution, scenarioFindings, run.environment));
     }
+    // Phase C: harvest + validate deterministic business rules; store for the graph/UI.
+    const rules = harvestBusinessRules(run);
+    storeBusinessRules(rules);
+    findings.push(...validateBusinessRules(run, rules));
+
     run.findings = findings;
     phase(run, 'ApiValidator', 'completed', {
       findings: findings.length,
       errors: findings.filter((f) => f.severity === 'error').length,
+      businessRules: rules.length,
     });
+    setTask(run.id, 'Validation', 'completed');
 
     // 6) Evidence (redacted) + registry
     phase(run, 'EvidenceAgent', 'running');
     recordApiEvidence(run, evidence);
     phase(run, 'EvidenceAgent', 'completed', { evidence: evidence.length });
 
-    // 7) Developer report (deterministic)
+    // 7) Dependency inference (Phase B) → Graph upsert (B) → Versioning (C) → Risk (D) → Flaky (D)
+    setTask(run.id, 'Dependencies', 'running');
+    phase(run, 'DependencyMapping', 'running');
+    const deps = inferDependencies(run);
+    storeDependencies(deps);
+    phase(run, 'DependencyMapping', 'completed', { edges: deps.length });
+    setTask(run.id, 'Dependencies', 'completed');
+
+    setTask(run.id, 'Graph', 'running');
+    phase(run, 'GraphUpsert', 'running');
+    upsertGraphFromRun(run);
+    const versionsCreated = snapshotContractVersions(run);
+    const risk = scoreRun(run);
+    const rowIds = run.endpoints.map((e) => endpointRowId(run.projectId, run.appId, e.method, e.path));
+    evaluateFlakyForRun(rowIds);
+    phase(run, 'GraphUpsert', 'completed', { endpoints: run.endpoints.length, versionsCreated, scored: risk.length });
+    setTask(run.id, 'Graph', 'completed');
+
+    // Phase E: flow testing (only when requested).
+    if (run.mode === 'flow') {
+      phase(run, 'ApiFlowPlanner', 'running');
+      const flow = planFlow(run);
+      storeFlow(flow);
+      const flowRun = await executeFlow(flow, run, {
+        baseUrl: run.targetUrl, token: opts.token, environment: run.environment, writeEnabled: run.writeEnabled, timeoutMs: opts.timeoutMs,
+      });
+      phase(run, 'ApiFlowPlanner', 'completed', { steps: flow.journey.length, flowStatus: flowRun.status });
+    }
+
+    // 8) Developer report (deterministic) + mission finalize
     run.report = buildReport(run);
     run.status = 'completed';
+    finalizeMission(run);
     phase(run, 'ApiReporter', 'completed', run.report.totals);
+    setTask(run.id, 'Report', 'completed');
     saveApiRun(run);
     return run;
   } catch (e: any) {

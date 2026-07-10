@@ -74,7 +74,8 @@ export function parseOpenApi(spec: any, baseUrl = ''): DiscoveryResult {
         responses[code] = { schema: schema?.$ref ? { $ref: refName(schema.$ref) } : schema, description: resp?.description };
       }
 
-      const authRequired = globalSecurity || (Array.isArray(op.security) && op.security.length > 0);
+      // Operation-level `security` overrides the global one (an empty array means "no auth for this op").
+      const authRequired = Array.isArray(op.security) ? op.security.length > 0 : globalSecurity;
       const contract: ApiContract = {
         request: { params, headers, bodySchema },
         responses,
