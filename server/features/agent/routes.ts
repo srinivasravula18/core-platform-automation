@@ -54,6 +54,12 @@ import {
   detectSurfaceKind, resolveTargetApp, buildAppScopedUrl, connForRun,
   fetchCorePlatformApps, fetchCorePlatformAppTabs, ALL_APPS_ID,
 } from './appTargeting';
+import {
+  buildMissionContext, platformTypeFromSurface, runtimeSurfaceFromSurface, moduleFromUrl,
+  buildMissionVerificationSnippet, missionContextFromRun,
+  renderMissionContextForPrompt, collapseDoubledLabels,
+  type MissionContext, type RuntimeSurface,
+} from './mission/missionContext';
 import { pushInboxItem } from '../inbox/routes';
 import { AgentRuns, Plans, Suites, Cases, Runs, Reports, Scripts, Folders, Requirements, RequirementLinks, Defects, isPgEnabled } from '../../db/repository';
 import { runGuardrailPipeline } from '../../ai/guardrails';
@@ -2180,6 +2186,53 @@ ${CASE_AUTHORING_CONTRACT}${knowledgeBlock}`,
   // over-produce. If it produced more, keep the first N (the prompt ordered them highest-value
   // first). When no count is fixed, the count follows the flow/complexity (untouched here).
   generated = (Array.isArray(generated) ? generated : []).filter((testCase) => !isInvalidGeneratedCase(testCase));
+
+  // EXACT COUNT (pad-up): when the user FIXED a count and a single pass under-produced (a single
+  // generateObject call rarely emits a large N), keep generating DISTINCT continuation cases in
+  // bounded batches until the target is reached. Only runs when requestedCaseCount > 0, so the
+  // auto/complexity-driven path is completely unchanged. The cap-down slices below then trim any
+  // overshoot, yielding EXACTLY requestedCaseCount.
+  if (requestedCaseCount > 0 && generated.length < requestedCaseCount) {
+    const padWriter = await getOrchestrator('caseWriter', { workspaceId: run.ownerId || 'default', effort: run.requestedEffort });
+    const norm = (t: any) => String(t || '').toLowerCase().replace(/\s+/g, ' ').trim();
+    const seen = new Set(generated.map((c: any) => norm(c.title || c.name)));
+    const maxBatches = Math.min(20, Math.ceil((requestedCaseCount - generated.length) / 5) + 5);
+    for (let b = 0; b < maxBatches && generated.length < requestedCaseCount; b += 1) {
+      const remaining = requestedCaseCount - generated.length;
+      const existingTitles = [...seen].slice(0, 200).map((t) => `- ${t}`).join('\n');
+      let more: any[] = [];
+      try {
+        const res = await padWriter.generateObject<any>({
+          prompt: `User prompt: ${prompt || 'not provided'}.
+Approved user-reviewed understanding: ${approvedUnderstanding || 'not provided'}.
+Playwright target URL: ${targetUrl || 'not provided'}.
+${applicationContextBlock}${selectorRegistryBlock}${understandingBlock}${featureInventoryBlock}${scenarioBlock}
+Browser inspection result: ${JSON.stringify(compactInspectionContext(inspectionContext))}.
+${renderPageOutlineForPrompt((run as any).dom_exploration)}
+CONTINUATION: ${generated.length} test case(s) already exist for this scope (their titles are listed below). Produce ${remaining} MORE, DISTINCT, high-value test case(s) that do NOT duplicate any existing title — continue the coverage with the next most valuable behaviors the code/inspection reveal (further business rules, role/permission differences, negative/edge/error paths, and E2E flows). Stay grounded in the inspection/understanding above; never invent unrelated pages or controls. If genuinely no further distinct, grounded cases exist, return fewer rather than padding with trivial duplicates.
+EXISTING TITLES (do NOT repeat any of these):
+${existingTitles}
+${SOURCE_BOUNDARY_CONTRACT}
+${CASE_AUTHORING_CONTRACT}`,
+          schema: testCasesSchema,
+          userMessage: prompt || '',
+        });
+        more = ((res.object?.test_cases as any[]) || []).map((tc) => ({ ...tc, captureEvidence: true }));
+      } catch { more = []; }
+      let added = 0;
+      for (const tc of more) {
+        if (isInvalidGeneratedCase(tc)) continue;
+        const key = norm(tc.title || tc.name);
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
+        generated.push(tc);
+        added += 1;
+        if (generated.length >= requestedCaseCount) break;
+      }
+      if (added === 0) break; // model produced only duplicates/nothing — stop (no infinite loop)
+    }
+  }
+
   if (requestedCaseCount > 0 && generated.length > requestedCaseCount) {
     generated = generated.slice(0, requestedCaseCount);
   }
@@ -2580,6 +2633,7 @@ Do NOT write comments such as "Auth is expected to be handled by global setup". 
   } else try {
     scriptsResult = await coder.generateObject<any>({
     prompt: `Use this baseURL in the scripts when provided: ${targetUrl || 'not provided'}.
+${renderMissionContextForPrompt((run as any).mission_context || missionContextFromRun(run))}
 Approved user-reviewed understanding: ${reviewedUnderstanding || 'not provided'}.
 ${credentialContext}
 ${loginScriptBlock}
@@ -2655,6 +2709,7 @@ Test cases: ${JSON.stringify(testCases)}${coderKnowledge}`,
         prompt: `Generate exactly ONE Playwright TypeScript script for exactly ONE reviewed test case.
 
 Use this baseURL in the script when provided: ${targetUrl || 'not provided'}.
+${renderMissionContextForPrompt((run as any).mission_context || missionContextFromRun(run))}
 Approved user-reviewed understanding: ${reviewedUnderstanding || 'not provided'}.
 ${credentialContext}
 ${loginScriptBlock}
@@ -2727,7 +2782,7 @@ Test case payload: ${JSON.stringify({ test_cases: [testCase] })}${coderKnowledge
   const preVerifyLiveUsable = buildLiveSelectorIndex(run).usable;
   run.playwright_scripts = (caseList.length ? aligned.scripts : initialScripts)
     .map((script: any) => {
-      const guarded = ensureExecutableLogin(script, liveCreds, targetUrl);
+      const guarded = ensureExecutableLogin(script, liveCreds, targetUrl, (run as any).mission_context || missionContextFromRun(run));
       if (preVerifiedMap && !preVerifyLiveUsable && guarded?.code) {
         guarded.code = correctSelectorMethods(String(guarded.code), preVerifiedMap).code;
       }
@@ -3297,10 +3352,20 @@ function neutralizeLoginAssertions(code: string): string {
   return lines.join('\n');
 }
 
-function ensureExecutableLogin(script: any, credentials: any, targetUrl: string) {
+function ensureExecutableLogin(script: any, credentials: any, targetUrl: string, mission?: MissionContext | null) {
   if (!script) return script;
   let code = String(script.code || '');
   if (!code) return script;
+  // Phase 3: inject the mission-verification preamble immediately before the FIRST assertion, so no
+  // test can assert on the wrong platform/application/module. Deterministic recovery + abort live in
+  // the snippet. Guarded against double-injection; no-op when there is nothing enforceable.
+  const missionVerify = buildMissionVerificationSnippet(mission);
+  const withVerify = (c: string) =>
+    missionVerify && !c.includes('MISSION VERIFICATION')
+      ? c.replace(/(\n[ \t]*)(await\s+expect\()/, `$1${missionVerify}$1$2`)
+      : c;
+  // Phase 4: collapse label+apiname concatenation artifacts (e.g. "App1app1" → "App1") deterministically.
+  code = collapseDoubledLabels(code).code;
   code = code.replace(/\/\/\s*Auth is expected[^\n]*\n?/gi, '');
   // networkidle hangs on SPAs that keep streaming/long-poll connections open; the coder
   // prompt forbids it but models still emit it. Downgrade to a deterministic, fast wait.
@@ -3313,7 +3378,7 @@ function ensureExecutableLogin(script: any, credentials: any, targetUrl: string)
     code = code.replace(/await\s+page\.goto\((['"`])\/[^'"`]*\1\)/, `await page.goto(${JSON.stringify(targetUrl)})`);
   }
   // Beyond guarding, the rest (constant injection, login-snippet fallback) needs real creds.
-  if (!credentials?.username || !credentials?.password) return { ...script, code };
+  if (!credentials?.username || !credentials?.password) return { ...script, code: withVerify(code) };
   const constants = `const USERNAME = ${JSON.stringify(String(credentials.username))};\nconst PASSWORD = ${JSON.stringify(String(credentials.password))};`;
   if (!/\bconst\s+USERNAME\b/.test(code) || !/\bconst\s+PASSWORD\b/.test(code)) {
     const importBlock = code.match(/^(?:import[^\n]*\n)+/);
@@ -3337,7 +3402,7 @@ function ensureExecutableLogin(script: any, credentials: any, targetUrl: string)
       code = code.replace(/await\s+page\.goto\([^)]+\)\s*;/, (match) => `${match}${loginSnippet}`);
     }
   }
-  return { ...script, code };
+  return { ...script, code: withVerify(code) };
 }
 
 async function alignScriptsToCases(
@@ -3869,7 +3934,7 @@ async function runScriptsAndCollectEvidence(run: any, targetUrl: string, testCas
             if (code && code.length > 80 && /test\(/.test(code)) {
               // Re-apply the deterministic guards (login guarding, networkidle strip, absolute
               // URL) + structural repair so a repair can never re-introduce the login hang.
-              const guarded = ensureExecutableLogin({ ...scripts[idx], code }, liveCreds, targetUrl);
+              const guarded = ensureExecutableLogin({ ...scripts[idx], code }, liveCreds, targetUrl, (run as any).mission_context || missionContextFromRun(run));
               code = repairTestCode(sanitizeTestCode(guarded.code)) || guarded.code;
               // Only apply the static repo method-rewrite when the fresh live re-inspection of THIS
               // failing control was too thin to trust  -  otherwise it drags the selector the coder
@@ -4714,48 +4779,72 @@ Rules:
     let targetCoreAppId = '';
     let targetAppLabel = '';
     let targetAppObjects: string[] = [];
-    if (surfaceBaseUrl && (credentials.username || (credentials as any).token)) {
-      const surfaceKind = detectSurfaceKind(selectedApp?.name || '', surfaceBaseUrl);
-      const conn = connForRun(surfaceBaseUrl, credentials, selectedApp?.specPath);
-      const apps = await fetchCorePlatformApps(conn).catch(() => []);
-      if (apps.length) {
-        // Resolve from the prompt AND recent user turns, so a follow-up reply naming the app
-        // matches against the earlier intent across chat turns.
-        const historyText = (chatHistory || [])
-          .filter((m) => m.role === 'user')
-          .map((m) => String(m.content || ''))
-          .slice(-4)
-          .join(' ');
-        const targetText = `${prompt || ''} ${historyText}`.trim();
-        const picked = wantsGenericOrAllApps(targetText)
-          ? { allApps: true, app: null, candidates: apps }
-          : resolveTargetApp(apps, targetText);
-        if (wantsPlatformAdminScope(targetText)) {
-          targetCoreAppId = '';
-        } else if (picked.allApps) {
-          targetCoreAppId = ALL_APPS_ID;
-        } else if (picked.app) {
-          targetCoreAppId = picked.app.id;
-          targetAppLabel = picked.app.label;
-          const tabs = await fetchCorePlatformAppTabs(conn, picked.app.id).catch(() => []);
-          targetAppObjects = [...new Set(tabs.map((t) => t.object_api_name).filter(Boolean))];
-          targetUrl = buildAppScopedUrl(surfaceBaseUrl, surfaceKind, picked.app.id, {
-            nav: 'objects',
-            objectApiName: surfaceKind === 'keystone' ? targetAppObjects[0] : undefined,
-          });
-        } else if (selectedPlatformFeatureExists(targetText, getProjectRepoPath(scope.projectId || '').trim(), String(req.body.websiteName || selectedApp?.name || ''), surfaceBaseUrl)) {
-          // The selected platform's own source contains this feature, so this is platform-level
-          // unless the user explicitly named one of the platform's child apps above.
-          targetCoreAppId = '';
-        } else {
-          // No app named (and not an "all apps" sweep) - ask which one, listing the real apps.
-          const names = picked.candidates.map((a) => a.label).filter(Boolean);
-          return res.json({
-            chat_response: `Which app should I test in ${selectedApp?.name || 'this platform'}?\n\nAvailable apps: ${names.join(' - ')}\n\nReply with the app name (e.g. "test the list view"), or say "all apps" to sweep every app.`,
-          });
+    // -- Target Resolution (Phase 2): the SINGLE place that determines platform / application / module /
+    // targetUrl, materialized as one immutable MissionContext. The Agent Console selection is
+    // AUTHORITATIVE; prompt text is advisory and NEVER overrides an explicit platform/application/module.
+    const explicitPlatform = String(req.body.platform || req.body.platformType || '').toUpperCase();
+    const platformType: 'ADMIN' | 'RUNTIME' = (explicitPlatform === 'ADMIN' || explicitPlatform === 'RUNTIME')
+      ? (explicitPlatform as 'ADMIN' | 'RUNTIME')
+      : platformTypeFromSurface(selectedApp?.name || '', surfaceBaseUrl);
+    const navInUrl = moduleFromUrl(surfaceBaseUrl);
+    const explicitModuleId = String(req.body.moduleId || req.body.module || '').trim();
+    const selectedModule = explicitModuleId
+      ? { id: explicitModuleId, name: String(req.body.moduleName || explicitModuleId).trim() }
+      : (navInUrl ? { id: navInUrl, name: navInUrl } : null);
+    let mission: MissionContext;
+
+    if (platformType === 'ADMIN') {
+      // ADMIN: the Admin Platform itself. NO application, NO appId, NO app discovery. Prompt text can
+      // never turn an Admin mission into a tenant-app mission.
+      mission = buildMissionContext({ platformType: 'ADMIN', baseUrl: surfaceBaseUrl, module: selectedModule || undefined });
+    } else {
+      // RUNTIME: application is REQUIRED. An explicit UI application selection is authoritative; only
+      // when NONE was selected do we fall back to advisory, prompt-based resolution (backward compat).
+      const runtimeSurface = (String(req.body.runtimeSurface || '').toLowerCase() as RuntimeSurface)
+        || runtimeSurfaceFromSurface(selectedApp?.name || '', surfaceBaseUrl);
+      const explicitAppId = String(req.body.applicationId || '').trim();
+      let application: { id: string; name: string } | null = explicitAppId
+        ? { id: explicitAppId, name: String(req.body.applicationName || explicitAppId).trim() }
+        : null;
+
+      if (!application && surfaceBaseUrl && (credentials.username || (credentials as any).token)) {
+        const conn = connForRun(surfaceBaseUrl, credentials, selectedApp?.specPath);
+        const apps = await fetchCorePlatformApps(conn).catch(() => []);
+        if (apps.length) {
+          const historyText = (chatHistory || []).filter((m) => m.role === 'user').map((m) => String(m.content || '')).slice(-4).join(' ');
+          const targetText = `${prompt || ''} ${historyText}`.trim();
+          const picked = wantsGenericOrAllApps(targetText)
+            ? { allApps: true, app: null as any, candidates: apps }
+            : resolveTargetApp(apps, targetText);
+          if (picked.allApps) {
+            application = { id: ALL_APPS_ID, name: 'All apps' };
+          } else if (picked.app) {
+            application = { id: picked.app.id, name: picked.app.label };
+          } else {
+            const names = picked.candidates.map((a) => a.label).filter(Boolean);
+            return res.json({ chat_response: `Which app should I test in ${selectedApp?.name || 'this runtime'}?\n\nAvailable apps: ${names.join(' - ')}\n\nReply with the app name, or say "all apps" to sweep every app.` });
+          }
         }
       }
+      // Real-app tabs → object nav defaulting (keystone deep-links into an object).
+      if (application && application.id && application.id !== ALL_APPS_ID && (credentials.username || (credentials as any).token)) {
+        const conn = connForRun(surfaceBaseUrl, credentials, selectedApp?.specPath);
+        const tabs = await fetchCorePlatformAppTabs(conn, application.id).catch(() => []);
+        targetAppObjects = [...new Set(tabs.map((t) => t.object_api_name).filter(Boolean))];
+      }
+      mission = buildMissionContext({
+        platformType: 'RUNTIME',
+        baseUrl: surfaceBaseUrl,
+        runtimeSurface: runtimeSurface || null,
+        application,
+        module: selectedModule || { id: 'objects', name: 'Objects' },
+      });
     }
+    // Downstream stages consume run.app_url / target_core_app_id / target_app_label unchanged — those
+    // are now a PROJECTION of the one MissionContext (backward compatible; no downstream code changes).
+    targetUrl = mission.targetUrl;
+    targetCoreAppId = mission.application?.id || '';
+    targetAppLabel = mission.application?.name || '';
 
     // Mask passwords in any persisted run record; the live agent gets the real
     // value from the resolved credential in memory only.
@@ -4877,6 +4966,9 @@ Rules:
       // phase scopes to that app. Empty when targeting the bare surface / all apps.
       target_core_app_id: targetCoreAppId,
       target_app_label: targetAppLabel,
+      // Phase 2: the immutable MissionContext that single-handedly resolved this run's target. Every
+      // stage should consume this instead of independently re-deriving platform/application/module.
+      mission_context: mission,
       target_app_objects: targetAppObjects,
       requestedProvider,
       requestedModel,

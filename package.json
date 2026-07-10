@@ -3,6 +3,9 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
+  "engines": {
+    "node": ">=18.17.0"
+  },
   "scripts": {
     "postinstall": "node scripts/ensure-playwright.mjs",
     "dev": "vite --host 0.0.0.0 --port 3000 --strictPort",
@@ -20,6 +23,8 @@
     "test:evidence": "tsx scripts/test-evidence-registry.ts",
     "test:selectors": "tsx scripts/test-selector-registry.ts",
     "test:api": "tsx scripts/test-api-intelligence.ts",
+    "test:mission": "tsx scripts/test-mission-context.ts",
+    "test:mission:regression": "tsx scripts/test-mission-regression.ts",
     "eval:agents": "tsx scripts/agent-evals.ts",
     "eval:routing": "tsx scripts/eval-routing.ts",
     "eval:coercion": "tsx scripts/eval-coercion.ts",
