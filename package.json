@@ -19,6 +19,7 @@
     "check:gemini": "node scripts/check-gemini-rest.mjs",
     "test:evidence": "tsx scripts/test-evidence-registry.ts",
     "test:selectors": "tsx scripts/test-selector-registry.ts",
+    "test:api": "tsx scripts/test-api-intelligence.ts",
     "eval:agents": "tsx scripts/agent-evals.ts",
     "eval:routing": "tsx scripts/eval-routing.ts",
     "eval:coercion": "tsx scripts/eval-coercion.ts",

@@ -30,7 +30,11 @@ export type EvidenceType =
   | 'selector'
   | 'requirement'
   | 'coverage'
-  | 'execution';
+  | 'execution'
+  // API Intelligence (Phase A+): a real executed API call ('api') and a diff vs a stored baseline
+  // ('regression'). Payloads are stored REDACTED on the run object; this remains metadata-only.
+  | 'api'
+  | 'regression';
 
 /** Lifecycle state of an evidence record. */
 export type EvidenceStatus = 'present' | 'degraded' | 'missing' | 'failed';

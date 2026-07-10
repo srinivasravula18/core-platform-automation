@@ -20,6 +20,7 @@ import { registerAgentRuntimeRoutes } from '../../../services/runtime';
 import { registerScreenshotRoutes } from '../../../services/screenshots';
 import { registerSearchRoutes } from '../../../services/search';
 import { registerSettingsRoutes, registerAiSettingsRoutes } from '../../../services/settings';
+import { registerApiIntelligenceRoutes } from '../../../services/api-intelligence';
 
 let processGuardsInstalled = false;
 
@@ -103,6 +104,7 @@ export async function createExpressApp() {
   registerScreenshotRoutes(app);
   registerDashboardRoutes(app);
   registerResourceRoutes(app);
+  registerApiIntelligenceRoutes(app);
 
   app.use((error: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
     if (res.headersSent) return next(error);

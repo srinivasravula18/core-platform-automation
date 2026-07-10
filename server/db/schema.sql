@@ -443,3 +443,38 @@ BEGIN
     EXECUTE format('CREATE INDEX IF NOT EXISTS %I ON %I(owner_id)', t || '_owner_idx', t);
   END LOOP;
 END $$;
+
+-- ===== API Intelligence — Phase A (run envelope + regression baselines) =====
+-- The run envelope mirrors agent_runs (JSONB blobs for phases/endpoints/scenarios/executions/evidence;
+-- payloads are REDACTED before persistence). Normalized intelligence tables (endpoints, graph link
+-- tables, executions history) arrive in Phase B+. Idempotent so existing deployments upgrade in place.
+CREATE TABLE IF NOT EXISTS api_runs (
+  id            TEXT PRIMARY KEY,
+  project_id    TEXT,
+  app_id        TEXT,
+  owner_id      TEXT,
+  target_url    TEXT DEFAULT '',
+  environment   TEXT DEFAULT 'unknown',
+  status        TEXT DEFAULT 'running',
+  mode          TEXT DEFAULT 'single',
+  write_enabled BOOLEAN DEFAULT false,
+  messages      JSONB DEFAULT '[]'::jsonb,
+  raw           JSONB DEFAULT '{}'::jsonb,   -- endpoints/scenarios/executions/findings/evidence/report
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS api_runs_project_idx ON api_runs(project_id);
+CREATE INDEX IF NOT EXISTS api_runs_created_idx ON api_runs(created_at DESC);
+
+-- Regression baselines: the last-good contract hash + response SHAPE (never raw response bodies) for an
+-- endpoint in an environment. Keyed by (baseline_key, environment); upserted on a successful run.
+CREATE TABLE IF NOT EXISTS api_baselines (
+  baseline_key  TEXT NOT NULL,
+  environment   TEXT NOT NULL DEFAULT 'unknown',
+  project_id    TEXT,
+  app_id        TEXT,
+  contract_hash TEXT DEFAULT '',
+  response_shape JSONB DEFAULT '{}'::jsonb,
+  captured_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (baseline_key, environment)
+);

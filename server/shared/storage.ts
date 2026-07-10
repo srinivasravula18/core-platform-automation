@@ -79,6 +79,10 @@ export const db: any = {
   // projectId -> AES-GCM-encrypted repo access token (private-repo auth). Ciphertext only.
   repoSecrets: {} as Record<string, string>,
   blackboard: [] as any[],
+  // API Intelligence (Phase A): API test runs + regression baselines. Run envelopes live here in the
+  // JSON store (like agentRuns); normalized intelligence tables arrive in later phases (PostgreSQL).
+  apiRuns: [] as any[],
+  apiBaselines: [] as any[],
 };
 
 const settingsFilePath = path.resolve(process.cwd(), '.testflow-settings.json');
@@ -111,6 +115,8 @@ function getPersistableDbSnapshot() {
     apps: db.apps,
     repoSecrets: db.repoSecrets,
     blackboard: db.blackboard,
+    apiRuns: db.apiRuns,
+    apiBaselines: db.apiBaselines,
   };
 }
 
@@ -144,6 +150,8 @@ export async function loadPersistedData() {
     db.apps = Array.isArray(data.apps) ? data.apps : [];
     db.repoSecrets = data.repoSecrets && typeof data.repoSecrets === 'object' ? data.repoSecrets : {};
     db.blackboard = Array.isArray(data.blackboard) ? data.blackboard : [];
+    db.apiRuns = Array.isArray(data.apiRuns) ? data.apiRuns : [];
+    db.apiBaselines = Array.isArray(data.apiBaselines) ? data.apiBaselines : [];
   } catch (error: any) {
     if (error instanceof SyntaxError) {
       console.warn(`Ignoring unreadable persisted data at ${dataFilePath}; starting with an empty in-memory store.`);
