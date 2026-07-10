@@ -37,20 +37,21 @@ import {
 } from 'lucide-react';
 
 /**
- * Heuristic: does an assistant text response look like an AI-agent error? Used to show a Retry button
- * only on failures (provider errors like "[openai] badrequest ...", request failures, "went wrong").
+ * Does an assistant text response look like an AI-agent ERROR (as opposed to a normal answer that
+ * merely mentions "error"/status codes)? Deliberately STRICT and START-ANCHORED so a test-generation
+ * answer that discusses error handling / 4xx codes never triggers a false Retry. The authoritative
+ * signal is the explicit `isError` flag on the turn; this is only a fallback for provider/system
+ * errors surfaced as plain text (e.g. "[openai] badrequest: 400 ...").
  */
 function looksLikeAgentError(text: string): boolean {
   const s = String(text || '').trim();
   if (!s) return false;
   return (
-    /^\[[a-z0-9_-]+\]\s/i.test(s) || // provider-prefixed: "[openai] ...", "[anthropic] ..."
-    /\brequest failed\b/i.test(s) ||
-    /\bfailed \(\d{3}\)/i.test(s) ||
-    /went wrong/i.test(s) ||
-    /^error[:\s]/i.test(s) ||
-    /\b(bad ?request|unauthorized|forbidden|not supported|unsupported|rate.?limit(?:ed)?)\b/i.test(s) ||
-    /\b(4\d\d|5\d\d)\b.*\b(error|failed|not supported|unsupported|bad)\b/i.test(s)
+    /^\[[a-z0-9_-]+\]\s/i.test(s) ||                 // provider-prefixed: "[openai] ...", "[anthropic] ..."
+    /^(?:error|failed)\b[:\s]/i.test(s) ||           // "Error: ...", "Failed: ..."
+    /^something went wrong\b/i.test(s) ||
+    /^request failed\b/i.test(s) ||
+    /^(?:the\s+)?(?:run|request|generation|agent)\s+failed\b/i.test(s)
   );
 }
 import { cn } from '@/src/lib/utils';
