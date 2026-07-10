@@ -33,7 +33,26 @@ import {
   Copy,
   User,
   Info,
+  RotateCcw,
 } from 'lucide-react';
+
+/**
+ * Heuristic: does an assistant text response look like an AI-agent error? Used to show a Retry button
+ * only on failures (provider errors like "[openai] badrequest ...", request failures, "went wrong").
+ */
+function looksLikeAgentError(text: string): boolean {
+  const s = String(text || '').trim();
+  if (!s) return false;
+  return (
+    /^\[[a-z0-9_-]+\]\s/i.test(s) || // provider-prefixed: "[openai] ...", "[anthropic] ..."
+    /\brequest failed\b/i.test(s) ||
+    /\bfailed \(\d{3}\)/i.test(s) ||
+    /went wrong/i.test(s) ||
+    /^error[:\s]/i.test(s) ||
+    /\b(bad ?request|unauthorized|forbidden|not supported|unsupported|rate.?limit(?:ed)?)\b/i.test(s) ||
+    /\b(4\d\d|5\d\d)\b.*\b(error|failed|not supported|unsupported|bad)\b/i.test(s)
+  );
+}
 import { cn } from '@/src/lib/utils';
 import { withEventSourceAuth } from '@/src/lib/base-path';
 import { useProjects, type ProjectApp } from '@/src/store/project';
@@ -322,7 +341,7 @@ function initialThinkingLabel(text: string, opts: { selectedApps: number; requir
 
 type Turn =
   | { id: string; role: 'user'; text: string }
-  | { id: string; role: 'assistant'; kind: 'text'; text: string; authoredScript?: string; authoredTargetUrl?: string; screenshotUrls?: string[] }
+  | { id: string; role: 'assistant'; kind: 'text'; text: string; authoredScript?: string; authoredTargetUrl?: string; screenshotUrls?: string[]; isError?: boolean }
   | { id: string; role: 'assistant'; kind: 'plan'; plan: any }
   | { id: string; role: 'assistant'; kind: 'deeprun'; taskId: string }
   | { id: string; role: 'assistant'; kind: 'codereview'; analysis: any }
@@ -2209,6 +2228,23 @@ export default function AgentConsole() {
     }
   }, []);
 
+  /** Re-run the user prompt that produced a (failed) assistant response. Finds the nearest preceding
+   *  user turn and re-sends it — used by the Retry button that appears on agent errors. */
+  const retryTurn = useCallback((assistantTurnId: string) => {
+    if (busy) return;
+    const list = turnsRef.current;
+    const idx = list.findIndex((t) => t.id === assistantTurnId);
+    if (idx < 0) return;
+    for (let i = idx - 1; i >= 0; i -= 1) {
+      const t = list[i];
+      if (t.role === 'user' && t.kind === 'text' && t.text.trim()) {
+        void send(t.text);
+        return;
+      }
+    }
+    showToast('Nothing to retry');
+  }, [busy, send]);
+
   const confirmClarify = useCallback((turnId: string, plan: any) => {
     setTurns((prev) => prev.map((t) => (t.id === turnId ? { id: turnId, role: 'assistant', kind: 'plan', plan } : t)));
   }, []);
@@ -2753,25 +2789,55 @@ export default function AgentConsole() {
                 );
               }
               if (turn.kind === 'text') {
+                // Retry appears only when the agent response is an error (explicit flag or heuristic).
+                const isErr = Boolean(turn.isError) || looksLikeAgentError(turn.text);
                 return (
-                  <div key={turn.id} className="flex justify-start">
+                  <div key={turn.id} className="group flex justify-start">
                     <div className="flex max-w-[90%] gap-2.5">
                       <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[var(--accent)]/10 text-[var(--accent)]">
                         <BrainCircuit className="h-4 w-4" />
                       </div>
-                      <div className="min-w-0 rounded-2xl rounded-bl-sm border border-[var(--border)] bg-[var(--bg-card)] px-4 py-2.5 text-sm text-[var(--text-primary)]">
-                        <MarkdownText value={turn.text} />
-                        {authoredScriptFromTurn(turn) && !(turn.screenshotUrls || []).length && (
+                      <div className="min-w-0">
+                        <div className={cn(
+                          'min-w-0 rounded-2xl rounded-bl-sm border px-4 py-2.5 text-sm text-[var(--text-primary)]',
+                          isErr ? 'border-red-500/30 bg-red-500/5' : 'border-[var(--border)] bg-[var(--bg-card)]',
+                        )}>
+                          <MarkdownText value={turn.text} />
+                          {authoredScriptFromTurn(turn) && !(turn.screenshotUrls || []).length && (
+                            <button
+                              type="button"
+                              onClick={() => void rerunAuthoredForScreenshots(turn)}
+                              disabled={busy}
+                              className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2.5 py-1.5 text-xs font-semibold text-[var(--text-primary)] hover:border-[var(--accent)] disabled:opacity-50"
+                            >
+                              <PlayCircle className="h-3.5 w-3.5 text-[var(--accent)]" />
+                              Run headless for screenshots
+                            </button>
+                          )}
+                        </div>
+                        {/* Action row: Copy (hover-reveal, always) + Retry (only on agent errors). */}
+                        <div className="mt-1 flex items-center gap-1 pl-1">
                           <button
                             type="button"
-                            onClick={() => void rerunAuthoredForScreenshots(turn)}
-                            disabled={busy}
-                            className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2.5 py-1.5 text-xs font-semibold text-[var(--text-primary)] hover:border-[var(--accent)] disabled:opacity-50"
+                            onClick={() => void copyUserPrompt(turn.id, turn.text)}
+                            title={copiedTurnId === turn.id ? 'Copied' : 'Copy response'}
+                            className="inline-flex h-7 w-7 items-center justify-center rounded-md text-[var(--text-muted)] opacity-0 transition-opacity hover:bg-[var(--bg-secondary)] hover:text-[var(--text-primary)] group-hover:opacity-100 group-focus-within:opacity-100"
                           >
-                            <PlayCircle className="h-3.5 w-3.5 text-[var(--accent)]" />
-                            Run headless for screenshots
+                            {copiedTurnId === turn.id ? <Check className="h-3 w-3 text-[var(--accent)]" /> : <Copy className="h-3 w-3" />}
                           </button>
-                        )}
+                          {isErr && (
+                            <button
+                              type="button"
+                              onClick={() => retryTurn(turn.id)}
+                              disabled={busy}
+                              title="Retry this request"
+                              className="inline-flex items-center gap-1.5 rounded-md border border-red-500/40 bg-red-500/5 px-2 py-1 text-xs font-medium text-[var(--text-primary)] hover:border-red-500/70 hover:bg-red-500/10 disabled:opacity-50"
+                            >
+                              <RotateCcw className="h-3 w-3" />
+                              Retry
+                            </button>
+                          )}
+                        </div>
                       </div>
                     </div>
                   </div>
