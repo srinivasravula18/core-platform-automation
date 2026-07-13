@@ -93,6 +93,31 @@ console.log('Regression: registry is NEVER empty when verified DOM exists');
 }
 
 // ---------------------------------------------------------------------------
+console.log('Inspector observation is not uniqueness verification');
+{
+  const run: any = {
+    id: 'run-observed-only',
+    inspection_contexts: [{
+      context_id: 'standard',
+      visibleNavigation: [{
+        text: 'Observed Only', role: 'button',
+        selectorHints: ['getByRole("button", { name: "Observed Only" })'],
+      }],
+    }],
+    dom_exploration: { elements: [] },
+  };
+  const registry = runSelectorRegistryPhase({ run, onPhase: () => {} });
+  const observed = registry.verified_selectors.find((s: any) => s.label === 'Observed Only');
+  ok(!!observed, 'inspector-only selector remains available for diagnostics');
+  eq(observed?.confidence, 'inferred', 'inspector-only confidence is inferred');
+  eq(observed?.uniqueness, null, 'inspector-only uniqueness is unknown');
+  eq(observed?.verified, false, 'inspector-only selector is withheld from automation');
+  eq(registry.coverage.verified, 0, 'inspector-only selector does not inflate verified coverage');
+  eq(renderSelectorRegistryForPrompt(registry), '', 'strict prompt excludes inspector-only selector');
+  eq(getRunRegistry(run).get('selector_registry')?.status, 'degraded', 'registry is degraded without unique live proof');
+}
+
+// ---------------------------------------------------------------------------
 console.log('Backward compatibility: metadata path still produces field records');
 {
   // A metadata field with no DOM match must still mint its record (existing behavior), and dom

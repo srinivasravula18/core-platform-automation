@@ -10,6 +10,7 @@
 
 import path from 'path';
 import fs from 'fs/promises';
+import { MISSION_RUNNER_SOURCE } from '../agent/compiler/missionRunner.template';
 import { spawn } from 'child_process';
 import { transformSync } from 'esbuild';
 import { CHROMIUM_LAUNCH_ARGS, chromiumExecutablePath } from '../../shared/browser';
@@ -161,6 +162,12 @@ export async function executePlaywrightScripts(opts: {
   sessionStorageState?: { origin: string; items: Record<string, string> };
   /** Run specs one-by-one while reusing one browser context/page across all tests. */
   singleSession?: boolean;
+  /**
+   * Emit the MissionRunner helper (mission-runner.ts) into the tests dir. Set by the deterministic compiler
+   * path so compiled specs can `import { MissionRunner } from './mission-runner'`. DARK by default (off) — the
+   * legacy LLM-authored path never sets it, so behavior is unchanged until the compiler is enabled.
+   */
+  emitMissionRunner?: boolean;
 }): Promise<ExecutionResult> {
   const scripts = (opts.scripts || []).filter((s) => s && typeof s.code === 'string' && s.code.trim());
   const runId = opts.runId || `run-${Date.now()}`;
@@ -245,6 +252,11 @@ export { expect, request };
   // (0 tests run). We esbuild-parse each file; auto-repair truncated ones; and quarantine
   // any that still won't parse — so the good scripts always run instead of all falling
   // back to "not executed".
+  // Compiler path: emit the MissionRunner helper the compiled specs import. Dark unless opted in.
+  if (opts.emitMissionRunner) {
+    await fs.writeFile(path.join(testsDir, 'mission-runner.ts'), MISSION_RUNNER_SOURCE, 'utf8');
+  }
+
   const seen = new Set<string>();
   const quarantined: string[] = [];
   let written = 0;

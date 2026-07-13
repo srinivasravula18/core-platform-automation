@@ -6,6 +6,7 @@ import { fetchCorePlatformMetadataMap, type CorePlatformMetadataMap } from '../.
 import { collectMcpDomFacts } from './mcpDomFacts';
 import { recordEvidence } from './evidence/registry';
 import { PROVENANCE, mapSelectorEvidenceType, type Provenance, type EvidenceConfidence } from './evidence/provenance';
+import { integrateGraphsIntoRun } from './graph/discoveryAdapter';
 
 type PhaseSink = (msg: any) => void;
 
@@ -50,7 +51,7 @@ function phaseSummary(run: any, key: string, value: Record<string, unknown>) {
   run.phases = { ...(run.phases || {}), [key]: value };
 }
 
-function domOpenPathForPrompt(prompt: string): string[] | undefined {
+export function domOpenPathForPrompt(prompt: string): string[] | undefined {
   const text = String(prompt || '').toLowerCase();
   if (/\b(?:create|add|new)\s+(?:an?\s+)?app\b/.test(text) || /\bapp\s+creation\b/.test(text)) return ['New'];
   return undefined;
@@ -453,6 +454,7 @@ function toVerifiedSelector(id: string, r: any): VerifiedSelector {
   const { source, confidence } = mapSelectorEvidenceType(evidenceType);
   const selector = String(r?.primary_selector || '') || null;
   const hasSelector = !!(selector || r?.fallback_selector);
+  const uniqueness = typeof r?.dom_unique === 'boolean' ? r.dom_unique : null;
   return {
     id: String(r?.proof_id || id),
     elementType: r?.element_type ?? r?.dom_tag ?? null,
@@ -460,12 +462,14 @@ function toVerifiedSelector(id: string, r: any): VerifiedSelector {
     label: r?.label ?? r?.metadata_api_name ?? null,
     selector,
     selectorType: r?.selector_strategy ?? null,
-    verified: Boolean(r?.verified) && hasSelector,
+    // Inspector observations are useful evidence, but only a live DOM uniqueness check may
+    // promote a selector into the strict automation handoff.
+    verified: Boolean(r?.verified) && hasSelector && confidence === 'verified-live' && uniqueness === true,
     verificationStatus: String(r?.dom_status || (r?.verified ? 'verified' : (r?.confidence === 'blocked' ? 'blocked' : 'unverified'))),
     confidence,
     provenance: source,
     visibility: typeof r?.dom_visible === 'boolean' ? r.dom_visible : null,
-    uniqueness: typeof r?.dom_unique === 'boolean' ? r.dom_unique : null,
+    uniqueness,
     sourceEvidenceId: evidenceIdForSource(evidenceType),
     fallbackSelector: r?.fallback_selector || null,
   };
@@ -534,6 +538,8 @@ export function runSelectorRegistryPhase(input: { run: any; page?: string; onPha
         verified: Boolean(domMatch || seen > 0),
         seen_in_dom_pool: domSeen,
         dom_status: domMatch?.status || null,
+        dom_visible: typeof domMatch?.visible === 'boolean' ? domMatch.visible : null,
+        dom_unique: typeof domMatch?.unique === 'boolean' ? domMatch.unique : null,
       };
       if (!seen && !domMatch) {
         unresolvable.push({
@@ -645,7 +651,7 @@ export function runSelectorRegistryPhase(input: { run: any; page?: string; onPha
     unresolvable,
     coverage: {
       total_elements: values.length,
-      verified: values.filter((s: any) => s.verified).length,
+      verified: verified_selectors.filter((s) => s.verified).length,
       context_specific: values.filter((s: any) => s.context_specific).length,
       unresolvable: unresolvable.length,
       promoted_from_dom: verified_selectors.filter((s) => s.sourceEvidenceId === 'dom').length,
@@ -655,19 +661,25 @@ export function runSelectorRegistryPhase(input: { run: any; page?: string; onPha
   // Provenance rule: only when at least one selector was verified against the LIVE DOM may this
   // evidence claim a live source. A registry built purely from static/source signals is tagged
   // STATIC_SOURCE + verified-static (recordEvidence defensively enforces this too).
-  const hasLiveSelector = values.some((s: any) => s?.evidence_type === 'live-dom-verified' || s?.evidence_type === 'inspection');
+  const hasVerifiedLiveSelector = verified_selectors.some((s) => s.verified && s.provenance === PROVENANCE.LIVE_DOM && s.uniqueness === true);
+  const hasLiveObservation = values.some((s: any) => ['live-dom-verified', 'inspection', 'live-dom-pool'].includes(s?.evidence_type));
   recordEvidence(input.run, {
     id: 'selector_registry', type: 'selector',
-    status: registry.coverage.total_elements === 0 ? 'missing' : (registry.coverage.verified === 0 ? 'degraded' : 'present'),
-    source: hasLiveSelector ? PROVENANCE.LIVE_DOM : PROVENANCE.STATIC_SOURCE,
-    confidence: hasLiveSelector ? 'verified-live' : 'verified-static',
+    status: registry.coverage.total_elements === 0 ? 'missing' : (hasVerifiedLiveSelector ? 'present' : 'degraded'),
+    source: hasLiveObservation ? PROVENANCE.LIVE_DOM : PROVENANCE.STATIC_SOURCE,
+    confidence: hasVerifiedLiveSelector ? 'verified-live' : (hasLiveObservation ? 'inferred' : 'verified-static'),
     producer: 'SelectorRegistry', payload: selectors,
     artifactCount: registry.coverage.total_elements, dependencies: ['dom'],
-    validationState: registry.coverage.verified > 0 ? 'passed' : 'unvalidated',
+    validationState: hasVerifiedLiveSelector ? 'passed' : 'unvalidated',
     payloadRef: 'selector_registry',
   });
   input.onPhase({ agent: 'SelectorRegistry', status: 'completed', output: registry.coverage });
   phaseSummary(input.run, 'selector_registry', { status: 'complete', ...registry.coverage, completed_at: new Date().toISOString() });
+
+  // Evidence-Graph Phase 2 (DARK, additive): project the just-built registry + metadata into the Metadata /
+  // Evidence graphs and the persistent Object Repository. Read-only over selector_registry; never throws.
+  integrateGraphsIntoRun(input.run);
+
   return registry;
 }
 

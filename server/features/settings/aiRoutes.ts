@@ -39,9 +39,10 @@ function ensureProviderSettings() {
   const existing = db.settings.providerSettings || {};
   db.settings.providerSettings = {};
   for (const name of PROVIDERS) {
+    const model = existing[name]?.model || '';
     db.settings.providerSettings[name] = {
       apiKey: existing[name]?.apiKey || '',
-      model: existing[name]?.model || '',
+      model: listAvailableModels(name, { includeLocalOnly: true }).includes(model) ? model : '',
       authMode: existing[name]?.authMode || 'api_key',
       enabled: existing[name]?.enabled === undefined ? name === db.settings.defaultProvider : !!existing[name]?.enabled,
     };

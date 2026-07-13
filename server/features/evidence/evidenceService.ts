@@ -221,6 +221,16 @@ export interface CapturedSessionStorage {
   items: Record<string, string>;
 }
 
+export function appearsAuthenticatedSurface(snapshot: {
+  hasPasswordField: boolean;
+  landmarkCount: number;
+  bodyText: string;
+}): boolean {
+  return !snapshot.hasPasswordField
+    && snapshot.landmarkCount > 0
+    && !/\b(?:sign in|log in|forgot password)\b/i.test(snapshot.bodyText);
+}
+
 export async function createAuthStorageState(
   targetUrl: string,
   credentials: any,
@@ -264,6 +274,12 @@ export async function createAuthStorageState(
         await page.waitForTimeout(800);
         await context.storageState({ path: outPath });
 
+        const authenticatedSurface = appearsAuthenticatedSurface({
+          hasPasswordField: await page.locator('input[type="password"]').count().then((count: number) => count > 0).catch(() => true),
+          landmarkCount: await page.locator('main, nav, table, [role="main"], [role="navigation"], [role="grid"]').count().catch(() => 0),
+          bodyText: await page.locator('body').innerText({ timeout: 3000 }).catch(() => ''),
+        });
+
         let captured: CapturedSessionStorage | undefined;
         try {
           const items = await page.evaluate(() => {
@@ -276,7 +292,11 @@ export async function createAuthStorageState(
           });
           if (items && Object.keys(items).length) captured = { origin: new URL(normalizedUrl).origin, items };
         } catch { /* sessionStorage capture is best-effort */ }
-        return { ok: loginResult?.success !== false, reason: loginResult?.reason, sessionStorage: captured };
+        return {
+          ok: loginResult?.success !== false || authenticatedSurface,
+          reason: authenticatedSurface && loginResult?.success === false ? 'Target was already on an authenticated application surface.' : loginResult?.reason,
+          sessionStorage: captured,
+        };
       } finally {
         await context.close().catch(() => undefined);
       }

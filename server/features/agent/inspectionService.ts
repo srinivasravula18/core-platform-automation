@@ -38,6 +38,19 @@ const plannerSchema = z.object({
 
 const destructiveActionPattern = /\b(delete|remove|archive|deactivate|disable|reset|purge|drop|destroy|cancel\s+subscription|purchase|pay\s+now|submit\s+order|confirm\s+delete)\b/i;
 
+/**
+ * A scoped list-view mission is already grounded once the loaded page exposes both
+ * list content and its controls. DOM exploration still runs after this inspector;
+ * invoking a model up to eight times here only repeats discovery we already have.
+ */
+export function isGroundedListViewInspection(prompt: string, context: any): boolean {
+  if (!/\blist[\s-]?views?\b/i.test(String(prompt || ''))) return false;
+  const hasList = (context?.tables?.length || 0) > 0 || (context?.listLikeRegions?.length || 0) > 0;
+  const hasControls = (context?.actions?.length || 0) > 0;
+  const stillLoading = /loading\s+records|\bloadingâ€¦?\b/i.test(String(context?.bodyText || ''));
+  return hasList && hasControls && !stillLoading;
+}
+
 function compactPageContext(context: any) {
   const sanitizeTable = (table: any) => ({
     label: String(table?.label || ''),
@@ -444,11 +457,13 @@ export async function inspectApplicationFlow(options: {
       warnings.push(`Menu reveal skipped: ${String(err?.message || err).slice(0, 100)}`);
     }
 
-    // #4 Cap the LLM planner loop at 4 steps. It still breaks early when the goal is
+    // #4 Cap the LLM planner loop at 4 steps. A loaded, scoped list view is already
+    // grounded by deterministic collection/reveal, so skip redundant model planning.
     // satisfied, so a simple view finishes in one call — but a goal whose controls live a
     // few levels deep (behind a menu/panel/dialog) needs a few clicks to DRILL in and reveal
     // the real controls before the codegen can ground them. Short-circuits on satisfied/blocked.
-    for (let step = 0; step < 4; step += 1) {
+    if (isGroundedListViewInspection(options.prompt || '', lastContext)) goalStatus = 'satisfied';
+    for (let step = 0; step < (goalStatus === 'satisfied' ? 0 : 4); step += 1) {
       const orchestrator = await getOrchestrator('appInspector', { workspaceId: options.workspaceId || 'default' });
       const plannerPrompt = `You are controlling a browser for QA discovery. User request: ${options.prompt}. Current page context: ${JSON.stringify({
         url: lastContext.url,

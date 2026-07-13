@@ -554,6 +554,13 @@ export default function AgentConsole() {
   const workspaceId = scopeWorkspaceId(selectedProjectId, selectedAppId);
   const convKey = activeConvKey(workspaceId);
 
+  // Router hooks must be read BEFORE the conversationId initializer below uses `urlChatId`. Previously
+  // `useParams` was declared further down, so the initializer referenced it in the temporal dead zone —
+  // it always threw, fell into the catch, and minted a NEW id, silently ignoring a shared /chat/:id link.
+  const navigate = useNavigate();
+  const location = useLocation();
+  const { chatId: urlChatId } = useParams<{ chatId?: string }>();
+
   const [turns, setTurns] = useState<Turn[]>([]);
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
@@ -614,9 +621,6 @@ export default function AgentConsole() {
     setSelectedEffort(effort);
   }, []);
 
-  const navigate = useNavigate();
-  const location = useLocation();
-  const { chatId: urlChatId } = useParams<{ chatId?: string }>();
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const historyRef = useRef<HTMLDivElement>(null);

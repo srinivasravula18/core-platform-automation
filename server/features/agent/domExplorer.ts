@@ -25,6 +25,7 @@ export interface DomElement {
   labelText: string | null;
   /** accessibility-tree enrichment (a11y-first capture) */
   accName?: string | null; // computed accessible name from the aria snapshot
+  rowKey?: string | null; // first meaningful data-cell value for a row/control in a row
   interactive?: boolean; // true for elements a user can act on (button/link/input/menuitem/…)
 }
 
@@ -106,6 +107,41 @@ const TOKEN_TTL_MS = 8 * 60 * 1000;
 // While the auth limiter has us blocked (429 + retry-after), do NOT re-POST — every attempt
 // during the window extends the lockout.
 const authBlockedUntil = new Map<string, number>();
+const DOM_AUTH_TTL_MS = 15 * 60 * 1000;
+const domAuthCache = new Map<string, { at: number; storageState: any; session?: { origin: string; items: Record<string, string> } }>();
+
+function domAuthKey(targetUrl: string, username?: string): string {
+  try { return `${new URL(targetUrl).origin}:${String(username || '').toLowerCase()}`; } catch { return `${targetUrl}:${username || ''}`; }
+}
+
+async function cachedBrowserContext(browser: any, targetUrl: string, username?: string) {
+  const key = domAuthKey(targetUrl, username);
+  const cached = domAuthCache.get(key);
+  const usable = cached && Date.now() - cached.at < DOM_AUTH_TTL_MS ? cached : undefined;
+  if (cached && !usable) domAuthCache.delete(key);
+  const context = await browser.newContext({ viewport: { width: 1365, height: 768 }, ...(usable?.storageState ? { storageState: usable.storageState } : {}) });
+  if (usable?.session) {
+    await context.addInitScript(({ origin, items }: any) => {
+      if (location.origin !== origin) return;
+      for (const [name, value] of Object.entries(items)) sessionStorage.setItem(name, String(value));
+    }, usable.session);
+  }
+  return { context, key, cached: Boolean(usable) };
+}
+
+async function rememberBrowserAuth(context: any, page: any, key: string): Promise<void> {
+  const storageState = await context.storageState().catch(() => undefined);
+  if (!storageState) return;
+  const session = await page.evaluate(() => {
+    const items: Record<string, string> = {};
+    for (let i = 0; i < sessionStorage.length; i += 1) {
+      const name = sessionStorage.key(i);
+      if (name) items[name] = sessionStorage.getItem(name) || '';
+    }
+    return { origin: location.origin, items };
+  }).catch(() => undefined);
+  domAuthCache.set(key, { at: Date.now(), storageState, session });
+}
 
 async function fetchAuthToken(origin: string, username: string, password: string): Promise<CachedToken | null> {
   const key = `${origin}:${username}`;
@@ -298,6 +334,15 @@ const pullAttrs = (el: any) => {
       .filter(Boolean);
     return cells.join(' | ');
   };
+  const rowKey = () => {
+    const row = e.matches?.('tr,[role="row"]') ? e : e.closest?.('tr,[role="row"]');
+    if (!row) return null;
+    const cells = Array.from(row.querySelectorAll('th,td,[role="columnheader"],[role="cell"],[role="gridcell"]'))
+      .map((cell: any) => normalizeLabel(cell.innerText || cell.textContent))
+      .filter(Boolean);
+    const value = cells.find((cell: string) => !/^\d+$/.test(cell) && cell !== '#');
+    return value ? value.slice(0, 80) : null;
+  };
   return {
     tag: e.tagName.toLowerCase(),
     text: (tableText() || normalizeLabel(directText(e))).slice(0, 120) || null,
@@ -329,6 +374,7 @@ const pullAttrs = (el: any) => {
     title: e.getAttribute('title'),
     visible: cs.visibility !== 'hidden' && cs.display !== 'none' && e.getClientRects().length > 0,
     labelText: e.labels && e.labels[0] ? normalizeLabel(e.labels[0].innerText || '').slice(0, 80) : null,
+    rowKey: rowKey(),
   };
 };
 
@@ -427,14 +473,15 @@ export async function exploreAppElements(opts: {
 }): Promise<ExploreResult> {
   const warnings: string[] = [];
   const browser = await launchChromiumWithRetry({ headless: true });
-  const page = await browser.newPage({ viewport: { width: 1365, height: 768 } });
-  page.setDefaultTimeout(8000);
   const login = opts.credentials
     ? { username: opts.credentials.username, password: opts.credentials.password, loginUrl: opts.loginUrl }
     : undefined;
+  const { context, key: authKey, cached: cachedAuth } = await cachedBrowserContext(browser, opts.targetUrl, login?.username);
+  const page = await context.newPage();
+  page.setDefaultTimeout(8000);
 
   try {
-    if (login) {
+    if (login && !cachedAuth) {
       await genericLogin(page, login.loginUrl || opts.targetUrl, login.username, login.password, opts.apiBase).catch(() => {});
     }
     await page.goto(opts.targetUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
@@ -479,6 +526,7 @@ export async function exploreAppElements(opts: {
       const score = (e: DomElement) => (e.interactive ? 0 : 2) + (e.visible ? 0 : 1);
       elements = [...elements].sort((a, b) => score(a) - score(b)).slice(0, max);
     }
+    if (login) await rememberBrowserAuth(context, page, authKey);
 
     return {
       url: page.url(),
@@ -499,13 +547,14 @@ export async function exploreAppElements(opts: {
     };
   } finally {
     await page.close().catch(() => {});
+    await context.close().catch(() => {});
     await browser.close().catch(() => {});
   }
 }
 
 // ---- generic, app-agnostic selector resolution (ported from agentic-test-platform) ----
 
-export type SelectorStrategy = 'data-testid' | 'id' | 'name' | 'data-field' | 'aria-label' | 'placeholder' | 'role+name' | 'text' | 'unresolvable';
+export type SelectorStrategy = 'data-testid' | 'id' | 'name' | 'data-field' | 'aria-label' | 'placeholder' | 'role+name' | 'row-key' | 'text' | 'unresolvable';
 
 export interface ResolvedSelector {
   key: string;
@@ -532,7 +581,9 @@ function candidatesFor(el: DomElement): { strategy: SelectorStrategy; selector: 
   if (el.dataField) out.push({ strategy: 'data-field', selector: `[data-field="${q(el.dataField)}"]` });
   if (el.ariaLabel) out.push({ strategy: 'aria-label', selector: `[aria-label="${q(el.ariaLabel)}"]` });
   if (el.placeholder) out.push({ strategy: 'placeholder', selector: `[placeholder="${q(el.placeholder)}"]` });
-  const accName = cleanLabel(el.ariaLabel || el.text || el.labelText || '');
+  if (el.role === 'row' && el.rowKey) out.push({ strategy: 'row-key', selector: `tr:has-text("${q(el.rowKey)}")` });
+  if (el.role === 'checkbox' && el.rowKey) out.push({ strategy: 'row-key', selector: `tr:has-text("${q(el.rowKey)}") input[type="checkbox"]` });
+  const accName = cleanLabel(el.accName || el.ariaLabel || el.labelText || el.text || '');
   if (el.role && accName) out.push({ strategy: 'role+name', selector: `role=${el.role}[name="${q(accName)}"]` });
   if (!el.role && el.tag === 'th' && el.text) out.push({ strategy: 'role+name', selector: `role=columnheader[name="${q(el.text)}"]` });
   if (el.text && el.text.length <= 40) out.push({ strategy: 'text', selector: `text="${q(el.text)}"` });
@@ -540,7 +591,8 @@ function candidatesFor(el: DomElement): { strategy: SelectorStrategy; selector: 
 }
 
 export function resolveBestSelector(el: DomElement): ResolvedSelector {
-  const key = slug(el.text, el.ariaLabel, el.name, el.labelText, el.testId) + `_${el.role || el.tag}`;
+  const rowScoped = el.role === 'row' || (el.role === 'checkbox' && !el.accName && !el.ariaLabel && !el.text);
+  const key = slug(rowScoped ? el.rowKey : el.accName, el.text, el.ariaLabel, el.name, el.labelText, el.testId) + `_${el.role || el.tag}`;
   const cands = candidatesFor(el);
   if (cands.length === 0) {
     return { key, strategy: 'unresolvable', selector: null, fallback: null, reason: 'no stable attribute' };
@@ -627,7 +679,9 @@ export async function exploreAndVerifyPage(opts: {
       id: sel.key,
       tag: el.tag,
       role: el.role,
-      name: el.accName ?? el.ariaLabel ?? el.text,
+      name: (el.role === 'row' || (el.role === 'checkbox' && !el.accName && !el.ariaLabel && !el.text))
+        ? (el.rowKey ?? el.accName ?? el.ariaLabel ?? el.text)
+        : (el.accName ?? el.ariaLabel ?? el.text),
       text: el.text,
       aria_label: el.ariaLabel,
       placeholder: el.placeholder,
@@ -677,17 +731,19 @@ export async function verifyResolvedSelectors(opts: {
   apiBase?: string;
 }): Promise<{ url: string; results: { selector: string; count: number; unique: boolean; visible: boolean }[] }> {
   const browser = await launchChromiumWithRetry({ headless: true });
-  const page = await browser.newPage({ viewport: { width: 1365, height: 768 } });
+  const { context, key: authKey, cached: cachedAuth } = await cachedBrowserContext(browser, opts.targetUrl, opts.login?.username);
+  const page = await context.newPage();
   page.setDefaultTimeout(4000);
   const results: { selector: string; count: number; unique: boolean; visible: boolean }[] = [];
   try {
-    if (opts.login) {
+    if (opts.login && !cachedAuth) {
       await genericLogin(page, opts.login.loginUrl || opts.targetUrl, opts.login.username, opts.login.password, opts.apiBase);
     }
     await page.goto(opts.targetUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
     await ensureAppLoaded(page, opts.login, opts.targetUrl, opts.apiBase);
     await settle(page);
     await openPath(page, opts.open);
+    if (opts.login) await rememberBrowserAuth(context, page, authKey);
     for (const selector of opts.selectors) {
       try {
         const loc = page.locator(selector);
@@ -700,6 +756,7 @@ export async function verifyResolvedSelectors(opts: {
     }
   } finally {
     await page.close().catch(() => {});
+    await context.close().catch(() => {});
     await browser.close().catch(() => {});
   }
   return { url: page.url(), results };

@@ -44,7 +44,7 @@ function getRunSelectorMap(run: any): SelectorMap | null {
 import { promises as fsp, readFileSync, existsSync, readdirSync } from 'fs';
 import path from 'path';
 import { inspectApplicationFlow } from './inspectionService';
-import { exploreAppElements, rankVerifiedElements } from './domExplorer';
+import { exploreAndVerifyPage, exploreAppElements, rankVerifiedElements } from './domExplorer';
 import { getFeatureGrounding } from './knowledge';
 import { getOrchestrator, listConfiguredProviders, resolveProviderForAgent } from '../../ai/orchestrator';
 import { answerAppQuestionFromCode, stripCodebaseLocationsForAgentConsole } from '../../ai/supervisor';
@@ -56,10 +56,17 @@ import {
 } from './appTargeting';
 import {
   buildMissionContext, platformTypeFromSurface, runtimeSurfaceFromSurface, moduleFromUrl,
-  buildMissionVerificationSnippet, missionContextFromRun,
-  renderMissionContextForPrompt, collapseDoubledLabels,
+  buildMissionVerificationSnippet, missionContextFromRun, finalizeMissionFromInspectedSurface,
+  renderMissionContextForPrompt, collapseDoubledLabels, describeMission,
+  needsExplicitListViewModule, sameMissionEvidenceScope,
   type MissionContext, type RuntimeSurface,
 } from './mission/missionContext';
+// Evidence-Graph Phase 5: deterministic compiler path (flag-gated by AIQA_COMPILER; legacy path is default).
+import { generateCompiledScripts, aiqaCompilerEnabled } from './compiler/compiledGeneration';
+import { renderTargetCatalogForPrompt } from './compiler/renderCatalogForPrompt';
+import { testPlanSchema, parseTestPlan } from './compiler/testPlan';
+import { semanticPlanFromCase } from './compiler/semanticPlanner';
+import { linkedExistingCases, scoreCaseReuse } from './caseReuse';
 import { pushInboxItem } from '../inbox/routes';
 import { AgentRuns, Plans, Suites, Cases, Runs, Reports, Scripts, Folders, Requirements, RequirementLinks, Defects, isPgEnabled } from '../../db/repository';
 import { runGuardrailPipeline } from '../../ai/guardrails';
@@ -77,6 +84,7 @@ import {
   runMetadataFetchPhase,
   runMultiContextInspectionPhase,
   runSelectorRegistryPhase,
+  domOpenPathForPrompt,
 } from './pipelineDelta';
 import { renderMcpDomFactsForPrompt } from './mcpDomFacts';
 // Strike 3: the single, shared source of grounding for every deep-run worker.
@@ -806,7 +814,7 @@ function summarizeAgentRunExecution(run: any) {
 
 async function persistAgentRequirementArtifacts(run: any) {
   const cases = Array.isArray(run.generated_cases) ? run.generated_cases : [];
-  const existingMatches = Array.isArray(run.existing_matches) ? run.existing_matches : [];
+  const existingMatches = linkedExistingCases(Array.isArray(run.existing_matches) ? run.existing_matches : [], cases);
   const requirementId = agentRequirementId(run);
   run.requirement_id = requirementId;
   const understanding = run.feature_understanding && typeof run.feature_understanding === 'object' ? run.feature_understanding : {};
@@ -1171,10 +1179,16 @@ function groundingIsFresh(run: any): boolean {
  * target + feature so 2nd+ runs skip them entirely. Short TTL so app changes are picked
  * up; cleared automatically. Keyed by lowercased targetUrl + normalized prompt.
  * -------------------------------------------------------------------------- */
-const INSPECT_CACHE_TTL_MS = 15 * 60 * 1000;
+const INSPECT_CACHE_TTL_MS = Math.max(60_000, Number(process.env.INSPECT_CACHE_TTL_MS) || 15 * 60 * 1000);
 const inspectionCache = new Map<string, { at: number; value: any }>();
 const understandingCache = new Map<string, { at: number; value: any }>();
 const featureInventoryCache = new Map<string, { at: number; value: any }>();
+const AUTH_SESSION_CACHE_TTL_MS = 15 * 60 * 1000;
+const authSessionCache = new Map<string, {
+  at: number;
+  storageStatePath: string;
+  sessionStorageState?: { origin: string; items: Record<string, string> };
+}>();
 
 function featureCacheKey(targetUrl: string, prompt: string, contextKey = ''): string {
   return [
@@ -1511,17 +1525,16 @@ async function findRelatedExistingCases(run: any): Promise<any[]> {
   if (!Array.isArray(all) || !all.length) return [];
   const scoped = scopeFilter(all as any[], { projectId: run.projectId || '', appId: run.appId || null, userId: run.ownerId || '', role: '' });
   const kws = caseMatchKeywords(run);
+  const query = `${run.prompt || ''} ${run.feature_understanding?.title || ''}`.trim();
   if (!kws.length || !scoped.length) return [];
   return scoped
     .map((c: any) => {
       const hay = `${c.title || ''} ${c.description || ''} ${(c.tags || []).join(' ')}`.toLowerCase();
-      let score = 0;
-      for (const k of kws) if (hay.includes(k)) score += 1;
-      return { c, score };
+      return { c, ...scoreCaseReuse(query, hay, kws) };
     })
-    .filter((x) => x.score >= 2)
+    .filter((x) => x.matched)
     .sort((a, b) => b.score - a.score)
-    .map((x) => ({ ...x.c, _matchScore: x.score }));
+    .map((x) => ({ ...x.c, _matchScore: x.score, _matchReasons: x.reasons, _matchAnchor: x.anchor }));
 }
 
 async function findExistingFeatureRequirements(run: any, limit = 8): Promise<any[]> {
@@ -1562,6 +1575,9 @@ function mapExistingToRunCase(c: any): any {
     captureEvidence: true,
     existingCaseId: c.id,
     reused: true,
+    reuseMatchScore: c._matchScore,
+    reuseMatchReasons: c._matchReasons || [],
+    reuseMatchAnchor: c._matchAnchor || '',
   };
 }
 
@@ -2506,16 +2522,6 @@ Do NOT write comments such as "Auth is expected to be handled by global setup". 
     ...(codeMap.roleNames || []).map((r: any) => r.name),
     ...(codeMap.fieldIds || []).map((f: any) => f.label),
   ].filter(Boolean).slice(0, 120) : [];
-  if (!codeMap) {
-    const why = 'Script generation blocked: no repo selector map is available, so the coder cannot fall back to repo-grounded labels/selectors.';
-    pushPhase(run, { agent: 'PlaywrightAgent', status: 'failed', output: why });
-    (run as any).execution_result = { ok: false, total: 0, passed: 0, failed: 0, skipped: 0, error: why, tests: [] };
-    await persistAgentScripts(run);
-    markRunDone(run, 'failed');
-    await persistAgentQualityArtifacts(run).catch((err) => console.warn('Failed to persist selector-map-blocked agent artifacts:', err));
-    persistDataInBackground('selector-map blocked script generation');
-    return;
-  }
   const coder = await getOrchestrator('playwrightCoder', { workspaceId: run.ownerId || 'default', effort: run.requestedEffort });
   const rawCaseList = Array.isArray(testCases?.test_cases) ? testCases.test_cases : [];
   const caseList = annotateGeneratedCasesWithProof(normalizeGeneratedCasesText(rawCaseList, run), run);
@@ -2537,6 +2543,57 @@ Do NOT write comments such as "Auth is expected to be handled by global setup". 
     status: 'running',
     output: `Script grounding mode: ${scriptGrounding.mode}. ${scriptGrounding.reason}`,
   });
+
+  // ===== Evidence-Graph Phase 5: deterministic compiler path (flag-gated) =====
+  // When AIQA_COMPILER=1, the LLM authors an abstract Test Plan (targets from the verified Evidence-Graph
+  // catalog only) and the deterministic PlaywrightCompiler emits the code. No selectors/URLs/login are
+  // authored by the model; ungrounded targets become diagnostics, never guessed scripts. Legacy path (below)
+  // is untouched and remains the default when the flag is unset.
+  if (aiqaCompilerEnabled()) {
+    const mission = (run as any).mission_context || missionContextFromRun(run);
+    const catalog = renderTargetCatalogForPrompt((run as any).evidence_graph);
+    const compiled = await generateCompiledScripts({
+      run, mission, testCases: caseList,
+      generatePlan: async ({ testCase, evidenceGraph }) => {
+        const deterministic = semanticPlanFromCase(testCase, evidenceGraph, mission);
+        if (deterministic) return deterministic;
+        try {
+          const r = await coder.generateObject<any>({
+            prompt: `Author an ABSTRACT TEST PLAN as JSON — NOT Playwright code. Reference ONLY target names from the catalog below; emit NO selectors, URLs, roles, aria, css, xpath, waits, login, or navigation.\n${renderMissionContextForPrompt(mission)}\n${catalog}\nReviewed test case:\nTitle: ${testCase?.title || ''}\nDescription: ${testCase?.description || ''}\nSteps:\n${(Array.isArray(testCase?.steps) ? testCase.steps : []).map((s: any) => `- ${s?.action} => ${s?.expected}`).join('\n')}\nReturn JSON {mission, module, title, steps:[{action|assert, target, value?}]}. Every locator-bearing "target" (CLICK/FILL/asserts) MUST be a catalog name verbatim. OPEN_MODULE is mission-scoped navigation — the runner re-enters the mission surface, so its target is advisory and needs no catalog match. Use VISIBLE / VERIFY_* asserts for expectations; OPEN_MODULE/CLICK/FILL for interactions.`,
+            schema: testPlanSchema,
+            userMessage: `Author the test plan for: ${testCase?.title || 'case'}`,
+          });
+          const plan = parseTestPlan(r.object);
+          if (!plan) console.warn('[compiler] planner returned unparseable output for case:', testCase?.title, '| raw:', JSON.stringify(r.object).slice(0, 400));
+          return plan;
+        } catch (e: any) {
+          console.warn('[compiler] plan authoring failed for case:', testCase?.title, '|', e?.message || e);
+          return null;
+        }
+      },
+    });
+    run.playwright_scripts = compiled.scripts;
+    (run as any).compiler_diagnostics = compiled.diagnostics;
+    (run as any).coverage_plan = compiled.coverage;
+    const automatedCaseCount = caseList.filter((testCase: any) => String(testCase?.type || '').toLowerCase() !== 'manual').length;
+    const blockingDiagnostics = compiled.diagnostics.filter((diagnostic) => diagnostic.kind !== 'MANUAL_CASE');
+    const completeSuite = compiled.scripts.length === automatedCaseCount && blockingDiagnostics.length === 0;
+    pushPhase(run, {
+      agent: 'PlaywrightCompiler',
+      status: completeSuite ? 'completed' : 'failed',
+      output: { compiled: compiled.scripts.length, diagnostics: compiled.diagnostics.length, coverage: compiled.coverage.length },
+    });
+    await persistAgentScripts(run);
+    if (!completeSuite) {
+      (run as any).execution_result = { ok: false, total: 0, passed: 0, failed: 0, skipped: automatedCaseCount - compiled.scripts.length, error: 'Compiler did not produce a grounded script for every automated case (see compiler_diagnostics).', tests: [] };
+      markRunDone(run, 'failed');
+      await persistAgentQualityArtifacts(run).catch((err) => console.warn('Failed to persist compiler-incomplete agent artifacts:', err));
+      persistDataInBackground('compiler produced incomplete script suite');
+      return;
+    }
+    await completeScriptProofFlow(run, targetUrl, { test_cases: caseList }, liveCreds);
+    return;
+  }
   if (targetUrl && caseList.length && caseList.every((tc: any) => canLiveAuthorGoal([
     tc?.title || '',
     tc?.description || '',
@@ -3724,14 +3781,38 @@ async function runScriptsAndCollectEvidence(run: any, targetUrl: string, testCas
       let authSetupReason = '';
       try {
         const authPath = path.join(process.cwd(), '.testflow-pw', `${run.id}-auth.json`);
-        await fsp.mkdir(path.dirname(authPath), { recursive: true });
-        const auth = await createAuthStorageState(targetUrl, liveCreds, authPath);
-        sessionStorageState = auth.sessionStorage;
-        authStorageReady = !!(auth.ok || sessionStorageState);
-        authSetupReason = auth.reason || '';
-        // When login succeeds, the storageState file contains cookies + localStorage; pair it
-        // with captured sessionStorage so SPAs that keep auth there are truly logged in.
-        if (authStorageReady) storageStatePath = authPath;
+        const sessionPath = path.join(process.cwd(), '.testflow-pw', `${run.id}-session-storage.json`);
+        const cached = authSessionCache.get(run.id);
+        const cacheUsable = !!cached && Date.now() - cached.at < AUTH_SESSION_CACHE_TTL_MS
+          && await fsp.access(cached.storageStatePath).then(() => true).catch(() => false);
+        const diskState = !cached
+          ? await fsp.stat(authPath).then((stat) => ({ fresh: Date.now() - stat.mtimeMs < AUTH_SESSION_CACHE_TTL_MS })).catch(() => null)
+          : null;
+        const diskSessionAvailable = !cached
+          && await fsp.access(sessionPath).then(() => true).catch(() => false);
+        if ((cached && cacheUsable) || (diskState?.fresh && diskSessionAvailable)) {
+          storageStatePath = cached?.storageStatePath || authPath;
+          sessionStorageState = cached?.sessionStorageState || await fsp.readFile(sessionPath, 'utf8')
+            .then((raw) => JSON.parse(raw))
+            .catch(() => undefined);
+          authStorageReady = true;
+          authSetupReason = 'Reused the authenticated session prepared earlier in this run.';
+          if (!cached) authSessionCache.set(run.id, { at: Date.now(), storageStatePath });
+        } else {
+          if (cached) authSessionCache.delete(run.id);
+          await fsp.mkdir(path.dirname(authPath), { recursive: true });
+          const auth = await createAuthStorageState(targetUrl, liveCreds, authPath);
+          sessionStorageState = auth.sessionStorage;
+          authStorageReady = !!(auth.ok || sessionStorageState);
+          authSetupReason = auth.reason || '';
+          // When login succeeds, the storageState file contains cookies + localStorage; pair it
+          // with captured sessionStorage so SPAs that keep auth there are truly logged in.
+          if (authStorageReady) {
+            storageStatePath = authPath;
+            authSessionCache.set(run.id, { at: Date.now(), storageStatePath: authPath, sessionStorageState });
+            if (sessionStorageState) await fsp.writeFile(sessionPath, JSON.stringify(sessionStorageState), 'utf8');
+          }
+        }
         if (authStorageReady) {
           run.messages.push({ agent: 'EvidenceAgent', status: 'running', output: 'Browser session prepared for script execution.' });
           pushPhase(run, { agent: 'AuthSessionAgent', status: 'completed', output: 'Browser session prepared for script execution.' });
@@ -3783,7 +3864,10 @@ async function runScriptsAndCollectEvidence(run: any, targetUrl: string, testCas
         return evidence;
       }
 
-      if (scripts.length > 1) {
+      // Legacy model-written scripts retain per-case execution/repair. Compiled scripts
+      // are already validated and can share one Playwright invocation, avoiding one
+      // browser/test-runner startup per case while preserving per-test evidence below.
+      if (scripts.length > 1 && !aiqaCompilerEnabled()) {
         pushPhase(run, { agent: 'EvidenceQueue', status: 'running', output: 'Running evidence one script at a time with the shared authenticated session.' });
         const evidence: any[] = [];
         const usedCaseIndexes = new Set<number>();
@@ -3811,6 +3895,7 @@ async function runScriptsAndCollectEvidence(run: any, targetUrl: string, testCas
             navigationTimeoutMs: 20000,
             expectTimeoutMs: 15000,
             timeoutMs: 90000,
+            emitMissionRunner: aiqaCompilerEnabled(), // compiled specs import ./mission-runner (dark by default)
           });
           throwIfCancelled(run);
           if (!execOne.ok) executionErrors.push(`${script.filename || script.title || `script ${i + 1}`}: ${execOne.error || 'no passing test result'}`);
@@ -3879,13 +3964,16 @@ async function runScriptsAndCollectEvidence(run: any, targetUrl: string, testCas
         actionTimeoutMs: 10000,
         navigationTimeoutMs: 20000,
         expectTimeoutMs: 15000,
+        emitMissionRunner: aiqaCompilerEnabled(), // compiled specs import ./mission-runner (dark by default)
       });
 
       // EXECUTION-REPAIR LOOP (Phase 3, evaluator-optimizer): the real Playwright result
       // is ground truth. When tests fail, feed the actual error + the observed DOM back to
       // the coder to fix the failing script, then re-run  -  up to a bounded budget. This is
       // the agent "fixing itself until the tests pass" instead of reporting a broken result.
-      const MAX_REPAIR_ROUNDS = 2;
+      // Compiled scripts are deterministic products of verified evidence. A model repair would
+      // reintroduce guessed selectors and hide infrastructure failures (for example, expired auth).
+      const MAX_REPAIR_ROUNDS = aiqaCompilerEnabled() ? 0 : 2;
       // Re-inspect each failing case against the LIVE page at most once, then reuse across rounds.
       const freshContextByFile = new Map<string, any>();
       for (let round = 1; round <= MAX_REPAIR_ROUNDS && (exec.failed || 0) > 0; round += 1) {
@@ -3999,6 +4087,14 @@ async function runScriptsAndCollectEvidence(run: any, targetUrl: string, testCas
         stderrTail: exec.stderrTail,
         tests: (exec.tests || []).map((t) => ({ title: t.title, status: t.status, durationMs: t.durationMs, error: t.error })),
       };
+      const executionText = `${exec.error || ''} ${(exec.tests || []).map((t) => t.error || '').join(' ')}`;
+      if (!exec.ok && /auth|login|sign[ -]?in|unauthori[sz]ed|forbidden|session/i.test(executionText)) {
+        authSessionCache.delete(run.id);
+        await Promise.all([
+          fsp.unlink(path.join(process.cwd(), '.testflow-pw', `${run.id}-auth.json`)).catch(() => undefined),
+          fsp.unlink(path.join(process.cwd(), '.testflow-pw', `${run.id}-session-storage.json`)).catch(() => undefined),
+        ]);
+      }
       if (exec.tests && exec.tests.length) {
         run.phases = {
           ...(run.phases || {}),
@@ -4717,6 +4813,10 @@ Rules:
     approvedUnderstanding = stripScriptBlocksFromScope(approvedUnderstanding);
     priorGrounding = stripScriptBlocksFromScope(priorGrounding);
     const scopeContextText = [selectedProject?.name, selectedApp?.name].filter(Boolean).join(' ');
+    const explicitModuleId = String(req.body.moduleId || req.body.module || '').trim();
+    if (needsExplicitListViewModule(prompt || '', explicitModuleId)) {
+      return res.json({ chat_response: 'Which list view should I test? Name the module or record type, for example Apps, Objects, Roles, or Users.' });
+    }
     const appScopeQuestion = needsExplicitAppScope(prompt || '', selectedApp, app_url || '', getProjectRepoPath(scope.projectId || '').trim());
     if (appScopeQuestion) {
       return res.json({ chat_response: appScopeQuestion });
@@ -4787,7 +4887,6 @@ Rules:
       ? (explicitPlatform as 'ADMIN' | 'RUNTIME')
       : platformTypeFromSurface(selectedApp?.name || '', surfaceBaseUrl);
     const navInUrl = moduleFromUrl(surfaceBaseUrl);
-    const explicitModuleId = String(req.body.moduleId || req.body.module || '').trim();
     const selectedModule = explicitModuleId
       ? { id: explicitModuleId, name: String(req.body.moduleName || explicitModuleId).trim() }
       : (navInUrl ? { id: navInUrl, name: navInUrl } : null);
@@ -4845,6 +4944,10 @@ Rules:
     targetUrl = mission.targetUrl;
     targetCoreAppId = mission.application?.id || '';
     targetAppLabel = mission.application?.name || '';
+    const priorEvidenceRun = priorSessionRun && sameMissionEvidenceScope(
+      priorSessionRun.mission_context || missionContextFromRun(priorSessionRun),
+      mission,
+    ) ? priorSessionRun : null;
 
     // Mask passwords in any persisted run record; the live agent gets the real
     // value from the resolved credential in memory only.
@@ -4925,9 +5028,9 @@ Rules:
       phases: {} as any,
       metadata_map: null as any,
       context_matrix: null as any,
-      inspection_contexts: priorSessionRun?.inspection_contexts || [] as any[],
-      selector_registry: priorSessionRun?.selector_registry || null as any,
-      inspection_context: priorSessionRun?.inspection_context || null as any,
+      inspection_contexts: priorEvidenceRun?.inspection_contexts || [] as any[],
+      selector_registry: priorEvidenceRun?.selector_registry || null as any,
+      inspection_context: priorEvidenceRun?.inspection_context || null as any,
       folderId: folder?.id || '',
       folderPath: folder ? getFolderPath(folder.id) : 'Uncategorized',
       selectedQaContext: selectedQaContext.context,
@@ -4954,12 +5057,12 @@ Rules:
         runId: priorSessionRun.id,
         approvedUnderstanding: priorSessionRun.approvedUnderstanding || '',
         priorGrounding: priorSessionRun.priorGrounding || '',
-        inspection_context: priorSessionRun.inspection_context || null,
-        inspection_contexts: priorSessionRun.inspection_contexts || [],
-        selector_registry: priorSessionRun.selector_registry || null,
+        inspection_context: priorEvidenceRun?.inspection_context || null,
+        inspection_contexts: priorEvidenceRun?.inspection_contexts || [],
+        selector_registry: priorEvidenceRun?.selector_registry || null,
         generated_cases: priorSessionRun.generated_cases || [],
         playwright_scripts: priorSessionRun.playwright_scripts || [],
-        evidence_screenshots: priorSessionRun.evidence_screenshots || [],
+        evidence_screenshots: priorEvidenceRun?.evidence_screenshots || [],
         execution_result: priorSessionRun.execution_result || null,
       } : null,
       // Resolved individual app within the surface (platform app id, e.g. app0000006), so every
@@ -5117,6 +5220,33 @@ Rules:
         inspectionOk = inspectionContexts.some((ctx: any) => assessInspection(ctx).ok);
         if (inspectionOk && inspectionContext) setCached(inspectionCache, cacheKey, inspectionContext);
       }
+
+      // Surface-Consistency Invariant (Phase 1): seal the mission to the surface discovery landed on, before
+      // the Selector Registry / Evidence Graph consume it. Prefer the live DOM URL; fall back to inspection.
+      const inspectedSurfaceUrl = String((newRun as any).dom_exploration?.url || inspectionContext?.currentUrl || '').trim();
+      if (inspectedSurfaceUrl) {
+        try {
+          const sealed = finalizeMissionFromInspectedSurface(mission, inspectedSurfaceUrl);
+          if (sealed !== mission) {
+            mission = sealed;
+            targetUrl = mission.targetUrl;
+            newRun.mission_context = mission;
+            newRun.app_url = mission.targetUrl;
+            pushPhase(newRun, {
+              agent: 'System',
+              status: 'completed',
+              output: `Mission sealed to discovery surface: ${describeMission(mission)} -> ${mission.targetUrl}`,
+            });
+          }
+        } catch (e: any) {
+          // Wrong-surface conflict: stop the run (HTTP response already sent) instead of grounding wrong.
+          pushPhase(newRun, { agent: 'System', status: 'failed', output: `Refusing to generate tests on the wrong surface: ${String(e?.message || e)}` });
+          markRunDone(newRun, 'failed');
+          persistDataInBackground('surface-mismatch blocked agent run');
+          return;
+        }
+      }
+
       runSelectorRegistryPhase({ run: newRun, page: targetUrl, onPhase: (msg) => pushPhase(newRun, msg) });
 
       (newRun as any).inspection_blind = !inspectionOk;
@@ -5291,42 +5421,58 @@ Rules:
         ? newRun.feature_understanding.candidateScenarios.length
         : 0;
       const useRequirementScenarioContract = newRun.understandingSource === 'requirement' && requirementScenarioCount > 0;
+      if (flowMode === 'review_cases') {
+        const relatedExisting = await findRelatedExistingCases(newRun);
+        newRun.existing_matches = relatedExisting.map(mapExistingToRunCase);
+        if (relatedExisting.length) {
+          newRun.status = 'coverage_options';
+          newRun.review_started_at = nowIso();
+          pushPhase(newRun, { agent: 'System', status: 'coverage_options', output: `Found ${relatedExisting.length} strongly related existing test case(s). Choose reuse, gaps, or fresh generation.` });
+          await persistAgentQualityArtifacts(newRun);
+          persistDataInBackground('coverage-options agent run');
+          return;
+        }
+      }
       if (inventoryFeatures.length > 0 && !requestedCaseCount && !useRequirementScenarioContract) {
         const existingTitles = existingFeatureRequirements.map((r: any) => (r.title || '').toLowerCase());
         const newFeatures = inventoryFeatures.filter((f: any) =>
           !existingTitles.some((t) => t.includes((f.name || '').toLowerCase().slice(0, 10))),
         );
-        const featureLoop = (newFeatures.length ? newFeatures : inventoryFeatures).slice(0, 4);
+        const featureLoop = newFeatures.length ? newFeatures : inventoryFeatures;
         const allGeneratedCases: any[] = [];
 
-        for (const feature of featureLoop) {
-          // Sub-phase: Map features
-          pushPhase(newRun, {
-            agent: 'FeatureMapper',
-            status: 'completed',
-            output: { feature: feature.name, subfeatures: (feature.subfeatures || []).length, surface: feature.surface || '' },
-          });
-          // Sub-phase: Find existing coverage for this feature
-          pushPhase(newRun, { agent: 'FeatureCoverageScout', status: 'running' });
-          const featureRelated = await findRelatedExistingCases({ ...newRun, prompt: `${feature.name} ${feature.description || ''}`.trim() });
-          pushPhase(newRun, {
-            agent: 'FeatureCoverageScout',
-            status: 'completed',
-            output: featureRelated.length ? `${featureRelated.length} existing case(s) for "${feature.name}".` : `No existing cases for "${feature.name}".`,
-          });
-          if (featureRelated.length) allGeneratedCases.push(...featureRelated.map(mapExistingToRunCase));
-          // Sub-phase: Write cases for this feature
-          pushPhase(newRun, { agent: 'FeatureTestWriter', status: 'running' });
-          try {
-            const cases = await generateCasesForFeature(newRun, feature, credentials);
-            allGeneratedCases.push(...cases);
+        // Feature writers are independent model calls. Run a small bounded batch so a
+        // complete 15-feature inventory does not take 15 serial model round trips.
+        const FEATURE_WRITER_CONCURRENCY = 3;
+        for (let start = 0; start < featureLoop.length; start += FEATURE_WRITER_CONCURRENCY) {
+          const batch = featureLoop.slice(start, start + FEATURE_WRITER_CONCURRENCY);
+          for (const feature of batch) {
+            pushPhase(newRun, {
+              agent: 'FeatureMapper',
+              status: 'completed',
+              output: { feature: feature.name, subfeatures: (feature.subfeatures || []).length, surface: feature.surface || '' },
+            });
+            pushPhase(newRun, { agent: 'FeatureTestWriter', status: 'running', output: `Writing cases for "${feature.name}".` });
+          }
+          const results = await Promise.all(batch.map(async (feature: any) => {
+            try {
+              return { feature, cases: await generateCasesForFeature(newRun, feature, credentials), error: null };
+            } catch (error: any) {
+              return { feature, cases: [] as any[], error };
+            }
+          }));
+          // Promise.all preserves input order, keeping generated case order deterministic.
+          for (const result of results) {
+            if (result.error) {
+              pushPhase(newRun, { agent: 'FeatureTestWriter', status: 'skipped', output: `"${result.feature.name}": ${getAIErrorMessage(result.error)}` });
+              continue;
+            }
+            allGeneratedCases.push(...result.cases);
             pushPhase(newRun, {
               agent: 'FeatureTestWriter',
               status: 'completed',
-              output: `${cases.length} new case(s) written for "${feature.name}".`,
+              output: `${result.cases.length} new case(s) written for "${result.feature.name}".`,
             });
-          } catch (featureErr: any) {
-            pushPhase(newRun, { agent: 'FeatureTestWriter', status: 'skipped', output: getAIErrorMessage(featureErr) });
           }
         }
 
@@ -5573,15 +5719,39 @@ Rules:
 
     const hasInspection = !!run.inspection_context;
     const hasCases = Array.isArray(run.generated_cases) && run.generated_cases.length > 0;
-    if (!hasInspection || !groundingIsFresh(run)) {
-      // Inspection never produced usable context  -  nothing cheap to resume from; the
-      // client should kick off a fresh run (which re-inspects).
-      return res.json({ success: false, needsFullRestart: true });
-    }
-
     const liveCreds = resolveCredentials({ targetUrl: run.app_url, websiteId: run.websiteId, role: (run.credentials || {}).role, ownerId: ownerScopeForRun(run) }) || undefined;
+    if (!hasInspection) return res.json({ success: false, needsFullRestart: true });
+    // A cancelled run retains both terminal status and cancelRequested. Clear them before any
+    // revalidation work, otherwise the phase guard aborts the retry as RUN_CANCELLED.
+    run.cancelRequested = false;
     run.status = 'running';
     run.completed_at = null;
+    if (!groundingIsFresh(run)) {
+      try {
+        pushPhase(run, { agent: 'DOMExplorer', status: 'running', output: 'Revalidating live selectors before retry; the prior inspection is stale.' });
+        const verifiedPage = await exploreAndVerifyPage({
+          targetUrl: run.app_url,
+          open: domOpenPathForPrompt(run.prompt || ''),
+          credentials: liveCreds?.username && liveCreds?.password
+            ? { username: liveCreds.username, password: liveCreds.password }
+            : undefined,
+        });
+        if (!verifiedPage?.coverage?.verified) throw new Error('No unique live selectors were revalidated.');
+        run.dom_exploration = verifiedPage;
+        run.phases = {
+          ...(run.phases || {}),
+          inspection: { ...(run.phases?.inspection || {}), completed_at: nowIso(), refreshed_by: 'DOMExplorer' },
+          retry_grounding: { status: 'complete', ...verifiedPage.coverage, completed_at: nowIso() },
+        };
+        runSelectorRegistryPhase({ run, page: verifiedPage.url || run.app_url, onPhase: (msg) => pushPhase(run, msg) });
+        pushPhase(run, { agent: 'DOMExplorer', status: 'completed', output: `Revalidated ${verifiedPage.coverage.verified} unique live selector(s) for retry.` });
+      } catch (error: any) {
+        pushPhase(run, { agent: 'DOMExplorer', status: 'failed', output: `Retry grounding refresh failed: ${error?.message || String(error)}` });
+        run.status = 'cancelled';
+        run.completed_at = nowIso();
+        return res.json({ success: false, needsFullRestart: true });
+      }
+    }
     if (run.review_started_at) {
       run.paused_ms = (run.paused_ms || 0) + Math.max(0, Date.parse(nowIso()) - Date.parse(run.review_started_at));
       run.review_started_at = null;

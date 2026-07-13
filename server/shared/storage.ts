@@ -83,6 +83,9 @@ export const db: any = {
   // JSON store (like agentRuns); normalized intelligence tables arrive in later phases (PostgreSQL).
   apiRuns: [] as any[],
   apiBaselines: [] as any[],
+  // Object Repository (Evidence-Graph Phase 1): persistent, append-only, VERSIONED enterprise UI knowledge
+  // (Platform→Application→Module→Object→Control). Evidence is never overwritten — see graph/objectRepository.
+  objectRepository: [] as any[],
 };
 
 const settingsFilePath = path.resolve(process.cwd(), '.testflow-settings.json');
@@ -117,6 +120,7 @@ function getPersistableDbSnapshot() {
     blackboard: db.blackboard,
     apiRuns: db.apiRuns,
     apiBaselines: db.apiBaselines,
+    objectRepository: db.objectRepository,
   };
 }
 
@@ -152,6 +156,7 @@ export async function loadPersistedData() {
     db.blackboard = Array.isArray(data.blackboard) ? data.blackboard : [];
     db.apiRuns = Array.isArray(data.apiRuns) ? data.apiRuns : [];
     db.apiBaselines = Array.isArray(data.apiBaselines) ? data.apiBaselines : [];
+    db.objectRepository = Array.isArray(data.objectRepository) ? data.objectRepository : [];
   } catch (error: any) {
     if (error instanceof SyntaxError) {
       console.warn(`Ignoring unreadable persisted data at ${dataFilePath}; starting with an empty in-memory store.`);

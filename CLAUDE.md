@@ -54,3 +54,4 @@ Two forensic, code-cited reports already exist from prior sessions — read them
 
 - Keep deliverable files (reports, diagnostics, plans) inside this repo (e.g. under `docs/`), not in the OS temp/scratchpad directory.
 - Commits/PRs must not mention Claude or add an AI co-author trailer.
+- Backend runs as `tsx server.ts` (`dev:backend`) with NO watch/hot-reload. After ANY backend (`server/**`, `server.ts`) code change, the running backend must be RESTARTED to load it — otherwise the live app/Agent Console keeps executing stale code. Order: (1) `npm run lint` (tsc --noEmit) passes, (2) relevant tests pass, (3) THEN restart the backend. Never conclude a backend change "works live" against a backend process older than the edit.

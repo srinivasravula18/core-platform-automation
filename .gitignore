@@ -57,3 +57,4 @@ scripts/**/*-json/
 .testflow-run-memory.json
 
 **/json.bak-project-cleanup/
+.aiqa-live/

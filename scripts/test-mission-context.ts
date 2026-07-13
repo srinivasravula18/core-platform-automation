@@ -6,6 +6,7 @@ import {
   buildMissionContext, missionContextFromRun, withModule, isMissionExecutable,
   platformTypeFromSurface, runtimeSurfaceFromSurface, moduleFromUrl, describeMission, stripAppScopedParams,
   buildMissionVerificationSnippet, renderMissionContextForPrompt, collapseDoubledLabels,
+  finalizeMissionFromInspectedSurface, needsExplicitListViewModule, sameMissionEvidenceScope,
 } from '../server/features/agent/mission/missionContext';
 
 let passed = 0, failed = 0;
@@ -42,6 +43,28 @@ console.log('RUNTIME without application: not executable');
   ok(!isMissionExecutable(mc), 'RUNTIME without application is NOT executable');
   ok(mc.executionScope.includes('UNRESOLVED_APPLICATION'), 'scope flags unresolved application');
   ok(!mc.targetUrl.includes('appId'), 'no appId when unresolved');
+}
+
+console.log('Extended shape: platform label + tab (Phase 1)');
+{
+  const admin = buildMissionContext({ platformType: 'ADMIN', baseUrl: 'https://host/admin-ui/', module: { id: 'objects', name: 'Objects' } });
+  eq(admin.platform, 'Admin', 'ADMIN default platform label');
+  eq(admin.tab, null, 'ADMIN tab null by default');
+
+  const ks = buildMissionContext({ platformType: 'RUNTIME', baseUrl: 'https://host/keystone/', runtimeSurface: 'keystone', application: { id: 'app9', name: 'CRM' } });
+  eq(ks.platform, 'Keystone', 'RUNTIME keystone → platform "Keystone"');
+
+  const explicit = buildMissionContext({ platformType: 'RUNTIME', baseUrl: 'https://host/shockwave/', runtimeSurface: 'shockwave', platform: 'Shockwave Prod', application: { id: 'app9', name: 'CRM' } });
+  eq(explicit.platform, 'Shockwave Prod', 'explicit platform label respected');
+
+  const withTab = buildMissionContext({ platformType: 'RUNTIME', baseUrl: 'https://host/keystone/', runtimeSurface: 'keystone', application: { id: 'app9', name: 'CRM' }, module: { id: 'accounts', name: 'Account' }, tab: { id: 'details', name: 'Details' } });
+  eq(withTab.tab, { id: 'details', name: 'Details' }, 'tab {id,name} preserved');
+  eq(withTab.executionScope, 'RUNTIME/keystone/CRM/accounts/details', 'tab appended to executionScope');
+  ok(describeMission(withTab).endsWith('→ Details'), 'describeMission includes tab');
+
+  const remoduled = withModule(withTab, { id: 'opportunity', name: 'Opportunity' });
+  eq(remoduled.tab, null, 'withModule resets tab (tabs are module-scoped)');
+  eq(remoduled.platform, 'Keystone', 'withModule preserves platform label');
 }
 
 console.log('Immutability + immutable navigation');
@@ -92,7 +115,8 @@ console.log('Phase 3: mission verification snippet');
   const admin = buildMissionContext({ platformType: 'ADMIN', baseUrl: 'https://host/admin-ui/', module: { id: 'apps', name: 'Apps' } });
   const sAdmin = buildMissionVerificationSnippet(admin);
   ok(sAdmin.includes('MISSION VERIFICATION'), 'admin snippet present');
-  ok(sAdmin.includes('"noAppId":true'), 'admin enforces NO appId');
+  ok(sAdmin.includes('"surfacePath":"/admin-ui"'), 'admin verified by surface path (admin-ui), not appId absence');
+  ok(sAdmin.includes('"enforceAppId":false'), 'admin does NOT pin an appId (admin-ui self-assigns its own)');
   ok(sAdmin.includes('"nav":"apps"'), 'admin enforces module nav');
   ok(sAdmin.includes('page.goto("https://host/admin-ui/?nav=apps")'), 'admin snippet recovers to mission URL');
   ok(sAdmin.includes('throw new Error'), 'admin snippet aborts on mismatch');
@@ -129,6 +153,56 @@ console.log('Phase 4: script generator (mission prompt + locator guard)');
   ok(r2.code.includes("getByText('Accounts')"), 'collapse getByText doubled → single');
   const r3 = collapseDoubledLabels(`await page.getByRole('link', { name: 'Revenue Hub' }).click();`);
   eq(r3.fixes, 0, 'legitimate name "Revenue Hub" is NOT altered');
+}
+
+console.log('Phase 1 (Surface-Consistency Invariant): seal mission from inspected surface');
+{
+  const throws = (fn: () => unknown, n: string) => { try { fn(); ok(false, `${n} (expected throw)`); } catch { ok(true, n); } };
+
+  // ADMIN module-null enriched from the surface discovery actually landed on (the core bug).
+  const bareAdmin = buildMissionContext({ platformType: 'ADMIN', baseUrl: 'https://host/admin-ui/' });
+  eq(bareAdmin.module, null, 'ADMIN provisional mission starts module-null');
+  const sealed = finalizeMissionFromInspectedSurface(bareAdmin, 'https://host/admin-ui/?nav=objects&appId=app21vhj4w');
+  ok(sealed !== bareAdmin && Object.isFrozen(sealed), 'seal → new frozen mission');
+  eq(sealed.module?.id, 'objects', 'ADMIN module enriched to inspected nav=objects');
+  eq(sealed.executionScope, 'ADMIN/objects', 'sealed executionScope carries the module');
+  ok(sealed.targetUrl.includes('nav=objects'), 'sealed targetUrl carries nav=objects');
+  ok(!sealed.targetUrl.includes('appId'), 'ADMIN self-assigned appId NOT copied into the sealed targetUrl');
+
+  // Existing/explicit module + matching nav → unchanged (same object).
+  const adminObjects = buildMissionContext({ platformType: 'ADMIN', baseUrl: 'https://host/admin-ui/', module: { id: 'objects', name: 'Objects' } });
+  ok(finalizeMissionFromInspectedSurface(adminObjects, 'https://host/admin-ui/?nav=objects') === adminObjects, 'matching module+nav → unchanged mission');
+
+  // Explicit module vs conflicting inspected nav → hard error, before any graph/compiler work.
+  throws(() => finalizeMissionFromInspectedSurface(adminObjects, 'https://host/admin-ui/?nav=users'), 'explicit module vs inspected-nav conflict throws');
+
+  // Wrong surface (path) → hard error.
+  throws(() => finalizeMissionFromInspectedSurface(bareAdmin, 'https://host/keystone/?nav=accounts'), 'wrong surface path throws');
+
+  // RUNTIME real app: inspected appId must match; a different appId → hard error.
+  const rt = buildMissionContext({ platformType: 'RUNTIME', baseUrl: 'https://host/keystone/', runtimeSurface: 'keystone', application: { id: 'app9', name: 'CRM' }, module: { id: 'accounts', name: 'Account' } });
+  ok(finalizeMissionFromInspectedSurface(rt, 'https://host/keystone/?appId=app9&nav=accounts') === rt, 'runtime matching appId+nav → unchanged');
+  throws(() => finalizeMissionFromInspectedSurface(rt, 'https://host/keystone/?appId=appOTHER&nav=accounts'), 'runtime appId mismatch throws');
+
+  // No inspected nav, module-null → unchanged (nothing to seal); unparseable/empty inputs are no-ops.
+  const bareRt = buildMissionContext({ platformType: 'RUNTIME', baseUrl: 'https://host/keystone/', runtimeSurface: 'keystone', application: { id: 'app9', name: 'CRM' } });
+  // bareRt defaults to no module; inspected URL has no nav → unchanged.
+  ok(finalizeMissionFromInspectedSurface(bareRt, 'https://host/keystone/?appId=app9') === bareRt, 'no inspected nav → unchanged');
+  ok(finalizeMissionFromInspectedSurface(bareAdmin, '') === bareAdmin, 'empty inspected url → no-op');
+  ok(finalizeMissionFromInspectedSurface(bareAdmin, 'not a url') === bareAdmin, 'unparseable inspected url → no-op');
+}
+
+console.log('List-view routing and evidence reuse');
+{
+  ok(needsExplicitListViewModule('write test cases for list view'), 'generic list view requires a module');
+  ok(needsExplicitListViewModule('test list view'), 'bare test-list-view request requires a module');
+  ok(!needsExplicitListViewModule('write test cases for the Roles list view'), 'named list view is scoped');
+  ok(!needsExplicitListViewModule('test the list view', 'apps'), 'explicit module selection is scoped');
+
+  const roles = buildMissionContext({ platformType: 'ADMIN', baseUrl: 'https://host/admin-ui/', module: { id: 'roles', name: 'Roles' } });
+  const apps = buildMissionContext({ platformType: 'ADMIN', baseUrl: 'https://host/admin-ui/', module: { id: 'apps', name: 'Apps' } });
+  ok(sameMissionEvidenceScope(roles, roles), 'same mission may reuse DOM evidence');
+  ok(!sameMissionEvidenceScope(roles, apps), 'different module cannot reuse DOM evidence');
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

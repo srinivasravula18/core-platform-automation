@@ -145,6 +145,10 @@ type Case = {
   tags?: string[];
   steps?: Step[];
   captureEvidence?: boolean;
+  reused?: boolean;
+  existingCaseId?: string;
+  reuseMatchScore?: number;
+  reuseMatchReasons?: string[];
 };
 
 export function DeepRunResult({ taskId }: { taskId: string }) {
@@ -1090,6 +1094,11 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
                       <span className="rounded bg-[var(--bg-card)] px-1.5 py-0.5 text-[10px] font-bold uppercase text-[var(--text-muted)]">
                         {c.priority || 'Med'}
                       </span>
+                      {c.reused && (
+                        <span title={`Existing case ${c.existingCaseId || ''}${c.reuseMatchReasons?.length ? `; matched: ${c.reuseMatchReasons.join(', ')}` : ''}`} className="rounded border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[9px] font-bold uppercase text-amber-300">
+                          Reused
+                        </span>
+                      )}
                       <span className="min-w-0 flex-1">
                         <span className="block text-xs font-semibold leading-snug text-[var(--text-primary)]">{c.title || 'Untitled'}</span>
                         {caseSummary(c.description) && (

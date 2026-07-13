@@ -62,8 +62,8 @@ export function mapSelectorEvidenceType(evidenceType: string | null | undefined)
     case 'live-dom-verified':
       return { source: PROVENANCE.LIVE_DOM, confidence: 'verified-live' };
     case 'inspection':
-      // Observed live by the inspector, though not selector-match-verified against the DOM grid.
-      return { source: PROVENANCE.LIVE_DOM, confidence: 'verified-live' };
+      // Observed live by the inspector, but not selector-match/uniqueness verified.
+      return { source: PROVENANCE.LIVE_DOM, confidence: 'inferred' };
     case 'live-dom-pool':
       // Seen in the live element pool but not matched to this specific target — inferred only.
       return { source: PROVENANCE.LIVE_DOM, confidence: 'inferred' };

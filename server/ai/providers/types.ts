@@ -162,7 +162,7 @@ export function classifyError(provider: ProviderName, status: number | undefined
 
 export const DEFAULT_MODELS: Record<ProviderName, { default: string; alternatives: string[] }> = {
   gemini: { default: 'gemini-2.5-flash', alternatives: ['gemini-3.5-flash', 'gemini-3.1-pro', 'gemini-3.1-flash-lite', 'gemini-2.5-pro', 'gemini-2.5-flash-lite'] },
-  openai: { default: 'gpt-5.4-mini', alternatives: ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-nano'] },
+  openai: { default: 'gpt-5.6-sol', alternatives: ['gpt-5.6-terra', 'gpt-5.6-luna'] },
   anthropic: { default: 'claude-opus-4-8', alternatives: ['claude-sonnet-4-6', 'claude-haiku-4-5'] },
 };
 

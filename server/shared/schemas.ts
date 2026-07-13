@@ -66,3 +66,13 @@ export const playwrightScriptsSchema = z.preprocess((value) => {
 }, z.object({
   scripts: z.array(playwrightScriptItemSchema)
 }));
+
+// ===== Structured Test Plan IR (Evidence-Graph Phase 3) =====
+// Re-exported from the compiler so all schema consumers import from one place. The IR is abstract QA intent
+// (semantic steps over enumerated targets); the deterministic Compiler — not the LLM — produces Playwright.
+// `playwrightScriptsSchema` above remains for the legacy LLM-writes-code path until the compiler is default.
+export {
+  testPlanSchema, planStepSchema, actionStepSchema, assertStepSchema,
+  PLAN_ACTIONS, PLAN_ASSERTS, parseTestPlan,
+  type TestPlan, type PlanStep, type ActionStep, type AssertStep, type PlanAction, type PlanAssert,
+} from '../features/agent/compiler/testPlan';

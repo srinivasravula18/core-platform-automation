@@ -294,6 +294,20 @@ function Shell({ children }: { children: React.ReactNode }) {
   // When the selected project/app changes, remount the page subtree so every page
   // re-fetches its data with the new scope (pages fetch on mount).
   const scopeKey = useProjects((s) => `${s.selectedProjectId ?? ''}:${s.selectedAppId ?? ''}`);
+  // Gate the keyed subtree on projects having loaded. fetchProjects() resolves asynchronously (from the
+  // Topbar's ProjectSwitcher) and may auto-select the first project, flipping scopeKey from ':' to
+  // '<projectId>:'. If the subtree were already mounted, that flip would remount it mid-interaction and wipe
+  // in-progress state (e.g. the Agent Console chat). Mounting only after `loaded` means the first mount uses
+  // the already-resolved scope, so there is no null→first-project remount. (`loaded` becomes true even on
+  // fetch error, so this never deadlocks.)
+  const projectsLoaded = useProjects((s) => s.loaded);
+  const fetchProjects = useProjects((s) => s.fetchProjects);
+
+  // Guarantee the workspace loads even if the ProjectSwitcher is not mounted, so the gate above never
+  // deadlocks on "Loading workspace…". Idempotent and only runs until loaded.
+  useEffect(() => {
+    if (!projectsLoaded) void fetchProjects();
+  }, [projectsLoaded, fetchProjects]);
 
   useResizableTables();
 
@@ -336,9 +350,15 @@ function Shell({ children }: { children: React.ReactNode }) {
       <div className="flex flex-1 flex-col min-w-0">
         <Topbar onMenuClick={() => setIsSidebarOpen(!isSidebarOpen)} onCommandBarOpen={() => setIsCommandBarOpen(true)} />
         <main data-sidebar={isSidebarOpen ? 'open' : 'closed'} className="flex-1 min-h-0 overflow-hidden relative flex flex-col">
-          <div key={scopeKey} className="flex-1 min-h-0 overflow-auto p-3 sm:p-6 flex flex-col">
-            {children}
-          </div>
+          {projectsLoaded ? (
+            <div key={scopeKey} className="flex-1 min-h-0 overflow-auto p-3 sm:p-6 flex flex-col">
+              {children}
+            </div>
+          ) : (
+            <div className="flex-1 min-h-0 flex items-center justify-center text-sm text-[var(--text-muted)]">
+              Loading workspace…
+            </div>
+          )}
         </main>
       </div>
       <CommandBar isOpen={isCommandBarOpen} onOpenChange={setIsCommandBarOpen} />

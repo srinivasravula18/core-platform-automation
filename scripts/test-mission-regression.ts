@@ -37,11 +37,12 @@ const CRM = buildMissionContext({ platformType: 'RUNTIME', baseUrl: 'https://h/k
 async function main() {
   console.log('IMPOSSIBLE #1 — Selecting Admin but executing Runtime');
   {
-    // Admin mission, but the SPA landed on a tenant app (appId present). Recovery re-goto still wrong → abort.
-    const r = await runVerify(ADMIN, ['https://h/admin-ui/?nav=apps&appId=app_crm', 'https://h/admin-ui/?nav=apps&appId=app_crm']);
-    ok(r.threw && /MISSION CONTEXT MISMATCH/.test(r.error), 'aborts when Admin lands on a tenant app (appId present)');
-    const good = await runVerify(ADMIN, ['https://h/admin-ui/?nav=apps']);
-    ok(!good.threw, 'passes when Admin has no appId and correct module');
+    // Admin mission, but the SPA bounced to a runtime SURFACE (different path). Recovery re-goto still wrong → abort.
+    const r = await runVerify(ADMIN, ['https://h/keystone/?nav=apps&appId=app_crm', 'https://h/keystone/?nav=apps&appId=app_crm']);
+    ok(r.threw && /MISSION CONTEXT MISMATCH/.test(r.error), 'aborts when Admin bounces to a runtime surface (wrong path)');
+    // The real admin-ui self-assigns its OWN system appId (e.g. app21vhj4w) — that is Admin, not a mismatch.
+    const good = await runVerify(ADMIN, ['https://h/admin-ui/?nav=apps&appId=app21vhj4w']);
+    ok(!good.threw, 'passes when Admin is on the admin-ui surface even though it self-assigns a system appId');
   }
 
   console.log('IMPOSSIBLE #2 — Selecting Runtime CRM but executing Inventory');

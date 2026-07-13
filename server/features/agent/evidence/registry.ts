@@ -34,7 +34,10 @@ export type EvidenceType =
   // API Intelligence (Phase A+): a real executed API call ('api') and a diff vs a stored baseline
   // ('regression'). Payloads are stored REDACTED on the run object; this remains metadata-only.
   | 'api'
-  | 'regression';
+  | 'regression'
+  // Evidence-Graph Phase 2: the Metadata + Evidence graph views built over existing discovery (metadata-only
+  // reference; the graphs live on run.metadata_graph / run.evidence_graph and wrap the Selector Registry).
+  | 'graph';
 
 /** Lifecycle state of an evidence record. */
 export type EvidenceStatus = 'present' | 'degraded' | 'missing' | 'failed';

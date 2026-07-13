@@ -478,3 +478,22 @@ CREATE TABLE IF NOT EXISTS api_baselines (
   captured_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (baseline_key, environment)
 );
+
+-- ===== Evidence-Graph Phase 1 — Object Repository (persistent, VERSIONED UI knowledge) =====
+-- Platform→Application→Module→Object→Control. Append-only: evidence is NEVER overwritten — when a control's
+-- verified shape changes, the prior snapshot moves into `history` and a new `current` version is minted.
+-- The Metadata Graph and Evidence Graph themselves are per-run views carried on agent_runs.raw (like
+-- selector_registry), so only this cross-run persistent store needs a table. Idempotent for in-place upgrade.
+CREATE TABLE IF NOT EXISTS object_repository (
+  key          TEXT PRIMARY KEY,           -- platform/application/module/object/control (slugged)
+  platform     TEXT DEFAULT 'Admin',
+  application  TEXT DEFAULT 'none',
+  module       TEXT DEFAULT 'none',
+  object       TEXT DEFAULT 'none',
+  control      TEXT NOT NULL,
+  current      JSONB DEFAULT '{}'::jsonb,   -- latest RepoControl snapshot (selector/role/label/version/…)
+  history      JSONB DEFAULT '[]'::jsonb,   -- append-only prior RepoControl snapshots (never overwritten)
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS object_repository_scope_idx ON object_repository(platform, application, module, object);

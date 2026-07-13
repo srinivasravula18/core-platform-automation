@@ -49,7 +49,7 @@ ok(isLiveSource(PROVENANCE.API), 'API is a live source');
 ok(!isLiveSource(PROVENANCE.STATIC_SOURCE), 'STATIC_SOURCE is NOT a live source');
 
 eq(mapSelectorEvidenceType('live-dom-verified'), { source: PROVENANCE.LIVE_DOM, confidence: 'verified-live' }, 'map live-dom-verified');
-eq(mapSelectorEvidenceType('inspection'), { source: PROVENANCE.LIVE_DOM, confidence: 'verified-live' }, 'map inspection');
+eq(mapSelectorEvidenceType('inspection'), { source: PROVENANCE.LIVE_DOM, confidence: 'inferred' }, 'map inspection');
 eq(mapSelectorEvidenceType('live-dom-pool'), { source: PROVENANCE.LIVE_DOM, confidence: 'inferred' }, 'map live-dom-pool');
 eq(mapSelectorEvidenceType('none'), { source: PROVENANCE.STATIC_SOURCE, confidence: 'unverified' }, 'map none');
 eq(mapSelectorEvidenceType(undefined), { source: PROVENANCE.STATIC_SOURCE, confidence: 'unverified' }, 'map undefined');
