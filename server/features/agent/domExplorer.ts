@@ -343,10 +343,39 @@ const pullAttrs = (el: any) => {
     const value = cells.find((cell: string) => !/^\d+$/.test(cell) && cell !== '#');
     return value ? value.slice(0, 80) : null;
   };
+  // Implicit ARIA role from the tag/type when no explicit role attribute exists. Without this a plain
+  // <button>/<a>/<input>/<th> captures as role=null, which the compiler's verb-role gate reads as
+  // "unknown" and rejects — the dominant cause of cases compiling to zero scripts.
+  const implicitRole = () => {
+    const explicit = e.getAttribute('role');
+    if (explicit) return explicit;
+    const tag = e.tagName.toLowerCase();
+    const type = String(e.getAttribute('type') || '').toLowerCase();
+    if (tag === 'button' || tag === 'summary') return 'button';
+    if (tag === 'a' && e.hasAttribute('href')) return 'link';
+    if (tag === 'select') return e.multiple ? 'listbox' : 'combobox';
+    if (tag === 'textarea') return 'textbox';
+    if (tag === 'th') return 'columnheader';
+    if (tag === 'td') return 'cell';
+    if (tag === 'tr') return 'row';
+    if (tag === 'option') return 'option';
+    if (tag === 'input') {
+      if (['button', 'submit', 'reset', 'image'].includes(type)) return 'button';
+      if (type === 'checkbox') return 'checkbox';
+      if (type === 'radio') return 'radio';
+      if (type === 'range') return 'slider';
+      if (type === 'number') return 'spinbutton';
+      if (type === 'search') return 'searchbox';
+      if (['text', 'email', 'tel', 'url', 'password', ''].includes(type)) return 'textbox';
+      return 'textbox';
+    }
+    if (e.isContentEditable) return 'textbox';
+    return null;
+  };
   return {
     tag: e.tagName.toLowerCase(),
     text: (tableText() || normalizeLabel(directText(e))).slice(0, 120) || null,
-    role: e.getAttribute('role'),
+    role: implicitRole(),
     ariaLabel: e.getAttribute('aria-label'),
     testId: e.getAttribute('data-testid'),
     dataField: e.getAttribute('data-field'),
