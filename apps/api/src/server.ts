@@ -106,7 +106,9 @@ export async function createExpressApp() {
       (!process.env.DEPLOYMENT_MODE && String(process.env.NODE_ENV || '').toLowerCase() === 'production')
         ? 'production'
         : 'local';
-    res.json({ deploymentMode: mode, allowLocalRepo: mode !== 'production' });
+    // graphEngine: curl-able confirmation that AGENT_GRAPH_V2 actually reached the running process —
+    // true here means new runs route through the LangGraph engine; false means the legacy pipeline.
+    res.json({ deploymentMode: mode, allowLocalRepo: mode !== 'production', graphEngine: isWorkflowGraphEnabled() });
   });
 
   registerAuthRoutes(app);
