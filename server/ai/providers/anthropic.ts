@@ -73,7 +73,9 @@ export class AnthropicProvider implements AIProvider {
   constructor(apiKey: string, defaultModel?: string) {
     this.apiKey = apiKey;
     this.defaultModel = defaultModel || DEFAULT_MODELS.anthropic.default;
-    this.client = new Anthropic({ apiKey });
+    // SDK default timeout is 10 minutes — a stuck call parked an agent run that long. 3 minutes
+    // covers the largest real case-set generations while making genuine hangs fail visibly.
+    this.client = new Anthropic({ apiKey, timeout: 180_000 });
   }
 
   private modelId(opts: { model?: string }) {

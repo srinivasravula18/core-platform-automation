@@ -15,6 +15,7 @@
 
 import { db } from '../shared/storage';
 import { getPool, isPostgresEnabled, migrate, query, queryOne, uid, withTransaction } from './pool';
+import { eventIdempotencyKey, type WorkflowEvent } from '../features/agent/workflow/events';
 
 export function isPgEnabled(): boolean {
   return isPostgresEnabled();
@@ -1420,6 +1421,55 @@ export const RequirementLinks = {
     }
     const res = await query('DELETE FROM requirement_case_links WHERE requirement_id = $1 AND case_id = $2', [requirementId, caseId]);
     return res.length > 0;
+  },
+};
+
+/* ---------- agent run events (LangGraph.js workflow runtime, Phase 1) ---------- */
+/* Append-only, run-scoped, ordered audit log — not a CRUD entity like the objects above. */
+
+function mapAgentRunEvent(r: any): WorkflowEvent {
+  return { ...(r.payload || {}), runId: r.run_id, threadId: r.thread_id, node: r.node, status: r.status };
+}
+
+export const AgentRunEvents = {
+  async append(event: WorkflowEvent): Promise<{ appended: boolean }> {
+    const eventId = eventIdempotencyKey(event);
+    if (!isPgEnabled()) {
+      const rows = db.agentRunEvents as any[];
+      if (rows.some((r) => r.event_id === eventId)) return { appended: false };
+      const seq = rows.filter((r) => r.run_id === event.runId).reduce((max, r) => Math.max(max, r.seq), 0) + 1;
+      rows.push({ event_id: eventId, run_id: event.runId, thread_id: event.threadId, seq, node: event.node, status: event.status, payload: event, created_at: new Date().toISOString() });
+      return { appended: true };
+    }
+    // seq = MAX(seq)+1 races under concurrent appends for the same run_id (planned from Phase 3+'s
+    // per-case parallel fan-out); retry on the (run_id, seq) unique violation rather than crash the caller.
+    for (let attempt = 0; attempt < 5; attempt++) {
+      try {
+        const row = await queryOne(
+          `WITH next_seq AS (SELECT COALESCE(MAX(seq), 0) + 1 AS seq FROM agent_run_events WHERE run_id = $2)
+           INSERT INTO agent_run_events (event_id, run_id, thread_id, seq, node, status, payload)
+           SELECT $1, $2, $3, next_seq.seq, $4, $5, $6::jsonb FROM next_seq
+           ON CONFLICT (event_id) DO NOTHING
+           RETURNING event_id`,
+          [eventId, event.runId, event.threadId, event.node, event.status, JSON.stringify(event)],
+        );
+        return { appended: !!row };
+      } catch (err: any) {
+        if (err?.code === '23505' && attempt < 4) continue;
+        throw err;
+      }
+    }
+    throw new Error('AgentRunEvents.append: exhausted seq retry attempts');
+  },
+  async list(runId: string): Promise<WorkflowEvent[]> {
+    if (!isPgEnabled()) {
+      return (db.agentRunEvents as any[])
+        .filter((r) => r.run_id === runId)
+        .sort((a, b) => a.seq - b.seq)
+        .map(mapAgentRunEvent);
+    }
+    const rows = await query('SELECT * FROM agent_run_events WHERE run_id = $1 ORDER BY seq ASC', [runId]);
+    return rows.map(mapAgentRunEvent);
   },
 };
 

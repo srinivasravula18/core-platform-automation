@@ -5,6 +5,8 @@ import path from 'path';
 import fs from 'fs/promises';
 import { executePlaywrightScripts } from './executionService';
 import { findSettingsCredentials } from '../../shared/url';
+import { resolveCredentials } from '../credentials/credentialsService';
+import { createAuthStorageState } from '../evidence/evidenceService';
 
 const codegenRuns = new Map<string, { child: ChildProcess; outputPath: string; url: string; startedAt: string }>();
 
@@ -48,7 +50,29 @@ export function registerPlaywrightRoutes(app: Express) {
         return res.status(400).json({ error: 'scripts[] is required' });
       }
       const runnableScripts = scripts.map((script: any) => ({ ...script, code: applySettingsCredentials(String(script?.code || ''), String(baseUrl || '')) }));
-      const result = await executePlaywrightScripts({ scripts: runnableScripts, baseUrl, runId, singleSession: !!singleSession, screenshotMode: screenshotMode === 'on' ? 'on' : undefined });
+      // Compiler-emitted specs import './mission-runner'; without emitting it they collect 0 tests on re-run.
+      const needsMissionRunner = runnableScripts.some((s: any) => /from\s+['"]\.\/mission-runner['"]/.test(String(s?.code || '')));
+      // Compiled specs never log in themselves (MissionRunner expects an injected authenticated session),
+      // so re-runs must prepare one — same proven login the pipeline uses. Legacy scripts keep their own login.
+      let storageStatePath: string | undefined;
+      let sessionStorageState: { origin: string; items: Record<string, string> } | undefined;
+      if (needsMissionRunner && baseUrl) {
+        const stored = resolveCredentials({ targetUrl: String(baseUrl) });
+        const settings = findSettingsCredentials(String(baseUrl));
+        const creds = stored?.username && stored?.password
+          ? { username: stored.username, password: stored.password }
+          : settings.username && settings.password ? { username: settings.username, password: settings.password } : null;
+        if (creds) {
+          const authPath = path.join(process.cwd(), '.testflow-pw', `rerun-${safeId(String(runId || Date.now()))}-auth.json`);
+          await fs.mkdir(path.dirname(authPath), { recursive: true });
+          const auth = await createAuthStorageState(String(baseUrl), creds, authPath).catch(() => null);
+          if (auth?.ok || auth?.sessionStorage) {
+            storageStatePath = authPath;
+            sessionStorageState = auth?.sessionStorage;
+          }
+        }
+      }
+      const result = await executePlaywrightScripts({ scripts: runnableScripts, baseUrl, runId, singleSession: !!singleSession, screenshotMode: screenshotMode === 'on' ? 'on' : undefined, emitMissionRunner: needsMissionRunner, storageStatePath, sessionStorageState });
       const evidenceDir = path.resolve(process.cwd(), 'evidence');
       await fs.mkdir(evidenceDir, { recursive: true });
       const screenshotUrls: string[] = [];

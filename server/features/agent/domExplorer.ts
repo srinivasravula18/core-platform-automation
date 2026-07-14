@@ -645,6 +645,43 @@ export function rankVerifiedElements<T extends { status?: string; interactive?: 
   return [...elements].sort((a, b) => score(a) - score(b));
 }
 
+/** Shared DomElement+ResolvedSelector+verification → VerifiedElement mapping (exploreAndVerifyPage and
+ * captureVerifiedElementsForOpenPage both call this so the two output shapes never drift apart). */
+function toVerifiedElement(
+  el: DomElement,
+  sel: ResolvedSelector,
+  v: { count: number; unique: boolean; visible: boolean } | undefined,
+): VerifiedElement {
+  const status: VerifiedElement['status'] = !sel.selector ? 'unresolvable' : v && v.count === 0 ? 'broken' : v && !v.unique ? 'not_unique' : 'verified';
+  return {
+    id: sel.key,
+    tag: el.tag,
+    role: el.role,
+    name: (el.role === 'row' || (el.role === 'checkbox' && !el.accName && !el.ariaLabel && !el.text))
+      ? (el.rowKey ?? el.accName ?? el.ariaLabel ?? el.text)
+      : (el.accName ?? el.ariaLabel ?? el.text),
+    text: el.text,
+    aria_label: el.ariaLabel,
+    placeholder: el.placeholder,
+    input_name: el.name,
+    data_field: el.dataField,
+    element_id: el.id,
+    type: el.type,
+    value: el.value ?? null,
+    options: Array.isArray(el.options) ? el.options : [],
+    href: el.href,
+    tooltip: el.title ?? null,
+    interactive: el.interactive !== false,
+    resolved_selector: sel.selector,
+    selector_strategy: sel.strategy,
+    fallback_selector: sel.fallback,
+    unique: v?.unique ?? false,
+    visible: v?.visible ?? el.visible,
+    status,
+    state: { disabled: el.disabled, readonly: el.readonly, required: el.required },
+  };
+}
+
 export async function exploreAndVerifyPage(opts: {
   targetUrl: string;
   credentials?: { username: string; password: string };
@@ -672,37 +709,7 @@ export async function exploreAndVerifyPage(opts: {
     : { url: extracted.url, results: [] as { selector: string; count: number; unique: boolean; visible: boolean }[] };
   const verMap = new Map(ver.results.map((r) => [r.selector, r]));
 
-  const elements: VerifiedElement[] = resolved.map(({ el, sel }) => {
-    const v = sel.selector ? verMap.get(sel.selector) : undefined;
-    const status: VerifiedElement['status'] = !sel.selector ? 'unresolvable' : v && v.count === 0 ? 'broken' : v && !v.unique ? 'not_unique' : 'verified';
-    return {
-      id: sel.key,
-      tag: el.tag,
-      role: el.role,
-      name: (el.role === 'row' || (el.role === 'checkbox' && !el.accName && !el.ariaLabel && !el.text))
-        ? (el.rowKey ?? el.accName ?? el.ariaLabel ?? el.text)
-        : (el.accName ?? el.ariaLabel ?? el.text),
-      text: el.text,
-      aria_label: el.ariaLabel,
-      placeholder: el.placeholder,
-      input_name: el.name,
-      data_field: el.dataField,
-      element_id: el.id,
-      type: el.type,
-      value: el.value ?? null,
-      options: Array.isArray(el.options) ? el.options : [],
-      href: el.href,
-      tooltip: el.title ?? null,
-      interactive: el.interactive !== false,
-      resolved_selector: sel.selector,
-      selector_strategy: sel.strategy,
-      fallback_selector: sel.fallback,
-      unique: v?.unique ?? false,
-      visible: v?.visible ?? el.visible,
-      status,
-      state: { disabled: el.disabled, readonly: el.readonly, required: el.required },
-    };
-  });
+  const elements: VerifiedElement[] = resolved.map(({ el, sel }) => toVerifiedElement(el, sel, sel.selector ? verMap.get(sel.selector) : undefined));
 
   return {
     url: extracted.url,
@@ -720,6 +727,38 @@ export async function exploreAndVerifyPage(opts: {
     warnings: extracted.warnings,
     diagnostics: extracted.diagnostics,
   };
+}
+
+/**
+ * Same capture→resolve→verify→rank pipeline as exploreAndVerifyPage, but against an ALREADY-OPEN
+ * page (e.g. a shared withPageSession page) — no navigation/login/browser-launch/close here. Lets
+ * a caller that already owns a live session (LangGraph discovery node) avoid a second browser/login.
+ */
+export async function captureVerifiedElementsForOpenPage(page: any, opts?: { maxElements?: number }): Promise<VerifiedElement[]> {
+  const { elements: captured } = await captureSemanticSnapshot(page);
+  const max = opts?.maxElements ?? 200;
+  const scoreDom = (e: DomElement) => (e.interactive ? 0 : 2) + (e.visible ? 0 : 1);
+  const elements = captured.length > max ? [...captured].sort((a, b) => scoreDom(a) - scoreDom(b)).slice(0, max) : captured;
+
+  const resolved = elements.map((el) => ({ el, sel: resolveBestSelector(el) }));
+  const selectors = [...new Set(resolved.filter((r) => r.sel.selector).map((r) => r.sel.selector as string))];
+  // Same technique/timeouts as verifyResolvedSelectors' inline loop — reimplemented here since that
+  // logic isn't factored into a standalone helper and this function must not touch that one.
+  const verMap = new Map<string, { count: number; unique: boolean; visible: boolean }>();
+  for (const selector of selectors) {
+    try {
+      const loc = page.locator(selector);
+      const count = await loc.count();
+      const visible = count > 0 ? await loc.first().isVisible().catch(() => false) : false;
+      verMap.set(selector, { count, unique: count === 1, visible });
+    } catch {
+      verMap.set(selector, { count: 0, unique: false, visible: false });
+    }
+  }
+
+  const verified: VerifiedElement[] = resolved.map(({ el, sel }) => toVerifiedElement(el, sel, sel.selector ? verMap.get(sel.selector) : undefined));
+
+  return rankVerifiedElements(verified);
 }
 
 export async function verifyResolvedSelectors(opts: {

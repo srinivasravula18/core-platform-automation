@@ -497,3 +497,21 @@ CREATE TABLE IF NOT EXISTS object_repository (
   updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS object_repository_scope_idx ON object_repository(platform, application, module, object);
+
+-- ===== Agent Workflow Phase 1 — append-only run events =====
+-- Durable, ordered, run-scoped audit stream for the LangGraph.js workflow runtime (server/features/agent/workflow).
+-- NOT a second event bus: it is a durable record read by the SSE compatibility projector. Rows are never
+-- updated or deleted — `seq` gives per-run ordering, `event_id` gives idempotent-append de-duplication.
+-- LangGraph's own checkpoint tables are created separately by PostgresSaver.setup() (server/features/agent/workflow/checkpointer.ts).
+CREATE TABLE IF NOT EXISTS agent_run_events (
+  event_id     TEXT PRIMARY KEY,          -- caller-supplied idempotency key (dedupes retried appends)
+  run_id       TEXT NOT NULL,
+  thread_id    TEXT NOT NULL,
+  seq          BIGINT NOT NULL,           -- monotonic per run_id; assigned by the append function, not the caller
+  node         TEXT NOT NULL,
+  status       TEXT NOT NULL,             -- start | success | error | interrupt | retry
+  payload      JSONB DEFAULT '{}'::jsonb, -- redacted event fields only (see workflow/events.ts) — never secrets/DOM/prompts
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS agent_run_events_run_seq_idx ON agent_run_events(run_id, seq);
+CREATE INDEX IF NOT EXISTS agent_run_events_run_idx ON agent_run_events(run_id, created_at);

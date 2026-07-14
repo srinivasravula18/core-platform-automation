@@ -192,3 +192,26 @@ export async function closePageSession(sessionId: string) {
   await s.page?.close().catch(() => undefined);
   await s.browser?.close().catch(() => undefined);
 }
+
+/** Narrow, same-process synchronous accessor — page never crosses an async checkpoint or leaves this file otherwise. */
+export function getSessionPage(sessionId: string): any {
+  const s = sessions.get(sessionId);
+  if (!s) throw new Error(`Page session ${sessionId} not found (expired or closed).`);
+  return s.page;
+}
+
+/** Guaranteed-cleanup wrapper: opens a session, runs fn, always closes the session after — even on throw. */
+export async function withPageSession<T>(
+  opts: { targetUrl: string; credentials?: any; runId: string },
+  fn: (session: { sessionId: string; page: any; observation: PageObservation; login: any }) => Promise<T>,
+): Promise<T> {
+  const { sessionId, login, observation } = await openPageSession(opts);
+  try {
+    const page = getSessionPage(sessionId);
+    return await fn({ sessionId, page, observation, login });
+  } finally {
+    await closePageSession(sessionId).catch((err) => {
+      console.error(`withPageSession: closePageSession(${sessionId}) failed during cleanup`, err);
+    });
+  }
+}

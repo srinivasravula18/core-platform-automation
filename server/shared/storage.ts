@@ -50,6 +50,9 @@ export const db: any = {
   defects: [] as any[],
   scripts: [] as any[],
   agentRuns: [] as any[],
+  // LangGraph.js workflow runtime (Phase 1): append-only run-event audit log. Non-durable here —
+  // durability is a Postgres-only guarantee (server/features/agent/workflow/events.ts).
+  agentRunEvents: [] as any[],
   recentActivity: [] as any[],
   settings: {
     geminiModel: 'gemini-2.5-flash',

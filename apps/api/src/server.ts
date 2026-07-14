@@ -21,6 +21,7 @@ import { registerScreenshotRoutes } from '../../../services/screenshots';
 import { registerSearchRoutes } from '../../../services/search';
 import { registerSettingsRoutes, registerAiSettingsRoutes } from '../../../services/settings';
 import { registerApiIntelligenceRoutes } from '../../../services/api-intelligence';
+import { getWorkflowCheckpointer, closeWorkflowCheckpointer, isWorkflowGraphEnabled } from '../../../services/orchestration';
 
 let processGuardsInstalled = false;
 
@@ -34,6 +35,21 @@ export function installApiProcessGuards() {
   process.on('uncaughtException', (err: any) => {
     console.error('[uncaughtException]', err?.stack || err?.message || err);
   });
+}
+
+let shutdownHooksInstalled = false;
+
+function installWorkflowShutdownHooks() {
+  if (shutdownHooksInstalled || !isWorkflowGraphEnabled()) return;
+  shutdownHooksInstalled = true;
+
+  const shutdown = async (signal: string) => {
+    await closeWorkflowCheckpointer();
+    console.log(`[workflow] checkpointer closed on ${signal}`);
+    process.exit(0);
+  };
+  process.on('SIGTERM', () => void shutdown('SIGTERM'));
+  process.on('SIGINT', () => void shutdown('SIGINT'));
 }
 
 export async function createExpressApp() {
@@ -51,6 +67,12 @@ export async function createExpressApp() {
     }
   } else {
     console.log('[storage] using JSON file persistence (no DATABASE_URL set)');
+  }
+
+  if (isWorkflowGraphEnabled()) {
+    // Fail-closed: let construction errors (e.g. production without DATABASE_URL) crash startup, not log-and-continue.
+    await getWorkflowCheckpointer();
+    console.log('[workflow] graph runtime checkpointer initialized');
   }
 
   await loadPersistedSettings();
@@ -117,6 +139,7 @@ export async function createExpressApp() {
 
 export async function startExpressServer() {
   installApiProcessGuards();
+  installWorkflowShutdownHooks();
   const app = await createExpressApp();
   const port = Number(process.env.BACKEND_PORT || process.env.PORT || 3001);
 

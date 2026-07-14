@@ -1,0 +1,456 @@
+/**
+ * Workflow runtime — Phase 5: start/resume/cancel/status service over the TestRunGraph, plus the
+ * legacy agent-run projection so the existing UI/routes keep working unchanged.
+ *
+ * Runs execute in the BACKGROUND: startGraphRun/resumeGraphRun kick off an async stream pump and
+ * return immediately. After every streamed state the pump projects the workflow state into the
+ * legacy run record (AgentRuns.upsert) and appends a bounded audit event (AgentRunEvents.append).
+ * Background failures NEVER throw to callers — they project a bounded 'failed' record instead.
+ *
+ * Secrets: the resolved credential lives only in the per-run resolveCredential closure; it is never
+ * written to state, checkpoints, projections, or events. Projections whitelist seed fields explicitly.
+ */
+import { Command, isInterrupted } from '@langchain/langgraph';
+import { AgentRuns, AgentRunEvents } from '../../../db/repository';
+import { db } from '../../../shared/storage';
+import { readArtifacts } from './artifactStash';
+import { getWorkflowCheckpointer } from './checkpointer';
+import { startEvent, terminalEvent, type WorkflowEvent } from './events';
+import { buildTestRunGraph, getAuthoredCases, type TestRunGraphDeps } from './testRunGraph';
+import {
+  createInitialWorkflowState,
+  type MissionRef,
+  type PendingReview,
+  type WorkflowState,
+  type WorkflowStatus,
+} from './state';
+
+export interface StartGraphRunOptions {
+  runId: string;
+  tenantId?: string;
+  workspaceId?: string;
+  projectId?: string;
+  requestedBy?: string;
+  goal: string;
+  requestedCaseCount: number;
+  reviewPolicy: 'auto' | 'manual';
+  executionPolicy?: 'auto' | 'manual' | 'skip';
+  mission: MissionRef;
+  /** Resolved per-run secret — held only in this process's resolver closure, never checkpointed. */
+  credential?: { username?: string; password?: string; token?: string };
+  /** Existing legacy run record to seed the projection (app_url/provider/model/prompt/messages...). */
+  legacyRunSeed?: any;
+  /** Topbar per-run provider/model/effort — authoritative over Settings for this run's model calls. */
+  modelOverrides?: { provider?: string; model?: string; effort?: string };
+  /** Test seam: node/dep overrides forwarded to buildTestRunGraph (production callers omit). */
+  graphDeps?: TestRunGraphDeps;
+}
+
+export interface ReviewResolutionInput {
+  correlationId: string;
+  decision: 'approved' | 'rejected' | 'revised';
+  actor: string;
+  decidedAt?: string;
+}
+
+interface RunRegistryEntry {
+  graph: ReturnType<typeof buildTestRunGraph>;
+  controller: AbortController;
+  cancelled: boolean;
+  pumping: boolean;
+  /** Monotonic per-run event sequence so audit events never collide on the idempotency key. */
+  eventSeq: number;
+  /** Last projected legacy record — the seed for message accumulation across projections. */
+  legacy: any;
+}
+
+const registry = new Map<string, RunRegistryEntry>();
+
+// ---------------------------------------------------------------------------------------------
+// Legacy projection.
+// ---------------------------------------------------------------------------------------------
+
+/** queued maps to running for UI compatibility (the legacy run object never modeled a pre-first-node state). */
+const LEGACY_STATUS: Record<WorkflowStatus, string> = {
+  queued: 'running',
+  running: 'running',
+  review_required: 'review_required',
+  completed: 'completed',
+  failed: 'failed',
+  cancelled: 'cancelled',
+};
+
+/** Whitelisted seed passthrough — NEVER credentials, inspection blobs, or anything unlisted. */
+const SEED_FIELDS = [
+  'app_url', 'appUrl', 'provider', 'model', 'prompt', 'folderId', 'folderPath',
+  'testPlanId', 'testSuiteId', 'testCaseId', 'artifactName', 'created_at', 'createdAt',
+] as const;
+
+const MAX_PROJECTED_MESSAGES = 20;
+
+/** Graph stage → the legacy UI's pipeline chip agent names (DeepRunResult's PIPELINE map), so chips
+ * light up for graph runs with zero frontend changes. Each entry: [completed chip, next running chip]. */
+const STAGE_CHIP: Record<string, { done: string[]; next?: string }> = {
+  validate_request: { done: ['ScopeAgent'], next: 'MetadataFetch' },
+  context: { done: ['MetadataFetch'], next: 'ApplicationInspector' },
+  discovery: { done: ['AuthSessionAgent', 'ApplicationInspector', 'SelectorRegistry'], next: 'TestGenerationAgent' },
+  author_cases: { done: ['TestGenerationAgent'], next: 'PlaywrightAgent' },
+  author_plans: { done: [], next: 'PlaywrightAgent' },
+  compile_and_validate: { done: ['PlaywrightAgent', 'SelectorVerifier'], next: 'EvidenceAgent' },
+  execute_tests: { done: ['EvidenceAgent'] },
+  finalize: { done: [] },
+};
+
+/** Projects a WorkflowState into the legacy agent-run record shape (exported for unit tests). */
+export function projectStateToLegacyRun(state: WorkflowState, seed?: any): any {
+  const compiled = readArtifacts(state.runId).compiledSources ?? {};
+  const titleByCase = new Map(state.cases.map((c) => [c.id, c.title]));
+  const playwrightScripts = (state.compilation?.scripts ?? [])
+    .filter((s) => s.ok && compiled[s.caseId])
+    .map((s) => ({
+      test_case_title: titleByCase.get(s.caseId) ?? s.caseId,
+      filename: `${s.caseId}.spec.ts`,
+      code: compiled[s.caseId],
+    }));
+
+  const status = LEGACY_STATUS[state.status] ?? 'running';
+  const progressLine = `stage: ${state.stage} — status: ${state.status}`
+    + (state.output?.reason ? ` (${state.output.reason.slice(0, 200)})` : '');
+  const prior: any[] = Array.isArray(seed?.messages) ? seed.messages.slice() : [];
+  // Appended conservatively: only on a changed progress line, hard-capped so the record stays small.
+  if (!prior.length || prior[prior.length - 1]?.output !== progressLine) {
+    prior.push({ agent: 'Workflow', status, output: progressLine });
+    // Light the legacy chips: completed chips for the finished stage, a 'running' chip for the next
+    // one — the longest phase (case authoring) otherwise shows zero visible progress for 1-2 minutes.
+    const chip = STAGE_CHIP[state.stage];
+    if (chip && status === 'running') {
+      for (const agent of chip.done) {
+        if (!prior.some((m) => m?.agent === agent && m?.status === 'completed')) prior.push({ agent, status: 'completed', output: 'Done.' });
+      }
+      if (chip.next && !prior.some((m) => m?.agent === chip.next && m?.status === 'running')) {
+        prior.push({ agent: chip.next, status: 'running', output: chip.next === 'TestGenerationAgent' ? 'Authoring test cases from verified evidence — the longest step (roughly 1-2 minutes at the selected model/effort).' : 'Working…' });
+      }
+    }
+  }
+  const messages = prior.slice(-MAX_PROJECTED_MESSAGES);
+
+  const projection: any = {
+    id: state.runId,
+    app_url: seed?.app_url ?? seed?.appUrl ?? state.mission?.targetUrl ?? '',
+    prompt: seed?.prompt ?? state.request.goal,
+    status,
+    messages,
+    // Prefer the FULL authored cases (steps/priority/preconditions, the exact legacy testCasesSchema
+    // shape) held in-process by the graph; the bounded state.cases fallback covers post-restart reads.
+    generated_cases: (() => {
+      const full = getAuthoredCases(state.runId);
+      if (full.length) {
+        return full.map((c) => ({
+          title: c.title,
+          description: c.description ?? '',
+          preconditions: c.preconditions ?? '',
+          tags: c.tags ?? [],
+          priority: c.priority ?? 'Medium',
+          type: c.type ?? 'Automated',
+          steps: Array.isArray(c.steps) ? c.steps : [],
+        }));
+      }
+      // Post-restart the in-process map is empty — NEVER downgrade: keep the seed's previously
+      // projected full cases (steps included) instead of overwriting them with the bounded shape.
+      if (Array.isArray(seed?.generated_cases) && seed.generated_cases.length) return seed.generated_cases;
+      return state.cases.map((c) => ({
+        title: c.title,
+        description: c.description ?? '',
+        preconditions: '',
+        tags: c.tags ?? [],
+        priority: 'Medium',
+        type: 'Automated',
+        steps: [],
+      }));
+    })(),
+    playwright_scripts: playwrightScripts,
+    // UI-ready cards from the stash; never downgrade a previously projected set (stash dies on restart).
+    evidence_screenshots: (() => {
+      const shots = readArtifacts(state.runId).evidenceShots;
+      if (shots?.length) return shots;
+      if (Array.isArray(seed?.evidence_screenshots) && seed.evidence_screenshots.length) return seed.evidence_screenshots;
+      return [];
+    })(),
+    engine: 'langgraph',
+  };
+  for (const key of SEED_FIELDS) {
+    if (seed && seed[key] !== undefined && projection[key] === undefined) projection[key] = seed[key];
+  }
+  return projection;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Persistence helpers — background-safe: log-and-continue, never throw.
+// ---------------------------------------------------------------------------------------------
+
+async function appendEventSafe(event: WorkflowEvent): Promise<void> {
+  try {
+    await AgentRunEvents.append(event);
+  } catch (err) {
+    console.warn(`[workflow] run ${event.runId}: event append failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+async function upsertSafe(runId: string, record: any): Promise<void> {
+  try {
+    // The status/details/SSE endpoints all read the in-memory run FIRST (loadAgentRun prefers
+    // db.agentRuns) and the SSE stream polls it every 1.5s — mutate the existing object IN PLACE
+    // so every live reference (routes seed, open SSE streams) sees graph progress, not just Postgres.
+    const idx = db.agentRuns.findIndex((r: any) => r?.id === runId);
+    if (idx >= 0) Object.assign(db.agentRuns[idx], record);
+    else db.agentRuns.unshift(record);
+    await AgentRuns.upsert(record);
+  } catch (err) {
+    console.warn(`[workflow] run ${runId}: projection persist failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+interface ProjectionExtras {
+  statusOverride?: string;
+  pendingReview?: unknown;
+}
+
+async function projectAndPersist(runId: string, entry: RunRegistryEntry, state: WorkflowState, extras: ProjectionExtras | null): Promise<void> {
+  const projection = projectStateToLegacyRun(state, entry.legacy);
+  if (extras?.statusOverride) projection.status = extras.statusOverride;
+  // Bounded interrupt payload (correlationId/kind/digest) so callers know what to resume with; never secrets.
+  projection.pending_review = extras?.pendingReview ?? null;
+  entry.legacy = projection;
+  await upsertSafe(runId, projection);
+}
+
+async function projectTerminalOverride(runId: string, entry: RunRegistryEntry, state: WorkflowState | null, status: 'cancelled' | 'failed', line: string): Promise<void> {
+  const base = entry.legacy ?? (state ? projectStateToLegacyRun(state) : { id: runId, messages: [], engine: 'langgraph' });
+  const messages = [...(Array.isArray(base.messages) ? base.messages : []), { agent: 'Workflow', status, output: line }].slice(-MAX_PROJECTED_MESSAGES);
+  entry.legacy = { ...base, status, messages, pending_review: null };
+  await upsertSafe(runId, entry.legacy);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Stream pump.
+// ---------------------------------------------------------------------------------------------
+
+function firstPendingInterrupt(snapshot: { tasks?: readonly unknown[] } | null | undefined): unknown | null {
+  for (const task of (snapshot?.tasks ?? []) as Array<{ interrupts?: Array<{ value?: unknown }> }>) {
+    if (task.interrupts && task.interrupts.length > 0) return task.interrupts[0]?.value ?? {};
+  }
+  return null;
+}
+
+function describePending(value: unknown): string {
+  const v = value as Partial<PendingReview> | null;
+  return v && typeof v === 'object' && v.kind ? `review:${v.kind}` : 'interrupt';
+}
+
+function progressEvent(runId: string, state: WorkflowState, seq: number): WorkflowEvent {
+  return {
+    runId,
+    threadId: runId,
+    node: state.stage || 'workflow',
+    status: state.status === 'failed' ? 'error' : 'success',
+    timestamp: new Date().toISOString(),
+    attempt: seq,
+  };
+}
+
+/** Background stream loop — projects every state, then classifies the end as interrupt/terminal/cancel/failure. */
+async function pump(runId: string, entry: RunRegistryEntry, input: unknown): Promise<void> {
+  entry.pumping = true;
+  const threadId = runId;
+  const pumpStartedAt = new Date().toISOString();
+  const config = { configurable: { thread_id: threadId }, streamMode: 'values' as const, signal: entry.controller.signal };
+  await appendEventSafe(startEvent({ runId, threadId, node: 'workflow', attempt: ++entry.eventSeq }));
+  let lastState: WorkflowState | null = null;
+  try {
+    const stream = await entry.graph.stream(input as any, config);
+    for await (const chunk of stream) {
+      if (entry.cancelled) break;
+      // An interrupt emits a `{ __interrupt__ }` marker chunk, not state values — handled after the loop via getState.
+      if (isInterrupted(chunk)) continue;
+      const state = chunk as unknown as WorkflowState;
+      if (!state?.runId) continue;
+      lastState = state;
+      await projectAndPersist(runId, entry, lastState, null);
+      await appendEventSafe(progressEvent(runId, lastState, ++entry.eventSeq));
+    }
+    if (entry.cancelled) {
+      await projectTerminalOverride(runId, entry, lastState, 'cancelled', 'Run cancelled by request.');
+      return;
+    }
+
+    // The stream ended without throwing: either the graph finished or an interrupt paused the thread.
+    const snapshot = await entry.graph.getState({ configurable: { thread_id: threadId } });
+    const pendingInterrupt = firstPendingInterrupt(snapshot);
+    if (pendingInterrupt !== null) {
+      const values = ((snapshot?.values as WorkflowState | undefined)?.runId ? snapshot.values : lastState) as WorkflowState | null;
+      if (values) await projectAndPersist(runId, entry, values, { statusOverride: 'review_required', pendingReview: pendingInterrupt });
+      await appendEventSafe(terminalEvent(
+        { runId, threadId, node: 'workflow', attempt: ++entry.eventSeq },
+        'interrupt', pumpStartedAt, { interruptReason: describePending(pendingInterrupt) },
+      ));
+      return;
+    }
+
+    const finalState = ((snapshot?.values as WorkflowState | undefined)?.runId ? snapshot.values : lastState) as WorkflowState | null;
+    if (finalState) {
+      await projectAndPersist(runId, entry, finalState, null);
+      await appendEventSafe(terminalEvent(
+        { runId, threadId, node: 'workflow', attempt: ++entry.eventSeq },
+        finalState.status === 'failed' ? 'error' : 'success', pumpStartedAt, {},
+      ));
+    }
+  } catch (error) {
+    if (entry.cancelled || entry.controller.signal.aborted) {
+      await projectTerminalOverride(runId, entry, lastState, 'cancelled', 'Run cancelled by request.');
+      return;
+    }
+    // Background runs never throw to callers — project a bounded failure and audit it.
+    const message = (error instanceof Error ? error.message : String(error ?? 'workflow run failed')).slice(0, 500);
+    await projectTerminalOverride(runId, entry, lastState, 'failed', `Workflow failed: ${message}`);
+    await appendEventSafe(terminalEvent(
+      { runId, threadId, node: 'workflow', attempt: ++entry.eventSeq },
+      'error', pumpStartedAt, { errorCode: 'WORKFLOW_RUN_FAILED' },
+    ));
+  } finally {
+    entry.pumping = false;
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Public service API.
+// ---------------------------------------------------------------------------------------------
+
+/** Strips channels that must not be sent as invoke input (plansByCase reducer quirk — the channel default supplies {}). */
+function toInvokeInput(state: WorkflowState): Record<string, unknown> {
+  const input: Record<string, unknown> = { ...state };
+  delete input.plansByCase;
+  return input;
+}
+
+/** Builds the initial state, compiles the graph against the durable checkpointer, and starts the run in the background. */
+export async function startGraphRun(opts: StartGraphRunOptions): Promise<void> {
+  const runId = opts.runId;
+  const initial = createInitialWorkflowState({
+    runId,
+    threadId: runId,
+    requestId: `req-${runId}`,
+    tenantId: opts.tenantId ?? 'default',
+    workspaceId: opts.workspaceId ?? 'default',
+    projectId: opts.projectId ?? 'default',
+    applicationId: opts.mission.applicationId ?? null,
+    requestedBy: opts.requestedBy ?? 'system',
+    request: {
+      goal: opts.goal,
+      requestedCaseCount: opts.requestedCaseCount,
+      reviewPolicy: opts.reviewPolicy,
+      executionPolicy: opts.executionPolicy ?? 'auto',
+    },
+    mission: opts.mission,
+    credentialRef: null,
+  });
+
+  const checkpointer = await getWorkflowCheckpointer();
+  const credential = opts.credential;
+  const graph = buildTestRunGraph(
+    {
+      ...(opts.graphDeps ?? {}),
+      resolveCredential: opts.graphDeps?.resolveCredential ?? (async () => credential),
+      modelOverrides: opts.graphDeps?.modelOverrides ?? opts.modelOverrides,
+    },
+    { checkpointer },
+  );
+  const entry: RunRegistryEntry = {
+    graph,
+    controller: new AbortController(),
+    cancelled: false,
+    pumping: false,
+    eventSeq: 0,
+    legacy: opts.legacyRunSeed ?? null,
+  };
+  registry.set(runId, entry);
+  // Immediate visibility for the UI before the first node completes.
+  await projectAndPersist(runId, entry, initial, null);
+  void pump(runId, entry, toInvokeInput(initial)).catch(() => undefined);
+}
+
+/** Resumes an interrupted thread with a human review decision; same background streaming/projection loop. */
+export async function resumeGraphRun(runId: string, resolution: ReviewResolutionInput): Promise<void> {
+  let entry = registry.get(runId);
+  if (!entry) {
+    // Process restarted since start: rebuild against the durable checkpointer (credential-less resume).
+    const checkpointer = await getWorkflowCheckpointer();
+    let legacy: any = null;
+    try { legacy = await AgentRuns.get(runId); } catch { legacy = null; }
+    entry = {
+      graph: buildTestRunGraph({}, { checkpointer }),
+      controller: new AbortController(),
+      cancelled: false,
+      pumping: false,
+      eventSeq: 0,
+      legacy,
+    };
+    registry.set(runId, entry);
+  }
+  if (entry.pumping) throw new Error(`Run ${runId} is still executing — cannot resume until it pauses or finishes.`);
+  if (entry.controller.signal.aborted) entry.controller = new AbortController();
+  entry.cancelled = false;
+  void pump(runId, entry, new Command({ resume: { ...resolution } })).catch(() => undefined);
+}
+
+/** Aborts the run's stream (best-effort mid-node) and projects a truthful 'cancelled' record immediately. */
+export async function cancelGraphRun(runId: string): Promise<void> {
+  const entry = registry.get(runId);
+  if (!entry) {
+    // Not registered in this process — still make the persisted record truthful.
+    try {
+      const existing = await AgentRuns.get(runId);
+      if (existing) await upsertSafe(runId, { ...existing, status: 'cancelled' });
+    } catch { /* record absent — nothing to project */ }
+    return;
+  }
+  entry.cancelled = true;
+  entry.controller.abort();
+  await projectTerminalOverride(runId, entry, null, 'cancelled', 'Run cancelled by request.');
+  await appendEventSafe(terminalEvent(
+    { runId, threadId: runId, node: 'workflow', attempt: ++entry.eventSeq },
+    'error', new Date().toISOString(), { errorCode: 'CANCELLED' },
+  ));
+}
+
+/** Checkpointer-backed state read — returns the thread's values snapshot, or null when no checkpoint exists. */
+export async function getGraphRunState(runId: string): Promise<WorkflowState | null> {
+  try {
+    const entry = registry.get(runId);
+    const graph = entry?.graph ?? buildTestRunGraph({}, { checkpointer: await getWorkflowCheckpointer() });
+    const snapshot = await graph.getState({ configurable: { thread_id: runId } });
+    const values = snapshot?.values as WorkflowState | undefined;
+    return values && values.runId ? values : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The pending review interrupt for a thread, or null. Read from the checkpoint's TASKS — before a
+ * resume, the interrupt payload lives there, NOT in state.review.pending (which is only written after
+ * the review node re-runs on resume). Survives process restarts via the checkpointer rebuild. */
+export async function getPendingReview(runId: string): Promise<{ correlationId: string; kind?: string; digest?: string } | null> {
+  try {
+    const entry = registry.get(runId);
+    const graph = entry?.graph ?? buildTestRunGraph({}, { checkpointer: await getWorkflowCheckpointer() });
+    const snapshot = await graph.getState({ configurable: { thread_id: runId } });
+    const pending = firstPendingInterrupt(snapshot) as { correlationId?: string; kind?: string; digest?: string } | null;
+    return pending && typeof pending.correlationId === 'string' ? (pending as { correlationId: string; kind?: string; digest?: string }) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** True while the run's background pump is executing in this process. */
+export function isGraphRunActive(runId: string): boolean {
+  return registry.get(runId)?.pumping ?? false;
+}

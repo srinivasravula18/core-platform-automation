@@ -684,7 +684,7 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
           </span>
         </div>
         <div className="flex shrink-0 items-center gap-2">
-          {isRunning && (
+          {(isRunning || reviewing) && (
             <button
               onClick={async () => {
                 try { await fetch('/api/agent/cancel', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ taskId: activeTaskId }) }); } catch { /* ignore */ }

@@ -37,6 +37,11 @@ export function isPostgresEnabled(): boolean {
   return readEnv() !== null;
 }
 
+/** The resolved connection string (DATABASE_URL or PG_*-assembled), for callers that need the raw string rather than a Pool. */
+export function getConnectionString(): string | null {
+  return readEnv()?.connectionString ?? null;
+}
+
 export function getPool(): Pool {
   if (pool) return pool;
   const env = readEnv();

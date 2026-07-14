@@ -109,3 +109,57 @@ export function parseTestPlan(json: unknown): TestPlan | null {
   const r = testPlanSchema.safeParse(json);
   return r.success ? (r.data as TestPlan) : null;
 }
+
+// ===== Strict variant (LangGraph authoring path) — ADDITIVE; the tolerant schema above stays the live legacy path =====
+
+/** v2 adds the strict no-normalizer parse for the graph path; the tolerant v1 behavior is unchanged. */
+export const TEST_PLAN_SCHEMA_VERSION = 2;
+
+/**
+ * Strict plan schema: NO preprocess/normalizer — steps must already match planStepSchema exactly (unknown
+ * keys are stripped, never fatal), and any step without a valid action/assert verb fails the WHOLE parse.
+ * Guarantee for the graph path: N steps in → N steps out, or an explicit failure — never a silent drop.
+ */
+export const strictTestPlanSchema = z.object({
+  mission: z.string().optional(),
+  module: z.string().optional(),
+  title: z.string().optional(),
+  steps: z.array(planStepSchema).min(1),
+});
+
+/** Per-step, model-quotable reasons for a strict-parse failure (1-based indexes, e.g. "step 3: unrecognized action 'SCROLL'"). */
+function describeStrictPlanIssues(raw: unknown, error: z.ZodError): string[] {
+  const issues: string[] = [];
+  const o: any = raw;
+  if (!o || typeof o !== 'object' || Array.isArray(o)) {
+    issues.push(`plan is not a JSON object with a steps array (got ${o === null ? 'null' : Array.isArray(o) ? 'array' : typeof o})`);
+    return issues;
+  }
+  for (const key of ['mission', 'module', 'title'] as const) {
+    if (o[key] !== undefined && typeof o[key] !== 'string') issues.push(`${key} must be a string when present`);
+  }
+  if (!Array.isArray(o.steps)) issues.push('steps is missing or not an array');
+  else if (o.steps.length === 0) issues.push('steps is empty — a plan needs at least one step');
+  const steps: any[] = Array.isArray(o.steps) ? o.steps : [];
+  steps.forEach((s, i) => {
+    const n = i + 1;
+    if (!s || typeof s !== 'object' || Array.isArray(s)) { issues.push(`step ${n}: not an object`); return; }
+    const action = s.action; const assertV = s.assert;
+    if (typeof s.target !== 'string' || !s.target.length) issues.push(`step ${n}: missing target (non-empty string required)`);
+    if (action !== undefined && !ACTION_SET.has(String(action))) issues.push(`step ${n}: unrecognized action '${String(action)}'`);
+    if (assertV !== undefined && !ASSERT_SET.has(String(assertV))) issues.push(`step ${n}: unrecognized assert '${String(assertV)}'`);
+    if (action !== undefined && assertV !== undefined) issues.push(`step ${n}: has both action and assert (exactly one allowed)`);
+    if (action === undefined && assertV === undefined) issues.push(`step ${n}: no action or assert verb`);
+    if (s.value !== undefined && typeof s.value !== 'string') issues.push(`step ${n}: value must be a string`);
+  });
+  // Anything the structural walk above missed still surfaces via the raw zod issues — never an empty reason list.
+  if (!issues.length) for (const zi of error.issues) issues.push(`${zi.path.join('.') || 'plan'}: ${zi.message}`);
+  return issues;
+}
+
+/** Strict parse for the graph path: returns the plan, or null plus one quotable issue per offending step (for the single repair call). */
+export function parseTestPlanStrict(json: unknown): { plan: TestPlan | null; issues: string[] } {
+  const r = strictTestPlanSchema.safeParse(json);
+  if (r.success) return { plan: r.data as TestPlan, issues: [] };
+  return { plan: null, issues: describeStrictPlanIssues(json, r.error) };
+}

@@ -63,6 +63,10 @@ import {
 } from './mission/missionContext';
 // Evidence-Graph Phase 5: deterministic compiler path (flag-gated by AIQA_COMPILER; legacy path is default).
 import { generateCompiledScripts, aiqaCompilerEnabled } from './compiler/compiledGeneration';
+// LangGraph workflow runtime (flag-gated by AGENT_GRAPH_V2; legacy path is default and untouched).
+import { isWorkflowGraphEnabled } from './workflow/checkpointer';
+import { startGraphRun, resumeGraphRun, cancelGraphRun, getPendingReview } from './workflow/runtime';
+import type { MissionRef } from './workflow/state';
 import { renderTargetCatalogForPrompt } from './compiler/renderCatalogForPrompt';
 import { testPlanSchema, parseTestPlan } from './compiler/testPlan';
 import { semanticPlanFromCase } from './compiler/semanticPlanner';
@@ -5115,6 +5119,42 @@ Rules:
       return;
     }
 
+    // AGENT_GRAPH_V2: route this run through the LangGraph workflow runtime instead of the legacy
+    // procedural pipeline. Same run record/SSE/status contracts; the runtime projects graph state
+    // back onto this run. Flag off (default) = the legacy path below runs byte-for-byte unchanged.
+    if (isWorkflowGraphEnabled()) {
+      const missionRef: MissionRef = {
+        platformType: mission.platformType,
+        platform: mission.platform,
+        runtimeSurface: mission.runtimeSurface,
+        applicationId: mission.application?.id ?? null,
+        moduleId: mission.module?.id ?? null,
+        tabId: mission.tab?.id ?? null,
+        targetUrl: mission.targetUrl,
+        executionScope: mission.executionScope,
+      };
+      pushPhase(newRun, { agent: 'Workflow', status: 'running', output: 'AGENT_GRAPH_V2: run routed through the durable LangGraph workflow runtime.' });
+      startGraphRun({
+        runId: taskId,
+        workspaceId: scope.projectId || undefined,
+        projectId: scope.projectId || undefined,
+        requestedBy: scope.userId || undefined,
+        goal: prompt || '',
+        requestedCaseCount,
+        reviewPolicy: flowMode === 'review_cases' ? 'manual' : 'auto',
+        mission: missionRef,
+        credential: { username: credentials.username, password: credentials.password, token: (credentials as any).token },
+        // Topbar per-run provider/model/effort — authoritative over Settings, same as the legacy path.
+        modelOverrides: { provider: requestedProvider || undefined, model: requestedModel || undefined, effort: requestedEffort || undefined },
+        legacyRunSeed: newRun,
+      }).catch((err: any) => {
+        markRunDone(newRun, 'failed');
+        pushPhase(newRun, { agent: 'Workflow', status: 'failed', output: `Workflow runtime failed to start: ${String(err?.message || err).slice(0, 300)}` });
+        persistDataInBackground('failed graph run start');
+      });
+      return;
+    }
+
     try {
       // #1: NamingAgent removed from the critical path  -  newRun.artifactName already holds
       // a deterministic name (buildFallbackArtifactName), saving a ~30s codex call up front.
@@ -5628,6 +5668,23 @@ Rules:
     const run = db.agentRuns.find((item: any) => item.id === taskId);
 
     if (!run) return res.status(404).json({ error: 'Run not found' });
+    // Graph-engine runs resume through the workflow runtime (durable interrupt), never the legacy flow.
+    // The pending correlationId is read server-side from the checkpointed state — no UI change needed.
+    if ((run as any).engine === 'langgraph') {
+      try {
+        const pending = await getPendingReview(taskId);
+        const correlationId = pending?.correlationId;
+        if (!correlationId) return res.status(409).json({ error: 'This run has no pending review to continue.' });
+        run.status = 'running';
+        persistDataInBackground('continued graph run');
+        res.json({ success: true });
+        await resumeGraphRun(taskId, { correlationId, decision: 'approved', actor: reqScope(req).userId || 'user' });
+      } catch (err: any) {
+        console.error('Graph continue error:', err);
+        if (!res.headersSent) res.status(500).json({ error: String(err?.message || err) });
+      }
+      return;
+    }
     if ((run as any).review_stage === 'scripts') {
       if (Array.isArray(scripts) && scripts.length) run.playwright_scripts = scripts;
       if (!Array.isArray(run.playwright_scripts) || run.playwright_scripts.length === 0) {
@@ -5701,6 +5758,8 @@ Rules:
     const { taskId } = req.body || {};
     const run = db.agentRuns.find((item: any) => item.id === taskId);
     if (!run) return res.status(404).json({ error: 'Run not found' });
+    // Graph-engine runs also abort the workflow runtime (checkpointed cancel + AbortController).
+    if ((run as any).engine === 'langgraph') await cancelGraphRun(taskId).catch((err) => console.warn('Graph cancel error:', err));
     (run as any).cancelRequested = true;
     run.status = 'cancelled';
     run.completed_at = nowIso();
