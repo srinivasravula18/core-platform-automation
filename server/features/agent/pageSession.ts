@@ -76,13 +76,32 @@ export async function openPageSession(opts: {
   targetUrl: string;
   credentials?: any;
   runId: string;
+  /** Pre-authenticated state (cookies/localStorage file + sessionStorage) — when present, the guarded
+   * login below becomes a no-op, so rediscovery attempts reuse ONE login instead of hitting rate limits. */
+  storageStatePath?: string;
+  sessionStorageState?: { origin: string; items: Record<string, string> };
 }): Promise<{ sessionId: string; login: any; observation: PageObservation }> {
   sweepExpired();
   const url = normalizeTargetUrl(opts.targetUrl);
   if (!url) throw new Error('No target URL was resolved for the page session.');
 
   const browser = await launchChromiumWithRetry({ headless: true });
-  const page = await browser.newPage({ viewport: { width: 1365, height: 768 } });
+  const page = await browser.newPage({
+    viewport: { width: 1365, height: 768 },
+    ...(opts.storageStatePath ? { storageState: opts.storageStatePath } : {}),
+  });
+  if (opts.sessionStorageState) {
+    // storageState can't carry sessionStorage; replay it before any page script runs (same as executionService).
+    await page.addInitScript((data: any) => {
+      try {
+        if (window.location.origin === data.origin) {
+          for (const k of Object.keys(data.items)) {
+            if (window.sessionStorage.getItem(k) === null) window.sessionStorage.setItem(k, data.items[k]);
+          }
+        }
+      } catch { /* ignore */ }
+    }, opts.sessionStorageState);
+  }
   const id = `PS-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const session: PageSession = {
     id, browser, page, runId: opts.runId, targetUrl: url,
@@ -202,7 +221,7 @@ export function getSessionPage(sessionId: string): any {
 
 /** Guaranteed-cleanup wrapper: opens a session, runs fn, always closes the session after — even on throw. */
 export async function withPageSession<T>(
-  opts: { targetUrl: string; credentials?: any; runId: string },
+  opts: { targetUrl: string; credentials?: any; runId: string; storageStatePath?: string; sessionStorageState?: { origin: string; items: Record<string, string> } },
   fn: (session: { sessionId: string; page: any; observation: PageObservation; login: any }) => Promise<T>,
 ): Promise<T> {
   const { sessionId, login, observation } = await openPageSession(opts);

@@ -48,6 +48,7 @@
     "test:agent-authoring-graph": "tsx scripts/test-agent-authoring-graph.ts",
     "test:agent-workflow-resume": "tsx scripts/test-agent-workflow-resume.ts",
     "test:agent-request-graph": "tsx scripts/test-agent-request-graph.ts",
+    "test:case-reuse": "tsx scripts/test-case-reuse.ts",
     "test:openai-responses": "tsx scripts/test-openai-responses.ts",
     "eval:agents": "tsx scripts/agent-evals.ts",
     "eval:routing": "tsx scripts/eval-routing.ts",

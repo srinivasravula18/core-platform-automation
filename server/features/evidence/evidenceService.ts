@@ -249,6 +249,9 @@ export async function createAuthStorageState(
       try {
         const page = await context.newPage();
         await page.goto(normalizedUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        // The SPA hydrates its login form AFTER domcontentloaded — filling immediately races hydration
+        // and intermittently fails with "Could not populate username or password fields". Wait for it.
+        await page.waitForSelector('input[type="password"]', { timeout: 15000 }).catch(() => undefined);
         const loginResult = await performLoginIfCredentialsProvided(page, credentials);
         lastReason = loginResult?.reason || '';
 
@@ -258,6 +261,11 @@ export async function createAuthStorageState(
             continue;
           }
           return { ok: false, reason: `${lastReason || 'Authentication was rate-limited by the target app.'} Retried once after ${Math.round(retryDelayMs / 1000)}s.` };
+        }
+        // Fill raced/failed without a rate limit — one fresh-context retry before giving up.
+        if (attempt === 1 && (loginResult as any)?.usernameFilled === false && (loginResult as any)?.passwordFilled === false) {
+          await page.waitForTimeout(2000);
+          continue;
         }
 
         await page.waitForLoadState('domcontentloaded', { timeout: 8000 }).catch(() => undefined);

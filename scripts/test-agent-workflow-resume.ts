@@ -10,7 +10,7 @@
 import { Command, MemorySaver } from '@langchain/langgraph';
 import {
   buildTestRunGraph,
-  routeAfterAuthorCases, routeAfterReviewCases, routeAfterCompile, routeAfterReviewScripts,
+  routeAfterAuthorCases, routeAfterReviewCases, routeAfterCompile,
   rediscoveryTargetsFromCompilation, MAX_REDISCOVERY_ATTEMPTS, MAX_REVIEW_REVISE,
 } from '../server/features/agent/workflow/testRunGraph';
 import {
@@ -174,12 +174,9 @@ function testRouters() {
   eq(routeAfterCompile({ compilation: unresolvedCompilation, rediscoveryAttempts: 0, request: request('auto') }), 'discover_and_ground', 'unresolved targets + attempts left → rediscovery');
   eq(routeAfterCompile({ compilation: unresolvedCompilation, rediscoveryAttempts: MAX_REDISCOVERY_ATTEMPTS, request: request('auto') }), 'finalize', 'unresolved targets + attempts exhausted + no scripts → finalize');
   const cleanCompilation = { scripts: [{ caseId: 'c1', scriptRef: 'r', digest: 'd', ok: true }], diagnostics: [], compilerVersion: 'x@1' };
-  eq(routeAfterCompile({ compilation: cleanCompilation, rediscoveryAttempts: 0, request: request('manual') }), 'review_scripts', 'clean scripts + manual → review_scripts');
+  // Script review removed: clean scripts ALWAYS go straight to execution regardless of review policy.
+  eq(routeAfterCompile({ compilation: cleanCompilation, rediscoveryAttempts: 0, request: request('manual') }), 'execute_tests', 'clean scripts + manual → execute_tests (script gate removed)');
   eq(routeAfterCompile({ compilation: cleanCompilation, rediscoveryAttempts: 0, request: request('auto') }), 'execute_tests', 'clean scripts + auto → execute_tests');
-
-  eq(routeAfterReviewScripts({ review: resolution('rejected') }), 'finalize', 'rejected scripts review → finalize');
-  eq(routeAfterReviewScripts({ review: resolution('approved') }), 'execute_tests', 'approved scripts review → execute_tests');
-  eq(routeAfterReviewScripts({ review: { pending: null, resolution: null } }), 'execute_tests', 'missing resolution treated as proceed (auto passthrough)');
 }
 
 // ---------------------------------------------------------------------------
@@ -230,17 +227,13 @@ async function testManualReviewResume() {
   ok((pending1?.correlationId ?? '').startsWith('cases:'), 'correlationId is digest-derived (cases:<digest>)');
   ok((snap1.values as WorkflowState).status !== 'completed', 'run is not completed while paused');
 
-  await graph.invoke(new Command({ resume: { correlationId: pending1!.correlationId, decision: 'approved', actor: 'qa' } }) as any, config);
-  const snap2 = await graph.getState(config);
-  const pending2 = firstInterruptValue(snap2);
-  eq(pending2?.kind, 'scripts', 'second interrupt is the scripts review');
-  ok((pending2?.correlationId ?? '').startsWith('scripts:'), 'scripts correlationId is digest-derived');
-
-  const final = await graph.invoke(new Command({ resume: { correlationId: pending2!.correlationId, decision: 'approved', actor: 'qa' } }) as any, config) as WorkflowState;
-  eq(final.status, 'completed', 'run completes after both approvals');
+  // Script review removed: approving cases runs plans→compile→execute automatically to completion, no 2nd pause.
+  const final = await graph.invoke(new Command({ resume: { correlationId: pending1!.correlationId, decision: 'approved', actor: 'qa' } }) as any, config) as WorkflowState;
+  eq(final.status, 'completed', 'run completes automatically after the single case-review approval');
   eq(final.review.resolution?.decision, 'approved', 'review.resolution decision recorded');
-  eq(final.review.resolution?.correlationId, pending2!.correlationId, 'recorded resolution answers the scripts review');
+  eq(final.review.resolution?.correlationId, pending1!.correlationId, 'recorded resolution answers the cases review');
   eq(final.review.resolution?.actor, 'qa', 'resolution actor recorded');
+  ok(firstInterruptValue(await graph.getState(config)) === null, 'no second (scripts) interrupt — script→evidence is automatic');
 }
 
 // ---------------------------------------------------------------------------
@@ -286,10 +279,8 @@ async function testCrashResumeDurability() {
   const pendingB = firstInterruptValue(await graphB.getState(config));
   eq(pendingB?.kind, 'cases', 'fresh graph instance sees the pending interrupt from the checkpoint');
 
-  await graphB.invoke(new Command({ resume: { correlationId: pendingB!.correlationId, decision: 'approved', actor: 'qa' } }) as any, config);
-  const pendingB2 = firstInterruptValue(await graphB.getState(config));
-  eq(pendingB2?.kind, 'scripts', 'fresh instance reaches the scripts review');
-  const final = await graphB.invoke(new Command({ resume: { correlationId: pendingB2!.correlationId, decision: 'approved', actor: 'qa' } }) as any, config) as WorkflowState;
+  // Script review removed: approving cases on the fresh instance runs straight through to completion.
+  const final = await graphB.invoke(new Command({ resume: { correlationId: pendingB!.correlationId, decision: 'approved', actor: 'qa' } }) as any, config) as WorkflowState;
   eq(final.status, 'completed', 'checkpoint-backed continuation completes on the fresh instance');
   eq(stubs.counters.discovery, 1, 'discovery ran exactly once across the simulated restart (no replay of finished nodes)');
   eq(stubs.counters.cases, 1, 'case authoring ran exactly once across the simulated restart');
@@ -313,11 +304,12 @@ async function testDuplicateExecutionSkip(shared: { graph?: ReturnType<typeof bu
   eq(skip.errors, [], 'skip carries no errors');
 
   // 5b — graph-level: re-drive the execute path on section 1's completed thread; the counting stub must not fire again.
+  // compile_and_validate now routes straight to execute_tests (script review removed), so re-enter there.
   const graph = shared.graph!;
   const threadId = shared.threadId!;
   const counters = shared.counters!;
   const config = { configurable: { thread_id: threadId } };
-  await graph.updateState(config, { stage: 'review_scripts' }, 'review_scripts');
+  await graph.updateState(config, { stage: 'compile_and_validate' }, 'compile_and_validate');
   const redriven = await graph.invoke(null, config) as WorkflowState;
   eq(counters.execution, 1, 'stubbed execution was NOT called a second time');
   eq(redriven.execution.attempts.length, 1, 'no second execution attempt appended (reducer replaced the same key)');
@@ -365,22 +357,20 @@ async function testRuntimeCancelAndResume() {
   const rec1 = await AgentRuns.get(runR);
   ok((rec1?.pending_review?.correlationId ?? '').startsWith('cases:'), 'pending review surfaced in the projection (cases)');
 
+  // Script review removed: approving CASES runs plans → compile → execute automatically to completion.
   await resumeGraphRun(runR, { correlationId: rec1.pending_review.correlationId, decision: 'approved', actor: 'qa' });
-  ok(await waitFor(async () => {
-    const r = await AgentRuns.get(runR);
-    return r?.pending_review?.kind === 'scripts' && !isGraphRunActive(runR);
-  }, 4000), 'runtime reaches the scripts review after the first resume');
-  const rec2 = await AgentRuns.get(runR);
-
-  await resumeGraphRun(runR, { correlationId: rec2.pending_review.correlationId, decision: 'approved', actor: 'qa' });
-  ok(await waitFor(async () => (await AgentRuns.get(runR))?.status === 'completed', 4000), 'runtime run completes after both approvals');
+  ok(await waitFor(async () => (await AgentRuns.get(runR))?.status === 'completed', 5000), 'run completes automatically after the single case-review approval (no script gate)');
   const rec3 = await AgentRuns.get(runR);
   eq(rec3?.engine, 'langgraph', 'projection carries engine=langgraph');
   ok((rec3?.playwright_scripts ?? []).length >= 1, 'legacy projection carries the compiled script');
   eq(rec3?.playwright_scripts?.[0]?.test_case_title, 'New button is visible on Accounts', 'script mapped with the case title');
   ok((rec3?.evidence_screenshots ?? []).some((s: any) => s?.screenshotUrl === '/evidence/exec-shot-1.png'), 'UI-ready evidence card projected');
   ok(!JSON.stringify(rec3).includes('SECRET_MARKER_RT'), 'no credential secret in the persisted projection');
-  ok(Array.isArray(rec3?.messages) && rec3.messages.length > 0 && rec3.messages.length <= 20, `messages appended conservatively (${rec3?.messages?.length ?? 0} ≤ 20)`);
+  const rtWorkflowLines = (rec3?.messages ?? []).filter((m: any) => m.agent === 'Workflow');
+  ok(rtWorkflowLines.length > 0 && rtWorkflowLines.length <= 20, `progress lines appended conservatively (${rtWorkflowLines.length} ≤ 20)`);
+  // Chip truth table: a completed run must leave every chip completed or skipped — never blank/spinning.
+  const rtChips = (rec3?.messages ?? []).filter((m: any) => m.agent !== 'Workflow' && m.agent !== 'System');
+  ok(rtChips.length > 0 && rtChips.every((m: any) => m.status === 'completed' || m.status === 'skipped'), 'terminal run leaves no chip running or silently blank');
 
   const wfState = await getGraphRunState(runR);
   eq(wfState?.status, 'completed', 'getGraphRunState returns the checkpointed values snapshot');
@@ -441,13 +431,20 @@ function testProjectionUnit() {
   eq(proj.prompt, 'orig prompt', 'seed prompt wins over the goal');
   ok(!JSON.stringify(proj).includes('SECRET_MARKER_SEED'), 'seed credentials never copied into the projection');
   ok(proj.credentials === undefined, 'no credentials key at all on the projection');
-  ok(Array.isArray(proj.messages) && proj.messages.length === 1 && proj.messages[0].agent === 'Workflow', 'one bounded Workflow message appended');
+  const wfLines = (proj.messages as any[]).filter((m) => m.agent === 'Workflow');
+  ok(wfLines.length === 1, 'one bounded Workflow progress line appended');
 
   const projDone = projectStateToLegacyRun({ ...state, status: 'completed', stage: 'finalize' }, proj);
   eq(projDone.status, 'completed', 'completed maps straight through');
-  eq(projDone.messages.length, 2, 'a changed progress line appends exactly one more message');
+  const doneWf = (projDone.messages as any[]).filter((m) => m.agent === 'Workflow');
+  eq(doneWf.length, 2, 'a changed progress line appends exactly one more Workflow message');
   const projSame = projectStateToLegacyRun({ ...state, status: 'completed', stage: 'finalize' }, projDone);
-  eq(projSame.messages.length, 2, 'an unchanged progress line appends nothing');
+  eq((projSame.messages as any[]).filter((m) => m.agent === 'Workflow').length, 2, 'an unchanged progress line appends nothing');
+  // Chip truth table on a terminal run: artifact-backed chips completed, artifact-less chips explicitly skipped.
+  const doneChips = (projDone.messages as any[]).filter((m) => m.agent !== 'Workflow' && m.agent !== 'System');
+  ok(doneChips.every((m) => m.status === 'completed' || m.status === 'skipped'), 'terminal projection has only completed/skipped chips');
+  ok(doneChips.some((m) => m.status === 'skipped' && /skipped/i.test(m.output)), 'artifact-less stages are explicitly marked skipped with a reason');
+  ok(doneChips.find((m) => m.agent === 'PlaywrightAgent')?.status === 'completed', 'compiled stage chip shows completed (artifact-backed)');
 
   const failedState: WorkflowState = { ...state, status: 'failed', stage: 'finalize', output: { summary: 's', reportRef: null, reason: 'gate blocked' } };
   const projFailed = projectStateToLegacyRun(failedState, projSame);

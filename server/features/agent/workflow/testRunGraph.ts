@@ -17,10 +17,8 @@
  * registry, plans, compiled sources) live in the run-scoped artifact stash; state carries refs/digests only.
  */
 import { createHash } from 'crypto';
-import path from 'path';
-import { mkdir } from 'fs/promises';
 import { StateGraph, START, END, type BaseCheckpointSaver } from '@langchain/langgraph';
-import { createAuthStorageState } from '../../evidence/evidenceService';
+import { ensureRunAuthState, clearRunAuthState } from './authSession';
 import { runContextNode } from './nodes/context';
 import { runDiscoveryNode } from './nodes/discovery';
 import { runGroundingNode, MAX_REDISCOVERY_ATTEMPTS } from './nodes/grounding';
@@ -66,6 +64,10 @@ export interface TestRunGraphDeps {
   executionNode?: typeof runExecutionNode;
   /** Topbar per-run provider/model/effort — forwarded to every authoring model call, like the legacy path. */
   modelOverrides?: { provider?: string; model?: string; effort?: string };
+  /** Coverage "reuse": existing cases (with steps) used INSTEAD of LLM authoring. */
+  seedCases?: any[];
+  /** Coverage "gaps": existing case titles the author must not duplicate. */
+  avoidCaseTitles?: string[];
 }
 
 export interface BuildTestRunGraphOptions {
@@ -147,16 +149,15 @@ export function routeAfterReviewCases(state: Pick<WorkflowState, 'review' | 'ret
   return 'author_plans';
 }
 
-export function routeAfterCompile(state: Pick<WorkflowState, 'compilation' | 'rediscoveryAttempts' | 'request'>): 'discover_and_ground' | 'finalize' | 'review_scripts' | 'execute_tests' {
+// Script→evidence is fully automatic: once scripts compile and pass the deterministic validation gate,
+// they go straight to execution. The human gate lives at CASE review (author_cases); a second script
+// review only slowed the loop without adding safety, since the compiler already refuses anything unverified.
+export function routeAfterCompile(state: Pick<WorkflowState, 'compilation' | 'rediscoveryAttempts' | 'request'>): 'discover_and_ground' | 'finalize' | 'execute_tests' {
   if (rediscoveryTargetsFromCompilation(state.compilation).length > 0 && (state.rediscoveryAttempts ?? 0) < MAX_REDISCOVERY_ATTEMPTS) {
     return 'discover_and_ground';
   }
   if (!state.compilation?.scripts?.length) return 'finalize';
-  return state.request.reviewPolicy === 'manual' ? 'review_scripts' : 'execute_tests';
-}
-
-export function routeAfterReviewScripts(state: Pick<WorkflowState, 'review'>): 'finalize' | 'execute_tests' {
-  return state.review?.resolution?.decision === 'rejected' ? 'finalize' : 'execute_tests';
+  return 'execute_tests';
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -234,7 +235,13 @@ export function buildTestRunGraph(deps: TestRunGraphDeps = {}, opts: BuildTestRu
     const reEntered = state.evidence?.gate?.decision === 'targeted_retry' || state.stage === 'compile_and_validate';
     const attempts = reEntered ? (state.rediscoveryAttempts ?? 0) + 1 : (state.rediscoveryAttempts ?? 0);
     const credential = await resolveCredential(state.credentialRef ?? null);
-    const discovery = await discoveryNode({ mission: state.mission, credential, runId: state.runId });
+    // ONE real login per run: first attempt logs in and caches state; rediscovery attempts reuse it.
+    const auth = deps.discoveryNode
+      ? undefined // injected discovery seam (tests) owns its own setup — no real login here
+      : await ensureRunAuthState(state.runId, state.mission?.targetUrl || '', credential);
+    const discovery = await discoveryNode({ mission: state.mission, credential, runId: state.runId, auth });
+    // An auth-classified failure invalidates the cached session so the bounded retry logs in fresh.
+    if (!deps.discoveryNode && discovery.errors.some((e) => e.class === 'AUTH_FAILURE')) clearRunAuthState(state.runId);
     // Raw elements never reach state — grounding projects them into the bounded evidence envelope.
     const grounding = groundingNode({
       elements: discovery.elements,
@@ -252,7 +259,28 @@ export function buildTestRunGraph(deps: TestRunGraphDeps = {}, opts: BuildTestRu
     };
   };
 
+  // Authors are TOLD stored credentials exist (auth handled by session injection) — never given them.
+  const hasStoredCredentials = async (state: WorkflowState): Promise<boolean> =>
+    Boolean((await resolveCredential(state.credentialRef ?? null).catch(() => undefined))?.username);
+
   const authorCasesNode = async (state: WorkflowState): Promise<WorkflowStateUpdate> => {
+    // Coverage "reuse": use the user-selected existing cases verbatim — NO LLM authoring. Plans are still
+    // re-authored against fresh live evidence, so reused cases execute against verified current selectors.
+    if (deps.seedCases?.length) {
+      const seeded = deps.seedCases.map((c: any) => ({
+        title: String(c.title || 'Untitled'),
+        description: String(c.description || ''),
+        preconditions: String(c.preconditions || ''),
+        tags: Array.isArray(c.tags) ? c.tags : [],
+        priority: c.priority || 'Medium',
+        type: c.type || 'Automated',
+        steps: Array.isArray(c.steps) ? c.steps : [],
+      }));
+      authoredCasesByRun.set(state.runId, seeded as AuthoredTestCase[]);
+      const cases: WorkflowCase[] = seeded.map((c, i) => ({ id: `case-${i + 1}`, title: c.title, description: c.description || undefined, tags: c.tags?.length ? c.tags : undefined }));
+      return { cases, stage: 'author_cases', updatedAt: nowIso(), errors: [], usage: [] };
+    }
+
     const { evidenceGraph } = readArtifacts(state.runId);
     const result = await authorCases({
       mission: state.mission,
@@ -260,6 +288,9 @@ export function buildTestRunGraph(deps: TestRunGraphDeps = {}, opts: BuildTestRu
       requestedCaseCount: state.request.requestedCaseCount,
       evidenceGraph: evidenceGraph ?? null,
       overrides: deps.modelOverrides,
+      hasStoredCredentials: await hasStoredCredentials(state),
+      // Coverage "gaps": don't re-author cases the user already has.
+      avoidCaseTitles: deps.avoidCaseTitles,
     });
     // Full cases (steps included) stay in-process for plan authoring; state holds the bounded WorkflowCase shape.
     authoredCasesByRun.set(state.runId, result.cases);
@@ -294,6 +325,7 @@ export function buildTestRunGraph(deps: TestRunGraphDeps = {}, opts: BuildTestRu
   const authorPlansNode = async (state: WorkflowState): Promise<WorkflowStateUpdate> => {
     const { evidenceGraph } = readArtifacts(state.runId);
     const fullCases = authoredCasesByRun.get(state.runId) ?? [];
+    const authed = await hasStoredCredentials(state);
     const authored = await mapWithConcurrency(state.cases, PLAN_AUTHORING_CONCURRENCY, async (testCase, index) => {
       // Index-aligned with author_cases's mapping; a stash-less resumed thread degrades to title/description only.
       const full = fullCases[index];
@@ -302,6 +334,7 @@ export function buildTestRunGraph(deps: TestRunGraphDeps = {}, opts: BuildTestRu
         testCase: { title: testCase.title, description: testCase.description ?? full?.description, steps: full?.steps },
         evidenceGraph: evidenceGraph ?? null,
         overrides: deps.modelOverrides,
+        hasStoredCredentials: authed,
       });
       return { caseId: testCase.id, result };
     });
@@ -351,14 +384,7 @@ export function buildTestRunGraph(deps: TestRunGraphDeps = {}, opts: BuildTestRu
     };
   };
 
-  const reviewScriptsNode = (state: WorkflowState): WorkflowStateUpdate => {
-    if (state.request.reviewPolicy !== 'manual') return { stage: 'review_scripts', updatedAt: nowIso() };
-    const digest = scriptsReviewDigest(state.compilation);
-    const pending = buildPendingReview('scripts', digest);
-    const resolution = requestReviewInterrupt('scripts', digest);
-    return { review: { pending, resolution }, stage: 'review_scripts', updatedAt: nowIso() };
-  };
-
+  // Script review intentionally removed — compiled+validated scripts flow straight to execution (see routeAfterCompile).
   const executeTests = async (state: WorkflowState): Promise<WorkflowStateUpdate> => {
     const compiledSources = readArtifacts(state.runId).compiledSources ?? {};
     const titleByCase = new Map(state.cases.map((c) => [c.id, c.title]));
@@ -379,16 +405,13 @@ export function buildTestRunGraph(deps: TestRunGraphDeps = {}, opts: BuildTestRu
     let storageStatePath: string | undefined;
     let sessionStorageState: { origin: string; items: Record<string, string> } | undefined;
     // Auth prep belongs to REAL execution only — an injected execution seam (tests) owns its own setup.
+    // Reuses the run's ONE cached login (workflow/authSession) — no fresh login for execution.
     const credential = deps.executionNode ? undefined : await resolveCredential(state.credentialRef ?? null).catch(() => undefined);
     if (credential?.username && credential?.password && state.mission?.targetUrl) {
       try {
-        const authPath = path.join(process.cwd(), '.testflow-pw', `${state.runId}-graph-auth.json`);
-        await mkdir(path.dirname(authPath), { recursive: true });
-        const auth = await createAuthStorageState(state.mission.targetUrl, { username: credential.username, password: credential.password }, authPath);
-        if (auth?.ok || auth?.sessionStorage) {
-          storageStatePath = authPath;
-          sessionStorageState = auth?.sessionStorage;
-        }
+        const auth = await ensureRunAuthState(state.runId, state.mission.targetUrl, credential);
+        storageStatePath = auth.storageStatePath;
+        sessionStorageState = auth.sessionStorageState;
       } catch { /* execution proceeds unauthenticated; failures will name the real cause */ }
     }
     const result = await executionNode({
@@ -448,7 +471,6 @@ export function buildTestRunGraph(deps: TestRunGraphDeps = {}, opts: BuildTestRu
     .addNode('review_cases', reviewCasesNode)
     .addNode('author_plans', authorPlansNode)
     .addNode('compile_and_validate', compileAndValidate)
-    .addNode('review_scripts', reviewScriptsNode)
     .addNode('execute_tests', executeTests)
     .addNode('finalize', finalize)
     .addEdge(START, 'load_context')
@@ -471,11 +493,6 @@ export function buildTestRunGraph(deps: TestRunGraphDeps = {}, opts: BuildTestRu
     .addEdge('author_plans', 'compile_and_validate')
     .addConditionalEdges('compile_and_validate', routeAfterCompile, {
       discover_and_ground: 'discover_and_ground',
-      finalize: 'finalize',
-      review_scripts: 'review_scripts',
-      execute_tests: 'execute_tests',
-    })
-    .addConditionalEdges('review_scripts', routeAfterReviewScripts, {
       finalize: 'finalize',
       execute_tests: 'execute_tests',
     })

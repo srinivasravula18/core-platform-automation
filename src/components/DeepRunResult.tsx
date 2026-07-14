@@ -28,6 +28,7 @@ import {
   Clock,
   Recycle,
   MessageSquareText,
+  MinusCircle,
 } from 'lucide-react';
 
 /**
@@ -785,7 +786,9 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
                       ? 'border-[var(--accent)]/30 bg-[var(--accent)]/5 text-[var(--accent)]'
                       : effState === 'failed'
                         ? 'border-red-500/20 bg-red-500/5 text-red-400'
-                        : 'border-[var(--border)] text-[var(--text-muted)]',
+                        : effState === 'skipped'
+                          ? 'border-amber-500/20 bg-amber-500/5 text-amber-400/80'
+                          : 'border-[var(--border)] text-[var(--text-muted)]',
                   isActive && 'animate-pulse',
                 )}
               >
@@ -795,10 +798,12 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
                   <Loader2 className="h-3 w-3 animate-spin" />
                 ) : effState === 'failed' ? (
                   <XCircle className="h-3 w-3" />
+                ) : effState === 'skipped' ? (
+                  <MinusCircle className="h-3 w-3" />
                 ) : (
                   <span className="h-3 w-3 rounded-full border border-current opacity-40" />
                 )}
-                {p.label}
+                {effState === 'skipped' ? `${p.label} — skipped` : p.label}
                 {(() => {
                   const d = phaseMs(p.key);
                   return d != null && (effState === 'completed' || effState === 'running' || effState === 'failed' || effState === 'stopped')

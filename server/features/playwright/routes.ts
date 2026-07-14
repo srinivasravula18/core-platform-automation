@@ -7,6 +7,7 @@ import { executePlaywrightScripts } from './executionService';
 import { findSettingsCredentials } from '../../shared/url';
 import { resolveCredentials } from '../credentials/credentialsService';
 import { createAuthStorageState } from '../evidence/evidenceService';
+import { db } from '../../shared/storage';
 
 const codegenRuns = new Map<string, { child: ChildProcess; outputPath: string; url: string; startedAt: string }>();
 
@@ -57,7 +58,15 @@ export function registerPlaywrightRoutes(app: Express) {
       let storageStatePath: string | undefined;
       let sessionStorageState: { origin: string; items: Record<string, string> } | undefined;
       if (needsMissionRunner && baseUrl) {
-        const stored = resolveCredentials({ targetUrl: String(baseUrl) });
+        // Pin credential resolution to the originating run's website/owner when known — Admin/Keystone/
+        // Shockwave share one hostname, so hostname-only matching can log in as the WRONG site's user.
+        const originRun = runId ? db.agentRuns.find((r: any) => r.id === runId || String(runId).startsWith(String(r.id))) : null;
+        const stored = resolveCredentials({
+          targetUrl: String(baseUrl),
+          websiteId: originRun?.websiteId || undefined,
+          role: originRun?.credentials?.role || undefined,
+          ownerId: originRun?.ownerId || undefined,
+        });
         const settings = findSettingsCredentials(String(baseUrl));
         const creds = stored?.username && stored?.password
           ? { username: stored.username, password: stored.password }
@@ -65,7 +74,12 @@ export function registerPlaywrightRoutes(app: Express) {
         if (creds) {
           const authPath = path.join(process.cwd(), '.testflow-pw', `rerun-${safeId(String(runId || Date.now()))}-auth.json`);
           await fs.mkdir(path.dirname(authPath), { recursive: true });
-          const auth = await createAuthStorageState(String(baseUrl), creds, authPath).catch(() => null);
+          let auth = await createAuthStorageState(String(baseUrl), creds, authPath).catch(() => null);
+          // The SPA writes its auth token to sessionStorage AFTER login settles — a raced capture comes back
+          // empty and the injected context renders logged-out (every selector then times out). Retry once.
+          if (auth?.ok && !auth.sessionStorage) {
+            auth = await createAuthStorageState(String(baseUrl), creds, authPath).catch(() => auth);
+          }
           if (auth?.ok || auth?.sessionStorage) {
             storageStatePath = authPath;
             sessionStorageState = auth?.sessionStorage;

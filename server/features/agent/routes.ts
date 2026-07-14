@@ -70,7 +70,7 @@ import type { MissionRef } from './workflow/state';
 import { renderTargetCatalogForPrompt } from './compiler/renderCatalogForPrompt';
 import { testPlanSchema, parseTestPlan } from './compiler/testPlan';
 import { semanticPlanFromCase } from './compiler/semanticPlanner';
-import { linkedExistingCases, scoreCaseReuse } from './caseReuse';
+import { linkedExistingCases, scoreCaseReuse, rankReuseCandidates } from './caseReuse';
 import { pushInboxItem } from '../inbox/routes';
 import { AgentRuns, Plans, Suites, Cases, Runs, Reports, Scripts, Folders, Requirements, RequirementLinks, Defects, isPgEnabled } from '../../db/repository';
 import { runGuardrailPipeline } from '../../ai/guardrails';
@@ -1523,22 +1523,65 @@ function caseMatchKeywords(run: any): string[] {
 // Find EXISTING test cases (scoped to the run's project/app) that look related to
 // this request, so the agent can offer reuse instead of regenerating from scratch.
 // Cheap keyword-overlap scorer  -  surfaces candidates for the human to confirm.
+/** Rebuild the graph's MissionRef from the run's sealed MissionContext (stored at start). */
+function missionRefFromRun(run: any): MissionRef {
+  const m = (run?.mission_context || {}) as any;
+  return {
+    platformType: m.platformType,
+    platform: m.platform,
+    runtimeSurface: m.runtimeSurface ?? null,
+    applicationId: m.application?.id ?? null,
+    moduleId: m.module?.id ?? null,
+    tabId: m.tab?.id ?? null,
+    targetUrl: m.targetUrl || run.app_url || '',
+    executionScope: m.executionScope || '',
+  };
+}
+
+/**
+ * Launch the LangGraph run for a stored run record. Shared by the direct start path and the coverage
+ * decision (reuse/gaps/fresh) so the gate and the no-gate path start the graph identically.
+ * `seedCases` (reuse) makes author_cases use those cases instead of the LLM; `avoidCaseTitles` (gaps)
+ * tells the author to skip duplicates of the reused set.
+ */
+async function beginGraphRunFor(run: any, opts?: { seedCases?: any[]; avoidCaseTitles?: string[]; credential?: any }): Promise<void> {
+  const gs = (run.graph_start || {}) as any;
+  const creds = opts?.credential
+    || resolveCredentials({ targetUrl: run.app_url, websiteId: run.websiteId, role: (run.credentials || {}).role, ownerId: ownerScopeForRun(run) })
+    || run.credentials || {};
+  await startGraphRun({
+    runId: run.id,
+    workspaceId: run.projectId || undefined,
+    projectId: run.projectId || undefined,
+    requestedBy: run.ownerId || undefined,
+    goal: run.prompt || '',
+    requestedCaseCount: Number(gs.requestedCaseCount) || 0,
+    reviewPolicy: gs.reviewPolicy === 'auto' ? 'auto' : 'manual',
+    mission: missionRefFromRun(run),
+    credential: { username: creds.username, password: creds.password, token: (creds as any).token },
+    modelOverrides: { provider: gs.provider || undefined, model: gs.model || undefined, effort: gs.effort || undefined },
+    legacyRunSeed: run,
+    seedCases: opts?.seedCases,
+    avoidCaseTitles: opts?.avoidCaseTitles,
+  });
+}
+
 async function findRelatedExistingCases(run: any): Promise<any[]> {
   let all: any[] = [];
   try { all = await Cases.list(); } catch { return []; }
   if (!Array.isArray(all) || !all.length) return [];
   const scoped = scopeFilter(all as any[], { projectId: run.projectId || '', appId: run.appId || null, userId: run.ownerId || '', role: '' });
-  const kws = caseMatchKeywords(run);
-  const query = `${run.prompt || ''} ${run.feature_understanding?.title || ''}`.trim();
-  if (!kws.length || !scoped.length) return [];
-  return scoped
-    .map((c: any) => {
-      const hay = `${c.title || ''} ${c.description || ''} ${(c.tags || []).join(' ')}`.toLowerCase();
-      return { c, ...scoreCaseReuse(query, hay, kws) };
-    })
-    .filter((x) => x.matched)
-    .sort((a, b) => b.score - a.score)
-    .map((x) => ({ ...x.c, _matchScore: x.score, _matchReasons: x.reasons, _matchAnchor: x.anchor }));
+  if (!scoped.length) return [];
+  // Careful lexical ranker (IDF-weighted overlap + phrase anchor + scope alignment + length normalization).
+  const mission = (run.mission_context || {}) as any;
+  const query = {
+    text: `${run.prompt || ''} ${run.approvedUnderstanding || ''} ${run.feature_understanding?.title || ''}`.trim(),
+    module: mission?.module?.id || mission?.module?.name || run.moduleId || '',
+    object: mission?.application?.name || (Array.isArray(run.target_app_objects) ? run.target_app_objects[0] : '') || '',
+  };
+  if (!query.text) return [];
+  return rankReuseCandidates(query, scoped as any[])
+    .map((m) => ({ ...m.case, _matchScore: m.relevance, _matchReasons: m.reasons, _matchAnchor: m.anchor }));
 }
 
 async function findExistingFeatureRequirements(run: any, limit = 8): Promise<any[]> {
@@ -4818,7 +4861,11 @@ Rules:
     priorGrounding = stripScriptBlocksFromScope(priorGrounding);
     const scopeContextText = [selectedProject?.name, selectedApp?.name].filter(Boolean).join(' ');
     const explicitModuleId = String(req.body.moduleId || req.body.module || '').trim();
-    if (needsExplicitListViewModule(prompt || '', explicitModuleId)) {
+    // Admin-only question: its examples (Apps/Objects/Roles/Users) are Admin modules. A RUNTIME surface
+    // (keystone/shockwave) falls through to the app-resolution flow below, which asks with the REAL
+    // app list + tabs instead of admin module names.
+    const provisionalPlatform = platformTypeFromSurface(selectedApp?.name || '', app_url || selectedApp?.baseUrl || '');
+    if (provisionalPlatform === 'ADMIN' && needsExplicitListViewModule(prompt || '', explicitModuleId)) {
       return res.json({ chat_response: 'Which list view should I test? Name the module or record type, for example Apps, Objects, Roles, or Users.' });
     }
     const appScopeQuestion = needsExplicitAppScope(prompt || '', selectedApp, app_url || '', getProjectRepoPath(scope.projectId || '').trim());
@@ -4924,8 +4971,15 @@ Rules:
           } else if (picked.app) {
             application = { id: picked.app.id, name: picked.app.label };
           } else {
-            const names = picked.candidates.map((a) => a.label).filter(Boolean);
-            return res.json({ chat_response: `Which app should I test in ${selectedApp?.name || 'this runtime'}?\n\nAvailable apps: ${names.join(' - ')}\n\nReply with the app name, or say "all apps" to sweep every app.` });
+            // Show each app WITH its tabs so the user can name a target in one reply ("CRM Accounts list view").
+            const candidates = picked.candidates.slice(0, 8);
+            const lines = await Promise.all(candidates.map(async (a) => {
+              const tabs = await fetchCorePlatformAppTabs(conn, a.id).catch(() => []);
+              const tabNames = [...new Set(tabs.map((t: any) => t.label || t.object_api_name).filter(Boolean))].slice(0, 10);
+              return `- ${a.label}${tabNames.length ? ` — tabs: ${tabNames.join(', ')}` : ''}`;
+            }));
+            const more = picked.candidates.length > candidates.length ? `\n(and ${picked.candidates.length - candidates.length} more apps)` : '';
+            return res.json({ chat_response: `Which app should I test in ${selectedApp?.name || 'this runtime'}?\n\n${lines.join('\n')}${more}\n\nReply with the app name and optionally a tab (e.g. "CRM Accounts list view"), or say "all apps" to sweep every app.` });
           }
         }
       }
@@ -5123,31 +5177,34 @@ Rules:
     // procedural pipeline. Same run record/SSE/status contracts; the runtime projects graph state
     // back onto this run. Flag off (default) = the legacy path below runs byte-for-byte unchanged.
     if (isWorkflowGraphEnabled()) {
-      const missionRef: MissionRef = {
-        platformType: mission.platformType,
-        platform: mission.platform,
-        runtimeSurface: mission.runtimeSurface,
-        applicationId: mission.application?.id ?? null,
-        moduleId: mission.module?.id ?? null,
-        tabId: mission.tab?.id ?? null,
-        targetUrl: mission.targetUrl,
-        executionScope: mission.executionScope,
-      };
-      pushPhase(newRun, { agent: 'Workflow', status: 'running', output: 'AGENT_GRAPH_V2: run routed through the durable LangGraph workflow runtime.' });
-      startGraphRun({
-        runId: taskId,
-        workspaceId: scope.projectId || undefined,
-        projectId: scope.projectId || undefined,
-        requestedBy: scope.userId || undefined,
-        goal: prompt || '',
+      // Non-secret graph-start params, so the coverage decision can launch the graph later (creds re-resolved then).
+      (newRun as any).graph_start = {
         requestedCaseCount,
         reviewPolicy: flowMode === 'review_cases' ? 'manual' : 'auto',
-        mission: missionRef,
-        credential: { username: credentials.username, password: credentials.password, token: (credentials as any).token },
-        // Topbar per-run provider/model/effort — authoritative over Settings, same as the legacy path.
-        modelOverrides: { provider: requestedProvider || undefined, model: requestedModel || undefined, effort: requestedEffort || undefined },
-        legacyRunSeed: newRun,
-      }).catch((err: any) => {
+        provider: requestedProvider || '',
+        model: requestedModel || '',
+        effort: requestedEffort || '',
+      };
+
+      // Existing-case reuse gate: if stored cases already cover this request, ask the user whether to
+      // reuse them or generate fresh BEFORE spending a run. Only in review mode (auto mode never pauses).
+      if (flowMode === 'review_cases') {
+        pushPhase(newRun, { agent: 'CoverageScout', status: 'running' });
+        const relatedExisting = await findRelatedExistingCases(newRun).catch(() => []);
+        newRun.existing_matches = relatedExisting.map(mapExistingToRunCase);
+        pushPhase(newRun, { agent: 'CoverageScout', status: 'completed', output: `${relatedExisting.length} related existing test case(s) found.` });
+        if (relatedExisting.length) {
+          newRun.status = 'coverage_options';
+          newRun.review_started_at = nowIso();
+          pushPhase(newRun, { agent: 'System', status: 'coverage_options', output: `Found ${relatedExisting.length} existing test case(s) that look related. Reuse them, add only the gaps, or generate fresh.` });
+          await persistAgentQualityArtifacts(newRun).catch(() => undefined);
+          persistDataInBackground('coverage-options graph run');
+          return;
+        }
+      }
+
+      pushPhase(newRun, { agent: 'Workflow', status: 'running', output: 'AGENT_GRAPH_V2: run routed through the durable LangGraph workflow runtime.' });
+      beginGraphRunFor(newRun, { credential: credentials }).catch((err: any) => {
         markRunDone(newRun, 'failed');
         pushPhase(newRun, { agent: 'Workflow', status: 'failed', output: `Workflow runtime failed to start: ${String(err?.message || err).slice(0, 300)}` });
         persistDataInBackground('failed graph run start');
@@ -5627,16 +5684,38 @@ Rules:
     persistDataInBackground('coverage decision');
     res.json({ success: true, action: act });
 
+    let matched = Array.isArray(run.existing_matches) ? run.existing_matches : [];
+    // Honor per-case deletions from the coverage card: keep only the cases the user kept,
+    // so irrelevant/over-matched existing cases (e.g. unrelated auth/coupon) aren't reused.
+    const keepIds = Array.isArray(req.body.keep) ? req.body.keep.map(String) : null;
+    if (keepIds) {
+      const keepSet = new Set(keepIds);
+      matched = matched.filter((c: any) => keepSet.has(String(c.id ?? c.existingCaseId ?? c.title)));
+    }
+
+    // Graph engine: the graph run hasn't started yet (the gate ran before it). Launch it now with the
+    // decision applied — reuse seeds the cases (author_cases uses them), gaps tells the author to skip
+    // duplicates, fresh generates from scratch. Scripts + evidence then run automatically in the graph.
+    if ((run as any).engine === 'langgraph' || (run as any).graph_start) {
+      try {
+        if (act === 'reuse' && matched.length) {
+          await beginGraphRunFor(run, { seedCases: matched });
+        } else if (act === 'gaps' && matched.length) {
+          await beginGraphRunFor(run, { avoidCaseTitles: matched.map((c: any) => String(c.title || '')).filter(Boolean) });
+        } else {
+          await beginGraphRunFor(run);
+        }
+      } catch (err: any) {
+        console.error('Graph coverage decision error:', err);
+        markRunDone(run, 'failed');
+        pushPhase(run, { agent: 'System', status: 'failed', output: getAIErrorMessage(err) });
+        persistDataInBackground('failed graph coverage decision');
+      }
+      return;
+    }
+
     try {
       const liveCreds = resolveCredentials({ targetUrl: run.app_url, websiteId: run.websiteId, role: (run.credentials || {}).role, ownerId: ownerScopeForRun(run) }) || undefined;
-      let matched = Array.isArray(run.existing_matches) ? run.existing_matches : [];
-      // Honor per-case deletions from the coverage card: keep only the cases the user kept,
-      // so irrelevant/over-matched existing cases (e.g. unrelated auth/coupon) aren't reused.
-      const keepIds = Array.isArray(req.body.keep) ? req.body.keep.map(String) : null;
-      if (keepIds) {
-        const keepSet = new Set(keepIds);
-        matched = matched.filter((c: any) => keepSet.has(String(c.id ?? c.existingCaseId ?? c.title)));
-      }
 
       if (act === 'reuse' && matched.length) {
         // No generation  -  load the existing cases and let the human review, then
@@ -5775,6 +5854,10 @@ Rules:
     const { taskId } = req.body;
     const run = db.agentRuns.find((item: any) => item.id === taskId);
     if (!run) return res.status(404).json({ error: 'Run not found' });
+    // Graph-engine runs never resume through the legacy pipeline (their seed can carry a STALE
+    // inspection_context from a prior session run, which fooled this path into a blind-inspection
+    // block). needsFullRestart → the UI starts a fresh run, which routes per the current engine flag.
+    if ((run as any).engine === 'langgraph') return res.json({ success: false, needsFullRestart: true });
 
     const hasInspection = !!run.inspection_context;
     const hasCases = Array.isArray(run.generated_cases) && run.generated_cases.length > 0;

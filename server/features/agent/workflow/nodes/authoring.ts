@@ -46,6 +46,10 @@ export interface AuthorTestCasesInput {
   signal?: AbortSignal;
   /** Topbar per-run provider/model/effort — authoritative over Settings, like the legacy path. */
   overrides?: { provider?: string; model?: string; effort?: string };
+  /** True when the site has stored Settings credentials — authors are told auth is handled externally. */
+  hasStoredCredentials?: boolean;
+  /** Coverage "gaps": existing case titles to NOT duplicate — author only genuinely new behaviors. */
+  avoidCaseTitles?: string[];
 }
 
 export interface AuthorTestCasesResult {
@@ -65,6 +69,8 @@ export interface AuthorAbstractPlanInput {
   signal?: AbortSignal;
   /** Topbar per-run provider/model/effort — authoritative over Settings, like the legacy path. */
   overrides?: { provider?: string; model?: string; effort?: string };
+  /** True when the site has stored Settings credentials — authors are told auth is handled externally. */
+  hasStoredCredentials?: boolean;
 }
 
 export interface AuthorAbstractPlanResult {
@@ -319,14 +325,25 @@ function renderMissionRefForPrompt(mission: MissionRef | null): string {
   return `MISSION SCOPE (advisory context — never author navigation/URLs from it): ${parts.join(', ')}; scope=${mission.executionScope}`;
 }
 
+// Auth handling is a fact the authors must know, never a secret they may hold: session injection is
+// the execution layer's job, so scripts/cases stay credential-free by construction.
+function authNote(hasStoredCredentials?: boolean): string {
+  return hasStoredCredentials
+    ? '\nAUTHENTICATION: this website has stored login credentials in Settings; every run starts from an already-authenticated session injected by the execution layer. Do NOT write login/logout steps, usernames, or passwords anywhere.'
+    : '';
+}
+
 function buildCasesPrompt(input: AuthorTestCasesInput, catalog: string): string {
   const countLine = input.requestedCaseCount > 0
     ? `Generate exactly ${input.requestedCaseCount} test case(s).`
     : 'Choose the case count the evidenced behavior genuinely supports — quality over quantity, never pad.';
+  const avoid = input.avoidCaseTitles?.length
+    ? `\nGAP MODE: the user ALREADY has these test cases — do NOT re-author them or trivial rewordings; author only genuinely NEW behaviors not covered below:\n${input.avoidCaseTitles.slice(0, 40).map((t) => `- ${t}`).join('\n')}`
+    : '';
   return `Author test cases for this goal.
 GOAL: ${input.goal}
 ${countLine}
-${renderMissionRefForPrompt(input.mission)}
+${renderMissionRefForPrompt(input.mission)}${authNote(input.hasStoredCredentials)}${avoid}
 ${catalog}
 CASE RULES:
 - Each case: short plain-English title naming ONE behavior; one-sentence description; concrete preconditions.
@@ -339,7 +356,7 @@ function buildPlanPrompt(input: AuthorAbstractPlanInput, catalog: string): strin
   const steps = Array.isArray(input.testCase.steps) ? input.testCase.steps : [];
   const stepLines = steps.map((s) => `- ${s?.action || ''} => ${s?.expected || ''}`).join('\n') || '- (no source steps provided)';
   return `Author ONE abstract test plan as JSON for the reviewed test case below — NOT Playwright code.
-${renderMissionRefForPrompt(input.mission)}
+${renderMissionRefForPrompt(input.mission)}${authNote(input.hasStoredCredentials)}
 ${catalog}
 REVIEWED TEST CASE:
 Title: ${input.testCase.title || ''}

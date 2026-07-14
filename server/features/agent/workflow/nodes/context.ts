@@ -34,8 +34,13 @@ export async function runContextNode(input: RunContextNodeInput): Promise<RunCon
   const appId = String(input.mission?.applicationId || '').trim();
   const baseUrl = String(input.mission?.targetUrl || '').trim();
 
+  // ADMIN missions have NO tenant application by design — the metadata map is a tenant-app concept,
+  // so "no metadata" is the correct, error-free outcome here (not an invariant violation).
+  if (!appId && input.mission?.platformType === 'ADMIN') {
+    return { context: { metadata: null }, errors: [] };
+  }
   if (!appId || !baseUrl) {
-    // Missing mission identity is a config/invariant problem, not a network blip — retrying as-is cannot help.
+    // Missing mission identity on a RUNTIME mission is a config/invariant problem — retrying as-is cannot help.
     const err = new WorkflowRuntimeError(
       WORKFLOW_ERROR_CLASSES.INVARIANT_VIOLATION,
       'Context node requires a resolved mission with applicationId and targetUrl.',

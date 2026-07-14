@@ -42,6 +42,10 @@ export interface StartGraphRunOptions {
   legacyRunSeed?: any;
   /** Topbar per-run provider/model/effort — authoritative over Settings for this run's model calls. */
   modelOverrides?: { provider?: string; model?: string; effort?: string };
+  /** Reuse: existing cases (with steps) to use INSTEAD of LLM authoring — the coverage "reuse" decision. */
+  seedCases?: any[];
+  /** Gaps: existing case titles the author must NOT duplicate — the coverage "gaps" decision. */
+  avoidCaseTitles?: string[];
   /** Test seam: node/dep overrides forwarded to buildTestRunGraph (production callers omit). */
   graphDeps?: TestRunGraphDeps;
 }
@@ -88,18 +92,46 @@ const SEED_FIELDS = [
 
 const MAX_PROJECTED_MESSAGES = 20;
 
-/** Graph stage → the legacy UI's pipeline chip agent names (DeepRunResult's PIPELINE map), so chips
- * light up for graph runs with zero frontend changes. Each entry: [completed chip, next running chip]. */
-const STAGE_CHIP: Record<string, { done: string[]; next?: string }> = {
-  validate_request: { done: ['ScopeAgent'], next: 'MetadataFetch' },
-  context: { done: ['MetadataFetch'], next: 'ApplicationInspector' },
-  discovery: { done: ['AuthSessionAgent', 'ApplicationInspector', 'SelectorRegistry'], next: 'TestGenerationAgent' },
-  author_cases: { done: ['TestGenerationAgent'], next: 'PlaywrightAgent' },
-  author_plans: { done: [], next: 'PlaywrightAgent' },
-  compile_and_validate: { done: ['PlaywrightAgent', 'SelectorVerifier'], next: 'EvidenceAgent' },
-  execute_tests: { done: ['EvidenceAgent'] },
-  finalize: { done: [] },
-};
+/** Chip truth table: every legacy UI pipeline chip (DeepRunResult's PIPELINE keys) is DERIVED per
+ * projection from the state's ACTUAL artifacts — completed only when its stage verifiably produced
+ * output, running only while its owning stage executes, and on any finished run explicitly 'skipped'
+ * with a reason. No chip is ever left silently blank on a terminal run, and no artifact-less stage
+ * can ever show green. */
+function chipMessages(state: WorkflowState): Array<{ agent: string; status: string; output: string }> {
+  // Real evidence only: an EMPTY registry still gets a digest, so registryRef alone must never light the chips.
+  const discoveryDone = (state.evidence?.targetCatalog?.length ?? 0) > 0 || (state.evidence?.countsByProvenance?.live ?? 0) > 0;
+  const compileRan = Boolean(state.compilation?.compilerVersion)
+    || (state.compilation?.scripts?.length ?? 0) > 0 || (state.compilation?.diagnostics?.length ?? 0) > 0;
+  const chips: Array<{ agent: string; stages: string[]; done: boolean; runningLine: string; skipLine: string }> = [
+    { agent: 'MetadataFetch', stages: ['load_context'], done: Boolean(state.context?.metadata),
+      runningLine: 'Fetching application metadata…', skipLine: 'Skipped — no application metadata available for this mission (normal for Admin-platform runs).' },
+    { agent: 'AuthSessionAgent', stages: ['discover_and_ground'], done: discoveryDone,
+      runningLine: 'Logging into the target application…', skipLine: 'Skipped — discovery did not complete.' },
+    { agent: 'ApplicationInspector', stages: ['discover_and_ground'], done: discoveryDone,
+      runningLine: 'Discovering live controls on the page…', skipLine: 'Skipped — discovery did not complete.' },
+    { agent: 'SelectorRegistry', stages: ['discover_and_ground'], done: discoveryDone,
+      runningLine: 'Verifying selector uniqueness/visibility…', skipLine: 'Skipped — no verified selector registry was built.' },
+    { agent: 'TestGenerationAgent', stages: ['author_cases'], done: (state.cases?.length ?? 0) > 0,
+      runningLine: 'Authoring test cases from verified evidence — the longest step (roughly 1-2 minutes at the selected model).', skipLine: 'Skipped — the run stopped before case authoring (see the evidence gate reasons).' },
+    { agent: 'PlaywrightAgent', stages: ['author_plans', 'compile_and_validate'], done: compileRan || Object.keys(state.plansByCase ?? {}).length > 0,
+      runningLine: 'Writing per-case plans and compiling scripts…', skipLine: 'Skipped — the run stopped before script authoring.' },
+    { agent: 'SelectorVerifier', stages: ['compile_and_validate'], done: compileRan,
+      runningLine: 'Validating compiled scripts against the prohibited-pattern gate…', skipLine: 'Skipped — compilation/validation did not run.' },
+    { agent: 'EvidenceAgent', stages: ['execute_tests'], done: (state.execution?.attempts?.length ?? 0) > 0,
+      runningLine: 'Executing compiled scripts against the live app…', skipLine: 'Skipped — no compiled scripts reached execution.' },
+  ];
+  const terminal = state.status === 'completed' || state.status === 'failed' || state.status === 'cancelled';
+  const out: Array<{ agent: string; status: string; output: string }> = [
+    { agent: 'ScopeAgent', status: 'completed', output: 'Done.' },
+  ];
+  for (const chip of chips) {
+    if (chip.done) out.push({ agent: chip.agent, status: 'completed', output: 'Done.' });
+    else if (state.status === 'running' && chip.stages.includes(state.stage)) out.push({ agent: chip.agent, status: 'running', output: chip.runningLine });
+    else if (terminal) out.push({ agent: chip.agent, status: 'skipped', output: chip.skipLine });
+    // Mid-run, not yet reached → no message: an honest pending chip.
+  }
+  return out;
+}
 
 /** Projects a WorkflowState into the legacy agent-run record shape (exported for unit tests). */
 export function projectStateToLegacyRun(state: WorkflowState, seed?: any): any {
@@ -116,23 +148,15 @@ export function projectStateToLegacyRun(state: WorkflowState, seed?: any): any {
   const status = LEGACY_STATUS[state.status] ?? 'running';
   const progressLine = `stage: ${state.stage} — status: ${state.status}`
     + (state.output?.reason ? ` (${state.output.reason.slice(0, 200)})` : '');
-  const prior: any[] = Array.isArray(seed?.messages) ? seed.messages.slice() : [];
-  // Appended conservatively: only on a changed progress line, hard-capped so the record stays small.
+  const chips = chipMessages(state);
+  const chipAgents = new Set(chips.map((m) => m.agent));
+  // Chip messages are regenerated from the stage each projection; only NON-chip lines accumulate,
+  // capped separately so early chip statuses can never be trimmed away by a long run's progress log.
+  const prior: any[] = (Array.isArray(seed?.messages) ? seed.messages : []).filter((m: any) => !chipAgents.has(m?.agent));
   if (!prior.length || prior[prior.length - 1]?.output !== progressLine) {
     prior.push({ agent: 'Workflow', status, output: progressLine });
-    // Light the legacy chips: completed chips for the finished stage, a 'running' chip for the next
-    // one — the longest phase (case authoring) otherwise shows zero visible progress for 1-2 minutes.
-    const chip = STAGE_CHIP[state.stage];
-    if (chip && status === 'running') {
-      for (const agent of chip.done) {
-        if (!prior.some((m) => m?.agent === agent && m?.status === 'completed')) prior.push({ agent, status: 'completed', output: 'Done.' });
-      }
-      if (chip.next && !prior.some((m) => m?.agent === chip.next && m?.status === 'running')) {
-        prior.push({ agent: chip.next, status: 'running', output: chip.next === 'TestGenerationAgent' ? 'Authoring test cases from verified evidence — the longest step (roughly 1-2 minutes at the selected model/effort).' : 'Working…' });
-      }
-    }
   }
-  const messages = prior.slice(-MAX_PROJECTED_MESSAGES);
+  const messages = [...chips, ...prior.slice(-MAX_PROJECTED_MESSAGES)];
 
   const projection: any = {
     id: state.runId,
@@ -361,6 +385,8 @@ export async function startGraphRun(opts: StartGraphRunOptions): Promise<void> {
       ...(opts.graphDeps ?? {}),
       resolveCredential: opts.graphDeps?.resolveCredential ?? (async () => credential),
       modelOverrides: opts.graphDeps?.modelOverrides ?? opts.modelOverrides,
+      seedCases: opts.graphDeps?.seedCases ?? opts.seedCases,
+      avoidCaseTitles: opts.graphDeps?.avoidCaseTitles ?? opts.avoidCaseTitles,
     },
     { checkpointer },
   );

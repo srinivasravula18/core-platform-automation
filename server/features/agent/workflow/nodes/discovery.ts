@@ -21,6 +21,9 @@ export interface RunDiscoveryNodeInput {
   credential?: { username?: string; password?: string; token?: string };
   runId: string;
   maxElements?: number;
+  /** Run-scoped pre-authenticated state (workflow/authSession) — the in-session login then no-ops, so
+   * rediscovery attempts never repeat a real login. */
+  auth?: { storageStatePath?: string; sessionStorageState?: { origin: string; items: Record<string, string> } };
 }
 
 export interface DiscoveryPageSummary {
@@ -58,6 +61,44 @@ function summarizePageContext(ctx: any): DiscoveryPageSummary {
   };
 }
 
+/** Bounded, secret-free head of a raw error for diagnostics — enough to tell 429/net::ERR/goto apart. */
+function boundedReason(message: string): { reason: string } {
+  return { reason: message.replace(/password[^\s]*/gi, '[redacted]').slice(0, 160) };
+}
+
+/** Generic disclosure verbs (app-agnostic UI vocabulary, not app facts) whose controls typically hide forms/menus. */
+const DISCLOSURE_LABEL = /^(new|create|add|actions|.*actions|export options|settings|more|menu|filter|filters)$/i;
+const MAX_DISCLOSURES = 4;
+
+/**
+ * The base capture only sees what's visible at rest — form fields and menu items behind "New"/"Actions"
+ * never enter the catalog, so any authored case about them degenerates into clicking the opener repeatedly
+ * (the exact failure class this closes). Same principle as the legacy inspector's revealHiddenControls:
+ * open each disclosure control, capture the newly revealed verified elements, then Escape to restore state.
+ */
+async function revealAndCaptureDisclosedControls(page: any, elements: VerifiedElement[], maxElements?: number): Promise<void> {
+  const seen = new Set(elements.map((e) => e.resolved_selector).filter(Boolean));
+  const openers = elements
+    .filter((e) => e.status === 'verified' && e.interactive && e.resolved_selector && DISCLOSURE_LABEL.test(String(e.name || '').trim()))
+    .slice(0, MAX_DISCLOSURES);
+  for (const opener of openers) {
+    try {
+      await page.locator(opener.resolved_selector as string).first().click({ timeout: 4000 });
+      await page.waitForTimeout(900);
+      const revealed = await captureVerifiedElementsForOpenPage(page, { maxElements: Math.min(60, maxElements ?? 60) });
+      for (const el of revealed) {
+        if (el.status !== 'verified' || !el.resolved_selector || seen.has(el.resolved_selector)) continue;
+        seen.add(el.resolved_selector);
+        elements.push(el);
+      }
+    } catch { /* opener not clickable right now — skip, never fail discovery over enrichment */ }
+    // Escape twice restores grids/modals to the resting state before the next opener (legacy-proven idiom).
+    await page.keyboard.press('Escape').catch(() => undefined);
+    await page.keyboard.press('Escape').catch(() => undefined);
+    await page.waitForTimeout(400);
+  }
+}
+
 /** Session open/navigation/login failures all surface here (withPageSession guarantees cleanup regardless of where inside it the throw came from). */
 function classifyDiscoveryError(err: unknown, loginAttempted: boolean): WorkflowRuntimeError {
   if (err instanceof WorkflowRuntimeError) return err;
@@ -65,13 +106,13 @@ function classifyDiscoveryError(err: unknown, loginAttempted: boolean): Workflow
   const lower = message.toLowerCase();
 
   // A login was attempted this session and the message itself talks about auth/credentials — treat as auth, not generic infra.
-  if (loginAttempted && /login|credential|auth|password|username/.test(lower)) {
-    return new WorkflowRuntimeError(WORKFLOW_ERROR_CLASSES.AUTH_FAILURE, 'Authentication failed while opening the discovery session.', undefined, 'discovery');
+  if (loginAttempted && /login|credential|auth|password|username|rate.?limit|too many/.test(lower)) {
+    return new WorkflowRuntimeError(WORKFLOW_ERROR_CLASSES.AUTH_FAILURE, 'Authentication failed while opening the discovery session.', boundedReason(message), 'discovery');
   }
-  if (/timeout|timed out|econnreset|econnrefused|enotfound/.test(lower)) {
-    return new WorkflowRuntimeError(WORKFLOW_ERROR_CLASSES.NETWORK_TRANSIENT, 'Network timeout while opening the discovery session.', undefined, 'discovery');
+  if (/timeout|timed out|econnreset|econnrefused|enotfound|net::err/.test(lower)) {
+    return new WorkflowRuntimeError(WORKFLOW_ERROR_CLASSES.NETWORK_TRANSIENT, 'Network timeout while opening the discovery session.', boundedReason(message), 'discovery');
   }
-  return new WorkflowRuntimeError(WORKFLOW_ERROR_CLASSES.EXECUTION_INFRA_FAILURE, 'Browser session failed during discovery.', undefined, 'discovery');
+  return new WorkflowRuntimeError(WORKFLOW_ERROR_CLASSES.EXECUTION_INFRA_FAILURE, 'Browser session failed during discovery.', boundedReason(message), 'discovery');
 }
 
 /** LangGraph node: opens exactly ONE authenticated page session and returns bounded evidence + summary. */
@@ -92,7 +133,7 @@ export async function runDiscoveryNode(input: RunDiscoveryNodeInput): Promise<Ru
 
   try {
     return await withPageSession(
-      { targetUrl, credentials: input.credential, runId: input.runId },
+      { targetUrl, credentials: input.credential, runId: input.runId, storageStatePath: input.auth?.storageStatePath, sessionStorageState: input.auth?.sessionStorageState },
       async ({ sessionId, page, login }) => {
         loginAttempted = Boolean(login?.attempted);
 
@@ -100,6 +141,7 @@ export async function runDiscoveryNode(input: RunDiscoveryNodeInput): Promise<Ru
         // one page are not meant to run concurrently from two call sites at once.
         const ctx = await collectPageContext(page);
         const elements = await captureVerifiedElementsForOpenPage(page, { maxElements: input.maxElements });
+        await revealAndCaptureDisclosedControls(page, elements, input.maxElements);
 
         // Must read screenshots before the callback returns — withPageSession closes the session right after.
         const artifacts = sessionArtifacts(sessionId);
