@@ -49,8 +49,10 @@ function resolveStepValue(engine: TestDataEngine, step: ActionStep, node: Eviden
   return String(step.value ?? '');
 }
 
-function emitAssert(step: AssertStep, spec: string): string {
-  const v = JSON.stringify(step.value ?? '');
+// `value` is the already-resolved expectation (threaded from the engine's fill/select output when the
+// assertion cites a value the engine replaced — a plan-placeholder expectation would otherwise always fail).
+function emitAssert(step: AssertStep, spec: string, value?: string): string {
+  const v = JSON.stringify(value ?? step.value ?? '');
   switch (step.assert) {
     // Higher-level VERIFY_* intents expand to a deterministic (reveal-then-)visible assertion; richer
     // expansions (row counts, sort order, filter effects) are added by later backends without changing the IR.
@@ -110,6 +112,10 @@ export class PlaywrightCompiler implements Compiler {
     });
 
     const body: string[] = [];
+    // Values the engine resolved for fills/selects — later assertions must expect the SAME resolved
+    // values, or every expectValue after a generated fill fails on the plan's placeholder text.
+    const resolvedBySelector = new Map<string, string>();
+    const planToResolved = new Map<string, string>();
     plan.steps.forEach((step: PlanStep, i: number) => {
       // OPEN_MODULE is mission-owned navigation: emit runner.openModule() and never ground it as a locator.
       if (isActionStep(step) && step.action === 'OPEN_MODULE') {
@@ -131,9 +137,26 @@ export class PlaywrightCompiler implements Compiler {
       }
       const spec = JSON.stringify({ selector: g.selector, selectorType: g.selectorType, role: g.node?.role ?? null, label: g.node?.label ?? null });
       if (isActionStep(step)) {
-        body.push(emitAction(step, spec, resolveStepValue(engine, step, g.node)));
+        const value = resolveStepValue(engine, step, g.node);
+        if (step.action === 'FILL' || step.action === 'SELECT') {
+          resolvedBySelector.set(g.selector as string, value);
+          const pv = String(step.value ?? '').trim();
+          if (pv && pv !== value) planToResolved.set(pv.toLowerCase(), value);
+        } else if (step.action === 'CLEAR') {
+          resolvedBySelector.delete(g.selector as string); // a cleared field's later empty-value check must stay ""
+        }
+        body.push(emitAction(step, spec, value));
       } else {
-        body.push(emitAssert(step as AssertStep, spec));
+        const assertStep = step as AssertStep;
+        const raw = String(assertStep.value ?? '');
+        const swappable = assertStep.assert === 'HAS_VALUE' || assertStep.assert === 'HAS_TEXT' || assertStep.assert === 'NOT_HAS_TEXT';
+        // Deliberate empty-value expectations ("field stays blank") are never rewritten.
+        const value = swappable && raw.trim()
+          ? (assertStep.assert === 'HAS_VALUE' && resolvedBySelector.has(g.selector as string)
+            ? resolvedBySelector.get(g.selector as string)
+            : (planToResolved.get(raw.trim().toLowerCase()) ?? raw))
+          : raw;
+        body.push(emitAssert(assertStep, spec, value));
       }
     });
 

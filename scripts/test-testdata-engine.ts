@@ -143,6 +143,22 @@ console.log('9. Schema-conformant (API acceptance) generation');
   ok(/@/.test(e.fillValue({ label: 'Contact Email', type: 'email' })), 'field not in schema → DOM-semantic fallback still works');
 }
 
+console.log('9b. Developer-platform identifier kinds (api name / prefix / version) + author placeholders');
+{
+  eq(inferFieldKind({ label: 'API Name *', id: 'create-app-api' }), 'apiName', 'API Name field');
+  eq(inferFieldKind({ label: 'Prefix *', id: 'create-app-prefix' }), 'codePrefix', 'Prefix field');
+  eq(inferFieldKind({ label: 'Version', id: 'create-app-version' }), 'version', 'Version field');
+  const e = new TestDataEngine('create-form-run');
+  ok(/^[a-z][a-z]*_\d{2}$/.test(e.fillValue({ label: 'API Name *' }, 'unique_api_name')), `api name is identifier-shaped (${e.fillValue({ label: 'API Name *' }, 'unique_api_name')})`);
+  ok(/^[a-z]{3}$/.test(e.fillValue({ label: 'Prefix *' }, 'unique_prefix')), `prefix is a 3-letter short code (${e.fillValue({ label: 'Prefix *' }, 'unique_prefix')})`);
+  ok(/^\d+\.\d+\.\d+$/.test(e.fillValue({ label: 'Version' }, 'any version')), `version is semver-ish (${e.fillValue({ label: 'Version' }, 'any version')})`);
+  // "unique_label"/"any parent app"-style author placeholders are replaced, real intent is kept.
+  ok(e.fillValue({ label: 'Label *' }, 'unique_label') !== 'unique_label', 'placeholder "unique_label" → generated');
+  ok(e.fillValue({ label: 'Label *' }, 'valid values') !== 'valid values', 'placeholder "valid values" → generated');
+  eq(e.fillValue({ label: 'Label *' }, 'My App / Test & Review!'), 'My App / Test & Review!', 'meaningful special-char value kept');
+  eq(e.fillValue({ label: 'City' }, 'New York'), 'New York', 'real city value "New York" kept (not mistaken for a placeholder)');
+}
+
 console.log('10. Per-run identity is unique across runs but consistent within a run');
 {
   const a = new TestDataEngine('runId-AAA');

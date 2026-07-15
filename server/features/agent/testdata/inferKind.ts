@@ -45,6 +45,12 @@ const RULES: Rule[] = [
   { kind: 'country', text: /country/, autocomplete: ['country', 'country-name'] },
   { kind: 'postalCode', text: /zip|postal|pin\s?code|post\s?code/, autocomplete: ['postal-code'] },
 
+  // Developer-platform identifiers (generic web-admin concepts, not app facts): api/system names must be
+  // identifier-shaped, prefixes are short codes, versions are semver-ish — free text breaks their validation.
+  { kind: 'apiName', text: /api[\s_-]?name|developer\s?name|internal\s?name|system\s?name|machine\s?name/ },
+  { kind: 'codePrefix', text: /\bprefix\b|short\s?code|namespace/ },
+  { kind: 'version', text: /\bversion\b|\bver\.?\s?(no|number)\b|\brelease\b/ },
+
   { kind: 'employeeId', text: /employee\s?(id|no|number|code)|\bemp\s?id\b|staff\s?(id|number)/ },
   { kind: 'customerId', text: /customer\s?(id|no|number)|client\s?(id|number)|account\s?(id|number|no)/ },
   { kind: 'orderNumber', text: /order\s?(no|number|id)|\bpo\s?(no|number)\b|purchase\s?order/ },

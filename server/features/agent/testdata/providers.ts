@@ -64,11 +64,31 @@ export function password(r: SeededRandom): string {
 
 export function loremPhrase(r: SeededRandom): string { return r.pick(LOREM); }
 
+/** A phrase made cross-run unique by a short seeded token — for NAME-like create-form fields, where the
+ * small phrase pool would otherwise collide across runs and trip "already exists" validation. */
+export function uniquePhrase(r: SeededRandom): string {
+  return `${r.pick(LOREM)} ${r.alnum(1, 'abcdefghijkmnpqrstuvwxyz')}${r.digits(2)}`;
+}
+
 export function website(r: SeededRandom): string { return `https://${r.pick(COMPANY_HEADS).toLowerCase()}.example.test`; }
 
 /** A prefixed identifier, e.g. EMP-4821, ORD-90342. Prefix derived from intent, digits seeded. */
 export function prefixedId(prefix: string, digitsLen: number, r: SeededRandom): string {
   return `${prefix}-${r.digits(digitsLen)}`;
+}
+
+/** Identifier-style API/developer name: lowercase snake_case, letter-first, digits keep it per-run unique. */
+export function apiIdentifier(r: SeededRandom): string {
+  return `${r.alnum(6, 'abcdefghijkmnpqrstuvwxyz')}_${r.digits(2)}`;
+}
+/** Short code/prefix (e.g. app or namespace prefix): 3 lowercase letters — the most common prefix
+ * convention; captured maxLength/minLength constraints still reshape it per field when present. */
+export function shortCode(r: SeededRandom): string {
+  return r.alnum(3, 'abcdefghijkmnpqrstuvwxyz');
+}
+/** Semantic version string, e.g. 2.4.1. */
+export function versionString(r: SeededRandom): string {
+  return `${r.int(1, 3)}.${r.int(0, 9)}.${r.int(0, 9)}`;
 }
 
 /* --- Synthetic government/financial IDs — structurally valid FORMATS, never real numbers, test-only --- */

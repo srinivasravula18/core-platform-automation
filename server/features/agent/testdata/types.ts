@@ -39,6 +39,7 @@ export const FIELD_KINDS = [
   'password', 'confirmPassword', 'otp',
   'search', 'url', 'date', 'time', 'amount', 'quantity', 'number',
   'description', 'title', 'subject',
+  'apiName', 'codePrefix', 'version',
   'employeeId', 'customerId', 'orderNumber', 'invoiceNumber', 'referenceId',
   'pan', 'gst', 'aadhaar', 'passport', 'license', 'creditCard', 'cvv', 'expiry',
   'unknown',

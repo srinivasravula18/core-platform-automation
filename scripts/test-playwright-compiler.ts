@@ -72,6 +72,26 @@ function main() {
   ok(r.code.includes('app9'), 'mission carries the appId');
   ok(!/searchParams/.test(r.code), 'no searchParams manipulation');
 
+  console.log('assertions expect the ENGINE-RESOLVED values (fill ↔ expectValue stay consistent)');
+  {
+    const p: TestPlan = { mission: runtime.executionScope, title: 'create app', steps: [
+      { action: 'FILL', target: 'Label *', value: 'unique_label' },
+      { assert: 'HAS_VALUE', target: 'Label *', value: 'unique_label' },
+      { action: 'FILL', target: 'API Name *', value: 'unique_api_name' },
+      { assert: 'HAS_VALUE', target: 'API Name *', value: 'unique_api_name' },
+      { assert: 'HAS_VALUE', target: 'Prefix *', value: '' },
+    ] };
+    const rc = playwrightCompiler.compile({ mission: runtime, plan: p, evidenceGraph: graph, run });
+    ok(rc.ok, 'threading plan compiles');
+    ok(!rc.code.includes('"unique_label"'), 'placeholder fill value replaced by a generated value');
+    const fillLabel = /runner\.fill\(\{[^}]*create-app-label[^}]*\}, ("[^"]+")\)/.exec(rc.code);
+    const expectLabel = /runner\.expectValue\(\{[^}]*create-app-label[^}]*\}, ("[^"]*")\)/.exec(rc.code);
+    ok(!!fillLabel && !!expectLabel && fillLabel[1] === expectLabel[1], `expectValue matches the resolved fill (${fillLabel?.[1]} vs ${expectLabel?.[1]})`);
+    const fillApi = /runner\.fill\(\{[^}]*create-app-api[^}]*\}, ("[^"]+")\)/.exec(rc.code);
+    ok(!!fillApi && /^"[a-z]+_\d{2}"$/.test(fillApi[1]), `api name resolved to an identifier shape (${fillApi?.[1]})`);
+    ok(/expectValue\(\{[^}]*create-app-prefix[^}]*\}, ""\)/.test(rc.code), 'deliberate empty-value expectation stays ""');
+  }
+
   console.log('ungrounded target → diagnostic + marker, never a guess');
   const bad: TestPlan = { mission: runtime.executionScope, steps: [
     { action: 'CLICK', target: 'Apps' },       // not unique → withheld from the graph

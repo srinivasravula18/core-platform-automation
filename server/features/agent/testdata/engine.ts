@@ -40,8 +40,12 @@ const GENERATORS: Record<FieldKind, Generator> = {
   quantity: (_id, r) => p.quantity(r),
   number: (_id, r) => p.integerValue(r),
   description: (_id, r) => p.loremPhrase(r),
-  title: (_id, r) => p.loremPhrase(r),
+  // Name-like fields feed create forms with uniqueness checks — a bare pool phrase collides across runs.
+  title: (_id, r) => p.uniquePhrase(r),
   subject: (_id, r) => p.loremPhrase(r),
+  apiName: (_id, r) => p.apiIdentifier(r),
+  codePrefix: (_id, r) => p.shortCode(r),
+  version: (_id, r) => p.versionString(r),
   employeeId: (_id, r) => p.prefixedId('EMP', 5, r),
   customerId: (_id, r) => p.prefixedId('CUST', 6, r),
   orderNumber: (_id, r) => p.prefixedId('ORD', 6, r),
@@ -55,7 +59,7 @@ const GENERATORS: Record<FieldKind, Generator> = {
   creditCard: () => p.creditCard(),
   cvv: (_id, r) => p.cvv(r),
   expiry: (_id, r) => p.expiry(r),
-  unknown: (_id, r) => p.loremPhrase(r),
+  unknown: (_id, r) => p.uniquePhrase(r),
 };
 
 /** A stable per-field key so the same field yields the same value across reruns. */
@@ -86,7 +90,10 @@ function isGenericPlanValue(value: string | undefined | null): boolean {
   const v = String(value ?? '').trim().toLowerCase();
   if (!v) return true;
   return /^(auto|value|text|sample|test|test\s?data|placeholder|input|xxx+|todo|n\/?a|string|example|dummy|foo|bar)$/.test(v)
-    || /^(known|some|a|the)\s/.test(v)  // "known partial app name", "some value"
+    || /^(known|some|a|an|the)[\s_-]/.test(v)  // "known partial app name", "some value"
+    // Author placeholders like "unique_label", "any parent app", "valid values", "test-prefix" — these
+    // describe the KIND of value, not a value; filling them verbatim breaks form validation/uniqueness.
+    || /^(unique|any|valid|some|existing|test|sample|dummy|generic|placeholder|appropriate|desired|required)([ _-][a-z0-9]+)+$/.test(v)
     || /random|no\s?match|gibberish/.test(v);
 }
 
