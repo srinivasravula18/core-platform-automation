@@ -9,7 +9,19 @@ import type { Compiler, CompileInput, CompileResult, Diagnostic } from './Compil
 import { resolveTarget } from '../graph/groundingEngine';
 import { isActionStep, type ActionStep, type AssertStep, type PlanStep } from './testPlan';
 import { TestDataEngine, type FieldSemantics } from '../testdata';
-import type { EvidenceNode } from '../graph/evidenceGraph';
+import { isRequiredFieldNode, type EvidenceNode } from '../graph/evidenceGraph';
+
+/** A submit-intent CLICK — the button that commits a create/edit. App-agnostic verbs; matched against the
+ * grounded control's role+label so completing the form before it fires makes create/submit flows succeed. */
+function isSubmitClick(step: PlanStep, node: EvidenceNode | null): boolean {
+  if (!isActionStep(step) || step.action !== 'CLICK' || String(node?.role || '').toLowerCase() !== 'button') return false;
+  return /^(save|create|submit|add|confirm|finish|done|save\s*&\s*new|create\s*&\s*new|save and new|create and new)\b/i.test(String(node?.label || '').trim());
+}
+
+/** A negative/validation case deliberately leaves fields empty (that emptiness IS the test) — never auto-complete it. */
+function isNegativeCase(plan: { title?: string | null }): boolean {
+  return /\b(empty|blank|without|missing|invalid|blocked|required\s+error|validation|negative|cannot|not\s+allowed|leave\s+\w+\s+empty|no\s+\w+\s+(provided|entered))\b/i.test(String(plan?.title || ''));
+}
 
 // Actions/assertions are emitted through MissionRunner's reveal-then-act helpers (not raw locator calls), so
 // every interaction first reveals hover-gated controls (column filter/sort/wrap triggers, row menus, …).
@@ -116,7 +128,46 @@ export class PlaywrightCompiler implements Compiler {
     // values, or every expectValue after a generated fill fails on the plan's placeholder text.
     const resolvedBySelector = new Map<string, string>();
     const planToResolved = new Map<string, string>();
+
+    // Required-field completion: the authored plan often fills only the fields the case happened to name, then
+    // clicks Save — and the create fails because OTHER required fields are empty. Before the first submit, fill
+    // every mandatory field the plan omitted with an API-accepted value (schema-conformant when the backend
+    // schema is known). Positive create/submit flows only — negative/validation cases are left untouched.
+    // Must be a FILLABLE control — a list column button/header can share a label with a required schema
+    // field (e.g. "Account Number"), and filling a button is nonsense. isRequiredFieldNode already gates on
+    // role; the schema branch does not, so gate here for both.
+    const FILLABLE_ROLES = new Set(['textbox', 'combobox', 'spinbutton', 'listbox']);
+    const requiredNodes = isNegativeCase(plan) ? [] : evidenceGraph.nodes.filter((n) =>
+      n.selector && n.uniqueness === true && n.confidence === 'verified-live' && n.provenance === 'LIVE_DOM'
+      && FILLABLE_ROLES.has(String(n.role || '').toLowerCase())
+      && (isRequiredFieldNode(n) || engine.isRequiredBySchema(fieldSemanticsFromNode(n))));
+    const plannedSelectors = new Set<string>();
+    let submitIndex = -1;
+    if (requiredNodes.length) {
+      plan.steps.forEach((step, i) => {
+        if (!isActionStep(step)) return;
+        const g = resolveTarget((step as any).target, evidenceGraph, run);
+        if (g.status !== 'RESOLVED') return;
+        if (['FILL', 'SELECT', 'CHECK', 'CLEAR'].includes(step.action) && g.selector) plannedSelectors.add(String(g.selector));
+        if (submitIndex < 0 && isSubmitClick(step, g.node)) submitIndex = i;
+      });
+    }
+    const missingRequired = submitIndex >= 0 ? requiredNodes.filter((n) => !plannedSelectors.has(String(n.selector))) : [];
+    const emitRequiredCompletion = () => {
+      for (const node of missingRequired) {
+        const spec = JSON.stringify({ selector: node.selector, selectorType: node.selectorType, role: node.role ?? null, label: node.label ?? null });
+        const isSelect = ['combobox', 'listbox'].includes(String(node.role || '').toLowerCase());
+        const synthetic = { action: isSelect ? 'SELECT' : 'FILL', target: node.semanticName, value: null } as unknown as ActionStep;
+        const value = resolveStepValue(engine, synthetic, node);
+        resolvedBySelector.set(String(node.selector), value);
+        body.push(emitAction(synthetic, spec, value));
+      }
+      if (missingRequired.length) body.push('  // ^ required fields the plan omitted, auto-completed with API-accepted values so the submit is not blocked by empty required inputs');
+    };
+
     plan.steps.forEach((step: PlanStep, i: number) => {
+      // Complete the form's remaining required fields immediately BEFORE the submit click fires.
+      if (i === submitIndex) emitRequiredCompletion();
       // OPEN_MODULE is mission-owned navigation: emit runner.openModule() and never ground it as a locator.
       if (isActionStep(step) && step.action === 'OPEN_MODULE') {
         body.push('  await runner.openModule();');

@@ -36,6 +36,9 @@ export interface AuthorTestCasesInput {
   mission: MissionRef | null;
   /** Normalized user goal/prompt text (WorkflowRequest.goal). */
   goal: string;
+  /** The chat's code-grounded feature analysis (behaviors, validation rules, derivations, payload, edges).
+   * Rendered into the prompt so the writer authors the REAL behaviors, not just what the bare DOM implies. */
+  understanding?: string;
   /** 0 = complexity-driven (model chooses a defensible count); >0 = exact count. */
   requestedCaseCount: number;
   /** Grounding vocabulary — rendered via renderTargetCatalogForPrompt, never dumped raw. */
@@ -344,14 +347,22 @@ function buildCasesPrompt(input: AuthorTestCasesInput, catalog: string): string 
   const avoid = input.avoidCaseTitles?.length
     ? `\nGAP MODE: the user ALREADY has these test cases — do NOT re-author them or trivial rewordings; author only genuinely NEW behaviors not covered below:\n${input.avoidCaseTitles.slice(0, 40).map((t) => `- ${t}`).join('\n')}`
     : '';
+  // The chat's code-grounded analysis — the writer's SOURCE OF BEHAVIORS. Bounded so the prompt stays sane;
+  // the catalog stays the locator authority (every step still names a real catalog control).
+  const understanding = String(input.understanding || '').trim();
+  const understandingBlock = understanding
+    ? `\nVERIFIED FEATURE ANALYSIS (code-grounded — author cases that COVER these real behaviors, rules, derivations, validations, and edges; each step must still target a control from the catalog below):\n${understanding.slice(0, 6000)}\n`
+    : '';
   return `Author test cases for this goal.
 GOAL: ${input.goal}
 ${countLine}
-${renderMissionRefForPrompt(input.mission)}${authNote(input.hasStoredCredentials)}${avoid}
+${renderMissionRefForPrompt(input.mission)}${authNote(input.hasStoredCredentials)}${understandingBlock}${avoid}
 ${catalog}
 CASE RULES:
 - Each case: short plain-English title naming ONE behavior; one-sentence description; concrete preconditions.
 - STEPS: each step is one specific user action naming a real on-screen control from the catalog evidence, paired with its own observable expected result. No vague steps, no invented labels, no login/authentication steps.
+- When a VERIFIED FEATURE ANALYSIS is provided, author a case for EACH distinct behavior/rule/edge in it that the live catalog can exercise (derivations, per-field validation, state changes, disabled/empty states) — do not collapse it to a few generic open/cancel cases.
+- A happy-path create/submit case MUST include a fill step for EVERY catalog field marked (required) before the save/create step; a partially filled form fails to submit.
 - Cover the highest-value behaviors the evidence supports first (happy path, negative/validation, disabled/empty/permission states).
 - tags use @ format (e.g. @regression, @ui, @positive, @negative); set priority and type per case.`;
 }
@@ -372,6 +383,7 @@ PLAN RULES:
 - Actions: ${PLAN_ACTIONS.join(', ')}. Asserts: ${PLAN_ASSERTS.join(', ')}.
 - Every locator-bearing target (CLICK/FILL/asserts) MUST be a catalog name verbatim. OPEN_MODULE is mission-scoped navigation intent — its target is advisory and needs no catalog match.
 - Translate EVERY source step into plan steps — never drop or merge away behavior.
+- CREATE/SUBMIT flows: before any save/create/submit CLICK, emit a FILL (or SELECT) for EVERY catalog field marked (required). A form submitted with an empty required field is rejected — this is the #1 cause of failed creates.
 - Set unused optional fields (mission/module/title/value) to null.`;
 }
 

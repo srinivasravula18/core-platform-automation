@@ -49,6 +49,9 @@ export interface WorkflowRequest {
   requestedCaseCount: number;
   reviewPolicy: 'auto' | 'manual';
   executionPolicy: 'auto' | 'manual' | 'skip';
+  /** The chat's approved, code-grounded understanding of the feature (behaviors, rules, edges). Threaded
+   * into case authoring so the writer grounds on the analysis too, not just the bare prompt + live DOM. */
+  understanding?: string;
 }
 
 /** Frozen mission reference — the execution-scope authority resolved by `resolve_mission`. */
@@ -370,6 +373,7 @@ const workflowRequestSchema = z.object({
   requestedCaseCount: z.number().int().nonnegative(),
   reviewPolicy: z.enum(['auto', 'manual']),
   executionPolicy: z.enum(['auto', 'manual', 'skip']),
+  understanding: z.string().optional(),
 });
 
 const missionRefSchema = z.object({

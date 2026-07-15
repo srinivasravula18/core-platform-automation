@@ -54,3 +54,10 @@ export {
   closeWorkflowCheckpointer,
   isWorkflowGraphEnabled,
 } from '../../server/features/agent/workflow/checkpointer';
+
+export {
+  reconcileRunIfOrphaned,
+  reconcileOrphanedRunsOnStartup,
+  orphanedRunFailure,
+  isGraphRunActive,
+} from '../../server/features/agent/workflow/runtime';

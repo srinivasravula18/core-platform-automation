@@ -4,7 +4,7 @@
  * picks targets from this closed list; anything it invents will fail grounding (UNRESOLVED_SELECTOR), which
  * is the point — invention becomes an explicit error, never a silent hallucinated locator.
  */
-import type { EvidenceGraph } from '../graph/evidenceGraph';
+import { isRequiredFieldNode, type EvidenceGraph } from '../graph/evidenceGraph';
 
 export interface RenderCatalogOpts {
   /** Max entries to render (keeps the prompt bounded). */
@@ -24,9 +24,14 @@ export function renderTargetCatalogForPrompt(graph: EvidenceGraph | null | undef
     const role = n.role ? ` [${n.role}]` : '';
     const label = n.label ? ` "${n.label}"` : '';
     const meta = n.metadataRef ? ` (metadata: ${n.metadataRef})` : '';
-    return `- ${n.semanticName}${role}${label}${meta}`;
+    // Flag mandatory fields so the author fills EVERY required field of a create/submit flow, not a subset.
+    const required = isRequiredFieldNode(n) ? ' (required)' : '';
+    return `- ${n.semanticName}${role}${label}${required}${meta}`;
   });
   const omitted = usable.length - shown.length;
   const note = omitted > 0 ? `\n(+${omitted} more verified controls not shown; ask for a targeted re-discovery if you need one.)` : '';
-  return `SEMANTIC TARGET CATALOG (use ONLY these target names — never invent selectors, labels, roles, or URLs):\n${lines.join('\n')}${note}`;
+  const requiredNote = shown.some((n) => isRequiredFieldNode(n))
+    ? '\nFor a create/submit flow, FILL every field marked (required) before the save/create step — a partially filled form is rejected.'
+    : '';
+  return `SEMANTIC TARGET CATALOG (use ONLY these target names — never invent selectors, labels, roles, or URLs):\n${lines.join('\n')}${note}${requiredNote}`;
 }

@@ -232,7 +232,12 @@ export function buildTestRunGraph(deps: TestRunGraphDeps = {}, opts: BuildTestRu
       try {
         const { fetchObjectSchema } = await import('../../../ai/tools/corePlatformData');
         const conn = { baseUrl: state.mission.targetUrl, token: credential.token, username: credential.username, password: credential.password };
-        const hints = [state.mission.moduleId, state.mission.tabId].filter(Boolean) as string[];
+        // The object under test is most reliably named by the URL's ?object= param (runtime surfaces carry it),
+        // then the module/tab; include the goal's nouns so "create a new account" still resolves the account object.
+        const objFromUrl = (() => { try { return new URL(state.mission.targetUrl).searchParams.get('object') || ''; } catch { return ''; } })();
+        const GOAL_STOPWORDS = new Set(['create', 'creating', 'new', 'add', 'adding', 'edit', 'update', 'test', 'tests', 'testing', 'case', 'cases', 'the', 'for', 'and', 'with', 'that', 'into', 'from', 'user', 'app', 'apps', 'page', 'form', 'record', 'records', 'write', 'generate']);
+        const goalNouns = (String(state.request?.goal || '').toLowerCase().match(/[a-z][a-z0-9_]{2,}/g) || []).filter((w) => !GOAL_STOPWORDS.has(w));
+        const hints = [objFromUrl, state.mission.moduleId, state.mission.tabId, ...goalNouns].filter(Boolean) as string[];
         const schema = await fetchObjectSchema(conn as any, state.mission.applicationId, hints);
         if (schema.length) stashArtifacts(state.runId, { objectSchema: schema });
       } catch { /* schema is an enhancement — its absence just falls back to DOM-semantic generation */ }
@@ -325,6 +330,8 @@ export function buildTestRunGraph(deps: TestRunGraphDeps = {}, opts: BuildTestRu
     const result = await authorCases({
       mission: state.mission,
       goal: state.request.goal,
+      // The chat's code-grounded analysis — grounds authoring on real behaviors/rules, not just prompt + DOM.
+      understanding: state.request.understanding,
       requestedCaseCount: state.request.requestedCaseCount,
       evidenceGraph: evidenceGraph ?? null,
       overrides: deps.modelOverrides,

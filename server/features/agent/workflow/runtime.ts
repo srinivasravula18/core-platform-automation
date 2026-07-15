@@ -32,6 +32,8 @@ export interface StartGraphRunOptions {
   projectId?: string;
   requestedBy?: string;
   goal: string;
+  /** The chat's code-grounded understanding of the feature — threaded into case authoring alongside the goal. */
+  understanding?: string;
   requestedCaseCount: number;
   reviewPolicy: 'auto' | 'manual';
   executionPolicy?: 'auto' | 'manual' | 'skip';
@@ -376,6 +378,7 @@ export async function startGraphRun(opts: StartGraphRunOptions): Promise<void> {
     requestedBy: opts.requestedBy ?? 'system',
     request: {
       goal: opts.goal,
+      understanding: opts.understanding,
       requestedCaseCount: opts.requestedCaseCount,
       reviewPolicy: opts.reviewPolicy,
       executionPolicy: opts.executionPolicy ?? 'auto',
@@ -485,4 +488,65 @@ export async function getPendingReview(runId: string): Promise<{ correlationId: 
 /** True while the run's background pump is executing in this process. */
 export function isGraphRunActive(runId: string): boolean {
   return registry.get(runId)?.pumping ?? false;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Orphaned-run reconciliation.
+//
+// A run's heavy artifacts (evidenceGraph/plans/compiledSources) live ONLY in this process's
+// in-memory stash; the checkpoint holds refs, not payloads. So when the backend restarts or the
+// process dies mid-run, the pump is gone and the stash with it — the run can never advance, yet its
+// persisted status stays 'running' and the UI spins forever. These helpers make that state truthful:
+// a non-terminal graph run with no live pump here is failed, with an actionable reason.
+// ---------------------------------------------------------------------------------------------
+
+/** Below this, a just-projected run gets the benefit of the doubt — covers the microtask gap between
+ * registry.set and the pump flipping `pumping` true, so a fresh run is never mistaken for orphaned. */
+const ORPHAN_STALE_MS = 3 * 60 * 1000;
+
+/** Rewrites a stuck run into a truthful failed record: still-'running' chips become 'skipped', a Workflow
+ * failure line is appended, and any pending-review pointer is cleared. */
+function buildOrphanFailedRecord(run: any, reason: string): any {
+  const messages = (Array.isArray(run.messages) ? run.messages : [])
+    .map((m: any) => (m && m.status === 'running' ? { ...m, status: 'skipped' } : m));
+  messages.push({ agent: 'Workflow', status: 'failed', output: `stage: finalize — status: failed (${reason})` });
+  return { ...run, status: 'failed', pending_review: null, messages: messages.slice(-MAX_PROJECTED_MESSAGES) };
+}
+
+/** Is this graph run orphaned right now? Only 'running'/'queued' graph runs with no live pump here AND no
+ * recent projection qualify — terminal, review-paused (resumable), actively-pumping, legacy, and just-started
+ * runs are all left untouched. Pure (no I/O) so read paths can call it cheaply. */
+export function orphanedRunFailure(run: any): any | null {
+  if (!run || String(run.engine) !== 'langgraph') return null; // legacy pipeline owns its own lifecycle
+  const status = String(run.status || '');
+  if (status !== 'running' && status !== 'queued') return null; // terminal or review_required → leave alone
+  if (isGraphRunActive(String(run.id || ''))) return null;      // a live pump is advancing it → not orphaned
+  const updated = Date.parse(String(run.updated_at || run.updatedAt || run.created_at || '')) || 0;
+  if (updated && Date.now() - updated < ORPHAN_STALE_MS) return null; // projected moments ago → give it room
+  return buildOrphanFailedRecord(run, 'Run was interrupted (server restart or crash) and could not resume — please start it again.');
+}
+
+/** Lazy self-heal for read paths: if the run is orphaned, persist the failed record and return it, else null. */
+export async function reconcileRunIfOrphaned(run: any): Promise<any | null> {
+  const failed = orphanedRunFailure(run);
+  if (!failed) return null;
+  await upsertSafe(String(run.id), failed);
+  return failed;
+}
+
+/** Boot-time sweep: this process's registry starts empty, so every persisted non-terminal graph run is from
+ * a dead process and can't resume — fail them all up front (no staleness grace; the prior process is gone). */
+export async function reconcileOrphanedRunsOnStartup(): Promise<number> {
+  let runs: any[] = [];
+  try { runs = await AgentRuns.list(); } catch { runs = Array.isArray(db.agentRuns) ? db.agentRuns : []; }
+  let n = 0;
+  for (const run of runs) {
+    if (String(run?.engine) !== 'langgraph') continue;
+    const status = String(run?.status || '');
+    if (status !== 'running' && status !== 'queued') continue;
+    await upsertSafe(String(run.id), buildOrphanFailedRecord(run, 'Run was interrupted by a server restart and could not resume — please start it again.'));
+    n += 1;
+  }
+  if (n) console.log(`[workflow] reconciled ${n} orphaned run(s) left non-terminal by a previous process`);
+  return n;
 }

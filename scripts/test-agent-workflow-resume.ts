@@ -15,6 +15,7 @@ import {
 } from '../server/features/agent/workflow/testRunGraph';
 import {
   startGraphRun, resumeGraphRun, cancelGraphRun, getGraphRunState, isGraphRunActive, projectStateToLegacyRun,
+  orphanedRunFailure,
 } from '../server/features/agent/workflow/runtime';
 import { runExecutionNode } from '../server/features/agent/workflow/nodes/execution';
 import type { RunContextNodeInput, RunContextNodeResult } from '../server/features/agent/workflow/nodes/context';
@@ -70,7 +71,7 @@ function makeElement(): VerifiedElement {
 }
 
 function makeStubs(o: { discoveryDelayMs?: number } = {}) {
-  const counters = { discovery: 0, cases: 0, plans: 0, execution: 0 };
+  const counters = { discovery: 0, cases: 0, plans: 0, execution: 0, lastCasesUnderstanding: undefined as string | undefined };
   const contextNode = async (_input: RunContextNodeInput): Promise<RunContextNodeResult> => ({
     context: { metadata: { ref: 'app9', digest: 'meta-digest-1', objectCount: 3, source: 'live' } },
     errors: [],
@@ -87,6 +88,7 @@ function makeStubs(o: { discoveryDelayMs?: number } = {}) {
   };
   const authorCases = async (_input: AuthorTestCasesInput): Promise<AuthorTestCasesResult> => {
     counters.cases++;
+    counters.lastCasesUnderstanding = _input.understanding; // capture: prove the chat analysis reaches the writer
     return {
       cases: [{
         title: 'New button is visible on Accounts',
@@ -455,6 +457,60 @@ function testProjectionUnit() {
 }
 
 // ---------------------------------------------------------------------------
+async function testOrphanReconciliation() {
+  console.log('8. Orphaned-run reconciliation (restart/crash leaves no run spinning forever)');
+  const old = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+  const fresh = new Date().toISOString();
+
+  // Orphaned: a graph run stuck 'running', no live pump in this process, stale → becomes a truthful failure.
+  const orphan = { id: `orphan-${Date.now()}`, engine: 'langgraph', status: 'running', updated_at: old,
+    messages: [{ agent: 'ApplicationInspector', status: 'running', output: 'Discovering…' }, { agent: 'ScopeAgent', status: 'completed', output: 'Done.' }] };
+  const failed = orphanedRunFailure(orphan);
+  ok(failed?.status === 'failed', 'stale running graph run with no live pump → failed');
+  ok(failed?.pending_review === null, 'reconciled record clears any pending review');
+  ok(failed?.messages?.some((m: any) => m.agent === 'Workflow' && m.status === 'failed' && /interrupted/i.test(m.output)), 'a truthful failure line names the interruption');
+  ok(!failed?.messages?.some((m: any) => m.status === 'running'), 'no chip is left spinning (running → skipped)');
+  ok(failed?.messages?.some((m: any) => m.agent === 'ApplicationInspector' && m.status === 'skipped'), 'the in-flight inspector chip is downgraded to skipped');
+
+  // Left ALONE: terminal, review-paused (resumable), legacy-engine, and just-projected runs.
+  eq(orphanedRunFailure({ ...orphan, status: 'completed' }), null, 'completed run is never reconciled');
+  eq(orphanedRunFailure({ ...orphan, status: 'review_required' }), null, 'review-paused run (resumable) is left alone');
+  eq(orphanedRunFailure({ ...orphan, engine: 'legacy' }), null, 'legacy-engine run is not touched (owns its own lifecycle)');
+  eq(orphanedRunFailure({ ...orphan, updated_at: fresh }), null, 'a just-projected run gets the benefit of the doubt (staleness grace)');
+
+  // An ACTIVELY-PUMPING run is never reconciled even if its last projection is old (long node between streams).
+  const runA = `orphan-active-${Date.now()}`;
+  const activeStubs = makeStubs({ discoveryDelayMs: 600 });
+  await startGraphRun({ runId: runA, goal: 'active', requestedCaseCount: 1, reviewPolicy: 'auto', mission: fixtureMission, graphDeps: activeStubs.deps });
+  await sleep(120);
+  ok(isGraphRunActive(runA), 'run is actively pumping');
+  eq(orphanedRunFailure({ id: runA, engine: 'langgraph', status: 'running', updated_at: old }), null, 'a live-pumping run is never reconciled, even with a stale timestamp');
+  await cancelGraphRun(runA);
+  await sleep(700);
+  await AgentRuns.remove(runA);
+  clearArtifacts(runA);
+}
+
+// ---------------------------------------------------------------------------
+async function testUnderstandingThreading() {
+  console.log('9. Chat understanding threads through to the case writer (not just prompt + DOM)');
+  const stubs = makeStubs();
+  const runU = `wfrt-understanding-${Date.now()}`;
+  const understanding = 'VERIFIED ANALYSIS: Label derives API Name by lowercasing + underscoring; Prefix is lowercased on change; Version accepts free text.';
+  await startGraphRun({
+    runId: runU, goal: 'write cases for app creation', requestedCaseCount: 1, reviewPolicy: 'auto',
+    understanding,
+    mission: fixtureMission,
+    graphDeps: stubs.deps,
+  });
+  ok(await waitFor(async () => stubs.counters.cases > 0, 5000), 'case authoring ran');
+  eq(stubs.counters.lastCasesUnderstanding, understanding, 'the case writer received the chat understanding verbatim');
+  ok(!isGraphRunActive(runU) || (await AgentRuns.get(runU))?.status === 'completed', 'run reached a terminal/settled state');
+  await AgentRuns.remove(runU);
+  clearArtifacts(runU);
+}
+
+// ---------------------------------------------------------------------------
 async function main() {
   // Hermetic: force the in-memory JSON store + MemorySaver checkpointer regardless of the shell env.
   delete process.env.DATABASE_URL;
@@ -471,6 +527,8 @@ async function main() {
   await testDuplicateExecutionSkip(shared);
   await testRuntimeCancelAndResume();
   testProjectionUnit();
+  await testOrphanReconciliation();
+  await testUnderstandingThreading();
 
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed === 0 ? 0 : 1);

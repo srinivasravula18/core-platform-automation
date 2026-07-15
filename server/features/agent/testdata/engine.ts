@@ -114,6 +114,15 @@ export class TestDataEngine {
   /** The run's coherent identity (exposed for reuse/consistency by callers that need it directly). */
   getIdentity(): GeneratedIdentity { return this.identity; }
 
+  /** Whether any object schema was supplied — lets callers prefer schema-driven behavior only when it exists. */
+  hasSchema(): boolean { return this.schemas.length > 0; }
+
+  /** Does the backend API mark this field REQUIRED? The schema is the authority on which fields a create
+   * form must fill; used by the compiler to complete a form before submit even when the plan omitted it. */
+  isRequiredBySchema(sem: FieldSemantics): boolean {
+    return matchSchemaField(sem, this.schemas)?.required === true;
+  }
+
   /** Resolve a text value for a FILL. Explicit meaningful plan value wins; else schema-conformant when a
    * backend field matches; else DOM-semantic generation. Uniqueness-constrained fields are kept distinct. */
   fillValue(sem: FieldSemantics, planValue?: string | null): string {

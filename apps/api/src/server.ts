@@ -21,7 +21,7 @@ import { registerScreenshotRoutes } from '../../../services/screenshots';
 import { registerSearchRoutes } from '../../../services/search';
 import { registerSettingsRoutes, registerAiSettingsRoutes } from '../../../services/settings';
 import { registerApiIntelligenceRoutes } from '../../../services/api-intelligence';
-import { getWorkflowCheckpointer, closeWorkflowCheckpointer, isWorkflowGraphEnabled } from '../../../services/orchestration';
+import { getWorkflowCheckpointer, closeWorkflowCheckpointer, isWorkflowGraphEnabled, reconcileOrphanedRunsOnStartup } from '../../../services/orchestration';
 
 let processGuardsInstalled = false;
 
@@ -73,6 +73,9 @@ export async function createExpressApp() {
     // Fail-closed: let construction errors (e.g. production without DATABASE_URL) crash startup, not log-and-continue.
     await getWorkflowCheckpointer();
     console.log('[workflow] graph runtime checkpointer initialized');
+    // This fresh process has no in-flight runs, so any run still 'running' in the store was orphaned by the
+    // previous process (its in-memory stash died with it) — fail them now instead of leaving the UI spinning.
+    await reconcileOrphanedRunsOnStartup().catch((err) => console.error('[workflow] orphaned-run reconcile failed:', err?.message || err));
   }
 
   await loadPersistedSettings();

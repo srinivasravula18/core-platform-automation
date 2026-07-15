@@ -157,6 +157,22 @@ export function evidenceBySemanticName(g: EvidenceGraph, name: string): Evidence
   return g.nodes.filter((n) => n.semanticName.toLowerCase() === q);
 }
 
+/** Editable control roles the Test Data Engine can fill/select — the only ones required-completion targets. */
+const FILLABLE_ROLES = new Set(['textbox', 'combobox', 'spinbutton', 'listbox']);
+
+/** Is this a REQUIRED, fillable form field? App-agnostic: reads the DOM's own required flag, then the
+ * near-universal "*" / "(required)" label conventions — never a hardcoded field name. Used both to mark the
+ * catalog for the authors and to drive the compiler's deterministic required-field completion before submit. */
+export function isRequiredFieldNode(node: EvidenceNode | null | undefined): boolean {
+  if (!node) return false;
+  if (!FILLABLE_ROLES.has(String(node.role || '').toLowerCase())) return false;
+  if (node.fieldMeta?.required === true) return true;
+  const label = String(node.label || '').trim();
+  // "Name *", "Email*", "Prefix (required)", "Account Number — required" — conservative: a trailing marker
+  // only, so "Required Documents"/"Not required" don't false-positive into a fill.
+  return /[*]\s*$/.test(label) || /\(\s*required\s*\)\s*$/i.test(label) || /\brequired\s*$/i.test(label);
+}
+
 export function evidenceBySelectorRef(g: EvidenceGraph, selectorRef: string): EvidenceNode | null {
   return g.nodes.find((n) => n.selectorRef === selectorRef) || null;
 }

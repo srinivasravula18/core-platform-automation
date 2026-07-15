@@ -791,10 +791,25 @@ export async function fetchObjectSchema(conn: CatalogConn, appId: string, object
     };
     const objs = items(await authGet(`/api/apps/${enc(app)}/objects`)) as any[];
     const names = (Array.isArray(objs) ? objs : []).map((o) => String(o?.api_name || '')).filter(Boolean);
-    const wanted = new Set(objectHints.map((s) => String(s || '').toLowerCase().trim()).filter(Boolean));
-    // Hinted object(s) if any match, else the app's first business object — mirrors fetchTestDataPack's fallback.
-    const matched = names.filter((n) => wanted.has(n.toLowerCase()));
-    const picked = (matched.length ? matched : names.slice(0, 1)).slice(0, 2);
+    // Resolve the RIGHT object the user is creating — not just an exact string equality (which misses the
+    // common singular/plural + label-vs-api_name mismatch, e.g. hint "accounts" vs api_name "account", and
+    // silently described the app's FIRST object instead). Rank by match strength, fall back to first only
+    // when nothing matches at all.
+    const norm = (s: string) => String(s || '').toLowerCase().trim().replace(/[\s_-]+/g, '');
+    const singular = (s: string) => s.replace(/ies$/, 'y').replace(/([^s])s$/, '$1');
+    const hintset = objectHints.map(norm).filter(Boolean);
+    const scoreName = (n: string): number => {
+      const nn = norm(n);
+      let best = 0;
+      for (const h of hintset) {
+        if (nn === h) best = Math.max(best, 3);                       // exact
+        else if (singular(nn) === singular(h)) best = Math.max(best, 2); // singular/plural
+        else if (nn.includes(h) || h.includes(nn)) best = Math.max(best, 1); // substring either way
+      }
+      return best;
+    };
+    const ranked = names.map((n) => ({ n, s: scoreName(n) })).filter((x) => x.s > 0).sort((a, b) => b.s - a.s).map((x) => x.n);
+    const picked = (ranked.length ? ranked : names.slice(0, 1)).slice(0, 2);
     const out: ObjectSchema[] = [];
     for (const objName of picked) {
       let fields: any[] = [];

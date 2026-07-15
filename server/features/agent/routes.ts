@@ -65,7 +65,7 @@ import {
 import { generateCompiledScripts, aiqaCompilerEnabled } from './compiler/compiledGeneration';
 // LangGraph workflow runtime (flag-gated by AGENT_GRAPH_V2; legacy path is default and untouched).
 import { isWorkflowGraphEnabled } from './workflow/checkpointer';
-import { startGraphRun, resumeGraphRun, cancelGraphRun, getPendingReview } from './workflow/runtime';
+import { startGraphRun, resumeGraphRun, cancelGraphRun, getPendingReview, reconcileRunIfOrphaned, orphanedRunFailure } from './workflow/runtime';
 import type { MissionRef } from './workflow/state';
 import { renderTargetCatalogForPrompt } from './compiler/renderCatalogForPrompt';
 import { testPlanSchema, parseTestPlan } from './compiler/testPlan';
@@ -1154,6 +1154,19 @@ function saveAgentRunStateSoon(run: any, reason: string): void {
 }
 
 async function loadAgentRun(id: string): Promise<any | null> {
+  const run = await loadAgentRunRaw(id);
+  if (!run) return null;
+  // Self-heal on read: a graph run left 'running' by a dead process (no live pump, stash gone) can never
+  // advance — flip it to a truthful 'failed' the moment it's read so the UI never spins forever. No-op for
+  // terminal, review-paused, actively-pumping, legacy, and just-projected runs.
+  const healed = await reconcileRunIfOrphaned(run).catch(() => null);
+  if (!healed) return run;
+  const idx = db.agentRuns.findIndex((r: any) => r.id === id);
+  if (idx >= 0) { Object.assign(db.agentRuns[idx], healed); return db.agentRuns[idx]; }
+  return healed;
+}
+
+async function loadAgentRunRaw(id: string): Promise<any | null> {
   const live = db.agentRuns.find((run: any) => run.id === id);
   if (live) return live;
   const stored = await AgentRuns.get(id);
@@ -1555,6 +1568,9 @@ async function beginGraphRunFor(run: any, opts?: { seedCases?: any[]; avoidCaseT
     projectId: run.projectId || undefined,
     requestedBy: run.ownerId || undefined,
     goal: run.prompt || '',
+    // The chat's code-grounded feature analysis — so the case writer authors from the real behaviors/rules
+    // it found (derivation, validation, payload, edges), not just the one-line prompt + the live DOM catalog.
+    understanding: (resolveUnderstanding(run) || '').trim() || undefined,
     requestedCaseCount: Number(gs.requestedCaseCount) || 0,
     reviewPolicy: gs.reviewPolicy === 'auto' ? 'auto' : 'manual',
     mission: missionRefFromRun(run),
@@ -4655,10 +4671,17 @@ Rules:
   app.get('/api/agent-runs', async (req, res) => {
     res.set('Cache-Control', 'no-store');
     const runs = await AgentRuns.list();
-    res.json(scopeFilter(runs, reqScope(req)).map((run: any) => ({
-      ...run,
-      generated_cases: annotateGeneratedCasesWithProof(normalizeGeneratedCasesText(run.generated_cases || [], run), run),
-    })));
+    res.json(scopeFilter(runs, reqScope(req)).map((run: any) => {
+      // Truthful history: an orphaned graph run (dead process, no live pump) shows as failed, not a phantom
+      // "running". Persist the heal in the background so the list read stays fast.
+      const healed = orphanedRunFailure(run);
+      if (healed) void reconcileRunIfOrphaned(run).catch(() => undefined);
+      const shown = healed ?? run;
+      return {
+        ...shown,
+        generated_cases: annotateGeneratedCasesWithProof(normalizeGeneratedCasesText(shown.generated_cases || [], shown), shown),
+      };
+    }));
   });
 
   app.get('/api/agent-runs/:id/status', async (req, res) => {

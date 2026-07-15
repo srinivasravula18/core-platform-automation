@@ -125,6 +125,42 @@ function main() {
   ok(semanticCompiled.code.indexOf('runner.click') < semanticCompiled.code.indexOf('#create-app-label'), 'later-state form fields are asserted only after clicking New');
   ok(!semanticCompiled.code.includes('label":"Create"'), 'negated Create action is not turned into a positive assertion');
 
+  console.log('required-field completion: create/submit flows fill EVERY required field the plan omitted');
+  {
+    const formRun: any = { id: 'run-reqfill', selector_registry: { verified_selectors: [
+      vs('rf_label', 'textbox', 'Label *', '#f-label', 'css'),
+      vs('rf_api', 'textbox', 'API Name *', '#f-api', 'css'),
+      vs('rf_prefix', 'textbox', 'Prefix *', '#f-prefix', 'css'),
+      vs('rf_parent', 'combobox', 'Parent App *', '#f-parent', 'css'),
+      vs('rf_version', 'textbox', 'Version', '#f-version', 'css'), // optional — no required marker
+      vs('rf_create', 'button', 'Create', 'role=button[name="Create"]', 'role'),
+    ] } };
+    const formGraph = buildEvidenceGraphFromRun(formRun, { platform: 'Admin', module: 'apps' });
+    // Plan fills ONLY Label then clicks Create — exactly the "50% filled → submit fails" case.
+    const partial: TestPlan = { mission: runtime.executionScope, title: 'Create app with required fields', steps: [
+      { action: 'FILL', target: 'Label', value: 'unique_label' },
+      { action: 'CLICK', target: 'Create' },
+    ] };
+    const rc = playwrightCompiler.compile({ mission: runtime, plan: partial, evidenceGraph: formGraph, run: formRun });
+    ok(rc.ok, 'partial create plan compiles');
+    ok(/runner\.fill\(\{[^}]*#f-label/.test(rc.code), 'plan-named Label is filled');
+    ok(/runner\.fill\(\{[^}]*#f-api/.test(rc.code), 'omitted required API Name is auto-filled');
+    ok(/runner\.fill\(\{[^}]*#f-prefix/.test(rc.code), 'omitted required Prefix is auto-filled');
+    ok(/runner\.select\(\{[^}]*#f-parent/.test(rc.code), 'omitted required Parent App (combobox) is auto-selected');
+    ok(!/#f-version/.test(rc.code), 'optional Version (no marker) is NOT auto-filled');
+    const createAt = rc.code.indexOf('runner.click');
+    ok(rc.code.indexOf('#f-api') < createAt && rc.code.indexOf('#f-parent') < createAt, 'all required completions happen BEFORE the Create click');
+
+    // Negative/validation case: the emptiness IS the test — completion must not fire.
+    const neg: TestPlan = { mission: runtime.executionScope, title: 'Create is blocked when API Name is empty', steps: [
+      { action: 'FILL', target: 'Label', value: 'x' },
+      { action: 'CLICK', target: 'Create' },
+    ] };
+    const rn = playwrightCompiler.compile({ mission: runtime, plan: neg, evidenceGraph: formGraph, run: formRun });
+    ok(!/#f-api/.test(rn.code), 'negative "API Name empty" case leaves API Name empty (no auto-complete)');
+    ok(!/#f-prefix/.test(rn.code) && !/#f-parent/.test(rn.code), 'negative case does not auto-fill any required field');
+  }
+
   console.log('semantic selection uses the target role, never the English verb alone');
   const buttonSelect = semanticPlanFromCase({ title: 'refresh', steps: [
     { action: 'Select "Refresh list view".', expected: 'Refresh list view is visible.' },
