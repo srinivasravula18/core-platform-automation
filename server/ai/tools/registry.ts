@@ -11,12 +11,13 @@
 import type { AgentTool, ToolContext } from './types';
 import { Cases, Suites, Plans, Runs, Scripts, Defects, Reports, Requirements } from '../../db/repository';
 import { searchCodeInScope, readCodeFileInScope } from '../../features/projects/codeSearch';
+import { getProject, getProjectRepoPath } from '../../features/projects/projectService';
 import { findUntestedEdges } from '../exploration/edgeFinder';
 import { analyzeFeatureCoverage, renderCoverageReport } from '../exploration/featureCoverage';
 import { corePlatformDataTools } from './corePlatformData';
 import { corePlatformMetaTools } from './corePlatformMeta';
 import { expandByReferences } from '../exploration/referenceGraph';
-import { searchCodeWithContext } from '../../features/git-agent/gitAgentService';
+import { searchCodeWithContext, resolveTargetRepo } from '../../features/git-agent/gitAgentService';
 import {
   explorePageTool, getBlackboardTool, verifySelectorsTool,
   listSurfacesTool, discoverAppsTool,
@@ -98,12 +99,20 @@ export const searchCodebaseTool: AgentTool = {
   async execute(args, ctx) {
     const terms = Array.isArray(args.terms) ? args.terms.map(String) : [String(args.terms || '')];
     const limit = Math.max(1, Math.min(60, Number(args.limit) || 30));
+    // The conversation's SELECTED project decides WHICH repo is the source of truth. A scoped
+    // conversation must never grep a globally-resolved default (Settings root / first project / env)
+    // — that silently grounds answers in the WRONG codebase. Unscoped callers keep the global default.
+    const project = ctx.projectId ? getProject(ctx.projectId) : undefined;
+    const grepRepo = ctx.projectId
+      ? (project && project.repoKind !== 'remote' ? getProjectRepoPath(ctx.projectId) : '')
+      : undefined;
     // AGENTIC SEARCH (Claude-Code-style): grep that returns the matching code lines WITH context,
     // so the agent sees WHY each file matched. Falls back to the scoped file-name grep.
-    try {
-      const hits = searchCodeWithContext(terms, undefined, { maxFiles: limit, contextLines: 2 });
+    if (grepRepo !== '') try {
+      const hits = searchCodeWithContext(terms, grepRepo, { maxFiles: limit, contextLines: 2 });
       if (hits.length) {
-        return { matchCount: hits.length, matches: hits.map((h) => ({ path: h.path, matchCount: h.matchCount, snippet: h.snippet })) };
+        // repo is recorded in the result so any grounding trace shows exactly which codebase was searched.
+        return { repo: grepRepo ?? resolveTargetRepo(), matchCount: hits.length, matches: hits.map((h) => ({ path: h.path, matchCount: h.matchCount, snippet: h.snippet })) };
       }
     } catch { /* fall back to the scoped grep below */ }
     const result = await searchCodeInScope(terms, { projectId: ctx.projectId, appId: ctx.appId }, limit);
