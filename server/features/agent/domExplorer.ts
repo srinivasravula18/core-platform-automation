@@ -454,12 +454,17 @@ async function resolveSnapshotRefs(page: any, outline: string): Promise<DomEleme
   return out;
 }
 
-function sweepDom(page: any): Promise<DomElement[]> {
-  return page.evaluate(`(() => {
+function sweepDom(page: any, rootSelector?: string): Promise<DomElement[]> {
+  // rootSelector scopes the sweep to a subtree (e.g. a just-opened modal/drawer). On huge pages a portal
+  // overlay renders LAST in document order, so the whole-document sweep's 600-cap cuts off its form fields;
+  // scoping to the overlay guarantees its handful of controls are captured regardless of page size.
+  return page.evaluate(`((rootSel) => {
     const pull = ${pullAttrs.toString()};
     const INTERACTIVE_TAGS = new Set(["button", "a", "input", "select", "textarea", "summary", "option"]);
     const INTERACTIVE_ROLES = new Set(${JSON.stringify([...INTERACTIVE_ROLES])});
     const SKIP = new Set(["meta", "link", "script", "style", "title", "base", "noscript", "template", "html", "head", "body", "svg", "path"]);
+    const scopeRoot = rootSel ? document.querySelector(rootSel) : document;
+    if (!scopeRoot) return [];
     const out = [];
     const visit = (root) => {
       for (const e of root.querySelectorAll("*")) {
@@ -483,20 +488,22 @@ function sweepDom(page: any): Promise<DomElement[]> {
         if (out.length >= 600) return;
       }
     };
-    visit(document);
+    visit(scopeRoot);
     return out;
-  })()`);
+  })(${JSON.stringify(rootSelector ?? null)})`);
 }
 
-async function captureSemanticSnapshot(page: any): Promise<{ outline: string | null; elements: DomElement[] }> {
+async function captureSemanticSnapshot(page: any, rootSelector?: string): Promise<{ outline: string | null; elements: DomElement[] }> {
   let outline: string | null = null;
   let elements: DomElement[] = [];
   await ensureBrowserEvalCompat(page);
   try {
-    outline = await page.locator('body').ariaSnapshot({ mode: 'ai' });
+    // Scope the aria snapshot to the overlay root when given, so its refs aren't crowded out by a giant grid.
+    const snapshotRoot = rootSelector ? page.locator(rootSelector).first() : page.locator('body');
+    outline = await snapshotRoot.ariaSnapshot({ mode: 'ai' });
     if (outline) elements = await resolveSnapshotRefs(page, outline);
   } catch { outline = null; }
-  const swept: DomElement[] = await sweepDom(page).catch(() => []);
+  const swept: DomElement[] = await sweepDom(page, rootSelector).catch(() => []);
   const sig = (e: DomElement) => [e.tag, e.id, e.testId, e.ariaLabel, e.name, e.dataField, e.placeholder, e.text?.slice(0, 40)].join('|');
   const have = new Set(elements.map(sig));
   for (const s of swept) {
@@ -794,8 +801,8 @@ export async function exploreAndVerifyPage(opts: {
  * page (e.g. a shared withPageSession page) — no navigation/login/browser-launch/close here. Lets
  * a caller that already owns a live session (LangGraph discovery node) avoid a second browser/login.
  */
-export async function captureVerifiedElementsForOpenPage(page: any, opts?: { maxElements?: number }): Promise<VerifiedElement[]> {
-  const { elements: captured } = await captureSemanticSnapshot(page);
+export async function captureVerifiedElementsForOpenPage(page: any, opts?: { maxElements?: number; within?: string }): Promise<VerifiedElement[]> {
+  const { elements: captured } = await captureSemanticSnapshot(page, opts?.within);
   const max = opts?.maxElements ?? 200;
   const scoreDom = (e: DomElement) => (e.interactive ? 0 : 2) + (e.visible ? 0 : 1);
   const elements = captured.length > max ? [...captured].sort((a, b) => scoreDom(a) - scoreDom(b)).slice(0, max) : captured;

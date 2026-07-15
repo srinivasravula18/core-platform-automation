@@ -111,6 +111,26 @@ async function revealAndCaptureDisclosedControls(page: any, elements: VerifiedEl
 /** Generic create/edit openers (app-agnostic verbs) whose target is a FORM, often on a separate route. */
 const FORM_OPENER_LABEL = /^(new|create|add|edit|\+ ?new|\+ ?add)\b/i;
 
+/** Generic overlay-container vocabulary (universal UI patterns, NOT app-specific class names). A create
+ * form on a data-heavy page renders as a portal modal/drawer at the very END of the DOM — past the base
+ * capture's element budget — so we mark the open overlay and capture scoped to it. Returns a stable scope
+ * selector when an open form overlay is found, else null (inline form → caller uses the full-page capture). */
+async function markOpenFormOverlay(page: any): Promise<string | null> {
+  const found = await page.evaluate(`(() => {
+    const sels = ['[role="dialog"]','[aria-modal="true"]','dialog[open]','[class*="modal" i]','[class*="drawer" i]','[class*="dialog" i]','[class*="flyout" i]','[class*="sheet" i]','[class*="offcanvas" i]','[class*="side-panel" i]','[class*="sidepanel" i]','[class*="popover" i]'];
+    const visible = (el) => { const r = el.getBoundingClientRect(); const s = getComputedStyle(el); return r.width > 8 && r.height > 8 && s.visibility !== 'hidden' && s.display !== 'none'; };
+    const fillable = (el) => el.querySelector('input:not([type=hidden]):not([type=search]):not([type=checkbox]):not([type=radio]), textarea, select, [contenteditable="true"]');
+    const prev = document.querySelector('[data-tf-form-scope]'); if (prev) prev.removeAttribute('data-tf-form-scope');
+    for (const sel of sels) {
+      for (const n of document.querySelectorAll(sel)) { // FIRST in document order = OUTERMOST overlay (keeps its footer Save/Cancel in scope)
+        if (visible(n) && fillable(n)) { n.setAttribute('data-tf-form-scope', '1'); return true; }
+      }
+    }
+    return false;
+  })()`).catch(() => false);
+  return found ? '[data-tf-form-scope="1"]' : null;
+}
+
 /**
  * Open the create/edit FORM and fold its fields + Save/Cancel controls into the catalog. The base capture
  * (and the inline disclosure sweep) only see the list at rest; on apps where "New" navigates to a full-page
@@ -136,15 +156,20 @@ async function exploreFormState(page: any, elements: VerifiedElement[], targetUr
       { timeout: 6000, state: 'visible' },
     ).catch(() => undefined);
     await page.waitForTimeout(700);
-    // Capture with a HIGH cap: a dialog/drawer appends to the end of the DOM, so its fields sort late and a
-    // normal cap slices them out entirely. Only the NEW verified form controls are merged below, so the
-    // catalog grows by the form's handful of fields, not by the cap.
-    const formEls = await captureVerifiedElementsForOpenPage(page, { maxElements: 400 });
+    // A portal modal/drawer renders at the very END of a data-heavy DOM (measured: form fields at doc index
+    // ~23.9k of ~24k), far past the whole-document capture's 600-element budget — so a full-page capture
+    // NEVER sees them no matter how high the cap. Mark the open overlay and capture SCOPED to it, so its
+    // handful of fields + Save/Cancel are read directly. Inline forms (no overlay) fall back to full capture.
+    const scope = await markOpenFormOverlay(page);
+    const formEls = scope
+      ? await captureVerifiedElementsForOpenPage(page, { within: scope, maxElements: 120 })
+      : await captureVerifiedElementsForOpenPage(page, { maxElements: 400 });
     for (const el of formEls) {
       if (el.status !== 'verified' || !el.resolved_selector || seen.has(el.resolved_selector)) continue;
       seen.add(el.resolved_selector);
       elements.push(el);
     }
+    if (scope) await page.evaluate(`(() => { const n = document.querySelector('[data-tf-form-scope]'); if (n) n.removeAttribute('data-tf-form-scope'); })()`).catch(() => undefined);
   } catch { /* opener not clickable / form didn't open — enrichment only, never fail discovery */ }
   // Restore the resting list state: re-navigate if we left the page, else Escape an inline panel.
   if (String(page.url?.() || '') !== beforeUrl) {
