@@ -61,13 +61,22 @@ function summarizePageContext(ctx: any): DiscoveryPageSummary {
   };
 }
 
-/** Bounded, secret-free head of a raw error for diagnostics — enough to tell 429/net::ERR/goto apart. */
+/** Bounded, secret-free head of a raw error for diagnostics — enough to tell 429/net::ERR/goto apart.
+ * Strips ANSI codes and Playwright's multi-line "Call log:" tail so the reason renders cleanly in the UI. */
 function boundedReason(message: string): { reason: string } {
-  return { reason: message.replace(/password[^\s]*/gi, '[redacted]').slice(0, 160) };
+  const clean = message
+    .replace(/\[[0-9;]*m/g, '')
+    .split(/\r?\n\s*Call log:/i)[0]
+    .replace(/\s+/g, ' ')
+    .replace(/password[^\s]*/gi, '[redacted]')
+    .trim();
+  return { reason: clean.slice(0, 160) };
 }
 
-/** Generic disclosure verbs (app-agnostic UI vocabulary, not app facts) whose controls typically hide forms/menus. */
-const DISCLOSURE_LABEL = /^(new|create|add|actions|.*actions|export options|settings|more|menu|filter|filters)$/i;
+/** Generic MENU/overflow disclosure verbs (app-agnostic). Create/edit FORM openers are handled separately by
+ * exploreFormState (which is navigation-aware and captures form fields), so they're excluded here to avoid
+ * two functions fighting over the same "New" button. */
+const DISCLOSURE_LABEL = /^(actions|.*actions|export options|settings|more|menu|filter|filters|columns|options)$/i;
 const MAX_DISCLOSURES = 4;
 
 /**
@@ -96,6 +105,54 @@ async function revealAndCaptureDisclosedControls(page: any, elements: VerifiedEl
     await page.keyboard.press('Escape').catch(() => undefined);
     await page.keyboard.press('Escape').catch(() => undefined);
     await page.waitForTimeout(400);
+  }
+}
+
+/** Generic create/edit openers (app-agnostic verbs) whose target is a FORM, often on a separate route. */
+const FORM_OPENER_LABEL = /^(new|create|add|edit|\+ ?new|\+ ?add)\b/i;
+
+/**
+ * Open the create/edit FORM and fold its fields + Save/Cancel controls into the catalog. The base capture
+ * (and the inline disclosure sweep) only see the list at rest; on apps where "New" navigates to a full-page
+ * form, the form's inputs and its Save button are otherwise undiscovered — so create/submit cases can never
+ * ground and never actually submit. This clicks one create opener, captures the form wherever it lands
+ * (inline panel OR new route), then RESTORES the list state (re-navigates if the URL changed) so the rest of
+ * the catalog stays valid. Read-mostly: it never clicks Save/Delete — the real submit happens at execution.
+ */
+async function exploreFormState(page: any, elements: VerifiedElement[], targetUrl: string, maxElements?: number): Promise<void> {
+  const seen = new Set(elements.map((e) => e.resolved_selector).filter(Boolean));
+  const opener = elements.find((e) => e.status === 'verified' && e.interactive && e.resolved_selector
+    && ['button', 'link', 'menuitem'].includes(String(e.role || ''))
+    && FORM_OPENER_LABEL.test(String(e.name || '').trim()));
+  if (!opener) return;
+  const beforeUrl = String(page.url?.() || '');
+  try {
+    await page.locator(opener.resolved_selector as string).first().click({ timeout: 5000 });
+    await page.waitForLoadState('domcontentloaded', { timeout: 8000 }).catch(() => undefined);
+    // Wait for a REAL form field (not the list's search/checkbox) to render — the form/drawer animates in,
+    // so a fixed short pause captured a half-rendered dialog and missed every field.
+    await page.waitForSelector(
+      'input:not([type="search"]):not([type="checkbox"]):not([type="radio"]), textarea, select, [contenteditable="true"]',
+      { timeout: 6000, state: 'visible' },
+    ).catch(() => undefined);
+    await page.waitForTimeout(700);
+    // Capture with a HIGH cap: a dialog/drawer appends to the end of the DOM, so its fields sort late and a
+    // normal cap slices them out entirely. Only the NEW verified form controls are merged below, so the
+    // catalog grows by the form's handful of fields, not by the cap.
+    const formEls = await captureVerifiedElementsForOpenPage(page, { maxElements: 400 });
+    for (const el of formEls) {
+      if (el.status !== 'verified' || !el.resolved_selector || seen.has(el.resolved_selector)) continue;
+      seen.add(el.resolved_selector);
+      elements.push(el);
+    }
+  } catch { /* opener not clickable / form didn't open — enrichment only, never fail discovery */ }
+  // Restore the resting list state: re-navigate if we left the page, else Escape an inline panel.
+  if (String(page.url?.() || '') !== beforeUrl) {
+    await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => undefined);
+    await page.waitForTimeout(800);
+  } else {
+    await page.keyboard.press('Escape').catch(() => undefined);
+    await page.waitForTimeout(300);
   }
 }
 
@@ -142,6 +199,8 @@ export async function runDiscoveryNode(input: RunDiscoveryNodeInput): Promise<Ru
         const ctx = await collectPageContext(page);
         const elements = await captureVerifiedElementsForOpenPage(page, { maxElements: input.maxElements });
         await revealAndCaptureDisclosedControls(page, elements, input.maxElements);
+        // Fold the create/edit form's fields + Save button into the catalog so fill→submit cases can ground.
+        await exploreFormState(page, elements, targetUrl, input.maxElements);
 
         // Must read screenshots before the callback returns — withPageSession closes the session right after.
         const artifacts = sessionArtifacts(sessionId);

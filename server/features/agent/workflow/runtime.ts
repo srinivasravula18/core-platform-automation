@@ -102,13 +102,19 @@ function chipMessages(state: WorkflowState): Array<{ agent: string; status: stri
   const discoveryDone = (state.evidence?.targetCatalog?.length ?? 0) > 0 || (state.evidence?.countsByProvenance?.live ?? 0) > 0;
   const compileRan = Boolean(state.compilation?.compilerVersion)
     || (state.compilation?.scripts?.length ?? 0) > 0 || (state.compilation?.diagnostics?.length ?? 0) > 0;
-  const chips: Array<{ agent: string; stages: string[]; done: boolean; runningLine: string; skipLine: string }> = [
+  // Discovery that RAN and failed (network/auth/browser) must not masquerade as "skipped" — name the cause.
+  const discoveryError = [...(state.errors ?? [])].reverse().find((e) => e?.nodeName === 'discovery');
+  const inspectorSkip = discoveryError
+    ? { line: `Failed — ${String(discoveryError.message).slice(0, 160)}`, status: 'failed' }
+    : { line: 'Skipped — discovery did not complete.', status: undefined };
+  const authSkip = discoveryError?.class === 'AUTH_FAILURE' ? inspectorSkip : { line: 'Skipped — discovery did not complete.', status: undefined };
+  const chips: Array<{ agent: string; stages: string[]; done: boolean; runningLine: string; skipLine: string; skipStatus?: string }> = [
     { agent: 'MetadataFetch', stages: ['load_context'], done: Boolean(state.context?.metadata),
       runningLine: 'Fetching application metadata…', skipLine: 'Skipped — no application metadata available for this mission (normal for Admin-platform runs).' },
     { agent: 'AuthSessionAgent', stages: ['discover_and_ground'], done: discoveryDone,
-      runningLine: 'Logging into the target application…', skipLine: 'Skipped — discovery did not complete.' },
+      runningLine: 'Logging into the target application…', skipLine: authSkip.line, skipStatus: authSkip.status },
     { agent: 'ApplicationInspector', stages: ['discover_and_ground'], done: discoveryDone,
-      runningLine: 'Discovering live controls on the page…', skipLine: 'Skipped — discovery did not complete.' },
+      runningLine: 'Discovering live controls on the page…', skipLine: inspectorSkip.line, skipStatus: inspectorSkip.status },
     { agent: 'SelectorRegistry', stages: ['discover_and_ground'], done: discoveryDone,
       runningLine: 'Verifying selector uniqueness/visibility…', skipLine: 'Skipped — no verified selector registry was built.' },
     { agent: 'TestGenerationAgent', stages: ['author_cases'], done: (state.cases?.length ?? 0) > 0,
@@ -127,7 +133,7 @@ function chipMessages(state: WorkflowState): Array<{ agent: string; status: stri
   for (const chip of chips) {
     if (chip.done) out.push({ agent: chip.agent, status: 'completed', output: 'Done.' });
     else if (state.status === 'running' && chip.stages.includes(state.stage)) out.push({ agent: chip.agent, status: 'running', output: chip.runningLine });
-    else if (terminal) out.push({ agent: chip.agent, status: 'skipped', output: chip.skipLine });
+    else if (terminal) out.push({ agent: chip.agent, status: chip.skipStatus ?? 'skipped', output: chip.skipLine });
     // Mid-run, not yet reached → no message: an honest pending chip.
   }
   return out;

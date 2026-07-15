@@ -28,7 +28,7 @@ import { buildPendingReview, requestReviewInterrupt } from './nodes/review';
 import { runExecutionNode } from './nodes/execution';
 import { routeAfterDiscoverAndGround, type ResolvedCredential } from './graphs/discoveryGraph';
 import { stashArtifacts, readArtifacts } from './artifactStash';
-import { WorkflowRuntimeError, WORKFLOW_ERROR_CLASSES, type WorkflowError } from './errors';
+import { WorkflowRuntimeError, WORKFLOW_ERROR_CLASSES, backoffDelayMs, type WorkflowError } from './errors';
 import {
   WorkflowStateAnnotation,
   type CasePlanResult,
@@ -186,7 +186,13 @@ function terminalFailureReason(state: WorkflowState): string {
   }
   const gate = state.evidence?.gate;
   if (gate && gate.decision === 'blocked') {
-    return `Evidence gate blocked: ${gate.reasons.join('; ')}`.slice(0, 400);
+    const reasons = gate.reasons.join('; ');
+    // Older gates (or resumed threads) may carry only the generic no-targets line while the real
+    // discovery failure sits in state.errors — surface that root cause instead of masking it.
+    const rootCause = [...(state.errors ?? [])].reverse().find((e) => e.nodeName === 'discovery');
+    const suffix = rootCause && !reasons.includes(rootCause.message)
+      ? `; root cause: [${rootCause.class}] ${rootCause.message}` : '';
+    return `Evidence gate blocked: ${reasons}${suffix}`.slice(0, 400);
   }
   if (!state.cases?.length) return 'Authoring produced no test cases.';
   if (!state.compilation?.scripts?.length) {
@@ -220,6 +226,17 @@ export function buildTestRunGraph(deps: TestRunGraphDeps = {}, opts: BuildTestRu
     // Resolved just-in-time, used immediately, never returned — checkpoints stay secret-free.
     const credential = await resolveCredential(state.credentialRef ?? null);
     const result = await contextNode({ mission: state.mission, credential });
+    // API-acceptance test data: fetch the mission object's backend schema once, stash for the compiler (best-effort).
+    // Real path only — an injected context seam (tests) skips the live schema fetch, same as the auth prep.
+    if (!deps.contextNode && state.mission?.applicationId && credential) {
+      try {
+        const { fetchObjectSchema } = await import('../../../ai/tools/corePlatformData');
+        const conn = { baseUrl: state.mission.targetUrl, token: credential.token, username: credential.username, password: credential.password };
+        const hints = [state.mission.moduleId, state.mission.tabId].filter(Boolean) as string[];
+        const schema = await fetchObjectSchema(conn as any, state.mission.applicationId, hints);
+        if (schema.length) stashArtifacts(state.runId, { objectSchema: schema });
+      } catch { /* schema is an enhancement — its absence just falls back to DOM-semantic generation */ }
+    }
     return {
       context: { ...(state.context ?? { metadata: null, repository: null, roles: [], budget: [] }), metadata: result.context.metadata },
       status: 'running',
@@ -236,17 +253,40 @@ export function buildTestRunGraph(deps: TestRunGraphDeps = {}, opts: BuildTestRu
     const attempts = reEntered ? (state.rediscoveryAttempts ?? 0) + 1 : (state.rediscoveryAttempts ?? 0);
     const credential = await resolveCredential(state.credentialRef ?? null);
     // ONE real login per run: first attempt logs in and caches state; rediscovery attempts reuse it.
-    const auth = deps.discoveryNode
+    let auth = deps.discoveryNode
       ? undefined // injected discovery seam (tests) owns its own setup — no real login here
       : await ensureRunAuthState(state.runId, state.mission?.targetUrl || '', credential);
-    const discovery = await discoveryNode({ mission: state.mission, credential, runId: state.runId, auth });
-    // An auth-classified failure invalidates the cached session so the bounded retry logs in fresh.
-    if (!deps.discoveryNode && discovery.errors.some((e) => e.class === 'AUTH_FAILURE')) clearRunAuthState(state.runId);
+    let discovery = await discoveryNode({ mission: state.mission, credential, runId: state.runId, auth });
+    let discoveryAttempts = 1;
+    // The node returns classified errors instead of throwing, so the retry policy (workflow/errors.ts) is
+    // applied HERE at the invocation layer — with real backoff, real path only. Without this, a transient
+    // network/browser blip yields 0 elements and the evidence gate burns its rediscovery budget in seconds.
+    if (!deps.discoveryNode) {
+      for (;;) {
+        const failure = discovery.elements.length === 0 ? discovery.errors.find((e) => e.retryable) : undefined;
+        if (!failure || discoveryAttempts >= failure.maxAttempts) break;
+        // An auth-classified failure invalidates the cached session so the next attempt logs in fresh.
+        if (failure.class === WORKFLOW_ERROR_CLASSES.AUTH_FAILURE) clearRunAuthState(state.runId);
+        const delay = backoffDelayMs(failure.class, discoveryAttempts);
+        if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
+        if (failure.class === WORKFLOW_ERROR_CLASSES.AUTH_FAILURE) {
+          auth = await ensureRunAuthState(state.runId, state.mission?.targetUrl || '', credential);
+        }
+        discovery = await discoveryNode({ mission: state.mission, credential, runId: state.runId, auth });
+        discoveryAttempts += 1;
+      }
+      // Still auth-failed after the policy attempts — drop the cached session so any later re-entry logs in fresh.
+      if (discovery.errors.some((e) => e.class === WORKFLOW_ERROR_CLASSES.AUTH_FAILURE)) clearRunAuthState(state.runId);
+    }
     // Raw elements never reach state — grounding projects them into the bounded evidence envelope.
     const grounding = groundingNode({
       elements: discovery.elements,
       metadataDigest: state.context?.metadata?.digest ?? null,
       rediscoveryAttempts: attempts,
+      // Zero elements WITH a classified error = discovery never read the page (its throw path always returns
+      // empty) — the gate then blocks with this root cause instead of looping on an unreachable target.
+      discoveryFailure: discovery.elements.length === 0 ? (discovery.errors[0] ?? null) : null,
+      discoveryAttempts,
     });
     // Full graph/registry go to the run stash for authoring/compilation; state gets refs/digests only.
     stashArtifacts(state.runId, { evidenceGraph: grounding.evidenceGraph, verifiedSelectors: grounding.verifiedSelectors });
@@ -372,6 +412,7 @@ export function buildTestRunGraph(deps: TestRunGraphDeps = {}, opts: BuildTestRu
       plansByCase: artifacts.plansByCase ?? {},
       evidenceGraph: artifacts.evidenceGraph ?? { nodes: [], edges: [], selectorRegistryRef: 'selector_registry' },
       verifiedSelectors: artifacts.verifiedSelectors ?? [],
+      objectSchema: artifacts.objectSchema, // stashed at load_context — threaded to the compiler for API-conformant data.
     });
     if (Object.keys(result.compiledSources).length) stashArtifacts(state.runId, { compiledSources: result.compiledSources });
     return {

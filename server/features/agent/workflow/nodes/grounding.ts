@@ -26,6 +26,11 @@ export interface RunGroundingNodeInput {
   /** Context node's ContextMetadataSummary.digest, carried only as metadataGraphRef — metadata-graph BINDING is out of Phase 3 scope (the context node holds a summary, not the full map). */
   metadataDigest?: string | null;
   rediscoveryAttempts: number;
+  /** Set when discovery itself FAILED (classified error, zero elements) — the gate then blocks with the real
+   * root cause instead of burning targeted-retry rounds on a target it never managed to read. */
+  discoveryFailure?: WorkflowError | null;
+  /** Policy-layer discovery attempts actually made this node invocation — for the truthful gate reason. */
+  discoveryAttempts?: number;
 }
 
 export interface RunGroundingNodeResult {
@@ -69,11 +74,33 @@ function toVerifiedSelector(el: VerifiedElement): VerifiedSelector {
     // 'dom' matches legacy evidenceIdForSource for both 'live-dom-verified' and 'live-dom-pool'.
     sourceEvidenceId: 'dom',
     fallbackSelector: el.fallback_selector,
+    // Input-field semantics for the Test Data Engine — harmless on non-fillable controls.
+    fieldMeta: {
+      name: el.input_name ?? null,
+      id: el.element_id ?? null,
+      placeholder: el.placeholder ?? null,
+      ariaLabel: el.aria_label ?? null,
+      autocomplete: el.autocomplete ?? null,
+      type: el.type ?? null,
+      options: Array.isArray(el.options) ? el.options : null,
+      maxLength: el.maxLength ?? null,
+      minLength: el.minLength ?? null,
+      pattern: el.pattern ?? null,
+      min: el.min ?? null,
+      max: el.max ?? null,
+      required: el.state?.required ?? null,
+    },
   };
 }
 
 /** The gate never lets zero verified targets flow through as 'continue' — rediscover or stop, never guess. */
-function decideGate(targetCount: number, capturedCount: number, rediscoveryAttempts: number): EvidenceGateDecision {
+function decideGate(
+  targetCount: number,
+  capturedCount: number,
+  rediscoveryAttempts: number,
+  discoveryFailure?: WorkflowError | null,
+  discoveryAttempts?: number,
+): EvidenceGateDecision {
   if (targetCount >= 1) {
     return {
       decision: 'continue',
@@ -81,8 +108,22 @@ function decideGate(targetCount: number, capturedCount: number, rediscoveryAttem
       missingRequirements: [],
     };
   }
-  const noTargets = `Discovery captured ${capturedCount} elements; 0 were promoted to verified-live unique visible targets`;
   const missingRequirements = ['at least one verified-live, unique, visible interactive element'];
+  // Discovery ERRORED (never read the page) — retries already happened at the node policy layer with
+  // backoff, so more instant gate loops can't help; block with the real root cause, never the generic
+  // "captured 0 elements" line that masks a network/auth/browser failure as an empty page.
+  if (discoveryFailure) {
+    // classifyDiscoveryError stashes the bounded raw cause (e.g. "net::ERR_NAME_NOT_RESOLVED at …") in details.reason.
+    const rawReason = typeof discoveryFailure.details?.reason === 'string' ? ` (${discoveryFailure.details.reason})` : '';
+    return {
+      decision: 'blocked',
+      reasons: [
+        `Discovery could not read the target page after ${Math.max(1, discoveryAttempts ?? 1)} attempt(s): [${discoveryFailure.class}] ${discoveryFailure.message}${rawReason}`.slice(0, 350),
+      ],
+      missingRequirements,
+    };
+  }
+  const noTargets = `Discovery captured ${capturedCount} elements; 0 were promoted to verified-live unique visible targets`;
   if (rediscoveryAttempts < MAX_REDISCOVERY_ATTEMPTS) {
     return {
       decision: 'targeted_retry',
@@ -119,7 +160,7 @@ export function runGroundingNode(input: RunGroundingNodeInput): RunGroundingNode
       // cached/inferred stay 0 until later phases contribute non-live evidence sources.
       countsByProvenance: { live: liveCount, cached: 0, inferred: 0, unverified: verifiedSelectors.length - liveCount },
       targetCatalog,
-      gate: decideGate(targetCatalog.length, input.elements.length, input.rediscoveryAttempts),
+      gate: decideGate(targetCatalog.length, input.elements.length, input.rediscoveryAttempts, input.discoveryFailure, input.discoveryAttempts),
     };
 
     return { evidence, evidenceGraph, verifiedSelectors, errors: [] };

@@ -165,9 +165,13 @@ function toTransportError(error: unknown, node: string): WorkflowError {
 /** A throw with no HTTP status whose message reads schema/parse-flavored is repairable, not transport. */
 function schemaInvalidDetailFromThrow(error: unknown): string | null {
   const status = (error as any)?.status ?? (error as any)?.statusCode;
-  if (typeof status === 'number') return null;
+  // Only a real HTTP FAILURE status (>=400) is transport. Providers stamp a bad-JSON/schema throw with
+  // status 200 ("call succeeded, output was malformed") — that IS repairable, so it must not bail here.
+  if (typeof status === 'number' && status >= 400) return null;
   const message = error instanceof Error ? error.message : String(error ?? '');
-  return /no object generated|did not match|could not parse|invalid json|schema|type validation/i.test(message) ? message : null;
+  // Match the actual JSON.parse / schema-validation error shapes, incl. "is not valid JSON" and "Unexpected token".
+  return /no object generated|did not match|could not parse|(in)?valid json|not valid json|unexpected token|unexpected (end|non-whitespace)|json\.parse|unterminated string|bad control character|schema|type validation/i.test(message)
+    ? message : null;
 }
 
 /** The Responses client folds SDK throws into rawContent — keep transport failures out of the repair loop. */

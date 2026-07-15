@@ -83,6 +83,14 @@ export function getRetryPolicy(errorClass: WorkflowErrorClass): RetryPolicy {
   return RETRY_POLICY_TABLE[errorClass];
 }
 
+/** Pure delay computation for the table's backoff strategy — callers sleep; this module never does. */
+export function backoffDelayMs(errorClass: WorkflowErrorClass, attempt: number): number {
+  const policy = RETRY_POLICY_TABLE[errorClass];
+  if (!policy.retryable || policy.backoff !== 'exponential-jitter') return 0;
+  // 4s, 8s, 16s… ±25% jitter — wide enough to outlive a short network blip, bounded by maxAttempts.
+  return Math.round(4000 * 2 ** Math.max(0, attempt - 1) * (0.75 + Math.random() * 0.5));
+}
+
 /** Throwable/catchable in TS control flow; `toWorkflowError()` produces the plain JSONB-checkpointed shape. */
 export class WorkflowRuntimeError extends Error {
   constructor(

@@ -34,20 +34,21 @@ export async function runContextNode(input: RunContextNodeInput): Promise<RunCon
   const appId = String(input.mission?.applicationId || '').trim();
   const baseUrl = String(input.mission?.targetUrl || '').trim();
 
-  // ADMIN missions have NO tenant application by design — the metadata map is a tenant-app concept,
-  // so "no metadata" is the correct, error-free outcome here (not an invariant violation).
-  if (!appId && input.mission?.platformType === 'ADMIN') {
-    return { context: { metadata: null }, errors: [] };
-  }
-  if (!appId || !baseUrl) {
-    // Missing mission identity on a RUNTIME mission is a config/invariant problem — retrying as-is cannot help.
+  // A missing targetUrl is the ONLY real invariant here — nothing downstream can recover from it.
+  if (!baseUrl) {
     const err = new WorkflowRuntimeError(
       WORKFLOW_ERROR_CLASSES.INVARIANT_VIOLATION,
-      'Context node requires a resolved mission with applicationId and targetUrl.',
-      { appId, hasBaseUrl: Boolean(baseUrl) },
+      'Context node requires a resolved mission with a targetUrl.',
+      { appId, hasBaseUrl: false },
       'context',
     );
     return { context: { metadata: null }, errors: [err.toWorkflowError()] };
+  }
+  // Metadata is a tenant-application concept and ADVISORY only (the run grounds on live evidence, not
+  // metadata). No appId — ADMIN by design, or a RUNTIME mission whose app wasn't resolved — is a clean
+  // "no metadata" outcome, never a hard error: the run just proceeds on discovery.
+  if (!appId) {
+    return { context: { metadata: null }, errors: [] };
   }
 
   const conn: CatalogConn = { baseUrl, ...input.credential };
