@@ -189,11 +189,15 @@ export interface ModelPricing {
 }
 
 // Per-1M-token prices from each provider's OFFICIAL pricing page (verified July 2026):
-//   OpenAI  developers.openai.com/api/docs/pricing  (cache-write = input; only cached READS are discounted)
+//   OpenAI  developers.openai.com/api/docs/pricing  (cache-write = input pre-5.6, 1.25× input for GPT-5.6+; cached READS discounted 90%)
 //   Anthropic platform.claude.com/docs/en/about-claude/pricing (5m cache-write = 1.25× input, read = 0.1× input)
 //   Google  ai.google.dev/gemini-api/docs/pricing  (standard tier; cache-write billed as hourly storage, approximated as input here)
 export const PRICING_PER_1M_TOKENS: Record<string, ModelPricing> = {
   // OpenAI GPT-5.x
+  // GPT-5.6 (Sol/Terra/Luna, GA 2026-07-09): cache-write = 1.25× input — changed from the 1.0× used by 5.5/5.4 below.
+  'gpt-5.6-sol': { input: 5.0, output: 30.0, cacheRead: 0.5, cacheWrite: 6.25 },
+  'gpt-5.6-terra': { input: 2.5, output: 15.0, cacheRead: 0.25, cacheWrite: 3.125 },
+  'gpt-5.6-luna': { input: 1.0, output: 6.0, cacheRead: 0.1, cacheWrite: 1.25 },
   'gpt-5.5': { input: 5.0, output: 30.0, cacheRead: 0.5, cacheWrite: 5.0 },
   'gpt-5.4': { input: 2.5, output: 15.0, cacheRead: 0.25, cacheWrite: 2.5 },
   'gpt-5.4-mini': { input: 0.75, output: 4.5, cacheRead: 0.075, cacheWrite: 0.75 },
@@ -244,6 +248,10 @@ export const MODEL_CAPS: Record<string, ModelCaps> = {
   'gemini-3.1-flash-lite': { contextWindow: 1_048_576, maxOutput: 65_536 },
   // OpenAI GPT-5.x — GPT-5.4 / 5.5 have a 1.05M context window, 128k max output. (mini/nano
   // specs aren't published separately; kept conservative at 400k context, 128k output.)
+  // GPT-5.6 Sol/Terra/Luna all ship a 1.05M context window + 128k max output (per OpenAI model docs).
+  'gpt-5.6-sol': { contextWindow: 1_050_000, maxOutput: 128_000 },
+  'gpt-5.6-terra': { contextWindow: 1_050_000, maxOutput: 128_000 },
+  'gpt-5.6-luna': { contextWindow: 1_050_000, maxOutput: 128_000 },
   'gpt-5.5': { contextWindow: 1_050_000, maxOutput: 128_000 },
   'gpt-5.4': { contextWindow: 1_050_000, maxOutput: 128_000 },
   'gpt-5.4-mini': { contextWindow: 400_000, maxOutput: 128_000 },
