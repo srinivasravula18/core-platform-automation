@@ -151,12 +151,13 @@ export class OpenAIProvider implements AIProvider {
           function: { name: t.name, description: t.description, parameters: t.parameters },
         }))
       : undefined;
-    // gpt-5.x / o-series reject `reasoning_effort` when function tools are present on
-    // /v1/chat/completions ("Function tools with reasoningeffort are not supported ... set
-    // reasoningeffort to 'none'"). Drop the effort hint on the tool-calling path for those models;
-    // the non-tool paths (generateObject/generateText) keep it. Reasoning still happens by default.
-    const newStyle = /^(gpt-5|o1|o3|o4)/.test((modelId || '').toLowerCase());
-    const includeEffort = Boolean(opts.effort) && !(tools && newStyle);
+    // `reasoning_effort` is unsupported alongside FUNCTION TOOLS on /v1/chat/completions: reasoning models
+    // reject it outright ("Function tools with reasoningeffort are not supported for <model> ... use
+    // /v1/responses or set reasoningeffort to 'none'") and non-reasoning models don't accept the param at
+    // all — so it must NEVER ride along with tools here, for ANY model. Model-name sniffing was fragile
+    // (missed new families like gpt-5.6-terra/luna and routed/prefixed ids); reasoning still happens by
+    // default. The non-tool paths (generateObject/generateText/stream) keep the effort hint.
+    const includeEffort = Boolean(opts.effort) && !tools;
     try {
       const completion = await this.client.chat.completions.create(
         {
