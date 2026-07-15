@@ -231,15 +231,38 @@ export { expect, request };
 export type { BrowserContext, Page } from '@playwright/test';
 `;
     await fs.writeFile(path.join(runDir, 'shared-session.ts'), sharedFixture, 'utf8');
-  } else if (screenshotMode === 'on') {
-    const fixture = `import { test as base, expect, request } from '@playwright/test';
-${autoScreenshotFixtureSource(stepShotsDir)}
-
-export const test = base.extend<{ tfaiFinalScreenshot: void }>({
-  tfaiFinalScreenshot: [async ({ page }, use, testInfo) => {
+  } else if (screenshotMode === 'on' || opts.sessionStorageState) {
+    // Parallel path (default re-run) still needs to (a) replay sessionStorage — `use.storageState` in the
+    // config only restores cookies + localStorage, so an SPA that keeps its auth token in sessionStorage
+    // (e.g. Core Platform) renders LOGGED OUT and every selector times out on the login page; and/or
+    // (b) attach the final screenshot. Both are done per-context so parallel workers stay independent.
+    const needsShot = screenshotMode === 'on';
+    const sessionCtx = opts.sessionStorageState
+      ? `  context: async ({ context }, use) => {
+    // storageState (config) already set cookies + localStorage; add sessionStorage on top before any page loads.
+    await context.addInitScript((data) => {
+      try {
+        if (window.location.origin === data.origin) {
+          for (const k of Object.keys(data.items)) {
+            if (window.sessionStorage.getItem(k) === null) window.sessionStorage.setItem(k, data.items[k]);
+          }
+        }
+      } catch (e) { /* ignore */ }
+    }, ${JSON.stringify(opts.sessionStorageState)});
+    await use(context);
+  },`
+      : '';
+    const shotFixture = needsShot
+      ? `  tfaiFinalScreenshot: [async ({ page }, use, testInfo) => {
     await use();
     await tfaiAttachFinalScreenshot(page, testInfo);
-  }, { auto: true }],
+  }, { auto: true }],`
+      : '';
+    const fixture = `import { test as base, expect, request } from '@playwright/test';
+${needsShot ? autoScreenshotFixtureSource(stepShotsDir) : ''}
+export const test = base.extend${needsShot ? '<{ tfaiFinalScreenshot: void }>' : ''}({
+${sessionCtx}
+${shotFixture}
 });
 
 export { expect, request };
@@ -267,7 +290,7 @@ export { expect, request };
     let code = sanitizeTestCode(scripts[i].code);
     if (opts.singleSession) {
       code = code.replace(/from\s+['"]@playwright\/test['"]/g, "from '../shared-session'");
-    } else if (screenshotMode === 'on') {
+    } else if (screenshotMode === 'on' || opts.sessionStorageState) {
       code = code.replace(/from\s+['"]@playwright\/test['"]/g, "from '../tfai-fixtures'");
     }
     if (!isParseable(code)) {
