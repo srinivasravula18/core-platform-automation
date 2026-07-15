@@ -16,6 +16,7 @@
  */
 import { createHash } from 'crypto';
 import type { AgentTool, ToolContext } from './types';
+import type { ObjectSchema } from '../../features/agent/testdata/types';
 
 function baseUrl(): string {
   return String(process.env.TARGET_BASE_URL || '').replace(/\/+$/, '');
@@ -759,6 +760,74 @@ export async function fetchTestDataPack(conn: CatalogConn, hintText: string, obj
     return blocks.join('\n\n');
   } catch {
     return '';
+  }
+}
+
+// A field is a uniqueness constraint (vary its value to avoid dup-key errors) when its name/label is name/code/email/number-like.
+const UNIQUE_FIELD_RE = /(^|_)(name|code|email|number|no|id|title|key|slug)$|unique/i;
+
+/**
+ * STRUCTURED sibling of fetchTestDataPack — same per-object /describe + one sample record, but returned as the
+ * Test Data Engine's ObjectSchema[] (types/picklists/required/sample) so the compiler can generate values the API
+ * ACCEPTS. Scoped to ONE app (appId already resolved); hinted object(s) first, else the app's first business object.
+ * NEVER throws — returns [] on any failure so its absence just falls back to DOM-semantic generation.
+ */
+export async function fetchObjectSchema(conn: CatalogConn, appId: string, objectHints: string[] = []): Promise<ObjectSchema[]> {
+  try {
+    const url = await resolveServiceBase(conn);
+    const app = String(appId || '').trim();
+    if (!url || !app) return [];
+    const token = await resolveConnToken(conn || {}, url);
+    if (!token) return [];
+    const authGet = async (path: string) => {
+      const res = await fetch(`${url}${path}`, { headers: { authorization: `Bearer ${token}` } });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return res.json();
+    };
+    const authPost = async (path: string, body: unknown) => {
+      const res = await fetch(`${url}${path}`, { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify(body) });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return res.json();
+    };
+    const objs = items(await authGet(`/api/apps/${enc(app)}/objects`)) as any[];
+    const names = (Array.isArray(objs) ? objs : []).map((o) => String(o?.api_name || '')).filter(Boolean);
+    const wanted = new Set(objectHints.map((s) => String(s || '').toLowerCase().trim()).filter(Boolean));
+    // Hinted object(s) if any match, else the app's first business object — mirrors fetchTestDataPack's fallback.
+    const matched = names.filter((n) => wanted.has(n.toLowerCase()));
+    const picked = (matched.length ? matched : names.slice(0, 1)).slice(0, 2);
+    const out: ObjectSchema[] = [];
+    for (const objName of picked) {
+      let fields: any[] = [];
+      try {
+        const d = await authGet(`/api/apps/${enc(app)}/objects/${enc(objName)}/describe`);
+        fields = (Array.isArray((d as any)?.fields) ? (d as any).fields : items(d)) as any[];
+      } catch { /* no schema for this object */ }
+      let sample: Record<string, unknown> | null = null;
+      try {
+        const q = await authPost(`/api/apps/${enc(app)}/objects/${enc(objName)}/list-views/query`, { pagination: { page: 1, page_size: 1 } });
+        sample = ((items(q) as any[])?.[0] ?? null) as Record<string, unknown> | null;
+      } catch { /* no records */ }
+      const schemaFields = (Array.isArray(fields) ? fields : []).map((f: any) => {
+        const apiName = String(f?.api_name || '');
+        const opts = f?.picklist_values || f?.options || f?.picklist;
+        const picklistValues = Array.isArray(opts) && opts.length
+          ? opts.map((x: any) => x?.value ?? x?.label ?? x).filter(Boolean).map(String)
+          : null;
+        const uniqueHay = `${apiName} ${String(f?.label || '')}`;
+        return {
+          apiName,
+          label: f?.label ?? null,
+          dataType: String(f?.data_type || f?.type || 'text'),
+          required: Boolean(f?.required || f?.is_required),
+          picklistValues,
+          unique: UNIQUE_FIELD_RE.test(uniqueHay) ? true : undefined,
+        };
+      }).filter((f) => f.apiName);
+      out.push({ objectApiName: objName, fields: schemaFields, sample });
+    }
+    return out;
+  } catch {
+    return [];
   }
 }
 

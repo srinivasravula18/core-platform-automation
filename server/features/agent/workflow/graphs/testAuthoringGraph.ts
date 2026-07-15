@@ -140,7 +140,7 @@ export function buildTestAuthoringGraph(deps: TestAuthoringGraphDeps = {}, opts:
   };
 
   const compileAndValidateWrapper = async (state: WorkflowState): Promise<WorkflowStateUpdate> => {
-    const { evidenceGraph, verifiedSelectors, plansByCase } = readArtifacts(state.runId);
+    const { evidenceGraph, verifiedSelectors, plansByCase, objectSchema } = readArtifacts(state.runId);
     const mission = missionContextFromRef(state.mission ?? null);
     if (!evidenceGraph || !mission) {
       // Defensive re-check: the stash can vanish between nodes only across a resume — fail explicit, never guess.
@@ -158,6 +158,7 @@ export function buildTestAuthoringGraph(deps: TestAuthoringGraphDeps = {}, opts:
       plansByCase: plansByCase ?? {},
       evidenceGraph,
       verifiedSelectors: verifiedSelectors ?? [],
+      objectSchema, // stashed at load_context — threaded to the compiler for API-conformant data.
     });
     // Full spec sources → stash for Phase 5 same-process execution; state gets scripts refs + diagnostics only.
     stashArtifacts(state.runId, { compiledSources: result.compiledSources });

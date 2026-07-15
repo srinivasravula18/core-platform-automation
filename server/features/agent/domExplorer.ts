@@ -17,6 +17,14 @@ export interface DomElement {
   disabled: boolean;
   readonly: boolean;
   required: boolean;
+  /** Input-field semantics for the Test Data Engine — optional, captured only when the attribute exists. */
+  autocomplete?: string | null;
+  maxLength?: number | null;
+  minLength?: number | null;
+  pattern?: string | null;
+  min?: string | null;
+  max?: string | null;
+  inputMode?: string | null;
   ariaExpanded: string | null;
   ariaHasPopup: string | null;
   /** the element's title ATTRIBUTE (tooltip text) — assertable only via toHaveAttribute */
@@ -396,6 +404,14 @@ const pullAttrs = (el: any) => {
     disabled: Boolean(e.disabled),
     readonly: Boolean(e.readOnly),
     required: Boolean(e.required),
+    // Input-field semantics for the Test Data Engine — prefer the numeric DOM property, fall back to the attribute.
+    autocomplete: e.getAttribute('autocomplete'),
+    maxLength: typeof e.maxLength === 'number' && e.maxLength > 0 ? e.maxLength : null,
+    minLength: typeof e.minLength === 'number' && e.minLength > 0 ? e.minLength : null,
+    pattern: e.getAttribute('pattern'),
+    min: e.getAttribute('min'),
+    max: e.getAttribute('max'),
+    inputMode: e.getAttribute('inputmode'),
     ariaExpanded: e.getAttribute('aria-expanded'),
     ariaHasPopup: e.getAttribute('aria-haspopup'),
     // Tooltip text lives in the title ATTRIBUTE — it never appears as page text, so tests
@@ -642,6 +658,14 @@ export interface VerifiedElement {
   data_field: string | null;
   element_id: string | null;
   type: string | null;
+  /** Input-field semantics for the Test Data Engine — optional, present only when captured from the live DOM. */
+  autocomplete?: string | null;
+  maxLength?: number | null;
+  minLength?: number | null;
+  pattern?: string | null;
+  min?: string | null;
+  max?: string | null;
+  inputMode?: string | null;
   value: string | null;
   options: { label: string; value: string; selected: boolean; disabled: boolean }[];
   href: string | null;
@@ -696,6 +720,13 @@ function toVerifiedElement(
     data_field: el.dataField,
     element_id: el.id,
     type: el.type,
+    autocomplete: el.autocomplete ?? null,
+    maxLength: el.maxLength ?? null,
+    minLength: el.minLength ?? null,
+    pattern: el.pattern ?? null,
+    min: el.min ?? null,
+    max: el.max ?? null,
+    inputMode: el.inputMode ?? null,
     value: el.value ?? null,
     options: Array.isArray(el.options) ? el.options : [],
     href: el.href,

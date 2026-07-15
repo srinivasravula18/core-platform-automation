@@ -8,11 +8,14 @@
 import type { Compiler, CompileInput, CompileResult, Diagnostic } from './Compiler';
 import { resolveTarget } from '../graph/groundingEngine';
 import { isActionStep, type ActionStep, type AssertStep, type PlanStep } from './testPlan';
+import { TestDataEngine, type FieldSemantics } from '../testdata';
+import type { EvidenceNode } from '../graph/evidenceGraph';
 
 // Actions/assertions are emitted through MissionRunner's reveal-then-act helpers (not raw locator calls), so
 // every interaction first reveals hover-gated controls (column filter/sort/wrap triggers, row menus, …).
-function emitAction(step: ActionStep, spec: string): string {
-  const v = JSON.stringify(step.value ?? '');
+// `value` is the already-resolved fill/select value (Test Data Engine output or the plan's explicit value).
+function emitAction(step: ActionStep, spec: string, value: string): string {
+  const v = JSON.stringify(value ?? '');
   switch (step.action) {
     // OPEN_MODULE is handled before grounding (mission-scoped navigation, no locator) — see compile().
     case 'CLICK': return `  await runner.click(${spec});`;
@@ -25,6 +28,25 @@ function emitAction(step: ActionStep, spec: string): string {
     case 'CLEAR': return `  await runner.clear(${spec});`;
     default: return `  // INVALID_STEP action: ${String((step as any).action)}`;
   }
+}
+
+/** Assemble the Test Data Engine's input from the grounded evidence node (label/role/semanticName + fieldMeta). */
+function fieldSemanticsFromNode(node: EvidenceNode | null): FieldSemantics {
+  const fm = node?.fieldMeta ?? undefined;
+  return {
+    label: node?.label ?? null, role: node?.role ?? null, semanticName: node?.semanticName ?? null,
+    name: fm?.name ?? null, id: fm?.id ?? null, placeholder: fm?.placeholder ?? null, ariaLabel: fm?.ariaLabel ?? null,
+    autocomplete: fm?.autocomplete ?? null, type: fm?.type ?? null, options: fm?.options ?? null,
+    maxLength: fm?.maxLength ?? null, minLength: fm?.minLength ?? null, pattern: fm?.pattern ?? null,
+    min: fm?.min ?? null, max: fm?.max ?? null, required: fm?.required ?? null,
+  };
+}
+
+/** Resolve the concrete value for a value-bearing action via the Test Data Engine (FILL/SELECT), else the plan value. */
+function resolveStepValue(engine: TestDataEngine, step: ActionStep, node: EvidenceNode | null): string {
+  if (step.action === 'FILL') return engine.fillValue(fieldSemanticsFromNode(node), step.value);
+  if (step.action === 'SELECT') return engine.selectValue(fieldSemanticsFromNode(node), step.value);
+  return String(step.value ?? '');
 }
 
 function emitAssert(step: AssertStep, spec: string): string {
@@ -71,6 +93,11 @@ export class PlaywrightCompiler implements Compiler {
       return { code: '', diagnostics: [{ kind: 'EMPTY_PLAN', message: 'Plan has no steps.' }], ok: false };
     }
 
+    // Seed from the run-UNIQUE id (falling back to mission scope) so every case in the run shares ONE
+    // coherent identity (consistency) while distinct runs get distinct identities — no cross-run duplicate
+    // name/email/code. The optional backend schema drives API-acceptance-conformant values.
+    const engine = new TestDataEngine((run as any)?.id || mission.executionScope || 'testflow', input.objectSchema);
+
     const missionJson = JSON.stringify({
       platform: mission.platform,
       platformType: mission.platformType,
@@ -103,7 +130,11 @@ export class PlaywrightCompiler implements Compiler {
         return;
       }
       const spec = JSON.stringify({ selector: g.selector, selectorType: g.selectorType, role: g.node?.role ?? null, label: g.node?.label ?? null });
-      body.push(isActionStep(step) ? emitAction(step, spec) : emitAssert(step as AssertStep, spec));
+      if (isActionStep(step)) {
+        body.push(emitAction(step, spec, resolveStepValue(engine, step, g.node)));
+      } else {
+        body.push(emitAssert(step as AssertStep, spec));
+      }
     });
 
     const title = String(plan.title || plan.module || plan.mission || 'compiled mission').replace(/`/g, "'");

@@ -416,6 +416,27 @@ function matchVerifiedDomField(field: any, domElements: any[]): any | null {
  * render it, and so future reranking/filtering/scoring needs no downstream-agent change. The legacy
  * `registry.selectors` MAP is preserved unchanged alongside it for backward compatibility.
  */
+/**
+ * Compact input-field semantics carried to the Test Data Engine (mirrors testdata/FieldSemantics minus
+ * label/role/semanticName, which the evidence node already carries). Defined locally — not imported from
+ * testdata/ — to keep the pipeline→testdata dependency one-way and avoid an import cycle.
+ */
+export interface FieldMeta {
+  name?: string | null;
+  id?: string | null;
+  placeholder?: string | null;
+  ariaLabel?: string | null;
+  autocomplete?: string | null;
+  type?: string | null;
+  options?: Array<{ label?: string; value?: string; disabled?: boolean }> | null;
+  maxLength?: number | null;
+  minLength?: number | null;
+  pattern?: string | null;
+  min?: string | number | null;
+  max?: string | number | null;
+  required?: boolean | null;
+}
+
 export interface VerifiedSelector {
   id: string;
   elementType: string | null;
@@ -431,6 +452,8 @@ export interface VerifiedSelector {
   uniqueness: boolean | null;
   sourceEvidenceId: string;
   fallbackSelector: string | null;
+  /** Input-field semantics for the Test Data Engine (present only for fillable controls). */
+  fieldMeta?: FieldMeta | null;
 }
 
 /** Which Evidence Registry record (Phase A) a selector's proof came from. */

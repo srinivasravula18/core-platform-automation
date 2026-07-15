@@ -37,6 +37,8 @@ export interface RunCompilationNodeInput {
   evidenceGraph: EvidenceGraph;
   /** Grounding node's registry projection — re-read at resolve time so the registry stays authoritative. */
   verifiedSelectors: VerifiedSelector[];
+  /** Backend object schema(s) from the artifact stash — threaded to the compiler for API-conformant test data. */
+  objectSchema?: import('../../testdata/types').ObjectSchema[];
 }
 
 export interface RunCompilationNodeResult {
@@ -82,7 +84,7 @@ export function runCompilationNode(input: RunCompilationNodeInput): RunCompilati
         diagnostics.push({ caseId: testCase.id, kind: 'EMPTY_PLAN', message: 'No authored test plan for this case.' });
         continue;
       }
-      const result = playwrightCompiler.compile({ mission: input.mission, plan, evidenceGraph: input.evidenceGraph, run });
+      const result = playwrightCompiler.compile({ mission: input.mission, plan, evidenceGraph: input.evidenceGraph, run, objectSchema: input.objectSchema });
       for (const d of result.diagnostics) {
         // Compiler DiagnosticKind is exactly CompilationDiagnostic.kind — mapped 1:1, tagged with the case id.
         diagnostics.push({ caseId: testCase.id, kind: d.kind, message: d.message, target: d.target });

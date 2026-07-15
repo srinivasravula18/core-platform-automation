@@ -11,7 +11,7 @@
  * Extensible: `evidenceKind` allows UI (Phase 1), plus API/DB/PERF/A11Y/LOG nodes in later phases, all on one
  * graph. Pure/read-only over the run — building the graph never mutates `run.selector_registry`.
  */
-import type { VerifiedSelector } from '../pipelineDelta';
+import type { FieldMeta, VerifiedSelector } from '../pipelineDelta';
 import type { MetadataGraph } from './metadataGraph';
 import { findMetadataByLabel } from './metadataGraph';
 
@@ -40,6 +40,8 @@ export interface EvidenceNode {
   confidence?: string | null;
   uniqueness?: boolean | null;
   provenance?: string | null;
+  /** Input-field semantics carried from the registry for the Test Data Engine (fillable controls only). */
+  fieldMeta?: FieldMeta | null;
   // Versioning/provenance fields (populated by the Object Repository as evidence accrues).
   domHash?: string | null;
   screenshotRef?: string | null;
@@ -116,6 +118,7 @@ export function buildEvidenceGraphFromRun(run: any, opts: BuildEvidenceGraphOpts
       confidence: (vs.confidence as any) ?? null,
       uniqueness: vs.uniqueness ?? null,
       provenance: (vs.provenance as any) ?? null,
+      fieldMeta: vs.fieldMeta ?? null,
       domHash: null,
       screenshotRef: null,
       lastVerified: null,

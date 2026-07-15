@@ -12,6 +12,8 @@ export interface RunArtifacts {
   compiledSources?: Record<string, string>;
   /** UI-ready evidence cards (title + served screenshotUrl) — state holds only evidenceRefs strings. */
   evidenceShots?: Array<{ title: string; url: string; screenshotUrl: string; status?: string }>;
+  /** Backend object schema(s) for API-acceptance-conformant test data — fetched once at context load. */
+  objectSchema?: import('../testdata/types').ObjectSchema[];
 }
 
 const stash = new Map<string, RunArtifacts>();

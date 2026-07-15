@@ -23,6 +23,8 @@ export interface CompileInput {
   evidenceGraph: EvidenceGraph;
   /** The run, so the compiler/grounding can re-read the authoritative Selector Registry (never copies). */
   run?: any;
+  /** Backend schema for API-conformant test data. */
+  objectSchema?: import('../testdata/types').ObjectSchema[];
 }
 
 export interface CompileResult {
