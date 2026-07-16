@@ -12,7 +12,7 @@ import fs from 'fs';
 import path from 'path';
 
 export interface AgentConfig {
-  cloudUrl: string;          // e.g. https://ops.achindra.com/automation
+  cloudUrl: string;          // e.g. https://ops.acchindra.com/automation
   pairingToken?: string;     // one-time; cleared after successful registration
   agentId?: string;
   agentToken?: string;
@@ -23,7 +23,7 @@ export interface AgentConfig {
 }
 
 const DEFAULTS: AgentConfig = {
-  cloudUrl: 'https://ops.achindra.com/automation',
+  cloudUrl: 'https://ops.acchindra.com/automation',
   logLevel: 'info',
 };
 
@@ -49,18 +49,17 @@ export function saveConfig(baseDir: string, config: AgentConfig): void {
   try { fs.chmodSync(file, 0o600); } catch { /* best-effort on non-POSIX */ }
 }
 
-/** The API origin (scheme+host) derived from cloudUrl, dropping any /automation path suffix. */
+/**
+ * The base URL under which the cloud API lives — i.e. cloudUrl itself (trailing slash trimmed).
+ * The app can be served under a path (e.g. https://ops.acchindra.com/automation), so we must KEEP
+ * that path: endpoints are `<apiBase>/api/automation/...`. For a root deployment cloudUrl is just the
+ * origin (e.g. http://localhost:3001) and this returns it unchanged.
+ */
 export function apiBase(config: AgentConfig): string {
-  try {
-    const u = new URL(config.cloudUrl);
-    return `${u.protocol}//${u.host}`;
-  } catch {
-    return config.cloudUrl.replace(/\/automation\/?$/, '');
-  }
+  return String(config.cloudUrl || '').replace(/\/+$/, '');
 }
 
 /** The WebSocket URL for the agent gateway (wss when the cloud is https). */
 export function wsUrl(config: AgentConfig): string {
-  const base = apiBase(config);
-  return base.replace(/^http/, 'ws') + '/api/automation/agent-ws';
+  return apiBase(config).replace(/^http/, 'ws') + '/api/automation/agent-ws';
 }

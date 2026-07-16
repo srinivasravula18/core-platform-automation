@@ -333,7 +333,10 @@ export function registerAutomationRoutes(app: Express) {
   /* ---------- agent download + updater ---------- */
 
   function publicOrigin(req: Request): string {
-    if (process.env.APP_URL) return process.env.APP_URL.replace(/\/$/, '');
+    // Only trust APP_URL when it's a real http(s) URL — the dev default is a "MY_APP_URL" placeholder,
+    // which would bake an unparseable cloudUrl into the agent's config. Otherwise use the request origin.
+    const appUrl = (process.env.APP_URL || '').trim();
+    if (/^https?:\/\//i.test(appUrl)) return appUrl.replace(/\/$/, '');
     return `${req.protocol}://${req.get('host')}`;
   }
 
@@ -342,7 +345,9 @@ export function registerAutomationRoutes(app: Express) {
     if (!agentDirExists()) return res.status(503).json({ error: 'Agent bundle is not available on this server.' });
     const scope = reqScope(req);
     const { pairingToken } = createPairingToken({ userId: scope.userId || '', projectId: scope.projectId, appId: scope.appId || '', name: String(req.query.name || '') });
-    streamAgentZip(res, { pairingToken, cloudUrl: `${publicOrigin(req)}/automation`, name: String(req.query.name || 'TestFlow Agent') });
+    // cloudUrl is the base the agent calls <base>/api/automation/... — APP_URL already carries any
+    // base path (e.g. /automation in production); the request-origin fallback is used in local dev.
+    streamAgentZip(res, { pairingToken, cloudUrl: publicOrigin(req), name: String(req.query.name || 'TestFlow Agent') });
   });
 
   // Latest published agent version (allowlisted so a running agent's updater can poll it).

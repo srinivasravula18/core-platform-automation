@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { Radio, Loader2, Square, Trash2, Save, Play, CalendarClock, Sparkles, FlaskConical, Circle } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Radio, Loader2, Square, Trash2, Save, Play, CalendarClock, Sparkles, FlaskConical, Circle, Plus } from 'lucide-react';
 import { showToast, showConfirm } from '@/src/lib/dialog';
 import { Modal } from '@/src/components/Modal';
 import { useRemoteAgentFlag, useAgents, useAgentEvents, type Recording } from '@/src/lib/useAutomation';
@@ -37,6 +37,14 @@ export default function RecordTest() {
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const [scheduleOpen, setScheduleOpen] = useState(false);
+
+  // Saved application URLs (from Settings → website credentials), selectable + addable inline.
+  const [websites, setWebsites] = useState<Array<{ id: string; name: string; baseUrl: string; environment?: string }>>([]);
+  const [addUrlOpen, setAddUrlOpen] = useState(false);
+  const loadWebsites = useCallback(async () => {
+    try { const d = await fetch('/api/credentials/websites').then((r) => r.json()); setWebsites(Array.isArray(d?.websites) ? d.websites : []); } catch { /* keep */ }
+  }, []);
+  useEffect(() => { void loadWebsites(); }, [loadWebsites]);
 
   const connected = useMemo(() => agents.filter((a) => !a.revoked && (a.status === 'online' || a.status === 'busy')), [agents]);
   const selectedAgent = connected.find((a) => a.id === agentId) || connected[0];
@@ -133,11 +141,31 @@ export default function RecordTest() {
           <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-card)] p-4">
             <div className="text-sm font-semibold text-[var(--text-primary)]">Record New Test</div>
             <div className="mt-4 space-y-4">
-              <label className="block text-xs font-medium text-[var(--text-muted)]">
-                Application URL
+              <div>
+                <div className="flex items-center justify-between">
+                  <label className="block text-xs font-medium text-[var(--text-muted)]">Application URL</label>
+                  <button type="button" onClick={() => setAddUrlOpen(true)} className="inline-flex items-center gap-1 text-xs font-medium text-[var(--accent)] hover:underline">
+                    <Plus className="h-3.5 w-3.5" /> Add URL
+                  </button>
+                </div>
+                {websites.length > 0 && (
+                  <select
+                    value={websites.some((w) => w.baseUrl === appUrl) ? appUrl : ''}
+                    onChange={(e) => {
+                      const site = websites.find((w) => w.baseUrl === e.target.value);
+                      setAppUrl(e.target.value);
+                      if (site && !name.trim()) setName(site.name);
+                      if (site?.environment && ENVIRONMENTS.includes(site.environment as typeof ENVIRONMENTS[number])) setEnvironment(site.environment);
+                    }}
+                    className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
+                  >
+                    <option value="">Select a saved URL…</option>
+                    {websites.map((w) => <option key={w.id} value={w.baseUrl}>{w.name} — {w.baseUrl}</option>)}
+                  </select>
+                )}
                 <input value={appUrl} onChange={(e) => setAppUrl(e.target.value)} placeholder="https://app.example.com"
-                  className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
-              </label>
+                  className="mt-2 w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
+              </div>
               <div className="grid gap-4 sm:grid-cols-2">
                 <label className="block text-xs font-medium text-[var(--text-muted)]">
                   Recording name
@@ -242,7 +270,60 @@ export default function RecordTest() {
       )}
 
       <ScheduleModal isOpen={scheduleOpen} onClose={() => setScheduleOpen(false)} recordingId={recordingId} agentId={selectedAgent?.id || ''} />
+      <AddUrlModal isOpen={addUrlOpen} onClose={() => setAddUrlOpen(false)} onCreated={(w) => { setAppUrl(w.baseUrl); if (!name.trim()) setName(w.name); void loadWebsites(); }} />
     </div>
+  );
+}
+
+function AddUrlModal({ isOpen, onClose, onCreated }: { isOpen: boolean; onClose: () => void; onCreated: (w: { name: string; baseUrl: string; environment?: string }) => void }) {
+  const [name, setName] = useState('');
+  const [baseUrl, setBaseUrl] = useState('');
+  const [environment, setEnvironment] = useState('QA');
+  const [busy, setBusy] = useState(false);
+  const submit = async () => {
+    if (!name.trim() || !baseUrl.trim()) return;
+    setBusy(true);
+    try {
+      const res = await fetch('/api/credentials/websites', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: name.trim(), baseUrl: baseUrl.trim(), environment }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error);
+      showToast('Saved URL added.', { tone: 'success' });
+      onCreated(data.website || { name: name.trim(), baseUrl: baseUrl.trim(), environment });
+      setName(''); setBaseUrl('');
+      onClose();
+    } catch { showToast('Could not add the URL.', { tone: 'error' }); }
+    finally { setBusy(false); }
+  };
+  return (
+    <Modal isOpen={isOpen} onClose={onClose} title="Add a saved URL" size="md"
+      footer={<div className="flex justify-end gap-2">
+        <button onClick={onClose} className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)]">Cancel</button>
+        <button onClick={submit} disabled={busy || !name.trim() || !baseUrl.trim()} className="inline-flex items-center gap-2 rounded-md bg-[var(--accent)] px-3 py-2 text-sm font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50">
+          {busy && <Loader2 className="h-4 w-4 animate-spin" />} Add URL
+        </button>
+      </div>}>
+      <label className="block text-xs font-medium text-[var(--text-muted)]">
+        Name
+        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Admin portal"
+          className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
+      </label>
+      <label className="mt-4 block text-xs font-medium text-[var(--text-muted)]">
+        URL
+        <input value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="https://app.example.com"
+          className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
+      </label>
+      <label className="mt-4 block text-xs font-medium text-[var(--text-muted)]">
+        Environment
+        <select value={environment} onChange={(e) => setEnvironment(e.target.value)}
+          className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]">
+          {['QA', 'DEV', 'PROD', 'staging'].map((e) => <option key={e} value={e}>{e}</option>)}
+        </select>
+      </label>
+      <p className="mt-4 text-xs text-[var(--text-muted)]">Saved URLs are shared with Settings → credentials and reusable across recordings.</p>
+    </Modal>
   );
 }
 

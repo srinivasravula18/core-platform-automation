@@ -1,5 +1,5 @@
 {
-  "cloudUrl": "https://ops.achindra.com/automation",
+  "cloudUrl": "https://ops.acchindra.com/automation",
   "pairingToken": "pair_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
   "name": "My Laptop",
   "logLevel": "info"

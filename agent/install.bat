@@ -22,9 +22,11 @@ if errorlevel 1 goto :err
 
 echo.
 echo ============================================
-echo   Installing Playwright browsers...
+echo   Installing Playwright browser (Chromium)...
 echo ============================================
-call npx playwright install
+REM Chromium only for a fast, lean install. Add more later with:
+REM   npx playwright install firefox webkit
+call npx playwright install chromium
 if errorlevel 1 goto :err
 
 echo.

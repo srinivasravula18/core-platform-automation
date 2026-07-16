@@ -2,7 +2,7 @@
 
 **Status:** ANALYSIS ONLY — no code has been changed. Awaiting explicit approval before any implementation phase.
 **Branch:** `langchain_version` · **Date:** 2026-07-16
-**Scope:** Move all browser recording/execution off the cloud server onto a downloadable TestFlow Desktop Agent, orchestrated from the cloud UI at `https://ops.achindra.com/automation`.
+**Scope:** Move all browser recording/execution off the cloud server onto a downloadable TestFlow Desktop Agent, orchestrated from the cloud UI at `https://ops.acchindra.com/automation`.
 
 ---
 
@@ -82,7 +82,7 @@ The platform was built local-first: one machine ran UI, API, and browsers, so "e
 ## 10. Proposed Architecture
 
 ```
-┌────────────────────────────── Cloud (ops.achindra.com/automation) ─────────────────────────────┐
+┌────────────────────────────── Cloud (ops.acchindra.com/automation) ─────────────────────────────┐
 │  React SPA ── /api/automation/* (HTTPS) ── Express :3001                                        │
 │      │ SSE (existing pattern)                │                                                  │
 │      ▼                                       ▼                                                  │
