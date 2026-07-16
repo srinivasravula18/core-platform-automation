@@ -1,0 +1,72 @@
+/**
+ * Agent bundle download.
+ *
+ * Streams a ready-to-run ZIP of the desktop agent (source + install/start/stop scripts) with a
+ * per-download config.json that carries a freshly minted, single-use pairing token and the cloud URL.
+ * The user unzips, runs install.bat (installs Node deps + Playwright browsers) then start.bat — the
+ * agent registers itself with the pairing token on first launch. node_modules/build output are excluded;
+ * install.bat rebuilds them locally.
+ */
+
+import path from 'path';
+import fs from 'fs';
+import type { Response } from 'express';
+import * as archiverNs from 'archiver';
+import type { Archiver } from 'archiver';
+
+// archiver ships as a CommonJS `export =` callable; bridge it to a typed factory without needing
+// esModuleInterop. Depending on the loader the callable is the namespace itself or its .default.
+const archiver = (((archiverNs as any).default ?? archiverNs) as (format: string, options?: Record<string, any>) => Archiver);
+
+const AGENT_DIR = path.resolve(process.cwd(), 'agent');
+const EXCLUDE_DIRS = new Set(['node_modules', 'dist', 'logs', 'playwright']);
+const EXCLUDE_FILES = new Set(['config.json', 'config.example.json']);
+// Used only if agent/package.json can't be read; the real version comes from that file.
+const AGENT_VERSION_FALLBACK = '1.0.0';
+
+export function agentDirExists(): boolean {
+  return fs.existsSync(path.join(AGENT_DIR, 'package.json'));
+}
+
+/** Latest published agent version (read from agent/package.json), plus where to download it. */
+export function agentLatestInfo(downloadUrl: string): { version: string; downloadUrl: string } {
+  let version = AGENT_VERSION_FALLBACK;
+  try {
+    version = JSON.parse(fs.readFileSync(path.join(AGENT_DIR, 'package.json'), 'utf-8')).version || version;
+  } catch { /* fall back */ }
+  return { version, downloadUrl };
+}
+
+export function streamAgentZip(res: Response, opts: { pairingToken: string; cloudUrl: string; name?: string }): void {
+  res.setHeader('Content-Type', 'application/zip');
+  res.setHeader('Content-Disposition', 'attachment; filename="TestFlow-Agent.zip"');
+
+  const archive = archiver('zip', { zlib: { level: 9 } });
+  archive.on('error', (err) => {
+    console.error('[automation] agent zip error:', err?.message || err);
+    if (!res.headersSent) res.status(500).json({ error: 'Failed to build agent bundle.' });
+    else res.destroy();
+  });
+  archive.pipe(res);
+
+  // Agent source + launcher scripts, under a TestFlow-Agent/ top folder. entry.name carries the
+  // destination prefix, so match on path segments (not a leading-anchored regex).
+  archive.directory(AGENT_DIR, 'TestFlow-Agent', (entry) => {
+    const rel = String(entry.name || '').replace(/\\/g, '/');
+    const segs = rel.split('/');
+    if (segs.some((s) => EXCLUDE_DIRS.has(s))) return false;
+    if (EXCLUDE_FILES.has(segs[segs.length - 1])) return false;
+    return entry;
+  });
+
+  // Per-download config with the single-use pairing token baked in.
+  const config = {
+    cloudUrl: opts.cloudUrl,
+    pairingToken: opts.pairingToken,
+    name: opts.name || 'TestFlow Agent',
+    logLevel: 'info',
+  };
+  archive.append(JSON.stringify(config, null, 2), { name: 'TestFlow-Agent/config.json' });
+
+  void archive.finalize();
+}

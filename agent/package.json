@@ -1,0 +1,35 @@
+{
+  "name": "testflow-agent",
+  "version": "1.0.0",
+  "private": true,
+  "description": "TestFlow Desktop Agent — runs Playwright recording & execution locally and connects outbound to TestFlow AI.",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "testflow-agent": "dist/index.js"
+  },
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "install-browsers": "playwright install",
+    "lint": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "pino": "^9.5.0",
+    "playwright": "^1.60.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.60.0",
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.14.0",
+    "@types/ws": "^8.5.13",
+    "tsx": "^4.21.0",
+    "typescript": "~5.8.2"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

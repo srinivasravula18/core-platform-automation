@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { BrowserRouter, Routes, Route, Link, useLocation, useNavigate } from 'react-router-dom';
-import { LayoutDashboard, TestTube2, Bug, Settings, BrainCircuit, PlayCircle, FolderTree, Sun, Moon, Search, CircleUser, Layers, Menu, ClipboardList, GitBranch, Command, MessagesSquare, ChevronDown, LogOut, Target, ScrollText, Radio } from 'lucide-react';
+import { LayoutDashboard, TestTube2, Bug, Settings, BrainCircuit, PlayCircle, FolderTree, Sun, Moon, Search, CircleUser, Layers, Menu, ClipboardList, GitBranch, Command, MessagesSquare, ChevronDown, LogOut, Target, ScrollText, Radio, HardDrive, CalendarClock, Gauge } from 'lucide-react';
+import { useRemoteAgentFlag } from '@/src/lib/useAutomation';
 import { cn } from '@/src/lib/utils';
 import { useTheme } from '@/src/store/theme';
 import { CommandBar } from '@/src/components/CommandBar';
@@ -26,10 +27,31 @@ import TestRepository from '@/src/pages/TestRepository';
 import Requirements from '@/src/pages/Requirements';
 import Traceability from '@/src/pages/Traceability';
 import RecordPlay from '@/src/pages/RecordPlay';
+import RecordTest from '@/src/pages/automation/RecordTest';
+import LocalAgent from '@/src/pages/automation/LocalAgent';
+import AutomationDashboard from '@/src/pages/automation/AutomationDashboard';
+import Executions from '@/src/pages/automation/Executions';
+import Schedules from '@/src/pages/automation/Schedules';
+import AutomationReports from '@/src/pages/automation/AutomationReports';
 
 function Sidebar({ isOpen }: { isOpen: boolean }) {
   const location = useLocation();
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  const remoteAgent = useRemoteAgentFlag();
+  // Record & Play desktop-agent pages appear only when the backend enables REMOTE_AGENT_V1.
+  const automationItems = [
+    ...(remoteAgent ? [
+      { name: 'Automation', href: '/automation', icon: Gauge },
+      { name: 'Record Test', href: '/automation/record', icon: Radio },
+      { name: 'Executions', href: '/automation/executions', icon: PlayCircle },
+      { name: 'Schedules', href: '/automation/schedules', icon: CalendarClock },
+      { name: 'Reports', href: '/automation/reports', icon: ClipboardList },
+      { name: 'Local Agent', href: '/automation/agent', icon: HardDrive },
+    ] : [
+      { name: 'Record & Play', href: '/record-play', icon: Radio },
+    ]),
+    { name: 'Git Agent', href: '/git-agent', icon: GitBranch },
+  ];
   const navGroups = [
     {
       label: 'Overview',
@@ -59,10 +81,7 @@ function Sidebar({ isOpen }: { isOpen: boolean }) {
     },
     {
       label: 'Automation',
-      items: [
-        { name: 'Record & Play', href: '/record-play', icon: Radio },
-        { name: 'Git Agent', href: '/git-agent', icon: GitBranch },
-      ],
+      items: automationItems,
     },
   ];
 
@@ -390,6 +409,13 @@ export default function App() {
           <Route path="/agent/chat/:chatId" element={<AgentConsole />} />
           <Route path="/studio" element={<AgentPanel />} />
           <Route path="/record-play" element={<RecordPlay />} />
+          <Route path="/automation" element={<AutomationDashboard />} />
+          <Route path="/automation/record" element={<RecordTest />} />
+          <Route path="/automation/executions" element={<Executions />} />
+          <Route path="/automation/schedules" element={<Schedules />} />
+          <Route path="/automation/reports" element={<AutomationReports />} />
+          <Route path="/automation/reports/:jobId" element={<AutomationReports />} />
+          <Route path="/automation/agent" element={<LocalAgent />} />
           <Route path="/git-agent" element={<GitAgent />} />
           <Route path="/settings" element={<SettingsPage />} />
           <Route path="*" element={

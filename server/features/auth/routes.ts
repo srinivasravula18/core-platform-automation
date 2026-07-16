@@ -74,6 +74,16 @@ const PUBLIC_API_PREFIXES = [
   '/api/app-config',
   '/api/auth/login',
   '/api/screenshot',
+  // Record & Play desktop agent: no human session — these authenticate via pairing/refresh
+  // tokens inside the handler (see server/features/automation). Exact paths only, so the
+  // rest of /api/automation/** still requires a logged-in user.
+  '/api/automation/agents/register',
+  '/api/automation/agents/token/refresh',
+  '/api/automation/agents/heartbeat',
+  // Webhook trigger authenticates by a hashed per-schedule token inside the handler.
+  '/api/automation/hooks',
+  // Agent version check — non-sensitive; polled by the desktop agent's updater (agent token, not human).
+  '/api/automation/agent/latest',
 ];
 
 /**
