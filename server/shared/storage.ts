@@ -89,6 +89,14 @@ export const db: any = {
   // Object Repository (Evidence-Graph Phase 1): persistent, append-only, VERSIONED enterprise UI knowledge
   // (Platform→Application→Module→Object→Control). Evidence is never overwritten — see graph/objectRepository.
   objectRepository: [] as any[],
+  // Record & Play — Local Desktop Agent (gated by REMOTE_AGENT_V1). JSON-mode equivalents of the
+  // agents/recordings/automation_* Postgres tables. Empty + inert when the feature flag is off.
+  agents: [] as any[],
+  recordings: [] as any[],
+  automationJobs: [] as any[],
+  automationSchedules: [] as any[],
+  automationArtifacts: [] as any[],
+  automationEvents: [] as any[],
 };
 
 const settingsFilePath = path.resolve(process.cwd(), '.testflow-settings.json');
@@ -124,6 +132,12 @@ function getPersistableDbSnapshot() {
     apiRuns: db.apiRuns,
     apiBaselines: db.apiBaselines,
     objectRepository: db.objectRepository,
+    agents: db.agents,
+    recordings: db.recordings,
+    automationJobs: db.automationJobs,
+    automationSchedules: db.automationSchedules,
+    automationArtifacts: db.automationArtifacts,
+    automationEvents: db.automationEvents,
   };
 }
 
@@ -160,6 +174,12 @@ export async function loadPersistedData() {
     db.apiRuns = Array.isArray(data.apiRuns) ? data.apiRuns : [];
     db.apiBaselines = Array.isArray(data.apiBaselines) ? data.apiBaselines : [];
     db.objectRepository = Array.isArray(data.objectRepository) ? data.objectRepository : [];
+    db.agents = Array.isArray(data.agents) ? data.agents : [];
+    db.recordings = Array.isArray(data.recordings) ? data.recordings : [];
+    db.automationJobs = Array.isArray(data.automationJobs) ? data.automationJobs : [];
+    db.automationSchedules = Array.isArray(data.automationSchedules) ? data.automationSchedules : [];
+    db.automationArtifacts = Array.isArray(data.automationArtifacts) ? data.automationArtifacts : [];
+    db.automationEvents = Array.isArray(data.automationEvents) ? data.automationEvents : [];
   } catch (error: any) {
     if (error instanceof SyntaxError) {
       console.warn(`Ignoring unreadable persisted data at ${dataFilePath}; starting with an empty in-memory store.`);

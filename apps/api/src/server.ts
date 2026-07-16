@@ -1,5 +1,6 @@
 import '../../../core/shared/env';
 import express from 'express';
+import http from 'http';
 import path from 'path';
 import { loadPersistedData, loadPersistedSettings, scopeMiddleware } from '../../../core/shared';
 import { AgentRuns, ensureMigrated, isPgEnabled, runSeedIfEmpty } from '../../../core/persistence';
@@ -23,6 +24,7 @@ import { registerSettingsRoutes, registerAiSettingsRoutes } from '../../../servi
 import { registerApiIntelligenceRoutes } from '../../../services/api-intelligence';
 import { getWorkflowCheckpointer, closeWorkflowCheckpointer, isWorkflowGraphEnabled, reconcileOrphanedRunsOnStartup } from '../../../services/orchestration';
 import { startMemoryRetention } from '../../../server/ai/memory/retention';
+import { registerAutomationRoutes, isRemoteAgentEnabled, attachAutomationGateway, startScheduler, recoverOrphanedJobs } from '../../../services/automation';
 
 let processGuardsInstalled = false;
 
@@ -113,7 +115,9 @@ export async function createExpressApp() {
         : 'local';
     // graphEngine: curl-able confirmation that AGENT_GRAPH_V2 actually reached the running process —
     // true here means new runs route through the LangGraph engine; false means the legacy pipeline.
-    res.json({ deploymentMode: mode, allowLocalRepo: mode !== 'production', graphEngine: isWorkflowGraphEnabled() });
+    // remoteAgent: curl-able confirmation that REMOTE_AGENT_V1 reached the running process —
+    // the frontend gates the Record & Play (local desktop agent) UI on this.
+    res.json({ deploymentMode: mode, allowLocalRepo: mode !== 'production', graphEngine: isWorkflowGraphEnabled(), remoteAgent: isRemoteAgentEnabled() });
   });
 
   registerAuthRoutes(app);
@@ -134,6 +138,7 @@ export async function createExpressApp() {
   registerDashboardRoutes(app);
   registerResourceRoutes(app);
   registerApiIntelligenceRoutes(app);
+  registerAutomationRoutes(app);
 
   app.use((error: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
     if (res.headersSent) return next(error);
@@ -150,7 +155,16 @@ export async function startExpressServer() {
   const app = await createExpressApp();
   const port = Number(process.env.BACKEND_PORT || process.env.PORT || 3001);
 
-  app.listen(port, '0.0.0.0', () => {
+  // Wrap the app in an explicit http.Server so the Record & Play agent WebSocket gateway can share
+  // the port via the HTTP upgrade path. Both attach + scheduler are no-ops when REMOTE_AGENT_V1 is off.
+  const httpServer = http.createServer(app);
+  attachAutomationGateway(httpServer);
+  if (isRemoteAgentEnabled()) {
+    startScheduler();
+    await recoverOrphanedJobs().catch((err) => console.error('[automation] orphaned-job recovery failed:', err?.message || err));
+  }
+
+  httpServer.listen(port, '0.0.0.0', () => {
     console.log(`Backend running on http://localhost:${port}`);
   });
 }

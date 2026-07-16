@@ -1565,4 +1565,358 @@ export const AgentRunEvents = {
   },
 };
 
+/* ---------- Record & Play — Local Desktop Agent (gated by REMOTE_AGENT_V1) ---------- */
+
+// These repos follow the array-like pattern above: JSON-mode reads/writes db.* arrays; PG-mode
+// uses SELECT/INSERT ... ON CONFLICT. Row mappers expose projectId/appId/ownerId so the route
+// layer's scopeFilter/scopeStamp partition them per project + owner exactly like every other entity.
+
+function mapAgent(r: any) {
+  if (!r) return null;
+  return {
+    id: r.id,
+    name: r.name,
+    machineName: r.machine_name,
+    os: r.os,
+    fingerprint: r.fingerprint,
+    tokenHash: r.token_hash,
+    refreshHash: r.refresh_hash,
+    version: r.version,
+    playwrightVersion: r.playwright_version,
+    browsers: r.browsers,
+    cpu: r.cpu,
+    memory: r.memory,
+    status: r.status,
+    lastHeartbeatAt: r.last_heartbeat_at,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+    revokedAt: r.revoked_at,
+    projectId: r.project_id || '',
+    appId: r.app_id || '',
+    ownerId: r.owner_id || '',
+  };
+}
+
+export const Agents = {
+  async list(): Promise<any[]> {
+    if (!isPgEnabled()) return db.agents as any[];
+    const rows = await query('SELECT * FROM agents ORDER BY created_at DESC');
+    return rows.map(mapAgent);
+  },
+  async get(id: string): Promise<any | null> {
+    if (!isPgEnabled()) return db.agents.find((a: any) => a.id === id) || null;
+    return mapAgent(await queryOne('SELECT * FROM agents WHERE id = $1', [id]));
+  },
+  async remove(id: string): Promise<boolean> {
+    if (!isPgEnabled()) {
+      const before = db.agents.length;
+      db.agents = db.agents.filter((a: any) => a.id !== id);
+      return db.agents.length < before;
+    }
+    const res = await query('DELETE FROM agents WHERE id = $1 RETURNING id', [id]);
+    return res.length > 0;
+  },
+  async upsert(a: any): Promise<any> {
+    if (!isPgEnabled()) {
+      const idx = db.agents.findIndex((x: any) => x.id === a.id);
+      if (idx >= 0) db.agents[idx] = { ...db.agents[idx], ...a };
+      else db.agents.unshift(a);
+      return a;
+    }
+    const id = a.id || uid('AGENT');
+    const row = await queryOne(
+      `INSERT INTO agents (id, project_id, app_id, owner_id, name, machine_name, os, fingerprint, token_hash, refresh_hash, version, playwright_version, browsers, cpu, memory, status, last_heartbeat_at, created_at, updated_at, revoked_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb,$14::jsonb,$15::jsonb,$16,$17::timestamptz, COALESCE($18::timestamptz, now()), now(), $19::timestamptz)
+       ON CONFLICT (id) DO UPDATE SET
+         name=EXCLUDED.name, machine_name=EXCLUDED.machine_name, os=EXCLUDED.os, fingerprint=EXCLUDED.fingerprint,
+         token_hash=EXCLUDED.token_hash, refresh_hash=EXCLUDED.refresh_hash, version=EXCLUDED.version,
+         playwright_version=EXCLUDED.playwright_version, browsers=EXCLUDED.browsers, cpu=EXCLUDED.cpu,
+         memory=EXCLUDED.memory, status=EXCLUDED.status, last_heartbeat_at=EXCLUDED.last_heartbeat_at,
+         revoked_at=EXCLUDED.revoked_at, updated_at=now()
+       RETURNING *`,
+      [id, a.projectId || null, a.appId || null, a.ownerId || null, a.name || '', a.machineName || '', a.os || '',
+       a.fingerprint || '', a.tokenHash || '', a.refreshHash || '', a.version || '', a.playwrightVersion || '',
+       JSON.stringify(a.browsers || []), JSON.stringify(a.cpu || {}), JSON.stringify(a.memory || {}),
+       a.status || 'offline', a.lastHeartbeatAt || null, a.createdAt || null, a.revokedAt || null],
+    );
+    return mapAgent(row);
+  },
+};
+
+function mapRecording(r: any) {
+  if (!r) return null;
+  return {
+    id: r.id,
+    agentId: r.agent_id,
+    name: r.name,
+    appUrl: r.app_url,
+    browser: r.browser,
+    environment: r.environment,
+    status: r.status,
+    script: r.script,
+    metadata: r.metadata,
+    stats: r.stats,
+    startedAt: r.started_at,
+    completedAt: r.completed_at,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+    projectId: r.project_id || '',
+    appId: r.app_id || '',
+    ownerId: r.owner_id || '',
+  };
+}
+
+export const Recordings = {
+  async list(): Promise<any[]> {
+    if (!isPgEnabled()) return db.recordings as any[];
+    const rows = await query('SELECT * FROM recordings WHERE deleted_at IS NULL ORDER BY created_at DESC');
+    return rows.map(mapRecording);
+  },
+  async get(id: string): Promise<any | null> {
+    if (!isPgEnabled()) return db.recordings.find((r: any) => r.id === id) || null;
+    return mapRecording(await queryOne('SELECT * FROM recordings WHERE id = $1 AND deleted_at IS NULL', [id]));
+  },
+  async remove(id: string): Promise<boolean> {
+    if (!isPgEnabled()) {
+      const before = db.recordings.length;
+      db.recordings = db.recordings.filter((r: any) => r.id !== id);
+      return db.recordings.length < before;
+    }
+    const res = await query('UPDATE recordings SET deleted_at = now() WHERE id = $1 AND deleted_at IS NULL RETURNING id', [id]);
+    return res.length > 0;
+  },
+  async upsert(r: any): Promise<any> {
+    if (!isPgEnabled()) {
+      const idx = db.recordings.findIndex((x: any) => x.id === r.id);
+      if (idx >= 0) db.recordings[idx] = { ...db.recordings[idx], ...r };
+      else db.recordings.unshift(r);
+      return r;
+    }
+    const id = r.id || uid('REC');
+    const row = await queryOne(
+      `INSERT INTO recordings (id, project_id, app_id, owner_id, agent_id, name, app_url, browser, environment, status, script, metadata, stats, started_at, completed_at, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13::jsonb,$14::timestamptz,$15::timestamptz, COALESCE($16::timestamptz, now()), now())
+       ON CONFLICT (id) DO UPDATE SET
+         agent_id=EXCLUDED.agent_id, name=EXCLUDED.name, app_url=EXCLUDED.app_url, browser=EXCLUDED.browser,
+         environment=EXCLUDED.environment, status=EXCLUDED.status, script=EXCLUDED.script, metadata=EXCLUDED.metadata,
+         stats=EXCLUDED.stats, started_at=EXCLUDED.started_at, completed_at=EXCLUDED.completed_at, updated_at=now()
+       RETURNING *`,
+      [id, r.projectId || null, r.appId || null, r.ownerId || null, r.agentId || null, r.name || '', r.appUrl || '',
+       r.browser || 'chromium', r.environment || 'QA', r.status || 'draft', r.script || '',
+       JSON.stringify(r.metadata || {}), JSON.stringify(r.stats || {}), r.startedAt || null, r.completedAt || null, r.createdAt || null],
+    );
+    return mapRecording(row);
+  },
+};
+
+function mapJob(r: any) {
+  if (!r) return null;
+  return {
+    id: r.id,
+    recordingId: r.recording_id,
+    agentId: r.agent_id,
+    scheduleId: r.schedule_id,
+    trigger: r.trigger,
+    status: r.status,
+    queuedAt: r.queued_at,
+    startedAt: r.started_at,
+    finishedAt: r.finished_at,
+    exitCode: r.exit_code,
+    summary: r.summary,
+    error: r.error,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+    projectId: r.project_id || '',
+    appId: r.app_id || '',
+    ownerId: r.owner_id || '',
+  };
+}
+
+export const AutomationJobs = {
+  async list(): Promise<any[]> {
+    if (!isPgEnabled()) return db.automationJobs as any[];
+    const rows = await query('SELECT * FROM automation_jobs ORDER BY queued_at DESC');
+    return rows.map(mapJob);
+  },
+  async get(id: string): Promise<any | null> {
+    if (!isPgEnabled()) return db.automationJobs.find((j: any) => j.id === id) || null;
+    return mapJob(await queryOne('SELECT * FROM automation_jobs WHERE id = $1', [id]));
+  },
+  async remove(id: string): Promise<boolean> {
+    if (!isPgEnabled()) {
+      const before = db.automationJobs.length;
+      db.automationJobs = db.automationJobs.filter((j: any) => j.id !== id);
+      return db.automationJobs.length < before;
+    }
+    const res = await query('DELETE FROM automation_jobs WHERE id = $1 RETURNING id', [id]);
+    return res.length > 0;
+  },
+  async upsert(j: any): Promise<any> {
+    if (!isPgEnabled()) {
+      const idx = db.automationJobs.findIndex((x: any) => x.id === j.id);
+      if (idx >= 0) db.automationJobs[idx] = { ...db.automationJobs[idx], ...j };
+      else db.automationJobs.unshift(j);
+      return j;
+    }
+    const id = j.id || uid('JOB');
+    const row = await queryOne(
+      `INSERT INTO automation_jobs (id, project_id, app_id, owner_id, recording_id, agent_id, schedule_id, trigger, status, queued_at, started_at, finished_at, exit_code, summary, error, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9, COALESCE($10::timestamptz, now()),$11::timestamptz,$12::timestamptz,$13,$14::jsonb,$15, now(), now())
+       ON CONFLICT (id) DO UPDATE SET
+         recording_id=EXCLUDED.recording_id, agent_id=EXCLUDED.agent_id, schedule_id=EXCLUDED.schedule_id,
+         trigger=EXCLUDED.trigger, status=EXCLUDED.status, started_at=EXCLUDED.started_at,
+         finished_at=EXCLUDED.finished_at, exit_code=EXCLUDED.exit_code, summary=EXCLUDED.summary,
+         error=EXCLUDED.error, updated_at=now()
+       RETURNING *`,
+      [id, j.projectId || null, j.appId || null, j.ownerId || null, j.recordingId || null, j.agentId || null,
+       j.scheduleId || null, j.trigger || 'manual', j.status || 'queued', j.queuedAt || null, j.startedAt || null,
+       j.finishedAt || null, typeof j.exitCode === 'number' ? j.exitCode : null, JSON.stringify(j.summary || {}), j.error || ''],
+    );
+    return mapJob(row);
+  },
+};
+
+function mapSchedule(r: any) {
+  if (!r) return null;
+  return {
+    id: r.id,
+    recordingId: r.recording_id,
+    agentId: r.agent_id,
+    kind: r.kind,
+    cron: r.cron,
+    timezone: r.timezone,
+    webhookTokenHash: r.webhook_token_hash,
+    enabled: r.enabled,
+    nextRunAt: r.next_run_at,
+    lastRunAt: r.last_run_at,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+    projectId: r.project_id || '',
+    appId: r.app_id || '',
+    ownerId: r.owner_id || '',
+  };
+}
+
+export const AutomationSchedules = {
+  async list(): Promise<any[]> {
+    if (!isPgEnabled()) return db.automationSchedules as any[];
+    const rows = await query('SELECT * FROM automation_schedules WHERE deleted_at IS NULL ORDER BY created_at DESC');
+    return rows.map(mapSchedule);
+  },
+  async get(id: string): Promise<any | null> {
+    if (!isPgEnabled()) return db.automationSchedules.find((s: any) => s.id === id) || null;
+    return mapSchedule(await queryOne('SELECT * FROM automation_schedules WHERE id = $1 AND deleted_at IS NULL', [id]));
+  },
+  async remove(id: string): Promise<boolean> {
+    if (!isPgEnabled()) {
+      const before = db.automationSchedules.length;
+      db.automationSchedules = db.automationSchedules.filter((s: any) => s.id !== id);
+      return db.automationSchedules.length < before;
+    }
+    const res = await query('UPDATE automation_schedules SET deleted_at = now() WHERE id = $1 AND deleted_at IS NULL RETURNING id', [id]);
+    return res.length > 0;
+  },
+  async upsert(s: any): Promise<any> {
+    if (!isPgEnabled()) {
+      const idx = db.automationSchedules.findIndex((x: any) => x.id === s.id);
+      if (idx >= 0) db.automationSchedules[idx] = { ...db.automationSchedules[idx], ...s };
+      else db.automationSchedules.unshift(s);
+      return s;
+    }
+    const id = s.id || uid('SCHED');
+    const row = await queryOne(
+      `INSERT INTO automation_schedules (id, project_id, app_id, owner_id, recording_id, agent_id, kind, cron, timezone, webhook_token_hash, enabled, next_run_at, last_run_at, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::timestamptz,$13::timestamptz, COALESCE($14::timestamptz, now()), now())
+       ON CONFLICT (id) DO UPDATE SET
+         recording_id=EXCLUDED.recording_id, agent_id=EXCLUDED.agent_id, kind=EXCLUDED.kind, cron=EXCLUDED.cron,
+         timezone=EXCLUDED.timezone, webhook_token_hash=EXCLUDED.webhook_token_hash, enabled=EXCLUDED.enabled,
+         next_run_at=EXCLUDED.next_run_at, last_run_at=EXCLUDED.last_run_at, updated_at=now()
+       RETURNING *`,
+      [id, s.projectId || null, s.appId || null, s.ownerId || null, s.recordingId || null, s.agentId || null,
+       s.kind || 'daily', s.cron || '', s.timezone || 'UTC', s.webhookTokenHash || '',
+       s.enabled !== false, s.nextRunAt || null, s.lastRunAt || null, s.createdAt || null],
+    );
+    return mapSchedule(row);
+  },
+};
+
+function mapArtifact(r: any) {
+  if (!r) return null;
+  return {
+    id: r.id,
+    jobId: r.job_id,
+    kind: r.kind,
+    filename: r.filename,
+    size: typeof r.size === 'string' ? Number(r.size) : r.size,
+    path: r.path,
+    createdAt: r.created_at,
+  };
+}
+
+export const AutomationArtifacts = {
+  async listByJob(jobId: string): Promise<any[]> {
+    if (!isPgEnabled()) return (db.automationArtifacts as any[]).filter((a) => a.jobId === jobId);
+    const rows = await query('SELECT * FROM automation_artifacts WHERE job_id = $1 ORDER BY created_at ASC', [jobId]);
+    return rows.map(mapArtifact);
+  },
+  async create(a: any): Promise<any> {
+    if (!isPgEnabled()) {
+      db.automationArtifacts.push(a);
+      return a;
+    }
+    const id = a.id || uid('ART');
+    const row = await queryOne(
+      `INSERT INTO automation_artifacts (id, job_id, kind, filename, size, path, created_at)
+       VALUES ($1,$2,$3,$4,$5,$6, now()) RETURNING *`,
+      [id, a.jobId, a.kind || 'other', a.filename || '', a.size || 0, a.path || ''],
+    );
+    return mapArtifact(row);
+  },
+};
+
+function mapAutomationEvent(r: any) {
+  if (!r) return null;
+  return {
+    id: r.id,
+    seq: typeof r.seq === 'string' ? Number(r.seq) : r.seq,
+    scopeType: r.scope_type,
+    scopeId: r.scope_id,
+    type: r.type,
+    payload: r.payload,
+    createdAt: r.created_at,
+  };
+}
+
+export const AutomationEvents = {
+  // Append-only. In JSON mode seq is assigned per (scopeType, scopeId); in PG mode BIGSERIAL assigns it.
+  async append(e: { scopeType: string; scopeId: string; type: string; payload?: any }): Promise<any> {
+    if (!isPgEnabled()) {
+      const priorMax = (db.automationEvents as any[])
+        .filter((r) => r.scopeType === e.scopeType && r.scopeId === e.scopeId)
+        .reduce((m, r) => Math.max(m, r.seq || 0), 0);
+      const row = { id: uid('EVT'), seq: priorMax + 1, scopeType: e.scopeType, scopeId: e.scopeId, type: e.type, payload: e.payload || {}, createdAt: new Date().toISOString() };
+      db.automationEvents.push(row);
+      return row;
+    }
+    const row = await queryOne(
+      `INSERT INTO automation_events (id, scope_type, scope_id, type, payload)
+       VALUES ($1,$2,$3,$4,$5::jsonb) RETURNING *`,
+      [uid('EVT'), e.scopeType, e.scopeId, e.type, JSON.stringify(e.payload || {})],
+    );
+    return mapAutomationEvent(row);
+  },
+  async listSince(scopeType: string, scopeId: string, sinceSeq = 0): Promise<any[]> {
+    if (!isPgEnabled()) {
+      return (db.automationEvents as any[])
+        .filter((r) => r.scopeType === scopeType && r.scopeId === scopeId && (r.seq || 0) > sinceSeq)
+        .sort((a, b) => a.seq - b.seq);
+    }
+    const rows = await query(
+      'SELECT * FROM automation_events WHERE scope_type = $1 AND scope_id = $2 AND seq > $3 ORDER BY seq ASC',
+      [scopeType, scopeId, sinceSeq],
+    );
+    return rows.map(mapAutomationEvent);
+  },
+};
+
 export { withTransaction };

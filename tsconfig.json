@@ -28,6 +28,7 @@
     "node_modules",
     ".playwright-mcp",
     "architecture-import",
-    "mcp-servers"
+    "mcp-servers",
+    "agent"
   ]
 }

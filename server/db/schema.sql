@@ -623,3 +623,134 @@ CREATE TABLE IF NOT EXISTS agent_run_events (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS agent_run_events_run_seq_idx ON agent_run_events(run_id, seq);
 CREATE INDEX IF NOT EXISTS agent_run_events_run_idx ON agent_run_events(run_id, created_at);
+
+-- ===== Record & Play — Local Desktop Agent (gated by REMOTE_AGENT_V1) =====
+-- Execution moves off the cloud onto a downloadable TestFlow Desktop Agent that runs
+-- Playwright locally and connects OUTBOUND (HTTPS + WebSocket) to the cloud. These tables
+-- model the execution-environment boundary the app never had: agent identity, recordings,
+-- jobs, schedules, artifacts, and an append-only event stream. All idempotent + scope-columned
+-- so existing deployments upgrade in place with the feature flag off and nothing renders.
+
+-- Registered desktop agents. token_hash/refresh_hash are scrypt "salt:hash" (never plaintext) —
+-- durable across restarts, unlike the in-memory human session Map. fingerprint binds the agent
+-- to a machine (hostname+os+stable machine id) and is re-checked per connection.
+CREATE TABLE IF NOT EXISTS agents (
+  id                 TEXT PRIMARY KEY,
+  project_id         TEXT,
+  app_id             TEXT,
+  owner_id           TEXT,
+  name               TEXT DEFAULT '',
+  machine_name       TEXT DEFAULT '',
+  os                 TEXT DEFAULT '',
+  fingerprint        TEXT DEFAULT '',
+  token_hash         TEXT DEFAULT '',
+  refresh_hash       TEXT DEFAULT '',
+  version            TEXT DEFAULT '',
+  playwright_version TEXT DEFAULT '',
+  browsers           JSONB DEFAULT '[]'::jsonb,
+  cpu                JSONB DEFAULT '{}'::jsonb,
+  memory             JSONB DEFAULT '{}'::jsonb,
+  status             TEXT DEFAULT 'offline',   -- offline | online | busy
+  last_heartbeat_at  TIMESTAMPTZ,
+  created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+  revoked_at         TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS agents_owner_idx ON agents(owner_id);
+CREATE INDEX IF NOT EXISTS agents_project_idx ON agents(project_id);
+
+-- A recorded Playwright flow (script + metadata) captured by an agent via codegen.
+CREATE TABLE IF NOT EXISTS recordings (
+  id           TEXT PRIMARY KEY,
+  project_id   TEXT,
+  app_id       TEXT,
+  owner_id     TEXT,
+  agent_id     TEXT,
+  name         TEXT DEFAULT '',
+  app_url      TEXT DEFAULT '',
+  browser      TEXT DEFAULT 'chromium',
+  environment  TEXT DEFAULT 'QA',
+  status       TEXT DEFAULT 'draft',   -- draft | recording | ready
+  script       TEXT DEFAULT '',
+  metadata     JSONB DEFAULT '{}'::jsonb,
+  stats        JSONB DEFAULT '{}'::jsonb,
+  started_at   TIMESTAMPTZ,
+  completed_at TIMESTAMPTZ,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  deleted_at   TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS recordings_owner_idx ON recordings(owner_id);
+CREATE INDEX IF NOT EXISTS recordings_project_idx ON recordings(project_id);
+
+-- One execution of a recording on an agent. Lifecycle: queued → dispatched → running → uploading → done/failed/cancelled.
+CREATE TABLE IF NOT EXISTS automation_jobs (
+  id           TEXT PRIMARY KEY,
+  project_id   TEXT,
+  app_id       TEXT,
+  owner_id     TEXT,
+  recording_id TEXT,
+  agent_id     TEXT,
+  schedule_id  TEXT,
+  trigger      TEXT DEFAULT 'manual',   -- manual | schedule | webhook | ci
+  status       TEXT DEFAULT 'queued',
+  queued_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  started_at   TIMESTAMPTZ,
+  finished_at  TIMESTAMPTZ,
+  exit_code    INTEGER,
+  summary      JSONB DEFAULT '{}'::jsonb,
+  error        TEXT DEFAULT '',
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS automation_jobs_owner_idx ON automation_jobs(owner_id);
+CREATE INDEX IF NOT EXISTS automation_jobs_agent_idx ON automation_jobs(agent_id);
+CREATE INDEX IF NOT EXISTS automation_jobs_status_idx ON automation_jobs(status);
+
+-- Schedules that enqueue jobs. kind: now | daily | weekly | monthly | cron | webhook.
+CREATE TABLE IF NOT EXISTS automation_schedules (
+  id                 TEXT PRIMARY KEY,
+  project_id         TEXT,
+  app_id             TEXT,
+  owner_id           TEXT,
+  recording_id       TEXT,
+  agent_id           TEXT,
+  kind               TEXT DEFAULT 'daily',
+  cron               TEXT DEFAULT '',
+  timezone           TEXT DEFAULT 'UTC',
+  webhook_token_hash TEXT DEFAULT '',
+  enabled            BOOLEAN NOT NULL DEFAULT true,
+  next_run_at        TIMESTAMPTZ,
+  last_run_at        TIMESTAMPTZ,
+  created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+  deleted_at         TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS automation_schedules_owner_idx ON automation_schedules(owner_id);
+CREATE INDEX IF NOT EXISTS automation_schedules_next_run_idx ON automation_schedules(next_run_at) WHERE enabled;
+
+-- Binary artifacts uploaded by the agent after a run (video, trace.zip, screenshots, HTML report, junit).
+CREATE TABLE IF NOT EXISTS automation_artifacts (
+  id         TEXT PRIMARY KEY,
+  job_id     TEXT NOT NULL,
+  kind       TEXT DEFAULT 'other',   -- video | trace | screenshot | html | junit | log | other
+  filename   TEXT DEFAULT '',
+  size       BIGINT DEFAULT 0,
+  path       TEXT DEFAULT '',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS automation_artifacts_job_idx ON automation_artifacts(job_id);
+
+-- Append-only agent/job event stream (mirrors agent_run_events): the durable record the SSE
+-- projector replays so the UI recovers live state after a refresh and the scheduler recovers
+-- orphaned jobs after a restart. Rows are never updated/deleted; seq orders per scope.
+CREATE TABLE IF NOT EXISTS automation_events (
+  id         TEXT PRIMARY KEY,
+  seq        BIGSERIAL,
+  scope_type TEXT NOT NULL,            -- agent | job | recording
+  scope_id   TEXT NOT NULL,
+  type       TEXT NOT NULL,
+  payload    JSONB DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS automation_events_scope_idx ON automation_events(scope_type, scope_id, seq);

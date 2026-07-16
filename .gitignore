@@ -58,3 +58,12 @@ scripts/**/*-json/
 
 **/json.bak-project-cleanup/
 .aiqa-live/
+
+# Record & Play — desktop agent build output + runtime state (source lives under agent/src)
+agent/node_modules/
+agent/dist/
+agent/config.json
+agent/logs/
+agent/playwright/
+# Uploaded run artifacts (cloud host storage, not source)
+/automation-artifacts
