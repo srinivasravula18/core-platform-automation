@@ -32,7 +32,6 @@ import LocalAgent from '@/src/pages/automation/LocalAgent';
 import AutomationDashboard from '@/src/pages/automation/AutomationDashboard';
 import Executions from '@/src/pages/automation/Executions';
 import Schedules from '@/src/pages/automation/Schedules';
-import AutomationReports from '@/src/pages/automation/AutomationReports';
 
 function Sidebar({ isOpen }: { isOpen: boolean }) {
   const location = useLocation();
@@ -45,7 +44,6 @@ function Sidebar({ isOpen }: { isOpen: boolean }) {
       { name: 'Record Test', href: '/automation/record', icon: Radio },
       { name: 'Executions', href: '/automation/executions', icon: PlayCircle },
       { name: 'Schedules', href: '/automation/schedules', icon: CalendarClock },
-      { name: 'Reports', href: '/automation/reports', icon: ClipboardList },
       { name: 'Local Agent', href: '/automation/agent', icon: HardDrive },
     ] : [
       { name: 'Record & Play', href: '/record-play', icon: Radio },
@@ -413,8 +411,6 @@ export default function App() {
           <Route path="/automation/record" element={<RecordTest />} />
           <Route path="/automation/executions" element={<Executions />} />
           <Route path="/automation/schedules" element={<Schedules />} />
-          <Route path="/automation/reports" element={<AutomationReports />} />
-          <Route path="/automation/reports/:jobId" element={<AutomationReports />} />
           <Route path="/automation/agent" element={<LocalAgent />} />
           <Route path="/git-agent" element={<GitAgent />} />
           <Route path="/settings" element={<SettingsPage />} />

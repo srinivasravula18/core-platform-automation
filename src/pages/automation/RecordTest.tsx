@@ -5,6 +5,7 @@ import { Modal } from '@/src/components/Modal';
 import { useRemoteAgentFlag, useAgents, useAgentEvents, type Recording } from '@/src/lib/useAutomation';
 import { AgentStatusCard } from '@/src/components/AgentStatusCard';
 import { NoAgentState } from '@/src/components/NoAgentState';
+import { ScheduleRecordingModal } from '@/src/components/ScheduleRecordingModal';
 
 type Phase = 'setup' | 'recording' | 'summary';
 const BROWSERS = ['chromium', 'firefox', 'webkit'] as const;
@@ -269,7 +270,7 @@ export default function RecordTest() {
         </div>
       )}
 
-      <ScheduleModal isOpen={scheduleOpen} onClose={() => setScheduleOpen(false)} recordingId={recordingId} agentId={selectedAgent?.id || ''} />
+      <ScheduleRecordingModal isOpen={scheduleOpen} onClose={() => setScheduleOpen(false)} recordingId={recordingId} />
       <AddUrlModal isOpen={addUrlOpen} onClose={() => setAddUrlOpen(false)} onCreated={(w) => { setAppUrl(w.baseUrl); if (!name.trim()) setName(w.name); void loadWebsites(); }} />
     </div>
   );
@@ -340,49 +341,3 @@ function ScriptPane({ script, placeholder }: { script: string; placeholder: stri
   );
 }
 
-function ScheduleModal({ isOpen, onClose, recordingId, agentId }: { isOpen: boolean; onClose: () => void; recordingId: string; agentId: string }) {
-  const [kind, setKind] = useState('daily');
-  const [cron, setCron] = useState('0 9 * * *');
-  const [busy, setBusy] = useState(false);
-  const submit = async () => {
-    if (!recordingId || !agentId) return;
-    setBusy(true);
-    try {
-      const res = await fetch('/api/automation/schedules', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ recordingId, agentId, kind, cron: kind === 'cron' ? cron : '' }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data?.error);
-      if (data.webhookToken) showToast('Schedule created. Copy your webhook token now — it is shown once.', { tone: 'success', durationMs: 8000 });
-      else showToast('Schedule created.', { tone: 'success' });
-      onClose();
-    } catch { showToast('Could not create the schedule.', { tone: 'error' }); }
-    finally { setBusy(false); }
-  };
-  return (
-    <Modal isOpen={isOpen} onClose={onClose} title="Schedule this test" size="md"
-      footer={<div className="flex justify-end gap-2">
-        <button onClick={onClose} className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)]">Cancel</button>
-        <button onClick={submit} disabled={busy} className="inline-flex items-center gap-2 rounded-md bg-[var(--accent)] px-3 py-2 text-sm font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50">
-          {busy && <Loader2 className="h-4 w-4 animate-spin" />} Create Schedule
-        </button>
-      </div>}>
-      <label className="block text-xs font-medium text-[var(--text-muted)]">
-        Frequency
-        <select value={kind} onChange={(e) => setKind(e.target.value)}
-          className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]">
-          {['now', 'daily', 'weekly', 'monthly', 'cron', 'webhook'].map((k) => <option key={k} value={k}>{k}</option>)}
-        </select>
-      </label>
-      {kind === 'cron' && (
-        <label className="mt-4 block text-xs font-medium text-[var(--text-muted)]">
-          Cron expression
-          <input value={cron} onChange={(e) => setCron(e.target.value)} placeholder="0 9 * * *"
-            className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 font-mono text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
-        </label>
-      )}
-      {kind === 'webhook' && <p className="mt-4 text-xs text-[var(--text-muted)]">A one-time webhook token will be returned after creation. POST to the hook URL to trigger a run.</p>}
-    </Modal>
-  );
-}

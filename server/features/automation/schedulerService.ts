@@ -12,7 +12,8 @@ import { AutomationSchedules } from '../../db/repository';
 import { isPostgresEnabled } from '../../db/pool';
 import { persistDataInBackground } from '../../shared/storage';
 import { isRemoteAgentEnabled } from './flag';
-import { createJob } from './jobService';
+import { createServerJob } from './jobService';
+import { runJobOnServer } from './serverRunner';
 import type { ScheduleKind } from './types';
 
 const TICK_MS = 30_000;
@@ -23,6 +24,9 @@ export function computeNextRun(kind: ScheduleKind, cron: string, timezone: strin
   switch (kind) {
     case 'now':
       return from;
+    case 'once':
+      // One-shot at a specific calendar date — never recurs (disabled after it fires).
+      return null;
     case 'daily':
       return new Date(from.getTime() + 24 * 3600 * 1000);
     case 'weekly':
@@ -52,14 +56,16 @@ async function tick() {
       if (!s.enabled || !s.nextRunAt) continue;
       if (new Date(s.nextRunAt).getTime() > now.getTime()) continue;
       const scope = { projectId: s.projectId || '', appId: s.appId || null, userId: s.ownerId || '', role: '' };
-      await createJob({ recordingId: s.recordingId, agentId: s.agentId, trigger: 'schedule', scheduleId: s.id }, scope);
+      // Scheduled runs execute on the SERVER headless (reliable when the agent is offline).
+      const job = await createServerJob({ recordingId: s.recordingId, scheduleId: s.id, trigger: 'schedule' }, scope);
+      void runJobOnServer(job.id).catch((err) => console.error('[automation] server run failed:', err?.message || err));
+      const oneShot = s.kind === 'now' || s.kind === 'once';
       const next = computeNextRun(s.kind, s.cron, s.timezone, now);
       await AutomationSchedules.upsert({
         ...s,
         lastRunAt: now.toISOString(),
-        // 'now' schedules are one-shot: disable after firing so they don't loop.
-        enabled: s.kind === 'now' ? false : s.enabled,
-        nextRunAt: next && s.kind !== 'now' ? next.toISOString() : null,
+        enabled: oneShot ? false : s.enabled,   // one-shot schedules disable after firing
+        nextRunAt: oneShot ? null : (next ? next.toISOString() : null),
       });
       if (!isPostgresEnabled()) persistDataInBackground('schedule fired');
     }

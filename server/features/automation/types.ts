@@ -53,7 +53,7 @@ export interface PublicAgent {
 
 export type JobStatus = 'queued' | 'dispatched' | 'running' | 'uploading' | 'done' | 'failed' | 'cancelled';
 export type JobTrigger = 'manual' | 'schedule' | 'webhook' | 'ci';
-export type ScheduleKind = 'now' | 'daily' | 'weekly' | 'monthly' | 'cron' | 'webhook';
+export type ScheduleKind = 'now' | 'once' | 'daily' | 'weekly' | 'monthly' | 'cron' | 'webhook';
 export type ArtifactKind = 'video' | 'trace' | 'screenshot' | 'html' | 'junit' | 'log' | 'other';
 
 /** Agent → cloud WebSocket frame types (Phase 2 gateway consumes these). */

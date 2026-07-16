@@ -221,9 +221,10 @@ export function registerAutomationRoutes(app: Express) {
   /* ---------- schedules (human, scoped) ---------- */
 
   app.post('/api/automation/schedules', requireAuth, async (req: Request, res: Response) => {
-    const { recordingId, agentId, kind, cron, timezone, enabled } = req.body || {};
-    if (!recordingId || !agentId) return res.status(400).json({ error: 'recordingId and agentId are required.' });
-    const k = (kind || 'daily') as ScheduleKind;
+    // agentId is optional now — scheduled runs execute on the server headless (not a local agent).
+    const { recordingId, agentId, kind, cron, timezone, enabled, runAt } = req.body || {};
+    if (!recordingId) return res.status(400).json({ error: 'recordingId is required.' });
+    const k = (kind || 'once') as ScheduleKind;
     const now = new Date();
     let webhookToken = '';
     let webhookTokenHash = '';
@@ -231,13 +232,17 @@ export function registerAutomationRoutes(app: Express) {
       webhookToken = `wh_${randomBytes(24).toString('hex')}`;
       webhookTokenHash = hashPassword(webhookToken);
     }
-    const next = computeNextRun(k, cron || '', timezone || 'UTC', now);
+    // 'once' fires at the chosen calendar date; 'now' immediately; recurring kinds compute the next tick.
+    let nextRunAt: string | null = null;
+    if (k === 'once') nextRunAt = runAt ? new Date(runAt).toISOString() : null;
+    else if (k === 'now') nextRunAt = now.toISOString();
+    else if (k !== 'webhook') { const n = computeNextRun(k, cron || '', timezone || 'UTC', now); nextRunAt = n ? n.toISOString() : null; }
     const sched = await AutomationSchedules.upsert({
       id: uid('SCHED'),
-      recordingId, agentId, kind: k, cron: cron || '', timezone: timezone || 'UTC',
+      recordingId, agentId: agentId || '', kind: k, cron: cron || '', timezone: timezone || 'UTC',
       webhookTokenHash,
       enabled: enabled !== false,
-      nextRunAt: next && k !== 'now' ? next.toISOString() : (k === 'now' ? now.toISOString() : null),
+      nextRunAt,
       lastRunAt: null,
       createdAt: now.toISOString(),
       ...scopeStamp(reqScope(req)),

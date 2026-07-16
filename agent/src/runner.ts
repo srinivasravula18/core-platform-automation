@@ -35,7 +35,10 @@ export default defineConfig({
   outputDir: './test-results',
   timeout: 60000,
   reporter: [['list'], ['json', { outputFile: 'results.json' }], ['junit', { outputFile: 'results.xml' }], ['html', { outputFolder: 'playwright-report', open: 'never' }]],
-  use: { browserName: '${browserName}', headless: true, trace: 'retain-on-failure', video: 'retain-on-failure', screenshot: 'only-on-failure' },
+  // Capture on every run (not just failures) so each execution has step snapshots, a full video of
+  // every action, and a trace to download. 'on' screenshots at each test end; the video + trace carry
+  // the per-action detail.
+  use: { browserName: '${browserName}', headless: true, trace: 'on', video: 'on', screenshot: 'on' },
 });
 `;
 }

@@ -66,7 +66,7 @@ export default function AutomationDashboard() {
             {recent.map((job) => {
               const meta = jobStatusMeta(job.status);
               return (
-                <Link key={job.id} to={`/automation/reports/${job.id}`} className="flex items-center justify-between gap-3 px-4 py-2.5 text-sm hover:bg-[var(--bg-secondary)]">
+                <Link key={job.id} to="/automation/executions" className="flex items-center justify-between gap-3 px-4 py-2.5 text-sm hover:bg-[var(--bg-secondary)]">
                   <span className="truncate font-mono text-xs text-[var(--text-muted)]">{job.id}</span>
                   <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${meta.cls}`}>{meta.label}</span>
                 </Link>

@@ -16,19 +16,45 @@ import type { Scope } from '../../shared/scope';
 import { scopeStamp } from '../../shared/scope';
 import { emitEvent } from './eventsService';
 import { onAgentFrame, onAgentConnected, dispatchToAgent, isAgentConnected } from './agentGateway';
+import { cancelServerJob } from './serverRunner';
 import type { AgentFrame, JobStatus, JobTrigger } from './types';
 
 function persist(reason: string) {
   if (!isPostgresEnabled()) persistDataInBackground(reason);
 }
 
-async function setStatus(jobId: string, status: JobStatus, patch: Record<string, any> = {}) {
+export async function setJobStatus(jobId: string, status: JobStatus, patch: Record<string, any> = {}) {
   const job = await AutomationJobs.get(jobId);
   if (!job) return null;
   const saved = await AutomationJobs.upsert({ ...job, status, ...patch });
   persist('job status');
   await emitEvent({ scopeType: 'job', scopeId: jobId, type: `job.${status}`, ownerId: job.ownerId, data: { job: saved } });
   return saved;
+}
+const setStatus = setJobStatus;
+
+/**
+ * Create a job that will execute on the SERVER (headless), not on a local agent. Used by the
+ * scheduler so scheduled runs fire even when the user's agent is offline. The caller then invokes
+ * the server runner. No agent dispatch happens here.
+ */
+export async function createServerJob(input: { recordingId: string; scheduleId?: string; trigger?: JobTrigger }, scope: Scope) {
+  const now = new Date().toISOString();
+  const job = await AutomationJobs.upsert({
+    id: uid('JOB'),
+    recordingId: input.recordingId,
+    agentId: '',
+    scheduleId: input.scheduleId || null,
+    trigger: input.trigger || 'schedule',
+    status: 'queued' as JobStatus,
+    queuedAt: now,
+    summary: {},
+    error: '',
+    ...scopeStamp(scope),
+  });
+  persist('server job created');
+  await emitEvent({ scopeType: 'job', scopeId: job.id, type: 'job.queued', ownerId: job.ownerId || '', data: { job } });
+  return job;
 }
 
 /** Push a queued job to its agent if connected; returns true if dispatched. */
@@ -78,6 +104,7 @@ export async function cancelJob(jobId: string) {
   if (!job) return { error: 'Job not found.', status: 404 };
   if (['done', 'failed', 'cancelled'].includes(job.status)) return { ok: true };
   if (job.agentId && isAgentConnected(job.agentId)) dispatchToAgent(job.agentId, { type: 'cancel', payload: { jobId } });
+  else cancelServerJob(jobId); // server-side run (scheduled): kill the local playwright process
   await setStatus(jobId, 'cancelled', { finishedAt: new Date().toISOString() });
   return { ok: true };
 }
