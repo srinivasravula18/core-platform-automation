@@ -1178,6 +1178,26 @@ function ensureChat() {
   if (!(db as any).chatConversations) (db as any).chatConversations = [];
 }
 
+function messageContent(turn: any): string {
+  return String(turn?.content ?? turn?.text ?? turn?.summary ?? '').trim();
+}
+
+function messagePayload(turn: any) {
+  const role = turn?.role === 'assistant' ? 'assistant' : 'user';
+  const content = messageContent(turn);
+  return {
+    role,
+    kind: String(turn?.kind || 'text'),
+    content,
+    payload: { ...turn, role, ...(turn?.content === undefined && turn?.text === undefined ? { text: content } : {}) },
+  };
+}
+
+function mapMessage(r: any) {
+  const payload = r?.payload && typeof r.payload === 'object' ? r.payload : {};
+  return { ...payload, role: r.role, kind: r.kind || payload.kind || 'text', ...(payload.content === undefined && payload.text === undefined ? { text: r.content || '' } : {}) };
+}
+
 function mapConversation(r: any, includeTurns = true) {
   if (!r) return null;
   return {
@@ -1199,8 +1219,10 @@ export const ChatConversations = {
         .sort((a: any, b: any) => String(b.updatedAt).localeCompare(String(a.updatedAt)))
         .map((c: any) => ({ id: c.id, workspaceId: c.workspaceId, title: c.title || '', turnCount: (c.turns || []).length, createdAt: c.createdAt, updatedAt: c.updatedAt }));
     }
-    const rows = await query('SELECT id, workspace_id, title, turns, created_at, updated_at FROM chat_conversations WHERE workspace_id = $1 ORDER BY updated_at DESC LIMIT 100', [workspaceId]);
-    return rows.map((r) => mapConversation(r, false));
+    const rows = await query(`SELECT c.id, c.workspace_id, c.title, c.turns, c.created_at, c.updated_at,
+      COALESCE((SELECT COUNT(*)::int FROM chat_messages m WHERE m.conversation_id = c.id), jsonb_array_length(c.turns)) AS message_count
+      FROM chat_conversations c WHERE c.workspace_id = $1 ORDER BY c.updated_at DESC LIMIT 100`, [workspaceId]);
+    return rows.map((r: any) => ({ ...mapConversation(r, false), turnCount: Number(r.message_count || 0) }));
   },
   async get(id: string): Promise<any | null> {
     if (!isPgEnabled()) {
@@ -1208,7 +1230,75 @@ export const ChatConversations = {
       return (db as any).chatConversations.find((c: any) => c.id === id) || null;
     }
     const r = await queryOne('SELECT * FROM chat_conversations WHERE id = $1', [id]);
+    if (!r) return null;
+    const messages = await query('SELECT role, kind, content, payload FROM chat_messages WHERE conversation_id = $1 ORDER BY seq', [id]);
+    return { ...mapConversation(r, true), turns: messages.length ? messages.map(mapMessage) : (r as any).turns || [] };
+  },
+  async listMessages(id: string): Promise<Array<{ seq: number; role: string; kind: string; content: string; payload: any }>> {
+    if (!isPgEnabled()) {
+      ensureChat();
+      const conversation = (db as any).chatConversations.find((c: any) => c.id === id);
+      const turns = conversation?.messages?.length ? conversation.messages : conversation?.turns || [];
+      return turns.map((turn: any, index: number) => ({ seq: index + 1, ...messagePayload(turn) }));
+    }
+    const rows = await query('SELECT seq, role, kind, content, payload FROM chat_messages WHERE conversation_id = $1 ORDER BY seq', [id]);
+    return rows.map((row: any) => ({ ...row, seq: Number(row.seq) }));
+  },
+  async updateMetadata(c: { id: string; workspaceId?: string; title?: string }): Promise<any> {
+    if (!isPgEnabled()) {
+      ensureChat();
+      const idx = (db as any).chatConversations.findIndex((x: any) => x.id === c.id);
+      const now = new Date().toISOString();
+      if (idx >= 0) {
+        Object.assign((db as any).chatConversations[idx], { workspaceId: c.workspaceId || (db as any).chatConversations[idx].workspaceId, title: c.title ?? (db as any).chatConversations[idx].title, updatedAt: now });
+        return (db as any).chatConversations[idx];
+      }
+      const rec = { id: c.id, workspaceId: c.workspaceId || 'default', title: c.title || '', turns: [], messages: [], createdAt: now, updatedAt: now };
+      (db as any).chatConversations.unshift(rec);
+      return rec;
+    }
+    const r = await queryOne(
+      `INSERT INTO chat_conversations (id, workspace_id, title, turns, updated_at)
+       VALUES ($1, $2, $3, '[]'::jsonb, now())
+       ON CONFLICT (id) DO UPDATE SET workspace_id = EXCLUDED.workspace_id, title = EXCLUDED.title, updated_at = now()
+       RETURNING *`,
+      [c.id, c.workspaceId || 'default', c.title || ''],
+    );
     return mapConversation(r, true);
+  },
+  async appendMessages(c: { id: string; workspaceId?: string; title?: string; messages: any[] }): Promise<any> {
+    const incoming = (c.messages || []).map(messagePayload).filter((m) => m.content || Object.keys(m.payload).length > 2);
+    if (!incoming.length) return this.get(c.id);
+    if (!isPgEnabled()) {
+      const conversation = await this.updateMetadata(c);
+      if (!Array.isArray(conversation.messages)) conversation.messages = Array.isArray(conversation.turns) ? [...conversation.turns] : [];
+      conversation.messages.push(...incoming.map((m) => m.payload));
+      conversation.turns = conversation.messages;
+      conversation.updatedAt = new Date().toISOString();
+      return conversation;
+    }
+    await withTransaction(async (client) => {
+      await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [c.id]);
+      await client.query(
+        `INSERT INTO chat_conversations (id, workspace_id, title, turns, updated_at)
+         VALUES ($1, $2, $3, '[]'::jsonb, now())
+         ON CONFLICT (id) DO UPDATE SET workspace_id = EXCLUDED.workspace_id,
+           title = CASE WHEN chat_conversations.title = '' THEN EXCLUDED.title ELSE chat_conversations.title END,
+           updated_at = now()`,
+        [c.id, c.workspaceId || 'default', c.title || ''],
+      );
+      const next = await client.query('SELECT COALESCE(MAX(seq), 0)::bigint AS seq FROM chat_messages WHERE conversation_id = $1', [c.id]);
+      let seq = Number(next.rows[0]?.seq || 0);
+      for (const message of incoming) {
+        seq += 1;
+        await client.query(
+          `INSERT INTO chat_messages (conversation_id, seq, role, kind, content, payload, token_estimate)
+           VALUES ($1, $2, $3, $4, $5, $6::jsonb, CEIL(LENGTH($5) / 4.0)::int)`,
+          [c.id, seq, message.role, message.kind, message.content, JSON.stringify(message.payload)],
+        );
+      }
+    });
+    return this.get(c.id);
   },
   async upsert(c: { id: string; workspaceId?: string; title?: string; turns?: any[] }): Promise<any> {
     if (!isPgEnabled()) {

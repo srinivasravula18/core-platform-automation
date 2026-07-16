@@ -24,6 +24,8 @@ export interface RunDiscoveryNodeInput {
   /** Run-scoped pre-authenticated state (workflow/authSession) — the in-session login then no-ops, so
    * rediscovery attempts never repeat a real login. */
   auth?: { storageStatePath?: string; sessionStorageState?: { origin: string; items: Record<string, string> } };
+  /** Prior same-mission selectors are hints only; every one is revalidated on the live page before reuse. */
+  priorElements?: VerifiedElement[];
 }
 
 export interface DiscoveryPageSummary {
@@ -59,6 +61,20 @@ function summarizePageContext(ctx: any): DiscoveryPageSummary {
     formCount: Array.isArray(ctx?.forms) ? ctx.forms.length : 0,
     bodyTextExcerpt: String(ctx?.bodyText || '').slice(0, 600),
   };
+}
+
+async function revalidatePriorElements(page: any, elements: VerifiedElement[], prior: VerifiedElement[] = []) {
+  const seen = new Set(elements.map((element) => element.resolved_selector).filter(Boolean));
+  for (const element of prior) {
+    const selector = String(element?.resolved_selector || '');
+    if (!selector || seen.has(selector)) continue;
+    const locator = page.locator(selector);
+    const visible = await locator.first().isVisible().catch(() => false);
+    const unique = visible && await locator.count().catch(() => 0) === 1;
+    if (!unique) continue;
+    seen.add(selector);
+    elements.push({ ...element, visible: true, unique: true, status: 'verified' });
+  }
 }
 
 /** Bounded, secret-free head of a raw error for diagnostics — enough to tell 429/net::ERR/goto apart.
@@ -223,6 +239,7 @@ export async function runDiscoveryNode(input: RunDiscoveryNodeInput): Promise<Ru
         // one page are not meant to run concurrently from two call sites at once.
         const ctx = await collectPageContext(page);
         const elements = await captureVerifiedElementsForOpenPage(page, { maxElements: input.maxElements });
+        await revalidatePriorElements(page, elements, input.priorElements);
         await revealAndCaptureDisclosedControls(page, elements, input.maxElements);
         // Fold the create/edit form's fields + Save button into the catalog so fill→submit cases can ground.
         await exploreFormState(page, elements, targetUrl, input.maxElements);

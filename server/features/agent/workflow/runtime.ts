@@ -37,6 +37,7 @@ export interface StartGraphRunOptions {
   goal: string;
   /** The chat's code-grounded understanding of the feature — threaded into case authoring alongside the goal. */
   understanding?: string;
+  conversationId?: string;
   requestedCaseCount: number;
   reviewPolicy: 'auto' | 'manual';
   executionPolicy?: 'auto' | 'manual' | 'skip';
@@ -604,6 +605,7 @@ export async function startGraphRun(opts: StartGraphRunOptions): Promise<void> {
     request: {
       goal: opts.goal,
       understanding: opts.understanding,
+      conversationId: opts.conversationId,
       requestedCaseCount: opts.requestedCaseCount,
       reviewPolicy: opts.reviewPolicy,
       executionPolicy: opts.executionPolicy ?? 'auto',

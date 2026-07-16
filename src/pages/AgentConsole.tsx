@@ -787,7 +787,7 @@ export default function AgentConsole() {
       fetch(`/api/chat/conversations/${conversationId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ workspaceId, title: firstUser?.text?.slice(0, 80) || 'New chat', turns: clean }),
+        body: JSON.stringify({ workspaceId, title: firstUser?.text?.slice(0, 80) || 'New chat' }),
       })
         .then(() => loadConversations())
         .catch(() => {});
@@ -1022,7 +1022,7 @@ export default function AgentConsole() {
   // request carries conversation memory (ChatGPT/Claude-style continuity).
   const buildHistory = useCallback((): Array<{ role: 'user' | 'assistant'; content: string }> => {
     const out: Array<{ role: 'user' | 'assistant'; content: string }> = [];
-    const push = (content: string) => { if (content && content.trim()) out.push({ role: 'assistant', content: content.trim().slice(0, 2400) }); };
+    const push = (content: string) => { if (content && content.trim()) out.push({ role: 'assistant', content: content.trim().slice(0, 4000) }); };
     for (const t of turnsRef.current) {
       if (t.role === 'user') {
         if (t.text?.trim()) out.push({ role: 'user', content: t.text });
@@ -1051,7 +1051,7 @@ export default function AgentConsole() {
         }
         case 'cases': {
           const titles = Array.isArray(t.cases)
-            ? t.cases.map((c: any, i: number) => `${i + 1}. ${c?.title || c?.name || `case ${i + 1}`}`).join('; ')
+            ? t.cases.map((c: any, i: number) => `${c?.id || c?.caseId || i + 1}: ${c?.title || c?.name || `case ${i + 1}`}`).join('; ')
             : '';
           push(`Generated ${Array.isArray(t.cases) ? t.cases.length : 0} test case(s): ${titles}`);
           break;
@@ -1074,7 +1074,7 @@ export default function AgentConsole() {
           break;
       }
     }
-    return out.slice(-16);
+    return out.slice(-60);
   }, []);
 
   const startDeepRun = useCallback(async (args: {
@@ -1518,6 +1518,7 @@ export default function AgentConsole() {
     const requestBody = {
       userMessage: text,
       workspaceId: 'default',
+      conversationId,
       history: buildHistory(),
       pageContext: { path: location.pathname },
       apps: getSelectedApps(),
@@ -1587,7 +1588,7 @@ export default function AgentConsole() {
         text: `The streaming request was interrupted before the agent finished: ${message}.`,
       });
     }
-  }, [appendThinkingDebug, buildHistory, location.pathname, replaceTurn, getSelectedApps]);
+  }, [appendThinkingDebug, buildHistory, conversationId, location.pathname, replaceTurn, getSelectedApps]);
 
   const send = useCallback(
     async (raw?: string, editTurnIdArg?: string | null) => {
@@ -1826,6 +1827,7 @@ export default function AgentConsole() {
         updateThinkingLabel(thinkingId, 'Routing request to the right agent...');
         const routingBody = {
           message: text,
+          conversationId,
           history: historyForRouting,
           apps: getRoutingApps(text),
           pageContext: { path: location.pathname },
@@ -2092,7 +2094,7 @@ export default function AgentConsole() {
         inputRef.current?.focus();
       }
     },
-    [input, busy, editingTurnId, location.pathname, stopListening, replaceTurn, updateThinkingLabel, appendThinkingDebug, requestDeepUnderstanding, presentDeepUnderstanding, runRequirementDraft, reqMode, scriptAuthorMode, pendingDeep, pendingRequirementDraft, websites, scopeApp, buildHistory, buildDeepContextPrompt, startDeepRun, runViaSupervisor, getSelectedApps, authorScriptFromSteps, selectedProjectId, selectedAppId],
+    [input, busy, editingTurnId, conversationId, location.pathname, stopListening, replaceTurn, updateThinkingLabel, appendThinkingDebug, requestDeepUnderstanding, presentDeepUnderstanding, runRequirementDraft, reqMode, scriptAuthorMode, pendingDeep, pendingRequirementDraft, websites, scopeApp, buildHistory, buildDeepContextPrompt, startDeepRun, runViaSupervisor, getSelectedApps, authorScriptFromSteps, selectedProjectId, selectedAppId],
   );
 
   // Start the deep run directly from a "Here's what I understood" card's OWN stored data

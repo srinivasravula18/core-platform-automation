@@ -15,6 +15,7 @@
 
 import { promises as fs } from 'fs';
 import path from 'path';
+import { isPostgresEnabled, query } from '../../db/pool';
 
 // One flat JSON file alongside the working dir — additive, low-risk, no schema.
 const STORE_PATH = path.resolve(process.cwd(), '.testflow-run-memory.json');
@@ -86,6 +87,22 @@ async function persist(records: RunMemory[]): Promise<void> {
 export async function recordRunMemory(
   mem: Omit<RunMemory, 'id' | 'at'> & { id?: string; at?: string },
 ): Promise<RunMemory> {
+  if (isPostgresEnabled()) {
+    const record: RunMemory = {
+      ...mem,
+      id: mem.id ?? `mem_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      at: mem.at ?? new Date().toISOString(),
+    };
+    await query(
+      `INSERT INTO run_memories (id, feature, selector, stability, failure_cause, note, run_id, project_id, app_id, owner_id, created_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+       ON CONFLICT (id) DO UPDATE SET feature=EXCLUDED.feature, selector=EXCLUDED.selector,
+         stability=EXCLUDED.stability, failure_cause=EXCLUDED.failure_cause, note=EXCLUDED.note`,
+      [record.id, record.feature || null, record.selector || null, record.stability, record.failureCause || null,
+        record.note || null, record.runId || null, record.projectId || null, record.appId || null, record.ownerId || null, record.at],
+    );
+    return record;
+  }
   const records = await ensureLoaded();
 
   // Derive rand from array length (not uuid) — keeps the module dependency-free
@@ -125,6 +142,23 @@ export async function retrieveRunMemories(query: {
   stability?: SelectorStability;
   limit?: number;
 }): Promise<RunMemory[]> {
+  if (isPostgresEnabled()) {
+    const conditions: string[] = [];
+    const params: unknown[] = [];
+    const add = (sql: string, value: unknown) => { params.push(value); conditions.push(sql.replace('?', `$${params.length}`)); };
+    if (query.feature) add('(feature IS NULL OR feature ILIKE ?)', `%${query.feature}%`);
+    if (query.selector) add('(selector IS NULL OR selector ILIKE ?)', `%${query.selector}%`);
+    if (query.projectId) add('(project_id IS NULL OR project_id = ?)', query.projectId);
+    if (query.appId != null) add('(app_id IS NULL OR app_id = ?)', query.appId);
+    if (query.ownerId) add('(owner_id IS NULL OR owner_id = ?)', query.ownerId);
+    if (query.stability) add('stability = ?', query.stability);
+    params.push(Math.max(0, query.limit ?? DEFAULT_RETRIEVE_LIMIT));
+    const rows = await queryDb<any>(
+      `SELECT * FROM run_memories ${conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''} ORDER BY created_at DESC LIMIT $${params.length}`,
+      params,
+    );
+    return rows.map(fromRow);
+  }
   const records = await ensureLoaded();
   const limit = query.limit ?? DEFAULT_RETRIEVE_LIMIT;
 
@@ -191,12 +225,32 @@ export function summarizeMemoriesForPrompt(mems: RunMemory[]): string {
 
 /** Test/util helper: return the full store (newest-first not guaranteed). */
 export async function loadRunMemories(): Promise<RunMemory[]> {
+  if (isPostgresEnabled()) return (await queryDb<any>('SELECT * FROM run_memories ORDER BY created_at DESC')).map(fromRow);
   const records = await ensureLoaded();
   return records.slice();
 }
 
 /** Test/util helper: wipe the store in memory and on disk (best-effort). */
 export async function clearRunMemories(): Promise<void> {
+  if (isPostgresEnabled()) { await queryDb('DELETE FROM run_memories'); return; }
   cache = [];
   await persist(cache);
+}
+
+const queryDb = query;
+
+function fromRow(row: any): RunMemory {
+  return {
+    id: row.id,
+    feature: row.feature || undefined,
+    selector: row.selector || undefined,
+    stability: row.stability,
+    failureCause: row.failure_cause || undefined,
+    note: row.note || undefined,
+    runId: row.run_id || undefined,
+    projectId: row.project_id || undefined,
+    appId: row.app_id ?? undefined,
+    ownerId: row.owner_id || undefined,
+    at: new Date(row.created_at).toISOString(),
+  };
 }

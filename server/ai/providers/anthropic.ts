@@ -120,7 +120,7 @@ export class AnthropicProvider implements AIProvider {
       max_tokens: resolveRequiredMaxTokens(modelId, opts.maxTokens),
       messages: [{ role: 'user', content: opts.prompt }],
     };
-    if (systemParts.length > 0) params.system = systemParts.join('\n\n');
+    if (systemParts.length > 0) params.system = [{ type: 'text', text: systemParts.join('\n\n'), cache_control: { type: 'ephemeral' } }] as any;
     if (acceptsTemperature(modelId)) params.temperature = opts.temperature ?? 0.2;
 
     try {
@@ -130,7 +130,7 @@ export class AnthropicProvider implements AIProvider {
         .map((b) => b.text)
         .join('');
       const usage = message.usage
-        ? { input_tokens: message.usage.input_tokens, output_tokens: message.usage.output_tokens }
+        ? { ...message.usage, input_tokens: message.usage.input_tokens, output_tokens: message.usage.output_tokens }
         : undefined;
       return { content: text, usage, modelId };
     } catch (err: any) {
@@ -148,13 +148,14 @@ export class AnthropicProvider implements AIProvider {
       max_tokens: resolveRequiredMaxTokens(modelId, opts.maxTokens),
       messages,
     };
-    if (opts.system) params.system = opts.system;
+    if (opts.system) params.system = [{ type: 'text', text: opts.system, cache_control: { type: 'ephemeral' } }] as any;
     if (opts.tools?.length) {
       params.tools = opts.tools.map((t) => ({
         name: t.name,
         description: t.description,
         input_schema: t.parameters as Anthropic.Tool.InputSchema,
       }));
+      (params.tools.at(-1) as any).cache_control = { type: 'ephemeral' };
     }
     if (acceptsTemperature(modelId)) params.temperature = opts.temperature ?? 0.2;
 
@@ -174,7 +175,7 @@ export class AnthropicProvider implements AIProvider {
       return {
         text: text || undefined,
         toolCalls,
-        usage: this.toUsageObj(modelId, message.usage ? { input_tokens: message.usage.input_tokens, output_tokens: message.usage.output_tokens } : undefined),
+        usage: this.toUsageObj(modelId, message.usage ? { ...message.usage, input_tokens: message.usage.input_tokens, output_tokens: message.usage.output_tokens } : undefined),
         model: modelId,
         provider: 'anthropic',
         stopReason,
@@ -205,7 +206,7 @@ export class AnthropicProvider implements AIProvider {
       messages: [{ role: 'user', content: opts.prompt }],
       stream: true,
     };
-    if (opts.system) params.system = opts.system;
+    if (opts.system) params.system = [{ type: 'text', text: opts.system, cache_control: { type: 'ephemeral' } }] as any;
     if (acceptsTemperature(modelId)) params.temperature = opts.temperature ?? 0.2;
     const stream = this.client.messages.stream(params, { signal: opts.signal });
     for await (const event of stream) {

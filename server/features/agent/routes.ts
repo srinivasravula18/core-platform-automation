@@ -73,7 +73,8 @@ import { testPlanSchema, parseTestPlan } from './compiler/testPlan';
 import { semanticPlanFromCase } from './compiler/semanticPlanner';
 import { linkedExistingCases, scoreCaseReuse, rankReuseCandidates } from './caseReuse';
 import { pushInboxItem } from '../inbox/routes';
-import { AgentRuns, Plans, Suites, Cases, Runs, Reports, Scripts, Folders, Requirements, RequirementLinks, Defects, isPgEnabled } from '../../db/repository';
+import { AgentRuns, ChatConversations, Plans, Suites, Cases, Runs, Reports, Scripts, Folders, Requirements, RequirementLinks, Defects, isPgEnabled } from '../../db/repository';
+import { loadConversationHandoff } from '../../ai/memory/conversationState';
 import { runGuardrailPipeline } from '../../ai/guardrails';
 import { assessInspection, assessCasesGrounding, assessExecution, assessFeatureCompleteness } from '../../ai/verifier';
 import { classifyFailure } from '../../ai/recovery';
@@ -1673,6 +1674,10 @@ async function beginGraphRunFor(run: any, opts?: { seedCases?: any[]; avoidCaseT
   const creds = opts?.credential
     || resolveCredentials({ targetUrl: run.app_url, websiteId: run.websiteId, role: (run.credentials || {}).role, ownerId: ownerScopeForRun(run) })
     || run.credentials || {};
+  const priorCapturedAt = Date.parse(String(run.session_context?.capturedAt || ''));
+  const priorVerifiedElements = Number.isFinite(priorCapturedAt) && Date.now() - priorCapturedAt < 15 * 60 * 1000
+    ? (run.session_context?.selector_registry?.verified_selectors || [])
+    : [];
   await startGraphRun({
     runId: run.id,
     workspaceId: run.projectId || undefined,
@@ -1682,6 +1687,7 @@ async function beginGraphRunFor(run: any, opts?: { seedCases?: any[]; avoidCaseT
     // The chat's code-grounded feature analysis — so the case writer authors from the real behaviors/rules
     // it found (derivation, validation, payload, edges), not just the one-line prompt + the live DOM catalog.
     understanding: (resolveUnderstanding(run) || '').trim() || undefined,
+    conversationId: run.conversationId || undefined,
     requestedCaseCount: Number(gs.requestedCaseCount) || 0,
     reviewPolicy: gs.reviewPolicy === 'auto' ? 'auto' : 'manual',
     mission: missionRefFromRun(run),
@@ -1690,6 +1696,7 @@ async function beginGraphRunFor(run: any, opts?: { seedCases?: any[]; avoidCaseT
     legacyRunSeed: run,
     seedCases: opts?.seedCases,
     avoidCaseTitles: opts?.avoidCaseTitles,
+    graphDeps: priorVerifiedElements.length ? { priorVerifiedElements } : undefined,
   });
 }
 
@@ -2623,6 +2630,15 @@ function pauseForScriptReview(run: any) {
   pushPhase(run, { agent: 'System', status: 'review_required', output: 'Review generated Playwright scripts, then continue to capture evidence.' });
 }
 
+async function pauseForScriptReviewIfRequested(run: any): Promise<boolean> {
+  if (!(run as any).review_scripts_before_execution) return false;
+  delete (run as any).review_scripts_before_execution;
+  pauseForScriptReview(run);
+  await persistAgentScripts(run);
+  await saveAgentRunState(run, 'scripts ready for review');
+  return true;
+}
+
 async function runPostCaseAgentFlow(run: any, model: any, testCases: any, targetUrl: string, liveCredentials?: any) {
   // The run record stores a MASKED password for safe persistence/logging. The live
   // browser (login + evidence) must use the REAL resolved credentials, so prefer the
@@ -2765,6 +2781,7 @@ Do NOT write comments such as "Auth is expected to be handled by global setup". 
       persistDataInBackground('compiler produced incomplete script suite');
       return;
     }
+    if (await pauseForScriptReviewIfRequested(run)) return;
     await completeScriptProofFlow(run, targetUrl, { test_cases: caseList }, liveCreds);
     return;
   }
@@ -2814,6 +2831,7 @@ Do NOT write comments such as "Auth is expected to be handled by global setup". 
       (run as any).live_author_evidence = authoredEvidence;
       pushPhase(run, { agent: 'LiveAuthor', status: 'completed', output: authoredNotes });
       pushPhase(run, { agent: 'PlaywrightAgent', status: 'completed', output: { scripts: run.playwright_scripts, source: 'live-author' } });
+      if (await pauseForScriptReviewIfRequested(run)) return;
       await completeScriptProofFlow(run, targetUrl, { test_cases: caseList }, liveCreds);
       return;
     }
@@ -2890,7 +2908,7 @@ Then handle login with a ROBUST, DYNAMIC-WAIT helper (a session may already be i
 Call await loginIfNeeded(); right after the goto/settle. Use the REAL login field/button selectors from the inspection context when they differ (the verifier corrects them). Do NOT assert anything about the login form.
 WAIT FOR ASYNC CONTENT BEFORE ASSERTING (dynamic, never fixed sleeps): list/grid screens render a "Loading.../Loading records..." placeholder and only mount the real <table> and its toolbar once rows arrive  -  so after login, before any assertion that depends on grid/table/toolbar content, WAIT for the actual content to appear and, if a REAL loading indicator was observed, wait for that loading indicator to disappear. Use guarded dynamic waits only for loading/busy signals, e.g.: await page.getByText(/loading|please wait|fetching/i).first().waitFor({ state: 'hidden', timeout: 20000 }).catch(() => {}); then await page.locator('table tbody tr, [role="row"], [role="gridcell"]').first().waitFor({ state: 'visible', timeout: 20000 }).catch(() => {}); NEVER wait for a normal persistent control/label to become hidden (examples: Refresh list view, Search results, Unpin list view, Tabs, Accounts, Created At) because those are target UI, not loading indicators. Only after the target content is READY do you proceed to the substantive task. NEVER use waitForLoadState('networkidle'). NEVER call APIs with undefined variables. Never leave USERNAME or PASSWORD undefined. Never use a relative URL when an absolute target URL is provided  -  verify only through the page UI.
 GUARDED ACTIONS: every SETUP / navigation / intermediate click or fill whose exact selector is uncertain MUST be guarded so a missing element does not hang or abort the run. Prefer getByRole/getByText using the EXACT visible labels from the inspection context. After a guarded action, take the step screenshot regardless of whether it succeeded. EXCEPTION: the case's PRIMARY GOAL action and its outcome assertion are NEVER guarded  -  see the ACTION COMPLETION CONTRACT below.
-GROUNDING (no hallucination): only assert text, labels, headings, buttons, or table/list content that ACTUALLY appears in the inspection context above. NEVER assert "assumed" UI  -  no guessed success toasts (e.g. "created successfully"), menu names, or headings you did not see in the inspection context. If unsure an element exists, do not assert it; prefer asserting a URL change or a landmark the inspector recorded. SELECTOR PRIORITY (choose the HIGHEST that actually resolves in the inspection context, never a lower one when a higher exists): 1) getByTestId (data-testid), 2) getByRole(role, { name }) with the accessible name, 3) getByLabel, 4) getByPlaceholder, 5) a stable #id via page.locator('#id'), 6) exact visible text via getByText, 7) a scoped attribute/CSS selector only as a last resort. NEVER use XPath, nth-child/positional chains, or generated/utility (e.g. Tailwind) class names. SCRIPT QUALITY (web-first, auto-waiting): assert with await expect(locator).toBeVisible()/toHaveText()/toHaveValue()/toBeEnabled()/toHaveURL(); do NOT use waitForTimeout or fixed sleeps to wait for elements or content (the only allowed fixed wait is the short post-navigation settle in SETUP); scope locators to the relevant region and store reused ones in named consts. ICON / TOOLBAR / HEADER CONTROLS: these expose their name via aria-label or title with NO visible text  -  locate them with getByRole(role, { name }) or getByLabel using the EXACT aria-label from the REAL SELECTORS / inspection context; NEVER use getByText(...) for a button or icon control (it matches visible text, which icon buttons lack, so it can never resolve). GENERIC WORDS ARE NOT SELECTORS  -  "More", "...", "Options", "Actions", "resize", "settings" are almost never the real accessible name (often only a hidden responsive label); an overflow/actions menu's real label is the feature it controls (e.g. "List view actions") and column auto-resize is typically "Fit columns"  -  take the EXACT aria-label from the inspection/map and use getByRole/getByLabel, and to reach an item inside an actions menu (e.g. Settings) click the actions button first then the item by its exact text. DISAMBIGUATE REPEATED TEXT: when a record name / cell value can appear on multiple rows, scope to one row (page.locator('tr', { hasText }) ) or add .first() so the locator is not strict-mode-ambiguous. SECTION NAVIGATION (avoid drift): to open an Admin section, navigate DIRECTLY by URL  -  preserve the appId already in the URL and set nav to the section's nav key from FEATURE GROUNDING, e.g. { const u = new URL(page.url()); u.searchParams.set('nav', 'objects'); await page.goto(u.toString()); await page.waitForTimeout(1200); }. Do NOT click the left sidebar to navigate (a sidebar click can land on the WRONG section). Use the EXACT navKey (objects, tabs, users, permissions, access_controls, sharing_settings, flows). STABLE IDS: when FEATURE GROUNDING gives a control's stable #id (e.g. #create-object-label, #field-type), locate it with page.locator('#<id>')  -  never guess its placeholder or text. TRANSIENT / HOVER-ONLY ELEMENTS: never assert .toBeVisible() on a tooltip, popover, or hover hint (it is hidden until hovered, so the assert will flake-fail)  -  instead trigger it explicitly (await locator.hover()) before asserting, OR assert the durable state it reflects (e.g. a disabled action button, or a persistent "N selected" counter) rather than the floating hint itself. CONTROL NOT IN CONTEXT: if a control the case needs is NOT present in the inspection context, do NOT fall back to a selector you "remember" or guessed earlier  -  reach it through the UI the inspector DID record (open the toolbar/overflow/actions menu that would contain it), then operate the now-visible control; if it genuinely cannot be reached, assert the closest grounded landmark instead of inventing a locator. When asserting a URL, match only a STABLE fragment with a loose regex (e.g. expect(page).toHaveURL(/nav=apps/) or expect(page.url()).toContain('nav=apps'))  -  NEVER assert the full URL or a pattern that includes query separators (?, &) or generated ids (appId, record ids) which vary every run.
+GROUNDING (no hallucination): only assert text, labels, headings, buttons, or table/list content that ACTUALLY appears in the inspection context above. NEVER assert "assumed" UI  -  no guessed success toasts (e.g. "created successfully"), menu names, or headings you did not see in the inspection context. If unsure an element exists, do not assert it; prefer asserting a URL change or a landmark the inspector recorded. NEVER make contradictory assertions about the same locator in one script (for example, asserting it is visible and later asserting its count is zero) unless a real intervening action is expected to remove it. SELECTOR PRIORITY (choose the HIGHEST that actually resolves in the inspection context, never a lower one when a higher exists): 1) getByTestId (data-testid), 2) getByRole(role, { name }) with the accessible name, 3) getByLabel, 4) getByPlaceholder, 5) a stable #id via page.locator('#id'), 6) exact visible text via getByText, 7) a scoped attribute/CSS selector only as a last resort. NEVER use XPath, nth-child/positional chains, or generated/utility (e.g. Tailwind) class names. SCRIPT QUALITY (web-first, auto-waiting): assert with await expect(locator).toBeVisible()/toHaveText()/toHaveValue()/toBeEnabled()/toHaveURL(); do NOT use waitForTimeout or fixed sleeps to wait for elements or content (the only allowed fixed wait is the short post-navigation settle in SETUP); scope locators to the relevant region and store reused ones in named consts. ICON / TOOLBAR / HEADER CONTROLS: these expose their name via aria-label or title with NO visible text  -  locate them with getByRole(role, { name }) or getByLabel using the EXACT aria-label from the REAL SELECTORS / inspection context; NEVER use getByText(...) for a button or icon control (it matches visible text, which icon buttons lack, so it can never resolve). GENERIC WORDS ARE NOT SELECTORS  -  "More", "...", "Options", "Actions", "resize", "settings" are almost never the real accessible name (often only a hidden responsive label); an overflow/actions menu's real label is the feature it controls (e.g. "List view actions") and column auto-resize is typically "Fit columns"  -  take the EXACT aria-label from the inspection/map and use getByRole/getByLabel, and to reach an item inside an actions menu (e.g. Settings) click the actions button first then the item by its exact text. DISAMBIGUATE REPEATED TEXT: when a record name / cell value can appear on multiple rows, scope to one row (page.locator('tr', { hasText }) ) or add .first() so the locator is not strict-mode-ambiguous. SECTION NAVIGATION (avoid drift): to open an Admin section, navigate DIRECTLY by URL  -  preserve the appId already in the URL and set nav to the section's nav key from FEATURE GROUNDING, e.g. { const u = new URL(page.url()); u.searchParams.set('nav', 'objects'); await page.goto(u.toString()); await page.waitForTimeout(1200); }. Do NOT click the left sidebar to navigate (a sidebar click can land on the WRONG section). Use the EXACT navKey (objects, tabs, users, permissions, access_controls, sharing_settings, flows). STABLE IDS: when FEATURE GROUNDING gives a control's stable #id (e.g. #create-object-label, #field-type), locate it with page.locator('#<id>')  -  never guess its placeholder or text. TRANSIENT / HOVER-ONLY ELEMENTS: never assert .toBeVisible() on a tooltip, popover, or hover hint (it is hidden until hovered, so the assert will flake-fail)  -  instead trigger it explicitly (await locator.hover()) before asserting, OR assert the durable state it reflects (e.g. a disabled action button, or a persistent "N selected" counter) rather than the floating hint itself. CONTROL NOT IN CONTEXT: if a control the case needs is NOT present in the inspection context, do NOT fall back to a selector you "remember" or guessed earlier  -  reach it through the UI the inspector DID record (open the toolbar/overflow/actions menu that would contain it), then operate the now-visible control; if it genuinely cannot be reached, assert the closest grounded landmark instead of inventing a locator. When asserting a URL, match only a STABLE fragment with a loose regex (e.g. expect(page).toHaveURL(/nav=apps/) or expect(page.url()).toContain('nav=apps'))  -  NEVER assert the full URL or a pattern that includes query separators (?, &) or generated ids (appId, record ids) which vary every run.
 RESILIENCE (the user's intent MUST actually be performed): use await expect.soft(...) for every intermediate per-step verification so a single mismatched locator does NOT abort the test before the user's real goal (e.g. creating the record) is carried out. Always run each ACTION step (goto/fill/click/submit) regardless of whether a prior soft assertion failed. Then follow the user-requested path discovered by the inspector; do not invent unrelated pages or menu names.
 ACTION COMPLETION CONTRACT (CRITICAL  -  the test must DO the thing, not just look at it): identify the case's PRIMARY GOAL action from its title/steps, actually PERFORM it, then make exactly ONE hard expect verify its real OUTCOME. Discover every selector from the inspection context / source  -  NEVER hardcode element names; the patterns below show only the Playwright technique per outcome type, not which element to use.
 - Asserting that a control/page is visible (toBeVisible) is NOT performing the action and is NEVER an acceptable primary assertion. Operate the control and verify what it PRODUCED.
@@ -2966,6 +2984,7 @@ Rules:
 - Start by navigating to ${targetUrl || '/'} and handling login with USERNAME/PASSWORD before the feature steps when credentials are available. Do not assume global auth.
 - Mirror this exact test case's ordered steps, not any other case. The script must cover every step in the payload below in order. Do not add per-step screenshots unless this case explicitly asks for step evidence.
 - Ground selectors and assertions only in the inspection context or source-grounded understanding. Do not invent menus, labels, or success messages.
+- Never make contradictory assertions about the same locator (such as visible and count zero) unless an intervening action is expected to remove it.
 - WAIT RULE: only wait for real loading/busy indicators to become hidden. Never wait for normal controls, labels, tabs, fields, columns, toolbar buttons, or selected-view labels to become hidden; those should be asserted visible or used directly.
 - ACTION COMPLETION CONTRACT: the test must PERFORM the case's primary goal action and make exactly ONE hard expect verify its real OUTCOME  -  asserting a control is visible is NOT performing the action. The primary action and its assertion must NOT be wrapped in .catch(() => {}) (a miss must FAIL so the repair step fixes it against the live DOM). Discover selectors from the inspection/source (never hardcode). Pick the assertion by outcome type: a file download -> assert page.waitForEvent('download'); a control state change -> do the real .check()/.setChecked()/selectOption, persist, then assert the new state held; create/edit/delete -> assert the row/value actually changed in the list.
 
@@ -3032,6 +3051,7 @@ Test case payload: ${JSON.stringify({ test_cases: [testCase] })}${coderKnowledge
     ...script,
     code: script?.code ? normalizeSelectorsFromInspection(String(script.code), run.inspection_context) : script?.code,
   }));
+  if (await pauseForScriptReviewIfRequested(run)) return;
   await completeScriptProofFlow(run, targetUrl, { test_cases: caseList }, liveCreds);
   return;
 }
@@ -4038,10 +4058,10 @@ async function runScriptsAndCollectEvidence(run: any, targetUrl: string, testCas
         return evidence;
       }
 
-      // Legacy model-written scripts retain per-case execution/repair. Compiled scripts
-      // are already validated and can share one Playwright invocation, avoiding one
-      // browser/test-runner startup per case while preserving per-test evidence below.
-      if (scripts.length > 1 && !aiqaCompilerEnabled()) {
+      // Compiled scripts do not use model repair, so run them serially for per-case progress.
+      // Legacy scripts continue to the batch evaluator below, where real failures trigger
+      // the existing live re-inspection and bounded repair loop.
+      if (scripts.length > 1 && aiqaCompilerEnabled()) {
         pushPhase(run, { agent: 'EvidenceQueue', status: 'running', output: 'Running evidence one script at a time with the shared authenticated session.' });
         const evidence: any[] = [];
         const usedCaseIndexes = new Set<number>();
@@ -4959,7 +4979,19 @@ Rules:
     let priorGrounding = String(req.body.priorGrounding || approvedUnderstanding || '').trim();
     // The conversation that led here, so case generation is grounded in what was actually
     // discussed (e.g. the Admin objects/users/permissions), not just the prompt string.
-    const chatHistory: Array<{ role: string; content: string }> = Array.isArray(req.body.history) ? req.body.history : [];
+    let chatHistory: Array<{ role: string; content: string }> = Array.isArray(req.body.history) ? req.body.history : [];
+    let conversationMemory = '';
+    if (conversationId) {
+      const storedConversation = await ChatConversations.get(conversationId).catch(() => null);
+      if (storedConversation?.turns?.length) {
+        chatHistory = storedConversation.turns.map((turn: any) => ({
+          role: turn?.role === 'assistant' ? 'assistant' : 'user',
+          content: String(turn?.content ?? turn?.text ?? turn?.summary ?? '').trim(),
+        })).filter((turn: any) => turn.content);
+      }
+      conversationMemory = await loadConversationHandoff(conversationId).catch(() => '');
+      approvedUnderstanding ||= conversationMemory;
+    }
     // 0 (or absent) means "auto"  -  let the depth of the source understanding decide
     // the count. A positive number is an explicit user request and is honored as-is.
     // Honor the user's wish: an explicit count from the UI field OR parsed from the prompt
@@ -5210,6 +5242,7 @@ Rules:
       provider: runProvider,
       prompt: prompt || '',
       approvedUnderstanding,
+      conversationMemory,
       understandingSource,
       priorGrounding,
       conversationId,
@@ -5255,6 +5288,7 @@ Rules:
       existing_matches: [] as any[],
       session_context: priorSessionRun ? {
         runId: priorSessionRun.id,
+        capturedAt: priorSessionRun.updatedAt || priorSessionRun.updated_at || priorSessionRun.createdAt || priorSessionRun.created_at,
         approvedUnderstanding: priorSessionRun.approvedUnderstanding || '',
         priorGrounding: priorSessionRun.priorGrounding || '',
         inspection_context: priorEvidenceRun?.inspection_context || null,
@@ -5822,6 +5856,7 @@ Rules:
       run.review_started_at = null;
     }
     run.status = 'running';
+    run.completed_at = null;
     delete (run as any).cancelRequested;
     persistDataInBackground('coverage decision');
     res.json({ success: true, action: act });
@@ -5939,6 +5974,7 @@ Rules:
     const selectedExecutionCases = Array.isArray(executionCases) && executionCases.length ? executionCases : cases;
 
     run.status = 'running';
+    run.completed_at = null;
     // The human just finished reviewing cases  -  fold that idle gap into paused_ms
     delete (run as any).cancelRequested;
     // so the reported total reflects automation time, not how long they deliberated.
@@ -5948,6 +5984,7 @@ Rules:
     }
     (run as any).all_generated_cases = cases;
     (run as any).execution_case_count = selectedExecutionCases.length;
+    (run as any).review_scripts_before_execution = true;
     run.generated_cases = cases;
     (run as any).review_stage = '';
     run.playwright_scripts = [];

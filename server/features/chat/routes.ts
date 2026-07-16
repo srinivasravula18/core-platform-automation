@@ -88,6 +88,7 @@ export function registerChatRoutes(app: Express) {
         userId: scope.userId,
         projectId: scope.projectId,
         appId: scope.appId,
+        conversationId: String(sessionId),
         history: compactHistory(history),
         pageContext,
         apps,
@@ -107,12 +108,11 @@ export function registerChatRoutes(app: Express) {
       writeEvent(res, { type: 'final', content: final, accepted: result.accepted });
 
       const existing = await ChatConversations.get(String(sessionId)).catch(() => null);
-      const turns = Array.isArray((existing as any)?.turns) ? (existing as any).turns : compactHistory(history);
-      await ChatConversations.upsert({
+      await ChatConversations.appendMessages({
         id: String(sessionId),
         workspaceId: String(sessionId || 'default'),
         title: (existing as any)?.title || message.slice(0, 120),
-        turns: [...turns, { role: 'user', text: message }, { role: 'assistant', text: final }],
+        messages: [{ role: 'user', text: message }, { role: 'assistant', kind: 'text', text: final }],
       }).catch(() => null);
       persistDataInBackground('chat turn');
     } catch (err: any) {
@@ -155,13 +155,11 @@ export function registerChatRoutes(app: Express) {
 
   app.put('/api/chat/conversations/:id', async (req, res, next) => {
     try {
-      const { workspaceId, title, turns } = req.body || {};
-      if (!Array.isArray(turns)) return res.status(400).json({ error: 'turns array is required' });
-      const saved = await ChatConversations.upsert({
+      const { workspaceId, title } = req.body || {};
+      const saved = await ChatConversations.updateMetadata({
         id: req.params.id,
         workspaceId: workspaceId || 'default',
         title: String(title || '').slice(0, 120),
-        turns,
       });
       persistDataInBackground('chat conversation');
       res.json({ ok: true, conversation: { id: saved.id, updatedAt: saved.updatedAt } });

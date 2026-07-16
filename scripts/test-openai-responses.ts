@@ -19,6 +19,7 @@ import {
 } from '../server/ai/openai/responsesClient';
 import { assemblePromptBudget, PROMPT_BUDGET_VERSION, type ContextCandidate } from '../server/ai/openai/promptBudget';
 import { WorkflowRuntimeError, WORKFLOW_ERROR_CLASSES } from '../server/features/agent/workflow/errors';
+import { OpenAIProvider } from '../server/ai/providers/openai';
 
 let passed = 0, failed = 0;
 const ok = (c: boolean, n: string) => { if (c) { passed++; console.log(`  ✓ ${n}`); } else { failed++; console.error(`  ✗ ${n}`); } };
@@ -281,6 +282,42 @@ function testPromptBudgetVersion() {
   ok(Number.isInteger(PROMPT_BUDGET_VERSION) && PROMPT_BUDGET_VERSION > 0, 'PROMPT_BUDGET_VERSION is a positive integer');
 }
 
+async function testProviderToolContinuity() {
+  console.log('8. OpenAI provider Responses tool continuity - native items, store:false, encrypted reasoning');
+  const bodies: any[] = [];
+  const reasoning = { id: 'rs_1', type: 'reasoning', summary: [], encrypted_content: 'opaque' };
+  const functionCall = { id: 'fc_1', type: 'function_call', call_id: 'call_1', name: 'lookup', arguments: '{"id":7}', status: 'completed' };
+  const responses = [
+    { id: 'resp_tool', model: 'gpt-5.4', status: 'completed', output: [reasoning, functionCall], output_text: '', incomplete_details: null, usage: fakeUsage() },
+    { id: 'resp_text', model: 'gpt-5.4', status: 'completed', output: fakeMessageOutput([{ type: 'output_text', text: 'done' }]), output_text: 'done', incomplete_details: null, usage: fakeUsage() },
+  ];
+  const provider = new OpenAIProvider('test-key-not-real', 'gpt-5.4');
+  (provider as any).client = { responses: { create: async (body: any) => { bodies.push(body); return responses.shift(); } } };
+
+  const first = await provider.chatWithTools({
+    messages: [{ role: 'user', content: 'look it up' }],
+    tools: [{ name: 'lookup', description: 'Look up an id', parameters: { type: 'object', properties: { id: { type: 'number' } } } }],
+    effort: 'medium',
+  });
+  eq(first.toolCalls, [{ id: 'call_1', name: 'lookup', arguments: { id: 7 } }], 'function_call maps by call_id');
+  ok(first.providerItems?.[0] === reasoning, 'native reasoning output is retained for continuation');
+
+  const second = await provider.chatWithTools({
+    messages: [
+      { role: 'user', content: 'look it up' },
+      { role: 'assistant', toolCalls: first.toolCalls, providerItems: first.providerItems },
+      { role: 'tool', toolCallId: 'call_1', content: '{"name":"seven"}' },
+    ],
+    tools: [{ name: 'lookup', description: 'Look up an id', parameters: { type: 'object' } }],
+  });
+  eq(second.text, 'done', 'second Responses turn returns final output text');
+  ok(bodies.every((body) => body.store === false), 'every provider Responses request sets store:false');
+  ok(bodies.every((body) => body.include?.includes('reasoning.encrypted_content')), 'stateless requests include encrypted reasoning');
+  ok(bodies[0].tools?.[0]?.name === 'lookup' && !bodies[0].tools?.[0]?.function, 'Responses function tool uses flat shape');
+  ok(bodies[1].input[1] === reasoning, 'next request replays the native reasoning item verbatim');
+  ok(bodies[1].input.some((item: any) => item.type === 'function_call_output' && item.call_id === 'call_1'), 'tool output correlates with function call_id');
+}
+
 // ---------------------------------------------------------------------------
 async function main() {
   await testSchemaValidHappyPath();
@@ -293,6 +330,7 @@ async function main() {
   testPromptBudgetExclusions();
   testPromptBudgetStableOrdering();
   testPromptBudgetVersion();
+  await testProviderToolContinuity();
 
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed === 0 ? 0 : 1);

@@ -23,6 +23,7 @@ import {
   listSurfacesTool, discoverAppsTool,
 } from './domTools';
 import { agentWorkflowTools } from './agentTools';
+import { fetchArtifact, searchConversationMemory } from '../memory/artifactMemory';
 
 type Lister = { list: () => Promise<any[]> };
 const COLLECTIONS: Record<string, Lister> = {
@@ -73,6 +74,37 @@ export const queryWorkspaceTool: AgentTool = {
       status: it?.status,
       date: it?.date || it?.updatedAt,
     }));
+  },
+};
+
+export const searchConversationTool: AgentTool = {
+  spec: {
+    name: 'search_conversation',
+    description: 'Search older turns, immutable summary segments, and prior tool-result digests in this conversation. Read-only.',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Case-insensitive text to find.' },
+        limit: { type: 'integer', description: 'Maximum results (default 20).' },
+      },
+      required: ['query'],
+    },
+  },
+  async execute(args, ctx) {
+    const conversationId = String(ctx.conversationId || '');
+    if (!conversationId) throw new Error('No conversation is attached to this request.');
+    return searchConversationMemory(conversationId, String(args.query || ''), Number(args.limit) || 20);
+  },
+};
+
+export const fetchArtifactTool: AgentTool = {
+  spec: {
+    name: 'fetch_artifact',
+    description: 'Fetch a prior evidentiary tool result by artifact ref. Freshness is checked before reuse. Read-only.',
+    parameters: { type: 'object', properties: { id: { type: 'string', description: 'Artifact ref returned by search_conversation.' } }, required: ['id'] },
+  },
+  async execute(args, ctx) {
+    return fetchArtifact(String(args.id || ''), ctx);
   },
 };
 
@@ -370,7 +402,7 @@ export async function quickWorkspaceAnswer(
 /** All registered tools by name. */
 export function coreTools(): AgentTool[] {
   return [
-    queryWorkspaceTool, searchCodebaseTool, readCodeFileTool, followImportsTool, findUntestedEdgesTool, analyzeFeatureCoverageTool,
+    queryWorkspaceTool, searchConversationTool, fetchArtifactTool, searchCodebaseTool, readCodeFileTool, followImportsTool, findUntestedEdgesTool, analyzeFeatureCoverageTool,
     // DATA tools (real schema + records via the App Service) — only when configured.
     ...corePlatformDataTools(),
     // META tools — object discovery, field inspection, sample records, route search.

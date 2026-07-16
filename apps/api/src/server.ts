@@ -22,6 +22,7 @@ import { registerSearchRoutes } from '../../../services/search';
 import { registerSettingsRoutes, registerAiSettingsRoutes } from '../../../services/settings';
 import { registerApiIntelligenceRoutes } from '../../../services/api-intelligence';
 import { getWorkflowCheckpointer, closeWorkflowCheckpointer, isWorkflowGraphEnabled, reconcileOrphanedRunsOnStartup } from '../../../services/orchestration';
+import { startMemoryRetention } from '../../../server/ai/memory/retention';
 
 let processGuardsInstalled = false;
 
@@ -79,6 +80,7 @@ export async function createExpressApp() {
   }
 
   await loadPersistedSettings();
+  startMemoryRetention();
   seedDefaultKnowledgeIfEmpty();
   seedAuthUsersIfEmpty();
 

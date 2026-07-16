@@ -9,10 +9,11 @@
  *
  * Provider + model come from Settings (getOrchestrator). Native function-calling only.
  */
-import { getToolCapableOrchestrator, getOrchestrator, resolveProviderForAgent, getProviderCredentials } from './orchestrator';
+import { getToolCapableOrchestrator, getOrchestrator, resolveProviderForAgent, resolveModelForAgent, getProviderCredentials } from './orchestrator';
+import { assembleConversationContext } from './memory/contextAssembler';
 import { executeIntent } from './controller';
 import type { AgentTool, ToolContext, AgentStep } from './tools/types';
-import { queryWorkspaceTool, searchCodebaseTool, readCodeFileTool, followImportsTool, findUntestedEdgesTool, analyzeFeatureCoverageTool } from './tools/registry';
+import { queryWorkspaceTool, searchConversationTool, fetchArtifactTool, searchCodebaseTool, readCodeFileTool, followImportsTool, findUntestedEdgesTool, analyzeFeatureCoverageTool } from './tools/registry';
 import { corePlatformDataTools } from './tools/corePlatformData';
 import { corePlatformMetaTools } from './tools/corePlatformMeta';
 import { readCodeFileInScope, resolveCodeSearchScope, searchCodeInScope } from '../features/projects/codeSearch';
@@ -308,7 +309,8 @@ async function answerByDecomposition(
           system: ADAPTIVE_CODE_EXPLORER_SYSTEM,
           tools: [searchCodebaseTool, readCodeFileTool, followImportsTool],
           toolContext: { workspaceId: opts.workspaceId || 'default', userId: opts.userId, projectId: opts.projectId, appId: opts.appId || null, userMessage: question },
-          maxSteps: 60,
+      maxSteps: 60,
+      maxTotalTokens: 120_000,
           temperature: 0.2,
           signal: opts.signal,
         });
@@ -339,6 +341,10 @@ export async function answerAppQuestionFromCode(question: string, opts: {
   apps?: Array<{ name: string; baseUrl: string }>;
   onProgress?: (label: string) => void;
   signal?: AbortSignal;
+  contextManifestId?: string;
+  conversationId?: string;
+  seedMessages?: Array<{ role: 'user' | 'assistant'; content: string }>;
+  memoryBlock?: string;
 } = {}): Promise<string> {
   const scope = resolveCodeSearchScope({ projectId: opts.projectId, appId: opts.appId });
   const scopeArg = { projectId: opts.projectId, appId: opts.appId };
@@ -376,16 +382,21 @@ export async function answerAppQuestionFromCode(question: string, opts: {
       projectId: opts.projectId,
       appId: opts.appId || null,
       userMessage: question,
+      conversationId: opts.conversationId,
     };
     const loop = await toolOrch.runToolLoop({
-      task: `Answer this question about THIS application, grounded ONLY in its REAL source code: ${question}${appsBlock}`,
+      task: `${opts.memoryBlock || ''}\n\nAnswer this question about THIS application, grounded ONLY in its REAL source code: ${question}${appsBlock}`.trim(),
+      guardrailInput: question,
+      seedMessages: opts.seedMessages,
       system: ADAPTIVE_CODE_EXPLORER_SYSTEM,
-      tools: [searchCodebaseTool, readCodeFileTool, followImportsTool],
+      tools: [searchConversationTool, fetchArtifactTool, searchCodebaseTool, readCodeFileTool, followImportsTool],
       toolContext: exploreCtx,
       // High ceiling so the agent keeps exploring (search → read full file → follow imports →
       // read more) until it has the whole picture — not cut off after a few steps. It stops on
       // its own when it has enough; this is just a runaway backstop.
       maxSteps: 200,
+      maxTotalTokens: 250_000,
+      contextManifestId: opts.contextManifestId,
       temperature: 0.2,
       onStep: (step) => {
         const call = step.toolCalls?.[0];
@@ -519,6 +530,7 @@ export async function runSupervisor(input: {
   userId?: string;
   projectId?: string;
   appId?: string | null;
+  conversationId?: string;
   history?: Array<{ role: 'user' | 'assistant'; content: string }>;
   pageContext?: { path?: string };
   apps?: Array<{ name: string; baseUrl: string }>;
@@ -531,26 +543,38 @@ export async function runSupervisor(input: {
     projectId: input.projectId,
     appId: input.appId || null,
     userMessage: input.userMessage,
+    conversationId: input.conversationId,
   };
-  const tools: AgentTool[] = [queryWorkspaceTool, searchCodebaseTool, readCodeFileTool, followImportsTool, findUntestedEdgesTool, analyzeFeatureCoverageTool, ...corePlatformDataTools(), ...corePlatformMetaTools, ...INTENT_TOOLS.map((d) => buildIntentTool(d, ctx))];
+  const tools: AgentTool[] = [queryWorkspaceTool, searchConversationTool, fetchArtifactTool, searchCodebaseTool, readCodeFileTool, followImportsTool, findUntestedEdgesTool, analyzeFeatureCoverageTool, ...corePlatformDataTools(), ...corePlatformMetaTools, ...INTENT_TOOLS.map((d) => buildIntentTool(d, ctx))];
 
-  const historyBlock = input.history?.length
-    ? `\n\nRECENT CONVERSATION (oldest first):\n${input.history.slice(-16).map((m) => `${m.role}: ${m.content}`).join('\n')}`
-    : '';
+  const provider = resolveProviderForAgent('chatAssistant');
+  const assembled = await assembleConversationContext({
+    conversationId: input.conversationId,
+    fallbackHistory: input.history,
+    currentMessage: input.userMessage,
+    model: resolveModelForAgent('chatAssistant', provider),
+    path: 'controller.supervisor',
+  });
+  const accountMode = getProviderCredentials(provider)?.authMode === 'account';
+  const historyBlock = accountMode ? assembled.promptBlock : assembled.memoryBlock;
   const pageBlock = input.pageContext?.path ? `\n\nThe user is currently on: ${input.pageContext.path}` : '';
   // Selected apps are explicit target context so the agent never lacks the app/URL data.
   const appsBlock = (input.apps || []).length
     ? `\n\nAPPS UNDER TEST (selected by the user — use these as the targets; do NOT ask which app): ${(input.apps || []).map((a) => `${a.name} (${a.baseUrl})`).join(', ')}.`
     : '';
-  const task = `User request: ${input.userMessage}${pageBlock}${appsBlock}${historyBlock}`;
+  const task = `${appsBlock}${historyBlock}${pageBlock}\n\nCurrent user request: ${input.userMessage}`.trim();
 
   const orch = await getToolCapableOrchestrator('chatAssistant', { workspaceId: ctx.workspaceId, userId: ctx.userId });
   const result = await orch.runToolLoop({
     task,
+    guardrailInput: input.userMessage,
+    seedMessages: accountMode ? undefined : assembled.history,
     system: SUPERVISOR_SYSTEM,
     tools,
     toolContext: ctx,
     maxSteps: 60,
+    maxTotalTokens: 120_000,
+    contextManifestId: assembled.manifest.id,
     temperature: 0.2,
     onStep: input.onStep,
     signal: input.signal,

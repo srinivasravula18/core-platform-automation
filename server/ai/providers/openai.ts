@@ -47,6 +47,35 @@ function toOpenAIMessage(m: ChatMessage): OpenAI.Chat.ChatCompletionMessageParam
   return { role: 'user', content: m.content || '' };
 }
 
+/** Convert neutral history into stateless Responses API input. Native output items
+ * are replayed verbatim so reasoning and function-call correlation survive a tool turn. */
+function toResponseInput(messages: ChatMessage[]): OpenAI.Responses.ResponseInputItem[] {
+  const input: OpenAI.Responses.ResponseInputItem[] = [];
+  for (const message of messages) {
+    if (message.role === 'system') continue;
+    if (message.role === 'assistant' && message.providerItems?.length) {
+      input.push(...message.providerItems as OpenAI.Responses.ResponseInputItem[]);
+      continue;
+    }
+    if (message.role === 'tool') {
+      input.push({ type: 'function_call_output', call_id: message.toolCallId || '', output: message.content || '' });
+      continue;
+    }
+    if (message.role === 'assistant' && message.toolCalls?.length) {
+      if (message.content) input.push({ role: 'assistant', content: message.content });
+      input.push(...message.toolCalls.map((call) => ({
+        type: 'function_call' as const,
+        call_id: call.id,
+        name: call.name,
+        arguments: JSON.stringify(call.arguments || {}),
+      })));
+      continue;
+    }
+    input.push({ role: message.role === 'assistant' ? 'assistant' : 'user', content: message.content || '' });
+  }
+  return input;
+}
+
 export class OpenAIProvider implements AIProvider {
   readonly name: ProviderName;
   private client: OpenAI;
@@ -65,6 +94,18 @@ export class OpenAIProvider implements AIProvider {
 
   private modelId(opts: { model?: string }) {
     return opts.model || this.defaultModel;
+  }
+
+  /** Emergency rollback for OpenAI-compatible endpoints that have not implemented Responses. */
+  private useResponsesApi() {
+    return process.env.OPENAI_RESPONSES_API !== 'false';
+  }
+
+  private responseParams(modelId: string, maxTokens?: number, effort?: 'low' | 'medium' | 'high') {
+    return {
+      ...(typeof maxTokens === 'number' && maxTokens > 0 ? { max_output_tokens: maxTokens } : {}),
+      ...(effort ? { reasoning: { effort } } : {}),
+    };
   }
 
   /**
@@ -97,6 +138,15 @@ export class OpenAIProvider implements AIProvider {
       return { ok: false, provider: this.name, model: this.defaultModel, error: `${this.name} API key not set`, checkedAt };
     }
     try {
+      if (this.useResponsesApi()) {
+        await this.client.responses.create({
+          model: this.defaultModel,
+          input: 'ping',
+          max_output_tokens: 16,
+          store: false,
+        });
+        return { ok: true, provider: this.name, model: this.defaultModel, checkedAt };
+      }
       await this.client.chat.completions.create({
         model: this.defaultModel,
         messages: [{ role: 'user', content: 'ping' }],
@@ -111,6 +161,18 @@ export class OpenAIProvider implements AIProvider {
   private async callChat(opts: GenerateTextOptions, jsonMode: boolean) {
     const modelId = this.modelId(opts);
     try {
+      if (this.useResponsesApi()) {
+        const response = await this.client.responses.create({
+          model: modelId,
+          instructions: opts.system,
+          input: opts.prompt,
+          store: false,
+          include: ['reasoning.encrypted_content'],
+          ...this.responseParams(modelId, opts.maxTokens, opts.effort),
+          ...(jsonMode ? { text: { format: { type: 'json_object' as const } } } : {}),
+        }, { signal: opts.signal });
+        return { content: response.output_text || '', usage: response.usage, modelId };
+      }
       const completion = await this.client.chat.completions.create(
         {
           model: modelId,
@@ -140,6 +202,7 @@ export class OpenAIProvider implements AIProvider {
 
   /** Native tool-calling round-trip via OpenAI tools / tool_calls. */
   async chatWithTools(opts: ChatWithToolsOptions): Promise<ChatWithToolsResult> {
+    if (this.useResponsesApi()) return this.chatWithResponses(opts);
     const start = Date.now();
     const modelId = this.modelId(opts);
     const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [];
@@ -197,20 +260,85 @@ export class OpenAIProvider implements AIProvider {
     }
   }
 
+  private async chatWithResponses(opts: ChatWithToolsOptions): Promise<ChatWithToolsResult> {
+    const start = Date.now();
+    const modelId = this.modelId(opts);
+    const tools: OpenAI.Responses.FunctionTool[] | undefined = opts.tools?.length
+      ? opts.tools.map((tool) => ({
+          type: 'function',
+          name: tool.name,
+          description: tool.description,
+          parameters: tool.parameters,
+          strict: false,
+        }))
+      : undefined;
+    try {
+      const response = await this.client.responses.create({
+        model: modelId,
+        instructions: opts.system,
+        input: toResponseInput(opts.messages),
+        ...(tools ? { tools, tool_choice: 'auto' as const } : {}),
+        ...this.responseParams(modelId, opts.maxTokens, opts.effort),
+        store: false,
+        include: ['reasoning.encrypted_content'],
+      }, { signal: opts.signal });
+      const toolCalls: ToolCallRequest[] = response.output
+        .filter((item): item is OpenAI.Responses.ResponseFunctionToolCall => item.type === 'function_call')
+        .map((item) => {
+          let args: Record<string, unknown> = {};
+          try { args = JSON.parse(item.arguments || '{}'); } catch { args = {}; }
+          return { id: item.call_id, name: item.name, arguments: args };
+        });
+      const incompleteReason = response.incomplete_details?.reason;
+      const stopReason: ChatWithToolsResult['stopReason'] = toolCalls.length
+        ? 'tool_calls'
+        : incompleteReason === 'max_output_tokens' ? 'length'
+          : response.status === 'completed' ? 'stop' : 'other';
+      return {
+        text: response.output_text || undefined,
+        toolCalls,
+        providerItems: response.output,
+        usage: this.toUsageObj(modelId, response.usage),
+        model: modelId,
+        provider: this.name,
+        stopReason,
+        latencyMs: Date.now() - start,
+      };
+    } catch (err: any) {
+      throw this.toProviderError(err);
+    }
+  }
+
   private toUsageObj(modelId: string, usage?: any) {
     if (!usage) return undefined;
     // OpenAI's `prompt_tokens` INCLUDES cached tokens; the cached portion is billed at the cheaper
     // cached-input rate, so split it out and bill only the remainder at the base input rate. OpenAI
     // auto-caches — there is no separate cache-WRITE charge.
-    const cacheReadTokens = usage.prompt_tokens_details?.cached_tokens ?? 0;
-    const inputTokens = Math.max(0, (usage.prompt_tokens ?? 0) - cacheReadTokens);
-    const outputTokens = usage.completion_tokens ?? 0;
+    const promptTokens = usage.prompt_tokens ?? usage.input_tokens ?? 0;
+    const cacheReadTokens = usage.prompt_tokens_details?.cached_tokens ?? usage.input_tokens_details?.cached_tokens ?? 0;
+    const inputTokens = Math.max(0, promptTokens - cacheReadTokens);
+    const outputTokens = usage.completion_tokens ?? usage.output_tokens ?? 0;
     const totalTokens = usage.total_tokens ?? inputTokens + outputTokens + cacheReadTokens;
     const usageObj = { inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens: 0, totalTokens };
     return { ...usageObj, costUsd: estimateCost(modelId, usageObj) };
   }
 
   async *generateTextStream(opts: GenerateTextOptions): AsyncIterable<string> {
+    if (this.useResponsesApi()) {
+      const stream = await this.client.responses.create({
+        model: this.modelId(opts),
+        instructions: opts.system,
+        input: opts.prompt,
+        ...this.responseParams(this.modelId(opts), opts.maxTokens, opts.effort),
+        store: false,
+        include: ['reasoning.encrypted_content'],
+        stream: true,
+      }, { signal: opts.signal });
+      for await (const event of stream) {
+        if (event.type === 'response.output_text.delta' && event.delta) yield event.delta;
+      }
+      return;
+    }
     const stream = await this.client.chat.completions.create(
       {
         model: this.modelId(opts),

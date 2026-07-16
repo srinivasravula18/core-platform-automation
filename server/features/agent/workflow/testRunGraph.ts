@@ -22,6 +22,7 @@ import { StateGraph, START, END, type BaseCheckpointSaver } from '@langchain/lan
 import { ensureRunAuthState, clearRunAuthState } from './authSession';
 import { runContextNode } from './nodes/context';
 import { runDiscoveryNode } from './nodes/discovery';
+import type { VerifiedElement } from '../domExplorer';
 import { runGroundingNode, MAX_REDISCOVERY_ATTEMPTS } from './nodes/grounding';
 import { authorTestCases, authorAbstractPlan, type AuthoredTestCase } from './nodes/authoring';
 import { runCompilationNode } from './nodes/compilation';
@@ -62,6 +63,7 @@ export interface TestRunGraphDeps {
   /** Test seams — default to the real node functions. */
   contextNode?: typeof runContextNode;
   discoveryNode?: typeof runDiscoveryNode;
+  priorVerifiedElements?: VerifiedElement[];
   groundingNode?: typeof runGroundingNode;
   authorCases?: typeof authorTestCases;
   authorPlan?: typeof authorAbstractPlan;
@@ -277,8 +279,8 @@ export function buildTestRunGraph(deps: TestRunGraphDeps = {}, opts: BuildTestRu
     // ONE real login per run: first attempt logs in and caches state; rediscovery attempts reuse it.
     let auth = deps.discoveryNode
       ? undefined // injected discovery seam (tests) owns its own setup — no real login here
-      : await ensureRunAuthState(state.runId, state.mission?.targetUrl || '', credential);
-    let discovery = await discoveryNode({ mission: state.mission, credential, runId: state.runId, auth });
+      : await ensureRunAuthState(state.runId, state.mission?.targetUrl || '', credential, state.request.conversationId);
+    let discovery = await discoveryNode({ mission: state.mission, credential, runId: state.runId, auth, priorElements: deps.priorVerifiedElements });
     let discoveryAttempts = 1;
     // The node returns classified errors instead of throwing, so the retry policy (workflow/errors.ts) is
     // applied HERE at the invocation layer — with real backoff, real path only. Without this, a transient
@@ -288,17 +290,17 @@ export function buildTestRunGraph(deps: TestRunGraphDeps = {}, opts: BuildTestRu
         const failure = discovery.elements.length === 0 ? discovery.errors.find((e) => e.retryable) : undefined;
         if (!failure || discoveryAttempts >= failure.maxAttempts) break;
         // An auth-classified failure invalidates the cached session so the next attempt logs in fresh.
-        if (failure.class === WORKFLOW_ERROR_CLASSES.AUTH_FAILURE) clearRunAuthState(state.runId);
+        if (failure.class === WORKFLOW_ERROR_CLASSES.AUTH_FAILURE) clearRunAuthState(state.runId, state.request.conversationId, state.mission?.targetUrl || '');
         const delay = backoffDelayMs(failure.class, discoveryAttempts);
         if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
         if (failure.class === WORKFLOW_ERROR_CLASSES.AUTH_FAILURE) {
-          auth = await ensureRunAuthState(state.runId, state.mission?.targetUrl || '', credential);
+          auth = await ensureRunAuthState(state.runId, state.mission?.targetUrl || '', credential, state.request.conversationId);
         }
-        discovery = await discoveryNode({ mission: state.mission, credential, runId: state.runId, auth });
+        discovery = await discoveryNode({ mission: state.mission, credential, runId: state.runId, auth, priorElements: deps.priorVerifiedElements });
         discoveryAttempts += 1;
       }
       // Still auth-failed after the policy attempts — drop the cached session so any later re-entry logs in fresh.
-      if (discovery.errors.some((e) => e.class === WORKFLOW_ERROR_CLASSES.AUTH_FAILURE)) clearRunAuthState(state.runId);
+      if (discovery.errors.some((e) => e.class === WORKFLOW_ERROR_CLASSES.AUTH_FAILURE)) clearRunAuthState(state.runId, state.request.conversationId, state.mission?.targetUrl || '');
     }
     // Raw elements never reach state — grounding projects them into the bounded evidence envelope.
     const grounding = groundingNode({
@@ -474,7 +476,7 @@ export function buildTestRunGraph(deps: TestRunGraphDeps = {}, opts: BuildTestRu
     const credential = deps.executionNode ? undefined : await resolveCredential(state.credentialRef ?? null).catch(() => undefined);
     if (credential?.username && credential?.password && state.mission?.targetUrl) {
       try {
-        const auth = await ensureRunAuthState(state.runId, state.mission.targetUrl, credential);
+        const auth = await ensureRunAuthState(state.runId, state.mission.targetUrl, credential, state.request.conversationId);
         storageStatePath = auth.storageStatePath;
         sessionStorageState = auth.sessionStorageState;
       } catch { /* execution proceeds unauthenticated; failures will name the real cause */ }
@@ -487,6 +489,9 @@ export function buildTestRunGraph(deps: TestRunGraphDeps = {}, opts: BuildTestRu
       priorAttempts: state.execution?.attempts ?? [],
       storageStatePath,
       sessionStorageState,
+      projectId: state.projectId,
+      appId: state.applicationId,
+      ownerId: state.requestedBy,
     });
     if (result.evidenceShots?.length) stashArtifacts(state.runId, { evidenceShots: result.evidenceShots });
     // Per-test records feed the defect reporter / investigation downstream — stash only (state carries refs).
@@ -533,7 +538,7 @@ export function buildTestRunGraph(deps: TestRunGraphDeps = {}, opts: BuildTestRu
         const credential = await resolveCredential(state.credentialRef ?? null).catch(() => undefined);
         if (credential?.username && credential?.password && state.mission?.targetUrl) {
           try {
-            const auth = await ensureRunAuthState(state.runId, state.mission.targetUrl, credential);
+            const auth = await ensureRunAuthState(state.runId, state.mission.targetUrl, credential, state.request.conversationId);
             storageStatePath = auth.storageStatePath;
             sessionStorageState = auth.sessionStorageState;
           } catch { /* probe proceeds unauthenticated; a login-failure re-run simply reads 'failed' */ }

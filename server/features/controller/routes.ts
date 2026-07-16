@@ -1,29 +1,43 @@
 import type { Express } from 'express';
-import { buildPlan, cancelPlan, classifyIntent, executePlan, explainIntent, streamExplain, getPlan, listPlans, getControllerMemory, clearControllerMemory } from '../../ai/controller';
+import { buildPlan, cancelPlan, classifyIntent, executePlan, explainIntent, streamExplain, getPlan, listPlans } from '../../ai/controller';
 import { runSupervisor, answerAppQuestionFromCode } from '../../ai/supervisor';
 import { quickWorkspaceAnswer } from '../../ai/tools/registry';
 import { reqScope } from '../../shared/scope';
+import { ChatConversations } from '../../db/repository';
+import { assembleConversationContext } from '../../ai/memory/contextAssembler';
+import { getProviderCredentials, resolveModelForAgent, resolveProviderForAgent } from '../../ai/orchestrator';
 
 // An action request mutates/creates/runs something → needs the full tool loop. A plain
 // question can be answered with the FAST single-call git-grounded path.
 const ACTION_RE = /\b(generate|create|write|build|make|run|execute|file\s+(a|the)|add|move|organi[sz]e|re-?run|delete|remove|update|edit|set\s|navigate|open|go\s+to|triage|expand|rework|schedule)\b/i;
 
-// Prefix the recent conversation so the app-knowledge answerer can resolve follow-ups ("rewrite
-// that case", "explain it", a pasted case that follows a prior instruction) instead of answering
-// the lone message blind. Harmless for self-contained questions. App-agnostic.
-function withConversationContext(message: string, history: unknown): string {
-  const turns = Array.isArray(history) ? history : [];
-  if (!turns.length) return message;
-  const recent = turns.slice(-6)
-    .map((h: any) => {
-      const role = h?.role === 'assistant' ? 'Assistant' : 'User';
-      const text = String(h?.content ?? h?.text ?? '').replace(/\s+/g, ' ').trim().slice(0, 700);
-      return text ? `${role}: ${text}` : '';
-    })
-    .filter(Boolean)
-    .join('\n');
-  if (!recent) return message;
-  return `Recent conversation (context — resolve references like "that case", "it", or "this" against it, and honor any earlier instruction such as "rewrite in simple words"):\n${recent}\n\nCurrent message: ${message}`;
+async function assembleFastContext(message: string, conversationId: unknown, history: unknown) {
+  const provider = resolveProviderForAgent('chatAssistant');
+  return assembleConversationContext({
+    conversationId: typeof conversationId === 'string' ? conversationId : undefined,
+    fallbackHistory: history,
+    currentMessage: message,
+    model: resolveModelForAgent('chatAssistant', provider),
+    path: 'controller.fast-question',
+  });
+}
+
+function nativeReplayOptions(assembled: Awaited<ReturnType<typeof assembleFastContext>>) {
+  const provider = resolveProviderForAgent('chatAssistant');
+  const accountMode = getProviderCredentials(provider)?.authMode === 'account';
+  return accountMode
+    ? { questionPrefix: assembled.promptBlock, seedMessages: undefined, memoryBlock: undefined }
+    : { questionPrefix: '', seedMessages: assembled.history, memoryBlock: assembled.memoryBlock };
+}
+
+async function persistExchange(conversationId: unknown, workspaceId: unknown, userMessage: string, reply: string) {
+  if (typeof conversationId !== 'string' || !conversationId) return;
+  await ChatConversations.appendMessages({
+    id: conversationId,
+    workspaceId: typeof workspaceId === 'string' ? workspaceId : 'default',
+    title: userMessage.slice(0, 120),
+    messages: [{ role: 'user', text: userMessage }, { role: 'assistant', kind: 'text', text: reply }],
+  });
 }
 
 import { INTENT_LABELS, type IntentKind, type Plan, type PlanStep } from '../../ai/intents';
@@ -134,7 +148,7 @@ export function registerControllerRoutes(app: Express) {
   // The model chooses + executes capabilities in a loop until the goal is met.
   app.post('/api/controller/supervise', async (req, res, next) => {
     try {
-      const { userMessage, workspaceId, userId, history, pageContext, apps } = req.body || {};
+      const { userMessage, workspaceId, userId, conversationId, history, pageContext, apps } = req.body || {};
       const scope = reqScope(req);
       const effectiveUserId = scope.userId || userId;
       if (!userMessage || typeof userMessage !== 'string') {
@@ -143,6 +157,7 @@ export function registerControllerRoutes(app: Express) {
       // FAST PATH 1: simple count/list questions answered straight from the DB (no LLM).
       const quick = await quickWorkspaceAnswer(userMessage, effectiveUserId);
       if (quick) {
+        await persistExchange(conversationId, workspaceId, userMessage, quick);
         return res.json({ reply: quick, accepted: true, fast: true, actions: [], trace: [] });
       }
       // FAST PATH 2: app-knowledge QUESTIONS get a single git-grounded LLM call (retrieval
@@ -150,13 +165,20 @@ export function registerControllerRoutes(app: Express) {
       // conversation so FOLLOW-UPS resolve against context — "rewrite that case", "explain it",
       // or a pasted case that follows a prior instruction — instead of being answered blind.
       if (!ACTION_RE.test(userMessage)) {
-        const reply = await answerAppQuestionFromCode(withConversationContext(userMessage, history), {
+        const assembled = await assembleFastContext(userMessage, conversationId, history);
+        const replay = nativeReplayOptions(assembled);
+        const reply = await answerAppQuestionFromCode(`${replay.questionPrefix}\n\n${userMessage}`.trim(), {
           workspaceId,
           userId: effectiveUserId,
           projectId: scope.projectId,
           appId: scope.appId,
           apps,
+          contextManifestId: assembled.manifest.id,
+          conversationId,
+          seedMessages: replay.seedMessages,
+          memoryBlock: replay.memoryBlock,
         });
+        await persistExchange(conversationId, workspaceId, userMessage, reply);
         return res.json({ reply, accepted: true, fast: true, actions: [{ tool: 'search_codebase', arguments: {} }], trace: [] });
       }
       const result = await runSupervisor({
@@ -165,10 +187,12 @@ export function registerControllerRoutes(app: Express) {
         userId: effectiveUserId,
         projectId: scope.projectId,
         appId: scope.appId,
+        conversationId,
         history,
         pageContext,
         apps,
       });
+      await persistExchange(conversationId, workspaceId, userMessage, result.finalText);
       res.json({
         reply: result.finalText,
         accepted: result.accepted,
@@ -189,7 +213,7 @@ export function registerControllerRoutes(app: Express) {
   // so the chat can show LIVE activity ("Searching the codebase for …", "Reading …"),
   // then a final line with the answer. Mirrors the /explain/stream pattern.
   app.post('/api/controller/supervise/stream', async (req, res) => {
-    const { userMessage, workspaceId, userId, history, pageContext, apps } = req.body || {};
+    const { userMessage, workspaceId, userId, conversationId, history, pageContext, apps } = req.body || {};
     const scope = reqScope(req);
     const effectiveUserId = scope.userId || userId;
     if (!userMessage || typeof userMessage !== 'string') {
@@ -203,22 +227,29 @@ export function registerControllerRoutes(app: Express) {
       flushStream(res);
       // Instant path: simple count/list answered from the DB, no steps.
       const quick = await quickWorkspaceAnswer(userMessage, effectiveUserId);
-      if (quick) { await sendFinalReply(res, send, quick, { fast: true }); return res.end(); }
+      if (quick) { await persistExchange(conversationId, workspaceId, userMessage, quick); await sendFinalReply(res, send, quick, { fast: true }); return res.end(); }
       // Fast git-grounded path for app-knowledge QUESTIONS: ONE LLM call after deterministic
       // retrieval. Emits the search/read progress so the UI still animates the live steps.
       if (!ACTION_RE.test(userMessage)) {
         let i = 0;
-        const reply = await answerAppQuestionFromCode(withConversationContext(userMessage, history), {
+        const assembled = await assembleFastContext(userMessage, conversationId, history);
+        const replay = nativeReplayOptions(assembled);
+        const reply = await answerAppQuestionFromCode(`${replay.questionPrefix}\n\n${userMessage}`.trim(), {
           workspaceId,
           userId: effectiveUserId,
           projectId: scope.projectId,
           appId: scope.appId,
           apps,
+          contextManifestId: assembled.manifest.id,
+          conversationId,
+          seedMessages: replay.seedMessages,
+          memoryBlock: replay.memoryBlock,
           onProgress: (label) => {
             send({ type: 'step', index: i++, toolCalls: [{ name: /reading/i.test(label) ? 'read_code_file' : 'search_codebase', arguments: {} }], text: label });
             flushStream(res);
           },
         });
+        await persistExchange(conversationId, workspaceId, userMessage, reply);
         await sendFinalReply(res, send, reply, { fast: true });
         return res.end();
       }
@@ -228,6 +259,7 @@ export function registerControllerRoutes(app: Express) {
         userId: effectiveUserId,
         projectId: scope.projectId,
         appId: scope.appId,
+        conversationId,
         history,
         pageContext,
         apps,
@@ -241,6 +273,7 @@ export function registerControllerRoutes(app: Express) {
           flushStream(res);
         },
       });
+      await persistExchange(conversationId, workspaceId, userMessage, result.finalText);
       await sendFinalReply(res, send, result.finalText, { accepted: result.accepted });
     } catch (err: any) {
       send({ type: 'error', error: err?.message || 'supervisor failed' });
@@ -250,21 +283,25 @@ export function registerControllerRoutes(app: Express) {
     }
   });
 
-  app.get('/api/controller/plans', (req, res) => {
+  app.get('/api/controller/plans', async (req, res, next) => {
+    try {
     const workspaceId = String((req.query.workspaceId as string) || 'default');
-    res.json({ plans: listPlans(workspaceId) });
+    res.json({ plans: await listPlans(workspaceId) });
+    } catch (error) { next(error); }
   });
 
-  app.get('/api/controller/plans/:id', (req, res) => {
-    const plan = getPlan(req.params.id);
+  app.get('/api/controller/plans/:id', async (req, res, next) => {
+    try {
+    const plan = await getPlan(req.params.id);
     if (!plan) return res.status(404).json({ error: 'Plan not found' });
     res.json(plan);
+    } catch (error) { next(error); }
   });
 
   app.post('/api/controller/plans/:id/execute', async (req, res, next) => {
     try {
       const { approveAll, stepId } = req.body || {};
-      const plan = getPlan(req.params.id);
+      const plan = await getPlan(req.params.id);
       if (!plan) return res.status(404).json({ error: 'Plan not found' });
       if (stepId) {
         const step = plan.steps.find((s: PlanStep) => s.id === stepId);
@@ -281,10 +318,12 @@ export function registerControllerRoutes(app: Express) {
     }
   });
 
-  app.post('/api/controller/plans/:id/cancel', (req, res) => {
-    const plan = cancelPlan(req.params.id);
+  app.post('/api/controller/plans/:id/cancel', async (req, res, next) => {
+    try {
+    const plan = await cancelPlan(req.params.id);
     if (!plan) return res.status(404).json({ error: 'Plan not found' });
     res.json(plan);
+    } catch (error) { next(error); }
   });
 
   app.post('/api/controller/explain/stream', async (req, res) => {
@@ -321,12 +360,4 @@ export function registerControllerRoutes(app: Express) {
     }
   });
 
-  app.get('/api/controller/memory', (req, res) => {
-    res.json({ memory: getControllerMemory() });
-  });
-
-  app.delete('/api/controller/memory', (req, res) => {
-    clearControllerMemory();
-    res.json({ ok: true });
-  });
 }

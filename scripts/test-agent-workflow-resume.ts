@@ -378,7 +378,7 @@ async function testRuntimeCancelAndResume() {
   eq(wfState?.status, 'completed', 'getGraphRunState returns the checkpointed values snapshot');
   eq(wfState?.runId, runR, 'snapshot belongs to the requested run');
   eq(await getGraphRunState('no-such-run-id'), null, 'getGraphRunState returns null for an unknown thread');
-  ok(!isGraphRunActive(runR), 'pump finished');
+  ok(await waitFor(() => !isGraphRunActive(runR), 5000), 'pump finished');
 
   // Cleanup: keep the shared in-memory store free of test records.
   await AgentRuns.remove(runC);

@@ -15,6 +15,7 @@ import { copyFile, mkdir } from 'fs/promises';
 import { executePlaywrightScripts, type ExecutionResult, type TestResult } from '../../../playwright/executionService';
 import { WorkflowRuntimeError, WORKFLOW_ERROR_CLASSES, type WorkflowError } from '../errors';
 import type { ExecutionAggregate, ExecutionAttempt } from '../state';
+import { recordRunMemory } from '../../../../ai/memory/runMemory';
 
 export interface RunExecutionNodeInput {
   runId: string;
@@ -26,6 +27,9 @@ export interface RunExecutionNodeInput {
   priorAttempts: ExecutionAttempt[];
   storageStatePath?: string;
   sessionStorageState?: { origin: string; items: Record<string, string> };
+  projectId?: string;
+  appId?: string | null;
+  ownerId?: string;
 }
 
 /** Legacy UI evidence card shape (run.evidence_screenshots items): title + web-served screenshot URL. */
@@ -102,6 +106,28 @@ function infraFailureReason(result: ExecutionResult): string | null {
   return null;
 }
 
+function selectorsIn(code: string): string[] {
+  const matches = code.match(/(?:page\.)?(?:locator|getByRole|getByText|getByLabel|getByPlaceholder|getByTestId)\([^;\n]{1,240}\)/g) || [];
+  return Array.from(new Set(matches)).slice(0, 30);
+}
+
+async function rememberExecution(input: RunExecutionNodeInput, result: ExecutionResult) {
+  const failed = result.tests.filter((test) => test.status !== 'passed');
+  await Promise.all(input.scripts.flatMap((script) => {
+    const failure = failed.find((test) => test.title === script.title || test.title.includes(script.title || ''));
+    return selectorsIn(script.code).map((selector) => recordRunMemory({
+      feature: script.title,
+      selector,
+      stability: failure ? 'broken' : 'stable',
+      failureCause: failure?.error ? String(failure.error).slice(0, 500) : undefined,
+      runId: input.runId,
+      projectId: input.projectId,
+      appId: input.appId,
+      ownerId: input.ownerId,
+    }));
+  })).catch((error) => console.warn('[runMemory] execution learning failed:', error?.message || error));
+}
+
 /** LangGraph node: replay-safe Playwright execution — skip-if-completed, run, then classify infra vs product result. */
 export async function runExecutionNode(input: RunExecutionNodeInput): Promise<RunExecutionNodeResult> {
   // Idempotency FIRST: a resumed thread must not re-execute a script set it already completed.
@@ -161,6 +187,7 @@ export async function runExecutionNode(input: RunExecutionNodeInput): Promise<Ru
 
     // Tests ran to a verdict: failures (incl. timedOut) are REAL product results — attempt 'completed', never infra.
     const aggregate: ExecutionAggregate = { totalCases: result.total, passed: result.passed, failed: result.failed, durationMs: result.durationMs };
+    await rememberExecution(input, result);
     const errors: WorkflowError[] = [];
     if (result.failed > 0) {
       // Informational record only — TEST_ASSERTION_FAILURE is non-retryable by taxonomy, so it can never trigger a re-run.

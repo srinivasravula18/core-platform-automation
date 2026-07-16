@@ -75,9 +75,9 @@ export function isNoiseTurn(content: string): boolean {
 export function deriveUnderstandingFromChat(chatHistory: any): string {
   const turns = (Array.isArray(chatHistory) ? chatHistory : [])
     .filter((m: any) => m && m.role === 'assistant' && typeof m.content === 'string' && !isNoiseTurn(m.content))
-    .slice(-6);
+    .slice(-12);
   if (!turns.length) return '';
-  return turns.reduce((best: string, m: any) => (m.content.length > best.length ? m.content : best), '').trim();
+  return turns.map((turn: any) => turn.content.trim()).join('\n\n');
 }
 
 /**
@@ -90,7 +90,9 @@ export function deriveUnderstandingFromChat(chatHistory: any): string {
  * on the same text.
  */
 export function resolveUnderstanding(run: any): string {
-  return (run?.approvedUnderstanding || '').trim() || deriveUnderstandingFromChat(run?.chat_history);
+  return (run?.approvedUnderstanding || '').trim()
+    || String(run?.conversationMemory || run?.conversation_memory || '').trim()
+    || deriveUnderstandingFromChat(run?.chat_history);
 }
 
 /**

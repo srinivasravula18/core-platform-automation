@@ -103,6 +103,9 @@ export interface ChatMessage {
   /** Present on role:'tool' messages — correlates to a prior ToolCallRequest.id. */
   toolCallId?: string;
   toolName?: string;
+  /** Opaque provider output items needed to continue a stateless native tool turn.
+   * Providers that do not use them ignore this field. */
+  providerItems?: unknown[];
 }
 
 export interface ChatWithToolsOptions {
@@ -126,6 +129,8 @@ export interface ChatWithToolsResult {
   provider: ProviderName;
   stopReason: 'tool_calls' | 'stop' | 'length' | 'other';
   latencyMs: number;
+  /** Provider-native output items to replay with the next tool results. */
+  providerItems?: unknown[];
 }
 
 export interface AIProvider {

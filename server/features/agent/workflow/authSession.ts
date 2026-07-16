@@ -25,9 +25,11 @@ export async function ensureRunAuthState(
   runId: string,
   targetUrl: string,
   credential: { username?: string; password?: string } | undefined,
+  conversationId?: string,
 ): Promise<RunAuthState> {
   if (!credential?.username || !credential?.password || !targetUrl) return {};
-  const hit = cache.get(runId);
+  const cacheKey = conversationId ? `${conversationId}::${targetUrl}` : runId;
+  const hit = cache.get(cacheKey);
   if (hit && Date.now() - hit.at < AUTH_TTL_MS) return hit.state;
 
   const authPath = path.join(process.cwd(), '.testflow-pw', `${runId}-run-auth.json`);
@@ -40,11 +42,11 @@ export async function ensureRunAuthState(
   const state: RunAuthState = (auth?.ok || auth?.sessionStorage)
     ? { storageStatePath: authPath, sessionStorageState: auth?.sessionStorage }
     : {};
-  cache.set(runId, { at: Date.now(), state, loginCount: (hit?.loginCount ?? 0) + 1 });
+  cache.set(cacheKey, { at: Date.now(), state, loginCount: (hit?.loginCount ?? 0) + 1 });
   return state;
 }
 
 /** Drop the cached state so the next consumer logs in fresh (e.g. after an auth-classified failure). */
-export function clearRunAuthState(runId: string): void {
-  cache.delete(runId);
+export function clearRunAuthState(runId: string, conversationId?: string, targetUrl?: string): void {
+  cache.delete(conversationId && targetUrl ? `${conversationId}::${targetUrl}` : runId);
 }

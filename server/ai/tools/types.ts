@@ -67,6 +67,10 @@ export type AcceptCheck = (
 export interface RunToolLoopOptions {
   /** The goal / initial user instruction. */
   task: string;
+  /** Original user-authored input for guardrails when task also contains memory/context. */
+  guardrailInput?: string;
+  /** Prior native text turns. The current task is appended as the final user turn. */
+  seedMessages?: import('../providers/types').ChatMessage[];
   /** Override the system prompt; defaults to the agent's assembled system prompt. */
   system?: string;
   tools: AgentTool[];
@@ -75,6 +79,8 @@ export interface RunToolLoopOptions {
   maxSteps?: number;
   /** Token budget across the whole loop. When exceeded, stop. */
   maxTotalTokens?: number;
+  /** Context-manifest id used to correlate provider usage with assembly decisions. */
+  contextManifestId?: string;
   maxTokensPerCall?: number;
   temperature?: number;
   accept?: AcceptCheck;

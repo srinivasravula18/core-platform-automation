@@ -93,7 +93,7 @@ const SUSPICIOUS_TAGS = /<\s*(script|iframe|object|embed|svg|img)\b/i;
 
 /* ---------- Layer 1: input normalization ---------- */
 
-export function normalizeInput(raw: string): { value: string; truncated: boolean; stripped: number } {
+export function normalizeInput(raw: string, maxLength = MAX_INPUT_LENGTH): { value: string; truncated: boolean; stripped: number } {
   let value = String(raw ?? '');
   let stripped = 0;
   value = value.replace(CONTROL_CHARS, () => {
@@ -105,8 +105,8 @@ export function normalizeInput(raw: string): { value: string; truncated: boolean
     return '';
   });
   let truncated = false;
-  if (value.length > MAX_INPUT_LENGTH) {
-    value = value.slice(0, MAX_INPUT_LENGTH);
+  if (value.length > maxLength) {
+    value = value.slice(0, maxLength);
     truncated = true;
   }
   return { value: value.trim(), truncated, stripped };
@@ -255,7 +255,11 @@ export function runGuardrailPipeline(input: PipelineInput): PipelineResult {
   const requestId = randomUUID();
   const ctx: GuardrailContext = { ...input, requestId };
 
-  const normalized = normalizeInput(input.userMessage);
+  // Analyze the complete input before applying the provider-facing length cap. Otherwise an
+  // injection or policy signal after character 8,000 is invisible to the guardrail.
+  const full = normalizeInput(input.userMessage, Number.POSITIVE_INFINITY);
+  const injection = detectInjection(full.value);
+  const normalized = normalizeInput(injection.sanitized);
   log({
     requestId,
     agent: input.agent,
@@ -280,7 +284,7 @@ export function runGuardrailPipeline(input: PipelineInput): PipelineResult {
     };
   }
 
-  const policy = preLLMPolicyCheck(ctx, normalized.value);
+  const policy = preLLMPolicyCheck(ctx, full.value);
   if (policy.kind !== 'allow') {
     log({ requestId, agent: input.agent, layer: 'policy', decision: 'short-circuit', reason: policy.reason });
     return {
@@ -291,7 +295,10 @@ export function runGuardrailPipeline(input: PipelineInput): PipelineResult {
     };
   }
 
-  const sanitized = injectionGuardrail(normalized.value, requestId, input.agent);
+  if (injection.hits.length) {
+    log({ requestId, agent: input.agent, layer: 'injection', decision: 'sanitize', reason: `filtered ${injection.hits.length} injection pattern(s): ${injection.hits.join(', ')}`, details: { hits: injection.hits } });
+  }
+  const sanitized = normalized.value;
   const systemPrompt = systemPromptFor(input.agent);
 
   return {

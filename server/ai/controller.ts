@@ -27,6 +27,7 @@ import { resolveCredentials } from '../features/credentials/credentialsService';
 import { Settings } from '../db/repository';
 import { buildKnowledgeBlock } from '../features/knowledge/knowledgeService';
 import { discoverRequirement } from '../features/requirements/requirementService';
+import { ControllerPlanStore } from './memory/controllerPlanStore';
 
 // The Agent Console is intentionally NOT connected to the AI Inbox. Plans create their
 // artifacts directly (they're shown in the chat and on their pages); nothing is queued for
@@ -37,24 +38,6 @@ async function pushInboxItem(_item: unknown): Promise<{ id: string }> {
   return { id: '' };
 }
 
-const planPlans: Map<string, Plan> = new Map();
-const controllerMemory: Array<{ role: 'user' | 'assistant'; content: string; at: string }> = [];
-const CONTROLLER_MEMORY_LIMIT = 20;
-
-function remember(message: string, role: 'user' | 'assistant'): void {
-  controllerMemory.push({ role, content: message, at: new Date().toISOString() });
-  if (controllerMemory.length > CONTROLLER_MEMORY_LIMIT) {
-    controllerMemory.splice(0, controllerMemory.length - CONTROLLER_MEMORY_LIMIT);
-  }
-}
-
-export function getControllerMemory() {
-  return controllerMemory.slice();
-}
-
-export function clearControllerMemory() {
-  controllerMemory.length = 0;
-}
 
 /**
  * Compact snapshot of the workspace's recent artifacts (with ids + timestamps)
@@ -81,10 +64,6 @@ export async function buildWorkspaceContext(): Promise<string> {
   } catch {
     return '{}';
   }
-}
-
-function recentConversation(): string {
-  return controllerMemory.slice(-10).map((m) => `${m.role}: ${m.content}`).join('\n');
 }
 
 export type ChatTurn = { role: 'user' | 'assistant'; content: string };
@@ -221,14 +200,13 @@ export async function classifyIntent(input: ClassifyInput): Promise<{ intents: I
     workspaceId: input.workspaceId || 'default',
     userId: input.userId,
   });
-  remember(input.userMessage, 'user');
   // Per-chat memory: ALWAYS include this conversation's prior turns (from the client)
   // so the model has continuity between messages. The heavier workspace DB snapshot is
   // still only pulled when the message references past artifacts ("those cases", an id).
   const provided = formatHistory(input.history);
   const refsPast = needsHistory(input.userMessage);
   const workspaceContext = refsPast ? await buildWorkspaceContext() : '';
-  const conversation = provided || (refsPast ? recentConversation() : '');
+  const conversation = provided;
   const prompt = buildPrompt(input, { workspaceContext, conversation });
   const result = await orch.generateObject<z.infer<typeof intentSchema>>({
     prompt,
@@ -263,7 +241,6 @@ export async function classifyIntent(input: ClassifyInput): Promise<{ intents: I
     .filter((it: IntentDraft | null) => it !== null) as IntentDraft[];
 
   const summary = String(obj.summary || 'No summary');
-  remember(summary, 'assistant');
   return {
     intents: intents.length ? intents : [fallbackIntent(input.userMessage)],
     summary,
@@ -387,8 +364,7 @@ export async function buildPlan(input: ClassifyInput): Promise<Plan> {
     workspaceId: input.workspaceId || 'default',
     userId: input.userId,
   };
-  planPlans.set(plan.id, plan);
-  return plan;
+  return ControllerPlanStore.save(plan);
 }
 
 /**
@@ -419,16 +395,16 @@ export async function executeIntent(
   return executeStep(step, plan);
 }
 
-export function getPlan(id: string): Plan | undefined {
-  return planPlans.get(id);
+export function getPlan(id: string): Promise<Plan | undefined> {
+  return ControllerPlanStore.get(id);
 }
 
-export function listPlans(workspaceId = 'default'): Plan[] {
-  return Array.from(planPlans.values()).filter((p) => p.workspaceId === workspaceId);
+export function listPlans(workspaceId = 'default'): Promise<Plan[]> {
+  return ControllerPlanStore.list(workspaceId);
 }
 
-export function cancelPlan(id: string): Plan | undefined {
-  const plan = planPlans.get(id);
+export async function cancelPlan(id: string): Promise<Plan | undefined> {
+  const plan = await ControllerPlanStore.get(id);
   if (!plan) return undefined;
   plan.status = 'cancelled';
   for (const step of plan.steps) {
@@ -436,14 +412,15 @@ export function cancelPlan(id: string): Plan | undefined {
       step.status = 'cancelled';
     }
   }
-  return plan;
+  return ControllerPlanStore.save(plan);
 }
 
 export async function executePlan(planId: string, options: { approveAll?: boolean } = {}): Promise<Plan> {
-  const plan = planPlans.get(planId);
+  const plan = await ControllerPlanStore.get(planId);
   if (!plan) throw new Error(`Plan ${planId} not found`);
   if (plan.status === 'running' || plan.status === 'completed') return plan;
   plan.status = 'running';
+  await ControllerPlanStore.save(plan);
 
   let anyFailed = false;
   for (const step of plan.steps) {
@@ -452,6 +429,7 @@ export async function executePlan(planId: string, options: { approveAll?: boolea
 
     step.status = 'running';
     step.startedAt = new Date().toISOString();
+    await ControllerPlanStore.save(plan);
     // Iterate, don't give up: retry a failed step once (handles transient provider/LLM
     // errors), and do NOT hard-abort the whole plan on one failure — run the remaining
     // steps so the user gets partial progress, then report an honest plan status.
@@ -474,10 +452,11 @@ export async function executePlan(planId: string, options: { approveAll?: boolea
       anyFailed = true;
     }
     step.finishedAt = new Date().toISOString();
+    await ControllerPlanStore.save(plan);
   }
 
   plan.status = anyFailed ? 'failed' : 'completed';
-  return plan;
+  return ControllerPlanStore.save(plan);
 }
 
 async function executeStep(step: PlanStep, plan: Plan): Promise<any> {
@@ -1070,7 +1049,7 @@ export async function explainIntent(topic: string, options: { workspaceId?: stri
   const provided = formatHistory(options.history);
   const refsPast = needsHistory(topic);
   const workspaceContext = refsPast ? await buildWorkspaceContext() : '';
-  const conversation = provided || (refsPast ? recentConversation() : '');
+  const conversation = provided;
   const { text, shortCircuit } = await orch.generateText({
     prompt: buildExplainPrompt(topic, workspaceContext, conversation, options.apps),
     userMessage: topic,
@@ -1078,8 +1057,6 @@ export async function explainIntent(topic: string, options: { workspaceId?: stri
   });
   if (shortCircuit) return sanitizeAnswer(shortCircuit);
   const answer = sanitizeAnswer(text) || 'No answer available.';
-  remember(topic, 'user');
-  remember(answer, 'assistant');
   return answer;
 }
 
@@ -1089,7 +1066,7 @@ export async function* streamExplain(topic: string, options: { workspaceId?: str
   const provided = formatHistory(options.history);
   const refsPast = needsHistory(topic);
   const workspaceContext = refsPast ? await buildWorkspaceContext() : '';
-  const conversation = provided || (refsPast ? recentConversation() : '');
+  const conversation = provided;
   let full = '';
   try {
     for await (const delta of orch.streamText({ prompt: buildExplainPrompt(topic, workspaceContext, conversation, options.apps), userMessage: topic, hasHistory: !!conversation })) {
@@ -1097,9 +1074,6 @@ export async function* streamExplain(topic: string, options: { workspaceId?: str
       yield delta;
     }
   } finally {
-    if (full.trim()) {
-      remember(topic, 'user');
-      remember(sanitizeAnswer(full), 'assistant');
-    }
+    // The caller persists the exchange in the conversation-scoped chat store.
   }
 }

@@ -24,6 +24,7 @@ import { recordUsage, getDailyCost } from './costTracker';
 import { canonicalAgent } from './systemPrompts';
 import { db } from '../shared/storage';
 import { logExecutionTrace, serializePrompt } from './tracer';
+import { rememberToolResult } from './memory/artifactMemory';
 
 export interface ProviderCredentials {
   apiKey: string;
@@ -378,7 +379,7 @@ export class AgentOrchestrator {
     }
     const pipeline = runGuardrailPipeline({
       agent: this.agent as any,
-      userMessage: opts.task,
+      userMessage: opts.guardrailInput || opts.task,
       workspaceId: this.workspaceId,
       userId: this.userId,
       providerName: this.provider.name,
@@ -397,7 +398,7 @@ export class AgentOrchestrator {
     const maxSteps = opts.maxSteps ?? 12;
     const maxAcceptRetries = opts.maxAcceptRetries ?? 2;
 
-    const messages: ChatMessage[] = [{ role: 'user', content: opts.task }];
+    const messages: ChatMessage[] = [...(opts.seedMessages || []), { role: 'user', content: opts.task }];
     const steps: AgentStep[] = [];
     const toolResults: AgentRunResult['toolResults'] = [];
     const totalUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0, costUsd: 0 };
@@ -435,14 +436,14 @@ export class AgentOrchestrator {
         cacheReadTokens: res.usage?.cacheReadTokens ?? 0,
         cacheWriteTokens: res.usage?.cacheWriteTokens ?? 0,
         costUsd: res.usage?.costUsd ?? 0,
-        requestId: pipeline.requestId,
+        requestId: opts.contextManifestId || pipeline.requestId,
       });
 
       const step: AgentStep = { index: i, text: res.text, toolCalls: [], usage: res.usage };
 
       if (res.toolCalls.length) {
         // Record the assistant's tool-call turn so the provider sees the full exchange.
-        messages.push({ role: 'assistant', content: res.text, toolCalls: res.toolCalls });
+        messages.push({ role: 'assistant', content: res.text, toolCalls: res.toolCalls, providerItems: res.providerItems });
         for (const call of res.toolCalls) {
           const inv: ToolInvocation = { id: call.id, name: call.name, arguments: call.arguments };
           const tool = toolByName.get(call.name);
@@ -454,6 +455,15 @@ export class AgentOrchestrator {
               const result = await tool.execute(call.arguments, ctx);
               inv.result = result;
               toolResults.push({ name: call.name, arguments: call.arguments, result });
+              if (ctx.conversationId) {
+                await rememberToolResult({
+                  conversationId: String(ctx.conversationId),
+                  runId: ctx.runId ? String(ctx.runId) : undefined,
+                  toolName: call.name,
+                  arguments: call.arguments,
+                  result,
+                }).catch((error) => console.warn('[memory] artifact persistence failed:', error?.message || error));
+              }
             } catch (err: any) {
               inv.error = err?.message || String(err);
             }

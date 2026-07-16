@@ -220,6 +220,7 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
   const reviewing = status === 'review_required';
   const reviewStage = String((run as any)?.review_stage || 'cases');
   const scriptReviewing = reviewing && reviewStage === 'scripts';
+  const canRegenerateScripts = failed && (run as any)?.engine !== 'langgraph';
   const coverageGate = status === 'coverage_options';
   const existingMatches: Case[] = run?.existing_matches || [];
   // Cases the user removed from the coverage card (by index) — dropped before reuse/gaps.
@@ -1062,14 +1063,18 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
                     {busy === 'save' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
                     {saved ? 'Saved' : 'Save all'}
                   </button>
-                  {reviewing && (
+                  {(reviewing || canRegenerateScripts) && (
                     <button
                       onClick={continueFlow}
                       disabled={busy === 'continue' || (!list.length && !scriptReviewing)}
                       className="inline-flex items-center gap-1 rounded-md bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50"
                     >
                       {busy === 'continue' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
-                      {scriptReviewing ? 'Run scripts & capture evidence' : selectedCases.size ? `Continue selected (${selectedCases.size}) -> scripts` : 'Continue -> scripts'}
+                      {scriptReviewing
+                        ? 'Run scripts & capture evidence'
+                        : canRegenerateScripts
+                          ? `Generate scripts for ${selectedCases.size ? `${selectedCases.size} selected` : `all ${list.length}`}`
+                          : selectedCases.size ? `Continue selected (${selectedCases.size}) -> scripts` : 'Continue -> scripts'}
                     </button>
                   )}
                 </div>

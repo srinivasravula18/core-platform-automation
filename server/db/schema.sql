@@ -360,7 +360,8 @@ CREATE TABLE IF NOT EXISTS settings (
   updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- Agent Console chat history (one row per conversation; turns stored as JSON)
+-- Agent Console conversation headers. `turns` remains during the dual-read migration;
+-- new writes go to append-only chat_messages below.
 CREATE TABLE IF NOT EXISTS chat_conversations (
   id            TEXT PRIMARY KEY,
   workspace_id  TEXT NOT NULL DEFAULT 'default',
@@ -370,6 +371,109 @@ CREATE TABLE IF NOT EXISTS chat_conversations (
   updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS chat_conversations_ws ON chat_conversations(workspace_id, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS chat_messages (
+  conversation_id TEXT NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
+  seq             BIGINT NOT NULL,
+  role            TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+  kind            TEXT NOT NULL DEFAULT 'text',
+  content         TEXT NOT NULL DEFAULT '',
+  payload         JSONB NOT NULL DEFAULT '{}'::jsonb,
+  token_estimate  INT NOT NULL DEFAULT 0,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (conversation_id, seq)
+);
+CREATE INDEX IF NOT EXISTS chat_messages_conversation_created ON chat_messages(conversation_id, created_at);
+CREATE INDEX IF NOT EXISTS chat_messages_content_search ON chat_messages USING gin (to_tsvector('simple', content));
+
+-- Idempotent legacy backfill. The JSONB column stays readable until the migration flag is retired.
+INSERT INTO chat_messages (conversation_id, seq, role, kind, content, payload, token_estimate, created_at)
+SELECT c.id,
+       t.ordinality,
+       CASE WHEN t.turn->>'role' = 'assistant' THEN 'assistant' ELSE 'user' END,
+       COALESCE(NULLIF(t.turn->>'kind', ''), 'text'),
+       COALESCE(t.turn->>'content', t.turn->>'text', t.turn->>'summary', ''),
+       t.turn,
+       CEIL(LENGTH(COALESCE(t.turn->>'content', t.turn->>'text', t.turn->>'summary', '')) / 4.0)::INT,
+       c.created_at + (t.ordinality * interval '1 millisecond')
+FROM chat_conversations c
+CROSS JOIN LATERAL jsonb_array_elements(c.turns) WITH ORDINALITY AS t(turn, ordinality)
+ON CONFLICT (conversation_id, seq) DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS context_manifests (
+  id                  TEXT PRIMARY KEY,
+  conversation_id     TEXT REFERENCES chat_conversations(id) ON DELETE CASCADE,
+  path                TEXT NOT NULL,
+  model               TEXT NOT NULL,
+  total_turns         INT NOT NULL DEFAULT 0,
+  verbatim_turns      INT NOT NULL DEFAULT 0,
+  estimated_tokens    INT NOT NULL DEFAULT 0,
+  entries             JSONB NOT NULL DEFAULT '[]'::jsonb,
+  retrieved_refs      JSONB NOT NULL DEFAULT '[]'::jsonb,
+  created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS context_manifests_conversation_created ON context_manifests(conversation_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS chat_summary_segments (
+  conversation_id TEXT NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
+  start_seq       BIGINT NOT NULL,
+  end_seq         BIGINT NOT NULL,
+  summary         TEXT NOT NULL,
+  token_estimate  INT NOT NULL DEFAULT 0,
+  source_hash     TEXT NOT NULL,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (conversation_id, start_seq, end_seq),
+  CHECK (start_seq > 0 AND end_seq >= start_seq)
+);
+CREATE INDEX IF NOT EXISTS chat_summary_segments_conversation ON chat_summary_segments(conversation_id, start_seq);
+
+CREATE TABLE IF NOT EXISTS artifact_blobs (
+  content_hash TEXT PRIMARY KEY,
+  body         JSONB NOT NULL,
+  byte_length  INT NOT NULL,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS conversation_artifacts (
+  id              TEXT PRIMARY KEY,
+  conversation_id TEXT NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
+  content_hash    TEXT NOT NULL REFERENCES artifact_blobs(content_hash) ON DELETE RESTRICT,
+  run_id          TEXT,
+  tool_name       TEXT NOT NULL,
+  target_key      TEXT NOT NULL DEFAULT '',
+  digest          TEXT NOT NULL,
+  validity        JSONB NOT NULL DEFAULT '{}'::jsonb,
+  expires_at      TIMESTAMPTZ,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (conversation_id, content_hash, tool_name, target_key)
+);
+CREATE INDEX IF NOT EXISTS conversation_artifacts_conversation_created ON conversation_artifacts(conversation_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS controller_plans (
+  id           TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL DEFAULT 'default',
+  user_id      TEXT,
+  status       TEXT NOT NULL,
+  plan         JSONB NOT NULL,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS controller_plans_workspace_updated ON controller_plans(workspace_id, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS run_memories (
+  id            TEXT PRIMARY KEY,
+  feature       TEXT,
+  selector      TEXT,
+  stability     TEXT NOT NULL,
+  failure_cause TEXT,
+  note          TEXT,
+  run_id        TEXT,
+  project_id    TEXT,
+  app_id        TEXT,
+  owner_id      TEXT,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS run_memories_scope_created ON run_memories(project_id, app_id, owner_id, created_at DESC);
 
 -- Git Agent multi-repo registry
 CREATE TABLE IF NOT EXISTS git_repositories (
