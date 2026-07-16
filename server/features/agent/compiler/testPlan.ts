@@ -14,7 +14,16 @@ export const PLAN_ASSERTS = [
   'VISIBLE', 'NOT_VISIBLE', 'ENABLED', 'DISABLED', 'HAS_TEXT', 'NOT_HAS_TEXT', 'HAS_VALUE', 'COUNT_GT',
   'VERIFY_TABLE', 'VERIFY_FILTER', 'VERIFY_SORT', 'VERIFY_PAGINATION', 'VERIFY_LOOKUP', 'VERIFY_PERMISSION',
   'VERIFY_VALIDATION', 'VERIFY_ERROR',
+  // Multi-level context asserts (bug-investigation framework, Phase 4): mission/page-scoped observations the
+  // MissionRunner owns — their target is ADVISORY TEXT (like OPEN_MODULE), never grounded to a locator.
+  'URL_MATCHES', 'HAS_STATUS', 'EMPTY_STATE', 'ERROR_STATE', 'ROW_IN_LIST', 'FOUND_IN_GLOBAL_SEARCH',
 ] as const;
+
+/** Asserts whose target is advisory text (URL fragments, expected messages, row text) — the compiler must
+ * NOT ground them against the evidence catalog; MissionRunner resolves them against the live page. */
+export const CONTEXT_ASSERTS = new Set<string>([
+  'URL_MATCHES', 'HAS_STATUS', 'EMPTY_STATE', 'ERROR_STATE', 'ROW_IN_LIST', 'FOUND_IN_GLOBAL_SEARCH',
+]);
 
 export type PlanAction = typeof PLAN_ACTIONS[number];
 export type PlanAssert = typeof PLAN_ASSERTS[number];

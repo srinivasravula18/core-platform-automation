@@ -42,6 +42,8 @@ export interface RunExecutionNodeResult {
   evidenceRefs: string[];
   /** UI-ready evidence cards (files copied into the served evidence/ dir) — in-memory, NOT checkpointed. Optional so test stubs/legacy callers stay valid. */
   evidenceShots?: EvidenceShot[];
+  /** Full per-test records (status/error/evidence paths) for the run-scoped stash — the defect-reporter/investigation substrate. NOT checkpointed. */
+  tests?: TestResult[];
   errors: WorkflowError[];
   skippedAsDuplicate: boolean;
 }
@@ -51,13 +53,16 @@ function digestOf(value: unknown): string {
   return createHash('sha1').update(JSON.stringify(value)).digest('hex');
 }
 
-/** Screenshot/trace paths are the checkpoint-safe evidence refs; deduped because screenshotPath may repeat the last step shot. */
+/** Screenshot/trace/log paths are the checkpoint-safe evidence refs; deduped because screenshotPath may repeat the last step shot. */
 function collectEvidenceRefs(tests: TestResult[]): string[] {
   const refs = new Set<string>();
   for (const t of tests) {
     if (t.screenshotPath) refs.add(t.screenshotPath);
     for (const p of t.stepScreenshotPaths ?? []) refs.add(p);
     if (t.tracePath) refs.add(t.tracePath);
+    if (t.consoleLogPath) refs.add(t.consoleLogPath);
+    if (t.networkLogPath) refs.add(t.networkLogPath);
+    if (t.stepLogPath) refs.add(t.stepLogPath);
   }
   return Array.from(refs);
 }
@@ -148,6 +153,7 @@ export async function runExecutionNode(input: RunExecutionNodeInput): Promise<Ru
         aggregate: null,
         evidenceRefs,
         evidenceShots,
+        tests: result.tests,
         errors: [err],
         skippedAsDuplicate: false,
       };
@@ -170,6 +176,7 @@ export async function runExecutionNode(input: RunExecutionNodeInput): Promise<Ru
       aggregate,
       evidenceRefs,
       evidenceShots,
+      tests: result.tests,
       errors,
       skippedAsDuplicate: false,
     };

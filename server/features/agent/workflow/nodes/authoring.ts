@@ -256,7 +256,7 @@ function buildRepairPrompt(originalPrompt: string, issues: string[], invalidAtte
   return `${originalPrompt}\n\nYOUR PREVIOUS RESPONSE FAILED VALIDATION. Fix EVERY issue below and return the corrected JSON only:\n${issues.map((i) => `- ${i}`).join('\n')}${echo}`;
 }
 
-interface StrictGenerationSpec<TWire, TOut> {
+export interface StrictGenerationSpec<TWire, TOut> {
   node: string;
   agent: string;
   schema: z.ZodType<TWire>;
@@ -269,7 +269,8 @@ interface StrictGenerationSpec<TWire, TOut> {
   overrides?: ModelOverrides;
 }
 
-async function generateStrictObject<TWire, TOut>(spec: StrictGenerationSpec<TWire, TOut>): Promise<{ value: TOut | null; usage: UsageRecord[]; errors: WorkflowError[] }> {
+/** Exported for sibling nodes (investigation/analyst) — the ONE sanctioned strict-generation seam. */
+export async function generateStrictObject<TWire, TOut>(spec: StrictGenerationSpec<TWire, TOut>): Promise<{ value: TOut | null; usage: UsageRecord[]; errors: WorkflowError[] }> {
   const usage: UsageRecord[] = [];
   let route: ModelRoute;
   try {
@@ -382,6 +383,7 @@ PLAN RULES:
 - steps: [{action|assert, target, value?}] — exactly ONE verb per step (set the unused verb to null).
 - Actions: ${PLAN_ACTIONS.join(', ')}. Asserts: ${PLAN_ASSERTS.join(', ')}.
 - Every locator-bearing target (CLICK/FILL/asserts) MUST be a catalog name verbatim. OPEN_MODULE is mission-scoped navigation intent — its target is advisory and needs no catalog match.
+- Context asserts (URL_MATCHES, HAS_STATUS, EMPTY_STATE, ERROR_STATE, ROW_IN_LIST, FOUND_IN_GLOBAL_SEARCH) are page-scoped: their target/value is the EXPECTED TEXT (a URL fragment, a status/error message, or row text), never a catalog name. Use ROW_IN_LIST after creating a record to confirm it appears in its list, and FOUND_IN_GLOBAL_SEARCH to cross-check it via global search.
 - Translate EVERY source step into plan steps — never drop or merge away behavior.
 - CREATE/SUBMIT flows: before any save/create/submit CLICK, emit a FILL (or SELECT) for EVERY catalog field marked (required). A form submitted with an empty required field is rejected — this is the #1 cause of failed creates.
 - Set unused optional fields (mission/module/title/value) to null.`;

@@ -40,6 +40,17 @@ function normalize(value: string): string {
   return String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 }
 
+/**
+ * Does the prompt describe a data-MUTATING flow (create/update/delete/submit…) rather than a read-only
+ * check? Used to harden mission scope: a mutation may never sweep "all apps" — it would write into an
+ * arbitrary tenant app (observed live: a create scoped __all_apps__ landed in App1 and still PASSED).
+ * Verb list is app-agnostic; false positives only mean we ask the user for a concrete app (safe direction).
+ */
+export function isMutationIntent(promptText: string): boolean {
+  const t = String(promptText || '');
+  return /\b(create|creating|add|adding|register|sign\s?up|update|updating|edit|editing|modify|change|rename|delete|deleting|remove|removing|deactivate|activate|archive|submit|save|saving|import|upload|assign|approve|reject|clone|duplicate|merge|transfer)\b/i.test(t);
+}
+
 /** Does the prompt explicitly ask for a cross-app / whole-surface sweep? */
 export function wantsAllApps(promptText: string): boolean {
   return /\ball apps\b|\bevery app\b|\bacross apps\b|\bwhole (surface|platform)\b|\bentire (surface|platform)\b/i.test(

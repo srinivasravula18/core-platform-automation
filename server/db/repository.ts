@@ -210,6 +210,7 @@ function mapDefect(r: any) {
     approvedBy: r.approved_by,
     approvedAt: r.approved_at,
     sourceRunId: r.source_run_id,
+    metadata: r.metadata || {},
     createdBy: r.proposed_by,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
@@ -909,16 +910,17 @@ export const Defects = {
     }
     const id = d.id || uid('DEF');
     const evidenceJson = JSON.stringify(d.evidence || []);
+    const metadataJson = JSON.stringify(d.metadata || {});
     const row = await queryOne(
-      `INSERT INTO defects (id, title, description, steps_to_reproduce, expected, actual, severity, status, assigned_to, linked_case_id, linked_run_id, evidence, tags, folder_id, approval_state, proposed_by, source_run_id, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13,$14,$15,$16,$17, now(), now())
+      `INSERT INTO defects (id, title, description, steps_to_reproduce, expected, actual, severity, status, assigned_to, linked_case_id, linked_run_id, evidence, tags, folder_id, approval_state, proposed_by, source_run_id, metadata, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13,$14,$15,$16,$17,$18::jsonb, now(), now())
        ON CONFLICT (id) DO UPDATE SET
          title=EXCLUDED.title, description=EXCLUDED.description, steps_to_reproduce=EXCLUDED.steps_to_reproduce,
          expected=EXCLUDED.expected, actual=EXCLUDED.actual, severity=EXCLUDED.severity,
          status=EXCLUDED.status, assigned_to=EXCLUDED.assigned_to, linked_case_id=EXCLUDED.linked_case_id,
          linked_run_id=EXCLUDED.linked_run_id, evidence=EXCLUDED.evidence, tags=EXCLUDED.tags,
          folder_id=EXCLUDED.folder_id, approval_state=EXCLUDED.approval_state,
-         proposed_by=EXCLUDED.proposed_by, source_run_id=EXCLUDED.source_run_id, updated_at=now()
+         proposed_by=EXCLUDED.proposed_by, source_run_id=EXCLUDED.source_run_id, metadata=EXCLUDED.metadata, updated_at=now()
        RETURNING *`,
       [
         id, d.title || 'Untitled Defect', d.description || '',
@@ -927,7 +929,7 @@ export const Defects = {
         d.assignedTo || null, d.linkedCaseId || null, d.linkedRunId || null,
         evidenceJson, d.tags || [], d.folderId || null,
         d.approvalState || 'approved', d.proposedBy || d.createdBy || 'human',
-        d.sourceRunId || null,
+        d.sourceRunId || null, metadataJson,
       ],
     );
     await writeScopeCols('defects', id, d);

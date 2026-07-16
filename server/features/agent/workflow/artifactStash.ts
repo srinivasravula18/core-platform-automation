@@ -12,6 +12,12 @@ export interface RunArtifacts {
   compiledSources?: Record<string, string>;
   /** UI-ready evidence cards (title + served screenshotUrl) — state holds only evidenceRefs strings. */
   evidenceShots?: Array<{ title: string; url: string; screenshotUrl: string; status?: string }>;
+  /** Full per-test execution records (status/error/step evidence paths) — the defect-reporter/investigation substrate. */
+  executionTests?: import('../../playwright/executionService').TestResult[];
+  /** Investigation output (findings + suspicious passes) — merged into defects/analyst at terminal time. */
+  investigation?: import('./nodes/investigation').InvestigationSummary;
+  /** Visual-regression findings (VISUAL_REGRESSION, report-only) — surfaced as analyst observations. */
+  visualFindings?: import('../validation/visualBaseline').VisualFinding[];
   /** Backend object schema(s) for API-acceptance-conformant test data — fetched once at context load. */
   objectSchema?: import('../testdata/types').ObjectSchema[];
 }

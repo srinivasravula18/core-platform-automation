@@ -33,6 +33,12 @@ export interface TestResult {
   stepScreenshotPaths?: string[];
   /** Absolute path to the Playwright trace zip (trace: 'retain-on-failure') — present for failures. */
   tracePath?: string;
+  /** Absolute path to the per-test console/pageerror log JSON (attached as 'console-log' by the evidence fixture). */
+  consoleLogPath?: string;
+  /** Absolute path to the per-test failed/erroring network log JSON (attached as 'network-log'). */
+  networkLogPath?: string;
+  /** Absolute path to the ordered MissionRunner step log JSON (merged 'step-log' attachments). */
+  stepLogPath?: string;
 }
 
 export interface ExecutionResult {
@@ -95,6 +101,56 @@ async function tfaiAttachFinalScreenshot(page: any, testInfo: any) {
 `;
 }
 
+/**
+ * Console/pageerror + failed-network evidence collectors, installed per test by an auto fixture.
+ * Bounded (caps + text truncation) so a chatty page can never bloat the results. Exported for tests.
+ */
+export function evidenceCaptureFixtureSource() {
+  return `
+function tfaiEvidenceCollectors(page: any, context: any) {
+  const consoleEntries: any[] = [];
+  const networkEntries: any[] = [];
+  const push = (arr: any[], cap: number, e: any) => { if (arr.length < cap) arr.push(e); };
+  const onConsole = (m: any) => {
+    const t = m && m.type ? m.type() : 'log';
+    if (t !== 'error' && t !== 'warning') return; // signal only — info/debug noise stays out
+    push(consoleEntries, 200, { at: Date.now(), type: t, text: String(m.text ? m.text() : m).slice(0, 500) });
+  };
+  const onPageError = (e: any) => push(consoleEntries, 200, { at: Date.now(), type: 'pageerror', text: String((e && e.message) || e).slice(0, 800) });
+  const onRequestFailed = (r: any) => push(networkEntries, 150, {
+    at: Date.now(), kind: 'requestfailed', method: r.method(), url: String(r.url()).slice(0, 300),
+    failure: r.failure() ? String(r.failure().errorText).slice(0, 200) : null, resourceType: r.resourceType(),
+  });
+  const onResponse = (resp: any) => {
+    const status = resp.status();
+    if (status < 400) return; // only failures — success traffic is not evidence
+    push(networkEntries, 150, {
+      at: Date.now(), kind: 'response', method: resp.request().method(), url: String(resp.url()).slice(0, 300),
+      status, resourceType: resp.request().resourceType(),
+    });
+  };
+  page.on('console', onConsole);
+  page.on('pageerror', onPageError);
+  context.on('requestfailed', onRequestFailed);
+  context.on('response', onResponse);
+  return () => {
+    try { page.off('console', onConsole); page.off('pageerror', onPageError); } catch {}
+    try { context.off('requestfailed', onRequestFailed); context.off('response', onResponse); } catch {}
+    return { consoleEntries, networkEntries };
+  };
+}
+async function tfaiAttachEvidence(testInfo: any, stop: any) {
+  try {
+    const { consoleEntries, networkEntries } = stop();
+    await testInfo.attach('console-log', { body: Buffer.from(JSON.stringify(consoleEntries)), contentType: 'application/json' });
+    await testInfo.attach('network-log', { body: Buffer.from(JSON.stringify(networkEntries)), contentType: 'application/json' });
+  } catch {
+    // Evidence capture is best-effort; never turn a passing test into a failure.
+  }
+}
+`;
+}
+
 /** True if the TypeScript source parses cleanly (esbuild transpile = real parser, no type checks). */
 function isParseable(code: string): boolean {
   try { transformSync(code, { loader: 'ts', sourcemap: false }); return true; }
@@ -125,6 +181,124 @@ export function repairTestCode(code: string): string | null {
   }
   for (const cand of candidates) if (isParseable(cand)) return cand;
   return null;
+}
+
+/**
+ * Parse the Playwright JSON-reporter output into TestResult[] and materialize evidence attachments
+ * (step-N screenshots, console-log/network-log JSON, merged step-log) into files under runDir.
+ * Exported as a pure(ish) function so the evidence pipeline is testable without launching browsers.
+ */
+export async function parsePlaywrightResults(
+  json: any,
+  opts: { runDir: string; screenshotMode: 'off' | 'only-on-failure' | 'on' },
+): Promise<{ tests: TestResult[]; passed: number; failed: number; skipped: number; durationMs: number }> {
+  const tests: TestResult[] = [];
+  const rawStepAttsByTest: any[][] = [];
+  const rawLogAttsByTest: { console: any | null; network: any | null; stepLogs: any[] }[] = [];
+  let passed = 0;
+  let failed = 0;
+  let skipped = 0;
+
+  const walk = (suites: any[], parentFile = '') => {
+    for (const s of suites || []) {
+      const file = s.file || parentFile;
+      for (const spec of s.specs || []) {
+        for (const t of spec.tests || []) {
+          const last = (t.results || [])[(t.results || []).length - 1] || {};
+          const status = (last.status || (spec.ok ? 'passed' : 'failed')) as TestResult['status'];
+          if (status === 'passed') passed++;
+          else if (status === 'skipped') skipped++;
+          else failed++;
+          const errMsg = last.error?.message || (last.errors && last.errors[0]?.message) || '';
+          const atts = (last.attachments || []) as any[];
+          const rawStepAtts = opts.screenshotMode === 'only-on-failure' && status === 'passed'
+            ? []
+            : atts
+              .filter((a) => /^step-\d+$/i.test(String(a?.name || '')) && (a?.path || a?.body))
+              .sort((a, b) => (parseInt(String(a.name).replace(/\D/g, ''), 10) || 0) - (parseInt(String(b.name).replace(/\D/g, ''), 10) || 0));
+          const shot = atts.find((a) => a?.name === 'screenshot' && a?.path);
+          const trace = atts.find((a) => a?.name === 'trace' && a?.path);
+          rawStepAttsByTest.push(rawStepAtts);
+          rawLogAttsByTest.push({
+            console: atts.find((a) => a?.name === 'console-log' && (a?.path || a?.body)) || null,
+            network: atts.find((a) => a?.name === 'network-log' && (a?.path || a?.body)) || null,
+            stepLogs: atts.filter((a) => a?.name === 'step-log' && (a?.path || a?.body)),
+          });
+          tests.push({
+            title: spec.title || t.title || 'test',
+            file,
+            status,
+            durationMs: last.duration || 0,
+            screenshotPath: shot?.path,
+            stepScreenshotPaths: [],
+            tracePath: trace?.path,
+            error: errMsg ? String(errMsg).replace(/\x1b\[[0-9;]*m/g, '').slice(0, 600) : undefined,
+          });
+        }
+      }
+      if (s.suites) walk(s.suites, file);
+    }
+  };
+  walk(json.suites || []);
+
+  const attachmentBuffer = (a: any): Buffer | null => {
+    if (!a?.body) return null;
+    return Buffer.isBuffer(a.body) ? a.body : Buffer.from(String(a.body), 'base64');
+  };
+
+  // Materialize per-step screenshots: testInfo.attach('step-N', { body }) stores
+  // the PNG inline as base64 (no path), so write each body to a file and expose
+  // its path. Path-based attachments are used as-is.
+  const stepsDir = path.join(opts.runDir, 'step-shots');
+  const logsDir = path.join(opts.runDir, 'evidence-logs');
+  await fs.mkdir(stepsDir, { recursive: true }).catch(() => undefined);
+  await fs.mkdir(logsDir, { recursive: true }).catch(() => undefined);
+  for (let ti = 0; ti < tests.length; ti += 1) {
+    const raw = rawStepAttsByTest[ti] || [];
+    const paths: string[] = [];
+    for (let k = 0; k < raw.length; k += 1) {
+      const a = raw[k];
+      if (a.path) { paths.push(a.path); continue; }
+      const buf = attachmentBuffer(a);
+      if (buf) {
+        const fp = path.join(stepsDir, `t${ti}-step-${k + 1}.png`);
+        const ok = await fs.writeFile(fp, buf).then(() => true).catch(() => false);
+        if (ok) paths.push(fp);
+      }
+    }
+    tests[ti].stepScreenshotPaths = paths;
+    if (!tests[ti].screenshotPath && paths.length) tests[ti].screenshotPath = paths[paths.length - 1];
+
+    // Console/network logs: one JSON attachment each per test (evidence fixture output).
+    const logs = rawLogAttsByTest[ti] || { console: null, network: null, stepLogs: [] };
+    const writeLog = async (a: any, name: string): Promise<string | undefined> => {
+      if (!a) return undefined;
+      if (a.path) return a.path;
+      const buf = attachmentBuffer(a);
+      if (!buf) return undefined;
+      const fp = path.join(logsDir, `t${ti}-${name}.json`);
+      return fs.writeFile(fp, buf).then(() => fp).catch(() => undefined);
+    };
+    tests[ti].consoleLogPath = await writeLog(logs.console, 'console');
+    tests[ti].networkLogPath = await writeLog(logs.network, 'network');
+
+    // Step log: MissionRunner attaches one small JSON entry per act(); merge into an ordered array.
+    if (logs.stepLogs.length) {
+      const entries: any[] = [];
+      for (const a of logs.stepLogs) {
+        const buf = a.path ? await fs.readFile(a.path).catch(() => null) : attachmentBuffer(a);
+        if (!buf) continue;
+        try { entries.push(JSON.parse(buf.toString('utf8'))); } catch { /* skip unparseable */ }
+      }
+      if (entries.length) {
+        const fp = path.join(logsDir, `t${ti}-steps.json`);
+        const ok = await fs.writeFile(fp, JSON.stringify(entries, null, 2)).then(() => true).catch(() => false);
+        if (ok) tests[ti].stepLogPath = fp;
+      }
+    }
+  }
+
+  return { tests, passed, failed, skipped, durationMs: json.stats?.duration || 0 };
 }
 
 // Track running Playwright child processes per run so a user "Stop" can SIGKILL the
@@ -206,11 +380,12 @@ export async function executePlaywrightScripts(opts: {
     const finalScreenshotFixture = screenshotMode === 'on' ? autoScreenshotFixtureSource(stepShotsDir) : '';
     const sharedFixture = `import { test as base, expect, request, type BrowserContext, type Page } from '@playwright/test';
 ${finalScreenshotFixture}
+${evidenceCaptureFixtureSource()}
 
 let sharedContext: BrowserContext | undefined;
 let sharedPage: Page | undefined;
 
-export const test = base.extend<{ context: BrowserContext; page: Page; tfaiFinalScreenshot: void }>({
+export const test = base.extend<{ context: BrowserContext; page: Page; tfaiFinalScreenshot: void; tfaiEvidence: void }>({
   context: async ({ browser }, use) => {
     if (!sharedContext) {
       sharedContext = await browser.newContext(${contextOptions});${sessionInit}
@@ -221,6 +396,11 @@ export const test = base.extend<{ context: BrowserContext; page: Page; tfaiFinal
     if (!sharedPage || sharedPage.isClosed()) sharedPage = await context.newPage();
     await use(sharedPage);
   },
+  tfaiEvidence: [async ({ context, page }, use, testInfo) => {
+    const stop = tfaiEvidenceCollectors(page, context);
+    await use();
+    await tfaiAttachEvidence(testInfo, stop);
+  }, { auto: true }],
   ${screenshotMode === 'on' ? `tfaiFinalScreenshot: [async ({ page }, use, testInfo) => {
     await use();
     await tfaiAttachFinalScreenshot(page, testInfo);
@@ -260,8 +440,14 @@ export type { BrowserContext, Page } from '@playwright/test';
       : '';
     const fixture = `import { test as base, expect, request } from '@playwright/test';
 ${needsShot ? autoScreenshotFixtureSource(stepShotsDir) : ''}
-export const test = base.extend${needsShot ? '<{ tfaiFinalScreenshot: void }>' : ''}({
+${evidenceCaptureFixtureSource()}
+export const test = base.extend<{ ${needsShot ? 'tfaiFinalScreenshot: void; ' : ''}tfaiEvidence: void }>({
 ${sessionCtx}
+  tfaiEvidence: [async ({ context, page }, use, testInfo) => {
+    const stop = tfaiEvidenceCollectors(page, context);
+    await use();
+    await tfaiAttachEvidence(testInfo, stop);
+  }, { auto: true }],
 ${shotFixture}
 });
 
@@ -385,81 +571,17 @@ export default defineConfig({
       try {
         const raw = await fs.readFile(resultsFile, 'utf8');
         const json = JSON.parse(raw);
-        const tests: TestResult[] = [];
-        const rawStepAttsByTest: any[][] = [];
-        let passed = 0;
-        let failed = 0;
-        let skipped = 0;
-
-        const walk = (suites: any[], parentFile = '') => {
-          for (const s of suites || []) {
-            const file = s.file || parentFile;
-            for (const spec of s.specs || []) {
-              for (const t of spec.tests || []) {
-                const last = (t.results || [])[(t.results || []).length - 1] || {};
-                const status = (last.status || (spec.ok ? 'passed' : 'failed')) as TestResult['status'];
-                if (status === 'passed') passed++;
-                else if (status === 'skipped') skipped++;
-                else failed++;
-                const errMsg = last.error?.message || (last.errors && last.errors[0]?.message) || '';
-                const atts = (last.attachments || []) as any[];
-                const rawStepAtts = screenshotMode === 'only-on-failure' && status === 'passed'
-                  ? []
-                  : atts
-                    .filter((a) => /^step-\d+$/i.test(String(a?.name || '')) && (a?.path || a?.body))
-                    .sort((a, b) => (parseInt(String(a.name).replace(/\D/g, ''), 10) || 0) - (parseInt(String(b.name).replace(/\D/g, ''), 10) || 0));
-                const shot = atts.find((a) => a?.name === 'screenshot' && a?.path);
-                const trace = atts.find((a) => a?.name === 'trace' && a?.path);
-                rawStepAttsByTest.push(rawStepAtts);
-                tests.push({
-                  title: spec.title || t.title || 'test',
-                  file,
-                  status,
-                  durationMs: last.duration || 0,
-                  screenshotPath: shot?.path,
-                  stepScreenshotPaths: [],
-                  tracePath: trace?.path,
-                  error: errMsg ? String(errMsg).replace(/\[[0-9;]*m/g, '').slice(0, 600) : undefined,
-                });
-              }
-            }
-            if (s.suites) walk(s.suites, file);
-          }
-        };
-        walk(json.suites || []);
-
-        // Materialize per-step screenshots: testInfo.attach('step-N', { body }) stores
-        // the PNG inline as base64 (no path), so write each body to a file and expose
-        // its path. Path-based attachments are used as-is.
-        const stepsDir = path.join(runDir, 'step-shots');
-        await fs.mkdir(stepsDir, { recursive: true }).catch(() => undefined);
-        for (let ti = 0; ti < tests.length; ti += 1) {
-          const raw = rawStepAttsByTest[ti] || [];
-          const paths: string[] = [];
-          for (let k = 0; k < raw.length; k += 1) {
-            const a = raw[k];
-            if (a.path) { paths.push(a.path); continue; }
-            if (a.body) {
-              const fp = path.join(stepsDir, `t${ti}-step-${k + 1}.png`);
-              const buf = Buffer.isBuffer(a.body) ? a.body : Buffer.from(String(a.body), 'base64');
-              const ok = await fs.writeFile(fp, buf).then(() => true).catch(() => false);
-              if (ok) paths.push(fp);
-            }
-          }
-          tests[ti].stepScreenshotPaths = paths;
-          if (!tests[ti].screenshotPath && paths.length) tests[ti].screenshotPath = paths[paths.length - 1];
-        }
-
+        const parsed = await parsePlaywrightResults(json, { runDir, screenshotMode });
         resolve({
-          ok: failed === 0 && tests.length > 0,
-          total: tests.length,
-          passed,
-          failed,
-          skipped,
-          durationMs: json.stats?.duration || 0,
-          tests,
+          ok: parsed.failed === 0 && parsed.tests.length > 0,
+          total: parsed.tests.length,
+          passed: parsed.passed,
+          failed: parsed.failed,
+          skipped: parsed.skipped,
+          durationMs: parsed.durationMs,
+          tests: parsed.tests,
           runId,
-          stderrTail: failed > 0 || tests.length === 0 ? stderr.slice(-1500) || undefined : undefined,
+          stderrTail: parsed.failed > 0 || parsed.tests.length === 0 ? stderr.slice(-1500) || undefined : undefined,
           quarantined: quarantined.length ? quarantined : undefined,
         });
       } catch {

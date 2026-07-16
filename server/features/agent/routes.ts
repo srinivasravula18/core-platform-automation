@@ -52,7 +52,7 @@ import { buildKnowledgeBlock, recordObservation } from '../knowledge/knowledgeSe
 import { resolveCredentials, maskPassword } from '../credentials/credentialsService';
 import {
   detectSurfaceKind, resolveTargetApp, buildAppScopedUrl, connForRun,
-  fetchCorePlatformApps, fetchCorePlatformAppTabs, ALL_APPS_ID,
+  fetchCorePlatformApps, fetchCorePlatformAppTabs, ALL_APPS_ID, isMutationIntent,
 } from './appTargeting';
 import {
   buildMissionContext, platformTypeFromSurface, runtimeSurfaceFromSurface, moduleFromUrl,
@@ -65,7 +65,8 @@ import {
 import { generateCompiledScripts, aiqaCompilerEnabled } from './compiler/compiledGeneration';
 // LangGraph workflow runtime (flag-gated by AGENT_GRAPH_V2; legacy path is default and untouched).
 import { isWorkflowGraphEnabled } from './workflow/checkpointer';
-import { startGraphRun, resumeGraphRun, cancelGraphRun, getPendingReview, reconcileRunIfOrphaned, orphanedRunFailure } from './workflow/runtime';
+import { startGraphRun, resumeGraphRun, cancelGraphRun, getPendingReview, reconcileRunIfOrphaned, orphanedRunFailure, persistDefectReport } from './workflow/runtime';
+import { buildDefectDrafts } from './workflow/defectReporter';
 import type { MissionRef } from './workflow/state';
 import { renderTargetCatalogForPrompt } from './compiler/renderCatalogForPrompt';
 import { testPlanSchema, parseTestPlan } from './compiler/testPlan';
@@ -958,6 +959,46 @@ async function persistAgentRunAndReportArtifacts(run: any) {
       ownerId: run.ownerId || '',
     });
   }
+
+  // Per-signature professional defects (bug-investigation framework): the same deterministic builder the
+  // graph terminal hook uses, fed from this run's execution_result. Additive — the coarse defect above and
+  // its id space are untouched; idempotent ids + the once-per-run occurrence guard prevent double filing.
+  try {
+    const tests = run.execution_result?.tests;
+    if (Array.isArray(tests) && tests.some((t: any) => ['failed', 'timedOut', 'interrupted'].includes(String(t?.status)))) {
+      const [priorDefects, priorRuns] = await Promise.all([
+        Defects.list().catch(() => []),
+        (async () => {
+          const runs = await AgentRuns.list().catch(() => [] as any[]);
+          return runs
+            .filter((r: any) => r?.id !== run.id && Array.isArray(r?.execution_result?.tests) && r.execution_result.tests.length)
+            .slice(0, 20)
+            .map((r: any) => ({
+              runId: r.id,
+              at: r.updated_at || r.created_at,
+              verdicts: Object.fromEntries(r.execution_result.tests.map((t: any) => [String(t?.title || ''), String(t?.status || '')])),
+            }));
+        })(),
+      ]);
+      const report = buildDefectDrafts({
+        runId: run.id,
+        runRecordId,
+        baseUrl: run.app_url || '',
+        missionScope: run.mission_context?.executionScope || '',
+        appLabel: run.target_app_label || '',
+        mutationIntent: (run.playwright_scripts || []).some((s: any) => String(s?.code || '').includes('"mutationIntent":true')),
+        cases: Array.isArray(run.generated_cases) ? run.generated_cases : [],
+        tests,
+        evidenceShots: run.evidence_screenshots || [],
+        priorRuns,
+        existingDefects: priorDefects,
+        scope: { projectId: run.projectId || null, appId: run.appId || null, ownerId: run.ownerId || null },
+      });
+      await persistDefectReport(report, run.id);
+    }
+  } catch (err) {
+    console.warn(`[agent] run ${run.id}: per-signature defect filing failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
 }
 
 async function persistAgentQualityArtifacts(run: any) {
@@ -1399,11 +1440,51 @@ function titleFromPrompt(prompt: string, targetUrl: string): string {
   return 'Grounded workflow';
 }
 
+/** Proposed-case titles from a prior chat answer that IS a test-case list (e.g. "**TC-01: title**"). */
+function extractProposedCases(grounding: string): string[] {
+  const text = String(grounding || '');
+  const titles: string[] = [];
+  // Bold/inline form: **TC-01: Create account with all required fields**
+  for (const m of text.matchAll(/\*\*\s*TC[-_ ]?\d+\s*[:.\-–]\s*([^*\n]{5,140})\*\*/gi)) titles.push(m[1].trim());
+  if (!titles.length) {
+    // Plain form: a line starting with "TC-01: title"
+    for (const line of text.split(/\r?\n/)) {
+      const m = /^\s*(?:[-*•]\s*)?TC[-_ ]?\d+\s*[:.\-–]\s*(.{5,140})$/i.exec(line.trim());
+      if (m) titles.push(m[1].replace(/\*+/g, '').trim());
+    }
+  }
+  return Array.from(new Set(titles)).slice(0, 40);
+}
+
 function buildUnderstandingFromPriorGrounding(prompt: string, targetUrl: string, grounding: string): any {
   const parsedRequirement = parseRequirementContextText(prompt, targetUrl, grounding);
   if (parsedRequirement) return parsedRequirement;
 
   const lines = meaningfulGroundingLines(grounding, 50);
+  // A prior answer that already PROPOSES cases is a case list, not prose to shred: each proposed case
+  // becomes ONE candidate scenario (a coverage contract), so the run writes them once instead of
+  // re-deriving overlapping cases from every markdown fragment.
+  const proposedCases = extractProposedCases(grounding);
+  if (proposedCases.length >= 3) {
+    return {
+      title: titleFromPrompt(prompt, targetUrl),
+      description: lines[0] || String(grounding || '').replace(/\s+/g, ' ').trim().slice(0, 500),
+      businessRules: lines.slice(0, 28),
+      dataPopulationNotes: '',
+      adminBehavior: '',
+      keystoneBehavior: '',
+      metadataRefs: [],
+      sourceFiles: [],
+      candidateScenarios: proposedCases.map((title) => ({
+        title: title.slice(0, 110),
+        priority: /permission|delete|blank|empty|invalid|duplicate|error|unauthenticated|blocked/i.test(title) ? 'High' : 'Medium',
+        rationale: 'Proposed in the prior code-grounded chat answer.',
+        steps: [{ action: `Exercise: ${title.slice(0, 140)}`, expected: 'The behavior matches the proposed case from the prior answer.' }],
+      })),
+      reusedPriorGrounding: true,
+      groundingSource: 'chat_memory',
+    };
+  }
   const title = titleFromPrompt(prompt, targetUrl);
   return {
     title,
@@ -1430,6 +1511,36 @@ function buildUnderstandingFromPriorGrounding(prompt: string, targetUrl: string,
 function buildInventoryFromPriorGrounding(prompt: string, targetUrl: string, grounding: string): any {
   const title = titleFromPrompt(prompt, targetUrl);
   const lines = meaningfulGroundingLines(grounding, 80);
+  // Case-list answers map 1:1 — ONE feature, one subfeature per proposed case. Shredding such an answer
+  // into per-line "features" made every fragment regenerate overlapping cases (34 proposed → 59 written).
+  const proposedCases = extractProposedCases(grounding);
+  if (proposedCases.length >= 3) {
+    return {
+      appName: targetUrl || '',
+      summary: `Proposed test cases reused from the prior code-grounded chat answer for: ${title}`,
+      coverageAudit: {
+        structuralFilesReviewed: [],
+        omittedStructuralFiles: [],
+        riskNotes: ['The prior chat answer proposed these cases; they were mapped 1:1 instead of re-derived.'],
+      },
+      features: [{
+        name: title,
+        surface: '',
+        description: `Coverage contract: ${proposedCases.length} case(s) proposed in the prior answer.`,
+        sourceFiles: [],
+        subfeatures: proposedCases.map((caseTitle) => ({
+          name: caseTitle.slice(0, 90),
+          description: caseTitle,
+          businessRules: [],
+          userActions: [`Exercise: ${caseTitle.slice(0, 120)}`],
+          testIdeas: [caseTitle.slice(0, 120)],
+          priority: /permission|delete|blank|empty|invalid|duplicate|error|unauthenticated|blocked/i.test(caseTitle) ? 'High' : 'Medium',
+          tags: ['@regression'],
+        })),
+      }],
+      e2eFlows: [],
+    };
+  }
   const numbered = String(grounding || '')
     .split(/\r?\n/)
     .map((line) => line.trim())
@@ -5005,6 +5116,14 @@ Rules:
             return res.json({ chat_response: `Which app should I test in ${selectedApp?.name || 'this runtime'}?\n\n${lines.join('\n')}${more}\n\nReply with the app name and optionally a tab (e.g. "CRM Accounts list view"), or say "all apps" to sweep every app.` });
           }
         }
+      }
+      // Scope hardening: a data-mutating goal may NEVER sweep every app — the mutation would land in an
+      // arbitrary tenant app (observed: a create scoped __all_apps__ wrote into App1 and still PASSED).
+      // Ask for ONE concrete app instead of executing; read-only all-apps sweeps stay allowed.
+      if (application && application.id === ALL_APPS_ID && isMutationIntent(prompt || '')) {
+        return res.json({
+          chat_response: 'This goal creates or changes data, so it needs ONE concrete app — an all-apps sweep would write into an arbitrary app. Reply with the app to target (e.g. its name), and I\'ll run it there.',
+        });
       }
       // Real-app tabs → object nav defaulting (keystone deep-links into an object).
       if (application && application.id && application.id !== ALL_APPS_ID && (credentials.username || (credentials as any).token)) {

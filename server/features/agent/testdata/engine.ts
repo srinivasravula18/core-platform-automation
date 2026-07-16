@@ -94,7 +94,14 @@ function isGenericPlanValue(value: string | undefined | null): boolean {
     // Author placeholders like "unique_label", "any parent app", "valid values", "test-prefix" — these
     // describe the KIND of value, not a value; filling them verbatim breaks form validation/uniqueness.
     || /^(unique|any|valid|some|existing|test|sample|dummy|generic|placeholder|appropriate|desired|required)([ _-][a-z0-9]+)+$/.test(v)
-    || /random|no\s?match|gibberish/.test(v);
+    || /random|no\s?match|gibberish/.test(v)
+    // Reserved/system sentinels and template placeholders must never be filled verbatim: __all_apps__,
+    // {{account_name}}, <enter value>, "reserved", "tbd", "changeme" are leads to generate FROM, not values.
+    || /^__.+__$/.test(v)
+    || /^\{\{.*\}\}$/.test(v)
+    || /^<[^>]+>$/.test(v)
+    || /^(reserved|tbd|tba|lorem(\s+ipsum)?|change\s?me)$/.test(v)
+    || /^your[\s_-][a-z0-9]+/.test(v);
 }
 
 export class TestDataEngine {

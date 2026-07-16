@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react';
-import { Search, Filter, MoreHorizontal, ShieldAlert, Camera, Sparkles, Trash2 } from 'lucide-react';
+import { Fragment, useEffect, useState } from 'react';
+import { Search, Filter, MoreHorizontal, ShieldAlert, Camera, Sparkles, Trash2, ChevronDown, ChevronRight } from 'lucide-react';
 import ExportMenu from '../components/ExportMenu';
+import DefectReport, { hasRichReport } from '../components/DefectReport';
 import { useAiSearch } from '@/src/lib/useAiSearch';
 import { useBulkDelete } from '@/src/lib/useBulkDelete';
 import { cn } from '@/src/lib/utils';
@@ -21,6 +22,7 @@ export default function Defects() {
   const [newDefectTitle, setNewDefectTitle] = useState('');
 
   const [selectedDefectId, setSelectedDefectId] = useState<string | null>(null);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
 
   const fetchDefects = () => {
     fetch('/api/defects')
@@ -237,12 +239,27 @@ export default function Defects() {
               ) : filteredDefects.length === 0 ? (
                 <tr><td colSpan={6} className="py-8 text-center text-[var(--text-muted)]">No defects found.</td></tr>
               ) : filteredDefects.map((defect) => (
-                <tr key={defect.id} onClick={() => openEditModal(defect)} className="hover:bg-[var(--bg-secondary)] transition-colors cursor-pointer">
+                <Fragment key={defect.id}>
+                <tr
+                  onClick={() => hasRichReport(defect) ? setExpandedId(expandedId === defect.id ? null : defect.id) : openEditModal(defect)}
+                  className="hover:bg-[var(--bg-secondary)] transition-colors cursor-pointer"
+                >
                   <td className="py-3 px-4" onClick={(e) => e.stopPropagation()}>
                     <input type="checkbox" checked={bulk.isSelected(defect.id)} onChange={() => bulk.toggle(defect.id)} />
                   </td>
-                  <td className="py-3 px-4 font-mono text-xs text-[var(--text-muted)]">{defect.id}</td>
-                  <td className="py-3 px-4 font-medium">{defect.title}</td>
+                  <td className="py-3 px-4 font-mono text-xs text-[var(--text-muted)]">
+                    <span className="inline-flex items-center gap-1">
+                      {hasRichReport(defect) && (expandedId === defect.id
+                        ? <ChevronDown className="w-3 h-3" />
+                        : <ChevronRight className="w-3 h-3" />)}
+                      {defect.id}
+                    </span>
+                  </td>
+                  <td className="py-3 px-4 font-medium">
+                    {defect.title}
+                    {defect.metadata?.regression && <span className="ml-2 text-[10px] font-bold text-red-500 border border-red-500/30 bg-red-500/10 rounded px-1">REGRESSION</span>}
+                    {typeof defect.metadata?.frequency === 'number' && defect.metadata.frequency > 1 && <span className="ml-2 text-[10px] text-[var(--text-muted)] border border-[var(--border)] rounded px-1">×{defect.metadata.frequency}</span>}
+                  </td>
                   <td className="py-3 px-4">
                     <span className={cn(
                       "inline-flex items-center px-2 py-0.5 rounded text-xs font-bold uppercase tracking-wider",
@@ -288,6 +305,14 @@ export default function Defects() {
                     </button>
                   </td>
                 </tr>
+                {expandedId === defect.id && hasRichReport(defect) && (
+                  <tr>
+                    <td colSpan={6} className="p-0 whitespace-normal">
+                      <DefectReport defect={defect} />
+                    </td>
+                  </tr>
+                )}
+                </Fragment>
               ))}
             </tbody>
           </table>

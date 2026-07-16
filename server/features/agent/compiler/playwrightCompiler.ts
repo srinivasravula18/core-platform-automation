@@ -7,7 +7,7 @@
  */
 import type { Compiler, CompileInput, CompileResult, Diagnostic } from './Compiler';
 import { resolveTarget } from '../graph/groundingEngine';
-import { isActionStep, type ActionStep, type AssertStep, type PlanStep } from './testPlan';
+import { isActionStep, isAssertStep, CONTEXT_ASSERTS, type ActionStep, type AssertStep, type PlanStep } from './testPlan';
 import { TestDataEngine, type FieldSemantics } from '../testdata';
 import { isRequiredFieldNode, type EvidenceNode } from '../graph/evidenceGraph';
 
@@ -66,17 +66,17 @@ function resolveStepValue(engine: TestDataEngine, step: ActionStep, node: Eviden
 function emitAssert(step: AssertStep, spec: string, value?: string): string {
   const v = JSON.stringify(value ?? step.value ?? '');
   switch (step.assert) {
-    // Higher-level VERIFY_* intents expand to a deterministic (reveal-then-)visible assertion; richer
-    // expansions (row counts, sort order, filter effects) are added by later backends without changing the IR.
     case 'VISIBLE':
-    case 'VERIFY_TABLE':
-    case 'VERIFY_FILTER':
-    case 'VERIFY_SORT':
+    // Intents with no runner-side enrichment yet stay a deterministic (reveal-then-)visible assertion.
     case 'VERIFY_PAGINATION':
     case 'VERIFY_LOOKUP':
-    case 'VERIFY_PERMISSION':
-    case 'VERIFY_VALIDATION':
-    case 'VERIFY_ERROR': return `  await runner.expectVisible(${spec});`;
+    case 'VERIFY_PERMISSION': return `  await runner.expectVisible(${spec});`;
+    // Real VERIFY_* expansions (Phase 4): richer runner-owned checks over the SAME grounded target.
+    case 'VERIFY_TABLE': return `  await runner.expectTable(${spec}, ${v});`;
+    case 'VERIFY_FILTER': return `  await runner.expectFiltered(${spec}, ${v});`;
+    case 'VERIFY_SORT': return `  await runner.expectSorted(${spec}, ${v});`;
+    case 'VERIFY_VALIDATION': return `  await runner.expectValidation(${spec}, ${v});`;
+    case 'VERIFY_ERROR': return `  await runner.expectErrorState(${v});`;
     case 'NOT_VISIBLE': return `  await runner.expectHidden(${spec});`;
     case 'ENABLED': return `  await runner.expectEnabled(${spec});`;
     case 'DISABLED': return `  await runner.expectDisabled(${spec});`;
@@ -85,6 +85,21 @@ function emitAssert(step: AssertStep, spec: string, value?: string): string {
     case 'HAS_VALUE': return `  await runner.expectValue(${spec}, ${v});`;
     case 'COUNT_GT': return `  await runner.expectCountGt(${spec}, Number(${v} || 0));`;
     default: return `  // INVALID_STEP assert: ${String((step as any).assert)}`;
+  }
+}
+
+// Context asserts (Phase 4): mission/page-scoped observations — target is advisory text, never grounded.
+// The runner owns the page-level lookups (URL, ARIA status regions, role=row scans, the global searchbox).
+function emitContextAssert(step: AssertStep): string {
+  const arg = JSON.stringify(String(step.value ?? '').trim() || String(step.target ?? ''));
+  switch (step.assert) {
+    case 'URL_MATCHES': return `  await runner.expectUrl(${arg});`;
+    case 'HAS_STATUS': return `  await runner.expectStatusRegion(${arg});`;
+    case 'EMPTY_STATE': return `  await runner.expectEmptyState(${JSON.stringify(String(step.value ?? '').trim())});`;
+    case 'ERROR_STATE': return `  await runner.expectErrorState(${arg});`;
+    case 'ROW_IN_LIST': return `  await runner.expectRowInList(${arg});`;
+    case 'FOUND_IN_GLOBAL_SEARCH': return `  await runner.searchGlobalFor(${arg});`;
+    default: return `  // INVALID_STEP context assert: ${String(step.assert)}`;
   }
 }
 
@@ -112,6 +127,22 @@ export class PlaywrightCompiler implements Compiler {
     // name/email/code. The optional backend schema drives API-acceptance-conformant values.
     const engine = new TestDataEngine((run as any)?.id || mission.executionScope || 'testflow', input.objectSchema);
 
+    // Mutation intent, derived deterministically from the plan (never from prompt text): the case commits
+    // data only if it sets field values AND clicks a submit-intent control. MissionRunner.verify() uses this
+    // to reject data-mutating runs against placeholder app ids (__all_apps__) while read-only sweeps stay legal.
+    const FIELD_SET_ACTIONS = new Set(['FILL', 'SELECT', 'CHECK', 'UNCHECK', 'CLEAR']);
+    let hasFieldSet = false;
+    let hasSubmit = false;
+    for (const step of plan.steps) {
+      if (!isActionStep(step)) continue;
+      if (FIELD_SET_ACTIONS.has(step.action)) hasFieldSet = true;
+      if (step.action === 'CLICK') {
+        const g = resolveTarget(step.target, evidenceGraph, run);
+        if (g.status === 'RESOLVED' && isSubmitClick(step, g.node)) hasSubmit = true;
+      }
+    }
+    const mutationIntent = hasFieldSet && hasSubmit;
+
     const missionJson = JSON.stringify({
       platform: mission.platform,
       platformType: mission.platformType,
@@ -121,6 +152,7 @@ export class PlaywrightCompiler implements Compiler {
       tab: mission.tab,
       targetUrl: mission.targetUrl,
       executionScope: mission.executionScope,
+      mutationIntent,
     });
 
     const body: string[] = [];
@@ -171,6 +203,14 @@ export class PlaywrightCompiler implements Compiler {
       // OPEN_MODULE is mission-owned navigation: emit runner.openModule() and never ground it as a locator.
       if (isActionStep(step) && step.action === 'OPEN_MODULE') {
         body.push('  await runner.openModule();');
+        return;
+      }
+      // Context asserts are mission/page-scoped: their target is advisory text — never grounded. Expected
+      // values the Test Data Engine replaced (e.g. a generated record name) are threaded like HAS_TEXT.
+      if (isAssertStep(step) && CONTEXT_ASSERTS.has(step.assert)) {
+        const raw = String(step.value ?? '').trim();
+        const threaded = raw ? (planToResolved.get(raw.toLowerCase()) ?? raw) : raw;
+        body.push(emitContextAssert({ ...step, value: threaded } as AssertStep));
         return;
       }
       const target = (step as any).target as string;

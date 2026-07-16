@@ -76,3 +76,41 @@ export {
   PLAN_ACTIONS, PLAN_ASSERTS, parseTestPlan,
   type TestPlan, type PlanStep, type ActionStep, type AssertStep, type PlanAction, type PlanAssert,
 } from '../features/agent/compiler/testPlan';
+
+// ===== Failure investigation (bug-investigation framework, Phase 3) =====
+// Strict wire schemas for the LLM investigator + intent-outcome judge. Every observation must carry its own
+// confidence AND the verification methods that support it — fabricated certainty is unrepresentable.
+
+/** One investigator observation: a statement, its confidence, and what verified it. */
+export const observationSchema = z.object({
+  statement: z.string().min(1),
+  confidence: z.number().min(0).max(1),
+  verifiedBy: z.array(z.string()).default([]),
+});
+export type Observation = z.infer<typeof observationSchema>;
+
+export const FAILURE_CLASSIFICATIONS = [
+  'functional', 'ui', 'ux', 'validation', 'data', 'search', 'filter', 'sorting', 'synchronization',
+  'state', 'permission', 'auth', 'api', 'performance', 'a11y', 'workflow', 'regression',
+  'automation_issue', 'environment', 'unknown',
+] as const;
+export type FailureClassificationKind = typeof FAILURE_CLASSIFICATIONS[number];
+
+export const failureClassificationSchema = z.object({
+  classification: z.enum(FAILURE_CLASSIFICATIONS),
+  rootCauseArea: z.string().default(''),
+  confidence: z.number().min(0).max(1),
+  observations: z.array(observationSchema).default([]),
+  severity: z.enum(['Critical', 'High', 'Medium', 'Low']).optional(),
+  suggestedAreas: z.array(z.string()).default([]),
+});
+export type FailureClassification = z.infer<typeof failureClassificationSchema>;
+
+/** Intent-outcome judge verdict: did the app accomplish what the case INTENDED (not just pass assertions)? */
+export const intentOutcomeSchema = z.object({
+  intentSatisfied: z.boolean(),
+  confidence: z.number().min(0).max(1),
+  reason: z.string().default(''),
+  observations: z.array(observationSchema).default([]),
+});
+export type IntentOutcome = z.infer<typeof intentOutcomeSchema>;

@@ -5,6 +5,7 @@
  *   npx tsx scripts/test-playwright-compiler.ts   (npm run test:compiler)
  */
 import { buildMissionContext } from '../server/features/agent/mission/missionContext';
+import { MISSION_RUNNER_SOURCE } from '../server/features/agent/compiler/missionRunner.template';
 import { buildEvidenceGraphFromRun } from '../server/features/agent/graph/evidenceGraph';
 import { playwrightCompiler } from '../server/features/agent/compiler/playwrightCompiler';
 import { validateCompiledOutput } from '../server/features/agent/compiler/validateCompiledOutput';
@@ -196,6 +197,68 @@ function main() {
   const badAction = playwrightCompiler.compile({ mission: runtime, plan: incompatible, evidenceGraph: graph, run });
   ok(!badAction.ok && badAction.diagnostics[0]?.kind === 'INVALID_STEP', 'SELECT targeting a heading is rejected');
   ok(!badAction.code.includes('runner.select('), 'invalid SELECT is never emitted');
+
+  console.log('context asserts (Phase 4): page-scoped, never grounded, runner-owned');
+  {
+    const ctxPlan: TestPlan = { mission: runtime.executionScope, title: 'create + cross-check', steps: [
+      { action: 'FILL', target: 'Search', value: 'acme' },
+      { assert: 'URL_MATCHES', target: 'page url', value: 'appId=app9' },
+      { assert: 'HAS_STATUS', target: 'status toast', value: 'saved successfully' },
+      { assert: 'EMPTY_STATE', target: 'grid', value: 'No records found' },
+      { assert: 'ERROR_STATE', target: 'form', value: 'Name is required' },
+      { assert: 'ROW_IN_LIST', target: 'not-a-catalog-name', value: 'Acme Corp' },
+      { assert: 'FOUND_IN_GLOBAL_SEARCH', target: 'search', value: 'Acme Corp' },
+    ] };
+    const rc = playwrightCompiler.compile({ mission: runtime, plan: ctxPlan, evidenceGraph: graph, run });
+    ok(rc.ok, `context asserts compile clean without grounding (diags: ${JSON.stringify(rc.diagnostics.map((d) => d.kind))})`);
+    ok(rc.code.includes('await runner.expectUrl("appId=app9");'), 'URL_MATCHES → runner.expectUrl');
+    ok(rc.code.includes('await runner.expectStatusRegion("saved successfully");'), 'HAS_STATUS → runner.expectStatusRegion');
+    ok(rc.code.includes('await runner.expectEmptyState("No records found");'), 'EMPTY_STATE → runner.expectEmptyState');
+    ok(rc.code.includes('await runner.expectErrorState("Name is required");'), 'ERROR_STATE → runner.expectErrorState');
+    ok(rc.code.includes('await runner.expectRowInList("Acme Corp");'), 'ROW_IN_LIST → runner.expectRowInList');
+    ok(rc.code.includes('await runner.searchGlobalFor("Acme Corp");'), 'FOUND_IN_GLOBAL_SEARCH → runner.searchGlobalFor');
+    const gate2 = validateCompiledOutput(rc.code);
+    ok(gate2.ok, 'context-assert spec passes the prohibited-pattern gate');
+
+    // Value threading: a generated fill value must thread into the later row/search expectations.
+    const threadPlan: TestPlan = { mission: runtime.executionScope, title: 'create app', steps: [
+      { action: 'FILL', target: 'Label *', value: 'unique_label' },
+      { assert: 'ROW_IN_LIST', target: 'apps list', value: 'unique_label' },
+    ] };
+    const rt = playwrightCompiler.compile({ mission: runtime, plan: threadPlan, evidenceGraph: graph, run });
+    const fillM = /runner\.fill\(\{[^}]*create-app-label[^}]*\}, ("[^"]+")\)/.exec(rt.code);
+    const rowM = /runner\.expectRowInList\(("[^"]+")\)/.exec(rt.code);
+    ok(!!fillM && !!rowM && fillM[1] === rowM[1], `ROW_IN_LIST expects the ENGINE-RESOLVED value (${fillM?.[1]} vs ${rowM?.[1]})`);
+  }
+
+  console.log('real VERIFY_* expansions (Phase 4)');
+  {
+    const vPlan: TestPlan = { mission: runtime.executionScope, title: 'grid checks', steps: [
+      { assert: 'VERIFY_TABLE', target: 'New', value: '' },
+      { assert: 'VERIFY_FILTER', target: 'New', value: 'acme' },
+      { assert: 'VERIFY_SORT', target: 'New', value: 'asc' },
+      { assert: 'VERIFY_VALIDATION', target: 'Label *', value: 'required' },
+      { assert: 'VERIFY_ERROR', target: 'New', value: 'Something went wrong' },
+      { assert: 'VERIFY_PAGINATION', target: 'New' },
+    ] };
+    const rv = playwrightCompiler.compile({ mission: runtime, plan: vPlan, evidenceGraph: graph, run });
+    ok(rv.ok, 'VERIFY plan compiles');
+    ok(rv.code.includes('await runner.expectTable('), 'VERIFY_TABLE → expectTable');
+    ok(rv.code.includes('await runner.expectFiltered('), 'VERIFY_FILTER → expectFiltered');
+    ok(rv.code.includes('await runner.expectSorted('), 'VERIFY_SORT → expectSorted');
+    ok(rv.code.includes('await runner.expectValidation('), 'VERIFY_VALIDATION → expectValidation');
+    ok(rv.code.includes('await runner.expectErrorState("Something went wrong");'), 'VERIFY_ERROR → expectErrorState');
+    ok(rv.code.includes('await runner.expectVisible('), 'VERIFY_PAGINATION stays a visibility assertion');
+    ok(validateCompiledOutput(rv.code).ok, 'VERIFY expansions pass the gate');
+  }
+
+  console.log('MissionRunner template exposes every Phase 4 helper');
+  {
+    const src = MISSION_RUNNER_SOURCE;
+    for (const helper of ['expectUrl', 'expectStatusRegion', 'expectEmptyState', 'expectErrorState', 'expectRowInList', 'searchGlobalFor', 'expectTable', 'expectFiltered', 'expectSorted', 'expectValidation']) {
+      ok(src.includes(`async ${helper}(`), `runner has ${helper}()`);
+    }
+  }
 
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed === 0 ? 0 : 1);

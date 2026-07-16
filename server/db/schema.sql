@@ -257,6 +257,10 @@ ALTER TABLE website_users ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NU
 ALTER TABLE website_users ADD COLUMN IF NOT EXISTS page_name  TEXT DEFAULT '';
 ALTER TABLE website_users ADD COLUMN IF NOT EXISTS page_url   TEXT DEFAULT '';
 
+-- Professional defect reports (bug-investigation framework): structured signature/cluster/regression/risk
+-- payload lives in an additive JSONB bag so the defects contract stays unchanged for existing readers.
+ALTER TABLE defects ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}'::jsonb;
+
 -- System prompt store: per-agent versioned overrides
 CREATE TABLE IF NOT EXISTS prompts (
   id          TEXT PRIMARY KEY,

@@ -10,7 +10,8 @@
  *   compile_and_validate → router: unresolved targets + attempts left → discover_and_ground | no clean scripts → finalize
  *                                  | manual review → review_scripts | else → execute_tests
  *   review_scripts (interrupt kind 'scripts') → rejected → finalize | else → execute_tests
- *   execute_tests → finalize → END
+ *   execute_tests → router (AGENT_INVESTIGATE + something to investigate) → investigate_failures | finalize
+ *   investigate_failures → finalize → END
  *
  * Composes the Phase 3-5 node MODULES directly (same pattern as graphs/discoveryGraph.ts): the node files
  * stay the unit-testable seams, only this file fuses them into one graph. Full payloads (evidence graph,
@@ -26,6 +27,9 @@ import { authorTestCases, authorAbstractPlan, type AuthoredTestCase } from './no
 import { runCompilationNode } from './nodes/compilation';
 import { buildPendingReview, requestReviewInterrupt } from './nodes/review';
 import { runExecutionNode } from './nodes/execution';
+import { runInvestigationNode, isInvestigationEnabled, type InvestigationSummary, type InvestigationNodeInput } from './nodes/investigation';
+import { diffRunSteps, isVisualRegressionEnabled } from '../validation/visualBaseline';
+import { executePlaywrightScripts } from '../../playwright/executionService';
 import { routeAfterDiscoverAndGround, type ResolvedCredential } from './graphs/discoveryGraph';
 import { stashArtifacts, readArtifacts } from './artifactStash';
 import { WorkflowRuntimeError, WORKFLOW_ERROR_CLASSES, backoffDelayMs, type WorkflowError } from './errors';
@@ -62,6 +66,7 @@ export interface TestRunGraphDeps {
   authorCases?: typeof authorTestCases;
   authorPlan?: typeof authorAbstractPlan;
   executionNode?: typeof runExecutionNode;
+  investigationNode?: (input: InvestigationNodeInput) => Promise<InvestigationSummary>;
   /** Topbar per-run provider/model/effort — forwarded to every authoring model call, like the legacy path. */
   modelOverrides?: { provider?: string; model?: string; effort?: string };
   /** Coverage "reuse": existing cases (with steps) used INSTEAD of LLM authoring. */
@@ -158,6 +163,18 @@ export function routeAfterCompile(state: Pick<WorkflowState, 'compilation' | 're
   }
   if (!state.compilation?.scripts?.length) return 'finalize';
   return 'execute_tests';
+}
+
+// Investigation runs only when the flag is on AND there is something to investigate: failed tests, or
+// passing MUTATION cases to intent-judge (the false-PASS class). Flag off → exact current behavior.
+export function routeAfterExecuteTests(state: Pick<WorkflowState, 'runId' | 'execution'>): 'investigate_failures' | 'finalize' {
+  if (!isInvestigationEnabled()) return 'finalize';
+  const agg = state.execution?.aggregate;
+  if (!agg) return 'finalize'; // infra failure — nothing ran to a verdict
+  if (agg.failed > 0) return 'investigate_failures';
+  const compiled = readArtifacts(state.runId).compiledSources ?? {};
+  const hasMutationPass = Object.values(compiled).some((code) => code.includes('"mutationIntent":true'));
+  return hasMutationPass ? 'investigate_failures' : 'finalize';
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -472,6 +489,15 @@ export function buildTestRunGraph(deps: TestRunGraphDeps = {}, opts: BuildTestRu
       sessionStorageState,
     });
     if (result.evidenceShots?.length) stashArtifacts(state.runId, { evidenceShots: result.evidenceShots });
+    // Per-test records feed the defect reporter / investigation downstream — stash only (state carries refs).
+    if (result.tests?.length) stashArtifacts(state.runId, { executionTests: result.tests });
+    // Phase 7 (VISUAL_REGRESSION, report-only): diff step screenshots vs the baseline store; seed on first run.
+    if (isVisualRegressionEnabled() && result.tests?.length) {
+      try {
+        const vis = await diffRunSteps({ tests: result.tests });
+        if (vis.findings.length) stashArtifacts(state.runId, { visualFindings: vis.findings });
+      } catch { /* report-only: never fails execution */ }
+    }
     return {
       execution: executionUpdate({
         attempts: result.attempt ? [result.attempt] : [],
@@ -482,6 +508,64 @@ export function buildTestRunGraph(deps: TestRunGraphDeps = {}, opts: BuildTestRu
       updatedAt: nowIso(),
       errors: result.errors,
     };
+  };
+
+  // Investigation (flag AGENT_INVESTIGATE): report-only enrichment between execute_tests and finalize.
+  // Reads the stash, writes ONLY to the stash — state gets a stage marker; a failure never blocks finalize.
+  const investigationNode = deps.investigationNode ?? runInvestigationNode;
+  const investigateFailures = async (state: WorkflowState): Promise<WorkflowStateUpdate> => {
+    try {
+      const arts = readArtifacts(state.runId);
+      const fullCases = getAuthoredCases(state.runId);
+
+      // Phase 6: the flake probe — re-run ONE failing spec (bounded per run) with the run's cached login.
+      // A pass demotes the cluster from deterministic bug to flaky inside the investigation node.
+      let flakeProbesLeft = 2;
+      const caseIdByTitle = new Map(state.cases.map((c) => [c.title, c.id]));
+      const rerunFailing = async (caseTitle: string): Promise<'passed' | 'failed' | null> => {
+        if (flakeProbesLeft <= 0) return null;
+        const caseId = caseIdByTitle.get(caseTitle);
+        const code = caseId ? (arts.compiledSources ?? {})[caseId] : undefined;
+        if (!caseId || !code) return null;
+        flakeProbesLeft -= 1;
+        let storageStatePath: string | undefined;
+        let sessionStorageState: { origin: string; items: Record<string, string> } | undefined;
+        const credential = await resolveCredential(state.credentialRef ?? null).catch(() => undefined);
+        if (credential?.username && credential?.password && state.mission?.targetUrl) {
+          try {
+            const auth = await ensureRunAuthState(state.runId, state.mission.targetUrl, credential);
+            storageStatePath = auth.storageStatePath;
+            sessionStorageState = auth.sessionStorageState;
+          } catch { /* probe proceeds unauthenticated; a login-failure re-run simply reads 'failed' */ }
+        }
+        const result = await executePlaywrightScripts({
+          scripts: [{ filename: `${caseId}.spec.ts`, title: caseTitle, code }],
+          baseUrl: state.mission?.targetUrl,
+          runId: `${state.runId}-flakeprobe-${2 - flakeProbesLeft}`,
+          singleSession: true,
+          emitMissionRunner: true,
+          screenshotMode: 'off',
+          storageStatePath,
+          sessionStorageState,
+          timeoutMs: 120000,
+        });
+        const t = result.tests.find((x) => x.title === caseTitle) ?? result.tests[0];
+        return t ? (t.status === 'passed' ? 'passed' : 'failed') : null;
+      };
+
+      const summary = await investigationNode({
+        runId: state.runId,
+        tests: arts.executionTests ?? [],
+        cases: fullCases.length ? fullCases : state.cases,
+        compiledSources: arts.compiledSources ?? {},
+        caseTitleById: Object.fromEntries(state.cases.map((c) => [c.id, c.title])),
+        // Phase 5 seam: the backend schema is already stashed at context load; live read-back wiring
+        // (readbackRecord/listRecords) remains the documented follow-up. Phase 6 probe wired above.
+        deps: { objectSchema: arts.objectSchema, rerunFailing },
+      });
+      if (summary) stashArtifacts(state.runId, { investigation: summary });
+    } catch { /* report-only: never blocks finalize */ }
+    return { stage: 'investigate_failures', updatedAt: nowIso() };
   };
 
   const finalize = (state: WorkflowState): WorkflowStateUpdate => {
@@ -520,6 +604,7 @@ export function buildTestRunGraph(deps: TestRunGraphDeps = {}, opts: BuildTestRu
     .addNode('author_plans', authorPlansNode)
     .addNode('compile_and_validate', compileAndValidate)
     .addNode('execute_tests', executeTests)
+    .addNode('investigate_failures', investigateFailures)
     .addNode('finalize', finalize)
     .addEdge(START, 'load_context')
     .addEdge('load_context', 'discover_and_ground')
@@ -544,7 +629,11 @@ export function buildTestRunGraph(deps: TestRunGraphDeps = {}, opts: BuildTestRu
       finalize: 'finalize',
       execute_tests: 'execute_tests',
     })
-    .addEdge('execute_tests', 'finalize')
+    .addConditionalEdges('execute_tests', routeAfterExecuteTests, {
+      investigate_failures: 'investigate_failures',
+      finalize: 'finalize',
+    })
+    .addEdge('investigate_failures', 'finalize')
     .addEdge('finalize', END);
 
   return graph.compile({ checkpointer: opts.checkpointer });

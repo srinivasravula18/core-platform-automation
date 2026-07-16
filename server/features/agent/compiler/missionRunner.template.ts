@@ -7,7 +7,7 @@
  * Exported as a string so it can be written to disk verbatim; it is Playwright/TS and is executed by
  * `npx playwright test`, not by this project's tsc. Keep it dependency-free beyond @playwright/test.
  */
-export const MISSION_RUNNER_SOURCE = String.raw`import { expect, type Page, type Locator } from '@playwright/test';
+export const MISSION_RUNNER_SOURCE = String.raw`import { test, expect, type Page, type Locator } from '@playwright/test';
 
 export interface MissionSpec {
   platform: string;
@@ -18,6 +18,8 @@ export interface MissionSpec {
   tab: { id: string; name: string } | null;
   targetUrl: string;
   executionScope: string;
+  /** Compiler-derived: the plan sets field values AND clicks a submit-intent control (commits data). */
+  mutationIntent?: boolean;
 }
 
 /** Verified locator primitives — always sourced from the Selector Registry via the Grounding Engine. */
@@ -33,13 +35,59 @@ export interface LocatorSpec {
  * mission verification, and retries. Assertions/coverage/business logic live in the spec, never here.
  */
 export class MissionRunner {
+  private stepIndex = 0;
+  private shotCount = 0;
+  private static readonly MAX_STEP_SHOTS = 48;
+
   constructor(private page: Page, private mission: MissionSpec) {}
 
   /** The ONLY navigation entry-point for a mission. */
   async startMission(): Promise<void> {
-    await this.page.goto(this.mission.targetUrl).catch(() => {});
-    await this.page.waitForLoadState('domcontentloaded').catch(() => {});
-    await this.verify();
+    await this.act('startMission', null, this.mission.targetUrl, async () => {
+      await this.page.goto(this.mission.targetUrl).catch(() => {});
+      await this.page.waitForLoadState('domcontentloaded').catch(() => {});
+      await this.verify();
+    });
+  }
+
+  private info(): any {
+    try { return test.info(); } catch { return null; } // outside a test (unit harness) — evidence off
+  }
+
+  /** Bounded ordered step screenshot via testInfo.attach('step-N') — evidence only, never fails the test. */
+  private async captureStep(): Promise<void> {
+    const info = this.info();
+    if (!info || this.shotCount >= MissionRunner.MAX_STEP_SHOTS) return;
+    try {
+      this.stepIndex += 1;
+      this.shotCount += 1;
+      const body = await this.page.screenshot({ timeout: 4000 });
+      await info.attach('step-' + this.stepIndex, { body, contentType: 'image/png' });
+    } catch { /* evidence only */ }
+  }
+
+  /** Structured step-log entry (parsed server-side into TestResult.stepLogPath) — evidence only. */
+  private async logStep(entry: Record<string, unknown>): Promise<void> {
+    const info = this.info();
+    if (!info) return;
+    try { await info.attach('step-log', { body: Buffer.from(JSON.stringify(entry)), contentType: 'application/json' }); } catch { /* evidence only */ }
+  }
+
+  /** Wrap every interaction/assertion with before/after screenshots + a step-log record. */
+  private async act<T>(kind: string, spec: LocatorSpec | null, value: string | null, fn: () => Promise<T>): Promise<T> {
+    await this.captureStep();
+    const started = Date.now();
+    const label = spec ? (spec.label ?? spec.selector ?? null) : null;
+    try {
+      const out = await fn();
+      await this.captureStep();
+      await this.logStep({ n: this.stepIndex, kind, label, value, ok: true, ms: Date.now() - started });
+      return out;
+    } catch (e: any) {
+      await this.captureStep(); // the failure-state frame — what the page looked like when it broke
+      await this.logStep({ n: this.stepIndex, kind, label, value, ok: false, ms: Date.now() - started, error: String((e && e.message) || e).slice(0, 400) });
+      throw e;
+    }
   }
 
   private ctx(): { path: string; appId: string; nav: string } {
@@ -59,7 +107,16 @@ export class MissionRunner {
   async verify(): Promise<void> {
     let surfacePath = '';
     try { surfacePath = new URL(this.mission.targetUrl).pathname.replace(/\/+$/, ''); } catch { surfacePath = ''; }
-    const enforceAppId = this.mission.platformType === 'RUNTIME' && !!this.mission.application;
+    const appIdRaw = this.mission.application ? String(this.mission.application.id || '') : '';
+    const placeholderApp = !appIdRaw || /^__.+__$/.test(appIdRaw);
+    // Scope hardening: a data-mutating RUNTIME mission may never execute against a placeholder app id
+    // (e.g. __all_apps__) — the mutation would land in an arbitrary tenant app. Read-only sweeps stay allowed.
+    if (this.mission.platformType === 'RUNTIME' && this.mission.mutationIntent === true && placeholderApp) {
+      throw new Error('MISSION SCOPE VIOLATION [' + this.mission.executionScope + '] — a data-mutating mission cannot run against placeholder application "'
+        + (appIdRaw || 'none') + '". Pin ONE concrete tenant app before executing mutations.');
+    }
+    // A placeholder app id is never a verifiable pinned app — matching it against the URL param would be fake verification.
+    const enforceAppId = this.mission.platformType === 'RUNTIME' && !!this.mission.application && !placeholderApp;
     const wantAppId = enforceAppId && this.mission.application ? this.mission.application.id : '';
     const wantNav = this.mission.module ? this.mission.module.id : '';
     const onSurface = (c: { path: string }) => !surfacePath || c.path === surfacePath || c.path.startsWith(surfacePath + '/');
@@ -82,7 +139,11 @@ export class MissionRunner {
 
   /** Re-navigate to the mission (module is encoded in the mission targetUrl). */
   async openModule(): Promise<void> {
-    await this.startMission();
+    await this.act('openModule', null, this.mission.targetUrl, async () => {
+      await this.page.goto(this.mission.targetUrl).catch(() => {});
+      await this.page.waitForLoadState('domcontentloaded').catch(() => {});
+      await this.verify();
+    });
   }
 
   /**
@@ -98,24 +159,150 @@ export class MissionRunner {
   }
 
   // ---- Reveal-then-act interaction helpers (the compiler emits these instead of raw locator calls) ----
-  async click(spec: LocatorSpec): Promise<void> { const l = this.locator(spec); await this.reveal(l); await l.click(); }
-  async fill(spec: LocatorSpec, value: string): Promise<void> { const l = this.locator(spec); await this.reveal(l); await l.fill(String(value ?? '')); }
-  async select(spec: LocatorSpec, value: string): Promise<void> { const l = this.locator(spec); await this.reveal(l); await l.selectOption(String(value ?? '')); }
-  async check(spec: LocatorSpec): Promise<void> { const l = this.locator(spec); await this.reveal(l); await l.check(); }
-  async uncheck(spec: LocatorSpec): Promise<void> { const l = this.locator(spec); await this.reveal(l); await l.uncheck(); }
-  async hover(spec: LocatorSpec): Promise<void> { await this.reveal(this.locator(spec)); }
-  async press(spec: LocatorSpec, key: string): Promise<void> { const l = this.locator(spec); await this.reveal(l); await l.press(String(key || 'Enter')); }
-  async clear(spec: LocatorSpec): Promise<void> { const l = this.locator(spec); await this.reveal(l); await l.fill(''); }
+  // Every helper runs through act(): before/after step screenshot + step-log entry, then the interaction.
+  async click(spec: LocatorSpec): Promise<void> { await this.act('click', spec, null, async () => { const l = this.locator(spec); await this.reveal(l); await l.click(); }); }
+  async fill(spec: LocatorSpec, value: string): Promise<void> { await this.act('fill', spec, String(value ?? ''), async () => { const l = this.locator(spec); await this.reveal(l); await l.fill(String(value ?? '')); }); }
+  async select(spec: LocatorSpec, value: string): Promise<void> { await this.act('select', spec, String(value ?? ''), async () => { const l = this.locator(spec); await this.reveal(l); await l.selectOption(String(value ?? '')); }); }
+  async check(spec: LocatorSpec): Promise<void> { await this.act('check', spec, null, async () => { const l = this.locator(spec); await this.reveal(l); await l.check(); }); }
+  async uncheck(spec: LocatorSpec): Promise<void> { await this.act('uncheck', spec, null, async () => { const l = this.locator(spec); await this.reveal(l); await l.uncheck(); }); }
+  async hover(spec: LocatorSpec): Promise<void> { await this.act('hover', spec, null, async () => { await this.reveal(this.locator(spec)); }); }
+  async press(spec: LocatorSpec, key: string): Promise<void> { await this.act('press', spec, String(key || 'Enter'), async () => { const l = this.locator(spec); await this.reveal(l); await l.press(String(key || 'Enter')); }); }
+  async clear(spec: LocatorSpec): Promise<void> { await this.act('clear', spec, null, async () => { const l = this.locator(spec); await this.reveal(l); await l.fill(''); }); }
 
   // ---- Reveal-then-assert helpers ----
-  async expectVisible(spec: LocatorSpec): Promise<void> { const l = this.locator(spec); await this.reveal(l); await expect(l).toBeVisible(); }
-  async expectHidden(spec: LocatorSpec): Promise<void> { await expect(this.locator(spec)).toBeHidden(); }
-  async expectEnabled(spec: LocatorSpec): Promise<void> { const l = this.locator(spec); await this.reveal(l); await expect(l).toBeEnabled(); }
-  async expectDisabled(spec: LocatorSpec): Promise<void> { const l = this.locator(spec); await this.reveal(l); await expect(l).toBeDisabled(); }
-  async expectText(spec: LocatorSpec, value: string): Promise<void> { const l = this.locator(spec); await this.reveal(l); await expect(l).toContainText(String(value ?? '')); }
-  async expectNotText(spec: LocatorSpec, value: string): Promise<void> { await expect(this.locator(spec)).not.toContainText(String(value ?? '')); }
-  async expectValue(spec: LocatorSpec, value: string): Promise<void> { const l = this.locator(spec); await this.reveal(l); await expect(l).toHaveValue(String(value ?? '')); }
-  async expectCountGt(spec: LocatorSpec, n: number): Promise<void> { expect(await this.locator(spec).count()).toBeGreaterThan(Number(n) || 0); }
+  async expectVisible(spec: LocatorSpec): Promise<void> { await this.act('expectVisible', spec, null, async () => { const l = this.locator(spec); await this.reveal(l); await expect(l).toBeVisible(); }); }
+  async expectHidden(spec: LocatorSpec): Promise<void> { await this.act('expectHidden', spec, null, async () => { await expect(this.locator(spec)).toBeHidden(); }); }
+  async expectEnabled(spec: LocatorSpec): Promise<void> { await this.act('expectEnabled', spec, null, async () => { const l = this.locator(spec); await this.reveal(l); await expect(l).toBeEnabled(); }); }
+  async expectDisabled(spec: LocatorSpec): Promise<void> { await this.act('expectDisabled', spec, null, async () => { const l = this.locator(spec); await this.reveal(l); await expect(l).toBeDisabled(); }); }
+  async expectText(spec: LocatorSpec, value: string): Promise<void> { await this.act('expectText', spec, String(value ?? ''), async () => { const l = this.locator(spec); await this.reveal(l); await expect(l).toContainText(String(value ?? '')); }); }
+  async expectNotText(spec: LocatorSpec, value: string): Promise<void> { await this.act('expectNotText', spec, String(value ?? ''), async () => { await expect(this.locator(spec)).not.toContainText(String(value ?? '')); }); }
+  async expectValue(spec: LocatorSpec, value: string): Promise<void> { await this.act('expectValue', spec, String(value ?? ''), async () => { const l = this.locator(spec); await this.reveal(l); await expect(l).toHaveValue(String(value ?? '')); }); }
+  async expectCountGt(spec: LocatorSpec, n: number): Promise<void> { await this.act('expectCountGt', spec, String(n), async () => { expect(await this.locator(spec).count()).toBeGreaterThan(Number(n) || 0); }); }
+
+  // ---- Multi-level context asserts (Phase 4) — mission/page-scoped, owned by the runner ----
+  // These are the ONLY sanctioned URL/status/search observations; specs pass expected TEXT, never selectors.
+
+  /** URL contains the fragment (or matches /regex/). The one sanctioned URL assertion. */
+  async expectUrl(fragment: string): Promise<void> {
+    await this.act('expectUrl', null, fragment, async () => {
+      const want = String(fragment || '');
+      const m = /^\/(.+)\/([a-z]*)$/.exec(want);
+      const re = m ? new RegExp(m[1], m[2]) : new RegExp(want.replace(/[.*+?^$\{\}()|[\]\\]/g, '\\$&'));
+      await expect(this.page).toHaveURL(re, { timeout: 10000 });
+    });
+  }
+
+  /** A toast/alert/status region (ARIA roles/live regions — app-agnostic) shows the expected text. */
+  async expectStatusRegion(text: string): Promise<void> {
+    await this.act('expectStatusRegion', null, text, async () => {
+      const region = this.page.locator('[role="alert"], [role="status"], [aria-live="polite"], [aria-live="assertive"]')
+        .filter({ hasText: String(text || '') });
+      await expect(region.first()).toBeVisible({ timeout: 10000 });
+    });
+  }
+
+  /** The page/list shows an EMPTY state: the given empty-state text when provided, else zero data rows. */
+  async expectEmptyState(text?: string | null): Promise<void> {
+    await this.act('expectEmptyState', null, text ?? null, async () => {
+      if (text && String(text).trim()) {
+        await expect(this.page.getByText(String(text), { exact: false }).first()).toBeVisible({ timeout: 10000 });
+        return;
+      }
+      // No text given: rows beyond a header row must not exist (role=row covers grids and tables).
+      const rows = this.page.getByRole('row');
+      await expect.poll(async () => await rows.count(), { timeout: 10000 }).toBeLessThanOrEqual(1);
+    });
+  }
+
+  /** An ERROR state is visible: an alert region or an invalid-marked control carrying the expected text. */
+  async expectErrorState(text: string): Promise<void> {
+    await this.act('expectErrorState', null, text, async () => {
+      const want = String(text || '');
+      const alert = this.page.locator('[role="alert"], [aria-invalid="true"], [aria-errormessage]');
+      const scoped = want.trim() ? alert.filter({ hasText: want }) : alert;
+      const fallback = want.trim() ? this.page.getByText(want, { exact: false }) : alert;
+      const found = (await scoped.count()) > 0 ? scoped : fallback;
+      await expect(found.first()).toBeVisible({ timeout: 10000 });
+    });
+  }
+
+  /** A data row containing the text exists in the current list/grid (role=row — app-agnostic). */
+  async expectRowInList(text: string): Promise<void> {
+    await this.act('expectRowInList', null, text, async () => {
+      const row = this.page.getByRole('row').filter({ hasText: String(text || '') });
+      await expect(row.first()).toBeVisible({ timeout: 15000 });
+    });
+  }
+
+  /** Global search (the page-level searchbox) finds the text — the cross-source consistency probe. */
+  async searchGlobalFor(text: string): Promise<void> {
+    await this.act('searchGlobalFor', null, text, async () => {
+      const want = String(text || '');
+      const box = this.page.getByRole('searchbox').first();
+      if (await box.count() === 0) {
+        throw new Error('GLOBAL SEARCH UNAVAILABLE [' + this.mission.executionScope + '] — no searchbox role found on the page, so "' + want + '" could not be cross-checked.');
+      }
+      await box.fill(want);
+      await box.press('Enter');
+      await this.page.waitForTimeout(800); // results render async; bounded settle
+      await expect(this.page.getByText(want, { exact: false }).first()).toBeVisible({ timeout: 15000 });
+    });
+  }
+
+  // ---- Real VERIFY_* expansions (Phase 4) — richer than bare visibility, still evidence-scoped ----
+
+  /** A grounded table/grid is visible; with expected text, a matching data row must exist too. */
+  async expectTable(spec: LocatorSpec, value?: string): Promise<void> {
+    await this.act('expectTable', spec, value ?? null, async () => {
+      const l = this.locator(spec);
+      await this.reveal(l);
+      await expect(l).toBeVisible();
+      if (String(value || '').trim()) {
+        await expect(this.page.getByRole('row').filter({ hasText: String(value) }).first()).toBeVisible({ timeout: 10000 });
+      }
+    });
+  }
+
+  /** After filtering, the grounded scope is visible and (when expected text is given) shows a matching row. */
+  async expectFiltered(spec: LocatorSpec, value: string): Promise<void> {
+    await this.act('expectFiltered', spec, value, async () => {
+      const l = this.locator(spec);
+      await this.reveal(l);
+      await expect(l).toBeVisible();
+      if (String(value || '').trim()) {
+        await expect(this.page.getByRole('row').filter({ hasText: String(value) }).first()).toBeVisible({ timeout: 10000 });
+      }
+    });
+  }
+
+  /** Column values are actually ORDERED (value hints 'desc'); falls back to visibility when unreadable. */
+  async expectSorted(spec: LocatorSpec, value: string): Promise<void> {
+    await this.act('expectSorted', spec, value, async () => {
+      const l = this.locator(spec);
+      await this.reveal(l);
+      await expect(l).toBeVisible();
+      const texts = (await this.page.getByRole('row').allInnerTexts()).slice(1, 21)
+        .map((t) => String(t || '').split('\n')[0].trim().toLowerCase()).filter(Boolean);
+      if (texts.length >= 2) {
+        const sorted = [...texts].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+        if (/\bdesc/i.test(String(value || ''))) sorted.reverse();
+        expect(texts).toEqual(sorted);
+      }
+    });
+  }
+
+  /** A validation failure is visible for the grounded control (invalid marking or an alert nearby). */
+  async expectValidation(spec: LocatorSpec, value: string): Promise<void> {
+    await this.act('expectValidation', spec, value, async () => {
+      const l = this.locator(spec);
+      await this.reveal(l);
+      const invalid = (await l.getAttribute('aria-invalid').catch(() => null)) === 'true';
+      if (invalid) return;
+      const alert = this.page.locator('[role="alert"], [aria-invalid="true"], [aria-errormessage]');
+      const scoped = String(value || '').trim() ? alert.filter({ hasText: String(value) }) : alert;
+      await expect(scoped.first()).toBeVisible({ timeout: 10000 });
+    });
+  }
 
   /** Build a Playwright Locator from VERIFIED primitives only — never invents a selector. */
   locator(spec: LocatorSpec): Locator {

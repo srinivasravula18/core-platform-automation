@@ -10,11 +10,14 @@
  * Secrets: the resolved credential lives only in the per-run resolveCredential closure; it is never
  * written to state, checkpoints, projections, or events. Projections whitelist seed fields explicitly.
  */
+import { readFile } from 'fs/promises';
 import { Command, isInterrupted } from '@langchain/langgraph';
-import { AgentRuns, AgentRunEvents } from '../../../db/repository';
+import { AgentRuns, AgentRunEvents, Defects } from '../../../db/repository';
 import { db } from '../../../shared/storage';
 import { readArtifacts } from './artifactStash';
 import { getWorkflowCheckpointer } from './checkpointer';
+import { buildDefectDrafts, type DefectReport, type PriorRunSummary, type StepLogEntry } from './defectReporter';
+import { buildAnalystReport, isAnalystEnabled, type AnalystReport } from './analyst';
 import { startEvent, terminalEvent, type WorkflowEvent } from './events';
 import { buildTestRunGraph, getAuthoredCases, type TestRunGraphDeps } from './testRunGraph';
 import {
@@ -208,6 +211,25 @@ export function projectStateToLegacyRun(state: WorkflowState, seed?: any): any {
       if (Array.isArray(seed?.evidence_screenshots) && seed.evidence_screenshots.length) return seed.evidence_screenshots;
       return [];
     })(),
+    // Per-case verdicts in the legacy shape — persists into agent_runs.raw, which is what regression
+    // detection (defectReporter priorRuns) and the run UI read. Never downgrade a projected result.
+    execution_result: (() => {
+      const agg = state.execution?.aggregate;
+      const tests = readArtifacts(state.runId).executionTests;
+      if (agg && tests?.length) {
+        return {
+          ok: agg.failed === 0,
+          total: agg.totalCases,
+          passed: agg.passed,
+          failed: agg.failed,
+          skipped: Math.max(0, agg.totalCases - agg.passed - agg.failed),
+          tests: tests.map((t) => ({ title: t.title, status: t.status, durationMs: t.durationMs, error: t.error })),
+        };
+      }
+      return seed?.execution_result ?? null;
+    })(),
+    // Release-intelligence report (AGENT_ANALYST) — set on the seed by the runAnalyst terminal hook.
+    analyst_report: seed?.analyst_report ?? null,
     engine: 'langgraph',
   };
   for (const key of SEED_FIELDS) {
@@ -261,6 +283,206 @@ async function projectTerminalOverride(runId: string, entry: RunRegistryEntry, s
   const messages = [...(Array.isArray(base.messages) ? base.messages : []), { agent: 'Workflow', status, output: line }].slice(-MAX_PROJECTED_MESSAGES);
   entry.legacy = { ...base, status, messages, pending_review: null };
   await upsertSafe(runId, entry.legacy);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Terminal hooks — best-effort post-run enrichment; NEVER allowed to fail the run.
+// ---------------------------------------------------------------------------------------------
+
+/** Newest-first per-case verdicts from prior agent runs (execution_result persists inside agent_runs.raw). */
+async function loadPriorRunSummaries(excludeRunId: string): Promise<PriorRunSummary[]> {
+  const runs = await AgentRuns.list().catch(() => [] as any[]);
+  const summaries: PriorRunSummary[] = [];
+  for (const r of runs) {
+    if (!r || r.id === excludeRunId) continue;
+    const tests = r.execution_result?.tests;
+    if (!Array.isArray(tests) || !tests.length) continue;
+    const verdicts: Record<string, string> = {};
+    for (const t of tests) if (t?.title) verdicts[String(t.title)] = String(t.status || '');
+    summaries.push({ runId: r.id, at: r.updated_at || r.updatedAt || r.created_at || r.createdAt, verdicts });
+    if (summaries.length >= 20) break; // bounded: regression looks back, not forever
+  }
+  return summaries;
+}
+
+async function readJsonSafe<T>(path: string | undefined): Promise<T | null> {
+  if (!path) return null;
+  try { return JSON.parse(await readFile(path, 'utf8')) as T; } catch { return null; }
+}
+
+/**
+ * Terminal hook: file ONE professional clustered defect per failure signature for a finished run
+ * (plus occurrence updates on existing same-signature defects). Returns the filed report so the
+ * analyst can roll it up. Exported for tests. Never throws.
+ */
+export async function fileDefectsForRun(state: WorkflowState, seed?: any): Promise<DefectReport | null> {
+  try {
+    const tests = readArtifacts(state.runId).executionTests ?? [];
+    const hasFailures = tests.some((t) => t.status !== 'passed' && t.status !== 'skipped');
+    // Suspicious passes (intent judge) file defects even on an all-green run — the whole point.
+    const hasSuspiciousPasses = (readArtifacts(state.runId).investigation?.suspiciousPasses?.length ?? 0) > 0;
+    if (!hasFailures && !hasSuspiciousPasses) return null;
+
+    const stepLogsByTitle: Record<string, StepLogEntry[]> = {};
+    const consoleByTitle: Record<string, Array<{ type?: string; text?: string }>> = {};
+    for (const t of tests) {
+      const steps = await readJsonSafe<StepLogEntry[]>(t.stepLogPath);
+      if (steps?.length) stepLogsByTitle[t.title] = steps;
+      const consoleLog = await readJsonSafe<Array<{ type?: string; text?: string }>>(t.consoleLogPath);
+      if (consoleLog?.length) consoleByTitle[t.title] = consoleLog.slice(0, 10);
+    }
+
+    const [priorRuns, existingDefects] = await Promise.all([
+      loadPriorRunSummaries(state.runId),
+      Defects.list().catch(() => [] as any[]),
+    ]);
+
+    const fullCases = getAuthoredCases(state.runId);
+    // The compiler embeds its plan-derived mutation intent in each MISSION spec — any mutating case marks the run.
+    const compiledSources = readArtifacts(state.runId).compiledSources ?? {};
+    const mutationIntent = Object.values(compiledSources).some((code) => code.includes('"mutationIntent":true'));
+    const report = buildDefectDrafts({
+      runId: state.runId,
+      mutationIntent,
+      // linked_run_id is an FK into the runs table — only safe when the seed carries a real runs-row id.
+      runRecordId: null,
+      baseUrl: state.mission?.targetUrl,
+      missionScope: state.mission?.executionScope,
+      appLabel: state.mission?.applicationId ?? undefined,
+      cases: fullCases.length ? fullCases : state.cases,
+      tests,
+      evidenceShots: readArtifacts(state.runId).evidenceShots,
+      stepLogsByTitle,
+      consoleByTitle,
+      priorRuns,
+      existingDefects,
+      scope: {
+        projectId: seed?.projectId ?? state.projectId ?? null,
+        appId: seed?.appId ?? state.applicationId ?? null,
+        ownerId: seed?.ownerId ?? null,
+      },
+    });
+
+    // Merge investigation findings (AGENT_INVESTIGATE) into the matching drafts by failure signature.
+    const investigation = readArtifacts(state.runId).investigation;
+    if (investigation) {
+      for (const draft of report.drafts) {
+        const finding = investigation.findings.find((f) => f.signature === draft.metadata.signature);
+        if (!finding) continue;
+        draft.metadata.investigation = {
+          classification: finding.classification,
+          rootCauseArea: finding.rootCauseArea,
+          confidence: finding.confidence,
+          observations: finding.observations,
+          suggestedAreas: finding.suggestedAreas,
+          source: finding.source,
+        };
+        if (finding.flaky) {
+          // A re-run pass demotes the deterministic-bug reading: keep the defect, mark + soften it.
+          draft.metadata.recoveryAttempts = investigation.recoveryAttempts.filter((r) => finding.affectedTests.includes(r.target));
+          draft.tags = Array.from(new Set([...draft.tags, '@flaky']));
+          if (draft.severity === 'High') draft.severity = 'Medium';
+        }
+        if (finding.severity && !finding.flaky) draft.severity = finding.severity as typeof draft.severity;
+      }
+      // Suspicious PASSES (intent-outcome judge): assertions passed but the intent was not satisfied —
+      // the App1 false-PASS class. Filed as their own defects; ids idempotent per run+title.
+      const runId8 = state.runId.replace(/[^a-zA-Z0-9]/g, '').slice(0, 8).toUpperCase() || 'RUN';
+      investigation.suspiciousPasses.forEach((sp, i) => {
+        report.drafts.push({
+          id: `DEF-AUTO-${runId8}-INTENT${i + 1}`,
+          title: `[Auto][Suspicious PASS] ${sp.title}`.slice(0, 180),
+          description: `${sp.reason}\n\nConfidence: ${Math.round(sp.confidence * 100)}%.\n\nThe test PASSED its assertions, but the intent-outcome judge found the case's intent was NOT satisfied.`,
+          stepsToReproduce: '(see the linked run — replay the case and verify the OUTCOME, not just the assertions)',
+          expected: 'The flow accomplishes the case intent end-to-end (correct record, correct app, correct state).',
+          actual: sp.reason,
+          severity: 'High',
+          status: 'Open',
+          linkedRunId: null,
+          evidence: (readArtifacts(state.runId).evidenceShots ?? []).filter((s) => String(s.title || '').startsWith(sp.title)),
+          tags: ['@auto', '@intent', '@suspicious-pass'],
+          approvalState: 'approved',
+          proposedBy: 'QA Assistant',
+          sourceRunId: state.runId,
+          projectId: seed?.projectId ?? state.projectId ?? null,
+          appId: seed?.appId ?? state.applicationId ?? null,
+          ownerId: seed?.ownerId ?? null,
+          metadata: {
+            signature: `intent-${i + 1}`,
+            errorKind: 'intent-mismatch',
+            failingTarget: null,
+            normalizedMessage: sp.reason.toLowerCase().slice(0, 220),
+            frequency: 1,
+            affectedTests: [sp.title],
+            regression: false,
+            risk: { score: 75, level: 'high', factors: ['assertions passed while the intent failed — silent product defect class'] },
+            environment: { runId: state.runId, url: state.mission?.targetUrl ?? '', app: state.mission?.applicationId ?? '', missionScope: state.mission?.executionScope ?? '', browser: 'chromium (headless)', engine: 'langgraph' },
+            testDataUsed: [],
+            consoleErrors: [],
+            occurrences: 1,
+            firstSeenRunId: state.runId,
+            lastSeenRunId: state.runId,
+            suspiciousPass: true,
+            investigation: { classification: 'data', rootCauseArea: 'intent-outcome', confidence: sp.confidence, observations: sp.observations, suggestedAreas: [], source: 'llm+deterministic' },
+          },
+        });
+      });
+    }
+
+    await persistDefectReport(report, state.runId);
+    return report;
+  } catch (err) {
+    console.warn(`[workflow] run ${state.runId}: defect filing failed: ${err instanceof Error ? err.message : String(err)}`);
+    return null;
+  }
+}
+
+/**
+ * Terminal hook (flag `AGENT_ANALYST`): build the per-run release-intelligence report and land it on the
+ * run record (`analyst_report`) + a run message. Exported for tests. Never throws; flag off → null.
+ */
+export async function runAnalyst(state: WorkflowState, seed: any, defectReport: DefectReport | null): Promise<AnalystReport | null> {
+  try {
+    if (!isAnalystEnabled()) return null;
+    const arts = readArtifacts(state.runId);
+    const report = await buildAnalystReport({
+      runId: state.runId,
+      aggregate: state.execution?.aggregate ?? null,
+      tests: arts.executionTests ?? [],
+      priorRuns: await loadPriorRunSummaries(state.runId),
+      defectReport,
+      investigation: arts.investigation ?? null,
+      visualFindings: arts.visualFindings ?? null,
+    });
+    if (seed && typeof seed === 'object') {
+      seed.analyst_report = report;
+      const line = `Release risk ${report.riskScore}/100 — ${report.recommendation.toUpperCase()}. ${report.rationale[0] ?? ''}`;
+      seed.messages = [...(Array.isArray(seed.messages) ? seed.messages : []), { agent: 'QAAnalyst', status: 'completed', output: line.slice(0, 300) }];
+    }
+    return report;
+  } catch (err) {
+    console.warn(`[workflow] run ${state.runId}: analyst failed: ${err instanceof Error ? err.message : String(err)}`);
+    return null;
+  }
+}
+
+/** Persist a DefectReport: upsert drafts (idempotent ids), apply occurrence updates at most once per run. */
+export async function persistDefectReport(report: DefectReport, runId: string): Promise<void> {
+  for (const draft of report.drafts) await Defects.upsert(draft);
+  for (const update of report.updates) {
+    const current = await Defects.get(update.id).catch(() => null);
+    if (!current) continue;
+    // Both the graph hook and the legacy artifact path may fire for one run — bump occurrences only once.
+    if (String(current.metadata?.lastSeenRunId || '') === runId) continue;
+    await Defects.upsert({
+      ...current,
+      tags: update.tags,
+      metadata: { ...(current.metadata ?? {}), ...update.metadata },
+    });
+  }
+  if (report.drafts.length || report.updates.length) {
+    console.log(`[workflow] run ${runId}: filed ${report.drafts.length} defect(s), updated ${report.updates.length}`);
+  }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -330,6 +552,9 @@ async function pump(runId: string, entry: RunRegistryEntry, input: unknown): Pro
 
     const finalState = ((snapshot?.values as WorkflowState | undefined)?.runId ? snapshot.values : lastState) as WorkflowState | null;
     if (finalState) {
+      // Terminal enrichment hooks run BEFORE the last projection so their outputs land on the final record.
+      const defectReport = await fileDefectsForRun(finalState, entry.legacy);
+      await runAnalyst(finalState, entry.legacy, defectReport);
       await projectAndPersist(runId, entry, finalState, null);
       await appendEventSafe(terminalEvent(
         { runId, threadId, node: 'workflow', attempt: ++entry.eventSeq },
