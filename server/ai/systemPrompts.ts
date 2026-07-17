@@ -327,6 +327,8 @@ Rules:
 - Do not include credentials, filler words, or full URLs. Use the hostname's first label.
 - Return ONLY the name string. No quotes, no explanation.`,
 
+  // Conversational Runtime Phase 3+: this LLM classification is a PROPOSAL only — the deterministic
+  // capability router (services/runtime) is the target authority; do not grow this taxonomy.
   goalRouter: `You are the single ROUTER. Your ONLY job is to classify the user's LATEST message into one routing decision and return it as JSON. You do NOT answer the message, chat, run tools, or perform the task — a separate agent does that after you route. Classify only.
 
 Routing destinations (kind):

@@ -378,6 +378,11 @@ function mapAgentRun(r: any) {
   const raw = r.raw && typeof r.raw === 'object' ? r.raw : {};
   return {
     ...raw,
+    // First-class columns (Phase 1) win over their raw copies when populated.
+    conversationId: r.conversation_id || raw.conversationId || undefined,
+    execution_result: r.execution_result ?? raw.execution_result ?? null,
+    completed_at: r.completed_at ?? raw.completed_at ?? null,
+    artifactSetId: r.artifact_set_id || raw.artifactSetId || undefined,
     id: r.id,
     app_url: r.app_url,
     appUrl: r.app_url,
@@ -470,9 +475,72 @@ export const AgentRuns = {
        JSON.stringify(a.credentials || {}), artifactName, JSON.stringify(raw), a.createdAt || a.created_at || null],
     );
     await writeScopeCols('agent_runs', id, a);
+    await writeConversationCols(id, a);
     return mapAgentRun(row);
   },
+  /** Scoped point read: id must match AND every provided scope field must match (or be legacy-null). */
+  async getScoped(id: string, scope: { ownerId?: string; projectId?: string; appId?: string } = {}): Promise<any | null> {
+    const run = await this.get(id);
+    if (!run) return null;
+    return runMatchesScope(run, scope) ? run : null;
+  },
+  /** Indexed conversation-scoped list (newest first) — replaces list()+filter for conversation reads. */
+  async listByConversation(conversationId: string, opts: { limit?: number; scope?: { ownerId?: string; projectId?: string; appId?: string } } = {}): Promise<any[]> {
+    const id = String(conversationId || '').trim();
+    if (!id) return [];
+    const limit = Math.min(200, opts.limit || 20);
+    let runs: any[];
+    if (!isPgEnabled()) {
+      runs = (db.agentRuns as any[])
+        .filter((r) => (r.conversationId || r.raw?.conversationId) === id)
+        .sort((a, b) => String(b.created_at || b.createdAt || '').localeCompare(String(a.created_at || a.createdAt || '')))
+        .slice(0, limit);
+    } else {
+      const rows = await query(
+        `SELECT * FROM agent_runs WHERE conversation_id = $1 ORDER BY created_at DESC LIMIT $2`,
+        [id, limit],
+      );
+      runs = rows.map(mapAgentRun);
+    }
+    return opts.scope ? runs.filter((r) => runMatchesScope(r, opts.scope!)) : runs;
+  },
+  /** Latest conversation-linked run; terminal=true restricts to completed/failed/cancelled runs. */
+  async latestByConversation(conversationId: string, opts: { terminal?: boolean; scope?: { ownerId?: string; projectId?: string; appId?: string } } = {}): Promise<any | null> {
+    const runs = await this.listByConversation(conversationId, { limit: 50, scope: opts.scope });
+    const eligible = opts.terminal
+      ? runs.filter((r) => ['completed', 'failed', 'cancelled'].includes(String(r.status || '')))
+      : runs;
+    return eligible[0] || null;
+  },
 };
+
+/** A run matches a scope when each requested field equals the row's value; legacy rows with an empty field pass. */
+function runMatchesScope(run: any, scope: { ownerId?: string; projectId?: string; appId?: string }): boolean {
+  for (const key of ['ownerId', 'projectId', 'appId'] as const) {
+    const want = scope[key];
+    if (want && run[key] && run[key] !== want) return false;
+  }
+  return true;
+}
+
+/** Dual-write the Phase-1 first-class conversation/execution columns after the raw upsert (PG only). */
+async function writeConversationCols(id: string, src: any): Promise<void> {
+  if (!isPgEnabled() || !id) return;
+  const conversationId = src?.conversationId || null;
+  const executionResult = src?.execution_result ?? src?.executionResult ?? null;
+  const completedAt = src?.completed_at ?? src?.completedAt ?? null;
+  const artifactSetId = src?.artifactSetId ?? src?.artifact_set_id ?? null;
+  if (!conversationId && !executionResult && !completedAt && !artifactSetId) return;
+  await query(
+    `UPDATE agent_runs SET
+       conversation_id  = COALESCE($2, conversation_id),
+       execution_result = COALESCE($3::jsonb, execution_result),
+       completed_at     = COALESCE($4::timestamptz, completed_at),
+       artifact_set_id  = COALESCE($5, artifact_set_id)
+     WHERE id = $1`,
+    [id, conversationId, executionResult ? JSON.stringify(executionResult) : null, completedAt, artifactSetId],
+  );
+}
 
 /* ---------- scripts ---------- */
 
@@ -1204,10 +1272,25 @@ function mapConversation(r: any, includeTurns = true) {
     id: r.id,
     workspaceId: r.workspace_id,
     title: r.title || '',
+    ownerId: r.owner_id || '',
+    projectId: r.project_id || '',
+    appId: r.app_id || '',
     ...(includeTurns ? { turns: r.turns || [] } : { turnCount: Array.isArray(r.turns) ? r.turns.length : 0 }),
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   };
+}
+
+/** Stamp conversation scope columns post-upsert; COALESCE keeps an existing owner (PG only). */
+async function writeConversationScope(id: string, src: { ownerId?: string; projectId?: string; appId?: string }): Promise<void> {
+  if (!isPgEnabled() || !id) return;
+  if (!src.ownerId && !src.projectId && !src.appId) return;
+  await query(
+    `UPDATE chat_conversations SET owner_id = COALESCE(NULLIF($2, ''), owner_id),
+       project_id = COALESCE(NULLIF($3, ''), project_id), app_id = COALESCE(NULLIF($4, ''), app_id)
+     WHERE id = $1`,
+    [id, src.ownerId || '', src.projectId || '', src.appId || ''],
+  );
 }
 
 export const ChatConversations = {
@@ -1217,7 +1300,7 @@ export const ChatConversations = {
       return (db as any).chatConversations
         .filter((c: any) => c.workspaceId === workspaceId)
         .sort((a: any, b: any) => String(b.updatedAt).localeCompare(String(a.updatedAt)))
-        .map((c: any) => ({ id: c.id, workspaceId: c.workspaceId, title: c.title || '', turnCount: (c.turns || []).length, createdAt: c.createdAt, updatedAt: c.updatedAt }));
+        .map((c: any) => ({ id: c.id, workspaceId: c.workspaceId, title: c.title || '', ownerId: c.ownerId || '', projectId: c.projectId || '', appId: c.appId || '', turnCount: (c.turns || []).length, createdAt: c.createdAt, updatedAt: c.updatedAt }));
     }
     const rows = await query(`SELECT c.id, c.workspace_id, c.title, c.turns, c.created_at, c.updated_at,
       GREATEST((SELECT COUNT(*)::int FROM chat_messages m WHERE m.conversation_id = c.id), COALESCE(jsonb_array_length(c.turns), 0)) AS message_count
@@ -1248,16 +1331,17 @@ export const ChatConversations = {
     const rows = await query('SELECT seq, role, kind, content, payload FROM chat_messages WHERE conversation_id = $1 ORDER BY seq', [id]);
     return rows.map((row: any) => ({ ...row, seq: Number(row.seq) }));
   },
-  async updateMetadata(c: { id: string; workspaceId?: string; title?: string }): Promise<any> {
+  async updateMetadata(c: { id: string; workspaceId?: string; title?: string; ownerId?: string; projectId?: string; appId?: string }): Promise<any> {
     if (!isPgEnabled()) {
       ensureChat();
       const idx = (db as any).chatConversations.findIndex((x: any) => x.id === c.id);
       const now = new Date().toISOString();
       if (idx >= 0) {
-        Object.assign((db as any).chatConversations[idx], { workspaceId: c.workspaceId || (db as any).chatConversations[idx].workspaceId, title: c.title ?? (db as any).chatConversations[idx].title, updatedAt: now });
-        return (db as any).chatConversations[idx];
+        const row = (db as any).chatConversations[idx];
+        Object.assign(row, { workspaceId: c.workspaceId || row.workspaceId, title: c.title ?? row.title, ownerId: row.ownerId || c.ownerId || '', updatedAt: now });
+        return row;
       }
-      const rec = { id: c.id, workspaceId: c.workspaceId || 'default', title: c.title || '', turns: [], messages: [], createdAt: now, updatedAt: now };
+      const rec = { id: c.id, workspaceId: c.workspaceId || 'default', title: c.title || '', ownerId: c.ownerId || '', projectId: c.projectId || '', appId: c.appId || '', turns: [], messages: [], createdAt: now, updatedAt: now };
       (db as any).chatConversations.unshift(rec);
       return rec;
     }
@@ -1268,6 +1352,7 @@ export const ChatConversations = {
        RETURNING *`,
       [c.id, c.workspaceId || 'default', c.title || ''],
     );
+    await writeConversationScope(c.id, c);
     return mapConversation(r, true);
   },
   async appendMessages(c: { id: string; workspaceId?: string; title?: string; messages: any[] }): Promise<any> {
@@ -1304,16 +1389,17 @@ export const ChatConversations = {
     });
     return this.get(c.id);
   },
-  async upsert(c: { id: string; workspaceId?: string; title?: string; turns?: any[] }): Promise<any> {
+  async upsert(c: { id: string; workspaceId?: string; title?: string; turns?: any[]; ownerId?: string; projectId?: string; appId?: string }): Promise<any> {
     if (!isPgEnabled()) {
       ensureChat();
       const idx = (db as any).chatConversations.findIndex((x: any) => x.id === c.id);
       const now = new Date().toISOString();
       if (idx >= 0) {
-        (db as any).chatConversations[idx] = { ...(db as any).chatConversations[idx], ...c, updatedAt: now };
+        const prior = (db as any).chatConversations[idx];
+        (db as any).chatConversations[idx] = { ...prior, ...c, ownerId: prior.ownerId || c.ownerId || '', updatedAt: now };
         return (db as any).chatConversations[idx];
       }
-      const rec = { id: c.id, workspaceId: c.workspaceId || 'default', title: c.title || '', turns: c.turns || [], createdAt: now, updatedAt: now };
+      const rec = { id: c.id, workspaceId: c.workspaceId || 'default', title: c.title || '', ownerId: c.ownerId || '', projectId: c.projectId || '', appId: c.appId || '', turns: c.turns || [], createdAt: now, updatedAt: now };
       (db as any).chatConversations.unshift(rec);
       return rec;
     }
@@ -1325,6 +1411,7 @@ export const ChatConversations = {
        RETURNING *`,
       [c.id, c.workspaceId || 'default', c.title || '', JSON.stringify(c.turns || [])],
     );
+    await writeConversationScope(c.id, c);
     return mapConversation(r, true);
   },
   async remove(id: string): Promise<boolean> {
@@ -1920,6 +2007,383 @@ export const AutomationEvents = {
       [scopeType, scopeId, sinceSeq],
     );
     return rows.map(mapAutomationEvent);
+  },
+};
+
+/* ---------- Conversational Runtime Phase 1 — session snapshot, events, entity refs, canonical messages ---------- */
+/* Additive persistence for services/runtime (no live route consumes these yet). PG mode gives the real
+   concurrency guarantees (advisory lock + optimistic version + source_key idempotency); JSON mode is a
+   single-process development adapter with the same observable semantics. */
+
+function mapSession(r: any) {
+  if (!r) return null;
+  return {
+    conversationId: r.conversation_id,
+    ownerId: r.owner_id || '',
+    workspaceId: r.workspace_id || 'default',
+    projectId: r.project_id || null,
+    state: r.state && typeof r.state === 'object' ? r.state : {},
+    version: Number(r.version || 0),
+    schemaVersion: Number(r.schema_version || 1),
+    lastEventSeq: Number(r.last_event_seq || 0),
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+  };
+}
+
+function mapSessionEvent(r: any) {
+  return {
+    conversationId: r.conversation_id,
+    seq: Number(r.seq),
+    eventId: r.event_id,
+    eventType: r.event_type,
+    payload: r.payload || {},
+    sourceKey: r.source_key,
+    correlationId: r.correlation_id || null,
+    causationId: r.causation_id || null,
+    actorId: r.actor_id || null,
+    createdAt: r.created_at,
+  };
+}
+
+export type SessionCommitInput = {
+  conversationId: string;
+  ownerId?: string;
+  workspaceId?: string;
+  projectId?: string | null;
+  /** Full replacement SessionContext snapshot; omit to append events without changing state. */
+  state?: any;
+  /** Optimistic concurrency: commit fails with conflict when the stored version differs. */
+  expectedVersion?: number;
+  events?: Array<{
+    eventId?: string;
+    eventType: string;
+    payload?: any;
+    sourceKey: string;
+    correlationId?: string;
+    causationId?: string;
+    actorId?: string;
+  }>;
+};
+
+export type SessionCommitResult =
+  | { ok: true; session: any; appendedEvents: number }
+  | { ok: false; conflict: true; currentVersion: number };
+
+export const ConversationSessions = {
+  async get(conversationId: string): Promise<any | null> {
+    if (!isPgEnabled()) {
+      return mapSession((db.conversationSessions as any[]).find((s) => s.conversation_id === conversationId) || null);
+    }
+    return mapSession(await queryOne('SELECT * FROM conversation_sessions WHERE conversation_id = $1', [conversationId]));
+  },
+  /** One atomic commit: version check → idempotent event append (source_key) → snapshot update. */
+  async commit(cmd: SessionCommitInput): Promise<SessionCommitResult> {
+    const conversationId = String(cmd.conversationId || '').trim();
+    if (!conversationId) throw new Error('ConversationSessions.commit: conversationId required');
+    const events = cmd.events || [];
+    if (!isPgEnabled()) {
+      // Single-process JSON adapter: no awaits between read and write keeps this atomic.
+      const rows = db.conversationSessions as any[];
+      let row = rows.find((s) => s.conversation_id === conversationId);
+      const current = Number(row?.version || 0);
+      if (cmd.expectedVersion !== undefined && cmd.expectedVersion !== current) {
+        return { ok: false, conflict: true, currentVersion: current };
+      }
+      const now = new Date().toISOString();
+      if (!row) {
+        row = {
+          conversation_id: conversationId, owner_id: cmd.ownerId || null, workspace_id: cmd.workspaceId || 'default',
+          project_id: cmd.projectId || null, state: {}, version: 0, schema_version: 1, last_event_seq: 0,
+          created_at: now, updated_at: now,
+        };
+        rows.push(row);
+      }
+      const eventRows = db.conversationSessionEvents as any[];
+      const seen = new Set(eventRows.filter((e) => e.conversation_id === conversationId).map((e) => e.source_key));
+      let appended = 0;
+      for (const event of events) {
+        if (seen.has(event.sourceKey)) continue;
+        seen.add(event.sourceKey);
+        row.last_event_seq += 1;
+        appended += 1;
+        eventRows.push({
+          conversation_id: conversationId, seq: row.last_event_seq, event_id: event.eventId || uid('SEVT'),
+          event_type: event.eventType, payload: event.payload || {}, source_key: event.sourceKey,
+          correlation_id: event.correlationId || null, causation_id: event.causationId || null,
+          actor_id: event.actorId || null, created_at: now,
+        });
+      }
+      if (appended > 0 || cmd.state !== undefined) {
+        if (cmd.state !== undefined) row.state = cmd.state;
+        row.version += 1;
+        row.updated_at = now;
+      }
+      return { ok: true, session: mapSession(row), appendedEvents: appended };
+    }
+    return withTransaction(async (client) => {
+      await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [conversationId]);
+      // The session row FKs chat_conversations — make sure the header exists first.
+      await client.query(
+        `INSERT INTO chat_conversations (id, workspace_id, turns) VALUES ($1, $2, '[]'::jsonb)
+         ON CONFLICT (id) DO NOTHING`,
+        [conversationId, cmd.workspaceId || 'default'],
+      );
+      const existing = await client.query('SELECT * FROM conversation_sessions WHERE conversation_id = $1 FOR UPDATE', [conversationId]);
+      let row = existing.rows[0] || null;
+      const current = Number(row?.version || 0);
+      if (cmd.expectedVersion !== undefined && cmd.expectedVersion !== current) {
+        return { ok: false as const, conflict: true as const, currentVersion: current };
+      }
+      if (!row) {
+        const inserted = await client.query(
+          `INSERT INTO conversation_sessions (conversation_id, owner_id, workspace_id, project_id)
+           VALUES ($1, $2, $3, $4) RETURNING *`,
+          [conversationId, cmd.ownerId || null, cmd.workspaceId || 'default', cmd.projectId || null],
+        );
+        row = inserted.rows[0];
+      }
+      let seq = Number(row.last_event_seq || 0);
+      let appended = 0;
+      for (const event of events) {
+        const res = await client.query(
+          `INSERT INTO conversation_session_events (conversation_id, seq, event_id, event_type, payload, source_key, correlation_id, causation_id, actor_id)
+           VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9)
+           ON CONFLICT (conversation_id, source_key) DO NOTHING
+           RETURNING seq`,
+          [conversationId, seq + 1, event.eventId || uid('SEVT'), event.eventType,
+           JSON.stringify(event.payload || {}), event.sourceKey,
+           event.correlationId || null, event.causationId || null, event.actorId || null],
+        );
+        if (res.rows.length) { seq += 1; appended += 1; }
+      }
+      if (appended > 0 || cmd.state !== undefined) {
+        const updated = await client.query(
+          `UPDATE conversation_sessions SET
+             state = COALESCE($2::jsonb, state), version = version + 1, last_event_seq = $3,
+             owner_id = COALESCE($4, owner_id), project_id = COALESCE($5, project_id), updated_at = now()
+           WHERE conversation_id = $1 RETURNING *`,
+          [conversationId, cmd.state !== undefined ? JSON.stringify(cmd.state) : null, seq,
+           cmd.ownerId || null, cmd.projectId || null],
+        );
+        row = updated.rows[0];
+      }
+      return { ok: true as const, session: mapSession(row), appendedEvents: appended };
+    });
+  },
+  async listEvents(conversationId: string, sinceSeq = 0): Promise<any[]> {
+    if (!isPgEnabled()) {
+      return (db.conversationSessionEvents as any[])
+        .filter((e) => e.conversation_id === conversationId && e.seq > sinceSeq)
+        .sort((a, b) => a.seq - b.seq)
+        .map(mapSessionEvent);
+    }
+    const rows = await query(
+      'SELECT * FROM conversation_session_events WHERE conversation_id = $1 AND seq > $2 ORDER BY seq ASC',
+      [conversationId, sinceSeq],
+    );
+    return rows.map(mapSessionEvent);
+  },
+};
+
+function mapEntityRef(r: any) {
+  if (!r) return null;
+  return {
+    id: r.id,
+    conversationId: r.conversation_id,
+    entityType: r.entity_type,
+    entityId: r.entity_id,
+    relation: r.relation,
+    sourceMessageId: r.source_message_id || null,
+    sourceEventSeq: r.source_event_seq === null || r.source_event_seq === undefined ? null : Number(r.source_event_seq),
+    sourceRunId: r.source_run_id || '',
+    projectId: r.project_id || '',
+    appId: r.app_id || '',
+    ownerId: r.owner_id || '',
+    salience: Number(r.salience || 0),
+    firstSeenAt: r.first_seen_at,
+    lastSeenAt: r.last_seen_at,
+    metadata: r.metadata || {},
+  };
+}
+
+export const ConversationEntityRefs = {
+  /** Idempotent on (conversation, type, id, relation, sourceRun): re-seeing an entity refreshes recency. */
+  async upsert(ref: {
+    conversationId: string; entityType: string; entityId: string; relation: string;
+    sourceMessageId?: string; sourceEventSeq?: number; sourceRunId?: string;
+    projectId?: string; appId?: string; ownerId?: string; salience?: number; metadata?: any;
+  }): Promise<any> {
+    const sourceRunId = ref.sourceRunId || '';
+    if (!isPgEnabled()) {
+      const rows = db.conversationEntityRefs as any[];
+      const now = new Date().toISOString();
+      const existing = rows.find((r) =>
+        r.conversation_id === ref.conversationId && r.entity_type === ref.entityType &&
+        r.entity_id === ref.entityId && r.relation === ref.relation && (r.source_run_id || '') === sourceRunId);
+      if (existing) {
+        existing.last_seen_at = now;
+        existing.salience = Math.max(Number(existing.salience || 0), ref.salience || 0);
+        existing.source_message_id = ref.sourceMessageId ?? existing.source_message_id;
+        existing.source_event_seq = ref.sourceEventSeq ?? existing.source_event_seq;
+        existing.metadata = { ...(existing.metadata || {}), ...(ref.metadata || {}) };
+        return mapEntityRef(existing);
+      }
+      const row = {
+        id: uid('EREF'), conversation_id: ref.conversationId, entity_type: ref.entityType, entity_id: ref.entityId,
+        relation: ref.relation, source_message_id: ref.sourceMessageId || null, source_event_seq: ref.sourceEventSeq ?? null,
+        source_run_id: sourceRunId, project_id: ref.projectId || null, app_id: ref.appId || null,
+        owner_id: ref.ownerId || null, salience: ref.salience || 0, first_seen_at: now, last_seen_at: now,
+        metadata: ref.metadata || {},
+      };
+      rows.push(row);
+      return mapEntityRef(row);
+    }
+    const row = await queryOne(
+      `INSERT INTO conversation_entity_refs (id, conversation_id, entity_type, entity_id, relation, source_message_id, source_event_seq, source_run_id, project_id, app_id, owner_id, salience, metadata)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb)
+       ON CONFLICT (conversation_id, entity_type, entity_id, relation, source_run_id) DO UPDATE SET
+         last_seen_at = now(),
+         salience = GREATEST(conversation_entity_refs.salience, EXCLUDED.salience),
+         source_message_id = COALESCE(EXCLUDED.source_message_id, conversation_entity_refs.source_message_id),
+         source_event_seq = COALESCE(EXCLUDED.source_event_seq, conversation_entity_refs.source_event_seq),
+         metadata = conversation_entity_refs.metadata || EXCLUDED.metadata
+       RETURNING *`,
+      [uid('EREF'), ref.conversationId, ref.entityType, ref.entityId, ref.relation,
+       ref.sourceMessageId || null, ref.sourceEventSeq ?? null, sourceRunId,
+       ref.projectId || null, ref.appId || null, ref.ownerId || null,
+       ref.salience || 0, JSON.stringify(ref.metadata || {})],
+    );
+    return mapEntityRef(row);
+  },
+  /** Recency-ordered (active/latest first) — the resolver's candidate source. */
+  async list(conversationId: string, opts: { entityType?: string; relation?: string; limit?: number } = {}): Promise<any[]> {
+    const limit = Math.min(500, opts.limit || 50);
+    if (!isPgEnabled()) {
+      return (db.conversationEntityRefs as any[])
+        .filter((r) => r.conversation_id === conversationId
+          && (!opts.entityType || r.entity_type === opts.entityType)
+          && (!opts.relation || r.relation === opts.relation))
+        .sort((a, b) => String(b.last_seen_at).localeCompare(String(a.last_seen_at)))
+        .slice(0, limit)
+        .map(mapEntityRef);
+    }
+    const clauses = ['conversation_id = $1'];
+    const params: any[] = [conversationId];
+    if (opts.entityType) { params.push(opts.entityType); clauses.push(`entity_type = $${params.length}`); }
+    if (opts.relation) { params.push(opts.relation); clauses.push(`relation = $${params.length}`); }
+    params.push(limit);
+    const rows = await query(
+      `SELECT * FROM conversation_entity_refs WHERE ${clauses.join(' AND ')} ORDER BY last_seen_at DESC LIMIT $${params.length}`,
+      params,
+    );
+    return rows.map(mapEntityRef);
+  },
+};
+
+function mapCanonicalMessage(r: any) {
+  if (!r) return null;
+  return {
+    messageId: r.message_id,
+    conversationId: r.conversation_id,
+    seq: Number(r.seq),
+    clientMessageId: r.client_message_id || null,
+    role: r.role,
+    kind: r.kind || 'text',
+    content: r.content || '',
+    payload: r.payload && typeof r.payload === 'object' ? r.payload : {},
+    entityRefs: Array.isArray(r.entity_refs) ? r.entity_refs : [],
+    artifactRefs: Array.isArray(r.artifact_refs) ? r.artifact_refs : [],
+    correlationId: r.correlation_id || null,
+    causationId: r.causation_id || null,
+    createdAt: r.created_at,
+  };
+}
+
+export const CanonicalMessages = {
+  /** Append one ordered message; a repeated clientMessageId returns the original row (idempotent delivery). */
+  async append(input: {
+    conversationId: string; workspaceId?: string; title?: string;
+    clientMessageId?: string; role: 'user' | 'assistant'; kind?: string; content: string;
+    payload?: any; entityRefs?: any[]; artifactRefs?: any[]; correlationId?: string; causationId?: string;
+  }): Promise<{ message: any; deduplicated: boolean }> {
+    const conversationId = String(input.conversationId || '').trim();
+    if (!conversationId) throw new Error('CanonicalMessages.append: conversationId required');
+    const role = input.role === 'assistant' ? 'assistant' : 'user';
+    if (!isPgEnabled()) {
+      ensureChat();
+      let conversation = (db as any).chatConversations.find((c: any) => c.id === conversationId);
+      const now = new Date().toISOString();
+      if (!conversation) {
+        conversation = { id: conversationId, workspaceId: input.workspaceId || 'default', title: input.title || '', turns: [], messages: [], createdAt: now, updatedAt: now };
+        (db as any).chatConversations.unshift(conversation);
+      }
+      if (!Array.isArray(conversation.messages)) conversation.messages = Array.isArray(conversation.turns) ? [...conversation.turns] : [];
+      if (input.clientMessageId) {
+        const dup = conversation.messages.find((m: any) => m.clientMessageId === input.clientMessageId);
+        if (dup) return { message: dup, deduplicated: true };
+      }
+      const seq = conversation.messages.length + 1;
+      const message = {
+        messageId: `${conversationId}:${seq}`, conversationId, seq,
+        clientMessageId: input.clientMessageId || null, role, kind: input.kind || 'text',
+        content: input.content || '', payload: input.payload || {},
+        entityRefs: input.entityRefs || [], artifactRefs: input.artifactRefs || [],
+        correlationId: input.correlationId || null, causationId: input.causationId || null, createdAt: now,
+      };
+      conversation.messages.push(message);
+      conversation.turns = conversation.messages;
+      conversation.updatedAt = now;
+      return { message, deduplicated: false };
+    }
+    return withTransaction(async (client) => {
+      await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [conversationId]);
+      await client.query(
+        `INSERT INTO chat_conversations (id, workspace_id, title, turns) VALUES ($1, $2, $3, '[]'::jsonb)
+         ON CONFLICT (id) DO UPDATE SET updated_at = now()`,
+        [conversationId, input.workspaceId || 'default', input.title || ''],
+      );
+      if (input.clientMessageId) {
+        const dup = await client.query(
+          'SELECT * FROM chat_messages WHERE conversation_id = $1 AND client_message_id = $2',
+          [conversationId, input.clientMessageId],
+        );
+        if (dup.rows.length) return { message: mapCanonicalMessage(dup.rows[0]), deduplicated: true };
+      }
+      const next = await client.query('SELECT COALESCE(MAX(seq), 0)::bigint AS seq FROM chat_messages WHERE conversation_id = $1', [conversationId]);
+      const seq = Number(next.rows[0]?.seq || 0) + 1;
+      const inserted = await client.query(
+        `INSERT INTO chat_messages (conversation_id, seq, message_id, client_message_id, role, kind, content, payload, entity_refs, artifact_refs, correlation_id, causation_id, token_estimate)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10::jsonb, $11, $12, CEIL(LENGTH($7) / 4.0)::int)
+         RETURNING *`,
+        [conversationId, seq, `${conversationId}:${seq}`, input.clientMessageId || null, role,
+         input.kind || 'text', input.content || '', JSON.stringify(input.payload || {}),
+         JSON.stringify(input.entityRefs || []), JSON.stringify(input.artifactRefs || []),
+         input.correlationId || null, input.causationId || null],
+      );
+      return { message: mapCanonicalMessage(inserted.rows[0]), deduplicated: false };
+    });
+  },
+  /** Sequence-ordered canonical read with keyset pagination (beforeSeq walks backwards). */
+  async list(conversationId: string, opts: { beforeSeq?: number; limit?: number } = {}): Promise<any[]> {
+    const limit = Math.min(500, opts.limit || 100);
+    if (!isPgEnabled()) {
+      ensureChat();
+      const conversation = (db as any).chatConversations.find((c: any) => c.id === conversationId);
+      const messages: any[] = conversation?.messages || [];
+      return messages
+        .filter((m: any) => m.messageId && (!opts.beforeSeq || m.seq < opts.beforeSeq))
+        .slice(-limit);
+    }
+    const params: any[] = [conversationId];
+    let where = 'conversation_id = $1';
+    if (opts.beforeSeq) { params.push(opts.beforeSeq); where += ` AND seq < $${params.length}`; }
+    params.push(limit);
+    const rows = await query(
+      `SELECT * FROM (SELECT * FROM chat_messages WHERE ${where} ORDER BY seq DESC LIMIT $${params.length}) sub ORDER BY seq ASC`,
+      params,
+    );
+    return rows.map(mapCanonicalMessage);
   },
 };
 

@@ -263,7 +263,8 @@ export class AgentOrchestrator {
     return { object: result.object, usage: result.usage, model: result.model, latencyMs: result.latencyMs, provider: this.provider.name };
   }
 
-  async generateText(opts: { prompt: string; temperature?: number; maxTokens?: number; userMessage?: string; hasHistory?: boolean }) {
+  // meta: prepared-invocation trace correlation (Conversational Runtime) — no routing logic here.
+  async generateText(opts: { prompt: string; temperature?: number; maxTokens?: number; userMessage?: string; hasHistory?: boolean; meta?: { requestId?: string; capability?: string; manifestId?: string } }) {
     const pipeline = runGuardrailPipeline({
       agent: this.agent as any,
       userMessage: opts.userMessage || opts.prompt,
@@ -318,10 +319,10 @@ export class AgentOrchestrator {
       assumptionsMade: "Not explicitly provided by model",
       whyNextToolSelected: "Single-shot generation",
       finalPromptSent: serializePrompt(system, [{ role: 'user', content: opts.prompt }]),
-      runId: pipeline.requestId
+      runId: opts.meta?.requestId || pipeline.requestId
     }).catch(console.error);
     // ----------------------------------------
-    
+
     return { text: result.text, usage: result.usage, model: result.model, latencyMs: result.latencyMs, provider: this.provider.name };
   }
 

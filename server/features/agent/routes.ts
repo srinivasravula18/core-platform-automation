@@ -46,6 +46,7 @@ import path from 'path';
 import { inspectApplicationFlow } from './inspectionService';
 import { exploreAndVerifyPage, exploreAppElements, rankVerifiedElements } from './domExplorer';
 import { getFeatureGrounding } from './knowledge';
+import { projectRunLifecycleSafe } from '../../../services/runtime/src/application/sessionProjector';
 import { getOrchestrator, listConfiguredProviders, resolveProviderForAgent, resolveModelForAgent } from '../../ai/orchestrator';
 import { assembleConversationContext } from '../../ai/memory/contextAssembler';
 import { answerAppQuestionFromCode, stripCodebaseLocationsForAgentConsole } from '../../ai/supervisor';
@@ -1243,6 +1244,8 @@ function markRunDone(run: any, status: 'completed' | 'failed' | 'cancelled'): vo
   if (run.status === 'cancelled') return;
   run.status = status;
   run.completed_at = nowIso();
+  // Conversational Runtime Phase 6: publish the terminal outcome into the conversation session.
+  projectRunLifecycleSafe({ run, phase: 'completed' });
 }
 
 async function saveAgentRunState(run: any, reason: string): Promise<void> {
@@ -5550,6 +5553,8 @@ Rules:
 
     db.agentRuns.unshift(newRun);
     saveAgentRunStateSoon(newRun, 'new agent run');
+    // Conversational Runtime Phase 6: the session now knows a run is in flight.
+    projectRunLifecycleSafe({ run: newRun, phase: 'started' });
     res.json({ task_id: taskId });
 
     // COST QUOTA (book Ch 16: Resource-Aware Optimization): if this project has already burned

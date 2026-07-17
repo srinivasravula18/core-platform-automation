@@ -13,7 +13,8 @@
 
 import type { Express } from 'express';
 import { routeGoal } from './goals/router';
-import type { RoutingContext, RouteTarget } from './goals/types';
+import type { CapabilityShadowRecord, RouteKind, RoutingContext, RouteTarget } from './goals/types';
+import { routeTurn, capabilityToLegacyRouteKind } from '../../services/runtime/src/application/routeTurn';
 import type { ChatTurn, SelectedApp } from '../ai/controller';
 import { buildPlan } from '../ai/controller';
 import { quickWorkspaceAnswer } from '../ai/tools/registry';
@@ -26,6 +27,46 @@ interface GoalRequestBody {
   apps?: SelectedApp[];
   pageContext?: { path?: string };
   workspaceId?: string;
+  /** Authoritative conversation link (Phase 3) — enables session-aware routing/shadow. */
+  conversationId?: string;
+}
+
+/** CONVERSATIONAL_ROUTER_SHADOW (default on): record capability decisions beside legacy routing. */
+function shadowRouterEnabled(): boolean {
+  return String(process.env.CONVERSATIONAL_ROUTER_SHADOW ?? 'true').toLowerCase() !== 'false';
+}
+
+/** Ring buffer of recent shadow comparisons (diagnostics; no extra LLM call, plan §22.3). */
+export const capabilityShadowLog: CapabilityShadowRecord[] = [];
+
+function recordCapabilityShadow(input: {
+  conversationId: string; message: string; legacyKind: RouteKind;
+  scope: { workspaceId: string; ownerId: string; projectId?: string | null; appId?: string | null };
+}): void {
+  if (!shadowRouterEnabled()) return;
+  void routeTurn({
+    conversationId: input.conversationId,
+    message: input.message,
+    scope: { workspaceId: input.scope.workspaceId, ownerId: input.scope.ownerId, projectId: input.scope.projectId, appId: input.scope.appId },
+    mode: 'shadow',
+  }).then(({ decision }) => {
+    const mapped = capabilityToLegacyRouteKind(decision);
+    const rec: CapabilityShadowRecord = {
+      conversationId: input.conversationId,
+      message: input.message.slice(0, 200),
+      legacyKind: input.legacyKind,
+      capability: decision.capability,
+      interaction: decision.interaction,
+      mappedLegacyKind: mapped,
+      agreed: mapped === input.legacyKind,
+      resolvedEntityIds: decision.resolvedEntities.map((e) => e.id).slice(0, 10),
+      missing: decision.missing.map((m) => m.reason),
+      at: new Date().toISOString(),
+    };
+    capabilityShadowLog.push(rec);
+    if (capabilityShadowLog.length > 200) capabilityShadowLog.splice(0, capabilityShadowLog.length - 200);
+    console.log(`[capability-shadow] legacy=${rec.legacyKind} capability=${rec.capability}/${rec.interaction} agreed=${rec.agreed}${rec.missing.length ? ` missing=${rec.missing.join('; ')}` : ''}`);
+  }).catch((err) => console.warn('[capability-shadow] failed:', err?.message || err));
 }
 
 export function registerAgentRuntimeRoutes(app: Express) {
@@ -56,6 +97,7 @@ export function registerAgentRuntimeRoutes(app: Express) {
         { message, history, apps, workspaceId, userId: scope.userId },
         ctx,
       );
+
 
       // Option A: an explicit request to GENERATE/CREATE/WRITE test cases for a feature is an
       // ACTION — it must run the deep pipeline (which previews the coverage areas, then generates
@@ -92,6 +134,16 @@ export function registerAgentRuntimeRoutes(app: Express) {
           route.kind = 'clarify';
           (route as any).clarifyingQuestion = 'Which app should I generate these test cases for? Select one in the top-bar app switcher or the "Apps to test" picker, or paste the app URL.';
         }
+      }
+
+      // Phase 3 shadow: compare the deterministic capability decision against the FINAL
+      // legacy route (fire-and-forget — never blocks or changes this response).
+      const conversationId = typeof body.conversationId === 'string' ? body.conversationId.trim() : '';
+      if (conversationId) {
+        recordCapabilityShadow({
+          conversationId, message, legacyKind: route.kind,
+          scope: { workspaceId, ownerId: scope.userId || '', projectId: scope.projectId, appId: scope.appId },
+        });
       }
 
       switch (route.kind) {

@@ -196,7 +196,30 @@ export const getRunTool: AgentTool = {
     if (!runId) return { error: 'runId is required' };
     try {
       const run = await Runs.get(runId);
-      if (!run) return { error: `Run "${runId}" not found.` };
+      if (!run) {
+        // One run truth (Phase 4): agent deep-run IDs live in AgentRuns, not Runs —
+        // delegate to the run evidence query instead of reporting "not found".
+        const { AgentRuns } = require('../../db/repository');
+        const agentRun = await AgentRuns.getScoped(runId).catch(() => null);
+        if (agentRun) {
+          const result = agentRun.execution_result || {};
+          return {
+            id: agentRun.id,
+            status: agentRun.status,
+            total: result.total ?? 0,
+            passed: result.passed ?? 0,
+            failed: result.failed ?? 0,
+            skipped: result.skipped ?? 0,
+            error: result.error,
+            createdAt: agentRun.createdAt,
+            updatedAt: agentRun.updatedAt,
+            tests: (result.tests || []).map((t: any) => ({
+              title: t.title, status: t.status, error: t.error, durationMs: t.durationMs,
+            })),
+          };
+        }
+        return { error: `Run "${runId}" not found.` };
+      }
       return {
         id: run.id,
         status: run.status,

@@ -21,6 +21,53 @@ import { deepParallelResearch, relevantSourcePaths } from './research/deepResear
 import { expandByReferences } from './exploration/referenceGraph';
 import { z } from 'zod';
 
+/* ---------- Conversational Runtime delegation (Phase 6) ---------- */
+
+/** Capabilities cut over to the evidence-first runtime; the rest keep the legacy paths. */
+const RUNTIME_ANSWER_CAPABILITIES = new Set(['run_diagnostics', 'execution_review', 'conversation_recall']);
+
+/**
+ * Route a non-action question through the Conversational Runtime when its deterministic
+ * router selects a cutover capability (e.g. "Why did they fail?" → run_diagnostics with
+ * REAL execution evidence instead of a code-only essay). Returns null to fall back to the
+ * legacy answer path — any error also falls back, so this can never break answering.
+ */
+export async function answerViaConversationalRuntime(userMessage: string, opts: {
+  conversationId?: string;
+  workspaceId?: string;
+  userId?: string;
+  projectId?: string;
+  appId?: string | null;
+  onProgress?: (label: string) => void;
+}): Promise<string | null> {
+  const conversationId = String(opts.conversationId || '').trim();
+  if (!conversationId) return null;
+  if (String(process.env.CONVERSATIONAL_RUNTIME_V1 ?? 'true').toLowerCase() === 'false') return null;
+  try {
+    const { routeTurn } = await import('../../services/runtime/src/application/routeTurn');
+    const scope = { workspaceId: opts.workspaceId || 'default', ownerId: opts.userId || '', projectId: opts.projectId || null, appId: opts.appId || null };
+    const routed = await routeTurn({ conversationId, message: userMessage, scope, mode: 'shadow' });
+    if (routed.decision.interaction !== 'answer' || !RUNTIME_ANSWER_CAPABILITIES.has(routed.decision.capability)) return null;
+    // run_diagnostics without ANY run context answers better through the legacy path
+    // (which can at least explain the app) — the runtime would only report the gap.
+    if (routed.decision.capability !== 'conversation_recall' && routed.decision.missing.length) return null;
+    const { runConversationTurn } = await import('../../services/runtime/src/application/conversationalRuntime');
+    const result = await runConversationTurn({
+      conversationId,
+      message: userMessage,
+      scope,
+      onEvent: (event) => {
+        if (event.type === 'evidence_collected') opts.onProgress?.(`Loaded ${event.items} evidence item(s) from the run record…`);
+        if (event.type === 'capability_selected') opts.onProgress?.(`Answering as ${event.capability.replace(/_/g, ' ')}…`);
+      },
+    });
+    return result.answer || null;
+  } catch (err: any) {
+    console.warn('[runtime-delegation] falling back to legacy answer:', err?.message || err);
+    return null;
+  }
+}
+
 interface IntentToolDef {
   kind: string;
   description: string;

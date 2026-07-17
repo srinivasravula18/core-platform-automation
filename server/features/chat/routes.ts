@@ -9,8 +9,8 @@
 
 import type { Express } from 'express';
 import { persistDataInBackground } from '../../shared/storage';
-import { reqScope, scopeFilter } from '../../shared/scope';
-import { AgentRuns, ChatConversations } from '../../db/repository';
+import { reqScope, scopeFilter, ownerMismatch, scopeStamp } from '../../shared/scope';
+import { AgentRuns, ChatConversations, CanonicalMessages } from '../../db/repository';
 import { runSupervisor } from '../../ai/supervisor';
 
 // Anti-buffering pad: defeats proxies that ignore X-Accel-Buffering by filling their
@@ -125,7 +125,10 @@ export function registerChatRoutes(app: Express) {
   app.get('/api/chat/conversations', async (req, res, next) => {
     try {
       const workspaceId = String(req.query.workspaceId || 'default');
-      const conversations = await ChatConversations.list(workspaceId);
+      // Phase 7 tenant isolation: users see their own conversations (+ legacy unowned rows).
+      const scope = reqScope(req);
+      const all = await ChatConversations.list(workspaceId);
+      const conversations = scope.userId ? all.filter((c: any) => !c.ownerId || c.ownerId === scope.userId) : all;
       if (conversations.length) return res.json({ conversations });
       const runs = scopeFilter(await AgentRuns.list(), reqScope(req))
         .slice()
@@ -147,7 +150,25 @@ export function registerChatRoutes(app: Express) {
       }
       const convo = await ChatConversations.get(req.params.id);
       if (!convo) return res.json({ id: req.params.id, turns: [], title: '' });
+      // Another user's conversation reads as absent, not as a hint that it exists.
+      if (ownerMismatch(convo, reqScope(req))) return res.json({ id: req.params.id, turns: [], title: '' });
       res.json(convo);
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // Canonical read compatibility (Phase 6): the ordered chat_messages transcript with stable
+  // message IDs and entity/artifact refs — what the console migrates onto (turns stays until then).
+  app.get('/api/chat/conversations/:id/messages/canonical', async (req, res, next) => {
+    try {
+      const existing = await ChatConversations.get(req.params.id).catch(() => null);
+      if (ownerMismatch(existing, reqScope(req))) return res.json({ id: req.params.id, messages: [] });
+      const messages = await CanonicalMessages.list(req.params.id, {
+        beforeSeq: Number(req.query.before) || undefined,
+        limit: Number(req.query.limit) || 200,
+      });
+      res.json({ id: req.params.id, messages });
     } catch (err) {
       next(err);
     }
@@ -156,6 +177,11 @@ export function registerChatRoutes(app: Express) {
   app.put('/api/chat/conversations/:id', async (req, res, next) => {
     try {
       const { workspaceId, title, turns } = req.body || {};
+      const scope = reqScope(req);
+      // Phase 7 tenant isolation: never mutate another user's conversation; stamp ownership on writes.
+      const existing = await ChatConversations.get(req.params.id).catch(() => null);
+      if (ownerMismatch(existing, scope)) return res.status(404).json({ error: 'Conversation not found' });
+      const stamp = scopeStamp(scope);
       // Full-turn snapshot from the console restores rich turns (deep-run cards, drafts) across
       // navigation/restart; a body without turns stays a metadata-only update (title rename).
       const saved = Array.isArray(turns)
@@ -164,11 +190,13 @@ export function registerChatRoutes(app: Express) {
             workspaceId: workspaceId || 'default',
             title: String(title || '').slice(0, 120),
             turns,
+            ...stamp,
           })
         : await ChatConversations.updateMetadata({
             id: req.params.id,
             workspaceId: workspaceId || 'default',
             title: String(title || '').slice(0, 120),
+            ...stamp,
           });
       persistDataInBackground('chat conversation');
       res.json({ ok: true, conversation: { id: saved.id, updatedAt: saved.updatedAt } });
@@ -179,6 +207,8 @@ export function registerChatRoutes(app: Express) {
 
   app.delete('/api/chat/conversations/:id', async (req, res, next) => {
     try {
+      const existing = await ChatConversations.get(req.params.id).catch(() => null);
+      if (ownerMismatch(existing, reqScope(req))) return res.status(404).json({ error: 'Conversation not found' });
       const ok = await ChatConversations.remove(req.params.id);
       persistDataInBackground('delete chat conversation');
       res.json({ ok });

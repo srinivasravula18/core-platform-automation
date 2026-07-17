@@ -97,6 +97,11 @@ export const db: any = {
   automationSchedules: [] as any[],
   automationArtifacts: [] as any[],
   automationEvents: [] as any[],
+  // Conversational Runtime Phase 1 (single-process only): versioned session snapshots,
+  // append-only session events, and the entity recency index. PG is required for multi-instance.
+  conversationSessions: [] as any[],
+  conversationSessionEvents: [] as any[],
+  conversationEntityRefs: [] as any[],
 };
 
 const settingsFilePath = path.resolve(process.cwd(), '.testflow-settings.json');
@@ -138,10 +143,27 @@ function getPersistableDbSnapshot() {
     automationSchedules: db.automationSchedules,
     automationArtifacts: db.automationArtifacts,
     automationEvents: db.automationEvents,
+    conversationSessions: db.conversationSessions,
+    conversationSessionEvents: db.conversationSessionEvents,
+    conversationEntityRefs: db.conversationEntityRefs,
   };
 }
 
+/** Read + parse the legacy data file; null when absent/unreadable. */
+async function readDataFile(): Promise<any | null> {
+  try {
+    const raw = (await fs.readFile(dataFilePath, 'utf-8')).replace(/^\uFEFF/, '');
+    if (!raw.trim()) return null;
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
 export async function loadPersistedData() {
+  // PG mode: the file is NOT a source of truth \u2014 repositories read PostgreSQL directly and
+  // the json_store hydration (post-migration) covers the array-backed collections.
+  if (isPostgresEnabled()) return;
   try {
     const raw = (await fs.readFile(dataFilePath, 'utf-8')).replace(/^\uFEFF/, '');
     if (!raw.trim()) return;
@@ -180,6 +202,9 @@ export async function loadPersistedData() {
     db.automationSchedules = Array.isArray(data.automationSchedules) ? data.automationSchedules : [];
     db.automationArtifacts = Array.isArray(data.automationArtifacts) ? data.automationArtifacts : [];
     db.automationEvents = Array.isArray(data.automationEvents) ? data.automationEvents : [];
+    db.conversationSessions = Array.isArray(data.conversationSessions) ? data.conversationSessions : [];
+    db.conversationSessionEvents = Array.isArray(data.conversationSessionEvents) ? data.conversationSessionEvents : [];
+    db.conversationEntityRefs = Array.isArray(data.conversationEntityRefs) ? data.conversationEntityRefs : [];
   } catch (error: any) {
     if (error instanceof SyntaxError) {
       console.warn(`Ignoring unreadable persisted data at ${dataFilePath}; starting with an empty in-memory store.`);
@@ -188,6 +213,68 @@ export async function loadPersistedData() {
     if (error?.code !== 'ENOENT') {
       console.error(`Failed to load persisted data from ${dataFilePath}:`, error);
     }
+  }
+}
+
+/* ---------- PG persistence for JSON-only collections ---------- */
+
+// Collections whose repositories do not write a dedicated PostgreSQL table. In PG mode they
+// persist to the json_store KV table (one row per collection) so the DATABASE is the source
+// of truth; the JSON file remains the store for explicit no-PG development/tests only.
+const PG_JSON_COLLECTIONS = ['projects', 'apps', 'appKnowledge', 'repoSecrets', 'blackboard', 'recentActivity', 'users', 'sessions'] as const;
+
+// Write-through is armed ONLY after successful hydration — a process that never loaded from
+// PG (e.g. a test script) must not clobber the stored collections with its empty arrays.
+let pgJsonHydrated = false;
+
+/** True when PostgreSQL is authoritative and hydrated — the data file is then a dead letter. */
+function pgIsAuthoritative(): boolean {
+  return isPostgresEnabled() && pgJsonHydrated;
+}
+
+async function savePgJsonCollections(): Promise<void> {
+  if (!isPostgresEnabled() || !pgJsonHydrated) return;
+  for (const key of PG_JSON_COLLECTIONS) {
+    const fallback = key === 'repoSecrets' ? {} : [];
+    await query(
+      `INSERT INTO json_store (key, value, updated_at) VALUES ($1, $2::jsonb, now())
+       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`,
+      [key, JSON.stringify((db as any)[key] ?? fallback)],
+    );
+  }
+}
+
+/**
+ * Hydrate the JSON-only collections from PostgreSQL. Call AFTER the schema migration.
+ * First PG boot: json_store is empty, so the file-loaded values seed it (one-time
+ * migration — nothing is lost). After that, PG wins over the file.
+ */
+export async function hydrateJsonCollectionsFromPg(): Promise<void> {
+  if (!isPostgresEnabled()) return;
+  try {
+    const rows = await query('SELECT key, value FROM json_store WHERE key = ANY($1)', [PG_JSON_COLLECTIONS as unknown as string[]]);
+    const byKey = new Map(rows.map((r: any) => [r.key, r.value]));
+    const missing = PG_JSON_COLLECTIONS.filter((key) => !byKey.has(key));
+    if (missing.length) {
+      // One-time migration: collections not yet in the database seed from the legacy JSON file.
+      const file = await readDataFile();
+      for (const key of missing) {
+        const fromFile = (file as any)?.[key];
+        if (fromFile !== undefined) (db as any)[key] = fromFile;
+      }
+    }
+    for (const key of PG_JSON_COLLECTIONS) {
+      if (byKey.has(key)) (db as any)[key] = byKey.get(key);
+    }
+    pgJsonHydrated = true;
+    if (missing.length) {
+      await savePgJsonCollections();
+      console.log(`[pg] json_store seeded ${missing.length} collection(s) from the legacy JSON file (${missing.join(', ')})`);
+    }
+    console.log('[pg] json collections hydrated — PostgreSQL is authoritative');
+  } catch (err: any) {
+    // Hydration failed → write-through stays DISARMED so we can't overwrite good PG data.
+    console.error('[pg] json_store hydration failed (falling back to file state):', err?.message || err);
   }
 }
 
@@ -216,6 +303,13 @@ function serializedAtomicWrite(target: string, getContent: () => string): Promis
 }
 
 export async function savePersistedData() {
+  // Once PostgreSQL is authoritative, nothing is written to the JSON file anymore.
+  // (Until hydration succeeds — or in explicit no-PG mode — the file write remains
+  // the fallback so data can never land nowhere.)
+  if (pgIsAuthoritative()) {
+    await savePgJsonCollections().catch((err) => console.error('[pg] json_store write failed:', err?.message || err));
+    return;
+  }
   await serializedAtomicWrite(dataFilePath, () => JSON.stringify(getPersistableDbSnapshot(), null, 2));
 }
 

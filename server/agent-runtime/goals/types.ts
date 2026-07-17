@@ -90,3 +90,23 @@ export interface RoutingContext {
   /** A target already established earlier in THIS conversation. */
   conversationTarget?: RouteTarget | null;
 }
+
+/* ---------- Conversational Runtime compatibility (Phase 3) ---------- */
+
+/**
+ * Shadow record comparing the legacy Route with the deterministic capability decision.
+ * DEPRECATION NOTE: RouteKind's broad 'answer' has no diagnostic/review vocabulary; the
+ * capability router is the target authority and this mapping exists only for migration.
+ */
+export interface CapabilityShadowRecord {
+  conversationId: string;
+  message: string;
+  legacyKind: RouteKind;
+  capability: string;
+  interaction: string;
+  mappedLegacyKind: string;
+  agreed: boolean;
+  resolvedEntityIds: string[];
+  missing: string[];
+  at: string;
+}

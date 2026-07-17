@@ -1,3 +1,5 @@
+// Compatibility layer (Conversational Runtime Phase 5): existing callers keep this assembler;
+// new capability turns use services/runtime contextAssembler (evidence-first prepared context).
 import { randomUUID } from 'crypto';
 import { ChatConversations } from '../../db/repository';
 import { isPostgresEnabled, query } from '../../db/pool';

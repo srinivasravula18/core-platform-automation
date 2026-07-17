@@ -9,6 +9,11 @@ import type { ToolContext } from '../tools/types';
 const SECRET_KEY = /password|passwd|secret|token|cookie|authorization|storage.?state/i;
 const EVIDENTIARY_TOOL = /search|read|inspect|explore|query|fetch|execute|run|metadata|schema|selector|coverage|evidence/i;
 
+/** Shared redaction contract (Phase 4): evidence providers reuse the same secret-key scrub. */
+export function redactSecrets(value: unknown): unknown {
+  return sanitize(value);
+}
+
 function sanitize(value: unknown, seen = new WeakSet<object>()): unknown {
   if (!value || typeof value !== 'object') return value;
   if (seen.has(value as object)) return '[Circular]';

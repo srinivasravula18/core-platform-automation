@@ -422,3 +422,26 @@ export function domTools(): AgentTool[] {
 export function toolByName(name: string): AgentTool | undefined {
   return coreTools().find((t) => t.spec.name === name);
 }
+
+/**
+ * Compatibility evidence facade (Phase 4): the legacy supervisor/answer bridge can load a
+ * conversation's run-diagnostics EvidenceBundle without gaining any new broad raw tools.
+ */
+export async function getRunEvidenceForConversation(input: {
+  conversationId: string;
+  runId?: string;
+  scope?: { userId?: string; projectId?: string; appId?: string | null };
+}) {
+  const { aggregateEvidence } = await import('../../../services/runtime/src/application/evidenceAggregator');
+  return aggregateEvidence({
+    capability: 'run_diagnostics',
+    subjectRefs: input.runId ? [{ type: 'run', id: input.runId }] : [],
+    scope: {
+      workspaceId: 'default',
+      ownerId: input.scope?.userId || '',
+      projectId: input.scope?.projectId || null,
+      appId: input.scope?.appId || null,
+    },
+    conversationId: input.conversationId,
+  });
+}

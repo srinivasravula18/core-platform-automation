@@ -75,6 +75,14 @@ export function scopeFilter<T extends { projectId?: string; appId?: string; owne
   });
 }
 
+/**
+ * True when a row belongs to ANOTHER user (Phase 7 tenant isolation). Legacy unowned
+ * rows and unauthenticated/internal callers pass — enforcement never hides old data.
+ */
+export function ownerMismatch(row: { ownerId?: string } | null | undefined, scope: Scope): boolean {
+  return !!(scope.userId && row?.ownerId && row.ownerId !== scope.userId);
+}
+
 /** Fields to stamp onto a new record so it belongs to the current scope + owner. */
 export function scopeStamp(scope: Scope): { projectId?: string; appId?: string; ownerId?: string } {
   const stamp: { projectId?: string; appId?: string; ownerId?: string } = {};

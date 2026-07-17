@@ -353,6 +353,15 @@ CREATE TABLE IF NOT EXISTS sessions (
   created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Generic JSON collection store: collections WITHOUT a dedicated table (projects, apps,
+-- appKnowledge, repoSecrets, blackboard, recentActivity) persist here in PG mode so the
+-- database — not .testflow-data.json — is the single source of truth. One row per collection.
+CREATE TABLE IF NOT EXISTS json_store (
+  key         TEXT PRIMARY KEY,
+  value       JSONB NOT NULL,
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- Generic key/value settings table (provider keys, autonomy, cost limit, etc.)
 CREATE TABLE IF NOT EXISTS settings (
   key         TEXT PRIMARY KEY,
@@ -360,8 +369,10 @@ CREATE TABLE IF NOT EXISTS settings (
   updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- Agent Console conversation headers. `turns` remains during the dual-read migration;
--- new writes go to append-only chat_messages below.
+-- Agent Console conversation headers. `turns` is DEPRECATED (Conversational Runtime Phase 7):
+-- chat_messages is the canonical ordered transcript; `turns` stays readable as the console's
+-- rich-card snapshot until the UI migrates to canonical hydration. Dropping it requires a
+-- separately approved data-retention migration after a production canonicalization audit.
 CREATE TABLE IF NOT EXISTS chat_conversations (
   id            TEXT PRIMARY KEY,
   workspace_id  TEXT NOT NULL DEFAULT 'default',
@@ -754,3 +765,126 @@ CREATE TABLE IF NOT EXISTS automation_events (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS automation_events_scope_idx ON automation_events(scope_type, scope_id, seq);
+
+-- ===== Conversational Intelligence Runtime — Phase 1 (persistence foundation) =====
+-- Plan of record: docs/diagnostics/conversational-intelligence-runtime-architecture-plan-2026-07-17.md.
+-- Everything here is ADDITIVE and idempotent: legacy chat_conversations.turns and agent_runs.raw stay
+-- authoritative until later phases; these tables/columns have no runtime consumer yet.
+
+-- Versioned conversation-scoped working-state snapshot (SessionContext aggregate).
+CREATE TABLE IF NOT EXISTS conversation_sessions (
+  conversation_id TEXT PRIMARY KEY REFERENCES chat_conversations(id) ON DELETE CASCADE,
+  owner_id        TEXT,
+  workspace_id    TEXT NOT NULL DEFAULT 'default',
+  project_id      TEXT,
+  state           JSONB NOT NULL DEFAULT '{}'::jsonb,
+  version         BIGINT NOT NULL DEFAULT 0 CHECK (version >= 0),
+  schema_version  INT NOT NULL DEFAULT 1,
+  last_event_seq  BIGINT NOT NULL DEFAULT 0 CHECK (last_event_seq >= 0),
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS conversation_sessions_owner_ws_idx ON conversation_sessions(owner_id, workspace_id, updated_at DESC);
+CREATE INDEX IF NOT EXISTS conversation_sessions_project_idx ON conversation_sessions(project_id, updated_at DESC);
+
+-- Append-only session event stream: audit trail + idempotent run/artifact projection (source_key dedupe).
+CREATE TABLE IF NOT EXISTS conversation_session_events (
+  conversation_id TEXT NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
+  seq             BIGINT NOT NULL,
+  event_id        TEXT NOT NULL UNIQUE,
+  event_type      TEXT NOT NULL,
+  payload         JSONB NOT NULL DEFAULT '{}'::jsonb,
+  source_key      TEXT NOT NULL,
+  correlation_id  TEXT,
+  causation_id    TEXT,
+  actor_id        TEXT,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (conversation_id, seq)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS conversation_session_events_source_key_idx ON conversation_session_events(conversation_id, source_key);
+CREATE INDEX IF NOT EXISTS conversation_session_events_type_idx ON conversation_session_events(conversation_id, event_type, seq);
+
+-- Deterministic entity recency index for reference resolution (indexed rows, not message-JSON scans).
+CREATE TABLE IF NOT EXISTS conversation_entity_refs (
+  id                TEXT PRIMARY KEY,
+  conversation_id   TEXT NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
+  entity_type       TEXT NOT NULL,
+  entity_id         TEXT NOT NULL,
+  relation          TEXT NOT NULL,            -- selected | current | latest | generated | mentioned | failed | linked
+  source_message_id TEXT,
+  source_event_seq  BIGINT,
+  source_run_id     TEXT NOT NULL DEFAULT '',
+  project_id        TEXT,
+  app_id            TEXT,
+  owner_id          TEXT,
+  salience          INT NOT NULL DEFAULT 0,
+  first_seen_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_seen_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  metadata          JSONB NOT NULL DEFAULT '{}'::jsonb,
+  UNIQUE (conversation_id, entity_type, entity_id, relation, source_run_id)
+);
+CREATE INDEX IF NOT EXISTS conversation_entity_refs_recency_idx ON conversation_entity_refs(conversation_id, entity_type, last_seen_at DESC);
+CREATE INDEX IF NOT EXISTS conversation_entity_refs_relation_idx ON conversation_entity_refs(conversation_id, relation, last_seen_at DESC);
+CREATE INDEX IF NOT EXISTS conversation_entity_refs_run_idx ON conversation_entity_refs(source_run_id) WHERE source_run_id <> '';
+
+-- chat_conversations gains scope + lifecycle columns (turns stays until the canonicalization gate).
+ALTER TABLE chat_conversations ADD COLUMN IF NOT EXISTS owner_id         TEXT;
+ALTER TABLE chat_conversations ADD COLUMN IF NOT EXISTS project_id       TEXT;
+ALTER TABLE chat_conversations ADD COLUMN IF NOT EXISTS app_id           TEXT;
+ALTER TABLE chat_conversations ADD COLUMN IF NOT EXISTS archived_at      TIMESTAMPTZ;
+ALTER TABLE chat_conversations ADD COLUMN IF NOT EXISTS canonicalized_at TIMESTAMPTZ;
+CREATE INDEX IF NOT EXISTS chat_conversations_owner_idx ON chat_conversations(owner_id, updated_at DESC);
+
+-- chat_messages becomes canonical-capable: stable IDs, client idempotency, refs, trace.
+ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS message_id        TEXT;
+ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS client_message_id TEXT;
+ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS entity_refs       JSONB NOT NULL DEFAULT '[]'::jsonb;
+ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS artifact_refs     JSONB NOT NULL DEFAULT '[]'::jsonb;
+ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS correlation_id    TEXT;
+ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS causation_id      TEXT;
+ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS schema_version    INT NOT NULL DEFAULT 1;
+-- Deterministic backfill: message_id derives from (conversation, seq) so re-runs are stable.
+UPDATE chat_messages SET message_id = conversation_id || ':' || seq WHERE message_id IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS chat_messages_message_id_idx ON chat_messages(message_id);
+CREATE UNIQUE INDEX IF NOT EXISTS chat_messages_client_id_idx ON chat_messages(conversation_id, client_message_id) WHERE client_message_id IS NOT NULL;
+
+-- agent_runs gains first-class conversation/execution columns (dual-written; raw stays readable).
+ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS conversation_id  TEXT;
+ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS execution_result JSONB;
+ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS completed_at     TIMESTAMPTZ;
+ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS artifact_set_id  TEXT;
+CREATE INDEX IF NOT EXISTS agent_runs_scope_created_idx ON agent_runs(owner_id, project_id, app_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS agent_runs_conversation_idx ON agent_runs(conversation_id, created_at DESC) WHERE conversation_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS agent_runs_conversation_status_idx ON agent_runs(conversation_id, status, created_at DESC) WHERE conversation_id IS NOT NULL;
+-- Backfill from raw (guarded: a malformed timestamp in one legacy row must not abort the migration).
+DO $$
+BEGIN
+  UPDATE agent_runs SET
+    conversation_id  = COALESCE(conversation_id, NULLIF(raw->>'conversationId', '')),
+    execution_result = COALESCE(execution_result, CASE WHEN jsonb_typeof(raw->'execution_result') = 'object' THEN raw->'execution_result' END),
+    completed_at     = COALESCE(completed_at, NULLIF(raw->>'completed_at', '')::timestamptz)
+  WHERE (conversation_id IS NULL AND raw ? 'conversationId')
+     OR (execution_result IS NULL AND raw ? 'execution_result')
+     OR (completed_at IS NULL AND raw ? 'completed_at');
+EXCEPTION WHEN others THEN
+  RAISE NOTICE 'agent_runs conversation backfill skipped: %', SQLERRM;
+END $$;
+
+-- conversation_artifacts generalizes from tool results to any conversation artifact.
+ALTER TABLE conversation_artifacts ADD COLUMN IF NOT EXISTS artifact_kind   TEXT NOT NULL DEFAULT 'tool_result';
+ALTER TABLE conversation_artifacts ADD COLUMN IF NOT EXISTS producer_kind   TEXT NOT NULL DEFAULT 'tool';
+ALTER TABLE conversation_artifacts ADD COLUMN IF NOT EXISTS entity_refs     JSONB NOT NULL DEFAULT '[]'::jsonb;
+ALTER TABLE conversation_artifacts ADD COLUMN IF NOT EXISTS metadata        JSONB NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE conversation_artifacts ADD COLUMN IF NOT EXISTS schema_version  INT NOT NULL DEFAULT 1;
+ALTER TABLE conversation_artifacts ADD COLUMN IF NOT EXISTS retention_class TEXT NOT NULL DEFAULT 'default';
+
+-- context_manifests gains full decision/evidence/plan traceability.
+ALTER TABLE context_manifests ADD COLUMN IF NOT EXISTS request_id             TEXT;
+ALTER TABLE context_manifests ADD COLUMN IF NOT EXISTS correlation_id         TEXT;
+ALTER TABLE context_manifests ADD COLUMN IF NOT EXISTS session_version        BIGINT;
+ALTER TABLE context_manifests ADD COLUMN IF NOT EXISTS capability             TEXT;
+ALTER TABLE context_manifests ADD COLUMN IF NOT EXISTS capability_version     TEXT;
+ALTER TABLE context_manifests ADD COLUMN IF NOT EXISTS resolution_trace       JSONB NOT NULL DEFAULT '[]'::jsonb;
+ALTER TABLE context_manifests ADD COLUMN IF NOT EXISTS evidence_manifest      JSONB NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE context_manifests ADD COLUMN IF NOT EXISTS plan_manifest          JSONB NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE context_manifests ADD COLUMN IF NOT EXISTS response_evidence_refs JSONB NOT NULL DEFAULT '[]'::jsonb;

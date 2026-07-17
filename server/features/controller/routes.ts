@@ -1,6 +1,6 @@
 import type { Express } from 'express';
 import { buildPlan, cancelPlan, classifyIntent, executePlan, explainIntent, streamExplain, getPlan, listPlans } from '../../ai/controller';
-import { runSupervisor, answerAppQuestionFromCode } from '../../ai/supervisor';
+import { runSupervisor, answerAppQuestionFromCode, answerViaConversationalRuntime } from '../../ai/supervisor';
 import { quickWorkspaceAnswer } from '../../ai/tools/registry';
 import { reqScope } from '../../shared/scope';
 import { ChatConversations } from '../../db/repository';
@@ -165,6 +165,14 @@ export function registerControllerRoutes(app: Express) {
       // conversation so FOLLOW-UPS resolve against context — "rewrite that case", "explain it",
       // or a pasted case that follows a prior instruction — instead of being answered blind.
       if (!ACTION_RE.test(userMessage)) {
+        // Phase 6 cutover: diagnostic/recall questions answer from REAL run evidence via the
+        // Conversational Runtime (it persists its own canonical exchange); null → legacy path.
+        const runtimeReply = await answerViaConversationalRuntime(userMessage, {
+          conversationId, workspaceId, userId: effectiveUserId, projectId: scope.projectId, appId: scope.appId,
+        });
+        if (runtimeReply) {
+          return res.json({ reply: runtimeReply, accepted: true, fast: true, actions: [], trace: [] });
+        }
         const assembled = await assembleFastContext(userMessage, conversationId, history);
         const replay = nativeReplayOptions(assembled);
         const reply = await answerAppQuestionFromCode(`${replay.questionPrefix}\n\n${userMessage}`.trim(), {
@@ -232,6 +240,19 @@ export function registerControllerRoutes(app: Express) {
       // retrieval. Emits the search/read progress so the UI still animates the live steps.
       if (!ACTION_RE.test(userMessage)) {
         let i = 0;
+        // Phase 6 cutover (streaming): evidence-first runtime answers diagnostic/recall
+        // questions; progress lines keep the UI animating. null → legacy code-grounded path.
+        const runtimeReply = await answerViaConversationalRuntime(userMessage, {
+          conversationId, workspaceId, userId: effectiveUserId, projectId: scope.projectId, appId: scope.appId,
+          onProgress: (label) => {
+            send({ type: 'step', index: i++, toolCalls: [{ name: 'get_run', arguments: {} }], text: label });
+            flushStream(res);
+          },
+        });
+        if (runtimeReply) {
+          await sendFinalReply(res, send, runtimeReply, { fast: true });
+          return res.end();
+        }
         const assembled = await assembleFastContext(userMessage, conversationId, history);
         const replay = nativeReplayOptions(assembled);
         const reply = await answerAppQuestionFromCode(`${replay.questionPrefix}\n\n${userMessage}`.trim(), {

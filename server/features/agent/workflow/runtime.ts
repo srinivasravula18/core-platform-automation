@@ -19,6 +19,7 @@ import { getWorkflowCheckpointer } from './checkpointer';
 import { buildDefectDrafts, type DefectReport, type PriorRunSummary, type StepLogEntry } from './defectReporter';
 import { buildAnalystReport, isAnalystEnabled, type AnalystReport } from './analyst';
 import { startEvent, terminalEvent, type WorkflowEvent } from './events';
+import { projectRunLifecycleSafe } from '../../../../services/runtime/src/application/sessionProjector';
 import { buildTestRunGraph, getAuthoredCases, type TestRunGraphDeps } from './testRunGraph';
 import {
   createInitialWorkflowState,
@@ -94,6 +95,8 @@ const LEGACY_STATUS: Record<WorkflowStatus, string> = {
 const SEED_FIELDS = [
   'app_url', 'appUrl', 'provider', 'model', 'prompt', 'folderId', 'folderPath',
   'testPlanId', 'testSuiteId', 'testCaseId', 'artifactName', 'created_at', 'createdAt',
+  // Conversation/scope linkage: losing these orphaned graph runs from their chat (plan P11).
+  'conversationId', 'projectId', 'appId', 'ownerId', 'websiteId',
 ] as const;
 
 const MAX_PROJECTED_MESSAGES = 20;
@@ -188,6 +191,8 @@ export function projectStateToLegacyRun(state: WorkflowState, seed?: any): any {
     prompt: seed?.prompt ?? state.request.goal,
     status,
     messages,
+    // Conversation linkage survives even when the seed is lost (post-restart projection).
+    conversationId: seed?.conversationId ?? state.request.conversationId ?? undefined,
     // Prefer the FULL authored cases (steps/priority/preconditions, the exact legacy testCasesSchema
     // shape) held in-process by the graph; the bounded state.cases fallback covers post-restart reads.
     generated_cases: (() => {
@@ -282,6 +287,14 @@ interface ProjectionExtras {
   pendingReview?: unknown;
 }
 
+// Cases persist to the workspace the moment they are AUTHORED (cases review gate), not only
+// on terminal runs — registered by routes.ts, same pattern as the terminal persister.
+type CasesReviewPersister = (legacyRun: any) => Promise<void>;
+let casesReviewPersister: CasesReviewPersister | null = null;
+export function registerCasesReviewPersister(fn: CasesReviewPersister): void {
+  casesReviewPersister = fn;
+}
+
 async function projectAndPersist(runId: string, entry: RunRegistryEntry, state: WorkflowState, extras: ProjectionExtras | null): Promise<void> {
   const projection = projectStateToLegacyRun(state, entry.legacy);
   if (extras?.statusOverride) projection.status = extras.statusOverride;
@@ -289,6 +302,19 @@ async function projectAndPersist(runId: string, entry: RunRegistryEntry, state: 
   projection.pending_review = extras?.pendingReview ?? null;
   entry.legacy = projection;
   await upsertSafe(runId, projection);
+  // Auto-save authored cases at the review pause (and re-save after each rework round).
+  if (casesReviewPersister && (projection.pending_review as any)?.kind === 'cases' && Array.isArray(projection.generated_cases) && projection.generated_cases.length) {
+    try {
+      await casesReviewPersister(projection);
+      console.log(`[workflow] run ${runId}: ${projection.generated_cases.length} authored case(s) auto-saved to the workspace (pending review).`);
+    } catch (err) {
+      console.warn(`[workflow] run ${runId}: case auto-save failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  // Conversational Runtime Phase 6: identical session semantics for the graph engine (idempotent by sourceKey).
+  if (['completed', 'failed', 'cancelled'].includes(String(projection.status || ''))) {
+    projectRunLifecycleSafe({ run: projection, phase: 'completed' });
+  }
 }
 
 async function projectTerminalOverride(runId: string, entry: RunRegistryEntry, state: WorkflowState | null, status: 'cancelled' | 'failed', line: string): Promise<void> {
@@ -296,6 +322,7 @@ async function projectTerminalOverride(runId: string, entry: RunRegistryEntry, s
   const messages = [...(Array.isArray(base.messages) ? base.messages : []), { agent: 'Workflow', status, output: line }].slice(-MAX_PROJECTED_MESSAGES);
   entry.legacy = { ...base, status, messages, pending_review: null };
   await upsertSafe(runId, entry.legacy);
+  projectRunLifecycleSafe({ run: entry.legacy, phase: 'completed' });
 }
 
 // ---------------------------------------------------------------------------------------------

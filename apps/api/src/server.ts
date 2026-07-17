@@ -2,7 +2,7 @@ import '../../../core/shared/env';
 import express from 'express';
 import http from 'http';
 import path from 'path';
-import { loadPersistedData, loadPersistedSettings, scopeMiddleware } from '../../../core/shared';
+import { loadPersistedData, loadPersistedSettings, hydrateJsonCollectionsFromPg, scopeMiddleware } from '../../../core/shared';
 import { AgentRuns, ensureMigrated, isPgEnabled, runSeedIfEmpty } from '../../../core/persistence';
 import { db } from '../../../server/shared/storage';
 import { registerAgentRoutes } from '../../../services/agents';
@@ -17,7 +17,7 @@ import { registerKnowledgeRoutes, seedDefaultKnowledgeIfEmpty } from '../../../s
 import { registerProjectRoutes, seedDefaultProjectAndBackfill } from '../../../services/projects';
 import { registerRequirementRoutes } from '../../../services/requirements';
 import { registerResourceRoutes } from '../../../services/resources';
-import { registerAgentRuntimeRoutes } from '../../../services/runtime';
+import { registerAgentRuntimeRoutes, registerConversationalRuntimeRoutes } from '../../../services/runtime';
 import { registerScreenshotRoutes } from '../../../services/screenshots';
 import { registerSearchRoutes } from '../../../services/search';
 import { registerSettingsRoutes, registerAiSettingsRoutes } from '../../../services/settings';
@@ -57,11 +57,25 @@ function installWorkflowShutdownHooks() {
 }
 
 export async function createExpressApp() {
+  // PostgreSQL is REQUIRED: the JSON file store is no longer a silent fallback. The only
+  // way to run without a database is the explicit DISABLE_POSTGRES=true sandbox override
+  // (used by the hermetic test suites) — never a missing/typo'd DATABASE_URL.
+  if (!isPgEnabled()) {
+    if (String(process.env.DISABLE_POSTGRES || '').toLowerCase() === 'true') {
+      console.warn('[storage] DISABLE_POSTGRES=true — running on the JSON sandbox store. NOT for real data.');
+    } else {
+      throw new Error('PostgreSQL is required: set DATABASE_URL (or PGHOST/PGUSER/PGDATABASE). To knowingly run a throwaway JSON-mode sandbox, set DISABLE_POSTGRES=true.');
+    }
+  }
+
   await loadPersistedData();
 
   if (isPgEnabled()) {
     try {
       await ensureMigrated();
+      // JSON-only collections (projects/apps/knowledge/repoSecrets/blackboard) become
+      // DB-authoritative: hydrate from json_store, seeding it from the file on first boot.
+      await hydrateJsonCollectionsFromPg();
       const seed = await runSeedIfEmpty();
       const creds = await hydrateFromPg();
       db.agentRuns = await AgentRuns.list();
@@ -69,8 +83,6 @@ export async function createExpressApp() {
     } catch (err: any) {
       console.error('[pg] startup error:', err?.message || err);
     }
-  } else {
-    console.log('[storage] using JSON file persistence (no DATABASE_URL set)');
   }
 
   if (isWorkflowGraphEnabled()) {
@@ -128,6 +140,7 @@ export async function createExpressApp() {
   registerCredentialsRoutes(app);
   registerControllerRoutes(app);
   registerAgentRuntimeRoutes(app);
+  registerConversationalRuntimeRoutes(app); // Conversational Runtime (flag CONVERSATIONAL_RUNTIME_V1)
   registerChatRoutes(app);
   registerPlaywrightRoutes(app);
   registerSearchRoutes(app);
