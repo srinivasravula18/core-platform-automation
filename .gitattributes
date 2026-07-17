@@ -1,0 +1,4 @@
+# The agent's committed node_modules ships binaries (tsx/esbuild, native .node). Store them byte-for-byte
+# so Git's autocrlf line-ending conversion can never corrupt them.
+agent/node_modules/** -text
+agent/browsers/** -text

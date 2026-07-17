@@ -18,16 +18,13 @@ for 10 minutes). Download it fresh each time you set up a new machine.
 
 ## 2. Install — nothing to install
 
-The bundle is **self-contained**: `node_modules` and the Chromium browser ship inside it.
+The bundle is **self-contained**: production `node_modules` and the compiled `dist/` ship inside it —
+there is no install step at all.
 
 1. Unzip `TestFlow-Agent.zip` to a folder you control, e.g. `C:\TestFlow-Agent`.
-2. That's it — there is no install step. (Clicking `install.bat` just confirms this.)
+2. Double-click **start.bat**. That's it.
 
-> Maintainers: the self-contained bundle is built once per OS with `build-bundle.bat` (installs
-> `node_modules` + Chromium into the folder), then the server serves it by pointing `AGENT_BUNDLE_DIR`
-> at that folder. Because native binaries are OS-specific, build the Windows bundle on Windows.
-
-If Node.js is missing, install.bat tells you and stops — install Node, then re-run it.
+Requires Node.js 18+ on the machine (or a bundled portable Node in `agent/node/`).
 
 ## 3. Start
 
@@ -56,8 +53,8 @@ Back in **Automation → Local Agent**, the status badge turns green (**Connecte
 ## Updating
 
 When a newer agent is published, **Automation → Local Agent** shows an **Update Agent** action, and the
-agent logs a notice on startup. Download the new ZIP and re-run install.bat over the same folder (your
-`config.json` and token are preserved).
+agent logs a notice on startup. Download the new ZIP and unzip it over the same folder, then run
+start.bat (your `config.json` and token are preserved).
 
 ## Security notes
 
@@ -71,9 +68,8 @@ agent logs a notice on startup. Download the new ZIP and re-run install.bat over
 
 | Symptom | Fix |
 | --- | --- |
-| "Node.js is required but was not found" | Install Node 18+ and re-run install.bat |
+| "Node.js is required but was not found" | Install Node 18+ (or use a bundle with a portable Node in `agent/node/`), then run start.bat |
 | Badge stays grey / "not running" | Run start.bat; check the console window for errors |
 | "Invalid or expired pairing token" | Pairing tokens last 10 minutes — download a fresh ZIP |
-| Recording window doesn't open | Run `npx playwright install chromium` in the agent folder |
-| Picked Firefox/WebKit but the run fails | Only Chromium installs by default — run `npx playwright install firefox webkit` |
+| Recording window doesn't open | The browser (Chromium) must be present in `agent/browsers/` — use a bundle that includes it |
 | Logs | See `logs/agent-YYYY-MM-DD.log` in the agent folder, or `GET http://localhost:2424/logs` |

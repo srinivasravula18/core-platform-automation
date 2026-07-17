@@ -1,5 +1,5 @@
 @echo off
-REM TestFlow Desktop Agent — launcher. Self-contained bundle: node_modules + browsers ship inside,
+REM TestFlow Desktop Agent — launcher. Self-contained: prod node_modules + compiled dist ship inside,
 REM so there is NOTHING to install. Just double-click this file.
 setlocal
 cd /d "%~dp0"
@@ -17,12 +17,12 @@ if errorlevel 1 (
   exit /b 1
 )
 
-if not exist "node_modules" (
-  echo This bundle is missing node_modules ^(not self-contained^). Re-download the agent from TestFlow AI.
+if not exist "dist\index.js" (
+  echo This bundle is missing dist\index.js ^(not built^). Re-download the agent from TestFlow AI.
   pause
   exit /b 1
 )
 
 echo Starting TestFlow Agent on http://localhost:2424 ...
 echo Close this window or run stop.bat to stop the agent.
-call "node_modules\.bin\tsx.cmd" src\index.ts
+node dist\index.js

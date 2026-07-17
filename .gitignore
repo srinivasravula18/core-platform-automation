@@ -59,11 +59,17 @@ scripts/**/*-json/
 **/json.bak-project-cleanup/
 .aiqa-live/
 
-# Record & Play — desktop agent build output + runtime state (source lives under agent/src)
-agent/node_modules/
-agent/dist/
+# Record & Play — desktop agent. node_modules (production-only) + compiled dist ARE committed so
+# machines without npm access get a ready-to-run, self-contained bundle (just run start.bat).
+# Negations override the global node_modules/ and dist/ ignores above (re-include the dir, then its
+# contents). Only runtime state + the huge browser binaries stay out of git.
+!agent/node_modules/
+!agent/node_modules/**
+!agent/dist/
+!agent/dist/**
 agent/config.json
 agent/logs/
 agent/playwright/
+agent/browsers/
 # Uploaded run artifacts (cloud host storage, not source)
 /automation-artifacts
