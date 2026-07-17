@@ -21,7 +21,7 @@ import type {
   ToolCallRequest,
   ChatMessage,
 } from './types';
-import { classifyError, DEFAULT_MODELS, estimateCost } from './types';
+import { classifyError, DEFAULT_MODELS, estimateCost, maxOutputFor } from './types';
 
 /** Build a ProviderUsage (with cost) from the Vercel AI SDK usage shape, splitting cached input out. */
 function geminiSdkUsage(modelId: string, usage: any) {
@@ -86,7 +86,8 @@ export class GeminiProvider implements AIProvider {
     const config: Record<string, any> = {};
     if (opts.system) config.systemInstruction = opts.system;
     if (typeof opts.temperature === 'number') config.temperature = opts.temperature;
-    if (opts.maxTokens) config.maxOutputTokens = opts.maxTokens;
+    // Use the model's FULL output budget by default (like Anthropic) so Gemini's own lower default never truncates.
+    config.maxOutputTokens = opts.maxTokens ?? maxOutputFor(modelId);
     if (opts.tools?.length) {
       config.tools = [{
         functionDeclarations: opts.tools.map((t) => ({
@@ -164,7 +165,7 @@ export class GeminiProvider implements AIProvider {
         prompt: opts.prompt,
         schema: schemaZ,
         temperature: opts.temperature,
-        maxOutputTokens: opts.maxTokens,
+        maxOutputTokens: opts.maxTokens ?? maxOutputFor(modelId),
         abortSignal: opts.signal,
       } as any);
       const text = JSON.stringify(object);
@@ -185,12 +186,13 @@ export class GeminiProvider implements AIProvider {
 
   async *generateTextStream(opts: GenerateTextOptions): AsyncIterable<string> {
     const client = this.client();
+    const modelId = this.modelId(opts);
     const { textStream } = aiStreamText({
-      model: client(this.modelId(opts)),
+      model: client(modelId),
       system: opts.system,
       prompt: opts.prompt,
       temperature: opts.temperature,
-      maxOutputTokens: opts.maxTokens,
+      maxOutputTokens: opts.maxTokens ?? maxOutputFor(modelId),
       abortSignal: opts.signal,
     } as any);
     for await (const delta of textStream) yield delta as string;
@@ -206,7 +208,7 @@ export class GeminiProvider implements AIProvider {
         system: opts.system,
         prompt: opts.prompt,
         temperature: opts.temperature,
-        maxOutputTokens: opts.maxTokens,
+        maxOutputTokens: opts.maxTokens ?? maxOutputFor(modelId),
         abortSignal: opts.signal,
       } as any);
       const usageObj = usage ? geminiSdkUsage(modelId, usage as any) : undefined;

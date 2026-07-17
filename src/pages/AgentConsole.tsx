@@ -865,6 +865,7 @@ export default function AgentConsole() {
   } = useSpeechToText({ onTranscript: appendSpeechTranscript });
 
   useEffect(() => {
+    if (scrollRef.current?.contains(document.activeElement)) return;
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
   }, [turns]);
 
