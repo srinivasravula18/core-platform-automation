@@ -44,15 +44,16 @@ export function getProviderCredentials(provider: ProviderName): ProviderCredenti
     return { apiKey: '', model: settings.model, authMode: 'account' };
   }
   if (!settings?.apiKey) {
+    const configuredModel = settings?.model;
     if (provider === 'gemini') {
       const envKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_GENERATIVE_AI_API_KEY;
-      if (envKey) return { apiKey: envKey, authMode: 'api_key' };
+      if (envKey) return { apiKey: envKey, model: configuredModel, authMode: 'api_key' };
     }
     if (provider === 'openai' && process.env.OPENAI_API_KEY) {
-      return { apiKey: process.env.OPENAI_API_KEY, authMode: 'api_key' };
+      return { apiKey: process.env.OPENAI_API_KEY, model: configuredModel, authMode: 'api_key' };
     }
     if (provider === 'anthropic' && process.env.ANTHROPIC_API_KEY) {
-      return { apiKey: process.env.ANTHROPIC_API_KEY, authMode: 'api_key' };
+      return { apiKey: process.env.ANTHROPIC_API_KEY, model: configuredModel, authMode: 'api_key' };
     }
     return null;
   }
