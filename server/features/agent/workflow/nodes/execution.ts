@@ -11,7 +11,7 @@
  */
 import { createHash } from 'crypto';
 import path from 'path';
-import { copyFile, mkdir } from 'fs/promises';
+import { copyFile, mkdir, readFile } from 'fs/promises';
 import { executePlaywrightScripts, type ExecutionResult, type TestResult } from '../../../playwright/executionService';
 import { WorkflowRuntimeError, WORKFLOW_ERROR_CLASSES, type WorkflowError } from '../errors';
 import type { ExecutionAggregate, ExecutionAttempt } from '../state';
@@ -40,6 +40,8 @@ export interface EvidenceShot {
   screenshotUrl: string;
   status?: string;
   stepScreenshots?: string[];
+  /** Step-log-joined frames: what each screenshot's step actually did (action/label/value/outcome). */
+  steps?: Array<{ url: string; kind?: string; label?: string; value?: string; ok?: boolean; error?: string }>;
 }
 
 export interface RunExecutionNodeResult {
@@ -99,7 +101,26 @@ export async function publishEvidenceShots(runId: string, tests: TestResult[], b
       if (url) cover = url;
     }
     if (!cover && stepUrls.length === 0) continue; // nothing captured for this case
-    shots.push({ title: t.title, url: baseUrl || '', screenshotUrl: cover, status: t.status, stepScreenshots: stepUrls });
+    // Join the MissionRunner step log (one entry per act(), same order as the step shots) so the
+    // viewer can label every frame with what the step did instead of a bare "Step N".
+    let steps: EvidenceShot['steps'];
+    if (stepUrls.length && t.stepLogPath) {
+      const entries = await readFile(t.stepLogPath, 'utf8').then((raw) => JSON.parse(raw) as any[]).catch(() => null);
+      if (Array.isArray(entries)) {
+        steps = stepUrls.map((url, k) => {
+          const e = entries[k] || {};
+          return {
+            url,
+            kind: typeof e.kind === 'string' ? e.kind : undefined,
+            label: typeof e.label === 'string' ? e.label.slice(0, 120) : undefined,
+            value: typeof e.value === 'string' ? e.value.slice(0, 80) : undefined,
+            ok: typeof e.ok === 'boolean' ? e.ok : undefined,
+            error: typeof e.error === 'string' ? e.error.slice(0, 300) : undefined,
+          };
+        });
+      }
+    }
+    shots.push({ title: t.title, url: baseUrl || '', screenshotUrl: cover, status: t.status, stepScreenshots: stepUrls, ...(steps ? { steps } : {}) });
   }
   return shots;
 }

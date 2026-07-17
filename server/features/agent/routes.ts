@@ -5097,7 +5097,10 @@ Rules:
       const prompt = String(req.body?.prompt || '').trim();
       const selectedApp = scope.appId ? getApp(scope.appId) : undefined;
       const appUrl = String(req.body?.app_url || selectedApp?.baseUrl || '').trim();
-      if (!prompt || !appUrl) return res.json({ needsChoice: false });
+      if (!prompt) return res.json({ needsChoice: false });
+      // No target configured anywhere — tell the client explicitly so it can guide the user
+      // to set up a project/app instead of silently proceeding into an untargeted flow.
+      if (!appUrl) return res.json({ needsChoice: false, reason: 'no-target-configured' });
 
       const platform = platformTypeFromSurface(selectedApp?.name || '', appUrl);
       if (platform === 'ADMIN') {
@@ -6413,6 +6416,75 @@ ${images ? `The user attached ${images.length} image(s) as additional context fo
       }, reworkRunScope));
     } catch (err: any) {
       console.error('AI Rework Error:', err);
+      res.status(500).json({ error: getAIErrorMessage(err) });
+    }
+  });
+
+  // Chat-based bulk rework: ONE free-text intent for the whole suite — the model decides whether to
+  // MODIFY existing cases and/or ADD missing coverage (e.g. "you missed this feature, please add it").
+  app.post('/api/agent/rework-cases-chat', async (req, res) => {
+    try {
+      const { instruction, cases, selectedIndexes, targetUrl } = req.body || {};
+      const intent = String(instruction || '').trim();
+      if (!intent) return res.status(400).json({ error: 'instruction required' });
+      const list = Array.isArray(cases) ? cases : [];
+      if (!list.length) return res.status(400).json({ error: 'cases required' });
+      const scope = reqScope(req);
+      const chatRunScope = { appName: (scope.appId ? getApp(scope.appId)?.name : '') || '', app_url: targetUrl || '' };
+      const picked = [...new Set((Array.isArray(selectedIndexes) ? selectedIndexes : [])
+        .map((i: any) => Number(i))
+        .filter((i: number) => Number.isInteger(i) && i >= 0 && i < list.length))];
+      // The intent applies to the selected cases when any are ticked, else the whole suite.
+      const focus = picked.length ? picked : list.map((_: any, i: number) => i);
+      const catalog = list.map((c: any, i: number) => `${i}. ${String(c?.title || 'Untitled')}${picked.includes(i) ? '  [SELECTED]' : ''}`).join('\n');
+      const detail = focus.slice(0, 15).map((i: number) => `INDEX ${i}: ${JSON.stringify(list[i])}`).join('\n');
+      const repoContext = buildReworkRepoContext({ scope, testCase: list[focus[0]] || list[0], feedback: intent });
+      const caseSchema = z.object({
+        title: z.string(),
+        description: z.string().optional().default(''),
+        preconditions: z.string().optional().default(''),
+        tags: z.array(z.string()).optional().default([]),
+        priority: z.enum(['Low', 'Medium', 'High', 'Critical']).optional().default('Medium'),
+        type: z.enum(['Manual', 'Automated', 'Both']).optional().default('Manual'),
+        steps: z.array(z.object({ action: z.string(), expected: z.string() })),
+      });
+      const ai = await getOrchestrator('caseReworker', { workspaceId: scope.userId || 'default' });
+      const result = await ai.generateObject<any>({
+        prompt: `You maintain a QA test-case suite. Target URL: ${targetUrl || 'not provided'}.
+ALL CASES (index. title):
+${catalog}
+
+FULL CASES IN FOCUS:
+${detail}
+${repoContext}
+USER REQUEST: ${intent}
+
+Decide what the request needs:
+- MODIFY existing cases -> return each changed case in updatedCases with its index (only cases that actually change).
+- ADD coverage the suite is missing (e.g. "you missed this feature") -> return complete new cases in newCases.
+Do both when the request implies both. Never delete or renumber cases. Steps must be concrete and executable against the target app. In note, say in one short sentence what you did.`,
+        schema: z.object({
+          updatedCases: z.array(z.object({ index: z.number().int(), testCase: caseSchema })).optional().default([]),
+          newCases: z.array(caseSchema).optional().default([]),
+          note: z.string().optional().default(''),
+        }),
+        userMessage: intent,
+      });
+      const out = result.object || {};
+      const updatedCases = (Array.isArray(out.updatedCases) ? out.updatedCases : [])
+        .filter((u: any) => Number.isInteger(u?.index) && u.index >= 0 && u.index < list.length && u?.testCase)
+        .map((u: any) => ({
+          index: u.index,
+          testCase: normalizeGeneratedCaseText({ ...list[u.index], ...u.testCase, steps: normalizeCaseSteps(u.testCase.steps || list[u.index]?.steps || []) }, chatRunScope),
+        }));
+      const newCases = (Array.isArray(out.newCases) ? out.newCases : [])
+        .map((c: any) => normalizeGeneratedCaseText({ captureEvidence: true, ...c, steps: normalizeCaseSteps(c?.steps || []) }, chatRunScope));
+      if (!updatedCases.length && !newCases.length) {
+        return res.status(422).json({ error: 'The AI could not map that request to any case changes — try being more specific about the feature or cases.' });
+      }
+      res.json({ updatedCases, newCases, note: String(out.note || '') });
+    } catch (err: any) {
+      console.error('AI Chat Rework Error:', err);
       res.status(500).json({ error: getAIErrorMessage(err) });
     }
   });

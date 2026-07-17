@@ -251,7 +251,8 @@ export class PlaywrightCompiler implements Compiler {
       }
     });
 
-    const title = String(plan.title || plan.module || plan.mission || 'compiled mission').replace(/`/g, "'");
+    // Fallback must stay user-presentable — it becomes the evidence-card header in the console.
+    const title = String(plan.title || plan.module || plan.mission || 'Untitled test case').replace(/`/g, "'");
     const code =
       `import { test, expect } from '@playwright/test';\n` +
       `import { MissionRunner } from './mission-runner';\n\n` +

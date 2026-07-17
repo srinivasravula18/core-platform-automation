@@ -26,6 +26,18 @@ All 16 reported bugs (Divya/santhosh/sai, 07/17) root-caused and fixed. Uncommit
 - Deep run end-to-end: router → understanding → FolderAskCard (typed custom folder, no jank) → graph stages → 2 correctly-scoped cases authored; Metadata chip resolved (timeout path exercised for real).
 - Save All: button → "Saved" in seconds; `TC-8357-1/2` + `PLAN-83571704` + `SUITE-83571704` in Postgres with FK links; cases visible in /cases without manual refresh.
 
+## Follow-up sweep (same day, second pass — Divya's remaining items)
+
+Re-verification of the full 21-item tester list found 5 gaps; all fixed, lint clean, suites green (78+20+36+74+39), backend restarted, live-verified:
+
+1. **Conversation rename** — pencil affordance in the History dropdown (inline input, Enter/blur commits) → metadata-only PUT; `convTitleRef` makes the snapshot PUT preserve the custom title instead of re-deriving the auto-title. Live-verified: rename persisted with turns intact.
+2. **"Save all" state across navigation** — `saved` is now serialized into the `deeprun` turn (`onSaved` → `replaceTurn`) and hydrated via `initialSaved`; inline `GeneratedCases` propagates edits + adopted case ids into the `cases` turn (`onCasesChange`) and shows a persistent per-case Saved chip (dirty-tracked).
+3. **"compiled mission" header** — compiler fallback renamed to a user-presentable title; client-side `evidenceTitle()` guard maps legacy 'compiled mission' titles to "Test case N" everywhere the header renders.
+4. **Raw-tab step screenshots** — the per-step `target="_blank"` links in the evidence modal replaced with an in-app zoom overlay (caption + click-to-close), stale zoom reset on case switch.
+5. **Step-to-screenshot correlation** — `publishEvidenceShots` now joins the MissionRunner step log (kind/label/value/ok/error, order-aligned with the step frames) into `EvidenceShot.steps`; the modal captions each frame "Step N — action label", flags failed steps and shows the step error.
+
+Plus the new feature request: **chat-based bulk "Rework with AI"** on the deep-run Cases tab (`POST /api/agent/rework-cases-chat`) — one free-text intent ("you missed this feature, add it"); the model returns `updatedCases` (index-keyed modifications) and/or `newCases` (missing coverage), normalized server-side; the card merges updates in place and appends additions. Live-verified: delete-confirmation intent produced a correct 5-step new case, existing cases untouched.
+
 ## Remaining technical debt
 
 - Plan→suite→cases→run bundle is idempotent (deterministic ids + upserts) but not yet wrapped in one `withTransaction` (repository upserts would need an optional client param).

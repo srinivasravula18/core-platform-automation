@@ -167,6 +167,30 @@ function actionErrorMessage(e: any): string {
   return e?.message || 'Request failed.';
 }
 
+// Legacy compiled scripts fell back to an internal 'compiled mission' test title — never surface it.
+function evidenceTitle(title: string | undefined, i: number): string {
+  const t = String(title || '').trim();
+  return !t || /^compiled mission/i.test(t) ? `Test case ${i + 1}` : t;
+}
+
+// One step frame in the evidence modal: url + the recorded action (when the step log is joined).
+type StepFrame = { url: string; kind?: string; label?: string; value?: string; ok?: boolean; error?: string };
+
+/** Frames for a case's modal: prefer the step-log-joined `steps`, fall back to bare screenshot urls. */
+function stepFramesFor(sc: any): StepFrame[] {
+  if (Array.isArray(sc?.steps) && sc.steps.length) return sc.steps.filter((s: any) => s?.url);
+  const urls: string[] = (Array.isArray(sc?.stepScreenshots) && sc.stepScreenshots.length)
+    ? sc.stepScreenshots
+    : (sc?.screenshotUrl ? [sc.screenshotUrl] : []);
+  return urls.map((url) => ({ url }));
+}
+
+/** "Step 3 — fill Username" style caption from the joined step-log metadata. */
+function stepCaption(frame: StepFrame, si: number): string {
+  const action = [frame.kind === 'startMission' ? 'open page' : frame.kind, frame.label].filter(Boolean).join(' ');
+  return `Step ${si + 1}${action ? ` — ${action}` : ''}${frame.value ? ` = "${String(frame.value).slice(0, 40)}"` : ''}`;
+}
+
 type Step = { action: string; expected: string };
 type Case = {
   title: string;
@@ -182,9 +206,12 @@ type Case = {
   reuseMatchReasons?: string[];
 };
 
-export function DeepRunResult({ taskId }: { taskId: string }) {
+export function DeepRunResult({ taskId, initialSaved, onSaved }: { taskId: string; initialSaved?: boolean; onSaved?: () => void }) {
   const [tab, setTab] = useState<'cases' | 'code' | 'evidence'>('cases');
   const [shotOpen, setShotOpen] = useState<number | null>(null); // evidence lightbox index
+  // In-modal zoom for a single step frame (replaces the old raw target=_blank image link).
+  const [stepZoom, setStepZoom] = useState<{ url: string; caption: string } | null>(null);
+  useEffect(() => setStepZoom(null), [shotOpen]); // never carry a stale zoom across cases
   const [cases, setCases] = useState<Case[] | null>(null);
   const [reworkBaseline, setReworkBaseline] = useState<Case[]>([]);
   const [editing, setEditing] = useState<number | null>(null);
@@ -202,7 +229,10 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
   const [busy, setBusy] = useState<string | null>(null);
   // Inline failure message for the case-action fetches (save/continue/rework/expand/coverage).
   const [actionError, setActionError] = useState<string | null>(null);
-  const [saved, setSaved] = useState(false);
+  // Chat-based bulk rework: one free-text intent for the suite ("you missed X — add it").
+  const [chatIntent, setChatIntent] = useState('');
+  const [chatNote, setChatNote] = useState<string | null>(null);
+  const [saved, setSaved] = useState(!!initialSaved);
   const [pwRunning, setPwRunning] = useState(false);
   const [pwResult, setPwResult] = useState<any>(null);
   const [reportOpen, setReportOpen] = useState(false);
@@ -478,6 +508,42 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
       setBusy(null);
     }
   };
+  // One intent, whole suite: the server decides whether to modify cases and/or add missing ones.
+  const chatRework = async () => {
+    const intent = chatIntent.trim();
+    if (!intent || !list.length) return;
+    setBusy('chat-rework');
+    setActionError(null);
+    setChatNote(null);
+    try {
+      const res = await fetchWithTimeout('/api/agent/rework-cases-chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ instruction: intent, cases: list, selectedIndexes: [...selectedCases], targetUrl }),
+      }, 180_000);
+      if (!res.ok) throw await errorFromResponse(res);
+      const data = await res.json();
+      const updates: Array<{ index: number; testCase: any }> = Array.isArray(data.updatedCases) ? data.updatedCases : [];
+      const added: any[] = Array.isArray(data.newCases) ? data.newCases : [];
+      if (updates.length) {
+        const apply = (arr: Case[]) => arr.map((c, idx) => updates.find((u) => u.index === idx)?.testCase ?? c);
+        setCases((prev) => apply(prev || []));
+        setReworkBaseline((prev) => apply(prev));
+      }
+      if (added.length) {
+        // Appended (not prepended) so selected-case indices stay valid without reindexing.
+        setCases((prev) => [...(prev || []), ...added]);
+        setReworkBaseline((prev) => [...prev, ...added]);
+      }
+      setSaved(false);
+      setChatIntent('');
+      setChatNote([data.note, updates.length ? `${updates.length} case${updates.length === 1 ? '' : 's'} updated.` : '', added.length ? `${added.length} case${added.length === 1 ? '' : 's'} added.` : ''].filter(Boolean).join(' ') || 'Done.');
+    } catch (e: any) {
+      setActionError(actionErrorMessage(e));
+    } finally {
+      setBusy(null);
+    }
+  };
   const saveAll = async () => {
     if (!list.length) return;
     setBusy('save');
@@ -490,6 +556,7 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
       });
       if (!res.ok) throw await errorFromResponse(res);
       setSaved(true); // only mark saved on a verified 2xx
+      onSaved?.(); // persist savedness into the conversation turn so it survives navigation
     } catch (e: any) {
       setActionError(actionErrorMessage(e));
     } finally {
@@ -1139,6 +1206,34 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
                 </div>
               </div>
 
+              {/* Chat-based bulk rework: tell the agent what to change or add across the suite. */}
+              <div className="mb-2 flex items-center gap-2">
+                <MessageSquareText className="h-4 w-4 shrink-0 text-[var(--accent)]" />
+                <input
+                  value={chatIntent}
+                  onChange={(e) => setChatIntent(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter' && chatIntent.trim()) void chatRework(); }}
+                  disabled={busy === 'chat-rework' || !list.length}
+                  placeholder={selectedCases.size
+                    ? `Rework with AI — applies to the ${selectedCases.size} selected case${selectedCases.size === 1 ? '' : 's'} (e.g. "add negative checks")…`
+                    : 'Rework with AI — e.g. "you missed the export permission check, please add it"…'}
+                  className="min-w-0 flex-1 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2.5 py-1.5 text-xs text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:border-[var(--accent)] focus:outline-none disabled:opacity-50"
+                />
+                <button
+                  onClick={chatRework}
+                  disabled={busy === 'chat-rework' || !chatIntent.trim() || !list.length}
+                  className="inline-flex shrink-0 items-center gap-1 rounded-md bg-[var(--accent)] px-2.5 py-1.5 text-xs font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50"
+                >
+                  {busy === 'chat-rework' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
+                  Rework with AI
+                </button>
+              </div>
+              {chatNote && (
+                <div aria-live="polite" className="mb-2 flex items-start gap-1.5 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-1.5 text-[11px] text-emerald-400">
+                  <CheckCircle2 className="mt-0.5 h-3 w-3 shrink-0" />
+                  <span>{chatNote}</span>
+                </div>
+              )}
               {actionError && (
                 <div className="mb-2 flex items-start gap-1.5 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-1.5 text-[11px] text-red-400">
                   <XCircle className="mt-0.5 h-3 w-3 shrink-0" />
@@ -1824,15 +1919,15 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
                       key={i}
                       type="button"
                       onClick={() => setShotOpen(i)}
-                      title={shot.title || 'Evidence'}
+                      title={evidenceTitle(shot.title, i)}
                       className="group overflow-hidden rounded-md border border-[var(--border)] text-left transition-colors hover:border-[var(--accent)]"
                     >
                       <div className="flex items-center gap-1.5 border-b border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5">
                         <span className={cn('h-1.5 w-1.5 shrink-0 rounded-full', shot.status === 'passed' ? 'bg-emerald-500' : 'bg-red-500')} />
-                        <span className="min-w-0 flex-1 truncate text-[11px] font-medium text-[var(--text-primary)]">{shot.title || 'Evidence'}</span>
+                        <span className="min-w-0 flex-1 truncate text-[11px] font-medium text-[var(--text-primary)]">{evidenceTitle(shot.title, i)}</span>
                       </div>
                       {shot.screenshotUrl ? (
-                        <img src={withBasePath(shot.screenshotUrl)} alt={shot.title || 'evidence'} className="h-32 w-full bg-black object-cover" />
+                        <img src={withBasePath(shot.screenshotUrl)} alt={evidenceTitle(shot.title, i)} className="h-32 w-full bg-black object-cover" />
                       ) : (
                         <div className="flex h-32 items-center justify-center bg-black text-[10px] text-[var(--text-muted)]">no screenshot</div>
                       )}
@@ -1874,9 +1969,7 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
       {/* Evidence popup: the selected case's per-step screenshots (same interaction as Cases/Scripts). */}
       {shotOpen != null && evidence[shotOpen] && (() => {
         const sc = evidence[shotOpen];
-        const steps: string[] = (Array.isArray(sc.stepScreenshots) && sc.stepScreenshots.length)
-          ? sc.stepScreenshots
-          : (sc.screenshotUrl ? [sc.screenshotUrl] : []);
+        const frames = stepFramesFor(sc);
         return (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onClick={() => setShotOpen(null)}>
             <div className="flex max-h-[90dvh] w-full max-w-4xl flex-col overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--bg-card)]" onClick={(e) => e.stopPropagation()}>
@@ -1884,7 +1977,7 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
                 {sc.status && (
                   <span className={cn('shrink-0 rounded border px-1.5 py-0.5 text-[9px] font-semibold uppercase', sc.status === 'passed' ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400' : 'border-red-500/30 bg-red-500/10 text-red-400')}>{sc.status}</span>
                 )}
-                <div className="min-w-0 flex-1 truncate text-sm font-medium text-[var(--text-primary)]">{sc.title || 'Evidence'}</div>
+                <div className="min-w-0 flex-1 truncate text-sm font-medium text-[var(--text-primary)]">{evidenceTitle(sc.title, shotOpen)}</div>
                 {sc.traceUrl && (
                   <a href={withBasePath(sc.traceUrl)} target="_blank" rel="noreferrer" title="Download the Playwright trace to replay step by step" className="shrink-0 rounded border border-[var(--accent)]/30 bg-[var(--accent)]/10 px-1.5 py-0.5 text-[9px] font-semibold uppercase text-[var(--accent)] hover:bg-[var(--accent)]/20">Trace ↓</a>
                 )}
@@ -1892,13 +1985,24 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
               </div>
               <div className="min-h-0 flex-1 overflow-auto p-3">
                 {sc.reason && <pre className="mb-2 max-h-28 overflow-auto whitespace-pre-wrap rounded bg-red-500/10 p-2 font-mono text-[10px] text-red-300">{sc.reason}</pre>}
-                <div className="mb-2 text-[11px] font-medium text-[var(--text-muted)]">{steps.length} step screenshot{steps.length === 1 ? '' : 's'}</div>
+                <div className="mb-2 text-[11px] font-medium text-[var(--text-muted)]">{frames.length} step screenshot{frames.length === 1 ? '' : 's'}</div>
                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                  {steps.map((url, si) => (
-                    <a key={`${url}-${si}`} href={withBasePath(url)} target="_blank" rel="noreferrer" className="overflow-hidden rounded-md border border-[var(--border)] bg-black">
-                      <div className="bg-[var(--bg-secondary)] px-2 py-1 text-[10px] font-semibold text-[var(--text-primary)]">Step {si + 1}</div>
-                      <img src={withBasePath(url)} alt={`step ${si + 1}`} className="w-full object-contain" />
-                    </a>
+                  {frames.map((frame, si) => (
+                    // In-app zoom (was a raw target=_blank image tab that lost the case/step context).
+                    <button
+                      key={`${frame.url}-${si}`}
+                      type="button"
+                      onClick={() => setStepZoom({ url: frame.url, caption: stepCaption(frame, si) })}
+                      className="overflow-hidden rounded-md border border-[var(--border)] bg-black text-left"
+                      title="Click to zoom"
+                    >
+                      <div className={cn('flex items-center gap-1.5 bg-[var(--bg-secondary)] px-2 py-1 text-[10px] font-semibold', frame.ok === false ? 'text-red-400' : 'text-[var(--text-primary)]')}>
+                        {frame.ok === false && <XCircle className="h-3 w-3 shrink-0" />}
+                        <span className="min-w-0 flex-1 truncate">{stepCaption(frame, si)}</span>
+                      </div>
+                      {frame.error && <div className="truncate bg-red-500/10 px-2 py-0.5 font-mono text-[9px] text-red-300" title={frame.error}>{frame.error}</div>}
+                      <img src={withBasePath(frame.url)} alt={stepCaption(frame, si)} className="w-full object-contain" />
+                    </button>
                   ))}
                 </div>
               </div>
@@ -1908,6 +2012,14 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
                 <button onClick={() => setShotOpen(Math.min(evidence.length - 1, shotOpen + 1))} disabled={shotOpen === evidence.length - 1} className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2.5 py-1 text-xs text-[var(--text-primary)] disabled:opacity-40">Next case →</button>
               </div>
             </div>
+            {/* Full-size zoom of one step frame, layered above the case modal — stays in-app. */}
+            {stepZoom && (
+              <div className="fixed inset-0 z-[60] flex flex-col items-center justify-center gap-2 bg-black/85 p-4" onClick={(e) => { e.stopPropagation(); setStepZoom(null); }}>
+                <div className="max-w-[95dvw] truncate text-xs font-medium text-white/90">{stepZoom.caption}</div>
+                <img src={withBasePath(stepZoom.url)} alt={stepZoom.caption} className="max-h-[85dvh] max-w-[95dvw] rounded-md object-contain" />
+                <div className="text-[10px] text-white/50">Click anywhere to close</div>
+              </div>
+            )}
           </div>
         );
       })()}

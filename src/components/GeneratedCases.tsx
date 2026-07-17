@@ -126,16 +126,26 @@ function proofClasses(status?: string): string {
   }
 }
 
-export function GeneratedCases({ cases: initial }: { cases: Case[] }) {
+export function GeneratedCases({ cases: initial, onCasesChange }: { cases: Case[]; onCasesChange?: (cases: Case[]) => void }) {
   const navigate = useNavigate();
   const [cases, setCases] = useState<Case[]>(() =>
     (initial || []).map((c) => ({ ...c, steps: (c.steps || []).map((s) => ({ ...s })) })),
   );
+  // Propagate edits + adopted ids up to the persisted turn so savedness survives navigation/reload.
+  const onCasesChangeRef = useRef(onCasesChange);
+  onCasesChangeRef.current = onCasesChange;
+  const firstSyncRef = useRef(true);
+  useEffect(() => {
+    if (firstSyncRef.current) { firstSyncRef.current = false; return; }
+    onCasesChangeRef.current?.(cases);
+  }, [cases]);
   const [editing, setEditing] = useState<number | null>(null);
   const [expandCount, setExpandCount] = useState<Record<number, number>>({});
   const [feedback, setFeedback] = useState<Record<number, string>>({});
   const [busy, setBusy] = useState<string | null>(null);
   const [savedIdx, setSavedIdx] = useState<number | null>(null);
+  // Indices edited since their last save — an id-bearing case only shows "Saved" while clean.
+  const [dirtyIdx, setDirtyIdx] = useState<Set<number>>(new Set());
   const [saveError, setSaveError] = useState<Record<number, string>>({});
   // Per-case rework attachments (index-keyed like feedback).
   const [attachments, setAttachments] = useState<Record<number, ReworkAttachment[]>>({});
@@ -159,6 +169,8 @@ export function GeneratedCases({ cases: initial }: { cases: Case[] }) {
   const patchCase = (i: number, patch: Partial<Case>) => {
     setCases((prev) => prev.map((c, idx) => (idx === i ? { ...c, ...patch } : c)));
     setSavedIdx(null);
+    // Adopting a freshly-created id is not a user edit — everything else marks the case dirty.
+    if (!('id' in patch && Object.keys(patch).length === 1)) setDirtyIdx((prev) => new Set(prev).add(i));
   };
   const patchStep = (i: number, si: number, patch: Partial<Step>) => {
     const steps = [...(cases[i]?.steps || [])];
@@ -207,6 +219,7 @@ export function GeneratedCases({ cases: initial }: { cases: Case[] }) {
         if (data?.id) patchCase(i, { id: String(data.id) });
       }
       setSavedIdx(i);
+      setDirtyIdx((prev) => { const next = new Set(prev); next.delete(i); return next; });
       // Signal open Repository / Test Cases views to refetch.
       invalidateData();
       if (thenCollapse) setEditing(null);
@@ -489,7 +502,7 @@ export function GeneratedCases({ cases: initial }: { cases: Case[] }) {
                   {c.priority || 'Medium'}
                 </span>
                 <div className="flex items-center gap-3">
-                  {savedIdx === i && (
+                  {(savedIdx === i || (c.id && !dirtyIdx.has(i))) && (
                     <span className="inline-flex items-center gap-1 text-[11px] text-emerald-400"><Check className="h-3.5 w-3.5" /> Saved</span>
                   )}
                   <button

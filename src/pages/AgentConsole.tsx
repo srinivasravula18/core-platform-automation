@@ -35,6 +35,7 @@ import {
   User,
   Info,
   RotateCcw,
+  Pencil,
 } from 'lucide-react';
 
 /**
@@ -345,7 +346,7 @@ type Turn =
   | { id: string; role: 'user'; text: string }
   | { id: string; role: 'assistant'; kind: 'text'; text: string; authoredScript?: string; authoredTargetUrl?: string; screenshotUrls?: string[]; isError?: boolean }
   | { id: string; role: 'assistant'; kind: 'plan'; plan: any }
-  | { id: string; role: 'assistant'; kind: 'deeprun'; taskId: string }
+  | { id: string; role: 'assistant'; kind: 'deeprun'; taskId: string; saved?: boolean }
   | { id: string; role: 'assistant'; kind: 'codereview'; analysis: any }
   | { id: string; role: 'assistant'; kind: 'reqdiscovery'; result: any }
   | { id: string; role: 'assistant'; kind: 'reqdraft'; result: any; query: string; revisionCount?: number }
@@ -907,6 +908,9 @@ export default function AgentConsole() {
 
   // Monotonic token so a slow/stale conversation load can never overwrite newer state.
   const loadReqRef = useRef(0);
+  // The ACTIVE conversation's stored title — the snapshot PUT reuses it so a custom rename is
+  // never clobbered by the auto-title derived from the first user message.
+  const convTitleRef = useRef('');
   const loadConversation = useCallback(async (id: string) => {
     const token = ++loadReqRef.current;
     loadedRef.current = false;
@@ -918,6 +922,7 @@ export default function AgentConsole() {
         (t: Turn) => !(t.role === 'assistant' && t.kind === 'thinking'),
       );
       if (token !== loadReqRef.current) return; // a newer load won — discard this result
+      convTitleRef.current = String(d.title || '');
       setTurns(clean);
     } catch {
       // Never wipe a live thread on a failed load — only clear when nothing is on screen.
@@ -947,9 +952,12 @@ export default function AgentConsole() {
       const preferredId = conversationId;
       let chosen = preferredId;
       let chosenTurns: Turn[] = [];
+      let chosenTitle = '';
       try {
         const r = await fetch(`/api/chat/conversations/${preferredId}`);
-        chosenTurns = cleanTurns((await r.json())?.turns);
+        const d = await r.json();
+        chosenTurns = cleanTurns(d?.turns);
+        chosenTitle = String(d?.title || '');
       } catch { /* ignore */ }
 
       // Only fall back when this wasn't an explicit deep link to a specific chat.
@@ -960,7 +968,9 @@ export default function AgentConsole() {
         if (recent && recent.id !== preferredId) {
           try {
             const r = await fetch(`/api/chat/conversations/${recent.id}`);
-            chosenTurns = cleanTurns((await r.json())?.turns);
+            const d = await r.json();
+            chosenTurns = cleanTurns(d?.turns);
+            chosenTitle = String(d?.title || '');
             chosen = recent.id;
           } catch { /* ignore */ }
         }
@@ -969,6 +979,7 @@ export default function AgentConsole() {
       if (token !== loadReqRef.current) return; // a newer load (chat switch/new chat) won
       loadedRef.current = true;
       if (turnsRef.current.length > 0) return; // user already started a thread — never wipe it
+      convTitleRef.current = chosenTitle;
       if (chosen !== conversationId) setConversationId(chosen);
       setTurns(chosenTurns);
     })();
@@ -1006,7 +1017,8 @@ export default function AgentConsole() {
         headers: { 'Content-Type': 'application/json' },
         // Full turn snapshot (not just title): rich turns (deep-run cards, drafts, cases) only live in
         // React state, so without this they vanish on navigation/restart and history opens blank.
-        body: JSON.stringify({ workspaceId, title: firstUser?.text?.slice(0, 80) || 'New chat', turns: clean }),
+        // A custom (renamed) title always wins over the auto-title from the first user message.
+        body: JSON.stringify({ workspaceId, title: convTitleRef.current || firstUser?.text?.slice(0, 80) || 'New chat', turns: clean }),
       })
         .then(() => loadConversations())
         .catch(() => {});
@@ -1027,6 +1039,7 @@ export default function AgentConsole() {
 
   const newConversation = useCallback(() => {
     loadReqRef.current++; // invalidate any in-flight conversation load
+    convTitleRef.current = '';
     setConversationId(makeConversationId());
     setTurns([]);
     loadedRef.current = true;
@@ -1070,6 +1083,27 @@ export default function AgentConsole() {
     setFavorites((prev) => { const next = new Set(prev); next.delete(id); return next; });
     if (id === conversationId) newConversation();
   }, [conversationId, newConversation]);
+
+  // Rename a conversation to a custom name (so it can be tracked against its test cases) — persisted
+  // via the metadata-only PUT; for the ACTIVE chat the snapshot PUT keeps the custom title from then on.
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState('');
+  const commitRename = useCallback(async () => {
+    const id = renamingId;
+    const title = renameDraft.trim().slice(0, 80);
+    setRenamingId(null);
+    if (!id || !title) return;
+    setConversations((prev) => prev.map((c) => (c.id === id ? { ...c, title } : c)));
+    if (id === conversationId) convTitleRef.current = title;
+    try {
+      await fetch(`/api/chat/conversations/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ workspaceId, title }),
+      });
+    } catch { /* list refresh below restores the server's view on failure */ }
+    loadConversations();
+  }, [renamingId, renameDraft, conversationId, workspaceId, loadConversations]);
 
   const appendSpeechTranscript = useCallback((transcript: string) => {
     setInput((prev) => prev + (prev.trim() ? ' ' : '') + transcript);
@@ -2326,6 +2360,17 @@ export default function AgentConsole() {
               signal: activeAbortRef.current?.signal,
               body: JSON.stringify({ prompt: text, app_url: targetUrl || websites.find((w) => w.id === websiteId)?.baseUrl || getSelectedApps()[0]?.baseUrl || '' }),
             }).then((r) => r.json()).catch(() => ({}));
+            if (pre?.reason === 'no-target-configured') {
+              replaceTurn(thinkingId, {
+                id: thinkingId,
+                role: 'assistant',
+                kind: 'text',
+                text: 'No apps are configured for your account yet, so I have nothing to test against. Add a project and its app URL(s) in the project switcher (top bar), store the login credentials, and try again.',
+              });
+              setBusy(false);
+              inputRef.current?.focus();
+              return;
+            }
             if (pre?.needsChoice && pre?.app_options?.apps?.length) {
               replaceTurn(thinkingId, {
                 id: thinkingId,
@@ -2706,13 +2751,38 @@ export default function AgentConsole() {
                     >
                       <MessageSquare className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[var(--text-muted)]" />
                       <span className="min-w-0 flex-1">
-                        <span className="block truncate text-xs font-medium text-[var(--text-primary)]">{c.title || 'Untitled chat'}</span>
+                        {renamingId === c.id ? (
+                          <input
+                            autoFocus
+                            value={renameDraft}
+                            onChange={(e) => setRenameDraft(e.target.value)}
+                            onClick={(e) => e.stopPropagation()}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') void commitRename();
+                              if (e.key === 'Escape') setRenamingId(null);
+                            }}
+                            onBlur={() => void commitRename()}
+                            maxLength={80}
+                            placeholder="Conversation name"
+                            className="w-full rounded border border-[var(--accent)] bg-[var(--bg-secondary)] px-1.5 py-0.5 text-xs font-medium text-[var(--text-primary)] outline-none"
+                          />
+                        ) : (
+                          <span className="block truncate text-xs font-medium text-[var(--text-primary)]">{c.title || 'Untitled chat'}</span>
+                        )}
                         <span className="block font-mono text-[10px] text-[var(--text-muted)]/60 truncate">{c.id}</span>
                         <span className="text-[10px] text-[var(--text-muted)]">
                           {c.turnCount} message{c.turnCount === 1 ? '' : 's'} · {new Date(c.updatedAt).toLocaleString()}
                         </span>
                       </span>
                       <div className="flex shrink-0 items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <button
+                          type="button"
+                          title="Rename conversation"
+                          onClick={(e) => { e.stopPropagation(); setRenamingId(c.id); setRenameDraft(String(c.title || '')); }}
+                          className="flex h-6 w-6 items-center justify-center rounded text-[var(--text-muted)] hover:bg-[var(--bg-secondary)] hover:text-[var(--text-primary)]"
+                        >
+                          <Pencil className="h-3.5 w-3.5" />
+                        </button>
                         <button
                           type="button"
                           title={favorites.has(c.id) ? 'Remove from favorites' : 'Add to favorites'}
@@ -2925,7 +2995,8 @@ export default function AgentConsole() {
                         <BrainCircuit className="h-4 w-4" />
                       </div>
                       <div className="min-w-0 flex-1">
-                        <DeepRunResult taskId={turn.taskId} />
+                        {/* saved is threaded through the persisted turn so "Save all" stays "Saved" after navigation. */}
+                        <DeepRunResult taskId={turn.taskId} initialSaved={!!turn.saved} onSaved={() => replaceTurn(turn.id, { ...turn, saved: true })} />
                       </div>
                     </div>
                   </div>
@@ -3029,7 +3100,8 @@ export default function AgentConsole() {
                         <BrainCircuit className="h-4 w-4" />
                       </div>
                       <div className="min-w-0 flex-1">
-                        <GeneratedCases cases={turn.cases} />
+                        {/* Edits + adopted case ids flow back into the persisted turn so savedness survives reload. */}
+                        <GeneratedCases cases={turn.cases} onCasesChange={(next) => replaceTurn(turn.id, { ...turn, cases: next })} />
                       </div>
                     </div>
                   </div>
