@@ -830,6 +830,9 @@ export default function AgentConsole() {
   // request ("generate them", "for admin", "yes") reuses it without re-asking — the chat
   // remembers what it's testing, like a normal assistant.
   const convTargetRef = useRef<{ targetUrl: string; websiteId?: string; websiteName?: string } | null>(null);
+  // The app/navigation the user picked in the AppAskCard for the CURRENT request chain. Threaded
+  // as explicit ids into /api/agent/start so no later gate re-asks; cleared on each new message.
+  const targetChoiceRef = useRef<{ applicationId?: string; applicationName?: string; moduleId?: string; moduleName?: string } | null>(null);
   const activeAbortRef = useRef<AbortController | null>(null);
   const activeThinkingIdRef = useRef<string | null>(null);
 
@@ -1343,11 +1346,13 @@ export default function AgentConsole() {
         provider: selectedProvider,
         model: selectedModel,
         effort: selectedEffort,
-        // Explicit target chosen in the app/navigation picker card — authoritative on the server.
-        applicationId: args.applicationId || undefined,
-        applicationName: args.applicationName || undefined,
-        moduleId: args.moduleId || undefined,
-        moduleName: args.moduleName || undefined,
+        // Explicit target chosen in the app/navigation picker card — authoritative on the server,
+        // so no downstream gate ever re-asks. The ref covers the pre-understanding picker whose
+        // choice must survive the understanding → folder-card → run-start chain.
+        applicationId: args.applicationId || targetChoiceRef.current?.applicationId || undefined,
+        applicationName: args.applicationName || targetChoiceRef.current?.applicationName || undefined,
+        moduleId: args.moduleId || targetChoiceRef.current?.moduleId || undefined,
+        moduleName: args.moduleName || targetChoiceRef.current?.moduleName || undefined,
         // Carry the conversation so case generation is grounded in what was actually
         // discussed — not just the (sometimes generic) prompt.
         history: buildHistory(),
@@ -1504,6 +1509,12 @@ export default function AgentConsole() {
       : choice.appId === '__all_apps__'
         ? ' — across all apps'
         : ` — target the ${choice.appName} app${choice.tab ? `, focus on the ${choice.tab} tab` : ''}`;
+    // Remember the choice for the WHOLE request chain (understanding → folder card → run start).
+    if (choice.appId && choice.appId !== '__all_apps__') {
+      targetChoiceRef.current = turn.platform === 'ADMIN'
+        ? { moduleId: choice.appId, moduleName: choice.appName }
+        : { applicationId: choice.appId, applicationName: choice.appName };
+    }
     if (base?.phase === 'pre-understanding') {
       replaceTurn(turn.id, { id: turn.id, role: 'assistant', kind: 'thinking', label: `Building reviewed test scope for ${choice.appName}${choice.tab ? ` · ${choice.tab}` : ''}...` });
       try {
@@ -1901,6 +1912,9 @@ export default function AgentConsole() {
       if (editTurnIdArg === undefined) setInput('');
       setEditingTurnId(null);
       setBusy(true);
+
+      // A fresh user message starts a fresh request chain — any earlier picker choice no longer applies.
+      targetChoiceRef.current = null;
 
       const thinkingId = nextId();
       const requestController = new AbortController();
