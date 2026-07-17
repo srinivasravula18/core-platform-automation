@@ -20,7 +20,7 @@ import type {
   ToolCallRequest,
   ChatMessage,
 } from './types';
-import { ProviderError, classifyError, DEFAULT_MODELS, estimateCost } from './types';
+import { ProviderError, classifyError, DEFAULT_MODELS, estimateCost, maxOutputFor } from './types';
 // Shared, NON-FABRICATING structured-output helpers (one copy for every provider).
 import {
   coerceToSchemaShape, repairValidationError, normalizeTestCasePayload, normalizeScriptPayload,
@@ -71,15 +71,15 @@ export class OpenAIProvider implements AIProvider {
    * Build per-model sampling params. Newer OpenAI models (gpt-5 family, o-series
    * reasoning models) reject the legacy `max_tokens` (require `max_completion_tokens`)
    * and only allow the default temperature — sending either errors with a 400. Older
-   * chat models (gpt-4o, gpt-4, gpt-3.5) accept `max_completion_tokens` too. Only send
-   * an output cap when the caller explicitly supplied one; otherwise let the selected
-   * model/provider default apply.
+   * chat models (gpt-4o, gpt-4, gpt-3.5) accept `max_completion_tokens` too. Default the output cap to
+   * the model's FULL max output (maxOutputFor) so agents use the model's exact budget — consistent with
+   * Anthropic/Gemini — instead of the provider's lower implicit default.
    */
   private sampling(modelId: string, maxTokens?: number, temperature?: number): Record<string, any> {
     const m = (modelId || '').toLowerCase();
     const newStyle = /^(gpt-5|o1|o3|o4)/.test(m);
     const params: Record<string, any> = {};
-    if (typeof maxTokens === 'number' && maxTokens > 0) params.max_completion_tokens = maxTokens;
+    params.max_completion_tokens = (typeof maxTokens === 'number' && maxTokens > 0) ? maxTokens : maxOutputFor(modelId);
     if (!newStyle) params.temperature = temperature ?? 0.2;
     return params;
   }

@@ -164,6 +164,7 @@ const INTENT_DRIVEN_ANSWER_RULES = `Infer the response shape from the user's int
 - If the user asks a direct factual question, answer directly and briefly. Do not include source locations.
 - If the user asks for evidence, sources, or "where did you find this", summarize the evidence in product/behavior terms. Do not disclose file locations in Agent Console responses.
 - If the codebase material does not support a requested item, say that it was not found in the codebase material instead of inventing it.
+- SURFACE BOUNDARY: the user selected a specific target surface/app (named in the context above). Ground the answer ONLY in features that belong to THAT selected surface. If the codebase shows the requested capability actually lives on a DIFFERENT surface, platform, or app area than the selected one, state that explicitly at the top — name where it really lives and that it is NOT part of the selected surface, and suggest selecting that surface — instead of describing it as a flow of the selected surface. Never relabel another surface's feature as if it belonged to the selected one.
 - Markdown/documentation files are excluded and must not be cited.
 - Agent Console responses must never display codebase file paths, filenames, line numbers, or repo directories. Keep source locations internal only.`;
 
