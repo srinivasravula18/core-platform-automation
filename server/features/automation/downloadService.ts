@@ -57,10 +57,12 @@ export function streamAgentZip(res: Response, opts: { pairingToken: string; clou
   // Agent source + launcher scripts, under a TestFlow-Agent/ top folder. entry.name carries the
   // destination prefix, so match on path segments (not a leading-anchored regex).
   archive.directory(AGENT_DIR, 'TestFlow-Agent', (entry) => {
-    const rel = String(entry.name || '').replace(/\\/g, '/');
-    const segs = rel.split('/');
-    if (segs.some((s) => EXCLUDE_DIRS.has(s))) return false;
-    if (EXCLUDE_FILES.has(segs[segs.length - 1])) return false;
+    // Match TOP-LEVEL agent dirs/files only — never nested ones. Excluding by any path segment would
+    // strip node_modules/playwright, node_modules/@playwright, etc. and break the bundle.
+    const rel = String(entry.name || '').replace(/\\/g, '/').replace(/^TestFlow-Agent\//, '');
+    const top = rel.split('/')[0];
+    if (EXCLUDE_DIRS.has(top)) return false;            // e.g. the agent's playwright/ workdir, logs/, .git/
+    if (EXCLUDE_FILES.has(rel)) return false;            // top-level config.json / config.example.json only
     return entry;
   });
 
