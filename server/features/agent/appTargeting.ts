@@ -13,6 +13,8 @@
  * the bare surface.
  */
 
+import fs from 'fs';
+import path from 'path';
 import type { CatalogConn } from '../../ai/tools/corePlatformData';
 import { fetchCorePlatformApps, fetchCorePlatformAppTabs } from '../../ai/tools/corePlatformData';
 
@@ -28,6 +30,59 @@ export type SurfaceKind = string;
 
 /** Sentinel the platform uses for "every app". */
 export const ALL_APPS_ID = '__all_apps__';
+
+export interface AdminNavModule { id: string; name: string; group: string }
+
+// Parsed-from-repo cache: the admin side-nav can only change with a repo change, so 10min is safe.
+const adminNavCache = new Map<string, { at: number; modules: AdminNavModule[] }>();
+const ADMIN_NAV_CACHE_TTL_MS = 10 * 60 * 1000;
+
+/** Find the admin surface's sidebar source file inside the bound repo (name contains "sidebar",
+ * path contains "admin"; node_modules/dist skipped). Returns '' when the repo has none. */
+function findAdminSidebarFile(repoPath: string): string {
+  const queue: Array<{ dir: string; depth: number }> = [{ dir: repoPath, depth: 0 }];
+  while (queue.length) {
+    const { dir, depth } = queue.shift()!;
+    if (depth > 6) continue;
+    let entries: fs.Dirent[] = [];
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { continue; }
+    for (const entry of entries) {
+      if (entry.name === 'node_modules' || entry.name === 'dist' || entry.name.startsWith('.')) continue;
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) { queue.push({ dir: full, depth: depth + 1 }); continue; }
+      if (/sidebar/i.test(entry.name) && /\.(tsx|jsx|ts|js)$/.test(entry.name) && /admin/i.test(full)) return full;
+    }
+  }
+  return '';
+}
+
+/** The Admin platform's side-nav modules, parsed at runtime from the bound repo's sidebar source —
+ * nothing hardcoded: `id` is the admin URL `?nav=` key, `name` the on-screen label, `group` the
+ * sidebar section title. Empty when the repo (or a parseable sidebar) is unavailable. */
+export function loadAdminNavModules(repoPath: string): AdminNavModule[] {
+  const root = String(repoPath || '').trim();
+  if (!root) return [];
+  const cached = adminNavCache.get(root);
+  if (cached && Date.now() - cached.at < ADMIN_NAV_CACHE_TTL_MS) return cached.modules;
+  const modules: AdminNavModule[] = [];
+  try {
+    const file = findAdminSidebarFile(root);
+    if (file) {
+      const src = fs.readFileSync(file, 'utf8');
+      // Linear walk: a section `title: "..."` scopes the `key/label` items that follow it.
+      const re = /title:\s*["']([^"']+)["']|key:\s*["']([a-z0-9_-]+)["']\s*,\s*label:\s*["']([^"']+)["']/g;
+      let group = '';
+      for (let m = re.exec(src); m; m = re.exec(src)) {
+        if (m[1]) group = m[1];
+        else if (m[2] && m[3]) modules.push({ id: m[2], name: m[3], group: group || 'General' });
+      }
+    }
+  } catch (err: any) {
+    console.warn(`[appTargeting] admin nav parse failed for ${root}: ${err?.message || err}`);
+  }
+  adminNavCache.set(root, { at: Date.now(), modules });
+  return modules;
+}
 
 /**
  * Detect the surface kind from URL query parameters. Defaults to admin.

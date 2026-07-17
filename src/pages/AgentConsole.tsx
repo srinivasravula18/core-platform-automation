@@ -28,6 +28,7 @@ import {
   Target,
   Trash2,
   AppWindow,
+  LayoutGrid,
   Check,
   ChevronDown,
   Copy,
@@ -351,10 +352,13 @@ type Turn =
   | { id: string; role: 'assistant'; kind: 'cases'; cases: any[] }
   | { id: string; role: 'assistant'; kind: 'clarify'; plan: any; summary: string; confidence: number }
   | { id: string; role: 'assistant'; kind: 'folderask'; text: string; understanding?: string; understandingSource?: string; folderName?: string; originalPrompt?: string; contextPrompt?: string; caseCountPrompt?: string; targetUrl?: string; websiteId?: string; websiteName?: string; revisionCount?: number }
+  | { id: string; role: 'assistant'; kind: 'appask'; text: string; surface: string; platform: 'ADMIN' | 'RUNTIME'; allowAllApps: boolean; apps: Array<{ id: string; name: string; tabs: string[]; group?: string }>; runArgs: Record<string, any> }
   | { id: string; role: 'assistant'; kind: 'thinking'; label: string; debug?: string[] };
 
 // Narrowed turn shape for the folder-ask review card component below.
 type FolderAskTurn = Extract<Turn, { kind: 'folderask' }>;
+// Narrowed turn shape for the app/navigation-picker card component below.
+type AppAskTurn = Extract<Turn, { kind: 'appask' }>;
 
 type PendingDeep = {
   prompt: string;
@@ -632,6 +636,84 @@ const FolderAskCard = memo(function FolderAskCard({
               className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--bg-card)] px-3 py-1.5 text-xs font-medium text-[var(--text-muted)] hover:border-[var(--accent)] hover:text-[var(--text-primary)]"
             >
               Cancel
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+});
+
+// App/navigation picker: when a test request doesn't name a target, the run pauses HERE — the
+// user picks the app (+ optional tab) on RUNTIME, or the admin navigation on ADMIN, then continues.
+// Local draft state only (no global turns writes per selection), mirroring FolderAskCard.
+const AppAskCard = memo(function AppAskCard({
+  turn,
+  onProceed,
+}: {
+  turn: AppAskTurn;
+  onProceed: (turn: AppAskTurn, choice: { appId: string; appName: string; tab?: string }) => void;
+}) {
+  const [appId, setAppId] = useState(turn.apps[0]?.id || '');
+  const [tab, setTab] = useState('');
+  const selected = turn.apps.find((a) => a.id === appId) || null;
+  const isAdmin = turn.platform === 'ADMIN';
+  const label = isAdmin
+    ? `Which admin navigation should I test in ${turn.surface}?`
+    : `Which app should I test in ${turn.surface}?${turn.apps.some((a) => a.tabs.length) ? ' Optionally pick a tab to focus on.' : ''}`;
+  // Group options into optgroups when the server sends groups (the admin side-nav sections).
+  const groups = [...new Set(turn.apps.map((a) => a.group).filter(Boolean))] as string[];
+  return (
+    <div className="flex justify-start">
+      <div className="flex max-w-[90%] gap-2.5">
+        <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[var(--accent)]/10 text-[var(--accent)]">
+          <LayoutGrid className="h-4 w-4" />
+        </div>
+        <div className="rounded-2xl rounded-bl-sm border border-[var(--border)] bg-[var(--bg-card)] px-4 py-3 text-sm">
+          <p className="text-[var(--text-primary)]">{label}</p>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <select
+              value={appId}
+              onChange={(e) => { setAppId(e.target.value); setTab(''); }}
+              aria-label={isAdmin ? 'Admin navigation' : 'Application'}
+              className="min-w-0 max-w-[260px] truncate rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
+            >
+              {groups.length
+                ? groups.map((g) => (
+                  <optgroup key={g} label={g}>
+                    {turn.apps.filter((a) => a.group === g).map((a) => (
+                      <option key={a.id} value={a.id}>{a.name}</option>
+                    ))}
+                  </optgroup>
+                ))
+                : turn.apps.map((a) => (
+                  <option key={a.id} value={a.id}>{a.name}</option>
+                ))}
+              {turn.allowAllApps && <option value="__all_apps__">All apps (read-only sweep)</option>}
+            </select>
+            {!isAdmin && selected && selected.tabs.length > 0 && (
+              <select
+                value={tab}
+                onChange={(e) => setTab(e.target.value)}
+                aria-label="Tab (optional)"
+                className="min-w-0 max-w-[220px] truncate rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
+              >
+                <option value="">Whole app</option>
+                {selected.tabs.map((t) => (
+                  <option key={t} value={t}>{t}</option>
+                ))}
+              </select>
+            )}
+            <button
+              onClick={() => {
+                const name = appId === '__all_apps__' ? 'All apps' : (selected?.name || appId);
+                if (!appId) return;
+                onProceed(turn, { appId, appName: name, tab: tab || undefined });
+              }}
+              disabled={!appId}
+              className="inline-flex shrink-0 items-center gap-1.5 rounded-md bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50 disabled:hover:bg-[var(--accent)]"
+            >
+              <Sparkles className="h-3.5 w-3.5" /> Continue
             </button>
           </div>
         </div>
@@ -1184,6 +1266,9 @@ export default function AgentConsole() {
         case 'folderask':
           push(t.understanding || t.text);
           break;
+        case 'appask':
+          push(t.text);
+          break;
         case 'clarify':
           push(t.summary);
           break;
@@ -1233,6 +1318,10 @@ export default function AgentConsole() {
     priorGrounding?: string;
     folderMention?: string;
     caseCountPrompt?: string;
+    applicationId?: string;
+    applicationName?: string;
+    moduleId?: string;
+    moduleName?: string;
   }) => {
     updateThinkingLabel(args.thinkingId, 'Starting agent run...');
     const res = await fetch('/api/agent/start', {
@@ -1254,6 +1343,11 @@ export default function AgentConsole() {
         provider: selectedProvider,
         model: selectedModel,
         effort: selectedEffort,
+        // Explicit target chosen in the app/navigation picker card — authoritative on the server.
+        applicationId: args.applicationId || undefined,
+        applicationName: args.applicationName || undefined,
+        moduleId: args.moduleId || undefined,
+        moduleName: args.moduleName || undefined,
         // Carry the conversation so case generation is grounded in what was actually
         // discussed — not just the (sometimes generic) prompt.
         history: buildHistory(),
@@ -1261,7 +1355,22 @@ export default function AgentConsole() {
       }),
     });
     const data = await res.json().catch(() => ({}));
-    if (data?.chat_response) {
+    if (data?.app_options?.apps?.length) {
+      // Ambiguous target: pause and let the user pick the app/navigation from a dropdown
+      // instead of a plain-text question; Continue resubmits this same run with the choice.
+      const { thinkingId: _omit, ...runArgs } = args;
+      replaceTurn(args.thinkingId, {
+        id: args.thinkingId,
+        role: 'assistant',
+        kind: 'appask',
+        text: String(data.chat_response || 'Which app should I test?'),
+        surface: String(data.app_options.surface || ''),
+        platform: data.app_options.platform === 'ADMIN' ? 'ADMIN' : 'RUNTIME',
+        allowAllApps: Boolean(data.app_options.allowAllApps),
+        apps: data.app_options.apps,
+        runArgs,
+      });
+    } else if (data?.chat_response) {
       replaceTurn(args.thinkingId, { id: args.thinkingId, role: 'assistant', kind: 'text', text: data.chat_response });
     } else if (data?.task_id) {
       replaceTurn(args.thinkingId, { id: args.thinkingId, role: 'assistant', kind: 'deeprun', taskId: data.task_id });
@@ -1382,6 +1491,50 @@ export default function AgentConsole() {
       text: 'Look right? A folder name is suggested below — keep it and Proceed, or pick an existing folder / type your own first.',
     });
   }, [buildDeepContextPrompt, requestDeepUnderstanding, replaceTurn, updateThinkingLabel]);
+
+  // App/navigation picked in the AppAskCard. Two phases:
+  // - 'pre-understanding' (the default flow): the target was resolved FIRST, before any research —
+  //   continue into the reviewed-understanding step with the choice woven into the request.
+  // - run-start (safety net): /api/agent/start still detected ambiguity — resubmit the same run
+  //   with the explicit target (RUNTIME: applicationId/Name; ADMIN: moduleId/Name).
+  const proceedAppAsk = useCallback(async (turn: AppAskTurn, choice: { appId: string; appName: string; tab?: string }) => {
+    const base = turn.runArgs as any;
+    const focus = turn.platform === 'ADMIN'
+      ? ` — test the ${choice.appName} list view`
+      : choice.appId === '__all_apps__'
+        ? ' — across all apps'
+        : ` — target the ${choice.appName} app${choice.tab ? `, focus on the ${choice.tab} tab` : ''}`;
+    if (base?.phase === 'pre-understanding') {
+      replaceTurn(turn.id, { id: turn.id, role: 'assistant', kind: 'thinking', label: `Building reviewed test scope for ${choice.appName}${choice.tab ? ` · ${choice.tab}` : ''}...` });
+      try {
+        await presentDeepUnderstanding({
+          thinkingId: turn.id,
+          prompt: `${base.prompt}${focus}`,
+          originalRequest: `${base.originalRequest || base.prompt}${focus}`,
+          contextPrompt: base.contextPrompt
+            ? `${base.contextPrompt}\n\nUser-selected target: ${choice.appName}${choice.tab ? ` › ${choice.tab} tab` : ''}`
+            : undefined,
+          targetUrl: base.targetUrl || '',
+          websiteId: base.websiteId,
+          websiteName: base.websiteName,
+        });
+      } catch (err: any) {
+        replaceTurn(turn.id, { id: turn.id, role: 'assistant', kind: 'text', text: `I could not build the test scope: ${err?.message || 'unknown error'}.`, isError: true });
+      }
+      return;
+    }
+    replaceTurn(turn.id, { id: turn.id, role: 'assistant', kind: 'thinking', label: `Starting the run for ${choice.appName}${choice.tab ? ` · ${choice.tab}` : ''}...` });
+    const prompt = choice.tab ? `${base.prompt} — focus on the ${choice.tab} tab` : base.prompt;
+    try {
+      if (turn.platform === 'ADMIN') {
+        await startDeepRun({ ...base, thinkingId: turn.id, prompt, moduleId: choice.appId, moduleName: choice.appName });
+      } else {
+        await startDeepRun({ ...base, thinkingId: turn.id, prompt, applicationId: choice.appId, applicationName: choice.appName });
+      }
+    } catch (err: any) {
+      replaceTurn(turn.id, { id: turn.id, role: 'assistant', kind: 'text', text: `I could not start the run: ${err?.message || 'unknown error'}.`, isError: true });
+    }
+  }, [replaceTurn, startDeepRun, presentDeepUnderstanding]);
 
   const runRequirementDraft = useCallback(async (thinkingId: string, query: string, previousDraft?: PendingRequirementDraft, instruction?: string) => {
     const featureQuery = (query || '').trim();
@@ -2148,6 +2301,34 @@ export default function AgentConsole() {
           // reflects the actual conversation rather than just the raw message.
           const prompt = (typeof goal.scope === 'string' && goal.scope.trim()) ? goal.scope.trim() : text;
           const contextPrompt = buildDeepContextPrompt(text, prompt);
+          // TARGET PRE-FLIGHT: resolve the app/navigation FIRST. When the request doesn't name
+          // its target, show the platform's real options as a dropdown BEFORE any research runs —
+          // never burn minutes of understanding only to ask "which app?" afterwards.
+          updateThinkingLabel(thinkingId, 'Checking the target scope...');
+          try {
+            const pre = await fetch('/api/agent/target-options', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              signal: activeAbortRef.current?.signal,
+              body: JSON.stringify({ prompt: text, app_url: targetUrl || websites.find((w) => w.id === websiteId)?.baseUrl || getSelectedApps()[0]?.baseUrl || '' }),
+            }).then((r) => r.json()).catch(() => ({}));
+            if (pre?.needsChoice && pre?.app_options?.apps?.length) {
+              replaceTurn(thinkingId, {
+                id: thinkingId,
+                role: 'assistant',
+                kind: 'appask',
+                text: 'Pick the target to test first.',
+                surface: String(pre.app_options.surface || ''),
+                platform: pre.app_options.platform === 'ADMIN' ? 'ADMIN' : 'RUNTIME',
+                allowAllApps: Boolean(pre.app_options.allowAllApps),
+                apps: pre.app_options.apps,
+                runArgs: { phase: 'pre-understanding', prompt, originalRequest: text, contextPrompt, targetUrl, websiteId, websiteName },
+              });
+              setBusy(false);
+              inputRef.current?.focus();
+              return;
+            }
+          } catch { /* pre-flight is advisory — fall through to the normal flow */ }
           updateThinkingLabel(thinkingId, 'Building reviewed test scope...');
           await presentDeepUnderstanding({ thinkingId, prompt, originalRequest: text, contextPrompt, targetUrl, websiteId, websiteName });
           setBusy(false);
@@ -2884,6 +3065,9 @@ export default function AgentConsole() {
                     onCancel={cancelFolderAsk}
                   />
                 );
+              }
+              if (turn.kind === 'appask') {
+                return <AppAskCard key={turn.id} turn={turn} onProceed={proceedAppAsk} />;
               }
               if (turn.kind === 'text') {
                 // Retry appears only when the agent response is an error (explicit flag or heuristic).

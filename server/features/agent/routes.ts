@@ -53,7 +53,7 @@ import { buildKnowledgeBlock, recordObservation } from '../knowledge/knowledgeSe
 import { resolveCredentials, maskPassword } from '../credentials/credentialsService';
 import {
   detectSurfaceKind, resolveTargetApp, buildAppScopedUrl, connForRun,
-  fetchCorePlatformApps, fetchCorePlatformAppTabs, ALL_APPS_ID, isMutationIntent,
+  fetchCorePlatformApps, fetchCorePlatformAppTabs, ALL_APPS_ID, loadAdminNavModules, isMutationIntent,
 } from './appTargeting';
 import {
   buildMissionContext, platformTypeFromSurface, runtimeSurfaceFromSurface, moduleFromUrl,
@@ -319,6 +319,38 @@ function getAgentPlanRiskLevel(run: any) {
   }
 
   return 'Low';
+}
+
+// Request filler the folder name must not carry — verbs/counts, not the feature being tested.
+const FOLDER_NAME_STOPWORDS = new Set([
+  'please', 'can', 'could', 'would', 'will', 'you', 'kindly', 'pls',
+  'generate', 'create', 'write', 'draft', 'author', 'make', 'build', 'add', 'give',
+  'test', 'tests', 'testing', 'case', 'cases', 'scenario', 'scenarios', 'coverage',
+  'verify', 'check', 'validate', 'run', 'execute', 'do', 'help', 'me', 'us', 'i',
+  'a', 'an', 'the', 'for', 'of', 'in', 'on', 'to', 'and', 'with', 'some', 'few', 'more',
+  'new', 'app', 'application', 'website', 'site', 'page', 'feature', 'functionality',
+  'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten',
+  '1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '15', '20',
+]);
+
+// Intent-based folder suggestion (mirrors the console's suggestFolderName): the FEATURE the user
+// asked to test, title-cased and prefixed with the target app — "CRM - Accounts List View", never
+// a URL-host label. Empty when the request carries no usable feature phrase.
+function suggestIntentFolderName(request: string, targetName: string): string {
+  const words = String(request || '')
+    .replace(/[^\w\s-]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .split(' ')
+    .filter(Boolean);
+  const appLower = String(targetName || '').trim().toLowerCase();
+  // Also drop tokens repeating the app name — it becomes the prefix, not part of the feature.
+  const kept = words.filter((w) => !FOLDER_NAME_STOPWORDS.has(w.toLowerCase()) && w.toLowerCase() !== appLower);
+  if (!kept.length) return '';
+  const title = (value: string) => value.replace(/[_-]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()).replace(/\s+/g, ' ').trim();
+  const feature = title(kept.slice(0, 8).join(' '));
+  const app = title(String(targetName || '').trim());
+  return app ? `${app} - ${feature}` : feature;
 }
 
 // Meaningful artifact names: compose from the run's REAL context (application + module/feature)
@@ -4724,7 +4756,8 @@ Rules:
       targetUrl: rawTargetUrl,
       task: rawPrompt,
       plannedApproach: 'Log in, inspect the live app, generate test cases, create Playwright scripts, execute them, and capture screenshot evidence.',
-      suggestedFolderName: buildFallbackArtifactName(rawOriginalRequest || rawPrompt, rawTargetUrl),
+      suggestedFolderName: suggestIntentFolderName(rawOriginalRequest || rawPrompt, rawTargetName)
+        || buildFallbackArtifactName(rawOriginalRequest || rawPrompt, rawTargetUrl),
       confidence: 70,
       missingInfo: [] as string[],
       source: 'fallback',
@@ -4769,7 +4802,9 @@ Rules:
             understanding,
             task: rawPrompt,
             plannedApproach: 'Use the codebase-grounded test areas above as the reviewed understanding, then draft human-reviewable cases.',
-            suggestedFolderName: buildFallbackArtifactName(rawOriginalRequest || rawPrompt, rawTargetUrl),
+            // Intent-based: the feature the user asked about + target app — never the URL host.
+            suggestedFolderName: suggestIntentFolderName(rawOriginalRequest || rawPrompt, rawTargetName)
+              || buildFallbackArtifactName(rawOriginalRequest || rawPrompt, rawTargetUrl),
             confidence: 85,
             missingInfo: [],
             source: 'codebase',
@@ -5052,6 +5087,70 @@ Rules:
     }
   });
 
+  // TARGET PRE-FLIGHT: the console calls this BEFORE any research/understanding. When the
+  // request doesn't name its target, it returns the platform's REAL options (RUNTIME apps with
+  // their tabs / ADMIN navigations) so the user picks from a dropdown up front — the run never
+  // burns minutes of research before discovering the target was ambiguous.
+  app.post('/api/agent/target-options', async (req, res) => {
+    try {
+      const scope = reqScope(req);
+      const prompt = String(req.body?.prompt || '').trim();
+      const selectedApp = scope.appId ? getApp(scope.appId) : undefined;
+      const appUrl = String(req.body?.app_url || selectedApp?.baseUrl || '').trim();
+      if (!prompt || !appUrl) return res.json({ needsChoice: false });
+
+      const platform = platformTypeFromSurface(selectedApp?.name || '', appUrl);
+      if (platform === 'ADMIN') {
+        // Ambiguous when the prompt names a feature (e.g. "list view") but no admin module —
+        // offer the side-nav modules PARSED FROM THE BOUND REPO so the user pins the target.
+        const navModules = loadAdminNavModules(getProjectRepoPath(scope.projectId || ''));
+        if (!navModules.length) return res.json({ needsChoice: false });
+        // "in admin" names the PLATFORM, not a module — strip platform words so they can't
+        // satisfy the module detector ("list view in admin" is still module-ambiguous).
+        const promptForGate = prompt.replace(/\b(in|on|at|for)\s+(the\s+)?(admin(istrator)?(\s*-?\s*ui)?|platform)\b/gi, ' ');
+        const namesModule = navModules.some((m) => prompt.toLowerCase().includes(m.name.toLowerCase()) || prompt.toLowerCase().includes(m.id.replace(/_/g, ' ')));
+        if (namesModule || !needsExplicitListViewModule(promptForGate, '')) return res.json({ needsChoice: false });
+        return res.json({
+          needsChoice: true,
+          app_options: {
+            surface: selectedApp?.name || 'Admin',
+            platform: 'ADMIN',
+            allowAllApps: false,
+            apps: navModules.map((m) => ({ id: m.id, name: m.name, group: m.group, tabs: [] })),
+          },
+        });
+      }
+
+      // RUNTIME: ambiguous unless the prompt names an app (or explicitly asks for all apps).
+      const credentials = resolveCredentials({ targetUrl: appUrl, ownerId: scope.userId || undefined }) || ({} as any);
+      if (!credentials.username && !(credentials as any).token) return res.json({ needsChoice: false });
+      const conn = connForRun(appUrl, credentials, selectedApp?.specPath);
+      const apps = await fetchCorePlatformApps(conn).catch(() => []);
+      if (!apps.length || wantsGenericOrAllApps(prompt)) return res.json({ needsChoice: false });
+      const picked = resolveTargetApp(apps, prompt);
+      if (picked.app) return res.json({ needsChoice: false });
+      const candidates = picked.candidates.slice(0, 20);
+      const optionApps = await Promise.all(candidates.map(async (a: any) => {
+        const tabs = await fetchCorePlatformAppTabs(conn, a.id).catch(() => []);
+        const tabNames = [...new Set(tabs.map((t: any) => t.label || t.object_api_name).filter(Boolean))].slice(0, 12) as string[];
+        return { id: String(a.id), name: String(a.label), tabs: tabNames };
+      }));
+      return res.json({
+        needsChoice: true,
+        app_options: {
+          surface: selectedApp?.name || 'this runtime',
+          platform: 'RUNTIME',
+          allowAllApps: !isMutationIntent(prompt),
+          apps: optionApps,
+        },
+      });
+    } catch (err: any) {
+      // Pre-flight is advisory — never block the flow on its failure.
+      console.warn(`[agent] target-options failed: ${err?.message || err}`);
+      res.json({ needsChoice: false });
+    }
+  });
+
   app.post('/api/agent/start', async (req, res) => {
     const { app_url, prompt } = req.body;
     const conversationId = String(req.body.conversationId || req.body.agentConsoleId || req.body.sessionId || '').trim();
@@ -5113,7 +5212,22 @@ Rules:
     // app list + tabs instead of admin module names.
     const provisionalPlatform = platformTypeFromSurface(selectedApp?.name || '', app_url || selectedApp?.baseUrl || '');
     if (provisionalPlatform === 'ADMIN' && needsExplicitListViewModule(prompt || '', explicitModuleId)) {
-      return res.json({ chat_response: 'Which list view should I test? Name the module or record type, for example Apps, Objects, Roles, or Users.' });
+      // Structured options drive the console's dropdown card (ids = admin URL nav keys);
+      // chat_response stays as the plain-text fallback and still accepts a typed module reply.
+      // Repo-parsed side-nav modules drive the dropdown; when the repo has none the plain
+      // question remains (older behavior) and the user can type the module name.
+      const adminNavModules = loadAdminNavModules(getProjectRepoPath(scope.projectId || ''));
+      return res.json({
+        chat_response: 'Which list view should I test? Name the module or record type, for example Apps, Objects, Roles, or Users.',
+        ...(adminNavModules.length ? {
+          app_options: {
+            surface: selectedApp?.name || 'Admin',
+            platform: 'ADMIN',
+            allowAllApps: false,
+            apps: adminNavModules.map((m) => ({ id: m.id, name: m.name, group: m.group, tabs: [] })),
+          },
+        } : {}),
+      });
     }
     const appScopeQuestion = needsExplicitAppScope(prompt || '', selectedApp, app_url || '', getProjectRepoPath(scope.projectId || '').trim());
     if (appScopeQuestion) {
@@ -5218,15 +5332,27 @@ Rules:
           } else if (picked.app) {
             application = { id: picked.app.id, name: picked.app.label };
           } else {
-            // Show each app WITH its tabs so the user can name a target in one reply ("CRM Accounts list view").
-            const candidates = picked.candidates.slice(0, 8);
-            const lines = await Promise.all(candidates.map(async (a) => {
+            // Show each app WITH its tabs so the user can pick a target. Structured `app_options`
+            // drives the console's dropdown card; `chat_response` remains the plain-text fallback
+            // for older clients (and still accepts a typed reply like "CRM Accounts list view").
+            const candidates = picked.candidates.slice(0, 20);
+            const optionApps = await Promise.all(candidates.map(async (a) => {
               const tabs = await fetchCorePlatformAppTabs(conn, a.id).catch(() => []);
-              const tabNames = [...new Set(tabs.map((t: any) => t.label || t.object_api_name).filter(Boolean))].slice(0, 10);
-              return `- ${a.label}${tabNames.length ? ` — tabs: ${tabNames.join(', ')}` : ''}`;
+              const tabNames = [...new Set(tabs.map((t: any) => t.label || t.object_api_name).filter(Boolean))].slice(0, 12) as string[];
+              return { id: String(a.id), name: String(a.label), tabs: tabNames };
             }));
-            const more = picked.candidates.length > candidates.length ? `\n(and ${picked.candidates.length - candidates.length} more apps)` : '';
-            return res.json({ chat_response: `Which app should I test in ${selectedApp?.name || 'this runtime'}?\n\n${lines.join('\n')}${more}\n\nReply with the app name and optionally a tab (e.g. "CRM Accounts list view"), or say "all apps" to sweep every app.` });
+            const lines = optionApps.slice(0, 8).map((a) => `- ${a.name}${a.tabs.length ? ` — tabs: ${a.tabs.join(', ')}` : ''}`);
+            const more = picked.candidates.length > 8 ? `\n(and ${picked.candidates.length - 8} more apps)` : '';
+            return res.json({
+              chat_response: `Which app should I test in ${selectedApp?.name || 'this runtime'}?\n\n${lines.join('\n')}${more}\n\nReply with the app name and optionally a tab (e.g. "CRM Accounts list view"), or say "all apps" to sweep every app.`,
+              app_options: {
+                surface: selectedApp?.name || 'this runtime',
+                platform: 'RUNTIME',
+                // Mutating goals must target ONE concrete app (see scope hardening below).
+                allowAllApps: !isMutationIntent(prompt || ''),
+                apps: optionApps,
+              },
+            });
           }
         }
       }
