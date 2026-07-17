@@ -1,21 +1,28 @@
 @echo off
-REM TestFlow Desktop Agent — launcher. Runs the agent on http://localhost:2424 and connects to the cloud.
+REM TestFlow Desktop Agent — launcher. Self-contained bundle: node_modules + browsers ship inside,
+REM so there is NOTHING to install. Just double-click this file.
 setlocal
 cd /d "%~dp0"
-set AGENT_HOME=%CD%
+set "AGENT_HOME=%CD%"
+set "PLAYWRIGHT_BROWSERS_PATH=%CD%\browsers"
+
+REM Prefer a bundled portable Node if present, so Node need not be installed on this machine.
+if exist "%CD%\node\node.exe" set "PATH=%CD%\node;%PATH%"
 
 where node >nul 2>nul
 if errorlevel 1 (
-  echo Node.js not found on PATH. Run install.bat first.
+  echo Node.js was not found and no portable Node is bundled.
+  echo Install Node.js 18+ from https://nodejs.org and run this again.
   pause
   exit /b 1
 )
 
 if not exist "node_modules" (
-  echo Dependencies are not installed yet. Running install.bat first...
-  call install.bat
+  echo This bundle is missing node_modules ^(not self-contained^). Re-download the agent from TestFlow AI.
+  pause
+  exit /b 1
 )
 
 echo Starting TestFlow Agent on http://localhost:2424 ...
 echo Close this window or run stop.bat to stop the agent.
-call npx tsx src/index.ts
+call "node_modules\.bin\tsx.cmd" src\index.ts

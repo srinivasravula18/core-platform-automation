@@ -16,12 +16,16 @@ In TestFlow AI, go to **Automation → Local Agent** and click **Download Agent*
 `TestFlow-Agent.zip` containing the agent and a `config.json` with a **one-time pairing token** (valid
 for 10 minutes). Download it fresh each time you set up a new machine.
 
-## 2. Install
+## 2. Install — nothing to install
+
+The bundle is **self-contained**: `node_modules` and the Chromium browser ship inside it.
 
 1. Unzip `TestFlow-Agent.zip` to a folder you control, e.g. `C:\TestFlow-Agent`.
-2. Double-click **install.bat**. It installs the agent's dependencies and the Chromium browser into that
-   folder. No global changes are made. To also record/run against Firefox or WebKit, run
-   `npx playwright install firefox webkit` in the agent folder afterward.
+2. That's it — there is no install step. (Clicking `install.bat` just confirms this.)
+
+> Maintainers: the self-contained bundle is built once per OS with `build-bundle.bat` (installs
+> `node_modules` + Chromium into the folder), then the server serves it by pointing `AGENT_BUNDLE_DIR`
+> at that folder. Because native binaries are OS-specific, build the Windows bundle on Windows.
 
 If Node.js is missing, install.bat tells you and stops — install Node, then re-run it.
 
