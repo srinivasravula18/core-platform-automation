@@ -67,7 +67,7 @@ import {
 import { generateCompiledScripts, aiqaCompilerEnabled } from './compiler/compiledGeneration';
 // LangGraph workflow runtime (flag-gated by AGENT_GRAPH_V2; legacy path is default and untouched).
 import { isWorkflowGraphEnabled } from './workflow/checkpointer';
-import { startGraphRun, resumeGraphRun, cancelGraphRun, getPendingReview, reconcileRunIfOrphaned, orphanedRunFailure, persistDefectReport, registerTerminalArtifactPersister } from './workflow/runtime';
+import { startGraphRun, resumeGraphRun, cancelGraphRun, getPendingReview, reconcileRunIfOrphaned, orphanedRunFailure, persistDefectReport, registerTerminalArtifactPersister, registerCasesReviewPersister } from './workflow/runtime';
 import { buildDefectDrafts } from './workflow/defectReporter';
 import type { MissionRef } from './workflow/state';
 import { renderTargetCatalogForPrompt } from './compiler/renderCatalogForPrompt';
@@ -1067,6 +1067,15 @@ async function persistAgentCaseArtifacts(run: any) {
   const suiteId = agentSuiteId(run);
 
   const cases = run.generated_cases || [];
+  // Rework rounds replace the set: rows from a prior save of THIS run that are no longer in
+  // the current case list are removed (reused existing cases keep their original run link).
+  const keepIds = new Set(cases.map((c: any, i: number) => c?.id || agentCaseId(run, i)));
+  try {
+    const stale = (await Cases.list()).filter((existing: any) => existing.agentRunId === run.id && !keepIds.has(existing.id));
+    for (const existing of stale) await Cases.remove(existing.id);
+  } catch (err: any) {
+    console.warn(`[agent] run ${run.id}: stale case cleanup failed: ${err?.message || err}`);
+  }
   for (let index = 0; index < cases.length; index++) {
     const testCase = cases[index];
     if (testCase?.reused && testCase?.existingCaseId) continue;
@@ -4557,6 +4566,8 @@ export function registerAgentRoutes(app: Express) {
   // Graph terminal hook: materialize plan/suite/cases/run/report for graph runs (injected here
   // because runtime.ts cannot import this module — routes.ts already imports the runtime).
   registerTerminalArtifactPersister(persistAgentQualityArtifacts);
+  // Authored cases save automatically at the graph's cases-review gate (no manual Save all needed).
+  registerCasesReviewPersister(persistAgentCaseArtifacts);
 
   // CODE-FLOW test endpoint: trace the complete flow from SOURCE (no live driving), transcribe
   // it deterministically into a script, and execute it.
