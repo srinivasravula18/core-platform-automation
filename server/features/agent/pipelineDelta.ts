@@ -85,14 +85,20 @@ export async function runMetadataFetchPhase(input: {
   onPhase: PhaseSink;
 }) {
   input.onPhase({ agent: 'MetadataFetch', status: 'running' });
-  const map = await fetchCorePlatformMetadataMap({
-    baseUrl: input.baseUrl,
-    token: input.credentials?.token,
-    username: input.credentials?.username,
-    password: input.credentials?.password,
-  }, input.appId);
+  // Never leave the chip in 'running': any throw degrades to null and takes the terminal skipped path.
+  let map: CorePlatformMetadataMap | null = null;
+  try {
+    map = await fetchCorePlatformMetadataMap({
+      baseUrl: input.baseUrl,
+      token: input.credentials?.token,
+      username: input.credentials?.username,
+      password: input.credentials?.password,
+    }, input.appId);
+  } catch (e: any) {
+    console.warn(`[MetadataFetch] metadata fetch threw: ${e?.message || String(e)}`);
+  }
   if (!map) {
-    const output = 'Metadata map unavailable; continuing with live inspection and source grounding.';
+    const output = 'Metadata unavailable (timed out or unreachable); continuing with live inspection and source grounding.';
     input.onPhase({ agent: 'MetadataFetch', status: 'skipped', output });
     phaseSummary(input.run, 'metadata_fetch', { status: 'skipped', completed_at: new Date().toISOString() });
     recordEvidence(input.run, {

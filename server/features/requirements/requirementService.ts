@@ -623,7 +623,7 @@ function summarizeFeatureInventoryForPrompt(inventory: FeatureInventory): string
  */
 export async function analyzeFeatureFromSource(
   query: string,
-  opts: { workspaceId?: string; userId?: string; repoPath?: string; projectId?: string; appId?: string; applicationContextPrompt?: string; onProgress?: (label: string) => void } = {},
+  opts: { workspaceId?: string; userId?: string; repoPath?: string; projectId?: string; appId?: string; applicationContextPrompt?: string; conversationContextPrompt?: string; onProgress?: (label: string) => void } = {},
 ): Promise<{ understanding: FeatureUnderstanding; files: Array<{ path: string; area: string; surface: string }>; keywords: string[] }> {
   const cleanQuery = String(query || '').trim();
   const keywords = deriveKeywords(cleanQuery);
@@ -745,12 +745,17 @@ export async function analyzeFeatureFromSource(
   const applicationContextBlock = opts.applicationContextPrompt
     ? `\n\nSELECTED APPLICATION CONTEXT - authoritative. Use this to avoid guessing app identity, repo roots, object api_names, field api_names, sample data, and knowledge-pack rules. If a detail is not present here or in source evidence, leave it unknown instead of inventing it:\n${opts.applicationContextPrompt}`
     : '';
+  // Ongoing-chat context so follow-up drafts ("also add requirements for X", "the same module")
+  // enrich the running scope instead of resetting it; the user query stays the primary subject.
+  const conversationContextBlock = opts.conversationContextPrompt
+    ? `\n\nCONVERSATION CONTEXT - the chat that led to this request. Use it ONLY to resolve references (pronouns, "the same page/module", earlier decisions and constraints) and to carry forward scope already agreed in the conversation. Do not let it override the user query or the source evidence:\n${opts.conversationContextPrompt}`
+    : '';
   const analystRes = await analyst.generateObject<FeatureUnderstanding>({
     prompt: `Feature/section to analyze (user query): "${cleanQuery}"
 
 Search keywords used: ${keywords.join(', ')}
 
-${groundingBlock}${metaCatalogBlock}${selectorCatalogBlock}${applicationContextBlock}
+${groundingBlock}${metaCatalogBlock}${selectorCatalogBlock}${applicationContextBlock}${conversationContextBlock}
 
 INFER the application's architecture from the research notes and excerpts above — do NOT assume any specific product, framework, or surface names. Let the code tell you. Use ONLY behaviour the research actually establishes; never invent meta-concepts (CI/seeding/regression scaffolding) that aren't real user features.
 ${readDraftingSkill() ? `\nLEARNED DRAFTING SKILL (general QA-drafting guidance refined over prior runs — apply it):\n${readDraftingSkill()}\n` : ''}
@@ -1178,7 +1183,7 @@ function mergeInventoryIntoUnderstanding(base: FeatureUnderstanding, inventory: 
 
 export async function draftRequirement(
   query: string,
-  opts: { workspaceId?: string; userId?: string; role?: string; repoPath?: string; projectId?: string; appId?: string; applicationContextPrompt?: string; requirementsOnly?: boolean; onProgress?: (label: string) => void } = {},
+  opts: { workspaceId?: string; userId?: string; role?: string; repoPath?: string; projectId?: string; appId?: string; applicationContextPrompt?: string; conversationContextPrompt?: string; requirementsOnly?: boolean; onProgress?: (label: string) => void } = {},
 ): Promise<RequirementDraftResult> {
   const ownerId = opts.userId || '';
   const cleanQuery = String(query || '').trim();

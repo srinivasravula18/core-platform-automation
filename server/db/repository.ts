@@ -1220,7 +1220,7 @@ export const ChatConversations = {
         .map((c: any) => ({ id: c.id, workspaceId: c.workspaceId, title: c.title || '', turnCount: (c.turns || []).length, createdAt: c.createdAt, updatedAt: c.updatedAt }));
     }
     const rows = await query(`SELECT c.id, c.workspace_id, c.title, c.turns, c.created_at, c.updated_at,
-      COALESCE((SELECT COUNT(*)::int FROM chat_messages m WHERE m.conversation_id = c.id), jsonb_array_length(c.turns)) AS message_count
+      GREATEST((SELECT COUNT(*)::int FROM chat_messages m WHERE m.conversation_id = c.id), COALESCE(jsonb_array_length(c.turns), 0)) AS message_count
       FROM chat_conversations c WHERE c.workspace_id = $1 ORDER BY c.updated_at DESC LIMIT 100`, [workspaceId]);
     return rows.map((r: any) => ({ ...mapConversation(r, false), turnCount: Number(r.message_count || 0) }));
   },
@@ -1232,7 +1232,11 @@ export const ChatConversations = {
     const r = await queryOne('SELECT * FROM chat_conversations WHERE id = $1', [id]);
     if (!r) return null;
     const messages = await query('SELECT role, kind, content, payload FROM chat_messages WHERE conversation_id = $1 ORDER BY seq', [id]);
-    return { ...mapConversation(r, true), turns: messages.length ? messages.map(mapMessage) : (r as any).turns || [] };
+    // Two writers coexist: the console PUTs the FULL turn snapshot (rich cards) into turns JSONB, while
+    // server chat paths append plain text rows to chat_messages — return whichever holds more of the chat.
+    const snapshot = Array.isArray((r as any).turns) ? (r as any).turns : [];
+    const mapped = messages.map(mapMessage);
+    return { ...mapConversation(r, true), turns: snapshot.length >= mapped.length ? snapshot : mapped };
   },
   async listMessages(id: string): Promise<Array<{ seq: number; role: string; kind: string; content: string; payload: any }>> {
     if (!isPgEnabled()) {

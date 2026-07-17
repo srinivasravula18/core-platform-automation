@@ -10,6 +10,7 @@ import { AIActionModal } from '@/src/components/AIActionModal';
 import { FolderSelect } from '@/src/components/FolderSelect';
 import { showAlert, showConfirm } from '@/src/lib/dialog';
 import { useProjects } from '@/src/store/project';
+import { useDataVersion } from '@/src/store/data';
 
 const CASE_STATUSES = ['Draft', 'Under Review', 'Approved', 'Automated', 'Deprecated'];
 
@@ -99,13 +100,33 @@ export default function TestCases() {
   // bulk-delete and the AI multi-select action below.
   const selectedCaseIds = Array.from(bulk.selectedIds).map(String);
 
-  useEffect(() => {
+  const dataVersion = useDataVersion((s) => s.version);
+
+  // Refetch all case-related data (projects load separately below).
+  const refetchAll = () => {
     fetchCases();
     fetchPlans();
     fetchSuites();
     fetchFolders();
-    fetchProjects();
     fetchRunInfo();
+  };
+
+  useEffect(() => {
+    fetchProjects();
+  }, []);
+
+  // Refetch on mount, on any global data-version bump, and when the selected project/app changes.
+  useEffect(() => {
+    refetchAll();
+  }, [dataVersion, selectedProjectId, selectedAppId]);
+
+  // Refetch when the tab becomes visible again (mirrors Dashboard).
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') refetchAll();
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
   }, []);
 
   useEffect(() => {

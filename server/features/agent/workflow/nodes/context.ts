@@ -56,12 +56,13 @@ export async function runContextNode(input: RunContextNodeInput): Promise<RunCon
   try {
     const map = await fetchCorePlatformMetadataMap(conn, appId);
     if (!map) {
-      // fetchCorePlatformMetadataMap never throws; null covers unreachable service, bad auth, and empty
-      // catalogs alike. Treated as transient/retryable since the far more common cause is the target
-      // not being up yet, not a permanent condition.
+      // fetchCorePlatformMetadataMap never throws; null covers unreachable service, bad auth, empty
+      // catalogs, and now per-request/overall timeouts alike. Treated as transient/retryable since the
+      // far more common cause is the target not being up yet, not a permanent condition.
+      console.warn(`[context] metadata map unavailable (timed out or unreachable) for app ${appId}; proceeding without metadata.`);
       const err = new WorkflowRuntimeError(
         WORKFLOW_ERROR_CLASSES.NETWORK_TRANSIENT,
-        'Metadata map unavailable for the resolved application.',
+        'Metadata unavailable (timed out or unreachable) for the resolved application.',
         { appId },
         'context',
       );

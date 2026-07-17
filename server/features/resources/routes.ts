@@ -376,7 +376,8 @@ export function registerResourceRoutes(app: Express) {
     await Cases.upsert(newCase);
     if (!isPgEnabled()) persistDataInBackground('case');
     addActivity(`Created Case: ${newCase.title}`);
-    res.json({ success: true });
+    // Return the generated id so clients (e.g. GeneratedCases save-fallback) can adopt it.
+    res.json({ success: true, id: newCase.id });
   });
 
   /* ---------- POST /api/cases/ai-action ---------- */

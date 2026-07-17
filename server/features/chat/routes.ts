@@ -155,12 +155,21 @@ export function registerChatRoutes(app: Express) {
 
   app.put('/api/chat/conversations/:id', async (req, res, next) => {
     try {
-      const { workspaceId, title } = req.body || {};
-      const saved = await ChatConversations.updateMetadata({
-        id: req.params.id,
-        workspaceId: workspaceId || 'default',
-        title: String(title || '').slice(0, 120),
-      });
+      const { workspaceId, title, turns } = req.body || {};
+      // Full-turn snapshot from the console restores rich turns (deep-run cards, drafts) across
+      // navigation/restart; a body without turns stays a metadata-only update (title rename).
+      const saved = Array.isArray(turns)
+        ? await ChatConversations.upsert({
+            id: req.params.id,
+            workspaceId: workspaceId || 'default',
+            title: String(title || '').slice(0, 120),
+            turns,
+          })
+        : await ChatConversations.updateMetadata({
+            id: req.params.id,
+            workspaceId: workspaceId || 'default',
+            title: String(title || '').slice(0, 120),
+          });
       persistDataInBackground('chat conversation');
       res.json({ ok: true, conversation: { id: saved.id, updatedAt: saved.updatedAt } });
     } catch (err) {

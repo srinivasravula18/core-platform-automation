@@ -3,6 +3,8 @@ import { ChevronRight, FileText, Folder, FolderPlus, Layers, PlayCircle, Search,
 import { cn } from '@/src/lib/utils';
 import { Modal } from '@/src/components/Modal';
 import { showAlert, showConfirm } from '@/src/lib/dialog';
+import { useDataVersion } from '@/src/store/data';
+import { useProjects } from '@/src/store/project';
 
 // Artifact groups backed by a real DELETE/bulk-delete endpoint (evidence is derived, not deletable).
 const DELETABLE_KEYS = new Set(['plans', 'suites', 'cases', 'runs', 'reports', 'scripts', 'requirements', 'defects']);
@@ -127,6 +129,8 @@ export default function TestRepository() {
   const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set());
   const [selectedFolderIds, setSelectedFolderIds] = useState<Set<string>>(new Set());
   const [deleting, setDeleting] = useState(false);
+  const dataVersion = useDataVersion((s) => s.version);
+  const { selectedProjectId, selectedAppId } = useProjects();
 
   const fetchData = () => {
     Promise.all([
@@ -163,8 +167,18 @@ export default function TestRepository() {
       .catch(console.error);
   };
 
+  // Refetch on mount, on any global data-version bump, and when the selected project/app changes.
   useEffect(() => {
     fetchData();
+  }, [dataVersion, selectedProjectId, selectedAppId]);
+
+  // Refetch when the tab becomes visible again (mirrors Dashboard).
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') fetchData();
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
   }, []);
 
   useEffect(() => {

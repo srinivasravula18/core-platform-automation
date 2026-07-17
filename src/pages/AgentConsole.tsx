@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type MouseEvent } from 'react';
+import { memo, useCallback, useEffect, useRef, useState, type MouseEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { TopbarActions } from '@/src/components/TopbarActions';
@@ -353,6 +353,9 @@ type Turn =
   | { id: string; role: 'assistant'; kind: 'folderask'; text: string; understanding?: string; understandingSource?: string; folderName?: string; originalPrompt?: string; contextPrompt?: string; caseCountPrompt?: string; targetUrl?: string; websiteId?: string; websiteName?: string; revisionCount?: number }
   | { id: string; role: 'assistant'; kind: 'thinking'; label: string; debug?: string[] };
 
+// Narrowed turn shape for the folder-ask review card component below.
+type FolderAskTurn = Extract<Turn, { kind: 'folderask' }>;
+
 type PendingDeep = {
   prompt: string;
   originalRequest?: string;
@@ -543,6 +546,100 @@ function drillLinksForPlan(plan: any): { label: string; href: string; icon: type
   return links;
 }
 
+// Folder-ask review card, extracted + memoized: the old inline version wrote every keystroke
+// into the global turns array (re-rendering every message + re-firing persist/autoscroll effects)
+// and re-measured the textarea on every render — both caused typing/scroll jank. Drafts stay
+// LOCAL here and are committed on blur / select / Proceed only.
+const FolderAskCard = memo(function FolderAskCard({
+  turn,
+  folderOptions,
+  onCommit,
+  onProceed,
+  onCancel,
+}: {
+  turn: FolderAskTurn;
+  folderOptions: Array<{ id: string; name: string; path?: string }>;
+  onCommit: (turnId: string, patch: { understanding?: string; folderName?: string }) => void;
+  onProceed: (turn: FolderAskTurn, folderName: string) => void;
+  onCancel: (turnId: string) => void;
+}) {
+  const [folderName, setFolderName] = useState(turn.folderName || '');
+  const [understanding, setUnderstanding] = useState(turn.understanding || '');
+  const taRef = useRef<HTMLTextAreaElement>(null);
+  // Reflect external revisions (e.g. a revise-understanding reply) back into the local drafts.
+  useEffect(() => { setUnderstanding(turn.understanding || ''); }, [turn.understanding]);
+  useEffect(() => { setFolderName(turn.folderName || ''); }, [turn.folderName]);
+  // One-shot auto-grow (capped at 360px): runs on mount and when the LOCAL value changes only.
+  useEffect(() => {
+    const el = taRef.current;
+    if (el) { el.style.height = 'auto'; el.style.height = `${Math.min(el.scrollHeight, 360)}px`; }
+  }, [understanding]);
+  const trimmed = folderName.trim();
+  return (
+    <div className="flex justify-start">
+      <div className="flex max-w-[90%] gap-2.5">
+        <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[var(--accent)]/10 text-[var(--accent)]">
+          <FolderTree className="h-4 w-4" />
+        </div>
+        <div className="rounded-2xl rounded-bl-sm border border-[var(--border)] bg-[var(--bg-card)] px-4 py-3 text-sm">
+          {turn.understanding && (
+            <textarea
+              ref={taRef}
+              value={understanding}
+              rows={3}
+              onChange={(e) => setUnderstanding(e.target.value)}
+              onBlur={() => onCommit(turn.id, { understanding })}
+              className="mb-2 w-full resize-none overflow-y-auto whitespace-pre-wrap rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 font-sans text-[13px] text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
+            />
+          )}
+          <p className="text-[var(--text-primary)]">{turn.text}</p>
+          {/* A results folder is REQUIRED before the run can start — pick or name one, then proceed/cancel. */}
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <select
+              value={folderOptions.some((f) => (f.path || f.name) === folderName) ? folderName : ''}
+              onChange={(e) => {
+                const name = e.target.value;
+                setFolderName(name);
+                onCommit(turn.id, { folderName: name });
+              }}
+              className="min-w-0 max-w-[240px] truncate rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
+            >
+              <option value="">Select an existing folder…</option>
+              {folderOptions.map((f) => (
+                <option key={f.id} value={f.path || f.name}>{f.path || f.name}</option>
+              ))}
+            </select>
+            <input
+              value={folderName}
+              onChange={(e) => setFolderName(e.target.value)}
+              onBlur={() => onCommit(turn.id, { folderName })}
+              placeholder="or new folder name"
+              className="min-w-0 flex-1 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2.5 py-1.5 text-xs text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
+            />
+            <button
+              onClick={() => {
+                if (!trimmed) return; // a folder is required — nothing starts without it
+                onProceed({ ...turn, understanding, folderName: trimmed }, trimmed);
+              }}
+              disabled={!trimmed}
+              title={trimmed ? 'Start the run in this folder' : 'Pick or name a folder first'}
+              className="inline-flex shrink-0 items-center gap-1.5 rounded-md bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50 disabled:hover:bg-[var(--accent)]"
+            >
+              <Sparkles className="h-3.5 w-3.5" /> Proceed
+            </button>
+            <button
+              onClick={() => onCancel(turn.id)}
+              className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--bg-card)] px-3 py-1.5 text-xs font-medium text-[var(--text-muted)] hover:border-[var(--accent)] hover:text-[var(--text-primary)]"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+});
+
 export default function AgentConsole() {
   // Active project/app scope. The whole page subtree remounts when this changes
   // (see App.tsx scopeKey), so reading it once at mount binds this console
@@ -587,7 +684,16 @@ export default function AgentConsole() {
   // Explicit "apps under test" selected by the user in the composer. ALL selected apps
   // are passed to the agent as target context on every request, so it always has the app
   // data and never replies "I don't have the URL / context".
-  const [selectedAppIds, setSelectedAppIds] = useState<Set<string>>(new Set());
+  // Persisted per workspace (mirrors the convKey pattern) so the selection survives remounts.
+  const appSelKey = `tfa_selected_apps::${workspaceId}`;
+  const [selectedAppIds, setSelectedAppIds] = useState<Set<string>>(() => {
+    try {
+      const stored = localStorage.getItem(appSelKey);
+      return new Set(stored ? (JSON.parse(stored) as string[]) : []);
+    } catch {
+      return new Set();
+    }
+  });
   const [appPickerOpen, setAppPickerOpen] = useState(false);
   const [pendingDeep, setPendingDeep] = useState<PendingDeep | null>(null);
   const [pendingRequirementDraft, setPendingRequirementDraft] = useState<PendingRequirementDraft | null>(null);
@@ -655,6 +761,24 @@ export default function AgentConsole() {
     }
   }, [conversationId, convKey]);
 
+  // Write-through: persist the app selection per workspace so it survives scope remounts.
+  useEffect(() => {
+    try {
+      localStorage.setItem(appSelKey, JSON.stringify(Array.from(selectedAppIds)));
+    } catch {
+      /* ignore */
+    }
+  }, [selectedAppIds, appSelKey]);
+
+  // Drop restored app ids that no longer exist once the saved-website list loads.
+  useEffect(() => {
+    if (!websites.length) return;
+    setSelectedAppIds((prev) => {
+      const valid = new Set(Array.from(prev).filter((id) => websites.some((w) => w.id === id)));
+      return valid.size === prev.size ? prev : valid;
+    });
+  }, [websites]);
+
   // Sync conversationId → URL so the address bar always reflects the active chat.
   // Uses replace so switching chats doesn't pollute the browser history stack.
   useEffect(() => {
@@ -696,7 +820,10 @@ export default function AgentConsole() {
     }
   }, [workspaceId]);
 
+  // Monotonic token so a slow/stale conversation load can never overwrite newer state.
+  const loadReqRef = useRef(0);
   const loadConversation = useCallback(async (id: string) => {
+    const token = ++loadReqRef.current;
     loadedRef.current = false;
     try {
       const r = await fetch(`/api/chat/conversations/${id}`);
@@ -705,11 +832,13 @@ export default function AgentConsole() {
       const clean = (Array.isArray(d.turns) ? d.turns : []).filter(
         (t: Turn) => !(t.role === 'assistant' && t.kind === 'thinking'),
       );
+      if (token !== loadReqRef.current) return; // a newer load won — discard this result
       setTurns(clean);
     } catch {
-      setTurns([]);
+      // Never wipe a live thread on a failed load — only clear when nothing is on screen.
+      if (token === loadReqRef.current && turnsRef.current.length === 0) setTurns([]);
     } finally {
-      loadedRef.current = true;
+      if (token === loadReqRef.current) loadedRef.current = true;
     }
   }, []);
 
@@ -721,6 +850,7 @@ export default function AgentConsole() {
     const cleanTurns = (raw: unknown): Turn[] =>
       (Array.isArray(raw) ? (raw as Turn[]) : []).filter((t) => !(t.role === 'assistant' && t.kind === 'thinking'));
     (async () => {
+      const token = ++loadReqRef.current; // stale-response guard for the mount-time load
       let convs: ConversationMeta[] = [];
       try {
         const r = await fetch(`/api/chat/conversations?workspaceId=${encodeURIComponent(workspaceId)}`);
@@ -751,9 +881,11 @@ export default function AgentConsole() {
         }
       }
 
+      if (token !== loadReqRef.current) return; // a newer load (chat switch/new chat) won
+      loadedRef.current = true;
+      if (turnsRef.current.length > 0) return; // user already started a thread — never wipe it
       if (chosen !== conversationId) setConversationId(chosen);
       setTurns(chosenTurns);
-      loadedRef.current = true;
     })();
     fetch('/api/credentials/websites')
       .then((r) => r.json())
@@ -787,7 +919,9 @@ export default function AgentConsole() {
       fetch(`/api/chat/conversations/${conversationId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ workspaceId, title: firstUser?.text?.slice(0, 80) || 'New chat' }),
+        // Full turn snapshot (not just title): rich turns (deep-run cards, drafts, cases) only live in
+        // React state, so without this they vanish on navigation/restart and history opens blank.
+        body: JSON.stringify({ workspaceId, title: firstUser?.text?.slice(0, 80) || 'New chat', turns: clean }),
       })
         .then(() => loadConversations())
         .catch(() => {});
@@ -807,6 +941,7 @@ export default function AgentConsole() {
   }, [historyOpen]);
 
   const newConversation = useCallback(() => {
+    loadReqRef.current++; // invalidate any in-flight conversation load
     setConversationId(makeConversationId());
     setTurns([]);
     loadedRef.current = true;
@@ -864,9 +999,18 @@ export default function AgentConsole() {
     toggleListening,
   } = useSpeechToText({ onTranscript: appendSpeechTranscript });
 
+  // Track whether the user is near the bottom (~120px) so streaming never yanks them back down.
+  const atBottomRef = useRef(true);
+  const handleChatScroll = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    atBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+  }, []);
   useEffect(() => {
+    if (!atBottomRef.current) return; // user scrolled up — leave them alone
     if (scrollRef.current?.contains(document.activeElement)) return;
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
+    // 'auto' (not 'smooth'): retargeting a smooth scroll on every streamed token is jerky.
+    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'auto' });
   }, [turns]);
 
   const patchTurn = useCallback((id: string, plan: any) => {
@@ -1152,6 +1296,7 @@ export default function AgentConsole() {
       body: JSON.stringify({
         ...args,
         history: buildHistory(),
+        conversationId,
         projectId: selectedProjectId || undefined,
         appId: selectedAppId || undefined,
       }),
@@ -1178,7 +1323,7 @@ export default function AgentConsole() {
         reject(new Error('Understanding stream disconnected before completion'));
       };
     });
-  }, [buildHistory, selectedProjectId, selectedAppId]);
+  }, [buildHistory, conversationId, selectedProjectId, selectedAppId]);
 
   // Present the "Here's what I understood" review card for a deep generation/run request:
   // generate an understanding (grounded in the conversation), stash it as pendingDeep, and
@@ -1265,6 +1410,8 @@ export default function AgentConsole() {
         body: JSON.stringify({
           query: draftQuery,
           workspaceId: 'default',
+          conversationId,
+          history: buildHistory(),
           projectId: selectedProjectId || undefined,
           appId: selectedAppId || undefined,
         }),
@@ -1327,7 +1474,7 @@ export default function AgentConsole() {
           : `Something went wrong drafting the requirement: ${safeMsg}.`,
       });
     }
-  }, [replaceTurn, selectedProjectId, selectedAppId, updateThinkingLabel]);
+  }, [replaceTurn, buildHistory, conversationId, selectedProjectId, selectedAppId, updateThinkingLabel]);
 
   const confirmRequirementDraft = useCallback(async (turn: { id: string; result: any }) => {
     if (busy) return;
@@ -2023,14 +2170,14 @@ export default function AgentConsole() {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 signal: activeAbortRef.current?.signal,
-                body: JSON.stringify({ topic: text, workspaceId: 'default', history: histForExplain, apps: getSelectedApps() }),
+                body: JSON.stringify({ topic: text, workspaceId: 'default', conversationId, history: histForExplain, apps: getSelectedApps() }),
               });
               if (!ans.ok || !ans.body) {
                 const data = await fetch('/api/controller/explain', {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
                   signal: activeAbortRef.current?.signal,
-                  body: JSON.stringify({ topic: text, workspaceId: 'default', history: histForExplain, apps: getSelectedApps() }),
+                  body: JSON.stringify({ topic: text, workspaceId: 'default', conversationId, history: histForExplain, apps: getSelectedApps() }),
                 }).then((r) => r.json()).catch(() => ({}));
                 replaceTurn(thinkingId, { id: thinkingId, role: 'assistant', kind: 'text', text: cleanChat(data?.answer || plan?.summary || fallbackText) });
               } else {
@@ -2149,6 +2296,29 @@ export default function AgentConsole() {
     },
     [busy, replaceTurn, startDeepRun],
   );
+
+  // Commit folder-ask drafts back into the turn (and pendingDeep) — on blur/select/proceed, never per keystroke.
+  const commitFolderAskDraft = useCallback((turnId: string, patch: { understanding?: string; folderName?: string }) => {
+    setTurns((prev) => prev.map((item) => (
+      item.id === turnId && item.role === 'assistant' && item.kind === 'folderask' ? { ...item, ...patch } : item
+    )));
+    if (typeof patch.understanding === 'string') {
+      const nextUnderstanding = patch.understanding;
+      setPendingDeep((prev) => (prev ? { ...prev, understanding: nextUnderstanding } : prev));
+    }
+  }, []);
+
+  // Cancel a folder-ask card: clear the pending run and swap the card for a plain notice.
+  const cancelFolderAsk = useCallback((turnId: string) => {
+    setPendingDeep(null);
+    replaceTurn(turnId, {
+      id: turnId,
+      role: 'assistant',
+      kind: 'text',
+      text: 'Cancelled. Tell me what to change (target, fields, or steps) and I will re-plan.',
+    });
+    inputRef.current?.focus();
+  }, [replaceTurn]);
 
   const executePlan = useCallback(
     async (planId: string, turnId: string, opts?: { approveAll?: boolean }) => {
@@ -2384,7 +2554,7 @@ export default function AgentConsole() {
       </div>
 
       {/* Thread */}
-      <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto rounded-xl">
+      <div ref={scrollRef} onScroll={handleChatScroll} className="flex-1 min-h-0 overflow-y-auto rounded-xl">
         {isEmpty ? (
           <div className="flex h-full flex-col items-center justify-center px-4 text-center">
             <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-[var(--accent)]/10 text-[var(--accent)]">
@@ -2705,95 +2875,14 @@ export default function AgentConsole() {
               }
               if (turn.kind === 'folderask') {
                 return (
-                  <div key={turn.id} className="flex justify-start">
-                    <div className="flex max-w-[90%] gap-2.5">
-                      <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[var(--accent)]/10 text-[var(--accent)]">
-                        <FolderTree className="h-4 w-4" />
-                      </div>
-                      <div className="rounded-2xl rounded-bl-sm border border-[var(--border)] bg-[var(--bg-card)] px-4 py-3 text-sm">
-                        {turn.understanding && (
-                          <textarea
-                            value={turn.understanding}
-                            rows={3}
-                            // Auto-grow to fit content (dynamic height, not fixed), capped so it never
-                            // takes over the viewport; scrolls past the cap.
-                            ref={(el) => { if (el) { el.style.height = 'auto'; el.style.height = `${Math.min(el.scrollHeight, 360)}px`; } }}
-                            onChange={(e) => {
-                              e.target.style.height = 'auto';
-                              e.target.style.height = `${Math.min(e.target.scrollHeight, 360)}px`;
-                              const nextUnderstanding = e.target.value;
-                              setTurns((prev) => prev.map((item) => (
-                                item.id === turn.id && item.role === 'assistant' && item.kind === 'folderask'
-                                  ? { ...item, understanding: nextUnderstanding }
-                                  : item
-                              )));
-                              setPendingDeep((prev) => (prev ? { ...prev, understanding: nextUnderstanding } : prev));
-                            }}
-                            className="mb-2 w-full resize-none overflow-y-auto whitespace-pre-wrap rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 font-sans text-[13px] text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
-                          />
-                        )}
-                        <p className="text-[var(--text-primary)]">{turn.text}</p>
-                        {/* Results folder + actions: a folder is REQUIRED before the run can start —
-                            pick an existing folder or type a new name, then proceed/cancel. No
-                            auto-named/blank folder, so every result is saved where the user chose. */}
-                        <div className="mt-2 flex items-center gap-2">
-                          <select
-                            value={folderOptions.some((f) => (f.path || f.name) === turn.folderName) ? turn.folderName : ''}
-                            onChange={(e) => {
-                              const name = e.target.value;
-                              setTurns((prev) => prev.map((item) => (
-                                item.id === turn.id && item.role === 'assistant' && item.kind === 'folderask' ? { ...item, folderName: name } : item
-                              )));
-                            }}
-                            className="shrink-0 max-w-[150px] rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
-                          >
-                            <option value="">Select an existing folder…</option>
-                            {folderOptions.map((f) => (
-                              <option key={f.id} value={f.path || f.name}>{f.path || f.name}</option>
-                            ))}
-                          </select>
-                          <input
-                            value={turn.folderName || ''}
-                            onChange={(e) => {
-                              const name = e.target.value;
-                              setTurns((prev) => prev.map((item) => (
-                                item.id === turn.id && item.role === 'assistant' && item.kind === 'folderask' ? { ...item, folderName: name } : item
-                              )));
-                            }}
-                            placeholder="or new folder name"
-                            className="min-w-0 flex-1 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2.5 py-1.5 text-xs text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
-                          />
-                          <button
-                            onClick={() => {
-                              const chosen = (turn.folderName || '').trim();
-                              if (!chosen) return; // a folder is required — nothing starts without it
-                              proceedDeepFromTurn(turn, chosen);
-                            }}
-                            disabled={!(turn.folderName || '').trim()}
-                            title={(turn.folderName || '').trim() ? 'Start the run in this folder' : 'Pick or name a folder first'}
-                            className="inline-flex shrink-0 items-center gap-1.5 rounded-md bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50 disabled:hover:bg-[var(--accent)]"
-                          >
-                            <Sparkles className="h-3.5 w-3.5" /> Proceed
-                          </button>
-                          <button
-                            onClick={() => {
-                              setPendingDeep(null);
-                              replaceTurn(turn.id, {
-                                id: turn.id,
-                                role: 'assistant',
-                                kind: 'text',
-                                text: 'Cancelled. Tell me what to change (target, fields, or steps) and I will re-plan.',
-                              });
-                              inputRef.current?.focus();
-                            }}
-                            className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--bg-card)] px-3 py-1.5 text-xs font-medium text-[var(--text-muted)] hover:border-[var(--accent)] hover:text-[var(--text-primary)]"
-                          >
-                            Cancel
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
+                  <FolderAskCard
+                    key={turn.id}
+                    turn={turn}
+                    folderOptions={folderOptions}
+                    onCommit={commitFolderAskDraft}
+                    onProceed={proceedDeepFromTurn}
+                    onCancel={cancelFolderAsk}
+                  />
                 );
               }
               if (turn.kind === 'text') {
@@ -2970,7 +3059,7 @@ export default function AgentConsole() {
                   <ChevronDown className="h-3 w-3" />
                 </button>
                 {appPickerOpen && (
-                  <div className="absolute bottom-full left-0 z-20 mb-1 max-h-64 w-72 overflow-auto rounded-lg border border-[var(--border)] bg-[var(--bg-card)] p-1 shadow-lg">
+                  <div className="absolute bottom-full left-0 z-50 mb-1 max-h-64 w-72 overflow-auto rounded-lg border border-[var(--border)] bg-[var(--bg-card)] p-1 shadow-lg">
                     {websites.length === 0 ? (
                       <div className="px-2 py-2 text-[11px] text-[var(--text-muted)]">No saved apps. Add them in Settings → Website Credentials.</div>
                     ) : (

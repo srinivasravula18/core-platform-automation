@@ -20,7 +20,7 @@
 
 import { z } from 'zod';
 import { randomUUID } from 'crypto';
-import { getOrchestrator } from './orchestrator';
+import { getOrchestrator, resolveModelForAgent, resolveProviderForAgent } from './orchestrator';
 import { AGENT_FOR_INTENT, INTENT_LABELS, intentRequiresApproval, type IntentDraft, type IntentKind, type Plan, type PlanStep, type SideEffect } from './intents';
 import { Plans, Suites, Cases, Runs, Defects, Reports, Scripts, Folders } from '../db/repository';
 import { resolveCredentials } from '../features/credentials/credentialsService';
@@ -28,6 +28,7 @@ import { Settings } from '../db/repository';
 import { buildKnowledgeBlock } from '../features/knowledge/knowledgeService';
 import { discoverRequirement } from '../features/requirements/requirementService';
 import { ControllerPlanStore } from './memory/controllerPlanStore';
+import { assembleConversationContext } from './memory/contextAssembler';
 
 // The Agent Console is intentionally NOT connected to the AI Inbox. Plans create their
 // artifacts directly (they're shown in the chat and on their pages); nothing is queued for
@@ -95,6 +96,24 @@ function formatHistory(history?: ChatTurn[]): string {
     .map((m) => `${m.role === 'assistant' ? 'assistant' : 'user'}: ${String(m.content || '').replace(/\s+/g, ' ').trim().slice(0, 1200)}`)
     .filter((line) => line.length > 6)
     .join('\n');
+}
+
+// Server-side conversation reconstruction (ledger + summaries + budgeted turns) with the
+// client-sent snapshot as fallback — so explain answers keep continuity in long threads.
+async function assembledHistory(topic: string, conversationId: string | undefined, history: ChatTurn[] | undefined, path: string): Promise<string> {
+  try {
+    const assembled = await assembleConversationContext({
+      conversationId: conversationId || undefined,
+      fallbackHistory: history,
+      currentMessage: topic,
+      model: resolveModelForAgent('chatAssistant', resolveProviderForAgent('chatAssistant')),
+      path,
+    });
+    if (assembled.promptBlock.trim()) return assembled.promptBlock.trim();
+  } catch (err: any) {
+    console.warn('[controller] context assembly failed, falling back to client history:', err?.message || err);
+  }
+  return formatHistory(history);
 }
 
 // Only look at conversation history + the workspace DB when the request actually
@@ -1044,9 +1063,9 @@ ${conversation ? `RECENT CONVERSATION (oldest first):\n${conversation}\n\n` : ''
 Question: ${topic}`;
 }
 
-export async function explainIntent(topic: string, options: { workspaceId?: string; userId?: string; history?: ChatTurn[]; apps?: SelectedApp[] } = {}): Promise<string> {
+export async function explainIntent(topic: string, options: { workspaceId?: string; userId?: string; conversationId?: string; history?: ChatTurn[]; apps?: SelectedApp[] } = {}): Promise<string> {
   const orch = await getOrchestrator('chatAssistant', options);
-  const provided = formatHistory(options.history);
+  const provided = await assembledHistory(topic, options.conversationId, options.history, 'controller.explain');
   const refsPast = needsHistory(topic);
   const workspaceContext = refsPast ? await buildWorkspaceContext() : '';
   const conversation = provided;
@@ -1061,9 +1080,9 @@ export async function explainIntent(topic: string, options: { workspaceId?: stri
 }
 
 /** Streaming variant of explainIntent — yields text deltas as they arrive. */
-export async function* streamExplain(topic: string, options: { workspaceId?: string; userId?: string; history?: ChatTurn[]; apps?: SelectedApp[] } = {}): AsyncGenerator<string> {
+export async function* streamExplain(topic: string, options: { workspaceId?: string; userId?: string; conversationId?: string; history?: ChatTurn[]; apps?: SelectedApp[] } = {}): AsyncGenerator<string> {
   const orch = await getOrchestrator('chatAssistant', options);
-  const provided = formatHistory(options.history);
+  const provided = await assembledHistory(topic, options.conversationId, options.history, 'controller.explain-stream');
   const refsPast = needsHistory(topic);
   const workspaceContext = refsPast ? await buildWorkspaceContext() : '';
   const conversation = provided;

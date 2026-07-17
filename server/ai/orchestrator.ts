@@ -11,7 +11,7 @@
  *   const { object, usage, model, latencyMs } = await ai.generateObject({...});
  */
 
-import type { AIProvider, ProviderAuthMode, ProviderName, ChatMessage, ProviderResponse } from './providers/types';
+import type { AIProvider, ProviderAuthMode, ProviderName, ChatMessage, ProviderResponse, ProviderImage } from './providers/types';
 import { DEFAULT_MODELS, listAvailableModels } from './providers/types';
 import type { AgentStep, AgentRunResult, RunToolLoopOptions, ToolInvocation } from './tools/types';
 import { GeminiProvider } from './providers/gemini';
@@ -191,7 +191,7 @@ export class AgentOrchestrator {
     return pipeline.systemPrompt;
   }
 
-  async generateObject<T>(opts: { prompt: string; schema: unknown; temperature?: number; maxTokens?: number; userMessage?: string; hasHistory?: boolean }) {
+  async generateObject<T>(opts: { prompt: string; schema: unknown; temperature?: number; maxTokens?: number; userMessage?: string; hasHistory?: boolean; images?: ProviderImage[] }) {
     const pipeline = runGuardrailPipeline({
       agent: this.agent as any,
       userMessage: opts.userMessage || opts.prompt,
@@ -221,11 +221,11 @@ export class AgentOrchestrator {
     const isBadOutput = (e: any) => /schema|invalid_type|invalid_value|expected .*received|did not match|valid json|received undefined|unexpected token|unexpected end of (json|input)|in json at position|after property value|not valid json|json\.parse/i.test(String(e?.message || ''));
     let result: ProviderResponse<T>;
     try {
-      result = await this.provider.generateObject<T>({ system, prompt: opts.prompt, schema: opts.schema, temperature: opts.temperature, maxTokens: opts.maxTokens, effort: this.effort });
+      result = await this.provider.generateObject<T>({ system, prompt: opts.prompt, schema: opts.schema, temperature: opts.temperature, maxTokens: opts.maxTokens, effort: this.effort, images: opts.images });
     } catch (err: any) {
       if (!isBadOutput(err)) throw err;
       const retrySystem = `${system}\n\nIMPORTANT: Your previous reply was not usable — it was not a single valid JSON object matching the required schema (it was malformed, truncated, or off-schema). Reply with ONLY one complete, valid JSON object that exactly matches the schema — all required fields present, correct types, properly closed braces/brackets, no prose, no markdown, no code fences.`;
-      result = await this.provider.generateObject<T>({ system: retrySystem, prompt: opts.prompt, schema: opts.schema, temperature: opts.temperature, maxTokens: opts.maxTokens, effort: this.effort });
+      result = await this.provider.generateObject<T>({ system: retrySystem, prompt: opts.prompt, schema: opts.schema, temperature: opts.temperature, maxTokens: opts.maxTokens, effort: this.effort, images: opts.images });
     }
     await recordUsage({
       workspaceId: this.workspaceId,

@@ -7,6 +7,28 @@ import { reqScope, scopeFilter } from '../../shared/scope';
 import { getApp, getProjectRepoPath } from '../projects/projectService';
 import { resolveCredentials } from '../credentials/credentialsService';
 import { buildCorePlatformApplicationContext } from '../agent/applicationContext';
+import { assembleConversationContext } from '../../ai/memory/contextAssembler';
+import { resolveModelForAgent, resolveProviderForAgent } from '../../ai/orchestrator';
+
+// Server-side conversation reconstruction for requirement drafting, so follow-ups
+// ("also add requirements for X") enrich the running scope instead of starting cold.
+// Best-effort: an assembly failure never blocks the draft.
+async function conversationContextForDraft(conversationId: unknown, history: unknown, query: string): Promise<string> {
+  if (typeof conversationId !== 'string' && !Array.isArray(history)) return '';
+  try {
+    const assembled = await assembleConversationContext({
+      conversationId: typeof conversationId === 'string' && conversationId ? conversationId : undefined,
+      fallbackHistory: history,
+      currentMessage: query,
+      model: resolveModelForAgent('featureAnalyst', resolveProviderForAgent('featureAnalyst')),
+      path: 'requirements.draft',
+    });
+    return assembled.promptBlock.trim();
+  } catch (err: any) {
+    console.warn('[requirements] conversation context assembly failed:', err?.message || err);
+    return '';
+  }
+}
 
 function repoPathForScope(scope: ReturnType<typeof reqScope>): string {
   return scope.projectId ? getProjectRepoPath(scope.projectId) : '';
@@ -74,7 +96,10 @@ export function registerRequirementRoutes(app: Express) {
         flushStream(res);
       };
       onProgress('Starting requirement drafting agent...');
-      const applicationContextPrompt = await applicationContextPromptForScope(scope, query).catch(() => '');
+      const [applicationContextPrompt, conversationContextPrompt] = await Promise.all([
+        applicationContextPromptForScope(scope, query).catch(() => ''),
+        conversationContextForDraft(req.body?.conversationId, req.body?.history, query),
+      ]);
       const result = await draftRequirement(query, {
         workspaceId: req.body?.workspaceId || 'default',
         userId: scope.userId,
@@ -83,6 +108,7 @@ export function registerRequirementRoutes(app: Express) {
         projectId: scope.projectId,
         appId: scope.appId || '',
         applicationContextPrompt,
+        conversationContextPrompt,
         requirementsOnly: true,
         onProgress,
       });
@@ -101,8 +127,11 @@ export function registerRequirementRoutes(app: Express) {
       const query = String(req.body?.query || '').trim();
       if (!query) return res.status(400).json({ error: 'Tell me which feature or section to test.' });
       const scope = reqScope(req);
-      const applicationContextPrompt = await applicationContextPromptForScope(scope, query).catch(() => '');
-      const result = await draftRequirement(query, { workspaceId: req.body?.workspaceId || 'default', userId: scope.userId, role: scope.role, repoPath: repoPathForScope(scope), projectId: scope.projectId, appId: scope.appId || '', applicationContextPrompt, requirementsOnly: true });
+      const [applicationContextPrompt, conversationContextPrompt] = await Promise.all([
+        applicationContextPromptForScope(scope, query).catch(() => ''),
+        conversationContextForDraft(req.body?.conversationId, req.body?.history, query),
+      ]);
+      const result = await draftRequirement(query, { workspaceId: req.body?.workspaceId || 'default', userId: scope.userId, role: scope.role, repoPath: repoPathForScope(scope), projectId: scope.projectId, appId: scope.appId || '', applicationContextPrompt, conversationContextPrompt, requirementsOnly: true });
       res.json(result);
     } catch (error: any) {
       res.status(500).json({ error: getAIErrorMessage(error) || error?.message || 'Failed to draft requirement.' });

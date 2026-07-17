@@ -137,6 +137,36 @@ function priorityRank(p?: string) {
   return ['low', 'medium', 'high', 'critical'].indexOf(String(p || 'medium').toLowerCase());
 }
 
+// Fetch with an abort-based timeout so a hung server can never wedge a busy spinner forever.
+async function fetchWithTimeout(input: RequestInfo, init: RequestInit = {}, timeoutMs = 60_000): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(input, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Build an Error from a non-2xx response, using the server's error text when parseable.
+async function errorFromResponse(res: Response): Promise<Error> {
+  let detail = '';
+  try {
+    const text = await res.text();
+    try {
+      const parsed = JSON.parse(text);
+      detail = typeof parsed?.error === 'string' ? parsed.error : text;
+    } catch { detail = text; }
+  } catch { /* ignore body read failures */ }
+  return new Error(detail.trim() ? detail.trim().slice(0, 300) : `Request failed (${res.status})`);
+}
+
+// Human-readable message for a failed action, mapping aborts to a timeout explanation.
+function actionErrorMessage(e: any): string {
+  if (e?.name === 'AbortError') return 'Request timed out — the server did not respond.';
+  return e?.message || 'Request failed.';
+}
+
 type Step = { action: string; expected: string };
 type Case = {
   title: string;
@@ -170,6 +200,8 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
   // Per-case set of step indices ticked for merging into one.
   const [mergePick, setMergePick] = useState<Record<number, number[]>>({});
   const [busy, setBusy] = useState<string | null>(null);
+  // Inline failure message for the case-action fetches (save/continue/rework/expand/coverage).
+  const [actionError, setActionError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
   const [pwRunning, setPwRunning] = useState(false);
   const [pwResult, setPwResult] = useState<any>(null);
@@ -328,14 +360,18 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
     const picks = (mergePick[i] || []);
     if (!c || (op === 'merge' ? picks.length < 2 : picks.length < 1)) return;
     setBusy(`${op}-${i}`);
+    setActionError(null);
     try {
-      const res = await fetch('/api/agent/expand-case-steps', {
+      const res = await fetchWithTimeout('/api/agent/expand-case-steps', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ testCase: c, op, selectedStepIndexes: picks, targetUrl }),
       });
+      if (!res.ok) throw await errorFromResponse(res);
       const data = await res.json();
-      if (res.ok && Array.isArray(data.steps) && data.steps.length) { patchCase(i, { steps: data.steps }); clearMergePick(i); }
+      if (Array.isArray(data.steps) && data.steps.length) { patchCase(i, { steps: data.steps }); clearMergePick(i); }
+    } catch (e: any) {
+      setActionError(actionErrorMessage(e));
     } finally {
       setBusy(null);
     }
@@ -424,18 +460,20 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
     const c = list[i];
     if (!c || !canReworkCase(i)) return;
     setBusy(`rework-${i}`);
+    setActionError(null);
     try {
-      const res = await fetch('/api/agent/rework-case', {
+      const res = await fetchWithTimeout('/api/agent/rework-case', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ testCase: c, feedback: feedback[i] || '', targetUrl }),
       });
+      if (!res.ok) throw await errorFromResponse(res);
       const data = await res.json();
-      if (res.ok) {
-        patchCase(i, data);
-        setReworkBaseline((prev) => prev.map((c, idx) => (idx === i ? data : c)));
-        setFeedback((p) => ({ ...p, [i]: '' }));
-      }
+      patchCase(i, data);
+      setReworkBaseline((prev) => prev.map((c, idx) => (idx === i ? data : c)));
+      setFeedback((p) => ({ ...p, [i]: '' }));
+    } catch (e: any) {
+      setActionError(actionErrorMessage(e));
     } finally {
       setBusy(null);
     }
@@ -443,13 +481,17 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
   const saveAll = async () => {
     if (!list.length) return;
     setBusy('save');
+    setActionError(null);
     try {
-      await fetch('/api/agent/save-cases', {
+      const res = await fetchWithTimeout('/api/agent/save-cases', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ cases: list, taskId: activeTaskId }),
       });
-      setSaved(true);
+      if (!res.ok) throw await errorFromResponse(res);
+      setSaved(true); // only mark saved on a verified 2xx
+    } catch (e: any) {
+      setActionError(actionErrorMessage(e));
     } finally {
       setBusy(null);
     }
@@ -458,8 +500,9 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
     if (!list.length && !scriptReviewing) return;
     const reviewedCases = selectedCases.size ? list.filter((_, idx) => selectedCases.has(idx)) : list;
     setBusy('continue');
+    setActionError(null);
     try {
-      const res = await fetch('/api/agent/continue', {
+      const res = await fetchWithTimeout('/api/agent/continue', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -469,10 +512,11 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
           scripts: scriptReviewing ? scripts : undefined,
         }),
       });
-      if (res.ok) {
-        setRun((prev: any) => (prev ? { ...prev, status: 'running' } : prev));
-        setTimeout(pollStatus, 800); // resume polling for scripts + evidence
-      }
+      if (!res.ok) throw await errorFromResponse(res);
+      setRun((prev: any) => (prev ? { ...prev, status: 'running' } : prev));
+      setTimeout(pollStatus, 800); // resume polling for scripts + evidence
+    } catch (e: any) {
+      setActionError(actionErrorMessage(e));
     } finally {
       setBusy(null);
     }
@@ -482,17 +526,19 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
   // only the gaps, or generate a fresh set. The run then resumes from case-writing.
   const coverageDecide = async (action: 'reuse' | 'gaps' | 'fresh') => {
     setBusy(`cov-${action}`);
+    setActionError(null);
     try {
-      const res = await fetch('/api/agent/coverage-decision', {
+      const res = await fetchWithTimeout('/api/agent/coverage-decision', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         // Only the cases the user kept (didn't delete from the card) are reused/extended.
         body: JSON.stringify({ taskId: activeTaskId, action, keep: keptMatches.map(matchKey) }),
       });
-      if (res.ok) {
-        setRun((prev: any) => (prev ? { ...prev, status: 'running' } : prev));
-        setTimeout(pollStatus, 800); // resume polling for cases -> scripts -> evidence
-      }
+      if (!res.ok) throw await errorFromResponse(res);
+      setRun((prev: any) => (prev ? { ...prev, status: 'running' } : prev));
+      setTimeout(pollStatus, 800); // resume polling for cases -> scripts -> evidence
+    } catch (e: any) {
+      setActionError(actionErrorMessage(e));
     } finally {
       setBusy(null);
     }
@@ -504,10 +550,11 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
   const retry = async () => {
     if (retrying) return;
     setRetrying(true);
+    setActionError(null);
     try {
       // Resume from the phase that failed (reusing the completed inspection / code
       // understanding / coverage matches) instead of re-running the whole pipeline.
-      const resumeRes = await fetch('/api/agent/retry', {
+      const resumeRes = await fetchWithTimeout('/api/agent/retry', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ taskId: activeTaskId }),
@@ -522,7 +569,7 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
       }
 
       // Backend says it can't cheaply resume (no inspection yet) → fresh run from scratch.
-      const res = await fetch('/api/agent/start', {
+      const res = await fetchWithTimeout('/api/agent/start', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -536,6 +583,7 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
           folderMention: run?.folder_path && run.folder_path !== 'Uncategorized' ? run.folder_path : undefined,
         }),
       });
+      if (!res.ok) throw await errorFromResponse(res);
       const data = await res.json();
       if (data?.task_id) {
         // Reset the card and follow the fresh run.
@@ -547,6 +595,8 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
         setTab('cases');
         setActiveTaskId(data.task_id);
       }
+    } catch (e: any) {
+      setActionError(actionErrorMessage(e));
     } finally {
       setRetrying(false);
     }
@@ -571,7 +621,8 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
     setPwRunning(true);
     setPwResult(onlyFailed ? pwResult : null);
     try {
-      const res = await fetch('/api/playwright/run', {
+      // Playwright executions legitimately run long — use a generous 10-minute cap.
+      const res = await fetchWithTimeout('/api/playwright/run', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -579,7 +630,7 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
           baseUrl: targetUrl,
           runId: `${activeTaskId}-pw`,
         }),
-      });
+      }, 600_000);
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error || `Playwright run failed (${res.status})`);
       // Merge re-run results over the prior ones so passed tests aren't lost from the view.
@@ -593,7 +644,7 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
         setPwResult(data);
       }
     } catch (e: any) {
-      setPwResult({ ok: false, error: e?.message || 'Run failed', tests: [] });
+      setPwResult({ ok: false, error: actionErrorMessage(e), tests: [] });
     } finally {
       setPwRunning(false);
     }
@@ -690,7 +741,7 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
           {(isRunning || reviewing) && (
             <button
               onClick={async () => {
-                try { await fetch('/api/agent/cancel', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ taskId: activeTaskId }) }); } catch { /* ignore */ }
+                try { await fetchWithTimeout('/api/agent/cancel', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ taskId: activeTaskId }) }); } catch { /* ignore */ }
                 setRun((prev: any) => (prev ? { ...prev, status: 'cancelled' } : prev));
               }}
               title="Stop this run"
@@ -874,6 +925,7 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
             <MarkdownText value={(run?.messages || []).findLast?.((m: any) => m.status === 'failed')?.output ||
               'The pipeline failed. Check the server console for details.'} />
           </div>
+          {actionError && <div className="mt-2 rounded border border-red-500/30 bg-red-500/10 px-2 py-1 text-[11px]">{actionError}</div>}
           <div className="mt-2 flex justify-end">
             <button
               onClick={retry}
@@ -957,6 +1009,12 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
               <ArrowRight className="h-3 w-3" />
             </button>
           </div>
+          {actionError && (
+            <div className="mt-2 flex items-start gap-1.5 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-1.5 text-[11px] text-red-400">
+              <XCircle className="mt-0.5 h-3 w-3 shrink-0" />
+              <span className="min-w-0 flex-1 break-words">{actionError}</span>
+            </div>
+          )}
         </div>
       )}
 
@@ -1080,6 +1138,13 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
                   )}
                 </div>
               </div>
+
+              {actionError && (
+                <div className="mb-2 flex items-start gap-1.5 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-1.5 text-[11px] text-red-400">
+                  <XCircle className="mt-0.5 h-3 w-3 shrink-0" />
+                  <span className="min-w-0 flex-1 break-words">{actionError}</span>
+                </div>
+              )}
 
               {!list.length && (
                 <div className="py-4 text-center text-xs text-[var(--text-muted)]">

@@ -46,7 +46,8 @@ import path from 'path';
 import { inspectApplicationFlow } from './inspectionService';
 import { exploreAndVerifyPage, exploreAppElements, rankVerifiedElements } from './domExplorer';
 import { getFeatureGrounding } from './knowledge';
-import { getOrchestrator, listConfiguredProviders, resolveProviderForAgent } from '../../ai/orchestrator';
+import { getOrchestrator, listConfiguredProviders, resolveProviderForAgent, resolveModelForAgent } from '../../ai/orchestrator';
+import { assembleConversationContext } from '../../ai/memory/contextAssembler';
 import { answerAppQuestionFromCode, stripCodebaseLocationsForAgentConsole } from '../../ai/supervisor';
 import { buildKnowledgeBlock, recordObservation } from '../knowledge/knowledgeService';
 import { resolveCredentials, maskPassword } from '../credentials/credentialsService';
@@ -65,7 +66,7 @@ import {
 import { generateCompiledScripts, aiqaCompilerEnabled } from './compiler/compiledGeneration';
 // LangGraph workflow runtime (flag-gated by AGENT_GRAPH_V2; legacy path is default and untouched).
 import { isWorkflowGraphEnabled } from './workflow/checkpointer';
-import { startGraphRun, resumeGraphRun, cancelGraphRun, getPendingReview, reconcileRunIfOrphaned, orphanedRunFailure, persistDefectReport } from './workflow/runtime';
+import { startGraphRun, resumeGraphRun, cancelGraphRun, getPendingReview, reconcileRunIfOrphaned, orphanedRunFailure, persistDefectReport, registerTerminalArtifactPersister } from './workflow/runtime';
 import { buildDefectDrafts } from './workflow/defectReporter';
 import type { MissionRef } from './workflow/state';
 import { renderTargetCatalogForPrompt } from './compiler/renderCatalogForPrompt';
@@ -318,6 +319,16 @@ function getAgentPlanRiskLevel(run: any) {
   }
 
   return 'Low';
+}
+
+// Meaningful artifact names: compose from the run's REAL context (application + module/feature)
+// so suites/plans read "Keystone · Leads — Functional Validation", never an id-looking label.
+function buildContextualArtifactName(ctx: { appLabel?: string; appName?: string; moduleName?: string; prompt?: string }): string {
+  const app = String(ctx.appLabel || ctx.appName || '').trim();
+  const module = String(ctx.moduleName || '').trim();
+  const scope = /\bsmoke\b/i.test(String(ctx.prompt || '')) ? 'Smoke' : 'Functional';
+  const subject = [app, module].filter(Boolean).join(' · ');
+  return subject ? `${subject} — ${scope} Validation` : '';
 }
 
 function buildFallbackArtifactName(prompt: string, targetUrl: string) {
@@ -786,7 +797,15 @@ function agentReportId(run: any): string {
 }
 
 function agentDisplayName(run: any): string {
-  return run.artifactName || buildFallbackArtifactName(run.prompt || '', run.app_url || '');
+  // Contextual name outranks the host-derived fallback so pre-fix runs also render meaningfully.
+  return run.artifactName
+    || buildContextualArtifactName({
+      appLabel: run.target_app_label,
+      appName: run.appName,
+      moduleName: run.mission_context?.module?.name || run.mission_context?.tab?.name,
+      prompt: run.prompt,
+    })
+    || buildFallbackArtifactName(run.prompt || '', run.app_url || '');
 }
 
 function agentRunStatusForList(status: string): string {
@@ -1010,6 +1029,45 @@ async function persistAgentQualityArtifacts(run: any) {
 }
 
 async function persistAgentCaseArtifacts(run: any) {
+  await ensureAgentPlanAndSuite(run);
+  const planId = agentPlanId(run);
+  const suiteId = agentSuiteId(run);
+
+  const cases = run.generated_cases || [];
+  for (let index = 0; index < cases.length; index++) {
+    const testCase = cases[index];
+    if (testCase?.reused && testCase?.existingCaseId) continue;
+    const caseId = testCase?.id || agentCaseId(run, index);
+    await Cases.upsert({
+      id: caseId,
+      title: testCase.title,
+      description: buildCaseDescription(testCase),
+      steps: normalizeCaseSteps(testCase.steps),
+      testPlanId: planId,
+      testSuiteId: suiteId,
+      status: 'Draft',
+      tags: normalizeCaseTags(testCase.tags || []),
+      type: testCase.type || 'Manual',
+      priority: testCase.priority || 'Medium',
+      folderId: run.folderId || null,
+      createdBy: 'QA Assistant',
+      proposedBy: 'QA Assistant',
+      approvalState: 'pending_review',
+      agentRunId: run.id,
+      sourceRunId: run.id,
+      projectId: run.projectId || '',
+      appId: run.appId || '',
+      ownerId: run.ownerId || '',
+    });
+  }
+
+  persistDataInBackground('agent case artifacts');
+}
+
+// Plan+suite creation shared by terminal persistence AND /api/agent/save-cases: cases carry
+// FK refs to these rows, so whichever path runs first must materialize them (the graph engine
+// has no review-pause persistence, unlike the legacy engine this endpoint assumed).
+async function ensureAgentPlanAndSuite(run: any) {
   const planId = agentPlanId(run);
   const suiteId = agentSuiteId(run);
   const baseName = agentDisplayName(run);
@@ -1069,36 +1127,6 @@ async function persistAgentCaseArtifacts(run: any) {
       ownerId: run.ownerId || '',
     });
   }
-
-  const cases = run.generated_cases || [];
-  for (let index = 0; index < cases.length; index++) {
-    const testCase = cases[index];
-    if (testCase?.reused && testCase?.existingCaseId) continue;
-    const caseId = testCase?.id || agentCaseId(run, index);
-    await Cases.upsert({
-      id: caseId,
-      title: testCase.title,
-      description: buildCaseDescription(testCase),
-      steps: normalizeCaseSteps(testCase.steps),
-      testPlanId: planId,
-      testSuiteId: suiteId,
-      status: 'Draft',
-      tags: normalizeCaseTags(testCase.tags || []),
-      type: testCase.type || 'Manual',
-      priority: testCase.priority || 'Medium',
-      folderId: run.folderId || null,
-      createdBy: 'QA Assistant',
-      proposedBy: 'QA Assistant',
-      approvalState: 'pending_review',
-      agentRunId: run.id,
-      sourceRunId: run.id,
-      projectId: run.projectId || '',
-      appId: run.appId || '',
-      ownerId: run.ownerId || '',
-    });
-  }
-
-  persistDataInBackground('agent case artifacts');
 }
 
 async function persistAgentScripts(run: any) {
@@ -1276,6 +1304,35 @@ function setCached(cache: Map<string, { at: number; value: any }>, key: string, 
 // startup, so admin's pre-existing credentials keep resolving.
 function ownerScopeForRun(run: any): string | undefined {
   return run?.ownerId || undefined;
+}
+
+// OBJECT COVERAGE CONTRACT (prescriptive): when the goal names a metadata object we hold REAL
+// fields for, prescribe the QA dimensions up front — CRUD, required-field validation, permissions,
+// negative/boundary, relationships — so an "object" request cannot collapse into one generic case.
+// App-agnostic by construction: every concrete detail (object label, field names, relationship
+// fields) comes from the run's live-fetched metadata, never from hardcoded app knowledge.
+function buildObjectCoverageBlock(run: any, prompt: string, understanding: string): string {
+  const objects: any[] = Array.isArray(run?.metadata_map?.objects) ? run.metadata_map.objects : [];
+  if (!objects.length) return '';
+  const hay = `${prompt} ${understanding}`.toLowerCase();
+  const target = objects.find((obj: any) => {
+    const label = String(obj?.label || '').toLowerCase();
+    const api = String(obj?.api_name || '').toLowerCase();
+    return (label.length > 2 && hay.includes(label)) || (api.length > 2 && hay.includes(api));
+  });
+  const fields: any[] = Array.isArray(target?.fields) ? target.fields : [];
+  if (!target || !fields.length) return '';
+  const names = (list: any[]) => list.map((f: any) => String(f?.label || f?.api_name || '').trim()).filter(Boolean).slice(0, 20).join(', ');
+  const required = fields.filter((f: any) => f?.required);
+  const permissionSensitive = fields.filter((f: any) => f?.permission_sensitive);
+  const relational = fields.filter((f: any) => /lookup|reference|relation|master|detail/i.test(String(f?.type || '')));
+  return `\nOBJECT COVERAGE CONTRACT — the goal targets the "${target.label || target.api_name}" object (verified from live metadata: ${fields.length} fields). Object-level testing MUST cover each applicable dimension below with at least one focused case; do NOT collapse them into one generic "validate object" case. Skip a dimension only when the inspected UI/metadata proves it does not apply, and say so in a case description:
+- CRUD: create with valid data, read/list the created record, update a field, delete (or the closest lifecycle the UI exposes).
+- Required-field validation: submit with each required field missing/blank${required.length ? ` (required fields: ${names(required)})` : ''} and assert the validation message.
+- Negative/boundary: invalid formats, over-length values, and boundary values for constrained fields.
+- Permissions/visibility: behavior of permission-sensitive fields for the current role${permissionSensitive.length ? ` (permission-sensitive: ${names(permissionSensitive)})` : ''} — cover the OBSERVED state (hidden/read-only), never invent roles.
+- Relationships: lookups/references resolve and constrain correctly${relational.length ? ` (relationship fields: ${names(relational)})` : ''}.
+Ground every step in the inspected UI and the REAL TEST DATA pack; if a dimension's controls are not reachable in the UI, mark that case blocked in its preconditions instead of guessing.\n`;
 }
 
 function complexityDrivenCaseCount(understanding: any, requested: number): number {
@@ -2329,6 +2386,7 @@ async function generateCasesForRun(
     generated = [...opts.existingCases, ...gapCases];
   } else {
     const caseWriter = await getOrchestrator('caseWriter', { workspaceId: run.ownerId || 'default', effort: run.requestedEffort });
+    const objectCoverageBlock = buildObjectCoverageBlock(run, prompt || '', approvedUnderstanding || '');
     const caseResult = await caseWriter.generateObject<any>({
       prompt: `User prompt: ${prompt || 'not provided'}.
 Approved user-reviewed understanding: ${approvedUnderstanding || 'not provided'}.
@@ -2340,7 +2398,7 @@ ${blackboardBlock}
 ${selectedQaPromptText}${conversationBlock}
 Browser inspection result: ${JSON.stringify(compactInspectionContext(inspectionContext))}.
 ${renderPageOutlineForPrompt((run as any).dom_exploration)}${understandingBlock}
-${featureInventoryBlock}${scenarioBlock}${testDataBlock}${readAgentSkill() ? `\nLEARNED QA-AUTHORING SKILL (general case/script guidance refined over prior runs  -  apply it):\n${readAgentSkill()}\n` : ''}
+${featureInventoryBlock}${scenarioBlock}${testDataBlock}${objectCoverageBlock}${readAgentSkill() ? `\nLEARNED QA-AUTHORING SKILL (general case/script guidance refined over prior runs  -  apply it):\n${readAgentSkill()}\n` : ''}
 ${requestedCaseCount > 0
   ? `Produce EXACTLY ${requestedCaseCount} test case(s)  -  no more and no fewer. The user FIXED this count, so make every case COUNT: cover the MOST IMPORTANT ones for this feature / scenario / business logic / flow FIRST  -  the critical primary user flows, the core business rules, the highest-risk and most-used behavior, and the key negative / permission / edge cases that matter most. ORDER the cases from most important to least so the ${requestedCaseCount} you return are genuinely the highest-value tests (the set is kept in order). Skip trivial or duplicate checks; do not exceed the count or pad to reach it.`
   : `Write approximately ${testCaseCount} test case(s)  -  this target is derived from the feature's real complexity in the source above, so treat it as a guide: cover every distinct business rule, role/permission difference, branch, and negative/edge case the code reveals, and do not pad with trivial duplicates to hit a number. The user asked for comprehensive coverage, so err toward thoroughness over brevity.`}
@@ -2384,18 +2442,22 @@ ${CASE_AUTHORING_CONTRACT}${knowledgeBlock}`,
   // first). When no count is fixed, the count follows the flow/complexity (untouched here).
   generated = (Array.isArray(generated) ? generated : []).filter((testCase) => !isInvalidGeneratedCase(testCase));
 
-  // EXACT COUNT (pad-up): when the user FIXED a count and a single pass under-produced (a single
-  // generateObject call rarely emits a large N), keep generating DISTINCT continuation cases in
-  // bounded batches until the target is reached. Only runs when requestedCaseCount > 0, so the
-  // auto/complexity-driven path is completely unchanged. The cap-down slices below then trim any
-  // overshoot, yielding EXACTLY requestedCaseCount.
-  if (requestedCaseCount > 0 && generated.length < requestedCaseCount) {
+  // COUNT FLOOR (pad-up): when the user FIXED a count, enforce it exactly; in AUTO mode the
+  // complexity-derived target is now a MINIMUM too — previously auto mode accepted whatever a
+  // single pass returned, so a lazy/truncated 1-case reply shipped as-is ("same prompt sometimes
+  // generates one case"). The loop still stops early when the model can only produce duplicates,
+  // so a genuinely thin feature yields fewer cases rather than fabricated filler.
+  const caseCountFloor = requestedCaseCount > 0 ? requestedCaseCount : testCaseCount;
+  if (generated.length < caseCountFloor) {
+    if (requestedCaseCount === 0) {
+      console.warn(`[agent] run ${run.id}: auto mode produced ${generated.length}/${caseCountFloor} cases — padding up to the complexity floor.`);
+    }
     const padWriter = await getOrchestrator('caseWriter', { workspaceId: run.ownerId || 'default', effort: run.requestedEffort });
     const norm = (t: any) => String(t || '').toLowerCase().replace(/\s+/g, ' ').trim();
     const seen = new Set(generated.map((c: any) => norm(c.title || c.name)));
-    const maxBatches = Math.min(20, Math.ceil((requestedCaseCount - generated.length) / 5) + 5);
-    for (let b = 0; b < maxBatches && generated.length < requestedCaseCount; b += 1) {
-      const remaining = requestedCaseCount - generated.length;
+    const maxBatches = Math.min(20, Math.ceil((caseCountFloor - generated.length) / 5) + 5);
+    for (let b = 0; b < maxBatches && generated.length < caseCountFloor; b += 1) {
+      const remaining = caseCountFloor - generated.length;
       const existingTitles = [...seen].slice(0, 200).map((t) => `- ${t}`).join('\n');
       let more: any[] = [];
       try {
@@ -4457,6 +4519,10 @@ async function copyExecutionScreenshots(runId: string, tests: any[]) {
 }
 
 export function registerAgentRoutes(app: Express) {
+  // Graph terminal hook: materialize plan/suite/cases/run/report for graph runs (injected here
+  // because runtime.ts cannot import this module — routes.ts already imports the runtime).
+  registerTerminalArtifactPersister(persistAgentQualityArtifacts);
+
   // CODE-FLOW test endpoint: trace the complete flow from SOURCE (no live driving), transcribe
   // it deterministically into a script, and execute it.
   app.post('/api/agent/flow-test', async (req, res) => {
@@ -4619,7 +4685,7 @@ Rules:
   }
 
   async function computeUnderstanding(body: any, scope: { userId?: string; projectId?: string | null; appId?: string | null }): Promise<any> {
-    const { prompt, originalRequest, contextPrompt, targetName, targetUrl, currentUnderstanding, correction, history } = body || {};
+    const { prompt, originalRequest, contextPrompt, targetName, targetUrl, currentUnderstanding, correction, history, conversationId } = body || {};
     const rawPrompt = String(prompt || '').trim();
     const rawOriginalRequest = String(originalRequest || '').trim();
     const rawContextPrompt = String(contextPrompt || '').trim();
@@ -4627,9 +4693,24 @@ Rules:
     const groundingPrompt = rawContextPrompt || [rawOriginalRequest, rawPrompt].filter(Boolean).join('\n\n');
     // Prior turns of this chat, so the understanding reflects the ongoing conversation
     // (e.g. "now do the same for the reports page" refers back to earlier messages).
-    const historyBlock = Array.isArray(history) && history.length
-      ? `Conversation so far (oldest first):\n${history.slice(-16).map((m: any) => `${m?.role === 'assistant' ? 'assistant' : 'user'}: ${String(m?.content || '').replace(/\s+/g, ' ').trim().slice(0, 1200)}`).filter((l: string) => l.length > 6).join('\n')}\n\n`
-      : '';
+    // Reconstructed server-side from the stored conversation (ledger + summary segments +
+    // budgeted verbatim turns); the client-sent history is only the fallback.
+    let historyBlock = '';
+    try {
+      const assembled = await assembleConversationContext({
+        conversationId: typeof conversationId === 'string' && conversationId ? conversationId : undefined,
+        fallbackHistory: history,
+        currentMessage: intentPrompt,
+        model: resolveModelForAgent('chatAssistant', resolveProviderForAgent('chatAssistant')),
+        path: 'agent.understand-request',
+      });
+      historyBlock = assembled.promptBlock.trim() ? `${assembled.promptBlock.trim()}\n\n` : '';
+    } catch (err: any) {
+      console.warn('[understand] context assembly failed, falling back to client history:', err?.message || err);
+      historyBlock = Array.isArray(history) && history.length
+        ? `Conversation so far (oldest first):\n${history.slice(-16).map((m: any) => `${m?.role === 'assistant' ? 'assistant' : 'user'}: ${String(m?.content || '').replace(/\s+/g, ' ').trim().slice(0, 1200)}`).filter((l: string) => l.length > 6).join('\n')}\n\n`
+        : '';
+    }
     const rawTargetUrl = String(targetUrl || '').trim();
     const rawTargetName = String(targetName || '').trim();
 
@@ -5271,7 +5352,15 @@ Rules:
       testSuiteId: req.body.testSuiteId || '',
       testCaseId: req.body.testCaseId || '',
       credentials: safeCredentialsForLog,
-      artifactName: buildFallbackArtifactName(prompt || '', targetUrl),
+      // Stamp only when real context resolved it; empty lets agentDisplayName resolve contextually
+      // LATER (mission is often known only after target clarification) instead of freezing the
+      // host-derived fallback at creation time.
+      artifactName: buildContextualArtifactName({
+        appLabel: targetAppLabel,
+        appName: exactAppName || mission?.application?.name,
+        moduleName: mission?.module?.name || mission?.tab?.name,
+        prompt,
+      }),
       created_at: new Date(),
       completed_at: null as string | null,
       review_started_at: null as string | null,
@@ -6133,18 +6222,42 @@ Rules:
     return `\nREPO CONTEXT: source lines from the selected project. Use these as the source of truth for exact behavior; if they do not prove a detail, keep it generic.\n${hits.map((h) => `FILE ${h.path}\n${h.snippet}`).join('\n\n')}\n`;
   }
 
+  // Allowed image attachment types + decoded-size cap for rework attachments.
+  const REWORK_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
+  const REWORK_IMAGE_MAX_BYTES = 5 * 1024 * 1024;
+
+  // Validates optional { name, mimeType, dataBase64 } attachments; returns provider images or an error string.
+  function parseReworkAttachments(attachments: unknown): { images?: Array<{ mimeType: string; dataBase64: string }>; error?: string } {
+    if (attachments === undefined || attachments === null) return {};
+    if (!Array.isArray(attachments)) return { error: 'attachments must be an array of { name, mimeType, dataBase64 } objects.' };
+    if (attachments.length > 4) return { error: 'At most 4 image attachments are allowed per rework request.' };
+    const images: Array<{ mimeType: string; dataBase64: string }> = [];
+    for (const a of attachments) {
+      const name = String(a?.name || 'unnamed');
+      const mimeType = String(a?.mimeType || '').toLowerCase();
+      const dataBase64 = String(a?.dataBase64 || '');
+      if (!REWORK_IMAGE_TYPES.has(mimeType)) return { error: `Attachment "${name}": unsupported type "${mimeType || 'unknown'}" — only image/png, image/jpeg, image/webp, image/gif are allowed.` };
+      if (!dataBase64) return { error: `Attachment "${name}": dataBase64 is empty.` };
+      if ((dataBase64.length * 3) / 4 > REWORK_IMAGE_MAX_BYTES) return { error: `Attachment "${name}": exceeds the 5MB size limit.` };
+      images.push({ mimeType, dataBase64 });
+    }
+    return { images: images.length ? images : undefined };
+  }
+
   app.post('/api/agent/rework-case', async (req, res) => {
     try {
-      const { testCase, feedback, targetUrl } = req.body;
+      const { testCase, feedback, targetUrl, attachments } = req.body;
       const scope = reqScope(req);
+      const parsedAttachments = parseReworkAttachments(attachments);
+      if (parsedAttachments.error) return res.status(400).json({ error: parsedAttachments.error });
+      const images = parsedAttachments.images;
       const reworkRunScope = { appName: (scope.appId ? getApp(scope.appId)?.name : '') || '', app_url: targetUrl || '' };
       const repoContext = buildReworkRepoContext({ scope, testCase, feedback: String(feedback || '') });
       const ai = await getOrchestrator('caseReworker', { workspaceId: reqScope(req).userId || 'default' });
       const result = await ai.generateObject<any>({
         prompt: `Target URL: ${targetUrl || 'not provided'}. Current case: ${JSON.stringify(testCase)}. Feedback: ${feedback || 'Improve clarity and coverage.'}
 ${repoContext}
-
-Return a complete test case object. Preserve any useful existing fields. If no explicit preconditions are needed, return preconditions as an empty string. Do not omit required keys.`,
+${images ? `The user attached ${images.length} image(s) as additional context for this rework — use what they show when improving the case.\n` : ''}Return a complete test case object. Preserve any useful existing fields. If no explicit preconditions are needed, return preconditions as an empty string. Do not omit required keys.`,
         schema: z.object({
           title: z.string(),
           description: z.string().optional().default(''),
@@ -6158,6 +6271,7 @@ Return a complete test case object. Preserve any useful existing fields. If no e
           })),
         }),
         userMessage: feedback || 'Rework the case for clarity and coverage.',
+        images,
       });
       const reworked = result.object || {};
       res.json(normalizeGeneratedCaseText({
@@ -6234,8 +6348,17 @@ Return a complete test case object. Preserve any useful existing fields. If no e
   });
 
   app.post('/api/agent/save-cases', async (req, res) => {
+    try {
     const { cases, taskId } = req.body;
-    const linkedRun = taskId ? db.agentRuns.find((run: any) => run.id === taskId) : null;
+    if (!Array.isArray(cases) || !cases.length) {
+      // A body without cases used to no-op with success:true — masking client bugs. Be explicit.
+      return res.status(400).json({ error: 'cases array is required (each case with title/steps; include taskId to link the agent run).' });
+    }
+    // Memory-first, DB fallback: after a backend restart the run only exists in Postgres,
+    // and losing the link silently dropped the plan/suite association of saved cases.
+    const linkedRun = taskId
+      ? (db.agentRuns.find((run: any) => run.id === taskId) || await AgentRuns.get(String(taskId)).catch(() => null))
+      : null;
     const saveScope = reqScope(req);
     const caseProjectId = linkedRun?.projectId || saveScope.projectId || '';
     const caseAppId = linkedRun?.appId || saveScope.appId || '';
@@ -6243,9 +6366,10 @@ Return a complete test case object. Preserve any useful existing fields. If no e
     const linkedPlanId = linkedRun ? `PLAN-${linkedRun.id.substring(0, 8).toUpperCase()}` : '';
     const linkedSuiteId = linkedRun ? `SUITE-${linkedRun.id.substring(0, 8).toUpperCase()}` : '';
     if (Array.isArray(cases)) {
-      // The linked run already created its plan/suite/folder at the review pause;
-      // re-ensure the folder so the FK resolves even if PG was reset since.
-      if (linkedRun) await ensureFolderInPg(linkedRun.folderId || '');
+      // Cases FK-reference the linked plan/suite, so they MUST exist before the upserts below.
+      // The legacy engine created them at the review pause; the graph engine does not — saving
+      // at a graph run's review previously hit cases_test_plan_id_fkey and hung the request.
+      if (linkedRun) await ensureAgentPlanAndSuite(linkedRun);
       // Cases deleted in the review UI before saving must be deleted here too  -  otherwise
       // they stay in the DB as orphaned stale rows (previously mis-attributed to the wrong
       // case when index-derived ids shifted after a deletion).
@@ -6282,6 +6406,10 @@ Return a complete test case object. Preserve any useful existing fields. If no e
       persistDataInBackground('saved generated cases');
     }
     res.json({ success: true });
+    } catch (err: any) {
+      console.warn(`[agent] save-cases failed: ${err?.message || err}`);
+      res.status(500).json({ error: getAIErrorMessage(err) || err?.message || 'Failed to save cases.' });
+    }
   });
 
   app.post('/api/agent/explore-dom', async (req, res) => {

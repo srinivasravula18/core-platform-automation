@@ -213,7 +213,11 @@ function terminalFailureReason(state: WorkflowState): string {
       ? `; root cause: [${rootCause.class}] ${rootCause.message}` : '';
     return `Evidence gate blocked: ${reasons}${suffix}`.slice(0, 400);
   }
-  if (!state.cases?.length) return 'Authoring produced no test cases.';
+  if (!state.cases?.length) {
+    // A blocked-contract authoring failure carries the specific missing-controls cause — surface it.
+    const authorErr = [...(state.errors ?? [])].reverse().find((e) => e.nodeName === 'generate_cases');
+    return authorErr ? authorErr.message.slice(0, 400) : 'Authoring produced no test cases.';
+  }
   if (!state.compilation?.scripts?.length) {
     const diags = state.compilation?.diagnostics ?? [];
     if (diags.length) {
@@ -358,6 +362,21 @@ export function buildTestRunGraph(deps: TestRunGraphDeps = {}, opts: BuildTestRu
       // Coverage "gaps": don't re-author cases the user already has.
       avoidCaseTitles: deps.avoidCaseTitles,
     });
+    // Blocked contract (see buildCasesPrompt): an all-@blocked result means the verified catalog lacks the
+    // goal's controls — fail loudly with the typed cause instead of shipping a placeholder case to review.
+    const isBlockedCase = (c: AuthoredTestCase) =>
+      (c.tags ?? []).some((t) => /^@?blocked$/i.test(String(t))) || /^blocked\b/i.test(String(c.title || ''));
+    if (result.cases.length > 0 && result.cases.every(isBlockedCase)) {
+      const detail = String(result.cases[0]?.description || result.cases[0]?.title || 'no goal-relevant controls in the verified evidence');
+      const err = new WorkflowRuntimeError(
+        WORKFLOW_ERROR_CLASSES.EVIDENCE_INSUFFICIENT,
+        `Case authoring blocked — the discovered page does not expose the controls this goal needs: ${detail.slice(0, 240)}. Check the target URL/module the run grounded against.`,
+        undefined, 'generate_cases',
+      ).toWorkflowError();
+      authoredCasesByRun.set(state.runId, []);
+      return { cases: [], stage: 'author_cases', updatedAt: nowIso(), errors: [...result.errors, err], usage: result.usage };
+    }
+
     // Full cases (steps included) stay in-process for plan authoring; state holds the bounded WorkflowCase shape.
     authoredCasesByRun.set(state.runId, result.cases);
     const cases: WorkflowCase[] = result.cases.map((c, i) => ({

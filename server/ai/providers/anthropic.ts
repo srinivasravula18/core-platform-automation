@@ -23,10 +23,12 @@ import type {
   ToolCallRequest,
   ChatMessage,
 } from './types';
-import { ProviderError, classifyError, DEFAULT_MODELS, estimateCost, maxOutputFor } from './types';
+import type { ProviderImage } from './types';
+import { ProviderError, classifyError, DEFAULT_MODELS, estimateCost, maxOutputFor, sanitizeProviderImages } from './types';
 // Shared, NON-FABRICATING structured-output helpers (one copy for every provider).
 import {
   coerceToSchemaShape, repairValidationError, normalizeTestCasePayload, normalizeScriptPayload,
+  extractBalancedJson, structuredTruncationError,
 } from './structuredOutput';
 
 /** Opus 4.7+ remove sampling params; sending `temperature` returns a 400. */
@@ -106,8 +108,9 @@ export class AnthropicProvider implements AIProvider {
     }
   }
 
-  private async callMessages(opts: GenerateTextOptions, jsonMode: boolean) {
+  private async callMessages(opts: GenerateTextOptions & { images?: ProviderImage[] }, jsonMode: boolean) {
     const modelId = this.modelId(opts);
+    const images = sanitizeProviderImages(opts.images);
     const systemParts: string[] = [];
     if (opts.system) systemParts.push(opts.system);
     if (jsonMode) {
@@ -115,10 +118,17 @@ export class AnthropicProvider implements AIProvider {
         'Return ONLY a single JSON object. No markdown, no code fences, no commentary before or after. The JSON must match the schema you have been given.',
       );
     }
+    // With images, the user turn becomes base64 image blocks followed by the text prompt.
+    const userContent: string | Anthropic.ContentBlockParam[] = images.length
+      ? [
+          ...images.map((img): Anthropic.ContentBlockParam => ({ type: 'image', source: { type: 'base64', media_type: img.mimeType as Anthropic.Base64ImageSource['media_type'], data: img.dataBase64 } })),
+          { type: 'text', text: opts.prompt },
+        ]
+      : opts.prompt;
     const params: Anthropic.MessageCreateParamsNonStreaming = {
       model: modelId,
       max_tokens: resolveRequiredMaxTokens(modelId, opts.maxTokens),
-      messages: [{ role: 'user', content: opts.prompt }],
+      messages: [{ role: 'user', content: userContent }],
     };
     if (systemParts.length > 0) params.system = [{ type: 'text', text: systemParts.join('\n\n'), cache_control: { type: 'ephemeral' } }] as any;
     if (acceptsTemperature(modelId)) params.temperature = opts.temperature ?? 0.2;
@@ -132,7 +142,8 @@ export class AnthropicProvider implements AIProvider {
       const usage = message.usage
         ? { ...message.usage, input_tokens: message.usage.input_tokens, output_tokens: message.usage.output_tokens }
         : undefined;
-      return { content: text, usage, modelId };
+      // Surface stop_reason so generateObject can refuse to parse a max_tokens-truncated payload.
+      return { content: text, usage, modelId, stopReason: message.stop_reason };
     } catch (err: any) {
       throw this.toProviderError(err);
     }
@@ -233,14 +244,19 @@ export class AnthropicProvider implements AIProvider {
     const start = Date.now();
     const schemaZ = opts.schema as z.ZodTypeAny;
     const jsonHint = `${opts.system ? `${opts.system}\n\n` : ''}Return ONLY a single JSON object matching this schema: ${JSON.stringify(schemaZ._def ?? schemaZ)}`;
-    const { content, usage, modelId } = await this.callMessages({ ...opts, system: jsonHint }, true);
+    const { content, usage, modelId, stopReason } = await this.callMessages({ ...opts, system: jsonHint }, true);
+    const outputTokens = usage?.output_tokens;
+    // Length-truncated JSON must FAIL (classified, retried by the orchestrator) — never be salvaged short.
+    if (stopReason === 'max_tokens') throw structuredTruncationError('anthropic', modelId, outputTokens);
     let parsed: unknown;
     try {
       parsed = JSON.parse(content);
     } catch {
-      const match = content.match(/\{[\s\S]*\}/);
-      if (!match) throw classifyError('anthropic', 200, 'Model did not return valid JSON');
-      parsed = JSON.parse(match[0]);
+      // Some models wrap JSON in prose/markdown — extract the first COMPLETE object or array.
+      const { json, unterminated } = extractBalancedJson(content);
+      if (unterminated) throw structuredTruncationError('anthropic', modelId, outputTokens);
+      if (!json) throw classifyError('anthropic', 200, 'Model did not return valid JSON');
+      parsed = JSON.parse(json);
     }
     parsed = normalizeScriptPayload(normalizeTestCasePayload(coerceToSchemaShape(parsed, schemaZ)));
     let validated: unknown;

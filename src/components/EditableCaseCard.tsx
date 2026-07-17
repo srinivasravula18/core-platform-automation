@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactElement } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { FlaskConical, Pencil, SplitSquareHorizontal, Send, Loader2, Check, Link2Off } from 'lucide-react';
+import { FlaskConical, Pencil, SplitSquareHorizontal, Send, Loader2, Check, Link2Off, Paperclip, X } from 'lucide-react';
 import { showAlert } from '@/src/lib/dialog';
 
 /**
@@ -32,6 +32,22 @@ export interface EditableCase {
 
 const CASE_STATUSES = ['Draft', 'Under Review', 'Approved', 'Automated', 'Deprecated'];
 
+// Rework image attachments — client-side rules mirror the /api/agent/rework-case validation.
+interface ReworkAttachment { name: string; mimeType: string; dataBase64: string }
+const ATTACH_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
+const MAX_ATTACHMENTS = 4;
+const MAX_ATTACH_BYTES = 5 * 1024 * 1024;
+
+// Reads a File into raw base64 (the data: URL prefix stripped).
+function readFileAsBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result).split(',')[1] || '');
+    reader.onerror = () => reject(new Error(`Could not read ${file.name}`));
+    reader.readAsDataURL(file);
+  });
+}
+
 function priorityClasses(p?: string): string {
   switch ((p || '').toLowerCase()) {
     case 'high':
@@ -60,6 +76,8 @@ export default function EditableCaseCard({ initial, linkType, selected, onToggle
   const [c, setC] = useState<EditableCase>(() => ({ ...initial, steps: (initial.steps || []).map((s) => ({ ...s })) }));
   const [editing, setEditing] = useState(false);
   const [feedback, setFeedback] = useState('');
+  const [attachments, setAttachments] = useState<ReworkAttachment[]>([]);
+  const [attachError, setAttachError] = useState('');
   const [busy, setBusy] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
   // Indices of steps ticked for merging into one.
@@ -153,6 +171,23 @@ export default function EditableCaseCard({ initial, linkType, selected, onToggle
     if (ok) onSaved?.();
   };
 
+  // Validate + read picked image files into base64 attachments (max 4, 5MB, png/jpeg/webp/gif).
+  const addAttachments = async (files: FileList | null) => {
+    if (!files?.length) return;
+    const errs: string[] = [];
+    const next = [...attachments];
+    for (const f of Array.from(files)) {
+      if (next.length >= MAX_ATTACHMENTS) { errs.push(`Max ${MAX_ATTACHMENTS} images per rework.`); break; }
+      if (!ATTACH_TYPES.includes(f.type)) { errs.push(`${f.name}: only PNG, JPEG, WebP or GIF images are allowed.`); continue; }
+      if (f.size > MAX_ATTACH_BYTES) { errs.push(`${f.name}: exceeds the 5MB limit.`); continue; }
+      try { next.push({ name: f.name, mimeType: f.type, dataBase64: await readFileAsBase64(f) }); }
+      catch (e: any) { errs.push(e?.message || `Could not read ${f.name}`); }
+    }
+    setAttachments(next);
+    setAttachError(errs.join(' '));
+  };
+  const removeAttachment = (ai: number) => setAttachments((prev) => prev.filter((_, idx) => idx !== ai));
+
   /* ---------- AI actions ---------- */
   const reworkCase = async () => {
     setBusy('rework');
@@ -160,10 +195,10 @@ export default function EditableCaseCard({ initial, linkType, selected, onToggle
       const res = await fetch('/api/agent/rework-case', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ testCase: c, feedback, targetUrl: '' }),
+        body: JSON.stringify({ testCase: c, feedback, targetUrl: '', attachments: attachments.length ? attachments : undefined }),
       });
       const data = await res.json();
-      if (res.ok) { patch(data); setFeedback(''); }
+      if (res.ok) { patch(data); setFeedback(''); setAttachments([]); setAttachError(''); }
     } finally {
       setBusy(null);
     }
@@ -339,6 +374,21 @@ export default function EditableCaseCard({ initial, linkType, selected, onToggle
           {/* Rework with AI */}
           <div className="space-y-1.5 border-t border-[var(--border)] pt-2">
             <textarea value={feedback} onChange={(e) => setFeedback(e.target.value)} placeholder="Tell the AI how to rework this case (e.g. add negative + boundary checks)…" className={`${inputCls} h-14`} />
+            <div className="flex flex-wrap items-center gap-1.5">
+              <label className="inline-flex cursor-pointer items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-card)] px-2 py-1 text-[11px] font-medium text-[var(--text-muted)] hover:border-[var(--accent)] hover:text-[var(--text-primary)]">
+                <Paperclip className="h-3 w-3" /> Attach
+                <input type="file" accept="image/*" multiple className="sr-only" onChange={(e) => { void addAttachments(e.target.files); e.target.value = ''; }} />
+              </label>
+              {attachments.map((a, ai) => (
+                <span key={ai} className="inline-flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-0.5 text-[11px] text-[var(--text-muted)]">
+                  {a.name}
+                  <button type="button" onClick={() => removeAttachment(ai)} aria-label={`Remove ${a.name}`} className="hover:text-red-400">
+                    <X className="h-3 w-3" />
+                  </button>
+                </span>
+              ))}
+            </div>
+            {attachError && <p role="alert" className="text-[11px] text-red-400">{attachError}</p>}
             <div className="flex flex-wrap items-center justify-between gap-2">
               <button onClick={reworkCase} disabled={busy === 'rework' || !feedback.trim()} className="inline-flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-card)] px-3 py-1.5 text-[11px] font-medium text-[var(--text-primary)] hover:border-[var(--accent)] disabled:opacity-50">
                 {busy === 'rework' ? <Loader2 className="h-3 w-3 animate-spin" /> : <Send className="h-3 w-3" />}

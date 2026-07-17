@@ -252,12 +252,13 @@ async function testCheckpointerAndFlag() {
 
   const savedFlag = process.env.AGENT_GRAPH_V2;
   try {
-    for (const truthy of ['1', 'true', 'TRUE']) {
-      process.env.AGENT_GRAPH_V2 = truthy;
+    // The LangGraph engine is hardcoded ON — unset/any value is enabled; only '0'/'false' kill-switch disables.
+    for (const truthy of [undefined, '1', 'true', 'TRUE']) {
+      if (truthy === undefined) delete process.env.AGENT_GRAPH_V2; else process.env.AGENT_GRAPH_V2 = truthy;
       ok(isWorkflowGraphEnabled(), `AGENT_GRAPH_V2=${JSON.stringify(truthy)} reads as enabled`);
     }
-    for (const falsy of [undefined, '0', 'false']) {
-      if (falsy === undefined) delete process.env.AGENT_GRAPH_V2; else process.env.AGENT_GRAPH_V2 = falsy;
+    for (const falsy of ['0', 'false']) {
+      process.env.AGENT_GRAPH_V2 = falsy;
       ok(!isWorkflowGraphEnabled(), `AGENT_GRAPH_V2=${JSON.stringify(falsy)} reads as disabled`);
     }
   } finally {

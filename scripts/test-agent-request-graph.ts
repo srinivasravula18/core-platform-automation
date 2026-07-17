@@ -91,12 +91,16 @@ async function testRequestRouting() {
     r = await routeRequest({ kind: 'chat', payload: {} });
     eq(r.route, 'legacy_chat', 'flag on: chat stays on legacy_chat');
 
+    // Hardcoded-on default: unset flag now routes to the graph engine; only the '0'/'false' kill switch disables.
     delete process.env.AGENT_GRAPH_V2;
     r = await routeRequest({ kind: 'test_run', payload: {} });
-    eq(r.route, 'legacy_chat', 'flag OFF: test_run falls back to legacy_chat');
-    ok(/disabled/i.test(r.reason), 'flag-off reason says the flag is disabled');
+    eq(r.route, 'test_run_graph', 'flag unset: test_run routes to the graph engine (hardcoded on)');
+    process.env.AGENT_GRAPH_V2 = '0';
+    r = await routeRequest({ kind: 'test_run', payload: {} });
+    eq(r.route, 'legacy_chat', 'kill switch AGENT_GRAPH_V2=0: test_run falls back to legacy_chat');
+    ok(/disabled/i.test(r.reason), 'kill-switch reason says the flag is disabled');
     r = await routeRequest({ kind: 'source_research', payload: {} });
-    eq(r.route, 'source_research_graph', 'flag OFF: source_research still routes to the research graph');
+    eq(r.route, 'source_research_graph', 'kill switch: source_research still routes to the research graph');
 
     process.env.AGENT_GRAPH_V2 = 'false';
     r = await routeRequest({ kind: 'test_run', payload: {} });

@@ -17,9 +17,9 @@ let cached: BaseCheckpointSaver | null = null;
 let cachedPostgres: PostgresSaver | null = null;
 let pending: Promise<BaseCheckpointSaver> | null = null;
 
-/** AGENT_GRAPH_V2 truthy check; exported so other modules (e.g. apps/api/src/server.ts) don't re-check the env var ad hoc. */
+/** The LangGraph workflow runtime is the engine — hardcoded on (no env flag); AGENT_GRAPH_V2=0 remains as an emergency kill switch only. */
 export function isWorkflowGraphEnabled(): boolean {
-  return ['1', 'true'].includes(String(process.env.AGENT_GRAPH_V2 || '').toLowerCase());
+  return !['0', 'false'].includes(String(process.env.AGENT_GRAPH_V2 || '').toLowerCase());
 }
 
 /** Mirrors apps/api/src/server.ts's inline deployment-mode check; not imported from there to avoid a backwards dependency. */

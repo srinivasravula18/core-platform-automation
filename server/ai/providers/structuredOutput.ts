@@ -19,6 +19,48 @@
  */
 
 import { z } from 'zod';
+import { classifyError, type ProviderError, type ProviderName } from './types';
+
+/**
+ * Classified error for a length-truncated structured response. The message deliberately
+ * contains "valid JSON" so the orchestrator's isBadOutput retry (orchestrator.ts) fires once.
+ */
+export function structuredTruncationError(provider: ProviderName, modelId: string, outputTokens?: number): ProviderError {
+  // Concise operator signal: which provider/model truncated and how many output tokens it burned.
+  console.warn(`[${provider}] structured output truncated (model=${modelId}, outputTokens=${outputTokens ?? 'unknown'}) — discarding partial JSON instead of salvaging`);
+  return classifyError(provider, 200, `Model response was truncated at the output-token limit (model ${modelId}, ${outputTokens ?? 'unknown'} output tokens) and is not valid JSON; the partial output was discarded.`);
+}
+
+/**
+ * Extract the FIRST complete top-level JSON object/array from prose/markdown using a
+ * balanced-brace scan that respects strings and escapes. Unlike the old greedy
+ * /\{[\s\S]*\}/ regex, a payload that never closes is reported as `unterminated`
+ * instead of being silently shortened to the last brace (the 1-test-case-instead-of-many bug).
+ */
+export function extractBalancedJson(content: string): { json: string | null; unterminated: boolean } {
+  const start = content.search(/[{[]/);
+  if (start === -1) return { json: null, unterminated: false };
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = start; i < content.length; i += 1) {
+    const ch = content[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === '\\') escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') inString = true;
+    else if (ch === '{' || ch === '[') depth += 1;
+    else if (ch === '}' || ch === ']') {
+      depth -= 1;
+      if (depth === 0) return { json: content.slice(start, i + 1), unterminated: false };
+    }
+  }
+  // Ran off the end of the content with the top-level container still open.
+  return { json: null, unterminated: true };
+}
 
 /** Flatten a model value into a string. Used only for fields the schema declares as string. */
 export function stringifyField(value: unknown): string {

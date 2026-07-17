@@ -62,6 +62,7 @@
     "test:record-play": "tsx scripts/test-record-play-agent.ts",
     "test:record-play-jobs": "tsx scripts/test-record-play-jobs.ts",
     "test:record-play-ws": "tsx scripts/test-record-play-ws.ts",
+    "test:structured-truncation": "tsx scripts/test-structured-truncation.ts",
     "eval:agents": "tsx scripts/agent-evals.ts",
     "eval:routing": "tsx scripts/eval-routing.ts",
     "eval:coercion": "tsx scripts/eval-coercion.ts",

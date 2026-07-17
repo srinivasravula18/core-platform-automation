@@ -16,6 +16,26 @@
 export type ProviderName = 'gemini' | 'openai' | 'anthropic';
 export type ProviderAuthMode = 'api_key' | 'account';
 
+/** An inline image attachment (raw base64, no data: prefix) for multimodal structured output. */
+export interface ProviderImage {
+  mimeType: string;
+  dataBase64: string;
+}
+
+/** Mime types every multimodal provider here accepts inline. */
+const SUPPORTED_IMAGE_MIME_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
+export const MAX_IMAGES_PER_REQUEST = 4;
+
+/** Keeps at most 4 supported images (png/jpeg/webp/gif), warning when any are dropped. */
+export function sanitizeProviderImages(images?: ProviderImage[]): ProviderImage[] {
+  if (!images?.length) return [];
+  const kept = images
+    .filter((img) => !!img?.dataBase64 && SUPPORTED_IMAGE_MIME_TYPES.has(String(img?.mimeType || '').toLowerCase()))
+    .slice(0, MAX_IMAGES_PER_REQUEST);
+  if (kept.length < images.length) console.warn(`[providers] dropped ${images.length - kept.length} image attachment(s): max ${MAX_IMAGES_PER_REQUEST} per request, png/jpeg/webp/gif only`);
+  return kept;
+}
+
 export interface GenerateObjectOptions<T> {
   system?: string;
   prompt: string;
@@ -25,6 +45,8 @@ export interface GenerateObjectOptions<T> {
   effort?: 'low' | 'medium' | 'high';
   model?: string;
   signal?: AbortSignal;
+  /** Optional inline images sent with the prompt; providers without multimodal support ignore them. */
+  images?: ProviderImage[];
 }
 
 export interface GenerateTextOptions {

@@ -3,9 +3,24 @@ import { withEventSourceAuth } from '@/src/lib/base-path';
 
 const TERMINAL = ['completed', 'failed', 'review_required', 'coverage_options', 'cancelled'];
 
+// Stop polling a non-terminal run after this long with no observable change (stall guard).
+const STALL_MS = 15 * 60 * 1000;
+
 export function useAgentRun(runId: string) {
   const [run, setRun] = useState<any>(null);
   const activeRef = useRef(true);
+  const lastChangeAtRef = useRef(Date.now());
+  const lastFingerprintRef = useRef('');
+
+  // Track whether the run visibly progressed (status or message stream changed) to feed the stall guard.
+  const noteActivity = useCallback((data: any) => {
+    const messages = Array.isArray(data?.messages) ? data.messages : [];
+    const fingerprint = `${data?.status ?? ''}|${messages.length}|${JSON.stringify(messages[messages.length - 1] ?? null)}`;
+    if (fingerprint !== lastFingerprintRef.current) {
+      lastFingerprintRef.current = fingerprint;
+      lastChangeAtRef.current = Date.now();
+    }
+  }, []);
 
   const fetchDetails = useCallback(async () => {
     if (!runId) return null;
@@ -18,9 +33,10 @@ export function useAgentRun(runId: string) {
 
   const applyStatus = useCallback((data: any) => {
     if (!activeRef.current) return;
+    noteActivity(data);
     setRun((prev: any) => ({ ...(prev || {}), ...data }));
     if (TERMINAL.includes(data?.status)) void fetchDetails().catch(() => undefined);
-  }, [fetchDetails]);
+  }, [fetchDetails, noteActivity]);
 
   const pollStatus = useCallback(async () => {
     if (!activeRef.current || !runId) return;
@@ -30,6 +46,19 @@ export function useAgentRun(runId: string) {
       const data = await r.json();
       applyStatus(data);
       if (!TERMINAL.includes(data?.status) && activeRef.current) {
+        // Stall guard: a non-terminal run with no visible change for STALL_MS stops polling forever.
+        if (Date.now() - lastChangeAtRef.current > STALL_MS) {
+          console.warn(`[useAgentRun] run ${runId} appears stalled (no change for ${Math.round(STALL_MS / 60000)} min); stopping polling.`);
+          setRun((prev: any) => ({
+            ...(prev || {}),
+            status: 'stalled',
+            messages: [
+              ...(Array.isArray(prev?.messages) ? prev.messages : []),
+              { agent: 'System', status: 'failed', output: 'This run appears stalled: no progress was observed for 15 minutes. Polling stopped — start a new run or refresh to retry.' },
+            ],
+          }));
+          return;
+        }
         window.setTimeout(pollStatus, document.hidden ? 30000 : 5000);
       }
     } catch (error: any) {
@@ -48,6 +77,8 @@ export function useAgentRun(runId: string) {
 
   useEffect(() => {
     activeRef.current = true;
+    lastChangeAtRef.current = Date.now();
+    lastFingerprintRef.current = '';
     let es: EventSource | null = null;
     let fallback: number | undefined;
     let settled = false;

@@ -98,6 +98,12 @@ const SEED_FIELDS = [
 
 const MAX_PROJECTED_MESSAGES = 20;
 
+/** Linear stage order of the test-run graph — lets the projection tell "not reached yet" from "passed without producing". */
+const STAGE_ORDER = ['validate_request', 'load_context', 'discover_and_ground', 'author_cases', 'review_cases', 'author_plans', 'compile_and_validate', 'execute_tests', 'investigate_failures', 'finalize'];
+
+/** Full chip roster — the stale-message filter must cover EVERY chip agent, not just the ones emitted this projection. */
+const CHIP_AGENT_KEYS = ['ScopeAgent', 'MetadataFetch', 'AuthSessionAgent', 'ApplicationInspector', 'SelectorRegistry', 'TestGenerationAgent', 'PlaywrightAgent', 'SelectorVerifier', 'EvidenceAgent'];
+
 /** Chip truth table: every legacy UI pipeline chip (DeepRunResult's PIPELINE keys) is DERIVED per
  * projection from the state's ACTUAL artifacts — completed only when its stage verifiably produced
  * output, running only while its owning stage executes, and on any finished run explicitly 'skipped'
@@ -133,14 +139,18 @@ function chipMessages(state: WorkflowState): Array<{ agent: string; status: stri
       runningLine: 'Executing compiled scripts against the live app…', skipLine: 'Skipped — no compiled scripts reached execution.' },
   ];
   const terminal = state.status === 'completed' || state.status === 'failed' || state.status === 'cancelled';
+  // A chip whose stages have all been PASSED without producing its artifact is 'skipped' NOW — leaving it
+  // silent mid-run let a persisted 'running' line survive forever (the eternally-spinning Metadata chip).
+  const stageIdx = STAGE_ORDER.indexOf(state.stage);
+  const pastChip = (stages: string[]) => stageIdx >= 0 && stages.every((s) => STAGE_ORDER.indexOf(s) >= 0 && STAGE_ORDER.indexOf(s) < stageIdx);
   const out: Array<{ agent: string; status: string; output: string }> = [
     { agent: 'ScopeAgent', status: 'completed', output: 'Done.' },
   ];
   for (const chip of chips) {
     if (chip.done) out.push({ agent: chip.agent, status: 'completed', output: 'Done.' });
     else if (state.status === 'running' && chip.stages.includes(state.stage)) out.push({ agent: chip.agent, status: 'running', output: chip.runningLine });
-    else if (terminal) out.push({ agent: chip.agent, status: chip.skipStatus ?? 'skipped', output: chip.skipLine });
-    // Mid-run, not yet reached → no message: an honest pending chip.
+    else if (terminal || pastChip(chip.stages)) out.push({ agent: chip.agent, status: chip.skipStatus ?? 'skipped', output: chip.skipLine });
+    // Not yet reached → no message: an honest pending chip.
   }
   return out;
 }
@@ -161,7 +171,9 @@ export function projectStateToLegacyRun(state: WorkflowState, seed?: any): any {
   const progressLine = `stage: ${state.stage} — status: ${state.status}`
     + (state.output?.reason ? ` (${state.output.reason.slice(0, 200)})` : '');
   const chips = chipMessages(state);
-  const chipAgents = new Set(chips.map((m) => m.agent));
+  // Filter by the FULL roster: a chip that stops being emitted (e.g. its stage passed) must drop its
+  // stale persisted 'running' line, not carry it forward as a forever-spinning pill.
+  const chipAgents = new Set(CHIP_AGENT_KEYS);
   // Chip messages are regenerated from the stage each projection; only NON-chip lines accumulate,
   // capped separately so early chip statuses can never be trimmed away by a long run's progress log.
   const prior: any[] = (Array.isArray(seed?.messages) ? seed.messages : []).filter((m: any) => !chipAgents.has(m?.agent));
@@ -289,6 +301,26 @@ async function projectTerminalOverride(runId: string, entry: RunRegistryEntry, s
 // ---------------------------------------------------------------------------------------------
 // Terminal hooks — best-effort post-run enrichment; NEVER allowed to fail the run.
 // ---------------------------------------------------------------------------------------------
+
+/** Injected by routes.ts at startup (routes imports this runtime, so a direct import would be circular):
+ * materializes the run's first-class Plan/Suite/Case/Run/Report rows on terminal states — without it the
+ * graph engine leaves generated output only inside the agent_runs JSON blob and no Test Plan ever appears. */
+type TerminalArtifactPersister = (legacyRun: any) => Promise<void>;
+let terminalArtifactPersister: TerminalArtifactPersister | null = null;
+export function registerTerminalArtifactPersister(fn: TerminalArtifactPersister): void {
+  terminalArtifactPersister = fn;
+}
+
+/** Best-effort artifact materialization for a terminal run — never allowed to fail the pump. */
+async function persistTerminalArtifactsSafe(runId: string, legacyRun: any): Promise<void> {
+  if (!terminalArtifactPersister || !legacyRun) return;
+  try {
+    await terminalArtifactPersister(legacyRun);
+    console.log(`[workflow] run ${runId}: terminal QA artifacts persisted (plan/suite/cases/run/report).`);
+  } catch (err) {
+    console.warn(`[workflow] run ${runId}: terminal artifact persistence failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
 
 /** Newest-first per-case verdicts from prior agent runs (execution_result persists inside agent_runs.raw). */
 async function loadPriorRunSummaries(excludeRunId: string): Promise<PriorRunSummary[]> {
@@ -557,6 +589,11 @@ async function pump(runId: string, entry: RunRegistryEntry, input: unknown): Pro
       const defectReport = await fileDefectsForRun(finalState, entry.legacy);
       await runAnalyst(finalState, entry.legacy, defectReport);
       await projectAndPersist(runId, entry, finalState, null);
+      // Materialize the first-class QA rows the legacy engine used to create — plan → suite →
+      // cases → run → report — from the final projected record (idempotent deterministic ids).
+      if (finalState.status === 'completed' || finalState.status === 'failed') {
+        await persistTerminalArtifactsSafe(runId, entry.legacy);
+      }
       await appendEventSafe(terminalEvent(
         { runId, threadId, node: 'workflow', attempt: ++entry.eventSeq },
         finalState.status === 'failed' ? 'error' : 'success', pumpStartedAt, {},
@@ -570,6 +607,7 @@ async function pump(runId: string, entry: RunRegistryEntry, input: unknown): Pro
     // Background runs never throw to callers — project a bounded failure and audit it.
     const message = (error instanceof Error ? error.message : String(error ?? 'workflow run failed')).slice(0, 500);
     await projectTerminalOverride(runId, entry, lastState, 'failed', `Workflow failed: ${message}`);
+    await persistTerminalArtifactsSafe(runId, entry.legacy);
     await appendEventSafe(terminalEvent(
       { runId, threadId, node: 'workflow', attempt: ++entry.eventSeq },
       'error', pumpStartedAt, { errorCode: 'WORKFLOW_RUN_FAILED' },

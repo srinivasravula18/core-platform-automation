@@ -21,7 +21,9 @@ import type {
   ToolCallRequest,
   ChatMessage,
 } from './types';
-import { classifyError, DEFAULT_MODELS, estimateCost, maxOutputFor } from './types';
+import { classifyError, DEFAULT_MODELS, estimateCost, maxOutputFor, ProviderError, sanitizeProviderImages } from './types';
+// Shared truncation guard (same classified error as the other providers).
+import { structuredTruncationError } from './structuredOutput';
 
 /** Build a ProviderUsage (with cost) from the Vercel AI SDK usage shape, splitting cached input out. */
 function geminiSdkUsage(modelId: string, usage: any) {
@@ -159,15 +161,30 @@ export class GeminiProvider implements AIProvider {
     try {
       const client = this.client();
       const schemaZ = opts.schema as z.ZodTypeAny;
-      const { object, usage } = await generateObject({
+      const images = sanitizeProviderImages(opts.images);
+      // With images, send one user message of image + text parts — the ai SDK serializes each image part to a Gemini inlineData({ mimeType, data }) part on the wire.
+      const promptOrMessages = images.length
+        ? {
+            messages: [{
+              role: 'user' as const,
+              content: [
+                ...images.map((img) => ({ type: 'image' as const, image: img.dataBase64, mediaType: img.mimeType })),
+                { type: 'text' as const, text: opts.prompt },
+              ],
+            }],
+          }
+        : { prompt: opts.prompt };
+      const { object, usage, finishReason } = await generateObject({
         model: client(modelId),
         system: opts.system,
-        prompt: opts.prompt,
+        ...promptOrMessages,
         schema: schemaZ,
         temperature: opts.temperature,
         maxOutputTokens: opts.maxTokens ?? maxOutputFor(modelId),
         abortSignal: opts.signal,
       } as any);
+      // Length-truncated JSON must FAIL (classified, retried by the orchestrator) — never be salvaged short.
+      if (finishReason === 'length') throw structuredTruncationError('gemini', modelId, (usage as any)?.completionTokens ?? (usage as any)?.outputTokens);
       const text = JSON.stringify(object);
       const usageObj = usage ? geminiSdkUsage(modelId, usage as any) : undefined;
       return {
@@ -179,6 +196,11 @@ export class GeminiProvider implements AIProvider {
         latencyMs: Date.now() - start,
       };
     } catch (err: any) {
+      if (err instanceof ProviderError) throw err;
+      // The ai SDK throws NoObjectGeneratedError on truncated JSON — it carries the finishReason.
+      if (err?.finishReason === 'length' || err?.cause?.finishReason === 'length') {
+        throw structuredTruncationError('gemini', modelId, err?.usage?.completionTokens ?? err?.usage?.outputTokens);
+      }
       const status = err?.statusCode || err?.status;
       throw classifyError('gemini', status, err?.message || String(err));
     }

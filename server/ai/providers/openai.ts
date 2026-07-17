@@ -20,10 +20,12 @@ import type {
   ToolCallRequest,
   ChatMessage,
 } from './types';
-import { ProviderError, classifyError, DEFAULT_MODELS, estimateCost, maxOutputFor } from './types';
+import type { ProviderImage } from './types';
+import { ProviderError, classifyError, DEFAULT_MODELS, estimateCost, maxOutputFor, sanitizeProviderImages } from './types';
 // Shared, NON-FABRICATING structured-output helpers (one copy for every provider).
 import {
   coerceToSchemaShape, repairValidationError, normalizeTestCasePayload, normalizeScriptPayload,
+  extractBalancedJson, structuredTruncationError,
 } from './structuredOutput';
 
 /** Map a provider-agnostic ChatMessage to an OpenAI chat message param. */
@@ -158,27 +160,49 @@ export class OpenAIProvider implements AIProvider {
     }
   }
 
-  private async callChat(opts: GenerateTextOptions, jsonMode: boolean) {
+  private async callChat(opts: GenerateTextOptions & { images?: ProviderImage[] }, jsonMode: boolean) {
     const modelId = this.modelId(opts);
+    const images = sanitizeProviderImages(opts.images);
     try {
       if (this.useResponsesApi()) {
+        // With images, the Responses input becomes one user turn of input_image + input_text parts.
+        const input = images.length
+          ? [{
+              role: 'user' as const,
+              content: [
+                ...images.map((img) => ({ type: 'input_image' as const, image_url: `data:${img.mimeType};base64,${img.dataBase64}`, detail: 'auto' as const })),
+                { type: 'input_text' as const, text: opts.prompt },
+              ],
+            }]
+          : opts.prompt;
         const response = await this.client.responses.create({
           model: modelId,
           instructions: opts.system,
-          input: opts.prompt,
+          input,
           store: false,
           include: ['reasoning.encrypted_content'],
           ...this.responseParams(modelId, opts.maxTokens, opts.effort),
           ...(jsonMode ? { text: { format: { type: 'json_object' as const } } } : {}),
         }, { signal: opts.signal });
-        return { content: response.output_text || '', usage: response.usage, modelId };
+        // Surface output-length truncation so generateObject can refuse to parse a partial payload.
+        const finishReason = response.incomplete_details?.reason === 'max_output_tokens' ? 'length' as const : 'stop' as const;
+        return { content: response.output_text || '', usage: response.usage, modelId, finishReason };
       }
       const completion = await this.client.chat.completions.create(
         {
           model: modelId,
           messages: [
             ...(opts.system ? [{ role: 'system' as const, content: opts.system }] : []),
-            { role: 'user' as const, content: opts.prompt },
+            {
+              role: 'user' as const,
+              // With images, chat-completions user content becomes image_url + text parts.
+              content: images.length
+                ? [
+                    ...images.map((img) => ({ type: 'image_url' as const, image_url: { url: `data:${img.mimeType};base64,${img.dataBase64}` } })),
+                    { type: 'text' as const, text: opts.prompt },
+                  ]
+                : opts.prompt,
+            },
           ],
           ...this.sampling(modelId, opts.maxTokens, opts.temperature),
           ...(opts.effort ? { reasoning_effort: opts.effort } : {}),
@@ -194,7 +218,8 @@ export class OpenAIProvider implements AIProvider {
             total_tokens: completion.usage.total_tokens,
           }
         : undefined;
-      return { content, usage, modelId };
+      const finishReason = completion.choices?.[0]?.finish_reason === 'length' ? 'length' as const : 'stop' as const;
+      return { content, usage, modelId, finishReason };
     } catch (err: any) {
       throw this.toProviderError(err);
     }
@@ -375,15 +400,19 @@ export class OpenAIProvider implements AIProvider {
     const start = Date.now();
     const schemaZ = opts.schema as z.ZodTypeAny;
     const jsonHint = `${opts.system ? `${opts.system}\n\n` : ''}Return ONLY a JSON object that matches this schema: ${JSON.stringify(schemaZ._def ?? schemaZ)}\nDo not add commentary or markdown.`;
-    const { content, usage, modelId } = await this.callChat({ ...opts, system: jsonHint }, true);
+    const { content, usage, modelId, finishReason } = await this.callChat({ ...opts, system: jsonHint }, true);
+    const outputTokens = (usage as any)?.completion_tokens ?? (usage as any)?.output_tokens;
+    // Length-truncated JSON must FAIL (classified, retried by the orchestrator) — never be salvaged short.
+    if (finishReason === 'length') throw structuredTruncationError(this.name, modelId, outputTokens);
     let parsed: unknown;
     try {
       parsed = JSON.parse(content);
     } catch {
-      // Some models wrap JSON in prose/markdown — extract the first object or array.
-      const match = content.match(/\{[\s\S]*\}/) || content.match(/\[[\s\S]*\]/);
-      if (!match) throw classifyError(this.name, 200, 'Model did not return valid JSON');
-      parsed = JSON.parse(match[0]);
+      // Some models wrap JSON in prose/markdown — extract the first COMPLETE object or array.
+      const { json, unterminated } = extractBalancedJson(content);
+      if (unterminated) throw structuredTruncationError(this.name, modelId, outputTokens);
+      if (!json) throw classifyError(this.name, 200, 'Model did not return valid JSON');
+      parsed = JSON.parse(json);
     }
     // Coerce common model shape mistakes (e.g. returning a bare [...] instead of
     // { scripts: [...] }, or putting the array under a differently-named key) so a

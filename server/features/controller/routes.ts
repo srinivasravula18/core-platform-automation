@@ -327,14 +327,14 @@ export function registerControllerRoutes(app: Express) {
   });
 
   app.post('/api/controller/explain/stream', async (req, res) => {
-    const { topic, workspaceId, userId, history, apps } = req.body || {};
+    const { topic, workspaceId, userId, conversationId, history, apps } = req.body || {};
     if (!topic || typeof topic !== 'string') {
       return res.status(400).json({ error: 'topic is required' });
     }
     prepareStreamingResponse(res);
     try {
       res.write('\n');
-      for await (const delta of streamExplain(topic, { workspaceId, userId, history, apps })) {
+      for await (const delta of streamExplain(topic, { workspaceId, userId, conversationId: typeof conversationId === 'string' ? conversationId : undefined, history, apps })) {
         res.write(delta);
       }
     } catch (err: any) {
@@ -346,11 +346,11 @@ export function registerControllerRoutes(app: Express) {
 
   app.post('/api/controller/explain', async (req, res, next) => {
     try {
-      const { topic, workspaceId, userId, history, apps } = req.body || {};
+      const { topic, workspaceId, userId, conversationId, history, apps } = req.body || {};
       if (!topic || typeof topic !== 'string') {
         return res.status(400).json({ error: 'topic is required' });
       }
-      const text = await explainIntent(topic, { workspaceId, userId, history, apps });
+      const text = await explainIntent(topic, { workspaceId, userId, conversationId: typeof conversationId === 'string' ? conversationId : undefined, history, apps });
       res.json({ topic, answer: text });
     } catch (err: any) {
       if (err?.status) {

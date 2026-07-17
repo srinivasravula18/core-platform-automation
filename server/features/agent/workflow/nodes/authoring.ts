@@ -344,7 +344,7 @@ function authNote(hasStoredCredentials?: boolean): string {
 function buildCasesPrompt(input: AuthorTestCasesInput, catalog: string): string {
   const countLine = input.requestedCaseCount > 0
     ? `Generate exactly ${input.requestedCaseCount} test case(s).`
-    : 'Choose the case count the evidenced behavior genuinely supports — quality over quantity, never pad.';
+    : 'Choose the case count the evidenced behavior genuinely supports — quality over quantity, never pad. A catalog exposing a form, list, or multiple controls almost never supports only one case: author a distinct case per evidenced behavior (happy path, each validation rule, negative paths, observed disabled/empty/permission states) rather than one broad check.';
   const avoid = input.avoidCaseTitles?.length
     ? `\nGAP MODE: the user ALREADY has these test cases — do NOT re-author them or trivial rewordings; author only genuinely NEW behaviors not covered below:\n${input.avoidCaseTitles.slice(0, 40).map((t) => `- ${t}`).join('\n')}`
     : '';
@@ -365,6 +365,7 @@ CASE RULES:
 - When a VERIFIED FEATURE ANALYSIS is provided, author a case for EACH distinct behavior/rule/edge in it that the live catalog can exercise (derivations, per-field validation, state changes, disabled/empty states) — do not collapse it to a few generic open/cancel cases.
 - A happy-path create/submit case MUST include a fill step for EVERY catalog field marked (required) before the save/create step; a partially filled form fails to submit.
 - Cover the highest-value behaviors the evidence supports first (happy path, negative/validation, disabled/empty/permission states).
+- OBJECT/RECORD GOALS: when the goal targets a business object/record and the catalog exposes its form or list, cover each applicable dimension with a focused case — create/read/update/delete lifecycle, per-required-field validation, negative/boundary input, observed permission/read-only states, and lookup/relationship fields — never one generic "validate object" case; skip a dimension only when the catalog proves it is not exercisable.
 - tags use @ format (e.g. @regression, @ui, @positive, @negative); set priority and type per case.`;
 }
 

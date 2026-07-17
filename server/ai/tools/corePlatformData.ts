@@ -37,6 +37,19 @@ function trimBaseUrl(value: string): string {
 const serviceBaseCache = new Map<string, { url: string; at: number }>();
 const SERVICE_BASE_TTL_MS = 10 * 60 * 1000;
 
+// Per-request hard timeout so a target that accepts TCP but never responds can't hang a phase.
+const FETCH_TIMEOUT_MS = 15_000;
+
+/** fetch with a hard timeout; warns on timeout then rethrows so existing catch → null/skip paths engage. */
+async function timedFetch(url: string, init: RequestInit = {}, timeoutMs = FETCH_TIMEOUT_MS): Promise<Response> {
+  try {
+    return await fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
+  } catch (e: any) {
+    if (e?.name === 'TimeoutError' || e?.name === 'AbortError') console.warn(`[corePlatformData] fetch timed out after ${timeoutMs}ms: ${url}`);
+    throw e;
+  }
+}
+
 async function probeServiceBase(candidate: string): Promise<boolean> {
   // The App Service answers /api/apps with JSON (401 for anonymous callers). A browser SPA
   // server answers ANY path with 200 + index.html (history fallback), so a response only
@@ -108,7 +121,7 @@ function serviceBaseUrl(conn?: CatalogConn): string {
 let cachedToken: string | null = null;
 
 async function loginForToken(url: string, username: string, password: string): Promise<string> {
-  const res = await fetch(`${url}/auth/login`, {
+  const res = await timedFetch(`${url}/auth/login`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ username, password }),
@@ -136,7 +149,7 @@ async function cpRequest(method: string, path: string, body?: unknown): Promise<
   const url = baseUrl();
   if (!url) throw new Error('Data tools are not configured: TARGET_BASE_URL is not set.');
   const call = async (token: string) => {
-    const res = await fetch(`${url}${path}`, {
+    const res = await timedFetch(`${url}${path}`, {
       method,
       headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
       body: body === undefined ? undefined : JSON.stringify(body),
@@ -351,7 +364,7 @@ async function fetchSwaggerSpec(url: string, preferredPath?: string): Promise<an
     if (tried.has(p)) continue;
     tried.add(p);
     try {
-      const res = await fetch(`${url}${p}`);
+      const res = await timedFetch(`${url}${p}`);
       if (res.ok) {
         const json = (await res.json()) as any;
         if (json && (json.openapi || json.swagger || json.paths)) return json;
@@ -430,7 +443,7 @@ async function fetchObjectCatalogViaApi(conn?: CatalogConn): Promise<Array<{ app
     const token = await resolveConnToken(conn || {}, url);
     if (!token) return [];
     const authGet = async (path: string) => {
-      const res = await fetch(`${url}${path}`, { headers: { authorization: `Bearer ${token}` } });
+      const res = await timedFetch(`${url}${path}`, { headers: { authorization: `Bearer ${token}` } });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       return res.json();
     };
@@ -465,7 +478,7 @@ export async function fetchCorePlatformApps(
     if (!url) return [];
     const token = await resolveConnToken(conn, url);
     if (!token) return [];
-    const res = await fetch(`${url}/api/apps`, { headers: { authorization: `Bearer ${token}` } });
+    const res = await timedFetch(`${url}/api/apps`, { headers: { authorization: `Bearer ${token}` } });
     if (!res.ok) return [];
     const apps = items(await res.json()) as any[];
     return (Array.isArray(apps) ? apps : [])
@@ -497,7 +510,7 @@ export async function fetchCorePlatformAppTabs(
     if (!url || !app) return [];
     const token = await resolveConnToken(conn, url);
     if (!token) return [];
-    const res = await fetch(`${url}/api/apps/${enc(app)}/tabs`, { headers: { authorization: `Bearer ${token}` } });
+    const res = await timedFetch(`${url}/api/apps/${enc(app)}/tabs`, { headers: { authorization: `Bearer ${token}` } });
     if (!res.ok) return [];
     const tabs = items(await res.json()) as any[];
     return (Array.isArray(tabs) ? tabs : [])
@@ -557,7 +570,26 @@ function formFieldNames(form: any): string[] {
   return fields.map(fieldApiName).filter(Boolean);
 }
 
+// Overall ceiling for the whole metadata map fetch — many slow-but-alive objects must not stall a run.
+const METADATA_MAP_DEADLINE_MS = 120_000;
+
+/** Deadline-guarded metadata map fetch: degrades to null (metadata is advisory-only) instead of hanging. */
 export async function fetchCorePlatformMetadataMap(conn: CatalogConn, appId: string): Promise<CorePlatformMetadataMap | null> {
+  const started = Date.now();
+  let timer: NodeJS.Timeout | undefined;
+  const deadline = new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), METADATA_MAP_DEADLINE_MS); });
+  try {
+    const result = await Promise.race([fetchCorePlatformMetadataMapInner(conn, appId), deadline]);
+    if (result === null && Date.now() - started >= METADATA_MAP_DEADLINE_MS) {
+      console.warn(`[MetadataFetch] fetchCorePlatformMetadataMap exceeded ${METADATA_MAP_DEADLINE_MS}ms deadline (elapsed ${Date.now() - started}ms) for app ${appId}; returning null.`);
+    }
+    return result;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+async function fetchCorePlatformMetadataMapInner(conn: CatalogConn, appId: string): Promise<CorePlatformMetadataMap | null> {
   try {
     const url = await resolveServiceBase(conn);
     const app = String(appId || '').trim();
@@ -569,7 +601,7 @@ export async function fetchCorePlatformMetadataMap(conn: CatalogConn, appId: str
     const token = await resolveConnToken(conn || {}, url);
     if (!token) return null;
     const authGet = async (path: string) => {
-      const res = await fetch(`${url}${path}`, { headers: { authorization: `Bearer ${token}` } });
+      const res = await timedFetch(`${url}${path}`, { headers: { authorization: `Bearer ${token}` } });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       return res.json();
     };
@@ -690,12 +722,12 @@ export async function fetchTestDataPack(conn: CatalogConn, hintText: string, obj
     const token = await resolveConnToken(conn || {}, url);
     if (!token) return '';
     const authGet = async (path: string) => {
-      const res = await fetch(`${url}${path}`, { headers: { authorization: `Bearer ${token}` } });
+      const res = await timedFetch(`${url}${path}`, { headers: { authorization: `Bearer ${token}` } });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       return res.json();
     };
     const authPost = async (path: string, body: unknown) => {
-      const res = await fetch(`${url}${path}`, { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify(body) });
+      const res = await timedFetch(`${url}${path}`, { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify(body) });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       return res.json();
     };
@@ -780,12 +812,12 @@ export async function fetchObjectSchema(conn: CatalogConn, appId: string, object
     const token = await resolveConnToken(conn || {}, url);
     if (!token) return [];
     const authGet = async (path: string) => {
-      const res = await fetch(`${url}${path}`, { headers: { authorization: `Bearer ${token}` } });
+      const res = await timedFetch(`${url}${path}`, { headers: { authorization: `Bearer ${token}` } });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       return res.json();
     };
     const authPost = async (path: string, body: unknown) => {
-      const res = await fetch(`${url}${path}`, { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify(body) });
+      const res = await timedFetch(`${url}${path}`, { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify(body) });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       return res.json();
     };
