@@ -25,6 +25,7 @@ import { registerApiIntelligenceRoutes } from '../../../services/api-intelligenc
 import { getWorkflowCheckpointer, closeWorkflowCheckpointer, isWorkflowGraphEnabled, reconcileOrphanedRunsOnStartup } from '../../../services/orchestration';
 import { startMemoryRetention } from '../../../server/ai/memory/retention';
 import { registerAutomationRoutes, isRemoteAgentEnabled, attachAutomationGateway, startScheduler, recoverOrphanedJobs } from '../../../services/automation';
+import { isEvidenceOracleEnabled } from '../../../server/features/agent/evidenceOracleFlag';
 
 let processGuardsInstalled = false;
 
@@ -117,7 +118,7 @@ export async function createExpressApp() {
     // true here means new runs route through the LangGraph engine; false means the legacy pipeline.
     // remoteAgent: curl-able confirmation that REMOTE_AGENT_V1 reached the running process —
     // the frontend gates the Record & Play (local desktop agent) UI on this.
-    res.json({ deploymentMode: mode, allowLocalRepo: mode !== 'production', graphEngine: isWorkflowGraphEnabled(), remoteAgent: isRemoteAgentEnabled() });
+    res.json({ deploymentMode: mode, allowLocalRepo: mode !== 'production', graphEngine: isWorkflowGraphEnabled(), remoteAgent: isRemoteAgentEnabled(), evidenceOracle: isEvidenceOracleEnabled() });
   });
 
   registerAuthRoutes(app);

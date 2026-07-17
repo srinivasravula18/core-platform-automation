@@ -58,6 +58,7 @@
     "test:visual-baseline": "tsx scripts/test-visual-baseline.ts",
     "test:analyst": "tsx scripts/test-analyst.ts",
     "test:openai-responses": "tsx scripts/test-openai-responses.ts",
+    "test:evidence-oracle": "tsx scripts/test-evidence-oracle.ts",
     "test:record-play": "tsx scripts/test-record-play-agent.ts",
     "test:record-play-jobs": "tsx scripts/test-record-play-jobs.ts",
     "test:record-play-ws": "tsx scripts/test-record-play-ws.ts",

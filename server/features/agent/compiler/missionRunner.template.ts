@@ -37,7 +37,7 @@ export interface LocatorSpec {
 export class MissionRunner {
   private stepIndex = 0;
   private shotCount = 0;
-  private static readonly MAX_STEP_SHOTS = 48;
+  private static readonly MAX_STEP_SHOTS = 60;
 
   constructor(private page: Page, private mission: MissionSpec) {}
 
@@ -54,7 +54,8 @@ export class MissionRunner {
     try { return test.info(); } catch { return null; } // outside a test (unit harness) — evidence off
   }
 
-  /** Bounded ordered step screenshot via testInfo.attach('step-N') — evidence only, never fails the test. */
+  /** Bounded ordered step screenshot via testInfo.attach('step-N') — evidence only, never fails the test.
+   * act() calls this before and after each interaction, so a case's shots form an ordered before/after chain. */
   private async captureStep(): Promise<void> {
     const info = this.info();
     if (!info || this.shotCount >= MissionRunner.MAX_STEP_SHOTS) return;
@@ -73,14 +74,15 @@ export class MissionRunner {
     try { await info.attach('step-log', { body: Buffer.from(JSON.stringify(entry)), contentType: 'application/json' }); } catch { /* evidence only */ }
   }
 
-  /** Wrap every interaction/assertion with before/after screenshots + a step-log record. */
+  /** Wrap every interaction/assertion with ONE result screenshot + a step-log record. One frame per
+   * step (the state after the action completes, or the failure state) — so a 4-step case yields 4
+   * screenshots. The trace still holds finer per-action detail on demand. */
   private async act<T>(kind: string, spec: LocatorSpec | null, value: string | null, fn: () => Promise<T>): Promise<T> {
-    await this.captureStep();
     const started = Date.now();
     const label = spec ? (spec.label ?? spec.selector ?? null) : null;
     try {
       const out = await fn();
-      await this.captureStep();
+      await this.captureStep(); // one frame per step: the state after this step completed
       await this.logStep({ n: this.stepIndex, kind, label, value, ok: true, ms: Date.now() - started });
       return out;
     } catch (e: any) {

@@ -428,13 +428,23 @@ export interface FieldMeta {
   ariaLabel?: string | null;
   autocomplete?: string | null;
   type?: string | null;
-  options?: Array<{ label?: string; value?: string; disabled?: boolean }> | null;
+  options?: Array<{ label?: string; value?: string; selected?: boolean; disabled?: boolean }> | null;
   maxLength?: number | null;
   minLength?: number | null;
   pattern?: string | null;
   min?: string | number | null;
   max?: string | number | null;
   required?: boolean | null;
+  /**
+   * Observed live-DOM state at discovery time — the oracle for state assertions (EVIDENCE_ORACLE_V1).
+   * Present only when the flag is on; absent = unknown (assertion validation fails open). Lets the
+   * compiler check DISABLED/ENABLED/HAS_VALUE against reality instead of trusting the LLM's guess.
+   */
+  observed?: {
+    disabled?: boolean | null;
+    readonly?: boolean | null;
+    value?: string | null;
+  } | null;
 }
 
 export interface VerifiedSelector {

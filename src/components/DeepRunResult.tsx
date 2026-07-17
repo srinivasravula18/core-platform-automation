@@ -154,6 +154,7 @@ type Case = {
 
 export function DeepRunResult({ taskId }: { taskId: string }) {
   const [tab, setTab] = useState<'cases' | 'code' | 'evidence'>('cases');
+  const [shotOpen, setShotOpen] = useState<number | null>(null); // evidence lightbox index
   const [cases, setCases] = useState<Case[] | null>(null);
   const [reworkBaseline, setReworkBaseline] = useState<Case[]>([]);
   const [editing, setEditing] = useState<number | null>(null);
@@ -1750,49 +1751,27 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
                 </div>
               )}
               {evidence.length ? (
-                <div className="space-y-2">
+                // One evidence card per test case (the end-of-test / failure frame). Click to open the
+                // full screenshot in a popup — same interaction as Cases and Scripts.
+                <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
                   {evidence.map((shot, i) => (
-                    <div key={i} className="overflow-hidden rounded-md border border-[var(--border)]">
-                      <div className="border-b border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-1.5 text-[11px]">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <div className="min-w-0 flex-1 truncate font-medium text-[var(--text-primary)]">{shot.title || 'Evidence'}</div>
-                          {shot.status && (
-                            <span className={cn(
-                              'shrink-0 rounded border px-1.5 py-0.5 text-[9px] font-semibold uppercase',
-                              shot.status === 'passed'
-                                ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400'
-                                : 'border-red-500/30 bg-red-500/10 text-red-400',
-                            )}>
-                              {shot.status}
-                            </span>
-                          )}
-                          {shot.traceUrl && (
-                            <a
-                              href={withBasePath(shot.traceUrl)}
-                              target="_blank"
-                              rel="noreferrer"
-                              title="Download the Playwright trace, then open it at trace.playwright.dev to replay the run step by step"
-                              className="shrink-0 rounded border border-[var(--accent)]/30 bg-[var(--accent)]/10 px-1.5 py-0.5 text-[9px] font-semibold uppercase text-[var(--accent)] hover:bg-[var(--accent)]/20"
-                            >
-                              Trace ↓
-                            </a>
-                          )}
-                        </div>
-                        <div className="truncate text-[var(--text-muted)]">{shot.url}</div>
-                        {shot.reason && <pre className="mt-1 max-h-24 overflow-auto whitespace-pre-wrap rounded bg-red-500/10 p-1.5 font-mono text-[10px] text-red-300">{shot.reason}</pre>}
+                    <button
+                      key={i}
+                      type="button"
+                      onClick={() => setShotOpen(i)}
+                      title={shot.title || 'Evidence'}
+                      className="group overflow-hidden rounded-md border border-[var(--border)] text-left transition-colors hover:border-[var(--accent)]"
+                    >
+                      <div className="flex items-center gap-1.5 border-b border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5">
+                        <span className={cn('h-1.5 w-1.5 shrink-0 rounded-full', shot.status === 'passed' ? 'bg-emerald-500' : 'bg-red-500')} />
+                        <span className="min-w-0 flex-1 truncate text-[11px] font-medium text-[var(--text-primary)]">{shot.title || 'Evidence'}</span>
                       </div>
-                      {shot.screenshotUrl && <img src={withBasePath(shot.screenshotUrl)} alt={shot.title || 'evidence'} className="w-full bg-black object-contain" />}
-                      {Array.isArray(shot.stepScreenshots) && shot.stepScreenshots.length > 0 && (
-                        <div className="grid grid-cols-2 gap-1.5 border-t border-[var(--border)] bg-[var(--bg-secondary)] p-2 md:grid-cols-3">
-                          {shot.stepScreenshots.map((url: string, stepIndex: number) => (
-                            <a key={url} href={withBasePath(url)} target="_blank" rel="noreferrer" className="overflow-hidden rounded border border-[var(--border)] bg-black">
-                              <div className="bg-[var(--bg-card)] px-1.5 py-1 text-[9px] font-semibold text-[var(--text-muted)]">Step {stepIndex + 1}</div>
-                              <img src={withBasePath(url)} alt={`${shot.title || 'evidence'} step ${stepIndex + 1}`} className="h-28 w-full object-cover" />
-                            </a>
-                          ))}
-                        </div>
+                      {shot.screenshotUrl ? (
+                        <img src={withBasePath(shot.screenshotUrl)} alt={shot.title || 'evidence'} className="h-32 w-full bg-black object-cover" />
+                      ) : (
+                        <div className="flex h-32 items-center justify-center bg-black text-[10px] text-[var(--text-muted)]">no screenshot</div>
                       )}
-                    </div>
+                    </button>
                   ))}
                 </div>
               ) : (
@@ -1826,6 +1805,47 @@ export function DeepRunResult({ taskId }: { taskId: string }) {
           ))}
         </div>
       )}
+
+      {/* Evidence popup: the selected case's per-step screenshots (same interaction as Cases/Scripts). */}
+      {shotOpen != null && evidence[shotOpen] && (() => {
+        const sc = evidence[shotOpen];
+        const steps: string[] = (Array.isArray(sc.stepScreenshots) && sc.stepScreenshots.length)
+          ? sc.stepScreenshots
+          : (sc.screenshotUrl ? [sc.screenshotUrl] : []);
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onClick={() => setShotOpen(null)}>
+            <div className="flex max-h-[90dvh] w-full max-w-4xl flex-col overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--bg-card)]" onClick={(e) => e.stopPropagation()}>
+              <div className="flex items-center gap-2 border-b border-[var(--border)] px-4 py-2.5">
+                {sc.status && (
+                  <span className={cn('shrink-0 rounded border px-1.5 py-0.5 text-[9px] font-semibold uppercase', sc.status === 'passed' ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400' : 'border-red-500/30 bg-red-500/10 text-red-400')}>{sc.status}</span>
+                )}
+                <div className="min-w-0 flex-1 truncate text-sm font-medium text-[var(--text-primary)]">{sc.title || 'Evidence'}</div>
+                {sc.traceUrl && (
+                  <a href={withBasePath(sc.traceUrl)} target="_blank" rel="noreferrer" title="Download the Playwright trace to replay step by step" className="shrink-0 rounded border border-[var(--accent)]/30 bg-[var(--accent)]/10 px-1.5 py-0.5 text-[9px] font-semibold uppercase text-[var(--accent)] hover:bg-[var(--accent)]/20">Trace ↓</a>
+                )}
+                <button onClick={() => setShotOpen(null)} className="shrink-0 rounded p-1 text-[var(--text-muted)] hover:text-[var(--text-primary)]"><XCircle className="h-4 w-4" /></button>
+              </div>
+              <div className="min-h-0 flex-1 overflow-auto p-3">
+                {sc.reason && <pre className="mb-2 max-h-28 overflow-auto whitespace-pre-wrap rounded bg-red-500/10 p-2 font-mono text-[10px] text-red-300">{sc.reason}</pre>}
+                <div className="mb-2 text-[11px] font-medium text-[var(--text-muted)]">{steps.length} step screenshot{steps.length === 1 ? '' : 's'}</div>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  {steps.map((url, si) => (
+                    <a key={`${url}-${si}`} href={withBasePath(url)} target="_blank" rel="noreferrer" className="overflow-hidden rounded-md border border-[var(--border)] bg-black">
+                      <div className="bg-[var(--bg-secondary)] px-2 py-1 text-[10px] font-semibold text-[var(--text-primary)]">Step {si + 1}</div>
+                      <img src={withBasePath(url)} alt={`step ${si + 1}`} className="w-full object-contain" />
+                    </a>
+                  ))}
+                </div>
+              </div>
+              <div className="flex items-center justify-between border-t border-[var(--border)] px-4 py-2">
+                <button onClick={() => setShotOpen(Math.max(0, shotOpen - 1))} disabled={shotOpen === 0} className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2.5 py-1 text-xs text-[var(--text-primary)] disabled:opacity-40">← Prev case</button>
+                <span className="text-[11px] text-[var(--text-muted)]">{shotOpen + 1} / {evidence.length}</span>
+                <button onClick={() => setShotOpen(Math.min(evidence.length - 1, shotOpen + 1))} disabled={shotOpen === evidence.length - 1} className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2.5 py-1 text-xs text-[var(--text-primary)] disabled:opacity-40">Next case →</button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }

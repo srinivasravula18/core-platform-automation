@@ -32,12 +32,14 @@ export interface RunExecutionNodeInput {
   ownerId?: string;
 }
 
-/** Legacy UI evidence card shape (run.evidence_screenshots items): title + web-served screenshot URL. */
+/** UI evidence card shape (run.evidence_screenshots items): ONE card per test case. screenshotUrl is
+ * the cover frame (final/failure); stepScreenshots is the ordered before/after chain for that case. */
 export interface EvidenceShot {
   title: string;
   url: string;
   screenshotUrl: string;
   status?: string;
+  stepScreenshots?: string[];
 }
 
 export interface RunExecutionNodeResult {
@@ -71,27 +73,33 @@ function collectEvidenceRefs(tests: TestResult[]): string[] {
   return Array.from(refs);
 }
 
-/** Copy screenshots into the statically-served evidence/ dir and shape them as the UI's evidence cards
- * (mirrors the legacy copyTestEvidenceToRun contract: title + '/evidence/<file>' screenshotUrl). */
+/** Copy each case's before/after step screenshots into the statically-served evidence/ dir and shape
+ * them as ONE evidence card per test case: the cover frame + the ordered before/after step chain.
+ * The UI renders one card per case and opens the step frames in a popup. */
 export async function publishEvidenceShots(runId: string, tests: TestResult[], baseUrl?: string): Promise<EvidenceShot[]> {
   const evidenceDir = path.resolve(process.cwd(), 'evidence');
   await mkdir(evidenceDir, { recursive: true }).catch(() => undefined);
   const shots: EvidenceShot[] = [];
-  const seen = new Set<string>();
-  let n = 0;
-  for (const t of tests) {
-    const files = [
-      ...(t.stepScreenshotPaths ?? []).map((p, i) => ({ p, title: `${t.title} — step ${i + 1}` })),
-      ...(t.screenshotPath ? [{ p: t.screenshotPath, title: t.title }] : []),
-    ];
-    for (const f of files) {
-      if (!f.p || seen.has(f.p)) continue;
-      seen.add(f.p);
-      n += 1;
-      const dest = `${runId}-graph-${n}${path.extname(f.p) || '.png'}`;
-      const ok = await copyFile(f.p, path.join(evidenceDir, dest)).then(() => true).catch(() => false);
-      if (ok) shots.push({ title: f.title, url: baseUrl || '', screenshotUrl: `/evidence/${dest}`, status: t.status });
+  const copyInto = async (src: string, dest: string): Promise<string | null> =>
+    (await copyFile(src, path.join(evidenceDir, dest)).then(() => true).catch(() => false)) ? `/evidence/${dest}` : null;
+
+  for (let ti = 0; ti < tests.length; ti += 1) {
+    const t = tests[ti];
+    const stepUrls: string[] = [];
+    const stepPaths = t.stepScreenshotPaths ?? [];
+    for (let k = 0; k < stepPaths.length; k += 1) {
+      const ext = path.extname(stepPaths[k]) || '.png';
+      const url = await copyInto(stepPaths[k], `${runId}-case${ti + 1}-step${k + 1}${ext}`);
+      if (url) stepUrls.push(url);
     }
+    // Cover thumbnail for the card: the end-of-test/failure screenshot, else the last step frame.
+    let cover = stepUrls.at(-1) || '';
+    if (t.screenshotPath) {
+      const url = await copyInto(t.screenshotPath, `${runId}-case${ti + 1}-final${path.extname(t.screenshotPath) || '.png'}`);
+      if (url) cover = url;
+    }
+    if (!cover && stepUrls.length === 0) continue; // nothing captured for this case
+    shots.push({ title: t.title, url: baseUrl || '', screenshotUrl: cover, status: t.status, stepScreenshots: stepUrls });
   }
   return shots;
 }
