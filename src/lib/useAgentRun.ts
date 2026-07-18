@@ -31,11 +31,19 @@ export function useAgentRun(runId: string) {
     return data;
   }, [runId]);
 
+  // Artifact counts from the last status payload — when they grow mid-run (scripts compiled,
+  // evidence captured), the slim status stream doesn't carry the arrays, so refetch full details.
+  const lastCountsRef = useRef('');
+
   const applyStatus = useCallback((data: any) => {
     if (!activeRef.current) return;
     noteActivity(data);
     setRun((prev: any) => ({ ...(prev || {}), ...data }));
-    if (TERMINAL.includes(data?.status)) void fetchDetails().catch(() => undefined);
+    const c = data?.counts;
+    const countsSig = c ? `${c.cases ?? 0}|${c.scripts ?? 0}|${c.evidence ?? 0}` : '';
+    const countsGrew = countsSig !== '' && countsSig !== lastCountsRef.current;
+    if (countsSig !== '') lastCountsRef.current = countsSig;
+    if (TERMINAL.includes(data?.status) || countsGrew) void fetchDetails().catch(() => undefined);
   }, [fetchDetails, noteActivity]);
 
   const pollStatus = useCallback(async () => {
