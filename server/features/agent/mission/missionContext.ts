@@ -200,10 +200,15 @@ export function needsExplicitListViewModule(prompt: string, explicitModuleId = '
   if (String(explicitModuleId || '').trim()) return false;
   const text = String(prompt || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
   if (!/\blist views?\b/.test(text) || /\b(?:all|every|each|current|this)\s+list views?\b/.test(text)) return false;
+  const generic = new Set(['a', 'an', 'the', 'for', 'admin', 'platform', 'feature', 'default', 'new', 'test', 'testing', 'verify', 'validate',
+    // Phrase words that can trail "list view in/of/..." without naming a module ("in end to end", "in e2e", "in depth", "in detail").
+    'end', 'e2e', 'depth', 'detail', 'details', 'full', 'general']);
   const before = text.match(/\b([a-z0-9_-]+)\s+list views?\b/)?.[1] || '';
-  const generic = new Set(['a', 'an', 'the', 'for', 'admin', 'platform', 'feature', 'default', 'new', 'test', 'testing', 'verify', 'validate']);
   if (before && !generic.has(before)) return false;
-  return !/\blist views?\s+(?:for|of|in|on|at)\s+(?:the\s+)?[a-z0-9_-]+\b/.test(text);
+  // "list view in X": X is a module only when it is NOT a generic phrase word — "end to end"
+  // previously read as module "end" and silently skipped the module question.
+  const after = text.match(/\blist views?\s+(?:for|of|in|on|at)\s+(?:the\s+)?([a-z0-9_-]+)\b/)?.[1] || '';
+  return !after || generic.has(after);
 }
 
 /** DOM evidence is reusable only inside the exact surface/application/module/tab mission. */
