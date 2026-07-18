@@ -1028,13 +1028,27 @@ Return a short, structured analysis.`,
   }
 }
 
+// Opening paragraphs where the model narrates its private reasoning instead of answering
+// ("The user is asking X — they want Y."). These must never reach the console.
+const REASONING_PREAMBLE_RE = /^(?:the\s+user(?:'s)?\s+(?:is\s+|was\s+|just\s+)?(?:asking|asks|wants|wanted|question|message|request)|they\s+(?:want|are\s+asking|asked)|looking\s+at\s+(?:the|this)\s+(?:question|request|message)|let\s+me\s+(?:think|recap|figure|start)|i\s+need\s+to\s+(?:answer|recap|figure|determine))/i;
+
+/** Drop leading reasoning-narration paragraphs, always keeping at least one paragraph. */
+export function stripReasoningPreamble(text: string): string {
+  const raw = String(text || '').trim();
+  if (!raw) return raw;
+  const paras = raw.split(/\n\s*\n/);
+  let start = 0;
+  while (start < paras.length - 1 && REASONING_PREAMBLE_RE.test(paras[start].trim())) start++;
+  return paras.slice(start).join('\n\n').trim();
+}
+
 /**
  * Strip markdown / decorative symbols and emojis so console chat answers render
  * as clean, plain, well-structured text.
  */
 export function sanitizeAnswer(text: string): string {
   if (!text) return '';
-  return String(text)
+  return stripReasoningPreamble(String(text))
     // remove emoji and common pictographs / dingbats / arrows
     .replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2190}-\u{21FF}\u{2B00}-\u{2BFF}\u{FE0F}\u{2022}]/gu, (m) => (m === '•' ? '-' : ''))
     // drop markdown emphasis / heading / code / blockquote markers
@@ -1055,6 +1069,7 @@ ${appsBlock}
 ${conversation ? `RECENT CONVERSATION (oldest first):\n${conversation}\n\n` : ''}${workspaceContext && workspaceContext !== '{}' ? `WORKSPACE CONTEXT — existing artifacts with ids and timestamps (most recent first):\n${workspaceContext}\n\n` : ''}Rules:
 - Use the workspace context and conversation above to answer questions about previously created work (for example "the test cases / suites / scripts / plan you created 2 days ago", "the run from yesterday"). Reference the real ids, titles, and dates from the context — do NOT make up artifacts.
 - If the user wants to act on past work (tweak a case and rerun, etc.), briefly confirm which specific item(s) by id/title, then tell them you can do it.
+- Answer DIRECTLY: the first sentence must already be the answer. NEVER restate, paraphrase, or analyze the user's question, and never narrate your reasoning or interpretation (no openers like "The user is asking..." or "They want...").
 - Write clear, well-structured plain text: 2 to 4 short sentences, or a short list using "- " bullets when listing items.
 - Do NOT use markdown, asterisks, hashes, backticks, code fences, emojis, or any decorative special characters.
 - If the request is ambiguous or the referenced work is not in the context, do NOT guess. Name what you can see and ask one short clarifying question (for example: "Did you mean A, or B?").
@@ -1086,12 +1101,21 @@ export async function* streamExplain(topic: string, options: { workspaceId?: str
   const refsPast = needsHistory(topic);
   const workspaceContext = refsPast ? await buildWorkspaceContext() : '';
   const conversation = provided;
-  let full = '';
+  // Hold the stream head until the first paragraph boundary so a leaked reasoning
+  // preamble ("The user is asking...") is stripped before any bytes reach the client.
+  let hold = '';
+  let flushed = false;
   try {
     for await (const delta of orch.streamText({ prompt: buildExplainPrompt(topic, workspaceContext, conversation, options.apps), userMessage: topic, hasHistory: !!conversation })) {
-      full += delta;
-      yield delta;
+      if (flushed) { yield delta; continue; }
+      hold += delta;
+      if (!hold.includes('\n\n') && hold.length < 800) continue;
+      const cleaned = stripReasoningPreamble(hold);
+      if (!cleaned) continue; // everything so far was preamble — keep holding for real content
+      flushed = true;
+      yield cleaned;
     }
+    if (!flushed && hold.trim()) yield stripReasoningPreamble(hold);
   } finally {
     // The caller persists the exchange in the conversation-scoped chat store.
   }

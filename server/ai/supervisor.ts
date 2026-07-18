@@ -11,7 +11,7 @@
  */
 import { getToolCapableOrchestrator, getOrchestrator, resolveProviderForAgent, resolveModelForAgent, getProviderCredentials } from './orchestrator';
 import { assembleConversationContext } from './memory/contextAssembler';
-import { executeIntent } from './controller';
+import { executeIntent, stripReasoningPreamble } from './controller';
 import type { AgentTool, ToolContext, AgentStep } from './tools/types';
 import { queryWorkspaceTool, searchConversationTool, fetchArtifactTool, searchCodebaseTool, readCodeFileTool, followImportsTool, findUntestedEdgesTool, analyzeFeatureCoverageTool } from './tools/registry';
 import { corePlatformDataTools } from './tools/corePlatformData';
@@ -120,7 +120,7 @@ Operating rules:
 - When the user asks HOW WELL a feature is covered, wants a feature/sub-feature breakdown, or asks to check coverage in depth, call analyze_feature_coverage — it discovers the feature's sub-features from real source and audits each behavior (business rule / user action) against existing cases, returning per-sub-feature coverage and gap proposals.
 - Do not ask for details you can obtain with query_workspace. Only ask the user (by replying with text instead of calling a tool) when a genuinely required detail is missing and unobtainable — e.g. a brand-new plan with no name/scope.
 - If a tool returns an error, diagnose it and try a corrected call; do not repeat the same failing call.
-- When the goal is complete, STOP calling tools and reply with a short plain-text summary of exactly what you did (names + ids), or the answer to their question.
+- When the goal is complete, STOP calling tools and reply with a short plain-text summary of exactly what you did (names + ids), or the answer to their question. Reply with the answer only — never restate the user's question or narrate your reasoning/interpretation first.
 - Be decisive. Prefer doing the work over narrating it.`;
 
 export interface SupervisorResult {
@@ -203,7 +203,8 @@ function numberLines(content: string): string {
     .join('\n');
 }
 
-const INTENT_DRIVEN_ANSWER_RULES = `Infer the response shape from the user's intent:
+const INTENT_DRIVEN_ANSWER_RULES = `Answer DIRECTLY: the first sentence must already be the answer. NEVER restate, paraphrase, or analyze the user's question, and never narrate your reasoning or interpretation (no openers like "The user is asking..." or "They want...").
+Infer the response shape from the user's intent:
 - If the user asks what to test, asks for test areas, asks to create/generate cases, or asks for QA coverage/scenarios, use this structure:
   1. Start with "For <app/feature>, the concrete target is:" and name the precise target/workflow/entity that the codebase supports.
   2. Add "Grounding I found:" with concise bullets that describe the grounded behavior found in the codebase, but DO NOT show file paths, file names, directory names, repository names, or line numbers.
@@ -221,7 +222,8 @@ export function stripCodebaseLocationsForAgentConsole(value: string): string {
     /(?:^|[\s(;])(?:[A-Za-z]:[\\/]|\.{0,2}[\\/]?(?:apps|server|src|tests?|docs|seeds|packages|api|lib|components|hooks|pages|shared|client|services|e2e|unit|features|db|scripts)[\\/])[\w./\\@-]+\.(?:tsx?|jsx?|vue|svelte|py|go|java|rb|cs|php|json|ya?ml|sql|css|scss|html|spec\.ts|test\.ts)(?::\d+(?:-\d+)?)?/gi;
   const bareFileRef =
     /(?:^|[\s(;])[\w.-]+\.(?:tsx?|jsx?|vue|svelte|py|go|java|rb|cs|php|json|ya?ml|sql|css|scss|html|spec\.ts|test\.ts)(?::\d+(?:-\d+)?)?/gi;
-  return String(value || '')
+  // Final Agent Console boundary — also drop any leaked reasoning-narration preamble.
+  return stripReasoningPreamble(String(value || ''))
     .split(/\r?\n/)
     .map((line) => line
       .replace(/\s+referenced by\s+[^.]+(?=\.|$)/gi, '')
