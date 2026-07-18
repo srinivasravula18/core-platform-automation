@@ -4,6 +4,7 @@ import { cn } from '@/src/lib/utils';
 import { withBasePath } from '@/src/lib/base-path';
 import { useAgentRun } from '@/src/lib/useAgentRun';
 import { MarkdownText } from '@/src/components/MarkdownText';
+import FailureCard from '@/src/components/FailureCard';
 import {
   Loader2,
   CheckCircle2,
@@ -1657,7 +1658,7 @@ export function DeepRunResult({ taskId, initialSaved, onSaved }: { taskId: strin
                             )}
                             <span className="min-w-0 flex-1">
                               <span className="text-[var(--text-primary)]">{t.title}</span>
-                              {t.error && <span className="mt-0.5 block whitespace-pre-wrap font-mono text-[10px] text-red-400">{t.error}</span>}
+                              {t.error && <FailureCard error={t.error} />}
                             </span>
                             <span className="shrink-0 text-[var(--text-muted)]">{(t.durationMs / 1000).toFixed(1)}s</span>
                           </div>
