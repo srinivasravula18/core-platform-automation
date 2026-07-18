@@ -373,6 +373,16 @@ export const WebsiteUsers = {
 
 /* ---------- agent runs ---------- */
 
+// PostgreSQL rejects \u0000 in jsonb AND text (0x00). Playwright console/step output can
+// contain null bytes, which made the ENTIRE run upsert fail atomically — the run then lived
+// only in process memory and vanished on restart. Strip them at the serialization boundary.
+function pgSafeJson(value: unknown): string {
+  return JSON.stringify(value ?? null, (_k, v) => (typeof v === 'string' ? v.replace(/\u0000/g, '') : v));
+}
+function pgSafeText(value: unknown): string {
+  return String(value ?? '').replace(/\u0000/g, '');
+}
+
 function mapAgentRun(r: any) {
   if (!r) return null;
   const raw = r.raw && typeof r.raw === 'object' ? r.raw : {};
@@ -467,12 +477,12 @@ export const AgentRuns = {
          test_case_id=EXCLUDED.test_case_id, credentials=EXCLUDED.credentials,
          artifact_name=EXCLUDED.artifact_name, raw=EXCLUDED.raw, updated_at=now()
        RETURNING *`,
-      [id, appUrl, a.provider || '', a.model || '', a.prompt || '',
-       a.status || 'running', JSON.stringify(a.messages || []), JSON.stringify(generatedCases),
-       JSON.stringify(playwrightScripts), JSON.stringify(evidenceScreenshots),
-       JSON.stringify(inspectionContext), folderId, folderPath,
+      [id, pgSafeText(appUrl), a.provider || '', a.model || '', pgSafeText(a.prompt || ''),
+       a.status || 'running', pgSafeJson(a.messages || []), pgSafeJson(generatedCases),
+       pgSafeJson(playwrightScripts), pgSafeJson(evidenceScreenshots),
+       pgSafeJson(inspectionContext), folderId, folderPath,
        testPlanId, testSuiteId, testCaseId,
-       JSON.stringify(a.credentials || {}), artifactName, JSON.stringify(raw), a.createdAt || a.created_at || null],
+       pgSafeJson(a.credentials || {}), artifactName, pgSafeJson(raw), a.createdAt || a.created_at || null],
     );
     await writeScopeCols('agent_runs', id, a);
     await writeConversationCols(id, a);
@@ -538,7 +548,7 @@ async function writeConversationCols(id: string, src: any): Promise<void> {
        completed_at     = COALESCE($4::timestamptz, completed_at),
        artifact_set_id  = COALESCE($5, artifact_set_id)
      WHERE id = $1`,
-    [id, conversationId, executionResult ? JSON.stringify(executionResult) : null, completedAt, artifactSetId],
+    [id, conversationId, executionResult ? pgSafeJson(executionResult) : null, completedAt, artifactSetId],
   );
 }
 
