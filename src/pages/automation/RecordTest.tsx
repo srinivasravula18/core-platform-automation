@@ -36,6 +36,11 @@ export default function RecordTest() {
   const [stats, setStats] = useState<Record<string, number>>({});
   const [elapsed, setElapsed] = useState(0);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Safety net for Stop: the UI leaves 'recording' when the agent's recording.done event lands.
+  // If that event is delayed/lost, this fallback still moves us to summary so the timer can't
+  // count forever. Cleared as soon as recording.done arrives.
+  const stopFallbackRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const clearStopFallback = () => { if (stopFallbackRef.current) { clearTimeout(stopFallbackRef.current); stopFallbackRef.current = null; } };
 
   const [scheduleOpen, setScheduleOpen] = useState(false);
 
@@ -58,6 +63,7 @@ export default function RecordTest() {
     if (evt.type === 'recording.chunk' && typeof evt.data.script === 'string') setScript(evt.data.script);
     if (evt.type === 'recording.status' && evt.data.stats) setStats((s) => ({ ...s, ...evt.data.stats }));
     if (evt.type === 'recording.done') {
+      clearStopFallback();
       const rec = evt.data.recording as Recording | undefined;
       if (rec) { setScript(rec.script || ''); setStats(rec.stats || {}); }
       stopTimer();
@@ -67,7 +73,7 @@ export default function RecordTest() {
 
   const startTimer = () => { setElapsed(0); timerRef.current = setInterval(() => setElapsed((e) => e + 1), 1000); };
   const stopTimer = () => { if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; } };
-  useEffect(() => () => stopTimer(), []);
+  useEffect(() => () => { stopTimer(); clearStopFallback(); }, []);
 
   const mmss = `${String(Math.floor(elapsed / 60)).padStart(2, '0')}:${String(elapsed % 60).padStart(2, '0')}`;
 
@@ -92,10 +98,17 @@ export default function RecordTest() {
   };
 
   const stopRecording = async () => {
-    if (!recordingId) return;
+    if (!recordingId || busy) return;
     setBusy(true);
+    // Stop the clock immediately — the recording is ending; don't keep counting while we wait
+    // on the agent's round-trip (the exact "keeps counting after Stop" bug).
+    stopTimer();
     try { await fetch(`/api/automation/recordings/${recordingId}/stop`, { method: 'POST' }); }
     catch { /* ignore */ } finally { setBusy(false); }
+    // Normally recording.done flips us to summary. If it's delayed/lost, fall back after a grace
+    // period using the script/stats already streamed, so the UI never hangs on the recording screen.
+    clearStopFallback();
+    stopFallbackRef.current = setTimeout(() => { setPhase((p) => (p === 'recording' ? 'summary' : p)); }, 8000);
   };
 
   const discard = async () => {
@@ -218,7 +231,7 @@ export default function RecordTest() {
             <div className="mt-4 flex flex-wrap gap-2">
               <button onClick={stopRecording} disabled={busy}
                 className="inline-flex items-center gap-2 rounded-md bg-[var(--accent)] px-3 py-2 text-sm font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50">
-                <Square className="h-4 w-4" /> Stop
+                {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Square className="h-4 w-4" />} {busy ? 'Stopping…' : 'Stop'}
               </button>
               <button onClick={discard}
                 className="inline-flex items-center gap-2 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm font-medium text-red-400 hover:border-red-500">

@@ -56,12 +56,42 @@ export async function startRecording(recordingId: string, agentId: string) {
   return { ok: true };
 }
 
+// Pending server-side stop fallbacks by recordingId — cleared the moment the agent's record.done lands.
+const stopFallbacks = new Map<string, ReturnType<typeof setTimeout>>();
+function clearStopFallback(recordingId: string) {
+  const t = stopFallbacks.get(recordingId);
+  if (t) { clearTimeout(t); stopFallbacks.delete(recordingId); }
+}
+
+// Mark a recording ready and notify the UI. Idempotent (skips if already ready or gone) so the
+// agent's record.done and the server-side stop fallback can't double-finalize or race each other.
+async function finalizeRecording(recordingId: string, patch: { script?: string; stats?: any; metadata?: any }) {
+  clearStopFallback(recordingId);
+  const rec = await Recordings.get(recordingId);
+  if (!rec || rec.status === 'ready') return;
+  const saved = await Recordings.upsert({
+    ...rec,
+    status: 'ready',
+    script: String(patch.script ?? rec.script ?? ''),
+    stats: { ...rec.stats, ...(patch.stats || {}) },
+    metadata: { ...rec.metadata, ...(patch.metadata || {}) },
+    completedAt: new Date().toISOString(),
+  });
+  persist('recording completed');
+  await emitEvent({ scopeType: 'recording', scopeId: recordingId, type: 'recording.done', ownerId: rec.ownerId, data: { recording: saved } });
+}
+
 export async function stopRecording(recordingId: string) {
   const rec = await Recordings.get(recordingId);
   if (!rec) return { error: 'Recording not found.', status: 404 };
   if (rec.agentId && isAgentConnected(rec.agentId)) {
     dispatchToAgent(rec.agentId, { type: 'record.stop', payload: { recordingId } });
   }
+  // Safety net: the agent normally answers with record.done. If that frame is delayed or lost
+  // (kill race, dropped WS frame, agent hiccup), finalize server-side from the last streamed
+  // script so the recording is saved and the UI leaves the recording state instead of hanging.
+  clearStopFallback(recordingId);
+  stopFallbacks.set(recordingId, setTimeout(() => { void finalizeRecording(recordingId, {}); }, 6000));
   return { ok: true };
 }
 
@@ -98,22 +128,16 @@ onAgentFrame('record.chunk', async (_agentId, frame: AgentFrame) => {
   if (!recordingId) return;
   const rec = await Recordings.get(recordingId);
   if (!rec) return;
+  // Keep the DB's script current so a server-side stop fallback (or a lost record.done) still has
+  // the real recorded script to finalize with, not an empty draft.
+  if (typeof script === 'string' && script && script !== rec.script) {
+    await Recordings.upsert({ ...rec, script });
+  }
   await emitEvent({ scopeType: 'recording', scopeId: recordingId, type: 'recording.chunk', ownerId: rec.ownerId, data: { script: String(script || '') } });
 });
 
 onAgentFrame('record.done', async (_agentId, frame: AgentFrame) => {
   const { recordingId, script, stats, metadata } = frame.payload || {};
   if (!recordingId) return;
-  const rec = await Recordings.get(recordingId);
-  if (!rec) return;
-  const saved = await Recordings.upsert({
-    ...rec,
-    status: 'ready',
-    script: String(script || rec.script || ''),
-    stats: { ...rec.stats, ...(stats || {}) },
-    metadata: { ...rec.metadata, ...(metadata || {}) },
-    completedAt: new Date().toISOString(),
-  });
-  persist('recording completed');
-  await emitEvent({ scopeType: 'recording', scopeId: recordingId, type: 'recording.done', ownerId: rec.ownerId, data: { recording: saved } });
+  await finalizeRecording(recordingId, { script, stats, metadata });
 });
