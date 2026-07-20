@@ -5,6 +5,8 @@
  * likely cause class, and concrete next steps. App-agnostic by design.
  */
 
+import { stripAnsi } from './stripAnsi';
+
 export interface FailureAnalysis {
   kind:
     | 'control-disabled'
@@ -30,6 +32,17 @@ export interface FailureAnalysis {
   suggestedFixes: string[];
 }
 
+/**
+ * One-line, human-readable summary of what a failed step could not do — names the actual selector/
+ * label it failed on (e.g. `Could not fill “#create-app-label” — element not found`) instead of a
+ * cryptic `expectValidation Label…` step name. Used to caption failure frames in the evidence viewer.
+ */
+export function failureGist(rawError: string): string {
+  const a = analyzeFailure(rawError);
+  const attempted = a.attempted.replace(/^interact with/, 'reach');
+  return `Could not ${attempted} — ${a.label.toLowerCase()}`;
+}
+
 /** First regex capture group across the error text, or null. */
 function cap(text: string, re: RegExp): string | null {
   const m = text.match(re);
@@ -41,7 +54,9 @@ function humanTarget(target: string | null): string {
 }
 
 export function analyzeFailure(rawError: string): FailureAnalysis {
-  const e = String(rawError || '');
+  // Playwright errors carry ANSI color codes; strip first so both parsing and every derived
+  // field (expected/actual/target) are clean plain text.
+  const e = stripAnsi(rawError);
 
   // --- shared extractions -----------------------------------------------------------------
   const target =

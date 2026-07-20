@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { ChevronDown, ChevronRight, Wrench } from 'lucide-react';
 import { analyzeFailure } from '../lib/failureAnalysis';
+import { stripAnsi } from '../lib/stripAnsi';
 
 /** Developer-actionable failure breakdown for one failed test — replaces the raw Playwright dump. */
 export default function FailureCard({ error }: { error: string }) {
@@ -55,7 +56,7 @@ export default function FailureCard({ error }: { error: string }) {
         Raw error
       </button>
       {showRaw && (
-        <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap rounded bg-slate-950 p-2 font-mono text-[10px] text-slate-300">{error}</pre>
+        <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap rounded bg-slate-950 p-2 font-mono text-[10px] text-slate-300">{stripAnsi(error)}</pre>
       )}
     </div>
   );

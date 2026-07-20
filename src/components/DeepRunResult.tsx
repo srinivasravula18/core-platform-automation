@@ -4,6 +4,8 @@ import { cn } from '@/src/lib/utils';
 import { withBasePath } from '@/src/lib/base-path';
 import { showAlert } from '@/src/lib/dialog';
 import { containsPrivateFileActivity } from '@/src/lib/userFacingAgentActivity';
+import { stripAnsi } from '@/src/lib/stripAnsi';
+import { failureGist } from '@/src/lib/failureAnalysis';
 import { useAgentRun } from '@/src/lib/useAgentRun';
 import { useUiSettings } from '@/src/store/uiSettings';
 import { MarkdownText } from '@/src/components/MarkdownText';
@@ -190,10 +192,31 @@ function stepFramesFor(sc: any): StepFrame[] {
   return urls.map((url) => ({ url }));
 }
 
-/** "Step 3 — fill Username" style caption from the joined step-log metadata. */
+/** "Step 3 — fill Username" style caption from the joined step-log metadata. A FAILED step instead
+ * names the actual selector/label it could not reach (e.g. "could not fill #create-app-label"), so
+ * the dev team sees the real gap rather than a cryptic step name. All text is ANSI-stripped. */
 function stepCaption(frame: StepFrame, si: number): string {
-  const action = [frame.kind === 'startMission' ? 'open page' : frame.kind, frame.label].filter(Boolean).join(' ');
-  return `Step ${si + 1}${action ? ` — ${action}` : ''}${frame.value ? ` = "${String(frame.value).slice(0, 40)}"` : ''}`;
+  if (frame.ok === false && frame.error) return `Step ${si + 1} — ${failureGist(frame.error)}`;
+  const action = [frame.kind === 'startMission' ? 'open page' : frame.kind, stripAnsi(frame.label || '')].filter(Boolean).join(' ');
+  return `Step ${si + 1}${action ? ` — ${action}` : ''}${frame.value ? ` = "${stripAnsi(String(frame.value)).slice(0, 40)}"` : ''}`;
+}
+
+/** Download one screenshot URL as a shareable file (dev-team handoff). Fetched as a blob so the
+ * saved filename is meaningful instead of the server's opaque evidence path. */
+async function downloadShot(url: string, filename: string): Promise<void> {
+  try {
+    const res = await fetch(withBasePath(url));
+    const blob = await res.blob();
+    const objectUrl = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = objectUrl;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(objectUrl);
+  } catch {
+    // Fall back to opening the image directly if the blob fetch is blocked.
+    window.open(withBasePath(url), '_blank');
+  }
 }
 
 type Step = { action: string; expected: string };
@@ -771,7 +794,7 @@ export function DeepRunResult({ taskId, initialSaved, onSaved }: { taskId: strin
     const header = ['Title', 'Priority', 'Type', 'Tags', 'Steps', 'Result', 'Error'];
     const rows = list.map((c) => {
       const r = resultForCase(c);
-      return [c.title, c.priority || '', c.type || 'Manual', (c.tags || []).join(' '), (c.steps || []).length, r ? r.status : 'not run', r?.error || ''];
+      return [c.title, c.priority || '', c.type || 'Manual', (c.tags || []).join(' '), (c.steps || []).length, r ? r.status : 'not run', stripAnsi(r?.error || '')];
     });
     return [header, ...rows].map((row) => row.map(esc).join(',')).join('\r\n');
   };
@@ -785,7 +808,7 @@ export function DeepRunResult({ taskId, initialSaved, onSaved }: { taskId: strin
       const r = resultForCase(c);
       const badge = r ? `<span class="b ${esc(r.status)}">${esc(r.status)}</span>` : '';
       const steps = (c.steps || []).map((s, si) => `<tr><td>${si + 1}. ${esc(s.action)}</td><td>${esc(s.expected)}</td></tr>`).join('');
-      return `<div class="c"><h3>${i + 1}. ${esc(c.title)} ${badge}</h3><div class="m">${esc(c.priority || 'Medium')} · ${esc(c.type || 'Manual')}${(c.tags || []).length ? ' · ' + (c.tags || []).map(esc).join(', ') : ''}</div>${c.description ? `<p>${esc(c.description)}</p>` : ''}<table><thead><tr><th>Step</th><th>Expected result</th></tr></thead><tbody>${steps || '<tr><td colspan="2">No steps</td></tr>'}</tbody></table>${r?.error ? `<pre class="e">${esc(r.error)}</pre>` : ''}</div>`;
+      return `<div class="c"><h3>${i + 1}. ${esc(c.title)} ${badge}</h3><div class="m">${esc(c.priority || 'Medium')} · ${esc(c.type || 'Manual')}${(c.tags || []).length ? ' · ' + (c.tags || []).map(esc).join(', ') : ''}</div>${c.description ? `<p>${esc(c.description)}</p>` : ''}<table><thead><tr><th>Step</th><th>Expected result</th></tr></thead><tbody>${steps || '<tr><td colspan="2">No steps</td></tr>'}</tbody></table>${r?.error ? `<pre class="e">${esc(stripAnsi(r.error))}</pre>` : ''}</div>`;
     }).join('');
     // Downloaded HTML is opened outside the app, so screenshot links must be absolute (origin + base path).
     const absShot = (u: string) => (u && u.startsWith('/') ? `${window.location.origin}${withBasePath(u)}` : u);
@@ -1679,9 +1702,9 @@ export function DeepRunResult({ taskId, initialSaved, onSaved }: { taskId: strin
                 >
                   {pwResult.error ? (
                     <div className="text-[11px] text-red-400">
-                      {pwResult.error}
+                      {stripAnsi(pwResult.error)}
                       {pwResult.stderrTail && (
-                        <pre className="mt-1.5 max-h-32 overflow-auto whitespace-pre-wrap rounded bg-slate-950 p-2 font-mono text-[10px] text-slate-300">{pwResult.stderrTail}</pre>
+                        <pre className="mt-1.5 max-h-32 overflow-auto whitespace-pre-wrap rounded bg-slate-950 p-2 font-mono text-[10px] text-slate-300">{stripAnsi(pwResult.stderrTail)}</pre>
                       )}
                     </div>
                   ) : (
@@ -2088,26 +2111,34 @@ export function DeepRunResult({ taskId, initialSaved, onSaved }: { taskId: strin
                 <button onClick={() => setShotOpen(null)} className="shrink-0 rounded p-1 text-[var(--text-muted)] hover:text-[var(--text-primary)]"><XCircle className="h-4 w-4" /></button>
               </div>
               <div className="min-h-0 flex-1 overflow-auto p-3">
-                {sc.reason && <pre className="mb-2 max-h-28 overflow-auto whitespace-pre-wrap rounded bg-red-500/10 p-2 font-mono text-[10px] text-red-300">{sc.reason}</pre>}
+                {sc.reason && <pre className="mb-2 max-h-28 overflow-auto whitespace-pre-wrap rounded bg-red-500/10 p-2 font-mono text-[10px] text-red-300">{stripAnsi(sc.reason)}</pre>}
                 <div className="mb-2 text-[11px] font-medium text-[var(--text-muted)]">{frames.length} step screenshot{frames.length === 1 ? '' : 's'}</div>
                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                  {frames.map((frame, si) => (
-                    // In-app zoom (was a raw target=_blank image tab that lost the case/step context).
-                    <button
-                      key={`${frame.url}-${si}`}
-                      type="button"
-                      onClick={() => setStepZoom({ url: frame.url, caption: stepCaption(frame, si) })}
-                      className="overflow-hidden rounded-md border border-[var(--border)] bg-black text-left"
-                      title="Click to zoom"
-                    >
+                  {frames.map((frame, si) => {
+                    const caption = stepCaption(frame, si);
+                    const shotName = `${(evidenceTitle(sc.title, shotOpen) || 'evidence').replace(/[^a-z0-9]+/gi, '-').toLowerCase().slice(0, 40)}-step${si + 1}.png`;
+                    return (
+                    <div key={`${frame.url}-${si}`} className="overflow-hidden rounded-md border border-[var(--border)] bg-black">
                       <div className={cn('flex items-center gap-1.5 bg-[var(--bg-secondary)] px-2 py-1 text-[10px] font-semibold', frame.ok === false ? 'text-red-400' : 'text-[var(--text-primary)]')}>
                         {frame.ok === false && <XCircle className="h-3 w-3 shrink-0" />}
-                        <span className="min-w-0 flex-1 truncate">{stepCaption(frame, si)}</span>
+                        <span className="min-w-0 flex-1 truncate" title={caption}>{caption}</span>
+                        <button
+                          type="button"
+                          onClick={(e) => { e.stopPropagation(); void downloadShot(frame.url, shotName); }}
+                          title="Download this screenshot to share with the dev team"
+                          className="shrink-0 rounded p-0.5 text-[var(--text-muted)] hover:text-[var(--accent)]"
+                        >
+                          <Download className="h-3 w-3" />
+                        </button>
                       </div>
-                      {frame.error && <div className="truncate bg-red-500/10 px-2 py-0.5 font-mono text-[9px] text-red-300" title={frame.error}>{frame.error}</div>}
-                      <img src={withBasePath(frame.url)} alt={stepCaption(frame, si)} className="w-full object-contain" />
-                    </button>
-                  ))}
+                      {/* Clean, ANSI-stripped failure line — the raw gap for this step (selector/label). */}
+                      {frame.error && <div className="truncate bg-red-500/10 px-2 py-0.5 font-mono text-[9px] text-red-300" title={stripAnsi(frame.error)}>{stripAnsi(frame.error)}</div>}
+                      <button type="button" onClick={() => setStepZoom({ url: frame.url, caption })} className="block w-full" title="Click to zoom">
+                        <img src={withBasePath(frame.url)} alt={caption} className="w-full object-contain" />
+                      </button>
+                    </div>
+                    );
+                  })}
                 </div>
               </div>
               <div className="flex items-center justify-between border-t border-[var(--border)] px-4 py-2">
@@ -2119,7 +2150,17 @@ export function DeepRunResult({ taskId, initialSaved, onSaved }: { taskId: strin
             {/* Full-size zoom of one step frame, layered above the case modal — stays in-app. */}
             {stepZoom && (
               <div className="fixed inset-0 z-[60] flex flex-col items-center justify-center gap-2 bg-black/85 p-4" onClick={(e) => { e.stopPropagation(); setStepZoom(null); }}>
-                <div className="max-w-[95dvw] truncate text-xs font-medium text-white/90">{stepZoom.caption}</div>
+                <div className="flex max-w-[95dvw] items-center gap-2">
+                  <span className="truncate text-xs font-medium text-white/90">{stepZoom.caption}</span>
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); void downloadShot(stepZoom.url, `evidence-${stepZoom.caption.replace(/[^a-z0-9]+/gi, '-').toLowerCase().slice(0, 40)}.png`); }}
+                    title="Download this screenshot to share with the dev team"
+                    className="inline-flex shrink-0 items-center gap-1 rounded border border-white/20 bg-white/10 px-2 py-0.5 text-[10px] font-semibold text-white hover:bg-white/20"
+                  >
+                    <Download className="h-3 w-3" /> Download
+                  </button>
+                </div>
                 <img src={withBasePath(stepZoom.url)} alt={stepZoom.caption} className="max-h-[85dvh] max-w-[95dvw] rounded-md object-contain" />
                 <div className="text-[10px] text-white/50">Click anywhere to close</div>
               </div>

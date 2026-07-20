@@ -61,6 +61,13 @@ function digestOf(value: unknown): string {
   return createHash('sha1').update(JSON.stringify(value)).digest('hex');
 }
 
+// Playwright step logs carry ANSI color codes; strip them at capture so stored evidence, the UI, and
+// exported reports all show plain text (built from string escapes to keep this source pure ASCII).
+const ANSI_PATTERN = new RegExp('[\\u001B\\u009B]\\[[0-9;?]*[A-Za-z]', 'g');
+function stripAnsi(input: unknown): string {
+  return String(input ?? '').replace(ANSI_PATTERN, '');
+}
+
 /** Screenshot/trace/log paths are the checkpoint-safe evidence refs; deduped because screenshotPath may repeat the last step shot. */
 function collectEvidenceRefs(tests: TestResult[]): string[] {
   const refs = new Set<string>();
@@ -112,10 +119,10 @@ export async function publishEvidenceShots(runId: string, tests: TestResult[], b
           return {
             url,
             kind: typeof e.kind === 'string' ? e.kind : undefined,
-            label: typeof e.label === 'string' ? e.label.slice(0, 120) : undefined,
-            value: typeof e.value === 'string' ? e.value.slice(0, 80) : undefined,
+            label: typeof e.label === 'string' ? stripAnsi(e.label).slice(0, 120) : undefined,
+            value: typeof e.value === 'string' ? stripAnsi(e.value).slice(0, 80) : undefined,
             ok: typeof e.ok === 'boolean' ? e.ok : undefined,
-            error: typeof e.error === 'string' ? e.error.slice(0, 300) : undefined,
+            error: typeof e.error === 'string' ? stripAnsi(e.error).slice(0, 300) : undefined,
           };
         });
       }
