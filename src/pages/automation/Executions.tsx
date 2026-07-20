@@ -55,9 +55,10 @@ export default function Executions() {
   const runNow = async (recordingId: string) => {
     if (!connectedAgent) { showToast('No connected agent. Start your agent first.', { tone: 'error' }); return; }
     try {
-      const res = await fetch('/api/automation/jobs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ recordingId, agentId: connectedAgent.id }) });
+      // Manual runs are headed: a browser window opens on the agent machine so the user can watch.
+      const res = await fetch('/api/automation/jobs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ recordingId, agentId: connectedAgent.id, headed: true }) });
       if (!res.ok) throw new Error();
-      showToast('Run queued. It will appear below as it executes.', { tone: 'success' });
+      showToast('Run queued — a browser window will open on the agent machine so you can watch.', { tone: 'success' });
       void refreshJobs();
     } catch { showToast('Could not queue the run.', { tone: 'error' }); }
   };
@@ -101,9 +102,10 @@ export default function Executions() {
         ) : recordings.length === 0 ? (
           <div className="px-4 py-8 text-center text-sm text-[var(--text-muted)]">No recordings yet. <Link to="/automation/record" className="text-[var(--accent)] hover:underline">Record one</Link>.</div>
         ) : (
+          <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead><tr className="border-b border-[var(--border)] text-left text-xs uppercase tracking-wide text-[var(--text-muted)]">
-              <th className="px-4 py-2 font-medium">Name</th><th className="px-4 py-2 font-medium">URL</th><th className="px-4 py-2 font-medium">Browser</th><th className="px-4 py-2 font-medium">Status</th><th className="px-4 py-2 font-medium text-right">Actions</th>
+              <th className="px-4 py-2 font-medium">Name</th><th className="hidden px-4 py-2 font-medium lg:table-cell">URL</th><th className="hidden px-4 py-2 font-medium sm:table-cell">Browser</th><th className="hidden px-4 py-2 font-medium md:table-cell">Status</th><th className="px-4 py-2 font-medium text-right">Actions</th>
             </tr></thead>
             <tbody>
               {recordings.map((rec) => {
@@ -111,14 +113,14 @@ export default function Executions() {
                 const runnable = rec.status === 'ready' && !!connectedAgent;
                 return (
                   <tr key={rec.id} className="border-b border-[var(--border)] last:border-0 hover:bg-[var(--bg-secondary)]">
-                    <td className="px-4 py-2 font-medium text-[var(--text-primary)]">{rec.name}</td>
-                    <td className="px-4 py-2 max-w-[14rem] truncate text-xs text-[var(--text-muted)]">{rec.appUrl}</td>
-                    <td className="px-4 py-2 text-[var(--text-primary)]">{rec.browser}</td>
-                    <td className="px-4 py-2"><span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${st.cls}`}>{st.label}</span></td>
+                    <td className="max-w-[16rem] truncate px-4 py-2 font-medium text-[var(--text-primary)]" title={rec.name}>{rec.name}</td>
+                    <td className="hidden max-w-[14rem] truncate px-4 py-2 text-xs text-[var(--text-muted)] lg:table-cell" title={rec.appUrl}>{rec.appUrl}</td>
+                    <td className="hidden px-4 py-2 text-[var(--text-primary)] sm:table-cell">{rec.browser}</td>
+                    <td className="hidden px-4 py-2 md:table-cell"><span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${st.cls}`}>{st.label}</span></td>
                     <td className="px-4 py-2">
-                      <div className="flex items-center justify-end gap-1.5">
+                      <div className="flex items-center justify-end gap-1.5 whitespace-nowrap">
                         <button onClick={() => setViewScript(rec)} title="View script" className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-xs text-[var(--text-primary)] hover:border-[var(--accent)]"><Code2 className="h-3.5 w-3.5" /></button>
-                        <button onClick={() => runNow(rec.id)} disabled={!runnable} title={runnable ? 'Run now' : 'Recording must be ready and an agent connected'} className="inline-flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-xs text-[var(--text-primary)] hover:border-[var(--accent)] disabled:opacity-40"><Play className="h-3.5 w-3.5" /> Run</button>
+                        <button onClick={() => runNow(rec.id)} disabled={!runnable} title={runnable ? 'Run now — a browser opens on the agent machine so you can watch' : 'Recording must be ready and an agent connected'} className="inline-flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-xs text-[var(--text-primary)] hover:border-[var(--accent)] disabled:opacity-40"><Play className="h-3.5 w-3.5" /> Run</button>
                         <button onClick={() => setScheduleFor(rec.id)} disabled={!connectedAgent} title={connectedAgent ? 'Schedule' : 'Connect an agent first'} className="inline-flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-xs text-[var(--text-primary)] hover:border-[var(--accent)] disabled:opacity-40"><CalendarClock className="h-3.5 w-3.5" /> Schedule</button>
                         <button onClick={() => removeRecording(rec.id, rec.name)} title="Delete" className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-xs text-red-400 hover:border-red-500"><Trash2 className="h-3.5 w-3.5" /></button>
                       </div>
@@ -128,6 +130,7 @@ export default function Executions() {
               })}
             </tbody>
           </table>
+          </div>
         )}
       </div>
 

@@ -9,7 +9,7 @@ import { ScheduleRecordingModal } from '@/src/components/ScheduleRecordingModal'
 
 type Phase = 'setup' | 'recording' | 'summary';
 const BROWSERS = ['chromium', 'firefox', 'webkit'] as const;
-const ENVIRONMENTS = ['QA', 'DEV', 'PROD'] as const;
+const ENVIRONMENTS = ['QA', 'DEV', 'TEST', 'PROD'] as const;
 
 function StatTile({ label, value }: { label: string; value: number | string }) {
   return (
@@ -320,7 +320,7 @@ function AddUrlModal({ isOpen, onClose, onCreated }: { isOpen: boolean; onClose:
         Environment
         <select value={environment} onChange={(e) => setEnvironment(e.target.value)}
           className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]">
-          {['QA', 'DEV', 'PROD', 'staging'].map((e) => <option key={e} value={e}>{e}</option>)}
+          {['QA', 'DEV', 'TEST', 'PROD', 'staging'].map((e) => <option key={e} value={e}>{e}</option>)}
         </select>
       </label>
       <p className="mt-4 text-xs text-[var(--text-muted)]">Saved URLs are shared with Settings → credentials and reusable across recordings.</p>

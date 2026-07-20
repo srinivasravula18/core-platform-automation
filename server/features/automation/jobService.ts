@@ -57,6 +57,10 @@ export async function createServerJob(input: { recordingId: string; scheduleId?:
   return job;
 }
 
+// Manual-run options that must reach the agent but have no DB column (the Postgres upsert would
+// drop them). In-memory only: after a server restart a re-flushed job falls back to headless.
+const jobRunOptions = new Map<string, { headed: boolean }>();
+
 /** Push a queued job to its agent if connected; returns true if dispatched. */
 async function tryDispatch(jobId: string): Promise<boolean> {
   const job = await AutomationJobs.get(jobId);
@@ -72,13 +76,17 @@ async function tryDispatch(jobId: string): Promise<boolean> {
       browser: rec?.browser || 'chromium',
       environment: rec?.environment || 'QA',
       appUrl: rec?.appUrl || '',
+      headed: jobRunOptions.get(job.id)?.headed || false,
     },
   });
-  if (ok) await setStatus(jobId, 'dispatched');
+  if (ok) {
+    jobRunOptions.delete(job.id);
+    await setStatus(jobId, 'dispatched');
+  }
   return ok;
 }
 
-export async function createJob(input: { recordingId: string; agentId: string; trigger?: JobTrigger; scheduleId?: string }, scope: Scope) {
+export async function createJob(input: { recordingId: string; agentId: string; trigger?: JobTrigger; scheduleId?: string; headed?: boolean }, scope: Scope) {
   const now = new Date().toISOString();
   const job = {
     id: uid('JOB'),
@@ -94,6 +102,7 @@ export async function createJob(input: { recordingId: string; agentId: string; t
   };
   const saved = await AutomationJobs.upsert(job);
   persist('job created');
+  if (input.headed) jobRunOptions.set(saved.id, { headed: true });
   await emitEvent({ scopeType: 'job', scopeId: saved.id, type: 'job.queued', ownerId: job.ownerId || '', data: { job: saved } });
   await tryDispatch(saved.id);
   return saved;
@@ -103,6 +112,7 @@ export async function cancelJob(jobId: string) {
   const job = await AutomationJobs.get(jobId);
   if (!job) return { error: 'Job not found.', status: 404 };
   if (['done', 'failed', 'cancelled'].includes(job.status)) return { ok: true };
+  jobRunOptions.delete(jobId);
   if (job.agentId && isAgentConnected(job.agentId)) dispatchToAgent(job.agentId, { type: 'cancel', payload: { jobId } });
   else cancelServerJob(jobId); // server-side run (scheduled): kill the local playwright process
   await setStatus(jobId, 'cancelled', { finishedAt: new Date().toISOString() });

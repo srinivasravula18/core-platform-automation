@@ -91,10 +91,15 @@ const PUBLIC_API_PREFIXES = [
  * public allowlist above. Non-/api paths (static UI, /evidence) pass through untouched.
  * Register this once, after authContextMiddleware, so per-route wiring isn't needed.
  */
+// Agent artifact ingest (PUT /api/automation/jobs/:id/artifacts/:kind/:file) authenticates with an
+// AGENT token inside the handler (requireAgent); the human-session gate would always 401 it.
+const AGENT_ARTIFACT_INGEST_RE = /^\/api\/automation\/jobs\/[^/]+\/artifacts\//;
+
 export function apiAuthGate(req: Request, res: Response, next: NextFunction) {
   const p = req.path;
   if (!p.startsWith('/api/')) return next();
   if (PUBLIC_API_PREFIXES.some((prefix) => p === prefix || p.startsWith(`${prefix}/`))) return next();
+  if (req.method === 'PUT' && AGENT_ARTIFACT_INGEST_RE.test(p)) return next();
   if (getAuthUser(req)) return next();
   return res.status(401).json({ error: 'Authentication required.' });
 }

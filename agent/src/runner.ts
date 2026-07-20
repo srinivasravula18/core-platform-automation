@@ -24,11 +24,12 @@ export interface Job {
   browser: string;
   environment: string;
   appUrl: string;
+  headed?: boolean;
 }
 
 export type SendFrame = (type: string, payload: Record<string, unknown>) => void;
 
-function configTemplate(engine: string): string {
+function configTemplate(engine: string, headed: boolean): string {
   const browserName = ['chromium', 'firefox', 'webkit'].includes(engine) ? engine : 'chromium';
   // Use system Chrome when bundled Chromium is absent (same resolution as the recorder).
   const channel = browserName === 'chromium' ? chromiumChannel() : undefined;
@@ -41,7 +42,7 @@ export default defineConfig({
   // Capture on every run (not just failures) so each execution has step snapshots, a full video of
   // every action, and a trace to download. 'on' screenshots at each test end; the video + trace carry
   // the per-action detail.
-  use: { browserName: '${browserName}',${channel ? ` channel: '${channel}',` : ''} headless: true, trace: 'on', video: 'on', screenshot: 'on' },
+  use: { browserName: '${browserName}',${channel ? ` channel: '${channel}',` : ''} headless: ${headed ? 'false' : 'true'}, trace: 'on', video: 'on', screenshot: 'on' },
 });
 `;
 }
@@ -68,9 +69,9 @@ export class Runner {
   async run(job: Job): Promise<void> {
     const runDir = path.join(this.workDir, 'runs', job.jobId.replace(/[^a-zA-Z0-9._-]/g, '_'));
     fs.mkdirSync(path.join(runDir, 'tests'), { recursive: true });
-    fs.writeFileSync(path.join(runDir, 'playwright.config.ts'), configTemplate(job.browser));
+    fs.writeFileSync(path.join(runDir, 'playwright.config.ts'), configTemplate(job.browser, !!job.headed));
     fs.writeFileSync(path.join(runDir, 'tests', 'recording.spec.ts'), job.script || '');
-    this.log.info({ jobId: job.jobId, browser: job.browser }, 'job started');
+    this.log.info({ jobId: job.jobId, browser: job.browser, headed: !!job.headed }, 'job started');
     this.send('job.progress', { jobId: job.jobId, phase: 'running' });
 
     const exitCode = await this.execute(job, runDir);

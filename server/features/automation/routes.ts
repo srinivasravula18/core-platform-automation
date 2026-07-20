@@ -191,11 +191,11 @@ export function registerAutomationRoutes(app: Express) {
   /* ---------- jobs (human, scoped) ---------- */
 
   app.post('/api/automation/jobs', requireAuth, async (req: Request, res: Response) => {
-    const { recordingId, agentId } = req.body || {};
+    const { recordingId, agentId, headed } = req.body || {};
     if (!recordingId || !agentId) return res.status(400).json({ error: 'recordingId and agentId are required.' });
     const rec = await scopedGet((id) => Recordings.get(id), recordingId, req);
     if (!rec) return res.status(404).json({ error: 'Recording not found.' });
-    const job = await createJob({ recordingId, agentId, trigger: 'manual' }, reqScope(req));
+    const job = await createJob({ recordingId, agentId, trigger: 'manual', headed: !!headed }, reqScope(req));
     res.status(201).json({ job });
   });
 
