@@ -70,6 +70,10 @@ scripts/**/*-json/
 agent/config.json
 agent/logs/
 agent/playwright/
-agent/browsers/
+# Keep huge browser downloads (chromium-*) out of git, but ship the tiny video/deps helpers
+# (ffmpeg, winldd) inside the downloadable bundle.
+agent/browsers/*
+!agent/browsers/ffmpeg-*/
+!agent/browsers/winldd-*/
 # Uploaded run artifacts (cloud host storage, not source)
 /automation-artifacts

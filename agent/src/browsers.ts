@@ -8,6 +8,7 @@
  */
 
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import { spawn } from 'child_process';
 import { chromium } from 'playwright';
@@ -44,13 +45,29 @@ export function chromiumChannel(): 'chrome' | undefined {
   return !bundledChromiumReady() && systemChromePath() ? 'chrome' : undefined;
 }
 
-/** Boot check: no-op when a usable browser exists; else download Chromium in the background. */
+function browsersRoot(): string {
+  if (process.env.PLAYWRIGHT_BROWSERS_PATH) return process.env.PLAYWRIGHT_BROWSERS_PATH;
+  if (process.platform === 'win32') return path.join(process.env.LOCALAPPDATA || '', 'ms-playwright');
+  if (process.platform === 'darwin') return path.join(os.homedir(), 'Library', 'Caches', 'ms-playwright');
+  return path.join(os.homedir(), '.cache', 'ms-playwright');
+}
+
+/** Video capture needs Playwright's ffmpeg even when the browser itself is system Chrome. */
+function ffmpegReady(): boolean {
+  try { return fs.readdirSync(browsersRoot()).some((d) => d.startsWith('ffmpeg-')); } catch { return false; }
+}
+
+/** Boot check: install whatever is missing (browser and/or ffmpeg) in the background. */
 export function ensureBrowsers(log: Logger, cwd: string): void {
-  if (bundledChromiumReady()) { log.info('browser: bundled Chromium ready'); return; }
   const chrome = systemChromePath();
-  if (chrome) { log.info({ chrome }, 'browser: using system Google Chrome'); return; }
-  log.warn('no browser found — downloading Playwright Chromium in the background (~150 MB, one time)');
-  const child = spawn('npx', ['playwright', 'install', 'chromium'], {
+  const needsBrowser = !bundledChromiumReady() && !chrome;
+  const missing = [...(needsBrowser ? ['chromium'] : []), ...(ffmpegReady() ? [] : ['ffmpeg'])];
+  if (!missing.length) {
+    log.info(chrome && !bundledChromiumReady() ? { chrome } : {}, 'browser: ready (incl. ffmpeg for video)');
+    return;
+  }
+  log.warn({ missing }, 'downloading missing Playwright components in the background (one time)');
+  const child = spawn('npx', ['playwright', 'install', ...missing], {
     cwd,
     shell: process.platform === 'win32',
     env: { ...process.env }, // start.bat's PLAYWRIGHT_BROWSERS_PATH keeps the download inside the bundle
@@ -59,8 +76,8 @@ export function ensureBrowsers(log: Logger, cwd: string): void {
   child.stdout?.on('data', onLine);
   child.stderr?.on('data', onLine);
   child.once('close', (code) => {
-    if (code === 0) log.info('browser: Chromium installed — record & run ready');
-    else log.error({ code }, 'Chromium install failed — run `npx playwright install chromium` in the agent folder');
+    if (code === 0) log.info({ installed: missing }, 'browser components installed — record & run ready');
+    else log.error({ code }, `install failed — run \`npx playwright install ${missing.join(' ')}\` in the agent folder`);
   });
-  child.once('error', (err) => log.error({ err: err.message }, 'Chromium install spawn failed'));
+  child.once('error', (err) => log.error({ err: err.message }, 'browser component install spawn failed'));
 }
