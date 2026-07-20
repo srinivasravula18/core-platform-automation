@@ -70,11 +70,19 @@ export class ConnectionManager {
                 this.scheduleReconnect();
         });
         ws.on('error', (err) => this.log.warn({ err: err.message }, 'socket error'));
-        // A 401 on the upgrade means the access token expired — refresh once, then let close→reconnect run.
+        // Rejected upgrade: ws suppresses 'error'/'close' when this listener exists, so we must log
+        // the rejection, refresh on 401, and schedule the reconnect ourselves or the agent hangs forever.
         ws.on('unexpected-response', (_req, res) => {
-            if (res.statusCode === 401)
-                void this.tryRefresh();
-            res.resume();
+            let body = '';
+            res.on('data', (c) => { body += c; });
+            res.on('end', () => this.log.warn({ status: res.statusCode, body: body.slice(0, 200) }, 'ws upgrade rejected'));
+            const refresh = res.statusCode === 401 ? this.tryRefresh() : Promise.resolve();
+            void refresh.finally(() => {
+                if (this.heartbeat)
+                    clearInterval(this.heartbeat);
+                if (!this.closing && this.ws === ws)
+                    this.scheduleReconnect();
+            });
         });
     }
     async tryRefresh() {
