@@ -45,6 +45,7 @@ import { computeNextRun } from './schedulerService';
 import { saveArtifact, listArtifacts, resolveArtifact, contentTypeFor } from './artifactService';
 import { subscribe } from './eventsService';
 import { streamAgentZip, agentLatestInfo, agentDirExists } from './downloadService';
+import { ensureBundledChromium } from './bundleBrowsers';
 import type { AgentRecord, ArtifactKind, ScheduleKind } from './types';
 
 /** Authenticate an agent from its `Authorization: Bearer <agentId>.<secret>` token. */
@@ -63,6 +64,9 @@ function requireAgent(req: Request, res: Response, next: NextFunction) {
 
 export function registerAutomationRoutes(app: Express) {
   if (!isRemoteAgentEnabled()) return;
+
+  // Enrich the downloadable agent with Windows Chromium at boot so end users install nothing.
+  ensureBundledChromium();
 
   /* ---------- human API (scoped) ---------- */
 

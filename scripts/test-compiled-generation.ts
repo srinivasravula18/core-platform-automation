@@ -55,6 +55,7 @@ async function main() {
   ok(res.scripts.every((s) => s.code.includes("import { MissionRunner } from './mission-runner'")), 'specs use MissionRunner');
   ok(res.scripts.every((s) => !/page\.goto|new URL|loginIfNeeded|\.first\(/.test(s.code)), 'no forbidden constructs');
   ok(new Set(res.scripts.map((s) => s.filename)).size === 2, 'filenames are unique');
+  ok(res.scripts.every((s) => s.code.includes(`test(${JSON.stringify(s.test_case_title)}`)), 'reviewed case titles override omitted plan titles in emitted tests');
 
   console.log('ungrounded case → diagnostic, never a script');
   ok(res.scripts.length === 2 && res.diagnostics.some((d) => d.kind === 'UNRESOLVED_SELECTOR' && d.target === 'GhostControl'), 'ungrounded target reported, not emitted');

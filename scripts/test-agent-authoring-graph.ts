@@ -153,6 +153,7 @@ async function testHappyPath() {
   eq(Object.keys(arts.compiledSources ?? {}).sort(), ['case-1', 'case-2'], 'compiled sources live in the stash, not state');
   ok((arts.compiledSources?.['case-1'] ?? '').includes('#search-box'), 'compiled source embeds the verified Search selector');
   ok((arts.compiledSources?.['case-1'] ?? '').includes('await runner.openModule();'), 'OPEN_MODULE compiled to mission-scoped navigation, not a click');
+  ok((arts.compiledSources?.['case-1'] ?? '').includes('test("List view loads"'), 'compiled test uses the reviewed case title when the plan omits it');
 
   return { graph, threadId, runId };
 }

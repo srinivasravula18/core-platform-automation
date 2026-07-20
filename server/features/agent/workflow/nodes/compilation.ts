@@ -84,7 +84,7 @@ export function runCompilationNode(input: RunCompilationNodeInput): RunCompilati
         diagnostics.push({ caseId: testCase.id, kind: 'EMPTY_PLAN', message: 'No authored test plan for this case.' });
         continue;
       }
-      const result = playwrightCompiler.compile({ mission: input.mission, plan, evidenceGraph: input.evidenceGraph, run, objectSchema: input.objectSchema });
+      const result = playwrightCompiler.compile({ mission: input.mission, plan: { ...plan, title: testCase.title }, evidenceGraph: input.evidenceGraph, run, objectSchema: input.objectSchema });
       for (const d of result.diagnostics) {
         // Compiler DiagnosticKind is exactly CompilationDiagnostic.kind — mapped 1:1, tagged with the case id.
         diagnostics.push({ caseId: testCase.id, kind: d.kind, message: d.message, target: d.target });

@@ -88,7 +88,7 @@ export async function generateCompiledScripts(opts: {
       continue;
     }
 
-    const compiled = playwrightCompiler.compile({ mission, plan, evidenceGraph: graph, run });
+    const compiled = playwrightCompiler.compile({ mission, plan: { ...plan, title }, evidenceGraph: graph, run });
     const gate = validateCompiledOutput(compiled.code);
     if (!compiled.ok) {
       for (const d of compiled.diagnostics) diagnostics.push({ caseIndex: i, title, kind: d.kind, message: d.message, target: d.target });
