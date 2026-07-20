@@ -100,6 +100,13 @@ export async function registerAgent(input: { pairingToken: string; fingerprint: 
   const fingerprint = String(input.fingerprint || '').trim();
   if (!fingerprint) return { error: 'Machine fingerprint is required.', status: 400 };
 
+  // Re-pairing replaces, not duplicates: revoke this owner's previous agents on the same machine
+  // so stale identities don't pile up as dead Offline cards.
+  const stale = (await Agents.list()).filter((a: any) => !a.revokedAt && a.fingerprint === fingerprint && a.ownerId === entry.userId);
+  for (const old of stale) {
+    await Agents.upsert({ ...old, status: 'offline', tokenHash: '', refreshHash: '', revokedAt: new Date().toISOString() });
+  }
+
   const agentSecret = newSecret();
   const refreshSecret = newSecret();
   const now = new Date().toISOString();

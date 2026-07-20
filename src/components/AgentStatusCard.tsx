@@ -51,7 +51,7 @@ export const AgentStatusCard: FC<{ agent: Agent; actions?: ReactNode }> = ({ age
           <div key={r.label} className="flex items-center gap-2 text-xs">
             <r.icon className="h-3.5 w-3.5 flex-shrink-0 text-[var(--text-muted)]" />
             <span className="w-28 flex-shrink-0 text-[var(--text-muted)]">{r.label}</span>
-            <span className="truncate text-[var(--text-primary)]">{r.value}</span>
+            <span title={r.value} className="min-w-0 flex-1 truncate text-[var(--text-primary)]">{r.value}</span>
           </div>
         ))}
       </div>
