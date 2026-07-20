@@ -612,7 +612,7 @@ const FolderAskCard = memo(function FolderAskCard({
               }}
               className="min-w-0 max-w-[240px] truncate rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
             >
-              <option value="">Select an existing folder…</option>
+              <option value="">{folderOptions.length ? 'Select an existing folder…' : 'No existing folders'}</option>
               {folderOptions.map((f) => (
                 <option key={f.id} value={f.path || f.name}>{f.path || f.name}</option>
               ))}
@@ -752,11 +752,13 @@ export default function AgentConsole() {
   const [turns, setTurns] = useState<Turn[]>([]);
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
+  const rememberedConversationIdRef = useRef<string | null>(null);
   const [conversationId, setConversationId] = useState<string>(() => {
     try {
       // URL param takes precedence — lets users share / bookmark a specific chat
       if (urlChatId) return urlChatId;
-      return localStorage.getItem(convKey) || makeConversationId();
+      rememberedConversationIdRef.current = localStorage.getItem(convKey);
+      return rememberedConversationIdRef.current || makeConversationId();
     } catch {
       return makeConversationId();
     }
@@ -969,7 +971,7 @@ export default function AgentConsole() {
       } catch { /* ignore */ }
 
       // Only fall back when this wasn't an explicit deep link to a specific chat.
-      if (chosenTurns.length === 0 && !urlChatId) {
+      if (chosenTurns.length === 0 && !urlChatId && !rememberedConversationIdRef.current) {
         const recent = [...convs]
           .filter((c) => (c.turnCount || 0) > 0)
           .sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''))[0];
@@ -1134,6 +1136,10 @@ export default function AgentConsole() {
     atBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
   }, []);
   useEffect(() => {
+    if (turns.length === 0) {
+      scrollRef.current?.scrollTo({ top: 0, behavior: 'auto' });
+      return;
+    }
     if (!atBottomRef.current) return; // user scrolled up — leave them alone
     if (scrollRef.current?.contains(document.activeElement)) return;
     // 'auto' (not 'smooth'): retargeting a smooth scroll on every streamed token is jerky.
@@ -2830,7 +2836,7 @@ export default function AgentConsole() {
       {/* Thread */}
       <div ref={scrollRef} onScroll={handleChatScroll} className="flex-1 min-h-0 overflow-y-auto rounded-xl">
         {isEmpty ? (
-          <div className="flex h-full flex-col items-center justify-center px-4 text-center">
+          <div className="flex min-h-full flex-col items-center justify-center px-4 text-center">
             <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-[var(--accent)]/10 text-[var(--accent)]">
               <Sparkles className="h-8 w-8" />
             </div>
