@@ -1,31 +1,29 @@
 /**
- * Regression tests — codegen login-race hardening (server/features/automation/scriptHardening.ts).
+ * Regression tests — codegen login hardening (server/features/automation/scriptHardening.ts).
  *
- * Proves that raw `playwright codegen` output gets a post-login settle wait inserted so replay
- * doesn't race its own login redirect (the Executions incident: click Sign in → immediate
- * page.goto → app bounces to Sign in → `New` never appears → 60s timeout). Covers:
- *   - a Sign in button click followed by page.goto gets a detach-wait on the same locator,
- *   - a password press('Enter') submit gets a networkidle settle wait,
- *   - the transform is idempotent (re-hardening does not stack waits),
- *   - non-login clicks and trailing submits (no following action) are left untouched.
+ * The app under test is a URL-stable, httpOnly-cookie SPA, so the reliable "login done" signal is the
+ * login form disappearing (NOT waitForURL, NOT the discouraged networkidle). Codegen also frequently
+ * records the submit twice (password Enter + Sign in click). These tests prove:
+ *   - a Sign in click before page.goto gets a "wait until the submit button is hidden" guard,
+ *   - a redundant password press('Enter') adjacent to the Sign in click is dropped (single submit),
+ *   - an Enter-only submit gets a guard anchored on the password field,
+ *   - the guard uses waitFor({ state: 'hidden' }) and never emits networkidle,
+ *   - the transform is idempotent, and non-login flows are left untouched.
  *
- * Convention: standalone tsx script, no jest/vitest. Run with:
- *   npx tsx scripts/test-script-hardening.ts   (or: npm run test:script-hardening)
- * Exits 0 if all pass, 1 on failure.
+ * Run: npx tsx scripts/test-script-hardening.ts   (or: npm run test:script-hardening)
  */
 import { hardenRecordedScript } from '../server/features/automation/scriptHardening';
 
 let passed = 0, failed = 0;
 const ok = (c: boolean, n: string) => { if (c) { passed++; console.log(`  ✓ ${n}`); } else { failed++; console.error(`  ✗ ${n}`); } };
-const countWaits = (s: string) => (s.match(/\.waitFor\(|waitForLoadState\(/g) || []).length;
+const lines = (s: string) => s.split('\n');
+const countClicks = (s: string, name: string) => (s.match(new RegExp(`\\{ name: '${name}' \\}\\)\\.click\\(\\)`, 'g')) || []).length;
+const countGuards = (s: string) => (s.match(/\.waitFor\(\{ state: 'hidden'/g) || []).length;
 
-console.log('Section 1 — Sign in click before page.goto gets a detach-wait');
+console.log('Section 1 — Sign in click before page.goto gets a form-gone guard');
 {
   const raw = [
-    "import { test, expect } from '@playwright/test';",
-    "",
     "test('test', async ({ page }) => {",
-    "  await page.goto('https://app.example.com/admin-ui/');",
     "  await page.getByRole('textbox', { name: 'Email or Username' }).fill('adminacc');",
     "  await page.getByRole('textbox', { name: 'Password' }).fill('secret');",
     "  await page.getByRole('button', { name: 'Sign in' }).click();",
@@ -34,14 +32,32 @@ console.log('Section 1 — Sign in click before page.goto gets a detach-wait');
     "});",
   ].join('\n');
   const out = hardenRecordedScript(raw);
-  ok(/getByRole\('button', \{ name: 'Sign in' \}\)\.waitFor\(\{ state: 'detached' \}\)\.catch/.test(out), 'inserts a detach-wait on the Sign in locator');
-  const idx = out.split('\n').findIndex((l) => l.includes(".waitFor({ state: 'detached' })"));
-  const clickIdx = out.split('\n').findIndex((l) => l.includes("{ name: 'Sign in' }).click()"));
-  ok(idx === clickIdx + 1, 'the wait is inserted immediately after the click');
-  ok(out.includes("await page.goto('https://app.example.com/admin-ui/?nav=apps');"), 'the following goto is preserved');
+  ok(/getByRole\('button', \{ name: 'Sign in' \}\)\.waitFor\(\{ state: 'hidden', timeout: 15000 \}\)\.catch/.test(out), 'inserts a hidden-wait on the Sign in locator');
+  const guardIdx = lines(out).findIndex((l) => l.includes(".waitFor({ state: 'hidden'"));
+  const clickIdx = lines(out).findIndex((l) => l.includes("{ name: 'Sign in' }).click()"));
+  ok(guardIdx === clickIdx + 1, 'the guard sits immediately after the click, before the goto');
+  ok(!/networkidle/.test(out), 'never emits the discouraged networkidle');
 }
 
-console.log('Section 2 — password press(Enter) submit gets a settle wait');
+console.log('Section 2 — redundant password Enter adjacent to the Sign in click is dropped');
+{
+  const raw = [
+    "test('test', async ({ page }) => {",
+    "  await page.getByRole('textbox', { name: 'Password' }).fill('secret');",
+    "  await page.getByRole('textbox', { name: 'Password' }).press('Enter');",
+    "  await page.getByRole('button', { name: 'Sign in' }).click();",
+    "  await page.goto('https://app.example.com/home');",
+    "  await page.getByRole('button', { name: 'New' }).click();",
+    "});",
+  ].join('\n');
+  const out = hardenRecordedScript(raw);
+  ok(!/press\('Enter'\)/.test(out), 'the redundant press(Enter) submit is removed');
+  ok(countClicks(out, 'Sign in') === 1, 'exactly one submit (the explicit Sign in click) remains');
+  ok(countGuards(out) === 1, 'exactly one form-gone guard is inserted');
+  ok(/getByRole\('button', \{ name: 'Sign in' \}\)\.waitFor/.test(out), 'the guard anchors on the Sign in button');
+}
+
+console.log('Section 3 — Enter-only submit is guarded on the password field');
 {
   const raw = [
     "test('test', async ({ page }) => {",
@@ -51,24 +67,27 @@ console.log('Section 2 — password press(Enter) submit gets a settle wait');
     "});",
   ].join('\n');
   const out = hardenRecordedScript(raw);
-  ok(/waitForLoadState\('networkidle'\)\.catch/.test(out), 'inserts a networkidle settle wait after Enter submit');
+  ok(/getByRole\('textbox', \{ name: 'Password' \}\)\.waitFor\(\{ state: 'hidden'/.test(out), 'guard anchors on the password field when there is no submit button');
+  ok(/press\('Enter'\)/.test(out), 'the Enter submit itself is kept (it is the only submit)');
+  ok(!/networkidle/.test(out), 'still no networkidle');
 }
 
-console.log('Section 3 — idempotent: re-hardening does not stack waits');
+console.log('Section 4 — idempotent');
 {
   const raw = [
     "test('test', async ({ page }) => {",
+    "  await page.getByRole('textbox', { name: 'Password' }).press('Enter');",
     "  await page.getByRole('button', { name: 'Sign in' }).click();",
     "  await page.goto('https://app.example.com/home');",
     "});",
   ].join('\n');
   const once = hardenRecordedScript(raw);
   const twice = hardenRecordedScript(once);
-  ok(countWaits(once) === 1, 'first pass inserts exactly one wait');
+  ok(countGuards(once) === 1, 'first pass inserts exactly one guard');
   ok(once === twice, 're-hardening a hardened script is a no-op');
 }
 
-console.log('Section 4 — non-login and trailing submits are left untouched');
+console.log('Section 5 — non-login flows and edge cases left untouched');
 {
   const nonLogin = [
     "test('test', async ({ page }) => {",
@@ -76,17 +95,15 @@ console.log('Section 4 — non-login and trailing submits are left untouched');
     "  await page.goto('https://app.example.com/home');",
     "});",
   ].join('\n');
-  ok(countWaits(hardenRecordedScript(nonLogin)) === 0, 'a non-login button click gets no wait');
+  ok(hardenRecordedScript(nonLogin) === nonLogin, 'a non-login button click flow is unchanged');
+  ok(hardenRecordedScript('') === '', 'empty script is returned unchanged');
 
   const trailing = [
     "test('test', async ({ page }) => {",
-    "  await page.getByRole('textbox', { name: 'Password' }).fill('secret');",
     "  await page.getByRole('button', { name: 'Sign in' }).click();",
     "});",
   ].join('\n');
-  ok(countWaits(hardenRecordedScript(trailing)) === 0, 'a login submit with no following action gets no wait');
-
-  ok(hardenRecordedScript('') === '', 'empty script is returned unchanged');
+  ok(countGuards(hardenRecordedScript(trailing)) === 0, 'a login submit with no following action gets no guard');
 }
 
 console.log(`\n${failed === 0 ? 'PASS' : 'FAIL'} — ${passed} passed, ${failed} failed`);

@@ -57,8 +57,9 @@ export async function createServerJob(input: { recordingId: string; scheduleId?:
   return job;
 }
 
-// Manual-run options that must reach the agent but have no DB column (the Postgres upsert would
-// drop them). In-memory only: after a server restart a re-flushed job falls back to headless.
+// Manual-run options fast path (no DB column of their own). In-memory only, so it can be lost on a
+// server restart — but tryDispatch falls back to `trigger === 'manual'` for `headed`, which IS
+// persisted, so a re-flushed job still runs headed. This map is just an override hook for the future.
 const jobRunOptions = new Map<string, { headed: boolean }>();
 
 /** Push a queued job to its agent if connected; returns true if dispatched. */
@@ -76,7 +77,10 @@ async function tryDispatch(jobId: string): Promise<boolean> {
       browser: rec?.browser || 'chromium',
       environment: rec?.environment || 'QA',
       appUrl: rec?.appUrl || '',
-      headed: jobRunOptions.get(job.id)?.headed || false,
+      // Manual runs are always headed (a window opens on the agent so the user can watch). Derive it
+      // from the persisted trigger so the flag survives a server restart or a re-dispatch on reconnect
+      // — the in-memory jobRunOptions below is only a same-process fast path, not the source of truth.
+      headed: jobRunOptions.get(job.id)?.headed ?? (job.trigger === 'manual'),
     },
   });
   if (ok) {
