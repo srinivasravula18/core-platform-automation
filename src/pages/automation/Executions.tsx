@@ -77,7 +77,7 @@ export default function Executions() {
   const toggleJob = (id: string) => { setLogs([]); setOpenJob((cur) => (cur === id ? null : id)); };
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-4">
+    <div className="flex flex-col gap-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-xl font-semibold tracking-tight text-[var(--text-primary)]">Executions</h1>

@@ -60,6 +60,8 @@
     "test:openai-responses": "tsx scripts/test-openai-responses.ts",
     "test:evidence-oracle": "tsx scripts/test-evidence-oracle.ts",
     "test:record-play": "tsx scripts/test-record-play-agent.ts",
+    "test:script-hardening": "tsx scripts/test-script-hardening.ts",
+    "backfill:harden-recordings": "tsx scripts/backfill-harden-recordings.ts",
     "test:record-play-jobs": "tsx scripts/test-record-play-jobs.ts",
     "test:record-play-ws": "tsx scripts/test-record-play-ws.ts",
     "test:structured-truncation": "tsx scripts/test-structured-truncation.ts",

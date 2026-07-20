@@ -15,6 +15,7 @@ import type { Scope } from '../../shared/scope';
 import { scopeStamp } from '../../shared/scope';
 import { emitEvent } from './eventsService';
 import { onAgentFrame, dispatchToAgent, isAgentConnected } from './agentGateway';
+import { hardenRecordedScript } from './scriptHardening';
 import type { AgentFrame } from './types';
 
 function persist(reason: string) {
@@ -69,10 +70,13 @@ async function finalizeRecording(recordingId: string, patch: { script?: string; 
   clearStopFallback(recordingId);
   const rec = await Recordings.get(recordingId);
   if (!rec || rec.status === 'ready') return;
+  // Harden the raw codegen output once, at finalization: insert post-login settle waits so the
+  // recorded script doesn't race its own login redirect on replay (see scriptHardening.ts).
+  const finalScript = hardenRecordedScript(String(patch.script ?? rec.script ?? ''));
   const saved = await Recordings.upsert({
     ...rec,
     status: 'ready',
-    script: String(patch.script ?? rec.script ?? ''),
+    script: finalScript,
     stats: { ...rec.stats, ...(patch.stats || {}) },
     metadata: { ...rec.metadata, ...(patch.metadata || {}) },
     completedAt: new Date().toISOString(),
