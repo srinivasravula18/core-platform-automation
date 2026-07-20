@@ -11,6 +11,7 @@ import { createHash } from 'crypto';
 import { createRequire } from 'module';
 import { chromium, firefox, webkit } from 'playwright';
 import { AGENT_VERSION } from './version.js';
+import { systemChromePath } from './browsers.js';
 function firstMac() {
     const ifaces = os.networkInterfaces();
     for (const name of Object.keys(ifaces)) {
@@ -37,6 +38,8 @@ function playwrightVersion() {
 }
 function installedBrowsers() {
     const out = [];
+    if (systemChromePath())
+        out.push('chrome (system)');
     const engines = [
         ['chromium', chromium],
         ['firefox', firefox],

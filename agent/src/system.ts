@@ -12,6 +12,7 @@ import { createHash } from 'crypto';
 import { createRequire } from 'module';
 import { chromium, firefox, webkit } from 'playwright';
 import { AGENT_VERSION } from './version.js';
+import { systemChromePath } from './browsers.js';
 
 export interface Telemetry {
   machineName: string;
@@ -50,6 +51,7 @@ function playwrightVersion(): string {
 
 function installedBrowsers(): string[] {
   const out: string[] = [];
+  if (systemChromePath()) out.push('chrome (system)');
   const engines: Array<[string, { executablePath(): string }]> = [
     ['chromium', chromium],
     ['firefox', firefox],

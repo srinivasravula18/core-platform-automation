@@ -10,6 +10,7 @@ import { spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import { chromiumChannel } from './browsers.js';
 function deriveStats(script) {
     const lines = script.split('\n');
     return {
@@ -41,7 +42,10 @@ export class Recorder {
         fs.writeFileSync(outputPath, '');
         const engine = ['chromium', 'firefox', 'webkit'].includes(browser) ? browser : 'chromium';
         // `npx playwright codegen` opens the headed recorder window; --output writes the growing spec.
-        const child = spawn('npx', ['playwright', 'codegen', url, '--output', outputPath, '--browser', engine], {
+        // Fall back to the user's installed Google Chrome when bundled Chromium is absent.
+        const channel = engine === 'chromium' ? chromiumChannel() : undefined;
+        const args = ['playwright', 'codegen', url, '--output', outputPath, '--browser', engine, ...(channel ? ['--channel', channel] : [])];
+        const child = spawn('npx', args, {
             stdio: 'ignore',
             shell: process.platform === 'win32',
         });

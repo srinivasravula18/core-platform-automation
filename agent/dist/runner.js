@@ -11,8 +11,11 @@ import fs from 'fs';
 import path from 'path';
 import { uploadArtifact } from './cloud.js';
 import { collectArtifacts } from './artifacts.js';
+import { chromiumChannel } from './browsers.js';
 function configTemplate(engine) {
     const browserName = ['chromium', 'firefox', 'webkit'].includes(engine) ? engine : 'chromium';
+    // Use system Chrome when bundled Chromium is absent (same resolution as the recorder).
+    const channel = browserName === 'chromium' ? chromiumChannel() : undefined;
     return `import { defineConfig } from '@playwright/test';
 export default defineConfig({
   testDir: './tests',
@@ -22,7 +25,7 @@ export default defineConfig({
   // Capture on every run (not just failures) so each execution has step snapshots, a full video of
   // every action, and a trace to download. 'on' screenshots at each test end; the video + trace carry
   // the per-action detail.
-  use: { browserName: '${browserName}', headless: true, trace: 'on', video: 'on', screenshot: 'on' },
+  use: { browserName: '${browserName}',${channel ? ` channel: '${channel}',` : ''} headless: true, trace: 'on', video: 'on', screenshot: 'on' },
 });
 `;
 }
