@@ -67,7 +67,7 @@ import {
 import { generateCompiledScripts, aiqaCompilerEnabled } from './compiler/compiledGeneration';
 // LangGraph workflow runtime (flag-gated by AGENT_GRAPH_V2; legacy path is default and untouched).
 import { isWorkflowGraphEnabled } from './workflow/checkpointer';
-import { startGraphRun, resumeGraphRun, cancelGraphRun, getPendingReview, reconcileRunIfOrphaned, orphanedRunFailure, persistDefectReport, registerTerminalArtifactPersister, registerCasesReviewPersister } from './workflow/runtime';
+import { startGraphRun, resumeGraphRun, cancelGraphRun, getPendingReview, reconcileRunIfOrphaned, orphanedRunFailure, persistDefectReport, registerTerminalArtifactPersister } from './workflow/runtime';
 import { buildDefectDrafts } from './workflow/defectReporter';
 import type { MissionRef } from './workflow/state';
 import { renderTargetCatalogForPrompt } from './compiler/renderCatalogForPrompt';
@@ -643,7 +643,10 @@ function runStatusSnapshot(run: any) {
   return {
     id: run?.id,
     status: run?.status || 'running',
-    review_stage: run?.review_stage || '',
+    // Graph-engine gates only set pending_review.kind (never review_stage), so derive it here —
+    // otherwise the UI can't tell a 'scripts' review pause from a 'cases' one and the button stays
+    // "Continue -> scripts" instead of advancing to "Run scripts & capture evidence".
+    review_stage: run?.review_stage || run?.pending_review?.kind || '',
     created_at: run?.created_at,
     completed_at: run?.completed_at,
     paused_ms: run?.paused_ms || 0,
@@ -1227,6 +1230,8 @@ function allCasesForRun(run: any): any[] {
 function runDetailsPayload(run: any): any {
   return {
     ...run,
+    // Same graph-gate derivation as runStatusSnapshot so the full-details refetch agrees with polling.
+    review_stage: run?.review_stage || run?.pending_review?.kind || '',
     generated_cases: annotateGeneratedCasesWithProof(normalizeGeneratedCasesText(run.generated_cases || [], run), run),
     all_generated_cases: annotateGeneratedCasesWithProof(normalizeGeneratedCasesText(allCasesForRun(run), run), run),
   };
@@ -2608,7 +2613,12 @@ ${CASE_AUTHORING_CONTRACT}`,
     status: 'completed',
     output: { test_cases: generated, grounding: groundingVerdict.reason, grounded: groundingVerdict.ok },
   });
-  await persistAgentCaseArtifacts(run);
+  // In the human-review flow the user curates cases and saves them explicitly ("Save all") —
+  // do NOT auto-save authored cases to the workspace here. The automatic (no-review) flow has no
+  // human gate, so it persists inline as before (terminal persistence also re-saves on completion).
+  if (opts.flowMode !== 'review_cases') {
+    await persistAgentCaseArtifacts(run);
+  }
   await persistAgentRequirementArtifacts(run);
 
   // Push every generated case to the inbox as a pending decision, so the human can
@@ -4569,8 +4579,9 @@ export function registerAgentRoutes(app: Express) {
   // Graph terminal hook: materialize plan/suite/cases/run/report for graph runs (injected here
   // because runtime.ts cannot import this module — routes.ts already imports the runtime).
   registerTerminalArtifactPersister(persistAgentQualityArtifacts);
-  // Authored cases save automatically at the graph's cases-review gate (no manual Save all needed).
-  registerCasesReviewPersister(persistAgentCaseArtifacts);
+  // NOTE: authored cases are intentionally NOT auto-saved at the cases-review gate. The end user
+  // curates them in the review UI and persists explicitly via "Save all" (/api/agent/save-cases).
+  // Terminal persistence still runs for completed/automatic runs via the terminal persister above.
 
   // CODE-FLOW test endpoint: trace the complete flow from SOURCE (no live driving), transcribe
   // it deterministically into a script, and execute it.

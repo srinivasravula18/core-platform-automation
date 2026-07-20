@@ -144,6 +144,32 @@ function priorityRank(p?: string) {
   return ['low', 'medium', 'high', 'critical'].indexOf(String(p || 'medium').toLowerCase());
 }
 
+// Plain-language reason a case produced no automated script — turns a compiler diagnostic kind
+// (EMPTY_PLAN / UNRESOLVED_SELECTOR / GATE_* …) into a QA-readable sentence for the cases→scripts gap.
+function diagnosticReason(d: { kind?: string; target?: string; message?: string }): string {
+  const k = String(d.kind || '').toUpperCase();
+  const t = d.target ? ` “${d.target}”` : '';
+  if (k === 'MANUAL_CASE') return 'Marked as a manual case — not automated.';
+  if (k === 'EMPTY_PLAN' || k === 'PLAN_MISSING') return 'No test plan could be authored for this case.';
+  if (k === 'PLAN_ERROR') return 'Test-plan authoring failed for this case.';
+  if (k === 'PLAN_INCOMPLETE') return `Some steps couldn't be mapped to the live app${d.message ? ` — ${d.message}` : '.'}`;
+  if (k === 'UNRESOLVED_SELECTOR') return `Couldn't uniquely locate${t || ' a required target'} in the live app — no script was guessed.`;
+  if (k === 'AMBIGUOUS_SELECTOR') return `Target${t} matched multiple elements, so it couldn't be grounded uniquely.`;
+  if (k === 'INVALID_STEP') return `A compiled step failed validation${d.message ? ` — ${d.message}` : '.'}`;
+  if (k.startsWith('GATE_')) return `Compiled script failed the safety gate (${k.replace('GATE_', '').toLowerCase()}).`;
+  return d.message || k.toLowerCase().replace(/_/g, ' ') || 'Not scripted.';
+}
+
+// Short badge label for a diagnostic kind.
+function diagnosticBadge(kind?: string): string {
+  const k = String(kind || '').toUpperCase();
+  if (k === 'MANUAL_CASE') return 'manual';
+  if (k === 'UNRESOLVED_SELECTOR' || k === 'AMBIGUOUS_SELECTOR') return 'ungrounded';
+  if (k.startsWith('PLAN') || k === 'EMPTY_PLAN') return 'no plan';
+  if (k === 'INVALID_STEP' || k.startsWith('GATE_')) return 'gate';
+  return 'skipped';
+}
+
 // Fetch with an abort-based timeout so a hung server can never wedge a busy spinner forever.
 async function fetchWithTimeout(input: RequestInfo, init: RequestInit = {}, timeoutMs = 60_000): Promise<Response> {
   const controller = new AbortController();
@@ -310,6 +336,17 @@ export function DeepRunResult({ taskId, initialSaved, onSaved }: { taskId: strin
     setSelectedScripts((prev) => new Set([...prev].filter((idx) => idx < scripts.length)));
   }, [scripts.length]);
   const evidence: any[] = run?.evidence_screenshots || [];
+  // Per-case "why no script" diagnostics (cases→scripts gap), grouped by case title. Populated by
+  // both engines (graph projects them; legacy sets run.compiler_diagnostics directly).
+  const compilerDiagnostics: any[] = Array.isArray(run?.compiler_diagnostics) ? run.compiler_diagnostics : [];
+  const droppedCases: { title: string; reasons: any[] }[] = (() => {
+    const byTitle = new Map<string, any[]>();
+    for (const d of compilerDiagnostics) {
+      const title = String(d?.title || 'Untitled case');
+      (byTitle.get(title) ?? byTitle.set(title, []).get(title)!).push(d);
+    }
+    return [...byTitle.entries()].map(([title, reasons]) => ({ title, reasons }));
+  })();
   const targetUrl: string = run?.app_url || '';
   const isRunning = !status || !TERMINAL.includes(status);
   const failed = status === 'failed';
@@ -1137,7 +1174,7 @@ export function DeepRunResult({ taskId, initialSaved, onSaved }: { taskId: strin
           <div className="mb-2 flex gap-1 border-b border-[var(--border)]">
             {[
               { id: 'cases', label: `Cases (${list.length})`, icon: FlaskConical },
-              { id: 'code', label: scopedExecution ? `Scripts (${scripts.length}/${executionCaseCount} selected)` : `Scripts (${scripts.length})`, icon: Code2 },
+              { id: 'code', label: scopedExecution ? `Scripts (${scripts.length}/${executionCaseCount} selected)` : `Scripts (${scripts.length}${droppedCases.length ? ` · ${droppedCases.length} skipped` : ''})`, icon: Code2 },
               { id: 'evidence', label: scopedExecution ? `Evidence (${evidence.length}/${executionCaseCount} selected)` : `Evidence (${evidence.length})`, icon: ImageIcon },
               { id: 'bugs', label: `Bugs (${bugs.length})`, icon: Bug },
             ].map((t) => (
@@ -1652,6 +1689,35 @@ export function DeepRunResult({ taskId, initialSaved, onSaved }: { taskId: strin
           {/* SCRIPTS */}
           {tab === 'code' && (
             <div>
+              {/* Cases→scripts gap: explain WHY some cases produced no script instead of showing a
+                  silent "16 cases / 7 scripts" mismatch. Grounding/plan/gate failures, per case. */}
+              {droppedCases.length > 0 && (
+                <details className="mb-2 rounded-md border border-amber-500/25 bg-amber-500/5">
+                  <summary className="flex cursor-pointer items-center gap-1.5 px-3 py-2 text-[11px] font-semibold text-amber-500">
+                    <MinusCircle className="h-3.5 w-3.5 shrink-0" />
+                    {droppedCases.length} of {list.length} case{list.length === 1 ? '' : 's'} produced no automated script
+                    <span className="font-normal text-[var(--text-muted)]">— why?</span>
+                  </summary>
+                  <div className="space-y-1.5 border-t border-amber-500/20 px-3 py-2">
+                    {droppedCases.map((dc, i) => (
+                      <div key={i} className="text-[11px]">
+                        <div className="flex items-start gap-1.5">
+                          <span className="mt-0.5 shrink-0 rounded border border-amber-500/30 bg-amber-500/10 px-1 py-0 text-[9px] font-semibold uppercase tracking-wide text-amber-500">{diagnosticBadge(dc.reasons[0]?.kind)}</span>
+                          <span className="min-w-0 flex-1">
+                            <span className="font-medium text-[var(--text-primary)]">{dc.title}</span>
+                            <ul className="mt-0.5 list-disc space-y-0.5 pl-4 text-[var(--text-secondary)]">
+                              {dc.reasons.map((r, ri) => <li key={ri}>{diagnosticReason(r)}</li>)}
+                            </ul>
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                    <div className="pt-1 text-[10px] text-[var(--text-muted)]">
+                      These cases were not scripted because the deterministic compiler refuses to guess ungrounded selectors. Improving live-inspection coverage for the targets above lets more cases compile.
+                    </div>
+                  </div>
+                </details>
+              )}
               {scripts.length > 0 && (
                 <div className="mb-2 flex items-center justify-between gap-2">
                   <div className="flex items-center gap-2 text-[11px] text-[var(--text-muted)]">

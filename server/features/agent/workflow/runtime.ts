@@ -162,13 +162,13 @@ function chipMessages(state: WorkflowState): Array<{ agent: string; status: stri
 export function projectStateToLegacyRun(state: WorkflowState, seed?: any): any {
   const compiled = readArtifacts(state.runId).compiledSources ?? {};
   const titleByCase = new Map(state.cases.map((c) => [c.id, c.title]));
-  const playwrightScripts = (state.compilation?.scripts ?? [])
-    .filter((s) => s.ok && compiled[s.caseId])
-    .map((s) => ({
-      test_case_title: titleByCase.get(s.caseId) ?? s.caseId,
-      filename: `${s.caseId}.spec.ts`,
-      code: compiled[s.caseId],
-    }));
+  const scriptRefs = (state.compilation?.scripts ?? []).filter((s) => s.ok && compiled[s.caseId]);
+  const scriptedCaseIds = new Set(scriptRefs.map((s) => s.caseId));
+  const playwrightScripts = scriptRefs.map((s) => ({
+    test_case_title: titleByCase.get(s.caseId) ?? s.caseId,
+    filename: `${s.caseId}.spec.ts`,
+    code: compiled[s.caseId],
+  }));
 
   const status = LEGACY_STATUS[state.status] ?? 'running';
   const progressLine = `stage: ${state.stage} — status: ${state.status}`
@@ -222,6 +222,19 @@ export function projectStateToLegacyRun(state: WorkflowState, seed?: any): any {
       }));
     })(),
     playwright_scripts: playwrightScripts,
+    // Per-case "why no script" reasons — surfaced in the UI so a run with more cases than scripts
+    // explains its gap instead of looking arbitrary. Scripted cases are excluded; only cases the
+    // deterministic compiler could NOT ground/plan/validate remain. Same field the legacy path uses.
+    compiler_diagnostics: (() => {
+      const comp = state.compilation;
+      const ran = Boolean(comp && (comp.compilerVersion || comp.scripts?.length || comp.diagnostics?.length));
+      if (ran) {
+        return (comp!.diagnostics ?? [])
+          .filter((d) => !scriptedCaseIds.has(d.caseId))
+          .map((d) => ({ title: titleByCase.get(d.caseId) ?? d.caseId, kind: d.kind, message: d.message, target: d.target }));
+      }
+      return seed?.compiler_diagnostics ?? []; // post-restart: keep the prior projection, never downgrade
+    })(),
     // UI-ready cards from the stash; never downgrade a previously projected set (stash dies on restart).
     evidence_screenshots: (() => {
       const shots = readArtifacts(state.runId).evidenceShots;
