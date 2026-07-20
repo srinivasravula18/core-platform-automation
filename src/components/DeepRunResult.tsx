@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { cn } from '@/src/lib/utils';
 import { withBasePath } from '@/src/lib/base-path';
+import { showAlert } from '@/src/lib/dialog';
 import { containsPrivateFileActivity } from '@/src/lib/userFacingAgentActivity';
 import { useAgentRun } from '@/src/lib/useAgentRun';
 import { useUiSettings } from '@/src/store/uiSettings';
@@ -555,6 +556,10 @@ export function DeepRunResult({ taskId, initialSaved, onSaved }: { taskId: strin
     }
   };
   const saveAll = async () => {
+    if (saved) {
+      void showAlert('Test cases are already saved. Please check under Test Cases section.');
+      return;
+    }
     if (!list.length) return;
     setBusy('save');
     setActionError(null);
