@@ -161,10 +161,9 @@ export class OpenAIProvider implements AIProvider {
   }
 
   private async callChat(opts: GenerateTextOptions & { images?: ProviderImage[] }, jsonMode: boolean) {
-    // OpenAI rejects json_object requests with 400 unless the word "json" appears somewhere in the
-    // prompt; guarantee it so no caller has to remember (e.g. caseReworker's prompt lacked it).
-    if (jsonMode && !/json/i.test(`${opts.system || ''} ${opts.prompt || ''}`)) {
-      opts = { ...opts, system: `${opts.system ? `${opts.system}\n\n` : ''}Respond with a single valid JSON object.` };
+    // Responses validates input messages (not instructions) for the word "json" in json_object mode.
+    if (jsonMode && !/json/i.test(opts.prompt || '')) {
+      opts = { ...opts, prompt: `${opts.prompt}\n\nRespond with a single valid JSON object.` };
     }
     const modelId = this.modelId(opts);
     const images = sanitizeProviderImages(opts.images);

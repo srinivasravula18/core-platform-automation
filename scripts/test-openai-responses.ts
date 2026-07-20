@@ -319,6 +319,22 @@ async function testProviderToolContinuity() {
 }
 
 // ---------------------------------------------------------------------------
+async function testProviderJsonModeInputHint() {
+  console.log('9. OpenAI provider JSON mode - input message contains required JSON hint');
+  let capturedBody: any = null;
+  const provider = new OpenAIProvider('test-key-not-real', 'gpt-5.4');
+  (provider as any).client = { responses: { create: async (body: any) => {
+    capturedBody = body;
+    return { output_text: '{"title":"ok"}', output: [], incomplete_details: null, usage: fakeUsage() };
+  } } };
+
+  await provider.generateObject({ prompt: 'Improve this case end to end.', schema: TEST_SCHEMA });
+
+  ok(/json/i.test(String(capturedBody.input)), 'json_object request includes "JSON" in Responses input');
+  ok(capturedBody.text?.format?.type === 'json_object', 'request still uses json_object response format');
+}
+
+// ---------------------------------------------------------------------------
 async function main() {
   await testSchemaValidHappyPath();
   await testRefusalPath();
@@ -331,6 +347,7 @@ async function main() {
   testPromptBudgetStableOrdering();
   testPromptBudgetVersion();
   await testProviderToolContinuity();
+  await testProviderJsonModeInputHint();
 
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed === 0 ? 0 : 1);
