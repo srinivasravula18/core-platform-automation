@@ -1699,7 +1699,15 @@ export function DeepRunResult({ taskId, initialSaved, onSaved }: { taskId: strin
                             )}
                             <span className="min-w-0 flex-1">
                               <span className="text-[var(--text-primary)]">{t.title}</span>
-                              {t.error && <FailureCard error={t.error} />}
+                              {t.error && (
+                                <button
+                                  type="button"
+                                  onClick={() => setTab('bugs')}
+                                  className="ml-1.5 inline-flex items-center gap-0.5 align-middle text-[10px] font-medium text-red-400 hover:underline"
+                                >
+                                  <Bug className="h-3 w-3" /> View in Bugs
+                                </button>
+                              )}
                             </span>
                             <span className="shrink-0 text-[var(--text-muted)]">{(t.durationMs / 1000).toFixed(1)}s</span>
                           </div>
