@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useTheme } from '@/src/store/theme';
+import { useUiSettings } from '@/src/store/uiSettings';
 import {
   Moon, Sun, CheckCircle, AlertCircle, Plus, Trash2, RefreshCw, Bot, Key,
   Globe, Users, Sparkles, MessageSquare, ChevronDown, ChevronUp, Send, Shield,
@@ -1469,6 +1470,8 @@ const fmtInt = (n: number) => Number(n || 0).toLocaleString();
 const fmtUsd = (n: number) => `$${Number(n || 0).toFixed(Number(n) >= 1 ? 2 : 4)}`;
 
 function CostSection() {
+  const { showQueryLogs, load: loadUiSettings, setShowQueryLogs } = useUiSettings();
+  useEffect(() => { void loadUiSettings(); }, [loadUiSettings]);
   const [cost, setCost] = useState<{ guardrailLogs: any[] }>({ guardrailLogs: [] });
   const [summary, setSummary] = useState<any>(null);
   const [usage, setUsage] = useState<any[]>([]);
@@ -1512,6 +1515,27 @@ function CostSection() {
 
   return (
     <div className="space-y-6">
+      {/* Chat log visibility: gates the per-query "Background communication" panels in the Agent Console. */}
+      <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-card)] p-4 sm:p-6 shadow-sm">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 className="text-lg font-medium">Chat logs</h2>
+            <p className="mt-1 text-sm text-[var(--text-muted)]">Show the per-query background communication logs under each chat message and agent run.</p>
+          </div>
+          <button
+            onClick={() => setShowQueryLogs(!showQueryLogs)}
+            aria-pressed={showQueryLogs}
+            className={`shrink-0 rounded-full px-3 py-1.5 text-xs font-semibold transition-colors ${
+              showQueryLogs
+                ? 'bg-[var(--accent)] text-white hover:bg-[var(--accent-hover)]'
+                : 'border border-[var(--border)] bg-[var(--bg-primary)] text-[var(--text-muted)] hover:text-[var(--text-primary)]'
+            }`}
+          >
+            {showQueryLogs ? 'On' : 'Off'}
+          </button>
+        </div>
+      </div>
+
       {/* Spend by window, each with its cap progress. */}
       <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-card)] p-4 sm:p-6 shadow-sm">
         <h2 className="text-lg font-medium">Spend</h2>

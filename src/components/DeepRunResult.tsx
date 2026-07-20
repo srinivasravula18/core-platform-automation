@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { cn } from '@/src/lib/utils';
 import { withBasePath } from '@/src/lib/base-path';
 import { useAgentRun } from '@/src/lib/useAgentRun';
+import { useUiSettings } from '@/src/store/uiSettings';
 import { MarkdownText } from '@/src/components/MarkdownText';
 import FailureCard from '@/src/components/FailureCard';
 import {
@@ -243,6 +244,11 @@ export function DeepRunResult({ taskId, initialSaved, onSaved }: { taskId: strin
   const [retrying, setRetrying] = useState(false);
   const navigate = useNavigate();
   const { run, setRun, pollStatus } = useAgentRun(activeTaskId);
+  // Settings toggle: hide the per-run background-communication log panel when off.
+  const showQueryLogs = useUiSettings((s) => s.showQueryLogs);
+  const loadUiSettings = useUiSettings((s) => s.load);
+  useEffect(() => { void loadUiSettings(); }, [loadUiSettings]);
+  const chatInputRef = useRef<HTMLInputElement | null>(null);
 
   // Seed the editable copy once the pipeline has written cases.
   useEffect(() => {
@@ -938,6 +944,7 @@ export function DeepRunResult({ taskId, initialSaved, onSaved }: { taskId: strin
         })}
       </div>
 
+      {showQueryLogs && (
       <details className="mb-3 rounded-lg border border-[var(--border)] bg-[var(--bg-primary)]">
         <summary className="flex cursor-pointer items-center gap-2 px-3 py-2 text-xs font-semibold text-[var(--text-primary)]">
           <MessageSquareText className="h-4 w-4 text-[var(--accent)]" />
@@ -986,6 +993,7 @@ export function DeepRunResult({ taskId, initialSaved, onSaved }: { taskId: strin
           )}
         </div>
       </details>
+      )}
 
       {failed && (
         <div className="rounded-md bg-red-500/10 p-2 text-xs text-red-400">
@@ -1207,19 +1215,42 @@ export function DeepRunResult({ taskId, initialSaved, onSaved }: { taskId: strin
                 </div>
               </div>
 
-              {/* Chat-based bulk rework: tell the agent what to change or add across the suite. */}
+              {/* Chat-based bulk rework: checked cases appear automatically as @mention chips inside the input. */}
               <div className="mb-2 flex items-center gap-2">
                 <MessageSquareText className="h-4 w-4 shrink-0 text-[var(--accent)]" />
-                <input
-                  value={chatIntent}
-                  onChange={(e) => setChatIntent(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === 'Enter' && chatIntent.trim()) void chatRework(); }}
-                  disabled={busy === 'chat-rework' || !list.length}
-                  placeholder={selectedCases.size
-                    ? `Rework with AI — applies to the ${selectedCases.size} selected case${selectedCases.size === 1 ? '' : 's'} (e.g. "add negative checks")…`
-                    : 'Rework with AI — e.g. "you missed the export permission check, please add it"…'}
-                  className="min-w-0 flex-1 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2.5 py-1.5 text-xs text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:border-[var(--accent)] focus:outline-none disabled:opacity-50"
-                />
+                <div
+                  onClick={() => chatInputRef.current?.focus()}
+                  className="flex min-w-0 flex-1 cursor-text flex-wrap items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 focus-within:border-[var(--accent)]"
+                >
+                  {[...selectedCases].sort((a, b) => a - b).map((i) => list[i] && (
+                    <span
+                      key={i}
+                      title={list[i].title}
+                      className="inline-flex max-w-[14rem] shrink-0 items-center gap-1 rounded border border-[var(--accent)]/30 bg-[var(--accent)]/10 px-1.5 py-0.5 text-[10px] font-semibold text-[var(--accent)]"
+                    >
+                      <span className="truncate">@{list[i].title || `Case ${i + 1}`}</span>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); toggleCaseSelection(i); }}
+                        className="shrink-0 opacity-70 hover:opacity-100"
+                        title="Remove from rework"
+                        aria-label={`Remove case ${i + 1} from rework`}
+                      >
+                        <XCircle className="h-3 w-3" />
+                      </button>
+                    </span>
+                  ))}
+                  <input
+                    ref={chatInputRef}
+                    value={chatIntent}
+                    onChange={(e) => setChatIntent(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter' && chatIntent.trim()) void chatRework(); }}
+                    disabled={busy === 'chat-rework' || !list.length}
+                    placeholder={selectedCases.size
+                      ? `Rework the ${selectedCases.size} mentioned case${selectedCases.size === 1 ? '' : 's'} (e.g. "add negative checks")…`
+                      : 'Rework with AI — e.g. "you missed the export permission check, please add it"…'}
+                    className="min-w-[10rem] flex-1 bg-transparent px-0.5 py-0.5 text-xs text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none disabled:opacity-50"
+                  />
+                </div>
                 <button
                   onClick={chatRework}
                   disabled={busy === 'chat-rework' || !chatIntent.trim() || !list.length}

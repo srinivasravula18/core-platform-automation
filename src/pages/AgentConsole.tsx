@@ -59,6 +59,7 @@ function looksLikeAgentError(text: string): boolean {
 import { cn } from '@/src/lib/utils';
 import { withEventSourceAuth } from '@/src/lib/base-path';
 import { useProjects, type ProjectApp } from '@/src/store/project';
+import { useUiSettings } from '@/src/store/uiSettings';
 import { useSpeechToText } from '@/src/lib/useSpeechToText';
 import { showToast } from '@/src/lib/dialog';
 import { WorkflowRunner } from '@/src/components/WorkflowRunner';
@@ -733,6 +734,11 @@ export default function AgentConsole() {
   const scopeApp = useProjects((s) => s.selectedApp());
   const workspaceId = scopeWorkspaceId(selectedProjectId, selectedAppId);
   const convKey = activeConvKey(workspaceId);
+
+  // Settings toggle: show/hide per-query background-communication logs in this chat.
+  const showQueryLogs = useUiSettings((s) => s.showQueryLogs);
+  const loadUiSettings = useUiSettings((s) => s.load);
+  useEffect(() => { void loadUiSettings(); }, [loadUiSettings]);
 
   // Router hooks must be read BEFORE the conversationId initializer below uses `urlChatId`. Previously
   // `useParams` was declared further down, so the initializer referenced it in the temporal dead zone —
@@ -2974,7 +2980,7 @@ export default function AgentConsole() {
                       ))}
                     </span>
                     </div>
-                    {(turn.debug || []).length > 0 && (
+                    {showQueryLogs && (turn.debug || []).length > 0 && (
                       <details className="ml-6 mt-2 max-w-[95%] rounded-lg border border-[var(--border)] bg-[var(--bg-card)] p-3">
                         <summary className="cursor-pointer text-xs font-semibold text-[var(--text-primary)]">
                           Background communication ({turn.debug?.length || 0})
