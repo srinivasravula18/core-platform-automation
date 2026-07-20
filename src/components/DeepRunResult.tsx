@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { cn } from '@/src/lib/utils';
 import { withBasePath } from '@/src/lib/base-path';
+import { containsPrivateFileActivity } from '@/src/lib/userFacingAgentActivity';
 import { useAgentRun } from '@/src/lib/useAgentRun';
 import { useUiSettings } from '@/src/store/uiSettings';
 import { MarkdownText } from '@/src/components/MarkdownText';
@@ -31,6 +32,7 @@ import {
   Recycle,
   MessageSquareText,
   MinusCircle,
+  Bug,
 } from 'lucide-react';
 
 /**
@@ -209,7 +211,7 @@ type Case = {
 };
 
 export function DeepRunResult({ taskId, initialSaved, onSaved }: { taskId: string; initialSaved?: boolean; onSaved?: () => void }) {
-  const [tab, setTab] = useState<'cases' | 'code' | 'evidence'>('cases');
+  const [tab, setTab] = useState<'cases' | 'code' | 'evidence' | 'bugs'>('cases');
   const [shotOpen, setShotOpen] = useState<number | null>(null); // evidence lightbox index
   // In-modal zoom for a single step frame (replaces the old raw target=_blank image link).
   const [stepZoom, setStepZoom] = useState<{ url: string; caption: string } | null>(null);
@@ -312,6 +314,7 @@ export function DeepRunResult({ taskId, initialSaved, onSaved }: { taskId: strin
   const canReworkCase = (i: number) => Boolean((feedback[i] || '').trim()) || caseSig(list[i]) !== caseSig(reworkBaseline[i]);
 
   const messages = run?.messages || [];
+  const visibleMessages = messages.filter((message: any) => !containsPrivateFileActivity(message));
   const latestAgentMessage = (agent: string) => messages.filter((m: any) => m.agent === agent).pop();
   const hasPhase = (...agents: string[]) => agents.some((agent) => messages.some((m: any) => m.agent === agent));
 
@@ -729,6 +732,12 @@ export function DeepRunResult({ taskId, initialSaved, onSaved }: { taskId: strin
     if (!tests.length) return 0;
     return tests.filter((t) => !/pass/i.test(String(t.status || ''))).length;
   })();
+  // Bugs = every executed test that did NOT pass, carried into its own tab so the
+  // failure breakdown (expected/actual/likely cause/fix) lives next to Evidence.
+  const bugs: any[] = (() => {
+    const tests: any[] = (pwResult?.tests?.length ? pwResult.tests : (run?.execution_result?.tests || [])) as any[];
+    return tests.filter((t) => !/pass/i.test(String(t.status || '')));
+  })();
 
   const downloadScripts = () => {
     if (!scripts.length) return;
@@ -949,7 +958,7 @@ export function DeepRunResult({ taskId, initialSaved, onSaved }: { taskId: strin
         <summary className="flex cursor-pointer items-center gap-2 px-3 py-2 text-xs font-semibold text-[var(--text-primary)]">
           <MessageSquareText className="h-4 w-4 text-[var(--accent)]" />
           Background communication
-          <span className="text-[11px] font-normal text-[var(--text-muted)]">({messages.length} messages)</span>
+          <span className="text-[11px] font-normal text-[var(--text-muted)]">({visibleMessages.length} messages)</span>
         </summary>
         <div className="border-t border-[var(--border)] p-3">
           <div className="mb-3 grid gap-2 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] p-3 text-xs text-[var(--text-primary)] md:grid-cols-2">
@@ -958,11 +967,11 @@ export function DeepRunResult({ taskId, initialSaved, onSaved }: { taskId: strin
             <div><span className="text-[var(--text-muted)]">Provider:</span> {run?.provider || 'default'}</div>
             <div><span className="text-[var(--text-muted)]">Status:</span> {run?.status || 'working'}</div>
           </div>
-          {messages.length === 0 ? (
+          {visibleMessages.length === 0 ? (
             <div className="py-6 text-center text-xs text-[var(--text-muted)]">No background messages recorded yet.</div>
           ) : (
             <div className="space-y-2">
-              {messages.map((message: any, index: number) => {
+              {visibleMessages.map((message: any, index: number) => {
                 const audit = phaseAudit(message, index);
                 return (
                   <div key={`${message.agent || 'agent'}-${message.at || index}-${index}`} className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] p-3">
@@ -1102,6 +1111,7 @@ export function DeepRunResult({ taskId, initialSaved, onSaved }: { taskId: strin
               { id: 'cases', label: `Cases (${list.length})`, icon: FlaskConical },
               { id: 'code', label: scopedExecution ? `Scripts (${scripts.length}/${executionCaseCount} selected)` : `Scripts (${scripts.length})`, icon: Code2 },
               { id: 'evidence', label: scopedExecution ? `Evidence (${evidence.length}/${executionCaseCount} selected)` : `Evidence (${evidence.length})`, icon: ImageIcon },
+              { id: 'bugs', label: `Bugs (${bugs.length})`, icon: Bug },
             ].map((t) => (
               <button
                 key={t.id}
@@ -1969,6 +1979,55 @@ export function DeepRunResult({ taskId, initialSaved, onSaved }: { taskId: strin
               ) : (
                 <div className="py-4 text-center text-xs text-[var(--text-muted)]">
                   {isRunning ? 'Evidence is captured after you Continue.' : 'No evidence captured (no reachable URL).'}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* BUGS — every non-passing test collected with its full failure breakdown. */}
+          {tab === 'bugs' && (
+            <div className="max-h-[min(28rem,60dvh)] overflow-y-auto pr-1">
+              {bugs.length ? (
+                <>
+                  <div className="mb-2 flex items-center justify-between gap-2 rounded-md border border-red-500/20 bg-red-500/5 px-3 py-1.5">
+                    <span className="text-[11px] font-semibold text-red-400">
+                      {bugs.length} bug{bugs.length === 1 ? '' : 's'} — {bugs.length} test{bugs.length === 1 ? '' : 's'} failed
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => runScripts(true)}
+                      disabled={pwRunning || !scripts.length}
+                      title="Re-run only the failed tests against the live app"
+                      className="inline-flex items-center gap-1 rounded border border-[var(--accent)]/30 bg-[var(--accent)]/10 px-2 py-1 text-[11px] font-semibold text-[var(--accent)] hover:bg-[var(--accent)]/20 disabled:opacity-50"
+                    >
+                      {pwRunning ? <Loader2 className="h-3 w-3 animate-spin" /> : <RotateCcw className="h-3 w-3" />}
+                      {pwRunning ? 'Re-running…' : `Re-run failed (${bugs.length})`}
+                    </button>
+                  </div>
+                  <div className="space-y-2">
+                    {bugs.map((t: any, i: number) => (
+                      <div key={i} className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] p-2.5">
+                        <div className="flex items-start gap-1.5 text-[11px]">
+                          <XCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-red-400" />
+                          <span className="min-w-0 flex-1 font-medium text-[var(--text-primary)]">{t.title || `Test ${i + 1}`}</span>
+                          {typeof t.durationMs === 'number' && (
+                            <span className="shrink-0 text-[var(--text-muted)]">{(t.durationMs / 1000).toFixed(1)}s</span>
+                          )}
+                        </div>
+                        {t.error
+                          ? <FailureCard error={t.error} />
+                          : <div className="mt-1 text-[11px] text-[var(--text-muted)]">Failed ({t.status || 'no details'}).</div>}
+                      </div>
+                    ))}
+                  </div>
+                </>
+              ) : (
+                <div className="py-6 text-center text-xs text-[var(--text-muted)]">
+                  {isRunning
+                    ? 'Bugs appear here after the scripts run.'
+                    : scripts.length
+                      ? 'No bugs — every executed test passed.'
+                      : 'No tests have run yet.'}
                 </div>
               )}
             </div>

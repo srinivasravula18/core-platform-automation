@@ -796,6 +796,9 @@ async function ensureFolderInPg(folderId: string) {
       description: folder.description || '',
       kind: folder.kind || 'Feature',
       createdBy: folder.createdBy || 'QA Assistant',
+      projectId: folder.projectId || '',
+      appId: folder.appId || '',
+      ownerId: folder.ownerId || '',
     });
   }
 }

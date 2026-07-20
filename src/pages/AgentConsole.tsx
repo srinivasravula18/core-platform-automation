@@ -58,6 +58,7 @@ function looksLikeAgentError(text: string): boolean {
 }
 import { cn } from '@/src/lib/utils';
 import { withEventSourceAuth } from '@/src/lib/base-path';
+import { containsPrivateFileActivity, hasPrivateResearchToolCall } from '@/src/lib/userFacingAgentActivity';
 import { useProjects, type ProjectApp } from '@/src/store/project';
 import { useUiSettings } from '@/src/store/uiSettings';
 import { useSpeechToText } from '@/src/lib/useSpeechToText';
@@ -79,6 +80,7 @@ import { GeneratedCases } from '@/src/components/GeneratedCases';
 
 // Turn a streamed Supervisor step into a human-readable "what it's doing right now" label.
 function describeAgentStep(ev: { toolCalls?: Array<{ name: string; arguments?: any }> }): string {
+  if (hasPrivateResearchToolCall(ev)) return 'Researching application...';
   const calls = ev.toolCalls || [];
   if (!calls.length) return 'Thinking…';
   const tc = calls[0];
@@ -1224,6 +1226,7 @@ export default function AgentConsole() {
   }, []);
 
   const appendThinkingDebug = useCallback((id: string, line: string, payload?: any) => {
+    if (containsPrivateFileActivity(payload === undefined ? line : payload)) return;
     const text = payload === undefined
       ? line
       : `${line}\n${formatDebugPayload(payload)}`;
@@ -1906,7 +1909,7 @@ export default function AgentConsole() {
           try { ev = JSON.parse(rawLine); } catch { continue; }
           if (ev.type === 'step') {
             appendThinkingDebug(thinkingId, 'Supervisor step', ev);
-            setThinkingLabel(ev.text && ev.text.length < 80 ? ev.text : describeAgentStep(ev));
+            setThinkingLabel(hasPrivateResearchToolCall(ev) ? describeAgentStep(ev) : (ev.text && ev.text.length < 80 ? ev.text : describeAgentStep(ev)));
           }
           else if (ev.type === 'answer_delta') {
             liveReply += ev.delta || '';
@@ -2961,6 +2964,7 @@ export default function AgentConsole() {
                 );
               }
               if (turn.kind === 'thinking') {
+                const visibleDebug = (turn.debug || []).filter((entry) => !containsPrivateFileActivity(entry));
                 return (
                   <div key={turn.id} className="text-sm text-[var(--text-muted)]">
                     <style>{`
@@ -2980,13 +2984,13 @@ export default function AgentConsole() {
                       ))}
                     </span>
                     </div>
-                    {showQueryLogs && (turn.debug || []).length > 0 && (
+                    {showQueryLogs && visibleDebug.length > 0 && (
                       <details className="ml-6 mt-2 max-w-[95%] rounded-lg border border-[var(--border)] bg-[var(--bg-card)] p-3">
                         <summary className="cursor-pointer text-xs font-semibold text-[var(--text-primary)]">
-                          Background communication ({turn.debug?.length || 0})
+                          Background communication ({visibleDebug.length})
                         </summary>
                         <pre className="custom-scrollbar mt-2 max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-md bg-[var(--bg-secondary)] p-3 text-[11px] leading-5 text-[var(--text-primary)]">
-                          {(turn.debug || []).join('\n\n---\n\n')}
+                          {visibleDebug.join('\n\n---\n\n')}
                         </pre>
                       </details>
                     )}

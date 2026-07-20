@@ -465,19 +465,19 @@ export default function TestRuns() {
         </div>
 
         <div className="flex-1 overflow-auto">
-          <table className="w-full text-left text-sm whitespace-nowrap">
+          <table className="w-full min-w-[1264px] table-fixed text-left text-sm whitespace-nowrap">
             <thead className="sticky top-0 bg-[var(--bg-secondary)] border-b border-[var(--border)] text-[var(--text-muted)]">
               <tr>
                 <th className="px-4 py-3 w-10">
                   <input type="checkbox" checked={bulk.allSelected(filteredRuns.map((run) => run.id))} onChange={() => bulk.toggleAll(filteredRuns.map((run) => run.id))} />
                 </th>
                 <th className="px-4 py-3 w-10"></th>
-                <th className="px-4 py-3 font-medium">Run</th>
-                <th className="px-4 py-3 font-medium">Folder</th>
-                <th className="px-4 py-3 font-medium">Tests</th>
-                <th className="px-4 py-3 font-medium">Duration</th>
-                <th className="px-4 py-3 font-medium">Tests Status</th>
-                <th className="px-4 py-3 font-medium">Failure Analysis</th>
+                <th className="w-72 px-4 py-3 font-medium">Run</th>
+                <th className="w-60 px-4 py-3 font-medium">Folder</th>
+                <th className="w-28 px-4 py-3 font-medium">Tests</th>
+                <th className="w-28 px-4 py-3 font-medium">Duration</th>
+                <th className="w-56 px-4 py-3 font-medium">Tests Status</th>
+                <th className="w-40 px-4 py-3 font-medium">Failure Analysis</th>
                 <th className="px-4 py-3 w-12"></th>
               </tr>
             </thead>
@@ -494,11 +494,11 @@ export default function TestRuns() {
                       <input type="checkbox" checked={bulk.isSelected(run.id)} onChange={() => bulk.toggle(run.id)} />
                     </td>
                     <td className="px-4 py-4"><CheckCircle className="w-8 h-8 text-[var(--accent)]" /></td>
-                    <td className="px-4 py-4">
-                      <div className="font-semibold">{run.name}</div>
-                      <div className="text-xs text-[var(--text-muted)]">Assigned to {run.requestedBy || 'Unassigned'}</div>
+                    <td className="min-w-0 px-4 py-4">
+                      <div className="truncate font-semibold" title={run.name}>{run.name}</div>
+                      <div className="truncate text-xs text-[var(--text-muted)]">Assigned to {run.requestedBy || 'Unassigned'}</div>
                     </td>
-                    <td className="px-4 py-4">
+                    <td className="overflow-hidden px-4 py-4">
                       <FolderBadge folders={folders} folderId={run.folderId} />
                     </td>
                     <td className="px-4 py-4">{stats.total} Tests</td>

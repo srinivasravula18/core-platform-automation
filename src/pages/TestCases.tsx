@@ -14,6 +14,37 @@ import { useDataVersion } from '@/src/store/data';
 
 const CASE_STATUSES = ['Draft', 'Under Review', 'Approved', 'Automated', 'Deprecated'];
 
+function TagMultiSelect({ options, value, onChange }: { options: string[]; value: string[]; onChange: (tags: string[]) => void }) {
+  const [selected, setSelected] = useState(value);
+  const [open, setOpen] = useState(false);
+  useEffect(() => setSelected(value), [value]);
+
+  const toggle = (tag: string) => {
+    const next = selected.includes(tag) ? selected.filter((item) => item !== tag) : [...selected, tag];
+    setSelected(next);
+    onChange(next);
+  };
+
+  return (
+    <details className="group relative" onClick={(event) => event.stopPropagation()} onToggle={(event) => setOpen(event.currentTarget.open)}>
+      <summary
+        className="w-full cursor-pointer list-none truncate rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs font-medium text-[var(--text-primary)] outline-none hover:border-[var(--accent)] [&::-webkit-details-marker]:hidden"
+        title={selected.length ? selected.join(', ') : 'No tags'}
+      >
+        {selected.length ? `${selected.length} tag${selected.length === 1 ? '' : 's'}` : 'No tags'}
+      </summary>
+      {open ? <div className="absolute right-0 z-30 mt-1 max-h-56 w-56 overflow-auto rounded-md border border-[var(--border)] bg-[var(--bg-card)] p-1 shadow-xl">
+        {options.length ? options.map((tag) => (
+          <label key={tag} className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-[var(--bg-secondary)]">
+            <input type="checkbox" checked={selected.includes(tag)} onChange={() => toggle(tag)} />
+            <span className="min-w-0 truncate" title={tag}>{tag}</span>
+          </label>
+        )) : <span className="block px-2 py-1.5 text-xs text-[var(--text-muted)]">No tags available</span>}
+      </div> : null}
+    </details>
+  );
+}
+
 export default function TestCases() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -23,14 +54,16 @@ export default function TestCases() {
   const [folders, setFolders] = useState<any[]>([]);
   // agentRunId → { platform, app } for the platform + individual app the run targeted, so each
   // agent-generated case can show the exact app the user chose (e.g. "Core Platform / CRM").
-  const [runInfo, setRunInfo] = useState<Record<string, { platform: string; app: string }>>({});
+  const [runInfo, setRunInfo] = useState<Record<string, { platformId: string; platform: string; app: string }>>({});
+  const [platforms, setPlatforms] = useState<Array<{ id: string; name: string }>>([]);
   const { projects, selectedProjectId, selectedAppId, fetchProjects } = useProjects();
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState(searchParams.get('search') || '');
   const aiSearch = useAiSearch('test cases');
-  const [statusFilter, setStatusFilter] = useState('All');
+  const [statusFilters, setStatusFilters] = useState<Set<string>>(() => new Set());
   const [appFilter, setAppFilter] = useState('All');
   const [isFilterOpen, setIsFilterOpen] = useState(false);
+  const filterRef = useRef<HTMLDivElement | null>(null);
   const [isCaseModalOpen, setIsCaseModalOpen] = useState(false);
   const [isAICaseModalOpen, setIsAICaseModalOpen] = useState(false);
   const [caseAIInstruction, setCaseAIInstruction] = useState('');
@@ -79,17 +112,24 @@ export default function TestCases() {
 
   // Map each run to the platform + individual app it targeted, so cases can display them.
   const fetchRunInfo = () => {
-    fetch('/api/agent-runs')
-      .then(r => r.json())
-      .then((runs) => {
-        const map: Record<string, { platform: string; app: string }> = {};
+    Promise.all([
+      fetch('/api/agent-runs').then(r => r.json()),
+      fetch('/api/credentials/websites').then(r => r.json()),
+    ])
+      .then(([runs, websiteData]) => {
+        const websites = Array.isArray(websiteData?.websites) ? websiteData.websites : [];
+        const websiteNames = new Map<string, string>(websites.map((website: any) => [String(website.id), String(website.name || website.id)]));
+        const map: Record<string, { platformId: string; platform: string; app: string }> = {};
         (Array.isArray(runs) ? runs : []).forEach((run: any) => {
           if (!run?.id) return;
+          const platformId = String(run.websiteId || '').trim();
           map[run.id] = {
-            platform: String(run.projectName || '').trim(),
+            platformId,
+            platform: websiteNames.get(platformId) || String(run.websiteName || run.appName || run.projectName || '').trim(),
             app: String(run.target_app_label || '').trim(),
           };
         });
+        setPlatforms(websites.map((website: any) => ({ id: String(website.id), name: String(website.name || website.id) })));
         setRunInfo(map);
       })
       .catch(console.error);
@@ -132,6 +172,15 @@ export default function TestCases() {
   useEffect(() => {
     setSearchTerm(searchParams.get('search') || '');
   }, [searchParams]);
+
+  useEffect(() => {
+    if (!isFilterOpen) return;
+    const closeOnOutsideClick = (event: PointerEvent) => {
+      if (!filterRef.current?.contains(event.target as Node)) setIsFilterOpen(false);
+    };
+    document.addEventListener('pointerdown', closeOnOutsideClick);
+    return () => document.removeEventListener('pointerdown', closeOnOutsideClick);
+  }, [isFilterOpen]);
 
   useEffect(() => {
     if (!isCaseModalOpen) return;
@@ -298,24 +347,28 @@ export default function TestCases() {
     return suites.find((suite) => testCase.agentRunId && suite.agentRunId === testCase.agentRunId)?.id || '';
   };
   const apps = projects.flatMap((project) => project.apps || []);
-  const appName = (appId: string) => apps.find((app) => app.id === appId)?.name || (appId ? 'Unknown app' : 'All apps');
+  const appName = (appId: string) => apps.find((app) => app.id === appId)?.name || platforms.find((platform) => platform.id === appId)?.name || (appId ? 'Unknown app' : 'All apps');
   // "Platform / App" the user chose for a case: the run's platform (project) + the individual app
   // (e.g. Core Platform / CRM). Falls back to the surface app when a case has no run-resolved app.
   const caseScopeLabel = (testCase: any) => {
     const info = runInfo[testCase.agentRunId || testCase.sourceRunId || ''];
     const platform = info?.platform || '';
-    const app = info?.app || appName(testCase.appId || '');
+    const app = info?.app || (platform ? '' : appName(testCase.appId || ''));
     return [platform, app].filter(Boolean).join(' / ') || appName(testCase.appId || '');
   };
-  const tagOptions = Array.from(new Set(cases.flatMap((testCase) => Array.isArray(testCase.tags) ? testCase.tags : []).map((tag) => String(tag).trim()).filter(Boolean))).sort();
+  const casePlatformId = (testCase: any) => runInfo[testCase.agentRunId || testCase.sourceRunId || '']?.platformId || testCase.appId || '';
+  const tagOptions: string[] = Array.from(new Set<string>(cases
+    .flatMap((testCase) => Array.isArray(testCase.tags) ? testCase.tags : [])
+    .map((tag: any) => String(tag).trim())
+    .filter((tag: string) => Boolean(tag)))).sort();
   const filteredCases = cases.filter((testCase) => {
     const query = searchTerm.toLowerCase();
     const appLabel = appName(testCase.appId || '');
     const matchesSearch = aiSearch.isAiQuery(searchTerm)
       ? (aiSearch.matchedIds ? aiSearch.matchedIds.has(testCase.id) : true)
       : (!query || `${testCase.id || ''} ${testCase.title || ''} ${testCase.description || ''} ${appLabel} ${(testCase.tags || []).join(' ')}`.toLowerCase().includes(query));
-    const matchesStatus = statusFilter === 'All' || (testCase.status || 'Draft') === statusFilter;
-    const matchesApp = appFilter === 'All' || (testCase.appId || '') === appFilter;
+    const matchesStatus = statusFilters.size === 0 || statusFilters.has(testCase.status || 'Draft');
+    const matchesApp = appFilter === 'All' || casePlatformId(testCase) === appFilter;
     return matchesSearch && matchesStatus && matchesApp;
   });
 
@@ -547,16 +600,33 @@ export default function TestCases() {
               className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md pl-9 pr-4 py-1.5 text-sm outline-none focus:border-[var(--accent)]"
             />
           </div>
-          <div className="relative">
-            <button onClick={() => setIsFilterOpen(!isFilterOpen)} className="flex items-center gap-2 border border-[var(--border)] bg-[var(--bg-secondary)] hover:bg-[var(--border)] text-[var(--text-primary)] px-3 py-1.5 rounded-md text-sm transition-colors">
-              <Filter className="w-4 h-4" /> {statusFilter === 'All' ? 'Filters' : statusFilter}
+          <div ref={filterRef} className="relative">
+            <button
+              onClick={() => setIsFilterOpen(!isFilterOpen)}
+              aria-expanded={isFilterOpen}
+              className="flex items-center gap-2 border border-[var(--border)] bg-[var(--bg-secondary)] hover:bg-[var(--border)] text-[var(--text-primary)] px-3 py-1.5 rounded-md text-sm transition-colors"
+            >
+              <Filter className="w-4 h-4" /> {statusFilters.size === 0 ? 'All statuses' : statusFilters.size === 1 ? Array.from(statusFilters)[0] : `${statusFilters.size} statuses`}
             </button>
             {isFilterOpen && (
-              <div className="absolute left-0 top-10 z-20 w-44 overflow-hidden rounded-md border border-[var(--border)] bg-[var(--bg-card)] shadow-xl">
-                {['All', ...CASE_STATUSES].map((status) => (
-                  <button key={status} onClick={() => { setStatusFilter(status); setIsFilterOpen(false); }} className="block w-full px-3 py-2 text-left text-sm hover:bg-[var(--bg-secondary)]">
+              <div className="absolute left-0 top-10 z-20 w-48 overflow-hidden rounded-md border border-[var(--border)] bg-[var(--bg-card)] p-1 shadow-xl">
+                <label className="flex cursor-pointer items-center gap-2 rounded px-2 py-2 text-sm hover:bg-[var(--bg-secondary)]">
+                  <input type="checkbox" checked={statusFilters.size === 0} onChange={() => setStatusFilters(new Set())} />
+                  All statuses
+                </label>
+                {CASE_STATUSES.map((status) => (
+                  <label key={status} className="flex cursor-pointer items-center gap-2 rounded px-2 py-2 text-sm hover:bg-[var(--bg-secondary)]">
+                    <input
+                      type="checkbox"
+                      checked={statusFilters.has(status)}
+                      onChange={() => setStatusFilters((current) => {
+                        const next = new Set(current);
+                        if (next.has(status)) next.delete(status); else next.add(status);
+                        return next;
+                      })}
+                    />
                     {status}
-                  </button>
+                  </label>
                 ))}
               </div>
             )}
@@ -568,6 +638,9 @@ export default function TestCases() {
             title="Filter by app"
           >
             <option value="All">All apps</option>
+            {platforms.map((platform) => (
+              <option key={platform.id} value={platform.id}>{platform.name}</option>
+            ))}
             {apps.map((app) => (
               <option key={app.id} value={app.id}>{app.name}</option>
             ))}
@@ -750,18 +823,11 @@ export default function TestCases() {
                     </select>
                   </td>
                   <td className="py-3 px-4">
-                    <select
-                      value={Array.isArray(tc.tags) && tc.tags.length > 0 ? tc.tags[0] : ''}
-                      onClick={(event) => event.stopPropagation()}
-                      onChange={(event) => updateCaseInline(tc, { tags: event.target.value ? [event.target.value] : [] })}
-                      className={inlineSelectClass}
-                      title="Update tags"
-                    >
-                      <option value="">No tags</option>
-                      {tagOptions.map((tag) => (
-                        <option key={tag} value={tag}>{tag}</option>
-                      ))}
-                    </select>
+                    <TagMultiSelect
+                      options={tagOptions}
+                      value={Array.isArray(tc.tags) ? tc.tags : []}
+                      onChange={(tags) => updateCaseInline(tc, { tags })}
+                    />
                   </td>
                   <td className="py-3 px-4 text-right flex gap-1 justify-end">
                     <button
