@@ -347,7 +347,7 @@ function initialThinkingLabel(text: string, opts: { selectedApps: number; requir
 
 type Turn =
   | { id: string; role: 'user'; text: string }
-  | { id: string; role: 'assistant'; kind: 'text'; text: string; authoredScript?: string; authoredTargetUrl?: string; screenshotUrls?: string[]; isError?: boolean }
+  | { id: string; role: 'assistant'; kind: 'text'; text: string; authoredScript?: string; authoredTargetUrl?: string; screenshotUrls?: string[]; isError?: boolean; stopped?: boolean }
   | { id: string; role: 'assistant'; kind: 'plan'; plan: any }
   | { id: string; role: 'assistant'; kind: 'deeprun'; taskId: string; saved?: boolean }
   | { id: string; role: 'assistant'; kind: 'codereview'; analysis: any }
@@ -1250,11 +1250,14 @@ export default function AgentConsole() {
     activeThinkingIdRef.current = null;
     stopListening();
     if (thinkingId) {
+      // Flag the turn as stopped so a Retry affordance appears — otherwise a stopped pipeline
+      // left the user with no way to re-run it (bug: unable to retry after stopping generation).
       replaceTurn(thinkingId, {
         id: thinkingId,
         role: 'assistant',
         kind: 'text',
-        text: 'Stopped.',
+        text: 'Stopped. You can retry this request.',
+        stopped: true,
       });
     }
     setBusy(false);
@@ -3172,8 +3175,10 @@ export default function AgentConsole() {
                 return <AppAskCard key={turn.id} turn={turn} onProceed={proceedAppAsk} />;
               }
               if (turn.kind === 'text') {
-                // Retry appears only when the agent response is an error (explicit flag or heuristic).
+                // Retry appears when the agent response is an error (explicit flag or heuristic) OR
+                // when the user stopped the request (so a stopped pipeline can be re-run).
                 const isErr = Boolean(turn.isError) || looksLikeAgentError(turn.text);
+                const canRetry = isErr || Boolean(turn.stopped);
                 return (
                   <div key={turn.id} className="group flex justify-start">
                     <div className="flex max-w-[90%] gap-2.5">
@@ -3208,7 +3213,7 @@ export default function AgentConsole() {
                           >
                             {copiedTurnId === turn.id ? <Check className="h-3 w-3 text-[var(--accent)]" /> : <Copy className="h-3 w-3" />}
                           </button>
-                          {isErr && (
+                          {canRetry && (
                             <button
                               type="button"
                               onClick={() => retryTurn(turn.id)}

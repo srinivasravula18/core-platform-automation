@@ -261,6 +261,16 @@ ALTER TABLE website_users ADD COLUMN IF NOT EXISTS page_url   TEXT DEFAULT '';
 -- payload lives in an additive JSONB bag so the defects contract stays unchanged for existing readers.
 ALTER TABLE defects ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}'::jsonb;
 
+-- Test-case classification fields: automation status, testing scope (Manual/Automation),
+-- and testing type (Functional/Smoke/Sanity/Regression/...). Additive so existing readers are unaffected.
+ALTER TABLE cases ADD COLUMN IF NOT EXISTS automation_status TEXT DEFAULT 'Not Automated';
+ALTER TABLE cases ADD COLUMN IF NOT EXISTS testing_scope     TEXT DEFAULT 'Manual';
+ALTER TABLE cases ADD COLUMN IF NOT EXISTS testing_type      TEXT DEFAULT 'Functional';
+-- Multi-select plan/suite membership (edit form). Singular test_plan_id/test_suite_id stay in sync
+-- with the first entry so existing run/linking logic keyed on the singular id is unaffected.
+ALTER TABLE cases ADD COLUMN IF NOT EXISTS test_plan_ids  JSONB DEFAULT '[]'::jsonb;
+ALTER TABLE cases ADD COLUMN IF NOT EXISTS test_suite_ids JSONB DEFAULT '[]'::jsonb;
+
 -- System prompt store: per-agent versioned overrides
 CREATE TABLE IF NOT EXISTS prompts (
   id          TEXT PRIMARY KEY,

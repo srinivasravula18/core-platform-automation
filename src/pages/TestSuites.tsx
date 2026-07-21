@@ -408,7 +408,7 @@ export default function TestSuites() {
                 <th className="font-medium py-3 px-4">Parent Test Plan</th>
                 <th className="font-medium py-3 px-4 w-32">Module</th>
                 <th className="font-medium py-3 px-4 w-28">Tags</th>
-                <th className="font-medium py-3 px-4 w-24 text-right">Actions</th>
+                <th className="font-medium py-3 px-4 w-36 text-right">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-[var(--border)]">
@@ -502,7 +502,7 @@ export default function TestSuites() {
                           ))}
                         </select>
                       </td>
-                      <td className="py-3 px-4 text-right">
+                      <td className="py-3 px-4 text-right whitespace-nowrap">
                         <div className="flex items-center justify-end gap-1">
                           <button
                             onClick={(e) => {
@@ -511,7 +511,7 @@ export default function TestSuites() {
                             }}
                             disabled={isStartingRun}
                             title="Run test suite"
-                            className="p-1 rounded hover:bg-emerald-500/10 text-[var(--text-muted)] hover:text-emerald-400 disabled:opacity-50 transition-colors"
+                            className="shrink-0 p-1 rounded hover:bg-emerald-500/10 text-[var(--text-muted)] hover:text-emerald-400 disabled:opacity-50 transition-colors"
                           >
                             <PlayCircle className="w-4 h-4" />
                           </button>
@@ -521,7 +521,7 @@ export default function TestSuites() {
                               openSubsuiteModal(suite);
                             }}
                             title="Add subsuite"
-                            className="p-1 rounded hover:bg-[var(--border)] text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors"
+                            className="shrink-0 p-1 rounded hover:bg-[var(--border)] text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors"
                           >
                             <Plus className="w-4 h-4" />
                           </button>
@@ -531,14 +531,14 @@ export default function TestSuites() {
                               openEditModal(suite);
                             }}
                             title="Edit suite"
-                            className="p-1 rounded hover:bg-[var(--border)] text-[var(--text-muted)] transition-colors"
+                            className="shrink-0 p-1 rounded hover:bg-[var(--border)] text-[var(--text-muted)] transition-colors"
                           >
                             <MoreHorizontal className="w-4 h-4" />
                           </button>
                           <button
                             onClick={(e) => { e.stopPropagation(); bulk.deleteOne(suite.id); }}
                             title="Delete"
-                            className="p-1 rounded hover:bg-red-500/10 text-[var(--text-muted)] hover:text-red-500 transition-colors"
+                            className="shrink-0 p-1 rounded hover:bg-red-500/10 text-[var(--text-muted)] hover:text-red-500 transition-colors"
                           >
                             <Trash2 className="w-4 h-4" />
                           </button>

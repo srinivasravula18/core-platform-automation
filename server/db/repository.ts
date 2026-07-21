@@ -131,9 +131,14 @@ function mapCase(r: any) {
     steps: r.steps || [],
     testPlanId: r.test_plan_id,
     testSuiteId: r.test_suite_id,
+    testPlanIds: r.test_plan_ids || (r.test_plan_id ? [r.test_plan_id] : []),
+    testSuiteIds: r.test_suite_ids || (r.test_suite_id ? [r.test_suite_id] : []),
     type: r.type,
     priority: r.priority,
     status: r.status,
+    automationStatus: r.automation_status || 'Not Automated',
+    testingScope: r.testing_scope || (r.type === 'Automated' ? 'Automation' : 'Manual'),
+    testingType: r.testing_type || 'Functional',
     tags: r.tags || [],
     folderId: r.folder_id,
     confidence: r.confidence,
@@ -831,24 +836,36 @@ export const Cases = {
     }
     const id = c.id || uid('TC');
     const stepsJson = JSON.stringify(c.steps || []);
+    const testingScope = c.testingScope || (c.type === 'Automated' ? 'Automation' : 'Manual');
+    // Multi-select plan/suite: keep the singular id synced to the first array entry (or an explicit
+    // singular value) so downstream run/linking logic keyed on test_plan_id/test_suite_id still works.
+    const planIds = Array.isArray(c.testPlanIds) ? c.testPlanIds.filter(Boolean) : (c.testPlanId ? [c.testPlanId] : []);
+    const suiteIds = Array.isArray(c.testSuiteIds) ? c.testSuiteIds.filter(Boolean) : (c.testSuiteId ? [c.testSuiteId] : []);
+    const primaryPlanId = c.testPlanId || planIds[0] || null;
+    const primarySuiteId = c.testSuiteId || suiteIds[0] || null;
     const row = await queryOne(
-      `INSERT INTO cases (id, title, description, preconditions, steps, test_plan_id, test_suite_id, type, priority, status, tags, folder_id, confidence, sources, approval_state, proposed_by, source_run_id, agent_run_id, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18, now(), now())
+      `INSERT INTO cases (id, title, description, preconditions, steps, test_plan_id, test_suite_id, type, priority, status, tags, folder_id, confidence, sources, approval_state, proposed_by, source_run_id, agent_run_id, automation_status, testing_scope, testing_type, test_plan_ids, test_suite_ids, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22::jsonb,$23::jsonb, now(), now())
        ON CONFLICT (id) DO UPDATE SET
          title=EXCLUDED.title, description=EXCLUDED.description, preconditions=EXCLUDED.preconditions,
          steps=EXCLUDED.steps, test_plan_id=EXCLUDED.test_plan_id, test_suite_id=EXCLUDED.test_suite_id,
          type=EXCLUDED.type, priority=EXCLUDED.priority, status=EXCLUDED.status, tags=EXCLUDED.tags,
          folder_id=EXCLUDED.folder_id, confidence=EXCLUDED.confidence, sources=EXCLUDED.sources,
          approval_state=EXCLUDED.approval_state, proposed_by=EXCLUDED.proposed_by,
-         source_run_id=EXCLUDED.source_run_id, agent_run_id=EXCLUDED.agent_run_id, updated_at=now()
+         source_run_id=EXCLUDED.source_run_id, agent_run_id=EXCLUDED.agent_run_id,
+         automation_status=EXCLUDED.automation_status, testing_scope=EXCLUDED.testing_scope,
+         testing_type=EXCLUDED.testing_type, test_plan_ids=EXCLUDED.test_plan_ids,
+         test_suite_ids=EXCLUDED.test_suite_ids, updated_at=now()
        RETURNING *`,
       [
         id, c.title || 'Untitled Case', c.description || '', c.preconditions || '',
-        stepsJson, c.testPlanId || null, c.testSuiteId || null,
+        stepsJson, primaryPlanId, primarySuiteId,
         c.type || 'Manual', c.priority || 'Medium', c.status || 'Draft',
         c.tags || [], c.folderId || null, c.confidence ?? null, c.sources || [],
         c.approvalState || 'approved', c.proposedBy || c.createdBy || 'human',
         c.sourceRunId || null, c.agentRunId || null,
+        c.automationStatus || 'Not Automated', testingScope, c.testingType || 'Functional',
+        JSON.stringify(planIds), JSON.stringify(suiteIds),
       ],
     );
     await writeScopeCols('cases', id, c);

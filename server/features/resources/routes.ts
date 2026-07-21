@@ -20,8 +20,52 @@ import {
   Folders,
   Requirements,
   Activity,
+  AgentRuns,
   isPgEnabled,
 } from '../../db/repository';
+
+// Generated Playwright scripts live on the agent run, but the File System → Scripts page reads the
+// Scripts repository. If a run's scripts were never persisted there (older runs, or a pipeline path
+// that skipped persistence), they were invisible outside the Agent Console. This reconcile lands any
+// run's generated scripts into the repository (idempotent via deterministic ids) so they always show.
+async function reconcileAgentScriptsToRepository(): Promise<void> {
+  try {
+    const runs = await AgentRuns.list();
+    if (!Array.isArray(runs) || !runs.length) return;
+    const existing = new Set((await Scripts.list()).map((script: any) => String(script.id)));
+    for (const run of runs) {
+      const scripts = Array.isArray(run?.playwright_scripts) ? run.playwright_scripts
+        : (Array.isArray(run?.playwrightScripts) ? run.playwrightScripts : []);
+      if (!scripts.length) continue;
+      const runKey = String(run.id).substring(0, 8).toUpperCase();
+      // Cheap gate: if the run's first script id already exists, assume it's fully persisted.
+      if (existing.has(`SCR-${runKey}-1`)) continue;
+      for (let index = 0; index < scripts.length; index++) {
+        const script = scripts[index];
+        if (!script?.code) continue;
+        await Scripts.upsert({
+          id: `SCR-${runKey}-${index + 1}`,
+          name: script.filename || script.test_case_title || `Agent Script - ${index + 1}`,
+          filename: script.filename || `agent-script-${runKey.toLowerCase()}-${index + 1}.spec.ts`,
+          title: script.test_case_title || script.filename || `Agent Script - ${index + 1}`,
+          code: script.code || '',
+          language: 'typescript',
+          framework: 'playwright',
+          status: 'Generated',
+          folderId: run.folderId || null,
+          agentRunId: run.id,
+          targetUrl: run.app_url || run.appUrl || '',
+          createdBy: 'QA Assistant',
+          projectId: run.projectId || '',
+          appId: run.appId || '',
+          ownerId: run.ownerId || '',
+        });
+      }
+    }
+  } catch (err: any) {
+    console.warn('[scripts] reconcile from agent runs failed:', err?.message || err);
+  }
+}
 
 const aiCaseActionSchema = z.object({
   summary: z.string(),
@@ -77,7 +121,11 @@ export function registerResourceRoutes(app: Express) {
   app.get('/api/cases', async (req, res) => res.json(scopeFilter(await Cases.list(), reqScope(req))));
   app.get('/api/runs', async (req, res) => res.json(scopeFilter(await Runs.list(), reqScope(req))));
   app.get('/api/defects', async (req, res) => res.json(scopeFilter(await Defects.list(), reqScope(req))));
-  app.get('/api/scripts', async (req, res) => res.json(scopeFilter(await Scripts.list(), reqScope(req))));
+  app.get('/api/scripts', async (req, res) => {
+    // Self-heal: surface any agent-generated scripts that never made it into the repository.
+    await reconcileAgentScriptsToRepository();
+    res.json(scopeFilter(await Scripts.list(), reqScope(req)));
+  });
   app.get('/api/reports', async (req, res) => res.json(scopeFilter(await Reports.list(), reqScope(req))));
   app.get('/api/folders', async (req, res) => {
     const folders = await Folders.list();
@@ -361,6 +409,7 @@ export function registerResourceRoutes(app: Express) {
       id: `TC-${Math.random().toString(36).substring(2, 6).toUpperCase()}`,
       title: c.title || 'New Case',
       description: buildCaseDescription(c),
+      preconditions: c.preconditions || '',
       steps: normalizeCaseSteps(c.steps),
       testPlanId: c.testPlanId || '',
       testSuiteId: c.testSuiteId || '',
@@ -368,6 +417,9 @@ export function registerResourceRoutes(app: Express) {
       tags: normalizeCaseTags(c.tags || []),
       type: c.type || 'Manual',
       priority: c.priority || 'Medium',
+      automationStatus: c.automationStatus || 'Not Automated',
+      testingScope: c.testingScope || (c.type === 'Automated' ? 'Automation' : 'Manual'),
+      testingType: c.testingType || 'Functional',
       captureEvidenceOnManualRun: c.captureEvidenceOnManualRun !== false,
       folderId: c.folderId || '',
       createdBy: c.createdBy || 'User',

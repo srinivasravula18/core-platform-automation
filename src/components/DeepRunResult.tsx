@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { cn } from '@/src/lib/utils';
 import { withBasePath } from '@/src/lib/base-path';
@@ -377,6 +377,22 @@ export function DeepRunResult({ taskId, initialSaved, onSaved }: { taskId: strin
   const keptMatches = existingMatches.filter((_, i) => !removedMatches.has(i));
   const matchKey = (c: any) => String(c?.id ?? c?.existingCaseId ?? c?.title);
   const list = cases || [];
+  // Evidence may arrive reversed; order it to match the displayed case order by title (BUG 13).
+  const orderedEvidence: any[] = useMemo(() => {
+    const orderByTitle = new Map<string, number>();
+    list.forEach((c: any, idx: number) => {
+      const key = String(c?.title || '').trim().toLowerCase();
+      if (key && !orderByTitle.has(key)) orderByTitle.set(key, idx);
+    });
+    const rank = (t: any) => {
+      const k = String(t || '').trim().toLowerCase();
+      return orderByTitle.has(k) ? orderByTitle.get(k)! : Number.MAX_SAFE_INTEGER;
+    };
+    return evidence
+      .map((shot, i) => ({ shot, i }))
+      .sort((a, b) => (rank(a.shot?.title) - rank(b.shot?.title)) || (a.i - b.i)) // stable fallback to original order
+      .map((x) => x.shot);
+  }, [evidence, list]);
   const executionCaseCount = Number((run as any)?.execution_case_count || 0) || selectedCases.size;
   const scopedExecution = executionCaseCount > 0 && list.length > executionCaseCount;
   const caseSig = (c: any) => JSON.stringify({
@@ -1189,7 +1205,7 @@ export function DeepRunResult({ taskId, initialSaved, onSaved }: { taskId: strin
           <div className="mb-2 flex gap-1 border-b border-[var(--border)]">
             {[
               { id: 'cases', label: `Cases (${list.length})`, icon: FlaskConical },
-              { id: 'code', label: scopedExecution ? `Scripts (${scripts.length}/${executionCaseCount} selected)` : `Scripts (${scripts.length}${droppedCases.length ? ` · ${droppedCases.length} skipped` : ''})`, icon: Code2 },
+              { id: 'code', label: scopedExecution ? `Scripts (${scripts.length}/${executionCaseCount} selected)` : `Scripts (${scripts.length}${droppedCases.length ? `, ${droppedCases.length} skipped` : ''})`, icon: Code2 },
               { id: 'evidence', label: scopedExecution ? `Evidence (${evidence.length}/${executionCaseCount} selected)` : `Evidence (${evidence.length})`, icon: ImageIcon },
               { id: 'bugs', label: `Bugs (${bugs.length})`, icon: Bug },
             ].map((t) => (
@@ -1265,7 +1281,7 @@ export function DeepRunResult({ taskId, initialSaved, onSaved }: { taskId: strin
                       disabled={!list.length}
                       className="inline-flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2.5 py-1.5 text-xs font-medium text-[var(--text-primary)] hover:border-[var(--accent)] disabled:opacity-50"
                     >
-                      <Download className="h-3.5 w-3.5" /> Report
+                      <Download className="h-3.5 w-3.5" /> Export
                       <ChevronDown className="h-3 w-3" />
                     </button>
                     {reportOpen && (
@@ -1275,7 +1291,7 @@ export function DeepRunResult({ taskId, initialSaved, onSaved }: { taskId: strin
                           <div className="border-b border-[var(--border)] px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">Download as</div>
                           <button onClick={() => exportReport('pdf')} className="block w-full px-3 py-2 text-left text-xs hover:bg-[var(--bg-secondary)]">PDF (print)</button>
                           <button onClick={() => exportReport('html')} className="block w-full px-3 py-2 text-left text-xs hover:bg-[var(--bg-secondary)]">HTML</button>
-                          <button onClick={() => exportReport('csv')} className="block w-full px-3 py-2 text-left text-xs hover:bg-[var(--bg-secondary)]">Excel (CSV)</button>
+                          <button onClick={() => exportReport('csv')} className="block w-full px-3 py-2 text-left text-xs hover:bg-[var(--bg-secondary)]">CSV (.csv)</button>
                         </div>
                       </>
                     )}
@@ -1306,11 +1322,23 @@ export function DeepRunResult({ taskId, initialSaved, onSaved }: { taskId: strin
               </div>
 
               {/* Chat-based bulk rework: checked cases appear automatically as @mention chips inside the input. */}
+              {/* Summary header for bulk rework selections — keeps the input reachable. */}
+              {selectedCases.size > 3 && (
+                <div className="mb-1 flex items-center justify-between gap-2 text-[11px] text-[var(--text-muted)]">
+                  <span>{selectedCases.size} cases selected for rework</span>
+                  <button
+                    onClick={() => setSelectedCases(new Set())}
+                    className="font-medium text-[var(--text-muted)] hover:text-[var(--accent)]"
+                  >
+                    Clear all
+                  </button>
+                </div>
+              )}
               <div className="mb-2 flex items-center gap-2">
                 <MessageSquareText className="h-4 w-4 shrink-0 text-[var(--accent)]" />
                 <div
                   onClick={() => chatInputRef.current?.focus()}
-                  className="flex min-w-0 flex-1 cursor-text flex-wrap items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 focus-within:border-[var(--accent)]"
+                  className="flex min-w-0 flex-1 cursor-text flex-wrap items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 max-h-24 overflow-y-auto focus-within:border-[var(--accent)]"
                 >
                   {[...selectedCases].sort((a, b) => a - b).map((i) => list[i] && (
                     <span
@@ -1704,6 +1732,12 @@ export function DeepRunResult({ taskId, initialSaved, onSaved }: { taskId: strin
           {/* SCRIPTS */}
           {tab === 'code' && (
             <div>
+              {/* Discoverability: tell the user where generated scripts persist (bug: unclear where to track scripts). */}
+              {scripts.length > 0 && (
+                <div className="mb-2 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-1.5 text-[11px] text-[var(--text-muted)]">
+                  These scripts are saved with this run and tracked under <span className="font-semibold text-[var(--text-primary)]">File System → Scripts</span> (left sidebar).
+                </div>
+              )}
               {/* Cases→scripts gap: explain WHY some cases produced no script instead of showing a
                   silent "16 cases / 7 scripts" mismatch. Grounding/plan/gate failures, per case. */}
               {droppedCases.length > 0 && (
@@ -2073,7 +2107,7 @@ export function DeepRunResult({ taskId, initialSaved, onSaved }: { taskId: strin
                 // One evidence card per test case (the end-of-test / failure frame). Click to open the
                 // full screenshot in a popup — same interaction as Cases and Scripts.
                 <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-                  {evidence.map((shot, i) => (
+                  {orderedEvidence.map((shot, i) => (
                     <button
                       key={i}
                       type="button"
@@ -2175,8 +2209,8 @@ export function DeepRunResult({ taskId, initialSaved, onSaved }: { taskId: strin
       )}
 
       {/* Evidence popup: the selected case's per-step screenshots (same interaction as Cases/Scripts). */}
-      {shotOpen != null && evidence[shotOpen] && (() => {
-        const sc = evidence[shotOpen];
+      {shotOpen != null && orderedEvidence[shotOpen] && (() => {
+        const sc = orderedEvidence[shotOpen];
         const frames = stepFramesFor(sc);
         return (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onClick={() => setShotOpen(null)}>

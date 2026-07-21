@@ -73,7 +73,7 @@ import type { MissionRef } from './workflow/state';
 import { renderTargetCatalogForPrompt } from './compiler/renderCatalogForPrompt';
 import { testPlanSchema, parseTestPlan } from './compiler/testPlan';
 import { semanticPlanFromCase } from './compiler/semanticPlanner';
-import { linkedExistingCases, scoreCaseReuse, rankReuseCandidates } from './caseReuse';
+import { linkedExistingCases, scoreCaseReuse } from './caseReuse';
 import { pushInboxItem } from '../inbox/routes';
 import { AgentRuns, ChatConversations, Plans, Suites, Cases, Runs, Reports, Scripts, Folders, Requirements, RequirementLinks, Defects, isPgEnabled } from '../../db/repository';
 import { loadConversationHandoff } from '../../ai/memory/conversationState';
@@ -1809,22 +1809,28 @@ async function beginGraphRunFor(run: any, opts?: { seedCases?: any[]; avoidCaseT
   });
 }
 
+// Find EXISTING test cases (scoped to the run's project/app) that look related to this request, so the
+// agent can offer reuse instead of regenerating from scratch. Restored to the proven keyword-overlap
+// scorer used on main/testflow_v2: caseMatchKeywords strips router/instruction boilerplate via
+// CASE_MATCH_STOP, and scoreCaseReuse surfaces a candidate on >=2 keyword hits + a phrase anchor. The
+// IDF ranker (rankReuseCandidates) diluted the prompt boilerplate ("User follow-up/request: ... Resolved
+// scope from router: ...") below its 0.34 threshold, so genuinely-related cases stopped surfacing.
 async function findRelatedExistingCases(run: any): Promise<any[]> {
   let all: any[] = [];
   try { all = await Cases.list(); } catch { return []; }
   if (!Array.isArray(all) || !all.length) return [];
   const scoped = scopeFilter(all as any[], { projectId: run.projectId || '', appId: run.appId || null, userId: run.ownerId || '', role: '' });
-  if (!scoped.length) return [];
-  // Careful lexical ranker (IDF-weighted overlap + phrase anchor + scope alignment + length normalization).
-  const mission = (run.mission_context || {}) as any;
-  const query = {
-    text: `${run.prompt || ''} ${run.approvedUnderstanding || ''} ${run.feature_understanding?.title || ''}`.trim(),
-    module: mission?.module?.id || mission?.module?.name || run.moduleId || '',
-    object: mission?.application?.name || (Array.isArray(run.target_app_objects) ? run.target_app_objects[0] : '') || '',
-  };
-  if (!query.text) return [];
-  return rankReuseCandidates(query, scoped as any[])
-    .map((m) => ({ ...m.case, _matchScore: m.relevance, _matchReasons: m.reasons, _matchAnchor: m.anchor }));
+  const kws = caseMatchKeywords(run);
+  const query = `${run.prompt || ''} ${run.feature_understanding?.title || ''}`.trim();
+  if (!kws.length || !scoped.length) return [];
+  return scoped
+    .map((c: any) => {
+      const hay = `${c.title || ''} ${c.description || ''} ${(c.tags || []).join(' ')}`.toLowerCase();
+      return { c, ...scoreCaseReuse(query, hay, kws) };
+    })
+    .filter((x) => x.matched)
+    .sort((a, b) => b.score - a.score)
+    .map((x) => ({ ...x.c, _matchScore: x.score, _matchReasons: x.reasons, _matchAnchor: x.anchor }));
 }
 
 async function findExistingFeatureRequirements(run: any, limit = 8): Promise<any[]> {
@@ -6607,13 +6613,18 @@ Do both when the request implies both. Never delete or renumber cases. Steps mus
         const toRemove = allCases.filter((existing: any) => existing.agentRunId === linkedRun.id && !keepIds.has(existing.id));
         for (const existing of toRemove) await Cases.remove(existing.id);
       }
-      for (let index = 0; index < cases.length; index++) {
+      // Save last-to-first so the generation order is preserved on display: both the PG list
+      // (created_at DESC) and the in-memory list (unshift) surface newest-first, so persisting in
+      // reverse index order makes case #1 the newest and keeps 1..N reading top-to-bottom (bug: cases
+      // were previously saved in reverse of how they were generated).
+      for (let index = cases.length - 1; index >= 0; index--) {
         const c = cases[index];
         const caseId = c.id || (linkedRun ? `TC-${linkedRun.id.substring(0, 4).toUpperCase()}-${index + 1}` : `TC-${Math.random().toString(36).substring(2, 6).toUpperCase()}`);
         await Cases.upsert({
           id: caseId,
           title: c.title,
           description: buildCaseDescription(c),
+          preconditions: c.preconditions || '',
           steps: normalizeCaseSteps(c.steps),
           testPlanId: c.testPlanId || linkedPlanId || null,
           testSuiteId: c.testSuiteId || linkedSuiteId || null,
@@ -6621,6 +6632,9 @@ Do both when the request implies both. Never delete or renumber cases. Steps mus
           tags: normalizeCaseTags(c.tags || []),
           type: c.type || 'Manual',
           priority: c.priority || 'Medium',
+          automationStatus: c.automationStatus || 'Not Automated',
+          testingScope: c.testingScope || (c.type === 'Automated' ? 'Automation' : 'Manual'),
+          testingType: c.testingType || 'Functional',
           folderId: c.folderId || linkedRun?.folderId || null,
           createdBy: c.createdBy || 'QA Assistant',
           proposedBy: 'QA Assistant',

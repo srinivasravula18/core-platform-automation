@@ -1,6 +1,6 @@
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useState, useRef, useMemo } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Search, Filter, MoreHorizontal, Plus, Sparkles, Loader2, Trash2, PlayCircle } from 'lucide-react';
+import { Search, Filter, MoreHorizontal, Plus, Sparkles, Loader2, Trash2, PlayCircle, X, ChevronDown, Code2 } from 'lucide-react';
 import ExportMenu from '../components/ExportMenu';
 import { useAiSearch } from '@/src/lib/useAiSearch';
 import { useBulkDelete } from '@/src/lib/useBulkDelete';
@@ -13,6 +13,10 @@ import { useProjects } from '@/src/store/project';
 import { useDataVersion } from '@/src/store/data';
 
 const CASE_STATUSES = ['Draft', 'Under Review', 'Approved', 'Automated', 'Deprecated'];
+const PRIORITIES = ['Low', 'Medium', 'High', 'Critical'];
+const AUTOMATION_STATUSES = ['Automated', 'Not Automated', 'Automation Not Required', 'Cannot Be Automated'];
+const TESTING_SCOPES = ['Manual', 'Automation'];
+const TESTING_TYPES = ['Functional', 'Smoke', 'Sanity', 'Regression', 'Integration', 'End to End', 'Acceptance', 'Performance', 'Security', 'Usability', 'Exploratory'];
 
 function TagMultiSelect({ options, value, onChange }: { options: string[]; value: string[]; onChange: (tags: string[]) => void }) {
   const [selected, setSelected] = useState(value);
@@ -45,6 +49,111 @@ function TagMultiSelect({ options, value, onChange }: { options: string[]; value
   );
 }
 
+// Edit-form tag control: pick from existing tags (dropdown) or create a new one — no free typing
+// that silently coins tags. Selected tags show as removable chips (bug: tag field allowed only manual entry).
+function TagEditor({ options, value, onChange }: { options: string[]; value: string[]; onChange: (tags: string[]) => void }) {
+  const [query, setQuery] = useState('');
+  const [open, setOpen] = useState(false);
+  const boxRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onClickAway = (event: PointerEvent) => {
+      if (!boxRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    document.addEventListener('pointerdown', onClickAway);
+    return () => document.removeEventListener('pointerdown', onClickAway);
+  }, [open]);
+
+  const add = (tag: string) => {
+    const clean = tag.trim();
+    if (!clean || value.includes(clean)) { setQuery(''); return; }
+    onChange([...value, clean]);
+    setQuery('');
+  };
+  const remove = (tag: string) => onChange(value.filter((t) => t !== tag));
+
+  const q = query.trim().toLowerCase();
+  const available = options.filter((t) => !value.includes(t));
+  const suggestions = q ? available.filter((t) => t.toLowerCase().includes(q)) : available;
+  const canCreate = Boolean(q) && !options.some((t) => t.toLowerCase() === q) && !value.some((t) => t.toLowerCase() === q);
+
+  return (
+    <div ref={boxRef} className="relative">
+      <div
+        className="flex flex-wrap items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 focus-within:border-[var(--accent)]"
+        onClick={() => setOpen(true)}
+      >
+        {value.map((tag) => (
+          <span key={tag} className="inline-flex items-center gap-1 rounded bg-[var(--accent)]/15 px-1.5 py-0.5 text-xs font-medium text-[var(--accent)]">
+            {tag}
+            <button type="button" onClick={(e) => { e.stopPropagation(); remove(tag); }} title={`Remove ${tag}`} className="opacity-70 hover:opacity-100">
+              <X className="h-3 w-3" />
+            </button>
+          </span>
+        ))}
+        <input
+          value={query}
+          onChange={(e) => { setQuery(e.target.value); setOpen(true); }}
+          onFocus={() => setOpen(true)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') { e.preventDefault(); if (canCreate || suggestions.length) add(canCreate ? query : suggestions[0]); }
+            if (e.key === 'Backspace' && !query && value.length) remove(value[value.length - 1]);
+          }}
+          placeholder={value.length ? 'Add tag…' : 'Select or create tags…'}
+          className="min-w-[8rem] flex-1 bg-transparent px-0.5 py-0.5 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none"
+        />
+      </div>
+      {open && (suggestions.length > 0 || canCreate) && (
+        <div className="absolute left-0 right-0 z-30 mt-1 max-h-52 overflow-auto rounded-md border border-[var(--border)] bg-[var(--bg-card)] p-1 shadow-xl">
+          {canCreate && (
+            <button type="button" onClick={() => add(query)} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-[var(--accent)] hover:bg-[var(--bg-secondary)]">
+              <Plus className="h-3.5 w-3.5" /> Create “{query.trim()}”
+            </button>
+          )}
+          {suggestions.map((tag) => (
+            <button key={tag} type="button" onClick={() => add(tag)} className="block w-full truncate rounded px-2 py-1.5 text-left text-xs text-[var(--text-primary)] hover:bg-[var(--bg-secondary)]" title={tag}>
+              {tag}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Generic multi-select dropdown used across the advanced filter panel and the edit-form plan/suite pickers.
+function MultiSelectDropdown({ label, options, value, onChange, className = '' }: { label: string; options: Array<{ id: string; name: string }>; value: string[]; onChange: (ids: string[]) => void; className?: string }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!open) return;
+    const away = (e: PointerEvent) => { if (!ref.current?.contains(e.target as Node)) setOpen(false); };
+    document.addEventListener('pointerdown', away);
+    return () => document.removeEventListener('pointerdown', away);
+  }, [open]);
+  const toggle = (id: string) => onChange(value.includes(id) ? value.filter((v) => v !== id) : [...value, id]);
+  const summary = value.length === 0 ? label : `${value.length} selected`;
+  return (
+    <div ref={ref} className={`relative ${className}`}>
+      <button type="button" onClick={() => setOpen((o) => !o)} className="flex w-full items-center justify-between gap-2 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2.5 py-1.5 text-xs text-[var(--text-primary)] outline-none hover:border-[var(--accent)]">
+        <span className="truncate">{summary}</span>
+        <ChevronDown className="h-3.5 w-3.5 shrink-0 opacity-70" />
+      </button>
+      {open && (
+        <div className="absolute left-0 right-0 z-40 mt-1 max-h-52 overflow-auto rounded-md border border-[var(--border)] bg-[var(--bg-card)] p-1 shadow-xl">
+          {options.length ? options.map((opt) => (
+            <label key={opt.id} className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-[var(--bg-secondary)]">
+              <input type="checkbox" checked={value.includes(opt.id)} onChange={() => toggle(opt.id)} />
+              <span className="min-w-0 truncate" title={opt.name}>{opt.name}</span>
+            </label>
+          )) : <span className="block px-2 py-1.5 text-xs text-[var(--text-muted)]">No options</span>}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function TestCases() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -60,10 +169,30 @@ export default function TestCases() {
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState(searchParams.get('search') || '');
   const aiSearch = useAiSearch('test cases');
-  const [statusFilters, setStatusFilters] = useState<Set<string>>(() => new Set());
+  const [runs, setRuns] = useState<any[]>([]);
+  const [scripts, setScripts] = useState<any[]>([]);
+  const [scriptViewer, setScriptViewer] = useState<{ title: string; filename: string; code: string } | null>(null);
+  // Platform + App are two independent dropdowns (bug: single merged dropdown showed duplicate names).
+  const [platformFilter, setPlatformFilter] = useState('All');
   const [appFilter, setAppFilter] = useState('All');
   const [isFilterOpen, setIsFilterOpen] = useState(false);
   const filterRef = useRef<HTMLDivElement | null>(null);
+  // Advanced filter state (bug: expanded filter set + AND/OR combine logic).
+  const emptyFilters = {
+    statuses: [] as string[],
+    priorities: [] as string[],
+    automationStatuses: [] as string[],
+    testingTypes: [] as string[],
+    tags: [] as string[],
+    owners: [] as string[],
+    folders: [] as string[],
+    requirement: '',
+    createdFrom: '', createdTo: '',
+    updatedFrom: '', updatedTo: '',
+    notInAnyRun: false,
+  };
+  const [filters, setFilters] = useState(emptyFilters);
+  const [matchMode, setMatchMode] = useState<'all' | 'any'>('all');
   const [isCaseModalOpen, setIsCaseModalOpen] = useState(false);
   const [isAICaseModalOpen, setIsAICaseModalOpen] = useState(false);
   const [caseAIInstruction, setCaseAIInstruction] = useState('');
@@ -71,7 +200,8 @@ export default function TestCases() {
   const [caseAIMessage, setCaseAIMessage] = useState('');
   const [isStartingRun, setIsStartingRun] = useState(false);
   const emptyStep = { action: '', expected: '' };
-  const [formData, setFormData] = useState({ title: '', description: '', testPlanId: '', testSuiteId: '', createdBy: 'Admin', tags: '', type: 'Manual', priority: 'Medium', status: 'Draft', folderId: '', captureEvidenceOnManualRun: true, steps: [emptyStep] });
+  const blankForm = { title: '', description: '', preconditions: '', testPlanIds: [] as string[], testSuiteIds: [] as string[], createdBy: 'Admin', tags: [] as string[], testingScope: 'Manual', automationStatus: 'Not Automated', testingType: 'Functional', priority: 'Medium', status: 'Draft', folderId: '', captureEvidenceOnManualRun: true, steps: [emptyStep] };
+  const [formData, setFormData] = useState(blankForm);
   const inlineSelectClass = "w-full min-w-0 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs font-medium text-[var(--text-primary)] outline-none transition-colors hover:border-[var(--accent)] focus:border-[var(--accent)]";
 
   const [selectedCaseId, setSelectedCaseId] = useState<string | null>(null);
@@ -107,6 +237,23 @@ export default function TestCases() {
     fetch('/api/folders')
       .then(r => r.json())
       .then(data => setFolders(Array.isArray(data) ? data : []))
+      .catch(console.error);
+  };
+
+  // Runs power the "Not in any test run" filter (bug: expanded filters).
+  const fetchRuns = () => {
+    fetch('/api/runs')
+      .then(r => r.json())
+      .then(data => setRuns(Array.isArray(data) ? data : []))
+      .catch(console.error);
+  };
+
+  // Generated Playwright scripts — surfaced per case so testers can see the related script here
+  // instead of only inside the Agent Console.
+  const fetchScripts = () => {
+    fetch('/api/scripts')
+      .then(r => r.json())
+      .then(data => setScripts(Array.isArray(data) ? data : []))
       .catch(console.error);
   };
 
@@ -149,6 +296,8 @@ export default function TestCases() {
     fetchSuites();
     fetchFolders();
     fetchRunInfo();
+    fetchRuns();
+    fetchScripts();
   };
 
   useEffect(() => {
@@ -193,18 +342,24 @@ export default function TestCases() {
 
   const openNewModal = () => {
     setSelectedCaseId(null);
-    setFormData({ title: '', description: '', testPlanId: '', testSuiteId: '', createdBy: 'Admin', tags: '', type: 'Manual', priority: 'Medium', status: 'Draft', folderId: '', captureEvidenceOnManualRun: true, steps: [emptyStep] });
+    setFormData(blankForm);
     setIsCaseModalOpen(true);
   };
 
   const openEditModal = (testCase: any) => {
     setSelectedCaseId(testCase.id);
+    const planIds = Array.isArray(testCase.testPlanIds) && testCase.testPlanIds.length ? testCase.testPlanIds : (testCase.testPlanId ? [testCase.testPlanId] : []);
+    const suiteIds = Array.isArray(testCase.testSuiteIds) && testCase.testSuiteIds.length ? testCase.testSuiteIds : (testCase.testSuiteId ? [testCase.testSuiteId] : []);
     setFormData({
-      title: testCase.title || '', description: testCase.description || '', 
-      testPlanId: testCase.testPlanId || '', testSuiteId: testCase.testSuiteId || '',
-      createdBy: testCase.createdBy || 'Admin', 
-      tags: Array.isArray(testCase.tags) ? testCase.tags.join(', ') : testCase.tags || '', 
-      type: testCase.type || 'Manual', priority: testCase.priority || 'Medium', status: testCase.status || 'Draft',
+      title: testCase.title || '', description: testCase.description || '',
+      preconditions: testCase.preconditions || '',
+      testPlanIds: planIds, testSuiteIds: suiteIds,
+      createdBy: testCase.createdBy || 'Admin',
+      tags: Array.isArray(testCase.tags) ? testCase.tags : String(testCase.tags || '').split(',').map((t: string) => t.trim()).filter(Boolean),
+      testingScope: testCase.testingScope || (testCase.type === 'Automated' ? 'Automation' : 'Manual'),
+      automationStatus: testCase.automationStatus || 'Not Automated',
+      testingType: testCase.testingType || 'Functional',
+      priority: testCase.priority || 'Medium', status: testCase.status || 'Draft',
       folderId: testCase.folderId || '',
       captureEvidenceOnManualRun: testCase.captureEvidenceOnManualRun !== false,
       steps: Array.isArray(testCase.steps) && testCase.steps.length > 0 ? testCase.steps : [emptyStep]
@@ -214,16 +369,25 @@ export default function TestCases() {
 
   const handleSaveCase = () => {
     if (!formData.title.trim()) return;
-    const tags = formData.tags.split(',').map(s => s.trim()).filter(Boolean);
+    const tags = formData.tags.map((s) => s.trim()).filter(Boolean);
     const steps = formData.steps
       .map((step) => ({ action: step.action.trim(), expected: step.expected.trim() }))
       .filter((step) => step.action || step.expected);
-    
+    // Derive the legacy singular fields so run/linking + exports keyed on them keep working.
+    const payload = {
+      ...formData,
+      tags,
+      steps,
+      type: formData.testingScope === 'Automation' ? 'Automated' : 'Manual',
+      testPlanId: formData.testPlanIds[0] || '',
+      testSuiteId: formData.testSuiteIds[0] || '',
+    };
+
     if (selectedCaseId) {
       fetch(`/api/cases/${selectedCaseId}`, {
         method: 'PUT',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ ...formData, tags, steps })
+        body: JSON.stringify(payload)
       }).then(() => {
          setIsCaseModalOpen(false);
          fetchCases();
@@ -232,7 +396,7 @@ export default function TestCases() {
       fetch('/api/cases', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ ...formData, tags, steps, projectId: selectedProjectId || '', appId: selectedAppId || '' })
+        body: JSON.stringify({ ...payload, projectId: selectedProjectId || '', appId: selectedAppId || '' })
       }).then(() => {
          setIsCaseModalOpen(false);
          fetchCases();
@@ -347,21 +511,24 @@ export default function TestCases() {
     return suites.find((suite) => testCase.agentRunId && suite.agentRunId === testCase.agentRunId)?.id || '';
   };
   const apps = projects.flatMap((project) => project.apps || []);
-  // The app filter is fed from two id-spaces — credential websites (`platforms`) and project apps (`apps`) —
-  // which routinely share a name ("admin", "keystone"), so listing both showed each app twice. Merge and
-  // dedupe by name; platforms come first so their id wins (case filtering keys on the website/platform id).
-  const appFilterOptions = (() => {
+  // Platform dropdown: credential websites (dedupe by name so the same platform never appears twice).
+  const platformFilterOptions = (() => {
     const seen = new Set<string>();
     const out: Array<{ id: string; name: string }> = [];
-    for (const opt of [...platforms, ...apps.map((app) => ({ id: String(app.id), name: String(app.name || app.id) }))]) {
-      const key = opt.name.trim().toLowerCase();
+    for (const platform of platforms) {
+      const key = platform.name.trim().toLowerCase();
       if (!key || seen.has(key)) continue;
       seen.add(key);
-      out.push(opt);
+      out.push(platform);
     }
     return out;
   })();
   const appName = (appId: string) => apps.find((app) => app.id === appId)?.name || platforms.find((platform) => platform.id === appId)?.name || (appId ? 'Unknown app' : 'All apps');
+  // The individual app a case targets (e.g. "CRM"), independent of its platform.
+  const caseAppLabel = (testCase: any) => {
+    const info = runInfo[testCase.agentRunId || testCase.sourceRunId || ''];
+    return (info?.app || '').trim() || appName(testCase.appId || '');
+  };
   // "Platform / App" the user chose for a case: the run's platform (project) + the individual app
   // (e.g. Core Platform / CRM). Falls back to the surface app when a case has no run-resolved app.
   const caseScopeLabel = (testCase: any) => {
@@ -371,19 +538,90 @@ export default function TestCases() {
     return [platform, app].filter(Boolean).join(' / ') || appName(testCase.appId || '');
   };
   const casePlatformId = (testCase: any) => runInfo[testCase.agentRunId || testCase.sourceRunId || '']?.platformId || testCase.appId || '';
+  // The generated Playwright script for a case: matched by the run it came from + the case title.
+  const normalizeTitle = (value: any) => String(value || '').trim().toLowerCase();
+  const scriptsByRun = useMemo(() => {
+    const map = new Map<string, any[]>();
+    for (const script of scripts) {
+      const key = String(script.agentRunId || script.sourceRunId || '');
+      if (!key) continue;
+      (map.get(key) || map.set(key, []).get(key)!).push(script);
+    }
+    return map;
+  }, [scripts]);
+  const relatedScript = (testCase: any) => {
+    const runId = String(testCase.agentRunId || testCase.sourceRunId || '');
+    const title = normalizeTitle(testCase.title);
+    const candidates = runId ? (scriptsByRun.get(runId) || []) : scripts;
+    return candidates.find((script) => normalizeTitle(script.title) === title || normalizeTitle(script.test_case_title) === title)
+      || (runId && candidates.length === 1 ? candidates[0] : null);
+  };
+  // App dropdown: distinct app labels across cases, scoped to the selected platform when one is chosen.
+  const appFilterOptions = Array.from(new Set<string>(cases
+    .filter((testCase) => platformFilter === 'All' || casePlatformId(testCase) === platformFilter)
+    .map((testCase) => caseAppLabel(testCase).trim())
+    // Exclude the "All apps"/"Unknown app" fallbacks so they never duplicate the placeholder option.
+    .filter((label) => label && label !== 'All apps' && label !== 'Unknown app'))).sort();
   const tagOptions: string[] = Array.from(new Set<string>(cases
     .flatMap((testCase) => Array.isArray(testCase.tags) ? testCase.tags : [])
     .map((tag: any) => String(tag).trim())
     .filter((tag: string) => Boolean(tag)))).sort();
+  const ownerOptions: string[] = Array.from(new Set<string>(cases
+    .map((testCase) => String(testCase.createdBy || '').trim())
+    .filter(Boolean))).sort();
+  // Cases referenced by at least one test run — drives the "Not in any test run" toggle.
+  const runCaseIds = useMemo(() => {
+    const set = new Set<string>();
+    runs.forEach((run) => (Array.isArray(run.caseIds) ? run.caseIds : []).forEach((id: any) => set.add(String(id))));
+    return set;
+  }, [runs]);
+  const activeFilterCount = (
+    filters.statuses.length + filters.priorities.length + filters.automationStatuses.length +
+    filters.testingTypes.length + filters.tags.length + filters.owners.length + filters.folders.length +
+    (filters.requirement.trim() ? 1 : 0) + (filters.createdFrom || filters.createdTo ? 1 : 0) +
+    (filters.updatedFrom || filters.updatedTo ? 1 : 0) + (filters.notInAnyRun ? 1 : 0)
+  );
+  const inDateRange = (value: any, from: string, to: string) => {
+    if (!from && !to) return true;
+    if (!value) return false;
+    const d = new Date(value);
+    if (Number.isNaN(d.getTime())) return false;
+    if (from && d < new Date(from)) return false;
+    if (to) { const end = new Date(to); end.setHours(23, 59, 59, 999); if (d > end) return false; }
+    return true;
+  };
+  // Advanced filters combine via AND (match all) or OR (match any); only fields the user set are considered.
+  const advancedMatch = (testCase: any) => {
+    const conds: boolean[] = [];
+    const tags = Array.isArray(testCase.tags) ? testCase.tags.map(String) : [];
+    if (filters.statuses.length) conds.push(filters.statuses.includes(testCase.status || 'Draft'));
+    if (filters.priorities.length) conds.push(filters.priorities.includes(testCase.priority || 'Medium'));
+    if (filters.automationStatuses.length) conds.push(filters.automationStatuses.includes(testCase.automationStatus || 'Not Automated'));
+    if (filters.testingTypes.length) conds.push(filters.testingTypes.includes(testCase.testingType || 'Functional'));
+    if (filters.tags.length) conds.push(filters.tags.some((t) => tags.includes(t)));
+    if (filters.owners.length) conds.push(filters.owners.includes(String(testCase.createdBy || '')));
+    if (filters.folders.length) conds.push(filters.folders.includes(testCase.folderId || ''));
+    if (filters.requirement.trim()) {
+      const q = filters.requirement.trim().toLowerCase();
+      const refs = [testCase.requirementId, testCase.requirementRef, ...(Array.isArray(testCase.requirementIds) ? testCase.requirementIds : []), ...(Array.isArray(testCase.requirements) ? testCase.requirements : [])]
+        .filter(Boolean).join(' ').toLowerCase();
+      conds.push(refs.includes(q));
+    }
+    if (filters.createdFrom || filters.createdTo) conds.push(inDateRange(testCase.createdAt, filters.createdFrom, filters.createdTo));
+    if (filters.updatedFrom || filters.updatedTo) conds.push(inDateRange(testCase.updatedAt, filters.updatedFrom, filters.updatedTo));
+    if (filters.notInAnyRun) conds.push(!runCaseIds.has(String(testCase.id)));
+    if (!conds.length) return true;
+    return matchMode === 'all' ? conds.every(Boolean) : conds.some(Boolean);
+  };
   const filteredCases = cases.filter((testCase) => {
     const query = searchTerm.toLowerCase();
     const appLabel = appName(testCase.appId || '');
     const matchesSearch = aiSearch.isAiQuery(searchTerm)
       ? (aiSearch.matchedIds ? aiSearch.matchedIds.has(testCase.id) : true)
       : (!query || `${testCase.id || ''} ${testCase.title || ''} ${testCase.description || ''} ${appLabel} ${(testCase.tags || []).join(' ')}`.toLowerCase().includes(query));
-    const matchesStatus = statusFilters.size === 0 || statusFilters.has(testCase.status || 'Draft');
-    const matchesApp = appFilter === 'All' || casePlatformId(testCase) === appFilter;
-    return matchesSearch && matchesStatus && matchesApp;
+    const matchesPlatform = platformFilter === 'All' || casePlatformId(testCase) === platformFilter;
+    const matchesApp = appFilter === 'All' || caseAppLabel(testCase) === appFilter;
+    return matchesSearch && matchesPlatform && matchesApp && advancedMatch(testCase);
   });
 
   return (
@@ -402,7 +640,9 @@ export default function TestCases() {
               { key: 'id', label: 'ID' },
               { key: 'title', label: 'Title' },
               { key: 'description', label: 'Description' },
-              { key: 'type', label: 'Type', get: (c) => c.type || 'Manual' },
+              { key: 'testingScope', label: 'Testing Scope', get: (c) => c.testingScope || (c.type === 'Automated' ? 'Automation' : 'Manual') },
+              { key: 'automationStatus', label: 'Automation Status', get: (c) => c.automationStatus || 'Not Automated' },
+              { key: 'testingType', label: 'Type Of Test Case', get: (c) => c.testingType || 'Functional' },
               { key: 'priority', label: 'Priority', get: (c) => c.priority || 'Medium' },
               { key: 'status', label: 'Status', get: (c) => c.status || 'Draft' },
               { key: 'app', label: 'Platform / App', get: (c) => caseScopeLabel(c) },
@@ -443,25 +683,15 @@ export default function TestCases() {
           </div>
         }
       >
-        <div className="space-y-4">
+        <div className="flex flex-col gap-4">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
              <div>
-                <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Test Plan (Optional)</label>
-                <select value={formData.testPlanId} onChange={(e) => setFormData({...formData, testPlanId: e.target.value})} className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]">
-                    <option value="">None</option>
-                    {plans.map(plan => (
-                      <option key={plan.id} value={plan.id}>{plan.name}</option>
-                    ))}
-                </select>
+                <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Test Plans (Optional)</label>
+                <MultiSelectDropdown label="None" options={plans.map((plan) => ({ id: String(plan.id), name: String(plan.name) }))} value={formData.testPlanIds} onChange={(ids) => setFormData({ ...formData, testPlanIds: ids })} />
              </div>
              <div>
-                <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Test Suite (Optional)</label>
-                <select value={formData.testSuiteId} onChange={(e) => setFormData({...formData, testSuiteId: e.target.value})} className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]">
-                    <option value="">None</option>
-                    {suites.map(suite => (
-                      <option key={suite.id} value={suite.id}>{suite.name}</option>
-                    ))}
-                </select>
+                <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Test Suites (Optional)</label>
+                <MultiSelectDropdown label="None" options={suites.map((suite) => ({ id: String(suite.id), name: String(suite.name) }))} value={formData.testSuiteIds} onChange={(ids) => setFormData({ ...formData, testSuiteIds: ids })} />
              </div>
           </div>
           <FolderSelect
@@ -477,13 +707,17 @@ export default function TestCases() {
             <textarea value={formData.description} onChange={(e) => setFormData({...formData, description: e.target.value})} placeholder="Preconditions, test steps..." className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)] h-24 resize-y" />
           </div>
           <div>
+            <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Pre Conditions</label>
+            <textarea value={formData.preconditions} onChange={(e) => setFormData({...formData, preconditions: e.target.value})} placeholder="State that must be true before running this case (e.g. user is logged in as Admin, an app exists)…" className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)] h-20 resize-y" />
+          </div>
+          <div>
             <div className="flex items-center justify-between mb-2">
               <label className="block text-sm font-medium text-[var(--text-muted)]">Test Steps & Expected Results</label>
               <button onClick={addFormStep} type="button" className="text-xs text-[var(--accent)] hover:underline">Add Step</button>
             </div>
-            <div ref={stepEditorRef} className="space-y-3">
+            <div ref={stepEditorRef}>
               {formData.steps.map((step, index) => (
-                <div key={index} className="rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)]/50 overflow-hidden">
+                <div key={index} className="mb-6 rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)]/50 overflow-hidden">
                   <div className="flex items-center justify-between gap-3 border-b border-[var(--border)] px-3 py-2">
                     <span className="font-mono text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
                       Step {index + 1}
@@ -541,10 +775,11 @@ export default function TestCases() {
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
              <div>
-                 <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Type</label>
-                 <select value={formData.type} onChange={(e) => setFormData({...formData, type: e.target.value})} className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]">
-                    <option>Manual</option>
-                    <option>Automated</option>
+                 <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Testing Scope</label>
+                 <select value={formData.testingScope} onChange={(e) => setFormData({...formData, testingScope: e.target.value})} className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]">
+                    {TESTING_SCOPES.map((scope) => (
+                      <option key={scope} value={scope}>{scope}</option>
+                    ))}
                  </select>
              </div>
              <div>
@@ -552,6 +787,24 @@ export default function TestCases() {
                  <select value={formData.status} onChange={(e) => setFormData({...formData, status: e.target.value})} className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]">
                     {CASE_STATUSES.map((status) => (
                       <option key={status} value={status}>{status}</option>
+                    ))}
+                 </select>
+             </div>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+             <div>
+                 <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Automation Status</label>
+                 <select value={formData.automationStatus} onChange={(e) => setFormData({...formData, automationStatus: e.target.value})} className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]">
+                    {AUTOMATION_STATUSES.map((status) => (
+                      <option key={status} value={status}>{status}</option>
+                    ))}
+                 </select>
+             </div>
+             <div>
+                 <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Type Of Test Case</label>
+                 <select value={formData.testingType} onChange={(e) => setFormData({...formData, testingType: e.target.value})} className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]">
+                    {TESTING_TYPES.map((testingType) => (
+                      <option key={testingType} value={testingType}>{testingType}</option>
                     ))}
                  </select>
              </div>
@@ -568,8 +821,8 @@ export default function TestCases() {
              </div>
           </div>
           <div>
-            <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Tags (Smoke, Positive, etc.)</label>
-            <input type="text" value={formData.tags} onChange={(e) => setFormData({...formData, tags: e.target.value})} placeholder="Comma separated..." className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]" />
+            <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Tags</label>
+            <TagEditor options={tagOptions} value={formData.tags} onChange={(tags) => setFormData({ ...formData, tags })} />
           </div>
           <label className="flex items-start gap-3 rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)]/50 p-3 text-left">
             <input
@@ -588,13 +841,39 @@ export default function TestCases() {
         </div>
       </Modal>
 
-      <AIActionModal 
+      <AIActionModal
         isOpen={isAICaseModalOpen}
         onClose={() => setIsAICaseModalOpen(false)}
         taskType="case"
         onApprove={handleAIApprove}
         title="AI Auto: New Test Case"
       />
+
+      {/* Read-only viewer for the Playwright script related to a test case. */}
+      <Modal
+        isOpen={!!scriptViewer}
+        onClose={() => setScriptViewer(null)}
+        title={scriptViewer ? `Script — ${scriptViewer.filename}` : 'Script'}
+        size="xl"
+        footer={
+          <div className="flex justify-end gap-3">
+            <button
+              onClick={() => { if (scriptViewer?.code) navigator.clipboard?.writeText(scriptViewer.code); }}
+              className="px-4 py-2 text-sm font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+            >
+              Copy code
+            </button>
+            <button onClick={() => setScriptViewer(null)} className="px-4 py-2 bg-[var(--accent)] text-white text-sm font-medium rounded-md hover:bg-[var(--accent-hover)]">Close</button>
+          </div>
+        }
+      >
+        {scriptViewer && (
+          <div>
+            <div className="mb-2 text-sm text-[var(--text-muted)]">Generated Playwright script for <span className="font-medium text-[var(--text-primary)]">{scriptViewer.title}</span></div>
+            <pre className="max-h-[60vh] overflow-auto rounded-lg border border-[var(--border)] bg-[var(--bg-primary)] p-3 text-xs leading-5 text-[var(--text-primary)]"><code>{scriptViewer.code || 'No code available for this script.'}</code></pre>
+          </div>
+        )}
+      </Modal>
 
       <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl flex flex-col flex-1 min-h-0 shadow-sm">
         <div className="p-4 border-b border-[var(--border)] flex flex-col gap-3 flex-shrink-0">
@@ -620,52 +899,105 @@ export default function TestCases() {
               aria-expanded={isFilterOpen}
               className="flex items-center gap-2 border border-[var(--border)] bg-[var(--bg-secondary)] hover:bg-[var(--border)] text-[var(--text-primary)] px-3 py-1.5 rounded-md text-sm transition-colors"
             >
-              <Filter className="w-4 h-4" /> {statusFilters.size === 0 ? 'All statuses' : statusFilters.size === 1 ? Array.from(statusFilters)[0] : `${statusFilters.size} statuses`}
+              <Filter className="w-4 h-4" /> Filters
+              {activeFilterCount > 0 && <span className="rounded-full bg-[var(--accent)] px-1.5 text-[11px] font-semibold text-white">{activeFilterCount}</span>}
             </button>
             {isFilterOpen && (
-              <div className="absolute left-0 top-10 z-20 w-48 overflow-hidden rounded-md border border-[var(--border)] bg-[var(--bg-card)] p-1 shadow-xl">
-                <label className="flex cursor-pointer items-center gap-2 rounded px-2 py-2 text-sm hover:bg-[var(--bg-secondary)]">
-                  <input type="checkbox" checked={statusFilters.size === 0} onChange={() => setStatusFilters(new Set())} />
-                  All statuses
-                </label>
-                {CASE_STATUSES.map((status) => (
-                  <label key={status} className="flex cursor-pointer items-center gap-2 rounded px-2 py-2 text-sm hover:bg-[var(--bg-secondary)]">
-                    <input
-                      type="checkbox"
-                      checked={statusFilters.has(status)}
-                      onChange={() => setStatusFilters((current) => {
-                        const next = new Set(current);
-                        if (next.has(status)) next.delete(status); else next.add(status);
-                        return next;
-                      })}
-                    />
-                    {status}
+              <div className="absolute left-0 top-10 z-30 w-[22rem] max-h-[70vh] overflow-auto rounded-md border border-[var(--border)] bg-[var(--bg-card)] p-3 shadow-xl">
+                <div className="mb-3 flex items-center justify-between gap-2">
+                  <div className="inline-flex rounded-md border border-[var(--border)] p-0.5 text-[11px] font-medium">
+                    <button onClick={() => setMatchMode('all')} className={`rounded px-2 py-1 ${matchMode === 'all' ? 'bg-[var(--accent)] text-white' : 'text-[var(--text-muted)]'}`}>Match all</button>
+                    <button onClick={() => setMatchMode('any')} className={`rounded px-2 py-1 ${matchMode === 'any' ? 'bg-[var(--accent)] text-white' : 'text-[var(--text-muted)]'}`}>Match any</button>
+                  </div>
+                  <button onClick={() => setFilters(emptyFilters)} className="text-xs font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]">Clear all</button>
+                </div>
+                <div className="flex flex-col gap-3">
+                  <div>
+                    <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">State</label>
+                    <MultiSelectDropdown label="Any state" options={CASE_STATUSES.map((s) => ({ id: s, name: s }))} value={filters.statuses} onChange={(v) => setFilters((f) => ({ ...f, statuses: v }))} />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Priority</label>
+                    <MultiSelectDropdown label="Any priority" options={PRIORITIES.map((p) => ({ id: p, name: p }))} value={filters.priorities} onChange={(v) => setFilters((f) => ({ ...f, priorities: v }))} />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Automation Status</label>
+                    <MultiSelectDropdown label="Any automation status" options={AUTOMATION_STATUSES.map((s) => ({ id: s, name: s }))} value={filters.automationStatuses} onChange={(v) => setFilters((f) => ({ ...f, automationStatuses: v }))} />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Type Of Test Case</label>
+                    <MultiSelectDropdown label="Any type" options={TESTING_TYPES.map((t) => ({ id: t, name: t }))} value={filters.testingTypes} onChange={(v) => setFilters((f) => ({ ...f, testingTypes: v }))} />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Tags</label>
+                    <MultiSelectDropdown label="Any tag" options={tagOptions.map((t) => ({ id: t, name: t }))} value={filters.tags} onChange={(v) => setFilters((f) => ({ ...f, tags: v }))} />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Owner</label>
+                    <MultiSelectDropdown label="Any owner" options={ownerOptions.map((o) => ({ id: o, name: o }))} value={filters.owners} onChange={(v) => setFilters((f) => ({ ...f, owners: v }))} />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Folder ({filters.folders.length} selected)</label>
+                    <MultiSelectDropdown label="Any folder" options={folders.map((folder) => ({ id: String(folder.id), name: String(folder.path || folder.name) }))} value={filters.folders} onChange={(v) => setFilters((f) => ({ ...f, folders: v }))} />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Requirements (Jira key / reference)</label>
+                    <input value={filters.requirement} onChange={(e) => setFilters((f) => ({ ...f, requirement: e.target.value }))} placeholder="e.g. PROJ-123" className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2.5 py-1.5 text-xs text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Created (date range)</label>
+                    <div className="flex items-center gap-2">
+                      <input type="date" value={filters.createdFrom} onChange={(e) => setFilters((f) => ({ ...f, createdFrom: e.target.value }))} className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
+                      <span className="text-xs text-[var(--text-muted)]">to</span>
+                      <input type="date" value={filters.createdTo} onChange={(e) => setFilters((f) => ({ ...f, createdTo: e.target.value }))} className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Last Updated (date range)</label>
+                    <div className="flex items-center gap-2">
+                      <input type="date" value={filters.updatedFrom} onChange={(e) => setFilters((f) => ({ ...f, updatedFrom: e.target.value }))} className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
+                      <span className="text-xs text-[var(--text-muted)]">to</span>
+                      <input type="date" value={filters.updatedTo} onChange={(e) => setFilters((f) => ({ ...f, updatedTo: e.target.value }))} className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
+                    </div>
+                  </div>
+                  <label className="flex cursor-pointer items-center gap-2 rounded px-1 py-1 text-sm hover:bg-[var(--bg-secondary)]">
+                    <input type="checkbox" checked={filters.notInAnyRun} onChange={(e) => setFilters((f) => ({ ...f, notInAnyRun: e.target.checked }))} />
+                    Not in any test run
                   </label>
-                ))}
+                </div>
               </div>
             )}
           </div>
           <select
+            value={platformFilter}
+            onChange={(event) => { setPlatformFilter(event.target.value); setAppFilter('All'); }}
+            className="min-w-[150px] rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-1.5 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
+            title="Filter by platform"
+          >
+            <option value="All">All platforms</option>
+            {platformFilterOptions.map((option) => (
+              <option key={option.id} value={option.id}>{option.name}</option>
+            ))}
+          </select>
+          <select
             value={appFilter}
             onChange={(event) => setAppFilter(event.target.value)}
-            className="min-w-[160px] rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-1.5 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
+            className="min-w-[150px] rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-1.5 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
             title="Filter by app"
           >
             <option value="All">All apps</option>
             {appFilterOptions.map((option) => (
-              <option key={option.id} value={option.id}>{option.name}</option>
+              <option key={option} value={option}>{option}</option>
             ))}
           </select>
-          {bulk.selectedCount > 0 && (
-            <div className="ml-auto flex items-center gap-2">
-              <button onClick={() => runSelectedCases()} disabled={isStartingRun} className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
-                {isStartingRun ? <Loader2 className="w-4 h-4 animate-spin" /> : <PlayCircle className="w-4 h-4" />} Run selected ({bulk.selectedCount})
-              </button>
-              <button onClick={bulk.deleteSelected} disabled={bulk.busy} className="flex items-center gap-1.5 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
-                <Trash2 className="w-4 h-4" /> Delete selected ({bulk.selectedCount})
-              </button>
-            </div>
-          )}
+          <div className="ml-auto flex items-center gap-2">
+            <button onClick={() => runSelectedCases()} disabled={isStartingRun || bulk.selectedCount === 0} title={bulk.selectedCount === 0 ? 'Select at least one test case' : 'Run selected'} className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
+              {isStartingRun ? <Loader2 className="w-4 h-4 animate-spin" /> : <PlayCircle className="w-4 h-4" />} Run selected{bulk.selectedCount > 0 ? ` (${bulk.selectedCount})` : ''}
+            </button>
+            <button onClick={bulk.deleteSelected} disabled={bulk.busy || bulk.selectedCount === 0} title={bulk.selectedCount === 0 ? 'Select at least one test case' : 'Delete selected'} className="flex items-center gap-1.5 bg-red-600 hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
+              <Trash2 className="w-4 h-4" /> Delete selected{bulk.selectedCount > 0 ? ` (${bulk.selectedCount})` : ''}
+            </button>
+          </div>
           </div>
           {selectedCaseIds.length > 0 && (
             <div className="rounded-lg border border-[var(--accent)]/30 bg-[var(--accent)]/10 p-3">
@@ -714,7 +1046,7 @@ export default function TestCases() {
         </div>
         
         <div className="flex-1 overflow-auto">
-          <table className="w-full min-w-[1100px] table-fixed text-left text-sm">
+          <table className="w-full min-w-[1680px] table-fixed text-left text-sm">
             <thead className="sticky top-0 bg-[var(--bg-secondary)] border-b border-[var(--border)] z-10">
               <tr className="text-[var(--text-muted)]">
                 <th className="font-medium py-3 px-4 w-10">
@@ -728,11 +1060,15 @@ export default function TestCases() {
                 </th>
                 <th className="font-medium py-3 px-4 w-20">ID</th>
                 <th className="font-medium py-3 px-4">Title</th>
+                <th className="font-medium py-3 px-4 w-48">Pre Conditions</th>
                 <th className="font-medium py-3 px-4 w-44">Folder</th>
                 <th className="font-medium py-3 px-4 w-44">Platform / App</th>
                 <th className="font-medium py-3 px-4 w-40">Test Plan</th>
                 <th className="font-medium py-3 px-4 w-40">Test Suite</th>
                 <th className="font-medium py-3 px-4 w-28">Status</th>
+                <th className="font-medium py-3 px-4 w-44">Automation Status</th>
+                <th className="font-medium py-3 px-4 w-36">Type Of Test Case</th>
+                <th className="font-medium py-3 px-4 w-32">Script</th>
                 <th className="font-medium py-3 px-4 w-32">Evidence</th>
                 <th className="font-medium py-3 px-4 w-28">Tags</th>
                 <th className="font-medium py-3 px-4 w-24 text-right">Actions</th>
@@ -740,10 +1076,10 @@ export default function TestCases() {
             </thead>
             <tbody className="divide-y divide-[var(--border)]">
               {loading && (
-                <tr><td colSpan={11} className="py-8 text-center text-[var(--text-muted)]">Loading test cases...</td></tr>
+                <tr><td colSpan={15} className="py-8 text-center text-[var(--text-muted)]">Loading test cases...</td></tr>
               )}
               {!loading && filteredCases.length === 0 && (
-                <tr><td colSpan={11} className="py-8 text-center text-[var(--text-muted)]">No test cases found.</td></tr>
+                <tr><td colSpan={15} className="py-8 text-center text-[var(--text-muted)]">No test cases found.</td></tr>
               )}
               {filteredCases.map((tc) => (
                 <tr key={tc.id} onClick={() => openEditModal(tc)} className="hover:bg-[var(--bg-secondary)] transition-colors cursor-pointer">
@@ -758,6 +1094,7 @@ export default function TestCases() {
                   </td>
                   <td className="py-3 px-4 font-mono text-xs text-[var(--text-muted)] truncate">{tc.id}</td>
                   <td className="py-3 px-4 font-medium truncate" title={tc.title}>{tc.title}</td>
+                  <td className="py-3 px-4 text-xs text-[var(--text-muted)] truncate" title={tc.preconditions || ''}>{tc.preconditions ? tc.preconditions : <span className="text-[var(--text-muted)]">—</span>}</td>
                   <td className="py-3 px-4">
                     <select
                       value={tc.folderId || ''}
@@ -820,6 +1157,50 @@ export default function TestCases() {
                         <option key={status} value={status}>{status}</option>
                       ))}
                     </select>
+                  </td>
+                  <td className="py-3 px-4">
+                    <select
+                      value={tc.automationStatus || 'Not Automated'}
+                      onClick={(event) => event.stopPropagation()}
+                      onChange={(event) => updateCaseInline(tc, { automationStatus: event.target.value })}
+                      className="w-full min-w-0 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs font-medium text-[var(--text-primary)] outline-none transition-colors hover:border-[var(--accent)] focus:border-[var(--accent)]"
+                      title="Update automation status"
+                    >
+                      {AUTOMATION_STATUSES.map((status) => (
+                        <option key={status} value={status}>{status}</option>
+                      ))}
+                    </select>
+                  </td>
+                  <td className="py-3 px-4">
+                    <select
+                      value={tc.testingType || 'Functional'}
+                      onClick={(event) => event.stopPropagation()}
+                      onChange={(event) => updateCaseInline(tc, { testingType: event.target.value })}
+                      className="w-full min-w-0 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs font-medium text-[var(--text-primary)] outline-none transition-colors hover:border-[var(--accent)] focus:border-[var(--accent)]"
+                      title="Update test-case type"
+                    >
+                      {TESTING_TYPES.map((testingType) => (
+                        <option key={testingType} value={testingType}>{testingType}</option>
+                      ))}
+                    </select>
+                  </td>
+                  <td className="py-3 px-4">
+                    {(() => {
+                      const script = relatedScript(tc);
+                      if (!script) return <span className="text-xs text-[var(--text-muted)]">—</span>;
+                      return (
+                        <button
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            setScriptViewer({ title: script.title || tc.title || 'Script', filename: script.filename || script.name || 'script.spec.ts', code: script.code || '' });
+                          }}
+                          title={script.filename || script.name || 'View generated script'}
+                          className="inline-flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-xs font-medium text-[var(--accent)] hover:border-[var(--accent)]"
+                        >
+                          <Code2 className="h-3.5 w-3.5" /> View
+                        </button>
+                      );
+                    })()}
                   </td>
                   <td className="py-3 px-4">
                     <select
