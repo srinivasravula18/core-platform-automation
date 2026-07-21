@@ -75,8 +75,11 @@ function looksLikeQuestionOrCoverageAsk(message: string): boolean {
   if (/\?$/.test(text)) return true;
   if (/\b(what|which|how|where|why|do|does|did|can|could|should|would|is|are)\b/.test(text)) return true;
   const coverageAsk =
-    /\b(list|show|tell|outline|summari[sz]e|map)\b/.test(text)
-    && /\b(features?|test areas?|coverage|scenarios?|workflows?|journeys?|modules?|pages?|screens?|end to end|e2e)\b/.test(text);
+    // A "list" COMMAND — but "list view(s)" is a feature noun, not a request to enumerate coverage.
+    (/\b(show|tell|outline|summari[sz]e|map)\b/.test(text) || (/\blist\b/.test(text) && !/\blist\s+views?\b/.test(text)))
+    // "end to end"/"e2e" is a SCOPE qualifier (an action: "test X end to end"), never a coverage-ask noun on
+    // its own, so it must not flip an imperative into an informational answer.
+    && /\b(features?|test areas?|coverage|scenarios?|workflows?|journeys?|modules?|pages?|screens?)\b/.test(text);
   const whatToTest =
     /\b(features?\s+to\s+test|what\s+(?:should|can)\s+(?:i|we)\s+test|what\s+to\s+test|test\s+areas?|coverage\s+areas?)\b/.test(text);
   return coverageAsk || whatToTest;
@@ -125,7 +128,9 @@ function heuristicClassifyGoal(message: string, ctx: RoutingContext = {}): RawGo
   const scope = String(message || '').trim();
   const wantsAllAboveTested = /\btest\b/.test(text)
     && /\b(?:all\s+(?:of\s+)?(?:the\s+)?above|all\s+(?:of\s+)?(?:these|those)|above\s+cases?|listed\s+cases?)\b/.test(text);
-  const hasExecutionVerb = wantsAllAboveTested || /\b(run|execute|rerun|re-run|playwright|e2e|end to end|end-to-end)\b/.test(text);
+  // "end to end"/"e2e" is scope, not an execution command — "test the list view end to end" should generate
+  // E2E cases (review-first), not auto-run. Only an explicit run/execute verb (or "run all the above") executes.
+  const hasExecutionVerb = wantsAllAboveTested || /\b(run|execute|rerun|re-run|playwright)\b/.test(text);
   const hasGenerationVerb = /\b(generate|draft|write|author|create|build|make)\b/.test(text);
   const hasCodeVerb = /\b(analy[sz]e|review|diff|recent changes|repo|repository|codebase|code changes?)\b/.test(text);
   const hasWorkspaceVerb = /\b(plan|suite|folder|report|defect|move|organize|organise|navigate|open|go to)\b/.test(text);

@@ -104,8 +104,17 @@ export function registerAgentRuntimeRoutes(app: Express) {
       // cases for review with an optional continue-to-execution), NOT be answered as a chat question
       // with a terse "Created N cases" summary. This holds even when politely phrased "can you …?".
       // Info questions ABOUT existing cases ("how many cases do I have", "list my cases") are excluded.
+      // A leading imperative "test/cover/automate <feature>" ("test the list view end to end") is a
+      // case-generation request even without the words "test cases" — it must reach the generate flow (with
+      // its review gate), not dead-end as an informational answer. Result/status talk ("test failed", "why…")
+      // is excluded so it stays a question.
+      const imperativeTestFeature =
+        /^(?:\s*(?:please|can you|could you|pls|hey)[\s,]+)?(test|cover|automate)\b/i.test(message.trim())
+        && /\b(view|views|page|pages|screen|screens|flow|flows|feature|features|module|modules|list|form|forms|workflow|tab|grid|dashboard|end[\s-]to[\s-]end|e2e|creation|functionality|button|field)\b/i.test(message)
+        && !/\b(failed|passed|error|errors|why|how|status|result|results|did it|is it)\b/i.test(message);
       const wantsCaseGen =
-        /\b(generate|create|write|draft|author|add|build|make)\b[\s\S]{0,40}\b(test\s*cases?|cases?|coverage|scenarios?)\b/i.test(message)
+        (/\b(generate|create|write|draft|author|add|build|make)\b[\s\S]{0,40}\b(test\s*cases?|cases?|coverage|scenarios?)\b/i.test(message)
+          || imperativeTestFeature)
         // Exclude info questions ABOUT existing artifacts. "list" must be followed by an artifact
         // word ("list my cases") so it does NOT swallow "list view" in a real generation request.
         && !(/\b(how many|how much|do (?:we|i) have|which cases|what cases|count)\b/i.test(message)
