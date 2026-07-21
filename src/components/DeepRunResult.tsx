@@ -648,11 +648,12 @@ export function DeepRunResult({ taskId, initialSaved, onSaved }: { taskId: strin
     }
   };
   const saveAll = async () => {
-    if (saved) {
-      void showAlert('Test cases are already saved. Please check under Test Cases section.');
-      return;
-    }
+    // No early-return on `saved`: that flag is persisted per conversation turn (initialSaved) and can
+    // be stale — a regenerated/reworked batch inherits it, so the button read "Saved" while the rows
+    // were never in the DB, and re-clicking only alerted instead of persisting. save-cases upserts by
+    // id and prunes orphans, so re-saving is idempotent; always persist on click.
     if (!list.length) return;
+    const wasSaved = saved; // re-click of a (possibly stale) "Saved" — confirm the re-persist below
     setBusy('save');
     setActionError(null);
     try {
@@ -664,6 +665,7 @@ export function DeepRunResult({ taskId, initialSaved, onSaved }: { taskId: strin
       if (!res.ok) throw await errorFromResponse(res);
       setSaved(true); // only mark saved on a verified 2xx
       onSaved?.(); // persist savedness into the conversation turn so it survives navigation
+      if (wasSaved) void showAlert(`Re-saved ${list.length} test case${list.length === 1 ? '' : 's'} to the Test Cases section.`);
     } catch (e: any) {
       setActionError(actionErrorMessage(e));
     } finally {
