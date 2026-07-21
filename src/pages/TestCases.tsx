@@ -347,6 +347,20 @@ export default function TestCases() {
     return suites.find((suite) => testCase.agentRunId && suite.agentRunId === testCase.agentRunId)?.id || '';
   };
   const apps = projects.flatMap((project) => project.apps || []);
+  // The app filter is fed from two id-spaces — credential websites (`platforms`) and project apps (`apps`) —
+  // which routinely share a name ("admin", "keystone"), so listing both showed each app twice. Merge and
+  // dedupe by name; platforms come first so their id wins (case filtering keys on the website/platform id).
+  const appFilterOptions = (() => {
+    const seen = new Set<string>();
+    const out: Array<{ id: string; name: string }> = [];
+    for (const opt of [...platforms, ...apps.map((app) => ({ id: String(app.id), name: String(app.name || app.id) }))]) {
+      const key = opt.name.trim().toLowerCase();
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      out.push(opt);
+    }
+    return out;
+  })();
   const appName = (appId: string) => apps.find((app) => app.id === appId)?.name || platforms.find((platform) => platform.id === appId)?.name || (appId ? 'Unknown app' : 'All apps');
   // "Platform / App" the user chose for a case: the run's platform (project) + the individual app
   // (e.g. Core Platform / CRM). Falls back to the surface app when a case has no run-resolved app.
@@ -638,11 +652,8 @@ export default function TestCases() {
             title="Filter by app"
           >
             <option value="All">All apps</option>
-            {platforms.map((platform) => (
-              <option key={platform.id} value={platform.id}>{platform.name}</option>
-            ))}
-            {apps.map((app) => (
-              <option key={app.id} value={app.id}>{app.name}</option>
+            {appFilterOptions.map((option) => (
+              <option key={option.id} value={option.id}>{option.name}</option>
             ))}
           </select>
           {bulk.selectedCount > 0 && (

@@ -200,6 +200,22 @@ function actionErrorMessage(e: any): string {
   return e?.message || 'Request failed.';
 }
 
+// Read a run response as JSON, but turn a non-JSON body into a clear message. A long synchronous run
+// (many scripts) can outlive the reverse-proxy read timeout and come back as an HTML 502/504 page;
+// parsing that with res.json() throws a cryptic "Unexpected token '<'". Surface the real cause instead.
+async function readRunJson(res: Response): Promise<any> {
+  const text = await res.text();
+  let data: any = null;
+  try { data = text ? JSON.parse(text) : null; } catch { /* non-JSON (HTML error page) */ }
+  if (data && res.ok) return data;
+  const isHtml = /^\s*<(?:!doctype|html)/i.test(text);
+  const detail = data?.error
+    || (isHtml
+      ? `the server returned an HTML error page (HTTP ${res.status}) — the run likely exceeded the proxy/gateway timeout. Try "Re-run failed" or fewer scripts.`
+      : (text.trim().slice(0, 200) || `HTTP ${res.status}`));
+  throw new Error(detail);
+}
+
 // Legacy compiled scripts fell back to an internal 'compiled mission' test title — never surface it.
 function evidenceTitle(title: string | undefined, i: number): string {
   const t = String(title || '').trim();
@@ -773,8 +789,7 @@ export function DeepRunResult({ taskId, initialSaved, onSaved }: { taskId: strin
           runId: `${activeTaskId}-pw`,
         }),
       }, 600_000);
-      const data = await res.json();
-      if (!res.ok) throw new Error(data?.error || `Playwright run failed (${res.status})`);
+      const data = await readRunJson(res);
       // Merge re-run results over the prior ones so passed tests aren't lost from the view.
       if (onlyFailed && pwResult?.tests?.length) {
         const byTitle = new Map<string, any>();

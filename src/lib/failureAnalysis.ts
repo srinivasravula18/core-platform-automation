@@ -1,8 +1,10 @@
 /**
  * Deterministic Playwright failure analysis for the run-results UI (no LLM).
- * Parses the raw error text into a developer-actionable breakdown: what the test
- * attempted, on which element, what was expected vs what actually happened, the
- * likely cause class, and concrete next steps. App-agnostic by design.
+ * Parses the raw error text into a plain-English breakdown: what the test tried to do, on which
+ * element, what was expected vs what actually happened, the likely cause, and concrete next steps.
+ * The copy is deliberately jargon-free (no "DOM", "locator", "assertion", "toBeVisible", "strict
+ * mode") — the technical detail stays in the "Resolved element" and "Raw error" sections of the card.
+ * App-agnostic by design.
  */
 
 import { stripAnsi } from './stripAnsi';
@@ -18,9 +20,9 @@ export interface FailureAnalysis {
     | 'navigation'
     | 'timeout'
     | 'unknown';
-  /** Short badge label, e.g. "Control disabled". */
+  /** Short badge label, e.g. "Couldn't find it". */
   label: string;
-  /** The action the script attempted (click / check / fill / assertion name). */
+  /** Plain-English phrase for what the test tried to do (the card prefixes it with "Tried to "). */
   attempted: string;
   /** The locator/selector the script targeted, if extractable. */
   target: string | null;
@@ -33,14 +35,13 @@ export interface FailureAnalysis {
 }
 
 /**
- * One-line, human-readable summary of what a failed step could not do — names the actual selector/
- * label it failed on (e.g. `Could not fill “#create-app-label” — element not found`) instead of a
- * cryptic `expectValidation Label…` step name. Used to caption failure frames in the evidence viewer.
+ * One-line, human-readable summary of what a failed step could not do — names the actual control it
+ * failed on (e.g. `Could not type into “#create-app-label” — couldn't find it`) instead of a cryptic
+ * step name. Used to caption failure frames in the evidence viewer.
  */
 export function failureGist(rawError: string): string {
   const a = analyzeFailure(rawError);
-  const attempted = a.attempted.replace(/^interact with/, 'reach');
-  return `Could not ${attempted} — ${a.label.toLowerCase()}`;
+  return `Could not ${a.attempted} — ${a.label.toLowerCase()}`;
 }
 
 /** First regex capture group across the error text, or null. */
@@ -49,8 +50,48 @@ function cap(text: string, re: RegExp): string | null {
   return m ? m[1] : null;
 }
 
+/** Turn a raw selector into a friendly name where we can — "the “Cancel” button", "an error message". */
 function humanTarget(target: string | null): string {
-  return target ? `“${target}”` : 'the target element';
+  if (!target) return 'the thing it needed';
+  const roleName =
+    target.match(/role=(\w+)\[name="([^"]+)"\]/i) ||
+    target.match(/getByRole\(['"](\w+)['"],\s*\{\s*name:\s*['"]([^'"]+)['"]/);
+  if (roleName) return `the “${roleName[2]}” ${roleName[1].toLowerCase()}`;
+  if (/\[role="alert"|aria-invalid|aria-errormessage/i.test(target)) return 'an error message';
+  const testid = target.match(/getByTestId\(['"]([^'"]+)['"]/) || target.match(/\[data-testid="([^"]+)"\]/);
+  if (testid) return `the “${testid[1]}” control`;
+  return `“${target}”`;
+}
+
+/** Turn a Playwright method name into a plain-English phrase a non-technical reader understands. */
+function plainAction(action: string | null, target: string | null, isAssertion: boolean): string {
+  const t = humanTarget(target);
+  const doVerbs: Record<string, string> = {
+    click: `click ${t}`,
+    dblclick: `double-click ${t}`,
+    fill: `type into ${t}`,
+    type: `type into ${t}`,
+    press: `press a key in ${t}`,
+    check: `tick ${t}`,
+    uncheck: `untick ${t}`,
+    selectOption: `pick an option in ${t}`,
+    hover: `hover over ${t}`,
+    focus: `focus ${t}`,
+  };
+  if (action && doVerbs[action]) return doVerbs[action];
+  const checkVerbs: Record<string, string> = {
+    toBeVisible: `check that ${t} is shown`,
+    toBeHidden: `check that ${t} is gone`,
+    toHaveValue: `check what ${t} contains`,
+    toHaveText: `check the text in ${t}`,
+    toContainText: `check the text in ${t}`,
+    toBeEnabled: `check that ${t} can be used`,
+    toBeDisabled: `check that ${t} is greyed out`,
+    toBeChecked: `check that ${t} is ticked`,
+    toHaveCount: `count how many ${t} there are`,
+  };
+  if (action && checkVerbs[action]) return checkVerbs[action];
+  return isAssertion ? `check ${t}` : `use ${t}`;
 }
 
 export function analyzeFailure(rawError: string): FailureAnalysis {
@@ -69,7 +110,7 @@ export function analyzeFailure(rawError: string): FailureAnalysis {
     cap(e, /expect\(locator\)\.(\w+)\(\)/) ??
     null;
   const timeoutMs = cap(e, /Timeout:?\s*(\d+)ms/i) ?? cap(e, /Timeout (\d+)ms exceeded/i);
-  const waited = timeoutMs ? `${Math.round(Number(timeoutMs) / 1000)}s` : 'the full wait window';
+  const waited = timeoutMs ? `${Math.round(Number(timeoutMs) / 1000)} seconds` : 'the whole wait';
 
   const notEnabled = /element is not enabled/i.test(e) || /<[^>]*\bdisabled\b[^>]*>/i.test(resolvedElement || '');
   const notVisible = /element is not visible|hidden/i.test(e);
@@ -79,133 +120,154 @@ export function analyzeFailure(rawError: string): FailureAnalysis {
   const isAssertion = /expect\(.*\)|toBeVisible|toBeHidden|toContainText|toHaveValue|toBeEnabled|toBeChecked|toHaveText|toHaveCount/i.test(e);
   const isNavigation = /net::|ERR_|ECONNREFUSED|Navigation (failed|timeout)|page\.goto/i.test(e);
 
-  const attempted = action
-    ? isAssertion && !/click|check|fill|hover|press|selectOption|type/.test(action)
-      ? `assert ${action} on ${humanTarget(target)}`
-      : `${action} ${humanTarget(target)}`
-    : `interact with ${humanTarget(target)}`;
+  const attempted = plainAction(action, target, isAssertion);
+  const doWord = action && !isAssertion ? plainAction(action, null, false).replace(/ the thing it needed$/, '') : 'use';
 
   // --- classification, most specific first ------------------------------------------------
+
+  // Typed into something that can't be typed into (a dropdown, checkbox, button…). Very common when a
+  // test uses "type text" on a <select>; the raw error is unreadable, so name the real control + fix.
+  if (/not an <input>|not an <textarea>|not an input|contenteditable/i.test(e)) {
+    const tag = cap(resolvedElement || '', /^<(\w+)/)?.toLowerCase() ?? '';
+    const kindWord = tag === 'select' ? 'a dropdown' : tag === 'button' ? 'a button' : tag ? `a <${tag}> (not a text box)` : 'something you cannot type into';
+    return {
+      kind: 'unknown', label: 'Wrong kind of control', attempted, target, resolvedElement,
+      expected: `${humanTarget(target)} accepts typed text.`,
+      actual: `The test tried to type into ${humanTarget(target)}, but it is ${kindWord} — you cannot type text into it.`,
+      likelyCause: 'The test used "type text" on the wrong kind of control. A dropdown needs to be opened and an option picked; a checkbox needs to be ticked; a button needs to be clicked.',
+      suggestedFixes: [
+        tag === 'select'
+          ? 'For a dropdown: open it and pick an option instead of typing.'
+          : 'Use the action that matches this control (open a dropdown, tick a checkbox, click a button) instead of typing.',
+        'The test generator should choose the action from the control type — this is a test bug, not a product bug.',
+      ],
+    };
+  }
+
   if (isNavigation) {
     return {
-      kind: 'navigation', label: 'Navigation error', attempted, target, resolvedElement,
-      expected: 'The page loads and the flow reaches the screen under test.',
-      actual: `Navigation failed: ${e.split('\n')[0].slice(0, 160)}`,
-      likelyCause: 'The target URL was unreachable, redirected, or timed out — environment or auth issue rather than a UI defect.',
+      kind: 'navigation', label: "Page didn't open", attempted, target, resolvedElement,
+      expected: 'The page opens and the test reaches the screen it needs to check.',
+      actual: `The page didn't open. ${e.split('\n')[0].slice(0, 160)}`,
+      likelyCause: "The web address couldn't be opened, or the test wasn't logged in yet. This is usually an environment or login problem — not a problem with the feature itself.",
       suggestedFixes: [
-        'Verify the target app URL is up and reachable from the runner.',
-        'Check that the login/session step succeeded before this test.',
+        "Make sure the app's web address is up and reachable from where the test runs.",
+        'Make sure the login step worked before this test started.',
       ],
     };
   }
 
   if (notEnabled) {
     return {
-      kind: 'control-disabled', label: 'Control disabled', attempted, target, resolvedElement,
-      expected: `${humanTarget(target)} is enabled so the script can ${action || 'interact with'} it.`,
-      actual: `The element exists on the page but stayed disabled for ${waited}, so the action never landed.`,
-      likelyCause: 'The app disables this control until a precondition is met (a selection, an applied filter, a specific view mode, or loaded data). The test most likely skipped the setup step that enables it.',
+      kind: 'control-disabled', label: 'Button was greyed out', attempted, target, resolvedElement,
+      expected: `${humanTarget(target)} is ready to use so the test can ${doWord} it.`,
+      actual: `It was on the screen but stayed greyed out (switched off) for ${waited}, so nothing happened when the test tried to use it.`,
+      likelyCause: 'The app keeps this switched off until you do something first — like pick an item, choose a filter, or wait for data to load. The test skipped that step.',
       suggestedFixes: [
-        'Reproduce manually: open the same screen and note what you must do before this control becomes enabled.',
-        'Add that missing setup step to the test before this action.',
-        'If the control should have been enabled at this point, this is a product bug — file it with the disabled state as evidence.',
-        'Check whether an earlier test changed shared state (view mode, filters) that this test inherited.',
+        'Open the same screen yourself and notice what you have to do before this turns on.',
+        'Add that missing step to the test, right before this action.',
+        "If it should already be on at this point, that's a real product bug — save a picture of it and report it.",
+        'Check whether an earlier test left the screen in a different state that carried over.',
       ],
     };
   }
 
   if (notVisible || (notStable && resolvedElement)) {
     return {
-      kind: notStable ? 'element-unstable' : 'element-hidden', label: notStable ? 'Element unstable/covered' : 'Element hidden', attempted, target, resolvedElement,
-      expected: `${humanTarget(target)} is visible and receives the ${action || 'pointer'} action.`,
-      actual: `The element is in the DOM but was ${notStable ? 'moving or covered by another element' : 'not visible'} for ${waited}.`,
+      kind: notStable ? 'element-unstable' : 'element-hidden',
+      label: notStable ? 'Something was in the way' : 'It was hidden',
+      attempted, target, resolvedElement,
+      expected: `${humanTarget(target)} is visible so the test can ${doWord} it.`,
+      actual: notStable
+        ? `It was there, but something else was on top of it (or it was still moving) for ${waited}, so the test couldn't reach it.`
+        : `It was there but not visible on screen for ${waited}.`,
       likelyCause: notStable
-        ? 'Another element (overlay, sticky header, toast) intercepts the pointer, or the element is animating.'
-        : 'The control is revealed only on hover/focus, or it sits inside a collapsed/scrolled-out region.',
+        ? 'A popup, pop-up message, or sticky header was covering it, or it was still sliding into place.'
+        : "It only shows when you hover or click near it, or it's inside a section that's closed or scrolled off screen.",
       suggestedFixes: notStable
         ? [
-            'Wait for animations/overlays to settle before the action, or dismiss the covering element.',
-            'Scroll the element into view explicitly before clicking.',
+            'Wait for popups and animations to finish (or close them) before this step.',
+            'Scroll it into view before clicking.',
           ]
         : [
-            'Hover or focus the parent element first (hover-revealed controls need a hover step before the click).',
-            'Scroll the element into view or expand its collapsed container before the action.',
+            'Hover or click the area around it first — some things only appear when you hover.',
+            'Open or scroll to the section that holds it before this step.',
           ],
     };
   }
 
   if (strictViolation) {
     return {
-      kind: 'ambiguous-locator', label: 'Ambiguous locator', attempted, target, resolvedElement,
-      expected: `${humanTarget(target)} matches exactly one element.`,
-      actual: 'The locator matched multiple elements, so Playwright refused to act (strict mode).',
-      likelyCause: 'The selector is not specific enough for this screen — several elements share the same label/role.',
+      kind: 'ambiguous-locator', label: 'Too many matches', attempted, target, resolvedElement,
+      expected: `The name ${humanTarget(target)} should point to exactly one thing on the screen.`,
+      actual: 'It matched more than one thing, so the test stopped instead of guessing which one to use.',
+      likelyCause: "Several things on this screen share the same name or label, so the test couldn't tell them apart.",
       suggestedFixes: [
-        'Scope the locator to its container (dialog, row, section) or add .first()/nth() deliberately.',
-        'Prefer a more specific accessible name or test id.',
+        'Point the test at the specific area (the popup, the row, the section) that holds the one you want.',
+        'Give that one a clearer, more exact name or a test id.',
       ],
     };
   }
 
   if (isAssertion && notFound) {
     return {
-      kind: 'element-not-found', label: 'Expected element missing', attempted, target, resolvedElement,
-      expected: `${humanTarget(target)} appears on screen after the steps run (${action || 'assertion'}).`,
-      actual: `The element never appeared in the DOM within ${waited}.`,
-      likelyCause: 'Either the flow did not reach the expected state, or the assertion targets an element from a different screen/dialog than the one this test actually opens (wrong-screen assertion).',
+      kind: 'element-not-found', label: "Expected thing wasn't there", attempted, target, resolvedElement,
+      expected: `${humanTarget(target)} shows up on screen after the steps run.`,
+      actual: `It never showed up, even after waiting ${waited}.`,
+      likelyCause: "Either the test didn't get to the right screen, or it's looking for something that lives on a DIFFERENT screen or popup than the one it actually opened.",
       suggestedFixes: [
-        'Reproduce manually and check which screen the flow actually ends on.',
-        'Verify the asserted element genuinely belongs to that screen — if it belongs to another dialog/page, replace the assertion with one from the correct screen.',
-        'If the element should be there and is not, this is a product bug — file it with a screenshot of the end state.',
+        'Do the steps yourself and see which screen you end up on.',
+        "Make sure the thing you're checking really belongs to that screen. If it's from another popup or page, check for something on the correct screen instead.",
+        "If it truly should be there and isn't, that's a real product bug — report it with a picture of the final screen.",
       ],
     };
   }
 
   if (isAssertion) {
-    const expectation = cap(e, /Expected:?\s*([^\n]+)/) ?? 'the asserted condition holds';
+    const expectation = cap(e, /Expected:?\s*([^\n]+)/) ?? 'the right result';
     return {
-      kind: 'assertion-failed', label: 'Assertion failed', attempted, target, resolvedElement,
-      expected: `${humanTarget(target)}: ${expectation}`.slice(0, 200),
-      actual: (cap(e, /Received:?\s*([^\n]+)/) ?? `The condition was still false after ${waited}.`).slice(0, 200),
-      likelyCause: 'The app state after the steps differs from what the test expects — either the feature misbehaved or the expectation is wrong for this flow.',
+      kind: 'assertion-failed', label: 'Wrong result', attempted, target, resolvedElement,
+      expected: `${humanTarget(target)} should be: ${expectation}`.slice(0, 200),
+      actual: (cap(e, /Received:?\s*([^\n]+)/) ?? `It still wasn't right after ${waited}.`).slice(0, 200),
+      likelyCause: 'After the steps, the app showed something different from what the test expected — either the feature behaved differently, or the test was expecting the wrong thing for this case.',
       suggestedFixes: [
-        'Replay the steps manually and compare the real outcome against the expectation.',
-        'If the real outcome is correct, fix the test expectation; if not, this is a product bug.',
+        'Do the steps yourself and compare what really happens with what the test expected.',
+        "If what the app does is actually correct, fix the test's expectation. If it's wrong, that's a product bug.",
       ],
     };
   }
 
   if (notFound) {
     return {
-      kind: 'element-not-found', label: 'Element not found', attempted, target, resolvedElement,
-      expected: `${humanTarget(target)} exists so the script can ${action || 'interact with'} it.`,
-      actual: `No matching element appeared within ${waited}.`,
-      likelyCause: 'The selector no longer matches (UI changed), or the flow did not reach the screen that contains it.',
+      kind: 'element-not-found', label: "Couldn't find it", attempted, target, resolvedElement,
+      expected: `${humanTarget(target)} is on the screen so the test can ${doWord} it.`,
+      actual: `Nothing matching ${humanTarget(target)} showed up within ${waited}.`,
+      likelyCause: "Either the name doesn't match anymore (the screen changed), or the test never got to the screen that has it.",
       suggestedFixes: [
-        'Open the screen manually and locate the control — update the selector if the UI changed.',
-        'Check the previous steps actually navigated to the right place.',
+        'Open the screen yourself and find it — update the name in the test if the screen changed.',
+        'Check that the earlier steps really took the test to the right place.',
       ],
     };
   }
 
   if (/Timeout|timed out/i.test(e)) {
     return {
-      kind: 'timeout', label: 'Timeout', attempted, target, resolvedElement,
-      expected: 'The step completes within its time budget.',
-      actual: `The step was still incomplete after ${waited}.`,
-      likelyCause: 'Slow environment, a spinner that never resolved, or a wait on a condition that can never become true.',
+      kind: 'timeout', label: 'Took too long', attempted, target, resolvedElement,
+      expected: 'The step finishes in time.',
+      actual: `The step still wasn't done after ${waited}.`,
+      likelyCause: 'The app was slow or stuck, a loading spinner never finished, or the test was waiting for something that can never happen.',
       suggestedFixes: [
-        'Check whether the app was genuinely slow/stuck at this point (screenshots/video).',
-        'If the wait condition is impossible in this flow, fix the test logic.',
+        'Check the screenshots or video to see if the app was really slow or stuck here.',
+        'If the test was waiting for something that can never happen in this flow, fix the test.',
       ],
     };
   }
 
   return {
-    kind: 'unknown', label: 'Failure', attempted, target, resolvedElement,
-    expected: 'The step completes successfully.',
-    actual: e.split('\n')[0].slice(0, 200) || 'Unknown failure.',
-    likelyCause: 'Unclassified failure — read the raw error below.',
-    suggestedFixes: ['Inspect the raw error and the step screenshots for this test.'],
+    kind: 'unknown', label: 'Something went wrong', attempted, target, resolvedElement,
+    expected: 'The step finishes without an error.',
+    actual: e.split('\n')[0].slice(0, 200) || 'Unknown problem.',
+    likelyCause: "This one doesn't match a common pattern — open the full error below to see the details.",
+    suggestedFixes: ['Open the full error and the step screenshots for this test.'],
   };
 }
