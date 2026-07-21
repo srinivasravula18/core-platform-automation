@@ -18,7 +18,7 @@ import { createReadStream } from 'fs';
 import { reqScope, scopeFilter } from '../../shared/scope';
 import { requireAuth } from '../auth/routes';
 import { hashPassword, verifyPassword } from '../auth/userStore';
-import { Agents, AutomationJobs, AutomationSchedules, Recordings } from '../../db/repository';
+import { Agents, AutomationJobs, AutomationSchedules, Recordings, Cases, Runs } from '../../db/repository';
 import { uid, isPostgresEnabled } from '../../db/pool';
 import { persistDataInBackground } from '../../shared/storage';
 import { scopeStamp } from '../../shared/scope';
@@ -41,6 +41,7 @@ import {
   removeRecording,
 } from './recordingService';
 import { createJob, cancelJob } from './jobService';
+import { isAgentConnected } from './agentGateway';
 import { computeNextRun } from './schedulerService';
 import { saveArtifact, listArtifacts, resolveArtifact, contentTypeFor } from './artifactService';
 import { subscribe } from './eventsService';
@@ -144,9 +145,9 @@ export function registerAutomationRoutes(app: Express) {
   }
 
   app.post('/api/automation/recordings', requireAuth, async (req: Request, res: Response) => {
-    const { name, appUrl, browser, environment, agentId } = req.body || {};
+    const { name, appUrl, browser, environment, agentId, caseMeta } = req.body || {};
     if (!appUrl) return res.status(400).json({ error: 'appUrl is required.' });
-    const rec = await createRecording({ name, appUrl, browser, environment, agentId }, reqScope(req));
+    const rec = await createRecording({ name, appUrl, browser, environment, agentId, caseMeta }, reqScope(req));
     res.status(201).json({ recording: rec });
   });
 
@@ -220,6 +221,41 @@ export function registerAutomationRoutes(app: Express) {
     const out = await cancelJob(req.params.id);
     if ('error' in out) return res.status(out.status).json({ error: out.error });
     res.json(out);
+  });
+
+  /* ---------- run an Automation test case → executes on the agent, tracked as a Test Run ---------- */
+  // Bridges Test Management and the agent job engine: dispatch the case's recorded script to the
+  // agent and create a Test Run linked to the job (trigger_meta.automationJobId). The Test Runs UI
+  // then renders the job's artifacts (video/trace/screenshots/junit/logs) and job.done syncs the run.
+  app.post('/api/automation/runs', requireAuth, async (req: Request, res: Response) => {
+    const caseId = String(req.body?.caseId || '');
+    const testCase = await scopedGet((id) => Cases.get(id), caseId, req);
+    if (!testCase) return res.status(404).json({ error: 'Test case not found.' });
+    // The recorded script lives on the recording that produced this case (linked via metadata.caseId).
+    const rec = scopeFilter((await Recordings.list()) as any[], reqScope(req))
+      .find((r: any) => r.metadata?.caseId === caseId && r.status === 'ready' && r.script);
+    if (!rec) return res.status(400).json({ error: 'No recorded script for this case yet. Record it via New Case → Automation.' });
+    const agentId = String(req.body?.agentId || rec.agentId || '');
+    if (!isAgentConnected(agentId)) return res.status(409).json({ error: 'Select a connected agent to run on.' });
+    const job = await createJob({ recordingId: rec.id, agentId, trigger: 'manual', headed: false }, reqScope(req));
+    const run = {
+      ...scopeStamp(reqScope(req)),
+      id: `RUN-${randomBytes(2).toString('hex').toUpperCase()}`,
+      name: testCase.title || 'Automation run',
+      caseIds: [caseId],
+      requestedBy: req.body?.requestedBy || '',
+      status: 'Running',
+      progress: 'Dispatched to agent',
+      targetUrl: rec.appUrl || '',
+      folderId: testCase.folderId || '',
+      triggerType: 'automation',
+      triggerMeta: { automationJobId: job.id, agentId },
+      startedAt: new Date().toISOString(),
+      date: new Date().toISOString().split('T')[0],
+    };
+    await Runs.upsert(run);
+    if (isPostgresEnabled()) { /* persisted */ } else persistDataInBackground('automation run');
+    res.status(201).json({ run, jobId: job.id });
   });
 
   /* ---------- schedules (human, scoped) ---------- */

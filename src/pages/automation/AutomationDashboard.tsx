@@ -38,9 +38,9 @@ export default function AutomationDashboard() {
 
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <Metric icon={HardDrive} label="Agents online" value={onlineAgents} to="/automation/agent" />
-        <Metric icon={Radio} label="Recordings" value={recordings.length} to="/automation/record" />
+        <Metric icon={Radio} label="Recordings" value={recordings.length} to="/test-cases" />
         <Metric icon={CalendarClock} label="Schedules" value={schedules.filter((s) => s.enabled).length} to="/automation/schedules" />
-        <Metric icon={PlayCircle} label="Executions" value={jobs.length} to="/automation/executions" />
+        <Metric icon={PlayCircle} label="Executions" value={jobs.length} to="/runs" />
       </div>
 
       <div className="grid gap-3 sm:grid-cols-2">
@@ -57,7 +57,7 @@ export default function AutomationDashboard() {
       <div className="min-w-0 overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--bg-card)]">
         <div className="flex items-center justify-between border-b border-[var(--border)] px-4 py-3">
           <div className="text-sm font-semibold text-[var(--text-primary)]">Recent executions</div>
-          <Link to="/automation/executions" className="text-xs text-[var(--accent)] hover:underline">View all</Link>
+          <Link to="/runs" className="text-xs text-[var(--accent)] hover:underline">View all</Link>
         </div>
         {recent.length === 0 ? (
           <div className="px-4 py-10 text-center text-sm text-[var(--text-muted)]">No executions yet.</div>
@@ -66,7 +66,7 @@ export default function AutomationDashboard() {
             {recent.map((job) => {
               const meta = jobStatusMeta(job.status);
               return (
-                <Link key={job.id} to="/automation/executions" className="flex items-center justify-between gap-3 px-4 py-2.5 text-sm hover:bg-[var(--bg-secondary)]">
+                <Link key={job.id} to="/runs" className="flex items-center justify-between gap-3 px-4 py-2.5 text-sm hover:bg-[var(--bg-secondary)]">
                   <span className="truncate font-mono text-xs text-[var(--text-muted)]">{job.id}</span>
                   <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${meta.cls}`}>{meta.label}</span>
                 </Link>

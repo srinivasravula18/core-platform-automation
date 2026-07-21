@@ -9,7 +9,7 @@
  * LangGraph runtime uses for agent runs.
  */
 
-import { AutomationJobs, Recordings } from '../../db/repository';
+import { AutomationJobs, Recordings, Runs } from '../../db/repository';
 import { uid, isPostgresEnabled } from '../../db/pool';
 import { persistDataInBackground } from '../../shared/storage';
 import type { Scope } from '../../shared/scope';
@@ -175,4 +175,26 @@ onAgentFrame('job.done', async (_agentId, frame: AgentFrame) => {
   if (!jobId) return;
   const status: JobStatus = Number(exitCode) === 0 ? 'done' : 'failed';
   await setStatus(jobId, status, { exitCode: Number(exitCode) || 0, summary: summary || {}, error: error || '', finishedAt: new Date().toISOString() });
+  await syncLinkedRun(jobId, status, summary || {});
 });
+
+// A Test Run started via POST /api/automation/runs is linked to this job by trigger_meta. When the
+// job finishes, mirror its real pass/fail/duration onto the run so the Test Runs list shows it.
+export async function syncLinkedRun(jobId: string, status: JobStatus, summary: any) {
+  const run = (await Runs.list()).find((r: any) => r.triggerMeta?.automationJobId === jobId);
+  if (!run) return;
+  const passed = Number(summary.passed || 0);
+  const failed = Number(summary.failed || 0);
+  const skipped = Number(summary.skipped || 0);
+  await Runs.upsert({
+    ...run,
+    status: status === 'done' ? 'Completed' : 'Failed',
+    passed,
+    failed,
+    totalExecutions: passed + failed + skipped,
+    progress: `${passed} passed`,
+    executionTime: summary.durationMs ? `${Math.round(Number(summary.durationMs) / 1000)}s` : run.executionTime,
+    completedAt: new Date().toISOString(),
+  });
+  persist('automation run synced');
+}

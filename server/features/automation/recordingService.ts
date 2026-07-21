@@ -7,22 +7,33 @@
  * only ever runs on the user's machine — the cloud stores the resulting artifact.
  */
 
-import { Recordings } from '../../db/repository';
+import { Recordings, Cases, Scripts } from '../../db/repository';
 import { uid } from '../../db/pool';
 import { persistDataInBackground } from '../../shared/storage';
 import { isPostgresEnabled } from '../../db/pool';
 import type { Scope } from '../../shared/scope';
 import { scopeStamp } from '../../shared/scope';
+import { normalizeCaseSteps, normalizeCaseTags } from '../../shared/testCases';
 import { emitEvent } from './eventsService';
 import { onAgentFrame, dispatchToAgent, isAgentConnected } from './agentGateway';
 import { hardenRecordedScript } from './scriptHardening';
 import type { AgentFrame } from './types';
 
+// Case metadata captured on the New Case → Automation flow, carried on the recording so the
+// Test Case created at finalize is classified the same as a manually-authored one.
+export interface RecordingCaseMeta {
+  testingType?: string;
+  priority?: string;
+  folderId?: string;
+  testPlanIds?: string[];
+  testSuiteIds?: string[];
+}
+
 function persist(reason: string) {
   if (!isPostgresEnabled()) persistDataInBackground(reason);
 }
 
-export async function createRecording(input: { name: string; appUrl: string; browser?: string; environment?: string; agentId?: string }, scope: Scope) {
+export async function createRecording(input: { name: string; appUrl: string; browser?: string; environment?: string; agentId?: string; caseMeta?: RecordingCaseMeta }, scope: Scope) {
   const now = new Date().toISOString();
   const rec = {
     id: uid('REC'),
@@ -33,7 +44,9 @@ export async function createRecording(input: { name: string; appUrl: string; bro
     agentId: input.agentId || null,
     status: 'draft',
     script: '',
-    metadata: {},
+    // Stash the Test Case classification (from the New Case → Automation form) so finalize can
+    // build a fully-classified case; caseId/scriptId get written back here for idempotency.
+    metadata: input.caseMeta ? { caseMeta: input.caseMeta } : {},
     stats: { actions: 0, selectors: 0, assertions: 0, networkCalls: 0, consoleErrors: 0, pages: 0 },
     startedAt: null,
     completedAt: null,
@@ -66,7 +79,7 @@ function clearStopFallback(recordingId: string) {
 
 // Mark a recording ready and notify the UI. Idempotent (skips if already ready or gone) so the
 // agent's record.done and the server-side stop fallback can't double-finalize or race each other.
-async function finalizeRecording(recordingId: string, patch: { script?: string; stats?: any; metadata?: any }) {
+export async function finalizeRecording(recordingId: string, patch: { script?: string; stats?: any; metadata?: any }) {
   clearStopFallback(recordingId);
   const rec = await Recordings.get(recordingId);
   if (!rec || rec.status === 'ready') return;
@@ -81,8 +94,83 @@ async function finalizeRecording(recordingId: string, patch: { script?: string; 
     metadata: { ...rec.metadata, ...(patch.metadata || {}) },
     completedAt: new Date().toISOString(),
   });
+  // Reflect the recording into Test Management as an Automated, script-linked test case. Isolated
+  // so a case-write failure never blocks the recording from finalizing.
+  let caseId = '';
+  try { caseId = await reflectRecordingAsCase(saved, finalScript); } catch { /* recording still saved */ }
   persist('recording completed');
-  await emitEvent({ scopeType: 'recording', scopeId: recordingId, type: 'recording.done', ownerId: rec.ownerId, data: { recording: saved } });
+  await emitEvent({ scopeType: 'recording', scopeId: recordingId, type: 'recording.done', ownerId: rec.ownerId, data: { recording: saved, caseId } });
+}
+
+// Best-effort parse of a Playwright codegen spec into human-readable case steps so the created
+// test case reads meaningfully in Test Management. Falls back to a single run-the-script step.
+export function scriptToSteps(script: string): Array<{ action: string; expected: string }> {
+  const steps: Array<{ action: string; expected: string }> = [];
+  for (const raw of String(script || '').split('\n')) {
+    const line = raw.trim();
+    let m: RegExpMatchArray | null;
+    if ((m = line.match(/\.goto\(['"`]([^'"`]+)['"`]/))) steps.push({ action: `Navigate to ${m[1]}`, expected: '' });
+    else if ((m = line.match(/getBy\w+\(['"`]([^'"`]+)['"`][^)]*\)\s*\.click\(/))) steps.push({ action: `Click "${m[1]}"`, expected: '' });
+    else if ((m = line.match(/getBy\w+\(['"`]([^'"`]+)['"`][^)]*\)\s*\.fill\(['"`]([^'"`]*)['"`]/))) steps.push({ action: `Fill "${m[1]}" with "${m[2]}"`, expected: '' });
+    else if ((m = line.match(/getBy\w+\(['"`]([^'"`]+)['"`][^)]*\)\s*\.(check|selectOption|press)\(/))) steps.push({ action: `${m[2]} "${m[1]}"`, expected: '' });
+    else if (/expect\(/.test(line) && (m = line.match(/getBy\w+\(['"`]([^'"`]+)['"`]/))) steps.push({ action: `Verify "${m[1]}"`, expected: 'Element is present/visible.' });
+  }
+  return steps.length ? steps : [{ action: 'Run the recorded Playwright script.', expected: 'The recorded flow completes without errors.' }];
+}
+
+// Create (or update, if the recording already produced one) the linked Automated test case + its
+// Playwright script row. Idempotent via metadata.caseId so record.done and the stop fallback can't
+// double-create. Returns the case id.
+async function reflectRecordingAsCase(rec: any, finalScript: string): Promise<string> {
+  const meta: RecordingCaseMeta = rec.metadata?.caseMeta || {};
+  const existingCaseId: string = rec.metadata?.caseId || '';
+  const title = rec.name || 'Recorded test';
+  const caseId = existingCaseId || `TC-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
+  const caseRow = {
+    id: caseId,
+    title,
+    description: `Recorded via codegen against ${rec.appUrl || 'the target app'}.`,
+    steps: normalizeCaseSteps(scriptToSteps(finalScript)),
+    type: 'Automated',
+    testingScope: 'Automation',
+    automationStatus: 'Automated',
+    status: 'Draft',
+    priority: meta.priority || 'Medium',
+    testingType: meta.testingType || 'Functional',
+    folderId: meta.folderId || null,
+    testPlanIds: Array.isArray(meta.testPlanIds) ? meta.testPlanIds : [],
+    testSuiteIds: Array.isArray(meta.testSuiteIds) ? meta.testSuiteIds : [],
+    tags: normalizeCaseTags(['codegen', 'recorded']),
+    createdBy: 'Codegen',
+    projectId: rec.projectId || '',
+    appId: rec.appId || '',
+    ownerId: rec.ownerId || '',
+  };
+  await Cases.upsert(caseRow);
+  // Link the hardened script to the case via the real scripts.case_id FK (title + caseId), so the
+  // Test Cases viewer resolves it directly and Test Runs (Phase 2) can execute it.
+  const scriptId = rec.metadata?.scriptId || `SCR-${String(rec.id).replace(/[^A-Za-z0-9]/g, '').slice(-8).toUpperCase()}-1`;
+  await Scripts.upsert({
+    id: scriptId,
+    name: title,
+    filename: `${scriptId.toLowerCase()}.spec.ts`,
+    title,
+    code: finalScript,
+    language: 'typescript',
+    framework: 'playwright',
+    status: 'Generated',
+    caseId,
+    targetUrl: rec.appUrl || '',
+    createdBy: 'Codegen',
+    projectId: rec.projectId || '',
+    appId: rec.appId || '',
+    ownerId: rec.ownerId || '',
+  });
+  // Persist the case/script ids back onto the recording so a second finalize updates instead of duplicating.
+  if (!existingCaseId || !rec.metadata?.scriptId) {
+    await Recordings.upsert({ ...rec, metadata: { ...rec.metadata, caseId, scriptId } });
+  }
+  return caseId;
 }
 
 export async function stopRecording(recordingId: string) {

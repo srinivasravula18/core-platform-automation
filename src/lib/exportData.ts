@@ -60,13 +60,22 @@ function toHTMLTable(rows: any[], columns: ExportColumn[], title: string): strin
   const body = rows
     .map((r) => `<tr>${columns.map((c) => `<td>${esc(cell(c, r)).replace(/\r?\n/g, '<br>')}</td>`).join('')}</tr>`)
     .join('');
-  return `<!doctype html><html><head><meta charset="utf-8"><title>${esc(title)}</title><style>
-    body{font-family:Arial,Helvetica,sans-serif;margin:24px;color:#111}
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="color-scheme" content="light dark"><title>${esc(title)}</title><style>
+    :root{color-scheme:light dark}
+    body{font-family:Arial,Helvetica,sans-serif;margin:24px;color:#111;background:#fff}
     h1{font-size:20px;margin:0 0 4px}.s{color:#666;font-size:12px;margin-bottom:16px}
     table{width:100%;border-collapse:collapse;font-size:12px}
     th,td{border:1px solid #ddd;padding:6px 8px;text-align:left;vertical-align:top}
     th{background:#f4f4f5}tr:nth-child(even){background:#fafafa}
-    @media print{@page{margin:14mm}}
+    /* Legible in a dark-theme browser too. */
+    @media (prefers-color-scheme: dark){
+      body{color:#e5e7eb;background:#0f172a}
+      .s{color:#94a3b8}
+      th,td{border-color:#334155}
+      th{background:#1e293b}tr:nth-child(even){background:#111827}
+    }
+    /* Printed output / PDF is always light on white regardless of screen theme. */
+    @media print{@page{margin:14mm} body{color:#111;background:#fff} .s{color:#666} th,td{border-color:#ddd} th{background:#f4f4f5} tr:nth-child(even){background:#fafafa}}
   </style></head><body><h1>${esc(title)}</h1><div class="s">${rows.length} row(s) · ${esc(new Date().toLocaleString())}</div>
   <table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></body></html>`;
 }

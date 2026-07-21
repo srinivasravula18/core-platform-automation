@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { BrowserRouter, Routes, Route, Link, useLocation, useNavigate } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Link, Navigate, useLocation, useNavigate } from 'react-router-dom';
 import { LayoutDashboard, TestTube2, Bug, Settings, BrainCircuit, PlayCircle, FolderTree, Sun, Moon, Search, CircleUser, Layers, Menu, ClipboardList, GitBranch, Command, MessagesSquare, ChevronDown, LogOut, Target, ScrollText, Radio, HardDrive, CalendarClock, Gauge } from 'lucide-react';
 import { useRemoteAgentFlag } from '@/src/lib/useAutomation';
 import { cn } from '@/src/lib/utils';
@@ -27,10 +27,8 @@ import TestRepository from '@/src/pages/TestRepository';
 import Requirements from '@/src/pages/Requirements';
 import Traceability from '@/src/pages/Traceability';
 import RecordPlay from '@/src/pages/RecordPlay';
-import RecordTest from '@/src/pages/automation/RecordTest';
 import LocalAgent from '@/src/pages/automation/LocalAgent';
 import AutomationDashboard from '@/src/pages/automation/AutomationDashboard';
-import Executions from '@/src/pages/automation/Executions';
 import Schedules from '@/src/pages/automation/Schedules';
 
 function Sidebar({ isOpen }: { isOpen: boolean }) {
@@ -40,9 +38,9 @@ function Sidebar({ isOpen }: { isOpen: boolean }) {
   // Record & Play desktop-agent pages appear only when the backend enables REMOTE_AGENT_V1.
   const automationItems = [
     ...(remoteAgent ? [
+      // Record Test + Executions folded into Test Management (Test Cases → New Case → Automation, and
+      // Test Runs). Their routes below redirect there for any lingering bookmarks/links.
       { name: 'Automation', href: '/automation', icon: Gauge },
-      { name: 'Record Test', href: '/automation/record', icon: Radio },
-      { name: 'Executions', href: '/automation/executions', icon: PlayCircle },
       { name: 'Schedules', href: '/automation/schedules', icon: CalendarClock },
       { name: 'Local Agent', href: '/automation/agent', icon: HardDrive },
     ] : [
@@ -408,8 +406,9 @@ export default function App() {
           <Route path="/studio" element={<AgentPanel />} />
           <Route path="/record-play" element={<RecordPlay />} />
           <Route path="/automation" element={<AutomationDashboard />} />
-          <Route path="/automation/record" element={<RecordTest />} />
-          <Route path="/automation/executions" element={<Executions />} />
+          {/* Folded into Test Management — redirect old automation URLs to their new homes. */}
+          <Route path="/automation/record" element={<Navigate to="/test-cases" replace />} />
+          <Route path="/automation/executions" element={<Navigate to="/runs" replace />} />
           <Route path="/automation/schedules" element={<Schedules />} />
           <Route path="/automation/agent" element={<LocalAgent />} />
           <Route path="/git-agent" element={<GitAgent />} />

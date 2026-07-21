@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts';
-import { PlayCircle, Target, TestTube2, ShieldAlert, Sparkles } from 'lucide-react';
+import { PlayCircle, Target, TestTube2, ShieldAlert, Sparkles, Layers } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { Modal } from '@/src/components/Modal';
 import { AIActionModal } from '@/src/components/AIActionModal';
@@ -8,6 +8,7 @@ import { FolderSelect } from '@/src/components/FolderSelect';
 
 export default function Dashboard() {
   const [stats, setStats] = useState<any>(null);
+  const [suitesCount, setSuitesCount] = useState(0);
   const [isPlanModalOpen, setIsPlanModalOpen] = useState(false);
   const [isAIPlanModalOpen, setIsAIPlanModalOpen] = useState(false);
   const [formData, setFormData] = useState({ 
@@ -20,6 +21,11 @@ export default function Dashboard() {
       .then(r => r.json())
       .then(data => setStats(data))
       .catch(console.error);
+    // Suites count isn't in /api/stats, so derive it from the suites list (scope-filtered like the rest).
+    fetch('/api/suites')
+      .then(r => r.json())
+      .then(data => setSuitesCount(Array.isArray(data) ? data.length : 0))
+      .catch(() => {});
   };
 
   useEffect(() => {
@@ -182,9 +188,10 @@ export default function Dashboard() {
       />
 
       {/* KPI Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
         {[
           { label: 'Test Plans', val: stats?.plansCount ?? 0, icon: Target },
+          { label: 'Test Suites', val: suitesCount, icon: Layers },
           { label: 'Test Cases', val: stats?.casesCount ?? 0, icon: TestTube2 },
           { label: 'Active Runs', val: stats?.activeRunsCount ?? 0, icon: PlayCircle },
           { label: 'Open Defects', val: stats?.defectsCount ?? 0, icon: ShieldAlert },

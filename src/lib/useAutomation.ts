@@ -129,3 +129,96 @@ export function useAgentEvents(onEvent: (evt: AutomationEvent) => void): void {
     return () => es.close();
   }, []);
 }
+
+export interface RecordingCaseMeta {
+  testingType?: string; priority?: string; folderId?: string;
+  testPlanIds?: string[]; testSuiteIds?: string[];
+}
+export interface StartRecordingInput {
+  name: string; appUrl: string; browser: string; environment: string; agentId: string; caseMeta?: RecordingCaseMeta;
+}
+export type RecordingPhase = 'setup' | 'recording' | 'summary';
+
+/**
+ * The record-a-flow state machine (setup → recording → summary), shared by the standalone Record
+ * Test page and the New Case → Automation panel. Owns the codegen lifecycle calls, the live SSE
+ * stream (script/stats/done), the elapsed timer, and the Stop safety-net fallback. UI concerns
+ * (toasts, confirm dialogs) stay with the caller; start() resolves the new recording id or throws.
+ */
+export function useRecordingSession(opts?: { onAgentEvent?: () => void }): {
+  phase: RecordingPhase; recordingId: string; script: string; stats: Record<string, number>;
+  elapsed: number; mmss: string; busy: boolean; caseId: string;
+  start: (input: StartRecordingInput) => Promise<string>; stop: () => Promise<void>;
+  discard: () => Promise<void>; reset: () => void;
+} {
+  const [phase, setPhase] = useState<RecordingPhase>('setup');
+  const [recordingId, setRecordingId] = useState('');
+  const [script, setScript] = useState('');
+  const [stats, setStats] = useState<Record<string, number>>({});
+  const [elapsed, setElapsed] = useState(0);
+  const [busy, setBusy] = useState(false);
+  const [caseId, setCaseId] = useState('');
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Safety net for Stop: the UI leaves 'recording' when recording.done lands. If that event is
+  // delayed/lost, this fallback still moves us to summary so the timer can't count forever.
+  const stopFallbackRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const clearStopFallback = () => { if (stopFallbackRef.current) { clearTimeout(stopFallbackRef.current); stopFallbackRef.current = null; } };
+  const stopTimer = () => { if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; } };
+  const startTimer = () => { setElapsed(0); timerRef.current = setInterval(() => setElapsed((e) => e + 1), 1000); };
+  useEffect(() => () => { stopTimer(); clearStopFallback(); }, []);
+
+  useAgentEvents((evt) => {
+    if (evt.scopeType === 'agent') { opts?.onAgentEvent?.(); return; }
+    if (evt.scopeId !== recordingId) return;
+    if (evt.type === 'recording.chunk' && typeof evt.data.script === 'string') setScript(evt.data.script);
+    if (evt.type === 'recording.status' && evt.data.stats) setStats((s) => ({ ...s, ...evt.data.stats }));
+    if (evt.type === 'recording.done') {
+      clearStopFallback();
+      const rec = evt.data.recording as Recording | undefined;
+      if (rec) { setScript(rec.script || ''); setStats(rec.stats || {}); }
+      if (typeof evt.data.caseId === 'string') setCaseId(evt.data.caseId);
+      stopTimer();
+      setPhase('summary');
+    }
+  });
+
+  const start = async (input: StartRecordingInput): Promise<string> => {
+    if (busy) throw new Error('A recording is already starting.');
+    setBusy(true);
+    try {
+      const created = await fetch('/api/automation/recordings', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input),
+      }).then((r) => r.json());
+      const id = created?.recording?.id;
+      if (!id) throw new Error('create failed');
+      const started = await fetch(`/api/automation/recordings/${id}/start`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agentId: input.agentId }),
+      });
+      if (!started.ok) throw new Error((await started.json())?.error || 'start failed');
+      setRecordingId(id); setScript(''); setStats({}); setCaseId(''); setPhase('recording'); startTimer();
+      return id;
+    } finally { setBusy(false); }
+  };
+
+  const stop = async (): Promise<void> => {
+    if (!recordingId || busy) return;
+    setBusy(true);
+    // Stop the clock immediately — don't keep counting while we wait on the agent's round-trip.
+    stopTimer();
+    try { await fetch(`/api/automation/recordings/${recordingId}/stop`, { method: 'POST' }); }
+    catch { /* ignore */ } finally { setBusy(false); }
+    clearStopFallback();
+    stopFallbackRef.current = setTimeout(() => { setPhase((p) => (p === 'recording' ? 'summary' : p)); }, 8000);
+  };
+
+  const discard = async (): Promise<void> => {
+    stopTimer();
+    if (recordingId) await fetch(`/api/automation/recordings/${recordingId}`, { method: 'DELETE' }).catch(() => {});
+    setRecordingId(''); setScript(''); setStats({}); setCaseId(''); setPhase('setup');
+  };
+
+  const reset = () => { setPhase('setup'); setRecordingId(''); setScript(''); setStats({}); setCaseId(''); };
+
+  const mmss = `${String(Math.floor(elapsed / 60)).padStart(2, '0')}:${String(elapsed % 60).padStart(2, '0')}`;
+  return { phase, recordingId, script, stats, elapsed, mmss, busy, caseId, start, stop, discard, reset };
+}

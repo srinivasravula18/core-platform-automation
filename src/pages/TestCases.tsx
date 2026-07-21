@@ -8,6 +8,8 @@ import { startSelectedRun } from '@/src/lib/startSelectedRun';
 import { Modal } from '@/src/components/Modal';
 import { AIActionModal } from '@/src/components/AIActionModal';
 import { FolderSelect } from '@/src/components/FolderSelect';
+import { CodegenPanel, AppUrlField } from '@/src/components/CodegenPanel';
+import { useRemoteAgentFlag } from '@/src/lib/useAutomation';
 import { showAlert, showConfirm } from '@/src/lib/dialog';
 import { useProjects } from '@/src/store/project';
 import { useDataVersion } from '@/src/store/data';
@@ -166,6 +168,9 @@ export default function TestCases() {
   const [runInfo, setRunInfo] = useState<Record<string, { platformId: string; platform: string; app: string }>>({});
   const [platforms, setPlatforms] = useState<Array<{ id: string; name: string }>>([]);
   const { projects, selectedProjectId, selectedAppId, fetchProjects } = useProjects();
+  const remoteAgentFlag = useRemoteAgentFlag();
+  // Application URL for the New Case → Automation (codegen) recording; shown above Title.
+  const [automationUrl, setAutomationUrl] = useState('');
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState(searchParams.get('search') || '');
   const aiSearch = useAiSearch('test cases');
@@ -343,6 +348,7 @@ export default function TestCases() {
   const openNewModal = () => {
     setSelectedCaseId(null);
     setFormData(blankForm);
+    setAutomationUrl('');
     setIsCaseModalOpen(true);
   };
 
@@ -500,6 +506,26 @@ export default function TestCases() {
     }
   };
 
+  // Automation cases execute their recorded Playwright script on the desktop agent; the Test Run
+  // that opens shows the live execution artifacts (video/screenshots/trace/junit/logs).
+  const runAutomationCase = async (testCase: any) => {
+    if (isStartingRun) return;
+    setIsStartingRun(true);
+    try {
+      const res = await fetch('/api/automation/runs', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ caseId: testCase.id }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || 'Could not start the automation run.');
+      navigate(`/runs/${data.run.id}`);
+    } catch (error: any) {
+      void showAlert(error.message || 'Could not start the automation run.');
+    } finally {
+      setIsStartingRun(false);
+    }
+  };
+  const isAutomationCase = (testCase: any) => remoteAgentFlag === true && (testCase.testingScope === 'Automation' || testCase.type === 'Automated') && !!relatedScript(testCase);
+
   const resolvePlanId = (testCase: any) => {
     if (testCase.testPlanId) return testCase.testPlanId;
     const linkedSuite = suites.find((suite) => suite.id === testCase.testSuiteId || (testCase.agentRunId && suite.agentRunId === testCase.agentRunId));
@@ -550,6 +576,9 @@ export default function TestCases() {
     return map;
   }, [scripts]);
   const relatedScript = (testCase: any) => {
+    // Codegen-created cases link their script via the real scripts.case_id FK — prefer that.
+    const linked = scripts.find((script) => script.caseId && script.caseId === testCase.id);
+    if (linked) return linked;
     const runId = String(testCase.agentRunId || testCase.sourceRunId || '');
     const title = normalizeTitle(testCase.title);
     const candidates = runId ? (scriptsByRun.get(runId) || []) : scripts;
@@ -624,6 +653,10 @@ export default function TestCases() {
     return matchesSearch && matchesPlatform && matchesApp && advancedMatch(testCase);
   });
 
+  // New Case → Automation records a Playwright flow via the desktop agent (codegen) and the backend
+  // saves it as an Automated, script-linked case. Only offered for NEW cases when the agent feature is on.
+  const automationMode = !selectedCaseId && formData.testingScope === 'Automation' && remoteAgentFlag === true;
+
   return (
     <div className="app-page-shell h-full flex flex-col">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-6 flex-shrink-0">
@@ -676,14 +709,76 @@ export default function TestCases() {
             </div>
             <div className="flex gap-3">
               <button onClick={() => setIsCaseModalOpen(false)} className="px-4 py-2 text-sm font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]">Cancel</button>
-              <button onClick={handleSaveCase} disabled={!formData.title.trim()} className="px-4 py-2 bg-[var(--accent)] text-white text-sm font-medium rounded-md hover:bg-[var(--accent-hover)] disabled:opacity-50">
-                {selectedCaseId ? 'Save Changes' : 'Create Case'}
-              </button>
+              {/* Automation mode: the codegen panel owns Start/Done, so the manual Create button is hidden. */}
+              {!automationMode && (
+                <button onClick={handleSaveCase} disabled={!formData.title.trim()} className="px-4 py-2 bg-[var(--accent)] text-white text-sm font-medium rounded-md hover:bg-[var(--accent-hover)] disabled:opacity-50">
+                  {selectedCaseId ? 'Save Changes' : 'Create Case'}
+                </button>
+              )}
             </div>
           </div>
         }
       >
         <div className="flex flex-col gap-4">
+          {/* Manual vs Automation: Automation records a live Playwright flow (codegen) into an Automated case. */}
+          {!selectedCaseId && (
+            <div>
+              <label className="block text-sm font-medium mb-2 text-[var(--text-muted)]">Testing Scope</label>
+              <div className="inline-flex rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] p-0.5">
+                {TESTING_SCOPES.map((scope) => (
+                  <button key={scope} type="button" onClick={() => setFormData({ ...formData, testingScope: scope })}
+                    className={`px-4 py-1.5 text-sm font-medium rounded transition-colors ${formData.testingScope === scope ? 'bg-[var(--accent)] text-white' : 'text-[var(--text-muted)] hover:text-[var(--text-primary)]'}`}>
+                    {scope}
+                  </button>
+                ))}
+              </div>
+              {formData.testingScope === 'Automation' && remoteAgentFlag === false && (
+                <p className="mt-2 text-xs text-amber-500">Automation recording needs the local desktop agent, which isn’t enabled here. Saving will create a manual case.</p>
+              )}
+            </div>
+          )}
+
+          {automationMode ? (
+            <div className="flex flex-col gap-4">
+              <AppUrlField value={automationUrl} onChange={setAutomationUrl} />
+              <div>
+                <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Title</label>
+                <input type="text" value={formData.title} onChange={(e) => setFormData({ ...formData, title: e.target.value })} placeholder="e.g., Login → List view" className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]" />
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Type Of Test Case</label>
+                  <select value={formData.testingType} onChange={(e) => setFormData({ ...formData, testingType: e.target.value })} className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]">
+                    {TESTING_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Priority</label>
+                  <select value={formData.priority} onChange={(e) => setFormData({ ...formData, priority: e.target.value })} className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]">
+                    {PRIORITIES.map((p) => <option key={p} value={p}>{p}</option>)}
+                  </select>
+                </div>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Test Plans (Optional)</label>
+                  <MultiSelectDropdown label="None" options={plans.map((plan) => ({ id: String(plan.id), name: String(plan.name) }))} value={formData.testPlanIds} onChange={(ids) => setFormData({ ...formData, testPlanIds: ids })} />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Test Suites (Optional)</label>
+                  <MultiSelectDropdown label="None" options={suites.map((suite) => ({ id: String(suite.id), name: String(suite.name) }))} value={formData.testSuiteIds} onChange={(ids) => setFormData({ ...formData, testSuiteIds: ids })} />
+                </div>
+              </div>
+              <FolderSelect value={formData.folderId} onChange={(folderId) => setFormData({ ...formData, folderId })} />
+              <CodegenPanel
+                title={formData.title}
+                appUrl={automationUrl}
+                caseMeta={{ testingType: formData.testingType, priority: formData.priority, folderId: formData.folderId, testPlanIds: formData.testPlanIds, testSuiteIds: formData.testSuiteIds }}
+                onDone={() => { setIsCaseModalOpen(false); fetchCases(); }}
+              />
+            </div>
+          ) : (
+          <>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
              <div>
                 <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Test Plans (Optional)</label>
@@ -774,14 +869,17 @@ export default function TestCases() {
             <input type="text" value={formData.createdBy} onChange={(e) => setFormData({...formData, createdBy: e.target.value})} placeholder="e.g. Admin or user name" className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]" />
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-             <div>
-                 <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Testing Scope</label>
-                 <select value={formData.testingScope} onChange={(e) => setFormData({...formData, testingScope: e.target.value})} className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]">
-                    {TESTING_SCOPES.map((scope) => (
-                      <option key={scope} value={scope}>{scope}</option>
-                    ))}
-                 </select>
-             </div>
+             {/* Testing Scope is chosen via the Manual/Automation toggle at the top of this form. */}
+             {selectedCaseId && (
+               <div>
+                   <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Testing Scope</label>
+                   <select value={formData.testingScope} onChange={(e) => setFormData({...formData, testingScope: e.target.value})} className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]">
+                      {TESTING_SCOPES.map((scope) => (
+                        <option key={scope} value={scope}>{scope}</option>
+                      ))}
+                   </select>
+               </div>
+             )}
              <div>
                  <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Status</label>
                  <select value={formData.status} onChange={(e) => setFormData({...formData, status: e.target.value})} className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]">
@@ -838,6 +936,8 @@ export default function TestCases() {
               </span>
             </span>
           </label>
+          </>
+          )}
         </div>
       </Modal>
 
@@ -1046,7 +1146,7 @@ export default function TestCases() {
         </div>
         
         <div className="flex-1 overflow-auto">
-          <table className="w-full min-w-[1680px] table-fixed text-left text-sm">
+          <table className="w-full min-w-[2160px] table-fixed text-left text-sm">
             <thead className="sticky top-0 bg-[var(--bg-secondary)] border-b border-[var(--border)] z-10">
               <tr className="text-[var(--text-muted)]">
                 <th className="font-medium py-3 px-4 w-10">
@@ -1059,7 +1159,7 @@ export default function TestCases() {
                   />
                 </th>
                 <th className="font-medium py-3 px-4 w-20">ID</th>
-                <th className="font-medium py-3 px-4">Title</th>
+                <th className="font-medium py-3 px-4 w-64">Title</th>
                 <th className="font-medium py-3 px-4 w-48">Pre Conditions</th>
                 <th className="font-medium py-3 px-4 w-44">Folder</th>
                 <th className="font-medium py-3 px-4 w-44">Platform / App</th>
@@ -1225,10 +1325,11 @@ export default function TestCases() {
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
-                        runSelectedCases([tc.id]);
+                        if (isAutomationCase(tc)) runAutomationCase(tc);
+                        else runSelectedCases([tc.id]);
                       }}
                       disabled={isStartingRun}
-                      title="Run test case"
+                      title={isAutomationCase(tc) ? 'Run automation (executes on the agent)' : 'Run test case'}
                       className="p-1 rounded hover:bg-emerald-500/10 text-[var(--text-muted)] hover:text-emerald-400 disabled:opacity-50 transition-colors"
                     >
                       <PlayCircle className="w-4 h-4" />

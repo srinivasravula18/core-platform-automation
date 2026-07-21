@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { ArrowDownToLine, ArrowLeft, CheckCircle, Filter, Folder, Lock, MoreHorizontal, PlayCircle, Search, Share2, SlidersHorizontal, Sparkles, Trash2 } from 'lucide-react';
+import { ArrowLeft, CheckCircle, Filter, Folder, MoreHorizontal, PlayCircle, Search, SlidersHorizontal, Sparkles, Trash2 } from 'lucide-react';
 import ExportMenu from '../components/ExportMenu';
 import { useAiSearch } from '@/src/lib/useAiSearch';
 import { useBulkDelete } from '@/src/lib/useBulkDelete';
@@ -9,6 +9,7 @@ import { Modal } from '@/src/components/Modal';
 import { AIActionModal } from '@/src/components/AIActionModal';
 import { FolderSelect } from '@/src/components/FolderSelect';
 import { FolderBadge } from '@/src/components/FolderBadge';
+import { AutomationRunArtifacts } from '@/src/components/AutomationRunArtifacts';
 import { showAlert } from '@/src/lib/dialog';
 
 function getRunStats(run: any) {
@@ -48,7 +49,6 @@ export default function TestRuns() {
   const [caseSearchTerm, setCaseSearchTerm] = useState('');
   const [caseStatusFilter, setCaseStatusFilter] = useState('All');
   const [isCaseFilterOpen, setIsCaseFilterOpen] = useState(false);
-  const [lockedRunIds, setLockedRunIds] = useState<string[]>([]);
   const [isViewMenuOpen, setIsViewMenuOpen] = useState(false);
   const [isRunModalOpen, setIsRunModalOpen] = useState(false);
   const [isAIRunModalOpen, setIsAIRunModalOpen] = useState(false);
@@ -89,7 +89,23 @@ export default function TestRuns() {
     fetchData();
   }, []);
 
+  // Quiet runs-only refetch (no full-page loading flash) used to poll a live automation run.
+  const refreshRunsQuiet = useCallback(async () => {
+    try { const r = await fetch('/api/runs').then((res) => res.json()); setRuns(Array.isArray(r) ? r : []); } catch { /* keep */ }
+  }, []);
+
   const selectedRun = runs.find((run) => run.id === runId) || null;
+
+  // An automation run executes async on the agent; its status/pass-fail land on the run only when
+  // the job finishes (job.done → syncLinkedRun on the backend). Poll while it's still non-terminal so
+  // the header/stat bar update from "Running" to Completed/Failed without a manual refresh.
+  const selectedJobId = selectedRun?.triggerMeta?.automationJobId;
+  const selectedTerminal = /completed|closed|failed|cancelled/i.test(selectedRun?.status || '');
+  useEffect(() => {
+    if (!selectedJobId || selectedTerminal) return;
+    const t = setInterval(() => { void refreshRunsQuiet(); }, 4000);
+    return () => clearInterval(t);
+  }, [selectedJobId, selectedTerminal, refreshRunsQuiet]);
   const activeRuns = runs.filter((run) => !/completed|closed/i.test(run.status || ''));
   const closedRuns = runs.filter((run) => /completed|closed/i.test(run.status || ''));
 
@@ -193,21 +209,6 @@ export default function TestRuns() {
     }).then(() => fetchData());
   };
 
-  const downloadRunJson = (run: any) => {
-    const blob = new Blob([JSON.stringify(run, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement('a');
-    anchor.href = url;
-    anchor.download = `${run.id || 'test-run'}.json`;
-    anchor.click();
-    URL.revokeObjectURL(url);
-  };
-
-  const shareRun = async (run: any) => {
-    const url = `${window.location.origin}/runs/${run.id}`;
-    await navigator.clipboard?.writeText(url);
-    void showAlert('Run link copied to clipboard.');
-  };
 
   if (selectedRun) {
     const stats = getRunStats(selectedRun);
@@ -234,21 +235,15 @@ export default function TestRuns() {
                   <FolderBadge folders={folders} folderId={selectedRun.folderId} />
                 </div>
               </div>
-              <div className="flex gap-2">
-                <button onClick={() => navigate('/defects')} className="px-3 py-2 rounded-md border border-[var(--border)] text-sm hover:bg-[var(--border)]">Linked Issues</button>
-                <button onClick={() => downloadRunJson(selectedRun)} title="Download run JSON" className="p-2 rounded-md border border-[var(--border)] hover:bg-[var(--border)]"><ArrowDownToLine className="w-4 h-4" /></button>
-                <button onClick={() => shareRun(selectedRun)} title="Copy run link" className="p-2 rounded-md border border-[var(--border)] hover:bg-[var(--border)]"><Share2 className="w-4 h-4" /></button>
-                <button
-                  onClick={() => setLockedRunIds((ids) => ids.includes(selectedRun.id) ? ids.filter((id) => id !== selectedRun.id) : [...ids, selectedRun.id])}
-                  title={lockedRunIds.includes(selectedRun.id) ? 'Unlock run locally' : 'Lock run locally'}
-                  className={cn("p-2 rounded-md border border-[var(--border)] hover:bg-[var(--border)]", lockedRunIds.includes(selectedRun.id) && "text-[var(--accent)]")}
-                >
-                  <Lock className="w-4 h-4" />
-                </button>
-                <button onClick={() => navigate('/reports')} title="Open reports" className="p-2 rounded-md border border-[var(--border)] hover:bg-[var(--border)]"><MoreHorizontal className="w-4 h-4" /></button>
-              </div>
             </div>
           </div>
+
+          {/* Automation run: execution artifacts (video/screenshots/trace/junit/logs) kept at the top. */}
+          {selectedRun.triggerMeta?.automationJobId && (
+            <div className="p-5 border-b border-[var(--border)] overflow-auto">
+              <AutomationRunArtifacts jobId={selectedRun.triggerMeta.automationJobId} />
+            </div>
+          )}
 
           <div className="h-2 bg-[var(--bg-secondary)] flex">
             <div className="bg-emerald-400" style={{ width: `${stats.total ? (stats.passed / stats.total) * 100 : 0}%` }} />
@@ -505,10 +500,10 @@ export default function TestRuns() {
                     <td className="px-4 py-4">{run.executionTime || '-'}</td>
                     <td className="px-4 py-4">
                       <div className="flex gap-2">
-                        <span className="px-2 py-1 rounded bg-emerald-500/10 text-emerald-400">{stats.passed}</span>
-                        <span className="px-2 py-1 rounded bg-red-500/10 text-red-400">{stats.failed}</span>
-                        <span className="px-2 py-1 rounded bg-indigo-500/10 text-indigo-400">{stats.blocked}</span>
-                        <span className="px-2 py-1 rounded bg-[var(--bg-secondary)] text-[var(--text-muted)]">{stats.untested}</span>
+                        <span title={`Passed: ${stats.passed}`} className="px-2 py-1 rounded bg-emerald-500/10 text-emerald-400 cursor-default">{stats.passed}</span>
+                        <span title={`Failed: ${stats.failed}`} className="px-2 py-1 rounded bg-red-500/10 text-red-400 cursor-default">{stats.failed}</span>
+                        <span title={`Blocked: ${stats.blocked}`} className="px-2 py-1 rounded bg-indigo-500/10 text-indigo-400 cursor-default">{stats.blocked}</span>
+                        <span title={`Untested: ${stats.untested}`} className="px-2 py-1 rounded bg-[var(--bg-secondary)] text-[var(--text-muted)] cursor-default">{stats.untested}</span>
                       </div>
                     </td>
                     <td className="px-4 py-4 text-[var(--text-muted)]">{stats.failed ? `${stats.failed} failed` : '-'}</td>
