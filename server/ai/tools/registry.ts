@@ -37,12 +37,29 @@ const COLLECTIONS: Record<string, Lister> = {
   reports: Reports as any,
 };
 
+/** Flatten a case/defect step list into readable text for both search and a compact summary. */
+function stepsToText(steps: any): string {
+  if (typeof steps === 'string') return steps;
+  if (!Array.isArray(steps)) return '';
+  return steps.map((s: any) => (typeof s === 'string' ? s
+    : [s?.action, s?.step, s?.description, s?.expected, s?.expectedResult, s?.result].filter(Boolean).join(' → '))).filter(Boolean).join(' | ');
+}
+
+/** Compact run outcome ("failed 3/12 (failed 3, skipped 0)") from a run's execution_result, when present. */
+function runOutcome(it: any): string {
+  const r = it?.execution_result || it?.executionResult;
+  if (!r || typeof r !== 'object') return '';
+  const p = Number(r.passed ?? 0), f = Number(r.failed ?? 0), sk = Number(r.skipped ?? 0);
+  const tot = Number(r.total ?? (p + f + sk));
+  return `${r.ok === false || f > 0 ? 'failed' : 'passed'} ${p}/${tot} (failed ${f}, skipped ${sk})`;
+}
+
 /** Read-only: list workspace artifacts of a given kind, newest first, compacted. */
 export const queryWorkspaceTool: AgentTool = {
   spec: {
     name: 'query_workspace',
     description:
-      'List existing QA artifacts (test cases, suites, plans, runs, scripts, defects) in the workspace so you can resolve references to prior work ("those cases", "the last run") to concrete ids. Read-only.',
+      'Search and read existing QA workspace memory — test cases, suites, plans, runs, scripts, defects (a.k.a. bugs/issues, kind="defects"), requirements, reports. This is your source of truth for ANY question about existing work; consult it before answering rather than guessing. The `query` matches each artifact\'s full CONTENT, and every row returns real detail: cases include description + steps, runs include the pass/fail outcome, defects include steps-to-reproduce/expected/actual/severity, scripts include the generated code body + filename + agentRunId (so you can see actual fill values, selectors, and which app a script creates). Read-only.',
     parameters: {
       type: 'object',
       properties: {
@@ -62,18 +79,48 @@ export const queryWorkspaceTool: AgentTool = {
     let items = await coll.list();
     // Respect per-user isolation when records carry an ownerId.
     if (ctx.userId) items = items.filter((it) => !it?.ownerId || it.ownerId === ctx.userId);
-    if (q) {
-      items = items.filter((it) =>
-        [it?.id, it?.title, it?.name].filter(Boolean).some((f: any) => String(f).toLowerCase().includes(q)),
-      );
-    }
-    return items.slice(0, limit).map((it) => ({
-      id: it?.id,
-      title: it?.title || it?.name || '',
-      suiteId: it?.suiteId,
-      status: it?.status,
-      date: it?.date || it?.updatedAt,
-    }));
+
+    // Full-text haystack per kind so CONTENT questions resolve against real detail — a case's steps, a run's
+    // pass/fail outcome, a defect's repro/expected/actual, a script's code — not just the title. This is what
+    // lets "which script fills API name zgf_86" or "which cases cover login" or "why did the last run fail" work.
+    const hay = (it: any): string => {
+      const base: any[] = [it?.id, it?.title, it?.name, it?.description, (it?.tags || []).join(' ')];
+      if (kind === 'cases') base.push(it?.preconditions, stepsToText(it?.steps), it?.priority, it?.type);
+      else if (kind === 'scripts') base.push(it?.filename, it?.code);
+      else if (kind === 'runs') base.push(it?.prompt, runOutcome(it), it?.app_url, it?.status);
+      else if (kind === 'defects') base.push(stepsToText(it?.stepsToReproduce), it?.expected, it?.actual, it?.severity, it?.linkedCaseId, it?.linkedRunId);
+      return base.filter(Boolean).map((f) => String(f)).join(' \n ').toLowerCase();
+    };
+    if (q) items = items.filter((it) => hay(it).includes(q));
+
+    return items.slice(0, limit).map((it) => {
+      const row: any = {
+        id: it?.id,
+        title: it?.title || it?.name || it?.prompt || '',
+        status: it?.status,
+        date: it?.date || it?.updatedAt || it?.createdAt,
+      };
+      if (kind === 'cases') Object.assign(row, {
+        description: it?.description || '', priority: it?.priority, type: it?.type,
+        suiteId: it?.testSuiteId || it?.suiteId, steps: stepsToText(it?.steps).slice(0, 2000), agentRunId: it?.agentRunId,
+      });
+      else if (kind === 'scripts') Object.assign(row, {
+        // The generated body lets the agent read actual fill values / selectors / which app a script creates.
+        // Full body when a query narrowed the set; a short excerpt for broad listing to bound context size.
+        filename: it?.filename, agentRunId: it?.agentRunId, code: it?.code ? String(it.code).slice(0, q ? 8000 : 1200) : '',
+      });
+      else if (kind === 'runs') Object.assign(row, {
+        prompt: it?.prompt || '', outcome: runOutcome(it), appUrl: it?.app_url,
+        scriptCount: Array.isArray(it?.playwright_scripts) ? it.playwright_scripts.length : undefined,
+      });
+      else if (kind === 'defects') Object.assign(row, {
+        description: it?.description || '', severity: it?.severity,
+        stepsToReproduce: stepsToText(it?.stepsToReproduce).slice(0, 1500),
+        expected: it?.expected, actual: it?.actual, linkedCaseId: it?.linkedCaseId, linkedRunId: it?.linkedRunId,
+      });
+      else Object.assign(row, { description: it?.description || '', suiteId: it?.suiteId });
+      return row;
+    });
   },
 };
 
@@ -354,6 +401,18 @@ export async function quickWorkspaceAnswer(
   const isList = /\b(show me|what are|which|do i have|are there)\b/.test(t)
     || (/\blist\b/.test(t) && !/\blist\s+views?\b/.test(t));
   if (!isCount && !isList) return null;
+
+  // The fast path is ONLY a latency shortcut for a BARE aggregate ("how many cases", "list scripts"). Detect
+  // that structurally: strip the intent verbs, the artifact kind nouns, and stopwords — if ANY meaningful
+  // token remains, the message carries a qualifier/predicate (a value, a filter, a "which/that/why") and is a
+  // real question that must be answered from live DB detail. Defer it to the agent, which reads full artifact
+  // content via query_workspace. This replaces an ever-growing keyword blocklist with one structural gate.
+  const residue = t
+    .replace(/[^a-z0-9 ]+/g, ' ')
+    .replace(/\b(how many|how much|number of|total|counts?|list|show|me|what|whats|are|there|which|do|does|did|i|have|has|the|all|any|my|our|of|in|currently|is|please|so far|now|workspace|test|tests)\b/g, ' ')
+    .replace(/\b(cases?|suites?|plans?|runs?|executions?|scripts?|playwright|defects?|bugs?|issues?|requirements?|reports?)\b/g, ' ')
+    .replace(/\s+/g, ' ').trim();
+  if (residue) return null;
 
   // Accept a bare userId (legacy callers) or a full {userId, projectId, appId} scope.
   const sc: WorkspaceScope = typeof scopeArg === 'string' ? { userId: scopeArg } : (scopeArg || {});
