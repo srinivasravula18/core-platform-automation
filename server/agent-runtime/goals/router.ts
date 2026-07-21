@@ -14,6 +14,7 @@ import { z } from 'zod';
 import { getOrchestrator } from '../../ai/orchestrator';
 import type { ChatTurn, SelectedApp } from '../../ai/controller';
 import type { Route, RouteKind, RawGoalClassification, RoutingContext, RouteTarget } from './types';
+import { normalizeQaVocab, processInput } from '../inputProcessing';
 
 /**
  * Below this confidence the router refuses to guess and asks instead. This one
@@ -49,7 +50,8 @@ function clampConfidence(n: unknown): number {
 }
 
 function cleanText(value: string): string {
-  return String(value || '').toLowerCase().replace(/\s+/g, ' ').trim();
+  const lowered = String(value || '').toLowerCase().replace(/\s+/g, ' ').trim();
+  return normalizeQaVocab(lowered);
 }
 
 function targetAliases(app: RouteTarget): string[] {
@@ -432,14 +434,23 @@ export async function classifyGoal(input: ClassifyGoalInput): Promise<RawGoalCla
 
 /** Convenience: classify (LLM) then decide (deterministic) in one call. */
 export async function routeGoal(input: ClassifyGoalInput, ctx: RoutingContext = {}): Promise<{ route: Route; raw: RawGoalClassification }> {
-  const direct = heuristicClassifyGoal(input.message, ctx);
-  const shouldBypassModel = looksLikeQuestionOrCoverageAsk(input.message);
+  // Input Processing Layer: recover spelling + canonicalize vocabulary ONCE, then classify on the cleaned
+  // message so a typo/variant ("give testcases", "tset cases", "keyston") routes the same as its correct
+  // form. The original message is preserved for the LLM's own context; only the classification sees the
+  // normalized text. Genuinely novel phrasings still fall through to classifyGoal (the semantic fallback).
+  const processed = processInput(input.message, ctx);
+  const normalizedInput: ClassifyGoalInput = processed.normalized && processed.normalized !== input.message.toLowerCase()
+    ? { ...input, message: processed.normalized }
+    : input;
+  const direct = heuristicClassifyGoal(normalizedInput.message, ctx);
+  const shouldBypassModel = looksLikeQuestionOrCoverageAsk(normalizedInput.message);
   let raw: RawGoalClassification;
   if (shouldBypassModel) {
     raw = direct;
   } else {
     try {
-      raw = await classifyGoal(input);
+      // Give the model the corrected message but keep the original as userMessage so its reply reads naturally.
+      raw = await classifyGoal({ ...normalizedInput, message: `${normalizedInput.message}` });
     } catch {
       raw = direct;
     }
