@@ -23,6 +23,44 @@ function isNegativeCase(plan: { title?: string | null }): boolean {
   return /\b(empty|blank|without|missing|invalid|blocked|required\s+error|validation|negative|cannot|not\s+allowed|leave\s+\w+\s+empty|no\s+\w+\s+(provided|entered))\b/i.test(String(plan?.title || ''));
 }
 
+/** A create/open TRIGGER — the toolbar control ("New"/"Add"/"+") that reveals a create dialog/drawer, as
+ * opposed to the in-dialog submit ("Create"/"Save"). Same app-agnostic label-convention philosophy as
+ * isRequiredFieldNode: never a hardcoded name. Used to auto-open the modal a plan's fields live inside. */
+function isCreateOpenerNode(node: EvidenceNode | null): boolean {
+  if (!node) return false;
+  const role = String(node.role || '').toLowerCase();
+  if (role !== 'button' && role !== 'link') return false;
+  const label = String(node.label || '').trim();
+  if (!label) return false;
+  // In-dialog submit/dismiss controls are NOT openers — excluding them avoids mistaking Create/Save/Cancel for New.
+  if (/^(save|create|submit|confirm|finish|done|ok|apply|cancel|close|discard|delete|remove)\b/i.test(label)) return false;
+  return label === '+' || /(^|\s)(new|add)(\s|$)/i.test(label);
+}
+
+/** In-dialog dismiss control (Cancel/Close/Discard) — its presence in a plan implies a dialog must be open. */
+function isDialogDismissNode(node: EvidenceNode | null): boolean {
+  if (String(node?.role || '').toLowerCase() !== 'button') return false;
+  return /^(cancel|close|discard|dismiss)\b/i.test(String(node?.label || '').trim());
+}
+
+/** Pick the single best create opener from the verified evidence: prefer an exact "New", then "New <noun>"/
+ * "Add <noun>", then "+", then the shortest label — deterministic so the same run always injects the same click. */
+function pickCreateOpener(nodes: EvidenceNode[]): EvidenceNode | null {
+  const candidates = nodes.filter((n) => n.selector && n.uniqueness === true && n.confidence === 'verified-live'
+    && n.provenance === 'LIVE_DOM' && isCreateOpenerNode(n));
+  if (!candidates.length) return null;
+  const rank = (n: EvidenceNode) => {
+    const l = String(n.label || '').trim().toLowerCase();
+    if (l === 'new') return 0;
+    if (/^new\b/.test(l)) return 1;
+    if (/^add\b/.test(l)) return 2;
+    if (l === '+') return 3;
+    return 4;
+  };
+  return [...candidates].sort((a, b) => rank(a) - rank(b)
+    || String(a.label || '').length - String(b.label || '').length)[0];
+}
+
 // Actions/assertions are emitted through MissionRunner's reveal-then-act helpers (not raw locator calls), so
 // every interaction first reveals hover-gated controls (column filter/sort/wrap triggers, row menus, …).
 // `value` is the already-resolved fill/select value (Test Data Engine output or the plan's explicit value).
@@ -185,6 +223,30 @@ export class PlaywrightCompiler implements Compiler {
       });
     }
     const missingRequired = submitIndex >= 0 ? requiredNodes.filter((n) => !plannedSelectors.has(String(n.selector))) : [];
+
+    // Modal-open precondition: the create dialog's fields (Label/API Name/…), its submit (Create/Save), and its
+    // dismiss (Cancel) only exist in the DOM AFTER a toolbar opener (New/Add/+) is clicked. Authored plans often
+    // assume the dialog is already open and jump straight to filling fields — so the fields never appear and every
+    // locator times out. If the plan touches dialog-owned controls but never clicks the opener itself, auto-inject
+    // that opener click before the first dialog-touching step (mirrors the required-field auto-completion above).
+    const openerNode = pickCreateOpener(evidenceGraph.nodes);
+    const planAlreadyOpens = plan.steps.some((step) => {
+      if (!isActionStep(step) || step.action !== 'CLICK') return false;
+      const g = resolveTarget((step as any).target, evidenceGraph, run);
+      return g.status === 'RESOLVED' && isCreateOpenerNode(g.node);
+    });
+    const shouldInjectOpener = !!openerNode && !planAlreadyOpens;
+    let openerInjected = false;
+    // A step whose target lives inside the create dialog: a required field (fill/select/clear or an assert on it),
+    // the submit button, or a dismiss button. The opener must precede the first such step.
+    const touchesDialog = (step: PlanStep, node: EvidenceNode | null): boolean => {
+      if (isActionStep(step)) {
+        if (['FILL', 'SELECT', 'CLEAR', 'CHECK', 'UNCHECK'].includes(step.action)) return isRequiredFieldNode(node);
+        if (step.action === 'CLICK') return isSubmitClick(step, node) || isDialogDismissNode(node);
+        return false;
+      }
+      return isAssertStep(step) && isRequiredFieldNode(node);
+    };
     const emitRequiredCompletion = () => {
       for (const node of missingRequired) {
         const spec = JSON.stringify({ selector: node.selector, selectorType: node.selectorType, role: node.role ?? null, label: node.label ?? null });
@@ -225,6 +287,13 @@ export class PlaywrightCompiler implements Compiler {
         diagnostics.push({ kind: 'INVALID_STEP', target, stepIndex: i, message: `${step.action} is incompatible with role "${g.node?.role || 'unknown'}".` });
         body.push(`  // INVALID_STEP: ${step.action} cannot target role "${g.node?.role || 'unknown'}" (${JSON.stringify(target)})`);
         return;
+      }
+      // Open the create dialog before the first step that touches a control living inside it.
+      if (shouldInjectOpener && !openerInjected && touchesDialog(step, g.node)) {
+        const oSpec = JSON.stringify({ selector: openerNode!.selector, selectorType: openerNode!.selectorType, role: openerNode!.role ?? null, label: openerNode!.label ?? null });
+        body.push(`  await runner.click(${oSpec});`);
+        body.push('  // ^ opener auto-injected: the dialog controls below only exist once this control opens the modal');
+        openerInjected = true;
       }
       const spec = JSON.stringify({ selector: g.selector, selectorType: g.selectorType, role: g.node?.role ?? null, label: g.node?.label ?? null });
       if (isActionStep(step)) {

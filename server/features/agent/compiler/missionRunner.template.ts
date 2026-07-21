@@ -169,7 +169,18 @@ export class MissionRunner {
   async uncheck(spec: LocatorSpec): Promise<void> { await this.act('uncheck', spec, null, async () => { const l = this.locator(spec); await this.reveal(l); await l.uncheck(); }); }
   async hover(spec: LocatorSpec): Promise<void> { await this.act('hover', spec, null, async () => { await this.reveal(this.locator(spec)); }); }
   async press(spec: LocatorSpec, key: string): Promise<void> { await this.act('press', spec, String(key || 'Enter'), async () => { const l = this.locator(spec); await this.reveal(l); await l.press(String(key || 'Enter')); }); }
-  async clear(spec: LocatorSpec): Promise<void> { await this.act('clear', spec, null, async () => { const l = this.locator(spec); await this.reveal(l); await l.fill(''); }); }
+  async clear(spec: LocatorSpec): Promise<void> { await this.act('clear', spec, null, async () => {
+    const l = this.locator(spec); await this.reveal(l);
+    // A native <select>/combobox cannot be .fill('')ed ("Element is not an <input>"): clear it by selecting the
+    // empty/placeholder option instead. Text inputs still clear via fill('').
+    const role = String(spec.role || '').toLowerCase();
+    const tag = await l.evaluate((el) => el.tagName.toLowerCase()).catch(() => '');
+    if (tag === 'select' || role === 'combobox' || role === 'listbox') {
+      await l.selectOption('').catch(async () => { await l.selectOption({ index: 0 }).catch(() => {}); });
+    } else {
+      await l.fill('');
+    }
+  }); }
 
   // ---- Reveal-then-assert helpers ----
   async expectVisible(spec: LocatorSpec): Promise<void> { await this.act('expectVisible', spec, null, async () => { const l = this.locator(spec); await this.reveal(l); await expect(l).toBeVisible(); }); }
