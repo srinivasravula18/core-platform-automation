@@ -143,7 +143,12 @@ export default function Traceability() {
     if (!linked.length) {
       return [{ ...base, caseId: '', caseTitle: details[req.id] ? '(no linked cases)' : '(expand to load coverage)', casePriority: '', caseStatus: '' }];
     }
-    return linked.map((lc) => ({ ...base, caseId: lc.id, caseTitle: lc.title, casePriority: lc.priority || '', caseStatus: lc.status || '' }));
+    // Each linked entry is { linkType, note, case: {...} } — the case fields live under `.case`,
+    // not on the link object itself (the Detailed view reads lc.case for the same reason).
+    return linked.map((lc) => {
+      const c = lc.case || { id: lc.caseId || '', title: '(deleted case)' };
+      return { ...base, caseId: c.id || '', caseTitle: c.title || '(deleted case)', casePriority: c.priority || '', caseStatus: c.status || '' };
+    });
   });
 
   return (
