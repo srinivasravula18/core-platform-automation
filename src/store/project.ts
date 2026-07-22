@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { readScopedStorage, writeScopedStorage } from '@/src/lib/storage';
 
 export type RepoKind = 'local' | 'remote';
 export type SyncStatus = 'idle' | 'connecting' | 'syncing' | 'ready' | 'error';
@@ -53,19 +54,10 @@ const SEL_PROJECT_KEY = 'tfa_project_id';
 const SEL_APP_KEY = 'tfa_app_id';
 
 function readLS(key: string): string | null {
-  try {
-    return localStorage.getItem(key);
-  } catch {
-    return null;
-  }
+  return readScopedStorage(key);
 }
 function writeLS(key: string, val: string | null) {
-  try {
-    if (val === null) localStorage.removeItem(key);
-    else localStorage.setItem(key, val);
-  } catch {
-    /* ignore */
-  }
+  writeScopedStorage(key, val);
 }
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {

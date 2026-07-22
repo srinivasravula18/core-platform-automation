@@ -1,33 +1,22 @@
 import React, { useEffect, useState } from 'react';
 import { BrainCircuit, Lock, Loader2, Eye, EyeOff } from 'lucide-react';
+import { readScopedStorage, writeScopedStorage } from '@/src/lib/storage';
 
 const TOKEN_KEY = 'tfa_auth_token';
 const USERNAME_KEY = 'tfa_username';
 const ROLE_KEY = 'tfa_role';
 
 export function getAuthToken(): string {
-  try {
-    return localStorage.getItem(TOKEN_KEY) || '';
-  } catch {
-    return '';
-  }
+  return readScopedStorage(TOKEN_KEY) || '';
 }
 
 export function getUsername(): string {
-  try {
-    return localStorage.getItem(USERNAME_KEY) || '';
-  } catch {
-    return '';
-  }
+  return readScopedStorage(USERNAME_KEY) || '';
 }
 
 export function getRole(): 'admin' | 'tester' | '' {
-  try {
-    const r = localStorage.getItem(ROLE_KEY);
-    return r === 'admin' || r === 'tester' ? r : '';
-  } catch {
-    return '';
-  }
+  const r = readScopedStorage(ROLE_KEY);
+  return r === 'admin' || r === 'tester' ? r : '';
 }
 
 export function isAdmin(): boolean {
@@ -43,9 +32,9 @@ export function logout() {
         headers: { Authorization: `Bearer ${token}` },
       }).catch(() => {});
     }
-    localStorage.removeItem(TOKEN_KEY);
-    localStorage.removeItem(USERNAME_KEY);
-    localStorage.removeItem(ROLE_KEY);
+    writeScopedStorage(TOKEN_KEY, null);
+    writeScopedStorage(USERNAME_KEY, null);
+    writeScopedStorage(ROLE_KEY, null);
   } catch {
     /* ignore */
   }
@@ -71,13 +60,11 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
       .then(async (r) => {
         if (r.ok) {
           const me = await r.json().catch(() => ({}));
-          try {
-            if (me?.role) localStorage.setItem(ROLE_KEY, me.role);
-            if (me?.username) localStorage.setItem(USERNAME_KEY, me.username);
-          } catch { /* ignore */ }
+          if (me?.role) writeScopedStorage(ROLE_KEY, me.role);
+          if (me?.username) writeScopedStorage(USERNAME_KEY, me.username);
           setStatus('in');
         } else {
-          localStorage.removeItem(TOKEN_KEY);
+          writeScopedStorage(TOKEN_KEY, null);
           setStatus('out');
         }
       })
@@ -100,11 +87,9 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
         setSubmitting(false);
         return;
       }
-      localStorage.setItem(TOKEN_KEY, data.token);
-      try {
-        localStorage.setItem(USERNAME_KEY, (data.username || username).trim());
-        if (data.role) localStorage.setItem(ROLE_KEY, data.role);
-      } catch { /* ignore */ }
+      writeScopedStorage(TOKEN_KEY, data.token);
+      writeScopedStorage(USERNAME_KEY, (data.username || username).trim());
+      if (data.role) writeScopedStorage(ROLE_KEY, data.role);
       setStatus('in');
     } catch {
       setError('Could not reach the server. Please try again.');

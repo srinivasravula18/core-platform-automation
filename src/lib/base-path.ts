@@ -1,3 +1,5 @@
+import { readScopedStorage } from '@/src/lib/storage';
+
 const rawBaseUrl = (import.meta as { env?: { BASE_URL?: string } }).env?.BASE_URL || '/';
 
 const normalizedBasePath = rawBaseUrl.endsWith('/') && rawBaseUrl !== '/'
@@ -13,16 +15,12 @@ export function withBasePath(path: string): string {
 
 export function withEventSourceAuth(path: string): string {
   const url = new URL(withBasePath(path), window.location.origin);
-  try {
-    const projectId = localStorage.getItem('tfa_project_id');
-    const appId = localStorage.getItem('tfa_app_id');
-    const token = localStorage.getItem('tfa_auth_token');
-    if (projectId) url.searchParams.set('projectId', projectId);
-    if (appId) url.searchParams.set('appId', appId);
-    if (token) url.searchParams.set('token', token);
-  } catch {
-    // ignore storage access failures; backend will return 401 if auth is missing
-  }
+  const projectId = readScopedStorage('tfa_project_id');
+  const appId = readScopedStorage('tfa_app_id');
+  const token = readScopedStorage('tfa_auth_token');
+  if (projectId) url.searchParams.set('projectId', projectId);
+  if (appId) url.searchParams.set('appId', appId);
+  if (token) url.searchParams.set('token', token);
   return `${url.pathname}${url.search}`;
 }
 
@@ -33,18 +31,14 @@ export function withEventSourceAuth(path: string): string {
  * not just /auth/me.
  */
 function scopeHeaders(): Record<string, string> {
-  try {
-    const headers: Record<string, string> = {};
-    const projectId = localStorage.getItem('tfa_project_id');
-    const appId = localStorage.getItem('tfa_app_id');
-    const token = localStorage.getItem('tfa_auth_token');
-    if (projectId) headers['X-Project-Id'] = projectId;
-    if (appId) headers['X-App-Id'] = appId;
-    if (token) headers['Authorization'] = `Bearer ${token}`;
-    return headers;
-  } catch {
-    return {};
-  }
+  const headers: Record<string, string> = {};
+  const projectId = readScopedStorage('tfa_project_id');
+  const appId = readScopedStorage('tfa_app_id');
+  const token = readScopedStorage('tfa_auth_token');
+  if (projectId) headers['X-Project-Id'] = projectId;
+  if (appId) headers['X-App-Id'] = appId;
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+  return headers;
 }
 
 /** True for same-origin API calls that should carry the project/app scope. */

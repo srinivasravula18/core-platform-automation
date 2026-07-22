@@ -58,6 +58,7 @@ function looksLikeAgentError(text: string): boolean {
 }
 import { cn } from '@/src/lib/utils';
 import { withEventSourceAuth } from '@/src/lib/base-path';
+import { readScopedStorage, writeScopedStorage } from '@/src/lib/storage';
 import { containsPrivateFileActivity, hasPrivateResearchToolCall } from '@/src/lib/userFacingAgentActivity';
 import { useProjects, type ProjectApp } from '@/src/store/project';
 import { useUiSettings } from '@/src/store/uiSettings';
@@ -754,24 +755,15 @@ export default function AgentConsole() {
   const [busy, setBusy] = useState(false);
   const rememberedConversationIdRef = useRef<string | null>(null);
   const [conversationId, setConversationId] = useState<string>(() => {
-    try {
-      // URL param takes precedence — lets users share / bookmark a specific chat
-      if (urlChatId) return urlChatId;
-      rememberedConversationIdRef.current = localStorage.getItem(convKey);
-      return rememberedConversationIdRef.current || makeConversationId();
-    } catch {
-      return makeConversationId();
-    }
+    if (urlChatId) return urlChatId;
+    rememberedConversationIdRef.current = readScopedStorage(convKey);
+    return rememberedConversationIdRef.current || makeConversationId();
   });
   const [conversations, setConversations] = useState<ConversationMeta[]>([]);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [favorites, setFavorites] = useState<Set<string>>(() => {
-    try {
-      const stored = localStorage.getItem('tfa_conv_favorites');
-      return new Set(stored ? JSON.parse(stored) : []);
-    } catch {
-      return new Set();
-    }
+    const stored = readScopedStorage('tfa_conv_favorites');
+    return new Set(stored ? JSON.parse(stored) : []);
   });
   const [websites, setWebsites] = useState<Array<{ id: string; name: string; baseUrl: string }>>([]);
   // Explicit "apps under test" selected by the user in the composer. ALL selected apps
@@ -780,12 +772,8 @@ export default function AgentConsole() {
   // Persisted per workspace (mirrors the convKey pattern) so the selection survives remounts.
   const appSelKey = `tfa_selected_apps::${workspaceId}`;
   const [selectedAppIds, setSelectedAppIds] = useState<Set<string>>(() => {
-    try {
-      const stored = localStorage.getItem(appSelKey);
-      return new Set(stored ? (JSON.parse(stored) as string[]) : []);
-    } catch {
-      return new Set();
-    }
+    const stored = readScopedStorage(appSelKey);
+    return new Set(stored ? (JSON.parse(stored) as string[]) : []);
   });
   const [appPickerOpen, setAppPickerOpen] = useState(false);
   const [pendingDeep, setPendingDeep] = useState<PendingDeep | null>(null);
@@ -850,20 +838,12 @@ export default function AgentConsole() {
   // Keep the active conversation id in localStorage (per scope) so a refresh
   // resumes the right conversation for the selected project/app.
   useEffect(() => {
-    try {
-      localStorage.setItem(convKey, conversationId);
-    } catch {
-      /* ignore */
-    }
+    writeScopedStorage(convKey, conversationId);
   }, [conversationId, convKey]);
 
   // Write-through: persist the app selection per workspace so it survives scope remounts.
   useEffect(() => {
-    try {
-      localStorage.setItem(appSelKey, JSON.stringify(Array.from(selectedAppIds)));
-    } catch {
-      /* ignore */
-    }
+    writeScopedStorage(appSelKey, JSON.stringify(Array.from(selectedAppIds)));
   }, [selectedAppIds, appSelKey]);
 
   // Drop restored app ids that no longer exist once the saved-website list loads.
@@ -1071,7 +1051,7 @@ export default function AgentConsole() {
 
   useEffect(() => {
     try {
-      localStorage.setItem('tfa_conv_favorites', JSON.stringify(Array.from(favorites)));
+      writeScopedStorage('tfa_conv_favorites', JSON.stringify(Array.from(favorites)));
     } catch { /* ignore */ }
   }, [favorites]);
 
