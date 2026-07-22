@@ -3,6 +3,7 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { Search, Command, Loader2, ArrowRight, Bot, LayoutDashboard, TestTube2, Bug, BrainCircuit, PlayCircle, FolderTree, Layers, ClipboardList, GitBranch, Settings, Sparkles } from 'lucide-react';
 import { WorkflowRunner } from '@/src/components/WorkflowRunner';
 import { useProjects } from '@/src/store/project';
+import { navigationHref } from '@/src/lib/controllerIntent';
 
 interface PlanStep {
   id: string;
@@ -194,6 +195,13 @@ export function CommandBar({ isOpen, onOpenChange }: CommandBarProps) {
 
     try {
       if (classifyResult) {
+        const navigation = classifyResult.intents.length === 1 && classifyResult.intents[0]?.kind === 'navigate'
+          ? classifyResult.intents[0]
+          : null;
+        if (navigation) {
+          navigateTo(navigationHref(navigation, query));
+          return;
+        }
         setMode('plan');
         const r = await fetch('/api/controller/plan', {
           method: 'POST',
@@ -227,7 +235,7 @@ export function CommandBar({ isOpen, onOpenChange }: CommandBarProps) {
         if (requestAbortRef.current !== controller) return;
         if (!data?.intents?.length) throw new Error(data?.error || 'Could not classify request');
         setClassifyResult(data);
-        if (data.intents.every((intent: any) => intent?.kind === 'explain')) {
+        if (data.intents.every((intent: any) => intent?.kind === 'explain' || intent?.kind === 'unknown')) {
           const answerResponse = await fetch('/api/controller/explain', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -267,6 +275,13 @@ export function CommandBar({ isOpen, onOpenChange }: CommandBarProps) {
     setAnswer('');
     setError('');
   };
+
+  const navigationIntent = classifyResult?.intents.length === 1 && classifyResult.intents[0]?.kind === 'navigate'
+    ? classifyResult.intents[0]
+    : null;
+  const navigationLabel = navigationIntent
+    ? `Open ${NAV_COMMANDS.find((command) => command.href === navigationIntent.params?.path)?.name || 'page'}`
+    : 'Create Plan';
 
   if (!isOpen) return null;
 
@@ -398,7 +413,7 @@ export function CommandBar({ isOpen, onOpenChange }: CommandBarProps) {
                       onClick={() => void handleSubmit()}
                       className="flex items-center gap-1.5 rounded-md bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white px-4 py-2 text-xs font-medium transition-colors"
                     >
-                      Create Plan
+                      {navigationLabel}
                     </button>
                     <button
                       onClick={close}

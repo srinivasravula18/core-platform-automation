@@ -11,6 +11,7 @@ import { AuthGate, logout, getUsername } from '@/src/components/AuthGate';
 import { appBasePath } from '@/src/lib/base-path';
 import { DialogHost } from '@/src/lib/dialog';
 import { useResizableTables } from '@/src/lib/useResizableTables';
+import { navigationHref } from '@/src/lib/controllerIntent';
 
 import AgentConsole from '@/src/pages/AgentConsole';
 import AgentPanel from '@/src/pages/AgentPanel';
@@ -193,8 +194,7 @@ function Topbar({ onMenuClick, onCommandBarOpen }: { onMenuClick: () => void; on
     const query = globalSearch.trim();
     if (!query) return;
     if (searchResults?.intents?.length === 1 && searchResults.intents[0].kind === 'navigate') {
-      const path = searchResults.intents[0].params?.path || '/cases?search=' + encodeURIComponent(query);
-      navigate(path);
+      navigate(navigationHref(searchResults.intents[0], query));
       setShowResults(false);
       return;
     }
@@ -232,14 +232,14 @@ function Topbar({ onMenuClick, onCommandBarOpen }: { onMenuClick: () => void; on
             <div className="absolute top-full left-0 right-0 mt-1 rounded-xl border border-[var(--border)] bg-[var(--bg-card)] shadow-xl overflow-hidden z-50">
               <div className="p-2 space-y-0.5">
                 <div className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
-                  {searching ? 'Analyzing...' : 'AI Interpretation'}
+                  {searching ? 'Searching...' : 'Search result'}
                 </div>
                 {searchResults.intents.map((intent, i) => (
                   <button
                     key={i}
                     onClick={() => {
                       if (intent.kind === 'navigate') {
-                        navigate(intent.params?.path || '/');
+                        navigate(navigationHref(intent, globalSearch));
                       } else {
                         onCommandBarOpen();
                       }
@@ -252,7 +252,7 @@ function Topbar({ onMenuClick, onCommandBarOpen }: { onMenuClick: () => void; on
                       <div className="text-xs font-medium">{intent.title}</div>
                       <div className="text-[10px] text-[var(--text-muted)] truncate">{intent.description}</div>
                     </div>
-                    <span className="shrink-0 rounded border border-[var(--border)] px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">{intent.kind}</span>
+                    <span className="shrink-0 rounded border border-[var(--border)] px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">{intent.kind === 'navigate' ? 'open' : 'ask ai'}</span>
                   </button>
                 ))}
               </div>
