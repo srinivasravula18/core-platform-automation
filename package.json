@@ -20,6 +20,8 @@
     "start:backend": "node dist/server.cjs",
     "start:frontend": "node scripts/frontend-server.mjs",
     "check:gemini": "node scripts/check-gemini-rest.mjs",
+    "test:step-grouping": "tsx scripts/test-step-grouping.ts",
+    "test:case-versioning": "tsx scripts/test-case-versioning.ts",
     "test:evidence": "tsx scripts/test-evidence-registry.ts",
     "test:selectors": "tsx scripts/test-selector-registry.ts",
     "test:api": "tsx scripts/test-api-intelligence.ts",

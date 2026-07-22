@@ -2,6 +2,7 @@ import { useEffect, useState, type ReactElement } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { FlaskConical, Pencil, SplitSquareHorizontal, Send, Loader2, Check, Link2Off, Paperclip, X } from 'lucide-react';
 import { showAlert } from '@/src/lib/dialog';
+import StepGroupList from '@/src/components/StepGroupList';
 
 /**
  * A single test case rendered as an inline-editable card — the same editing
@@ -17,6 +18,9 @@ import { showAlert } from '@/src/lib/dialog';
 interface Step {
   action: string;
   expected: string;
+  // Optional recorder grouping metadata (see StepGroupList / stepGrouping.ts). Read-only in the UI.
+  group?: string;
+  groupIndex?: number;
 }
 export interface EditableCase {
   id: string;
@@ -263,25 +267,8 @@ export default function EditableCaseCard({ initial, linkType, selected, onToggle
       {!editing && (
         <>
           {!!c.steps?.length && (
-            <div className="mt-3 overflow-hidden rounded-lg border border-[var(--border)]">
-              <table className="w-full border-collapse text-left text-xs">
-                <thead>
-                  <tr className="bg-[var(--bg-secondary)] text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
-                    <th className="w-1/2 border-b border-[var(--border)] px-3 py-2">Test Steps</th>
-                    <th className="w-1/2 border-b border-[var(--border)] px-3 py-2">Expected Result</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {c.steps.map((s, si) => (
-                    <tr key={si} className="align-top">
-                      <td className="border-b border-[var(--border)] px-3 py-2 text-[var(--text-primary)]">
-                        <span className="text-[var(--text-muted)]">{si + 1}.</span> {s.action}
-                      </td>
-                      <td className="border-b border-[var(--border)] px-3 py-2 text-[var(--text-muted)]">{s.expected}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+            <div className="mt-3">
+              <StepGroupList steps={c.steps} />
             </div>
           )}
           <div className="mt-3 flex flex-wrap items-center justify-between gap-2">

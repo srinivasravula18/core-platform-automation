@@ -898,3 +898,51 @@ ALTER TABLE context_manifests ADD COLUMN IF NOT EXISTS resolution_trace       JS
 ALTER TABLE context_manifests ADD COLUMN IF NOT EXISTS evidence_manifest      JSONB NOT NULL DEFAULT '{}'::jsonb;
 ALTER TABLE context_manifests ADD COLUMN IF NOT EXISTS plan_manifest          JSONB NOT NULL DEFAULT '{}'::jsonb;
 ALTER TABLE context_manifests ADD COLUMN IF NOT EXISTS response_evidence_refs JSONB NOT NULL DEFAULT '[]'::jsonb;
+
+-- ===== Test Case Versioning — append-only revision history (gated by CASE_VERSIONING) =====
+-- Layer 1 of the versioning plan (docs/plans/test-case-versioning-and-recorder-grouping-plan.md).
+-- `cases` stays the mutable HEAD (every read path unchanged); each content edit appends an immutable
+-- snapshot here, mirroring object_repository's current+history and prompts.version precedents. Only
+-- VERSIONED content (title/description/preconditions/steps) is snapshotted — operational fields
+-- (status/folder/tags/scope) do NOT mint a revision, avoiding revision spam. Idempotent; feature inert
+-- when the flag is off (rows simply never get written).
+ALTER TABLE cases ADD COLUMN IF NOT EXISTS current_revision INT NOT NULL DEFAULT 1;
+
+CREATE TABLE IF NOT EXISTS case_revisions (
+  revision_id        TEXT PRIMARY KEY,
+  case_id            TEXT NOT NULL,                 -- lineage id (references cases.id; no FK so history survives a soft-delete)
+  revision_no        INT  NOT NULL,                 -- 1,2,3… unique per case_id
+  parent_revision    TEXT,                          -- prior revision this was based on (null for the first); enables rollback chains
+  -- frozen snapshot of the versioned content only:
+  title              TEXT,
+  description        TEXT,
+  preconditions      TEXT,
+  steps              JSONB NOT NULL DEFAULT '[]'::jsonb,
+  -- provenance:
+  change_summary     TEXT,
+  change_kind        TEXT NOT NULL DEFAULT 'manual',-- manual | ai | recorded | rollback
+  applies_to_release TEXT,                          -- optional product-release tag (Layer 2 hook)
+  author             TEXT,
+  created_at         TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS case_revisions_case_no_idx ON case_revisions(case_id, revision_no);
+CREATE INDEX IF NOT EXISTS case_revisions_case_idx ON case_revisions(case_id, created_at);
+
+-- ===== Test Case Versioning Layer 2 — release pinning (gated by CASE_VERSIONING) =====
+-- A "release" reuses an existing test plan as its container (cheaper than a parallel releases table):
+-- the plan groups the cases in scope, and a pin freezes a case to a specific revision within that
+-- release. No pin row = the release follows the case's HEAD; a row = frozen to that revision_no.
+-- So "run release vN" resolves each in-scope case to its pinned revision (or HEAD). Idempotent.
+CREATE TABLE IF NOT EXISTS release_case_pins (
+  plan_id            TEXT NOT NULL,        -- release container (references plans.id; no FK so a plan rename/soft-delete can't orphan a pin write)
+  case_id            TEXT NOT NULL,        -- lineage id (cases.id)
+  pinned_revision_no INT  NOT NULL,        -- the frozen revision for this case in this release
+  created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (plan_id, case_id)
+);
+CREATE INDEX IF NOT EXISTS release_case_pins_case_idx ON release_case_pins(case_id);
+
+-- ===== Test Case Versioning Layer 3 — execution snapshot (gated by CASE_VERSIONING) =====
+-- Each run result records the exact case revision it executed, so a historical result always resolves
+-- to the frozen case content even after later edits. Nullable/backfill-null = "HEAD at run time".
+ALTER TABLE reports ADD COLUMN IF NOT EXISTS case_revisions JSONB NOT NULL DEFAULT '{}'::jsonb;

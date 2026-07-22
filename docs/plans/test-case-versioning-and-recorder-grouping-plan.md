@@ -112,9 +112,23 @@ Cap: this is >10 files across two subsystems, so per the repo's phase rule it is
 
 ### A5. Recommended phase order (Part A)
 
-- **Phase A1 — Schema + revision write path (flag `CASE_VERSIONING`, default OFF).** Files 1–4. Every content edit starts appending revisions; nothing reads them yet. Validate: upsert still works, revision row appears only on content change, no revision on folder/status change.
-- **Phase A2 — Read APIs + History UI.** Files 5–6 (history list, diff, rollback). Validate live.
-- **Phase A3 — Release dimension + execution snapshot.** File 1 (release tables), 5 (release endpoints), 7 (run stamps revision). Validate a v1→v2 login scenario end to end.
+- **Phase A1 — Schema + revision write path (flag `CASE_VERSIONING`, default OFF). DONE 2026-07-22.**
+  - `case_revisions` table + `cases.current_revision` added to `server/db/schema.sql` (append-only, idempotent).
+  - `Cases.upsert` captures the pre-upsert row and appends a snapshot on content change; operational-only edits mint nothing; cases predating versioning get a lazy `baseline` revision on first edit so rollback works.
+  - `CaseRevisions` repo: `list` / `get` / `rollback` (rollback writes a NEW `change_kind='rollback'` revision — history stays immutable).
+  - Unit-tested: `npm run test:case-versioning` (8/8, change-detection semantics). `npm run lint` clean.
+  - Nothing reads revisions yet (UI is A2). Postgres only; JSON-file mode skips versioning.
+- **Phase A2 — Read APIs + History UI. DONE 2026-07-22.**
+  - `GET /api/cases/:id/revisions` (+ `currentRevision`) and `POST /api/cases/:id/rollback/:revisionId` in `server/features/resources/routes.ts`; `mapCase` now exposes `currentRevision`.
+  - `CaseHistoryModal.tsx` — revision list (kind badges, Current badge, author/time), per-revision step view, Restore. Wired into the Test Cases edit modal via a **History** button.
+  - **Verified live with Playwright MCP**: created TC-IDN1, edited v1→v2 (mints rev 2), status-only change minted nothing, rollback appended an immutable rev 3; History UI showed all three with correct badges and Restore. Backend API smoke test + browser flow both green.
+- **Phase A3 — Release dimension + execution snapshot. DONE 2026-07-22.**
+  - Release layer reuses `test_plans` as release containers (no parallel table). New `release_case_pins(plan_id, case_id, pinned_revision_no)` freezes a case to a revision within a release; no pin = follows HEAD.
+  - `ReleasePins` repo (`pin`/`unpin`/`listForCase`/`resolve`) + `CaseRevisions.getByNo`. Routes: `GET /api/cases/:id/pins`, `POST /api/plans/:planId/pins`, `DELETE /api/plans/:planId/pins/:caseId`, `GET /api/plans/:id/release` (resolves every in-scope case to pinned-or-HEAD content).
+  - Execution snapshot: `reports.case_revisions` JSONB; `POST /api/reports` stamps each `caseIds` entry's current revision. `Reports.upsert`/`mapReport` updated.
+  - Release-pinning UI added to `CaseHistoryModal` (pin the selected revision to a release, existing-pin chips, unpin).
+  - **Verified live**: API test showed resolve = HEAD (rev 3, 2 steps) before pin → rev 2 (3 steps) after pin; report froze `caseRevisions={TC-IDN1:3}`. **Playwright MCP**: pin chip renders, unpin removes it, re-pin adds it back.
+  - Follow-up (thin): auto-pass `caseIds` from the live run executor into `POST /api/reports` so snapshots capture automatically (the storage + API contract are done; today it stamps when caseIds are supplied).
 
 ### A6. Backward compatibility / migration / rollback
 
@@ -178,9 +192,11 @@ Groups are derivable, so we don't strictly need to persist them, but persisting 
 
 ### B5. Recommended phase order (Part B)
 
-- **Phase B1 — Tier 1 coalescing** in `scriptToSteps` (flag `RECORDER_STEP_GROUPING`, default OFF). Pure step-count reduction, no UI change. Validate: a 200-line recording drops to ~60–90 steps, script still runs unchanged.
-- **Phase B2 — Tier 2 grouping + collapsible UI.** Files 1, 3, 4. Validate: groups render, expand/collapse works, editing a step still maps back to a script line.
-- **Phase B3 — Tier 3 reusable modules** (separate plan; only if B1/B2 land well).
+- **Phase B1 — Tier 1 coalescing** in `scriptToSteps`. **DONE 2026-07-22** — `stepGrouping.ts` coalesces same-field fills + dedups navigations; unit-tested (`npm run test:step-grouping`, 12/12); legacy flat path preserved byte-for-byte when disabled.
+- **Phase B2 — Tier 2 grouping + collapsible UI.** **DONE 2026-07-22** — nav-boundary grouping in `stepGrouping.ts`; `group`/`groupIndex` persisted through `normalizeCaseSteps`; new read-only `StepGroupList.tsx` (collapsible groups, flat fallback) wired into `EditableCaseCard` read view. Type-checks clean.
+- **Phase B3 — Tier 3 reusable modules** (separate plan; only if B1/B2 land well). Not started.
+
+Grouping is **default-on product behavior** (not env-gated) — `isRecorderStepGroupingEnabled()` returns true unless `RECORDER_STEP_GROUPING` is explicitly set to `0/false/off` (escape hatch to the legacy flat path). Verified: `npm run lint` clean; `npm run test:step-grouping` 12/12. To see it live: **restart the backend** (no hot-reload), then record a session and open the created case.
 
 ### B6. Backward compatibility
 

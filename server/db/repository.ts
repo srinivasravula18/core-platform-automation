@@ -149,6 +149,7 @@ function mapCase(r: any) {
     approvedAt: r.approved_at,
     sourceRunId: r.source_run_id,
     agentRunId: r.agent_run_id,
+    currentRevision: r.current_revision ?? null,
     createdBy: r.proposed_by,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
@@ -243,6 +244,7 @@ function mapReport(r: any) {
     evidence: r.evidence || [],
     narrative: r.narrative,
     folderId: r.folder_id,
+    caseRevisions: r.case_revisions || {},
     date: typeof r.date === 'string' ? r.date : (r.date ? r.date.toISOString().split('T')[0] : ''),
     createdAt: r.created_at,
     updatedAt: r.updated_at,
@@ -816,6 +818,80 @@ export const Suites = {
 
 /* ---------- cases ---------- */
 
+// Test Case Versioning (Layer 1). Default OFF — set CASE_VERSIONING=1 to append an immutable revision
+// snapshot on every content change. See docs/plans/test-case-versioning-and-recorder-grouping-plan.md.
+function isCaseVersioningEnabled(): boolean {
+  const raw = String(process.env.CASE_VERSIONING || '').trim().toLowerCase();
+  return raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on';
+}
+
+// Only these fields are "versioned content" — an edit to status/folder/tags/scope must NOT mint a
+// revision (that would spam history on a folder move). Compared as stable JSON so step reordering shows.
+export function versionedContentChanged(prev: any, next: any): boolean {
+  if (!prev) return true;
+  return (
+    String(prev.title || '') !== String(next.title || '') ||
+    String(prev.description || '') !== String(next.description || '') ||
+    String(prev.preconditions || '') !== String(next.preconditions || '') ||
+    JSON.stringify(prev.steps || []) !== JSON.stringify(next.steps || [])
+  );
+}
+
+function mapCaseRevision(r: any) {
+  if (!r) return null;
+  return {
+    revisionId: r.revision_id,
+    caseId: r.case_id,
+    revisionNo: r.revision_no,
+    parentRevision: r.parent_revision,
+    title: r.title,
+    description: r.description,
+    preconditions: r.preconditions,
+    steps: r.steps,
+    changeSummary: r.change_summary,
+    changeKind: r.change_kind,
+    appliesToRelease: r.applies_to_release,
+    author: r.author,
+    createdAt: r.created_at,
+  };
+}
+
+// Append one immutable revision snapshot. `content` supplies the frozen title/description/preconditions/steps.
+async function insertCaseRevision(caseId: string, revisionNo: number, parentRevision: string | null, content: any, meta: any, changeKind?: string): Promise<string> {
+  const revisionId = uid('CREV');
+  await query(
+    `INSERT INTO case_revisions (revision_id, case_id, revision_no, parent_revision, title, description, preconditions, steps, change_summary, change_kind, applies_to_release, author, created_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10,$11,$12, now())`,
+    [
+      revisionId, caseId, revisionNo, parentRevision,
+      content.title || '', content.description || '', content.preconditions || '',
+      JSON.stringify(content.steps || []),
+      meta?.changeSummary || null, changeKind || meta?.changeKind || 'manual',
+      meta?.appliesToRelease || null, meta?.author || meta?.createdBy || meta?.proposedBy || 'system',
+    ],
+  );
+  return revisionId;
+}
+
+// Mint a revision when versioned content changed. `existing` is the pre-upsert row (null = brand-new case).
+async function snapshotCaseRevision(caseId: string, existing: any, row: any, meta: any): Promise<void> {
+  if (!existing) {
+    // Brand-new case → capture the baseline as revision 1 (current_revision already defaults to 1).
+    await insertCaseRevision(caseId, 1, null, row, meta, 'initial');
+    return;
+  }
+  if (!versionedContentChanged(existing, row)) return;
+  const [last] = await query('SELECT revision_id, revision_no FROM case_revisions WHERE case_id = $1 ORDER BY revision_no DESC LIMIT 1', [caseId]);
+  let parentId: string | null = last?.revision_id || null;
+  let lastNo: number = last?.revision_no || 0;
+  // No captured history yet (case predates versioning): snapshot the pre-edit state so rollback works.
+  if (lastNo === 0) { parentId = await insertCaseRevision(caseId, 1, null, existing, meta, 'baseline'); lastNo = 1; }
+  const nextNo = lastNo + 1;
+  await insertCaseRevision(caseId, nextNo, parentId, row, meta);
+  await query('UPDATE cases SET current_revision = $1 WHERE id = $2', [nextNo, caseId]);
+  row.current_revision = nextNo; // keep the row the caller maps in sync with the bumped counter
+}
+
 export const Cases = {
   async list(): Promise<any[]> {
     if (!isPgEnabled()) return db.cases as any[];
@@ -843,6 +919,10 @@ export const Cases = {
     const suiteIds = Array.isArray(c.testSuiteIds) ? c.testSuiteIds.filter(Boolean) : (c.testSuiteId ? [c.testSuiteId] : []);
     const primaryPlanId = c.testPlanId || planIds[0] || null;
     const primarySuiteId = c.testSuiteId || suiteIds[0] || null;
+    // Capture the pre-upsert versioned content so we can detect a real content change (versioning only).
+    const priorForVersion = isCaseVersioningEnabled()
+      ? await queryOne('SELECT title, description, preconditions, steps FROM cases WHERE id = $1', [id])
+      : null;
     const row = await queryOne(
       `INSERT INTO cases (id, title, description, preconditions, steps, test_plan_id, test_suite_id, type, priority, status, tags, folder_id, confidence, sources, approval_state, proposed_by, source_run_id, agent_run_id, automation_status, testing_scope, testing_type, test_plan_ids, test_suite_ids, created_at, updated_at)
        VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22::jsonb,$23::jsonb, now(), now())
@@ -869,6 +949,11 @@ export const Cases = {
       ],
     );
     await writeScopeCols('cases', id, c);
+    // Append an immutable revision snapshot on content change (no-op when the flag is off, or when
+    // only operational fields changed). Isolated so a history-write failure never fails the save.
+    if (isCaseVersioningEnabled()) {
+      try { await snapshotCaseRevision(id, priorForVersion, row, c); } catch { /* case still saved */ }
+    }
     return mapCase(row);
   },
   async remove(id: string): Promise<boolean> {
@@ -884,6 +969,107 @@ export const Cases = {
     const out: any[] = [];
     for (const c of cases) {
       out.push(await this.upsert(c));
+    }
+    return out;
+  },
+};
+
+/* ---------- case revisions (append-only version history) ---------- */
+
+export const CaseRevisions = {
+  // Full history for a case, newest first. Empty when versioning is off or PG is disabled.
+  async list(caseId: string): Promise<any[]> {
+    if (!isPgEnabled()) return [];
+    const rows = await query('SELECT * FROM case_revisions WHERE case_id = $1 ORDER BY revision_no DESC', [caseId]);
+    return rows.map(mapCaseRevision);
+  },
+  async get(revisionId: string): Promise<any | null> {
+    if (!isPgEnabled()) return null;
+    return mapCaseRevision(await queryOne('SELECT * FROM case_revisions WHERE revision_id = $1', [revisionId]));
+  },
+  // Roll the case's HEAD back to a prior revision's content by writing it through Cases.upsert — which
+  // appends a NEW revision (change_kind='rollback') rather than mutating history. History stays immutable.
+  async rollback(caseId: string, revisionId: string): Promise<any | null> {
+    if (!isPgEnabled()) return null;
+    const target = await this.get(revisionId);
+    if (!target || target.caseId !== caseId) return null;
+    const current = await Cases.get(caseId);
+    if (!current) return null;
+    return Cases.upsert({
+      ...current,
+      title: target.title,
+      description: target.description,
+      preconditions: target.preconditions,
+      steps: target.steps,
+      changeKind: 'rollback',
+      changeSummary: `Rolled back to revision ${target.revisionNo}`,
+    });
+  },
+  // Look up the content of a specific revision_no for a case (used to resolve a release pin).
+  async getByNo(caseId: string, revisionNo: number): Promise<any | null> {
+    if (!isPgEnabled()) return null;
+    return mapCaseRevision(await queryOne('SELECT * FROM case_revisions WHERE case_id = $1 AND revision_no = $2', [caseId, revisionNo]));
+  },
+};
+
+/* ---------- release pinning (Layer 2: freeze a case to a revision within a release/plan) ---------- */
+
+// Which cases belong to a release (= plan): a case is in scope if the plan id is in its test_plan_ids
+// (multi-select) or its singular test_plan_id. Returns the mapped case rows.
+async function casesInPlan(planId: string): Promise<any[]> {
+  if (!isPgEnabled()) return [];
+  const rows = await query(
+    `SELECT * FROM cases
+     WHERE deleted_at IS NULL
+       AND (test_plan_id = $1 OR (test_plan_ids IS NOT NULL AND test_plan_ids @> to_jsonb($1::text)))`,
+    [planId],
+  );
+  return rows.map(mapCase);
+}
+
+export const ReleasePins = {
+  // Pin a case to a specific revision within a release (plan). Validates the revision exists.
+  async pin(planId: string, caseId: string, revisionNo: number): Promise<boolean> {
+    if (!isPgEnabled()) return false;
+    const rev = await CaseRevisions.getByNo(caseId, revisionNo);
+    if (!rev) return false;
+    await query(
+      `INSERT INTO release_case_pins (plan_id, case_id, pinned_revision_no)
+       VALUES ($1,$2,$3)
+       ON CONFLICT (plan_id, case_id) DO UPDATE SET pinned_revision_no = EXCLUDED.pinned_revision_no, created_at = now()`,
+      [planId, caseId, revisionNo],
+    );
+    return true;
+  },
+  async unpin(planId: string, caseId: string): Promise<boolean> {
+    if (!isPgEnabled()) return false;
+    const res = await query('DELETE FROM release_case_pins WHERE plan_id = $1 AND case_id = $2', [planId, caseId]);
+    return res.length >= 0;
+  },
+  // All releases (plans) a given case is pinned in, with the pinned revision number.
+  async listForCase(caseId: string): Promise<Array<{ planId: string; pinnedRevisionNo: number }>> {
+    if (!isPgEnabled()) return [];
+    const rows = await query('SELECT plan_id, pinned_revision_no FROM release_case_pins WHERE case_id = $1', [caseId]);
+    return rows.map((r: any) => ({ planId: r.plan_id, pinnedRevisionNo: r.pinned_revision_no }));
+  },
+  // Resolve a release: every in-scope case with its EFFECTIVE content — the pinned revision if pinned,
+  // else the case's current HEAD. This is what a release/regression run would execute.
+  async resolve(planId: string): Promise<Array<any>> {
+    if (!isPgEnabled()) return [];
+    const cases = await casesInPlan(planId);
+    const pins = await query('SELECT case_id, pinned_revision_no FROM release_case_pins WHERE plan_id = $1', [planId]);
+    const pinBy = new Map<string, number>(pins.map((p: any) => [p.case_id, p.pinned_revision_no]));
+    const out: any[] = [];
+    for (const c of cases) {
+      const pinnedNo = pinBy.get(c.id);
+      if (pinnedNo != null) {
+        const rev = await CaseRevisions.getByNo(c.id, pinnedNo);
+        if (rev) {
+          out.push({ caseId: c.id, title: rev.title, steps: rev.steps, resolvedRevisionNo: pinnedNo, pinned: true });
+          continue;
+        }
+      }
+      out.push({ caseId: c.id, title: c.title, steps: c.steps, resolvedRevisionNo: c.currentRevision ?? null, pinned: false });
     }
     return out;
   },
@@ -1064,16 +1250,17 @@ export const Reports = {
     const id = rep.id || uid('REP');
     const stepsJson = JSON.stringify(rep.steps || []);
     const evidenceJson = JSON.stringify(rep.evidence || []);
+    const caseRevisionsJson = JSON.stringify(rep.caseRevisions || {}); // execution snapshot: {caseId: revisionNo}
     const row = await queryOne(
-      `INSERT INTO reports (id, name, plan_id, suite_id, run_id, plan_name, suite_name, requested_by, execution_time, total_executions, status, failure_reason, target_url, steps, evidence, narrative, folder_id, date, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15::jsonb,$16,$17, COALESCE($18, CURRENT_DATE), now(), now())
+      `INSERT INTO reports (id, name, plan_id, suite_id, run_id, plan_name, suite_name, requested_by, execution_time, total_executions, status, failure_reason, target_url, steps, evidence, narrative, folder_id, date, case_revisions, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15::jsonb,$16,$17, COALESCE($18, CURRENT_DATE), $19::jsonb, now(), now())
        ON CONFLICT (id) DO UPDATE SET
          name=EXCLUDED.name, plan_id=EXCLUDED.plan_id, suite_id=EXCLUDED.suite_id, run_id=EXCLUDED.run_id,
          plan_name=EXCLUDED.plan_name, suite_name=EXCLUDED.suite_name, requested_by=EXCLUDED.requested_by,
          execution_time=EXCLUDED.execution_time, total_executions=EXCLUDED.total_executions,
          status=EXCLUDED.status, failure_reason=EXCLUDED.failure_reason, target_url=EXCLUDED.target_url,
          steps=EXCLUDED.steps, evidence=EXCLUDED.evidence, narrative=EXCLUDED.narrative,
-         folder_id=EXCLUDED.folder_id, date=EXCLUDED.date, updated_at=now()
+         folder_id=EXCLUDED.folder_id, date=EXCLUDED.date, case_revisions=EXCLUDED.case_revisions, updated_at=now()
        RETURNING *`,
       [
         id, rep.name || 'Untitled Report', rep.planId || null, rep.suiteId || null, rep.runId || null,
@@ -1081,7 +1268,7 @@ export const Reports = {
         rep.executionTime || '', rep.totalExecutions || 0, rep.status || 'Passed',
         rep.failureReason || '', rep.targetUrl || '',
         stepsJson, evidenceJson, rep.narrative || '',
-        rep.folderId || null, rep.date || null,
+        rep.folderId || null, rep.date || null, caseRevisionsJson,
       ],
     );
     await writeScopeCols('reports', id, rep);

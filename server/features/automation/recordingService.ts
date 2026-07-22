@@ -17,6 +17,8 @@ import { normalizeCaseSteps, normalizeCaseTags } from '../../shared/testCases';
 import { emitEvent } from './eventsService';
 import { onAgentFrame, dispatchToAgent, isAgentConnected } from './agentGateway';
 import { hardenRecordedScript } from './scriptHardening';
+import { scriptToGroupedSteps } from './stepGrouping';
+import { isRecorderStepGroupingEnabled } from './flag';
 import type { AgentFrame } from './types';
 
 // Case metadata captured on the New Case → Automation flow, carried on the recording so the
@@ -104,18 +106,27 @@ export async function finalizeRecording(recordingId: string, patch: { script?: s
 
 // Best-effort parse of a Playwright codegen spec into human-readable case steps so the created
 // test case reads meaningfully in Test Management. Falls back to a single run-the-script step.
-export function scriptToSteps(script: string): Array<{ action: string; expected: string }> {
-  const steps: Array<{ action: string; expected: string }> = [];
-  for (const raw of String(script || '').split('\n')) {
-    const line = raw.trim();
-    let m: RegExpMatchArray | null;
-    if ((m = line.match(/\.goto\(['"`]([^'"`]+)['"`]/))) steps.push({ action: `Navigate to ${m[1]}`, expected: '' });
-    else if ((m = line.match(/getBy\w+\(['"`]([^'"`]+)['"`][^)]*\)\s*\.click\(/))) steps.push({ action: `Click "${m[1]}"`, expected: '' });
-    else if ((m = line.match(/getBy\w+\(['"`]([^'"`]+)['"`][^)]*\)\s*\.fill\(['"`]([^'"`]*)['"`]/))) steps.push({ action: `Fill "${m[1]}" with "${m[2]}"`, expected: '' });
-    else if ((m = line.match(/getBy\w+\(['"`]([^'"`]+)['"`][^)]*\)\s*\.(check|selectOption|press)\(/))) steps.push({ action: `${m[2]} "${m[1]}"`, expected: '' });
-    else if (/expect\(/.test(line) && (m = line.match(/getBy\w+\(['"`]([^'"`]+)['"`]/))) steps.push({ action: `Verify "${m[1]}"`, expected: 'Element is present/visible.' });
+// With RECORDER_STEP_GROUPING on, steps are coalesced + tagged with collapsible logical groups
+// (see stepGrouping.ts); off, it stays the legacy 1 script-line -> 1 flat step behavior.
+export function scriptToSteps(script: string): Array<{ action: string; expected: string; group?: string; groupIndex?: number }> {
+  if (isRecorderStepGroupingEnabled()) {
+    const grouped = scriptToGroupedSteps(script);
+    if (grouped.length) return grouped;
+  } else {
+    // Legacy path (flag off): 1 recognized script line -> 1 flat step, byte-for-byte as before.
+    const steps: Array<{ action: string; expected: string }> = [];
+    for (const raw of String(script || '').split('\n')) {
+      const line = raw.trim();
+      let m: RegExpMatchArray | null;
+      if ((m = line.match(/\.goto\(['"`]([^'"`]+)['"`]/))) steps.push({ action: `Navigate to ${m[1]}`, expected: '' });
+      else if ((m = line.match(/getBy\w+\(['"`]([^'"`]+)['"`][^)]*\)\s*\.click\(/))) steps.push({ action: `Click "${m[1]}"`, expected: '' });
+      else if ((m = line.match(/getBy\w+\(['"`]([^'"`]+)['"`][^)]*\)\s*\.fill\(['"`]([^'"`]*)['"`]/))) steps.push({ action: `Fill "${m[1]}" with "${m[2]}"`, expected: '' });
+      else if ((m = line.match(/getBy\w+\(['"`]([^'"`]+)['"`][^)]*\)\s*\.(check|selectOption|press)\(/))) steps.push({ action: `${m[2]} "${m[1]}"`, expected: '' });
+      else if (/expect\(/.test(line) && (m = line.match(/getBy\w+\(['"`]([^'"`]+)['"`]/))) steps.push({ action: `Verify "${m[1]}"`, expected: 'Element is present/visible.' });
+    }
+    if (steps.length) return steps;
   }
-  return steps.length ? steps : [{ action: 'Run the recorded Playwright script.', expected: 'The recorded flow completes without errors.' }];
+  return [{ action: 'Run the recorded Playwright script.', expected: 'The recorded flow completes without errors.' }];
 }
 
 // Create (or update, if the recording already produced one) the linked Automated test case + its

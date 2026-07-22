@@ -14,6 +14,8 @@ import {
   Plans,
   Suites,
   Cases,
+  CaseRevisions,
+  ReleasePins,
   Runs,
   Defects,
   Reports,
@@ -311,6 +313,51 @@ export function registerResourceRoutes(app: Express) {
     });
   }
 
+  /* ---------- Test Case Versioning — revision history + rollback (Phase A2) ---------- */
+  // Full append-only history for a case, newest first. Empty array when CASE_VERSIONING is off.
+  app.get('/api/cases/:id/revisions', async (req, res) => {
+    const existing = await Cases.get(req.params.id);
+    if (!existing) return res.status(404).json({ error: 'Not found' });
+    const revisions = await CaseRevisions.list(req.params.id);
+    res.json({ revisions, currentRevision: existing.currentRevision ?? null });
+  });
+
+  // Roll the case's HEAD back to a prior revision. Writes a NEW rollback revision (history stays immutable).
+  app.post('/api/cases/:id/rollback/:revisionId', async (req, res) => {
+    const updated = await CaseRevisions.rollback(req.params.id, req.params.revisionId);
+    if (!updated) return res.status(404).json({ error: 'Case or revision not found.' });
+    addActivity(`Rolled back case: ${updated.title}`, { type: 'case', entityId: updated.id, actor: getAuthUser(req)?.username || '' });
+    res.json({ success: true, case: updated });
+  });
+
+  /* ---------- Release pinning — freeze a case to a revision within a release/plan (Phase A3) ---------- */
+  // Releases this case is pinned in (plan id + frozen revision number).
+  app.get('/api/cases/:id/pins', async (req, res) => {
+    res.json({ pins: await ReleasePins.listForCase(req.params.id) });
+  });
+
+  // Pin a case to a specific revision within a release (plan). Body: { caseId, revisionNo }.
+  app.post('/api/plans/:planId/pins', async (req, res) => {
+    const caseId = String(req.body?.caseId || '');
+    const revisionNo = Number(req.body?.revisionNo);
+    if (!caseId || !Number.isInteger(revisionNo)) return res.status(400).json({ error: 'caseId and integer revisionNo are required.' });
+    const ok = await ReleasePins.pin(req.params.planId, caseId, revisionNo);
+    if (!ok) return res.status(404).json({ error: 'That revision does not exist for the case.' });
+    addActivity(`Pinned case ${caseId} to revision ${revisionNo} in release ${req.params.planId}`, { type: 'case', entityId: caseId, actor: getAuthUser(req)?.username || '' });
+    res.json({ success: true });
+  });
+
+  // Unpin a case from a release (it reverts to following the case HEAD).
+  app.delete('/api/plans/:planId/pins/:caseId', async (req, res) => {
+    await ReleasePins.unpin(req.params.planId, req.params.caseId);
+    res.json({ success: true });
+  });
+
+  // Resolve a release: every in-scope case with its effective content (pinned revision or HEAD).
+  app.get('/api/plans/:id/release', async (req, res) => {
+    res.json({ cases: await ReleasePins.resolve(req.params.id) });
+  });
+
   /* ---------- POST /api/reports (special: processed steps) ---------- */
   app.post('/api/reports', async (req, res) => {
     const r = req.body;
@@ -322,6 +369,15 @@ export function registerResourceRoutes(app: Express) {
       if (targetUrl && !stepScreenshot) stepScreenshot = targetUrl;
       return { ...st, screenshot: stepScreenshot };
     });
+
+    // Execution snapshot (Phase A3): freeze which case revision each executed case was at, so this
+    // report always resolves to the exact content it ran even after later edits. Best-effort.
+    const caseRevisions: Record<string, number> = {};
+    const reportCaseIds: string[] = Array.isArray(r.caseIds) ? r.caseIds.map(String) : [];
+    for (const cid of reportCaseIds) {
+      const c = await Cases.get(cid);
+      if (c && c.currentRevision != null) caseRevisions[cid] = c.currentRevision;
+    }
 
     const newReport = {
       ...scopeStamp(reqScope(req)),
@@ -338,6 +394,7 @@ export function registerResourceRoutes(app: Express) {
       targetUrl,
       folderId: r.folderId || '',
       steps: processedSteps,
+      caseRevisions,
     };
     await Reports.upsert(newReport);
     if (!isPgEnabled()) persistDataInBackground('report');

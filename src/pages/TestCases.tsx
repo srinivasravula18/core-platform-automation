@@ -9,6 +9,7 @@ import { Modal } from '@/src/components/Modal';
 import { AIActionModal } from '@/src/components/AIActionModal';
 import { FolderSelect } from '@/src/components/FolderSelect';
 import { CodegenPanel, AppUrlField } from '@/src/components/CodegenPanel';
+import CaseHistoryModal from '@/src/components/CaseHistoryModal';
 import { useRemoteAgentFlag } from '@/src/lib/useAutomation';
 import { showAlert, showConfirm } from '@/src/lib/dialog';
 import { useProjects } from '@/src/store/project';
@@ -210,6 +211,7 @@ export default function TestCases() {
   const inlineSelectClass = "w-full min-w-0 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs font-medium text-[var(--text-primary)] outline-none transition-colors hover:border-[var(--accent)] focus:border-[var(--accent)]";
 
   const [selectedCaseId, setSelectedCaseId] = useState<string | null>(null);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const stepEditorRef = useRef<HTMLDivElement | null>(null);
 
   const resizeTextArea = (textarea: HTMLTextAreaElement) => {
@@ -702,9 +704,12 @@ export default function TestCases() {
         size="xl"
         footer={
           <div className="flex justify-between items-center">
-            <div>
+            <div className="flex items-center gap-3">
               {selectedCaseId && (
                 <button onClick={handleDeleteCase} className="px-4 py-2 text-sm font-medium text-red-500 hover:text-red-400">Delete</button>
+              )}
+              {selectedCaseId && (
+                <button onClick={() => setHistoryOpen(true)} className="px-4 py-2 text-sm font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]">History</button>
               )}
             </div>
             <div className="flex gap-3">
@@ -940,6 +945,15 @@ export default function TestCases() {
           )}
         </div>
       </Modal>
+
+      {selectedCaseId && (
+        <CaseHistoryModal
+          caseId={selectedCaseId}
+          isOpen={historyOpen}
+          onClose={() => setHistoryOpen(false)}
+          onRolledBack={fetchCases}
+        />
+      )}
 
       <AIActionModal
         isOpen={isAICaseModalOpen}

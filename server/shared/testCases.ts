@@ -1,9 +1,17 @@
 export function normalizeCaseSteps(steps: any[] = []) {
   return steps
-    .map((step) => ({
-      action: String(step?.action || '').trim(),
-      expected: String(step?.expected || '').trim(),
-    }))
+    .map((step) => {
+      const normalized: { action: string; expected: string; group?: string; groupIndex?: number } = {
+        action: String(step?.action || '').trim(),
+        expected: String(step?.expected || '').trim(),
+      };
+      // Preserve optional recorder grouping metadata (see stepGrouping.ts) when present — additive,
+      // so callers that only read {action, expected} are unaffected.
+      const group = String(step?.group || '').trim();
+      if (group) normalized.group = group;
+      if (Number.isInteger(step?.groupIndex)) normalized.groupIndex = step.groupIndex;
+      return normalized;
+    })
     .filter((step) => step.action || step.expected);
 }
 
