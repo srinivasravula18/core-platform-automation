@@ -337,6 +337,25 @@ async function testProviderStructuredOutput() {
 }
 
 // ---------------------------------------------------------------------------
+async function testProviderDynamicRecordFallback() {
+  console.log('10. OpenAI provider dynamic records - JSON mode fallback with local validation');
+  let capturedBody: any = null;
+  const provider = new OpenAIProvider('test-key-not-real', 'gpt-5.4');
+  (provider as any).client = { responses: { create: async (body: any) => {
+    capturedBody = body;
+    return { output_text: '{"params":{"tag":"@ui"}}', output: [], incomplete_details: null, usage: fakeUsage() };
+  } } };
+
+  const result = await provider.generateObject({
+    prompt: 'Return the params as JSON.',
+    schema: z.object({ params: z.record(z.string(), z.any()) }),
+  });
+
+  ok(capturedBody.text?.format?.type === 'json_object', 'propertyNames schema falls back to JSON mode');
+  eq(result.object, { params: { tag: '@ui' } }, 'JSON-mode response is still validated by Zod');
+}
+
+// ---------------------------------------------------------------------------
 async function main() {
   await testSchemaValidHappyPath();
   await testRefusalPath();
@@ -350,6 +369,7 @@ async function main() {
   testPromptBudgetVersion();
   await testProviderToolContinuity();
   await testProviderStructuredOutput();
+  await testProviderDynamicRecordFallback();
 
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed === 0 ? 0 : 1);
