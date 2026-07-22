@@ -395,8 +395,26 @@ export function persistSettingsInBackground(reason: string) {
   });
 }
 
-export function addActivity(message: string) {
-  db.recentActivity.unshift({ message, time: 'Just now' });
-  if (db.recentActivity.length > 6) db.recentActivity.length = 6;
+/**
+ * Record a dashboard activity entry. Beyond the human message we keep a real timestamp plus a
+ * structured shape (type + entityId + actor + meta) so the Recent Activity feed can render relative
+ * time, a per-type icon, an outcome badge, and a clickable deep-link to the entity. `type`/`entityId`
+ * are optional so legacy message-only callers keep working (they render as a plain, unlinked line).
+ */
+export function addActivity(
+  message: string,
+  opts?: { type?: string; entityId?: string; actor?: string; meta?: Record<string, any> },
+) {
+  db.recentActivity.unshift({
+    message,
+    time: 'Just now', // legacy field kept for any old consumer; UI now uses createdAt
+    createdAt: new Date().toISOString(),
+    type: opts?.type || 'general',
+    entityId: opts?.entityId || '',
+    actor: opts?.actor || '',
+    meta: opts?.meta || {},
+  });
+  // Keep a short history (not just 6) so a future "view all" works; the dashboard slices what it needs.
+  if (db.recentActivity.length > 50) db.recentActivity.length = 50;
   persistDataInBackground('activity log');
 }

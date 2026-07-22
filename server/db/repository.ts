@@ -1101,15 +1101,11 @@ export const Reports = {
 /* ---------- activity ---------- */
 
 export const Activity = {
-  async list(workspaceId = 'default', limit = 100): Promise<any[]> {
-    if (!isPgEnabled()) return (db.recentActivity as any[]).slice(0, limit);
-    const rows = await query(
-      'SELECT * FROM activity WHERE workspace_id = $1 ORDER BY created_at DESC LIMIT $2',
-      [workspaceId, limit],
-    );
-    return rows.map((r) => ({
-      id: r.id, actor: r.actor, action: r.action, target: r.target, detail: r.detail, meta: r.meta, time: new Date(r.created_at).toLocaleString(),
-    }));
+  async list(_workspaceId = 'default', limit = 100): Promise<any[]> {
+    // The dashboard feed is fed by addActivity(), which writes the `recentActivity` collection
+    // (PG-persisted via json_store). Read that in both modes — the legacy `activity` table was
+    // never populated by addActivity, so reading it left the dashboard perpetually empty in PG mode.
+    return (db.recentActivity as any[]).slice(0, limit);
   },
   async push(entry: { actor?: string; action: string; target?: string; detail?: string; meta?: any; workspaceId?: string }): Promise<void> {
     if (!isPgEnabled()) {

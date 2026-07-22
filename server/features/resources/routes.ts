@@ -8,6 +8,7 @@ import { findSettingsPlaywrightTargetUrl, normalizeTargetUrl } from '../../share
 import { getAIErrorMessage } from '../../shared/ai';
 import { getOrchestrator } from '../../ai/orchestrator';
 import { reqScope, scopeFilter, scopeStamp } from '../../shared/scope';
+import { getAuthUser } from '../auth/routes';
 
 import {
   Plans,
@@ -371,7 +372,7 @@ export function registerResourceRoutes(app: Express) {
     };
     await Plans.upsert(newPlan);
     if (!isPgEnabled()) persistDataInBackground('plan');
-    addActivity(`Created Plan: ${newPlan.name}`);
+    addActivity(`Created Plan: ${newPlan.name}`, { type: 'plan', entityId: newPlan.id, actor: getAuthUser(req)?.username || '' });
     res.json({ success: true });
   });
 
@@ -397,7 +398,7 @@ export function registerResourceRoutes(app: Express) {
     };
     await Suites.upsert(newSuite);
     if (!isPgEnabled()) persistDataInBackground('suite');
-    addActivity(`Created Suite: ${newSuite.name}`);
+    addActivity(`Created Suite: ${newSuite.name}`, { type: 'suite', entityId: newSuite.id, actor: getAuthUser(req)?.username || '' });
     res.json({ success: true });
   });
 
@@ -427,7 +428,7 @@ export function registerResourceRoutes(app: Express) {
     };
     await Cases.upsert(newCase);
     if (!isPgEnabled()) persistDataInBackground('case');
-    addActivity(`Created Case: ${newCase.title}`);
+    addActivity(`Created Case: ${newCase.title}`, { type: 'case', entityId: newCase.id, actor: getAuthUser(req)?.username || '' });
     // Return the generated id so clients (e.g. GeneratedCases save-fallback) can adopt it.
     res.json({ success: true, id: newCase.id });
   });
@@ -654,7 +655,7 @@ Rules:
     };
     await Runs.upsert(newRun);
     if (!isPgEnabled()) persistDataInBackground('selection run');
-    addActivity(`Started selected run: ${name}`);
+    addActivity(`Started selected run: ${name}`, { type: 'run', entityId: newRun.id, actor: getAuthUser(req)?.username || '', meta: { passed: newRun.passed, failed: newRun.failed } });
     res.json({ success: true, run: newRun });
   });
 
@@ -707,7 +708,7 @@ Rules:
     };
     await Runs.upsert(newRun);
     if (!isPgEnabled()) persistDataInBackground('run');
-    addActivity(`Started Run: ${name}`);
+    addActivity(`Started Run: ${name}`, { type: 'run', entityId: runId, actor: getAuthUser(req)?.username || '', meta: { passed, failed, total: steps.length } });
     res.json({ success: true, run: newRun });
   });
 
@@ -724,7 +725,7 @@ Rules:
     };
     await Defects.upsert(newDefect);
     if (!isPgEnabled()) persistDataInBackground('defect');
-    addActivity(`Logged Defect: ${title}`);
+    addActivity(`Logged Defect: ${title}`, { type: 'defect', entityId: newDefect.id, actor: getAuthUser(req)?.username || '', meta: { severity: newDefect.severity } });
     res.json({ success: true });
   });
 
