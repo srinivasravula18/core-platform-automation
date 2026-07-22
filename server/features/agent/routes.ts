@@ -297,8 +297,9 @@ function getAgentPlanStatus(run: any) {
   if (run?.status === 'completed') return 'Completed';
   if (run?.status === 'review_required') return 'Under Review';
   if (run?.status === 'failed') return 'Blocked';
-  if (run?.status === 'cancelled') return 'Cancelled';
   if (run?.status === 'running') return 'In Progress';
+  // A generated plan holds real, usable cases — an interrupted/cancelled generation still leaves a
+  // Draft plan the user works with, so it must NOT default to 'Cancelled' (bug #18).
   return 'Draft';
 }
 
@@ -851,7 +852,9 @@ function agentRunStatusForList(status: string): string {
   switch (String(status || '').toLowerCase()) {
     case 'completed': return 'Completed';
     case 'failed': return 'Failed';
-    case 'cancelled': return 'Cancelled';
+    // A cancelled/interrupted generation still produced usable cases — surface it as a Draft run
+    // rather than 'Cancelled', so freshly-generated runs aren't mislabelled (bug #18).
+    case 'cancelled': return 'Draft';
     case 'review_required': return 'Review Required';
     case 'coverage_options': return 'Coverage Options';
     case 'running': return 'In Progress';
