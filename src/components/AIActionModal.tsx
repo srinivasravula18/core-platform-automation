@@ -3,6 +3,7 @@ import { Mic, Send, Bot, Loader2, Sparkles, Check, X, RefreshCw } from 'lucide-r
 import { Modal } from './Modal';
 import { useSpeechToText } from '@/src/lib/useSpeechToText';
 import { showAlert } from '@/src/lib/dialog';
+import { FolderSelect } from './FolderSelect';
 
 interface AIActionModalProps {
   isOpen: boolean;
@@ -16,6 +17,8 @@ export function AIActionModal({ isOpen, onClose, taskType, onApprove, title }: A
   const [input, setInput] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
   const [generatedData, setGeneratedData] = useState<any>(null);
+  const [folderId, setFolderId] = useState('');
+  const requiresFolder = taskType !== 'defect';
 
   const appendSpeechTranscript = useCallback((transcript: string) => {
     setInput((prev) => prev + (prev.trim() ? ' ' : '') + transcript);
@@ -57,6 +60,7 @@ export function AIActionModal({ isOpen, onClose, taskType, onApprove, title }: A
   const handleReset = () => {
     setGeneratedData(null);
     setInput('');
+    setFolderId('');
   }
 
   const handleClose = () => {
@@ -77,6 +81,7 @@ export function AIActionModal({ isOpen, onClose, taskType, onApprove, title }: A
   return (
     <Modal isOpen={isOpen} onClose={handleClose} title={title}>
       <div className="space-y-4">
+        {requiresFolder && <FolderSelect value={folderId} onChange={setFolderId} includeNone={false} />}
         {!generatedData ? (
           <div>
             <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">
@@ -148,7 +153,11 @@ export function AIActionModal({ isOpen, onClose, taskType, onApprove, title }: A
                  <button onClick={() => setGeneratedData(null)} className="px-3 py-1.5 text-sm font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)] flex items-center gap-1 border border-transparent hover:border-[var(--border)] rounded">
                    <X className="w-4 h-4" /> Discard
                  </button>
-                 <button onClick={() => { onApprove(generatedData); handleClose(); }} className="px-4 py-1.5 bg-[#8b5cf6] text-white text-sm font-medium rounded-md hover:bg-[#7c3aed] flex items-center gap-1 shadow-sm">
+                 <button onClick={() => {
+                   if (requiresFolder && !folderId) { void showAlert('Select a folder or create one first.'); return; }
+                   onApprove({ ...generatedData, folderId });
+                   handleClose();
+                 }} className="px-4 py-1.5 bg-[#8b5cf6] text-white text-sm font-medium rounded-md hover:bg-[#7c3aed] flex items-center gap-1 shadow-sm">
                    <Check className="w-4 h-4" /> Approve & Create
                  </button>
                </div>

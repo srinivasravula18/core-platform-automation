@@ -108,6 +108,7 @@ export default function TestSuites() {
 
   const handleSaveSuite = () => {
     if (!formData.name.trim()) return;
+    if (!formData.folderId) { void showAlert('Select a folder or create one first.'); return; }
     const tags = formData.tags.split(',').map(s => s.trim()).filter(Boolean);
     
     if (selectedSuiteId) {
@@ -263,6 +264,7 @@ export default function TestSuites() {
             value={formData.folderId}
             onChange={(folderId) => setFormData({ ...formData, folderId })}
             allowCreate={!selectedSuiteId}
+            includeNone={false}
           />
           <div>
              <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Test Plan (Optional)</label>
@@ -454,7 +456,7 @@ export default function TestSuites() {
                         className={inlineSelectClass}
                         title="Update folder"
                       >
-                        <option value="">Uncategorized</option>
+                        <option value="" disabled>Select a folder</option>
                         {folders.map((folder) => (
                           <option key={folder.id} value={folder.id}>{folder.path || folder.name}</option>
                         ))}

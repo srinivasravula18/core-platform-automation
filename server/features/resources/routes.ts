@@ -1,4 +1,4 @@
-import type { Express } from 'express';
+import type { Express, NextFunction, Request, Response } from 'express';
 import { z } from 'zod';
 import { generateObject } from 'ai';
 import { db, addActivity, persistDataInBackground } from '../../shared/storage';
@@ -26,6 +26,20 @@ import {
   AgentRuns,
   isPgEnabled,
 } from '../../db/repository';
+
+const FOLDER_REQUIRED_ERROR = 'Select a folder or create one first.';
+
+async function requireRepositoryFolder(req: Request, res: Response, next: NextFunction) {
+  try {
+    const folderId = String(req.body?.folderId || '').trim();
+    const folder = folderId ? await Folders.get(folderId) : null;
+    if (!folder || !scopeFilter([folder], reqScope(req)).length) return res.status(400).json({ error: FOLDER_REQUIRED_ERROR });
+    req.body.folderId = folderId;
+    next();
+  } catch (error) {
+    next(error);
+  }
+}
 
 // Generated Playwright scripts live on the agent run, but the File System → Scripts page reads the
 // Scripts repository. If a run's scripts were never persisted there (older runs, or a pipeline path
@@ -308,6 +322,12 @@ export function registerResourceRoutes(app: Express) {
     app.put(`/api/${e.name}/:id`, async (req, res) => {
       const existing = await e.repo.get(req.params.id);
       if (!existing) return res.status(404).json({ error: 'Not found' });
+      if (['plans', 'suites', 'cases', 'runs'].includes(e.name)) {
+        const folderId = String(req.body?.folderId ?? existing.folderId ?? '').trim();
+        const folder = folderId ? await Folders.get(folderId) : null;
+        if (!folder || !scopeFilter([folder], reqScope(req)).length) return res.status(400).json({ error: FOLDER_REQUIRED_ERROR });
+        req.body.folderId = folderId;
+      }
       const updated = { ...existing, ...req.body, updatedAt: new Date() };
       await e.repo.upsert(updated);
       if (!isPgEnabled()) persistDataInBackground(`${e.name} update`);
@@ -430,7 +450,7 @@ export function registerResourceRoutes(app: Express) {
   });
 
   /* ---------- POST /api/plans ---------- */
-  app.post('/api/plans', async (req, res) => {
+  app.post('/api/plans', requireRepositoryFolder, async (req, res) => {
     const p = req.body;
     const newPlan = {
       ...scopeStamp(reqScope(req)),
@@ -461,7 +481,7 @@ export function registerResourceRoutes(app: Express) {
   });
 
   /* ---------- POST /api/suites ---------- */
-  app.post('/api/suites', async (req, res) => {
+  app.post('/api/suites', requireRepositoryFolder, async (req, res) => {
     const s = req.body;
     const newSuite = {
       ...scopeStamp(reqScope(req)),
@@ -487,7 +507,7 @@ export function registerResourceRoutes(app: Express) {
   });
 
   /* ---------- POST /api/cases ---------- */
-  app.post('/api/cases', async (req, res) => {
+  app.post('/api/cases', requireRepositoryFolder, async (req, res) => {
     const c = req.body;
     const newCase = {
       ...scopeStamp(reqScope(req)),
@@ -617,7 +637,7 @@ Rules:
   });
 
   /* ---------- POST /api/runs/from-selection ---------- */
-  app.post('/api/runs/from-selection', async (req, res) => {
+  app.post('/api/runs/from-selection', requireRepositoryFolder, async (req, res) => {
     const scope = reqScope(req);
     const selectedPlanIds = uniqueStrings(req.body?.planIds);
     const selectedSuiteIds = uniqueStrings(req.body?.suiteIds);
@@ -751,7 +771,7 @@ Rules:
   });
 
   /* ---------- POST /api/runs ---------- */
-  app.post('/api/runs', async (req, res) => {
+  app.post('/api/runs', requireRepositoryFolder, async (req, res) => {
     const name = req.body.name || 'New Run';
     const runId = `RUN-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
     const targetUrl = normalizeTargetUrl(req.body.targetUrl || findSettingsPlaywrightTargetUrl() || '');

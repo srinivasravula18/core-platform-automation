@@ -199,6 +199,7 @@ export default function TestRuns() {
 
   const handleSaveRun = () => {
     if (!newRunName.trim()) return;
+    if (!newRunFolderId) { void showAlert('Select a folder or create one first.'); return; }
     const tags = newRunTags.split(',').map((t) => t.trim()).filter(Boolean);
     const caseIds = Array.from(newRunCaseIds);
     const shared = {
@@ -473,7 +474,7 @@ export default function TestRuns() {
                 {plans.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
               </select>
             </label>
-            <div><span className="block text-xs font-medium text-[var(--text-muted)] mb-1">Folder</span><FolderSelect value={newRunFolderId} onChange={setNewRunFolderId} /></div>
+            <div><span className="block text-xs font-medium text-[var(--text-muted)] mb-1">Folder</span><FolderSelect value={newRunFolderId} onChange={setNewRunFolderId} includeNone={false} /></div>
           </div>
 
           {/* #5 — Assign To, State, Tags. */}

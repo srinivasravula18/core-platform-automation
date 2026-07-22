@@ -126,6 +126,7 @@ export default function TestPlans() {
 
   const handleSavePlan = () => {
     if (!formData.name.trim()) return;
+    if (!formData.folderId) { void showAlert('Select a folder or create one first.'); return; }
     
     if (selectedPlanId) {
       fetch(`/api/plans/${selectedPlanId}`, {
@@ -286,6 +287,7 @@ export default function TestPlans() {
               value={formData.folderId}
               onChange={(folderId) => setFormData({ ...formData, folderId })}
               label="Repository Folder"
+              includeNone={false}
             />
           </div>
           <div>
@@ -637,7 +639,7 @@ export default function TestPlans() {
                         className={inlineSelectClass}
                         title="Update folder"
                       >
-                        <option value="">Uncategorized</option>
+                        <option value="" disabled>Select a folder</option>
                         {folders.map((folder) => (
                           <option key={folder.id} value={folder.id}>{folder.path || folder.name}</option>
                         ))}

@@ -9,10 +9,6 @@ import { useProjects } from '@/src/store/project';
 // Artifact groups backed by a real DELETE/bulk-delete endpoint (evidence is derived, not deletable).
 const DELETABLE_KEYS = new Set(['plans', 'suites', 'cases', 'runs', 'reports', 'scripts', 'requirements', 'defects']);
 
-// Synthetic folder for artifacts with no folderId (legacy items created before the folder gate),
-// so they remain viewable instead of being hidden by the first-folder auto-select.
-const UNCATEGORIZED_ID = '__uncategorized__';
-
 type FolderNode = any & { children: FolderNode[] };
 
 const artifactConfig = [
@@ -182,27 +178,17 @@ export default function TestRepository() {
   }, []);
 
   useEffect(() => {
-    if (!selectedFolderId && folders.length > 0) {
-      setSelectedFolderId(folders[0].id);
-    }
+    if (!selectedFolderId && folders.length > 0) setSelectedFolderId(folders[0].id);
   }, [folders, selectedFolderId]);
 
   const selectedFolder = folders.find((folder) => folder.id === selectedFolderId) || null;
-  // Prepend an "Uncategorized" node so artifacts with no folderId (legacy items) stay reachable.
-  const tree = useMemo(
-    () => buildTree([{ id: UNCATEGORIZED_ID, name: 'Uncategorized', parentId: null }, ...folders]),
-    [folders],
-  );
+  const tree = useMemo(() => buildTree(folders), [folders]);
   const allFolderIds = useMemo(() => folders.map((folder) => folder.id), [folders]);
   const allFoldersSelected = allFolderIds.length > 0 && allFolderIds.every((id) => selectedFolderIds.has(id));
   const visibleItems = (key: string) => {
     const query = searchTerm.toLowerCase();
     return (artifacts[key] || []).filter((item) => {
-      const inFolder = selectedFolderId === UNCATEGORIZED_ID
-        ? !item.folderId
-        : selectedFolderId
-          ? item.folderId === selectedFolderId
-          : !item.folderId;
+      const inFolder = selectedFolderId ? item.folderId === selectedFolderId : !item.folderId;
       const matchesSearch = !query || `${item.id || ''} ${item.name || ''} ${item.title || ''} ${item.description || ''}`.toLowerCase().includes(query);
       return inFolder && matchesSearch;
     });
@@ -226,7 +212,7 @@ export default function TestRepository() {
 
   const createSubfolder = async () => {
     const name = newSubfolderName.trim();
-    if (!name) return;
+    if (!name || !selectedFolder) return;
     const res = await fetch('/api/folders', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -241,7 +227,7 @@ export default function TestRepository() {
   };
 
   const deleteFolderById = async (id: string, name?: string) => {
-    if (!id || id === UNCATEGORIZED_ID) return; // "Uncategorized" is a synthetic view, not deletable
+    if (!id) return;
     if (!await showConfirm(`Delete folder${name ? ` "${name}"` : ''}? This cannot be undone.`, { tone: 'danger' })) return;
     const res = await fetch(`/api/folders/${id}`, { method: 'DELETE' });
     if (!res.ok) {
@@ -391,7 +377,7 @@ export default function TestRepository() {
             <div>
               <div className="mb-2 text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">Create Subfolder</div>
               <div className="mb-2 truncate text-xs text-[var(--text-muted)]">
-                Parent: <span className="text-[var(--text-primary)]">{selectedFolder ? selectedFolder.path : 'Root folder'}</span>
+                Parent: <span className="text-[var(--text-primary)]">{selectedFolder ? selectedFolder.path : 'Select a folder'}</span>
               </div>
               <div className="flex gap-2">
               <input
@@ -401,7 +387,7 @@ export default function TestRepository() {
                 placeholder="Subfolder name"
                 className="min-w-0 flex-1 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
               />
-              <button onClick={createSubfolder} disabled={!newSubfolderName.trim()} className="inline-flex items-center gap-2 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm font-medium text-[var(--text-primary)] hover:border-[var(--accent)] disabled:opacity-50" title="Create subfolder">
+              <button onClick={createSubfolder} disabled={!newSubfolderName.trim() || !selectedFolder} className="inline-flex items-center gap-2 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm font-medium text-[var(--text-primary)] hover:border-[var(--accent)] disabled:opacity-50" title="Create subfolder">
                 <FolderPlus className="h-4 w-4" />
                 Add
               </button>

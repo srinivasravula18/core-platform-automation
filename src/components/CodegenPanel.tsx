@@ -35,6 +35,7 @@ export function CodegenPanel({ title, appUrl, caseMeta, onDone }: {
 
   const startRecording = async () => {
     if (!appUrl.trim() || !title.trim() || !selectedAgent || busy) return;
+    if (!caseMeta.folderId) { showToast('Select a folder or create one first.', { tone: 'error' }); return; }
     try {
       await session.start({ name: title.trim(), appUrl: appUrl.trim(), browser, environment, agentId: selectedAgent.id, caseMeta });
       showToast('Recording started — interact with your app in the codegen window.', { tone: 'success' });
@@ -82,6 +83,7 @@ export function CodegenPanel({ title, appUrl, caseMeta, onDone }: {
         {!hasAgent && <NoAgentState onRetry={refresh} />}
         {!title.trim() && <p className="text-xs text-amber-500">Enter a Title above to name this recorded test case.</p>}
         {!appUrl.trim() && <p className="text-xs text-amber-500">Choose an Application URL above to record against.</p>}
+        {!caseMeta.folderId && <p className="text-xs text-amber-500">Select a repository folder above before recording.</p>}
         <button onClick={startRecording} disabled={busy || !appUrl.trim() || !title.trim() || !hasAgent}
           title={!hasAgent ? 'Start your local agent to begin recording' : undefined}
           className="inline-flex items-center gap-2 rounded-md bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50">

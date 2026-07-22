@@ -377,6 +377,7 @@ export default function TestCases() {
 
   const handleSaveCase = () => {
     if (!formData.title.trim()) return;
+    if (!formData.folderId) { void showAlert('Select a folder or create one first.'); return; }
     const tags = formData.tags.map((s) => s.trim()).filter(Boolean);
     const steps = formData.steps
       .map((step) => ({ action: step.action.trim(), expected: step.expected.trim() }))
@@ -774,7 +775,7 @@ export default function TestCases() {
                   <MultiSelectDropdown label="None" options={suites.map((suite) => ({ id: String(suite.id), name: String(suite.name) }))} value={formData.testSuiteIds} onChange={(ids) => setFormData({ ...formData, testSuiteIds: ids })} />
                 </div>
               </div>
-              <FolderSelect value={formData.folderId} onChange={(folderId) => setFormData({ ...formData, folderId })} />
+              <FolderSelect value={formData.folderId} onChange={(folderId) => setFormData({ ...formData, folderId })} includeNone={false} />
               <CodegenPanel
                 title={formData.title}
                 appUrl={automationUrl}
@@ -797,6 +798,7 @@ export default function TestCases() {
           <FolderSelect
             value={formData.folderId}
             onChange={(folderId) => setFormData({ ...formData, folderId })}
+            includeNone={false}
           />
           <div>
             <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Title</label>
@@ -1217,7 +1219,7 @@ export default function TestCases() {
                       className={inlineSelectClass}
                       title="Update folder"
                     >
-                      <option value="">Uncategorized</option>
+                      <option value="" disabled>Select a folder</option>
                       {folders.map((folder) => (
                         <option key={folder.id} value={folder.id}>{folder.path || folder.name}</option>
                       ))}
