@@ -46,14 +46,40 @@ async function pushInboxItem(_item: unknown): Promise<{ id: string }> {
  * made 2 days ago") and resolve references to concrete ids for follow-up
  * actions ("tweak those and rerun").
  */
-export async function buildWorkspaceContext(): Promise<string> {
+export async function buildWorkspaceContext(options: { query?: string; userId?: string; projectId?: string; appId?: string | null } = {}): Promise<string> {
   try {
     const [cases, suites, plans, runs, scripts, defects] = await Promise.all([
       Cases.list(), Suites.list(), Plans.list(), Runs.list(), Scripts.list(), Defects.list(),
     ]);
-    const take = (arr: any[], n = 15) => (Array.isArray(arr) ? arr.slice(0, n) : []);
+    const tokens: string[] = String(options.query || '').toLowerCase().match(/@[a-z0-9_-]+|[a-z0-9_-]{3,}/g) || [];
+    // ponytail: rank the in-memory workspace scan; move to indexed full-text search when workspace size makes this measurable.
+    const take = (arr: any[], n = 15) => (Array.isArray(arr) ? arr : [])
+      .filter((item) => {
+        if (options.userId && item?.ownerId && item.ownerId !== options.userId) return false;
+        if (options.projectId && item?.projectId && item.projectId !== options.projectId) return false;
+        if (options.appId && item?.appId && item.appId !== options.appId) return false;
+        return true;
+      })
+      .map((item, index) => ({ item, index, score: tokens.reduce<number>((score, token) => score + (JSON.stringify(item).toLowerCase().includes(token) ? 1 : 0), 0) }))
+      .sort((a, b) => b.score - a.score || a.index - b.index)
+      .slice(0, n)
+      .map(({ item }) => item);
+    const stepsText = (steps: any) => (Array.isArray(steps) ? steps : [])
+      .map((step: any) => typeof step === 'string' ? step : [step?.action, step?.description, step?.expected, step?.expectedResult].filter(Boolean).join(' -> '))
+      .filter(Boolean)
+      .join(' | ')
+      .slice(0, 1000);
     const snapshot = {
-      cases: take(cases).map((c: any) => ({ id: c.id, title: c.title, status: c.status, suiteId: c.testSuiteId, createdAt: c.createdAt })),
+      cases: take(cases).map((c: any) => ({
+        id: c.id,
+        title: c.title,
+        description: String(c.description || '').slice(0, 600),
+        tags: c.tags || [],
+        steps: stepsText(c.steps),
+        status: c.status,
+        suiteId: c.testSuiteId,
+        createdAt: c.createdAt,
+      })),
       suites: take(suites).map((s: any) => ({ id: s.id, name: s.name, planId: s.testPlanId, parentSuite: s.parentSuite, createdAt: s.createdAt })),
       plans: take(plans).map((p: any) => ({ id: p.id, name: p.name, status: p.status, createdAt: p.createdAt })),
       runs: take(runs).map((r: any) => ({ id: r.id, name: r.name, status: r.status, suiteId: r.suiteId, caseIds: r.caseIds, createdAt: r.createdAt || r.date })),
@@ -121,7 +147,10 @@ async function assembledHistory(topic: string, conversationId: string | undefine
 const HISTORY_RE = /\b(previous|earlier|before|yesterday|last\s+(night|week|month|time)|days?\s+ago|weeks?\s+ago|recent(?:ly)?|already|those|these|that\s+(one|run|case|suite|plan|script|defect|report)|the\s+(cases?|suites?|scripts?|plans?|runs?|defects?|reports?|tests?)\s+(you|we|i)|you\s+(created|made|generated|wrote|built)|we\s+(talked|discussed|created|made|did)|re-?run|tweak|existing|do\s+you\s+remember|\bremember\b|organi[sz]e|\bfolders?\b|repositor\w*|file\s*system|move\s+\w+\s+(?:to|into|under))\b/i;
 const ID_RE = /\b(TC|SUITE|PLAN|RUN|DEF|SCR|REP)-[A-Z0-9-]+/i;
 function needsHistory(message: string): boolean {
-  return HISTORY_RE.test(message || '') || ID_RE.test(message || '');
+  const text = message || '';
+  const lookup = /\b(find|search|locate|show|list|which|what|where|look\s*up)\b/i.test(text)
+    && /\b(test\s*)?(cases?|suites?|plans?|runs?|scripts?|defects?|reports?|requirements?|artifacts?)\b/i.test(text);
+  return HISTORY_RE.test(text) || ID_RE.test(text) || lookup || /@[a-z0-9_-]+/i.test(text);
 }
 
 const intentSchema = z.object({
@@ -146,6 +175,8 @@ export interface ClassifyInput {
   };
   workspaceId?: string;
   userId?: string;
+  projectId?: string;
+  appId?: string | null;
   /** Prior turns of THIS chat, sent by the client for per-conversation memory. */
   history?: ChatTurn[];
   /** App(s) the user selected as the target (top-bar scope + composer picker, merged). */
@@ -224,7 +255,12 @@ export async function classifyIntent(input: ClassifyInput): Promise<{ intents: I
   // still only pulled when the message references past artifacts ("those cases", an id).
   const provided = formatHistory(input.history);
   const refsPast = needsHistory(input.userMessage);
-  const workspaceContext = refsPast ? await buildWorkspaceContext() : '';
+  const workspaceContext = refsPast ? await buildWorkspaceContext({
+    query: input.userMessage,
+    userId: input.userId,
+    projectId: input.projectId,
+    appId: input.appId,
+  }) : '';
   const conversation = provided;
   const prompt = buildPrompt(input, { workspaceContext, conversation });
   const result = await orch.generateObject<z.infer<typeof intentSchema>>({
@@ -1078,11 +1114,11 @@ ${conversation ? `RECENT CONVERSATION (oldest first):\n${conversation}\n\n` : ''
 Question: ${topic}`;
 }
 
-export async function explainIntent(topic: string, options: { workspaceId?: string; userId?: string; conversationId?: string; history?: ChatTurn[]; apps?: SelectedApp[] } = {}): Promise<string> {
+export async function explainIntent(topic: string, options: { workspaceId?: string; userId?: string; projectId?: string; appId?: string | null; conversationId?: string; history?: ChatTurn[]; apps?: SelectedApp[] } = {}): Promise<string> {
   const orch = await getOrchestrator('chatAssistant', options);
   const provided = await assembledHistory(topic, options.conversationId, options.history, 'controller.explain');
   const refsPast = needsHistory(topic);
-  const workspaceContext = refsPast ? await buildWorkspaceContext() : '';
+  const workspaceContext = refsPast ? await buildWorkspaceContext({ query: topic, ...options }) : '';
   const conversation = provided;
   const { text, shortCircuit } = await orch.generateText({
     prompt: buildExplainPrompt(topic, workspaceContext, conversation, options.apps),
@@ -1095,11 +1131,11 @@ export async function explainIntent(topic: string, options: { workspaceId?: stri
 }
 
 /** Streaming variant of explainIntent — yields text deltas as they arrive. */
-export async function* streamExplain(topic: string, options: { workspaceId?: string; userId?: string; conversationId?: string; history?: ChatTurn[]; apps?: SelectedApp[] } = {}): AsyncGenerator<string> {
+export async function* streamExplain(topic: string, options: { workspaceId?: string; userId?: string; projectId?: string; appId?: string | null; conversationId?: string; history?: ChatTurn[]; apps?: SelectedApp[] } = {}): AsyncGenerator<string> {
   const orch = await getOrchestrator('chatAssistant', options);
   const provided = await assembledHistory(topic, options.conversationId, options.history, 'controller.explain-stream');
   const refsPast = needsHistory(topic);
-  const workspaceContext = refsPast ? await buildWorkspaceContext() : '';
+  const workspaceContext = refsPast ? await buildWorkspaceContext({ query: topic, ...options }) : '';
   const conversation = provided;
   // Hold the stream head until the first paragraph boundary so a leaked reasoning
   // preamble ("The user is asking...") is stripped before any bytes reach the client.

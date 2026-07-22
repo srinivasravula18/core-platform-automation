@@ -115,10 +115,20 @@ export function registerControllerRoutes(app: Express) {
   app.post('/api/controller/classify', async (req, res, next) => {
     try {
       const { userMessage, pageContext, workspaceId, userId, history, apps } = req.body || {};
+      const scope = reqScope(req);
       if (!userMessage || typeof userMessage !== 'string') {
         return res.status(400).json({ error: 'userMessage is required' });
       }
-      const result = await classifyIntent({ userMessage, pageContext, workspaceId, userId, history, apps });
+      const result = await classifyIntent({
+        userMessage,
+        pageContext,
+        workspaceId,
+        userId: scope.userId || userId,
+        projectId: scope.projectId,
+        appId: scope.appId,
+        history,
+        apps,
+      });
       res.json(result);
     } catch (err: any) {
       if (err?.status) {
@@ -131,10 +141,20 @@ export function registerControllerRoutes(app: Express) {
   app.post('/api/controller/plan', async (req, res, next) => {
     try {
       const { userMessage, pageContext, workspaceId, userId, history, apps } = req.body || {};
+      const scope = reqScope(req);
       if (!userMessage || typeof userMessage !== 'string') {
         return res.status(400).json({ error: 'userMessage is required' });
       }
-      const plan = await buildPlan({ userMessage, pageContext, workspaceId, userId, history, apps });
+      const plan = await buildPlan({
+        userMessage,
+        pageContext,
+        workspaceId,
+        userId: scope.userId || userId,
+        projectId: scope.projectId,
+        appId: scope.appId,
+        history,
+        apps,
+      });
       res.json(plan);
     } catch (err: any) {
       if (err?.status) {
@@ -155,7 +175,7 @@ export function registerControllerRoutes(app: Express) {
         return res.status(400).json({ error: 'userMessage is required' });
       }
       // FAST PATH 1: simple count/list questions answered straight from the DB (no LLM).
-      const quick = await quickWorkspaceAnswer(userMessage, effectiveUserId);
+      const quick = await quickWorkspaceAnswer(userMessage, scope);
       if (quick) {
         await persistExchange(conversationId, workspaceId, userMessage, quick);
         return res.json({ reply: quick, accepted: true, fast: true, actions: [], trace: [] });
@@ -354,8 +374,9 @@ export function registerControllerRoutes(app: Express) {
     }
     prepareStreamingResponse(res);
     try {
+      const scope = reqScope(req);
       res.write('\n');
-      for await (const delta of streamExplain(topic, { workspaceId, userId, conversationId: typeof conversationId === 'string' ? conversationId : undefined, history, apps })) {
+      for await (const delta of streamExplain(topic, { workspaceId, userId: scope.userId || userId, projectId: scope.projectId, appId: scope.appId, conversationId: typeof conversationId === 'string' ? conversationId : undefined, history, apps })) {
         res.write(delta);
       }
     } catch (err: any) {
@@ -371,7 +392,8 @@ export function registerControllerRoutes(app: Express) {
       if (!topic || typeof topic !== 'string') {
         return res.status(400).json({ error: 'topic is required' });
       }
-      const text = await explainIntent(topic, { workspaceId, userId, conversationId: typeof conversationId === 'string' ? conversationId : undefined, history, apps });
+      const scope = reqScope(req);
+      const text = await explainIntent(topic, { workspaceId, userId: scope.userId || userId, projectId: scope.projectId, appId: scope.appId, conversationId: typeof conversationId === 'string' ? conversationId : undefined, history, apps });
       res.json({ topic, answer: text });
     } catch (err: any) {
       if (err?.status) {

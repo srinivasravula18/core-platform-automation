@@ -77,8 +77,13 @@ export const queryWorkspaceTool: AgentTool = {
     const q = String(args.query || '').toLowerCase();
     const limit = Math.max(1, Math.min(100, Number(args.limit) || 20));
     let items = await coll.list();
-    // Respect per-user isolation when records carry an ownerId.
-    if (ctx.userId) items = items.filter((it) => !it?.ownerId || it.ownerId === ctx.userId);
+    // Respect the active owner/project/app scope when records carry those fields.
+    items = items.filter((it) => {
+      if (ctx.userId && it?.ownerId && it.ownerId !== ctx.userId) return false;
+      if (ctx.projectId && it?.projectId && it.projectId !== ctx.projectId) return false;
+      if (ctx.appId && it?.appId && it.appId !== ctx.appId) return false;
+      return true;
+    });
 
     // Full-text haystack per kind so CONTENT questions resolve against real detail — a case's steps, a run's
     // pass/fail outcome, a defect's repro/expected/actual, a script's code — not just the title. This is what
@@ -102,7 +107,8 @@ export const queryWorkspaceTool: AgentTool = {
       };
       if (kind === 'cases') Object.assign(row, {
         description: it?.description || '', priority: it?.priority, type: it?.type,
-        suiteId: it?.testSuiteId || it?.suiteId, steps: stepsToText(it?.steps).slice(0, 2000), agentRunId: it?.agentRunId,
+        tags: it?.tags || [], suiteId: it?.testSuiteId || it?.suiteId,
+        steps: stepsToText(it?.steps).slice(0, 2000), agentRunId: it?.agentRunId,
       });
       else if (kind === 'scripts') Object.assign(row, {
         // The generated body lets the agent read actual fill values / selectors / which app a script creates.
