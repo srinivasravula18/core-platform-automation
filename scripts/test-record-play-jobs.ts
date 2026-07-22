@@ -28,8 +28,8 @@ async function main() {
   const gateway = await import('../server/features/automation/agentGateway');
   const events = await import('../server/features/automation/eventsService');
   const { db } = await import('../server/shared/storage');
-  const { AutomationEvents } = await import('../server/db/repository');
-  db.recordings = []; db.automationJobs = []; db.automationSchedules = []; db.automationArtifacts = []; db.automationEvents = [];
+  const { AutomationEvents, Scripts } = await import('../server/db/repository');
+  db.recordings = []; db.scripts = []; db.automationJobs = []; db.automationSchedules = []; db.automationArtifacts = []; db.automationEvents = [];
 
   console.log('recording lifecycle');
   const r = await rec.createRecording({ name: 'Login flow', appUrl: 'http://localhost:5002', browser: 'chromium' }, SCOPE);
@@ -43,6 +43,13 @@ async function main() {
   const done = await rec.getRecording(r.id);
   ok(done.status === 'ready', 'recording marked ready after record.done');
   ok(done.script.includes('@playwright/test') && done.stats.actions === 12, 'script + stats persisted');
+
+  console.log('repository script resolves to one reusable execution recording');
+  const repositoryScript = await Scripts.upsert({ id: 'SCR-REPOSITORY-1', name: 'Repository flow', code: "import { test } from '@playwright/test';\ntest('flow', async () => {});", projectId: 'p1', appId: 'a1', ownerId: 'u1' });
+  const scriptRecording = await rec.recordingForScript(repositoryScript.id, SCOPE);
+  const reusedScriptRecording = await rec.recordingForScript(repositoryScript.id, SCOPE);
+  ok(scriptRecording?.status === 'ready' && scriptRecording.script === repositoryScript.code, 'repository script prepared for scheduling');
+  ok(reusedScriptRecording?.id === scriptRecording?.id, 'repository script reuses its execution recording');
 
   console.log('job stays queued when agent offline, then progresses via frames');
   const job = await jobs.createJob({ recordingId: r.id, agentId: 'agent-x', trigger: 'manual' }, SCOPE);

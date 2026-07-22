@@ -5124,12 +5124,13 @@ Rules:
         userMessage: String(prompt || ''),
       });
       if ((result as any).shortCircuit) {
-        return res.json({ chat_response: (result as any).shortCircuit });
+        return res.status(422).json({ error: (result as any).shortCircuit });
       }
       res.json(result.object);
     } catch (err: any) {
       console.error(err);
-      res.status(err?.status || 500).json({ error: getAIErrorMessage(err) });
+      const status = Number(err?.status);
+      res.status(status >= 400 && status <= 599 ? status : 502).json({ error: getAIErrorMessage(err) });
     }
   });
 

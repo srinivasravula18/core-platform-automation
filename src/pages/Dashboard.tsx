@@ -3,7 +3,6 @@ import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 
 import { PlayCircle, Target, TestTube2, ShieldAlert, Sparkles, Layers, Activity, FileText, CalendarClock, Clock, AlertTriangle, Gauge, Bug, CheckCircle2, ListChecks } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { Modal } from '@/src/components/Modal';
-import { AIActionModal } from '@/src/components/AIActionModal';
 import { FolderSelect } from '@/src/components/FolderSelect';
 import { cn } from '@/src/lib/utils';
 
@@ -95,7 +94,6 @@ export default function Dashboard() {
   const [nowTick, setNowTick] = useState(() => Date.now()); // drives the Next Run countdown
   useEffect(() => { const t = window.setInterval(() => setNowTick(Date.now()), 60_000); return () => window.clearInterval(t); }, []);
   const [isPlanModalOpen, setIsPlanModalOpen] = useState(false);
-  const [isAIPlanModalOpen, setIsAIPlanModalOpen] = useState(false);
   const [formData, setFormData] = useState({ 
     name: '', scope: '', objectives: '', inScope: '', outOfScope: '', strategy: '', testTypes: '', environments: '', roles: '', entryExit: '', schedule: '', risks: '', deliverables: '', folderId: ''
   });
@@ -141,14 +139,6 @@ export default function Dashboard() {
     });
   };
 
-  const handleAIApprove = (data: any) => {
-    fetch('/api/plans', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ name: data.name })
-    }).then(() => fetchStats());
-  };
-
   return (
     <div className="w-full space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
@@ -159,9 +149,6 @@ export default function Dashboard() {
         <div className="flex flex-wrap items-center gap-2">
           <button onClick={() => setIsPlanModalOpen(true)} className="bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white px-4 py-2 rounded-md text-sm font-medium transition-colors">
             + New Plan
-          </button>
-          <button onClick={() => setIsAIPlanModalOpen(true)} className="flex items-center gap-1.5 bg-[#8b5cf6] hover:bg-[#7c3aed] text-white px-3 py-2 rounded-md text-sm font-medium transition-colors">
-            <Sparkles className="w-4 h-4" /> AI Auto
           </button>
         </div>
       </div>
@@ -263,14 +250,6 @@ export default function Dashboard() {
           </div>
         </div>
       </Modal>
-
-      <AIActionModal 
-        isOpen={isAIPlanModalOpen}
-        onClose={() => setIsAIPlanModalOpen(false)}
-        taskType="plan"
-        onApprove={handleAIApprove}
-        title="AI Auto: New Test Plan"
-      />
 
       {/* Row 1 — count KPIs (#1 Plans, #2 Suites, #3 Cases, #4 Active Runs, #5 Open Defects, #8 Cases not in any run) */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">

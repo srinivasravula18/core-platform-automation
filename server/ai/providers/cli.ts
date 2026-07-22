@@ -245,7 +245,7 @@ Decide the single next action. Reply with EXACTLY ONE JSON object and NOTHING el
   async generateObject<T>(opts: GenerateObjectOptions<unknown>): Promise<ProviderResponse<T>> {
     const start = Date.now();
     const schemaZ = opts.schema as z.ZodTypeAny;
-    const prompt = `${opts.prompt}\n\nReturn ONLY a JSON object matching the requested schema. No markdown, no code fences, no commentary.`;
+    const prompt = `${opts.prompt}\n\nReturn ONLY a JSON object matching this schema: ${JSON.stringify(z.toJSONSchema(schemaZ))}\nEvery required property must be present. No markdown, no code fences, no commentary.`;
     const text = await this.run({ ...opts, prompt });
     try {
       const parsed = normalizeScriptPayload(normalizeTestCasePayload(coerceToSchemaShape(extractJson(text), schemaZ)));

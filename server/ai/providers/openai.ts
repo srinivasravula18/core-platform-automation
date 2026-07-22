@@ -7,6 +7,7 @@
  */
 
 import OpenAI from 'openai';
+import { zodResponseFormat, zodTextFormat } from 'openai/helpers/zod';
 import { z } from 'zod';
 import type {
   AIProvider,
@@ -160,7 +161,7 @@ export class OpenAIProvider implements AIProvider {
     }
   }
 
-  private async callChat(opts: GenerateTextOptions & { images?: ProviderImage[] }, jsonMode: boolean) {
+  private async callChat(opts: GenerateTextOptions & { images?: ProviderImage[] }, jsonMode: boolean, schema?: z.ZodTypeAny) {
     // Responses validates input messages (not instructions) for the word "json" in json_object mode.
     if (jsonMode && !/json/i.test(opts.prompt || '')) {
       opts = { ...opts, prompt: `${opts.prompt}\n\nRespond with a single valid JSON object.` };
@@ -186,7 +187,7 @@ export class OpenAIProvider implements AIProvider {
           store: false,
           include: ['reasoning.encrypted_content'],
           ...this.responseParams(modelId, opts.maxTokens, opts.effort),
-          ...(jsonMode ? { text: { format: { type: 'json_object' as const } } } : {}),
+          ...(jsonMode ? { text: { format: schema ? zodTextFormat(schema, 'structured_output') : { type: 'json_object' as const } } } : {}),
         }, { signal: opts.signal });
         // Surface output-length truncation so generateObject can refuse to parse a partial payload.
         const finishReason = response.incomplete_details?.reason === 'max_output_tokens' ? 'length' as const : 'stop' as const;
@@ -210,7 +211,7 @@ export class OpenAIProvider implements AIProvider {
           ],
           ...this.sampling(modelId, opts.maxTokens, opts.temperature),
           ...(opts.effort ? { reasoning_effort: opts.effort } : {}),
-          ...(jsonMode ? { response_format: { type: 'json_object' as const } } : {}),
+          ...(jsonMode ? { response_format: schema ? zodResponseFormat(schema, 'structured_output') : { type: 'json_object' as const } } : {}),
         },
         { signal: opts.signal },
       );
@@ -404,7 +405,7 @@ export class OpenAIProvider implements AIProvider {
     const start = Date.now();
     const schemaZ = opts.schema as z.ZodTypeAny;
     const jsonHint = `${opts.system ? `${opts.system}\n\n` : ''}Return ONLY a JSON object that matches this schema: ${JSON.stringify(schemaZ._def ?? schemaZ)}\nDo not add commentary or markdown.`;
-    const { content, usage, modelId, finishReason } = await this.callChat({ ...opts, system: jsonHint }, true);
+    const { content, usage, modelId, finishReason } = await this.callChat({ ...opts, system: jsonHint }, true, schemaZ);
     const outputTokens = (usage as any)?.completion_tokens ?? (usage as any)?.output_tokens;
     // Length-truncated JSON must FAIL (classified, retried by the orchestrator) — never be salvaged short.
     if (finishReason === 'length') throw structuredTruncationError(this.name, modelId, outputTokens);

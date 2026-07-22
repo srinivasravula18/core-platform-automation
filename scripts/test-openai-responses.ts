@@ -319,8 +319,8 @@ async function testProviderToolContinuity() {
 }
 
 // ---------------------------------------------------------------------------
-async function testProviderJsonModeInputHint() {
-  console.log('9. OpenAI provider JSON mode - input message contains required JSON hint');
+async function testProviderStructuredOutput() {
+  console.log('9. OpenAI provider structured output - native schema enforcement');
   let capturedBody: any = null;
   const provider = new OpenAIProvider('test-key-not-real', 'gpt-5.4');
   (provider as any).client = { responses: { create: async (body: any) => {
@@ -331,7 +331,9 @@ async function testProviderJsonModeInputHint() {
   await provider.generateObject({ prompt: 'Improve this case end to end.', schema: TEST_SCHEMA });
 
   ok(/json/i.test(String(capturedBody.input)), 'json_object request includes "JSON" in Responses input');
-  ok(capturedBody.text?.format?.type === 'json_object', 'request still uses json_object response format');
+  ok(capturedBody.text?.format?.type === 'json_schema', 'request uses strict json_schema response format');
+  ok(capturedBody.text?.format?.strict === true, 'structured output schema is strict');
+  ok(capturedBody.text?.format?.schema?.required?.includes('title'), 'structured output requires the schema fields');
 }
 
 // ---------------------------------------------------------------------------
@@ -347,7 +349,7 @@ async function main() {
   testPromptBudgetStableOrdering();
   testPromptBudgetVersion();
   await testProviderToolContinuity();
-  await testProviderJsonModeInputHint();
+  await testProviderStructuredOutput();
 
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed === 0 ? 0 : 1);

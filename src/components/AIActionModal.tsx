@@ -41,10 +41,10 @@ export function AIActionModal({ isOpen, onClose, taskType, onApprove, title }: A
         body: JSON.stringify({ taskType, prompt: input })
       });
       const data = await res.json();
-      if (res.ok) {
+      if (res.ok && !data.error) {
         setGeneratedData(data);
       } else {
-        void showAlert("Failed to generate: " + data.error);
+        void showAlert("Failed to generate: " + (data.error || `HTTP ${res.status}`));
       }
     } catch (e) {
       console.error(e);

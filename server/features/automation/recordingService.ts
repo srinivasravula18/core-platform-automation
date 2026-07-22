@@ -12,7 +12,7 @@ import { uid } from '../../db/pool';
 import { persistDataInBackground } from '../../shared/storage';
 import { isPostgresEnabled } from '../../db/pool';
 import type { Scope } from '../../shared/scope';
-import { scopeStamp } from '../../shared/scope';
+import { scopeFilter, scopeStamp } from '../../shared/scope';
 import { normalizeCaseSteps, normalizeCaseTags } from '../../shared/testCases';
 import { emitEvent } from './eventsService';
 import { onAgentFrame, dispatchToAgent, isAgentConnected } from './agentGateway';
@@ -170,6 +170,7 @@ async function reflectRecordingAsCase(rec: any, finalScript: string): Promise<st
     language: 'typescript',
     framework: 'playwright',
     status: 'Generated',
+    folderId: meta.folderId || null,
     caseId,
     targetUrl: rec.appUrl || '',
     createdBy: 'Codegen',
@@ -182,6 +183,36 @@ async function reflectRecordingAsCase(rec: any, finalScript: string): Promise<st
     await Recordings.upsert({ ...rec, metadata: { ...rec.metadata, caseId, scriptId } });
   }
   return caseId;
+}
+
+/** Resolve a repository script to the recording-shaped artifact used by the existing runner. */
+export async function recordingForScript(scriptId: string, scope: Scope) {
+  const script = scopeFilter((await Scripts.list()) as any[], scope).find((item: any) => item.id === scriptId);
+  if (!script || !String(script.code || '').trim()) return null;
+
+  const recordings = scopeFilter((await Recordings.list()) as any[], scope);
+  const existing = recordings.find((item: any) => item.status === 'ready' && item.script && item.metadata?.scriptId === scriptId);
+  if (existing) return existing;
+
+  const now = new Date().toISOString();
+  const saved = await Recordings.upsert({
+    id: uid('REC'),
+    name: script.name || script.title || script.filename || 'Repository script',
+    appUrl: script.targetUrl || '',
+    browser: 'chromium',
+    environment: 'QA',
+    agentId: null,
+    status: 'ready',
+    script: script.code,
+    metadata: { scriptId, caseId: script.caseId || undefined, source: 'repository' },
+    stats: { actions: 0, selectors: 0, assertions: 0, networkCalls: 0, consoleErrors: 0, pages: 0 },
+    startedAt: null,
+    completedAt: now,
+    createdAt: now,
+    ...scopeStamp(scope),
+  });
+  persist('repository script prepared for scheduling');
+  return saved;
 }
 
 export async function stopRecording(recordingId: string) {
