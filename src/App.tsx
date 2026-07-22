@@ -11,7 +11,7 @@ import { AuthGate, logout, getUsername } from '@/src/components/AuthGate';
 import { appBasePath } from '@/src/lib/base-path';
 import { DialogHost } from '@/src/lib/dialog';
 import { useResizableTables } from '@/src/lib/useResizableTables';
-import { navigationHref } from '@/src/lib/controllerIntent';
+import { searchResultHref } from '@/src/lib/controllerIntent';
 
 import AgentConsole from '@/src/pages/AgentConsole';
 import AgentPanel from '@/src/pages/AgentPanel';
@@ -193,8 +193,9 @@ function Topbar({ onMenuClick, onCommandBarOpen }: { onMenuClick: () => void; on
     event.preventDefault();
     const query = globalSearch.trim();
     if (!query) return;
-    if (searchResults?.intents?.length === 1 && searchResults.intents[0].kind === 'navigate') {
-      navigate(navigationHref(searchResults.intents[0], query));
+    const directHref = searchResults?.intents?.length === 1 ? searchResultHref(searchResults.intents[0], query) : '';
+    if (directHref) {
+      navigate(directHref);
       setShowResults(false);
       return;
     }
@@ -238,8 +239,9 @@ function Topbar({ onMenuClick, onCommandBarOpen }: { onMenuClick: () => void; on
                   <button
                     key={i}
                     onClick={() => {
-                      if (intent.kind === 'navigate') {
-                        navigate(navigationHref(intent, globalSearch));
+                      const href = searchResultHref(intent, globalSearch);
+                      if (href) {
+                        navigate(href);
                       } else {
                         onCommandBarOpen();
                       }
@@ -250,9 +252,9 @@ function Topbar({ onMenuClick, onCommandBarOpen }: { onMenuClick: () => void; on
                     <span className="flex h-6 w-6 items-center justify-center rounded-full bg-[var(--accent)]/10 text-[10px] font-bold text-[var(--accent)]">{i + 1}</span>
                     <div className="min-w-0 flex-1">
                       <div className="text-xs font-medium">{intent.title}</div>
-                      <div className="text-[10px] text-[var(--text-muted)] truncate">{intent.description}</div>
+                      <div className="text-[10px] text-[var(--text-muted)] line-clamp-3">{intent.params?.topic || intent.description}</div>
                     </div>
-                    <span className="shrink-0 rounded border border-[var(--border)] px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">{intent.kind === 'navigate' ? 'open' : 'ask ai'}</span>
+                    <span className="shrink-0 rounded border border-[var(--border)] px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">{searchResultHref(intent, globalSearch) ? 'open' : 'answer'}</span>
                   </button>
                 ))}
               </div>

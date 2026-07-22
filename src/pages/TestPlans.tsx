@@ -573,6 +573,9 @@ export default function TestPlans() {
               </div>
             )}
           </div>
+          <div aria-live="polite" className="ml-auto whitespace-nowrap text-xs font-medium text-[var(--text-muted)]">
+            {filteredPlans.length}{(searchTerm || statusFilter !== 'All') ? ` of ${plans.length}` : ''} test plan{filteredPlans.length === 1 ? '' : 's'}
+          </div>
           {bulk.selectedCount > 0 && (
             <div className="ml-auto flex items-center gap-2">
               <button onClick={() => runSelectedPlans()} disabled={isStartingRun} className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">

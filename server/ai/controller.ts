@@ -246,6 +246,22 @@ Rules:
 }
 
 export async function classifyIntent(input: ClassifyInput): Promise<{ intents: IntentDraft[]; summary: string; reasoning: string; rawText: string }> {
+  const tag = input.userMessage.match(/\btagged(?:\s+as)?\s+(@[a-z0-9_-]+)/i)?.[1];
+  if (tag && /\b(?:test\s*)?cases?\b/i.test(input.userMessage)) {
+    const cases = (await Cases.list()).filter((item: any) => {
+      if (input.userId && item?.ownerId && item.ownerId !== input.userId) return false;
+      if (input.projectId && item?.projectId && item.projectId !== input.projectId) return false;
+      if (input.appId && item?.appId && item.appId !== input.appId) return false;
+      return (item?.tags || []).some((value: unknown) => String(value).toLowerCase() === tag.toLowerCase());
+    });
+    const summary = `Found ${cases.length} test case${cases.length === 1 ? '' : 's'} tagged ${tag}.`;
+    const intent = toIntentDraft({
+      kind: 'navigate', confidence: 100, title: `Open ${tag} Test Cases`, description: summary,
+      params: { path: '/cases', search: tag },
+    })!;
+    return { intents: [intent], summary, reasoning: 'Exact workspace tag search', rawText: JSON.stringify({ intents: [intent], summary }) };
+  }
+
   const orch = await getOrchestrator('chatAssistant', {
     workspaceId: input.workspaceId || 'default',
     userId: input.userId,

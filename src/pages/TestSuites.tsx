@@ -385,6 +385,9 @@ export default function TestSuites() {
               </div>
             )}
           </div>
+          <div aria-live="polite" className="ml-auto whitespace-nowrap text-xs font-medium text-[var(--text-muted)]">
+            {filteredSuites.length}{(searchTerm || statusFilter !== 'All') ? ` of ${suites.length}` : ''} test suite{filteredSuites.length === 1 ? '' : 's'}
+          </div>
           {bulk.selectedCount > 0 && (
             <div className="ml-auto flex items-center gap-2">
               <button onClick={() => runSelectedSuites()} disabled={isStartingRun} className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">

@@ -1084,6 +1084,9 @@ export default function TestCases() {
               </div>
             )}
           </div>
+          <div aria-live="polite" className="ml-auto whitespace-nowrap text-xs font-medium text-[var(--text-muted)]">
+            {filteredCases.length}{(searchTerm || activeFilterCount > 0) ? ` of ${cases.length}` : ''} test case{filteredCases.length === 1 ? '' : 's'}
+          </div>
           <select
             value={platformFilter}
             onChange={(event) => { setPlatformFilter(event.target.value); setAppFilter('All'); }}
