@@ -33,6 +33,7 @@ import { diffRunSteps, isVisualRegressionEnabled } from '../validation/visualBas
 import { executePlaywrightScripts } from '../../playwright/executionService';
 import { routeAfterDiscoverAndGround, type ResolvedCredential } from './graphs/discoveryGraph';
 import { stashArtifacts, readArtifacts } from './artifactStash';
+import { specFilenameFromTitle } from './specFilename';
 import { WorkflowRuntimeError, WORKFLOW_ERROR_CLASSES, backoffDelayMs, type WorkflowError } from './errors';
 import {
   WorkflowStateAnnotation,
@@ -474,9 +475,13 @@ export function buildTestRunGraph(deps: TestRunGraphDeps = {}, opts: BuildTestRu
   const executeTests = async (state: WorkflowState): Promise<WorkflowStateUpdate> => {
     const compiledSources = readArtifacts(state.runId).compiledSources ?? {};
     const titleByCase = new Map(state.cases.map((c) => [c.id, c.title]));
+    const usedNames = new Set<string>();
     const scripts = (state.compilation?.scripts ?? [])
       .filter((s) => s.ok && compiledSources[s.caseId])
-      .map((s) => ({ filename: `${s.caseId}.spec.ts`, title: titleByCase.get(s.caseId) ?? s.caseId, code: compiledSources[s.caseId] }));
+      .map((s) => {
+        const title = titleByCase.get(s.caseId) ?? s.caseId;
+        return { filename: specFilenameFromTitle(title, s.caseId, usedNames), title, code: compiledSources[s.caseId] };
+      });
     if (!scripts.length) {
       return {
         stage: 'execute_tests',
@@ -563,7 +568,7 @@ export function buildTestRunGraph(deps: TestRunGraphDeps = {}, opts: BuildTestRu
           } catch { /* probe proceeds unauthenticated; a login-failure re-run simply reads 'failed' */ }
         }
         const result = await executePlaywrightScripts({
-          scripts: [{ filename: `${caseId}.spec.ts`, title: caseTitle, code }],
+          scripts: [{ filename: specFilenameFromTitle(caseTitle, caseId), title: caseTitle, code }],
           baseUrl: state.mission?.targetUrl,
           runId: `${state.runId}-flakeprobe-${2 - flakeProbesLeft}`,
           singleSession: true,

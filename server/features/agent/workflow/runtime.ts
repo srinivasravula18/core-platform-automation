@@ -15,6 +15,7 @@ import { Command, isInterrupted } from '@langchain/langgraph';
 import { AgentRuns, AgentRunEvents, Defects } from '../../../db/repository';
 import { db } from '../../../shared/storage';
 import { readArtifacts } from './artifactStash';
+import { specFilenameFromTitle } from './specFilename';
 import { getWorkflowCheckpointer } from './checkpointer';
 import { buildDefectDrafts, type DefectReport, type PriorRunSummary, type StepLogEntry } from './defectReporter';
 import { buildAnalystReport, isAnalystEnabled, type AnalystReport } from './analyst';
@@ -164,11 +165,16 @@ export function projectStateToLegacyRun(state: WorkflowState, seed?: any): any {
   const titleByCase = new Map(state.cases.map((c) => [c.id, c.title]));
   const scriptRefs = (state.compilation?.scripts ?? []).filter((s) => s.ok && compiled[s.caseId]);
   const scriptedCaseIds = new Set(scriptRefs.map((s) => s.caseId));
-  const playwrightScripts = scriptRefs.map((s) => ({
-    test_case_title: titleByCase.get(s.caseId) ?? s.caseId,
-    filename: `${s.caseId}.spec.ts`,
-    code: compiled[s.caseId],
-  }));
+  const usedNames = new Set<string>();
+  const playwrightScripts = scriptRefs.map((s) => {
+    const title = titleByCase.get(s.caseId) ?? s.caseId;
+    return {
+      test_case_title: title,
+      // Name the artifact after the case title (deduped), not the internal case id.
+      filename: specFilenameFromTitle(title, s.caseId, usedNames),
+      code: compiled[s.caseId],
+    };
+  });
 
   const status = LEGACY_STATUS[state.status] ?? 'running';
   const progressLine = `stage: ${state.stage} — status: ${state.status}`
