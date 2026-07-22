@@ -821,11 +821,13 @@ export const Suites = {
 
 /* ---------- cases ---------- */
 
-// Test Case Versioning (Layer 1). Default OFF — set CASE_VERSIONING=1 to append an immutable revision
-// snapshot on every content change. See docs/plans/test-case-versioning-and-recorder-grouping-plan.md.
+// Test Case Versioning (Layer 1) — default product behavior: append an immutable revision snapshot on
+// every content change (Postgres only). Needs no env var; CASE_VERSIONING exists ONLY as an escape
+// hatch to disable it (set 0/false/off). See docs/plans/test-case-versioning-and-recorder-grouping-plan.md.
 function isCaseVersioningEnabled(): boolean {
-  const raw = String(process.env.CASE_VERSIONING || '').trim().toLowerCase();
-  return raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on';
+  const raw = String(process.env.CASE_VERSIONING ?? '').trim().toLowerCase();
+  if (raw === '0' || raw === 'false' || raw === 'no' || raw === 'off') return false;
+  return true;
 }
 
 // Only these fields are "versioned content" — an edit to status/folder/tags/scope must NOT mint a
