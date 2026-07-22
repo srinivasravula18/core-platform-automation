@@ -297,8 +297,9 @@ function getAgentPlanStatus(run: any) {
   if (run?.status === 'completed') return 'Completed';
   if (run?.status === 'review_required') return 'Under Review';
   if (run?.status === 'failed') return 'Blocked';
-  if (run?.status === 'cancelled') return 'Cancelled';
   if (run?.status === 'running') return 'In Progress';
+  // A generated plan holds real, usable cases — an interrupted/cancelled generation still leaves a
+  // Draft plan the user works with, so it must NOT default to 'Cancelled' (bug #18).
   return 'Draft';
 }
 
@@ -851,7 +852,9 @@ function agentRunStatusForList(status: string): string {
   switch (String(status || '').toLowerCase()) {
     case 'completed': return 'Completed';
     case 'failed': return 'Failed';
-    case 'cancelled': return 'Cancelled';
+    // A cancelled/interrupted generation still produced usable cases — surface it as a Draft run
+    // rather than 'Cancelled', so freshly-generated runs aren't mislabelled (bug #18).
+    case 'cancelled': return 'Draft';
     case 'review_required': return 'Review Required';
     case 'coverage_options': return 'Coverage Options';
     case 'running': return 'In Progress';
@@ -942,6 +945,11 @@ async function persistAgentRunAndReportArtifacts(run: any) {
   const runRecordId = agentRunRecordId(run);
   const listStatus = agentRunStatusForList(run.status);
   const caseIds = (Array.isArray(run.generated_cases) ? run.generated_cases : []).map((_: any, index: number) => runCaseId(run, index));
+  // Real elapsed time (excludes human review pause) — shared by the run AND its report so the
+  // report's Duration is an actual time, not the literal "Generated" (#6).
+  const durationLabel = run.completed_at && run.created_at
+    ? `${Math.max(0, Math.round((Date.parse(run.completed_at) - Date.parse(run.created_at) - (run.paused_ms || 0)) / 1000))}s`
+    : 'Pending';
 
   await Runs.upsert({
     id: runRecordId,
@@ -950,9 +958,7 @@ async function persistAgentRunAndReportArtifacts(run: any) {
     testPlanId: agentPlanId(run),
     caseIds,
     requestedBy: 'QA Assistant',
-    executionTime: run.completed_at && run.created_at
-      ? `${Math.max(0, Math.round((Date.parse(run.completed_at) - Date.parse(run.created_at) - (run.paused_ms || 0)) / 1000))}s`
-      : 'Pending',
+    executionTime: durationLabel,
     status: listStatus,
     progress: progressLabel,
     date,
@@ -982,7 +988,7 @@ async function persistAgentRunAndReportArtifacts(run: any) {
     planName: `Agent Plan - ${baseName}`,
     suiteName: `Agent Suite - ${baseName}`,
     requestedBy: 'QA Assistant',
-    executionTime: 'Generated',
+    executionTime: durationLabel,
     totalExecutions: executionSteps.length,
     status: reportStatus,
     failureReason: firstFailure
@@ -2115,6 +2121,11 @@ async function persistAgentRunArtifacts(run: any) {
     notVerified > 0 ? `${notVerified} not executed` : '',
   ].filter(Boolean).join(' / ');
 
+  // Real elapsed time (shared by run + report) so Duration isn't the literal "Generated" (#6).
+  const durationLabel = run.completed_at && run.created_at
+    ? `${Math.max(0, Math.round((Date.parse(run.completed_at) - Date.parse(run.created_at) - (run.paused_ms || 0)) / 1000))}s`
+    : 'Pending';
+
   await Runs.upsert({
     id: existingRunId,
     name: `Agent Run - ${baseName}`,
@@ -2122,7 +2133,7 @@ async function persistAgentRunArtifacts(run: any) {
     testPlanId: agentPlanId(run),
     caseIds: (run.generated_cases || []).map((_: any, index: number) => runCaseId(run, index)),
     requestedBy: 'QA Assistant',
-    executionTime: 'Generated',
+    executionTime: durationLabel,
     status: 'Completed',
     progress: progressLabel,
     date,
@@ -2152,7 +2163,7 @@ async function persistAgentRunArtifacts(run: any) {
     planName: `Agent Plan - ${baseName}`,
     suiteName: `Agent Suite - ${baseName}`,
     requestedBy: 'QA Assistant',
-    executionTime: 'Generated',
+    executionTime: durationLabel,
     totalExecutions: executionSteps.length,
     status: reportStatus,
     failureReason: firstFailure

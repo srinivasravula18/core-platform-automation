@@ -271,6 +271,12 @@ ALTER TABLE cases ADD COLUMN IF NOT EXISTS testing_type      TEXT DEFAULT 'Funct
 ALTER TABLE cases ADD COLUMN IF NOT EXISTS test_plan_ids  JSONB DEFAULT '[]'::jsonb;
 ALTER TABLE cases ADD COLUMN IF NOT EXISTS test_suite_ids JSONB DEFAULT '[]'::jsonb;
 
+-- Test-run assignment/classification fields (Assign To, Tags, State). Additive so existing readers
+-- are unaffected; `state` is a workflow state distinct from execution `status`.
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS assigned_to TEXT DEFAULT '';
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS tags        TEXT[] DEFAULT ARRAY[]::TEXT[];
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS state       TEXT DEFAULT '';
+
 -- System prompt store: per-agent versioned overrides
 CREATE TABLE IF NOT EXISTS prompts (
   id          TEXT PRIMARY KEY,

@@ -173,6 +173,9 @@ function mapRun(r: any) {
     failed: r.failed,
     progress: r.progress,
     status: r.status,
+    assignedTo: r.assigned_to || '',
+    tags: r.tags || [],
+    state: r.state || '',
     targetUrl: r.target_url,
     folderId: r.folder_id,
     steps: r.steps || [],
@@ -1128,8 +1131,8 @@ export const Runs = {
     const evidenceJson = JSON.stringify(r.evidence || []);
     const triggerMetaJson = JSON.stringify(r.triggerMeta || {});
     const row = await queryOne(
-      `INSERT INTO runs (id, name, suite_id, test_plan_id, case_ids, requested_by, execution_time, total_executions, passed, failed, progress, status, target_url, folder_id, steps, evidence, trigger_type, trigger_meta, started_at, completed_at, approval_state, proposed_by, source_run_id, date, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::jsonb,$16::jsonb,$17,$18::jsonb,$19,$20,$21,$22,$23, COALESCE($24, CURRENT_DATE), now(), now())
+      `INSERT INTO runs (id, name, suite_id, test_plan_id, case_ids, requested_by, execution_time, total_executions, passed, failed, progress, status, target_url, folder_id, steps, evidence, trigger_type, trigger_meta, started_at, completed_at, approval_state, proposed_by, source_run_id, date, assigned_to, tags, state, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::jsonb,$16::jsonb,$17,$18::jsonb,$19,$20,$21,$22,$23, COALESCE($24, CURRENT_DATE), $25, $26, $27, now(), now())
        ON CONFLICT (id) DO UPDATE SET
          name=EXCLUDED.name, suite_id=EXCLUDED.suite_id, test_plan_id=EXCLUDED.test_plan_id,
          case_ids=EXCLUDED.case_ids, requested_by=EXCLUDED.requested_by, execution_time=EXCLUDED.execution_time,
@@ -1140,6 +1143,7 @@ export const Runs = {
          started_at=EXCLUDED.started_at, completed_at=EXCLUDED.completed_at,
          approval_state=EXCLUDED.approval_state, proposed_by=EXCLUDED.proposed_by,
          source_run_id=EXCLUDED.source_run_id,
+         assigned_to=EXCLUDED.assigned_to, tags=EXCLUDED.tags, state=EXCLUDED.state,
          updated_at=now()
        RETURNING *`,
       [
@@ -1153,6 +1157,7 @@ export const Runs = {
         r.approvalState || 'approved', r.proposedBy || 'human',
         r.sourceRunId || r.agentRunId || null,
         r.date || null,
+        r.assignedTo || '', r.tags || [], r.state || '',
       ],
     );
     await writeScopeCols('runs', id, r);

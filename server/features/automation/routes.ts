@@ -262,8 +262,21 @@ export function registerAutomationRoutes(app: Express) {
 
   app.post('/api/automation/schedules', requireAuth, async (req: Request, res: Response) => {
     // agentId is optional now — scheduled runs execute on the server headless (not a local agent).
-    const { recordingId, agentId, kind, cron, timezone, enabled, runAt } = req.body || {};
-    if (!recordingId) return res.status(400).json({ error: 'recordingId is required.' });
+    const { agentId, kind, cron, timezone, enabled, runAt, caseId, suiteId } = req.body || {};
+    let recordingId = req.body?.recordingId as string | undefined;
+    // #17 — schedule by Test Case/Suite, not just a raw recording. Resolve the case (or the first
+    // recorded case in the suite) to its codegen recording, which is what the scheduler executes.
+    if (!recordingId && (caseId || suiteId)) {
+      const recs = scopeFilter((await Recordings.list()) as any[], reqScope(req)).filter((r: any) => r.status === 'ready' && r.script);
+      if (caseId) {
+        recordingId = recs.find((r: any) => r.metadata?.caseId === caseId)?.id;
+      } else if (suiteId) {
+        const suiteCaseIds = new Set((await Cases.list()).filter((c: any) => c.testSuiteId === suiteId || (Array.isArray(c.testSuiteIds) && c.testSuiteIds.includes(suiteId))).map((c: any) => c.id));
+        recordingId = recs.find((r: any) => suiteCaseIds.has(r.metadata?.caseId))?.id;
+      }
+      if (!recordingId) return res.status(400).json({ error: 'The selected test case/suite has no recorded script to schedule. Record it via New Case → Automation first.' });
+    }
+    if (!recordingId) return res.status(400).json({ error: 'recordingId, or a caseId/suiteId with a recording, is required.' });
     const k = (kind || 'once') as ScheduleKind;
     const now = new Date();
     let webhookToken = '';

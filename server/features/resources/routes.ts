@@ -117,6 +117,33 @@ function uniqueStrings(values: any) {
   return Array.from(new Set(values.map((value) => String(value || '').trim()).filter(Boolean)));
 }
 
+// #16 — every completed run yields a Report so it shows up in the Reports section. Deterministic id
+// keyed on the run so re-saving a run updates its report instead of duplicating.
+async function createReportFromRun(run: any, scope: any, opts: { passed: number; failed: number; steps: any[]; targetUrl: string; suiteName?: string }) {
+  const status = opts.failed > 0 ? 'Failed' : (opts.passed > 0 ? 'Passed' : 'Skipped');
+  const firstFail = (opts.steps || []).find((s: any) => /fail/i.test(String(s?.outcome || '')));
+  await Reports.upsert({
+    ...scopeStamp(scope),
+    id: `REP-${String(run.id).replace(/[^A-Za-z0-9]/g, '').slice(-8).toUpperCase()}`,
+    name: `Report - ${run.name}`,
+    runId: run.id,
+    planId: run.testPlanId || null,
+    suiteId: run.suiteId || null,
+    planName: '',
+    suiteName: opts.suiteName || run.suiteName || '',
+    requestedBy: run.assignedTo || run.requestedBy || '',
+    executionTime: run.executionTime || '',
+    totalExecutions: opts.steps.length,
+    status,
+    failureReason: firstFail ? String(firstFail.reason || firstFail.expected || '') : '',
+    targetUrl: opts.targetUrl || '',
+    steps: opts.steps,
+    evidence: [],
+    folderId: run.folderId || null,
+    date: run.date,
+  });
+}
+
 export function registerResourceRoutes(app: Express) {
   /* ---------- read endpoints (PG-backed, scoped to the selected project/app) ---------- */
   app.get('/api/plans', async (req, res) => res.json(scopeFilter(await Plans.list(), reqScope(req))));
@@ -692,7 +719,13 @@ Rules:
       id: runId,
       name,
       suiteName,
+      // Prefer an explicitly-chosen plan; else fall back to the first plan resolved from the selection.
+      testPlanId: req.body?.testPlanId || Array.from(planIds)[0] || '',
+      suiteId: Array.from(suiteIds)[0] || '',
       requestedBy: req.body?.requestedBy || '',
+      assignedTo: req.body?.assignedTo || '',
+      tags: Array.isArray(req.body?.tags) ? req.body.tags : normalizeCaseTags(req.body?.tags || []),
+      state: req.body?.state || '',
       executionTime: req.body?.executionTime || '',
       status: 'Completed',
       progress: `${passed} passed`,
@@ -711,6 +744,7 @@ Rules:
       steps,
     };
     await Runs.upsert(newRun);
+    await createReportFromRun(newRun, scope, { passed, failed, steps, targetUrl }).catch((e) => console.warn('[reports] selection run report failed:', e?.message || e));
     if (!isPgEnabled()) persistDataInBackground('selection run');
     addActivity(`Started selected run: ${name}`, { type: 'run', entityId: newRun.id, actor: getAuthUser(req)?.username || '', meta: { passed: newRun.passed, failed: newRun.failed } });
     res.json({ success: true, run: newRun });
@@ -748,7 +782,14 @@ Rules:
       id: runId,
       name,
       suiteName: req.body.suiteName || 'Playwright Verification Suite',
+      // Map the run to an existing Test Plan (and suite) instead of just a free-text suite name.
+      testPlanId: req.body.testPlanId || '',
+      suiteId: req.body.suiteId || '',
       requestedBy: req.body.requestedBy || '',
+      // Assign To / Tags / State are first-class run fields now.
+      assignedTo: req.body.assignedTo || '',
+      tags: Array.isArray(req.body.tags) ? req.body.tags : normalizeCaseTags(req.body.tags || []),
+      state: req.body.state || '',
       executionTime: req.body.executionTime || '',
       status: 'Completed',
       progress: `${passed} passed`,
@@ -760,10 +801,12 @@ Rules:
       folderId: req.body.folderId || selectedCase?.folderId || '',
       testCaseId: selectedCase?.id || '',
       testCaseTitle: selectedCase?.title || '',
+      caseIds: Array.isArray(req.body.caseIds) && req.body.caseIds.length ? req.body.caseIds : (selectedCase?.id ? [selectedCase.id] : []),
       captureEvidence: shouldCaptureCaseEvidence,
       steps,
     };
     await Runs.upsert(newRun);
+    await createReportFromRun(newRun, reqScope(req), { passed, failed, steps, targetUrl }).catch((e) => console.warn('[reports] run report failed:', e?.message || e));
     if (!isPgEnabled()) persistDataInBackground('run');
     addActivity(`Started Run: ${name}`, { type: 'run', entityId: runId, actor: getAuthUser(req)?.username || '', meta: { passed, failed, total: steps.length } });
     res.json({ success: true, run: newRun });
