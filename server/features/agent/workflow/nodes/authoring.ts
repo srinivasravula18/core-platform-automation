@@ -360,7 +360,8 @@ ${countLine}
 ${renderMissionRefForPrompt(input.mission)}${authNote(input.hasStoredCredentials)}${understandingBlock}${avoid}
 ${catalog}
 CASE RULES:
-- Each case: short plain-English title naming ONE behavior; one-sentence description; concrete preconditions.
+- Each case: short plain-English title naming ONE behavior; one-sentence description; a concrete, NON-EMPTY precondition.
+- PRECONDITIONS ARE REQUIRED: state in one plain sentence the exact state that must already be true before the steps run — the signed-in role/permissions, which app/surface is open, and any records/metadata that must already exist (e.g. "Signed in as an Admin with the Sales app open and at least one account present"). This is where setup/login belongs, so keep it out of the title, description, and steps; never leave it empty.
 - STEPS: each step is one specific user action naming a real on-screen control from the catalog evidence, paired with its own observable expected result. No vague steps, no invented labels, no login/authentication steps.
 - When a VERIFIED FEATURE ANALYSIS is provided, author a case for EACH distinct behavior/rule/edge in it that the live catalog can exercise (derivations, per-field validation, state changes, disabled/empty states) — do not collapse it to a few generic open/cancel cases.
 - A happy-path create/submit case MUST include a fill step for EVERY catalog field marked (required) before the save/create step; a partially filled form fails to submit.

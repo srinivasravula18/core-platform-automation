@@ -24,6 +24,7 @@ interface Case {
   id: string;
   title: string;
   description?: string;
+  preconditions?: string;
   priority?: string;
   type?: string;
   tags?: string[];
@@ -190,6 +191,7 @@ export function GeneratedCases({ cases: initial, onCasesChange }: { cases: Case[
     const body = JSON.stringify({
       title: c.title,
       description: c.description || '',
+      preconditions: c.preconditions || '',
       steps: c.steps || [],
       tags: c.tags || [],
       type: c.type || 'Manual',
@@ -436,6 +438,7 @@ export function GeneratedCases({ cases: initial, onCasesChange }: { cases: Case[
             <p role="alert" className="mt-1 text-[11px] text-red-400">{bulkErrors[c.id]}</p>
           )}
           {c.description && editing !== i && <p className="mt-1 text-xs text-[var(--text-muted)]">{c.description}</p>}
+          {c.preconditions && editing !== i && <p className="mt-1 text-xs text-[var(--text-muted)]"><span className="font-medium text-[var(--text-primary)]">Preconditions:</span> {c.preconditions}</p>}
           {editing !== i && (c.automationReadiness || c.proofSummary) && (
             <div className="mt-2 flex flex-wrap items-center gap-2">
               {c.automationReadiness && (
@@ -528,6 +531,7 @@ export function GeneratedCases({ cases: initial, onCasesChange }: { cases: Case[
             <div className="mt-3 space-y-3">
               <input value={c.title || ''} onChange={(e) => patchCase(i, { title: e.target.value })} placeholder="Title" className={inputCls} />
               <textarea value={c.description || ''} onChange={(e) => patchCase(i, { description: e.target.value })} placeholder="Description" className={`${inputCls} h-16`} />
+              <textarea value={c.preconditions || ''} onChange={(e) => patchCase(i, { preconditions: e.target.value })} placeholder="Preconditions (state that must be true before the steps run)" className={`${inputCls} h-16`} />
               <div className="grid grid-cols-2 gap-2">
                 <select value={c.priority || 'Medium'} onChange={(e) => patchCase(i, { priority: e.target.value })} className={inputCls}>
                   <option>Low</option>
