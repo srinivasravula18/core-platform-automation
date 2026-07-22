@@ -37,7 +37,7 @@ interface ClassifyResult {
 }
 
 const NAV_COMMANDS = [
-  { name: 'Dashboard', href: '/', icon: LayoutDashboard, keywords: 'home dashboard' },
+  { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard, keywords: 'home dashboard' },
   { name: 'Plans', href: '/plans', icon: FolderTree, keywords: 'plan test plan' },
   { name: 'Suites', href: '/suites', icon: Layers, keywords: 'suite test suite' },
   { name: 'Cases', href: '/cases', icon: TestTube2, keywords: 'case test case' },

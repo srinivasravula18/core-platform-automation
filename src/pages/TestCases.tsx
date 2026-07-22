@@ -651,7 +651,7 @@ export default function TestCases() {
     const matchesPlatform = platformFilter === 'All' || casePlatformId(testCase) === platformFilter;
     const matchesApp = appFilter === 'All' || caseAppLabel(testCase) === appFilter;
     return matchesSearch && matchesPlatform && matchesApp && advancedMatch(testCase);
-  });
+  }).sort((a, b) => String(a.id || '').localeCompare(String(b.id || ''), undefined, { numeric: true }));
 
   // New Case → Automation records a Playwright flow via the desktop agent (codegen) and the backend
   // saves it as an Automated, script-linked case. Only offered for NEW cases when the agent feature is on.

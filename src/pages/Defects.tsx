@@ -9,9 +9,19 @@ import html2canvas from 'html2canvas';
 import { Modal } from '@/src/components/Modal';
 import { AIActionModal } from '@/src/components/AIActionModal';
 import { showAlert, showConfirm } from '@/src/lib/dialog';
+import { withBasePath } from '@/src/lib/base-path';
+
+// A defect's failure snapshot lives in its `evidence` (captured at the failing run). Pull the first usable image URL.
+function defectSnapshotUrl(defect: any): string {
+  const ev = Array.isArray(defect?.evidence) ? defect.evidence : [];
+  const candidates = ev.flatMap((e: any) => [e?.screenshotUrl, e?.screenshot, e?.url, ...(Array.isArray(e?.stepScreenshots) ? e.stepScreenshots : [])]);
+  const first = candidates.find((u: any) => typeof u === 'string' && u.trim());
+  return first ? (first.startsWith('/') ? withBasePath(first) : first) : '';
+}
 
 export default function Defects() {
   const [defects, setDefects] = useState<any[]>([]);
+  const [snapshotUrl, setSnapshotUrl] = useState<string>('');
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const aiSearch = useAiSearch('defects');
@@ -92,18 +102,11 @@ export default function Defects() {
     }).then(() => fetchDefects());
   };
 
-  const captureEvidence = async (defectId: string) => {
-    try {
-      const canvas = await html2canvas(document.body);
-      const dataUrl = canvas.toDataURL('image/png');
-      const a = document.createElement('a');
-      a.href = dataUrl;
-      a.download = `defect-evidence-${defectId}.png`;
-      a.click();
-    } catch (e) {
-      console.error(e);
-      void showAlert('Failed to capture screen.');
-    }
+  // #14 — open the defect's captured failure snapshot (not a screenshot of this admin page).
+  const openDefectSnapshot = (defect: any) => {
+    const url = defectSnapshotUrl(defect);
+    if (url) setSnapshotUrl(url);
+    else void showAlert('No failure snapshot was captured for this defect. Snapshots come from the failing test run.');
   };
 
   const filteredDefects = defects.filter((defect) => {
@@ -173,13 +176,28 @@ export default function Defects() {
         </div>
       </Modal>
 
-      <AIActionModal 
+      <AIActionModal
         isOpen={isAIDefectModalOpen}
         onClose={() => setIsAIDefectModalOpen(false)}
         taskType="defect"
         onApprove={handleAIApprove}
         title="AI Auto: Log New Defect"
       />
+
+      {/* #14 — failure-snapshot lightbox */}
+      {snapshotUrl && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-6 backdrop-blur-md" onClick={() => setSnapshotUrl('')}>
+          <div className="flex max-h-[90dvh] w-full max-w-4xl flex-col overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--bg-card)] shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between border-b border-[var(--border)] bg-[var(--bg-secondary)] px-4 py-3">
+              <span className="text-sm font-semibold text-[var(--text-primary)]">Failure snapshot</span>
+              <button onClick={() => setSnapshotUrl('')} className="rounded border border-[var(--border)] bg-[var(--bg-primary)] px-2 py-1 text-xs text-[var(--text-muted)] hover:text-[var(--text-primary)]">Close</button>
+            </div>
+            <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto bg-slate-900 p-2">
+              <img src={snapshotUrl} alt="Failure snapshot" className="max-h-[75dvh] w-full object-contain" referrerPolicy="no-referrer" />
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl flex flex-col flex-1 min-h-0 shadow-sm">
         <div className="p-4 border-b border-[var(--border)] flex gap-3 h-[68px] flex-shrink-0 items-center">
@@ -280,7 +298,7 @@ export default function Defects() {
                     </span>
                   </td>
                   <td className="py-3 px-4 text-right flex gap-1 justify-end">
-                    <button onClick={(e) => { e.stopPropagation(); captureEvidence(defect.id); }} title="Capture Evidence" className="p-1 rounded hover:bg-[var(--bg-primary)] text-red-500 transition-colors border border-transparent hover:border-red-500">
+                    <button onClick={(e) => { e.stopPropagation(); openDefectSnapshot(defect); }} title={defectSnapshotUrl(defect) ? 'View failure snapshot' : 'No snapshot captured'} className={cn('p-1 rounded transition-colors border border-transparent', defectSnapshotUrl(defect) ? 'text-red-500 hover:bg-[var(--bg-primary)] hover:border-red-500' : 'text-[var(--text-muted)] opacity-50')}>
                       <Camera className="w-4 h-4" />
                     </button>
                     <button

@@ -26,6 +26,8 @@ function getRunStats(run: any) {
   return { total, passed, failed, blocked, skipped, retest, untested, completed };
 }
 
+const RUN_STATES = ['Not Started', 'In Progress', 'Completed', 'On Hold', 'Blocked'];
+
 function statusDot(status: string) {
   if (/pass/i.test(status)) return 'bg-emerald-400';
   if (/fail/i.test(status)) return 'bg-red-400';
@@ -59,6 +61,15 @@ export default function TestRuns() {
   const [newRunTargetUrl, setNewRunTargetUrl] = useState('');
   const [newRunCaseId, setNewRunCaseId] = useState('');
   const [newRunFolderId, setNewRunFolderId] = useState('');
+  // #3/#4/#5 — pick cases from the folder tree, map to a Test Plan, and set Assign To / Tags / State.
+  const [newRunPlanId, setNewRunPlanId] = useState('');
+  const [newRunAssignedTo, setNewRunAssignedTo] = useState('');
+  const [newRunTags, setNewRunTags] = useState('');
+  const [newRunState, setNewRunState] = useState('Not Started');
+  const [newRunCaseIds, setNewRunCaseIds] = useState<Set<string>>(new Set());
+  const [runCaseSearch, setRunCaseSearch] = useState('');
+  const [expandedRunFolders, setExpandedRunFolders] = useState<Set<string>>(new Set());
+  const [plans, setPlans] = useState<any[]>([]);
 
   const fetchData = () => {
     setLoading(true);
@@ -67,12 +78,14 @@ export default function TestRuns() {
       fetch('/api/cases').then((r) => r.json()),
       fetch('/api/suites').then((r) => r.json()),
       fetch('/api/folders').then((r) => r.json()),
+      fetch('/api/plans').then((r) => r.json()),
     ])
-      .then(([runData, caseData, suiteData, folderData]) => {
+      .then(([runData, caseData, suiteData, folderData, planData]) => {
         setRuns(Array.isArray(runData) ? runData : []);
         setCases(Array.isArray(caseData) ? caseData : []);
         setSuites(Array.isArray(suiteData) ? suiteData : []);
         setFolders(Array.isArray(folderData) ? folderData : []);
+        setPlans(Array.isArray(planData) ? planData : []);
         setLoading(false);
       })
       .catch((error) => {
@@ -174,24 +187,38 @@ export default function TestRuns() {
     setNewRunTargetUrl('');
     setNewRunCaseId('');
     setNewRunFolderId('');
+    setNewRunPlanId('');
+    setNewRunAssignedTo('');
+    setNewRunTags('');
+    setNewRunState('Not Started');
+    setNewRunCaseIds(new Set());
+    setRunCaseSearch('');
+    setExpandedRunFolders(new Set());
     setIsRunModalOpen(true);
   };
 
   const handleSaveRun = () => {
     if (!newRunName.trim()) return;
-    fetch('/api/runs', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        name: newRunName,
-        suiteName: newRunSuite,
-        requestedBy: newRunRequester,
-        executionTime: newRunExecutionTime,
-        targetUrl: newRunTargetUrl,
-        testCaseId: newRunCaseId,
-        folderId: newRunFolderId,
-      }),
-    })
+    const tags = newRunTags.split(',').map((t) => t.trim()).filter(Boolean);
+    const caseIds = Array.from(newRunCaseIds);
+    const shared = {
+      name: newRunName,
+      testPlanId: newRunPlanId,
+      requestedBy: newRunRequester,
+      assignedTo: newRunAssignedTo,
+      tags,
+      state: newRunState,
+      executionTime: newRunExecutionTime,
+      targetUrl: newRunTargetUrl,
+      folderId: newRunFolderId,
+    };
+    // When cases/a plan are chosen, expand them through from-selection (handles many cases + steps).
+    const useSelection = caseIds.length > 0 || !!newRunPlanId;
+    const url = useSelection ? '/api/runs/from-selection' : '/api/runs';
+    const body = useSelection
+      ? { ...shared, caseIds, planIds: newRunPlanId ? [newRunPlanId] : [] }
+      : { ...shared, testCaseId: newRunCaseId };
+    fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
       .then((r) => r.json())
       .then((rsp) => {
         setIsRunModalOpen(false);
@@ -200,6 +227,25 @@ export default function TestRuns() {
       })
       .catch(console.error);
   };
+
+  // Cases grouped by folder for the create-run picker (#3 — pick from the file-system/folder tree).
+  const runCasesByFolder = useMemo(() => {
+    const q = runCaseSearch.trim().toLowerCase();
+    const groups = new Map<string, { folderId: string; name: string; cases: any[] }>();
+    for (const c of cases) {
+      if (q && !`${c.id} ${c.title || ''}`.toLowerCase().includes(q)) continue;
+      const fid = c.folderId || '';
+      const fname = folders.find((f) => f.id === fid)?.path || folders.find((f) => f.id === fid)?.name || 'Uncategorized';
+      if (!groups.has(fid)) groups.set(fid, { folderId: fid, name: fname, cases: [] });
+      groups.get(fid)!.cases.push(c);
+    }
+    return Array.from(groups.values()).sort((a, b) => a.name.localeCompare(b.name));
+  }, [cases, folders, runCaseSearch]);
+  const toggleRunCase = (id: string) => setNewRunCaseIds((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const toggleRunFolder = (group: { cases: any[] }) => setNewRunCaseIds((prev) => {
+    const n = new Set(prev); const allIn = group.cases.every((c) => n.has(c.id));
+    group.cases.forEach((c) => allIn ? n.delete(c.id) : n.add(c.id)); return n;
+  });
 
   const handleAIApprove = (data: any) => {
     fetch('/api/runs', {
@@ -229,10 +275,13 @@ export default function TestRuns() {
                 <h1 className="text-2xl font-bold tracking-tight">{selectedRun.name}</h1>
                 <div className="mt-3 flex flex-wrap items-center gap-4 text-sm text-[var(--text-muted)]">
                   <span className="inline-flex items-center gap-1"><PlayCircle className="w-4 h-4" /> {selectedRun.status || 'In Progress'}</span>
-                  <span>{selectedRun.requestedBy || 'Unassigned'}</span>
+                  {selectedRun.state && <span className="rounded-full border border-[var(--border)] px-2 py-0.5 text-xs">{selectedRun.state}</span>}
+                  <span>Assigned: {selectedRun.assignedTo || selectedRun.requestedBy || 'Unassigned'}</span>
+                  {selectedRun.testPlanId && <span>Plan: {plans.find((p) => p.id === selectedRun.testPlanId)?.name || selectedRun.testPlanId}</span>}
                   <span>{selectedRun.date || 'No date'}</span>
                   <span>{selectedRun.executionTime || '-'}</span>
                   <FolderBadge folders={folders} folderId={selectedRun.folderId} />
+                  {Array.isArray(selectedRun.tags) && selectedRun.tags.map((t: string) => <span key={t} className="rounded bg-[var(--bg-secondary)] px-2 py-0.5 text-xs">{t}</span>)}
                 </div>
               </div>
             </div>
@@ -415,19 +464,80 @@ export default function TestRuns() {
       >
         <div className="space-y-4">
           <input value={newRunName} onChange={(e) => setNewRunName(e.target.value)} placeholder="Run name" className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm" />
-          <select value={newRunCaseId} onChange={(e) => setNewRunCaseId(e.target.value)} className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm">
-            <option value="">No specific test case</option>
-            {cases.map((testCase) => (
-              <option key={testCase.id} value={testCase.id}>
-                {testCase.title || testCase.id}{testCase.captureEvidenceOnManualRun !== false ? ' - snapshot evidence on' : ' - snapshot evidence off'}
-              </option>
-            ))}
-          </select>
-          <FolderSelect value={newRunFolderId} onChange={setNewRunFolderId} />
-          <input value={newRunSuite} onChange={(e) => setNewRunSuite(e.target.value)} placeholder="Suite name" className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm" />
-          <input value={newRunRequester} onChange={(e) => setNewRunRequester(e.target.value)} placeholder="Requested by" className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm" />
-          <input value={newRunExecutionTime} onChange={(e) => setNewRunExecutionTime(e.target.value)} placeholder="Execution time" className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm" />
-          <input value={newRunTargetUrl} onChange={(e) => setNewRunTargetUrl(e.target.value)} placeholder="Target URL" className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm" />
+
+          {/* #4 — map the run to an existing Test Plan (not a free-text suite). */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <label className="block text-xs font-medium text-[var(--text-muted)]">Test Plan
+              <select value={newRunPlanId} onChange={(e) => setNewRunPlanId(e.target.value)} className="mt-1 w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm text-[var(--text-primary)]">
+                <option value="">No plan</option>
+                {plans.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+              </select>
+            </label>
+            <div><span className="block text-xs font-medium text-[var(--text-muted)] mb-1">Folder</span><FolderSelect value={newRunFolderId} onChange={setNewRunFolderId} /></div>
+          </div>
+
+          {/* #5 — Assign To, State, Tags. */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <label className="block text-xs font-medium text-[var(--text-muted)]">Assign To
+              <input value={newRunAssignedTo} onChange={(e) => setNewRunAssignedTo(e.target.value)} placeholder="e.g. QA name" className="mt-1 w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm text-[var(--text-primary)]" />
+            </label>
+            <label className="block text-xs font-medium text-[var(--text-muted)]">State
+              <select value={newRunState} onChange={(e) => setNewRunState(e.target.value)} className="mt-1 w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm text-[var(--text-primary)]">
+                {RUN_STATES.map((s) => <option key={s} value={s}>{s}</option>)}
+              </select>
+            </label>
+            <label className="block text-xs font-medium text-[var(--text-muted)]">Tags
+              <input value={newRunTags} onChange={(e) => setNewRunTags(e.target.value)} placeholder="comma,separated" className="mt-1 w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm text-[var(--text-primary)]" />
+            </label>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <input value={newRunRequester} onChange={(e) => setNewRunRequester(e.target.value)} placeholder="Requested by" className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm" />
+            <input value={newRunTargetUrl} onChange={(e) => setNewRunTargetUrl(e.target.value)} placeholder="Target URL (optional)" className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm" />
+          </div>
+
+          {/* #3 — pick test cases from the folder tree, not a flat dropdown. */}
+          <div>
+            <div className="mb-1 flex items-center justify-between">
+              <span className="text-xs font-medium text-[var(--text-muted)]">Test Cases</span>
+              <span className="text-xs text-[var(--accent)]">{newRunCaseIds.size} selected</span>
+            </div>
+            <div className="relative mb-2">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--text-muted)]" />
+              <input value={runCaseSearch} onChange={(e) => setRunCaseSearch(e.target.value)} placeholder="Search cases by ID or title…" className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md pl-9 pr-3 py-2 text-sm" />
+            </div>
+            <div className="max-h-60 overflow-auto rounded-md border border-[var(--border)] bg-[var(--bg-secondary)]/40">
+              {runCasesByFolder.length === 0 ? (
+                <div className="px-3 py-6 text-center text-sm text-[var(--text-muted)]">No test cases.</div>
+              ) : runCasesByFolder.map((group) => {
+                const expanded = expandedRunFolders.has(group.folderId) || !!runCaseSearch;
+                const allIn = group.cases.every((c) => newRunCaseIds.has(c.id));
+                const someIn = group.cases.some((c) => newRunCaseIds.has(c.id));
+                return (
+                  <div key={group.folderId} className="border-b border-[var(--border)] last:border-0">
+                    <div className="flex items-center gap-2 px-3 py-2 text-sm">
+                      <button type="button" onClick={() => setExpandedRunFolders((p) => { const n = new Set(p); n.has(group.folderId) ? n.delete(group.folderId) : n.add(group.folderId); return n; })} className="text-[var(--text-muted)] hover:text-[var(--text-primary)]">{expanded ? '▾' : '▸'}</button>
+                      <input type="checkbox" checked={allIn} ref={(el) => { if (el) el.indeterminate = !allIn && someIn; }} onChange={() => toggleRunFolder(group)} />
+                      <Folder className="w-4 h-4 text-[var(--accent)]" />
+                      <span className="font-medium text-[var(--text-primary)]">{group.name}</span>
+                      <span className="text-xs text-[var(--text-muted)]">({group.cases.length})</span>
+                    </div>
+                    {expanded && (
+                      <div className="pb-1">
+                        {group.cases.map((c) => (
+                          <label key={c.id} className="flex cursor-pointer items-center gap-2 px-3 py-1.5 pl-10 text-sm hover:bg-[var(--bg-secondary)]">
+                            <input type="checkbox" checked={newRunCaseIds.has(c.id)} onChange={() => toggleRunCase(c.id)} />
+                            <span className="font-mono text-xs text-[var(--text-muted)]">{c.id}</span>
+                            <span className="truncate text-[var(--text-primary)]">{c.title}</span>
+                          </label>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
         </div>
       </Modal>
 
@@ -491,7 +601,7 @@ export default function TestRuns() {
                     <td className="px-4 py-4"><CheckCircle className="w-8 h-8 text-[var(--accent)]" /></td>
                     <td className="min-w-0 px-4 py-4">
                       <div className="truncate font-semibold" title={run.name}>{run.name}</div>
-                      <div className="truncate text-xs text-[var(--text-muted)]">Assigned to {run.requestedBy || 'Unassigned'}</div>
+                      <div className="truncate text-xs text-[var(--text-muted)]">Assigned to {run.assignedTo || run.requestedBy || 'Unassigned'}{run.state ? ` · ${run.state}` : ''}</div>
                     </td>
                     <td className="overflow-hidden px-4 py-4">
                       <FolderBadge folders={folders} folderId={run.folderId} />

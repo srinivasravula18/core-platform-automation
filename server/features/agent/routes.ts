@@ -942,6 +942,11 @@ async function persistAgentRunAndReportArtifacts(run: any) {
   const runRecordId = agentRunRecordId(run);
   const listStatus = agentRunStatusForList(run.status);
   const caseIds = (Array.isArray(run.generated_cases) ? run.generated_cases : []).map((_: any, index: number) => runCaseId(run, index));
+  // Real elapsed time (excludes human review pause) — shared by the run AND its report so the
+  // report's Duration is an actual time, not the literal "Generated" (#6).
+  const durationLabel = run.completed_at && run.created_at
+    ? `${Math.max(0, Math.round((Date.parse(run.completed_at) - Date.parse(run.created_at) - (run.paused_ms || 0)) / 1000))}s`
+    : 'Pending';
 
   await Runs.upsert({
     id: runRecordId,
@@ -950,9 +955,7 @@ async function persistAgentRunAndReportArtifacts(run: any) {
     testPlanId: agentPlanId(run),
     caseIds,
     requestedBy: 'QA Assistant',
-    executionTime: run.completed_at && run.created_at
-      ? `${Math.max(0, Math.round((Date.parse(run.completed_at) - Date.parse(run.created_at) - (run.paused_ms || 0)) / 1000))}s`
-      : 'Pending',
+    executionTime: durationLabel,
     status: listStatus,
     progress: progressLabel,
     date,
@@ -982,7 +985,7 @@ async function persistAgentRunAndReportArtifacts(run: any) {
     planName: `Agent Plan - ${baseName}`,
     suiteName: `Agent Suite - ${baseName}`,
     requestedBy: 'QA Assistant',
-    executionTime: 'Generated',
+    executionTime: durationLabel,
     totalExecutions: executionSteps.length,
     status: reportStatus,
     failureReason: firstFailure
@@ -2115,6 +2118,11 @@ async function persistAgentRunArtifacts(run: any) {
     notVerified > 0 ? `${notVerified} not executed` : '',
   ].filter(Boolean).join(' / ');
 
+  // Real elapsed time (shared by run + report) so Duration isn't the literal "Generated" (#6).
+  const durationLabel = run.completed_at && run.created_at
+    ? `${Math.max(0, Math.round((Date.parse(run.completed_at) - Date.parse(run.created_at) - (run.paused_ms || 0)) / 1000))}s`
+    : 'Pending';
+
   await Runs.upsert({
     id: existingRunId,
     name: `Agent Run - ${baseName}`,
@@ -2122,7 +2130,7 @@ async function persistAgentRunArtifacts(run: any) {
     testPlanId: agentPlanId(run),
     caseIds: (run.generated_cases || []).map((_: any, index: number) => runCaseId(run, index)),
     requestedBy: 'QA Assistant',
-    executionTime: 'Generated',
+    executionTime: durationLabel,
     status: 'Completed',
     progress: progressLabel,
     date,
@@ -2152,7 +2160,7 @@ async function persistAgentRunArtifacts(run: any) {
     planName: `Agent Plan - ${baseName}`,
     suiteName: `Agent Suite - ${baseName}`,
     requestedBy: 'QA Assistant',
-    executionTime: 'Generated',
+    executionTime: durationLabel,
     totalExecutions: executionSteps.length,
     status: reportStatus,
     failureReason: firstFailure

@@ -12,6 +12,37 @@ const COVERAGE_BADGE: Record<string, { label: string; cls: string }> = {
   unknown: { label: 'Unknown', cls: 'border-slate-500/30 bg-slate-500/10 text-slate-400' },
 };
 
+// #13 — render a requirement's structured fields (business rules, admin/keystone behavior) as
+// headings + bullets rather than a single dense paragraph. Falls back to nothing if unstructured.
+function ReqSection({ title, children }: { title: string; children: any }) {
+  return (
+    <div className="mb-2 last:mb-0">
+      <div className="text-[10px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">{title}</div>
+      <div className="mt-0.5 text-xs text-[var(--text-primary)]">{children}</div>
+    </div>
+  );
+}
+function RequirementContent({ req }: { req: any }) {
+  const rules = req?.businessRules || req?.business_rules || [];
+  const admin = req?.adminBehavior || req?.admin_behavior || '';
+  const keystone = req?.keystoneBehavior || req?.keystone_behavior || '';
+  const dataNotes = req?.dataPopulationNotes || req?.data_population_notes || '';
+  const desc = req?.description || '';
+  const hasStructured = (Array.isArray(rules) && rules.length > 0) || admin || keystone || dataNotes;
+  if (!hasStructured) return null;
+  return (
+    <div className="mb-3 rounded-md border border-[var(--border)] bg-[var(--bg-card)]/50 p-3">
+      {desc && <p className="mb-2 whitespace-pre-wrap text-xs text-[var(--text-muted)]">{desc}</p>}
+      {Array.isArray(rules) && rules.length > 0 && (
+        <ReqSection title="Business Rules"><ul className="list-disc space-y-0.5 pl-4">{rules.map((r: string, i: number) => <li key={i}>{r}</li>)}</ul></ReqSection>
+      )}
+      {admin && <ReqSection title="Admin Behavior"><span className="whitespace-pre-wrap">{admin}</span></ReqSection>}
+      {keystone && <ReqSection title="Keystone Behavior"><span className="whitespace-pre-wrap">{keystone}</span></ReqSection>}
+      {dataNotes && <ReqSection title="Data Population"><span className="whitespace-pre-wrap">{dataNotes}</span></ReqSection>}
+    </div>
+  );
+}
+
 export default function Traceability() {
   const [searchParams] = useSearchParams();
   const [requirements, setRequirements] = useState<any[]>([]);
@@ -22,6 +53,9 @@ export default function Traceability() {
   const [aiInstruction, setAiInstruction] = useState('');
   const [aiWorking, setAiWorking] = useState(false);
   const [aiMessage, setAiMessage] = useState('');
+  // #12 — matrix (table) view vs the detailed accordion. Matrix needs coverage for every requirement.
+  const [view, setView] = useState<'matrix' | 'detailed'>('matrix');
+  const [coverageLoaded, setCoverageLoaded] = useState(false);
 
   const fetchRequirements = useCallback(() => {
     fetch('/api/requirements')
@@ -49,6 +83,13 @@ export default function Traceability() {
   }, [details, loadDetail]);
 
   useEffect(() => { fetchRequirements(); }, [fetchRequirements]);
+
+  // Load linked-case coverage for every requirement once, so the matrix is fully populated up-front.
+  useEffect(() => {
+    if (!requirements.length || coverageLoaded) return;
+    setCoverageLoaded(true);
+    requirements.forEach((req) => loadDetail(req.id));
+  }, [requirements, coverageLoaded, loadDetail]);
 
   // Auto-expand the requirement passed via ?req=.
   useEffect(() => {
@@ -112,21 +153,28 @@ export default function Traceability() {
           <h1 className="text-2xl font-bold tracking-tight">Traceability</h1>
           <p className="text-sm text-[var(--text-muted)] mt-1">Requirement → test case coverage matrix. Edit or rework the linked cases in place.</p>
         </div>
-        <ExportMenu
-          filename="traceability-matrix"
-          title="Traceability Matrix"
-          rows={traceRows}
-          columns={[
-            { key: 'reqId', label: 'Requirement ID' },
-            { key: 'requirement', label: 'Requirement' },
-            { key: 'reqStatus', label: 'Req Status' },
-            { key: 'coverage', label: 'Coverage' },
-            { key: 'caseId', label: 'Case ID' },
-            { key: 'caseTitle', label: 'Linked Case' },
-            { key: 'casePriority', label: 'Case Priority' },
-            { key: 'caseStatus', label: 'Case Status' },
-          ]}
-        />
+        <div className="flex items-center gap-2">
+          <div className="inline-flex rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] p-0.5">
+            {(['matrix', 'detailed'] as const).map((v) => (
+              <button key={v} onClick={() => setView(v)} className={`px-3 py-1.5 text-sm font-medium rounded capitalize ${view === v ? 'bg-[var(--accent)] text-white' : 'text-[var(--text-muted)] hover:text-[var(--text-primary)]'}`}>{v}</button>
+            ))}
+          </div>
+          <ExportMenu
+            filename="traceability-matrix"
+            title="Traceability Matrix"
+            rows={traceRows}
+            columns={[
+              { key: 'reqId', label: 'Requirement ID' },
+              { key: 'requirement', label: 'Requirement' },
+              { key: 'reqStatus', label: 'Req Status' },
+              { key: 'coverage', label: 'Coverage' },
+              { key: 'caseId', label: 'Case ID' },
+              { key: 'caseTitle', label: 'Linked Case' },
+              { key: 'casePriority', label: 'Case Priority' },
+              { key: 'caseStatus', label: 'Case Status' },
+            ]}
+          />
+        </div>
       </div>
 
       {/* AI rework bar (appears when cases are selected) */}
@@ -158,6 +206,38 @@ export default function Traceability() {
         {!loading && requirements.length === 0 && (
           <div className="py-8 text-center text-[var(--text-muted)]">No requirements yet. Discover one from the Agent Console or the Requirements page.</div>
         )}
+        {!loading && requirements.length > 0 && view === 'matrix' && (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[720px] text-left text-sm">
+              <thead className="sticky top-0 z-10 bg-[var(--bg-secondary)] text-[11px] uppercase tracking-wide text-[var(--text-muted)]">
+                <tr>
+                  <th className="px-4 py-2.5">Requirement</th>
+                  <th className="w-32 px-4 py-2.5">Coverage</th>
+                  <th className="px-4 py-2.5">Linked Case</th>
+                  <th className="w-24 px-4 py-2.5">Priority</th>
+                  <th className="w-28 px-4 py-2.5">Case Status</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-[var(--border)]">
+                {traceRows.map((row, i) => {
+                  const badge = COVERAGE_BADGE[row.coverage] || COVERAGE_BADGE.unknown;
+                  const firstOfReq = i === 0 || traceRows[i - 1].reqId !== row.reqId;
+                  return (
+                    <tr key={`${row.reqId}-${row.caseId}-${i}`} className={`align-top hover:bg-[var(--bg-secondary)]/40 ${firstOfReq ? 'border-t-2 border-t-[var(--border)]' : ''}`}>
+                      <td className="px-4 py-2.5">{firstOfReq && (<><span className="font-mono text-[10px] text-[var(--text-muted)]">{row.reqId}</span><div className="font-medium text-[var(--text-primary)]">{row.requirement}</div></>)}</td>
+                      <td className="px-4 py-2.5">{firstOfReq && <span className={`rounded-md border px-1.5 py-0.5 text-[10px] font-semibold uppercase ${badge.cls}`}>{badge.label}</span>}</td>
+                      <td className="px-4 py-2.5">{row.caseId && <span className="mr-2 font-mono text-xs text-[var(--text-muted)]">{row.caseId}</span>}<span className={row.caseId ? 'text-[var(--text-primary)]' : 'text-[var(--text-muted)] italic'}>{row.caseTitle}</span></td>
+                      <td className="px-4 py-2.5 text-[var(--text-muted)]">{row.casePriority || '—'}</td>
+                      <td className="px-4 py-2.5 text-[var(--text-muted)]">{row.caseStatus || '—'}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {view === 'detailed' && (
         <div className="divide-y divide-[var(--border)]">
           {requirements.map((req) => {
             const badge = COVERAGE_BADGE[req.coverageStatus] || COVERAGE_BADGE.unknown;
@@ -179,7 +259,10 @@ export default function Traceability() {
 
                 {isOpen && (
                   <div className="bg-[var(--bg-secondary)]/40 px-4 pb-4 pt-1">
-                    {req.description && <p className="mb-2 text-xs text-[var(--text-muted)]">{req.description}</p>}
+                    <RequirementContent req={detail || req} />
+                    {req.description && !(detail || req).businessRules?.length && !(detail || req).adminBehavior && !(detail || req).keystoneBehavior && (
+                      <p className="mb-2 whitespace-pre-wrap text-xs text-[var(--text-muted)]">{req.description}</p>
+                    )}
                     {!detail && <div className="py-3 text-xs text-[var(--text-muted)]">Loading linked cases…</div>}
                     {detail && linkedCases.length === 0 && (
                       <div className="flex items-center gap-2 py-3 text-xs text-[var(--text-muted)]">
@@ -217,6 +300,7 @@ export default function Traceability() {
             );
           })}
         </div>
+        )}
       </div>
     </div>
   );

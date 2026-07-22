@@ -255,6 +255,17 @@ export default function Reports() {
   
   // Active step & screenshot for inline expanded browser mockup
   const [activeStep, setActiveStep] = useState<{ reportId: string; step: Step } | null>(null);
+  // The report opened for full step-by-step detail (#9 — list is a summary; click opens detail).
+  const [detailReport, setDetailReport] = useState<Report | null>(null);
+
+  const stepCounts = (rep: Report) => {
+    const steps = rep.steps || [];
+    return {
+      passed: steps.filter((s) => /pass/i.test(String(s.outcome || ''))).length,
+      failed: steps.filter((s) => /fail/i.test(String(s.outcome || ''))).length,
+      total: steps.length,
+    };
+  };
 
   const handleDownloadPdf = async (reportId: string) => {
     try {
@@ -270,6 +281,12 @@ export default function Reports() {
       console.error(e);
       window.print();
     }
+  };
+
+  const handleShareReport = async (reportId: string) => {
+    const url = `${window.location.origin}${window.location.pathname}#report-${reportId}`;
+    try { await navigator.clipboard?.writeText(url); await showConfirm('Report link copied to clipboard.'); }
+    catch { /* clipboard unavailable */ }
   };
 
   const fetchReports = () => {
@@ -532,235 +549,96 @@ export default function Reports() {
 
         {/* Main Table Styled search similar to Image 2 */}
         <div className="flex-1 min-h-0 w-full overflow-x-auto overflow-y-auto rounded-b-xl">
-          <table className="w-full min-w-[1530px] table-fixed border-collapse text-left text-sm">
+          <table className="w-full min-w-[820px] border-collapse text-left text-sm">
             <thead className="bg-[var(--bg-secondary)] text-[var(--text-muted)] text-[11px] uppercase tracking-wider font-semibold border-b border-[var(--border)]">
               <tr>
                 <th className="w-10 px-4 py-3">
                   <input type="checkbox" checked={bulk.allSelected(filteredReports.map((r) => r.id))} onChange={() => bulk.toggleAll(filteredReports.map((r) => r.id))} />
                 </th>
-                <th className="w-16 px-4 py-3">ID</th>
-                <th className="w-[300px] px-4 py-3">Test Scenario</th>
-                <th className="w-24 px-4 py-3">Type</th>
-                <th className="w-[360px] px-4 py-3">Test Steps</th>
-                <th className="w-[420px] px-4 py-3">Expected Result</th>
-                <th className="w-[280px] px-4 py-3 text-left">Outcome</th>
-                <th className="w-[210px] px-4 py-3 text-left">Evidence</th>
+                <th className="w-24 px-4 py-3">ID</th>
+                <th className="px-4 py-3">Test Scenario</th>
+                <th className="w-28 px-4 py-3">Type</th>
+                <th className="w-32 px-4 py-3">Pass / Fail</th>
+                <th className="w-28 px-4 py-3">Duration</th>
+                <th className="w-28 px-4 py-3">Status</th>
+                <th className="w-14 px-4 py-3"></th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-[var(--border)] font-sans">
+            <tbody className="divide-y divide-[var(--border)]">
               {filteredReports.length === 0 ? (
-                <tr>
-                  <td colSpan={8} className="py-12 px-4 text-center text-sm text-[var(--text-muted)]">
-                    No test reports found.
-                  </td>
-                </tr>
-              ) : filteredReports.map((r, rIdx) => {
+                <tr><td colSpan={8} className="py-12 px-4 text-center text-sm text-[var(--text-muted)]">No test reports found.</td></tr>
+              ) : filteredReports.map((r) => {
+                const c = stepCounts(r);
+                const type = r.suiteName?.includes('Regression') ? 'Regression' : r.suiteName?.includes('Sanity') ? 'Sanity' : 'BVT';
                 return (
-                  <React.Fragment key={r.id}>
-                    {/* Scenario header / Main row */}
-                    <tr id={`row-container-${r.id}`} className={cn(
-                      "hover:bg-[var(--bg-secondary)]/40 transition-colors align-top text-left",
-                      activeStep?.reportId === r.id ? "bg-[var(--bg-secondary)]/10" : ""
-                    )}>
-                      <td className="py-4 px-4">
-                        <input type="checkbox" checked={bulk.isSelected(r.id)} onChange={() => bulk.toggle(r.id)} />
-                      </td>
-                      {/* ID column */}
-                      <td className="py-4 px-4 font-bold font-mono text-xs text-slate-950 dark:text-slate-100">
-                        {`TC-00${rIdx + 1}`}
-                      </td>
-                      
-                      {/* Test Scenario description with Plan and Date */}
-                      <td className="px-4 py-4">
-                        <div className="text-sm font-semibold leading-5 text-slate-900 dark:text-slate-100">
-                          {r.name}
-                        </div>
-                        <div className="mt-2">
-                          <FolderBadge folders={folders} folderId={r.folderId} />
-                        </div>
-                        <div className="text-[10px] text-slate-500 mt-1.5 leading-relaxed font-mono">
-                          Plan: {r.planName}<br />
-                          Requested: <span className="font-semibold text-slate-700 dark:text-slate-300">{r.requestedBy || 'Not specified'}</span><br />
-                          Duration: <span className="font-semibold text-slate-700 dark:text-slate-300">{r.executionTime || '1m 20s'}</span><br />
-                          Logged: {r.date}
-                        </div>
-                      </td>
-                      
-                      {/* Testing Type */}
-                      <td className="py-4 px-4 text-xs font-mono text-slate-600 dark:text-slate-400">
-                        <span className="bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-bold px-1.5 py-0.5 rounded text-[10px]">
-                          {r.suiteName?.includes('Regression') ? 'Regression' : r.suiteName?.includes('Sanity') ? 'Sanity' : 'BVT'}
-                        </span>
-                      </td>
-                      
-                      {/* Test steps numbered list block */}
-                      <td className="border-l border-[var(--border)] px-4 py-4">
-                        <div className="custom-scrollbar max-h-[calc(100dvh-450px)] space-y-3 overflow-y-auto pr-2">
-                          {r.steps?.map((stepItemSum, stepIdx) => (
-                            <div key={stepIdx} className="flex items-start gap-2 border-b border-dashed border-slate-100 pb-2 text-xs leading-5 text-slate-700 last:border-0 last:pb-0 dark:border-slate-800/40 dark:text-slate-200">
-                              <span className="shrink-0 select-none rounded bg-[var(--bg-secondary)] px-1.5 py-0.5 font-mono text-[10px] font-bold text-slate-400">{stepIdx + 1}</span>
-                              <span className="min-w-0 whitespace-normal break-words">{stepItemSum.action}</span>
-                            </div>
-                          ))}
-                        </div>
-                      </td>
-                      
-                      {/* Expected result numbered list block corresponding to steps */}
-                      <td className="border-l border-[var(--border)] px-4 py-4">
-                        <div className="custom-scrollbar max-h-[calc(100dvh-450px)] space-y-3 overflow-y-auto pr-2">
-                          {r.steps?.map((stepItemSum, stepIdx) => (
-                            <div key={stepIdx} className="flex items-start gap-2 border-b border-dashed border-slate-100 pb-2 text-xs leading-5 text-slate-500 last:border-0 last:pb-0 dark:border-slate-800/40 dark:text-slate-400">
-                              <span className="shrink-0 select-none rounded bg-[var(--bg-secondary)] px-1.5 py-0.5 font-mono text-[10px] font-bold text-slate-400">{stepIdx + 1}</span>
-                              <span className="min-w-0 whitespace-normal break-words">{stepItemSum.expected}</span>
-                            </div>
-                          ))}
-                        </div>
-                      </td>
-                      
-                      {/* Outcome Badge Status */}
-                      <td className="border-l border-[var(--border)] px-4 py-4 text-left">
-                        <span className={cn(
-                          "inline-flex px-2 py-0.5 rounded text-[11px] font-bold border leading-none tracking-wide",
-                          r.status === 'Passed' 
-                            ? "bg-emerald-500/10 text-emerald-600 border-emerald-500/20" 
-                            : "bg-red-500/10 text-red-650 border-red-500/20"
-                        )}>
-                          {r.status === 'Passed' ? 'Passed' : 'Failed'}
-                        </span>
-                        
-                        {r.status === 'Failed' && r.failureReason && (
-                          <span className="mt-2 block min-h-[150px] max-h-[260px] w-full overflow-y-auto whitespace-pre-wrap break-words rounded border border-red-500/20 bg-red-500/10 p-3 text-[11px] leading-5 text-red-300">
-                            {r.failureReason}
-                          </span>
-                        )}
-                      </td>
-                      
-                      {/* Evidence Step-triggering buttons Column */}
-                      <td className="border-l border-[var(--border)] px-4 py-4">
-                        <div className="custom-scrollbar flex max-h-[calc(100dvh-450px)] flex-col gap-2 overflow-y-auto pr-2">
-                          {r.steps?.map((stepItemSum, stepIdx) => (
-                            <div key={stepIdx} className="flex min-h-[30px] items-center gap-2 border-b border-dashed border-slate-100 pb-1.5 text-[11px] last:border-0 last:pb-0 dark:border-slate-800/40">
-                              <span className="w-5 shrink-0 select-none text-right font-mono font-bold text-slate-400">{stepIdx + 1}</span>
-                              {stepItemSum.screenshot ? (
-                                <button
-                                  type="button"
-                                  onClick={() => setActiveStep({ reportId: r.id, step: stepItemSum })}
-                                  className={cn(
-                                    "min-w-[78px] rounded-md border px-2.5 py-1 text-[10px] font-bold transition-all",
-                                    activeStep?.reportId === r.id && activeStep?.step.step === stepItemSum.step
-                                      ? "bg-[var(--accent)] text-white border-[var(--accent)] shadow"
-                                      : stepItemSum.outcome === 'Fail'
-                                      ? "border-red-500/30 bg-red-500/10 text-red-300 hover:bg-red-500/20"
-                                      : "bg-[var(--bg-secondary)] hover:bg-[var(--border)] border-[var(--border)] text-[var(--text-primary)]"
-                                  )}
-                                >
-                                  Step {stepItemSum.step}
-                                </button>
-                              ) : (
-                                <span className="text-slate-400 italic text-[10px]">No capture</span>
-                              )}
-                            </div>
-                          ))}
-                          
-                          {/* Selected PDF trigger buttons */}
-                          <div className="mt-3 flex gap-1.5 border-t border-[var(--border)] pt-3">
-                            <button
-                              type="button"
-                              onClick={() => handleDownloadPdf(r.id)}
-                              className="flex-1 px-2 py-1 bg-slate-50 hover:bg-slate-100 dark:bg-slate-900 dark:hover:bg-slate-800 text-slate-800 dark:text-slate-200 border border-slate-200 dark:border-slate-800 font-bold text-[10px] rounded shadow-sm text-center transition-all flex items-center justify-center gap-1 hover:shadow"
-                            >
-                              Selected PDF
-                            </button>
-                            <button
-                              type="button"
-                              onClick={(e) => handleDeleteReport(r.id, e)}
-                              className="px-2 py-1 bg-red-50 hover:bg-red-100 dark:bg-red-950/20 text-red-650 border border-red-200 dark:border-red-900/30 rounded font-bold transition-all shadow-sm flex items-center justify-center"
-                              title="Delete Report Entry"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
-                          </div>
-                        </div>
-                      </td>
-                    </tr>
-
-                    {/* Inline browser screen expander row when a step is active */}
-                    {activeStep?.reportId === r.id && (
-                      <tr className="bg-[var(--bg-secondary)]/15">
-                        <td colSpan={8} className="px-6 py-5 border-b border-[var(--border)]">
-                          {/* Custom Red Banner for Failures exactly as shown in 1st image */}
-                          {activeStep.step.outcome === 'Fail' && activeStep.step.reason && (
-                            <div className="mx-auto mb-4 flex max-w-5xl items-start gap-2 rounded-lg border border-red-500/20 bg-red-950/20 p-3 text-left text-xs shadow-inner">
-                              <AlertTriangle className="w-4 h-4 text-red-500 shrink-0 mt-0.5" />
-                              <div>
-                                <span className="font-extrabold text-red-500 block text-[10px] uppercase tracking-wider">REPORT FAILURE REASON</span>
-                                <p className="text-red-400 font-mono text-[11px] mt-1 leading-relaxed">{activeStep.step.reason}</p>
-                              </div>
-                            </div>
-                          )}
-
-                          {/* Beautiful simulated browser sandbox exactly as image 1 */}
-                          <div className="mx-auto mb-1 flex max-w-5xl flex-col overflow-hidden rounded-xl border border-slate-800 bg-slate-950 text-left font-sans shadow-2xl">
-                            {/* Browser Header Controls */}
-                            <div className="flex items-center justify-between gap-3 border-b border-slate-800 bg-slate-900 px-3.5 py-2">
-                              <div className="flex min-w-0 items-center gap-1.5">
-                                <span className="w-2.5 h-2.5 rounded-full bg-red-500/90"></span>
-                                <span className="w-2.5 h-2.5 rounded-full bg-yellow-500/90"></span>
-                                <span className="w-2.5 h-2.5 rounded-full bg-emerald-500/90"></span>
-                                <span className="ml-3 min-w-0 max-w-2xl truncate rounded border border-slate-800 bg-slate-950 px-3.5 py-0.5 font-mono text-[10px] text-slate-400">
-                                  {SCREENSHOT_PRESETS[activeStep.step.screenshot]?.url || activeStep.step.screenshot || 'No screenshot URL'}
-                                </span>
-                              </div>
-                              <span className="hidden shrink-0 items-center gap-1 rounded border border-emerald-500/25 bg-emerald-950/30 px-2 py-0.5 font-mono text-[9px] font-extrabold text-emerald-400 sm:flex">
-                                <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse mr-0.5"></span>
-                                PLAYWRIGHT SCREENSHOT ENGINE
-                              </span>
-                              <button
-                                type="button"
-                                onClick={() => setActiveStep(null)}
-                                className="shrink-0 rounded-md border border-slate-700 bg-slate-950 px-2.5 py-1 text-[10px] font-semibold text-slate-300 hover:bg-slate-800"
-                              >
-                                Close
-                              </button>
-                            </div>
-                            
-                            {/* Browser Contents Viewport - Raw automated screenshot */}
-                            <div className="flex min-h-[260px] items-center justify-center overflow-hidden bg-slate-100 p-0 transition-all dark:bg-slate-950">
-                              {activeStep.step.screenshot ? (
-                                <img
-                                  src={withBasePath(`/api/screenshot?url=${encodeURIComponent(activeStep.step.screenshot)}`)}
-                                  alt={SCREENSHOT_PRESETS[activeStep.step.screenshot]?.title || `Live Verification of ${activeStep.step.screenshot}`}
-                                  className="max-h-[560px] w-full object-contain object-top"
-                                  referrerPolicy="no-referrer"
-                                  onError={(e) => {
-                                    e.currentTarget.src = "https://images.unsplash.com/photo-1541560052-5e137f229371?w=1280&q=80";
-                                  }}
-                                />
-                              ) : (
-                                <div className="p-8 text-center text-slate-500 font-mono text-xs">No screenshot path loaded for this execution step.</div>
-                              )}
-                            </div>
-                            
-                            {/* Browser Footer Metadata bar */}
-                            <div className="flex items-center justify-between gap-4 border-t border-slate-800 bg-slate-900 px-4 py-2 text-[10px] font-medium text-slate-500">
-                              <span className="min-w-0 truncate font-bold text-slate-300">
-                                {SCREENSHOT_PRESETS[activeStep.step.screenshot]?.title || `Automated live screen of ${activeStep.step.screenshot}`}
-                              </span>
-                              <span className="shrink-0 font-mono text-slate-400">
-                                Step {activeStep.step.step} Evidence Screenshot
-                              </span>
-                            </div>
-                          </div>
-                        </td>
-                      </tr>
-                    )}
-                  </React.Fragment>
+                  <tr key={r.id} onClick={() => setDetailReport(r)} className="cursor-pointer align-top hover:bg-[var(--bg-secondary)]/40 transition-colors">
+                    <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
+                      <input type="checkbox" checked={bulk.isSelected(r.id)} onChange={() => bulk.toggle(r.id)} />
+                    </td>
+                    <td className="px-4 py-3 font-mono text-xs text-[var(--text-muted)]">{r.id}</td>
+                    <td className="px-4 py-3">
+                      <div className="font-semibold text-[var(--text-primary)]">{r.name}</div>
+                      <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-[var(--text-muted)]"><FolderBadge folders={folders} folderId={r.folderId} />{r.planName ? <span>· {r.planName}</span> : null}<span>· {r.date}</span></div>
+                    </td>
+                    <td className="px-4 py-3"><span className="rounded bg-[var(--bg-secondary)] px-1.5 py-0.5 text-[10px] font-bold text-[var(--text-muted)]">{type}</span></td>
+                    <td className="px-4 py-3 text-xs"><span className="font-semibold text-emerald-500">{c.passed}</span> / <span className={c.failed ? 'font-semibold text-red-500' : 'text-[var(--text-muted)]'}>{c.failed}</span> <span className="text-[var(--text-muted)]">of {c.total}</span></td>
+                    <td className="px-4 py-3 text-xs text-[var(--text-muted)]">{r.executionTime && r.executionTime !== 'Generated' ? r.executionTime : '—'}</td>
+                    <td className="px-4 py-3"><span className={cn('inline-flex rounded border px-2 py-0.5 text-[11px] font-bold', r.status === 'Passed' ? 'border-emerald-500/20 bg-emerald-500/10 text-emerald-600' : r.status === 'Failed' ? 'border-red-500/20 bg-red-500/10 text-red-500' : 'border-slate-500/20 bg-slate-500/10 text-slate-400')}>{r.status}</span></td>
+                    <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}><button onClick={(e) => handleDeleteReport(r.id, e)} title="Delete report" className="rounded p-1 text-[var(--text-muted)] hover:bg-red-500/10 hover:text-red-500"><Trash2 className="h-4 w-4" /></button></td>
+                  </tr>
                 );
               })}
             </tbody>
           </table>
         </div>
       </div>
+
+      {/* Report detail — full step-by-step + evidence + Download/Share (the list is a summary now). */}
+      <Modal isOpen={!!detailReport} onClose={() => setDetailReport(null)} title={detailReport?.name || 'Report'} size="xl"
+        footer={
+          <div className="flex w-full items-center justify-between gap-3">
+            <div className="text-xs text-[var(--text-muted)]">Requested by {detailReport?.requestedBy || '—'} · {detailReport?.executionTime && detailReport.executionTime !== 'Generated' ? detailReport.executionTime : '—'} · {detailReport?.date}</div>
+            <div className="flex gap-2">
+              <button onClick={() => detailReport && handleShareReport(detailReport.id)} className="inline-flex items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] hover:border-[var(--accent)]"><ExternalLink className="h-4 w-4" /> Share</button>
+              <button onClick={() => detailReport && handleDownloadPdf(detailReport.id)} className="inline-flex items-center gap-1.5 rounded-md bg-[var(--accent)] px-3 py-2 text-sm font-medium text-white hover:bg-[var(--accent-hover)]"><FileSpreadsheet className="h-4 w-4" /> Download</button>
+            </div>
+          </div>
+        }>
+        {detailReport && (() => {
+          const c = stepCounts(detailReport);
+          return (
+            <div id={`row-container-${detailReport.id}`} className="space-y-4">
+              <div className="flex flex-wrap items-center gap-2 text-sm">
+                <span className={cn('inline-flex rounded border px-2 py-0.5 text-xs font-bold', detailReport.status === 'Passed' ? 'border-emerald-500/20 bg-emerald-500/10 text-emerald-600' : detailReport.status === 'Failed' ? 'border-red-500/20 bg-red-500/10 text-red-500' : 'border-slate-500/20 bg-slate-500/10 text-slate-400')}>{detailReport.status}</span>
+                <span className="text-[var(--text-muted)]"><span className="font-semibold text-emerald-500">{c.passed}</span> passed · <span className={c.failed ? 'font-semibold text-red-500' : ''}>{c.failed}</span> failed · {c.total} steps</span>
+                {detailReport.planName && <span className="text-[var(--text-muted)]">· Plan: {detailReport.planName}</span>}
+                {detailReport.suiteName && <span className="text-[var(--text-muted)]">· Suite: {detailReport.suiteName}</span>}
+              </div>
+              {detailReport.failureReason && (
+                <div className="whitespace-pre-wrap rounded-md border border-red-500/20 bg-red-500/10 p-3 text-xs text-red-400">{detailReport.failureReason}</div>
+              )}
+              <div className="overflow-x-auto rounded-lg border border-[var(--border)]">
+                <table className="w-full min-w-[640px] text-left text-sm">
+                  <thead className="bg-[var(--bg-secondary)] text-[11px] uppercase tracking-wide text-[var(--text-muted)]">
+                    <tr><th className="w-10 px-3 py-2">#</th><th className="px-3 py-2">Test Step</th><th className="px-3 py-2">Expected Result</th><th className="w-24 px-3 py-2">Outcome</th><th className="w-24 px-3 py-2">Evidence</th></tr>
+                  </thead>
+                  <tbody className="divide-y divide-[var(--border)]">
+                    {(detailReport.steps || []).map((s, i) => (
+                      <tr key={i} className="align-top">
+                        <td className="px-3 py-2 font-mono text-xs text-[var(--text-muted)]">{i + 1}</td>
+                        <td className="px-3 py-2 text-[var(--text-primary)]">{s.action}</td>
+                        <td className="px-3 py-2 text-[var(--text-muted)]">{s.expected}</td>
+                        <td className="px-3 py-2"><span className={cn('inline-flex rounded border px-1.5 py-0.5 text-[10px] font-bold', /pass/i.test(String(s.outcome)) ? 'border-emerald-500/20 bg-emerald-500/10 text-emerald-600' : /fail/i.test(String(s.outcome)) ? 'border-red-500/20 bg-red-500/10 text-red-500' : 'border-slate-500/20 bg-slate-500/10 text-slate-400')}>{s.outcome || '—'}</span></td>
+                        <td className="px-3 py-2">{s.screenshot ? <button onClick={() => setLightboxKey(s.screenshot)} className="rounded border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-xs text-[var(--accent)] hover:border-[var(--accent)]">View</button> : <span className="text-xs text-[var(--text-muted)]">—</span>}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          );
+        })()}
+      </Modal>
 
       {/* Lightbox Modal for Screenshots Evidence */}
       {lightboxKey && (
