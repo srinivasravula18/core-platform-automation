@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { cn } from '@/src/lib/utils';
-import { formatRequirementSrs, type RequirementSrsModule } from '@/src/lib/requirementSrs';
+import { formatBusinessRulesMarkdown, formatRequirementSrs, type RequirementSrsModule } from '@/src/lib/requirementSrs';
 import { MarkdownText } from '@/src/components/MarkdownText';
 import {
   Target,
@@ -100,13 +100,8 @@ export function RequirementDiscoveryResult({ result, onGenerateTests }: { result
 
       {/* Business rules */}
       {srsModules.length === 0 && businessRules.length > 0 && (
-        <div className="mb-3">
-          <div className="mb-1 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
-            <ScrollText className="h-3.5 w-3.5" /> Business rules
-          </div>
-          <ul className="list-disc space-y-0.5 pl-5 text-[11px] text-[var(--text-primary)]">
-            {businessRules.map((r, i) => <li key={i}>{r}</li>)}
-          </ul>
+        <div className="mb-3 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-xs text-[var(--text-primary)]">
+          <MarkdownText value={formatBusinessRulesMarkdown(businessRules)} />
         </div>
       )}
 

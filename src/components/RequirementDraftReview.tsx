@@ -6,7 +6,7 @@ import {
   Trash2,
 } from 'lucide-react';
 import { cn } from '@/src/lib/utils';
-import { formatRequirementSrs, type RequirementSrsModule } from '@/src/lib/requirementSrs';
+import { formatBusinessRulesMarkdown, formatRequirementSrs, type RequirementSrsModule } from '@/src/lib/requirementSrs';
 import { MarkdownText } from '@/src/components/MarkdownText';
 
 const COVERAGE_BADGE: Record<string, { label: string; cls: string }> = {
@@ -83,13 +83,8 @@ export function RequirementDraftReview({
         )}
 
         {srsModules.length === 0 && businessRules.length > 0 && (
-          <div>
-            <div className="mb-1 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
-              <ScrollText className="h-3.5 w-3.5" /> Business rules
-            </div>
-            <ul className="list-disc space-y-1 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-5 py-2 text-xs text-[var(--text-primary)]">
-              {businessRules.map((rule, index) => <li key={index}>{rule}</li>)}
-            </ul>
+          <div className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-xs text-[var(--text-primary)]">
+            <MarkdownText value={formatBusinessRulesMarkdown(businessRules)} />
           </div>
         )}
 

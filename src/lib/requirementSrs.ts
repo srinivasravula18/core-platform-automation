@@ -9,6 +9,10 @@ export type RequirementSrsModule = {
 
 export const SRS_INTRO = 'Here is a structured Software Requirements Specification (SRS) formatted into distinct functional modules based on your provided details:';
 
+export function formatBusinessRulesMarkdown(rules: string[]): string {
+  return ['## Business Rules', ...rules.filter(Boolean).map((rule) => `- ${rule}`)].join('\n\n');
+}
+
 export function formatRequirementSrs(modules: RequirementSrsModule[]): string {
   const sections = modules.map((module, moduleIndex) => {
     const requirements = module.requirements.map((requirement, requirementIndex) => {

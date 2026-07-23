@@ -6,7 +6,7 @@ import { useBulkDelete } from '@/src/lib/useBulkDelete';
 import { Modal } from '@/src/components/Modal';
 import { showAlert, showConfirm } from '@/src/lib/dialog';
 import { MarkdownText } from '@/src/components/MarkdownText';
-import { formatRequirementSrs, type RequirementSrsModule } from '@/src/lib/requirementSrs';
+import { formatBusinessRulesMarkdown, formatRequirementSrs, type RequirementSrsModule } from '@/src/lib/requirementSrs';
 
 const REQ_STATUSES = ['Draft', 'Under Review', 'Approved', 'Deprecated'];
 
@@ -305,7 +305,12 @@ export default function Requirements() {
             <textarea value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} className={`${inputClass} h-20 resize-y`} />
           </div>
           <div>
-            <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Business rules (one per line)</label>
+            {form.businessRules.trim() && (
+              <div className="mb-2 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-xs text-[var(--text-primary)]">
+                <MarkdownText value={formatBusinessRulesMarkdown(form.businessRules.split('\n').map((rule) => rule.trim()).filter(Boolean))} />
+              </div>
+            )}
+            <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Edit business rules (one per line)</label>
             <textarea value={form.businessRules} onChange={(e) => setForm({ ...form, businessRules: e.target.value })} className={`${inputClass} h-28 resize-y font-mono text-xs`} />
           </div>
           <div>

@@ -789,8 +789,8 @@ export default function AgentConsole() {
   const [selectedEffort, setSelectedEffort] = useState('medium');
   // Existing repository folders, for the deep-run "save results to folder" picker.
   const [folderOptions, setFolderOptions] = useState<Array<{ id: string; name: string; path?: string }>>([]);
-  // Requirement mode: toggled with Shift+Tab. When on, every message is routed to
-  // the requirement-discovery pipeline regardless of phrasing.
+  // Requirement mode: selected from the composer. When on, every message is routed
+  // to the requirement-discovery pipeline regardless of phrasing.
   const [reqMode, setReqMode] = useState(false);
   const [scriptAuthorMode, setScriptAuthorMode] = useState(false);
   const handleProviderChange = useCallback((provider: string) => {
@@ -2170,7 +2170,7 @@ export default function AgentConsole() {
       }
 
       // 2) Requirement creation only:
-      //    - Shift+Tab requirement mode keeps forcing this route.
+      //    - Composer requirement mode keeps forcing this route.
       //    - Plain-text requests like "create requirements only for list view" also bypass
       //      the goal router, so the console drafts a requirement without starting a deep run.
       const requirementOnly = isExplicitRequirementOnlyRequest(text);
@@ -3333,16 +3333,10 @@ export default function AgentConsole() {
           )}
         >
           {reqMode && (
-            <div className="mb-1 flex items-center justify-between gap-2 px-1">
+            <div className="mb-1 flex items-center gap-2 px-1">
               <span className="inline-flex items-center gap-1.5 rounded-full bg-[var(--accent)]/10 px-2.5 py-1 text-[11px] font-semibold text-[var(--accent)]">
                 <Target className="h-3.5 w-3.5" /> Requirement mode
               </span>
-              <button
-                onClick={() => setReqMode(false)}
-                className="text-[11px] font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]"
-              >
-                Exit (Shift+Tab)
-              </button>
             </div>
           )}
           <textarea
@@ -3366,11 +3360,6 @@ export default function AgentConsole() {
               requestAnimationFrame(() => { try { el.selectionStart = el.selectionEnd = caret; } catch { /* ignore */ } });
             }}
             onKeyDown={(e) => {
-              if (e.key === 'Tab' && e.shiftKey) {
-                e.preventDefault();
-                setReqMode((m) => !m);
-                return;
-              }
               if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
                 void send();
@@ -3444,6 +3433,21 @@ export default function AgentConsole() {
               </div>
               <button
                 type="button"
+                onClick={() => setReqMode((mode) => !mode)}
+                aria-pressed={reqMode}
+                title="Create source-grounded requirements"
+                className={cn(
+                  'inline-flex items-center gap-1 rounded-md border px-2 py-1 text-[11px] font-medium transition-colors',
+                  reqMode
+                    ? 'border-[var(--accent)] bg-[var(--accent)]/10 text-[var(--accent)]'
+                    : 'border-[var(--border)] text-[var(--text-muted)] hover:border-[var(--accent)]',
+                )}
+              >
+                <Target className="h-3.5 w-3.5" />
+                Requirements
+              </button>
+              <button
+                type="button"
                 onClick={() => setScriptAuthorMode((m) => !m)}
                 title="Author one Playwright script by driving the live app from your exact steps"
                 className={cn(
@@ -3462,7 +3466,7 @@ export default function AgentConsole() {
                 </span>
               ) : (
                 <span className="hidden sm:inline">
-                  {scriptAuthorMode ? 'Script author mode: enter exact UI steps' : `Enter to send · Shift+Enter for a new line · Shift+Tab for ${reqMode ? 'normal' : 'requirement'} mode`}
+                  {scriptAuthorMode ? 'Script author mode: enter exact UI steps' : 'Enter to send · Shift+Enter for a new line'}
                 </span>
               )}
             </div>

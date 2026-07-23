@@ -911,6 +911,7 @@ async function persistAgentRequirementArtifacts(run: any) {
     businessRules: Array.isArray(understanding.businessRules) && understanding.businessRules.length
       ? understanding.businessRules
       : structuredUnderstanding.businessRules,
+    srsModules: Array.isArray(understanding.srsModules) ? understanding.srsModules : [],
     dataPopulationNotes: understanding.dataPopulationNotes || '',
     metadataRefs: Array.isArray(understanding.metadataRefs) ? understanding.metadataRefs : [],
     sourceFiles: [],
@@ -5571,6 +5572,12 @@ Rules:
         status: 'completed',
         output: `Approved understanding:\n${approvedUnderstanding}`,
       });
+    }
+
+    // Proceed is the approval boundary. Save the Draft before either background engine can
+    // pause or fail; later phases update this id and attach cases for Traceability.
+    if (newRun.understandingSource !== 'requirement') {
+      await persistAgentRequirementArtifacts(newRun);
     }
 
     db.agentRuns.unshift(newRun);
