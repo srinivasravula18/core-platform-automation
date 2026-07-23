@@ -5,6 +5,7 @@ import {
   relatedCasesForSuite,
   suiteHierarchyDepth,
   suiteModuleName,
+  suiteParentIds,
   suitePlanIds,
 } from '../src/lib/suiteCaseSelection';
 
@@ -15,6 +16,7 @@ const cases = [
 ];
 
 assert.deepEqual(relatedCasesForSuite(cases, 'F-1', 'PARENT-1').map((item) => item.id), ['TC-1', 'TC-3']);
+assert.deepEqual(relatedCasesForSuite(cases, 'F-1', ['PARENT-1', 'PARENT-2']).map((item) => item.id), ['TC-1', 'TC-2', 'TC-3']);
 assert.deepEqual(relatedCasesForSuite(cases, 'F-1', '').map((item) => item.id), ['TC-1', 'TC-2']);
 assert.deepEqual(caseSuiteAssignment(cases[0], 'SUITE-NEW'), {
   testSuiteId: 'SUITE-NEW',
@@ -33,4 +35,5 @@ assert.deepEqual(orderSuitesByHierarchy(suites).map((suite) => suite.id), ['PARE
 assert.equal(suiteHierarchyDepth(suites[1], suites), 2);
 assert.deepEqual(suitePlanIds({ testPlanId: 'PLAN-1' }), ['PLAN-1']);
 assert.deepEqual(suitePlanIds({ testPlanId: 'PLAN-1', testPlanIds: ['PLAN-1', 'PLAN-2'] }), ['PLAN-1', 'PLAN-2']);
+assert.deepEqual(suiteParentIds({ parentSuite: 'PARENT-1', parentSuiteIds: ['PARENT-1', 'PARENT-2'] }), ['PARENT-1', 'PARENT-2']);
 console.log('manual suite case selection: ok');

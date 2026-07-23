@@ -102,6 +102,7 @@ function mapSuite(r: any) {
     name: r.name,
     description: r.description,
     parentSuite: r.parent_suite,
+    parentSuiteIds: r.parent_suite_ids || (r.parent_suite ? [r.parent_suite] : []),
     testPlanId: r.test_plan_id,
     testPlanIds: r.test_plan_ids || (r.test_plan_id ? [r.test_plan_id] : []),
     module: r.module,
@@ -783,31 +784,34 @@ export const Suites = {
     return mapSuite(r);
   },
   async upsert(s: any): Promise<any> {
-    if (!isPgEnabled()) {
-      const idx = db.suites.findIndex((x: any) => x.id === s.id);
-      if (idx >= 0) db.suites[idx] = { ...db.suites[idx], ...s };
-      else db.suites.unshift(s);
-      return s;
-    }
-    const id = s.id || uid('SUITE');
+    const parentSuiteIds = Array.isArray(s.parentSuiteIds) ? s.parentSuiteIds.filter(Boolean) : (s.parentSuite ? [s.parentSuite] : []);
+    const primaryParentSuite = s.parentSuite || parentSuiteIds[0] || null;
     const planIds = Array.isArray(s.testPlanIds) ? s.testPlanIds.filter(Boolean) : (s.testPlanId ? [s.testPlanId] : []);
     const primaryPlanId = s.testPlanId || planIds[0] || null;
+    if (!isPgEnabled()) {
+      const idx = db.suites.findIndex((x: any) => x.id === s.id);
+      const normalized = { ...s, parentSuite: primaryParentSuite || '', parentSuiteIds, testPlanId: primaryPlanId || '', testPlanIds: planIds };
+      if (idx >= 0) db.suites[idx] = { ...db.suites[idx], ...normalized };
+      else db.suites.unshift(normalized);
+      return normalized;
+    }
+    const id = s.id || uid('SUITE');
     const row = await queryOne(
-      `INSERT INTO suites (id, name, description, parent_suite, test_plan_id, module, owner, tags, priority, status, folder_id, approval_state, proposed_by, source_run_id, test_plan_ids, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15, now(), now())
+      `INSERT INTO suites (id, name, description, parent_suite, test_plan_id, module, owner, tags, priority, status, folder_id, approval_state, proposed_by, source_run_id, test_plan_ids, parent_suite_ids, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16, now(), now())
        ON CONFLICT (id) DO UPDATE SET
          name=EXCLUDED.name, description=EXCLUDED.description, parent_suite=EXCLUDED.parent_suite,
          test_plan_id=EXCLUDED.test_plan_id, module=EXCLUDED.module, owner=EXCLUDED.owner,
          tags=EXCLUDED.tags, priority=EXCLUDED.priority, status=EXCLUDED.status, folder_id=EXCLUDED.folder_id,
          approval_state=EXCLUDED.approval_state, proposed_by=EXCLUDED.proposed_by, source_run_id=EXCLUDED.source_run_id,
-         test_plan_ids=EXCLUDED.test_plan_ids, updated_at=now()
+         test_plan_ids=EXCLUDED.test_plan_ids, parent_suite_ids=EXCLUDED.parent_suite_ids, updated_at=now()
        RETURNING *`,
       [
-        id, s.name || 'Untitled Suite', s.description || '', s.parentSuite || null,
+        id, s.name || 'Untitled Suite', s.description || '', primaryParentSuite,
         primaryPlanId, s.module || '', s.owner || '', s.tags || [],
         s.priority || 'Medium', s.status || 'Active', s.folderId || null,
         s.approvalState || 'approved', s.proposedBy || s.createdBy || 'human', s.sourceRunId || null,
-        JSON.stringify(planIds),
+        JSON.stringify(planIds), JSON.stringify(parentSuiteIds),
       ],
     );
     await writeScopeCols('suites', id, s);

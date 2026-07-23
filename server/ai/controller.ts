@@ -80,7 +80,7 @@ export async function buildWorkspaceContext(options: { query?: string; userId?: 
         suiteId: c.testSuiteId,
         createdAt: c.createdAt,
       })),
-      suites: take(suites).map((s: any) => ({ id: s.id, name: s.name, planId: s.testPlanId, planIds: s.testPlanIds || (s.testPlanId ? [s.testPlanId] : []), parentSuite: s.parentSuite, createdAt: s.createdAt })),
+      suites: take(suites).map((s: any) => ({ id: s.id, name: s.name, planId: s.testPlanId, planIds: s.testPlanIds || (s.testPlanId ? [s.testPlanId] : []), parentSuite: s.parentSuite, parentSuiteIds: s.parentSuiteIds || (s.parentSuite ? [s.parentSuite] : []), createdAt: s.createdAt })),
       plans: take(plans).map((p: any) => ({ id: p.id, name: p.name, status: p.status, createdAt: p.createdAt })),
       runs: take(runs).map((r: any) => ({ id: r.id, name: r.name, status: r.status, suiteId: r.suiteId, caseIds: r.caseIds, createdAt: r.createdAt || r.date })),
       scripts: take(scripts).map((s: any) => ({ id: s.id, filename: s.filename, caseId: s.caseId, createdAt: s.createdAt })),

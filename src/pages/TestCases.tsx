@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef, useMemo } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Search, Filter, MoreHorizontal, Plus, Sparkles, Loader2, Trash2, PlayCircle, ChevronDown, Code2 } from 'lucide-react';
+import { Search, Filter, MoreHorizontal, Plus, Sparkles, Loader2, Trash2, PlayCircle, Code2 } from 'lucide-react';
 import ExportMenu from '../components/ExportMenu';
 import { useAiSearch } from '@/src/lib/useAiSearch';
 import { useBulkDelete } from '@/src/lib/useBulkDelete';
@@ -16,44 +16,13 @@ import { useProjects } from '@/src/store/project';
 import { useDataVersion } from '@/src/store/data';
 import { TagEditor } from '@/src/components/TagEditor';
 import { TagMultiSelect } from '@/src/components/TagMultiSelect';
+import { MultiSelectDropdown } from '@/src/components/MultiSelectDropdown';
 
 const CASE_STATUSES = ['Draft', 'Under Review', 'Approved', 'Automated', 'Deprecated'];
 const PRIORITIES = ['Low', 'Medium', 'High', 'Critical'];
 const AUTOMATION_STATUSES = ['Automated', 'Not Automated', 'Automation Not Required', 'Cannot Be Automated'];
 const TESTING_SCOPES = ['Manual', 'Automation'];
 const TESTING_TYPES = ['Functional', 'Smoke', 'Sanity', 'Regression', 'Integration', 'End to End', 'Acceptance', 'Performance', 'Security', 'Usability', 'Exploratory'];
-
-// Generic multi-select dropdown used across the advanced filter panel and the edit-form plan/suite pickers.
-function MultiSelectDropdown({ label, options, value, onChange, className = '' }: { label: string; options: Array<{ id: string; name: string }>; value: string[]; onChange: (ids: string[]) => void; className?: string }) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement | null>(null);
-  useEffect(() => {
-    if (!open) return;
-    const away = (e: PointerEvent) => { if (!ref.current?.contains(e.target as Node)) setOpen(false); };
-    document.addEventListener('pointerdown', away);
-    return () => document.removeEventListener('pointerdown', away);
-  }, [open]);
-  const toggle = (id: string) => onChange(value.includes(id) ? value.filter((v) => v !== id) : [...value, id]);
-  const summary = value.length === 0 ? label : `${value.length} selected`;
-  return (
-    <div ref={ref} className={`relative ${className}`}>
-      <button type="button" onClick={() => setOpen((o) => !o)} className="flex w-full items-center justify-between gap-2 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2.5 py-1.5 text-xs text-[var(--text-primary)] outline-none hover:border-[var(--accent)]">
-        <span className="truncate">{summary}</span>
-        <ChevronDown className="h-3.5 w-3.5 shrink-0 opacity-70" />
-      </button>
-      {open && (
-        <div className="absolute left-0 right-0 z-40 mt-1 max-h-52 overflow-auto rounded-md border border-[var(--border)] bg-[var(--bg-card)] p-1 shadow-xl">
-          {options.length ? options.map((opt) => (
-            <label key={opt.id} className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-[var(--bg-secondary)]">
-              <input type="checkbox" checked={value.includes(opt.id)} onChange={() => toggle(opt.id)} />
-              <span className="min-w-0 truncate" title={opt.name}>{opt.name}</span>
-            </label>
-          )) : <span className="block px-2 py-1.5 text-xs text-[var(--text-muted)]">No options</span>}
-        </div>
-      )}
-    </div>
-  );
-}
 
 export default function TestCases() {
   const navigate = useNavigate();

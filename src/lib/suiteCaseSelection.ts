@@ -1,9 +1,10 @@
-export function relatedCasesForSuite(cases: any[], folderId: string, parentSuiteId: string): any[] {
-  if (!folderId && !parentSuiteId) return [];
+export function relatedCasesForSuite(cases: any[], folderId: string, parentSuiteIds: string | string[]): any[] {
+  const parentIds = Array.isArray(parentSuiteIds) ? parentSuiteIds : (parentSuiteIds ? [parentSuiteIds] : []);
+  if (!folderId && !parentIds.length) return [];
   return cases.filter((testCase) => {
-    if (parentSuiteId) {
-      return testCase.testSuiteId === parentSuiteId
-        || (Array.isArray(testCase.testSuiteIds) && testCase.testSuiteIds.includes(parentSuiteId));
+    if (parentIds.length) {
+      const caseSuiteIds = Array.isArray(testCase.testSuiteIds) ? testCase.testSuiteIds : (testCase.testSuiteId ? [testCase.testSuiteId] : []);
+      return caseSuiteIds.some((id: string) => parentIds.includes(id));
     }
     return testCase.folderId === folderId;
   });
@@ -33,8 +34,14 @@ export function suitePlanIds(suite: any): string[] {
     : (suite?.testPlanId ? [suite.testPlanId] : []);
 }
 
+export function suiteParentIds(suite: any): string[] {
+  return Array.isArray(suite?.parentSuiteIds) && suite.parentSuiteIds.length
+    ? suite.parentSuiteIds
+    : (suite?.parentSuite ? [suite.parentSuite] : []);
+}
+
 function suiteParent(suite: any, suites: any[]) {
-  const parentRef = suite?.parentSuite;
+  const parentRef = suiteParentIds(suite)[0];
   return parentRef ? suites.find((item) => item.id === parentRef || item.name === parentRef) : undefined;
 }
 

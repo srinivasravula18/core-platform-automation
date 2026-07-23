@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS suites (
   name            TEXT NOT NULL,
   description     TEXT DEFAULT '',
   parent_suite    TEXT,
+  parent_suite_ids JSONB DEFAULT '[]'::jsonb,
   test_plan_id    TEXT REFERENCES plans(id) ON DELETE SET NULL,
   module          TEXT DEFAULT '',
   owner           TEXT DEFAULT '',
@@ -271,6 +272,7 @@ ALTER TABLE cases ADD COLUMN IF NOT EXISTS testing_type      TEXT DEFAULT 'Funct
 ALTER TABLE cases ADD COLUMN IF NOT EXISTS test_plan_ids  JSONB DEFAULT '[]'::jsonb;
 ALTER TABLE cases ADD COLUMN IF NOT EXISTS test_suite_ids JSONB DEFAULT '[]'::jsonb;
 ALTER TABLE suites ADD COLUMN IF NOT EXISTS test_plan_ids JSONB DEFAULT '[]'::jsonb;
+ALTER TABLE suites ADD COLUMN IF NOT EXISTS parent_suite_ids JSONB DEFAULT '[]'::jsonb;
 
 -- Test-run assignment/classification fields (Assign To, Tags, State). Additive so existing readers
 -- are unaffected; `state` is a workflow state distinct from execution `status`.

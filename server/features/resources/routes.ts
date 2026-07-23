@@ -490,7 +490,8 @@ export function registerResourceRoutes(app: Express) {
       description: s.description,
       testPlanId: s.testPlanId || s.testPlanIds?.[0] || '',
       testPlanIds: uniqueStrings(s.testPlanIds?.length ? s.testPlanIds : (s.testPlanId ? [s.testPlanId] : [])),
-      parentSuite: s.parentSuite,
+      parentSuite: s.parentSuite || s.parentSuiteIds?.[0] || '',
+      parentSuiteIds: uniqueStrings(s.parentSuiteIds?.length ? s.parentSuiteIds : (s.parentSuite ? [s.parentSuite] : [])),
       module: s.module,
       owner: s.owner || 'User',
       priority: s.priority || 'Medium',
@@ -668,7 +669,8 @@ Rules:
     while (addedDescendant) {
       addedDescendant = false;
       suites.forEach((suite: any) => {
-        if (suiteIds.has(suite.parentSuite) && !suiteIds.has(suite.id)) {
+        const parentSuiteIds = uniqueStrings(suite.parentSuiteIds?.length ? suite.parentSuiteIds : [suite.parentSuite]);
+        if (parentSuiteIds.some((id) => suiteIds.has(id)) && !suiteIds.has(suite.id)) {
           suiteIds.add(suite.id);
           addedDescendant = true;
         }
