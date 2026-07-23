@@ -88,6 +88,14 @@ export function canLiveAuthorGoal(goal: string): boolean {
   return !/\b(unavailable|outage|dependency|backend|server-side|api fail|restore|simulate|mock|stub)\b/i.test(goal);
 }
 
+export function actionableAuthorBlockers(value: unknown, hasCredentials: boolean): string[] {
+  if (hasCredentials || !Array.isArray(value)) return [];
+  return value
+    .map((item) => String(item || '').trim())
+    .filter((item) => /\b(credentials?|username|password|sign\s*in|log\s*in|authentication)\b/i.test(item))
+    .slice(0, 4);
+}
+
 /** Snapshot the live page into a CLEAN, capped list of actionables with structured locators. */
 async function snapshot(page: Page, evidence: Evidence[], notes: string[] = []): Promise<Actionable[]> {
   const snapshotId = `snap_${randomUUID().slice(0, 8)}`;

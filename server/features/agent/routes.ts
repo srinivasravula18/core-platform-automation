@@ -12,7 +12,7 @@ import { capturePlaywrightEvidence, createAuthStorageState } from '../evidence/e
 import { gitGrep, readRepoFile, searchCodeWithContext } from '../git-agent/gitAgentService';
 import { analyzeFeatureFromSource, discoverFeatureInventoryFromSource, proposeGapCases } from '../requirements/requirementService';
 import { executePlaywrightScripts, killRunProcesses, sanitizeTestCode, repairTestCode } from '../playwright/executionService';
-import { liveAuthor, emitScript, canLiveAuthorGoal } from './liveAuthor';
+import { liveAuthor, emitScript, canLiveAuthorGoal, actionableAuthorBlockers } from './liveAuthor';
 import { inspectFlow, flowToScript } from './flowInspector';
 import { extractSelectorMap, renderSelectorMap, mapHas, correctSelectorMethods, type SelectorMap } from './selectorMap';
 
@@ -4650,9 +4650,10 @@ Existing test data hint: ${input.testData || '(none)'}
 
 Rules:
 - Understand the target app/module/tab/object from the wording.
+- The target app URL is already selected. Never block because the request is brief or omits a module, tab, object, or detailed workflow; resolve those details from the live DOM.
 - If the user asks for random test data, create concrete valid-looking values.
 - Login is a silent setup step when saved credentials are available.
-- If login is required but saved credentials are not available, add one blocker.
+- The only valid blocker is that login is required but saved credentials are not available.
 - Return only the real app workflow. Do not include QA assistant/chat/UI behavior.`,
       });
       const obj = result.object || {};
@@ -4660,7 +4661,7 @@ Rules:
         understoodGoal: String(obj.understoodGoal || input.goal),
         workflow: Array.isArray(obj.workflow) ? obj.workflow.map(String).filter(Boolean).slice(0, 12) : fallback.workflow,
         testData: String(obj.testData || input.testData || ''),
-        blockers: Array.isArray(obj.blockers) ? obj.blockers.map(String).filter(Boolean).slice(0, 4) : [],
+        blockers: actionableAuthorBlockers(obj.blockers, input.hasCredentials),
       };
     } catch {
       return fallback;
