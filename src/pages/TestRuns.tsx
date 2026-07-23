@@ -10,6 +10,7 @@ import { AIActionModal } from '@/src/components/AIActionModal';
 import { FolderSelect } from '@/src/components/FolderSelect';
 import { FolderBadge } from '@/src/components/FolderBadge';
 import { AutomationRunArtifacts } from '@/src/components/AutomationRunArtifacts';
+import { TagEditor } from '@/src/components/TagEditor';
 import { showAlert } from '@/src/lib/dialog';
 
 function getRunStats(run: any) {
@@ -64,12 +65,16 @@ export default function TestRuns() {
   // #3/#4/#5 — pick cases from the folder tree, map to a Test Plan, and set Assign To / Tags / State.
   const [newRunPlanId, setNewRunPlanId] = useState('');
   const [newRunAssignedTo, setNewRunAssignedTo] = useState('');
-  const [newRunTags, setNewRunTags] = useState('');
+  const [newRunTags, setNewRunTags] = useState<string[]>([]);
   const [newRunState, setNewRunState] = useState('Not Started');
   const [newRunCaseIds, setNewRunCaseIds] = useState<Set<string>>(new Set());
   const [runCaseSearch, setRunCaseSearch] = useState('');
   const [expandedRunFolders, setExpandedRunFolders] = useState<Set<string>>(new Set());
   const [plans, setPlans] = useState<any[]>([]);
+  const tagOptions = useMemo(() => Array.from(new Set<string>(cases
+    .flatMap((testCase) => Array.isArray(testCase.tags) ? testCase.tags : [])
+    .map((tag: any) => String(tag).trim())
+    .filter(Boolean))).sort(), [cases]);
 
   const fetchData = () => {
     setLoading(true);
@@ -189,7 +194,7 @@ export default function TestRuns() {
     setNewRunFolderId('');
     setNewRunPlanId('');
     setNewRunAssignedTo('');
-    setNewRunTags('');
+    setNewRunTags([]);
     setNewRunState('Not Started');
     setNewRunCaseIds(new Set());
     setRunCaseSearch('');
@@ -200,14 +205,13 @@ export default function TestRuns() {
   const handleSaveRun = () => {
     if (!newRunName.trim()) return;
     if (!newRunFolderId) { void showAlert('Select a folder or create one first.'); return; }
-    const tags = newRunTags.split(',').map((t) => t.trim()).filter(Boolean);
     const caseIds = Array.from(newRunCaseIds);
     const shared = {
       name: newRunName,
       testPlanId: newRunPlanId,
       requestedBy: newRunRequester,
       assignedTo: newRunAssignedTo,
-      tags,
+      tags: newRunTags,
       state: newRunState,
       executionTime: newRunExecutionTime,
       targetUrl: newRunTargetUrl,
@@ -487,9 +491,12 @@ export default function TestRuns() {
                 {RUN_STATES.map((s) => <option key={s} value={s}>{s}</option>)}
               </select>
             </label>
-            <label className="block text-xs font-medium text-[var(--text-muted)]">Tags
-              <input value={newRunTags} onChange={(e) => setNewRunTags(e.target.value)} placeholder="comma,separated" className="mt-1 w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm text-[var(--text-primary)]" />
-            </label>
+            <div>
+              <label className="block text-xs font-medium text-[var(--text-muted)]">Tags</label>
+              <div className="mt-1">
+                <TagEditor options={tagOptions} value={newRunTags} onChange={setNewRunTags} />
+              </div>
+            </div>
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">

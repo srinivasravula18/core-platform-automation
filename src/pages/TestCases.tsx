@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef, useMemo } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Search, Filter, MoreHorizontal, Plus, Sparkles, Loader2, Trash2, PlayCircle, X, ChevronDown, Code2 } from 'lucide-react';
+import { Search, Filter, MoreHorizontal, Plus, Sparkles, Loader2, Trash2, PlayCircle, ChevronDown, Code2 } from 'lucide-react';
 import ExportMenu from '../components/ExportMenu';
 import { useAiSearch } from '@/src/lib/useAiSearch';
 import { useBulkDelete } from '@/src/lib/useBulkDelete';
@@ -14,6 +14,7 @@ import { useRemoteAgentFlag } from '@/src/lib/useAutomation';
 import { showAlert, showConfirm } from '@/src/lib/dialog';
 import { useProjects } from '@/src/store/project';
 import { useDataVersion } from '@/src/store/data';
+import { TagEditor } from '@/src/components/TagEditor';
 
 const CASE_STATUSES = ['Draft', 'Under Review', 'Approved', 'Automated', 'Deprecated'];
 const PRIORITIES = ['Low', 'Medium', 'High', 'Critical'];
@@ -49,79 +50,6 @@ function TagMultiSelect({ options, value, onChange }: { options: string[]; value
         )) : <span className="block px-2 py-1.5 text-xs text-[var(--text-muted)]">No tags available</span>}
       </div> : null}
     </details>
-  );
-}
-
-// Edit-form tag control: pick from existing tags (dropdown) or create a new one — no free typing
-// that silently coins tags. Selected tags show as removable chips (bug: tag field allowed only manual entry).
-function TagEditor({ options, value, onChange }: { options: string[]; value: string[]; onChange: (tags: string[]) => void }) {
-  const [query, setQuery] = useState('');
-  const [open, setOpen] = useState(false);
-  const boxRef = useRef<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const onClickAway = (event: PointerEvent) => {
-      if (!boxRef.current?.contains(event.target as Node)) setOpen(false);
-    };
-    document.addEventListener('pointerdown', onClickAway);
-    return () => document.removeEventListener('pointerdown', onClickAway);
-  }, [open]);
-
-  const add = (tag: string) => {
-    const clean = tag.trim();
-    if (!clean || value.includes(clean)) { setQuery(''); return; }
-    onChange([...value, clean]);
-    setQuery('');
-  };
-  const remove = (tag: string) => onChange(value.filter((t) => t !== tag));
-
-  const q = query.trim().toLowerCase();
-  const available = options.filter((t) => !value.includes(t));
-  const suggestions = q ? available.filter((t) => t.toLowerCase().includes(q)) : available;
-  const canCreate = Boolean(q) && !options.some((t) => t.toLowerCase() === q) && !value.some((t) => t.toLowerCase() === q);
-
-  return (
-    <div ref={boxRef} className="relative">
-      <div
-        className="flex flex-wrap items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 focus-within:border-[var(--accent)]"
-        onClick={() => setOpen(true)}
-      >
-        {value.map((tag) => (
-          <span key={tag} className="inline-flex items-center gap-1 rounded bg-[var(--accent)]/15 px-1.5 py-0.5 text-xs font-medium text-[var(--accent)]">
-            {tag}
-            <button type="button" onClick={(e) => { e.stopPropagation(); remove(tag); }} title={`Remove ${tag}`} className="opacity-70 hover:opacity-100">
-              <X className="h-3 w-3" />
-            </button>
-          </span>
-        ))}
-        <input
-          value={query}
-          onChange={(e) => { setQuery(e.target.value); setOpen(true); }}
-          onFocus={() => setOpen(true)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') { e.preventDefault(); if (canCreate || suggestions.length) add(canCreate ? query : suggestions[0]); }
-            if (e.key === 'Backspace' && !query && value.length) remove(value[value.length - 1]);
-          }}
-          placeholder={value.length ? 'Add tag…' : 'Select or create tags…'}
-          className="min-w-[8rem] flex-1 bg-transparent px-0.5 py-0.5 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none"
-        />
-      </div>
-      {open && (suggestions.length > 0 || canCreate) && (
-        <div className="absolute left-0 right-0 z-30 mt-1 max-h-52 overflow-auto rounded-md border border-[var(--border)] bg-[var(--bg-card)] p-1 shadow-xl">
-          {canCreate && (
-            <button type="button" onClick={() => add(query)} className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-[var(--accent)] hover:bg-[var(--bg-secondary)]">
-              <Plus className="h-3.5 w-3.5" /> Create “{query.trim()}”
-            </button>
-          )}
-          {suggestions.map((tag) => (
-            <button key={tag} type="button" onClick={() => add(tag)} className="block w-full truncate rounded px-2 py-1.5 text-left text-xs text-[var(--text-primary)] hover:bg-[var(--bg-secondary)]" title={tag}>
-              {tag}
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
   );
 }
 
