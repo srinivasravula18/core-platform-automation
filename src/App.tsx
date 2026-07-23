@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { BrowserRouter, Routes, Route, Link, Navigate, useLocation, useNavigate } from 'react-router-dom';
-import { LayoutDashboard, TestTube2, Bug, Settings, BrainCircuit, PlayCircle, FolderTree, Sun, Moon, Search, CircleUser, Layers, Menu, ClipboardList, GitBranch, Command, MessagesSquare, ChevronDown, LogOut, Target, ScrollText, Radio, HardDrive, CalendarClock, Gauge } from 'lucide-react';
+import { LayoutDashboard, TestTube2, Bug, Settings, BrainCircuit, PlayCircle, FolderTree, Sun, Moon, Search, CircleUser, Layers, Menu, ClipboardList, GitBranch, Command, MessagesSquare, ChevronDown, LogOut, Target, ScrollText, Radio, HardDrive, CalendarClock, Gauge, BookOpen } from 'lucide-react';
 import { useRemoteAgentFlag } from '@/src/lib/useAutomation';
 import { cn } from '@/src/lib/utils';
 import { useTheme } from '@/src/store/theme';
@@ -23,6 +23,7 @@ import TestRuns from '@/src/pages/TestRuns';
 import Defects from '@/src/pages/Defects';
 import Reports from '@/src/pages/Reports';
 import SettingsPage from '@/src/pages/Settings';
+import Documentation from '@/src/pages/Documentation';
 import GitAgent from '@/src/pages/GitAgent';
 import TestRepository from '@/src/pages/TestRepository';
 import Requirements from '@/src/pages/Requirements';
@@ -148,13 +149,18 @@ function Topbar({ onMenuClick, onCommandBarOpen }: { onMenuClick: () => void; on
   const [searchResults, setSearchResults] = useState<{ intents: any[]; summary: string } | null>(null);
   const [searching, setSearching] = useState(false);
   const [showResults, setShowResults] = useState(false);
+  const [profileOpen, setProfileOpen] = useState(false);
   const searchRef = useRef<HTMLDivElement>(null);
+  const profileRef = useRef<HTMLDivElement>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     const onClick = (e: MouseEvent) => {
       if (searchRef.current && !searchRef.current.contains(e.target as Node)) {
         setShowResults(false);
+      }
+      if (profileRef.current && !profileRef.current.contains(e.target as Node)) {
+        setProfileOpen(false);
       }
     };
     document.addEventListener('mousedown', onClick);
@@ -287,17 +293,54 @@ function Topbar({ onMenuClick, onCommandBarOpen }: { onMenuClick: () => void; on
         >
           {theme === 'dark' ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
         </button>
-        <div title={username || 'Signed in'} className="flex items-center gap-2 px-1.5 py-1 text-sm text-[var(--text-primary)]">
-          <CircleUser className="w-7 h-7 text-[var(--text-muted)]" />
-          <span className="hidden sm:inline max-w-[10rem] truncate font-medium">{username || 'User'}</span>
+        <div ref={profileRef} className="relative">
+          <button
+            type="button"
+            onClick={() => setProfileOpen((open) => !open)}
+            aria-label={`Profile: ${username || 'User'}`}
+            aria-haspopup="menu"
+            aria-expanded={profileOpen}
+            className="flex items-center gap-2 rounded-md px-1.5 py-1 text-sm text-[var(--text-primary)] hover:bg-[var(--bg-secondary)] transition-colors"
+          >
+            <CircleUser className="w-7 h-7 text-[var(--text-muted)]" />
+            <span className="hidden sm:inline max-w-[10rem] truncate font-medium">{username || 'User'}</span>
+            <ChevronDown className={cn('hidden h-3.5 w-3.5 text-[var(--text-muted)] transition-transform sm:block', profileOpen && 'rotate-180')} />
+          </button>
+          {profileOpen && (
+            <div role="menu" className="absolute right-0 top-full z-50 mt-2 w-52 overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--bg-card)] p-1.5 shadow-xl">
+              <div className="border-b border-[var(--border)] px-3 py-2">
+                <div className="truncate text-sm font-medium text-[var(--text-primary)]">{username || 'User'}</div>
+                <div className="text-[10px] uppercase tracking-wider text-[var(--text-muted)]">Signed in</div>
+              </div>
+              <Link
+                role="menuitem"
+                to="/documentation"
+                onClick={() => setProfileOpen(false)}
+                className="mt-1 flex items-center gap-2 rounded-md px-3 py-2 text-sm text-[var(--text-muted)] hover:bg-[var(--bg-secondary)] hover:text-[var(--text-primary)]"
+              >
+                <BookOpen className="h-4 w-4" />
+                Documentation
+              </Link>
+              <Link
+                role="menuitem"
+                to="/settings"
+                onClick={() => setProfileOpen(false)}
+                className="flex items-center gap-2 rounded-md px-3 py-2 text-sm text-[var(--text-muted)] hover:bg-[var(--bg-secondary)] hover:text-[var(--text-primary)]"
+              >
+                <Settings className="h-4 w-4" />
+                Settings
+              </Link>
+              <button
+                role="menuitem"
+                onClick={logout}
+                className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm text-[var(--text-muted)] hover:bg-[var(--bg-secondary)] hover:text-[var(--text-primary)]"
+              >
+                <LogOut className="h-4 w-4" />
+                Sign out
+              </button>
+            </div>
+          )}
         </div>
-        <button
-          onClick={logout}
-          title="Sign out"
-          className="p-2 rounded-full hover:bg-[var(--bg-secondary)] text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors"
-        >
-          <LogOut className="w-5 h-5" />
-        </button>
       </div>
     </div>
   );
@@ -415,6 +458,7 @@ export default function App() {
           <Route path="/automation/agent" element={<LocalAgent />} />
           <Route path="/git-agent" element={<GitAgent />} />
           <Route path="/settings" element={<SettingsPage />} />
+          <Route path="/documentation" element={<Documentation />} />
           <Route path="*" element={
             <div className="flex flex-col items-center justify-center h-full text-[var(--text-muted)]">
                <FolderTree className="w-12 h-12 mb-4 opacity-50" />
