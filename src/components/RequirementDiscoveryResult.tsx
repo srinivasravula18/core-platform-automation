@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { cn } from '@/src/lib/utils';
+import { formatRequirementSrs, type RequirementSrsModule } from '@/src/lib/requirementSrs';
+import { MarkdownText } from '@/src/components/MarkdownText';
 import {
   Target,
   ShieldCheck,
@@ -59,6 +61,7 @@ export function RequirementDiscoveryResult({ result, onGenerateTests }: { result
 
   const requirement = result?.requirement || {};
   const understanding = result?.understanding || {};
+  const srsModules: RequirementSrsModule[] = Array.isArray(understanding?.srsModules) ? understanding.srsModules : [];
   const coverage = result?.coverage || { sufficient: false, gaps: [], reasoning: '' };
   const existingLinks: any[] = result?.existingLinks || [];
   const generatedCases: any[] = result?.generatedCases || [];
@@ -87,10 +90,16 @@ export function RequirementDiscoveryResult({ result, onGenerateTests }: { result
         )}
       </div>
 
-      {understanding?.description && <p className="mb-3 text-xs text-[var(--text-muted)]">{understanding.description}</p>}
+      {srsModules.length > 0 && (
+        <div className="mb-3 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-xs leading-relaxed text-[var(--text-primary)]">
+          <MarkdownText value={formatRequirementSrs(srsModules)} />
+        </div>
+      )}
+
+      {srsModules.length === 0 && understanding?.description && <p className="mb-3 text-xs text-[var(--text-muted)]">{understanding.description}</p>}
 
       {/* Business rules */}
-      {businessRules.length > 0 && (
+      {srsModules.length === 0 && businessRules.length > 0 && (
         <div className="mb-3">
           <div className="mb-1 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
             <ScrollText className="h-3.5 w-3.5" /> Business rules

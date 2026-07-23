@@ -101,6 +101,14 @@ const featureAnalystSchema = z.object({
   title: textField('Feature under test'),
   description: textField(''),
   businessRules: arrayField(textField('')),
+  srsModules: arrayField(z.object({
+    title: textField('Functional Requirements'),
+    requirements: arrayField(z.object({
+      title: textField('Requirement'),
+      statement: textField(''),
+      details: arrayField(textField('')),
+    })),
+  })),
   dataPopulationNotes: textField(''),
   sharedComponents: arrayField(z.object({
     name: textField(''),
@@ -765,6 +773,7 @@ Produce the requirement understanding as strict JSON matching the schema:
 - title: a concise requirement title for this feature.
 - description: 1-3 sentences on what the feature does and why it matters.
 - businessRules: the concrete, testable rules the code enforces.
+- srsModules: organize every business rule into distinct functional modules for the Agent Console's Notion-style Markdown Requirements response. Each module needs a concise title and ordered requirements. Each requirement needs a short title, one complete "The system shall..." statement, and optional detail lines for conditions, defaults, enumerated values, or validation rules. Do not include numbering or Markdown syntax in these fields; the UI deterministically adds the Markdown headings, 1., 1.1, 1.2 numbering, and detail bullets. Do not omit a business rule from this structure.
 - dataPopulationNotes: what the backend populates/seeds/syncs in the background as preconditions for this feature (only if the research shows it).
 - sharedComponents: reusable components/modules discovered by code search. For each one, include its real source files, where it is reused, the controls/behaviors the code proves, metadata/permission gates, and the exact test focus. This is the main way downstream agents avoid searching the whole repo again.
 - metadataRefs: the EXACT metadata object api_names that are the source of truth for this feature. Each entry's "object" MUST be a verbatim api_name taken from the LIVE METADATA OBJECT CATALOG provided above — never a descriptive phrase, label, invented name, or DB-table/column name. List ONLY the 1-5 objects that are the PRIMARY source of truth for THIS specific feature — do NOT list every object that is loosely or indirectly related, and do NOT dump the catalog. Prefer fewer, highly-relevant refs. Put any table/column-level detail in businessRules or dataPopulationNotes instead. If no catalog was provided above, or none of its objects are the source of truth for this feature, leave metadataRefs empty rather than inventing entries.
@@ -781,6 +790,7 @@ Produce the requirement understanding as strict JSON matching the schema:
     title: cleanQuery,
     description: '',
     businessRules: [],
+    srsModules: [],
     dataPopulationNotes: '',
     sharedComponents: [],
     metadataRefs: [],
