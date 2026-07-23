@@ -10,6 +10,7 @@ assert.equal(isWorkspaceDataQuestion('check once again', [
   { content: 'which script created Validation test app?' },
 ]), true);
 for (const question of [
+  'how many test steps are in my workspace?',
   'how many folders are in my workspace?',
   'list the automation agents',
   'show my recordings',
@@ -22,7 +23,7 @@ for (const question of [
 }
 
 const workspaceKinds = ((queryWorkspaceTool.spec.parameters as any).properties.kind.enum || []) as string[];
-for (const kind of ['folders', 'automation_agents', 'recordings', 'jobs', 'schedules', 'automation_artifacts', 'settings']) {
+for (const kind of ['steps', 'folders', 'automation_agents', 'recordings', 'jobs', 'schedules', 'automation_artifacts', 'settings']) {
   assert.equal(workspaceKinds.includes(kind), true, kind);
 }
 assert.equal(workspaceKinds.includes('credentials'), false);
@@ -51,6 +52,14 @@ try {
   assert.equal(
     await quickWorkspaceAnswer('how many test steps?', { userId: 'USER-1' }),
     'There are 3 test steps in the workspace.',
+  );
+  assert.equal(
+    await quickWorkspaceAnswer('can you tell me total count of Steps created so far', { userId: 'USER-1' }),
+    'There are 3 test steps in the workspace.',
+  );
+  assert.equal(
+    await quickWorkspaceAnswer('how many failed test cases?', { userId: 'USER-1' }),
+    null,
   );
 
   AutomationArtifacts.list = async () => [
