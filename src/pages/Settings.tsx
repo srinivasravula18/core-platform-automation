@@ -138,7 +138,7 @@ function DataSection() {
   const [status, setStatus] = useState<SaveStatus>({ type: 'idle', message: '' });
 
   const clearArtifacts = async () => {
-    if (!await showConfirm('Delete all folders, plans, suites, cases, runs, scripts, reports, requirements, defects, and generated QA evidence records? Chat history, conversation memory, and all automation data and uploads will be kept.', { tone: 'danger' })) return;
+    if (!await showConfirm("Delete all QA artifacts and this signed-in user's chat history? Other users' chat history and all automation data and uploads will be kept.", { tone: 'danger' })) return;
     setBusy(true);
     setStatus({ type: 'idle', message: '' });
     try {
@@ -146,7 +146,10 @@ function DataSection() {
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.error || 'Failed to delete artifacts');
       const total = Object.values(data.removed || {}).reduce((sum: number, value: any) => sum + Number(value || 0), 0);
-      setStatus({ type: 'success', message: `Deleted ${total} stored artifact${total === 1 ? '' : 's'}. Chat history, conversation memory, and automation data were kept.` });
+      Object.keys(localStorage)
+        .filter((key) => key.startsWith('tfa_active_conversation::'))
+        .forEach((key) => localStorage.removeItem(key));
+      setStatus({ type: 'success', message: `Deleted ${total} stored record${total === 1 ? '' : 's'}, including your chat history. Other users' chats and automation data were kept.` });
     } catch (error: any) {
       setStatus({ type: 'error', message: error?.message || 'Failed to delete artifacts' });
     } finally {
@@ -162,7 +165,7 @@ function DataSection() {
           <div>
             <h2 className="text-lg font-medium text-red-400">Delete Stored Artifacts</h2>
             <p className="mt-1 max-w-2xl text-sm text-[var(--text-muted)]">
-              Clears folders, plans, suites, test cases, runs, scripts, reports, requirements, links, defects, agent runs, and selector blackboards. Chat history, conversation memory, automation agents, recordings, jobs, schedules, uploaded automation artifacts, settings, credentials, users, projects, and apps are kept.
+              Clears folders, plans, suites, test cases, runs, scripts, reports, requirements, links, defects, agent runs, selector blackboards, and the signed-in user's chat history. Other users' chat history, run memory, automation agents, recordings, jobs, schedules, uploaded automation artifacts, settings, credentials, users, projects, and apps are kept.
             </p>
           </div>
           <button

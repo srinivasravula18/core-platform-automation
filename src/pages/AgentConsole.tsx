@@ -63,6 +63,7 @@ import { containsPrivateFileActivity, hasPrivateResearchToolCall } from '@/src/l
 import { useProjects, type ProjectApp } from '@/src/store/project';
 import { useUiSettings } from '@/src/store/uiSettings';
 import { useSpeechToText } from '@/src/lib/useSpeechToText';
+import { showAlert, showConfirm } from '@/src/lib/dialog';
 import { showToast } from '@/src/lib/dialog';
 import { WorkflowRunner } from '@/src/components/WorkflowRunner';
 import { DeepRunResult } from '@/src/components/DeepRunResult';
@@ -761,6 +762,7 @@ export default function AgentConsole() {
   });
   const [conversations, setConversations] = useState<ConversationMeta[]>([]);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [selectedConversationIds, setSelectedConversationIds] = useState<Set<string>>(new Set());
   const [favorites, setFavorites] = useState<Set<string>>(() => {
     const stored = readScopedStorage('tfa_conv_favorites');
     return new Set(stored ? JSON.parse(stored) : []);
@@ -1071,8 +1073,47 @@ export default function AgentConsole() {
     } catch { /* ignore */ }
     setConversations((prev) => prev.filter((c) => c.id !== id));
     setFavorites((prev) => { const next = new Set(prev); next.delete(id); return next; });
+    setSelectedConversationIds((prev) => { const next = new Set(prev); next.delete(id); return next; });
     if (id === conversationId) newConversation();
   }, [conversationId, newConversation]);
+
+  const toggleConversationSelection = useCallback((id: string) => {
+    setSelectedConversationIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const deleteSelectedConversations = useCallback(async () => {
+    const ids = Array.from(selectedConversationIds);
+    if (!ids.length) return;
+    if (!await showConfirm(`Delete ${ids.length === conversations.length ? 'all' : ids.length} selected conversation${ids.length === 1 ? '' : 's'}? This cannot be undone.`, { tone: 'danger' })) return;
+
+    const results = await Promise.all(ids.map(async (id) => {
+      try {
+        const response = await fetch(`/api/chat/conversations/${id}`, { method: 'DELETE' });
+        return response.ok ? id : null;
+      } catch {
+        return null;
+      }
+    }));
+    const deleted = new Set<string>(results.filter((id): id is string => id !== null));
+
+    setConversations((prev) => prev.filter((conversation) => !deleted.has(conversation.id)));
+    setFavorites((prev) => {
+      const next = new Set(prev);
+      deleted.forEach((id) => next.delete(id));
+      return next;
+    });
+    setSelectedConversationIds((prev) => {
+      const next = new Set(prev);
+      deleted.forEach((id) => next.delete(id));
+      return next;
+    });
+    if (deleted.has(conversationId)) newConversation();
+    if (deleted.size !== ids.length) void showAlert(`${ids.length - deleted.size} conversation${ids.length - deleted.size === 1 ? '' : 's'} could not be deleted.`);
+  }, [selectedConversationIds, conversations.length, conversationId, newConversation]);
 
   // Rename a conversation to a custom name (so it can be tracked against its test cases) — persisted
   // via the metadata-only PUT; for the ACTIVE chat the snapshot PUT keeps the custom title from then on.
@@ -2729,8 +2770,32 @@ export default function AgentConsole() {
             </button>
             {historyOpen && (
               <div className="absolute right-0 top-full z-50 mt-1 w-72 overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--bg-card)] shadow-xl">
-                <div className="border-b border-[var(--border)] px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
-                  Conversations
+                <div className="flex items-center justify-between gap-2 border-b border-[var(--border)] px-3 py-2">
+                  <span className="text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">Conversations</span>
+                  {conversations.length > 0 && (
+                    <div className="flex items-center gap-2 text-[10px] font-medium">
+                      <button
+                        type="button"
+                        onClick={() => setSelectedConversationIds(
+                          selectedConversationIds.size === conversations.length
+                            ? new Set()
+                            : new Set(conversations.map((conversation) => conversation.id)),
+                        )}
+                        className="text-[var(--accent)] hover:underline"
+                      >
+                        {selectedConversationIds.size === conversations.length ? 'Clear selection' : 'Select all'}
+                      </button>
+                      {selectedConversationIds.size > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => void deleteSelectedConversations()}
+                          className="text-red-400 hover:underline"
+                        >
+                          {selectedConversationIds.size === conversations.length ? 'Delete all' : `Delete (${selectedConversationIds.size})`}
+                        </button>
+                      )}
+                    </div>
+                  )}
                 </div>
                 <div className="max-h-80 overflow-y-auto">
                   {conversations.length === 0 && (
@@ -2747,6 +2812,14 @@ export default function AgentConsole() {
                       )}
                       onClick={() => switchConversation(c.id)}
                     >
+                      <input
+                        type="checkbox"
+                        checked={selectedConversationIds.has(c.id)}
+                        onClick={(e) => e.stopPropagation()}
+                        onChange={() => toggleConversationSelection(c.id)}
+                        aria-label={`Select ${c.title || 'Untitled chat'}`}
+                        className="mt-0.5 h-3.5 w-3.5 shrink-0 accent-[var(--accent)]"
+                      />
                       <MessageSquare className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[var(--text-muted)]" />
                       <span className="min-w-0 flex-1">
                         {renamingId === c.id ? (

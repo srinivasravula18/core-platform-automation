@@ -32,6 +32,11 @@ const PG_SOFT_DELETE_TABLES = [
   'folders',
 ] as const;
 
+export function removeOwnedConversations<T extends { ownerId?: string }>(conversations: T[], userId: string): { remaining: T[]; removed: number } {
+  const remaining = conversations.filter((conversation) => conversation.ownerId !== userId);
+  return { remaining, removed: conversations.length - remaining.length };
+}
+
 async function clearPostgresArtifacts(): Promise<Record<string, number>> {
   const removed: Record<string, number> = {};
   const linkRows = await query('DELETE FROM requirement_case_links RETURNING id');
@@ -42,6 +47,19 @@ async function clearPostgresArtifacts(): Promise<Record<string, number>> {
     const rows = await query(`UPDATE ${table} SET deleted_at = now() WHERE deleted_at IS NULL RETURNING id`);
     removed[table] = rows.length;
   }
+  return removed;
+}
+
+async function clearSignedInUserChatHistory(userId: string): Promise<number> {
+  if (isPostgresEnabled()) {
+    // Deleting the owned conversation cascades its messages and conversation-linked context,
+    // while the owner predicate prevents one admin cleanup from touching another user's chats.
+    const rows = await query('DELETE FROM chat_conversations WHERE owner_id = $1 RETURNING id', [userId]);
+    return rows.length;
+  }
+  const conversations = Array.isArray((db as any).chatConversations) ? (db as any).chatConversations : [];
+  const { remaining, removed } = removeOwnedConversations(conversations, userId);
+  (db as any).chatConversations = remaining;
   return removed;
 }
 
@@ -119,7 +137,9 @@ export function registerSettingsRoutes(app: Express) {
     if ((req as any).authUser?.role !== 'admin') {
       return res.status(403).json({ error: 'Admin access required.' });
     }
+    const userId = String((req as any).authUser?.userId || '');
     const removed = isPostgresEnabled() ? await clearPostgresArtifacts() : {};
+    const chatHistory = await clearSignedInUserChatHistory(userId);
     const memoryRemoved = Object.fromEntries(
       ARTIFACT_KEYS.map((key) => {
         const count = Array.isArray(db[key]) ? db[key].length : 0;
@@ -131,10 +151,10 @@ export function registerSettingsRoutes(app: Express) {
     await savePersistedData();
     res.json({
       ok: true,
-      removed: { ...memoryRemoved, ...removed },
+      removed: { ...memoryRemoved, ...removed, chatHistory },
       preserved: [
-        'chat history',
-        'conversation memory',
+        "other users' chat history",
+        'run memory',
         'automation agents',
         'automation recordings',
         'automation jobs',
