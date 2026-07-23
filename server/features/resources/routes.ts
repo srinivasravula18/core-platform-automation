@@ -503,7 +503,7 @@ export function registerResourceRoutes(app: Express) {
     await Suites.upsert(newSuite);
     if (!isPgEnabled()) persistDataInBackground('suite');
     addActivity(`Created Suite: ${newSuite.name}`, { type: 'suite', entityId: newSuite.id, actor: getAuthUser(req)?.username || '' });
-    res.json({ success: true });
+    res.json({ success: true, id: newSuite.id, suite: newSuite });
   });
 
   /* ---------- POST /api/cases ---------- */

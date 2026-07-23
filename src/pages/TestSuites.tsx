@@ -5,10 +5,12 @@ import ExportMenu from '../components/ExportMenu';
 import { useAiSearch } from '@/src/lib/useAiSearch';
 import { useBulkDelete } from '@/src/lib/useBulkDelete';
 import { startSelectedRun } from '@/src/lib/startSelectedRun';
+import { caseSuiteAssignment, relatedCasesForSuite } from '@/src/lib/suiteCaseSelection';
 import { cn } from '@/src/lib/utils';
 import { Modal } from '@/src/components/Modal';
 import { AIActionModal } from '@/src/components/AIActionModal';
 import { FolderSelect } from '@/src/components/FolderSelect';
+import { TagEditor } from '@/src/components/TagEditor';
 import { showAlert, showConfirm } from '@/src/lib/dialog';
 
 export default function TestSuites() {
@@ -26,7 +28,8 @@ export default function TestSuites() {
   const [isSuiteModalOpen, setIsSuiteModalOpen] = useState(false);
   const [isAISuiteModalOpen, setIsAISuiteModalOpen] = useState(false);
   const [isStartingRun, setIsStartingRun] = useState(false);
-  const [formData, setFormData] = useState({ name: '', description: '', testPlanId: '', parentSuite: '', module: '', owner: '', tags: '', priority: 'Medium', status: 'Active', folderId: '' });
+  const [formData, setFormData] = useState({ name: '', description: '', testPlanId: '', parentSuite: '', module: '', owner: '', tags: [] as string[], priority: 'Medium', status: 'Active', folderId: '' });
+  const [selectedCaseIds, setSelectedCaseIds] = useState<Set<string>>(new Set());
   // Set only when the modal was opened via a suite's "Add subsuite" action, so the modal can say
   // it's adding under that specific parent instead of showing a generic parent-suite picker.
   const [subsuiteParentId, setSubsuiteParentId] = useState('');
@@ -75,16 +78,18 @@ export default function TestSuites() {
   const openNewModal = () => {
     setSelectedSuiteId(null);
     setSubsuiteParentId('');
-    setFormData({ name: '', description: '', testPlanId: '', parentSuite: '', module: '', owner: '', tags: '', priority: 'Medium', status: 'Active', folderId: '' });
+    setFormData({ name: '', description: '', testPlanId: '', parentSuite: '', module: '', owner: '', tags: [], priority: 'Medium', status: 'Active', folderId: '' });
+    setSelectedCaseIds(new Set());
     setIsSuiteModalOpen(true);
   };
 
   const openEditModal = (suite: any) => {
     setSelectedSuiteId(suite.id);
     setSubsuiteParentId('');
+    setSelectedCaseIds(new Set());
     setFormData({
       name: suite.name || '', description: suite.description || '', testPlanId: suite.testPlanId || '', parentSuite: suite.parentSuite || '', 
-      module: suite.module || '', owner: suite.owner || '', tags: Array.isArray(suite.tags) ? suite.tags.join(', ') : suite.tags || '', 
+      module: suite.module || '', owner: suite.owner || '', tags: Array.isArray(suite.tags) ? suite.tags : String(suite.tags || '').split(',').map((tag) => tag.trim()).filter(Boolean),
       priority: suite.priority || 'Medium', status: suite.status || 'Active', folderId: suite.folderId || ''
     });
     setIsSuiteModalOpen(true);
@@ -93,9 +98,10 @@ export default function TestSuites() {
   const openSubsuiteModal = (parent: any) => {
     setSelectedSuiteId(null);
     setSubsuiteParentId(parent.id);
+    setSelectedCaseIds(new Set());
     setFormData({
       name: '', description: '', testPlanId: parent.testPlanId || '', parentSuite: parent.id,
-      module: parent.module || '', owner: parent.owner || '', tags: '', priority: 'Medium', status: 'Active', folderId: parent.folderId || '',
+      module: parent.module || '', owner: parent.owner || '', tags: [], priority: 'Medium', status: 'Active', folderId: parent.folderId || '',
     });
     setIsSuiteModalOpen(true);
   };
@@ -106,31 +112,43 @@ export default function TestSuites() {
     return match ? match.name : parentSuite;
   };
 
-  const handleSaveSuite = () => {
+  const handleSaveSuite = async () => {
     if (!formData.name.trim()) return;
     if (!formData.folderId) { void showAlert('Select a folder or create one first.'); return; }
-    const tags = formData.tags.split(',').map(s => s.trim()).filter(Boolean);
-    
-    if (selectedSuiteId) {
-      fetch(`/api/suites/${selectedSuiteId}`, {
-        method: 'PUT',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ ...formData, tags })
-      }).then(() => {
-         setIsSuiteModalOpen(false);
-         fetchSuites();
-         fetchCases();
-      });
-    } else {
-      fetch('/api/suites', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ ...formData, tags })
-      }).then(() => {
-         setIsSuiteModalOpen(false);
-         fetchSuites();
-         fetchCases();
-      });
+    try {
+      if (selectedSuiteId) {
+        const response = await fetch(`/api/suites/${selectedSuiteId}`, {
+          method: 'PUT',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(formData),
+        });
+        if (!response.ok) throw new Error((await response.json().catch(() => ({})))?.error || 'Failed to update test suite.');
+      } else {
+        const response = await fetch('/api/suites', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(formData),
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(data?.error || 'Failed to create test suite.');
+        const suiteId = String(data?.id || data?.suite?.id || '');
+        if (suiteId && selectedCaseIds.size) {
+          const selectedCases = cases.filter((testCase) => selectedCaseIds.has(testCase.id));
+          const results = await Promise.all(selectedCases.map((testCase) => {
+            return fetch(`/api/cases/${testCase.id}`, {
+              method: 'PUT',
+              headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify(caseSuiteAssignment(testCase, suiteId)),
+            });
+          }));
+          if (results.some((result) => !result.ok)) throw new Error('Suite created, but one or more test cases could not be attached.');
+        }
+      }
+      setIsSuiteModalOpen(false);
+      fetchSuites();
+      fetchCases();
+    } catch (error: any) {
+      void showAlert(error?.message || 'Failed to save test suite.');
     }
   };
 
@@ -195,7 +213,12 @@ export default function TestSuites() {
 
   const getSuiteCases = (suiteId: string) => cases.filter((testCase) => testCase.testSuiteId === suiteId);
   const moduleOptions = Array.from(new Set(suites.map((suite) => String(suite.module || '').trim()).filter(Boolean))).sort();
-  const tagOptions = Array.from(new Set(suites.flatMap((suite) => Array.isArray(suite.tags) ? suite.tags : []).map((tag) => String(tag).trim()).filter(Boolean))).sort();
+  const tagOptions: string[] = Array.from(new Set<string>(suites.flatMap((suite) => Array.isArray(suite.tags) ? suite.tags : []).map((tag) => String(tag).trim()).filter(Boolean))).sort();
+  const relatedCases = selectedSuiteId ? [] : relatedCasesForSuite(cases, formData.folderId, formData.parentSuite || subsuiteParentId);
+  useEffect(() => {
+    const visibleIds = new Set(relatedCases.map((testCase) => testCase.id));
+    setSelectedCaseIds((current) => new Set([...current].filter((id) => visibleIds.has(id))));
+  }, [formData.folderId, formData.parentSuite, subsuiteParentId, cases, selectedSuiteId]);
   const filteredSuites = suites.filter((suite) => {
     const query = searchTerm.toLowerCase();
     const matchesSearch = aiSearch.isAiQuery(searchTerm)
@@ -339,10 +362,52 @@ export default function TestSuites() {
                 </select>
             </div>
             <div>
-                <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Tags (comma separated)</label>
-                <input type="text" value={formData.tags} onChange={(e) => setFormData({...formData, tags: e.target.value})} placeholder="e.g. Sanity, API" className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]" />
+                <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Tags</label>
+                <TagEditor options={tagOptions} value={formData.tags} onChange={(tags) => setFormData({ ...formData, tags })} />
             </div>
           </div>
+          {!selectedSuiteId && (
+            <div>
+              <div className="mb-1 flex items-center justify-between">
+                <label className="text-sm font-medium text-[var(--text-muted)]">Related Test Cases</label>
+                {relatedCases.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setSelectedCaseIds(
+                      relatedCases.every((testCase) => selectedCaseIds.has(testCase.id))
+                        ? new Set()
+                        : new Set(relatedCases.map((testCase) => testCase.id)),
+                    )}
+                    className="text-xs font-medium text-[var(--accent)] hover:underline"
+                  >
+                    {relatedCases.every((testCase) => selectedCaseIds.has(testCase.id)) ? 'Clear all' : 'Select all'}
+                  </button>
+                )}
+              </div>
+              <div className="max-h-48 overflow-auto rounded-md border border-[var(--border)] bg-[var(--bg-secondary)]/40">
+                {!formData.folderId ? (
+                  <div className="px-3 py-5 text-center text-sm text-[var(--text-muted)]">Select a repository folder to see related test cases.</div>
+                ) : relatedCases.length === 0 ? (
+                  <div className="px-3 py-5 text-center text-sm text-[var(--text-muted)]">No test cases match the selected folder and parent suite.</div>
+                ) : relatedCases.map((testCase) => (
+                  <label key={testCase.id} className="flex cursor-pointer items-center gap-2 border-b border-[var(--border)] px-3 py-2 text-sm last:border-0 hover:bg-[var(--bg-secondary)]">
+                    <input
+                      type="checkbox"
+                      checked={selectedCaseIds.has(testCase.id)}
+                      onChange={() => setSelectedCaseIds((current) => {
+                        const next = new Set(current);
+                        next.has(testCase.id) ? next.delete(testCase.id) : next.add(testCase.id);
+                        return next;
+                      })}
+                    />
+                    <span className="shrink-0 font-mono text-xs text-[var(--text-muted)]">{testCase.id}</span>
+                    <span className="min-w-0 flex-1 truncate text-[var(--text-primary)]">{testCase.title}</span>
+                  </label>
+                ))}
+              </div>
+              <div className="mt-1 text-xs text-[var(--text-muted)]">{selectedCaseIds.size} selected</div>
+            </div>
+          )}
         </div>
       </Modal>
 

@@ -2760,20 +2760,8 @@ function normalizeSelectorsFromInspection(code: string, inspectionContext: any):
   return out;
 }
 
-function pauseForScriptReview(run: any) {
-  run.status = 'review_required';
-  (run as any).review_stage = 'scripts';
-  run.review_started_at = nowIso();
-  pushPhase(run, { agent: 'System', status: 'review_required', output: 'Review generated Playwright scripts, then continue to capture evidence.' });
-}
-
-async function pauseForScriptReviewIfRequested(run: any): Promise<boolean> {
-  if (!(run as any).review_scripts_before_execution) return false;
-  delete (run as any).review_scripts_before_execution;
-  pauseForScriptReview(run);
-  await persistAgentScripts(run);
-  await saveAgentRunState(run, 'scripts ready for review');
-  return true;
+export function hasRunnableScripts(scripts: unknown): boolean {
+  return Array.isArray(scripts) && scripts.length > 0;
 }
 
 async function runPostCaseAgentFlow(run: any, model: any, testCases: any, targetUrl: string, liveCredentials?: any) {
@@ -2903,22 +2891,20 @@ Do NOT write comments such as "Auth is expected to be handled by global setup". 
     (run as any).compiler_diagnostics = compiled.diagnostics;
     (run as any).coverage_plan = compiled.coverage;
     const automatedCaseCount = caseList.filter((testCase: any) => String(testCase?.type || '').toLowerCase() !== 'manual').length;
-    const blockingDiagnostics = compiled.diagnostics.filter((diagnostic) => diagnostic.kind !== 'MANUAL_CASE');
-    const completeSuite = compiled.scripts.length === automatedCaseCount && blockingDiagnostics.length === 0;
+    const canRunEvidence = hasRunnableScripts(compiled.scripts);
     pushPhase(run, {
       agent: 'PlaywrightCompiler',
-      status: completeSuite ? 'completed' : 'failed',
-      output: { compiled: compiled.scripts.length, diagnostics: compiled.diagnostics.length, coverage: compiled.coverage.length },
+      status: canRunEvidence ? 'completed' : 'failed',
+      output: { compiled: compiled.scripts.length, skipped: Math.max(0, automatedCaseCount - compiled.scripts.length), diagnostics: compiled.diagnostics.length, coverage: compiled.coverage.length },
     });
     await persistAgentScripts(run);
-    if (!completeSuite) {
+    if (!canRunEvidence) {
       (run as any).execution_result = { ok: false, total: 0, passed: 0, failed: 0, skipped: automatedCaseCount - compiled.scripts.length, error: 'Compiler did not produce a grounded script for every automated case (see compiler_diagnostics).', tests: [] };
       markRunDone(run, 'failed');
       await persistAgentQualityArtifacts(run).catch((err) => console.warn('Failed to persist compiler-incomplete agent artifacts:', err));
       persistDataInBackground('compiler produced incomplete script suite');
       return;
     }
-    if (await pauseForScriptReviewIfRequested(run)) return;
     await completeScriptProofFlow(run, targetUrl, { test_cases: caseList }, liveCreds);
     return;
   }
@@ -2968,7 +2954,6 @@ Do NOT write comments such as "Auth is expected to be handled by global setup". 
       (run as any).live_author_evidence = authoredEvidence;
       pushPhase(run, { agent: 'LiveAuthor', status: 'completed', output: authoredNotes });
       pushPhase(run, { agent: 'PlaywrightAgent', status: 'completed', output: { scripts: run.playwright_scripts, source: 'live-author' } });
-      if (await pauseForScriptReviewIfRequested(run)) return;
       await completeScriptProofFlow(run, targetUrl, { test_cases: caseList }, liveCreds);
       return;
     }
@@ -3149,18 +3134,25 @@ Test case payload: ${JSON.stringify({ test_cases: [testCase] })}${coderKnowledge
       return null;
     }
   }, run);
-  if (caseList.length && aligned.missing.length) {
+  if (caseList.length && aligned.missing.length && !hasRunnableScripts(aligned.scripts)) {
     run.playwright_scripts = aligned.scripts;
     pushPhase(run, {
       agent: 'PlaywrightAgent',
       status: 'failed',
-      output: `Generated ${aligned.scripts.length}/${caseList.length} script(s). Missing script(s) for case ${aligned.missing.map((i) => i + 1).join(', ')}; evidence was not run for an incomplete script set.`,
+      output: `No runnable scripts were generated. Missing script(s) for case ${aligned.missing.map((i) => i + 1).join(', ')}.`,
     });
     await persistAgentScripts(run);
     markRunDone(run, 'failed');
     await persistAgentQualityArtifacts(run).catch((err) => console.warn('Failed to persist incomplete-script agent artifacts:', err));
     persistDataInBackground('incomplete agent scripts');
     return;
+  }
+  if (caseList.length && aligned.missing.length) {
+    pushPhase(run, {
+      agent: 'ScriptQueue',
+      status: 'completed',
+      output: `Proceeding with ${aligned.scripts.length}/${caseList.length} runnable script(s); case ${aligned.missing.map((i) => i + 1).join(', ')} will remain skipped.`,
+    });
   }
   const preVerifiedMap = getRunSelectorMap(run);
   // Only let the STATIC repo map rewrite selector methods when we lack a usable live DOM capture.
@@ -3188,7 +3180,6 @@ Test case payload: ${JSON.stringify({ test_cases: [testCase] })}${coderKnowledge
     ...script,
     code: script?.code ? normalizeSelectorsFromInspection(String(script.code), run.inspection_context) : script?.code,
   }));
-  if (await pauseForScriptReviewIfRequested(run)) return;
   await completeScriptProofFlow(run, targetUrl, { test_cases: caseList }, liveCreds);
   return;
 }
@@ -6251,7 +6242,6 @@ Rules:
     }
     (run as any).all_generated_cases = cases;
     (run as any).execution_case_count = selectedExecutionCases.length;
-    (run as any).review_scripts_before_execution = true;
     run.generated_cases = cases;
     (run as any).review_stage = '';
     run.playwright_scripts = [];
