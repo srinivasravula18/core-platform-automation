@@ -5,6 +5,8 @@ import ExportMenu from '../components/ExportMenu';
 import { useBulkDelete } from '@/src/lib/useBulkDelete';
 import { Modal } from '@/src/components/Modal';
 import { showAlert, showConfirm } from '@/src/lib/dialog';
+import { MarkdownText } from '@/src/components/MarkdownText';
+import { formatRequirementSrs, type RequirementSrsModule } from '@/src/lib/requirementSrs';
 
 const REQ_STATUSES = ['Draft', 'Under Review', 'Approved', 'Deprecated'];
 
@@ -149,6 +151,7 @@ export default function Requirements() {
               { key: 'status', label: 'Status', get: (r) => r.status || 'Draft' },
               { key: 'coverageStatus', label: 'Coverage' },
               { key: 'description', label: 'Description' },
+              { key: 'srsModules', label: 'SRS Markdown', get: (r) => Array.isArray(r.srsModules) && r.srsModules.length ? formatRequirementSrs(r.srsModules) : '' },
               { key: 'businessRules', label: 'Business Rules' },
               { key: 'dataPopulationNotes', label: 'Data Population Notes' },
             ]}
@@ -285,6 +288,14 @@ export default function Requirements() {
         }
       >
         <div className="space-y-4">
+          {Array.isArray(selected?.srsModules) && selected.srsModules.length > 0 && (
+            <div>
+              <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">Software Requirements Specification</div>
+              <div className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-xs leading-relaxed text-[var(--text-primary)]">
+                <MarkdownText value={formatRequirementSrs(selected.srsModules as RequirementSrsModule[])} />
+              </div>
+            </div>
+          )}
           <div>
             <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Title</label>
             <input value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} className={inputClass} />

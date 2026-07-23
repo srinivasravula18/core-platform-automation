@@ -1100,6 +1100,7 @@ function buildRequirementRecord(
     description: understanding.description || '',
     featureQuery: cleanQuery,
     businessRules: understanding.businessRules || [],
+    srsModules: understanding.srsModules || [],
     dataPopulationNotes: understanding.dataPopulationNotes || '',
     metadataRefs: understanding.metadataRefs || [],
     uiSelectors: (understanding as any).uiSelectors || {
@@ -1227,6 +1228,7 @@ export async function confirmRequirementDraft(
     description: String((incoming as any).description || ''),
     featureQuery: String((incoming as any).featureQuery || ''),
     businessRules: Array.isArray((incoming as any).businessRules) ? (incoming as any).businessRules : [],
+    srsModules: Array.isArray((incoming as any).srsModules) ? (incoming as any).srsModules : [],
     dataPopulationNotes: String((incoming as any).dataPopulationNotes || ''),
     metadataRefs: Array.isArray((incoming as any).metadataRefs) ? (incoming as any).metadataRefs : [],
     uiSelectors: (incoming as any).uiSelectors && typeof (incoming as any).uiSelectors === 'object' ? (incoming as any).uiSelectors : {},

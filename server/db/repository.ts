@@ -1687,6 +1687,7 @@ function mapRequirement(r: any) {
     description: r.description,
     featureQuery: r.feature_query,
     businessRules: r.business_rules || [],
+    srsModules: r.srs_modules || [],
     dataPopulationNotes: r.data_population_notes,
     metadataRefs: r.metadata_refs || [],
     uiSelectors: r.ui_selectors || {},
@@ -1723,11 +1724,11 @@ export const Requirements = {
       return rq;
     }
     const id = rq.id || uid('REQ');
-    const sql = `INSERT INTO requirements (id, title, description, feature_query, business_rules, data_population_notes, admin_behavior, keystone_behavior, metadata_refs, ui_selectors, source_files, coverage_status, status, folder_id, approval_state, proposed_by, source_run_id, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9::jsonb,$10::jsonb,$11::jsonb,$12,$13,$14,$15,$16,$17, now(), now())
+    const sql = `INSERT INTO requirements (id, title, description, feature_query, business_rules, srs_modules, data_population_notes, admin_behavior, keystone_behavior, metadata_refs, ui_selectors, source_files, coverage_status, status, folder_id, approval_state, proposed_by, source_run_id, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5::jsonb,$6::jsonb,$7,$8,$9,$10::jsonb,$11::jsonb,$12::jsonb,$13,$14,$15,$16,$17,$18, now(), now())
        ON CONFLICT (id) DO UPDATE SET
          title=EXCLUDED.title, description=EXCLUDED.description, feature_query=EXCLUDED.feature_query,
-         business_rules=EXCLUDED.business_rules, data_population_notes=EXCLUDED.data_population_notes,
+         business_rules=EXCLUDED.business_rules, srs_modules=EXCLUDED.srs_modules, data_population_notes=EXCLUDED.data_population_notes,
          admin_behavior=EXCLUDED.admin_behavior, keystone_behavior=EXCLUDED.keystone_behavior,
          metadata_refs=EXCLUDED.metadata_refs, ui_selectors=EXCLUDED.ui_selectors, source_files=EXCLUDED.source_files,
          coverage_status=EXCLUDED.coverage_status, status=EXCLUDED.status, folder_id=EXCLUDED.folder_id,
@@ -1736,7 +1737,7 @@ export const Requirements = {
        RETURNING *`;
     const params = (folderId: string | null) => [
       id, rq.title || 'Untitled Requirement', rq.description || '', rq.featureQuery || '',
-      JSON.stringify(rq.businessRules || []), rq.dataPopulationNotes || '',
+      JSON.stringify(rq.businessRules || []), JSON.stringify(rq.srsModules || []), rq.dataPopulationNotes || '',
       '', '',
       JSON.stringify(rq.metadataRefs || []), JSON.stringify(rq.uiSelectors || {}),
       JSON.stringify(rq.sourceFiles || []),

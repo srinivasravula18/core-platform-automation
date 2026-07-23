@@ -529,6 +529,7 @@ CREATE TABLE IF NOT EXISTS requirements (
   description            TEXT DEFAULT '',
   feature_query          TEXT DEFAULT '',
   business_rules         JSONB DEFAULT '[]'::jsonb,
+  srs_modules            JSONB DEFAULT '[]'::jsonb,
   data_population_notes  TEXT DEFAULT '',
   admin_behavior         TEXT DEFAULT '',
   keystone_behavior      TEXT DEFAULT '',
@@ -547,6 +548,7 @@ CREATE TABLE IF NOT EXISTS requirements (
 );
 
 ALTER TABLE requirements ADD COLUMN IF NOT EXISTS ui_selectors JSONB DEFAULT '{}'::jsonb;
+ALTER TABLE requirements ADD COLUMN IF NOT EXISTS srs_modules JSONB DEFAULT '[]'::jsonb;
 
 -- Many-to-many coverage links between a requirement and the test cases that cover it.
 -- link_type 'existing' = case already in the repo reconciled as coverage;
