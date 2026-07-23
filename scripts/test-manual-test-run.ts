@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { casesForPlan, casesForRun, manualRunSelection, runnableCases, scriptsForCases, scriptsForRun } from '../src/lib/manualTestRun';
+import { casesForPlan, casesForRun, manualRunSelection, runExecutionState, runnableCases, scriptsForCases, scriptsForRun } from '../src/lib/manualTestRun';
 
 const suites = [
   { id: 'S1', testPlanId: 'P1' },
@@ -25,4 +25,15 @@ assert.deepEqual(runnableCases(
   [{ id: 'C1', folderId: 'F1' }, { id: 'C2', folderId: 'F1' }, { id: 'C3', folderId: 'F2' }],
   [{ id: 'X1', caseId: 'C1', code: 'one' }],
 ).map(({ id }) => id), ['C1']);
+assert.deepEqual(runExecutionState({
+  status: 'Running',
+  progress: 'Completed 2/4 scripts',
+  triggerMeta: { manualExecution: { completed: 2, total: 4 } },
+}), {
+  running: true,
+  total: 4,
+  completed: 2,
+  percent: 50,
+  label: 'Completed 2/4 scripts',
+});
 console.log('PASS: manual runs use current plan cases, linked scripts, and real execution outcomes.');

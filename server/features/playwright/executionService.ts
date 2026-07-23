@@ -58,6 +58,11 @@ export interface ExecutionResult {
 
 const RUN_ROOT = path.resolve(process.cwd(), '.testflow-pw');
 
+function sanitizeRunId(value: string): string {
+  const safe = String(value || '').replace(/[^a-zA-Z0-9._-]/g, '-').slice(0, 120);
+  return safe && safe !== '.' && safe !== '..' ? safe : `run-${Date.now()}`;
+}
+
 function sanitizeFilename(name: string, index: number): string {
   let file = String(name || `test-${index + 1}`).trim().replace(/[^a-zA-Z0-9._-]/g, '-').replace(/-+/g, '-');
   if (!file) file = `test-${index + 1}`;
@@ -344,18 +349,19 @@ export async function executePlaywrightScripts(opts: {
   emitMissionRunner?: boolean;
 }): Promise<ExecutionResult> {
   const scripts = (opts.scripts || []).filter((s) => s && typeof s.code === 'string' && s.code.trim());
-  const runId = opts.runId || `run-${Date.now()}`;
+  const runId = sanitizeRunId(opts.runId || `run-${Date.now()}`);
   const base: Omit<ExecutionResult, 'ok'> = { total: 0, passed: 0, failed: 0, skipped: 0, durationMs: 0, tests: [], runId };
 
   if (!scripts.length) {
     return { ok: false, ...base, error: 'No scripts to run.' };
   }
 
-  const runDir = path.join(RUN_ROOT, runId.replace(/[^a-zA-Z0-9._-]/g, '-'));
+  const runDir = path.join(RUN_ROOT, runId);
   const testsDir = path.join(runDir, 'tests');
   const resultsFile = path.join(runDir, 'results.json');
   const screenshotMode = opts.screenshotMode || 'only-on-failure';
   const stepShotsDir = path.join(runDir, 'step-shots');
+  await fs.rm(runDir, { recursive: true, force: true });
   await fs.mkdir(testsDir, { recursive: true });
 
   if (opts.singleSession) {

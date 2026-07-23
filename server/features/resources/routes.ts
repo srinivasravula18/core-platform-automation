@@ -1,4 +1,5 @@
 import type { Express, NextFunction, Request, Response } from 'express';
+import { randomUUID } from 'crypto';
 import { z } from 'zod';
 import { generateObject } from 'ai';
 import { db, addActivity, persistDataInBackground } from '../../shared/storage';
@@ -29,6 +30,37 @@ import {
 } from '../../db/repository';
 
 const FOLDER_REQUIRED_ERROR = 'Select a folder or create one first.';
+// Process-local execution lock; use a durable worker queue before multi-instance deployment.
+const activeManualRunExecutions = new Map<string, string>();
+const MANUAL_RUN_STALE_MS = 15 * 60 * 1000;
+
+function isRunningRun(run: any): boolean {
+  return /^running$/i.test(String(run?.status || ''));
+}
+
+function manualExecutionMeta(run: any): any {
+  return run?.triggerMeta?.manualExecution || {};
+}
+
+function withManualExecutionMeta(run: any, patch: any): any {
+  return {
+    ...run,
+    triggerMeta: {
+      ...(run?.triggerMeta || {}),
+      manualExecution: { ...manualExecutionMeta(run), ...patch },
+    },
+  };
+}
+
+function isStaleManualRun(run: any, now = Date.now()): boolean {
+  if (!isRunningRun(run) || activeManualRunExecutions.has(String(run.id))) return false;
+  const execution = manualExecutionMeta(run);
+  if (!execution.attemptId && run?.triggerMeta?.automationJobId) return false;
+  const heartbeat = Date.parse(String(
+    execution.heartbeatAt || execution.startedAt || run.updatedAt || run.startedAt || '',
+  ));
+  return Number.isFinite(heartbeat) && now - heartbeat > MANUAL_RUN_STALE_MS;
+}
 
 async function requireRepositoryFolder(req: Request, res: Response, next: NextFunction) {
   try {
@@ -134,7 +166,7 @@ function uniqueStrings(values: any) {
 
 // #16 — every completed run yields a Report so it shows up in the Reports section. Deterministic id
 // keyed on the run so re-saving a run updates its report instead of duplicating.
-async function createReportFromRun(run: any, scope: any, opts: { passed: number; failed: number; steps: any[]; targetUrl: string; suiteName?: string }) {
+async function createReportFromRun(run: any, scope: any, opts: { passed: number; failed: number; steps: any[]; targetUrl: string; suiteName?: string; evidence?: any[] }) {
   const status = opts.failed > 0 ? 'Failed' : (opts.passed > 0 ? 'Passed' : 'Skipped');
   const firstFail = (opts.steps || []).find((s: any) => /fail/i.test(String(s?.outcome || '')));
   await Reports.upsert({
@@ -153,10 +185,22 @@ async function createReportFromRun(run: any, scope: any, opts: { passed: number;
     failureReason: firstFail ? String(firstFail.reason || firstFail.expected || '') : '',
     targetUrl: opts.targetUrl || '',
     steps: opts.steps,
-    evidence: [],
+    evidence: opts.evidence || [],
     folderId: run.folderId || null,
     date: run.date,
   });
+}
+
+function executionSteps(tests: any[]): any[] {
+  return tests.map((test: any, index: number) => ({
+    step: String(index + 1),
+    action: test.title || `Playwright test ${index + 1}`,
+    expected: 'Playwright script completes successfully.',
+    outcome: /pass/i.test(test.status || '') ? 'Passed' : /skip/i.test(test.status || '') ? 'Skipped' : 'Failed',
+    reason: test.error || '',
+    screenshot: test.screenshotUrl || '',
+    screenshots: Array.isArray(test.evidenceUrls) ? test.evidenceUrls : [],
+  }));
 }
 
 export function registerResourceRoutes(app: Express) {
@@ -164,10 +208,28 @@ export function registerResourceRoutes(app: Express) {
   app.get('/api/plans', async (req, res) => res.json(scopeFilter(await Plans.list(), reqScope(req))));
   app.get('/api/suites', async (req, res) => res.json(scopeFilter(await Suites.list(), reqScope(req))));
   app.get('/api/cases', async (req, res) => res.json(scopeFilter(await Cases.list(), reqScope(req))));
-  app.get('/api/runs', async (req, res) => res.json(scopeFilter(await Runs.list(), reqScope(req))));
+  app.get('/api/runs', async (req, res) => {
+    const runs = await Runs.list();
+    const healed = await Promise.all(runs.map(async (run: any) => {
+      if (!isStaleManualRun(run)) return run;
+      const failed = {
+        ...run,
+        status: 'Failed',
+        state: 'Blocked',
+        progress: 'Execution was interrupted before completion.',
+        completedAt: new Date().toISOString(),
+      };
+      await Runs.upsert(failed);
+      return failed;
+    }));
+    res.json(scopeFilter(healed, reqScope(req)));
+  });
   app.post('/api/runs/:id/execute', async (req, res) => {
     const run = await Runs.get(req.params.id);
     if (!run || !scopeFilter([run], reqScope(req)).length) return res.status(404).json({ error: 'Run not found.' });
+    if (activeManualRunExecutions.has(run.id) || (isRunningRun(run) && !isStaleManualRun(run))) {
+      return res.status(409).json({ error: 'This run is already executing.' });
+    }
     try {
       const [allCases, allScripts] = await Promise.all([Cases.list(), Scripts.list()]);
       const cases = scopeFilter(allCases, reqScope(req));
@@ -195,40 +257,128 @@ export function registerResourceRoutes(app: Express) {
       const runnableScripts = [...selectedScripts.values()];
       if (!runnableScripts.length) return res.status(400).json({ error: 'No linked Playwright scripts were found for this run.' });
 
-      await Runs.upsert({ ...run, status: 'Running', state: 'In Progress', progress: `Running ${runnableScripts.length} script${runnableScripts.length === 1 ? '' : 's'}` });
-      const result = await runPlaywrightRequest({
-        scripts: runnableScripts,
-        baseUrl: run.targetUrl || runnableScripts.find((script: any) => script.targetUrl)?.targetUrl || '',
-        runId: run.sourceRunId || run.agentRunId || runnableScripts[0]?.agentRunId || run.id,
-        screenshotMode: 'on',
-      });
-      const tests = Array.isArray(result.tests) ? result.tests : [];
-      const updated = {
+      if (activeManualRunExecutions.has(run.id)) return res.status(409).json({ error: 'This run is already executing.' });
+      const executionAttemptId = `${run.id}-${randomUUID().slice(0, 8)}`;
+      const targetUrl = run.targetUrl || runnableScripts.find((script: any) => script.targetUrl)?.targetUrl || '';
+      const scope = reqScope(req);
+      const runningRun = withManualExecutionMeta({
         ...run,
-        status: result.ok ? 'Completed' : 'Failed',
-        state: result.ok ? 'Completed' : 'Blocked',
-        totalExecutions: Number(result.total) || tests.length,
-        passed: Number(result.passed) || 0,
-        failed: Number(result.failed) || 0,
-        progress: `${Number(result.passed) || 0} passed`,
-        executionTime: result.durationMs ? `${Math.round(Number(result.durationMs) / 1000)}s` : '',
-        completedAt: new Date().toISOString(),
-        evidence: Array.isArray(result.screenshotUrls) ? result.screenshotUrls : [],
-        steps: tests.map((test: any, index: number) => ({
-          step: String(index + 1),
-          action: test.title || `Playwright test ${index + 1}`,
-          expected: 'Playwright script completes successfully.',
-          outcome: /pass/i.test(test.status || '') ? 'Passed' : /skip/i.test(test.status || '') ? 'Skipped' : 'Failed',
-          reason: test.error || '',
-          screenshot: result.screenshotUrls?.[index] || '',
-        })),
-      };
-      await Runs.upsert(updated);
-      if (!isPgEnabled()) persistDataInBackground('manual run execution');
-      res.json({ run: updated, result });
+        status: 'Running',
+        state: 'In Progress',
+        progress: `Starting 0/${runnableScripts.length} scripts`,
+        startedAt: new Date().toISOString(),
+        completedAt: null,
+        evidence: [],
+      }, {
+        attemptId: executionAttemptId,
+        startedAt: new Date().toISOString(),
+        heartbeatAt: new Date().toISOString(),
+        completed: 0,
+        total: runnableScripts.length,
+        reportStatus: 'pending',
+        reportError: '',
+      });
+      activeManualRunExecutions.set(run.id, executionAttemptId);
+      try {
+        await Runs.upsert(runningRun);
+      } catch (error) {
+        activeManualRunExecutions.delete(run.id);
+        throw error;
+      }
+      res.status(202).json({ run: runningRun, executionAttemptId });
+
+      setImmediate(() => {
+        void (async () => {
+          try {
+            const result = await runPlaywrightRequest({
+              scripts: runnableScripts,
+              baseUrl: targetUrl,
+              runId: run.sourceRunId || run.agentRunId || runnableScripts[0]?.agentRunId || run.id,
+              executionId: executionAttemptId,
+              screenshotMode: 'on',
+              onProgress: async (progress: any) => {
+                const latest = await Runs.get(run.id);
+                if (!latest || manualExecutionMeta(latest).attemptId !== executionAttemptId) throw new Error('Execution was superseded by a newer attempt.');
+                await Runs.upsert(withManualExecutionMeta({
+                  ...latest,
+                  status: 'Running',
+                  state: 'In Progress',
+                  progress: `Completed ${progress.completed}/${progress.total} scripts`,
+                  passed: progress.passed,
+                  failed: progress.failed,
+                  steps: executionSteps(progress.tests || []),
+                }, {
+                  heartbeatAt: new Date().toISOString(),
+                  completed: progress.completed,
+                  total: progress.total,
+                }));
+              },
+            });
+            const latest = await Runs.get(run.id);
+            if (!latest || manualExecutionMeta(latest).attemptId !== executionAttemptId) return;
+            const tests = Array.isArray(result.tests) ? result.tests : [];
+            const steps = executionSteps(tests);
+            const evidence = Array.isArray(result.screenshotUrls) ? result.screenshotUrls : [];
+            const updated = withManualExecutionMeta({
+              ...latest,
+              status: result.ok ? 'Completed' : 'Failed',
+              state: result.ok ? 'Completed' : 'Blocked',
+              totalExecutions: Number(result.total) || tests.length,
+              passed: Number(result.passed) || 0,
+              failed: Number(result.failed) || 0,
+              progress: result.ok
+                ? `Completed ${runnableScripts.length}/${runnableScripts.length} scripts`
+                : result.error || `${Number(result.failed) || 0} failed`,
+              executionTime: result.durationMs ? `${Math.round(Number(result.durationMs) / 1000)}s` : '',
+              completedAt: new Date().toISOString(),
+              evidence,
+              steps,
+            }, {
+              heartbeatAt: new Date().toISOString(),
+              completed: runnableScripts.length,
+              total: runnableScripts.length,
+            });
+            await Runs.upsert(updated);
+            try {
+              await createReportFromRun(updated, scope, {
+                passed: updated.passed,
+                failed: updated.failed,
+                steps,
+                targetUrl,
+                suiteName: updated.suiteName,
+                evidence: steps.map((step: any) => ({
+                  screenshotUrl: step.screenshot || '',
+                  stepScreenshots: step.screenshots || [],
+                })),
+              });
+              await Runs.upsert(withManualExecutionMeta(updated, { reportStatus: 'completed', reportError: '' }));
+            } catch (reportError: any) {
+              await Runs.upsert(withManualExecutionMeta(updated, {
+                reportStatus: 'failed',
+                reportError: reportError?.message || 'Failed to create execution report.',
+              })).catch(() => {});
+            }
+            if (!isPgEnabled()) persistDataInBackground('manual run execution');
+          } catch (error: any) {
+            const latest = await Runs.get(run.id).catch(() => null);
+            if (manualExecutionMeta(latest).attemptId === executionAttemptId) {
+              await Runs.upsert(withManualExecutionMeta({
+                ...latest,
+                status: 'Failed',
+                state: 'Blocked',
+                progress: error?.message || 'Execution failed',
+                completedAt: new Date().toISOString(),
+              }, {
+                heartbeatAt: new Date().toISOString(),
+              })).catch(() => {});
+            }
+          } finally {
+            if (activeManualRunExecutions.get(run.id) === executionAttemptId) activeManualRunExecutions.delete(run.id);
+          }
+        })();
+      });
     } catch (error: any) {
-      await Runs.upsert({ ...run, status: 'Failed', state: 'Blocked', progress: error?.message || 'Execution failed' }).catch(() => {});
-      res.status(500).json({ error: error?.message || 'Failed to run Playwright scripts.' });
+      if (!res.headersSent) res.status(500).json({ error: error?.message || 'Failed to start Playwright execution.' });
     }
   });
   app.get('/api/defects', async (req, res) => res.json(scopeFilter(await Defects.list(), reqScope(req))));

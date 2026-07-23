@@ -13,8 +13,9 @@ import { AutomationRunArtifacts } from '@/src/components/AutomationRunArtifacts'
 import { TagEditor } from '@/src/components/TagEditor';
 import { MultiSelectDropdown } from '@/src/components/MultiSelectDropdown';
 import { showAlert } from '@/src/lib/dialog';
+import { withBasePath } from '@/src/lib/base-path';
 import { caseSuiteIds } from '@/src/lib/suiteCaseSelection';
-import { casesForPlan, casesForRun, manualRunSelection, runnableCases, scriptsForRun } from '@/src/lib/manualTestRun';
+import { casesForPlan, casesForRun, manualRunSelection, runExecutionState, runnableCases, scriptsForRun } from '@/src/lib/manualTestRun';
 
 function getRunStats(run: any) {
   const steps = Array.isArray(run?.steps) ? run.steps : [];
@@ -114,16 +115,12 @@ export default function TestRuns() {
 
   const selectedRun = runs.find((run) => run.id === runId) || null;
 
-  // An automation run executes async on the agent; its status/pass-fail land on the run only when
-  // the job finishes (job.done → syncLinkedRun on the backend). Poll while it's still non-terminal so
-  // the header/stat bar update from "Running" to Completed/Failed without a manual refresh.
-  const selectedJobId = selectedRun?.triggerMeta?.automationJobId;
-  const selectedTerminal = /completed|closed|failed|cancelled/i.test(selectedRun?.status || '');
+  const hasRunningRuns = runs.some((run) => runExecutionState(run).running);
   useEffect(() => {
-    if (!selectedJobId || selectedTerminal) return;
-    const t = setInterval(() => { void refreshRunsQuiet(); }, 4000);
+    if (!hasRunningRuns) return;
+    const t = setInterval(() => { void refreshRunsQuiet(); }, 2000);
     return () => clearInterval(t);
-  }, [selectedJobId, selectedTerminal, refreshRunsQuiet]);
+  }, [hasRunningRuns, refreshRunsQuiet]);
   const activeRuns = runs.filter((run) => !/completed|closed/i.test(run.status || ''));
   const closedRuns = runs.filter((run) => /completed|closed/i.test(run.status || ''));
 
@@ -212,7 +209,7 @@ export default function TestRuns() {
     if (!runsToExecute.length) return;
     const errors: string[] = [];
     for (const run of runsToExecute) {
-      if (runProgress[run.id]) continue;
+      if (runProgress[run.id] || runExecutionState(run).running) continue;
       const runCases = casesForRun(run, cases, suites);
       const runScripts = scriptsForRun(run, runCases, scripts);
       if (!runScripts.length) {
@@ -220,16 +217,27 @@ export default function TestRuns() {
         continue;
       }
       setRunProgress((current) => ({ ...current, [run.id]: `Running ${runScripts.length} script${runScripts.length === 1 ? '' : 's'}…` }));
-      setRuns((current) => current.map((item) => item.id === run.id ? { ...item, status: 'Running', state: 'In Progress' } : item));
+      setRuns((current) => current.map((item) => item.id === run.id ? {
+        ...item,
+        status: 'Running',
+        state: 'In Progress',
+        progress: `Starting 0/${runScripts.length} scripts`,
+        triggerMeta: {
+          ...(item.triggerMeta || {}),
+          manualExecution: { completed: 0, total: runScripts.length },
+        },
+      } : item));
       try {
-        const response = await fetch(`/api/runs/${run.id}/execute`, {
-          method: 'POST',
-        });
+        const response = await fetch(`/api/runs/${run.id}/execute`, { method: 'POST' });
         const responseText = await response.text();
         let data: any = {};
         try { data = responseText ? JSON.parse(responseText) : {}; } catch { /* proxy/server returned text */ }
-        if (!response.ok) throw new Error(data.error || `Execution request failed (HTTP ${response.status})${responseText ? `: ${responseText.slice(0, 240)}` : ''}`);
-        setRunProgress((current) => ({ ...current, [run.id]: 'Loading results…' }));
+        if (!response.ok) {
+          const isGatewayHtml = response.status >= 500 && /^\s*<(?:!doctype|html)/i.test(responseText);
+          throw new Error(data.error || (isGatewayHtml
+            ? `Execution service did not respond (HTTP ${response.status}).`
+            : `Execution request failed (HTTP ${response.status})${responseText ? `: ${responseText.slice(0, 240)}` : ''}`));
+        }
         setRuns((current) => current.map((item) => item.id === run.id ? { ...item, ...data.run } : item));
       } catch (error: any) {
         errors.push(`${run.name}: ${error.message || 'execution failed'}`);
@@ -263,7 +271,16 @@ export default function TestRuns() {
 
   if (selectedRun) {
     const stats = getRunStats(selectedRun);
-    const selectedProgress = runProgress[selectedRun.id];
+    const selectedExecution = runExecutionState(selectedRun);
+    const selectedProgress = runProgress[selectedRun.id] || selectedExecution.label;
+    const selectedIsRunning = selectedExecution.running || Boolean(runProgress[selectedRun.id]);
+    const selectedEvidence = Array.from(new Set<string>([
+      ...(Array.isArray(selectedRun.evidence) ? selectedRun.evidence : []),
+      ...(Array.isArray(selectedRun.steps) ? selectedRun.steps.flatMap((step: any) => [
+        step?.screenshot,
+        ...(Array.isArray(step?.screenshots) ? step.screenshots : []),
+      ]) : []),
+    ].filter(Boolean)));
 
     return (
       <div className="app-page-shell h-full flex flex-col">
@@ -292,7 +309,7 @@ export default function TestRuns() {
               </div>
               <button
                 onClick={() => handleExecuteRuns([selectedRun])}
-                disabled={Boolean(selectedProgress) || selectedRunScripts.length === 0}
+                disabled={selectedExecution.running || Boolean(runProgress[selectedRun.id]) || selectedRunScripts.length === 0}
                 title={selectedRunScripts.length ? 'Execute linked Playwright scripts' : 'No Playwright scripts are linked to these cases'}
                 className="inline-flex items-center gap-2 rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
               >
@@ -307,17 +324,44 @@ export default function TestRuns() {
               <AutomationRunArtifacts jobId={selectedRun.triggerMeta.automationJobId} />
             </div>
           )}
+          {selectedEvidence.length > 0 && (
+            <div className="border-b border-[var(--border)] p-5">
+              <h2 className="mb-3 text-sm font-semibold">Execution evidence ({selectedEvidence.length})</h2>
+              <div className="flex gap-3 overflow-x-auto pb-1">
+                {selectedEvidence.map((url, index) => (
+                  <a key={url} href={withBasePath(url)} target="_blank" rel="noreferrer" className="shrink-0">
+                    <img
+                      src={withBasePath(url)}
+                      alt={`Execution evidence ${index + 1}`}
+                      className="h-28 w-44 rounded-md border border-[var(--border)] bg-black object-cover"
+                    />
+                  </a>
+                ))}
+              </div>
+            </div>
+          )}
 
           <div className="h-2 bg-[var(--bg-secondary)] flex">
-            <div className="bg-emerald-400" style={{ width: `${stats.total ? (stats.passed / stats.total) * 100 : 0}%` }} />
-            <div className="bg-red-400" style={{ width: `${stats.total ? (stats.failed / stats.total) * 100 : 0}%` }} />
-            <div className="bg-indigo-400" style={{ width: `${stats.total ? (stats.blocked / stats.total) * 100 : 0}%` }} />
-            <div className="bg-yellow-400" style={{ width: `${stats.total ? (stats.retest / stats.total) * 100 : 0}%` }} />
-            <div className="bg-slate-500" style={{ width: `${stats.total ? (stats.skipped / stats.total) * 100 : 0}%` }} />
+            {selectedIsRunning ? (
+              <div
+                className="h-full animate-pulse bg-[var(--accent)] transition-[width] duration-500"
+                style={{ width: `${selectedExecution.total ? Math.max(2, selectedExecution.percent) : 100}%` }}
+              />
+            ) : (
+              <>
+                <div className="bg-emerald-400" style={{ width: `${stats.total ? (stats.passed / stats.total) * 100 : 0}%` }} />
+                <div className="bg-red-400" style={{ width: `${stats.total ? (stats.failed / stats.total) * 100 : 0}%` }} />
+                <div className="bg-indigo-400" style={{ width: `${stats.total ? (stats.blocked / stats.total) * 100 : 0}%` }} />
+                <div className="bg-yellow-400" style={{ width: `${stats.total ? (stats.retest / stats.total) * 100 : 0}%` }} />
+                <div className="bg-slate-500" style={{ width: `${stats.total ? (stats.skipped / stats.total) * 100 : 0}%` }} />
+              </>
+            )}
           </div>
 
           <div className="px-5 py-3 border-b border-[var(--border)] flex flex-wrap gap-4 text-sm">
-            <span>{stats.completed}% Completed</span>
+            <span role="status" aria-live="polite">
+              {selectedIsRunning ? `${selectedExecution.percent}% · ${selectedProgress}` : `${stats.completed}% Completed`}
+            </span>
             <span className="text-emerald-400">Passed {stats.passed}</span>
             <span className="text-red-400">Failed {stats.failed}</span>
             <span className="text-indigo-400">Blocked {stats.blocked}</span>
@@ -546,7 +590,7 @@ export default function TestRuns() {
             {bulk.selectedCount > 0 && (
               <>
                 {bulk.selectedCount > 1 && (
-                  <button onClick={() => handleExecuteRuns(runs.filter((run) => bulk.selectedIds.has(run.id)))} disabled={runs.some((run) => bulk.selectedIds.has(run.id) && runProgress[run.id])} className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
+                  <button onClick={() => handleExecuteRuns(runs.filter((run) => bulk.selectedIds.has(run.id)))} disabled={runs.some((run) => bulk.selectedIds.has(run.id) && (runProgress[run.id] || runExecutionState(run).running))} className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
                     <PlayCircle className="w-4 h-4" /> Run selected ({bulk.selectedCount})
                   </button>
                 )}
@@ -583,7 +627,9 @@ export default function TestRuns() {
               ) : filteredRuns.map((run) => {
                 const stats = getRunStats(run);
                 const hasScripts = scriptsForRun(run, casesForRun(run, cases, suites), scripts).length > 0;
-                const progress = runProgress[run.id];
+                const execution = runExecutionState(run);
+                const progress = runProgress[run.id] || execution.label;
+                const running = execution.running || Boolean(runProgress[run.id]);
                 return (
                   <tr key={run.id} onClick={() => navigate(`/runs/${run.id}`)} className="hover:bg-[var(--bg-secondary)] cursor-pointer">
                     <td className="px-4 py-4" onClick={(e) => e.stopPropagation()}>
@@ -598,11 +644,11 @@ export default function TestRuns() {
                         </div>
                         <button
                           onClick={(event) => { event.stopPropagation(); void handleExecuteRuns([run]); }}
-                          disabled={Boolean(progress) || !hasScripts}
+                          disabled={running || !hasScripts}
                           title={hasScripts ? 'Run linked Playwright scripts' : 'No Playwright scripts are linked to this run'}
                           className="inline-flex shrink-0 items-center gap-1 rounded-md bg-emerald-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
                         >
-                          <PlayCircle className="h-3.5 w-3.5" /> {progress ? 'Running…' : 'Run'}
+                          <PlayCircle className="h-3.5 w-3.5" /> {running ? 'Running…' : 'Run'}
                         </button>
                       </div>
                     </td>
@@ -610,13 +656,16 @@ export default function TestRuns() {
                       <FolderBadge folders={folders} folderId={run.folderId} />
                     </td>
                     <td className="px-4 py-4">{stats.total} Tests</td>
-                    <td className="px-4 py-4">{progress ? 'Running…' : run.executionTime || '-'}</td>
+                    <td className="px-4 py-4">{running ? 'Running…' : run.executionTime || '-'}</td>
                     <td className="px-4 py-4">
-                      {progress ? (
+                      {running ? (
                         <div className="w-36" role="status" aria-live="polite">
-                          <div className="mb-1 truncate text-xs text-[var(--accent)]">{progress}</div>
+                          <div className="mb-1 truncate text-xs text-[var(--accent)]">{execution.percent}% · {progress}</div>
                           <div className="h-1.5 overflow-hidden rounded-full bg-[var(--bg-secondary)]">
-                            <div className="h-full w-1/2 animate-pulse rounded-full bg-[var(--accent)]" />
+                            <div
+                              className="h-full animate-pulse rounded-full bg-[var(--accent)] transition-[width] duration-500"
+                              style={{ width: `${execution.total ? Math.max(2, execution.percent) : 100}%` }}
+                            />
                           </div>
                         </div>
                       ) : <div className="flex gap-2">

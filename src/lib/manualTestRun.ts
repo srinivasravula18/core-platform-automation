@@ -75,3 +75,17 @@ export function manualRunSelection(planId: string, caseIds: string[]) {
     planIds: caseIds.length || !planId ? [] : [planId],
   };
 }
+
+export function runExecutionState(run: any) {
+  const running = /^running$/i.test(String(run?.status || ''));
+  const execution = run?.triggerMeta?.manualExecution || {};
+  const total = Math.max(0, Number(execution.total ?? run?.executionTotal) || 0);
+  const completed = Math.min(total, Math.max(0, Number(execution.completed ?? run?.executionCompleted) || 0));
+  return {
+    running,
+    total,
+    completed,
+    percent: total ? Math.round((completed / total) * 100) : 0,
+    label: running ? String(run?.progress || `Running ${total || ''} scripts`).trim() : '',
+  };
+}

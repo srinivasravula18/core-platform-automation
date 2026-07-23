@@ -43,55 +43,121 @@ function applySettingsCredentials(code: string, baseUrl: string) {
   return next;
 }
 
-export async function runPlaywrightRequest({ scripts, baseUrl, runId, singleSession, screenshotMode }: any) {
+export async function runPlaywrightRequest({ scripts, baseUrl, runId, executionId, singleSession, screenshotMode, onProgress }: any) {
   if (!Array.isArray(scripts) || scripts.length === 0) throw new Error('No linked Playwright scripts were found.');
   const runnableScripts = scripts.map((script: any) => ({ ...script, code: applySettingsCredentials(String(script?.code || ''), String(baseUrl || '')) }));
-      // Compiler-emitted specs import './mission-runner'; without emitting it they collect 0 tests on re-run.
-      const needsMissionRunner = runnableScripts.some((s: any) => /from\s+['"]\.\/mission-runner['"]/.test(String(s?.code || '')));
-      // Compiled specs never log in themselves (MissionRunner expects an injected authenticated session),
-      // so re-runs must prepare one — same proven login the pipeline uses. Legacy scripts keep their own login.
-      let storageStatePath: string | undefined;
-      let sessionStorageState: { origin: string; items: Record<string, string> } | undefined;
-      if (needsMissionRunner && baseUrl) {
-        // Pin credential resolution to the originating run's website/owner when known — Admin/Keystone/
-        // Shockwave share one hostname, so hostname-only matching can log in as the WRONG site's user.
-        const originRun = runId ? db.agentRuns.find((r: any) => r.id === runId || String(runId).startsWith(String(r.id))) : null;
-        const stored = resolveCredentials({
-          targetUrl: String(baseUrl),
-          websiteId: originRun?.websiteId || undefined,
-          role: originRun?.credentials?.role || undefined,
-          ownerId: originRun?.ownerId || undefined,
+  const needsMissionRunner = runnableScripts.some((script: any) => /from\s+['"]\.\/mission-runner['"]/.test(String(script?.code || '')));
+  let storageStatePath: string | undefined;
+  let sessionStorageState: { origin: string; items: Record<string, string> } | undefined;
+  if (needsMissionRunner && baseUrl) {
+    const originRun = runId ? db.agentRuns.find((run: any) => run.id === runId || String(runId).startsWith(String(run.id))) : null;
+    const stored = resolveCredentials({
+      targetUrl: String(baseUrl),
+      websiteId: originRun?.websiteId || undefined,
+      role: originRun?.credentials?.role || undefined,
+      ownerId: originRun?.ownerId || undefined,
+    });
+    const settings = findSettingsCredentials(String(baseUrl));
+    const creds = stored?.username && stored?.password
+      ? { username: stored.username, password: stored.password }
+      : settings.username && settings.password ? { username: settings.username, password: settings.password } : null;
+    if (creds) {
+      const authPath = path.join(process.cwd(), '.testflow-pw', `rerun-${safeId(String(executionId || runId || Date.now()))}-auth.json`);
+      await fs.mkdir(path.dirname(authPath), { recursive: true });
+      let auth = await createAuthStorageState(String(baseUrl), creds, authPath).catch(() => null);
+      if (auth?.ok && !auth.sessionStorage) {
+        auth = await createAuthStorageState(String(baseUrl), creds, authPath).catch(() => auth);
+      }
+      if (auth?.ok || auth?.sessionStorage) {
+        storageStatePath = authPath;
+        sessionStorageState = auth?.sessionStorage;
+      }
+    }
+  }
+
+  const executionRunId = String(executionId || runId || `run-${Date.now()}`);
+  let result: any;
+  if (typeof onProgress !== 'function') {
+    result = await executePlaywrightScripts({
+      scripts: runnableScripts,
+      baseUrl,
+      runId: executionRunId,
+      singleSession: !!singleSession,
+      screenshotMode: screenshotMode === 'on' ? 'on' : undefined,
+      emitMissionRunner: needsMissionRunner,
+      storageStatePath,
+      sessionStorageState,
+    });
+  } else {
+    const tests: any[] = [];
+    const errors: string[] = [];
+    const quarantined: string[] = [];
+    let passed = 0;
+    let failed = 0;
+    let skipped = 0;
+    let durationMs = 0;
+    for (let index = 0; index < runnableScripts.length; index += 1) {
+      const script = runnableScripts[index];
+      const current = await executePlaywrightScripts({
+        scripts: [script],
+        baseUrl,
+        runId: `${executionRunId}-case-${index + 1}`,
+        singleSession: true,
+        screenshotMode: screenshotMode === 'on' ? 'on' : undefined,
+        emitMissionRunner: needsMissionRunner,
+        storageStatePath,
+        sessionStorageState,
+      });
+      const currentTests = Array.isArray(current.tests) ? current.tests : [];
+      tests.push(...currentTests);
+      passed += Number(current.passed) || 0;
+      failed += Number(current.failed) || 0;
+      skipped += Number(current.skipped) || 0;
+      durationMs += Number(current.durationMs) || 0;
+      if (!current.ok && currentTests.length === 0) {
+        failed += 1;
+        tests.push({
+          title: script.title || script.filename || `Script ${index + 1}`,
+          status: 'failed',
+          durationMs: Number(current.durationMs) || 0,
+          error: current.error || 'No Playwright result was produced.',
         });
-        const settings = findSettingsCredentials(String(baseUrl));
-        const creds = stored?.username && stored?.password
-          ? { username: stored.username, password: stored.password }
-          : settings.username && settings.password ? { username: settings.username, password: settings.password } : null;
-        if (creds) {
-          const authPath = path.join(process.cwd(), '.testflow-pw', `rerun-${safeId(String(runId || Date.now()))}-auth.json`);
-          await fs.mkdir(path.dirname(authPath), { recursive: true });
-          let auth = await createAuthStorageState(String(baseUrl), creds, authPath).catch(() => null);
-          // The SPA writes its auth token to sessionStorage AFTER login settles — a raced capture comes back
-          // empty and the injected context renders logged-out (every selector then times out). Retry once.
-          if (auth?.ok && !auth.sessionStorage) {
-            auth = await createAuthStorageState(String(baseUrl), creds, authPath).catch(() => auth);
-          }
-          if (auth?.ok || auth?.sessionStorage) {
-            storageStatePath = authPath;
-            sessionStorageState = auth?.sessionStorage;
-          }
-        }
       }
-      const result = await executePlaywrightScripts({ scripts: runnableScripts, baseUrl, runId, singleSession: !!singleSession, screenshotMode: screenshotMode === 'on' ? 'on' : undefined, emitMissionRunner: needsMissionRunner, storageStatePath, sessionStorageState });
-      const evidenceDir = path.resolve(process.cwd(), 'evidence');
-      await fs.mkdir(evidenceDir, { recursive: true });
-      const screenshotUrls: string[] = [];
-      for (const t of result.tests || []) {
-        for (const fp of [...(t.stepScreenshotPaths || []), t.screenshotPath].filter(Boolean)) {
-          const dest = `${result.runId}-shot-${screenshotUrls.length + 1}.png`;
-          const ok = await fs.copyFile(fp, path.join(evidenceDir, dest)).then(() => true).catch(() => false);
-          if (ok) screenshotUrls.push(`/evidence/${dest}`);
-        }
+      if (current.error) errors.push(`${script.title || script.filename || `Script ${index + 1}`}: ${current.error}`);
+      if (Array.isArray(current.quarantined)) quarantined.push(...current.quarantined);
+      await onProgress({ completed: index + 1, total: runnableScripts.length, passed, failed, skipped, tests: [...tests] });
+    }
+    result = {
+      ok: errors.length === 0 && failed === 0 && tests.length > 0,
+      total: tests.length,
+      passed,
+      failed,
+      skipped,
+      durationMs,
+      tests,
+      runId: executionRunId,
+      error: errors.length ? errors.join(' | ') : undefined,
+      quarantined: quarantined.length ? quarantined : undefined,
+    };
+  }
+
+  const evidenceDir = path.resolve(process.cwd(), 'evidence');
+  await fs.mkdir(evidenceDir, { recursive: true });
+  const screenshotUrls: string[] = [];
+  for (const test of result.tests || []) {
+    const testUrls: string[] = [];
+    for (const sourcePath of [...(test.stepScreenshotPaths || []), test.screenshotPath].filter(Boolean)) {
+      const destination = `${safeId(result.runId)}-shot-${screenshotUrls.length + 1}.png`;
+      const copied = await fs.copyFile(sourcePath, path.join(evidenceDir, destination)).then(() => true).catch(() => false);
+      if (copied) {
+        const url = `/evidence/${destination}`;
+        screenshotUrls.push(url);
+        testUrls.push(url);
       }
+    }
+    test.evidenceUrls = testUrls;
+    test.screenshotUrl = testUrls.at(-1) || '';
+  }
   return { ...result, screenshotUrls };
 }
 
