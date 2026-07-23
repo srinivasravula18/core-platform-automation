@@ -1,5 +1,26 @@
-import { Fragment } from 'react';
+import { Fragment, useEffect, useId, useState } from 'react';
 import { withBasePath } from '@/src/lib/base-path';
+
+function MermaidDiagram({ source }: { source: string }) {
+  const id = `mermaid-${useId().replace(/:/g, '')}`;
+  const [svg, setSvg] = useState('');
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    let active = true;
+    import('mermaid').then(async ({ default: mermaid }) => {
+      mermaid.initialize({ startOnLoad: false, securityLevel: 'strict', theme: 'dark' });
+      const rendered = await mermaid.render(id, source);
+      if (active) setSvg(rendered.svg);
+    }).catch((reason) => {
+      if (active) setError(reason instanceof Error ? reason.message : String(reason));
+    });
+    return () => { active = false; };
+  }, [id, source]);
+
+  if (error) return <pre className="my-3 overflow-x-auto rounded-md bg-black/30 p-3 text-xs"><code>{source}</code></pre>;
+  return <div aria-label="Architecture diagram" className="my-4 overflow-x-auto rounded-lg border border-[var(--border)] bg-slate-950 p-4" dangerouslySetInnerHTML={{ __html: svg }} />;
+}
 
 function inlineParts(text: string) {
   const parts = String(text || '').split(/(`[^`]+`|\*\*[^*]+\*\*)/g);
@@ -59,6 +80,7 @@ export function MarkdownText({ value }: { value: unknown }) {
   const lines = text.split(/\r?\n/);
   const blocks = [];
   let code: string[] | null = null;
+  let codeLanguage = '';
   let table: string[] | null = null;
 
   const flushTable = (i: number) => {
@@ -75,10 +97,15 @@ export function MarkdownText({ value }: { value: unknown }) {
     flushTable(i);
     if (line.trim().startsWith('```')) {
       if (code) {
-        blocks.push(<pre key={`code-${i}`} className="my-2 overflow-x-auto rounded-md bg-black/30 p-2 text-xs"><code>{code.join('\n')}</code></pre>);
+        const source = code.join('\n');
+        blocks.push(codeLanguage === 'mermaid'
+          ? <Fragment key={`code-${i}`}><MermaidDiagram source={source} /></Fragment>
+          : <pre key={`code-${i}`} className="my-2 overflow-x-auto rounded-md bg-black/30 p-2 text-xs"><code>{source}</code></pre>);
         code = null;
+        codeLanguage = '';
       } else {
         code = [];
+        codeLanguage = line.trim().slice(3).trim().toLowerCase();
       }
       return;
     }
@@ -118,7 +145,10 @@ export function MarkdownText({ value }: { value: unknown }) {
 
   flushTable(lines.length);
   if (code) {
-    blocks.push(<pre key="code-tail" className="my-2 overflow-x-auto rounded-md bg-black/30 p-2 text-xs"><code>{code.join('\n')}</code></pre>);
+    const source = code.join('\n');
+    blocks.push(codeLanguage === 'mermaid'
+      ? <Fragment key="code-tail"><MermaidDiagram source={source} /></Fragment>
+      : <pre key="code-tail" className="my-2 overflow-x-auto rounded-md bg-black/30 p-2 text-xs"><code>{source}</code></pre>);
   }
 
   return <div className="space-y-0.5 break-words">{blocks}</div>;

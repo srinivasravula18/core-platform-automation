@@ -111,6 +111,7 @@
     "firebase": "^12.14.0",
     "html2canvas": "^1.4.1",
     "lucide-react": "^0.546.0",
+    "mermaid": "^11.16.0",
     "motion": "^12.23.24",
     "openai": "^6.42.0",
     "pg": "^8.21.0",
