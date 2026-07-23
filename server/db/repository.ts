@@ -103,6 +103,7 @@ function mapSuite(r: any) {
     description: r.description,
     parentSuite: r.parent_suite,
     testPlanId: r.test_plan_id,
+    testPlanIds: r.test_plan_ids || (r.test_plan_id ? [r.test_plan_id] : []),
     module: r.module,
     owner: r.owner,
     tags: r.tags || [],
@@ -789,20 +790,24 @@ export const Suites = {
       return s;
     }
     const id = s.id || uid('SUITE');
+    const planIds = Array.isArray(s.testPlanIds) ? s.testPlanIds.filter(Boolean) : (s.testPlanId ? [s.testPlanId] : []);
+    const primaryPlanId = s.testPlanId || planIds[0] || null;
     const row = await queryOne(
-      `INSERT INTO suites (id, name, description, parent_suite, test_plan_id, module, owner, tags, priority, status, folder_id, approval_state, proposed_by, source_run_id, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14, now(), now())
+      `INSERT INTO suites (id, name, description, parent_suite, test_plan_id, module, owner, tags, priority, status, folder_id, approval_state, proposed_by, source_run_id, test_plan_ids, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15, now(), now())
        ON CONFLICT (id) DO UPDATE SET
          name=EXCLUDED.name, description=EXCLUDED.description, parent_suite=EXCLUDED.parent_suite,
          test_plan_id=EXCLUDED.test_plan_id, module=EXCLUDED.module, owner=EXCLUDED.owner,
          tags=EXCLUDED.tags, priority=EXCLUDED.priority, status=EXCLUDED.status, folder_id=EXCLUDED.folder_id,
-         approval_state=EXCLUDED.approval_state, proposed_by=EXCLUDED.proposed_by, source_run_id=EXCLUDED.source_run_id, updated_at=now()
+         approval_state=EXCLUDED.approval_state, proposed_by=EXCLUDED.proposed_by, source_run_id=EXCLUDED.source_run_id,
+         test_plan_ids=EXCLUDED.test_plan_ids, updated_at=now()
        RETURNING *`,
       [
         id, s.name || 'Untitled Suite', s.description || '', s.parentSuite || null,
-        s.testPlanId || null, s.module || '', s.owner || '', s.tags || [],
+        primaryPlanId, s.module || '', s.owner || '', s.tags || [],
         s.priority || 'Medium', s.status || 'Active', s.folderId || null,
         s.approvalState || 'approved', s.proposedBy || s.createdBy || 'human', s.sourceRunId || null,
+        JSON.stringify(planIds),
       ],
     );
     await writeScopeCols('suites', id, s);

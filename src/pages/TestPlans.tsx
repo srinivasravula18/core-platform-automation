@@ -11,6 +11,7 @@ import { AIActionModal } from '@/src/components/AIActionModal';
 import { FolderSelect } from '@/src/components/FolderSelect';
 import { FolderBadge } from '@/src/components/FolderBadge';
 import { showAlert, showConfirm } from '@/src/lib/dialog';
+import { suitePlanIds } from '@/src/lib/suiteCaseSelection';
 
 const PLAN_STATUSES = ['Draft', 'Under Review', 'Approved', 'In Progress', 'Completed', 'Blocked', 'Cancelled', 'Archived'];
 const PLAN_RISK_LEVELS = ['Low', 'Medium', 'High'];
@@ -214,7 +215,7 @@ export default function TestPlans() {
     }
   };
 
-  const getPlanSuites = (planId: string) => suites.filter((suite) => suite.testPlanId === planId);
+  const getPlanSuites = (planId: string) => suites.filter((suite) => suitePlanIds(suite).includes(planId));
   const getPlanCases = (planId: string) => cases.filter((testCase) => testCase.testPlanId === planId);
   const selectedDetailPlan = plans.find((plan) => plan.id === planId) || null;
   const getPlanRuns = (plan: any) => runs.filter((run) => run.agentRunId === plan?.agentRunId || run.planName === plan?.name);
@@ -248,7 +249,7 @@ export default function TestPlans() {
               { key: 'scope', label: 'Scope' },
               { key: 'objectives', label: 'Objectives' },
               { key: 'environments', label: 'Environments' },
-              { key: 'suiteCount', label: 'Suites', get: (p) => suites.filter((s) => s.testPlanId === p.id).length },
+              { key: 'suiteCount', label: 'Suites', get: (p) => suites.filter((s) => suitePlanIds(s).includes(p.id)).length },
               { key: 'caseCount', label: 'Cases', get: (p) => cases.filter((c) => c.testPlanId === p.id).length },
             ]}
           />

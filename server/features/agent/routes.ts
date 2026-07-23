@@ -704,7 +704,9 @@ function buildSelectedQaContext(input: { testPlanId?: string; testSuiteId?: stri
   const selectedPlan = input.testPlanId ? db.plans.find((item: any) => item.id === input.testPlanId) : null;
   const selectedSuite = input.testSuiteId ? db.suites.find((item: any) => item.id === input.testSuiteId) : null;
   const selectedCase = input.testCaseId ? db.cases.find((item: any) => item.id === input.testCaseId) : null;
-  const planSuites = selectedPlan ? db.suites.filter((suite: any) => suite.testPlanId === selectedPlan.id) : [];
+  const planSuites = selectedPlan ? db.suites.filter((suite: any) =>
+    (Array.isArray(suite.testPlanIds) && suite.testPlanIds.length ? suite.testPlanIds : [suite.testPlanId]).includes(selectedPlan.id)
+  ) : [];
   const suiteCases = selectedSuite ? db.cases.filter((testCase: any) => testCase.testSuiteId === selectedSuite.id) : [];
   const planCases = selectedPlan ? db.cases.filter((testCase: any) =>
     testCase.testPlanId === selectedPlan.id || planSuites.some((suite: any) => suite.id === testCase.testSuiteId)
@@ -1166,7 +1168,7 @@ async function ensureAgentPlanAndSuite(run: any) {
       description: `Generated suite for ${run.app_url || baseName}`,
       testPlanId: planId,
       parentSuite: '',
-      module: 'QA Assistant',
+      module: db.folders.find((folder: any) => folder.id === run.folderId)?.name || getFolderPath(run.folderId || ''),
       owner: 'QA Assistant',
       tags: suiteTags.length ? suiteTags : ['@generated'],
       priority: 'Medium',

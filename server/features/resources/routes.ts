@@ -488,7 +488,8 @@ export function registerResourceRoutes(app: Express) {
       id: `SUITE-${Math.random().toString(36).substring(2, 6).toUpperCase()}`,
       name: s.name || 'New Suite',
       description: s.description,
-      testPlanId: s.testPlanId || '',
+      testPlanId: s.testPlanId || s.testPlanIds?.[0] || '',
+      testPlanIds: uniqueStrings(s.testPlanIds?.length ? s.testPlanIds : (s.testPlanId ? [s.testPlanId] : [])),
       parentSuite: s.parentSuite,
       module: s.module,
       owner: s.owner || 'User',
@@ -637,7 +638,7 @@ Rules:
   });
 
   /* ---------- POST /api/runs/from-selection ---------- */
-  app.post('/api/runs/from-selection', requireRepositoryFolder, async (req, res) => {
+  app.post('/api/runs/from-selection', async (req, res) => {
     const scope = reqScope(req);
     const selectedPlanIds = uniqueStrings(req.body?.planIds);
     const selectedSuiteIds = uniqueStrings(req.body?.suiteIds);
@@ -660,7 +661,7 @@ Rules:
     const suiteIds = new Set(selectedSuiteIds.filter((id) => suites.some((suite: any) => suite.id === id)));
 
     suites.forEach((suite: any) => {
-      if (planIds.has(suite.testPlanId)) suiteIds.add(suite.id);
+      if (uniqueStrings(suite.testPlanIds?.length ? suite.testPlanIds : [suite.testPlanId]).some((id) => planIds.has(id))) suiteIds.add(suite.id);
     });
 
     let addedDescendant = true;
@@ -694,6 +695,10 @@ Rules:
       || selectedSuites.find((suite: any) => suite.folderId)?.folderId
       || selectedPlans.find((plan: any) => plan.folderId)?.folderId
       || '';
+    const folder = folderId ? await Folders.get(folderId) : null;
+    if (!folder || !scopeFilter([folder], scope).length) {
+      return res.status(400).json({ error: FOLDER_REQUIRED_ERROR });
+    }
 
     const steps = selectedCases.flatMap((testCase: any) => {
       const caseSteps = normalizeCaseSteps(testCase.steps);
@@ -747,7 +752,7 @@ Rules:
       tags: Array.isArray(req.body?.tags) ? req.body.tags : normalizeCaseTags(req.body?.tags || []),
       state: req.body?.state || '',
       executionTime: req.body?.executionTime || '',
-      status: 'Completed',
+      status: req.body?.state || 'Not Started',
       progress: `${passed} passed`,
       date: new Date().toISOString().split('T')[0],
       totalExecutions: steps.length,
@@ -811,7 +816,7 @@ Rules:
       tags: Array.isArray(req.body.tags) ? req.body.tags : normalizeCaseTags(req.body.tags || []),
       state: req.body.state || '',
       executionTime: req.body.executionTime || '',
-      status: 'Completed',
+      status: req.body.state || 'Not Started',
       progress: `${passed} passed`,
       date: new Date().toISOString().split('T')[0],
       totalExecutions: steps.length,

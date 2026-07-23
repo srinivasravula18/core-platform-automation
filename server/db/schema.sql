@@ -270,6 +270,7 @@ ALTER TABLE cases ADD COLUMN IF NOT EXISTS testing_type      TEXT DEFAULT 'Funct
 -- with the first entry so existing run/linking logic keyed on the singular id is unaffected.
 ALTER TABLE cases ADD COLUMN IF NOT EXISTS test_plan_ids  JSONB DEFAULT '[]'::jsonb;
 ALTER TABLE cases ADD COLUMN IF NOT EXISTS test_suite_ids JSONB DEFAULT '[]'::jsonb;
+ALTER TABLE suites ADD COLUMN IF NOT EXISTS test_plan_ids JSONB DEFAULT '[]'::jsonb;
 
 -- Test-run assignment/classification fields (Assign To, Tags, State). Additive so existing readers
 -- are unaffected; `state` is a workflow state distinct from execution `status`.

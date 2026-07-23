@@ -5,12 +5,20 @@ import ExportMenu from '../components/ExportMenu';
 import { useAiSearch } from '@/src/lib/useAiSearch';
 import { useBulkDelete } from '@/src/lib/useBulkDelete';
 import { startSelectedRun } from '@/src/lib/startSelectedRun';
-import { caseSuiteAssignment, relatedCasesForSuite } from '@/src/lib/suiteCaseSelection';
+import {
+  caseSuiteAssignment,
+  orderSuitesByHierarchy,
+  relatedCasesForSuite,
+  suiteHierarchyDepth,
+  suiteModuleName,
+  suitePlanIds,
+} from '@/src/lib/suiteCaseSelection';
 import { cn } from '@/src/lib/utils';
 import { Modal } from '@/src/components/Modal';
 import { AIActionModal } from '@/src/components/AIActionModal';
 import { FolderSelect } from '@/src/components/FolderSelect';
 import { TagEditor } from '@/src/components/TagEditor';
+import { TagMultiSelect } from '@/src/components/TagMultiSelect';
 import { showAlert, showConfirm } from '@/src/lib/dialog';
 
 export default function TestSuites() {
@@ -28,7 +36,7 @@ export default function TestSuites() {
   const [isSuiteModalOpen, setIsSuiteModalOpen] = useState(false);
   const [isAISuiteModalOpen, setIsAISuiteModalOpen] = useState(false);
   const [isStartingRun, setIsStartingRun] = useState(false);
-  const [formData, setFormData] = useState({ name: '', description: '', testPlanId: '', parentSuite: '', module: '', owner: '', tags: [] as string[], priority: 'Medium', status: 'Active', folderId: '' });
+  const [formData, setFormData] = useState({ name: '', description: '', testPlanIds: [] as string[], parentSuite: '', module: '', owner: '', tags: [] as string[], priority: 'Medium', status: 'Active', folderId: '' });
   const [selectedCaseIds, setSelectedCaseIds] = useState<Set<string>>(new Set());
   // Set only when the modal was opened via a suite's "Add subsuite" action, so the modal can say
   // it's adding under that specific parent instead of showing a generic parent-suite picker.
@@ -78,7 +86,7 @@ export default function TestSuites() {
   const openNewModal = () => {
     setSelectedSuiteId(null);
     setSubsuiteParentId('');
-    setFormData({ name: '', description: '', testPlanId: '', parentSuite: '', module: '', owner: '', tags: [], priority: 'Medium', status: 'Active', folderId: '' });
+    setFormData({ name: '', description: '', testPlanIds: [], parentSuite: '', module: '', owner: '', tags: [], priority: 'Medium', status: 'Active', folderId: '' });
     setSelectedCaseIds(new Set());
     setIsSuiteModalOpen(true);
   };
@@ -88,8 +96,8 @@ export default function TestSuites() {
     setSubsuiteParentId('');
     setSelectedCaseIds(new Set());
     setFormData({
-      name: suite.name || '', description: suite.description || '', testPlanId: suite.testPlanId || '', parentSuite: suite.parentSuite || '', 
-      module: suite.module || '', owner: suite.owner || '', tags: Array.isArray(suite.tags) ? suite.tags : String(suite.tags || '').split(',').map((tag) => tag.trim()).filter(Boolean),
+      name: suite.name || '', description: suite.description || '', testPlanIds: suitePlanIds(suite), parentSuite: suite.parentSuite || '',
+      module: suiteModuleName(suite, folders), owner: suite.owner || '', tags: Array.isArray(suite.tags) ? suite.tags : String(suite.tags || '').split(',').map((tag) => tag.trim()).filter(Boolean),
       priority: suite.priority || 'Medium', status: suite.status || 'Active', folderId: suite.folderId || ''
     });
     setIsSuiteModalOpen(true);
@@ -100,8 +108,8 @@ export default function TestSuites() {
     setSubsuiteParentId(parent.id);
     setSelectedCaseIds(new Set());
     setFormData({
-      name: '', description: '', testPlanId: parent.testPlanId || '', parentSuite: parent.id,
-      module: parent.module || '', owner: parent.owner || '', tags: [], priority: 'Medium', status: 'Active', folderId: parent.folderId || '',
+      name: '', description: '', testPlanIds: suitePlanIds(parent), parentSuite: parent.id,
+      module: suiteModuleName(parent, folders), owner: parent.owner || '', tags: [], priority: 'Medium', status: 'Active', folderId: parent.folderId || '',
     });
     setIsSuiteModalOpen(true);
   };
@@ -115,19 +123,20 @@ export default function TestSuites() {
   const handleSaveSuite = async () => {
     if (!formData.name.trim()) return;
     if (!formData.folderId) { void showAlert('Select a folder or create one first.'); return; }
+    const suitePayload = { ...formData, testPlanId: formData.testPlanIds[0] || '', module: suiteModuleName(formData, folders) };
     try {
       if (selectedSuiteId) {
         const response = await fetch(`/api/suites/${selectedSuiteId}`, {
           method: 'PUT',
           headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify(formData),
+          body: JSON.stringify(suitePayload),
         });
         if (!response.ok) throw new Error((await response.json().catch(() => ({})))?.error || 'Failed to update test suite.');
       } else {
         const response = await fetch('/api/suites', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify(formData),
+          body: JSON.stringify(suitePayload),
         });
         const data = await response.json().catch(() => ({}));
         if (!response.ok) throw new Error(data?.error || 'Failed to create test suite.');
@@ -212,7 +221,7 @@ export default function TestSuites() {
   };
 
   const getSuiteCases = (suiteId: string) => cases.filter((testCase) => testCase.testSuiteId === suiteId);
-  const moduleOptions = Array.from(new Set(suites.map((suite) => String(suite.module || '').trim()).filter(Boolean))).sort();
+  const moduleOptions = Array.from(new Set(suites.map((suite) => suiteModuleName(suite, folders)).filter(Boolean))).sort();
   const tagOptions: string[] = Array.from(new Set<string>(suites.flatMap((suite) => Array.isArray(suite.tags) ? suite.tags : []).map((tag) => String(tag).trim()).filter(Boolean))).sort();
   const relatedCases = selectedSuiteId ? [] : relatedCasesForSuite(cases, formData.folderId, formData.parentSuite || subsuiteParentId);
   useEffect(() => {
@@ -223,10 +232,11 @@ export default function TestSuites() {
     const query = searchTerm.toLowerCase();
     const matchesSearch = aiSearch.isAiQuery(searchTerm)
       ? (aiSearch.matchedIds ? aiSearch.matchedIds.has(suite.id) : true)
-      : (!query || `${suite.id || ''} ${suite.name || ''} ${suite.description || ''} ${suite.module || ''} ${(suite.tags || []).join(' ')}`.toLowerCase().includes(query));
+      : (!query || `${suite.id || ''} ${suite.name || ''} ${suite.description || ''} ${suiteModuleName(suite, folders)} ${(suite.tags || []).join(' ')}`.toLowerCase().includes(query));
     const matchesStatus = statusFilter === 'All' || (suite.status || 'Active') === statusFilter;
     return matchesSearch && matchesStatus;
   });
+  const orderedSuites = orderSuitesByHierarchy(filteredSuites, suites);
 
   return (
     <div className="app-page-shell h-full flex flex-col">
@@ -239,7 +249,7 @@ export default function TestSuites() {
           <ExportMenu
             filename="test-suites"
             title="Test Suites"
-            rows={filteredSuites}
+            rows={orderedSuites}
             columns={[
               { key: 'id', label: 'ID' },
               { key: 'name', label: 'Name' },
@@ -249,7 +259,7 @@ export default function TestSuites() {
               { key: 'priority', label: 'Priority' },
               { key: 'status', label: 'Status', get: (s) => s.status || 'Active' },
               { key: 'tags', label: 'Tags' },
-              { key: 'plan', label: 'Plan', get: (s) => (plans.find((p) => p.id === s.testPlanId) || {}).name || '' },
+              { key: 'plan', label: 'Plans', get: (s) => suitePlanIds(s).map((id) => plans.find((p) => p.id === id)?.name || id).join(', ') },
               { key: 'caseCount', label: 'Cases', get: (s) => cases.filter((c) => c.testSuiteId === s.id).length },
             ]}
           />
@@ -290,8 +300,8 @@ export default function TestSuites() {
             includeNone={false}
           />
           <div>
-             <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Test Plan (Optional)</label>
-             <select value={formData.testPlanId} onChange={(e) => setFormData({...formData, testPlanId: e.target.value})} className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]">
+             <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Test Plans (Optional)</label>
+             <select multiple value={formData.testPlanIds} onChange={(e) => setFormData({...formData, testPlanIds: Array.from(e.currentTarget.selectedOptions).map((option: HTMLOptionElement) => option.value).filter(Boolean)})} className="w-full min-h-24 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]">
                  <option value="">None</option>
                  {plans.map(plan => (
                    <option key={plan.id} value={plan.id}>{plan.name}</option>
@@ -318,7 +328,15 @@ export default function TestSuites() {
                 ) : (
                   <>
                     <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Parent Suite (makes this a subsuite)</label>
-                    <select value={formData.parentSuite} onChange={(e) => setFormData({...formData, parentSuite: e.target.value})} className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]">
+                    <select value={formData.parentSuite} onChange={(e) => {
+                      const parentSuite = suites.find((suite) => suite.id === e.target.value);
+                      setFormData({
+                        ...formData,
+                        parentSuite: e.target.value,
+                        folderId: parentSuite?.folderId || formData.folderId,
+                        testPlanIds: parentSuite ? suitePlanIds(parentSuite) : formData.testPlanIds,
+                      });
+                    }} className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]">
                       <option value="">None (top-level suite)</option>
                       {suites.filter((s: any) => s.id !== selectedSuiteId).map((s: any) => (
                         <option key={s.id} value={s.id}>{s.name}</option>
@@ -475,7 +493,7 @@ export default function TestSuites() {
                 <th className="font-medium py-3 px-4 w-24">ID</th>
                 <th className="font-medium py-3 px-4">Name</th>
                 <th className="font-medium py-3 px-4">Folder</th>
-                <th className="font-medium py-3 px-4">Parent Test Plan</th>
+                <th className="font-medium py-3 px-4">Test Plan</th>
                 <th className="font-medium py-3 px-4 w-32">Module</th>
                 <th className="font-medium py-3 px-4 w-28">Tags</th>
                 <th className="font-medium py-3 px-4 w-36 text-right">Actions</th>
@@ -486,9 +504,10 @@ export default function TestSuites() {
                 <tr><td colSpan={8} className="py-8 text-center text-[var(--text-muted)]">Loading suites...</td></tr>
               ) : filteredSuites.length === 0 ? (
                 <tr><td colSpan={8} className="py-8 text-center text-[var(--text-muted)]">No suites found.</td></tr>
-              ) : filteredSuites.map((suite) => {
+              ) : orderedSuites.map((suite) => {
                 const suiteCases = getSuiteCases(suite.id);
                 const isExpanded = expandedSuiteIds.includes(suite.id);
+                const hierarchyDepth = suiteHierarchyDepth(suite, suites);
 
                 return (
                   <Fragment key={suite.id}>
@@ -498,7 +517,8 @@ export default function TestSuites() {
                       </td>
                       <td className="py-3 px-4 font-mono text-xs text-[var(--text-muted)]">{suite.id}</td>
                       <td className="py-3 px-4">
-                        <div className="flex items-start gap-2">
+                        <div className="flex items-start gap-2" style={{ paddingLeft: `${hierarchyDepth * 24}px` }}>
+                          {hierarchyDepth > 0 && <span aria-hidden="true" className="mt-1 text-[var(--accent)]">└</span>}
                           <button
                             onClick={() => toggleSuiteExpanded(suite.id)}
                             className="mt-0.5 p-1 rounded hover:bg-[var(--border)] text-[var(--text-muted)] transition-colors"
@@ -510,9 +530,6 @@ export default function TestSuites() {
                             <span className="block font-medium hover:text-[var(--accent)] transition-colors truncate" title={suite.name}>{suite.name}</span>
                             <span className="block text-xs text-[var(--text-muted)] font-normal truncate">{suite.description}</span>
                             <span className="block text-xs text-[var(--text-muted)]">{suiteCases.length} related cases</span>
-                            {suite.parentSuite && (
-                              <span className="mt-0.5 block text-[10px] font-medium text-[var(--accent)]">↳ Subsuite of {getParentName(suite.parentSuite)}</span>
-                            )}
                           </button>
                       </div>
                     </td>
@@ -520,7 +537,14 @@ export default function TestSuites() {
                       <select
                         value={suite.folderId || ''}
                         onClick={(event) => event.stopPropagation()}
-                        onChange={(event) => updateSuiteInline(suite, { folderId: event.target.value })}
+                        onChange={(event) => {
+                          const folderId = event.target.value;
+                          const folderName = folders.find((folder) => folder.id === folderId)?.name || '';
+                          updateSuiteInline(suite, {
+                            folderId,
+                            ...((!suite.module || suite.module === 'QA Assistant') && folderName ? { module: folderName } : {}),
+                          });
+                        }}
                         className={inlineSelectClass}
                         title="Update folder"
                       >
@@ -532,11 +556,15 @@ export default function TestSuites() {
                     </td>
                     <td className="py-3 px-4">
                         <select
-                          value={suite.testPlanId || ''}
+                          multiple
+                          value={suitePlanIds(suite)}
                           onClick={(event) => event.stopPropagation()}
-                          onChange={(event) => updateSuiteInline(suite, { testPlanId: event.target.value })}
+                          onChange={(event) => {
+                            const testPlanIds = Array.from(event.currentTarget.selectedOptions).map((option: HTMLOptionElement) => option.value).filter(Boolean);
+                            updateSuiteInline(suite, { testPlanIds, testPlanId: testPlanIds[0] || '' });
+                          }}
                           className={inlineSelectClass}
-                          title="Update parent test plan"
+                          title="Update test plans"
                         >
                           <option value="">None</option>
                           {plans.map((plan) => (
@@ -546,7 +574,7 @@ export default function TestSuites() {
                       </td>
                       <td className="py-3 px-4">
                         <select
-                          value={suite.module || ''}
+                          value={suiteModuleName(suite, folders)}
                           onClick={(event) => event.stopPropagation()}
                           onChange={(event) => updateSuiteInline(suite, { module: event.target.value })}
                           className="w-full min-w-[100px] rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs font-medium text-[var(--text-primary)] outline-none transition-colors hover:border-[var(--accent)] focus:border-[var(--accent)]"
@@ -559,18 +587,11 @@ export default function TestSuites() {
                         </select>
                       </td>
                       <td className="py-3 px-4">
-                        <select
-                          value={Array.isArray(suite.tags) && suite.tags.length > 0 ? suite.tags[0] : ''}
-                          onClick={(event) => event.stopPropagation()}
-                          onChange={(event) => updateSuiteInline(suite, { tags: event.target.value ? [event.target.value] : [] })}
-                          className="w-full min-w-[90px] max-w-[120px] rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs font-medium text-[var(--text-primary)] outline-none transition-colors hover:border-[var(--accent)] focus:border-[var(--accent)]"
-                          title="Update tags"
-                        >
-                          <option value="">No tags</option>
-                          {tagOptions.map((tag) => (
-                            <option key={tag} value={tag}>{tag}</option>
-                          ))}
-                        </select>
+                        <TagMultiSelect
+                          options={tagOptions}
+                          value={Array.isArray(suite.tags) ? suite.tags : []}
+                          onChange={(tags) => updateSuiteInline(suite, { tags })}
+                        />
                       </td>
                       <td className="py-3 px-4 text-right whitespace-nowrap">
                         <div className="flex items-center justify-end gap-1">

@@ -1,10 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { Search, Filter, ShieldCheck, ShieldAlert, Sparkles, Plus, Clock, FileSpreadsheet, Layers, User, Calendar, Trash2, Eye, EyeOff, AlertTriangle, PlayCircle, ExternalLink, Activity } from 'lucide-react';
+import { Search, Filter, ShieldCheck, ShieldAlert, Sparkles, Plus, Clock, Layers, User, Calendar, Trash2, Eye, EyeOff, AlertTriangle, PlayCircle, ExternalLink, Activity } from 'lucide-react';
 import ExportMenu from '../components/ExportMenu';
 import { cn } from '@/src/lib/utils';
 import { useAiSearch } from '@/src/lib/useAiSearch';
 import { useBulkDelete } from '@/src/lib/useBulkDelete';
-import html2canvas from 'html2canvas';
 import { Modal } from '@/src/components/Modal';
 import { FolderSelect } from '@/src/components/FolderSelect';
 import { FolderBadge } from '@/src/components/FolderBadge';
@@ -267,37 +266,25 @@ export default function Reports() {
     };
   };
 
-  const handleDownloadPdf = async (reportId: string) => {
-    try {
-      const element = document.getElementById(`row-container-${reportId}`);
-      if (!element) return;
-      const canvas = await html2canvas(element);
-      const dataUrl = canvas.toDataURL('image/png');
-      const a = document.createElement('a');
-      a.href = dataUrl;
-      a.download = `evidence-${reportId}.png`;
-      a.click();
-    } catch (e) {
-      console.error(e);
-      window.print();
-    }
-  };
-
   const handleShareReport = async (reportId: string) => {
     const url = `${window.location.origin}${window.location.pathname}#report-${reportId}`;
     try { await navigator.clipboard?.writeText(url); await showConfirm('Report link copied to clipboard.'); }
     catch { /* clipboard unavailable */ }
   };
 
-  const fetchReports = () => {
-    setLoading(true);
+  const fetchReports = (showLoading = true) => {
+    if (showLoading) setLoading(true);
     fetch('/api/reports')
       .then(r => r.json())
       .then(data => {
-        setReports(data);
-        if (data.length > 0 && !selectedReport) {
-          setSelectedReport(data[0]);
-        }
+        const nextReports = Array.isArray(data) ? data : [];
+        setReports(nextReports);
+        setSelectedReport((current) => current
+          ? nextReports.find((report) => report.id === current.id) || null
+          : nextReports[0] || null);
+        setDetailReport((current) => current
+          ? nextReports.find((report) => report.id === current.id) || null
+          : null);
         setLoading(false);
       })
       .catch(err => {
@@ -315,6 +302,15 @@ export default function Reports() {
   useEffect(() => {
     fetchReports();
     fetchDataConfigs();
+    const refresh = () => {
+      if (!document.hidden) fetchReports(false);
+    };
+    const interval = window.setInterval(refresh, 10_000);
+    document.addEventListener('visibilitychange', refresh);
+    return () => {
+      window.clearInterval(interval);
+      document.removeEventListener('visibilitychange', refresh);
+    };
   }, []);
 
   const handleCreateReport = () => {
@@ -412,20 +408,20 @@ export default function Reports() {
     if (statusFilter === 'Failed') return matchesSearch && r.status === 'Failed';
     return matchesSearch;
   });
-  const totalReportSteps = reports.reduce((total, report) => total + (report.steps?.length || report.totalExecutions || 0), 0);
-  const passedReportSteps = reports.reduce((total, report) => {
+  const totalReportSteps = filteredReports.reduce((total, report) => total + (report.steps?.length || report.totalExecutions || 0), 0);
+  const passedReportSteps = filteredReports.reduce((total, report) => {
     const steps = report.steps || [];
     if (steps.length > 0) return total + steps.filter(step => step.outcome === 'Pass').length;
     return total + (report.status === 'Passed' ? (report.totalExecutions || 0) : 0);
   }, 0);
-  const failedReportSteps = reports.reduce((total, report) => {
+  const failedReportSteps = filteredReports.reduce((total, report) => {
     const steps = report.steps || [];
     if (steps.length > 0) return total + steps.filter(step => step.outcome === 'Fail').length;
     return total + (report.status === 'Failed' ? 1 : 0);
   }, 0);
-  const requestedBySummary = reports.find(report => report.requestedBy)?.requestedBy || 'No reports logged';
-  const uniqueDurations = Array.from(new Set(reports.map(report => report.executionTime).filter(Boolean)));
-  const executionDurationSummary = reports.length > 0
+  const requestedBySummary = filteredReports.find(report => report.requestedBy)?.requestedBy || 'No reports logged';
+  const uniqueDurations = Array.from(new Set(filteredReports.map(report => report.executionTime).filter(Boolean)));
+  const executionDurationSummary = filteredReports.length > 0
     ? uniqueDurations.length
       ? uniqueDurations.slice(0, 3).join(', ') + (uniqueDurations.length > 3 ? ` +${uniqueDurations.length - 3} more` : '')
       : 'Not specified'
@@ -443,6 +439,7 @@ export default function Reports() {
           <ExportMenu
             filename="test-reports"
             title="Test Reports"
+            formats={['csv', 'json', 'md', 'pdf']}
             rows={filteredReports}
             columns={[
               { key: 'id', label: 'ID' },
@@ -486,7 +483,7 @@ export default function Reports() {
           <div className="bg-[var(--bg-card)] border border-[var(--border)] p-3 rounded-lg shadow-inner">
             <span className="block text-[10px] font-bold text-[var(--text-muted)] uppercase tracking-wider">Total Executed Cases (Steps)</span>
             <span className="block text-xs font-semibold text-[var(--text-primary)] mt-1">
-              {totalReportSteps} Verification Steps in {reports.length} Scenarios
+              {totalReportSteps} Verification Steps in {filteredReports.length} Scenarios
             </span>
           </div>
           <div className="bg-[var(--bg-card)] border border-[var(--border)] p-3 rounded-lg shadow-inner">
@@ -600,7 +597,23 @@ export default function Reports() {
             <div className="text-xs text-[var(--text-muted)]">Requested by {detailReport?.requestedBy || '—'} · {detailReport?.executionTime && detailReport.executionTime !== 'Generated' ? detailReport.executionTime : '—'} · {detailReport?.date}</div>
             <div className="flex gap-2">
               <button onClick={() => detailReport && handleShareReport(detailReport.id)} className="inline-flex items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] hover:border-[var(--accent)]"><ExternalLink className="h-4 w-4" /> Share</button>
-              <button onClick={() => detailReport && handleDownloadPdf(detailReport.id)} className="inline-flex items-center gap-1.5 rounded-md bg-[var(--accent)] px-3 py-2 text-sm font-medium text-white hover:bg-[var(--accent-hover)]"><FileSpreadsheet className="h-4 w-4" /> Download</button>
+              {detailReport && (
+                <ExportMenu
+                  label="Export"
+                  filename={`report-${detailReport.id}`}
+                  title={detailReport.name}
+                  formats={['csv', 'json', 'md', 'pdf']}
+                  rows={detailReport.steps || []}
+                  columns={[
+                    { key: 'step', label: '#' },
+                    { key: 'action', label: 'Test Step' },
+                    { key: 'expected', label: 'Expected Result' },
+                    { key: 'outcome', label: 'Outcome' },
+                    { key: 'reason', label: 'Reason' },
+                    { key: 'screenshot', label: 'Evidence' },
+                  ]}
+                />
+              )}
             </div>
           </div>
         }>

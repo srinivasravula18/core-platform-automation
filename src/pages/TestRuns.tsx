@@ -12,6 +12,7 @@ import { FolderBadge } from '@/src/components/FolderBadge';
 import { AutomationRunArtifacts } from '@/src/components/AutomationRunArtifacts';
 import { TagEditor } from '@/src/components/TagEditor';
 import { showAlert } from '@/src/lib/dialog';
+import { suitePlanIds } from '@/src/lib/suiteCaseSelection';
 
 function getRunStats(run: any) {
   const steps = Array.isArray(run?.steps) ? run.steps : [];
@@ -155,7 +156,7 @@ export default function TestRuns() {
     }
     if (Array.isArray(selectedRun.planIds) && selectedRun.planIds.length) {
       const selectedPlanIds = new Set(selectedRun.planIds);
-      const selectedSuiteIds = new Set(suites.filter((item) => selectedPlanIds.has(item.testPlanId)).map((item) => item.id));
+      const selectedSuiteIds = new Set(suites.filter((item) => suitePlanIds(item).some((id) => selectedPlanIds.has(id))).map((item) => item.id));
       return cases.filter((testCase) => selectedPlanIds.has(testCase.testPlanId) || selectedSuiteIds.has(testCase.testSuiteId));
     }
     const suite = suites.find((item) => item.name === selectedRun.suiteName || item.id === selectedRun.suiteId);

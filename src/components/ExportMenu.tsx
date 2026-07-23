@@ -19,7 +19,7 @@ const FORMAT_META: Record<ExportFormat, { label: string; icon: typeof FileText }
   csv: { label: 'CSV (.csv)', icon: FileSpreadsheet },
   json: { label: 'JSON (.json)', icon: FileJson },
   md: { label: 'Markdown (.md)', icon: FileText },
-  pdf: { label: 'Print / PDF', icon: Printer },
+  pdf: { label: 'PDF (.pdf)', icon: Printer },
 };
 
 export default function ExportMenu({

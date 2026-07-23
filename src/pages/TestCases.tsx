@@ -15,43 +15,13 @@ import { showAlert, showConfirm } from '@/src/lib/dialog';
 import { useProjects } from '@/src/store/project';
 import { useDataVersion } from '@/src/store/data';
 import { TagEditor } from '@/src/components/TagEditor';
+import { TagMultiSelect } from '@/src/components/TagMultiSelect';
 
 const CASE_STATUSES = ['Draft', 'Under Review', 'Approved', 'Automated', 'Deprecated'];
 const PRIORITIES = ['Low', 'Medium', 'High', 'Critical'];
 const AUTOMATION_STATUSES = ['Automated', 'Not Automated', 'Automation Not Required', 'Cannot Be Automated'];
 const TESTING_SCOPES = ['Manual', 'Automation'];
 const TESTING_TYPES = ['Functional', 'Smoke', 'Sanity', 'Regression', 'Integration', 'End to End', 'Acceptance', 'Performance', 'Security', 'Usability', 'Exploratory'];
-
-function TagMultiSelect({ options, value, onChange }: { options: string[]; value: string[]; onChange: (tags: string[]) => void }) {
-  const [selected, setSelected] = useState(value);
-  const [open, setOpen] = useState(false);
-  useEffect(() => setSelected(value), [value]);
-
-  const toggle = (tag: string) => {
-    const next = selected.includes(tag) ? selected.filter((item) => item !== tag) : [...selected, tag];
-    setSelected(next);
-    onChange(next);
-  };
-
-  return (
-    <details className="group relative" onClick={(event) => event.stopPropagation()} onToggle={(event) => setOpen(event.currentTarget.open)}>
-      <summary
-        className="w-full cursor-pointer list-none truncate rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs font-medium text-[var(--text-primary)] outline-none hover:border-[var(--accent)] [&::-webkit-details-marker]:hidden"
-        title={selected.length ? selected.join(', ') : 'No tags'}
-      >
-        {selected.length ? `${selected.length} tag${selected.length === 1 ? '' : 's'}` : 'No tags'}
-      </summary>
-      {open ? <div className="absolute right-0 z-30 mt-1 max-h-56 w-56 overflow-auto rounded-md border border-[var(--border)] bg-[var(--bg-card)] p-1 shadow-xl">
-        {options.length ? options.map((tag) => (
-          <label key={tag} className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-[var(--bg-secondary)]">
-            <input type="checkbox" checked={selected.includes(tag)} onChange={() => toggle(tag)} />
-            <span className="min-w-0 truncate" title={tag}>{tag}</span>
-          </label>
-        )) : <span className="block px-2 py-1.5 text-xs text-[var(--text-muted)]">No tags available</span>}
-      </div> : null}
-    </details>
-  );
-}
 
 // Generic multi-select dropdown used across the advanced filter panel and the edit-form plan/suite pickers.
 function MultiSelectDropdown({ label, options, value, onChange, className = '' }: { label: string; options: Array<{ id: string; name: string }>; value: string[]; onChange: (ids: string[]) => void; className?: string }) {
