@@ -129,6 +129,24 @@ export function registerSettingsRoutes(app: Express) {
     );
     addActivity('Deleted QA artifacts');
     await savePersistedData();
-    res.json({ ok: true, removed: { ...memoryRemoved, ...removed }, preserved: ['chat history', 'settings', 'users', 'sessions', 'websites', 'projects', 'apps'] });
+    res.json({
+      ok: true,
+      removed: { ...memoryRemoved, ...removed },
+      preserved: [
+        'chat history',
+        'conversation memory',
+        'automation agents',
+        'automation recordings',
+        'automation jobs',
+        'automation schedules',
+        'uploaded automation artifacts',
+        'settings',
+        'users',
+        'sessions',
+        'websites',
+        'projects',
+        'apps',
+      ],
+    });
   });
 }
