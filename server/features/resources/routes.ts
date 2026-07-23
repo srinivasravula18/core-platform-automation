@@ -9,6 +9,7 @@ import { getAIErrorMessage } from '../../shared/ai';
 import { getOrchestrator } from '../../ai/orchestrator';
 import { reqScope, scopeFilter, scopeStamp } from '../../shared/scope';
 import { getAuthUser } from '../auth/routes';
+import { runPlaywrightRequest } from '../playwright/routes';
 
 import {
   Plans,
@@ -164,6 +165,72 @@ export function registerResourceRoutes(app: Express) {
   app.get('/api/suites', async (req, res) => res.json(scopeFilter(await Suites.list(), reqScope(req))));
   app.get('/api/cases', async (req, res) => res.json(scopeFilter(await Cases.list(), reqScope(req))));
   app.get('/api/runs', async (req, res) => res.json(scopeFilter(await Runs.list(), reqScope(req))));
+  app.post('/api/runs/:id/execute', async (req, res) => {
+    const run = await Runs.get(req.params.id);
+    if (!run || !scopeFilter([run], reqScope(req)).length) return res.status(404).json({ error: 'Run not found.' });
+    try {
+      const [allCases, allScripts] = await Promise.all([Cases.list(), Scripts.list()]);
+      const cases = scopeFilter(allCases, reqScope(req));
+      const scripts = scopeFilter(allScripts, reqScope(req));
+      const caseIds = new Set(Array.isArray(run.caseIds) ? run.caseIds.map(String) : []);
+      const selectedCases = cases.filter((testCase: any) =>
+        caseIds.has(String(testCase.id)) || (!caseIds.size && run.agentRunId && testCase.agentRunId === run.agentRunId),
+      );
+      const selectedScripts = new Map<string, any>();
+      for (const testCase of selectedCases) {
+        const title = String(testCase.title || '').trim().toLowerCase();
+        const agentRunId = String(testCase.agentRunId || testCase.sourceRunId || '');
+        const script = scripts.find((item: any) => item.caseId === testCase.id)
+          || (title ? scripts.find((item: any) =>
+            (!agentRunId || String(item.agentRunId || item.sourceRunId || '') === agentRunId)
+            && [item.title, item.test_case_title].some((value) => String(value || '').trim().toLowerCase() === title),
+          ) : null);
+        if (script?.code) selectedScripts.set(script.id || script.filename, script);
+      }
+      if (!selectedScripts.size) {
+        const sourceRunId = String(run.sourceRunId || run.agentRunId || '');
+        scripts.filter((script: any) => sourceRunId && String(script.agentRunId || script.sourceRunId || '') === sourceRunId && script.code)
+          .forEach((script: any) => selectedScripts.set(script.id || script.filename, script));
+      }
+      const runnableScripts = [...selectedScripts.values()];
+      if (!runnableScripts.length) return res.status(400).json({ error: 'No linked Playwright scripts were found for this run.' });
+
+      await Runs.upsert({ ...run, status: 'Running', state: 'In Progress', progress: `Running ${runnableScripts.length} script${runnableScripts.length === 1 ? '' : 's'}` });
+      const result = await runPlaywrightRequest({
+        scripts: runnableScripts,
+        baseUrl: run.targetUrl || runnableScripts.find((script: any) => script.targetUrl)?.targetUrl || '',
+        runId: run.sourceRunId || run.agentRunId || runnableScripts[0]?.agentRunId || run.id,
+        screenshotMode: 'on',
+      });
+      const tests = Array.isArray(result.tests) ? result.tests : [];
+      const updated = {
+        ...run,
+        status: result.ok ? 'Completed' : 'Failed',
+        state: result.ok ? 'Completed' : 'Blocked',
+        totalExecutions: Number(result.total) || tests.length,
+        passed: Number(result.passed) || 0,
+        failed: Number(result.failed) || 0,
+        progress: `${Number(result.passed) || 0} passed`,
+        executionTime: result.durationMs ? `${Math.round(Number(result.durationMs) / 1000)}s` : '',
+        completedAt: new Date().toISOString(),
+        evidence: Array.isArray(result.screenshotUrls) ? result.screenshotUrls : [],
+        steps: tests.map((test: any, index: number) => ({
+          step: String(index + 1),
+          action: test.title || `Playwright test ${index + 1}`,
+          expected: 'Playwright script completes successfully.',
+          outcome: /pass/i.test(test.status || '') ? 'Passed' : /skip/i.test(test.status || '') ? 'Skipped' : 'Failed',
+          reason: test.error || '',
+          screenshot: result.screenshotUrls?.[index] || '',
+        })),
+      };
+      await Runs.upsert(updated);
+      if (!isPgEnabled()) persistDataInBackground('manual run execution');
+      res.json({ run: updated, result });
+    } catch (error: any) {
+      await Runs.upsert({ ...run, status: 'Failed', state: 'Blocked', progress: error?.message || 'Execution failed' }).catch(() => {});
+      res.status(500).json({ error: error?.message || 'Failed to run Playwright scripts.' });
+    }
+  });
   app.get('/api/defects', async (req, res) => res.json(scopeFilter(await Defects.list(), reqScope(req))));
   app.get('/api/scripts', async (req, res) => {
     // Self-heal: surface any agent-generated scripts that never made it into the repository.

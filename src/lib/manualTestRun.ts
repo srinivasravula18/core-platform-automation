@@ -75,26 +75,3 @@ export function manualRunSelection(planId: string, caseIds: string[]) {
     planIds: caseIds.length || !planId ? [] : [planId],
   };
 }
-
-export function executionRunUpdate(result: any) {
-  const tests = Array.isArray(result?.tests) ? result.tests : [];
-  return {
-    status: result?.ok ? 'Completed' : 'Failed',
-    state: result?.ok ? 'Completed' : 'Blocked',
-    totalExecutions: Number(result?.total) || tests.length,
-    passed: Number(result?.passed) || 0,
-    failed: Number(result?.failed) || 0,
-    progress: `${Number(result?.passed) || 0} passed`,
-    executionTime: result?.durationMs ? `${Math.round(Number(result.durationMs) / 1000)}s` : '',
-    completedAt: new Date().toISOString(),
-    evidence: Array.isArray(result?.screenshotUrls) ? result.screenshotUrls : [],
-    steps: tests.map((test: any, index: number) => ({
-      step: String(index + 1),
-      action: test.title || `Playwright test ${index + 1}`,
-      expected: 'Playwright script completes successfully.',
-      outcome: /pass/i.test(test.status || '') ? 'Passed' : /skip/i.test(test.status || '') ? 'Skipped' : 'Failed',
-      reason: test.error || '',
-      screenshot: result?.screenshotUrls?.[index] || '',
-    })),
-  };
-}

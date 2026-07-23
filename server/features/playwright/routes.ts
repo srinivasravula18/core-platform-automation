@@ -43,14 +43,9 @@ function applySettingsCredentials(code: string, baseUrl: string) {
   return next;
 }
 
-export function registerPlaywrightRoutes(app: Express) {
-  app.post('/api/playwright/run', async (req, res) => {
-    try {
-      const { scripts, baseUrl, runId, singleSession, screenshotMode } = req.body || {};
-      if (!Array.isArray(scripts) || scripts.length === 0) {
-        return res.status(400).json({ error: 'scripts[] is required' });
-      }
-      const runnableScripts = scripts.map((script: any) => ({ ...script, code: applySettingsCredentials(String(script?.code || ''), String(baseUrl || '')) }));
+export async function runPlaywrightRequest({ scripts, baseUrl, runId, singleSession, screenshotMode }: any) {
+  if (!Array.isArray(scripts) || scripts.length === 0) throw new Error('No linked Playwright scripts were found.');
+  const runnableScripts = scripts.map((script: any) => ({ ...script, code: applySettingsCredentials(String(script?.code || ''), String(baseUrl || '')) }));
       // Compiler-emitted specs import './mission-runner'; without emitting it they collect 0 tests on re-run.
       const needsMissionRunner = runnableScripts.some((s: any) => /from\s+['"]\.\/mission-runner['"]/.test(String(s?.code || '')));
       // Compiled specs never log in themselves (MissionRunner expects an injected authenticated session),
@@ -97,7 +92,13 @@ export function registerPlaywrightRoutes(app: Express) {
           if (ok) screenshotUrls.push(`/evidence/${dest}`);
         }
       }
-      res.json({ ...result, screenshotUrls });
+  return { ...result, screenshotUrls };
+}
+
+export function registerPlaywrightRoutes(app: Express) {
+  app.post('/api/playwright/run', async (req, res) => {
+    try {
+      res.json(await runPlaywrightRequest(req.body || {}));
     } catch (err: any) {
       res.status(500).json({ error: err?.message || 'Failed to run Playwright scripts.' });
     }

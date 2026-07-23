@@ -14,7 +14,7 @@ import { TagEditor } from '@/src/components/TagEditor';
 import { MultiSelectDropdown } from '@/src/components/MultiSelectDropdown';
 import { showAlert } from '@/src/lib/dialog';
 import { caseSuiteIds } from '@/src/lib/suiteCaseSelection';
-import { casesForPlan, casesForRun, executionRunUpdate, manualRunSelection, runnableCases, scriptsForRun } from '@/src/lib/manualTestRun';
+import { casesForPlan, casesForRun, manualRunSelection, runnableCases, scriptsForRun } from '@/src/lib/manualTestRun';
 
 function getRunStats(run: any) {
   const steps = Array.isArray(run?.steps) ? run.steps : [];
@@ -68,7 +68,7 @@ export default function TestRuns() {
   const [newRunCaseIds, setNewRunCaseIds] = useState<Set<string>>(new Set());
   const [plans, setPlans] = useState<any[]>([]);
   const [scripts, setScripts] = useState<any[]>([]);
-  const [isExecutingRun, setIsExecutingRun] = useState(false);
+  const [runProgress, setRunProgress] = useState<Record<string, string>>({});
   const tagOptions = useMemo(() => Array.from(new Set<string>(cases
     .flatMap((testCase) => Array.isArray(testCase.tags) ? testCase.tags : [])
     .map((tag: any) => String(tag).trim())
@@ -209,45 +209,39 @@ export default function TestRuns() {
   };
 
   const handleExecuteRuns = async (runsToExecute: any[]) => {
-    if (!runsToExecute.length || isExecutingRun) return;
-    setIsExecutingRun(true);
+    if (!runsToExecute.length) return;
     const errors: string[] = [];
     for (const run of runsToExecute) {
+      if (runProgress[run.id]) continue;
       const runCases = casesForRun(run, cases, suites);
       const runScripts = scriptsForRun(run, runCases, scripts);
       if (!runScripts.length) {
         errors.push(`${run.name}: no linked Playwright scripts`);
         continue;
       }
+      setRunProgress((current) => ({ ...current, [run.id]: `Running ${runScripts.length} script${runScripts.length === 1 ? '' : 's'}…` }));
       setRuns((current) => current.map((item) => item.id === run.id ? { ...item, status: 'Running', state: 'In Progress' } : item));
       try {
-        const response = await fetch('/api/playwright/run', {
+        const response = await fetch(`/api/runs/${run.id}/execute`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            scripts: runScripts.map(({ filename, title, code }) => ({ filename, title, code })),
-            baseUrl: run.targetUrl || runScripts.find((script) => script.targetUrl)?.targetUrl || '',
-            runId: run.sourceRunId || run.agentRunId || runScripts[0]?.agentRunId || run.id,
-            screenshotMode: 'on',
-          }),
         });
-        const result = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(result.error || 'Failed to run Playwright scripts.');
-        const updateResponse = await fetch(`/api/runs/${run.id}`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(executionRunUpdate(result)),
-        });
-        if (!updateResponse.ok) throw new Error((await updateResponse.json().catch(() => ({}))).error || 'Results could not be saved.');
+        const responseText = await response.text();
+        let data: any = {};
+        try { data = responseText ? JSON.parse(responseText) : {}; } catch { /* proxy/server returned text */ }
+        if (!response.ok) throw new Error(data.error || `Execution request failed (HTTP ${response.status})${responseText ? `: ${responseText.slice(0, 240)}` : ''}`);
+        setRunProgress((current) => ({ ...current, [run.id]: 'Loading results…' }));
+        setRuns((current) => current.map((item) => item.id === run.id ? { ...item, ...data.run } : item));
       } catch (error: any) {
         errors.push(`${run.name}: ${error.message || 'execution failed'}`);
+      } finally {
+        setRunProgress((current) => {
+          const next = { ...current };
+          delete next[run.id];
+          return next;
+        });
       }
     }
-    try {
-      await refreshRunsQuiet();
-    } finally {
-      setIsExecutingRun(false);
-    }
+    await refreshRunsQuiet();
     if (errors.length) void showAlert(errors.join('\n'));
   };
 
@@ -269,6 +263,7 @@ export default function TestRuns() {
 
   if (selectedRun) {
     const stats = getRunStats(selectedRun);
+    const selectedProgress = runProgress[selectedRun.id];
 
     return (
       <div className="app-page-shell h-full flex flex-col">
@@ -297,11 +292,11 @@ export default function TestRuns() {
               </div>
               <button
                 onClick={() => handleExecuteRuns([selectedRun])}
-                disabled={isExecutingRun || selectedRunScripts.length === 0}
+                disabled={Boolean(selectedProgress) || selectedRunScripts.length === 0}
                 title={selectedRunScripts.length ? 'Execute linked Playwright scripts' : 'No Playwright scripts are linked to these cases'}
                 className="inline-flex items-center gap-2 rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
               >
-                <PlayCircle className="h-4 w-4" /> {isExecutingRun ? 'Running…' : 'Run scripts'}
+                <PlayCircle className="h-4 w-4" /> {selectedProgress || 'Run scripts'}
               </button>
             </div>
           </div>
@@ -551,8 +546,8 @@ export default function TestRuns() {
             {bulk.selectedCount > 0 && (
               <>
                 {bulk.selectedCount > 1 && (
-                  <button onClick={() => handleExecuteRuns(runs.filter((run) => bulk.selectedIds.has(run.id)))} disabled={isExecutingRun} className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
-                    <PlayCircle className="w-4 h-4" /> {isExecutingRun ? 'Running…' : `Run selected (${bulk.selectedCount})`}
+                  <button onClick={() => handleExecuteRuns(runs.filter((run) => bulk.selectedIds.has(run.id)))} disabled={runs.some((run) => bulk.selectedIds.has(run.id) && runProgress[run.id])} className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
+                    <PlayCircle className="w-4 h-4" /> Run selected ({bulk.selectedCount})
                   </button>
                 )}
                 <button onClick={bulk.deleteSelected} disabled={bulk.busy} className="flex items-center gap-1.5 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
@@ -588,6 +583,7 @@ export default function TestRuns() {
               ) : filteredRuns.map((run) => {
                 const stats = getRunStats(run);
                 const hasScripts = scriptsForRun(run, casesForRun(run, cases, suites), scripts).length > 0;
+                const progress = runProgress[run.id];
                 return (
                   <tr key={run.id} onClick={() => navigate(`/runs/${run.id}`)} className="hover:bg-[var(--bg-secondary)] cursor-pointer">
                     <td className="px-4 py-4" onClick={(e) => e.stopPropagation()}>
@@ -602,11 +598,11 @@ export default function TestRuns() {
                         </div>
                         <button
                           onClick={(event) => { event.stopPropagation(); void handleExecuteRuns([run]); }}
-                          disabled={isExecutingRun || !hasScripts}
+                          disabled={Boolean(progress) || !hasScripts}
                           title={hasScripts ? 'Run linked Playwright scripts' : 'No Playwright scripts are linked to this run'}
                           className="inline-flex shrink-0 items-center gap-1 rounded-md bg-emerald-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
                         >
-                          <PlayCircle className="h-3.5 w-3.5" /> Run
+                          <PlayCircle className="h-3.5 w-3.5" /> {progress ? 'Running…' : 'Run'}
                         </button>
                       </div>
                     </td>
@@ -614,14 +610,21 @@ export default function TestRuns() {
                       <FolderBadge folders={folders} folderId={run.folderId} />
                     </td>
                     <td className="px-4 py-4">{stats.total} Tests</td>
-                    <td className="px-4 py-4">{run.executionTime || '-'}</td>
+                    <td className="px-4 py-4">{progress ? 'Running…' : run.executionTime || '-'}</td>
                     <td className="px-4 py-4">
-                      <div className="flex gap-2">
+                      {progress ? (
+                        <div className="w-36" role="status" aria-live="polite">
+                          <div className="mb-1 truncate text-xs text-[var(--accent)]">{progress}</div>
+                          <div className="h-1.5 overflow-hidden rounded-full bg-[var(--bg-secondary)]">
+                            <div className="h-full w-1/2 animate-pulse rounded-full bg-[var(--accent)]" />
+                          </div>
+                        </div>
+                      ) : <div className="flex gap-2">
                         <span title={`Passed: ${stats.passed}`} className="px-2 py-1 rounded bg-emerald-500/10 text-emerald-400 cursor-default">{stats.passed}</span>
                         <span title={`Failed: ${stats.failed}`} className="px-2 py-1 rounded bg-red-500/10 text-red-400 cursor-default">{stats.failed}</span>
                         <span title={`Blocked: ${stats.blocked}`} className="px-2 py-1 rounded bg-indigo-500/10 text-indigo-400 cursor-default">{stats.blocked}</span>
                         <span title={`Untested: ${stats.untested}`} className="px-2 py-1 rounded bg-[var(--bg-secondary)] text-[var(--text-muted)] cursor-default">{stats.untested}</span>
-                      </div>
+                      </div>}
                     </td>
                     <td className="px-4 py-4 text-[var(--text-muted)]">{stats.failed ? `${stats.failed} failed` : '-'}</td>
                     <td className="px-4 py-4">
