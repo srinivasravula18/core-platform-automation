@@ -257,6 +257,10 @@ export default function TestRuns() {
     return runnableCasesInFolder(casesForPlan(cases, suites, newRunPlanId), scripts, newRunFolderId)
       .filter((testCase) => !q || `${testCase.id} ${testCase.title || ''}`.toLowerCase().includes(q));
   }, [cases, suites, scripts, newRunPlanId, newRunFolderId, runCaseSearch]);
+  const selectedNewRunCases = useMemo(
+    () => cases.filter((testCase) => newRunCaseIds.has(testCase.id)),
+    [cases, newRunCaseIds],
+  );
   const toggleRunCase = (id: string) => setNewRunCaseIds((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
 
   const handleAIApprove = (data: any) => {
@@ -493,7 +497,7 @@ export default function TestRuns() {
                 {plans.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
               </select>
             </label>
-            <div><span className="block text-xs font-medium text-[var(--text-muted)] mb-1">Folder</span><FolderSelect value={newRunFolderId} onChange={(folderId) => { setNewRunFolderId(folderId); setNewRunCaseIds(new Set()); }} includeNone={false} /></div>
+            <div><span className="block text-xs font-medium text-[var(--text-muted)] mb-1">Browse Folder</span><FolderSelect value={newRunFolderId} onChange={setNewRunFolderId} includeNone={false} /></div>
           </div>
 
           {/* #5 — Assign To, State, Tags. */}
@@ -523,13 +527,22 @@ export default function TestRuns() {
               <span className="text-xs font-medium text-[var(--text-muted)]">Test Cases</span>
               <span className="text-xs text-[var(--accent)]">{newRunCaseIds.size} selected</span>
             </div>
+            {selectedNewRunCases.length > 0 && (
+              <div className="mb-2 flex flex-wrap gap-2 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)]/40 p-2">
+                {selectedNewRunCases.map((testCase) => (
+                  <button key={testCase.id} type="button" onClick={() => toggleRunCase(testCase.id)} title="Remove from this run" className="max-w-full truncate rounded bg-[var(--bg-card)] px-2 py-1 text-xs text-[var(--text-primary)] hover:text-red-400">
+                    {testCase.id}: {testCase.title} ×
+                  </button>
+                ))}
+              </div>
+            )}
             <div className="relative mb-2">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--text-muted)]" />
               <input value={runCaseSearch} onChange={(e) => setRunCaseSearch(e.target.value)} placeholder="Search cases by ID or title…" className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md pl-9 pr-3 py-2 text-sm" />
             </div>
             <div className="max-h-60 overflow-auto rounded-md border border-[var(--border)] bg-[var(--bg-secondary)]/40">
               {!newRunFolderId ? (
-                <div className="px-3 py-6 text-center text-sm text-[var(--text-muted)]">Select a folder to see test cases with scripts.</div>
+                <div className="px-3 py-6 text-center text-sm text-[var(--text-muted)]">Select a folder to see test cases with scripts. Your selections are kept when you change folders.</div>
               ) : runnableRunCases.length === 0 ? (
                 <div className="px-3 py-6 text-center text-sm text-[var(--text-muted)]">No test cases with Playwright scripts in this folder.</div>
               ) : runnableRunCases.map((testCase) => (
