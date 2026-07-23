@@ -520,6 +520,8 @@ export function registerResourceRoutes(app: Express) {
       steps: normalizeCaseSteps(c.steps),
       testPlanId: c.testPlanId || '',
       testSuiteId: c.testSuiteId || '',
+      testPlanIds: uniqueStrings(c.testPlanIds?.length ? c.testPlanIds : (c.testPlanId ? [c.testPlanId] : [])),
+      testSuiteIds: uniqueStrings(c.testSuiteIds?.length ? c.testSuiteIds : (c.testSuiteId ? [c.testSuiteId] : [])),
       status: c.status || 'Draft',
       tags: normalizeCaseTags(c.tags || []),
       type: c.type || 'Manual',
@@ -679,7 +681,8 @@ Rules:
 
     const caseIds = new Set(selectedCaseIds.filter((id) => cases.some((testCase: any) => testCase.id === id)));
     cases.forEach((testCase: any) => {
-      if (planIds.has(testCase.testPlanId) || suiteIds.has(testCase.testSuiteId)) {
+      const testSuiteIds = uniqueStrings(testCase.testSuiteIds?.length ? testCase.testSuiteIds : [testCase.testSuiteId]);
+      if (planIds.has(testCase.testPlanId) || testSuiteIds.some((id) => suiteIds.has(id))) {
         caseIds.add(testCase.id);
       }
     });

@@ -32,6 +32,23 @@ interface Report {
   failureReason?: string;
   date: string;
   steps: Step[];
+  evidence?: any[];
+}
+
+function stepEvidence(report: Report, step: Step, index: number): string {
+  if (step.screenshot) return step.screenshot;
+  const evidence = Array.isArray(report.evidence) ? report.evidence : [];
+  const item = evidence.find((entry) =>
+    (entry?.testCaseId && entry.testCaseId === (step as any).testCaseId)
+    || (entry?.title && entry.title === (step as any).testCaseTitle)
+  ) || evidence[index];
+  return item?.stepScreenshots?.[0] || item?.screenshotUrl || item?.screenshot || item?.url || '';
+}
+
+function evidenceImageSource(value: string): string {
+  return value.startsWith('/evidence/') || value.startsWith('data:')
+    ? withBasePath(value)
+    : withBasePath(`/api/screenshot?url=${encodeURIComponent(value)}`);
 }
 
 // Preset visual screens to render for screenshot evidence
@@ -600,17 +617,21 @@ export default function Reports() {
               {detailReport && (
                 <ExportMenu
                   label="Export"
+                  dropUp
                   filename={`report-${detailReport.id}`}
                   title={detailReport.name}
-                  formats={['csv', 'json', 'md', 'pdf']}
-                  rows={detailReport.steps || []}
+                  formats={['pdf', 'csv', 'md', 'json', 'html']}
+                  rows={(detailReport.steps || []).map((step, index) => ({
+                    ...step,
+                    evidence: stepEvidence(detailReport, step, index),
+                  }))}
                   columns={[
                     { key: 'step', label: '#' },
                     { key: 'action', label: 'Test Step' },
                     { key: 'expected', label: 'Expected Result' },
                     { key: 'outcome', label: 'Outcome' },
                     { key: 'reason', label: 'Reason' },
-                    { key: 'screenshot', label: 'Evidence' },
+                    { key: 'evidence', label: 'Evidence' },
                   ]}
                 />
               )}
@@ -642,7 +663,7 @@ export default function Reports() {
                         <td className="px-3 py-2 text-[var(--text-primary)]">{s.action}</td>
                         <td className="px-3 py-2 text-[var(--text-muted)]">{s.expected}</td>
                         <td className="px-3 py-2"><span className={cn('inline-flex rounded border px-1.5 py-0.5 text-[10px] font-bold', /pass/i.test(String(s.outcome)) ? 'border-emerald-500/20 bg-emerald-500/10 text-emerald-600' : /fail/i.test(String(s.outcome)) ? 'border-red-500/20 bg-red-500/10 text-red-500' : 'border-slate-500/20 bg-slate-500/10 text-slate-400')}>{s.outcome || '—'}</span></td>
-                        <td className="px-3 py-2">{s.screenshot ? <button onClick={() => setLightboxKey(s.screenshot)} className="rounded border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-xs text-[var(--accent)] hover:border-[var(--accent)]">View</button> : <span className="text-xs text-[var(--text-muted)]">—</span>}</td>
+                        <td className="px-3 py-2">{stepEvidence(detailReport, s, i) ? <button onClick={() => setLightboxKey(stepEvidence(detailReport, s, i))} className="rounded border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-xs text-[var(--accent)] hover:border-[var(--accent)]">View</button> : <span className="text-xs text-[var(--text-muted)]">Not captured</span>}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -674,7 +695,7 @@ export default function Reports() {
             {/* Browser body canvas content context */}
             <div className="p-0 bg-slate-900 overflow-hidden flex-1 min-h-0 flex items-center justify-center">
               <img
-                src={withBasePath(`/api/screenshot?url=${encodeURIComponent(lightboxKey)}`)}
+                src={evidenceImageSource(lightboxKey)}
                 alt={SCREENSHOT_PRESETS[lightboxKey]?.title || `Captured URL View: ${lightboxKey}`}
                 className="w-full h-full object-contain"
                 referrerPolicy="no-referrer"

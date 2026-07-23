@@ -707,9 +707,13 @@ function buildSelectedQaContext(input: { testPlanId?: string; testSuiteId?: stri
   const planSuites = selectedPlan ? db.suites.filter((suite: any) =>
     (Array.isArray(suite.testPlanIds) && suite.testPlanIds.length ? suite.testPlanIds : [suite.testPlanId]).includes(selectedPlan.id)
   ) : [];
-  const suiteCases = selectedSuite ? db.cases.filter((testCase: any) => testCase.testSuiteId === selectedSuite.id) : [];
+  const suiteCases = selectedSuite ? db.cases.filter((testCase: any) =>
+    (Array.isArray(testCase.testSuiteIds) && testCase.testSuiteIds.length ? testCase.testSuiteIds : [testCase.testSuiteId]).includes(selectedSuite.id)
+  ) : [];
   const planCases = selectedPlan ? db.cases.filter((testCase: any) =>
-    testCase.testPlanId === selectedPlan.id || planSuites.some((suite: any) => suite.id === testCase.testSuiteId)
+    testCase.testPlanId === selectedPlan.id || planSuites.some((suite: any) =>
+      (Array.isArray(testCase.testSuiteIds) && testCase.testSuiteIds.length ? testCase.testSuiteIds : [testCase.testSuiteId]).includes(suite.id)
+    )
   ) : [];
 
   const context = {

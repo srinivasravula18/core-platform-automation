@@ -11,7 +11,7 @@ import { AIActionModal } from '@/src/components/AIActionModal';
 import { FolderSelect } from '@/src/components/FolderSelect';
 import { FolderBadge } from '@/src/components/FolderBadge';
 import { showAlert, showConfirm } from '@/src/lib/dialog';
-import { suitePlanIds } from '@/src/lib/suiteCaseSelection';
+import { caseBelongsToSuite, suitePlanIds } from '@/src/lib/suiteCaseSelection';
 
 const PLAN_STATUSES = ['Draft', 'Under Review', 'Approved', 'In Progress', 'Completed', 'Blocked', 'Cancelled', 'Archived'];
 const PLAN_RISK_LEVELS = ['Low', 'Medium', 'High'];
@@ -477,7 +477,7 @@ export default function TestPlans() {
                         <td className="px-4 py-3 text-[var(--text-muted)]">{suite.module || '-'}</td>
                         <td className="px-4 py-3 text-[var(--text-muted)] max-w-md whitespace-normal">{suite.description || 'No description.'}</td>
                         <td className="px-4 py-3 text-[var(--text-muted)]">
-                          {getPlanCases(selectedDetailPlan.id).filter((testCase) => testCase.testSuiteId === suite.id).length}
+                          {getPlanCases(selectedDetailPlan.id).filter((testCase) => caseBelongsToSuite(testCase, suite.id)).length}
                         </td>
                         <td className="px-4 py-3">
                           <span className="text-xs px-2 py-0.5 rounded border border-[var(--border)] text-[var(--text-muted)]">

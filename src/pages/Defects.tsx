@@ -238,13 +238,13 @@ export default function Defects() {
         </div>
 
         <div className="flex-1 overflow-auto">
-          <table className="w-full text-left text-sm whitespace-nowrap">
+          <table className="w-full table-fixed text-left text-sm whitespace-nowrap">
             <thead className="sticky top-0 bg-[var(--bg-secondary)] border-b border-[var(--border)] z-10">
               <tr className="text-[var(--text-muted)]">
                 <th className="font-medium py-3 px-4 w-10">
                   <input type="checkbox" checked={bulk.allSelected(filteredDefects.map((d) => d.id))} onChange={() => bulk.toggleAll(filteredDefects.map((d) => d.id))} />
                 </th>
-                <th className="font-medium py-3 px-4 w-24">ID</th>
+                <th className="font-medium py-3 px-4 w-44">ID</th>
                 <th className="font-medium py-3 px-4">Title</th>
                 <th className="font-medium py-3 px-4 w-32">Severity</th>
                 <th className="font-medium py-3 px-4 w-32">Status</th>
@@ -265,18 +265,20 @@ export default function Defects() {
                   <td className="py-3 px-4" onClick={(e) => e.stopPropagation()}>
                     <input type="checkbox" checked={bulk.isSelected(defect.id)} onChange={() => bulk.toggle(defect.id)} />
                   </td>
-                  <td className="py-3 px-4 font-mono text-xs text-[var(--text-muted)]">
-                    <span className="inline-flex items-center gap-1">
+                  <td className="overflow-hidden py-3 px-4 font-mono text-xs text-[var(--text-muted)]">
+                    <span className="flex min-w-0 items-center gap-1">
                       {hasRichReport(defect) && (expandedId === defect.id
                         ? <ChevronDown className="w-3 h-3" />
                         : <ChevronRight className="w-3 h-3" />)}
-                      {defect.id}
+                      <span className="truncate" title={defect.id}>{defect.id}</span>
                     </span>
                   </td>
-                  <td className="py-3 px-4 font-medium">
-                    {defect.title}
-                    {defect.metadata?.regression && <span className="ml-2 text-[10px] font-bold text-red-500 border border-red-500/30 bg-red-500/10 rounded px-1">REGRESSION</span>}
-                    {typeof defect.metadata?.frequency === 'number' && defect.metadata.frequency > 1 && <span className="ml-2 text-[10px] text-[var(--text-muted)] border border-[var(--border)] rounded px-1">×{defect.metadata.frequency}</span>}
+                  <td className="overflow-hidden py-3 px-4 font-medium">
+                    <div className="flex min-w-0 items-center">
+                      <span className="truncate" title={defect.title}>{defect.title}</span>
+                      {defect.metadata?.regression && <span className="ml-2 shrink-0 text-[10px] font-bold text-red-500 border border-red-500/30 bg-red-500/10 rounded px-1">REGRESSION</span>}
+                      {typeof defect.metadata?.frequency === 'number' && defect.metadata.frequency > 1 && <span className="ml-2 shrink-0 text-[10px] text-[var(--text-muted)] border border-[var(--border)] rounded px-1">×{defect.metadata.frequency}</span>}
+                    </div>
                   </td>
                   <td className="py-3 px-4">
                     <span className={cn(

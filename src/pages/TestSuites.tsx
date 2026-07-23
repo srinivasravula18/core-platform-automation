@@ -6,6 +6,7 @@ import { useAiSearch } from '@/src/lib/useAiSearch';
 import { useBulkDelete } from '@/src/lib/useBulkDelete';
 import { startSelectedRun } from '@/src/lib/startSelectedRun';
 import {
+  caseBelongsToSuite,
   caseSuiteAssignment,
   orderSuitesByHierarchy,
   relatedCasesForSuite,
@@ -227,7 +228,7 @@ export default function TestSuites() {
     );
   };
 
-  const getSuiteCases = (suiteId: string) => cases.filter((testCase) => testCase.testSuiteId === suiteId);
+  const getSuiteCases = (suiteId: string) => cases.filter((testCase) => caseBelongsToSuite(testCase, suiteId));
   const moduleOptions = Array.from(new Set(suites.map((suite) => suiteModuleName(suite, folders)).filter(Boolean))).sort();
   const tagOptions: string[] = Array.from(new Set<string>(suites.flatMap((suite) => Array.isArray(suite.tags) ? suite.tags : []).map((tag) => String(tag).trim()).filter(Boolean))).sort();
   const relatedCases = selectedSuiteId ? [] : relatedCasesForSuite(cases, formData.folderId, formData.parentSuiteIds.length ? formData.parentSuiteIds : (subsuiteParentId ? [subsuiteParentId] : []));
@@ -267,7 +268,7 @@ export default function TestSuites() {
               { key: 'status', label: 'Status', get: (s) => s.status || 'Active' },
               { key: 'tags', label: 'Tags' },
               { key: 'plan', label: 'Plans', get: (s) => suitePlanIds(s).map((id) => plans.find((p) => p.id === id)?.name || id).join(', ') },
-              { key: 'caseCount', label: 'Cases', get: (s) => cases.filter((c) => c.testSuiteId === s.id).length },
+              { key: 'caseCount', label: 'Cases', get: (s) => cases.filter((c) => caseBelongsToSuite(c, s.id)).length },
             ]}
           />
           <button onClick={openNewModal} className="flex items-center gap-2 bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white px-4 py-2 rounded-md text-sm font-medium transition-colors">

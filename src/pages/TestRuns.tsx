@@ -12,7 +12,7 @@ import { FolderBadge } from '@/src/components/FolderBadge';
 import { AutomationRunArtifacts } from '@/src/components/AutomationRunArtifacts';
 import { TagEditor } from '@/src/components/TagEditor';
 import { showAlert } from '@/src/lib/dialog';
-import { suitePlanIds } from '@/src/lib/suiteCaseSelection';
+import { caseBelongsToSuite, caseSuiteIds, suitePlanIds } from '@/src/lib/suiteCaseSelection';
 
 function getRunStats(run: any) {
   const steps = Array.isArray(run?.steps) ? run.steps : [];
@@ -152,15 +152,15 @@ export default function TestRuns() {
     }
     if (Array.isArray(selectedRun.suiteIds) && selectedRun.suiteIds.length) {
       const selectedSuiteIds = new Set(selectedRun.suiteIds);
-      return cases.filter((testCase) => selectedSuiteIds.has(testCase.testSuiteId));
+      return cases.filter((testCase) => caseSuiteIds(testCase).some((id) => selectedSuiteIds.has(id)));
     }
     if (Array.isArray(selectedRun.planIds) && selectedRun.planIds.length) {
       const selectedPlanIds = new Set(selectedRun.planIds);
       const selectedSuiteIds = new Set(suites.filter((item) => suitePlanIds(item).some((id) => selectedPlanIds.has(id))).map((item) => item.id));
-      return cases.filter((testCase) => selectedPlanIds.has(testCase.testPlanId) || selectedSuiteIds.has(testCase.testSuiteId));
+      return cases.filter((testCase) => selectedPlanIds.has(testCase.testPlanId) || caseSuiteIds(testCase).some((id) => selectedSuiteIds.has(id)));
     }
     const suite = suites.find((item) => item.name === selectedRun.suiteName || item.id === selectedRun.suiteId);
-    const suiteCases = suite ? cases.filter((testCase) => testCase.testSuiteId === suite.id) : [];
+    const suiteCases = suite ? cases.filter((testCase) => caseBelongsToSuite(testCase, suite.id)) : [];
     if (suiteCases.length) return suiteCases;
     if (selectedRun.agentRunId) return cases.filter((testCase) => testCase.agentRunId === selectedRun.agentRunId);
     return [];

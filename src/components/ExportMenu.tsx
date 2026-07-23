@@ -13,13 +13,15 @@ interface ExportMenuProps {
   formats?: ExportFormat[];
   label?: string;
   className?: string;
+  dropUp?: boolean;
 }
 
 const FORMAT_META: Record<ExportFormat, { label: string; icon: typeof FileText }> = {
-  csv: { label: 'CSV (.csv)', icon: FileSpreadsheet },
+  csv: { label: 'Excel / CSV (.csv)', icon: FileSpreadsheet },
   json: { label: 'JSON (.json)', icon: FileJson },
   md: { label: 'Markdown (.md)', icon: FileText },
   pdf: { label: 'PDF (.pdf)', icon: Printer },
+  html: { label: 'HTML (.html)', icon: FileText },
 };
 
 export default function ExportMenu({
@@ -30,6 +32,7 @@ export default function ExportMenu({
   formats = ['csv', 'json', 'md', 'pdf'],
   label = 'Export',
   className = '',
+  dropUp = false,
 }: ExportMenuProps) {
   const [open, setOpen] = useState(false);
   const disabled = !rows || rows.length === 0;
@@ -55,7 +58,7 @@ export default function ExportMenu({
         <>
           {/* click-away overlay */}
           <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          <div className="absolute right-0 z-50 mt-1 w-52 overflow-hidden rounded-md border border-[var(--border)] bg-[var(--bg-card)] shadow-lg">
+          <div className={`absolute right-0 z-50 w-52 overflow-hidden rounded-md border border-[var(--border)] bg-[var(--bg-card)] shadow-lg ${dropUp ? 'bottom-full mb-1' : 'mt-1'}`}>
             <div className="px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] border-b border-[var(--border)]">
               Export {rows.length} row{rows.length === 1 ? '' : 's'}
             </div>

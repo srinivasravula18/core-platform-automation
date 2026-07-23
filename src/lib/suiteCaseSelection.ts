@@ -3,11 +3,20 @@ export function relatedCasesForSuite(cases: any[], folderId: string, parentSuite
   if (!folderId && !parentIds.length) return [];
   return cases.filter((testCase) => {
     if (parentIds.length) {
-      const caseSuiteIds = Array.isArray(testCase.testSuiteIds) ? testCase.testSuiteIds : (testCase.testSuiteId ? [testCase.testSuiteId] : []);
-      return caseSuiteIds.some((id: string) => parentIds.includes(id));
+      return caseSuiteIds(testCase).some((id) => parentIds.includes(id));
     }
     return testCase.folderId === folderId;
   });
+}
+
+export function caseSuiteIds(testCase: any): string[] {
+  return Array.isArray(testCase?.testSuiteIds) && testCase.testSuiteIds.length
+    ? testCase.testSuiteIds
+    : (testCase?.testSuiteId ? [testCase.testSuiteId] : []);
+}
+
+export function caseBelongsToSuite(testCase: any, suiteId: string): boolean {
+  return caseSuiteIds(testCase).includes(suiteId);
 }
 
 export function caseSuiteAssignment(testCase: any, suiteId: string) {

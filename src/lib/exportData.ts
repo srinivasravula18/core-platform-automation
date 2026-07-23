@@ -2,7 +2,7 @@
 // runs, requirements, traceability, reports, defects).
 // Supports CSV, JSON, Markdown table, and Print/PDF (via the browser print dialog).
 
-export type ExportFormat = 'csv' | 'json' | 'md' | 'pdf';
+export type ExportFormat = 'csv' | 'json' | 'md' | 'pdf' | 'html';
 
 export interface ExportColumn {
   key: string;
@@ -101,5 +101,6 @@ export function exportRows(
   if (format === 'csv') return downloadFile('﻿' + toCSV(rows, columns), `${base}.csv`, 'text/csv;charset=utf-8');
   if (format === 'json') return downloadFile(toJSONExport(rows, columns), `${base}.json`, 'application/json');
   if (format === 'md') return downloadFile(toMarkdown(rows, columns, title), `${base}.md`, 'text/markdown;charset=utf-8');
+  if (format === 'html') return downloadFile(toHTMLTable(rows, columns, title || filename), `${base}.html`, 'text/html;charset=utf-8');
   if (format === 'pdf') return printHTML(toHTMLTable(rows, columns, title || filename));
 }

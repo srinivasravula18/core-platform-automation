@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import {
+  caseBelongsToSuite,
   caseSuiteAssignment,
+  caseSuiteIds,
   orderSuitesByHierarchy,
   relatedCasesForSuite,
   suiteHierarchyDepth,
@@ -23,6 +25,8 @@ assert.deepEqual(caseSuiteAssignment(cases[0], 'SUITE-NEW'), {
   testSuiteIds: ['PARENT-1', 'SUITE-NEW'],
   folderId: 'F-1',
 });
+assert.deepEqual(caseSuiteIds({ testSuiteId: 'SUITE-1', testSuiteIds: ['SUITE-1', 'SUITE-2'] }), ['SUITE-1', 'SUITE-2']);
+assert.equal(caseBelongsToSuite({ testSuiteId: 'SUITE-1', testSuiteIds: ['SUITE-1', 'SUITE-2'] }, 'SUITE-2'), true);
 assert.equal(suiteModuleName({ module: 'QA Assistant', folderId: 'F-1' }, [{ id: 'F-1', name: 'App Creation' }]), 'App Creation');
 assert.equal(suiteModuleName({ module: 'Payments', folderId: 'F-1' }, [{ id: 'F-1', name: 'App Creation' }]), 'Payments');
 const suites = [
