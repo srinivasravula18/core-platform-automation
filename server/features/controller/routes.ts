@@ -1,7 +1,7 @@
 import type { Express } from 'express';
 import { buildPlan, cancelPlan, classifyIntent, executePlan, explainIntent, streamExplain, getPlan, listPlans } from '../../ai/controller';
 import { runSupervisor, answerAppQuestionFromCode, answerViaConversationalRuntime } from '../../ai/supervisor';
-import { quickWorkspaceAnswer } from '../../ai/tools/registry';
+import { isWorkspaceDataQuestion, quickWorkspaceAnswer } from '../../ai/tools/registry';
 import { reqScope } from '../../shared/scope';
 import { ChatConversations } from '../../db/repository';
 import { assembleConversationContext } from '../../ai/memory/contextAssembler';
@@ -184,7 +184,7 @@ export function registerControllerRoutes(app: Express) {
       // done deterministically), instead of the slow multi-step tool loop. Include the recent
       // conversation so FOLLOW-UPS resolve against context — "rewrite that case", "explain it",
       // or a pasted case that follows a prior instruction — instead of being answered blind.
-      if (!ACTION_RE.test(userMessage)) {
+      if (!ACTION_RE.test(userMessage) && !isWorkspaceDataQuestion(userMessage, Array.isArray(history) ? history : [])) {
         // Phase 6 cutover: diagnostic/recall questions answer from REAL run evidence via the
         // Conversational Runtime (it persists its own canonical exchange); null → legacy path.
         const runtimeReply = await answerViaConversationalRuntime(userMessage, {
@@ -258,7 +258,7 @@ export function registerControllerRoutes(app: Express) {
       if (quick) { await persistExchange(conversationId, workspaceId, userMessage, quick); await sendFinalReply(res, send, quick, { fast: true }); return res.end(); }
       // Fast git-grounded path for app-knowledge QUESTIONS: ONE LLM call after deterministic
       // retrieval. Emits the search/read progress so the UI still animates the live steps.
-      if (!ACTION_RE.test(userMessage)) {
+      if (!ACTION_RE.test(userMessage) && !isWorkspaceDataQuestion(userMessage, Array.isArray(history) ? history : [])) {
         let i = 0;
         // Phase 6 cutover (streaming): evidence-first runtime answers diagnostic/recall
         // questions; progress lines keep the UI animating. null → legacy code-grounded path.

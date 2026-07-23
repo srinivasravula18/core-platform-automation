@@ -9,7 +9,7 @@
  * generateCasesForRun, playwrightCoder, executePlaywrightScripts, etc.
  */
 import type { AgentTool, ToolContext } from './types';
-import { Cases, Suites, Plans, Runs, Scripts, Defects, Reports, Requirements } from '../../db/repository';
+import { AgentRuns, Cases, Suites, Plans, Runs, Scripts, Defects, Reports, Requirements } from '../../db/repository';
 import { searchCodeInScope, readCodeFileInScope } from '../../features/projects/codeSearch';
 import { getProject, getProjectRepoPath } from '../../features/projects/projectService';
 import { findUntestedEdges } from '../exploration/edgeFinder';
@@ -36,6 +36,44 @@ const COLLECTIONS: Record<string, Lister> = {
   requirements: Requirements as any,
   reports: Reports as any,
 };
+
+/** Scripts executed by agent runs are persisted on the run, even when no standalone script row exists. */
+export function scriptsFromAgentRuns(runs: any[]): any[] {
+  return (Array.isArray(runs) ? runs : []).flatMap((run: any) => {
+    const scripts = Array.isArray(run?.playwrightScripts)
+      ? run.playwrightScripts
+      : Array.isArray(run?.playwright_scripts) ? run.playwright_scripts : [];
+    return scripts.map((script: any, index: number) => {
+      const item = script && typeof script === 'object' ? script : { code: String(script || '') };
+      return {
+        ...item,
+        title: item.title || item.test_case_title || '',
+        filename: item.filename || `run-script-${index + 1}.spec.ts`,
+        agentRunId: item.agentRunId || run.id,
+        targetUrl: item.targetUrl || run.appUrl || run.app_url || '',
+        createdAt: item.createdAt || run.createdAt || run.created_at,
+        ownerId: item.ownerId || run.ownerId,
+        projectId: item.projectId || run.projectId,
+        appId: item.appId || run.appId,
+        source: 'agent_run',
+      };
+    });
+  });
+}
+
+/** Route persisted-artifact questions to database tools instead of the app-source fast path. */
+export function isWorkspaceDataQuestion(message: string, history: Array<{ content?: string }> = []): boolean {
+  const asksAboutArtifacts = (value: string) => {
+    const text = String(value || '').toLowerCase();
+    const artifact = /\b(test\s*)?(cases?|suites?|plans?|scripts?|defects?|bugs?|requirements?|reports?|artifacts?|evidence)\b/.test(text)
+      || (/\bruns?\b/.test(text) && /\b(test|last|latest|existing|workspace|failed|passed|result|execution|which|list|show)\b/.test(text));
+    const lookup = /\b(which|what|where|when|who|why|how many|find|search|locate|show|list|tell|check|verify|last|latest|recent|existing|saved|stored|created|generated|recorded|tagged|named|called|linked|workspace)\b/.test(text);
+    return artifact && lookup;
+  };
+  if (asksAboutArtifacts(message)) return true;
+  if (!/\b(again|recheck|check|verify|are you sure|look once more)\b/i.test(message) || message.length > 100) return false;
+  return history.slice(-6).some((turn) => asksAboutArtifacts(String(turn?.content || '')));
+}
 
 /** Flatten a case/defect step list into readable text for both search and a compact summary. */
 function stepsToText(steps: any): string {
@@ -77,6 +115,10 @@ export const queryWorkspaceTool: AgentTool = {
     const q = String(args.query || '').toLowerCase();
     const limit = Math.max(1, Math.min(100, Number(args.limit) || 20));
     let items = await coll.list();
+    if (kind === 'scripts') {
+      // ponytail: scan embedded run scripts; add an indexed script projection when run volume makes this measurable.
+      items = [...items, ...scriptsFromAgentRuns(await AgentRuns.list())];
+    }
     // Respect the active owner/project/app scope when records carry those fields.
     items = items.filter((it) => {
       if (ctx.userId && it?.ownerId && it.ownerId !== ctx.userId) return false;
