@@ -11,9 +11,10 @@ import { FolderSelect } from '@/src/components/FolderSelect';
 import { FolderBadge } from '@/src/components/FolderBadge';
 import { AutomationRunArtifacts } from '@/src/components/AutomationRunArtifacts';
 import { TagEditor } from '@/src/components/TagEditor';
+import { MultiSelectDropdown } from '@/src/components/MultiSelectDropdown';
 import { showAlert } from '@/src/lib/dialog';
 import { caseSuiteIds } from '@/src/lib/suiteCaseSelection';
-import { casesForPlan, casesForRun, executionRunUpdate, manualRunSelection, runnableCasesInFolder, scriptsForRun } from '@/src/lib/manualTestRun';
+import { casesForPlan, casesForRun, executionRunUpdate, manualRunSelection, runnableCases, scriptsForRun } from '@/src/lib/manualTestRun';
 
 function getRunStats(run: any) {
   const steps = Array.isArray(run?.steps) ? run.steps : [];
@@ -65,7 +66,6 @@ export default function TestRuns() {
   const [newRunAssignedTo, setNewRunAssignedTo] = useState('');
   const [newRunTags, setNewRunTags] = useState<string[]>([]);
   const [newRunCaseIds, setNewRunCaseIds] = useState<Set<string>>(new Set());
-  const [runCaseSearch, setRunCaseSearch] = useState('');
   const [plans, setPlans] = useState<any[]>([]);
   const [scripts, setScripts] = useState<any[]>([]);
   const [isExecutingRun, setIsExecutingRun] = useState(false);
@@ -175,7 +175,6 @@ export default function TestRuns() {
     setNewRunAssignedTo('');
     setNewRunTags([]);
     setNewRunCaseIds(new Set());
-    setRunCaseSearch('');
     setIsRunModalOpen(true);
   };
 
@@ -252,16 +251,12 @@ export default function TestRuns() {
     if (errors.length) void showAlert(errors.join('\n'));
   };
 
-  const runnableRunCases = useMemo(() => {
-    const q = runCaseSearch.trim().toLowerCase();
-    return runnableCasesInFolder(casesForPlan(cases, suites, newRunPlanId), scripts, newRunFolderId)
-      .filter((testCase) => !q || `${testCase.id} ${testCase.title || ''}`.toLowerCase().includes(q));
-  }, [cases, suites, scripts, newRunPlanId, newRunFolderId, runCaseSearch]);
-  const selectedNewRunCases = useMemo(
-    () => cases.filter((testCase) => newRunCaseIds.has(testCase.id)),
-    [cases, newRunCaseIds],
-  );
-  const toggleRunCase = (id: string) => setNewRunCaseIds((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const runnableCaseOptions = useMemo(() => runnableCases(casesForPlan(cases, suites, newRunPlanId), scripts)
+    .map((testCase) => ({
+      id: String(testCase.id),
+      name: `${folders.find((folder) => folder.id === testCase.folderId)?.path || folders.find((folder) => folder.id === testCase.folderId)?.name || 'Unfiled'} — ${testCase.id}: ${testCase.title}`,
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name)), [cases, suites, scripts, folders, newRunPlanId]);
 
   const handleAIApprove = (data: any) => {
     fetch('/api/runs', {
@@ -521,38 +516,14 @@ export default function TestRuns() {
             <input value={newRunTargetUrl} onChange={(e) => setNewRunTargetUrl(e.target.value)} placeholder="Target URL (optional)" className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm" />
           </div>
 
-          {/* Only runnable cases from the selected folder belong in an executable run. */}
           <div>
-            <div className="mb-1 flex items-center justify-between">
-              <span className="text-xs font-medium text-[var(--text-muted)]">Test Cases</span>
-              <span className="text-xs text-[var(--accent)]">{newRunCaseIds.size} selected</span>
-            </div>
-            {selectedNewRunCases.length > 0 && (
-              <div className="mb-2 flex flex-wrap gap-2 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)]/40 p-2">
-                {selectedNewRunCases.map((testCase) => (
-                  <button key={testCase.id} type="button" onClick={() => toggleRunCase(testCase.id)} title="Remove from this run" className="max-w-full truncate rounded bg-[var(--bg-card)] px-2 py-1 text-xs text-[var(--text-primary)] hover:text-red-400">
-                    {testCase.id}: {testCase.title} ×
-                  </button>
-                ))}
-              </div>
-            )}
-            <div className="relative mb-2">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--text-muted)]" />
-              <input value={runCaseSearch} onChange={(e) => setRunCaseSearch(e.target.value)} placeholder="Search cases by ID or title…" className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md pl-9 pr-3 py-2 text-sm" />
-            </div>
-            <div className="max-h-60 overflow-auto rounded-md border border-[var(--border)] bg-[var(--bg-secondary)]/40">
-              {!newRunFolderId ? (
-                <div className="px-3 py-6 text-center text-sm text-[var(--text-muted)]">Select a folder to see test cases with scripts. Your selections are kept when you change folders.</div>
-              ) : runnableRunCases.length === 0 ? (
-                <div className="px-3 py-6 text-center text-sm text-[var(--text-muted)]">No test cases with Playwright scripts in this folder.</div>
-              ) : runnableRunCases.map((testCase) => (
-                <label key={testCase.id} className="flex cursor-pointer items-center gap-2 border-b border-[var(--border)] px-3 py-2 text-sm last:border-0 hover:bg-[var(--bg-secondary)]">
-                  <input type="checkbox" checked={newRunCaseIds.has(testCase.id)} onChange={() => toggleRunCase(testCase.id)} />
-                  <span className="font-mono text-xs text-[var(--text-muted)]">{testCase.id}</span>
-                  <span className="truncate text-[var(--text-primary)]">{testCase.title}</span>
-                </label>
-              ))}
-            </div>
+            <label className="mb-1 block text-xs font-medium text-[var(--text-muted)]">Test Cases with Playwright Scripts</label>
+            <MultiSelectDropdown
+              label={runnableCaseOptions.length ? 'Select test cases from any repository folder' : 'No runnable test cases'}
+              options={runnableCaseOptions}
+              value={[...newRunCaseIds]}
+              onChange={(ids) => setNewRunCaseIds(new Set(ids))}
+            />
           </div>
         </div>
       </Modal>

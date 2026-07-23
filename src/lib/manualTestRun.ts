@@ -34,11 +34,8 @@ export function scriptsForCases(cases: any[], scripts: any[]): any[] {
   return [...selected.values()];
 }
 
-export function runnableCasesInFolder(cases: any[], scripts: any[], folderId: string): any[] {
-  if (!folderId) return [];
-  return cases.filter((testCase) =>
-    testCase.folderId === folderId && scriptsForCases([testCase], scripts).length > 0,
-  );
+export function runnableCases(cases: any[], scripts: any[]): any[] {
+  return cases.filter((testCase) => scriptsForCases([testCase], scripts).length > 0);
 }
 
 export function casesForRun(run: any, cases: any[], suites: any[]): any[] {

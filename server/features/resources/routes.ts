@@ -696,7 +696,8 @@ Rules:
     const targetUrl = normalizeTargetUrl(req.body?.targetUrl || findSettingsPlaywrightTargetUrl() || '');
     const selectedPlans = plans.filter((plan: any) => planIds.has(plan.id));
     const selectedSuites = suites.filter((suite: any) => suiteIds.has(suite.id));
-    const folderId = selectedCases.find((testCase: any) => testCase.folderId)?.folderId
+    const folderId = req.body?.folderId
+      || selectedCases.find((testCase: any) => testCase.folderId)?.folderId
       || selectedSuites.find((suite: any) => suite.folderId)?.folderId
       || selectedPlans.find((plan: any) => plan.folderId)?.folderId
       || '';

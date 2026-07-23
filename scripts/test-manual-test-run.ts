@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { casesForPlan, casesForRun, executionRunUpdate, manualRunSelection, runnableCasesInFolder, scriptsForCases, scriptsForRun } from '../src/lib/manualTestRun';
+import { casesForPlan, casesForRun, executionRunUpdate, manualRunSelection, runnableCases, scriptsForCases, scriptsForRun } from '../src/lib/manualTestRun';
 
 const suites = [
   { id: 'S1', testPlanId: 'P1' },
@@ -21,10 +21,9 @@ assert.deepEqual(manualRunSelection('', ['C1', 'C3']), { planIds: [], caseIds: [
 assert.deepEqual(manualRunSelection('P1', []), { planIds: ['P1'], caseIds: [] });
 assert.deepEqual(casesForRun({ planIds: ['P1'] }, cases, suites).map(({ id }) => id), ['C1', 'C2']);
 assert.deepEqual(scriptsForRun({ agentRunId: 'A1' }, [], [{ id: 'X1', agentRunId: 'A1', code: 'one' }]).map(({ id }) => id), ['X1']);
-assert.deepEqual(runnableCasesInFolder(
+assert.deepEqual(runnableCases(
   [{ id: 'C1', folderId: 'F1' }, { id: 'C2', folderId: 'F1' }, { id: 'C3', folderId: 'F2' }],
   [{ id: 'X1', caseId: 'C1', code: 'one' }],
-  'F1',
 ).map(({ id }) => id), ['C1']);
 assert.deepEqual(
   executionRunUpdate({ ok: true, total: 1, passed: 1, tests: [{ title: 'First', status: 'passed' }] }).steps[0].outcome,
