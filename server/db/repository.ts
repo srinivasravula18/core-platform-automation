@@ -1688,8 +1688,6 @@ function mapRequirement(r: any) {
     featureQuery: r.feature_query,
     businessRules: r.business_rules || [],
     dataPopulationNotes: r.data_population_notes,
-    adminBehavior: r.admin_behavior,
-    keystoneBehavior: r.keystone_behavior,
     metadataRefs: r.metadata_refs || [],
     uiSelectors: r.ui_selectors || {},
     sourceFiles: r.source_files || [],
@@ -1739,7 +1737,7 @@ export const Requirements = {
     const params = (folderId: string | null) => [
       id, rq.title || 'Untitled Requirement', rq.description || '', rq.featureQuery || '',
       JSON.stringify(rq.businessRules || []), rq.dataPopulationNotes || '',
-      rq.adminBehavior || '', rq.keystoneBehavior || '',
+      '', '',
       JSON.stringify(rq.metadataRefs || []), JSON.stringify(rq.uiSelectors || {}),
       JSON.stringify(rq.sourceFiles || []),
       rq.coverageStatus || 'unknown', rq.status || 'Draft', folderId,
@@ -2171,6 +2169,11 @@ function mapArtifact(r: any) {
 }
 
 export const AutomationArtifacts = {
+  async list(): Promise<any[]> {
+    if (!isPgEnabled()) return db.automationArtifacts as any[];
+    const rows = await query('SELECT * FROM automation_artifacts ORDER BY created_at DESC');
+    return rows.map(mapArtifact);
+  },
   async listByJob(jobId: string): Promise<any[]> {
     if (!isPgEnabled()) return (db.automationArtifacts as any[]).filter((a) => a.jobId === jobId);
     const rows = await query('SELECT * FROM automation_artifacts WHERE job_id = $1 ORDER BY created_at ASC', [jobId]);

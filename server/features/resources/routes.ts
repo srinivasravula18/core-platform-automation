@@ -707,15 +707,14 @@ Rules:
 
     const steps = selectedCases.flatMap((testCase: any) => {
       const caseSteps = normalizeCaseSteps(testCase.steps);
-      const shouldCaptureCaseEvidence = Boolean(testCase.captureEvidenceOnManualRun !== false && targetUrl);
       if (!caseSteps.length) {
         return [{
           step: `${testCase.id}`,
           action: `Review test case: ${testCase.title || testCase.id}`,
           expected: 'Test case can be executed and evaluated.',
-          outcome: 'Pass',
+          outcome: 'Untested',
           reason: '',
-          screenshot: shouldCaptureCaseEvidence ? targetUrl : '',
+          screenshot: '',
           testCaseId: testCase.id,
           testCaseTitle: testCase.title,
         }];
@@ -724,15 +723,15 @@ Rules:
         step: `${testCase.id}.${index + 1}`,
         action: step.action,
         expected: step.expected,
-        outcome: 'Pass',
+        outcome: 'Untested',
         reason: '',
-        screenshot: shouldCaptureCaseEvidence ? targetUrl : '',
+        screenshot: '',
         testCaseId: testCase.id,
         testCaseTitle: testCase.title,
       }));
     });
-    const passed = steps.filter((step: any) => step.outcome === 'Pass').length;
-    const failed = steps.filter((step: any) => step.outcome === 'Fail').length;
+    const passed = 0;
+    const failed = 0;
     const name = req.body?.name || (
       selectedCases.length === 1
         ? `Run: ${selectedCases[0].title || selectedCases[0].id}`
@@ -758,7 +757,7 @@ Rules:
       state: req.body?.state || '',
       executionTime: req.body?.executionTime || '',
       status: req.body?.state || 'Not Started',
-      progress: `${passed} passed`,
+      progress: 'Not started',
       date: new Date().toISOString().split('T')[0],
       totalExecutions: steps.length,
       passed,
@@ -774,9 +773,8 @@ Rules:
       steps,
     };
     await Runs.upsert(newRun);
-    await createReportFromRun(newRun, scope, { passed, failed, steps, targetUrl }).catch((e) => console.warn('[reports] selection run report failed:', e?.message || e));
     if (!isPgEnabled()) persistDataInBackground('selection run');
-    addActivity(`Started selected run: ${name}`, { type: 'run', entityId: newRun.id, actor: getAuthUser(req)?.username || '', meta: { passed: newRun.passed, failed: newRun.failed } });
+    addActivity(`Created manual run: ${name}`, { type: 'run', entityId: newRun.id, actor: getAuthUser(req)?.username || '' });
     res.json({ success: true, run: newRun });
   });
 
@@ -793,19 +791,19 @@ Rules:
           step: `${index + 1}`,
           action: step.action,
           expected: step.expected,
-          outcome: 'Pass',
+          outcome: 'Untested',
           reason: '',
-          screenshot: shouldCaptureCaseEvidence ? targetUrl : '',
+          screenshot: '',
           testCaseId: selectedCase.id,
           testCaseTitle: selectedCase.title,
         }))
       : targetUrl ? [
-        { step: '1', action: `Load target webpage address URL: ${targetUrl}`, expected: 'Page responds successfully.', outcome: 'Pass', reason: '', screenshot: targetUrl },
-        { step: '2', action: 'Verify primary page layout renders', expected: 'Core page content is visible.', outcome: 'Pass', reason: '', screenshot: targetUrl },
-        { step: '3', action: 'Capture responsive viewport evidence', expected: 'Screenshot evidence is available for review.', outcome: 'Pass', reason: '', screenshot: targetUrl },
+        { step: '1', action: `Load target webpage address URL: ${targetUrl}`, expected: 'Page responds successfully.', outcome: 'Untested', reason: '', screenshot: '' },
+        { step: '2', action: 'Verify primary page layout renders', expected: 'Core page content is visible.', outcome: 'Untested', reason: '', screenshot: '' },
+        { step: '3', action: 'Capture responsive viewport evidence', expected: 'Screenshot evidence is available for review.', outcome: 'Untested', reason: '', screenshot: '' },
       ] : [];
-    const passed = steps.filter((s: any) => s.outcome === 'Pass').length;
-    const failed = steps.filter((s: any) => s.outcome === 'Fail').length;
+    const passed = 0;
+    const failed = 0;
 
     const newRun = {
       ...scopeStamp(reqScope(req)),
@@ -822,7 +820,7 @@ Rules:
       state: req.body.state || '',
       executionTime: req.body.executionTime || '',
       status: req.body.state || 'Not Started',
-      progress: `${passed} passed`,
+      progress: 'Not started',
       date: new Date().toISOString().split('T')[0],
       totalExecutions: steps.length,
       passed,
@@ -836,9 +834,8 @@ Rules:
       steps,
     };
     await Runs.upsert(newRun);
-    await createReportFromRun(newRun, reqScope(req), { passed, failed, steps, targetUrl }).catch((e) => console.warn('[reports] run report failed:', e?.message || e));
     if (!isPgEnabled()) persistDataInBackground('run');
-    addActivity(`Started Run: ${name}`, { type: 'run', entityId: runId, actor: getAuthUser(req)?.username || '', meta: { passed, failed, total: steps.length } });
+    addActivity(`Created manual run: ${name}`, { type: 'run', entityId: runId, actor: getAuthUser(req)?.username || '' });
     res.json({ success: true, run: newRun });
   });
 

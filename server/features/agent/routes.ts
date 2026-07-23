@@ -11,6 +11,7 @@ import { buildAgentExecutionSteps, buildCaseDescription, normalizeCaseSteps, nor
 import { capturePlaywrightEvidence, createAuthStorageState } from '../evidence/evidenceService';
 import { gitGrep, readRepoFile, searchCodeWithContext } from '../git-agent/gitAgentService';
 import { analyzeFeatureFromSource, discoverFeatureInventoryFromSource, proposeGapCases } from '../requirements/requirementService';
+import { structureRequirementText } from '../requirements/requirementText';
 import { executePlaywrightScripts, killRunProcesses, sanitizeTestCode, repairTestCode } from '../playwright/executionService';
 import { liveAuthor, emitScript, canLiveAuthorGoal, actionableAuthorBlockers } from './liveAuthor';
 import { inspectFlow, flowToScript } from './flowInspector';
@@ -891,6 +892,8 @@ async function persistAgentRequirementArtifacts(run: any) {
   const requirementId = agentRequirementId(run);
   run.requirement_id = requirementId;
   const understanding = run.feature_understanding && typeof run.feature_understanding === 'object' ? run.feature_understanding : {};
+  const resolvedUnderstanding = resolveUnderstanding(run);
+  const structuredUnderstanding = structureRequirementText(resolvedUnderstanding);
   const baseName = agentDisplayName(run);
   const isFinished = ['completed', 'failed', 'cancelled'].includes(String(run.status || '').toLowerCase());
   const coverageStatus = run.status === 'completed'
@@ -903,12 +906,12 @@ async function persistAgentRequirementArtifacts(run: any) {
   await Requirements.upsert({
     id: requirementId,
     title: understanding.title || baseName,
-    description: understanding.description || resolveUnderstanding(run) || run.prompt || '',
+    description: understanding.description || structuredUnderstanding.description || resolvedUnderstanding || run.prompt || '',
     featureQuery: run.prompt || baseName,
-    businessRules: Array.isArray(understanding.businessRules) ? understanding.businessRules : [],
+    businessRules: Array.isArray(understanding.businessRules) && understanding.businessRules.length
+      ? understanding.businessRules
+      : structuredUnderstanding.businessRules,
     dataPopulationNotes: understanding.dataPopulationNotes || '',
-    adminBehavior: understanding.adminBehavior || '',
-    keystoneBehavior: understanding.keystoneBehavior || '',
     metadataRefs: Array.isArray(understanding.metadataRefs) ? understanding.metadataRefs : [],
     sourceFiles: [],
     coverageStatus,
@@ -1492,30 +1495,15 @@ function parseRequirementContextText(prompt: string, targetUrl: string, groundin
   const title = (text.match(/^\s*Requirement\s*:?\s*(.+)$/im)?.[1] || titleFromPrompt(prompt, targetUrl)).trim();
   const description = requirementSection(text, /^\s*Description\s*:?\s*/im, [
     /^\s*Business rules\s*:?\s*$/im,
-    /^\s*Admin surface\s*:?/im,
-    /^\s*End-user surface\s*:?/im,
     /^\s*Metadata objects\s*:?/im,
     /^\s*Key source files\s*:?/im,
     /^\s*Candidate scenarios\s*\(/im,
   ]);
   const businessRules = splitRequirementList(requirementSection(text, /^\s*Business rules\s*:?\s*/im, [
-    /^\s*Admin surface\s*:?/im,
-    /^\s*End-user surface\s*:?/im,
     /^\s*Metadata objects\s*:?/im,
     /^\s*Key source files\s*:?/im,
     /^\s*Candidate scenarios\s*\(/im,
   ]));
-  const adminBehavior = requirementSection(text, /^\s*Admin surface\s*:?\s*/im, [
-    /^\s*End-user surface\s*:?/im,
-    /^\s*Metadata objects\s*:?/im,
-    /^\s*Key source files\s*:?/im,
-    /^\s*Candidate scenarios\s*\(/im,
-  ]);
-  const keystoneBehavior = requirementSection(text, /^\s*End-user surface\s*:?\s*/im, [
-    /^\s*Metadata objects\s*:?/im,
-    /^\s*Key source files\s*:?/im,
-    /^\s*Candidate scenarios\s*\(/im,
-  ]);
   const metadataLine = text.match(/^\s*Metadata objects\s*:?\s*(.+)$/im)?.[1] || '';
   const metadataRefs = metadataLine
     .split(',')
@@ -1543,8 +1531,6 @@ function parseRequirementContextText(prompt: string, targetUrl: string, groundin
     description,
     businessRules,
     dataPopulationNotes: '',
-    adminBehavior,
-    keystoneBehavior,
     metadataRefs,
     sourceFiles,
     candidateScenarios: scenarios,
@@ -1593,8 +1579,6 @@ function buildUnderstandingFromPriorGrounding(prompt: string, targetUrl: string,
       description: lines[0] || String(grounding || '').replace(/\s+/g, ' ').trim().slice(0, 500),
       businessRules: lines.slice(0, 28),
       dataPopulationNotes: '',
-      adminBehavior: '',
-      keystoneBehavior: '',
       metadataRefs: [],
       sourceFiles: [],
       candidateScenarios: proposedCases.map((title) => ({
@@ -1613,8 +1597,6 @@ function buildUnderstandingFromPriorGrounding(prompt: string, targetUrl: string,
     description: lines[0] || String(grounding || '').replace(/\s+/g, ' ').trim().slice(0, 500),
     businessRules: lines.slice(0, 28),
     dataPopulationNotes: '',
-    adminBehavior: /admin/i.test(grounding) ? lines.filter((line) => /admin/i.test(line)).slice(0, 8).join(' ') : '',
-    keystoneBehavior: /keystone/i.test(grounding) ? lines.filter((line) => /keystone/i.test(line)).slice(0, 8).join(' ') : '',
     metadataRefs: [],
     sourceFiles: [],
     candidateScenarios: lines.slice(0, 14).map((line) => ({
@@ -1897,8 +1879,6 @@ function summarizeUnderstanding(u: any, maxChars = 4000): string {
   if (u.title) lines.push(`Feature: ${u.title}`);
   if (u.description) lines.push(`What it does: ${u.description}`);
   if (Array.isArray(u.businessRules) && u.businessRules.length) lines.push(`Business rules enforced by the code:\n- ${u.businessRules.join('\n- ')}`);
-  if (u.adminBehavior) lines.push(`Configuration/admin-surface behavior: ${u.adminBehavior}`);
-  if (u.keystoneBehavior) lines.push(`End-user-surface behavior: ${u.keystoneBehavior}`);
   if (u.dataPopulationNotes) lines.push(`Background data/preconditions: ${u.dataPopulationNotes}`);
   if (Array.isArray(u.sharedComponents) && u.sharedComponents.length) {
     const componentLines = u.sharedComponents.slice(0, 12).map((c: any) => {

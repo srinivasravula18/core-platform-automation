@@ -9,7 +9,10 @@
  * generateCasesForRun, playwrightCoder, executePlaywrightScripts, etc.
  */
 import type { AgentTool, ToolContext } from './types';
-import { AgentRuns, Cases, Suites, Plans, Runs, Scripts, Defects, Reports, Requirements } from '../../db/repository';
+import {
+  AgentRuns, Cases, Suites, Plans, Runs, Scripts, Defects, Reports, Requirements,
+  Folders, Settings, Agents, Recordings, AutomationJobs, AutomationSchedules, AutomationArtifacts,
+} from '../../db/repository';
 import { searchCodeInScope, readCodeFileInScope } from '../../features/projects/codeSearch';
 import { getProject, getProjectRepoPath } from '../../features/projects/projectService';
 import { findUntestedEdges } from '../exploration/edgeFinder';
@@ -26,6 +29,30 @@ import { agentWorkflowTools } from './agentTools';
 import { fetchArtifact, searchConversationMemory } from '../memory/artifactMemory';
 
 type Lister = { list: () => Promise<any[]> };
+const safeSettings: Lister = {
+  async list() {
+    const values = await Settings.getKVs();
+    const sensitive = /credential|password|secret|token|api.?key|auth|cookie|session|encrypt/i;
+    return Object.keys(values)
+      .filter((key) => !sensitive.test(key))
+      .map((key) => ({ id: key, name: key, status: 'configured' }));
+  },
+};
+const scopedAutomationArtifacts: Lister = {
+  async list() {
+    const [artifacts, jobs] = await Promise.all([AutomationArtifacts.list(), AutomationJobs.list()]);
+    const jobsById = new Map(jobs.map((job: any) => [job.id, job]));
+    return artifacts.map((artifact: any) => {
+      const job: any = jobsById.get(artifact.jobId);
+      return {
+        ...artifact,
+        ownerId: job?.ownerId || '',
+        projectId: job?.projectId || '',
+        appId: job?.appId || '',
+      };
+    });
+  },
+};
 const COLLECTIONS: Record<string, Lister> = {
   cases: Cases as any,
   suites: Suites as any,
@@ -35,6 +62,13 @@ const COLLECTIONS: Record<string, Lister> = {
   defects: Defects as any,
   requirements: Requirements as any,
   reports: Reports as any,
+  folders: Folders as any,
+  automation_agents: Agents as any,
+  recordings: Recordings as any,
+  jobs: AutomationJobs as any,
+  schedules: AutomationSchedules as any,
+  automation_artifacts: scopedAutomationArtifacts,
+  settings: safeSettings,
 };
 
 /** Scripts executed by agent runs are persisted on the run, even when no standalone script row exists. */
@@ -65,7 +99,9 @@ export function scriptsFromAgentRuns(runs: any[]): any[] {
 export function isWorkspaceDataQuestion(message: string, history: Array<{ content?: string }> = []): boolean {
   const asksAboutArtifacts = (value: string) => {
     const text = String(value || '').toLowerCase();
-    const artifact = /\b(test\s*)?(cases?|suites?|plans?|scripts?|defects?|bugs?|requirements?|reports?|artifacts?|evidence)\b/.test(text)
+    const artifact = /\b(test\s*)?(cases?|suites?|plans?|scripts?|defects?|bugs?|requirements?|reports?|artifacts?|evidence|folders?|recordings?|jobs?|schedules?|settings?)\b/.test(text)
+      || /\b(?:automation|local)\s+agents?\b/.test(text)
+      || /\buploaded\s+(?:automation\s+)?artifacts?\b/.test(text)
       || (/\bruns?\b/.test(text) && /\b(test|last|latest|existing|workspace|failed|passed|result|execution|which|list|show)\b/.test(text));
     const lookup = /\b(which|what|where|when|who|why|how many|find|search|locate|show|list|tell|check|verify|last|latest|recent|existing|saved|stored|created|generated|recorded|tagged|named|called|linked|workspace)\b/.test(text);
     return artifact && lookup;
@@ -97,7 +133,7 @@ export const queryWorkspaceTool: AgentTool = {
   spec: {
     name: 'query_workspace',
     description:
-      'Search and read existing QA workspace memory — test cases, suites, plans, runs, scripts, defects (a.k.a. bugs/issues, kind="defects"), requirements, reports. This is your source of truth for ANY question about existing work; consult it before answering rather than guessing. The `query` matches each artifact\'s full CONTENT, and every row returns real detail: cases include description + steps, runs include the pass/fail outcome, defects include steps-to-reproduce/expected/actual/severity, scripts include the generated code body + filename + agentRunId (so you can see actual fill values, selectors, and which app a script creates). Read-only.',
+      'Search and read QA workspace memory: cases, suites, plans, runs, scripts, defects, requirements, reports, folders, automation agents, recordings, jobs, schedules, uploaded automation artifacts, and non-sensitive setting names. Credentials, tokens, secrets, setting values, webhook hashes, and agent authentication hashes are never available. Use this read-only tool as the source of truth for questions about existing work.',
     parameters: {
       type: 'object',
       properties: {
@@ -136,6 +172,12 @@ export const queryWorkspaceTool: AgentTool = {
       else if (kind === 'scripts') base.push(it?.filename, it?.code);
       else if (kind === 'runs') base.push(it?.prompt, runOutcome(it), it?.app_url, it?.status);
       else if (kind === 'defects') base.push(stepsToText(it?.stepsToReproduce), it?.expected, it?.actual, it?.severity, it?.linkedCaseId, it?.linkedRunId);
+      else if (kind === 'folders') base.push(it?.path, it?.kind, it?.parentId);
+      else if (kind === 'automation_agents') base.push(it?.machineName, it?.os, it?.version, it?.playwrightVersion);
+      else if (kind === 'recordings') base.push(it?.appUrl, it?.browser, it?.environment, it?.script);
+      else if (kind === 'jobs') base.push(it?.recordingId, it?.agentId, it?.scheduleId, it?.trigger, JSON.stringify(it?.summary || {}), it?.error);
+      else if (kind === 'schedules') base.push(it?.recordingId, it?.agentId, it?.kind, it?.cron, it?.timezone, String(it?.enabled));
+      else if (kind === 'automation_artifacts') base.push(it?.jobId, it?.kind, it?.filename, it?.size);
       return base.filter(Boolean).map((f) => String(f)).join(' \n ').toLowerCase();
     };
     if (q) items = items.filter((it) => hay(it).includes(q));
@@ -166,6 +208,32 @@ export const queryWorkspaceTool: AgentTool = {
         stepsToReproduce: stepsToText(it?.stepsToReproduce).slice(0, 1500),
         expected: it?.expected, actual: it?.actual, linkedCaseId: it?.linkedCaseId, linkedRunId: it?.linkedRunId,
       });
+      else if (kind === 'folders') Object.assign(row, {
+        path: it?.path, kind: it?.kind, parentId: it?.parentId, description: it?.description || '',
+      });
+      else if (kind === 'automation_agents') Object.assign(row, {
+        machineName: it?.machineName, os: it?.os, version: it?.version,
+        playwrightVersion: it?.playwrightVersion, lastHeartbeatAt: it?.lastHeartbeatAt,
+      });
+      else if (kind === 'recordings') Object.assign(row, {
+        agentId: it?.agentId, appUrl: it?.appUrl, browser: it?.browser, environment: it?.environment,
+        script: it?.script ? String(it.script).slice(0, q ? 8000 : 1200) : '',
+        startedAt: it?.startedAt, completedAt: it?.completedAt,
+      });
+      else if (kind === 'jobs') Object.assign(row, {
+        recordingId: it?.recordingId, agentId: it?.agentId, scheduleId: it?.scheduleId,
+        trigger: it?.trigger, queuedAt: it?.queuedAt, startedAt: it?.startedAt,
+        finishedAt: it?.finishedAt, exitCode: it?.exitCode, summary: it?.summary, error: it?.error,
+      });
+      else if (kind === 'schedules') Object.assign(row, {
+        recordingId: it?.recordingId, agentId: it?.agentId, kind: it?.kind,
+        cron: it?.cron, timezone: it?.timezone, enabled: it?.enabled,
+        nextRunAt: it?.nextRunAt, lastRunAt: it?.lastRunAt,
+      });
+      else if (kind === 'automation_artifacts') Object.assign(row, {
+        jobId: it?.jobId, kind: it?.kind, filename: it?.filename, size: it?.size,
+      });
+      else if (kind === 'settings') Object.assign(row, { configured: true });
       else Object.assign(row, { description: it?.description || '', suiteId: it?.suiteId });
       return row;
     });
@@ -420,6 +488,13 @@ const KIND_MATCHERS: Array<{ coll: Lister; re: RegExp; label: string }> = [
   { coll: Defects as any, re: /\b(defects?|bugs?|issues?)\b/, label: 'defects' },
   { coll: Requirements as any, re: /\brequirements?\b/, label: 'requirements' },
   { coll: Reports as any, re: /\breports?\b/, label: 'reports' },
+  { coll: Folders as any, re: /\bfolders?\b/, label: 'folders' },
+  { coll: Agents as any, re: /\b(?:(?:automation|local)\s+)?agents?\b/, label: 'automation agents' },
+  { coll: Recordings as any, re: /\brecordings?\b/, label: 'recordings' },
+  { coll: AutomationJobs as any, re: /\b(?:automation\s+)?jobs?\b/, label: 'automation jobs' },
+  { coll: AutomationSchedules as any, re: /\b(?:automation\s+)?schedules?\b/, label: 'automation schedules' },
+  { coll: scopedAutomationArtifacts, re: /\b(?:(?:uploaded\s+)(?:automation\s+)?|automation\s+)artifacts?\b/, label: 'uploaded automation artifacts' },
+  { coll: safeSettings, re: /\bsettings?\b/, label: 'settings' },
 ];
 
 export interface WorkspaceScope { userId?: string; projectId?: string; appId?: string | null; }
@@ -455,10 +530,11 @@ export async function quickWorkspaceAnswer(
   // token remains, the message carries a qualifier/predicate (a value, a filter, a "which/that/why") and is a
   // real question that must be answered from live DB detail. Defer it to the agent, which reads full artifact
   // content via query_workspace. This replaces an ever-growing keyword blocklist with one structural gate.
-  const residue = t
+  const countText = /\bsettings?\b/.test(t) ? t.replace(/\bconfigured\b/g, ' ') : t;
+  const residue = countText
     .replace(/[^a-z0-9 ]+/g, ' ')
-    .replace(/\b(how many|how much|number of|total|counts?|list|show|me|what|whats|are|there|which|do|does|did|i|have|has|the|all|any|my|our|of|in|currently|is|please|so far|now|workspace|test|tests)\b/g, ' ')
-    .replace(/\b(cases?|suites?|plans?|runs?|executions?|scripts?|playwright|defects?|bugs?|issues?|requirements?|reports?)\b/g, ' ')
+    .replace(/\b(how many|how much|number of|total|counts?|list|show|me|what|whats|are|there|which|do|does|did|i|have|has|the|all|any|my|our|of|in|currently|is|please|so far|now|workspace|test|tests|automation|local|uploaded|them|items|data|overall|everything|each|kind)\b/g, ' ')
+    .replace(/\b(cases?|suites?|plans?|runs?|executions?|scripts?|playwright|defects?|bugs?|issues?|requirements?|reports?|folders?|agents?|recordings?|jobs?|schedules?|artifacts?|settings?)\b/g, ' ')
     .replace(/\s+/g, ' ').trim();
   if (residue) return null;
 

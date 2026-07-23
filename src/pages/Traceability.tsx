@@ -24,11 +24,9 @@ function ReqSection({ title, children }: { title: string; children: any }) {
 }
 function RequirementContent({ req }: { req: any }) {
   const rules = req?.businessRules || req?.business_rules || [];
-  const admin = req?.adminBehavior || req?.admin_behavior || '';
-  const keystone = req?.keystoneBehavior || req?.keystone_behavior || '';
   const dataNotes = req?.dataPopulationNotes || req?.data_population_notes || '';
   const desc = req?.description || '';
-  const hasStructured = (Array.isArray(rules) && rules.length > 0) || admin || keystone || dataNotes;
+  const hasStructured = (Array.isArray(rules) && rules.length > 0) || dataNotes;
   if (!hasStructured) return null;
   return (
     <div className="mb-3 rounded-md border border-[var(--border)] bg-[var(--bg-card)]/50 p-3">
@@ -36,8 +34,6 @@ function RequirementContent({ req }: { req: any }) {
       {Array.isArray(rules) && rules.length > 0 && (
         <ReqSection title="Business Rules"><ul className="list-disc space-y-0.5 pl-4">{rules.map((r: string, i: number) => <li key={i}>{r}</li>)}</ul></ReqSection>
       )}
-      {admin && <ReqSection title="Admin Behavior"><span className="whitespace-pre-wrap">{admin}</span></ReqSection>}
-      {keystone && <ReqSection title="Keystone Behavior"><span className="whitespace-pre-wrap">{keystone}</span></ReqSection>}
       {dataNotes && <ReqSection title="Data Population"><span className="whitespace-pre-wrap">{dataNotes}</span></ReqSection>}
     </div>
   );
@@ -265,7 +261,7 @@ export default function Traceability() {
                 {isOpen && (
                   <div className="bg-[var(--bg-secondary)]/40 px-4 pb-4 pt-1">
                     <RequirementContent req={detail || req} />
-                    {req.description && !(detail || req).businessRules?.length && !(detail || req).adminBehavior && !(detail || req).keystoneBehavior && (
+                    {req.description && !(detail || req).businessRules?.length && !(detail || req).dataPopulationNotes && (
                       <p className="mb-2 whitespace-pre-wrap text-xs text-[var(--text-muted)]">{req.description}</p>
                     )}
                     {!detail && <div className="py-3 text-xs text-[var(--text-muted)]">Loading linked cases…</div>}

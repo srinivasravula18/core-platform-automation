@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, CheckCircle, Filter, Folder, MoreHorizontal, PlayCircle, Search, SlidersHorizontal, Sparkles, Trash2 } from 'lucide-react';
+import { ArrowLeft, CheckCircle, Filter, Folder, PlayCircle, Search, SlidersHorizontal, Sparkles, Trash2 } from 'lucide-react';
 import ExportMenu from '../components/ExportMenu';
 import { useAiSearch } from '@/src/lib/useAiSearch';
 import { useBulkDelete } from '@/src/lib/useBulkDelete';
@@ -12,7 +12,8 @@ import { FolderBadge } from '@/src/components/FolderBadge';
 import { AutomationRunArtifacts } from '@/src/components/AutomationRunArtifacts';
 import { TagEditor } from '@/src/components/TagEditor';
 import { showAlert } from '@/src/lib/dialog';
-import { caseBelongsToSuite, caseSuiteIds, suitePlanIds } from '@/src/lib/suiteCaseSelection';
+import { caseSuiteIds } from '@/src/lib/suiteCaseSelection';
+import { casesForPlan, casesForRun, executionRunUpdate, manualRunSelection, scriptsForRun } from '@/src/lib/manualTestRun';
 
 function getRunStats(run: any) {
   const steps = Array.isArray(run?.steps) ? run.steps : [];
@@ -72,6 +73,8 @@ export default function TestRuns() {
   const [runCaseSearch, setRunCaseSearch] = useState('');
   const [expandedRunFolders, setExpandedRunFolders] = useState<Set<string>>(new Set());
   const [plans, setPlans] = useState<any[]>([]);
+  const [scripts, setScripts] = useState<any[]>([]);
+  const [isExecutingRun, setIsExecutingRun] = useState(false);
   const tagOptions = useMemo(() => Array.from(new Set<string>(cases
     .flatMap((testCase) => Array.isArray(testCase.tags) ? testCase.tags : [])
     .map((tag: any) => String(tag).trim())
@@ -85,13 +88,15 @@ export default function TestRuns() {
       fetch('/api/suites').then((r) => r.json()),
       fetch('/api/folders').then((r) => r.json()),
       fetch('/api/plans').then((r) => r.json()),
+      fetch('/api/scripts').then((r) => r.json()),
     ])
-      .then(([runData, caseData, suiteData, folderData, planData]) => {
+      .then(([runData, caseData, suiteData, folderData, planData, scriptData]) => {
         setRuns(Array.isArray(runData) ? runData : []);
         setCases(Array.isArray(caseData) ? caseData : []);
         setSuites(Array.isArray(suiteData) ? suiteData : []);
         setFolders(Array.isArray(folderData) ? folderData : []);
         setPlans(Array.isArray(planData) ? planData : []);
+        setScripts(Array.isArray(scriptData) ? scriptData : []);
         setLoading(false);
       })
       .catch((error) => {
@@ -144,27 +149,7 @@ export default function TestRuns() {
     });
   }, [activeRuns, closedRuns, runView, searchTerm, selectedView, aiSearch.matchedIds, aiSearch]);
 
-  const selectedRunCases = useMemo(() => {
-    if (!selectedRun) return [];
-    if (Array.isArray(selectedRun.caseIds) && selectedRun.caseIds.length) {
-      const selectedCaseIds = new Set(selectedRun.caseIds);
-      return cases.filter((testCase) => selectedCaseIds.has(testCase.id));
-    }
-    if (Array.isArray(selectedRun.suiteIds) && selectedRun.suiteIds.length) {
-      const selectedSuiteIds = new Set(selectedRun.suiteIds);
-      return cases.filter((testCase) => caseSuiteIds(testCase).some((id) => selectedSuiteIds.has(id)));
-    }
-    if (Array.isArray(selectedRun.planIds) && selectedRun.planIds.length) {
-      const selectedPlanIds = new Set(selectedRun.planIds);
-      const selectedSuiteIds = new Set(suites.filter((item) => suitePlanIds(item).some((id) => selectedPlanIds.has(id))).map((item) => item.id));
-      return cases.filter((testCase) => selectedPlanIds.has(testCase.testPlanId) || caseSuiteIds(testCase).some((id) => selectedSuiteIds.has(id)));
-    }
-    const suite = suites.find((item) => item.name === selectedRun.suiteName || item.id === selectedRun.suiteId);
-    const suiteCases = suite ? cases.filter((testCase) => caseBelongsToSuite(testCase, suite.id)) : [];
-    if (suiteCases.length) return suiteCases;
-    if (selectedRun.agentRunId) return cases.filter((testCase) => testCase.agentRunId === selectedRun.agentRunId);
-    return [];
-  }, [cases, selectedRun, suites]);
+  const selectedRunCases = useMemo(() => selectedRun ? casesForRun(selectedRun, cases, suites) : [], [cases, selectedRun, suites]);
 
   const visibleRunCases = useMemo(() => {
     const query = caseSearchTerm.toLowerCase();
@@ -184,6 +169,7 @@ export default function TestRuns() {
     });
     return Array.from(groups.entries());
   }, [selectedRunCases, suites]);
+  const selectedRunScripts = useMemo(() => selectedRun ? scriptsForRun(selectedRun, selectedRunCases, scripts) : [], [selectedRun, selectedRunCases, scripts]);
 
   const openNewModal = () => {
     setNewRunName('');
@@ -203,10 +189,10 @@ export default function TestRuns() {
     setIsRunModalOpen(true);
   };
 
-  const handleSaveRun = () => {
+  const handleSaveRun = async () => {
     if (!newRunName.trim()) return;
     if (!newRunFolderId) { void showAlert('Select a folder or create one first.'); return; }
-    const caseIds = Array.from(newRunCaseIds);
+    const caseIds = [...newRunCaseIds] as string[];
     const shared = {
       name: newRunName,
       testPlanId: newRunPlanId,
@@ -222,23 +208,68 @@ export default function TestRuns() {
     const useSelection = caseIds.length > 0 || !!newRunPlanId;
     const url = useSelection ? '/api/runs/from-selection' : '/api/runs';
     const body = useSelection
-      ? { ...shared, caseIds, planIds: newRunPlanId ? [newRunPlanId] : [] }
+      ? { ...shared, ...manualRunSelection(newRunPlanId, caseIds) }
       : { ...shared, testCaseId: newRunCaseId };
-    fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
-      .then((r) => r.json())
-      .then((rsp) => {
-        setIsRunModalOpen(false);
-        fetchData();
-        if (rsp.run?.id) navigate(`/runs/${rsp.run.id}`);
-      })
-      .catch(console.error);
+    try {
+      const response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      const rsp = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(rsp.error || 'Failed to create manual run.');
+      setIsRunModalOpen(false);
+      fetchData();
+      if (rsp.run?.id) navigate(`/runs/${rsp.run.id}`);
+    } catch (error: any) {
+      void showAlert(error.message || 'Failed to create manual run.');
+    }
+  };
+
+  const handleExecuteRuns = async (runsToExecute: any[]) => {
+    if (!runsToExecute.length || isExecutingRun) return;
+    setIsExecutingRun(true);
+    const errors: string[] = [];
+    for (const run of runsToExecute) {
+      const runCases = casesForRun(run, cases, suites);
+      const runScripts = scriptsForRun(run, runCases, scripts);
+      if (!runScripts.length) {
+        errors.push(`${run.name}: no linked Playwright scripts`);
+        continue;
+      }
+      setRuns((current) => current.map((item) => item.id === run.id ? { ...item, status: 'Running', state: 'In Progress' } : item));
+      try {
+        const response = await fetch('/api/playwright/run', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            scripts: runScripts.map(({ filename, title, code }) => ({ filename, title, code })),
+            baseUrl: run.targetUrl || runScripts.find((script) => script.targetUrl)?.targetUrl || '',
+            runId: run.sourceRunId || run.agentRunId || runScripts[0]?.agentRunId || run.id,
+            screenshotMode: 'on',
+          }),
+        });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(result.error || 'Failed to run Playwright scripts.');
+        const updateResponse = await fetch(`/api/runs/${run.id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(executionRunUpdate(result)),
+        });
+        if (!updateResponse.ok) throw new Error((await updateResponse.json().catch(() => ({}))).error || 'Results could not be saved.');
+      } catch (error: any) {
+        errors.push(`${run.name}: ${error.message || 'execution failed'}`);
+      }
+    }
+    try {
+      await refreshRunsQuiet();
+    } finally {
+      setIsExecutingRun(false);
+    }
+    if (errors.length) void showAlert(errors.join('\n'));
   };
 
   // Cases grouped by folder for the create-run picker (#3 — pick from the file-system/folder tree).
   const runCasesByFolder = useMemo(() => {
     const q = runCaseSearch.trim().toLowerCase();
     const groups = new Map<string, { folderId: string; name: string; cases: any[] }>();
-    for (const c of cases) {
+    for (const c of casesForPlan(cases, suites, newRunPlanId)) {
       if (q && !`${c.id} ${c.title || ''}`.toLowerCase().includes(q)) continue;
       const fid = c.folderId || '';
       const fname = folders.find((f) => f.id === fid)?.path || folders.find((f) => f.id === fid)?.name || 'Uncategorized';
@@ -246,7 +277,7 @@ export default function TestRuns() {
       groups.get(fid)!.cases.push(c);
     }
     return Array.from(groups.values()).sort((a, b) => a.name.localeCompare(b.name));
-  }, [cases, folders, runCaseSearch]);
+  }, [cases, suites, folders, newRunPlanId, runCaseSearch]);
   const toggleRunCase = (id: string) => setNewRunCaseIds((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
   const toggleRunFolder = (group: { cases: any[] }) => setNewRunCaseIds((prev) => {
     const n = new Set(prev); const allIn = group.cases.every((c) => n.has(c.id));
@@ -290,6 +321,14 @@ export default function TestRuns() {
                   {Array.isArray(selectedRun.tags) && selectedRun.tags.map((t: string) => <span key={t} className="rounded bg-[var(--bg-secondary)] px-2 py-0.5 text-xs">{t}</span>)}
                 </div>
               </div>
+              <button
+                onClick={() => handleExecuteRuns([selectedRun])}
+                disabled={isExecutingRun || selectedRunScripts.length === 0}
+                title={selectedRunScripts.length ? 'Execute linked Playwright scripts' : 'No Playwright scripts are linked to these cases'}
+                className="inline-flex items-center gap-2 rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <PlayCircle className="h-4 w-4" /> {isExecutingRun ? 'Running…' : 'Run scripts'}
+              </button>
             </div>
           </div>
 
@@ -474,7 +513,7 @@ export default function TestRuns() {
           {/* #4 — map the run to an existing Test Plan (not a free-text suite). */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <label className="block text-xs font-medium text-[var(--text-muted)]">Test Plan
-              <select value={newRunPlanId} onChange={(e) => setNewRunPlanId(e.target.value)} className="mt-1 w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm text-[var(--text-primary)]">
+              <select value={newRunPlanId} onChange={(e) => { setNewRunPlanId(e.target.value); setNewRunCaseIds(new Set()); }} className="mt-1 w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm text-[var(--text-primary)]">
                 <option value="">No plan</option>
                 {plans.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
               </select>
@@ -571,9 +610,16 @@ export default function TestRuns() {
             </div>
             <button onClick={() => setIsViewMenuOpen(!isViewMenuOpen)} title="Open run view filters" className="p-2 rounded-md border border-[var(--border)]"><Filter className="w-4 h-4" /></button>
             {bulk.selectedCount > 0 && (
-              <button onClick={bulk.deleteSelected} disabled={bulk.busy} className="flex items-center gap-1.5 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
-                <Trash2 className="w-4 h-4" /> Delete selected ({bulk.selectedCount})
-              </button>
+              <>
+                {bulk.selectedCount > 1 && (
+                  <button onClick={() => handleExecuteRuns(runs.filter((run) => bulk.selectedIds.has(run.id)))} disabled={isExecutingRun} className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
+                    <PlayCircle className="w-4 h-4" /> {isExecutingRun ? 'Running…' : `Run selected (${bulk.selectedCount})`}
+                  </button>
+                )}
+                <button onClick={bulk.deleteSelected} disabled={bulk.busy} className="flex items-center gap-1.5 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
+                  <Trash2 className="w-4 h-4" /> Delete selected ({bulk.selectedCount})
+                </button>
+              </>
             )}
           </div>
         </div>
@@ -586,13 +632,13 @@ export default function TestRuns() {
                   <input type="checkbox" checked={bulk.allSelected(filteredRuns.map((run) => run.id))} onChange={() => bulk.toggleAll(filteredRuns.map((run) => run.id))} />
                 </th>
                 <th className="px-4 py-3 w-10"></th>
-                <th className="w-72 px-4 py-3 font-medium">Run</th>
+                <th className="w-80 px-4 py-3 font-medium">Run</th>
                 <th className="w-60 px-4 py-3 font-medium">Folder</th>
                 <th className="w-28 px-4 py-3 font-medium">Tests</th>
                 <th className="w-28 px-4 py-3 font-medium">Duration</th>
                 <th className="w-56 px-4 py-3 font-medium">Tests Status</th>
                 <th className="w-40 px-4 py-3 font-medium">Failure Analysis</th>
-                <th className="px-4 py-3 w-12"></th>
+                <th className="w-12 px-4 py-3"></th>
               </tr>
             </thead>
             <tbody className="divide-y divide-[var(--border)]">
@@ -602,6 +648,7 @@ export default function TestRuns() {
                 <tr><td colSpan={9} className="px-4 py-8 text-center text-[var(--text-muted)]">No test runs found.</td></tr>
               ) : filteredRuns.map((run) => {
                 const stats = getRunStats(run);
+                const hasScripts = scriptsForRun(run, casesForRun(run, cases, suites), scripts).length > 0;
                 return (
                   <tr key={run.id} onClick={() => navigate(`/runs/${run.id}`)} className="hover:bg-[var(--bg-secondary)] cursor-pointer">
                     <td className="px-4 py-4" onClick={(e) => e.stopPropagation()}>
@@ -609,8 +656,20 @@ export default function TestRuns() {
                     </td>
                     <td className="px-4 py-4"><CheckCircle className="w-8 h-8 text-[var(--accent)]" /></td>
                     <td className="min-w-0 px-4 py-4">
-                      <div className="truncate font-semibold" title={run.name}>{run.name}</div>
+                      <div className="flex items-center gap-3">
+                        <div className="min-w-0 flex-1">
+                          <div className="truncate font-semibold" title={run.name}>{run.name}</div>
                       <div className="truncate text-xs text-[var(--text-muted)]">Assigned to {run.assignedTo || run.requestedBy || 'Unassigned'}{run.state ? ` · ${run.state}` : ''}</div>
+                        </div>
+                        <button
+                          onClick={(event) => { event.stopPropagation(); void handleExecuteRuns([run]); }}
+                          disabled={isExecutingRun || !hasScripts}
+                          title={hasScripts ? 'Run linked Playwright scripts' : 'No Playwright scripts are linked to this run'}
+                          className="inline-flex shrink-0 items-center gap-1 rounded-md bg-emerald-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          <PlayCircle className="h-3.5 w-3.5" /> Run
+                        </button>
+                      </div>
                     </td>
                     <td className="overflow-hidden px-4 py-4">
                       <FolderBadge folders={folders} folderId={run.folderId} />
@@ -628,9 +687,6 @@ export default function TestRuns() {
                     <td className="px-4 py-4 text-[var(--text-muted)]">{stats.failed ? `${stats.failed} failed` : '-'}</td>
                     <td className="px-4 py-4">
                       <div className="flex items-center gap-1">
-                        <button onClick={(event) => { event.stopPropagation(); navigate(`/runs/${run.id}`); }} title="Open run details">
-                          <MoreHorizontal className="w-4 h-4 text-[var(--text-muted)]" />
-                        </button>
                         <button onClick={(e) => { e.stopPropagation(); bulk.deleteOne(run.id); }} title="Delete" className="p-1 rounded hover:bg-red-500/10 text-[var(--text-muted)] hover:text-red-500 transition-colors">
                           <Trash2 className="w-4 h-4" />
                         </button>

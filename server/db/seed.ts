@@ -351,8 +351,6 @@ export async function runSeedIfEmpty(): Promise<{ seeded: boolean; reason?: stri
       'Access is default-deny until a session is established.',
     ],
     dataPopulationNotes: 'Test users are seeded by the service module admin seeders (seed-test-users) before sign-in flows can be exercised.',
-    adminBehavior: 'Admins manage users, roles, and groups that gate downstream access.',
-    keystoneBehavior: 'Keystone (end-user app) presents the sign-in form and the post-login landing page.',
     metadataRefs: [{ object: 'user', note: 'User identity is part of the access-control source of truth.' }],
     sourceFiles: [
       { path: 'apps/service/src/auth', why: 'Authentication routes and session handling.' },

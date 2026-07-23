@@ -98,6 +98,22 @@ export function registerAgentRuntimeRoutes(app: Express) {
         ctx,
       );
 
+      // Read-only workspace count/list requests win over a model action label.
+      // The helper returns null before touching storage for non-workspace messages.
+      const quickWorkspace = await quickWorkspaceAnswer(message, {
+        userId: scope.userId,
+        projectId: scope.projectId,
+        appId: scope.appId,
+      });
+      if (quickWorkspace) {
+        return res.json({
+          kind: 'answer',
+          reply: quickWorkspace,
+          route: { ...route, kind: 'answer', reason: 'read-only workspace query' },
+          source: 'workspace',
+        });
+      }
+
 
       // Option A: an explicit request to GENERATE/CREATE/WRITE test cases for a feature is an
       // ACTION — it must run the deep pipeline (which previews the coverage areas, then generates
@@ -157,16 +173,6 @@ export function registerAgentRuntimeRoutes(app: Express) {
 
       switch (route.kind) {
         case 'answer': {
-          // FAST PATH: questions about the user's OWN QA artifacts (counts/lists of test cases,
-          // suites, plans, runs, …) answer instantly from workspace data.
-          const quick = await quickWorkspaceAnswer(message, {
-            userId: scope.userId,
-            projectId: scope.projectId,
-            appId: scope.appId,
-          });
-          if (quick) {
-            return res.json({ kind: 'answer', reply: quick, route, source: 'workspace' });
-          }
           // Do NOT block this routing call on the deep code answer: the adaptive exploration can
           // run for minutes (especially for broad questions) and would time the request out — the
           // bug behind "Sorry, I could not process that request". Return the 'answer' decision with

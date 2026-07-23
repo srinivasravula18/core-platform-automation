@@ -11,8 +11,6 @@ import {
   ArrowRight,
   FileCode2,
   Database,
-  Settings2,
-  Users,
   ScrollText,
   TestTube2,
   Plug,
@@ -103,20 +101,8 @@ export function RequirementDiscoveryResult({ result, onGenerateTests }: { result
         </div>
       )}
 
-      {/* Admin vs Keystone vs data population */}
-      <div className="mb-3 grid grid-cols-1 gap-2 sm:grid-cols-3">
-        {understanding?.adminBehavior && (
-          <div className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] p-2">
-            <div className="mb-1 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]"><Settings2 className="h-3.5 w-3.5" /> Admin</div>
-            <p className="text-[11px] text-[var(--text-primary)]">{understanding.adminBehavior}</p>
-          </div>
-        )}
-        {understanding?.keystoneBehavior && (
-          <div className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] p-2">
-            <div className="mb-1 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]"><Users className="h-3.5 w-3.5" /> Keystone</div>
-            <p className="text-[11px] text-[var(--text-primary)]">{understanding.keystoneBehavior}</p>
-          </div>
-        )}
+      {/* Data population */}
+      <div className="mb-3">
         {understanding?.dataPopulationNotes && (
           <div className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] p-2">
             <div className="mb-1 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]"><Database className="h-3.5 w-3.5" /> Data population</div>
@@ -451,8 +437,6 @@ export function RequirementDiscoveryResult({ result, onGenerateTests }: { result
                 lines.push('Business rules:');
                 (understanding.businessRules as string[]).forEach((r) => lines.push(`  - ${r}`));
               }
-              if (understanding.adminBehavior) lines.push(`Admin surface: ${understanding.adminBehavior}`);
-              if (understanding.keystoneBehavior) lines.push(`End-user surface: ${understanding.keystoneBehavior}`);
               if ((understanding.metadataRefs || []).length) {
                 lines.push('Metadata objects: ' + (understanding.metadataRefs as any[])
                   .map((m) => typeof m === 'string' ? m : (m.object || m.name || m.api_name || m.apiName || ''))

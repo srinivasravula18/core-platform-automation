@@ -3,9 +3,7 @@ import {
   Database,
   FileCode2,
   ScrollText,
-  Settings2,
   Trash2,
-  Users,
 } from 'lucide-react';
 import { cn } from '@/src/lib/utils';
 
@@ -86,23 +84,7 @@ export function RequirementDraftReview({
           </div>
         )}
 
-        <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
-          {requirement.adminBehavior && (
-            <div className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] p-2">
-              <div className="mb-1 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
-                <Settings2 className="h-3.5 w-3.5" /> Admin
-              </div>
-              <p className="text-[11px] leading-relaxed text-[var(--text-primary)]">{requirement.adminBehavior}</p>
-            </div>
-          )}
-          {requirement.keystoneBehavior && (
-            <div className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] p-2">
-              <div className="mb-1 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
-                <Users className="h-3.5 w-3.5" /> Keystone
-              </div>
-              <p className="text-[11px] leading-relaxed text-[var(--text-primary)]">{requirement.keystoneBehavior}</p>
-            </div>
-          )}
+        <div>
           {requirement.dataPopulationNotes && (
             <div className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] p-2">
               <div className="mb-1 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">

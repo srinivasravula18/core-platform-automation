@@ -41,7 +41,7 @@ export default function Requirements() {
   const [discoverMessage, setDiscoverMessage] = useState('');
   const [selected, setSelected] = useState<any | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
-  const [form, setForm] = useState({ title: '', description: '', status: 'Draft', businessRules: '', dataPopulationNotes: '', adminBehavior: '', keystoneBehavior: '' });
+  const [form, setForm] = useState({ title: '', description: '', status: 'Draft', businessRules: '', dataPopulationNotes: '' });
   const navigate = useNavigate();
 
   const inputClass = 'w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]';
@@ -92,8 +92,6 @@ export default function Requirements() {
         status: data.status || 'Draft',
         businessRules: Array.isArray(data.businessRules) ? data.businessRules.join('\n') : '',
         dataPopulationNotes: data.dataPopulationNotes || '',
-        adminBehavior: data.adminBehavior || '',
-        keystoneBehavior: data.keystoneBehavior || '',
       });
       setIsModalOpen(true);
     } catch {
@@ -153,8 +151,6 @@ export default function Requirements() {
               { key: 'description', label: 'Description' },
               { key: 'businessRules', label: 'Business Rules' },
               { key: 'dataPopulationNotes', label: 'Data Population Notes' },
-              { key: 'adminBehavior', label: 'Admin Behavior' },
-              { key: 'keystoneBehavior', label: 'Keystone Behavior' },
             ]}
           />
           <button
@@ -300,16 +296,6 @@ export default function Requirements() {
           <div>
             <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Business rules (one per line)</label>
             <textarea value={form.businessRules} onChange={(e) => setForm({ ...form, businessRules: e.target.value })} className={`${inputClass} h-28 resize-y font-mono text-xs`} />
-          </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div>
-              <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Admin behavior</label>
-              <textarea value={form.adminBehavior} onChange={(e) => setForm({ ...form, adminBehavior: e.target.value })} className={`${inputClass} h-20 resize-y`} />
-            </div>
-            <div>
-              <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Keystone behavior</label>
-              <textarea value={form.keystoneBehavior} onChange={(e) => setForm({ ...form, keystoneBehavior: e.target.value })} className={`${inputClass} h-20 resize-y`} />
-            </div>
           </div>
           <div>
             <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Background data population</label>

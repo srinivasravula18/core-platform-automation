@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Loader2, History, RotateCcw, Check, Pin, X } from 'lucide-react';
 import { Modal } from '@/src/components/Modal';
 import { showToast, showConfirm } from '@/src/lib/dialog';
+import { diffCaseRevisions, type RevisionDiffValue } from '@/src/lib/caseRevisionDiff';
 
 /**
  * Test Case Versioning — revision history viewer (Phase A2).
@@ -15,6 +16,7 @@ import { showToast, showConfirm } from '@/src/lib/dialog';
 interface Revision {
   revisionId: string;
   revisionNo: number;
+  parentRevision?: string | null;
   changeKind: string;
   changeSummary?: string | null;
   author?: string | null;
@@ -38,6 +40,18 @@ function when(iso?: string): string {
   if (!iso) return '';
   const d = new Date(iso);
   return Number.isNaN(d.getTime()) ? '' : d.toLocaleString();
+}
+
+function DiffValue({ value, emptyLabel }: { value: RevisionDiffValue | null; emptyLabel: string }) {
+  if (!value) return <span className="italic text-[var(--text-muted)]">{emptyLabel}</span>;
+  return (
+    <div className="space-y-1">
+      <p className="whitespace-pre-wrap break-words">{value.value || '(empty)'}</p>
+      {value.expected !== undefined && (
+        <p className="whitespace-pre-wrap break-words text-[var(--text-muted)]"><span className="font-semibold">Expected:</span> {value.expected || '(empty)'}</p>
+      )}
+    </div>
+  );
 }
 
 export default function CaseHistoryModal({ caseId, isOpen, onClose, onRolledBack }: {
@@ -75,6 +89,12 @@ export default function CaseHistoryModal({ caseId, isOpen, onClose, onRolledBack
   }, [isOpen, caseId]);
 
   const selected = revisions.find((r) => r.revisionId === selectedId) || null;
+  const previous = selected
+    ? revisions.find((r) => r.revisionId === selected.parentRevision)
+      || revisions.find((r) => r.revisionNo === selected.revisionNo - 1)
+      || null
+    : null;
+  const differences = selected && previous ? diffCaseRevisions(previous, selected) : [];
   const planName = (id: string) => plans.find((p) => p.id === id)?.name || id;
 
   const pinSelected = async () => {
@@ -166,6 +186,48 @@ export default function CaseHistoryModal({ caseId, isOpen, onClose, onRolledBack
                   )}
                 </div>
                 {selected.description && <p className="text-xs text-[var(--text-muted)]">{selected.description}</p>}
+
+                <div className="overflow-hidden rounded-lg border border-[var(--border)]">
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2">
+                    <div>
+                      <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">Exact changes</div>
+                      <div className="text-xs text-[var(--text-primary)]">
+                        {previous ? `Revision ${previous.revisionNo} → Revision ${selected.revisionNo}` : `Revision ${selected.revisionNo} is the initial snapshot`}
+                      </div>
+                    </div>
+                    {previous && <span className="rounded-full border border-[var(--border)] px-2 py-0.5 text-[10px] font-medium text-[var(--text-muted)]">{differences.length} change{differences.length === 1 ? '' : 's'}</span>}
+                  </div>
+                  {!previous ? (
+                    <p className="p-3 text-xs text-[var(--text-muted)]">There is no earlier revision to compare.</p>
+                  ) : differences.length === 0 ? (
+                    <p className="p-3 text-xs text-[var(--text-muted)]">No versioned content differences were detected.</p>
+                  ) : (
+                    <div className="max-h-72 divide-y divide-[var(--border)] overflow-y-auto">
+                      {differences.map((difference) => (
+                        <div key={`${difference.type}-${difference.label}`} className="p-3">
+                          <div className="mb-2 flex items-center gap-2">
+                            <span className="text-xs font-semibold text-[var(--text-primary)]">{difference.label}</span>
+                            <span className={`rounded px-1.5 py-0.5 text-[9px] font-semibold uppercase ${
+                              difference.status === 'added' ? 'bg-emerald-500/10 text-emerald-400'
+                                : difference.status === 'removed' ? 'bg-red-500/10 text-red-400'
+                                  : 'bg-amber-500/10 text-amber-400'
+                            }`}>{difference.status}</span>
+                          </div>
+                          <div className="grid gap-2 sm:grid-cols-2">
+                            <div className="min-w-0 rounded-md border border-red-500/20 bg-red-500/5 p-2 text-xs text-[var(--text-primary)]">
+                              <div className="mb-1 text-[9px] font-semibold uppercase tracking-wider text-red-400">Before</div>
+                              <DiffValue value={difference.before} emptyLabel="Not present" />
+                            </div>
+                            <div className="min-w-0 rounded-md border border-emerald-500/20 bg-emerald-500/5 p-2 text-xs text-[var(--text-primary)]">
+                              <div className="mb-1 text-[9px] font-semibold uppercase tracking-wider text-emerald-400">After</div>
+                              <DiffValue value={difference.after} emptyLabel="Removed" />
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
 
                 {/* Release pinning: freeze this revision into a release (plan). */}
                 <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] p-3">

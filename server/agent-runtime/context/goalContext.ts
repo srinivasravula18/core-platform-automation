@@ -92,7 +92,14 @@ export function deriveUnderstandingFromChat(chatHistory: any): string {
 export function resolveUnderstanding(run: any): string {
   return (run?.approvedUnderstanding || '').trim()
     || String(run?.conversationMemory || run?.conversation_memory || '').trim()
-    || deriveUnderstandingFromChat(run?.chat_history);
+    || deriveUnderstandingFromChat(run?.chat_history)
+    || [...(Array.isArray(run?.messages) ? run.messages : [])]
+      .reverse()
+      .map((message: any) => String(message?.output || '').trim())
+      .find((output: string) => /^Approved understanding\s*:/i.test(output))
+      ?.replace(/^Approved understanding\s*:\s*/i, '')
+      .trim()
+    || '';
 }
 
 /**

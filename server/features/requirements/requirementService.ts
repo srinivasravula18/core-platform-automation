@@ -102,8 +102,6 @@ const featureAnalystSchema = z.object({
   description: textField(''),
   businessRules: arrayField(textField('')),
   dataPopulationNotes: textField(''),
-  adminBehavior: textField(''),
-  keystoneBehavior: textField(''),
   sharedComponents: arrayField(z.object({
     name: textField(''),
     kind: textField('component'),
@@ -241,8 +239,6 @@ function buildRequirementUiSelectors(map: SelectorMap, understanding: Partial<Fe
     understanding.title,
     understanding.description,
     ...(understanding.businessRules || []),
-    understanding.adminBehavior,
-    understanding.keystoneBehavior,
     understanding.dataPopulationNotes,
     scenarioText,
   ].filter(Boolean).join(' ');
@@ -770,7 +766,6 @@ Produce the requirement understanding as strict JSON matching the schema:
 - description: 1-3 sentences on what the feature does and why it matters.
 - businessRules: the concrete, testable rules the code enforces.
 - dataPopulationNotes: what the backend populates/seeds/syncs in the background as preconditions for this feature (only if the research shows it).
-- adminBehavior vs keystoneBehavior: if the app has distinct surfaces, put the configuration/admin-surface behavior in adminBehavior and the end-user-surface behavior in keystoneBehavior; if it has only one surface, describe it in whichever fits and leave the other empty. Do not invent a surface the code does not show.
 - sharedComponents: reusable components/modules discovered by code search. For each one, include its real source files, where it is reused, the controls/behaviors the code proves, metadata/permission gates, and the exact test focus. This is the main way downstream agents avoid searching the whole repo again.
 - metadataRefs: the EXACT metadata object api_names that are the source of truth for this feature. Each entry's "object" MUST be a verbatim api_name taken from the LIVE METADATA OBJECT CATALOG provided above — never a descriptive phrase, label, invented name, or DB-table/column name. List ONLY the 1-5 objects that are the PRIMARY source of truth for THIS specific feature — do NOT list every object that is loosely or indirectly related, and do NOT dump the catalog. Prefer fewer, highly-relevant refs. Put any table/column-level detail in businessRules or dataPopulationNotes instead. If no catalog was provided above, or none of its objects are the source of truth for this feature, leave metadataRefs empty rather than inventing entries.
 - sourceFiles: the specific files (real paths from the research/excerpts) that justify your understanding, each with a one-line reason.
@@ -787,8 +782,6 @@ Produce the requirement understanding as strict JSON matching the schema:
     description: '',
     businessRules: [],
     dataPopulationNotes: '',
-    adminBehavior: '',
-    keystoneBehavior: '',
     sharedComponents: [],
     metadataRefs: [],
     sourceFiles: files.map((f) => ({ path: f.path, why: f.area })),
@@ -1098,8 +1091,6 @@ function buildRequirementRecord(
     featureQuery: cleanQuery,
     businessRules: understanding.businessRules || [],
     dataPopulationNotes: understanding.dataPopulationNotes || '',
-    adminBehavior: understanding.adminBehavior || '',
-    keystoneBehavior: understanding.keystoneBehavior || '',
     metadataRefs: understanding.metadataRefs || [],
     uiSelectors: (understanding as any).uiSelectors || {
       ariaLabels: [],
@@ -1227,8 +1218,6 @@ export async function confirmRequirementDraft(
     featureQuery: String((incoming as any).featureQuery || ''),
     businessRules: Array.isArray((incoming as any).businessRules) ? (incoming as any).businessRules : [],
     dataPopulationNotes: String((incoming as any).dataPopulationNotes || ''),
-    adminBehavior: String((incoming as any).adminBehavior || ''),
-    keystoneBehavior: String((incoming as any).keystoneBehavior || ''),
     metadataRefs: Array.isArray((incoming as any).metadataRefs) ? (incoming as any).metadataRefs : [],
     uiSelectors: (incoming as any).uiSelectors && typeof (incoming as any).uiSelectors === 'object' ? (incoming as any).uiSelectors : {},
     sourceFiles: Array.isArray((incoming as any).sourceFiles) ? (incoming as any).sourceFiles : [],
