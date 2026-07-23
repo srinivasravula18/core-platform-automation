@@ -27,11 +27,18 @@ export function scriptsForCases(cases: any[], scripts: any[]): any[] {
       ? scripts.filter((script) => String(script.agentRunId || script.sourceRunId || '') === runId)
       : scripts;
     const script = scripts.find((item) => item.caseId === testCase.id)
-      || candidates.find((item) => [item.title, item.test_case_title].some((value) => String(value || '').trim().toLowerCase() === title))
+      || (title ? candidates.find((item) => [item.title, item.test_case_title].some((value) => String(value || '').trim().toLowerCase() === title)) : null)
       || (runId && candidates.length === 1 ? candidates[0] : null);
     if (script?.code) selected.set(script.id || script.filename || `${runId}:${title}`, script);
   }
   return [...selected.values()];
+}
+
+export function runnableCasesInFolder(cases: any[], scripts: any[], folderId: string): any[] {
+  if (!folderId) return [];
+  return cases.filter((testCase) =>
+    testCase.folderId === folderId && scriptsForCases([testCase], scripts).length > 0,
+  );
 }
 
 export function casesForRun(run: any, cases: any[], suites: any[]): any[] {
