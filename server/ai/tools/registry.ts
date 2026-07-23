@@ -53,6 +53,20 @@ const scopedAutomationArtifacts: Lister = {
     });
   },
 };
+const testSteps: Lister = {
+  async list() {
+    const cases = await Cases.list();
+    return cases.flatMap((testCase: any) => (Array.isArray(testCase.steps) ? testCase.steps : [])
+      .map((step: any, index: number) => ({
+        ...step,
+        id: step?.id || `${testCase.id}-step-${index + 1}`,
+        caseId: testCase.id,
+        ownerId: testCase.ownerId,
+        projectId: testCase.projectId,
+        appId: testCase.appId,
+      })));
+  },
+};
 const COLLECTIONS: Record<string, Lister> = {
   cases: Cases as any,
   suites: Suites as any,
@@ -480,6 +494,7 @@ export const analyzeFeatureCoverageTool: AgentTool = {
  */
 const KIND_MATCHERS: Array<{ coll: Lister; re: RegExp; label: string }> = [
   // Order matters: more specific labels first so "test runs" isn't shadowed, etc.
+  { coll: testSteps, re: /\b(?:test\s*)?steps?\b/, label: 'test steps' },
   { coll: Cases as any, re: /\b(test\s*cases?|cases?)\b/, label: 'test cases' },
   { coll: Suites as any, re: /\b(test\s*suites?|suites?)\b/, label: 'test suites' },
   { coll: Plans as any, re: /\b(test\s*plans?|plans?)\b/, label: 'test plans' },
@@ -534,7 +549,7 @@ export async function quickWorkspaceAnswer(
   const residue = countText
     .replace(/[^a-z0-9 ]+/g, ' ')
     .replace(/\b(how many|how much|number of|total|counts?|list|show|me|what|whats|are|there|which|do|does|did|i|have|has|the|all|any|my|our|of|in|currently|is|please|so far|now|workspace|test|tests|automation|local|uploaded|them|items|data|overall|everything|each|kind)\b/g, ' ')
-    .replace(/\b(cases?|suites?|plans?|runs?|executions?|scripts?|playwright|defects?|bugs?|issues?|requirements?|reports?|folders?|agents?|recordings?|jobs?|schedules?|artifacts?|settings?)\b/g, ' ')
+    .replace(/\b(steps?|cases?|suites?|plans?|runs?|executions?|scripts?|playwright|defects?|bugs?|issues?|requirements?|reports?|folders?|agents?|recordings?|jobs?|schedules?|artifacts?|settings?)\b/g, ' ')
     .replace(/\s+/g, ' ').trim();
   if (residue) return null;
 
