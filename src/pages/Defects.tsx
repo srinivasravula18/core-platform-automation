@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useState } from 'react';
-import { Search, Filter, MoreHorizontal, ShieldAlert, Camera, Sparkles, Trash2, ChevronDown, ChevronRight } from 'lucide-react';
+import { Search, Filter, Pencil, ShieldAlert, Camera, Sparkles, Trash2, ChevronDown, ChevronRight } from 'lucide-react';
 import ExportMenu from '../components/ExportMenu';
 import DefectReport, { hasRichReport } from '../components/DefectReport';
 import { useAiSearch } from '@/src/lib/useAiSearch';
@@ -309,9 +309,9 @@ export default function Defects() {
                         openEditModal(defect);
                       }}
                       title="Edit defect"
-                      className="p-1 rounded hover:bg-[var(--border)] text-[var(--text-muted)] transition-colors"
+                      className="p-1 rounded hover:bg-[var(--border)] text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors"
                     >
-                      <MoreHorizontal className="w-4 h-4" />
+                      <Pencil className="w-4 h-4" />
                     </button>
                     <button
                       onClick={(e) => {
