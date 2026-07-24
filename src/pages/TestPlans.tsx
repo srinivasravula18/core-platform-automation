@@ -71,9 +71,8 @@ export default function TestPlans() {
   const [suites, setSuites] = useState<any[]>([]);
   const [cases, setCases] = useState<any[]>([]);
   const [runs, setRuns] = useState<any[]>([]);
-  const [reports, setReports] = useState<any[]>([]);
   const [folders, setFolders] = useState<any[]>([]);
-  const [activeDetailTab, setActiveDetailTab] = useState<'suites' | 'cases' | 'sessions'>('suites');
+  const [activeDetailTab, setActiveDetailTab] = useState<'suites' | 'cases' | 'runs'>('suites');
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const aiSearch = useAiSearch('test plans');
@@ -104,14 +103,12 @@ export default function TestPlans() {
       fetch('/api/suites').then(r => r.json()),
       fetch('/api/cases').then(r => r.json()),
       fetch('/api/runs').then(r => r.json()),
-      fetch('/api/reports').then(r => r.json()),
       fetch('/api/folders').then(r => r.json()),
     ])
-      .then(([suiteData, caseData, runData, reportData, folderData]) => {
+      .then(([suiteData, caseData, runData, folderData]) => {
         setSuites(Array.isArray(suiteData) ? suiteData : []);
         setCases(Array.isArray(caseData) ? caseData : []);
         setRuns(Array.isArray(runData) ? runData : []);
-        setReports(Array.isArray(reportData) ? reportData : []);
         setFolders(Array.isArray(folderData) ? folderData : []);
       })
       .catch(console.error);
@@ -241,7 +238,6 @@ export default function TestPlans() {
   const selectedDetailPlan = plans.find((plan) => plan.id === planId) || null;
   const getPlanRuns = (plan: any) => linkedRunsForPlan(plan, runs);
   const runCountLabel = (count: number) => `Run ${count} test run${count === 1 ? '' : 's'}`;
-  const getPlanReports = (plan: any) => reports.filter((report) => report.agentRunId === plan?.agentRunId || report.planName === plan?.name);
   const tagOptions = Array.from(new Set<string>(plans.flatMap((plan) => Array.isArray(plan.tags) ? plan.tags.map(String) : []))).sort();
   const ownerOptions = Array.from(new Set<string>(plans.map((plan) => String(plan.owner || '').trim()).filter(Boolean))).sort();
   const activeFilterCount = filters.statuses.length + filters.owners.length + filters.tags.length + filters.folders.length
@@ -414,9 +410,9 @@ export default function TestPlans() {
 
           <div className="border-b border-[var(--border)] px-5 flex gap-6">
             {[
-              { id: 'suites', label: 'Linked Runs/Plans' },
-              { id: 'cases', label: 'Linked Test Cases' },
-              { id: 'sessions', label: 'Linked Sessions' },
+              { id: 'suites', label: `Linked Test Suites (${getPlanSuites(selectedDetailPlan.id).length})` },
+              { id: 'cases', label: `Linked Test Cases (${getPlanCases(selectedDetailPlan.id).length})` },
+              { id: 'runs', label: `Linked Test Runs (${getPlanRuns(selectedDetailPlan).length})` },
             ].map((tab) => (
               <button
                 key={tab.id}
@@ -498,23 +494,32 @@ export default function TestPlans() {
               </div>
             )}
 
-            {activeDetailTab === 'sessions' && (
-              <div className="space-y-4">
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                  <div className="border border-[var(--border)] rounded-lg p-4 text-center"><div className="text-2xl font-bold text-[var(--accent)]">{getPlanRuns(selectedDetailPlan).filter((run) => run.status !== 'Completed').length}</div><div className="text-sm text-[var(--text-muted)]">Active</div></div>
-                  <div className="border border-[var(--border)] rounded-lg p-4 text-center"><div className="text-2xl font-bold text-emerald-400">{getPlanRuns(selectedDetailPlan).filter((run) => run.status === 'Completed').length}</div><div className="text-sm text-[var(--text-muted)]">Closed</div></div>
-                  <div className="border border-[var(--border)] rounded-lg p-4 text-center"><div className="text-2xl font-bold">{getPlanRuns(selectedDetailPlan).length}</div><div className="text-sm text-[var(--text-muted)]">Total</div></div>
-                </div>
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                  <div className="border border-[var(--border)] rounded-lg p-4 min-h-56">
-                    <h3 className="font-semibold mb-3">Session Outcomes</h3>
-                    <p className="text-sm text-[var(--text-muted)]">{getPlanReports(selectedDetailPlan).length ? `${getPlanReports(selectedDetailPlan).length} reports linked to this plan.` : 'No data to display'}</p>
-                  </div>
-                  <div className="border border-[var(--border)] rounded-lg p-4 min-h-56">
-                    <h3 className="font-semibold mb-3">Results from Linked Sessions</h3>
-                    <p className="text-sm text-[var(--text-muted)]">{getPlanRuns(selectedDetailPlan).length ? `${getPlanRuns(selectedDetailPlan).length} runs linked to this plan.` : 'No data to display'}</p>
-                  </div>
-                </div>
+            {activeDetailTab === 'runs' && (
+              <div className="border border-[var(--border)] rounded-lg overflow-auto max-h-[60dvh]">
+                <table className="w-full text-left text-sm whitespace-nowrap">
+                  <thead className="sticky top-0 z-10 bg-[var(--bg-secondary)] text-[var(--text-muted)]">
+                    <tr>
+                      <th className="px-4 py-3 font-medium">Run ID</th>
+                      <th className="px-4 py-3 font-medium">Run Name</th>
+                      <th className="px-4 py-3 font-medium">Assigned To</th>
+                      <th className="px-4 py-3 font-medium">Status</th>
+                      <th className="px-4 py-3 font-medium">Duration</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[var(--border)]">
+                    {getPlanRuns(selectedDetailPlan).length === 0 ? (
+                      <tr><td colSpan={5} className="px-4 py-6 text-center text-[var(--text-muted)]">No test runs are linked to this plan.</td></tr>
+                    ) : getPlanRuns(selectedDetailPlan).map((run) => (
+                      <tr key={run.id} onClick={() => navigate(`/runs/${run.id}`)} className="cursor-pointer hover:bg-[var(--bg-secondary)]/60">
+                        <td className="px-4 py-3 font-mono text-xs text-[var(--text-muted)]">{run.id}</td>
+                        <td className="px-4 py-3 font-medium">{run.name || run.id}</td>
+                        <td className="px-4 py-3 text-[var(--text-muted)]">{run.assignedTo || run.requestedBy || 'Unassigned'}</td>
+                        <td className="px-4 py-3 text-[var(--text-muted)]">{run.status || run.state || 'Draft'}</td>
+                        <td className="px-4 py-3 text-[var(--text-muted)]">{run.executionTime || '-'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
             )}
           </div>
