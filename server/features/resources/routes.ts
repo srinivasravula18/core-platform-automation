@@ -731,7 +731,6 @@ export function registerResourceRoutes(app: Express) {
     const p = req.body;
     const newPlan = {
       ...scopeStamp(reqScope(req)),
-      id: `PLAN-${Math.random().toString(36).substring(2, 6).toUpperCase()}`,
       name: p.name || 'New Plan',
       scope: p.scope,
       objectives: p.objectives,
@@ -756,10 +755,10 @@ export function registerResourceRoutes(app: Express) {
       folderId: p.folderId || '',
       createdAt: new Date(),
     };
-    await Plans.upsert(newPlan);
+    const savedPlan = await Plans.upsert(newPlan);
     if (!isPgEnabled()) persistDataInBackground('plan');
-    logActivity(req, `Created Plan: ${newPlan.name}`, { type: 'plan', entityId: newPlan.id });
-    res.json({ success: true });
+    logActivity(req, `Created Plan: ${savedPlan.name}`, { type: 'plan', entityId: savedPlan.id });
+    res.json({ success: true, id: savedPlan.id, plan: savedPlan });
   });
 
   /* ---------- POST /api/suites ---------- */
@@ -767,7 +766,6 @@ export function registerResourceRoutes(app: Express) {
     const s = req.body;
     const newSuite = {
       ...scopeStamp(reqScope(req)),
-      id: `SUITE-${Math.random().toString(36).substring(2, 6).toUpperCase()}`,
       name: s.name || 'New Suite',
       description: s.description,
       testPlanId: s.testPlanId || s.testPlanIds?.[0] || '',
@@ -784,10 +782,10 @@ export function registerResourceRoutes(app: Express) {
       createdBy: 'User',
       createdAt: new Date(),
     };
-    await Suites.upsert(newSuite);
+    const savedSuite = await Suites.upsert(newSuite);
     if (!isPgEnabled()) persistDataInBackground('suite');
-    logActivity(req, `Created Suite: ${newSuite.name}`, { type: 'suite', entityId: newSuite.id });
-    res.json({ success: true, id: newSuite.id, suite: newSuite });
+    logActivity(req, `Created Suite: ${savedSuite.name}`, { type: 'suite', entityId: savedSuite.id });
+    res.json({ success: true, id: savedSuite.id, suite: savedSuite });
   });
 
   /* ---------- POST /api/cases ---------- */
@@ -796,7 +794,6 @@ export function registerResourceRoutes(app: Express) {
     const typeFields = testCaseTypeFields(c.testingTypes, c.testingType);
     const newCase = {
       ...scopeStamp(reqScope(req)),
-      id: `TC-${Math.random().toString(36).substring(2, 6).toUpperCase()}`,
       title: c.title || 'New Case',
       description: buildCaseDescription(c),
       preconditions: c.preconditions || '',
@@ -817,11 +814,11 @@ export function registerResourceRoutes(app: Express) {
       createdBy: c.createdBy || 'User',
       createdAt: new Date(),
     };
-    await Cases.upsert(newCase);
+    const savedCase = await Cases.upsert(newCase);
     if (!isPgEnabled()) persistDataInBackground('case');
-    logActivity(req, `Created Case: ${newCase.title}`, { type: 'case', entityId: newCase.id });
+    logActivity(req, `Created Case: ${savedCase.title}`, { type: 'case', entityId: savedCase.id });
     // Return the generated id so clients (e.g. GeneratedCases save-fallback) can adopt it.
-    res.json({ success: true, id: newCase.id });
+    res.json({ success: true, id: savedCase.id });
   });
 
   /* ---------- POST /api/cases/ai-action ---------- */
@@ -896,15 +893,14 @@ Rules:
           const payload = sanitizeCasePayload(operation, fallback);
           const newCase = {
             ...scopeStamp(reqScope(req)),
-            id: `TC-AI-${Math.random().toString(36).substring(2, 6).toUpperCase()}`,
             ...payload,
             createdBy: 'AI Assistant',
             createdAt: new Date(),
             aiInstruction: instruction,
             sourceCaseIds: caseIds,
           };
-          await Cases.upsert(newCase);
-          results.push({ action: 'create', id: newCase.id, title: newCase.title });
+          const savedCase = await Cases.upsert(newCase);
+          results.push({ action: 'create', id: savedCase.id, title: savedCase.title });
         }
 
         if (operation.action === 'delete') {

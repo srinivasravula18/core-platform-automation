@@ -6,6 +6,7 @@ import { spawnSync } from 'child_process';
 import { rgPath } from '@vscode/ripgrep';
 import { db, addActivity, persistDataInBackground } from '../../shared/storage';
 import { buildCaseDescription, normalizeCaseSteps, normalizeCaseTags } from '../../shared/testCases';
+import { nextArtifactId } from '../../shared/artifactIds';
 
 /**
  * Resolve the repo to operate on. DYNAMIC and never app-specific:
@@ -468,10 +469,11 @@ export function scanGitAgentChanges(baseRef = 'auto') {
   return scan;
 }
 
-function persistGitAgentArtifacts(generation: any) {
+async function persistGitAgentArtifacts(generation: any) {
   const now = new Date();
   const stamp = generation.generatedAt.replace(/[-:TZ.]/g, '').slice(0, 14);
-  const planId = `PLAN-GIT-${stamp}`;
+  const idContext = { sourceText: `${generation.repoPath || ''} ${generation.branch || ''}` };
+  const planId = await nextArtifactId('PLAN', idContext);
   const planName = `Git Change Plan - ${generation.branch} - ${stamp}`;
 
   db.plans.unshift({
@@ -491,7 +493,7 @@ function persistGitAgentArtifacts(generation: any) {
 
   const suiteIds = new Map<string, string>();
   for (const area of Object.keys(generation.suites)) {
-    const suiteId = `SUITE-GIT-${stamp}-${String(area).replace(/[^A-Za-z0-9]+/g, '-').toUpperCase()}`;
+    const suiteId = await nextArtifactId('SUITE', { sourceText: `${idContext.sourceText} ${area}` });
     suiteIds.set(area, suiteId);
     db.suites.unshift({
       id: suiteId,
@@ -510,9 +512,9 @@ function persistGitAgentArtifacts(generation: any) {
     });
   }
 
-  generation.testCases.forEach((testCase: any, index: number) => {
+  for (const testCase of generation.testCases) {
     db.cases.unshift({
-      id: `TC-GIT-${stamp}-${String(index + 1).padStart(3, '0')}`,
+      id: await nextArtifactId('TC', { sourceText: `${idContext.sourceText} ${testCase.title || ''}` }),
       title: testCase.title,
       description: buildCaseDescription(testCase),
       steps: normalizeCaseSteps(testCase.steps),
@@ -527,7 +529,7 @@ function persistGitAgentArtifacts(generation: any) {
       gitAgentRunId: generation.id,
       sourcePath: testCase.sourcePath,
     });
-  });
+  }
 
   (generation.scripts || []).forEach((script: any, index: number) => {
     const scriptId = `SCR-GIT-${stamp}-${String(index + 1).padStart(3, '0')}`;
@@ -805,7 +807,7 @@ export async function generateGitAgentCases(baseRef = 'auto') {
     scripts,
   };
 
-  persistGitAgentArtifacts(generation);
+  await persistGitAgentArtifacts(generation);
   writeGitAgentState({
     baselineCommit: scan.headCommit,
     lastGeneratedAt: generation.generatedAt,

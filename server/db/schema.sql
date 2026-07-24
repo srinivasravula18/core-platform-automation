@@ -252,6 +252,13 @@ CREATE TABLE IF NOT EXISTS websites (
   created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS artifact_id_counters (
+  website_key   TEXT NOT NULL,
+  artifact_type TEXT NOT NULL CHECK (artifact_type IN ('PLAN', 'SUITE', 'TC')),
+  last_value    BIGINT NOT NULL DEFAULT 0,
+  PRIMARY KEY (website_key, artifact_type)
+);
+
 CREATE TABLE IF NOT EXISTS website_users (
   id          TEXT PRIMARY KEY,
   website_id  TEXT NOT NULL REFERENCES websites(id) ON DELETE CASCADE,

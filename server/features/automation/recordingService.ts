@@ -21,6 +21,7 @@ import { hardenRecordedScript } from './scriptHardening';
 import { scriptToGroupedSteps } from './stepGrouping';
 import { isRecorderStepGroupingEnabled } from './flag';
 import type { AgentFrame } from './types';
+import { nextArtifactId } from '../../shared/artifactIds';
 
 // Case metadata captured on the New Case → Automation flow, carried on the recording so the
 // Test Case created at finalize is classified the same as a manually-authored one.
@@ -138,7 +139,11 @@ async function reflectRecordingAsCase(rec: any, finalScript: string): Promise<st
   const meta: RecordingCaseMeta = rec.metadata?.caseMeta || {};
   const existingCaseId: string = rec.metadata?.caseId || '';
   const title = rec.name || 'Recorded test';
-  const caseId = existingCaseId || `TC-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
+  const caseId = existingCaseId || await nextArtifactId('TC', {
+    ownerId: rec.ownerId,
+    targetUrl: rec.appUrl,
+    sourceText: title,
+  });
   const caseRow = {
     id: caseId,
     title,

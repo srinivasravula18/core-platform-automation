@@ -17,6 +17,7 @@ import { db } from '../shared/storage';
 import { getPool, isPostgresEnabled, migrate, query, queryOne, uid, withTransaction } from './pool';
 import { eventIdempotencyKey, type WorkflowEvent } from '../features/agent/workflow/events';
 import { normalizeTestCaseTypes } from '../../core/shared/testCaseTypes';
+import { nextArtifactId } from '../shared/artifactIds';
 
 export function isPgEnabled(): boolean {
   return isPostgresEnabled();
@@ -722,13 +723,20 @@ export const Plans = {
     return mapPlan(r);
   },
   async upsert(plan: any): Promise<any> {
+    const id = plan.id || await nextArtifactId('PLAN', {
+      ownerId: plan.ownerId,
+      websiteId: plan.websiteId,
+      websiteName: plan.websiteName,
+      targetUrl: plan.targetUrl || plan.environments,
+      sourceText: `${plan.name || ''} ${plan.description || ''} ${plan.objectives || ''}`,
+    });
+    plan = { ...plan, id };
     if (!isPgEnabled()) {
       const idx = db.plans.findIndex((p: any) => p.id === plan.id);
       if (idx >= 0) db.plans[idx] = { ...db.plans[idx], ...plan };
       else db.plans.unshift(plan);
       return plan;
     }
-    const id = plan.id || uid('PLAN');
     const row = await queryOne(
       `INSERT INTO plans (id, name, scope, objectives, in_scope, out_of_scope, strategy, test_types, environments, roles, entry_exit, schedule, risks, deliverables, description, start_date, end_date, owner, tags, run_ids, status, risk_level, folder_id, approval_state, proposed_by, source_run_id, created_at, updated_at)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26, now(), now())
@@ -800,6 +808,14 @@ export const Suites = {
     return mapSuite(r);
   },
   async upsert(s: any): Promise<any> {
+    const id = s.id || await nextArtifactId('SUITE', {
+      ownerId: s.ownerId,
+      websiteId: s.websiteId,
+      websiteName: s.websiteName,
+      targetUrl: s.targetUrl,
+      sourceText: `${s.name || ''} ${s.description || ''}`,
+    });
+    s = { ...s, id };
     const parentSuiteIds = Array.isArray(s.parentSuiteIds) ? s.parentSuiteIds.filter(Boolean) : (s.parentSuite ? [s.parentSuite] : []);
     const primaryParentSuite = s.parentSuite || parentSuiteIds[0] || null;
     const planIds = Array.isArray(s.testPlanIds) ? s.testPlanIds.filter(Boolean) : (s.testPlanId ? [s.testPlanId] : []);
@@ -811,7 +827,6 @@ export const Suites = {
       else db.suites.unshift(normalized);
       return normalized;
     }
-    const id = s.id || uid('SUITE');
     const row = await queryOne(
       `INSERT INTO suites (id, name, description, parent_suite, test_plan_id, module, owner, tags, priority, status, folder_id, approval_state, proposed_by, source_run_id, test_plan_ids, parent_suite_ids, created_at, updated_at)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16, now(), now())
@@ -934,13 +949,20 @@ export const Cases = {
     return mapCase(r);
   },
   async upsert(c: any): Promise<any> {
+    const id = c.id || await nextArtifactId('TC', {
+      ownerId: c.ownerId,
+      websiteId: c.websiteId,
+      websiteName: c.websiteName,
+      targetUrl: c.targetUrl,
+      sourceText: `${c.title || ''} ${c.description || ''}`,
+    });
+    c = { ...c, id };
     if (!isPgEnabled()) {
       const idx = db.cases.findIndex((x: any) => x.id === c.id);
       if (idx >= 0) db.cases[idx] = { ...db.cases[idx], ...c };
       else db.cases.unshift(c);
       return c;
     }
-    const id = c.id || uid('TC');
     const stepsJson = JSON.stringify(c.steps || []);
     const testingScope = c.testingScope || (c.type === 'Automated' ? 'Automation' : 'Manual');
     const testingTypes = normalizeTestCaseTypes(c);

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, Search, Filter, MoreHorizontal, Plus, Sparkles, Trash2, PlayCircle, Loader2 } from 'lucide-react';
+import { ArrowLeft, Search, Filter, Pencil, Plus, Sparkles, Trash2, PlayCircle, Loader2 } from 'lucide-react';
 import ExportMenu from '../components/ExportMenu';
 import { useAiSearch } from '@/src/lib/useAiSearch';
 import { useBulkDelete } from '@/src/lib/useBulkDelete';
@@ -17,7 +17,6 @@ import { caseBelongsToSuite, suitePlanIds } from '@/src/lib/suiteCaseSelection';
 import { emptyTestPlanFilters, linkedRunsForPlan, matchesTestPlanFilters } from '@/src/lib/testPlanFilters';
 
 const PLAN_STATUSES = ['Draft', 'Under Review', 'Approved', 'In Progress', 'Completed', 'Blocked', 'Cancelled', 'Archived'];
-const PLAN_RISK_LEVELS = ['Low', 'Medium', 'High'];
 const emptyPlanForm = () => ({
   name: '',
   folderId: '',
@@ -75,7 +74,6 @@ export default function TestPlans() {
   const [reports, setReports] = useState<any[]>([]);
   const [folders, setFolders] = useState<any[]>([]);
   const [activeDetailTab, setActiveDetailTab] = useState<'suites' | 'cases' | 'sessions'>('suites');
-  const [openActionPlanId, setOpenActionPlanId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const aiSearch = useAiSearch('test plans');
@@ -199,18 +197,6 @@ export default function TestPlans() {
     }
   };
 
-  const handleDeletePlanById = async (planId: string) => {
-    if (await showConfirm('Are you sure you want to delete this plan?', { tone: 'danger' })) {
-      fetch(`/api/plans/${planId}`, { method: 'DELETE' })
-        .then(() => {
-          if (openActionPlanId === planId) setOpenActionPlanId(null);
-          navigate('/plans');
-          fetchPlans();
-          fetchPlanRelations();
-        });
-    }
-  };
-
   const handleAIApprove = (data: any) => {
     fetch('/api/plans', {
       method: 'POST',
@@ -254,6 +240,7 @@ export default function TestPlans() {
   const getPlanCases = (planId: string) => cases.filter((testCase) => testCase.testPlanId === planId);
   const selectedDetailPlan = plans.find((plan) => plan.id === planId) || null;
   const getPlanRuns = (plan: any) => linkedRunsForPlan(plan, runs);
+  const runCountLabel = (count: number) => `Run ${count} test run${count === 1 ? '' : 's'}`;
   const getPlanReports = (plan: any) => reports.filter((report) => report.agentRunId === plan?.agentRunId || report.planName === plan?.name);
   const tagOptions = Array.from(new Set<string>(plans.flatMap((plan) => Array.isArray(plan.tags) ? plan.tags.map(String) : []))).sort();
   const ownerOptions = Array.from(new Set<string>(plans.map((plan) => String(plan.owner || '').trim()).filter(Boolean))).sort();
@@ -615,7 +602,7 @@ export default function TestPlans() {
           </div>
           {bulk.selectedCount > 0 && (
             <div className="ml-auto flex items-center gap-2">
-              <button onClick={() => runSelectedPlans()} disabled={isStartingRun} className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
+              <button onClick={() => runSelectedPlans()} disabled={isStartingRun} title={runCountLabel(selectedPlanIds.reduce((count, id) => count + getPlanRuns(plans.find((plan) => plan.id === id)).length, 0))} className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
                 {isStartingRun ? <Loader2 className="w-4 h-4 animate-spin" /> : <PlayCircle className="w-4 h-4" />} Run selected ({bulk.selectedCount})
               </button>
               <button onClick={bulk.deleteSelected} disabled={bulk.busy} className="flex items-center gap-1.5 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
@@ -633,21 +620,30 @@ export default function TestPlans() {
                   <input type="checkbox" checked={bulk.allSelected(filteredPlans.map((p) => p.id))} onChange={() => bulk.toggleAll(filteredPlans.map((p) => p.id))} />
                 </th>
                 <th className="font-medium py-3 px-4 w-24">ID</th>
-                <th className="font-medium py-3 px-4">Name</th>
-                <th className="font-medium py-3 px-4 w-56">Folder</th>
+                <th className="font-medium py-3 px-4">Title</th>
+                <th className="font-medium py-3 px-4 w-56">Repository Folder</th>
+                <th className="font-medium py-3 px-4">Start Date</th>
+                <th className="font-medium py-3 px-4">End Date</th>
+                <th className="font-medium py-3 px-4">Owner</th>
+                <th className="font-medium py-3 px-4">Tags</th>
                 <th className="font-medium py-3 px-4 w-32">Status</th>
-                <th className="font-medium py-3 px-4 w-44">Risk Level</th>
+                <th className="font-medium py-3 px-4">Environments</th>
+                <th className="font-medium py-3 px-4">Resources &amp; Roles</th>
+                <th className="font-medium py-3 px-4">Deliverables</th>
+                <th className="font-medium py-3 px-4 text-center">Linked Test Runs</th>
+                <th className="font-medium py-3 px-4">Description</th>
                 <th className="font-medium py-3 px-4 w-24 text-right">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-[var(--border)]">
               {loading ? (
-                <tr><td colSpan={7} className="py-8 text-center text-[var(--text-muted)]">Loading plans...</td></tr>
+                <tr><td colSpan={15} className="py-8 text-center text-[var(--text-muted)]">Loading plans...</td></tr>
               ) : filteredPlans.length === 0 ? (
-                <tr><td colSpan={7} className="py-8 text-center text-[var(--text-muted)]">No plans found.</td></tr>
+                <tr><td colSpan={15} className="py-8 text-center text-[var(--text-muted)]">No plans found.</td></tr>
               ) : filteredPlans.map((plan) => {
                 const planSuites = getPlanSuites(plan.id);
                 const planCases = getPlanCases(plan.id);
+                const linkedRunCount = getPlanRuns(plan).length;
                 const isSelected = planId === plan.id;
 
                 return (
@@ -685,6 +681,16 @@ export default function TestPlans() {
                         ))}
                       </select>
                     </td>
+                    <td className="py-3 px-4 text-[var(--text-muted)]">{plan.startDate || '-'}</td>
+                    <td className="py-3 px-4 text-[var(--text-muted)]">{plan.endDate || '-'}</td>
+                    <td className="py-3 px-4 text-[var(--text-muted)]">{plan.owner || '-'}</td>
+                    <td className="py-3 px-4">
+                      <div className="flex max-w-56 flex-wrap gap-1">
+                        {(Array.isArray(plan.tags) && plan.tags.length) ? plan.tags.map((tag: string) => (
+                          <span key={tag} className="rounded bg-[var(--accent)]/10 px-1.5 py-0.5 text-xs text-[var(--accent)]">{tag}</span>
+                        )) : <span className="text-[var(--text-muted)]">-</span>}
+                      </div>
+                    </td>
                     <td className="py-3 px-4">
                       <select
                         value={plan.status || 'Draft'}
@@ -698,19 +704,15 @@ export default function TestPlans() {
                         ))}
                       </select>
                     </td>
-                    <td className="py-3 px-4">
-                      <select
-                        value={plan.riskLevel || 'Medium'}
-                        onClick={(event) => event.stopPropagation()}
-                        onChange={(event) => updatePlanInline(plan, { riskLevel: event.target.value })}
-                        className="w-full min-w-[110px] rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs font-medium text-[var(--text-primary)] outline-none transition-colors hover:border-[var(--accent)] focus:border-[var(--accent)]"
-                        title="Update risk level"
-                      >
-                        {PLAN_RISK_LEVELS.map((riskLevel) => (
-                          <option key={riskLevel} value={riskLevel}>{riskLevel}</option>
-                        ))}
-                      </select>
+                    <td className="max-w-64 whitespace-normal py-3 px-4 text-[var(--text-muted)]">{plan.environments || '-'}</td>
+                    <td className="max-w-64 whitespace-normal py-3 px-4 text-[var(--text-muted)]">{plan.roles || '-'}</td>
+                    <td className="max-w-64 whitespace-normal py-3 px-4 text-[var(--text-muted)]">{plan.deliverables || '-'}</td>
+                    <td className="py-3 px-4 text-center">
+                      <span className="inline-flex min-w-7 justify-center rounded-full bg-[var(--accent)]/10 px-2 py-0.5 text-xs font-semibold text-[var(--accent)]" title={`${linkedRunCount} linked test run${linkedRunCount === 1 ? '' : 's'}`}>
+                        {linkedRunCount}
+                      </span>
                     </td>
+                    <td className="max-w-80 whitespace-normal py-3 px-4 text-[var(--text-muted)]">{plan.description || plan.objectives || '-'}</td>
                     <td className="py-3 px-4 text-right">
                       <div className="relative inline-flex items-center gap-1">
                         <button
@@ -719,7 +721,7 @@ export default function TestPlans() {
                             runSelectedPlans([plan.id]);
                           }}
                           disabled={isStartingRun}
-                          title="Run test plan"
+                          title={runCountLabel(linkedRunCount)}
                           className="p-1 rounded hover:bg-emerald-500/10 text-[var(--text-muted)] hover:text-emerald-400 disabled:opacity-50 transition-colors"
                         >
                           <PlayCircle className="w-4 h-4" />
@@ -727,12 +729,12 @@ export default function TestPlans() {
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
-                            setOpenActionPlanId(openActionPlanId === plan.id ? null : plan.id);
+                            openEditModal(plan);
                           }}
-                          title="Plan actions"
-                          className="p-1 rounded hover:bg-[var(--border)] text-[var(--text-muted)] transition-colors"
+                          title="Edit plan"
+                          className="p-1 rounded hover:bg-[var(--border)] text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors"
                         >
-                          <MoreHorizontal className="w-4 h-4" />
+                          <Pencil className="w-4 h-4" />
                         </button>
                         <button
                           onClick={(e) => { e.stopPropagation(); bulk.deleteOne(plan.id); }}
@@ -741,31 +743,6 @@ export default function TestPlans() {
                         >
                           <Trash2 className="w-4 h-4" />
                         </button>
-                        {openActionPlanId === plan.id && (
-                          <div
-                            onClick={(e) => e.stopPropagation()}
-                            className="absolute right-0 top-8 z-20 min-w-28 overflow-hidden rounded-md border border-[var(--border)] bg-[var(--bg-card)] shadow-xl"
-                          >
-                            <button
-                              onClick={() => {
-                                setOpenActionPlanId(null);
-                                openEditModal(plan);
-                              }}
-                              className="block w-full px-3 py-2 text-left text-sm text-[var(--text-primary)] hover:bg-[var(--bg-secondary)]"
-                            >
-                              Edit
-                            </button>
-                            <button
-                              onClick={() => {
-                                setOpenActionPlanId(null);
-                                handleDeletePlanById(plan.id);
-                              }}
-                              className="block w-full px-3 py-2 text-left text-sm text-red-400 hover:bg-red-500/10"
-                            >
-                              Delete
-                            </button>
-                          </div>
-                        )}
                       </div>
                     </td>
                   </tr>

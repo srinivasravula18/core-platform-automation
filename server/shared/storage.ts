@@ -79,6 +79,7 @@ export const db: any = {
   appKnowledge: [] as any[],
   projects: [] as any[],
   apps: [] as any[],
+  artifactIdCounters: {} as Record<string, number>,
   // projectId -> AES-GCM-encrypted repo access token (private-repo auth). Ciphertext only.
   repoSecrets: {} as Record<string, string>,
   blackboard: [] as any[],
@@ -132,6 +133,7 @@ function getPersistableDbSnapshot() {
     appKnowledge: db.appKnowledge,
     projects: db.projects,
     apps: db.apps,
+    artifactIdCounters: db.artifactIdCounters,
     repoSecrets: db.repoSecrets,
     blackboard: db.blackboard,
     apiRuns: db.apiRuns,
@@ -191,6 +193,7 @@ export async function loadPersistedData() {
     db.appKnowledge = Array.isArray(data.appKnowledge) ? data.appKnowledge : [];
     db.projects = Array.isArray(data.projects) ? data.projects : [];
     db.apps = Array.isArray(data.apps) ? data.apps : [];
+    db.artifactIdCounters = data.artifactIdCounters && typeof data.artifactIdCounters === 'object' ? data.artifactIdCounters : {};
     db.repoSecrets = data.repoSecrets && typeof data.repoSecrets === 'object' ? data.repoSecrets : {};
     db.blackboard = Array.isArray(data.blackboard) ? data.blackboard : [];
     db.apiRuns = Array.isArray(data.apiRuns) ? data.apiRuns : [];

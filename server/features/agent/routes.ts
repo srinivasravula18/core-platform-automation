@@ -8,6 +8,7 @@ import { getAIErrorMessage } from '../../shared/ai';
 import { buildCredentialContext, resolveAgentTargetUrl, findSettingsCredentials } from '../../shared/url';
 import { playwrightScriptsSchema, testCasesSchema } from '../../shared/schemas';
 import { buildAgentExecutionSteps, buildCaseDescription, normalizeCaseSteps, normalizeCaseTags } from '../../shared/testCases';
+import { nextArtifactId } from '../../shared/artifactIds';
 import { capturePlaywrightEvidence, createAuthStorageState } from '../evidence/evidenceService';
 import { gitGrep, readRepoFile, searchCodeWithContext } from '../git-agent/gitAgentService';
 import { analyzeFeatureFromSource, discoverFeatureInventoryFromSource, proposeGapCases } from '../requirements/requirementService';
@@ -816,11 +817,11 @@ async function ensureFolderInPg(folderId: string) {
 }
 
 function agentPlanId(run: any): string {
-  return run.testPlanId || `PLAN-${run.id.substring(0, 8).toUpperCase()}`;
+  return run.testPlanId || run.generatedPlanId || `PLAN-${run.id.substring(0, 8).toUpperCase()}`;
 }
 
 function agentSuiteId(run: any): string {
-  return run.testSuiteId || `SUITE-${run.id.substring(0, 8).toUpperCase()}`;
+  return run.testSuiteId || run.generatedSuiteId || `SUITE-${run.id.substring(0, 8).toUpperCase()}`;
 }
 
 function agentCaseId(run: any, index: number): string {
@@ -2560,9 +2561,22 @@ ${CASE_AUTHORING_CONTRACT}`,
   // (chat output, review UI, save-cases) must key off this id instead of re-deriving one from
   // array position later  -  position shifts the moment a case is deleted in the review UI, which
   // previously caused save-cases to overwrite the wrong row and orphan another.
-  generated = generated.map((tc: any, i: number) => (
-    tc.id ? tc : { ...tc, id: tc.reused && tc.existingCaseId ? tc.existingCaseId : agentCaseId(run, i) }
-  ));
+  for (let index = 0; index < generated.length; index++) {
+    const testCase = generated[index];
+    if (testCase.id) continue;
+    generated[index] = {
+      ...testCase,
+      id: testCase.reused && testCase.existingCaseId
+        ? testCase.existingCaseId
+        : await nextArtifactId('TC', {
+            ownerId: run.ownerId,
+            websiteId: run.websiteId,
+            websiteName: run.appName,
+            targetUrl: run.app_url,
+            sourceText: run.prompt,
+          }),
+    };
+  }
   run.generated_cases = generated;
   (run as any).all_generated_cases = generated;
   // GROUNDING GATE (Phase 2): verify the generated cases actually reference what the
@@ -5466,6 +5480,15 @@ Rules:
     // Smaller budget for the inspector (it runs in a loop), generous for the one-shot case writer.
     const knowledgeCtx = { knowledgePackId: selectedApp?.knowledgePackId || undefined, websiteId: req.body.websiteId, targetUrl, text: `${scopeContextText} ${prompt || ''} ${approvedUnderstanding}`.trim(), ownerId: scope.userId || '' };
     const inspectorKnowledge = buildKnowledgeBlock(knowledgeCtx, { maxChars: 3500 });
+    const artifactIdContext = {
+      ownerId: scope.userId || '',
+      websiteId: req.body.websiteId || '',
+      websiteName: exactAppName,
+      targetUrl,
+      sourceText: prompt || '',
+    };
+    const generatedPlanId = req.body.testPlanId ? '' : await nextArtifactId('PLAN', artifactIdContext);
+    const generatedSuiteId = req.body.testSuiteId ? '' : await nextArtifactId('SUITE', artifactIdContext);
 
     const newRun = {
       id: taskId,
@@ -5501,6 +5524,8 @@ Rules:
       testPlanId: req.body.testPlanId || '',
       testSuiteId: req.body.testSuiteId || '',
       testCaseId: req.body.testCaseId || '',
+      generatedPlanId,
+      generatedSuiteId,
       credentials: safeCredentialsForLog,
       // Stamp only when real context resolved it; empty lets agentDisplayName resolve contextually
       // LATER (mission is often known only after target clarification) instead of freezing the
@@ -6589,9 +6614,19 @@ Do both when the request implies both. Never delete or renumber cases. Steps mus
     const caseProjectId = linkedRun?.projectId || saveScope.projectId || '';
     const caseAppId = linkedRun?.appId || saveScope.appId || '';
     const caseOwnerId = linkedRun?.ownerId || saveScope.userId || '';
-    const linkedPlanId = linkedRun ? `PLAN-${linkedRun.id.substring(0, 8).toUpperCase()}` : '';
-    const linkedSuiteId = linkedRun ? `SUITE-${linkedRun.id.substring(0, 8).toUpperCase()}` : '';
+    const linkedPlanId = linkedRun ? agentPlanId(linkedRun) : '';
+    const linkedSuiteId = linkedRun ? agentSuiteId(linkedRun) : '';
     if (Array.isArray(cases)) {
+      for (const testCase of cases) {
+        if (testCase.id) continue;
+        testCase.id = await nextArtifactId('TC', {
+          ownerId: caseOwnerId,
+          websiteId: linkedRun?.websiteId,
+          websiteName: linkedRun?.appName,
+          targetUrl: linkedRun?.app_url,
+          sourceText: linkedRun?.prompt || testCase.title,
+        });
+      }
       if (linkedRun) {
         syncReviewedCases(linkedRun, cases);
         await saveAgentRunState(linkedRun, 'saved reviewed cases');
@@ -6615,9 +6650,8 @@ Do both when the request implies both. Never delete or renumber cases. Steps mus
       // were previously saved in reverse of how they were generated).
       for (let index = cases.length - 1; index >= 0; index--) {
         const c = cases[index];
-        const caseId = c.id || (linkedRun ? `TC-${linkedRun.id.substring(0, 4).toUpperCase()}-${index + 1}` : `TC-${Math.random().toString(36).substring(2, 6).toUpperCase()}`);
-        await Cases.upsert({
-          id: caseId,
+        const savedCase = await Cases.upsert({
+          id: c.id,
           title: c.title,
           description: buildCaseDescription(c),
           preconditions: c.preconditions || '',
@@ -6640,6 +6674,7 @@ Do both when the request implies both. Never delete or renumber cases. Steps mus
           appId: caseAppId,
           ownerId: caseOwnerId,
         });
+        c.id = savedCase.id;
       }
       persistDataInBackground('saved generated cases');
     }

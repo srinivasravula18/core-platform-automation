@@ -28,6 +28,7 @@ import { fetchCorePlatformObjectCatalog } from '../../ai/tools/corePlatformData'
 import { getApp } from '../projects/projectService';
 import { resolveCredentials } from '../credentials/credentialsService';
 import { extractSelectorMap, type SelectorMap } from '../agent/selectorMap';
+import { nextArtifactId } from '../../shared/artifactIds';
 
 /* ---------- schemas ---------- */
 
@@ -1299,7 +1300,7 @@ export async function discoverRequirement(
   const generatedCases: Array<{ id: string; title: string }> = [];
   const proposedCases = requirementsOnly ? [] : (reconciliation.proposedCases || []);
   for (const pc of proposedCases) {
-    const caseId = genId('TC-REQ');
+    const caseId = await nextArtifactId('TC', { ownerId, sourceText: cleanQuery });
     const tags = normalizeCaseTags(pc.tags && pc.tags.length ? [...pc.tags, '@requirement'] : ['@requirement']);
     await Cases.upsert({
       id: caseId,
