@@ -745,10 +745,15 @@ export function registerResourceRoutes(app: Express) {
       schedule: p.schedule,
       risks: p.risks,
       deliverables: p.deliverables,
+      description: p.description,
+      startDate: p.startDate || null,
+      endDate: p.endDate || null,
+      owner: p.owner || '',
+      tags: uniqueStrings(p.tags),
+      runIds: uniqueStrings(p.runIds),
       status: p.status || 'Draft',
       riskLevel: p.riskLevel || 'Medium',
       folderId: p.folderId || '',
-      owner: 'User',
       createdAt: new Date(),
     };
     await Plans.upsert(newPlan);

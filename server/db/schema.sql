@@ -31,6 +31,12 @@ CREATE TABLE IF NOT EXISTS plans (
   schedule        TEXT DEFAULT '',
   risks           TEXT DEFAULT '',
   deliverables    TEXT DEFAULT '',
+  description     TEXT DEFAULT '',
+  start_date      DATE,
+  end_date        DATE,
+  owner           TEXT DEFAULT '',
+  tags            TEXT[] DEFAULT ARRAY[]::TEXT[],
+  run_ids         JSONB DEFAULT '[]'::jsonb,
   status          TEXT NOT NULL DEFAULT 'draft',
   risk_level      TEXT DEFAULT 'Medium',
   folder_id       TEXT REFERENCES folders(id) ON DELETE SET NULL,
@@ -43,6 +49,13 @@ CREATE TABLE IF NOT EXISTS plans (
   updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
   deleted_at      TIMESTAMPTZ
 );
+
+ALTER TABLE plans ADD COLUMN IF NOT EXISTS description TEXT DEFAULT '';
+ALTER TABLE plans ADD COLUMN IF NOT EXISTS start_date DATE;
+ALTER TABLE plans ADD COLUMN IF NOT EXISTS end_date DATE;
+ALTER TABLE plans ADD COLUMN IF NOT EXISTS owner TEXT DEFAULT '';
+ALTER TABLE plans ADD COLUMN IF NOT EXISTS tags TEXT[] DEFAULT ARRAY[]::TEXT[];
+ALTER TABLE plans ADD COLUMN IF NOT EXISTS run_ids JSONB DEFAULT '[]'::jsonb;
 
 CREATE TABLE IF NOT EXISTS suites (
   id              TEXT PRIMARY KEY,

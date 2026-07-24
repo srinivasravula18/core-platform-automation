@@ -81,6 +81,12 @@ function mapPlan(r: any) {
     schedule: r.schedule,
     risks: r.risks,
     deliverables: r.deliverables,
+    description: r.description,
+    startDate: r.start_date,
+    endDate: r.end_date,
+    owner: r.owner,
+    tags: r.tags || [],
+    runIds: r.run_ids || [],
     status: r.status,
     riskLevel: r.risk_level,
     folderId: r.folder_id,
@@ -724,14 +730,16 @@ export const Plans = {
     }
     const id = plan.id || uid('PLAN');
     const row = await queryOne(
-      `INSERT INTO plans (id, name, scope, objectives, in_scope, out_of_scope, strategy, test_types, environments, roles, entry_exit, schedule, risks, deliverables, status, risk_level, folder_id, approval_state, proposed_by, source_run_id, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20, now(), now())
+      `INSERT INTO plans (id, name, scope, objectives, in_scope, out_of_scope, strategy, test_types, environments, roles, entry_exit, schedule, risks, deliverables, description, start_date, end_date, owner, tags, run_ids, status, risk_level, folder_id, approval_state, proposed_by, source_run_id, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26, now(), now())
        ON CONFLICT (id) DO UPDATE SET
          name=EXCLUDED.name, scope=EXCLUDED.scope, objectives=EXCLUDED.objectives,
          in_scope=EXCLUDED.in_scope, out_of_scope=EXCLUDED.out_of_scope, strategy=EXCLUDED.strategy,
          test_types=EXCLUDED.test_types, environments=EXCLUDED.environments, roles=EXCLUDED.roles,
          entry_exit=EXCLUDED.entry_exit, schedule=EXCLUDED.schedule, risks=EXCLUDED.risks,
-         deliverables=EXCLUDED.deliverables, status=EXCLUDED.status, risk_level=EXCLUDED.risk_level,
+         deliverables=EXCLUDED.deliverables, description=EXCLUDED.description,
+         start_date=EXCLUDED.start_date, end_date=EXCLUDED.end_date, owner=EXCLUDED.owner,
+         tags=EXCLUDED.tags, run_ids=EXCLUDED.run_ids, status=EXCLUDED.status, risk_level=EXCLUDED.risk_level,
          folder_id=EXCLUDED.folder_id, approval_state=EXCLUDED.approval_state,
          proposed_by=EXCLUDED.proposed_by, source_run_id=EXCLUDED.source_run_id, updated_at=now()
        RETURNING *`,
@@ -750,6 +758,12 @@ export const Plans = {
         plan.schedule || '',
         plan.risks || '',
         plan.deliverables || '',
+        plan.description || '',
+        plan.startDate || null,
+        plan.endDate || null,
+        plan.owner || '',
+        Array.isArray(plan.tags) ? plan.tags : [],
+        JSON.stringify(Array.isArray(plan.runIds) ? plan.runIds : []),
         plan.status || 'draft',
         plan.riskLevel || 'Medium',
         plan.folderId || null,

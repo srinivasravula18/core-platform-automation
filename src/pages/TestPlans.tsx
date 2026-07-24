@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft, Search, Filter, MoreHorizontal, Plus, Sparkles, Trash2, PlayCircle, Loader2 } from 'lucide-react';
 import ExportMenu from '../components/ExportMenu';
@@ -10,11 +10,28 @@ import { Modal } from '@/src/components/Modal';
 import { AIActionModal } from '@/src/components/AIActionModal';
 import { FolderSelect } from '@/src/components/FolderSelect';
 import { FolderBadge } from '@/src/components/FolderBadge';
+import { MultiSelectDropdown } from '@/src/components/MultiSelectDropdown';
+import { TagEditor } from '@/src/components/TagEditor';
 import { showAlert, showConfirm } from '@/src/lib/dialog';
 import { caseBelongsToSuite, suitePlanIds } from '@/src/lib/suiteCaseSelection';
+import { emptyTestPlanFilters, linkedRunsForPlan, matchesTestPlanFilters } from '@/src/lib/testPlanFilters';
 
 const PLAN_STATUSES = ['Draft', 'Under Review', 'Approved', 'In Progress', 'Completed', 'Blocked', 'Cancelled', 'Archived'];
 const PLAN_RISK_LEVELS = ['Low', 'Medium', 'High'];
+const emptyPlanForm = () => ({
+  name: '',
+  folderId: '',
+  startDate: '',
+  endDate: '',
+  owner: '',
+  tags: [] as string[],
+  status: 'Draft',
+  environments: '',
+  roles: '',
+  deliverables: '',
+  runIds: [] as string[],
+  description: '',
+});
 
 function getStatusBadgeClass(status: string) {
   switch (status) {
@@ -62,14 +79,14 @@ export default function TestPlans() {
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const aiSearch = useAiSearch('test plans');
-  const [statusFilter, setStatusFilter] = useState('All');
   const [isFilterOpen, setIsFilterOpen] = useState(false);
+  const filterRef = useRef<HTMLDivElement | null>(null);
+  const [filters, setFilters] = useState(emptyTestPlanFilters);
+  const [matchMode, setMatchMode] = useState<'all' | 'any'>('all');
   const [isPlanModalOpen, setIsPlanModalOpen] = useState(false);
   const [isAIPlanModalOpen, setIsAIPlanModalOpen] = useState(false);
   const [isStartingRun, setIsStartingRun] = useState(false);
-  const [formData, setFormData] = useState({ 
-    name: '', scope: '', objectives: '', inScope: '', outOfScope: '', strategy: '', testTypes: '', environments: '', roles: '', entryExit: '', schedule: '', risks: '', deliverables: '', status: 'Draft', riskLevel: 'Medium', folderId: ''
-  });
+  const [formData, setFormData] = useState(emptyPlanForm);
 
   const [selectedPlanId, setSelectedPlanId] = useState<string | null>(null);
   const inlineSelectClass = "w-full min-w-[140px] rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs font-medium text-[var(--text-primary)] outline-none transition-colors hover:border-[var(--accent)] focus:border-[var(--accent)]";
@@ -107,20 +124,38 @@ export default function TestPlans() {
     fetchPlanRelations();
   }, []);
 
+  useEffect(() => {
+    if (!isFilterOpen) return;
+    const closeOnOutsideClick = (event: PointerEvent) => {
+      if (!filterRef.current?.contains(event.target as Node)) setIsFilterOpen(false);
+    };
+    document.addEventListener('pointerdown', closeOnOutsideClick);
+    return () => document.removeEventListener('pointerdown', closeOnOutsideClick);
+  }, [isFilterOpen]);
+
   const openNewModal = () => {
     setSelectedPlanId(null);
-    setFormData({ name: '', scope: '', objectives: '', inScope: '', outOfScope: '', strategy: '', testTypes: '', environments: '', roles: '', entryExit: '', schedule: '', risks: '', deliverables: '', status: 'Draft', riskLevel: 'Medium', folderId: '' });
+    setFormData(emptyPlanForm());
     setIsPlanModalOpen(true);
   };
 
   const openEditModal = (plan: any) => {
     setSelectedPlanId(plan.id);
+    const linkedRunIds = new Set((Array.isArray(plan.runIds) ? plan.runIds : []).map(String));
+    runs.filter((run) => run.testPlanId === plan.id).forEach((run) => linkedRunIds.add(String(run.id)));
     setFormData({
-      name: plan.name || '', scope: plan.scope || '', objectives: plan.objectives || '',
-      inScope: plan.inScope || '', outOfScope: plan.outOfScope || '', strategy: plan.strategy || '',
-      testTypes: plan.testTypes || '', environments: plan.environments || '', roles: plan.roles || '',
-      entryExit: plan.entryExit || '', schedule: plan.schedule || '', risks: plan.risks || '', deliverables: plan.deliverables || '',
-      status: plan.status || 'Draft', riskLevel: plan.riskLevel || 'Medium', folderId: plan.folderId || ''
+      name: plan.name || '',
+      folderId: plan.folderId || '',
+      startDate: plan.startDate || '',
+      endDate: plan.endDate || '',
+      owner: plan.owner || '',
+      tags: Array.isArray(plan.tags) ? plan.tags : [],
+      status: plan.status || 'Draft',
+      environments: plan.environments || '',
+      roles: plan.roles || '',
+      deliverables: plan.deliverables || '',
+      runIds: Array.from(linkedRunIds),
+      description: plan.description || plan.objectives || '',
     });
     setIsPlanModalOpen(true);
   };
@@ -218,15 +253,19 @@ export default function TestPlans() {
   const getPlanSuites = (planId: string) => suites.filter((suite) => suitePlanIds(suite).includes(planId));
   const getPlanCases = (planId: string) => cases.filter((testCase) => testCase.testPlanId === planId);
   const selectedDetailPlan = plans.find((plan) => plan.id === planId) || null;
-  const getPlanRuns = (plan: any) => runs.filter((run) => run.agentRunId === plan?.agentRunId || run.planName === plan?.name);
+  const getPlanRuns = (plan: any) => linkedRunsForPlan(plan, runs);
   const getPlanReports = (plan: any) => reports.filter((report) => report.agentRunId === plan?.agentRunId || report.planName === plan?.name);
+  const tagOptions = Array.from(new Set<string>(plans.flatMap((plan) => Array.isArray(plan.tags) ? plan.tags.map(String) : []))).sort();
+  const ownerOptions = Array.from(new Set<string>(plans.map((plan) => String(plan.owner || '').trim()).filter(Boolean))).sort();
+  const activeFilterCount = filters.statuses.length + filters.owners.length + filters.tags.length + filters.folders.length
+    + (filters.startFrom || filters.endTo ? 1 : 0) + (filters.environments.trim() ? 1 : 0)
+    + (filters.roles.trim() ? 1 : 0) + filters.runIds.length + (filters.notYetExecuted ? 1 : 0);
   const filteredPlans = plans.filter((plan) => {
     const query = searchTerm.toLowerCase();
     const matchesSearch = aiSearch.isAiQuery(searchTerm)
       ? (aiSearch.matchedIds ? aiSearch.matchedIds.has(plan.id) : true)
-      : (!query || `${plan.id || ''} ${plan.name || ''} ${plan.scope || ''} ${plan.objectives || ''}`.toLowerCase().includes(query));
-    const matchesStatus = statusFilter === 'All' || (plan.status || 'Draft') === statusFilter;
-    return matchesSearch && matchesStatus;
+      : (!query || `${plan.id || ''} ${plan.name || ''} ${plan.description || ''} ${plan.owner || ''} ${(plan.tags || []).join(' ')}`.toLowerCase().includes(query));
+    return matchesSearch && matchesTestPlanFilters(plan, runs, filters, matchMode);
   });
 
   return (
@@ -243,12 +282,17 @@ export default function TestPlans() {
             rows={filteredPlans}
             columns={[
               { key: 'id', label: 'ID' },
-              { key: 'name', label: 'Name' },
+              { key: 'name', label: 'Title' },
+              { key: 'startDate', label: 'Start Date' },
+              { key: 'endDate', label: 'End Date' },
+              { key: 'owner', label: 'Owner' },
+              { key: 'tags', label: 'Tags', get: (p) => (p.tags || []).join(', ') },
               { key: 'status', label: 'Status', get: (p) => p.status || 'Draft' },
-              { key: 'riskLevel', label: 'Risk Level' },
-              { key: 'scope', label: 'Scope' },
-              { key: 'objectives', label: 'Objectives' },
               { key: 'environments', label: 'Environments' },
+              { key: 'roles', label: 'Resources & Roles' },
+              { key: 'deliverables', label: 'Deliverables' },
+              { key: 'runIds', label: 'Linked Test Runs', get: (p) => getPlanRuns(p).map((run) => run.name || run.id).join(', ') },
+              { key: 'description', label: 'Description' },
               { key: 'suiteCount', label: 'Suites', get: (p) => suites.filter((s) => suitePlanIds(s).includes(p.id)).length },
               { key: 'caseCount', label: 'Cases', get: (p) => cases.filter((c) => c.testPlanId === p.id).length },
             ]}
@@ -283,120 +327,67 @@ export default function TestPlans() {
         }
       >
         <div className="space-y-4">
-          <div className="sticky top-0 z-20 border-b border-[var(--border)] bg-[var(--bg-card)] pb-4">
-            <FolderSelect
-              value={formData.folderId}
-              onChange={(folderId) => setFormData({ ...formData, folderId })}
-              label="Repository Folder"
-              includeNone={false}
-            />
-          </div>
           <div>
-            <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Plan Name (e.g. Release 2.4)</label>
+            <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Title</label>
             <input 
               type="text" 
               value={formData.name}
               onChange={(e) => setFormData({...formData, name: e.target.value})}
-              placeholder="e.g., Sprint 20 Regression" 
+              placeholder="e.g. Sprint 20 Regression"
               className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]" 
             />
           </div>
+          <FolderSelect
+            value={formData.folderId}
+            onChange={(folderId) => setFormData({ ...formData, folderId })}
+            label="Repository Folder"
+            includeNone={false}
+          />
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Start Date</label>
+              <input type="date" value={formData.startDate} onChange={(e) => setFormData({...formData, startDate: e.target.value})} className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
+            </div>
+            <div>
+              <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">End Date</label>
+              <input type="date" min={formData.startDate || undefined} value={formData.endDate} onChange={(e) => setFormData({...formData, endDate: e.target.value})} className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
+            </div>
+          </div>
           <div>
-            <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Scope & Objectives</label>
-            <textarea 
-              value={formData.objectives}
-              onChange={(e) => setFormData({...formData, objectives: e.target.value})}
-              placeholder="What are we testing and why?" 
-              className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)] h-16" 
-            />
+            <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Owner</label>
+            <input type="text" value={formData.owner} onChange={(e) => setFormData({...formData, owner: e.target.value})} placeholder="Plan owner" className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
+          </div>
+          <div>
+            <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Tags</label>
+            <TagEditor options={tagOptions} value={formData.tags} onChange={(tags) => setFormData({...formData, tags})} />
+          </div>
+          <div>
+            <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Status</label>
+            <select value={formData.status} onChange={(e) => setFormData({...formData, status: e.target.value})} className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]">
+              {PLAN_STATUSES.map((status) => <option key={status} value={status}>{status}</option>)}
+            </select>
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-             <div>
-                <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">In-Scope</label>
-                <textarea value={formData.inScope} onChange={(e) => setFormData({...formData, inScope: e.target.value})} className="min-h-20 w-full resize-y rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
-             </div>
-             <div>
-                <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Out-of-Scope</label>
-                <textarea value={formData.outOfScope} onChange={(e) => setFormData({...formData, outOfScope: e.target.value})} className="min-h-20 w-full resize-y rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
-             </div>
+            <div>
+              <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Environments</label>
+              <textarea value={formData.environments} onChange={(e) => setFormData({...formData, environments: e.target.value})} placeholder="e.g. Staging, UAT, Production" className="min-h-20 w-full resize-y rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
+            </div>
+            <div>
+              <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Resources &amp; Roles</label>
+              <textarea value={formData.roles} onChange={(e) => setFormData({...formData, roles: e.target.value})} placeholder="e.g. QA lead, automation engineer" className="min-h-20 w-full resize-y rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
+            </div>
           </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-             <div>
-                <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Test Strategy</label>
-                <input type="text" value={formData.strategy} onChange={(e) => setFormData({...formData, strategy: e.target.value})} className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]" />
-             </div>
-             <div>
-                <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Test Types</label>
-                <input type="text" value={formData.testTypes} onChange={(e) => setFormData({...formData, testTypes: e.target.value})} placeholder="e.g. Manual, Auto, API" className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]" />
-             </div>
+          <div>
+            <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Deliverables</label>
+            <textarea value={formData.deliverables} onChange={(e) => setFormData({...formData, deliverables: e.target.value})} placeholder="e.g. Test report, defect summary" className="min-h-20 w-full resize-y rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
           </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-             <div>
-                <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Environments</label>
-                <input 
-                  type="text" 
-                  value={formData.environments}
-                  onChange={(e) => setFormData({...formData, environments: e.target.value})}
-                  placeholder="e.g., Staging, UAT, Prod" 
-                  className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]" 
-                />
-             </div>
-             <div>
-                <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Resources & Roles</label>
-                <input 
-                  type="text" 
-                  value={formData.roles}
-                  onChange={(e) => setFormData({...formData, roles: e.target.value})}
-                  placeholder="e.g., QA Team, Devs" 
-                  className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]" 
-                />
-             </div>
+          <div>
+            <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Link Test Runs</label>
+            <MultiSelectDropdown label="Select test runs" options={runs.map((run) => ({ id: String(run.id), name: String(run.name || run.id) }))} value={formData.runIds} onChange={(runIds) => setFormData({...formData, runIds})} />
           </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-             <div>
-                <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Entry/Exit Criteria</label>
-                <input type="text" value={formData.entryExit} onChange={(e) => setFormData({...formData, entryExit: e.target.value})} className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]" />
-             </div>
-             <div>
-                <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Schedule</label>
-                <input type="text" value={formData.schedule} onChange={(e) => setFormData({...formData, schedule: e.target.value})} placeholder="e.g. 2 weeks" className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]" />
-             </div>
-          </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-             <div>
-                <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Status</label>
-                <select
-                  value={formData.status}
-                  onChange={(e) => setFormData({...formData, status: e.target.value})}
-                  className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]"
-                >
-                  {PLAN_STATUSES.map((status) => (
-                    <option key={status} value={status}>{status}</option>
-                  ))}
-                </select>
-             </div>
-             <div>
-                <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Risk Level</label>
-                <select
-                  value={formData.riskLevel}
-                  onChange={(e) => setFormData({...formData, riskLevel: e.target.value})}
-                  className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]"
-                >
-                  {PLAN_RISK_LEVELS.map((riskLevel) => (
-                    <option key={riskLevel} value={riskLevel}>{riskLevel}</option>
-                  ))}
-                </select>
-             </div>
-          </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-             <div>
-                <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Risks & Dependencies</label>
-                <input type="text" value={formData.risks} onChange={(e) => setFormData({...formData, risks: e.target.value})} className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]" />
-             </div>
-             <div>
-                <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Deliverables</label>
-                <input type="text" value={formData.deliverables} onChange={(e) => setFormData({...formData, deliverables: e.target.value})} placeholder="e.g. Plan, Summary Report" className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]" />
-             </div>
+          <div>
+            <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Description</label>
+            <textarea value={formData.description} onChange={(e) => setFormData({...formData, description: e.target.value})} placeholder="Describe the test plan" className="min-h-28 w-full resize-y rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
           </div>
         </div>
       </Modal>
@@ -560,22 +551,67 @@ export default function TestPlans() {
               className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md pl-9 pr-4 py-1.5 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]"
             />
           </div>
-          <div className="relative">
-            <button onClick={() => setIsFilterOpen(!isFilterOpen)} className="flex items-center gap-2 border border-[var(--border)] bg-[var(--bg-secondary)] hover:bg-[var(--border)] text-[var(--text-primary)] px-3 py-1.5 rounded-md text-sm transition-colors">
-              <Filter className="w-4 h-4" /> {statusFilter === 'All' ? 'Filters' : statusFilter}
+          <div ref={filterRef} className="relative">
+            <button onClick={() => setIsFilterOpen(!isFilterOpen)} aria-expanded={isFilterOpen} className="flex items-center gap-2 border border-[var(--border)] bg-[var(--bg-secondary)] hover:bg-[var(--border)] text-[var(--text-primary)] px-3 py-1.5 rounded-md text-sm transition-colors">
+              <Filter className="w-4 h-4" /> Filters
+              {activeFilterCount > 0 && <span className="rounded-full bg-[var(--accent)] px-1.5 text-[11px] font-semibold text-white">{activeFilterCount}</span>}
             </button>
             {isFilterOpen && (
-              <div className="absolute left-0 top-10 z-20 w-44 overflow-hidden rounded-md border border-[var(--border)] bg-[var(--bg-card)] shadow-xl">
-                {['All', ...PLAN_STATUSES].map((status) => (
-                  <button key={status} onClick={() => { setStatusFilter(status); setIsFilterOpen(false); }} className="block w-full px-3 py-2 text-left text-sm hover:bg-[var(--bg-secondary)]">
-                    {status}
-                  </button>
-                ))}
+              <div className="absolute left-0 top-10 z-30 max-h-[70vh] w-[24rem] overflow-auto rounded-md border border-[var(--border)] bg-[var(--bg-card)] p-3 shadow-xl">
+                <div className="mb-3 flex items-center justify-between gap-2">
+                  <div className="inline-flex rounded-md border border-[var(--border)] p-0.5 text-[11px] font-medium">
+                    <button onClick={() => setMatchMode('all')} className={`rounded px-2 py-1 ${matchMode === 'all' ? 'bg-[var(--accent)] text-white' : 'text-[var(--text-muted)]'}`}>Match all</button>
+                    <button onClick={() => setMatchMode('any')} className={`rounded px-2 py-1 ${matchMode === 'any' ? 'bg-[var(--accent)] text-white' : 'text-[var(--text-muted)]'}`}>Match any</button>
+                  </div>
+                  <button onClick={() => setFilters(emptyTestPlanFilters())} className="text-xs font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]">Clear all</button>
+                </div>
+                <div className="flex flex-col gap-3">
+                  <div>
+                    <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Status</label>
+                    <MultiSelectDropdown label="Any status" options={PLAN_STATUSES.map((status) => ({ id: status, name: status }))} value={filters.statuses} onChange={(statuses) => setFilters((current) => ({ ...current, statuses }))} />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Owner</label>
+                    <MultiSelectDropdown label="Any owner" options={ownerOptions.map((owner) => ({ id: owner, name: owner }))} value={filters.owners} onChange={(owners) => setFilters((current) => ({ ...current, owners }))} />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Tags</label>
+                    <MultiSelectDropdown label="Any tag" options={tagOptions.map((tag) => ({ id: tag, name: tag }))} value={filters.tags} onChange={(tags) => setFilters((current) => ({ ...current, tags }))} />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Repository Folder</label>
+                    <MultiSelectDropdown label="Any folder" options={folders.map((folder) => ({ id: String(folder.id), name: String(folder.path || folder.name) }))} value={filters.folders} onChange={(folders) => setFilters((current) => ({ ...current, folders }))} />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Start Date / End Date</label>
+                    <div className="flex items-center gap-2">
+                      <input type="date" aria-label="Plan starts on or after" value={filters.startFrom} onChange={(event) => setFilters((current) => ({ ...current, startFrom: event.target.value }))} className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
+                      <span className="text-xs text-[var(--text-muted)]">to</span>
+                      <input type="date" aria-label="Plan ends on or before" min={filters.startFrom || undefined} value={filters.endTo} onChange={(event) => setFilters((current) => ({ ...current, endTo: event.target.value }))} className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Environments</label>
+                    <input value={filters.environments} onChange={(event) => setFilters((current) => ({ ...current, environments: event.target.value }))} placeholder="Contains environment" className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2.5 py-1.5 text-xs text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Resources &amp; Roles</label>
+                    <input value={filters.roles} onChange={(event) => setFilters((current) => ({ ...current, roles: event.target.value }))} placeholder="Contains resource or role" className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2.5 py-1.5 text-xs text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Linked Test Runs</label>
+                    <MultiSelectDropdown label="Any linked run" options={runs.map((run) => ({ id: String(run.id), name: String(run.name || run.id) }))} value={filters.runIds} onChange={(runIds) => setFilters((current) => ({ ...current, runIds }))} />
+                  </div>
+                  <label className="flex cursor-pointer items-center gap-2 rounded px-1 py-1 text-sm hover:bg-[var(--bg-secondary)]">
+                    <input type="checkbox" checked={filters.notYetExecuted} onChange={(event) => setFilters((current) => ({ ...current, notYetExecuted: event.target.checked }))} />
+                    Not yet executed
+                  </label>
+                </div>
               </div>
             )}
           </div>
           <div aria-live="polite" className="ml-auto whitespace-nowrap text-xs font-medium text-[var(--text-muted)]">
-            {filteredPlans.length}{(searchTerm || statusFilter !== 'All') ? ` of ${plans.length}` : ''} test plan{filteredPlans.length === 1 ? '' : 's'}
+            {filteredPlans.length}{(searchTerm || activeFilterCount > 0) ? ` of ${plans.length}` : ''} test plan{filteredPlans.length === 1 ? '' : 's'}
           </div>
           {bulk.selectedCount > 0 && (
             <div className="ml-auto flex items-center gap-2">
