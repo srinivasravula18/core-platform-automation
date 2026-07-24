@@ -607,9 +607,11 @@ export default function TestPlans() {
           </div>
           {bulk.selectedCount > 0 && (
             <div className="ml-auto flex items-center gap-2">
-              <button onClick={() => runSelectedPlans()} disabled={isStartingRun} title={runCountLabel(selectedPlanIds.reduce((count, id) => count + getPlanRuns(plans.find((plan) => plan.id === id)).length, 0))} className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
-                {isStartingRun ? <Loader2 className="w-4 h-4 animate-spin" /> : <PlayCircle className="w-4 h-4" />} Run selected ({bulk.selectedCount})
-              </button>
+              {bulk.selectedCount > 1 && (
+                <button onClick={() => runSelectedPlans()} disabled={isStartingRun} title={runCountLabel(selectedPlanIds.reduce((count, id) => count + getPlanRuns(plans.find((plan) => plan.id === id)).length, 0))} className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
+                  {isStartingRun ? <Loader2 className="w-4 h-4 animate-spin" /> : <PlayCircle className="w-4 h-4" />} Run selected ({bulk.selectedCount})
+                </button>
+              )}
               <button onClick={bulk.deleteSelected} disabled={bulk.busy} className="flex items-center gap-1.5 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
                 <Trash2 className="w-4 h-4" /> Delete selected ({bulk.selectedCount})
               </button>

@@ -973,9 +973,11 @@ export default function TestCases() {
             ))}
           </select>
           <div className="ml-auto flex items-center gap-2">
-            <button onClick={() => runSelectedCases()} disabled={isStartingRun || bulk.selectedCount === 0} title={bulk.selectedCount === 0 ? 'Select at least one test case' : 'Run selected'} className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
-              {isStartingRun ? <Loader2 className="w-4 h-4 animate-spin" /> : <PlayCircle className="w-4 h-4" />} Run selected{bulk.selectedCount > 0 ? ` (${bulk.selectedCount})` : ''}
-            </button>
+            {bulk.selectedCount > 1 && (
+              <button onClick={() => runSelectedCases()} disabled={isStartingRun} title="Run selected" className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
+                {isStartingRun ? <Loader2 className="w-4 h-4 animate-spin" /> : <PlayCircle className="w-4 h-4" />} Run selected ({bulk.selectedCount})
+              </button>
+            )}
             <button onClick={bulk.deleteSelected} disabled={bulk.busy || bulk.selectedCount === 0} title={bulk.selectedCount === 0 ? 'Select at least one test case' : 'Delete selected'} className="flex items-center gap-1.5 bg-red-600 hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
               <Trash2 className="w-4 h-4" /> Delete selected{bulk.selectedCount > 0 ? ` (${bulk.selectedCount})` : ''}
             </button>
