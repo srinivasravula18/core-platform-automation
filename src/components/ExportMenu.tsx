@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Download, ChevronDown, FileSpreadsheet, FileJson, FileText, Printer } from 'lucide-react';
+import { Archive, Download, ChevronDown, FileSpreadsheet, FileJson, FileText, Printer } from 'lucide-react';
 import { exportRows, type ExportColumn, type ExportFormat } from '../lib/exportData';
 
 interface ExportMenuProps {
@@ -14,6 +14,7 @@ interface ExportMenuProps {
   label?: string;
   className?: string;
   dropUp?: boolean;
+  extraItems?: Array<{ label: string; onClick: () => void; icon?: typeof FileText }>;
 }
 
 const FORMAT_META: Record<ExportFormat, { label: string; icon: typeof FileText }> = {
@@ -33,6 +34,7 @@ export default function ExportMenu({
   label = 'Export',
   className = '',
   dropUp = false,
+  extraItems = [],
 }: ExportMenuProps) {
   const [open, setOpen] = useState(false);
   const disabled = !rows || rows.length === 0;
@@ -72,6 +74,18 @@ export default function ExportMenu({
                   className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-[var(--text-primary)] hover:bg-[var(--bg-secondary)] transition-colors"
                 >
                   <Icon className="w-4 h-4 text-[var(--accent)]" /> {Meta.label}
+                </button>
+              );
+            })}
+            {extraItems.map((item) => {
+              const Icon = item.icon || Archive;
+              return (
+                <button
+                  key={item.label}
+                  onClick={() => { setOpen(false); item.onClick(); }}
+                  className="flex w-full items-center gap-2 border-t border-[var(--border)] px-3 py-2 text-left text-sm text-[var(--text-primary)] hover:bg-[var(--bg-secondary)] transition-colors"
+                >
+                  <Icon className="w-4 h-4 text-[var(--accent)]" /> {item.label}
                 </button>
               );
             })}

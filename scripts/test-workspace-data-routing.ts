@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import {
   isWorkspaceDataQuestion, queryWorkspaceTool, quickWorkspaceAnswer, scriptsFromAgentRuns,
 } from '../server/ai/tools/registry';
-import { Agents, AutomationArtifacts, AutomationJobs, Settings } from '../server/db/repository';
+import { Agents, AutomationArtifacts, AutomationJobs, Cases, Settings } from '../server/db/repository';
 
 assert.equal(isWorkspaceDataQuestion('tell me which script created the app called Validation test app'), true);
 assert.equal(isWorkspaceDataQuestion('what fields are on the app creation page?'), false);
@@ -10,6 +10,7 @@ assert.equal(isWorkspaceDataQuestion('check once again', [
   { content: 'which script created Validation test app?' },
 ]), true);
 for (const question of [
+  'how many test steps are in my workspace?',
   'how many folders are in my workspace?',
   'list the automation agents',
   'show my recordings',
@@ -22,13 +23,14 @@ for (const question of [
 }
 
 const workspaceKinds = ((queryWorkspaceTool.spec.parameters as any).properties.kind.enum || []) as string[];
-for (const kind of ['folders', 'automation_agents', 'recordings', 'jobs', 'schedules', 'automation_artifacts', 'settings']) {
+for (const kind of ['steps', 'folders', 'automation_agents', 'recordings', 'jobs', 'schedules', 'automation_artifacts', 'settings']) {
   assert.equal(workspaceKinds.includes(kind), true, kind);
 }
 assert.equal(workspaceKinds.includes('credentials'), false);
 
 const originalAgentsList = Agents.list;
 const originalArtifactsList = AutomationArtifacts.list;
+const originalCasesList = Cases.list;
 const originalJobsList = AutomationJobs.list;
 const originalSettingsGet = Settings.getKVs;
 try {
@@ -40,6 +42,24 @@ try {
   assert.equal(
     await quickWorkspaceAnswer('how many automation agents?', { userId: 'USER-1' }),
     'There are 2 automation agents in the workspace.',
+  );
+
+  Cases.list = async () => [
+    { id: 'CASE-1', ownerId: 'USER-1', steps: [{ action: 'Open' }, { action: 'Submit' }] },
+    { id: 'CASE-2', ownerId: 'USER-1', steps: [{ action: 'Verify' }] },
+    { id: 'CASE-3', ownerId: 'USER-2', steps: [{ action: 'Hidden' }] },
+  ] as any;
+  assert.equal(
+    await quickWorkspaceAnswer('how many test steps?', { userId: 'USER-1' }),
+    'There are 3 test steps in the workspace.',
+  );
+  assert.equal(
+    await quickWorkspaceAnswer('can you tell me total count of Steps created so far', { userId: 'USER-1' }),
+    'There are 3 test steps in the workspace.',
+  );
+  assert.equal(
+    await quickWorkspaceAnswer('how many failed test cases?', { userId: 'USER-1' }),
+    null,
   );
 
   AutomationArtifacts.list = async () => [
@@ -71,6 +91,7 @@ try {
 } finally {
   Agents.list = originalAgentsList;
   AutomationArtifacts.list = originalArtifactsList;
+  Cases.list = originalCasesList;
   AutomationJobs.list = originalJobsList;
   Settings.getKVs = originalSettingsGet;
 }

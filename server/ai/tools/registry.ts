@@ -53,8 +53,23 @@ const scopedAutomationArtifacts: Lister = {
     });
   },
 };
+const testSteps: Lister = {
+  async list() {
+    const cases = await Cases.list();
+    return cases.flatMap((testCase: any) => (Array.isArray(testCase.steps) ? testCase.steps : [])
+      .map((step: any, index: number) => ({
+        ...step,
+        id: step?.id || `${testCase.id}-step-${index + 1}`,
+        caseId: testCase.id,
+        ownerId: testCase.ownerId,
+        projectId: testCase.projectId,
+        appId: testCase.appId,
+      })));
+  },
+};
 const COLLECTIONS: Record<string, Lister> = {
   cases: Cases as any,
+  steps: testSteps,
   suites: Suites as any,
   plans: Plans as any,
   runs: Runs as any,
@@ -99,7 +114,7 @@ export function scriptsFromAgentRuns(runs: any[]): any[] {
 export function isWorkspaceDataQuestion(message: string, history: Array<{ content?: string }> = []): boolean {
   const asksAboutArtifacts = (value: string) => {
     const text = String(value || '').toLowerCase();
-    const artifact = /\b(test\s*)?(cases?|suites?|plans?|scripts?|defects?|bugs?|requirements?|reports?|artifacts?|evidence|folders?|recordings?|jobs?|schedules?|settings?)\b/.test(text)
+    const artifact = /\b(test\s*)?(steps?|cases?|suites?|plans?|scripts?|defects?|bugs?|requirements?|reports?|artifacts?|evidence|folders?|recordings?|jobs?|schedules?|settings?)\b/.test(text)
       || /\b(?:automation|local)\s+agents?\b/.test(text)
       || /\buploaded\s+(?:automation\s+)?artifacts?\b/.test(text)
       || (/\bruns?\b/.test(text) && /\b(test|last|latest|existing|workspace|failed|passed|result|execution|which|list|show)\b/.test(text));
@@ -133,7 +148,7 @@ export const queryWorkspaceTool: AgentTool = {
   spec: {
     name: 'query_workspace',
     description:
-      'Search and read QA workspace memory: cases, suites, plans, runs, scripts, defects, requirements, reports, folders, automation agents, recordings, jobs, schedules, uploaded automation artifacts, and non-sensitive setting names. Credentials, tokens, secrets, setting values, webhook hashes, and agent authentication hashes are never available. Use this read-only tool as the source of truth for questions about existing work.',
+      'Search and read QA workspace memory: test steps, cases, suites, plans, runs, scripts, defects, requirements, reports, folders, automation agents, recordings, jobs, schedules, uploaded automation artifacts, and non-sensitive setting names. Credentials, tokens, secrets, setting values, webhook hashes, and agent authentication hashes are never available. Use this read-only tool as the source of truth for questions about existing work.',
     parameters: {
       type: 'object',
       properties: {
@@ -168,7 +183,8 @@ export const queryWorkspaceTool: AgentTool = {
     // lets "which script fills API name zgf_86" or "which cases cover login" or "why did the last run fail" work.
     const hay = (it: any): string => {
       const base: any[] = [it?.id, it?.title, it?.name, it?.description, (it?.tags || []).join(' ')];
-      if (kind === 'cases') base.push(it?.preconditions, stepsToText(it?.steps), it?.priority, it?.type);
+      if (kind === 'steps') base.push(it?.caseId, it?.action, it?.step, it?.description, it?.expected, it?.expectedResult);
+      else if (kind === 'cases') base.push(it?.preconditions, stepsToText(it?.steps), it?.priority, it?.type);
       else if (kind === 'scripts') base.push(it?.filename, it?.code);
       else if (kind === 'runs') base.push(it?.prompt, runOutcome(it), it?.app_url, it?.status);
       else if (kind === 'defects') base.push(stepsToText(it?.stepsToReproduce), it?.expected, it?.actual, it?.severity, it?.linkedCaseId, it?.linkedRunId);
@@ -189,7 +205,12 @@ export const queryWorkspaceTool: AgentTool = {
         status: it?.status,
         date: it?.date || it?.updatedAt || it?.createdAt,
       };
-      if (kind === 'cases') Object.assign(row, {
+      if (kind === 'steps') Object.assign(row, {
+        caseId: it?.caseId,
+        action: it?.action || it?.step || it?.description || '',
+        expected: it?.expected || it?.expectedResult || it?.result || '',
+      });
+      else if (kind === 'cases') Object.assign(row, {
         description: it?.description || '', priority: it?.priority, type: it?.type,
         tags: it?.tags || [], suiteId: it?.testSuiteId || it?.suiteId,
         steps: stepsToText(it?.steps).slice(0, 2000), agentRunId: it?.agentRunId,
@@ -480,6 +501,7 @@ export const analyzeFeatureCoverageTool: AgentTool = {
  */
 const KIND_MATCHERS: Array<{ coll: Lister; re: RegExp; label: string }> = [
   // Order matters: more specific labels first so "test runs" isn't shadowed, etc.
+  { coll: testSteps, re: /\b(?:test\s*)?steps?\b/, label: 'test steps' },
   { coll: Cases as any, re: /\b(test\s*cases?|cases?)\b/, label: 'test cases' },
   { coll: Suites as any, re: /\b(test\s*suites?|suites?)\b/, label: 'test suites' },
   { coll: Plans as any, re: /\b(test\s*plans?|plans?)\b/, label: 'test plans' },
@@ -534,9 +556,9 @@ export async function quickWorkspaceAnswer(
   const residue = countText
     .replace(/[^a-z0-9 ]+/g, ' ')
     .replace(/\b(how many|how much|number of|total|counts?|list|show|me|what|whats|are|there|which|do|does|did|i|have|has|the|all|any|my|our|of|in|currently|is|please|so far|now|workspace|test|tests|automation|local|uploaded|them|items|data|overall|everything|each|kind)\b/g, ' ')
-    .replace(/\b(cases?|suites?|plans?|runs?|executions?|scripts?|playwright|defects?|bugs?|issues?|requirements?|reports?|folders?|agents?|recordings?|jobs?|schedules?|artifacts?|settings?)\b/g, ' ')
+    .replace(/\b(steps?|cases?|suites?|plans?|runs?|executions?|scripts?|playwright|defects?|bugs?|issues?|requirements?|reports?|folders?|agents?|recordings?|jobs?|schedules?|artifacts?|settings?)\b/g, ' ')
     .replace(/\s+/g, ' ').trim();
-  if (residue) return null;
+  if (residue && !/\b(total|overall)\b/.test(t)) return null;
 
   // Accept a bare userId (legacy callers) or a full {userId, projectId, appId} scope.
   const sc: WorkspaceScope = typeof scopeArg === 'string' ? { userId: scopeArg } : (scopeArg || {});

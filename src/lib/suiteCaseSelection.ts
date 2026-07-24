@@ -31,6 +31,23 @@ export function caseSuiteAssignment(testCase: any, suiteId: string) {
   };
 }
 
+export function caseSuiteMembershipUpdate(testCase: any, suiteId: string, selected: boolean) {
+  const currentIds = Array.from(new Set([
+    ...(Array.isArray(testCase.testSuiteIds) ? testCase.testSuiteIds : []),
+    ...(testCase.testSuiteId ? [testCase.testSuiteId] : []),
+  ]));
+  const testSuiteIds = selected
+    ? Array.from(new Set([...currentIds, suiteId]))
+    : currentIds.filter((id) => id !== suiteId);
+  return {
+    testSuiteId: testCase.testSuiteId === suiteId
+      ? (testSuiteIds[0] || '')
+      : (testCase.testSuiteId || (selected ? suiteId : '')),
+    testSuiteIds,
+    folderId: testCase.folderId,
+  };
+}
+
 export function suiteModuleName(suite: any, folders: any[]): string {
   const stored = String(suite?.module || '').trim();
   if (stored && stored !== 'QA Assistant') return stored;

@@ -29,6 +29,7 @@ import { buildKnowledgeBlock } from '../features/knowledge/knowledgeService';
 import { discoverRequirement } from '../features/requirements/requirementService';
 import { ControllerPlanStore } from './memory/controllerPlanStore';
 import { assembleConversationContext } from './memory/contextAssembler';
+import { nextArtifactId } from '../shared/artifactIds';
 
 // The Agent Console is intentionally NOT connected to the AI Inbox. Plans create their
 // artifacts directly (they're shown in the chat and on their pages); nothing is queued for
@@ -541,7 +542,7 @@ async function executeStep(step: PlanStep, plan: Plan): Promise<any> {
     }
     case 'create_plan': {
       const name = String(params.name || 'AI Generated Plan');
-      const id = `PLAN-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
+      const id = await nextArtifactId('PLAN', { ownerId: userId, sourceText: `${plan.userMessage} ${name}` });
       const planRec = await Plans.upsert({
         id,
         name,
@@ -579,7 +580,7 @@ async function executeStep(step: PlanStep, plan: Plan): Promise<any> {
     }
     case 'create_suite': {
       const name = String(params.name || 'AI Generated Suite');
-      const id = `SUITE-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
+      const id = await nextArtifactId('SUITE', { ownerId: userId, sourceText: `${plan.userMessage} ${name}` });
       const suite = await Suites.upsert({
         id,
         name,

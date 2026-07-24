@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ChevronDown, ChevronRight, Search, Filter, MoreHorizontal, Plus, Sparkles, Trash2, PlayCircle, Loader2 } from 'lucide-react';
+import { ChevronDown, ChevronRight, Search, Filter, Pencil, Plus, Sparkles, Trash2, PlayCircle, Loader2 } from 'lucide-react';
 import ExportMenu from '../components/ExportMenu';
 import { useAiSearch } from '@/src/lib/useAiSearch';
 import { useBulkDelete } from '@/src/lib/useBulkDelete';
@@ -8,6 +8,7 @@ import { startSelectedRun } from '@/src/lib/startSelectedRun';
 import {
   caseBelongsToSuite,
   caseSuiteAssignment,
+  caseSuiteMembershipUpdate,
   orderSuitesByHierarchy,
   relatedCasesForSuite,
   suiteHierarchyDepth,
@@ -65,11 +66,17 @@ export default function TestSuites() {
       .catch(console.error);
   };
 
-  const fetchCases = () => {
-    fetch('/api/cases')
-      .then(r => r.json())
-      .then(data => { setCases(Array.isArray(data) ? data : []); })
-      .catch(console.error);
+  const fetchCases = async () => {
+    try {
+      const response = await fetch('/api/cases');
+      const data = await response.json();
+      const nextCases = Array.isArray(data) ? data : [];
+      setCases(nextCases);
+      return nextCases;
+    } catch (error) {
+      console.error(error);
+      return cases;
+    }
   };
 
   const fetchFolders = () => {
@@ -94,10 +101,11 @@ export default function TestSuites() {
     setIsSuiteModalOpen(true);
   };
 
-  const openEditModal = (suite: any) => {
+  const openEditModal = async (suite: any) => {
+    const currentCases = await fetchCases();
     setSelectedSuiteId(suite.id);
     setSubsuiteParentId('');
-    setSelectedCaseIds(new Set());
+    setSelectedCaseIds(new Set(currentCases.filter((testCase) => caseBelongsToSuite(testCase, suite.id)).map((testCase) => testCase.id)));
     setFormData({
       name: suite.name || '', description: suite.description || '', testPlanIds: suitePlanIds(suite), parentSuiteIds: suiteParentIds(suite),
       module: suiteModuleName(suite, folders), owner: suite.owner || '', tags: Array.isArray(suite.tags) ? suite.tags : String(suite.tags || '').split(',').map((tag) => tag.trim()).filter(Boolean),
@@ -140,6 +148,17 @@ export default function TestSuites() {
           body: JSON.stringify(suitePayload),
         });
         if (!response.ok) throw new Error((await response.json().catch(() => ({})))?.error || 'Failed to update test suite.');
+        const changedCases = cases.filter((testCase) =>
+          caseBelongsToSuite(testCase, selectedSuiteId) !== selectedCaseIds.has(testCase.id),
+        );
+        const results = await Promise.all(changedCases.map((testCase) =>
+          fetch(`/api/cases/${testCase.id}`, {
+            method: 'PUT',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(caseSuiteMembershipUpdate(testCase, selectedSuiteId, selectedCaseIds.has(testCase.id))),
+          }),
+        ));
+        if (results.some((result) => !result.ok)) throw new Error('Suite updated, but one or more test case assignments could not be saved.');
       } else {
         const response = await fetch('/api/suites', {
           method: 'POST',
@@ -231,7 +250,9 @@ export default function TestSuites() {
   const getSuiteCases = (suiteId: string) => cases.filter((testCase) => caseBelongsToSuite(testCase, suiteId));
   const moduleOptions = Array.from(new Set(suites.map((suite) => suiteModuleName(suite, folders)).filter(Boolean))).sort();
   const tagOptions: string[] = Array.from(new Set<string>(suites.flatMap((suite) => Array.isArray(suite.tags) ? suite.tags : []).map((tag) => String(tag).trim()).filter(Boolean))).sort();
-  const relatedCases = selectedSuiteId ? [] : relatedCasesForSuite(cases, formData.folderId, formData.parentSuiteIds.length ? formData.parentSuiteIds : (subsuiteParentId ? [subsuiteParentId] : []));
+  const relatedCases = selectedSuiteId
+    ? cases.filter((testCase) => testCase.folderId === formData.folderId || caseBelongsToSuite(testCase, selectedSuiteId))
+    : relatedCasesForSuite(cases, formData.folderId, formData.parentSuiteIds.length ? formData.parentSuiteIds : (subsuiteParentId ? [subsuiteParentId] : []));
   useEffect(() => {
     const visibleIds = new Set(relatedCases.map((testCase) => testCase.id));
     setSelectedCaseIds((current) => new Set([...current].filter((id) => visibleIds.has(id))));
@@ -392,8 +413,7 @@ export default function TestSuites() {
                 <TagEditor options={tagOptions} value={formData.tags} onChange={(tags) => setFormData({ ...formData, tags })} />
             </div>
           </div>
-          {!selectedSuiteId && (
-            <div>
+          <div>
               <div className="mb-1 flex items-center justify-between">
                 <label className="text-sm font-medium text-[var(--text-muted)]">Related Test Cases</label>
                 {relatedCases.length > 0 && (
@@ -414,7 +434,9 @@ export default function TestSuites() {
                 {!formData.folderId ? (
                   <div className="px-3 py-5 text-center text-sm text-[var(--text-muted)]">Select a repository folder to see related test cases.</div>
                 ) : relatedCases.length === 0 ? (
-                  <div className="px-3 py-5 text-center text-sm text-[var(--text-muted)]">No test cases match the selected folder and parent suite.</div>
+                  <div className="px-3 py-5 text-center text-sm text-[var(--text-muted)]">
+                    {selectedSuiteId ? 'No test cases match the selected folder.' : 'No test cases match the selected folder and parent suite.'}
+                  </div>
                 ) : relatedCases.map((testCase) => (
                   <label key={testCase.id} className="flex cursor-pointer items-center gap-2 border-b border-[var(--border)] px-3 py-2 text-sm last:border-0 hover:bg-[var(--bg-secondary)]">
                     <input
@@ -432,8 +454,7 @@ export default function TestSuites() {
                 ))}
               </div>
               <div className="mt-1 text-xs text-[var(--text-muted)]">{selectedCaseIds.size} selected</div>
-            </div>
-          )}
+          </div>
         </div>
       </Modal>
 
@@ -481,9 +502,11 @@ export default function TestSuites() {
           </div>
           {bulk.selectedCount > 0 && (
             <div className="ml-auto flex items-center gap-2">
-              <button onClick={() => runSelectedSuites()} disabled={isStartingRun} className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
-                {isStartingRun ? <Loader2 className="w-4 h-4 animate-spin" /> : <PlayCircle className="w-4 h-4" />} Run selected ({bulk.selectedCount})
-              </button>
+              {bulk.selectedCount > 1 && (
+                <button onClick={() => runSelectedSuites()} disabled={isStartingRun} className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
+                  {isStartingRun ? <Loader2 className="w-4 h-4 animate-spin" /> : <PlayCircle className="w-4 h-4" />} Run selected ({bulk.selectedCount})
+                </button>
+              )}
               <button onClick={bulk.deleteSelected} disabled={bulk.busy} className="flex items-center gap-1.5 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
                 <Trash2 className="w-4 h-4" /> Delete selected ({bulk.selectedCount})
               </button>
@@ -621,9 +644,9 @@ export default function TestSuites() {
                               openEditModal(suite);
                             }}
                             title="Edit suite"
-                            className="shrink-0 p-1 rounded hover:bg-[var(--border)] text-[var(--text-muted)] transition-colors"
+                            className="shrink-0 p-1 rounded hover:bg-[var(--border)] text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors"
                           >
-                            <MoreHorizontal className="w-4 h-4" />
+                            <Pencil className="w-4 h-4" />
                           </button>
                           <button
                             onClick={(e) => { e.stopPropagation(); bulk.deleteOne(suite.id); }}

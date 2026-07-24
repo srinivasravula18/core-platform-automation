@@ -31,6 +31,12 @@ CREATE TABLE IF NOT EXISTS plans (
   schedule        TEXT DEFAULT '',
   risks           TEXT DEFAULT '',
   deliverables    TEXT DEFAULT '',
+  description     TEXT DEFAULT '',
+  start_date      DATE,
+  end_date        DATE,
+  owner           TEXT DEFAULT '',
+  tags            TEXT[] DEFAULT ARRAY[]::TEXT[],
+  run_ids         JSONB DEFAULT '[]'::jsonb,
   status          TEXT NOT NULL DEFAULT 'draft',
   risk_level      TEXT DEFAULT 'Medium',
   folder_id       TEXT REFERENCES folders(id) ON DELETE SET NULL,
@@ -43,6 +49,13 @@ CREATE TABLE IF NOT EXISTS plans (
   updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
   deleted_at      TIMESTAMPTZ
 );
+
+ALTER TABLE plans ADD COLUMN IF NOT EXISTS description TEXT DEFAULT '';
+ALTER TABLE plans ADD COLUMN IF NOT EXISTS start_date DATE;
+ALTER TABLE plans ADD COLUMN IF NOT EXISTS end_date DATE;
+ALTER TABLE plans ADD COLUMN IF NOT EXISTS owner TEXT DEFAULT '';
+ALTER TABLE plans ADD COLUMN IF NOT EXISTS tags TEXT[] DEFAULT ARRAY[]::TEXT[];
+ALTER TABLE plans ADD COLUMN IF NOT EXISTS run_ids JSONB DEFAULT '[]'::jsonb;
 
 CREATE TABLE IF NOT EXISTS suites (
   id              TEXT PRIMARY KEY,
@@ -239,6 +252,13 @@ CREATE TABLE IF NOT EXISTS websites (
   created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS artifact_id_counters (
+  website_key   TEXT NOT NULL,
+  artifact_type TEXT NOT NULL CHECK (artifact_type IN ('PLAN', 'SUITE', 'TC')),
+  last_value    BIGINT NOT NULL DEFAULT 0,
+  PRIMARY KEY (website_key, artifact_type)
+);
+
 CREATE TABLE IF NOT EXISTS website_users (
   id          TEXT PRIMARY KEY,
   website_id  TEXT NOT NULL REFERENCES websites(id) ON DELETE CASCADE,
@@ -267,6 +287,7 @@ ALTER TABLE defects ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}'::jsonb;
 ALTER TABLE cases ADD COLUMN IF NOT EXISTS automation_status TEXT DEFAULT 'Not Automated';
 ALTER TABLE cases ADD COLUMN IF NOT EXISTS testing_scope     TEXT DEFAULT 'Manual';
 ALTER TABLE cases ADD COLUMN IF NOT EXISTS testing_type      TEXT DEFAULT 'Functional';
+ALTER TABLE cases ADD COLUMN IF NOT EXISTS testing_types     JSONB DEFAULT '[]'::jsonb;
 -- Multi-select plan/suite membership (edit form). Singular test_plan_id/test_suite_id stay in sync
 -- with the first entry so existing run/linking logic keyed on the singular id is unaffected.
 ALTER TABLE cases ADD COLUMN IF NOT EXISTS test_plan_ids  JSONB DEFAULT '[]'::jsonb;
@@ -529,6 +550,7 @@ CREATE TABLE IF NOT EXISTS requirements (
   description            TEXT DEFAULT '',
   feature_query          TEXT DEFAULT '',
   business_rules         JSONB DEFAULT '[]'::jsonb,
+  srs_modules            JSONB DEFAULT '[]'::jsonb,
   data_population_notes  TEXT DEFAULT '',
   admin_behavior         TEXT DEFAULT '',
   keystone_behavior      TEXT DEFAULT '',
@@ -547,6 +569,7 @@ CREATE TABLE IF NOT EXISTS requirements (
 );
 
 ALTER TABLE requirements ADD COLUMN IF NOT EXISTS ui_selectors JSONB DEFAULT '{}'::jsonb;
+ALTER TABLE requirements ADD COLUMN IF NOT EXISTS srs_modules JSONB DEFAULT '[]'::jsonb;
 
 -- Many-to-many coverage links between a requirement and the test cases that cover it.
 -- link_type 'existing' = case already in the repo reconciled as coverage;

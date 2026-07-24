@@ -9,6 +9,7 @@ import { resolveCredentials } from '../credentials/credentialsService';
 import { buildCorePlatformApplicationContext } from '../agent/applicationContext';
 import { assembleConversationContext } from '../../ai/memory/contextAssembler';
 import { resolveModelForAgent, resolveProviderForAgent } from '../../ai/orchestrator';
+import { normalizeTestCaseTypes } from '../../../core/shared/testCaseTypes';
 
 // Server-side conversation reconstruction for requirement drafting, so follow-ups
 // ("also add requirements for X") enrich the running scope instead of starting cold.
@@ -168,16 +169,23 @@ export function registerRequirementRoutes(app: Express) {
     try {
       const requirements = scopeFilter(await Requirements.list(), reqScope(req));
       const links = await RequirementLinks.list();
+      const cases = scopeFilter(await Cases.list(), reqScope(req));
+      const casesById = new Map(cases.map((testCase: any) => [testCase.id, testCase]));
       const byReq = new Map<string, { existing: number; generated: number }>();
+      const typesByReq = new Map<string, Set<string>>();
       for (const l of links) {
         const entry = byReq.get(l.requirementId) || { existing: 0, generated: 0 };
         if (l.linkType === 'generated') entry.generated += 1;
         else entry.existing += 1;
         byReq.set(l.requirementId, entry);
+        const typeSet = typesByReq.get(l.requirementId) || new Set<string>();
+        const linkedCase = casesById.get(l.caseId);
+        if (linkedCase) normalizeTestCaseTypes(linkedCase).forEach((type) => typeSet.add(type));
+        typesByReq.set(l.requirementId, typeSet);
       }
       res.json(requirements.map((r: any) => {
         const counts = byReq.get(r.id) || { existing: 0, generated: 0 };
-        return { ...r, existingCaseCount: counts.existing, generatedCaseCount: counts.generated, linkedCaseCount: counts.existing + counts.generated };
+        return { ...r, testCaseTypes: [...(typesByReq.get(r.id) || [])], existingCaseCount: counts.existing, generatedCaseCount: counts.generated, linkedCaseCount: counts.existing + counts.generated };
       }));
     } catch (error: any) {
       res.status(500).json({ error: error?.message || 'Failed to list requirements.' });
@@ -206,7 +214,7 @@ export function registerRequirementRoutes(app: Express) {
     const updated = { ...existing, ...req.body, updatedAt: new Date() };
     await Requirements.upsert(updated);
     if (!isPgEnabled()) persistDataInBackground('requirement update');
-    addActivity(`Updated requirement: ${updated.title}`);
+    addActivity(`Updated requirement: ${updated.title}`, { ownerId: reqScope(req).userId || '' });
     res.json({ success: true });
   });
 
@@ -215,7 +223,7 @@ export function registerRequirementRoutes(app: Express) {
     if (!existing) return res.status(404).json({ error: 'Requirement not found.' });
     await Requirements.remove(req.params.id);
     if (!isPgEnabled()) persistDataInBackground('requirement delete');
-    addActivity(`Deleted requirement: ${existing.title}`);
+    addActivity(`Deleted requirement: ${existing.title}`, { ownerId: reqScope(req).userId || '' });
     res.json({ success: true });
   });
 
@@ -230,7 +238,7 @@ export function registerRequirementRoutes(app: Express) {
       deleted += 1;
     }
     if (!isPgEnabled()) persistDataInBackground('requirement bulk delete');
-    addActivity(`Deleted ${deleted} requirements`);
+    addActivity(`Deleted ${deleted} requirements`, { ownerId: reqScope(req).userId || '' });
     res.json({ success: true, deleted });
   });
 
@@ -249,7 +257,7 @@ export function registerRequirementRoutes(app: Express) {
       note: req.body?.note || '',
     });
     if (!isPgEnabled()) persistDataInBackground('requirement link');
-    addActivity(`Linked case ${caseId} to requirement ${requirement.title}`);
+    addActivity(`Linked case ${caseId} to requirement ${requirement.title}`, { ownerId: reqScope(req).userId || '' });
     res.json({ success: true, link });
   });
 

@@ -19,6 +19,8 @@ export interface Scope {
   appId: string | null;
   /** Logged-in app user id, or '' when unauthenticated. Drives per-user isolation. */
   userId?: string;
+  /** Logged-in username, or '' when unauthenticated. Used to attribute activity/history. */
+  username?: string;
   /** Logged-in user's role ('admin' sees all data; 'tester' sees only their own). */
   role?: string;
 }
@@ -36,8 +38,8 @@ export function getScope(req: Request): Scope {
   const appId = headerOrBody(req, 'x-app-id', 'appId');
   // authContextMiddleware (registered before scopeMiddleware) resolves the token
   // into the logged-in user; read it here without importing the auth module.
-  const authUser = (req as any).authUser as { userId?: string; role?: string } | null | undefined;
-  return { projectId, appId: appId || null, userId: authUser?.userId || '', role: authUser?.role || '' };
+  const authUser = (req as any).authUser as { userId?: string; username?: string; role?: string } | null | undefined;
+  return { projectId, appId: appId || null, userId: authUser?.userId || '', username: authUser?.username || '', role: authUser?.role || '' };
 }
 
 /** Express middleware: attach `req.scope` for every request. */
@@ -59,10 +61,12 @@ export function reqScope(req: Request): Scope {
  */
 export function scopeFilter<T extends { projectId?: string; appId?: string; ownerId?: string }>(items: T[], scope: Scope): T[] {
   let out = items;
-  // Per-user isolation FIRST and independent of project selection: every logged-in
-  // user (including admin) sees ONLY rows they own — no cross-user data visibility.
-  // Legacy/unowned rows are reassigned to admin at startup (claimLegacyDataForAdmin).
-  // Unauthenticated/internal callers (no userId) bypass this.
+  // STRICT per-user isolation, independent of project selection and role: EVERY logged-in
+  // user — admin included — sees ONLY rows they own. No user's data is ever visible to
+  // another user anywhere in the app. Admin's elevated rights are for user/settings
+  // MANAGEMENT (see requireAdmin), NOT for seeing other users' data. Legacy/unowned rows
+  // are reassigned to admin at startup (claimLegacyDataForAdmin). Unauthenticated/internal
+  // callers (no userId) bypass this.
   if (scope.userId) {
     out = out.filter((it) => (it.ownerId || '') === scope.userId);
   }

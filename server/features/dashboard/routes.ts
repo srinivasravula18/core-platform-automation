@@ -1,5 +1,6 @@
 import type { Express } from 'express';
 import { Activity, Cases, Defects, Plans, Reports, Runs, Suites, AgentRuns, AutomationSchedules, AutomationJobs, isPgEnabled } from '../../db/repository';
+import { reqScope, scopeFilter } from '../../shared/scope';
 
 function toLocalDateKey(date: Date) {
   const year = date.getFullYear();
@@ -49,18 +50,43 @@ function buildStatsChartData(runs: any[]) {
 
 export function registerDashboardRoutes(app: Express) {
   app.get('/api/stats', async (req, res) => {
-    const [plans, suites, cases, runs, defects, reports, recentActivity, agentRuns, schedules, jobs] = await Promise.all([
+    // Scope every collection to the caller EXACTLY as the list endpoints do (see
+    // server/features/resources/routes.ts), so dashboard counts always match what the
+    // user actually sees on the Plans/Cases/etc. pages. Without this the counts were
+    // computed globally while the lists filtered by owner — non-zero cards, empty pages.
+    const scope = reqScope(req);
+    const scoped = <T extends { projectId?: string; appId?: string; ownerId?: string }>(items: T[]) => scopeFilter(items, scope);
+    const [plansAll, suitesAll, casesAll, runsAll, defectsAll, reportsAll, activityAll, agentRunsAll, schedules, jobs] = await Promise.all([
       Plans.list(),
       Suites.list(),
       Cases.list(),
       Runs.list(),
       Defects.list(),
       Reports.list(),
-      Activity.list('default', 8),
+      // Pull a wider window so the per-user history filter below still has ~8 to show.
+      Activity.list('default', 100),
       AgentRuns.list(),
       AutomationSchedules.list().catch(() => []),
       AutomationJobs.list().catch(() => []),
     ]);
+    const plans = scoped(plansAll);
+    const suites = scoped(suitesAll);
+    const cases = scoped(casesAll);
+    const runs = scoped(runsAll);
+    const defects = scoped(defectsAll);
+    const reports = scoped(reportsAll);
+    const agentRuns = scoped(agentRunsAll as any[]);
+    // History feed under strict per-user isolation:
+    //  - a TESTER sees ONLY their own activity — never another user's, and not unowned
+    //    system/legacy lines (those belong to the admin/system domain).
+    //  - ADMIN sees their own activity plus unowned system/legacy events, but NOT other
+    //    users' activity (admin's elevated rights are for management, not data visibility).
+    //  - unauthenticated/internal callers see everything (back-compat).
+    // Entries are stamped with ownerId at creation (see addActivity call sites).
+    let recentActivity: any[];
+    if (!scope.userId) recentActivity = activityAll.slice(0, 8);
+    else if (scope.role === 'admin') recentActivity = activityAll.filter((a: any) => !a?.ownerId || a.ownerId === scope.userId).slice(0, 8);
+    else recentActivity = activityAll.filter((a: any) => a?.ownerId === scope.userId).slice(0, 8);
     const activeRunsCount = agentRuns.filter((run: any) =>
       ['running', 'review_required'].includes(String(run?.status || ''))
     ).length;

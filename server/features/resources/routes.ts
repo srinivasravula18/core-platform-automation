@@ -1,5 +1,8 @@
 import type { Express, NextFunction, Request, Response } from 'express';
 import { randomUUID } from 'crypto';
+import fs from 'fs';
+import path from 'path';
+import * as archiverNs from 'archiver';
 import { z } from 'zod';
 import { generateObject } from 'ai';
 import { db, addActivity, persistDataInBackground } from '../../shared/storage';
@@ -9,8 +12,11 @@ import { findSettingsPlaywrightTargetUrl, normalizeTargetUrl } from '../../share
 import { getAIErrorMessage } from '../../shared/ai';
 import { getOrchestrator } from '../../ai/orchestrator';
 import { reqScope, scopeFilter, scopeStamp } from '../../shared/scope';
-import { getAuthUser } from '../auth/routes';
 import { runPlaywrightRequest } from '../playwright/routes';
+import { testCaseTypeFields } from '../../../core/shared/testCaseTypes';
+import { collectRunEvidence, evidenceDownloadName } from '../../../core/shared/runEvidence';
+
+const archiver = ((archiverNs as any).default ?? archiverNs) as (format: string, options?: Record<string, any>) => any;
 
 import {
   Plans,
@@ -28,6 +34,17 @@ import {
   AgentRuns,
   isPgEnabled,
 } from '../../db/repository';
+
+// Record activity stamped with the acting user, so the dashboard history feed stays under
+// strict per-user isolation (each user sees only their own events + unowned system events).
+function logActivity(
+  req: any,
+  message: string,
+  opts: { type?: string; entityId?: string; actor?: string; meta?: Record<string, any> } = {},
+) {
+  const scope = reqScope(req);
+  addActivity(message, { ...opts, ownerId: scope.userId || '', actor: opts.actor || scope.username || '' });
+}
 
 const FOLDER_REQUIRED_ERROR = 'Select a folder or create one first.';
 // Process-local execution lock; use a durable worker queue before multi-instance deployment.
@@ -224,6 +241,49 @@ export function registerResourceRoutes(app: Express) {
     }));
     res.json(scopeFilter(healed, reqScope(req)));
   });
+  app.get('/api/runs/:id/evidence/export', async (req, res) => {
+    const run = await Runs.get(req.params.id);
+    if (!run || !scopeFilter([run], reqScope(req)).length) return res.status(404).json({ error: 'Run not found.' });
+
+    const allCases = scopeFilter(await Cases.list(), reqScope(req));
+    const casesById = new Map(allCases.map((testCase: any) => [String(testCase.id), testCase]));
+    const linkedCases = Array.isArray(run.caseIds) && run.caseIds.length
+      ? run.caseIds.map((id: any) => casesById.get(String(id))).filter(Boolean)
+      : allCases.filter((testCase: any) => run.agentRunId && testCase.agentRunId === run.agentRunId);
+    const selectedCaseIds = new Set(String(req.query.caseIds || '').split(',').map((id) => id.trim()).filter(Boolean));
+    const evidence = collectRunEvidence(run, linkedCases)
+      .filter((item) => !selectedCaseIds.size || selectedCaseIds.has(item.caseId));
+    const evidenceRoot = path.resolve(process.cwd(), 'evidence');
+    const files = evidence.flatMap((item, index) => {
+      let pathname = '';
+      try { pathname = new URL(item.url, 'http://local').pathname; } catch { return []; }
+      if (!pathname.startsWith('/evidence/')) return [];
+      const relative = decodeURIComponent(pathname.slice('/evidence/'.length));
+      const absolute = path.resolve(evidenceRoot, relative);
+      if (!absolute.toLowerCase().startsWith(`${evidenceRoot.toLowerCase()}${path.sep}`) || !fs.existsSync(absolute)) return [];
+      const folder = String(item.caseId || item.caseTitle || `case-${item.caseIndex + 1}`)
+        .replace(/[^a-z0-9._-]+/gi, '-').replace(/^-+|-+$/g, '') || `case-${item.caseIndex + 1}`;
+      return [{ item, absolute, name: `${folder}/${String(index + 1).padStart(2, '0')}-${evidenceDownloadName(run.id, item)}` }];
+    });
+    if (!files.length) return res.status(404).json({ error: 'No downloadable screenshots were found for this run.' });
+
+    const filename = `${String(run.id || 'run').replace(/[^a-z0-9._-]+/gi, '-')}-evidence.zip`;
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    const archive = archiver('zip', { zlib: { level: 9 } });
+    archive.on('error', (error: Error) => {
+      console.error('[runs] evidence export failed:', error.message);
+      if (!res.headersSent) res.status(500).json({ error: 'Failed to export run evidence.' });
+      else res.destroy(error);
+    });
+    archive.pipe(res);
+    archive.append(JSON.stringify({
+      run: { id: run.id, name: run.name, status: run.status, date: run.date },
+      evidence: evidence.map((item) => ({ ...item, filename: evidenceDownloadName(run.id, item) })),
+    }, null, 2), { name: 'run-summary.json' });
+    files.forEach((file) => archive.file(file.absolute, { name: file.name }));
+    await archive.finalize();
+  });
   app.post('/api/runs/:id/execute', async (req, res) => {
     const run = await Runs.get(req.params.id);
     if (!run || !scopeFilter([run], reqScope(req)).length) return res.status(404).json({ error: 'Run not found.' });
@@ -409,7 +469,7 @@ export function registerResourceRoutes(app: Express) {
     await Folders.upsert(folder);
     if (!isPgEnabled()) persistDataInBackground('folder');
     const allFolders = await Folders.list();
-    addActivity(`Created folder: ${folder.path || getFolderPath(folder.id, allFolders)}`);
+    logActivity(req, `Created folder: ${folder.path || getFolderPath(folder.id, allFolders)}`);
     res.json({ success: true, folder: { ...folder, path: folder.path || getFolderPath(folder.id, allFolders) } });
   });
 
@@ -441,7 +501,7 @@ export function registerResourceRoutes(app: Express) {
     await Folders.upsert(updated);
     if (!isPgEnabled()) persistDataInBackground('folder update');
     const allFolders = await Folders.list();
-    addActivity(`Updated folder: ${updated.path || getFolderPath(updated.id, allFolders)}`);
+    logActivity(req, `Updated folder: ${updated.path || getFolderPath(updated.id, allFolders)}`);
     res.json({ success: true, folder: { ...updated, path: updated.path || getFolderPath(updated.id, allFolders) } });
   });
 
@@ -502,7 +562,7 @@ export function registerResourceRoutes(app: Express) {
     if (!existing) return res.status(404).json({ error: 'Folder not found' });
     const { folders, artifacts } = await cascadeDeleteFolderTree(req.params.id);
     if (!isPgEnabled()) persistDataInBackground('folder cascade delete');
-    addActivity(`Deleted folder "${existing.name}" with ${folders} folder(s) and ${artifacts} item(s)`);
+    logActivity(req, `Deleted folder "${existing.name}" with ${folders} folder(s) and ${artifacts} item(s)`);
     res.json({ success: true, folders, artifacts });
   });
 
@@ -517,7 +577,7 @@ export function registerResourceRoutes(app: Express) {
       folders += r.folders; artifacts += r.artifacts;
     }
     if (!isPgEnabled()) persistDataInBackground('folder bulk cascade delete');
-    addActivity(`Deleted ${folders} folder(s) and ${artifacts} item(s)`);
+    logActivity(req, `Deleted ${folders} folder(s) and ${artifacts} item(s)`);
     res.json({ success: true, deleted: folders, artifacts });
   });
 
@@ -548,7 +608,7 @@ export function registerResourceRoutes(app: Express) {
       const updated = { ...existing, ...req.body, updatedAt: new Date() };
       await e.repo.upsert(updated);
       if (!isPgEnabled()) persistDataInBackground(`${e.name} update`);
-      addActivity(`Updated ${e.name.slice(0, -1)}: ${updated.name || updated.title}`);
+      logActivity(req, `Updated ${e.name.slice(0, -1)}: ${updated.name || updated.title}`);
       res.json({ success: true });
     });
 
@@ -557,7 +617,7 @@ export function registerResourceRoutes(app: Express) {
       if (!existing) return res.status(404).json({ error: 'Not found' });
       await e.repo.remove(req.params.id);
       if (!isPgEnabled()) persistDataInBackground(`${e.name} delete`);
-      addActivity(`Deleted ${e.name.slice(0, -1)}: ${existing.name || existing.title}`);
+      logActivity(req, `Deleted ${e.name.slice(0, -1)}: ${existing.name || existing.title}`);
       res.json({ success: true });
     });
 
@@ -572,7 +632,7 @@ export function registerResourceRoutes(app: Express) {
         deleted += 1;
       }
       if (!isPgEnabled()) persistDataInBackground(`${e.name} bulk delete`);
-      addActivity(`Deleted ${deleted} ${e.name}`);
+      logActivity(req, `Deleted ${deleted} ${e.name}`);
       res.json({ success: true, deleted });
     });
   }
@@ -590,7 +650,7 @@ export function registerResourceRoutes(app: Express) {
   app.post('/api/cases/:id/rollback/:revisionId', async (req, res) => {
     const updated = await CaseRevisions.rollback(req.params.id, req.params.revisionId);
     if (!updated) return res.status(404).json({ error: 'Case or revision not found.' });
-    addActivity(`Rolled back case: ${updated.title}`, { type: 'case', entityId: updated.id, actor: getAuthUser(req)?.username || '' });
+    logActivity(req, `Rolled back case: ${updated.title}`, { type: 'case', entityId: updated.id });
     res.json({ success: true, case: updated });
   });
 
@@ -607,7 +667,7 @@ export function registerResourceRoutes(app: Express) {
     if (!caseId || !Number.isInteger(revisionNo)) return res.status(400).json({ error: 'caseId and integer revisionNo are required.' });
     const ok = await ReleasePins.pin(req.params.planId, caseId, revisionNo);
     if (!ok) return res.status(404).json({ error: 'That revision does not exist for the case.' });
-    addActivity(`Pinned case ${caseId} to revision ${revisionNo} in release ${req.params.planId}`, { type: 'case', entityId: caseId, actor: getAuthUser(req)?.username || '' });
+    logActivity(req, `Pinned case ${caseId} to revision ${revisionNo} in release ${req.params.planId}`, { type: 'case', entityId: caseId });
     res.json({ success: true });
   });
 
@@ -662,7 +722,7 @@ export function registerResourceRoutes(app: Express) {
     };
     await Reports.upsert(newReport);
     if (!isPgEnabled()) persistDataInBackground('report');
-    addActivity(`Logged Test Report: ${name}`);
+    logActivity(req, `Logged Test Report: ${name}`);
     res.json({ success: true, report: newReport });
   });
 
@@ -671,7 +731,6 @@ export function registerResourceRoutes(app: Express) {
     const p = req.body;
     const newPlan = {
       ...scopeStamp(reqScope(req)),
-      id: `PLAN-${Math.random().toString(36).substring(2, 6).toUpperCase()}`,
       name: p.name || 'New Plan',
       scope: p.scope,
       objectives: p.objectives,
@@ -685,16 +744,21 @@ export function registerResourceRoutes(app: Express) {
       schedule: p.schedule,
       risks: p.risks,
       deliverables: p.deliverables,
+      description: p.description,
+      startDate: p.startDate || null,
+      endDate: p.endDate || null,
+      owner: p.owner || '',
+      tags: uniqueStrings(p.tags),
+      runIds: uniqueStrings(p.runIds),
       status: p.status || 'Draft',
       riskLevel: p.riskLevel || 'Medium',
       folderId: p.folderId || '',
-      owner: 'User',
       createdAt: new Date(),
     };
-    await Plans.upsert(newPlan);
+    const savedPlan = await Plans.upsert(newPlan);
     if (!isPgEnabled()) persistDataInBackground('plan');
-    addActivity(`Created Plan: ${newPlan.name}`, { type: 'plan', entityId: newPlan.id, actor: getAuthUser(req)?.username || '' });
-    res.json({ success: true });
+    logActivity(req, `Created Plan: ${savedPlan.name}`, { type: 'plan', entityId: savedPlan.id });
+    res.json({ success: true, id: savedPlan.id, plan: savedPlan });
   });
 
   /* ---------- POST /api/suites ---------- */
@@ -702,7 +766,6 @@ export function registerResourceRoutes(app: Express) {
     const s = req.body;
     const newSuite = {
       ...scopeStamp(reqScope(req)),
-      id: `SUITE-${Math.random().toString(36).substring(2, 6).toUpperCase()}`,
       name: s.name || 'New Suite',
       description: s.description,
       testPlanId: s.testPlanId || s.testPlanIds?.[0] || '',
@@ -719,18 +782,18 @@ export function registerResourceRoutes(app: Express) {
       createdBy: 'User',
       createdAt: new Date(),
     };
-    await Suites.upsert(newSuite);
+    const savedSuite = await Suites.upsert(newSuite);
     if (!isPgEnabled()) persistDataInBackground('suite');
-    addActivity(`Created Suite: ${newSuite.name}`, { type: 'suite', entityId: newSuite.id, actor: getAuthUser(req)?.username || '' });
-    res.json({ success: true, id: newSuite.id, suite: newSuite });
+    logActivity(req, `Created Suite: ${savedSuite.name}`, { type: 'suite', entityId: savedSuite.id });
+    res.json({ success: true, id: savedSuite.id, suite: savedSuite });
   });
 
   /* ---------- POST /api/cases ---------- */
   app.post('/api/cases', requireRepositoryFolder, async (req, res) => {
     const c = req.body;
+    const typeFields = testCaseTypeFields(c.testingTypes, c.testingType);
     const newCase = {
       ...scopeStamp(reqScope(req)),
-      id: `TC-${Math.random().toString(36).substring(2, 6).toUpperCase()}`,
       title: c.title || 'New Case',
       description: buildCaseDescription(c),
       preconditions: c.preconditions || '',
@@ -745,17 +808,17 @@ export function registerResourceRoutes(app: Express) {
       priority: c.priority || 'Medium',
       automationStatus: c.automationStatus || 'Not Automated',
       testingScope: c.testingScope || (c.type === 'Automated' ? 'Automation' : 'Manual'),
-      testingType: c.testingType || 'Functional',
+      ...typeFields,
       captureEvidenceOnManualRun: c.captureEvidenceOnManualRun !== false,
       folderId: c.folderId || '',
       createdBy: c.createdBy || 'User',
       createdAt: new Date(),
     };
-    await Cases.upsert(newCase);
+    const savedCase = await Cases.upsert(newCase);
     if (!isPgEnabled()) persistDataInBackground('case');
-    addActivity(`Created Case: ${newCase.title}`, { type: 'case', entityId: newCase.id, actor: getAuthUser(req)?.username || '' });
+    logActivity(req, `Created Case: ${savedCase.title}`, { type: 'case', entityId: savedCase.id });
     // Return the generated id so clients (e.g. GeneratedCases save-fallback) can adopt it.
-    res.json({ success: true, id: newCase.id });
+    res.json({ success: true, id: savedCase.id });
   });
 
   /* ---------- POST /api/cases/ai-action ---------- */
@@ -830,15 +893,14 @@ Rules:
           const payload = sanitizeCasePayload(operation, fallback);
           const newCase = {
             ...scopeStamp(reqScope(req)),
-            id: `TC-AI-${Math.random().toString(36).substring(2, 6).toUpperCase()}`,
             ...payload,
             createdBy: 'AI Assistant',
             createdAt: new Date(),
             aiInstruction: instruction,
             sourceCaseIds: caseIds,
           };
-          await Cases.upsert(newCase);
-          results.push({ action: 'create', id: newCase.id, title: newCase.title });
+          const savedCase = await Cases.upsert(newCase);
+          results.push({ action: 'create', id: savedCase.id, title: savedCase.title });
         }
 
         if (operation.action === 'delete') {
@@ -850,7 +912,7 @@ Rules:
       }
 
       if (!isPgEnabled()) persistDataInBackground('AI case action');
-      addActivity(`AI updated ${results.length} test case artifact(s): ${object.summary}`);
+      logActivity(req, `AI updated ${results.length} test case artifact(s): ${object.summary}`);
       res.json({ success: true, summary: object.summary, results });
     } catch (error: any) {
       res.status(500).json({ error: getAIErrorMessage(error) || error?.message || 'Failed to apply AI case action.' });
@@ -992,7 +1054,7 @@ Rules:
     };
     await Runs.upsert(newRun);
     if (!isPgEnabled()) persistDataInBackground('selection run');
-    addActivity(`Created manual run: ${name}`, { type: 'run', entityId: newRun.id, actor: getAuthUser(req)?.username || '' });
+    logActivity(req, `Created manual run: ${name}`, { type: 'run', entityId: newRun.id });
     res.json({ success: true, run: newRun });
   });
 
@@ -1053,7 +1115,7 @@ Rules:
     };
     await Runs.upsert(newRun);
     if (!isPgEnabled()) persistDataInBackground('run');
-    addActivity(`Created manual run: ${name}`, { type: 'run', entityId: runId, actor: getAuthUser(req)?.username || '' });
+    logActivity(req, `Created manual run: ${name}`, { type: 'run', entityId: runId });
     res.json({ success: true, run: newRun });
   });
 
@@ -1070,7 +1132,7 @@ Rules:
     };
     await Defects.upsert(newDefect);
     if (!isPgEnabled()) persistDataInBackground('defect');
-    addActivity(`Logged Defect: ${title}`, { type: 'defect', entityId: newDefect.id, actor: getAuthUser(req)?.username || '', meta: { severity: newDefect.severity } });
+    logActivity(req, `Logged Defect: ${title}`, { type: 'defect', entityId: newDefect.id, meta: { severity: newDefect.severity } });
     res.json({ success: true });
   });
 

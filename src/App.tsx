@@ -107,7 +107,7 @@ function Sidebar({ isOpen }: { isOpen: boolean }) {
                 <ChevronDown className={cn("w-3.5 h-3.5 transition-transform", isCollapsed && "-rotate-90")} />
               </button>
               {!isCollapsed && group.items.map((item) => {
-                const isActive = location.pathname === item.href;
+                const isActive = location.pathname === item.href || (item.href !== '/' && location.pathname.startsWith(`${item.href}/`));
                 return (
                   <Link
                     key={item.name}

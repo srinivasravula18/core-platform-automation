@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, Search, Filter, MoreHorizontal, Plus, Sparkles, Trash2, PlayCircle, Loader2 } from 'lucide-react';
+import { ArrowLeft, Search, Filter, Pencil, Plus, Sparkles, Trash2, PlayCircle, Loader2 } from 'lucide-react';
 import ExportMenu from '../components/ExportMenu';
 import { useAiSearch } from '@/src/lib/useAiSearch';
 import { useBulkDelete } from '@/src/lib/useBulkDelete';
@@ -10,11 +10,27 @@ import { Modal } from '@/src/components/Modal';
 import { AIActionModal } from '@/src/components/AIActionModal';
 import { FolderSelect } from '@/src/components/FolderSelect';
 import { FolderBadge } from '@/src/components/FolderBadge';
+import { MultiSelectDropdown } from '@/src/components/MultiSelectDropdown';
+import { TagEditor } from '@/src/components/TagEditor';
 import { showAlert, showConfirm } from '@/src/lib/dialog';
 import { caseBelongsToSuite, suitePlanIds } from '@/src/lib/suiteCaseSelection';
+import { emptyTestPlanFilters, linkedRunsForPlan, matchesTestPlanFilters } from '@/src/lib/testPlanFilters';
 
 const PLAN_STATUSES = ['Draft', 'Under Review', 'Approved', 'In Progress', 'Completed', 'Blocked', 'Cancelled', 'Archived'];
-const PLAN_RISK_LEVELS = ['Low', 'Medium', 'High'];
+const emptyPlanForm = () => ({
+  name: '',
+  folderId: '',
+  startDate: '',
+  endDate: '',
+  owner: '',
+  tags: [] as string[],
+  status: 'Draft',
+  environments: '',
+  roles: '',
+  deliverables: '',
+  runIds: [] as string[],
+  description: '',
+});
 
 function getStatusBadgeClass(status: string) {
   switch (status) {
@@ -55,21 +71,19 @@ export default function TestPlans() {
   const [suites, setSuites] = useState<any[]>([]);
   const [cases, setCases] = useState<any[]>([]);
   const [runs, setRuns] = useState<any[]>([]);
-  const [reports, setReports] = useState<any[]>([]);
   const [folders, setFolders] = useState<any[]>([]);
-  const [activeDetailTab, setActiveDetailTab] = useState<'suites' | 'cases' | 'sessions'>('suites');
-  const [openActionPlanId, setOpenActionPlanId] = useState<string | null>(null);
+  const [activeDetailTab, setActiveDetailTab] = useState<'suites' | 'cases' | 'runs'>('suites');
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const aiSearch = useAiSearch('test plans');
-  const [statusFilter, setStatusFilter] = useState('All');
   const [isFilterOpen, setIsFilterOpen] = useState(false);
+  const filterRef = useRef<HTMLDivElement | null>(null);
+  const [filters, setFilters] = useState(emptyTestPlanFilters);
+  const [matchMode, setMatchMode] = useState<'all' | 'any'>('all');
   const [isPlanModalOpen, setIsPlanModalOpen] = useState(false);
   const [isAIPlanModalOpen, setIsAIPlanModalOpen] = useState(false);
   const [isStartingRun, setIsStartingRun] = useState(false);
-  const [formData, setFormData] = useState({ 
-    name: '', scope: '', objectives: '', inScope: '', outOfScope: '', strategy: '', testTypes: '', environments: '', roles: '', entryExit: '', schedule: '', risks: '', deliverables: '', status: 'Draft', riskLevel: 'Medium', folderId: ''
-  });
+  const [formData, setFormData] = useState(emptyPlanForm);
 
   const [selectedPlanId, setSelectedPlanId] = useState<string | null>(null);
   const inlineSelectClass = "w-full min-w-[140px] rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs font-medium text-[var(--text-primary)] outline-none transition-colors hover:border-[var(--accent)] focus:border-[var(--accent)]";
@@ -89,14 +103,12 @@ export default function TestPlans() {
       fetch('/api/suites').then(r => r.json()),
       fetch('/api/cases').then(r => r.json()),
       fetch('/api/runs').then(r => r.json()),
-      fetch('/api/reports').then(r => r.json()),
       fetch('/api/folders').then(r => r.json()),
     ])
-      .then(([suiteData, caseData, runData, reportData, folderData]) => {
+      .then(([suiteData, caseData, runData, folderData]) => {
         setSuites(Array.isArray(suiteData) ? suiteData : []);
         setCases(Array.isArray(caseData) ? caseData : []);
         setRuns(Array.isArray(runData) ? runData : []);
-        setReports(Array.isArray(reportData) ? reportData : []);
         setFolders(Array.isArray(folderData) ? folderData : []);
       })
       .catch(console.error);
@@ -107,20 +119,38 @@ export default function TestPlans() {
     fetchPlanRelations();
   }, []);
 
+  useEffect(() => {
+    if (!isFilterOpen) return;
+    const closeOnOutsideClick = (event: PointerEvent) => {
+      if (!filterRef.current?.contains(event.target as Node)) setIsFilterOpen(false);
+    };
+    document.addEventListener('pointerdown', closeOnOutsideClick);
+    return () => document.removeEventListener('pointerdown', closeOnOutsideClick);
+  }, [isFilterOpen]);
+
   const openNewModal = () => {
     setSelectedPlanId(null);
-    setFormData({ name: '', scope: '', objectives: '', inScope: '', outOfScope: '', strategy: '', testTypes: '', environments: '', roles: '', entryExit: '', schedule: '', risks: '', deliverables: '', status: 'Draft', riskLevel: 'Medium', folderId: '' });
+    setFormData(emptyPlanForm());
     setIsPlanModalOpen(true);
   };
 
   const openEditModal = (plan: any) => {
     setSelectedPlanId(plan.id);
+    const linkedRunIds = new Set((Array.isArray(plan.runIds) ? plan.runIds : []).map(String));
+    runs.filter((run) => run.testPlanId === plan.id).forEach((run) => linkedRunIds.add(String(run.id)));
     setFormData({
-      name: plan.name || '', scope: plan.scope || '', objectives: plan.objectives || '',
-      inScope: plan.inScope || '', outOfScope: plan.outOfScope || '', strategy: plan.strategy || '',
-      testTypes: plan.testTypes || '', environments: plan.environments || '', roles: plan.roles || '',
-      entryExit: plan.entryExit || '', schedule: plan.schedule || '', risks: plan.risks || '', deliverables: plan.deliverables || '',
-      status: plan.status || 'Draft', riskLevel: plan.riskLevel || 'Medium', folderId: plan.folderId || ''
+      name: plan.name || '',
+      folderId: plan.folderId || '',
+      startDate: plan.startDate || '',
+      endDate: plan.endDate || '',
+      owner: plan.owner || '',
+      tags: Array.isArray(plan.tags) ? plan.tags : [],
+      status: plan.status || 'Draft',
+      environments: plan.environments || '',
+      roles: plan.roles || '',
+      deliverables: plan.deliverables || '',
+      runIds: Array.from(linkedRunIds),
+      description: plan.description || plan.objectives || '',
     });
     setIsPlanModalOpen(true);
   };
@@ -158,18 +188,6 @@ export default function TestPlans() {
       fetch(`/api/plans/${selectedPlanId}`, { method: 'DELETE' })
         .then(() => {
           setIsPlanModalOpen(false);
-          fetchPlans();
-          fetchPlanRelations();
-        });
-    }
-  };
-
-  const handleDeletePlanById = async (planId: string) => {
-    if (await showConfirm('Are you sure you want to delete this plan?', { tone: 'danger' })) {
-      fetch(`/api/plans/${planId}`, { method: 'DELETE' })
-        .then(() => {
-          if (openActionPlanId === planId) setOpenActionPlanId(null);
-          navigate('/plans');
           fetchPlans();
           fetchPlanRelations();
         });
@@ -218,15 +236,19 @@ export default function TestPlans() {
   const getPlanSuites = (planId: string) => suites.filter((suite) => suitePlanIds(suite).includes(planId));
   const getPlanCases = (planId: string) => cases.filter((testCase) => testCase.testPlanId === planId);
   const selectedDetailPlan = plans.find((plan) => plan.id === planId) || null;
-  const getPlanRuns = (plan: any) => runs.filter((run) => run.agentRunId === plan?.agentRunId || run.planName === plan?.name);
-  const getPlanReports = (plan: any) => reports.filter((report) => report.agentRunId === plan?.agentRunId || report.planName === plan?.name);
+  const getPlanRuns = (plan: any) => linkedRunsForPlan(plan, runs);
+  const runCountLabel = (count: number) => `Run ${count} test run${count === 1 ? '' : 's'}`;
+  const tagOptions = Array.from(new Set<string>(plans.flatMap((plan) => Array.isArray(plan.tags) ? plan.tags.map(String) : []))).sort();
+  const ownerOptions = Array.from(new Set<string>(plans.map((plan) => String(plan.owner || '').trim()).filter(Boolean))).sort();
+  const activeFilterCount = filters.statuses.length + filters.owners.length + filters.tags.length + filters.folders.length
+    + (filters.startFrom || filters.endTo ? 1 : 0) + (filters.environments.trim() ? 1 : 0)
+    + (filters.roles.trim() ? 1 : 0) + filters.runIds.length + (filters.notYetExecuted ? 1 : 0);
   const filteredPlans = plans.filter((plan) => {
     const query = searchTerm.toLowerCase();
     const matchesSearch = aiSearch.isAiQuery(searchTerm)
       ? (aiSearch.matchedIds ? aiSearch.matchedIds.has(plan.id) : true)
-      : (!query || `${plan.id || ''} ${plan.name || ''} ${plan.scope || ''} ${plan.objectives || ''}`.toLowerCase().includes(query));
-    const matchesStatus = statusFilter === 'All' || (plan.status || 'Draft') === statusFilter;
-    return matchesSearch && matchesStatus;
+      : (!query || `${plan.id || ''} ${plan.name || ''} ${plan.description || ''} ${plan.owner || ''} ${(plan.tags || []).join(' ')}`.toLowerCase().includes(query));
+    return matchesSearch && matchesTestPlanFilters(plan, runs, filters, matchMode);
   });
 
   return (
@@ -243,12 +265,17 @@ export default function TestPlans() {
             rows={filteredPlans}
             columns={[
               { key: 'id', label: 'ID' },
-              { key: 'name', label: 'Name' },
+              { key: 'name', label: 'Title' },
+              { key: 'startDate', label: 'Start Date' },
+              { key: 'endDate', label: 'End Date' },
+              { key: 'owner', label: 'Owner' },
+              { key: 'tags', label: 'Tags', get: (p) => (p.tags || []).join(', ') },
               { key: 'status', label: 'Status', get: (p) => p.status || 'Draft' },
-              { key: 'riskLevel', label: 'Risk Level' },
-              { key: 'scope', label: 'Scope' },
-              { key: 'objectives', label: 'Objectives' },
               { key: 'environments', label: 'Environments' },
+              { key: 'roles', label: 'Resources & Roles' },
+              { key: 'deliverables', label: 'Deliverables' },
+              { key: 'runIds', label: 'Linked Test Runs', get: (p) => getPlanRuns(p).map((run) => run.name || run.id).join(', ') },
+              { key: 'description', label: 'Description' },
               { key: 'suiteCount', label: 'Suites', get: (p) => suites.filter((s) => suitePlanIds(s).includes(p.id)).length },
               { key: 'caseCount', label: 'Cases', get: (p) => cases.filter((c) => c.testPlanId === p.id).length },
             ]}
@@ -283,120 +310,67 @@ export default function TestPlans() {
         }
       >
         <div className="space-y-4">
-          <div className="sticky top-0 z-20 border-b border-[var(--border)] bg-[var(--bg-card)] pb-4">
-            <FolderSelect
-              value={formData.folderId}
-              onChange={(folderId) => setFormData({ ...formData, folderId })}
-              label="Repository Folder"
-              includeNone={false}
-            />
-          </div>
           <div>
-            <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Plan Name (e.g. Release 2.4)</label>
+            <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Title</label>
             <input 
               type="text" 
               value={formData.name}
               onChange={(e) => setFormData({...formData, name: e.target.value})}
-              placeholder="e.g., Sprint 20 Regression" 
+              placeholder="e.g. Sprint 20 Regression"
               className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]" 
             />
           </div>
+          <FolderSelect
+            value={formData.folderId}
+            onChange={(folderId) => setFormData({ ...formData, folderId })}
+            label="Repository Folder"
+            includeNone={false}
+          />
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Start Date</label>
+              <input type="date" value={formData.startDate} onChange={(e) => setFormData({...formData, startDate: e.target.value})} className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
+            </div>
+            <div>
+              <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">End Date</label>
+              <input type="date" min={formData.startDate || undefined} value={formData.endDate} onChange={(e) => setFormData({...formData, endDate: e.target.value})} className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
+            </div>
+          </div>
           <div>
-            <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Scope & Objectives</label>
-            <textarea 
-              value={formData.objectives}
-              onChange={(e) => setFormData({...formData, objectives: e.target.value})}
-              placeholder="What are we testing and why?" 
-              className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)] h-16" 
-            />
+            <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Owner</label>
+            <input type="text" value={formData.owner} onChange={(e) => setFormData({...formData, owner: e.target.value})} placeholder="Plan owner" className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
+          </div>
+          <div>
+            <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Tags</label>
+            <TagEditor options={tagOptions} value={formData.tags} onChange={(tags) => setFormData({...formData, tags})} />
+          </div>
+          <div>
+            <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Status</label>
+            <select value={formData.status} onChange={(e) => setFormData({...formData, status: e.target.value})} className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]">
+              {PLAN_STATUSES.map((status) => <option key={status} value={status}>{status}</option>)}
+            </select>
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-             <div>
-                <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">In-Scope</label>
-                <input type="text" value={formData.inScope} onChange={(e) => setFormData({...formData, inScope: e.target.value})} className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]" />
-             </div>
-             <div>
-                <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Out-of-Scope</label>
-                <input type="text" value={formData.outOfScope} onChange={(e) => setFormData({...formData, outOfScope: e.target.value})} className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]" />
-             </div>
+            <div>
+              <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Environments</label>
+              <textarea value={formData.environments} onChange={(e) => setFormData({...formData, environments: e.target.value})} placeholder="e.g. Staging, UAT, Production" className="min-h-20 w-full resize-y rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
+            </div>
+            <div>
+              <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Resources &amp; Roles</label>
+              <textarea value={formData.roles} onChange={(e) => setFormData({...formData, roles: e.target.value})} placeholder="e.g. QA lead, automation engineer" className="min-h-20 w-full resize-y rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
+            </div>
           </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-             <div>
-                <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Test Strategy</label>
-                <input type="text" value={formData.strategy} onChange={(e) => setFormData({...formData, strategy: e.target.value})} className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]" />
-             </div>
-             <div>
-                <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Test Types</label>
-                <input type="text" value={formData.testTypes} onChange={(e) => setFormData({...formData, testTypes: e.target.value})} placeholder="e.g. Manual, Auto, API" className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]" />
-             </div>
+          <div>
+            <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Deliverables</label>
+            <textarea value={formData.deliverables} onChange={(e) => setFormData({...formData, deliverables: e.target.value})} placeholder="e.g. Test report, defect summary" className="min-h-20 w-full resize-y rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
           </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-             <div>
-                <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Environments</label>
-                <input 
-                  type="text" 
-                  value={formData.environments}
-                  onChange={(e) => setFormData({...formData, environments: e.target.value})}
-                  placeholder="e.g., Staging, UAT, Prod" 
-                  className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]" 
-                />
-             </div>
-             <div>
-                <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Resources & Roles</label>
-                <input 
-                  type="text" 
-                  value={formData.roles}
-                  onChange={(e) => setFormData({...formData, roles: e.target.value})}
-                  placeholder="e.g., QA Team, Devs" 
-                  className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]" 
-                />
-             </div>
+          <div>
+            <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Link Test Runs</label>
+            <MultiSelectDropdown label="Select test runs" options={runs.map((run) => ({ id: String(run.id), name: String(run.name || run.id) }))} value={formData.runIds} onChange={(runIds) => setFormData({...formData, runIds})} />
           </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-             <div>
-                <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Entry/Exit Criteria</label>
-                <input type="text" value={formData.entryExit} onChange={(e) => setFormData({...formData, entryExit: e.target.value})} className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]" />
-             </div>
-             <div>
-                <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Schedule</label>
-                <input type="text" value={formData.schedule} onChange={(e) => setFormData({...formData, schedule: e.target.value})} placeholder="e.g. 2 weeks" className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]" />
-             </div>
-          </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-             <div>
-                <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Status</label>
-                <select
-                  value={formData.status}
-                  onChange={(e) => setFormData({...formData, status: e.target.value})}
-                  className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]"
-                >
-                  {PLAN_STATUSES.map((status) => (
-                    <option key={status} value={status}>{status}</option>
-                  ))}
-                </select>
-             </div>
-             <div>
-                <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Risk Level</label>
-                <select
-                  value={formData.riskLevel}
-                  onChange={(e) => setFormData({...formData, riskLevel: e.target.value})}
-                  className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]"
-                >
-                  {PLAN_RISK_LEVELS.map((riskLevel) => (
-                    <option key={riskLevel} value={riskLevel}>{riskLevel}</option>
-                  ))}
-                </select>
-             </div>
-          </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-             <div>
-                <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Risks & Dependencies</label>
-                <input type="text" value={formData.risks} onChange={(e) => setFormData({...formData, risks: e.target.value})} className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]" />
-             </div>
-             <div>
-                <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Deliverables</label>
-                <input type="text" value={formData.deliverables} onChange={(e) => setFormData({...formData, deliverables: e.target.value})} placeholder="e.g. Plan, Summary Report" className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]" />
-             </div>
+          <div>
+            <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Description</label>
+            <textarea value={formData.description} onChange={(e) => setFormData({...formData, description: e.target.value})} placeholder="Describe the test plan" className="min-h-28 w-full resize-y rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
           </div>
         </div>
       </Modal>
@@ -436,9 +410,9 @@ export default function TestPlans() {
 
           <div className="border-b border-[var(--border)] px-5 flex gap-6">
             {[
-              { id: 'suites', label: 'Linked Runs/Plans' },
-              { id: 'cases', label: 'Linked Test Cases' },
-              { id: 'sessions', label: 'Linked Sessions' },
+              { id: 'suites', label: `Linked Test Suites (${getPlanSuites(selectedDetailPlan.id).length})` },
+              { id: 'cases', label: `Linked Test Cases (${getPlanCases(selectedDetailPlan.id).length})` },
+              { id: 'runs', label: `Linked Test Runs (${getPlanRuns(selectedDetailPlan).length})` },
             ].map((tab) => (
               <button
                 key={tab.id}
@@ -520,23 +494,32 @@ export default function TestPlans() {
               </div>
             )}
 
-            {activeDetailTab === 'sessions' && (
-              <div className="space-y-4">
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                  <div className="border border-[var(--border)] rounded-lg p-4 text-center"><div className="text-2xl font-bold text-[var(--accent)]">{getPlanRuns(selectedDetailPlan).filter((run) => run.status !== 'Completed').length}</div><div className="text-sm text-[var(--text-muted)]">Active</div></div>
-                  <div className="border border-[var(--border)] rounded-lg p-4 text-center"><div className="text-2xl font-bold text-emerald-400">{getPlanRuns(selectedDetailPlan).filter((run) => run.status === 'Completed').length}</div><div className="text-sm text-[var(--text-muted)]">Closed</div></div>
-                  <div className="border border-[var(--border)] rounded-lg p-4 text-center"><div className="text-2xl font-bold">{getPlanRuns(selectedDetailPlan).length}</div><div className="text-sm text-[var(--text-muted)]">Total</div></div>
-                </div>
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                  <div className="border border-[var(--border)] rounded-lg p-4 min-h-56">
-                    <h3 className="font-semibold mb-3">Session Outcomes</h3>
-                    <p className="text-sm text-[var(--text-muted)]">{getPlanReports(selectedDetailPlan).length ? `${getPlanReports(selectedDetailPlan).length} reports linked to this plan.` : 'No data to display'}</p>
-                  </div>
-                  <div className="border border-[var(--border)] rounded-lg p-4 min-h-56">
-                    <h3 className="font-semibold mb-3">Results from Linked Sessions</h3>
-                    <p className="text-sm text-[var(--text-muted)]">{getPlanRuns(selectedDetailPlan).length ? `${getPlanRuns(selectedDetailPlan).length} runs linked to this plan.` : 'No data to display'}</p>
-                  </div>
-                </div>
+            {activeDetailTab === 'runs' && (
+              <div className="border border-[var(--border)] rounded-lg overflow-auto max-h-[60dvh]">
+                <table className="w-full text-left text-sm whitespace-nowrap">
+                  <thead className="sticky top-0 z-10 bg-[var(--bg-secondary)] text-[var(--text-muted)]">
+                    <tr>
+                      <th className="px-4 py-3 font-medium">Run ID</th>
+                      <th className="px-4 py-3 font-medium">Run Name</th>
+                      <th className="px-4 py-3 font-medium">Assigned To</th>
+                      <th className="px-4 py-3 font-medium">Status</th>
+                      <th className="px-4 py-3 font-medium">Duration</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[var(--border)]">
+                    {getPlanRuns(selectedDetailPlan).length === 0 ? (
+                      <tr><td colSpan={5} className="px-4 py-6 text-center text-[var(--text-muted)]">No test runs are linked to this plan.</td></tr>
+                    ) : getPlanRuns(selectedDetailPlan).map((run) => (
+                      <tr key={run.id} onClick={() => navigate(`/runs/${run.id}`)} className="cursor-pointer hover:bg-[var(--bg-secondary)]/60">
+                        <td className="px-4 py-3 font-mono text-xs text-[var(--text-muted)]">{run.id}</td>
+                        <td className="px-4 py-3 font-medium">{run.name || run.id}</td>
+                        <td className="px-4 py-3 text-[var(--text-muted)]">{run.assignedTo || run.requestedBy || 'Unassigned'}</td>
+                        <td className="px-4 py-3 text-[var(--text-muted)]">{run.status || run.state || 'Draft'}</td>
+                        <td className="px-4 py-3 text-[var(--text-muted)]">{run.executionTime || '-'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
             )}
           </div>
@@ -560,28 +543,75 @@ export default function TestPlans() {
               className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md pl-9 pr-4 py-1.5 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]"
             />
           </div>
-          <div className="relative">
-            <button onClick={() => setIsFilterOpen(!isFilterOpen)} className="flex items-center gap-2 border border-[var(--border)] bg-[var(--bg-secondary)] hover:bg-[var(--border)] text-[var(--text-primary)] px-3 py-1.5 rounded-md text-sm transition-colors">
-              <Filter className="w-4 h-4" /> {statusFilter === 'All' ? 'Filters' : statusFilter}
+          <div ref={filterRef} className="relative">
+            <button onClick={() => setIsFilterOpen(!isFilterOpen)} aria-expanded={isFilterOpen} className="flex items-center gap-2 border border-[var(--border)] bg-[var(--bg-secondary)] hover:bg-[var(--border)] text-[var(--text-primary)] px-3 py-1.5 rounded-md text-sm transition-colors">
+              <Filter className="w-4 h-4" /> Filters
+              {activeFilterCount > 0 && <span className="rounded-full bg-[var(--accent)] px-1.5 text-[11px] font-semibold text-white">{activeFilterCount}</span>}
             </button>
             {isFilterOpen && (
-              <div className="absolute left-0 top-10 z-20 w-44 overflow-hidden rounded-md border border-[var(--border)] bg-[var(--bg-card)] shadow-xl">
-                {['All', ...PLAN_STATUSES].map((status) => (
-                  <button key={status} onClick={() => { setStatusFilter(status); setIsFilterOpen(false); }} className="block w-full px-3 py-2 text-left text-sm hover:bg-[var(--bg-secondary)]">
-                    {status}
-                  </button>
-                ))}
+              <div className="absolute left-0 top-10 z-30 max-h-[70vh] w-[24rem] overflow-auto rounded-md border border-[var(--border)] bg-[var(--bg-card)] p-3 shadow-xl">
+                <div className="mb-3 flex items-center justify-between gap-2">
+                  <div className="inline-flex rounded-md border border-[var(--border)] p-0.5 text-[11px] font-medium">
+                    <button onClick={() => setMatchMode('all')} className={`rounded px-2 py-1 ${matchMode === 'all' ? 'bg-[var(--accent)] text-white' : 'text-[var(--text-muted)]'}`}>Match all</button>
+                    <button onClick={() => setMatchMode('any')} className={`rounded px-2 py-1 ${matchMode === 'any' ? 'bg-[var(--accent)] text-white' : 'text-[var(--text-muted)]'}`}>Match any</button>
+                  </div>
+                  <button onClick={() => setFilters(emptyTestPlanFilters())} className="text-xs font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]">Clear all</button>
+                </div>
+                <div className="flex flex-col gap-3">
+                  <div>
+                    <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Status</label>
+                    <MultiSelectDropdown label="Any status" options={PLAN_STATUSES.map((status) => ({ id: status, name: status }))} value={filters.statuses} onChange={(statuses) => setFilters((current) => ({ ...current, statuses }))} />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Owner</label>
+                    <MultiSelectDropdown label="Any owner" options={ownerOptions.map((owner) => ({ id: owner, name: owner }))} value={filters.owners} onChange={(owners) => setFilters((current) => ({ ...current, owners }))} />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Tags</label>
+                    <MultiSelectDropdown label="Any tag" options={tagOptions.map((tag) => ({ id: tag, name: tag }))} value={filters.tags} onChange={(tags) => setFilters((current) => ({ ...current, tags }))} />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Repository Folder</label>
+                    <MultiSelectDropdown label="Any folder" options={folders.map((folder) => ({ id: String(folder.id), name: String(folder.path || folder.name) }))} value={filters.folders} onChange={(folders) => setFilters((current) => ({ ...current, folders }))} />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Start Date / End Date</label>
+                    <div className="flex items-center gap-2">
+                      <input type="date" aria-label="Plan starts on or after" value={filters.startFrom} onChange={(event) => setFilters((current) => ({ ...current, startFrom: event.target.value }))} className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
+                      <span className="text-xs text-[var(--text-muted)]">to</span>
+                      <input type="date" aria-label="Plan ends on or before" min={filters.startFrom || undefined} value={filters.endTo} onChange={(event) => setFilters((current) => ({ ...current, endTo: event.target.value }))} className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Environments</label>
+                    <input value={filters.environments} onChange={(event) => setFilters((current) => ({ ...current, environments: event.target.value }))} placeholder="Contains environment" className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2.5 py-1.5 text-xs text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Resources &amp; Roles</label>
+                    <input value={filters.roles} onChange={(event) => setFilters((current) => ({ ...current, roles: event.target.value }))} placeholder="Contains resource or role" className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2.5 py-1.5 text-xs text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Linked Test Runs</label>
+                    <MultiSelectDropdown label="Any linked run" options={runs.map((run) => ({ id: String(run.id), name: String(run.name || run.id) }))} value={filters.runIds} onChange={(runIds) => setFilters((current) => ({ ...current, runIds }))} />
+                  </div>
+                  <label className="flex cursor-pointer items-center gap-2 rounded px-1 py-1 text-sm hover:bg-[var(--bg-secondary)]">
+                    <input type="checkbox" checked={filters.notYetExecuted} onChange={(event) => setFilters((current) => ({ ...current, notYetExecuted: event.target.checked }))} />
+                    Not yet executed
+                  </label>
+                </div>
               </div>
             )}
           </div>
           <div aria-live="polite" className="ml-auto whitespace-nowrap text-xs font-medium text-[var(--text-muted)]">
-            {filteredPlans.length}{(searchTerm || statusFilter !== 'All') ? ` of ${plans.length}` : ''} test plan{filteredPlans.length === 1 ? '' : 's'}
+            {filteredPlans.length}{(searchTerm || activeFilterCount > 0) ? ` of ${plans.length}` : ''} test plan{filteredPlans.length === 1 ? '' : 's'}
           </div>
           {bulk.selectedCount > 0 && (
             <div className="ml-auto flex items-center gap-2">
-              <button onClick={() => runSelectedPlans()} disabled={isStartingRun} className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
-                {isStartingRun ? <Loader2 className="w-4 h-4 animate-spin" /> : <PlayCircle className="w-4 h-4" />} Run selected ({bulk.selectedCount})
-              </button>
+              {bulk.selectedCount > 1 && (
+                <button onClick={() => runSelectedPlans()} disabled={isStartingRun} title={runCountLabel(selectedPlanIds.reduce((count, id) => count + getPlanRuns(plans.find((plan) => plan.id === id)).length, 0))} className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
+                  {isStartingRun ? <Loader2 className="w-4 h-4 animate-spin" /> : <PlayCircle className="w-4 h-4" />} Run selected ({bulk.selectedCount})
+                </button>
+              )}
               <button onClick={bulk.deleteSelected} disabled={bulk.busy} className="flex items-center gap-1.5 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
                 <Trash2 className="w-4 h-4" /> Delete selected ({bulk.selectedCount})
               </button>
@@ -590,28 +620,31 @@ export default function TestPlans() {
         </div>
 
         <div className="flex-1 overflow-auto">
-          <table className="w-full text-left text-sm whitespace-nowrap">
+          <table className="w-full min-w-[1120px] table-fixed text-left text-sm whitespace-nowrap">
             <thead className="sticky top-0 bg-[var(--bg-secondary)] border-b border-[var(--border)] z-10">
               <tr className="text-[var(--text-muted)]">
                 <th className="font-medium py-3 px-4 w-10">
                   <input type="checkbox" checked={bulk.allSelected(filteredPlans.map((p) => p.id))} onChange={() => bulk.toggleAll(filteredPlans.map((p) => p.id))} />
                 </th>
-                <th className="font-medium py-3 px-4 w-24">ID</th>
-                <th className="font-medium py-3 px-4">Name</th>
-                <th className="font-medium py-3 px-4 w-56">Folder</th>
-                <th className="font-medium py-3 px-4 w-32">Status</th>
-                <th className="font-medium py-3 px-4 w-44">Risk Level</th>
+                <th className="w-32 px-4 py-3 font-medium">ID</th>
+                <th className="w-72 px-4 py-3 font-medium">Name</th>
+                <th className="w-48 px-4 py-3 font-medium">Owner</th>
+                <th className="w-40 px-4 py-3 font-medium">Status</th>
+                <th className="w-32 px-4 py-3 font-medium">Risk Level</th>
+                <th className="w-52 px-4 py-3 font-medium">Start / End Date</th>
+                <th className="w-28 px-4 py-3 text-center font-medium">Linked Runs</th>
+                <th className="w-28 px-4 py-3 text-center font-medium">Test Cases</th>
                 <th className="font-medium py-3 px-4 w-24 text-right">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-[var(--border)]">
               {loading ? (
-                <tr><td colSpan={7} className="py-8 text-center text-[var(--text-muted)]">Loading plans...</td></tr>
+                <tr><td colSpan={10} className="py-8 text-center text-[var(--text-muted)]">Loading plans...</td></tr>
               ) : filteredPlans.length === 0 ? (
-                <tr><td colSpan={7} className="py-8 text-center text-[var(--text-muted)]">No plans found.</td></tr>
+                <tr><td colSpan={10} className="py-8 text-center text-[var(--text-muted)]">No plans found.</td></tr>
               ) : filteredPlans.map((plan) => {
-                const planSuites = getPlanSuites(plan.id);
                 const planCases = getPlanCases(plan.id);
+                const linkedRunCount = getPlanRuns(plan).length;
                 const isSelected = planId === plan.id;
 
                 return (
@@ -619,36 +652,18 @@ export default function TestPlans() {
                     key={plan.id}
                     onClick={() => navigate(`/plans/${plan.id}`)}
                     className={cn(
-                      "transition-colors cursor-pointer",
+                      "h-14 cursor-pointer align-middle transition-colors",
                       isSelected ? "bg-[var(--accent)]/10" : "hover:bg-[var(--bg-secondary)]"
                     )}
                   >
                     <td className="py-3 px-4" onClick={(e) => e.stopPropagation()}>
                       <input type="checkbox" checked={bulk.isSelected(plan.id)} onChange={() => bulk.toggle(plan.id)} />
                     </td>
-                    <td className="py-3 px-4 font-mono text-xs text-[var(--text-muted)]">{plan.id}</td>
+                    <td className="truncate py-3 px-4 font-mono text-xs text-[var(--text-muted)]" title={plan.id}>{plan.id}</td>
                     <td className="py-3 px-4">
-                      <div className="min-w-0 max-w-[420px]">
-                        <span className="block truncate font-medium" title={plan.name}>{plan.name}</span>
-                        <span className="text-xs text-[var(--text-muted)]">
-                          {planSuites.length} suites / {planCases.length} cases
-                        </span>
-                      </div>
+                      <span className="block max-w-[420px] truncate font-medium" title={plan.name}>{plan.name}</span>
                     </td>
-                    <td className="py-3 px-4">
-                      <select
-                        value={plan.folderId || ''}
-                        onClick={(event) => event.stopPropagation()}
-                        onChange={(event) => updatePlanInline(plan, { folderId: event.target.value })}
-                        className={inlineSelectClass}
-                        title="Update folder"
-                      >
-                        <option value="" disabled>Select a folder</option>
-                        {folders.map((folder) => (
-                          <option key={folder.id} value={folder.id}>{folder.path || folder.name}</option>
-                        ))}
-                      </select>
-                    </td>
+                    <td className="truncate py-3 px-4 text-[var(--text-muted)]" title={plan.owner || undefined}>{plan.owner || '-'}</td>
                     <td className="py-3 px-4">
                       <select
                         value={plan.status || 'Draft'}
@@ -663,18 +678,17 @@ export default function TestPlans() {
                       </select>
                     </td>
                     <td className="py-3 px-4">
-                      <select
-                        value={plan.riskLevel || 'Medium'}
-                        onClick={(event) => event.stopPropagation()}
-                        onChange={(event) => updatePlanInline(plan, { riskLevel: event.target.value })}
-                        className="w-full min-w-[110px] rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs font-medium text-[var(--text-primary)] outline-none transition-colors hover:border-[var(--accent)] focus:border-[var(--accent)]"
-                        title="Update risk level"
-                      >
-                        {PLAN_RISK_LEVELS.map((riskLevel) => (
-                          <option key={riskLevel} value={riskLevel}>{riskLevel}</option>
-                        ))}
-                      </select>
+                      <span className={cn("inline-flex rounded px-2 py-0.5 text-xs font-bold uppercase tracking-wider", getRiskBadgeClass(plan.riskLevel || 'Medium'))}>
+                        {plan.riskLevel || 'Medium'}
+                      </span>
                     </td>
+                    <td className="py-3 px-4 text-[var(--text-muted)]">{plan.startDate || '-'} / {plan.endDate || '-'}</td>
+                    <td className="py-3 px-4 text-center">
+                      <span className="inline-flex min-w-7 justify-center rounded-full bg-[var(--accent)]/10 px-2 py-0.5 text-xs font-semibold text-[var(--accent)]" title={`${linkedRunCount} linked test run${linkedRunCount === 1 ? '' : 's'}`}>
+                        {linkedRunCount}
+                      </span>
+                    </td>
+                    <td className="py-3 px-4 text-center">{planCases.length}</td>
                     <td className="py-3 px-4 text-right">
                       <div className="relative inline-flex items-center gap-1">
                         <button
@@ -683,7 +697,7 @@ export default function TestPlans() {
                             runSelectedPlans([plan.id]);
                           }}
                           disabled={isStartingRun}
-                          title="Run test plan"
+                          title={runCountLabel(linkedRunCount)}
                           className="p-1 rounded hover:bg-emerald-500/10 text-[var(--text-muted)] hover:text-emerald-400 disabled:opacity-50 transition-colors"
                         >
                           <PlayCircle className="w-4 h-4" />
@@ -691,12 +705,12 @@ export default function TestPlans() {
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
-                            setOpenActionPlanId(openActionPlanId === plan.id ? null : plan.id);
+                            openEditModal(plan);
                           }}
-                          title="Plan actions"
-                          className="p-1 rounded hover:bg-[var(--border)] text-[var(--text-muted)] transition-colors"
+                          title="Edit plan"
+                          className="p-1 rounded hover:bg-[var(--border)] text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors"
                         >
-                          <MoreHorizontal className="w-4 h-4" />
+                          <Pencil className="w-4 h-4" />
                         </button>
                         <button
                           onClick={(e) => { e.stopPropagation(); bulk.deleteOne(plan.id); }}
@@ -705,31 +719,6 @@ export default function TestPlans() {
                         >
                           <Trash2 className="w-4 h-4" />
                         </button>
-                        {openActionPlanId === plan.id && (
-                          <div
-                            onClick={(e) => e.stopPropagation()}
-                            className="absolute right-0 top-8 z-20 min-w-28 overflow-hidden rounded-md border border-[var(--border)] bg-[var(--bg-card)] shadow-xl"
-                          >
-                            <button
-                              onClick={() => {
-                                setOpenActionPlanId(null);
-                                openEditModal(plan);
-                              }}
-                              className="block w-full px-3 py-2 text-left text-sm text-[var(--text-primary)] hover:bg-[var(--bg-secondary)]"
-                            >
-                              Edit
-                            </button>
-                            <button
-                              onClick={() => {
-                                setOpenActionPlanId(null);
-                                handleDeletePlanById(plan.id);
-                              }}
-                              className="block w-full px-3 py-2 text-left text-sm text-red-400 hover:bg-red-500/10"
-                            >
-                              Delete
-                            </button>
-                          </div>
-                        )}
                       </div>
                     </td>
                   </tr>

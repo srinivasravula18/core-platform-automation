@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef, useMemo } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Search, Filter, MoreHorizontal, Plus, Sparkles, Loader2, Trash2, PlayCircle, Code2 } from 'lucide-react';
+import { Search, Filter, Pencil, Plus, Sparkles, Loader2, Trash2, PlayCircle, Code2 } from 'lucide-react';
 import ExportMenu from '../components/ExportMenu';
 import { useAiSearch } from '@/src/lib/useAiSearch';
 import { useBulkDelete } from '@/src/lib/useBulkDelete';
@@ -17,6 +17,7 @@ import { useDataVersion } from '@/src/store/data';
 import { TagEditor } from '@/src/components/TagEditor';
 import { TagMultiSelect } from '@/src/components/TagMultiSelect';
 import { MultiSelectDropdown } from '@/src/components/MultiSelectDropdown';
+import { normalizeTestCaseTypes, testCaseTypeFields } from '@/core/shared/testCaseTypes';
 
 const CASE_STATUSES = ['Draft', 'Under Review', 'Approved', 'Automated', 'Deprecated'];
 const PRIORITIES = ['Low', 'Medium', 'High', 'Critical'];
@@ -73,7 +74,7 @@ export default function TestCases() {
   const [caseAIMessage, setCaseAIMessage] = useState('');
   const [isStartingRun, setIsStartingRun] = useState(false);
   const emptyStep = { action: '', expected: '' };
-  const blankForm = { title: '', description: '', preconditions: '', testPlanIds: [] as string[], testSuiteIds: [] as string[], createdBy: 'Admin', tags: [] as string[], testingScope: 'Manual', automationStatus: 'Not Automated', testingType: 'Functional', priority: 'Medium', status: 'Draft', folderId: '', captureEvidenceOnManualRun: true, steps: [emptyStep] };
+  const blankForm = { title: '', description: '', preconditions: '', testPlanIds: [] as string[], testSuiteIds: [] as string[], createdBy: 'Admin', tags: [] as string[], testingScope: 'Manual', automationStatus: 'Not Automated', testingTypes: ['Functional'] as string[], priority: 'Medium', status: 'Draft', folderId: '', captureEvidenceOnManualRun: true, steps: [emptyStep] };
   const [formData, setFormData] = useState(blankForm);
   const inlineSelectClass = "w-full min-w-0 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs font-medium text-[var(--text-primary)] outline-none transition-colors hover:border-[var(--accent)] focus:border-[var(--accent)]";
 
@@ -233,7 +234,7 @@ export default function TestCases() {
       tags: Array.isArray(testCase.tags) ? testCase.tags : String(testCase.tags || '').split(',').map((t: string) => t.trim()).filter(Boolean),
       testingScope: testCase.testingScope || (testCase.type === 'Automated' ? 'Automation' : 'Manual'),
       automationStatus: testCase.automationStatus || 'Not Automated',
-      testingType: testCase.testingType || 'Functional',
+      testingTypes: normalizeTestCaseTypes(testCase),
       priority: testCase.priority || 'Medium', status: testCase.status || 'Draft',
       folderId: testCase.folderId || '',
       captureEvidenceOnManualRun: testCase.captureEvidenceOnManualRun !== false,
@@ -252,6 +253,7 @@ export default function TestCases() {
     // Derive the legacy singular fields so run/linking + exports keyed on them keep working.
     const payload = {
       ...formData,
+      ...testCaseTypeFields(formData.testingTypes),
       tags,
       steps,
       type: formData.testingScope === 'Automation' ? 'Automated' : 'Manual',
@@ -496,7 +498,7 @@ export default function TestCases() {
     if (filters.statuses.length) conds.push(filters.statuses.includes(testCase.status || 'Draft'));
     if (filters.priorities.length) conds.push(filters.priorities.includes(testCase.priority || 'Medium'));
     if (filters.automationStatuses.length) conds.push(filters.automationStatuses.includes(testCase.automationStatus || 'Not Automated'));
-    if (filters.testingTypes.length) conds.push(filters.testingTypes.includes(testCase.testingType || 'Functional'));
+    if (filters.testingTypes.length) conds.push(normalizeTestCaseTypes(testCase).some((type) => filters.testingTypes.includes(type)));
     if (filters.tags.length) conds.push(filters.tags.some((t) => tags.includes(t)));
     if (filters.owners.length) conds.push(filters.owners.includes(String(testCase.createdBy || '')));
     if (filters.folders.length) conds.push(filters.folders.includes(testCase.folderId || ''));
@@ -545,7 +547,7 @@ export default function TestCases() {
               { key: 'description', label: 'Description' },
               { key: 'testingScope', label: 'Testing Scope', get: (c) => c.testingScope || (c.type === 'Automated' ? 'Automation' : 'Manual') },
               { key: 'automationStatus', label: 'Automation Status', get: (c) => c.automationStatus || 'Not Automated' },
-              { key: 'testingType', label: 'Type Of Test Case', get: (c) => c.testingType || 'Functional' },
+              { key: 'testingType', label: 'Type Of Test Case', get: (c) => normalizeTestCaseTypes(c).join(', ') },
               { key: 'priority', label: 'Priority', get: (c) => c.priority || 'Medium' },
               { key: 'status', label: 'Status', get: (c) => c.status || 'Draft' },
               { key: 'app', label: 'Platform / App', get: (c) => caseScopeLabel(c) },
@@ -553,7 +555,7 @@ export default function TestCases() {
               { key: 'createdBy', label: 'Created By' },
               { key: 'suite', label: 'Suite', get: (c) => (suites.find((s) => s.id === c.testSuiteId) || {}).name || '' },
               { key: 'stepCount', label: 'Steps', get: (c) => (c.steps || []).length },
-              { key: 'stepDetail', label: 'Step Detail', get: (c) => (c.steps || []).map((s: any, i: number) => `${i + 1}. ${s.action || ''}${s.expected ? ' => ' + s.expected : ''}`).join('  |  ') },
+              { key: 'stepDetail', label: 'Step Detail', get: (c) => (c.steps || []).map((s: any, i: number) => `${i + 1}. ${s.action || ''}${s.expected ? ' => ' + s.expected : ''}`).join('\n') },
             ]}
           />
           <button onClick={openNewModal} className="flex items-center gap-2 bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white px-4 py-2 rounded-md text-sm font-medium transition-colors">
@@ -621,9 +623,7 @@ export default function TestCases() {
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Type Of Test Case</label>
-                  <select value={formData.testingType} onChange={(e) => setFormData({ ...formData, testingType: e.target.value })} className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]">
-                    {TESTING_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
-                  </select>
+                  <MultiSelectDropdown label="Select types" options={TESTING_TYPES.map((type) => ({ id: type, name: type }))} value={formData.testingTypes} onChange={(testingTypes) => setFormData({ ...formData, testingTypes })} />
                 </div>
                 <div>
                   <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Priority</label>
@@ -646,7 +646,7 @@ export default function TestCases() {
               <CodegenPanel
                 title={formData.title}
                 appUrl={automationUrl}
-                caseMeta={{ testingType: formData.testingType, priority: formData.priority, folderId: formData.folderId, testPlanIds: formData.testPlanIds, testSuiteIds: formData.testSuiteIds }}
+                caseMeta={{ ...testCaseTypeFields(formData.testingTypes), priority: formData.priority, folderId: formData.folderId, testPlanIds: formData.testPlanIds, testSuiteIds: formData.testSuiteIds }}
                 onDone={() => { setIsCaseModalOpen(false); fetchCases(); }}
               />
             </div>
@@ -774,11 +774,7 @@ export default function TestCases() {
              </div>
              <div>
                  <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Type Of Test Case</label>
-                 <select value={formData.testingType} onChange={(e) => setFormData({...formData, testingType: e.target.value})} className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]">
-                    {TESTING_TYPES.map((testingType) => (
-                      <option key={testingType} value={testingType}>{testingType}</option>
-                    ))}
-                 </select>
+                 <MultiSelectDropdown label="Select types" options={TESTING_TYPES.map((type) => ({ id: type, name: type }))} value={formData.testingTypes} onChange={(testingTypes) => setFormData({ ...formData, testingTypes })} />
              </div>
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -977,9 +973,11 @@ export default function TestCases() {
             ))}
           </select>
           <div className="ml-auto flex items-center gap-2">
-            <button onClick={() => runSelectedCases()} disabled={isStartingRun || bulk.selectedCount === 0} title={bulk.selectedCount === 0 ? 'Select at least one test case' : 'Run selected'} className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
-              {isStartingRun ? <Loader2 className="w-4 h-4 animate-spin" /> : <PlayCircle className="w-4 h-4" />} Run selected{bulk.selectedCount > 0 ? ` (${bulk.selectedCount})` : ''}
-            </button>
+            {bulk.selectedCount > 1 && (
+              <button onClick={() => runSelectedCases()} disabled={isStartingRun} title="Run selected" className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
+                {isStartingRun ? <Loader2 className="w-4 h-4 animate-spin" /> : <PlayCircle className="w-4 h-4" />} Run selected ({bulk.selectedCount})
+              </button>
+            )}
             <button onClick={bulk.deleteSelected} disabled={bulk.busy || bulk.selectedCount === 0} title={bulk.selectedCount === 0 ? 'Select at least one test case' : 'Delete selected'} className="flex items-center gap-1.5 bg-red-600 hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
               <Trash2 className="w-4 h-4" /> Delete selected{bulk.selectedCount > 0 ? ` (${bulk.selectedCount})` : ''}
             </button>
@@ -1158,17 +1156,12 @@ export default function TestCases() {
                     </select>
                   </td>
                   <td className="py-3 px-4">
-                    <select
-                      value={tc.testingType || 'Functional'}
-                      onClick={(event) => event.stopPropagation()}
-                      onChange={(event) => updateCaseInline(tc, { testingType: event.target.value })}
-                      className="w-full min-w-0 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs font-medium text-[var(--text-primary)] outline-none transition-colors hover:border-[var(--accent)] focus:border-[var(--accent)]"
-                      title="Update test-case type"
-                    >
-                      {TESTING_TYPES.map((testingType) => (
-                        <option key={testingType} value={testingType}>{testingType}</option>
-                      ))}
-                    </select>
+                    <MultiSelectDropdown
+                      label="Select types"
+                      options={TESTING_TYPES.map((type) => ({ id: type, name: type }))}
+                      value={normalizeTestCaseTypes(tc)}
+                      onChange={(testingTypes) => updateCaseInline(tc, testCaseTypeFields(testingTypes))}
+                    />
                   </td>
                   <td className="py-3 px-4">
                     {(() => {
@@ -1226,9 +1219,9 @@ export default function TestCases() {
                         openEditModal(tc);
                       }}
                       title="Edit test case"
-                      className="p-1 rounded hover:bg-[var(--border)] text-[var(--text-muted)] transition-colors"
+                      className="p-1 rounded hover:bg-[var(--border)] text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors"
                     >
-                      <MoreHorizontal className="w-4 h-4" />
+                      <Pencil className="w-4 h-4" />
                     </button>
                     <button
                       onClick={(e) => {

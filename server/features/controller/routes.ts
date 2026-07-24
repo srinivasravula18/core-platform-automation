@@ -3,6 +3,7 @@ import { buildPlan, cancelPlan, classifyIntent, executePlan, explainIntent, stre
 import { runSupervisor, answerAppQuestionFromCode, answerViaConversationalRuntime } from '../../ai/supervisor';
 import { isWorkspaceDataQuestion, quickWorkspaceAnswer } from '../../ai/tools/registry';
 import { reqScope } from '../../shared/scope';
+import { normalizeInput, preLLMPolicyCheck } from '../../ai/guardrails';
 import { ChatConversations } from '../../db/repository';
 import { assembleConversationContext } from '../../ai/memory/contextAssembler';
 import { getProviderCredentials, resolveModelForAgent, resolveProviderForAgent } from '../../ai/orchestrator';
@@ -30,14 +31,45 @@ function nativeReplayOptions(assembled: Awaited<ReturnType<typeof assembleFastCo
     : { questionPrefix: '', seedMessages: assembled.history, memoryBlock: assembled.memoryBlock };
 }
 
-async function persistExchange(conversationId: unknown, workspaceId: unknown, userMessage: string, reply: string) {
+async function persistExchange(conversationId: unknown, workspaceId: unknown, userMessage: string, reply: string, scope?: { userId?: string; projectId?: string; appId?: string | null }) {
   if (typeof conversationId !== 'string' || !conversationId) return;
+  // Store the conversation under the SAME workspace key the console's history list queries —
+  // `${projectId||'none'}::${appId||'all'}` (see scopeWorkspaceId in the Agent Console). The body
+  // `workspaceId` is a hardcoded 'default' used only for agent memory, so relying on it stored chats
+  // under 'default' where the project-scoped history never found them. Derive from scope instead.
+  const convWorkspace = scope
+    ? `${scope.projectId || 'none'}::${scope.appId || 'all'}`
+    : (typeof workspaceId === 'string' ? workspaceId : 'default');
   await ChatConversations.appendMessages({
     id: conversationId,
-    workspaceId: typeof workspaceId === 'string' ? workspaceId : 'default',
+    workspaceId: convWorkspace,
     title: userMessage.slice(0, 120),
     messages: [{ role: 'user', text: userMessage }, { role: 'assistant', kind: 'text', text: reply }],
+    // Stamp ownership so the conversation belongs to the sender — otherwise it is created unowned
+    // and, under strict per-user history isolation, a tester never sees their own chats.
+    ownerId: scope?.userId,
+    projectId: scope?.projectId,
+    appId: scope?.appId || undefined,
   });
+}
+
+// Deterministic small-talk shortcut: greetings ("hi", "hloo"), thanks, farewells, and identity
+// questions get an instant canned reply with NO LLM call. The console's chat path did not run the
+// guardrail, so these went to the model — which then rambled about its own greeting-classification
+// rules ("hloo is not recognized as an instant greeting… counts against the usage budget") instead
+// of just answering. Returns the canned reply, or null to proceed to the normal flow.
+function smallTalkReply(userMessage: string, history: unknown, conversationId: unknown): string | null {
+  const normalized = normalizeInput(userMessage).value;
+  const verdict = preLLMPolicyCheck(
+    {
+      agent: 'chatAssistant' as any,
+      userMessage,
+      requestId: typeof conversationId === 'string' ? conversationId : 'controller',
+      hasHistory: Array.isArray(history) && history.length > 0,
+    },
+    normalized,
+  );
+  return verdict.kind === 'respond' ? verdict.reply : null;
 }
 
 import { INTENT_LABELS, type IntentKind, type Plan, type PlanStep } from '../../ai/intents';
@@ -174,10 +206,16 @@ export function registerControllerRoutes(app: Express) {
       if (!userMessage || typeof userMessage !== 'string') {
         return res.status(400).json({ error: 'userMessage is required' });
       }
+      // Instant small-talk shortcut (greeting/thanks/farewell/identity) — no LLM call.
+      const smallTalk = smallTalkReply(userMessage, history, conversationId);
+      if (smallTalk) {
+        await persistExchange(conversationId, workspaceId, userMessage, smallTalk, scope);
+        return res.json({ reply: smallTalk, accepted: true, fast: true, actions: [], trace: [] });
+      }
       // FAST PATH 1: simple count/list questions answered straight from the DB (no LLM).
       const quick = await quickWorkspaceAnswer(userMessage, scope);
       if (quick) {
-        await persistExchange(conversationId, workspaceId, userMessage, quick);
+        await persistExchange(conversationId, workspaceId, userMessage, quick, scope);
         return res.json({ reply: quick, accepted: true, fast: true, actions: [], trace: [] });
       }
       // FAST PATH 2: app-knowledge QUESTIONS get a single git-grounded LLM call (retrieval
@@ -206,7 +244,7 @@ export function registerControllerRoutes(app: Express) {
           seedMessages: replay.seedMessages,
           memoryBlock: replay.memoryBlock,
         });
-        await persistExchange(conversationId, workspaceId, userMessage, reply);
+        await persistExchange(conversationId, workspaceId, userMessage, reply, scope);
         return res.json({ reply, accepted: true, fast: true, actions: [{ tool: 'search_codebase', arguments: {} }], trace: [] });
       }
       const result = await runSupervisor({
@@ -220,7 +258,7 @@ export function registerControllerRoutes(app: Express) {
         pageContext,
         apps,
       });
-      await persistExchange(conversationId, workspaceId, userMessage, result.finalText);
+      await persistExchange(conversationId, workspaceId, userMessage, result.finalText, scope);
       res.json({
         reply: result.finalText,
         accepted: result.accepted,
@@ -253,9 +291,16 @@ export function registerControllerRoutes(app: Express) {
     try {
       send({ type: 'step', index: 0, text: 'Starting...', toolCalls: [] });
       flushStream(res);
+      // Instant small-talk shortcut (greeting/thanks/farewell/identity) — no LLM call.
+      const smallTalk = smallTalkReply(userMessage, history, conversationId);
+      if (smallTalk) {
+        await persistExchange(conversationId, workspaceId, userMessage, smallTalk, scope);
+        await sendFinalReply(res, send, smallTalk, { fast: true });
+        return res.end();
+      }
       // Instant path: simple count/list answered from the DB, no steps.
       const quick = await quickWorkspaceAnswer(userMessage, effectiveUserId);
-      if (quick) { await persistExchange(conversationId, workspaceId, userMessage, quick); await sendFinalReply(res, send, quick, { fast: true }); return res.end(); }
+      if (quick) { await persistExchange(conversationId, workspaceId, userMessage, quick, scope); await sendFinalReply(res, send, quick, { fast: true }); return res.end(); }
       // Fast git-grounded path for app-knowledge QUESTIONS: ONE LLM call after deterministic
       // retrieval. Emits the search/read progress so the UI still animates the live steps.
       if (!ACTION_RE.test(userMessage) && !isWorkspaceDataQuestion(userMessage, Array.isArray(history) ? history : [])) {
@@ -290,7 +335,7 @@ export function registerControllerRoutes(app: Express) {
             flushStream(res);
           },
         });
-        await persistExchange(conversationId, workspaceId, userMessage, reply);
+        await persistExchange(conversationId, workspaceId, userMessage, reply, scope);
         await sendFinalReply(res, send, reply, { fast: true });
         return res.end();
       }
@@ -314,7 +359,7 @@ export function registerControllerRoutes(app: Express) {
           flushStream(res);
         },
       });
-      await persistExchange(conversationId, workspaceId, userMessage, result.finalText);
+      await persistExchange(conversationId, workspaceId, userMessage, result.finalText, scope);
       await sendFinalReply(res, send, result.finalText, { accepted: result.accepted });
     } catch (err: any) {
       send({ type: 'error', error: err?.message || 'supervisor failed' });

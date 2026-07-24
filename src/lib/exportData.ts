@@ -9,6 +9,8 @@ export interface ExportColumn {
   label: string;
   /** Custom accessor; defaults to row[key]. Return a primitive (string/number/boolean). */
   get?: (row: any) => any;
+  /** Render image URLs as linked thumbnails in HTML/PDF while keeping the URL in data exports. */
+  kind?: 'image';
 }
 
 const cell = (col: ExportColumn, row: any): string => {
@@ -49,16 +51,26 @@ export function toMarkdown(rows: any[], columns: ExportColumn[], title?: string)
   const mdCell = (v: string) => v.replace(/\|/g, '\\|').replace(/\r?\n/g, '<br>');
   const head = `| ${columns.map((c) => mdCell(c.label)).join(' | ')} |`;
   const sep = `| ${columns.map(() => '---').join(' | ')} |`;
-  const body = rows.map((r) => `| ${columns.map((c) => mdCell(cell(c, r))).join(' | ')} |`).join('\n');
+  const body = rows.map((r) => `| ${columns.map((c) => {
+    const value = cell(c, r);
+    return c.kind === 'image' && value ? `[View screenshot](${value})` : mdCell(value);
+  }).join(' | ')} |`).join('\n');
   const heading = title ? `# ${title}\n\n_${rows.length} row(s) · exported ${new Date().toLocaleString()}_\n\n` : '';
   return `${heading}${head}\n${sep}\n${body}\n`;
 }
 
 function toHTMLTable(rows: any[], columns: ExportColumn[], title: string): string {
   const esc = (s: string) => s.replace(/[&<>]/g, (m) => (({ '&': '&amp;', '<': '&lt;', '>': '&gt;' } as Record<string, string>)[m]));
+  const escAttr = (s: string) => esc(s).replace(/"/g, '&quot;');
+  const htmlCell = (column: ExportColumn, row: any) => {
+    const value = cell(column, row);
+    if (column.kind !== 'image' || !/^https?:\/\//i.test(value)) return esc(value).replace(/\r?\n/g, '<br>');
+    const url = escAttr(value);
+    return `<a href="${url}" target="_blank" rel="noreferrer"><img src="${url}" alt="Execution screenshot"></a>`;
+  };
   const head = columns.map((c) => `<th>${esc(c.label)}</th>`).join('');
   const body = rows
-    .map((r) => `<tr>${columns.map((c) => `<td>${esc(cell(c, r)).replace(/\r?\n/g, '<br>')}</td>`).join('')}</tr>`)
+    .map((r) => `<tr>${columns.map((c) => `<td>${htmlCell(c, r)}</td>`).join('')}</tr>`)
     .join('');
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="color-scheme" content="light dark"><title>${esc(title)}</title><style>
     :root{color-scheme:light dark}
@@ -66,6 +78,7 @@ function toHTMLTable(rows: any[], columns: ExportColumn[], title: string): strin
     h1{font-size:20px;margin:0 0 4px}.s{color:#666;font-size:12px;margin-bottom:16px}
     table{width:100%;border-collapse:collapse;font-size:12px}
     th,td{border:1px solid #ddd;padding:6px 8px;text-align:left;vertical-align:top}
+    td img{display:block;width:180px;max-height:120px;object-fit:cover;border:1px solid #ddd;border-radius:4px}
     th{background:#f4f4f5}tr:nth-child(even){background:#fafafa}
     /* Legible in a dark-theme browser too. */
     @media (prefers-color-scheme: dark){
@@ -86,8 +99,14 @@ function printHTML(html: string) {
   w.document.write(html);
   w.document.close();
   w.focus();
-  // give the new window a tick to render before invoking print
-  setTimeout(() => w.print(), 250);
+  const images = Array.from(w.document.images);
+  const loaded = Promise.all(images.map((image) => image.complete
+    ? Promise.resolve()
+    : new Promise<void>((resolve) => {
+        image.addEventListener('load', () => resolve(), { once: true });
+        image.addEventListener('error', () => resolve(), { once: true });
+      })));
+  void Promise.race([loaded, new Promise((resolve) => setTimeout(resolve, 3000))]).then(() => w.print());
 }
 
 const slug = (s: string) => (s || 'export').replace(/[^a-z0-9]+/gi, '-').toLowerCase().replace(/^-+|-+$/g, '').slice(0, 50);

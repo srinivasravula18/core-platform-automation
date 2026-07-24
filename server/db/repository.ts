@@ -16,6 +16,8 @@
 import { db } from '../shared/storage';
 import { getPool, isPostgresEnabled, migrate, query, queryOne, uid, withTransaction } from './pool';
 import { eventIdempotencyKey, type WorkflowEvent } from '../features/agent/workflow/events';
+import { normalizeTestCaseTypes } from '../../core/shared/testCaseTypes';
+import { nextArtifactId } from '../shared/artifactIds';
 
 export function isPgEnabled(): boolean {
   return isPostgresEnabled();
@@ -80,6 +82,12 @@ function mapPlan(r: any) {
     schedule: r.schedule,
     risks: r.risks,
     deliverables: r.deliverables,
+    description: r.description,
+    startDate: r.start_date,
+    endDate: r.end_date,
+    owner: r.owner,
+    tags: r.tags || [],
+    runIds: r.run_ids || [],
     status: r.status,
     riskLevel: r.risk_level,
     folderId: r.folder_id,
@@ -141,6 +149,7 @@ function mapCase(r: any) {
     automationStatus: r.automation_status || 'Not Automated',
     testingScope: r.testing_scope || (r.type === 'Automated' ? 'Automation' : 'Manual'),
     testingType: r.testing_type || 'Functional',
+    testingTypes: normalizeTestCaseTypes({ testingTypes: r.testing_types, testingType: r.testing_type }),
     tags: r.tags || [],
     folderId: r.folder_id,
     confidence: r.confidence,
@@ -714,22 +723,31 @@ export const Plans = {
     return mapPlan(r);
   },
   async upsert(plan: any): Promise<any> {
+    const id = plan.id || await nextArtifactId('PLAN', {
+      ownerId: plan.ownerId,
+      websiteId: plan.websiteId,
+      websiteName: plan.websiteName,
+      targetUrl: plan.targetUrl || plan.environments,
+      sourceText: `${plan.name || ''} ${plan.description || ''} ${plan.objectives || ''}`,
+    });
+    plan = { ...plan, id };
     if (!isPgEnabled()) {
       const idx = db.plans.findIndex((p: any) => p.id === plan.id);
       if (idx >= 0) db.plans[idx] = { ...db.plans[idx], ...plan };
       else db.plans.unshift(plan);
       return plan;
     }
-    const id = plan.id || uid('PLAN');
     const row = await queryOne(
-      `INSERT INTO plans (id, name, scope, objectives, in_scope, out_of_scope, strategy, test_types, environments, roles, entry_exit, schedule, risks, deliverables, status, risk_level, folder_id, approval_state, proposed_by, source_run_id, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20, now(), now())
+      `INSERT INTO plans (id, name, scope, objectives, in_scope, out_of_scope, strategy, test_types, environments, roles, entry_exit, schedule, risks, deliverables, description, start_date, end_date, owner, tags, run_ids, status, risk_level, folder_id, approval_state, proposed_by, source_run_id, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26, now(), now())
        ON CONFLICT (id) DO UPDATE SET
          name=EXCLUDED.name, scope=EXCLUDED.scope, objectives=EXCLUDED.objectives,
          in_scope=EXCLUDED.in_scope, out_of_scope=EXCLUDED.out_of_scope, strategy=EXCLUDED.strategy,
          test_types=EXCLUDED.test_types, environments=EXCLUDED.environments, roles=EXCLUDED.roles,
          entry_exit=EXCLUDED.entry_exit, schedule=EXCLUDED.schedule, risks=EXCLUDED.risks,
-         deliverables=EXCLUDED.deliverables, status=EXCLUDED.status, risk_level=EXCLUDED.risk_level,
+         deliverables=EXCLUDED.deliverables, description=EXCLUDED.description,
+         start_date=EXCLUDED.start_date, end_date=EXCLUDED.end_date, owner=EXCLUDED.owner,
+         tags=EXCLUDED.tags, run_ids=EXCLUDED.run_ids, status=EXCLUDED.status, risk_level=EXCLUDED.risk_level,
          folder_id=EXCLUDED.folder_id, approval_state=EXCLUDED.approval_state,
          proposed_by=EXCLUDED.proposed_by, source_run_id=EXCLUDED.source_run_id, updated_at=now()
        RETURNING *`,
@@ -748,6 +766,12 @@ export const Plans = {
         plan.schedule || '',
         plan.risks || '',
         plan.deliverables || '',
+        plan.description || '',
+        plan.startDate || null,
+        plan.endDate || null,
+        plan.owner || '',
+        Array.isArray(plan.tags) ? plan.tags : [],
+        JSON.stringify(Array.isArray(plan.runIds) ? plan.runIds : []),
         plan.status || 'draft',
         plan.riskLevel || 'Medium',
         plan.folderId || null,
@@ -784,6 +808,14 @@ export const Suites = {
     return mapSuite(r);
   },
   async upsert(s: any): Promise<any> {
+    const id = s.id || await nextArtifactId('SUITE', {
+      ownerId: s.ownerId,
+      websiteId: s.websiteId,
+      websiteName: s.websiteName,
+      targetUrl: s.targetUrl,
+      sourceText: `${s.name || ''} ${s.description || ''}`,
+    });
+    s = { ...s, id };
     const parentSuiteIds = Array.isArray(s.parentSuiteIds) ? s.parentSuiteIds.filter(Boolean) : (s.parentSuite ? [s.parentSuite] : []);
     const primaryParentSuite = s.parentSuite || parentSuiteIds[0] || null;
     const planIds = Array.isArray(s.testPlanIds) ? s.testPlanIds.filter(Boolean) : (s.testPlanId ? [s.testPlanId] : []);
@@ -795,7 +827,6 @@ export const Suites = {
       else db.suites.unshift(normalized);
       return normalized;
     }
-    const id = s.id || uid('SUITE');
     const row = await queryOne(
       `INSERT INTO suites (id, name, description, parent_suite, test_plan_id, module, owner, tags, priority, status, folder_id, approval_state, proposed_by, source_run_id, test_plan_ids, parent_suite_ids, created_at, updated_at)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16, now(), now())
@@ -918,15 +949,23 @@ export const Cases = {
     return mapCase(r);
   },
   async upsert(c: any): Promise<any> {
+    const id = c.id || await nextArtifactId('TC', {
+      ownerId: c.ownerId,
+      websiteId: c.websiteId,
+      websiteName: c.websiteName,
+      targetUrl: c.targetUrl,
+      sourceText: `${c.title || ''} ${c.description || ''}`,
+    });
+    c = { ...c, id };
     if (!isPgEnabled()) {
       const idx = db.cases.findIndex((x: any) => x.id === c.id);
       if (idx >= 0) db.cases[idx] = { ...db.cases[idx], ...c };
       else db.cases.unshift(c);
       return c;
     }
-    const id = c.id || uid('TC');
     const stepsJson = JSON.stringify(c.steps || []);
     const testingScope = c.testingScope || (c.type === 'Automated' ? 'Automation' : 'Manual');
+    const testingTypes = normalizeTestCaseTypes(c);
     // Multi-select plan/suite: keep the singular id synced to the first array entry (or an explicit
     // singular value) so downstream run/linking logic keyed on test_plan_id/test_suite_id still works.
     const planIds = Array.isArray(c.testPlanIds) ? c.testPlanIds.filter(Boolean) : (c.testPlanId ? [c.testPlanId] : []);
@@ -938,8 +977,8 @@ export const Cases = {
       ? await queryOne('SELECT title, description, preconditions, steps FROM cases WHERE id = $1', [id])
       : null;
     const row = await queryOne(
-      `INSERT INTO cases (id, title, description, preconditions, steps, test_plan_id, test_suite_id, type, priority, status, tags, folder_id, confidence, sources, approval_state, proposed_by, source_run_id, agent_run_id, automation_status, testing_scope, testing_type, test_plan_ids, test_suite_ids, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22::jsonb,$23::jsonb, now(), now())
+      `INSERT INTO cases (id, title, description, preconditions, steps, test_plan_id, test_suite_id, type, priority, status, tags, folder_id, confidence, sources, approval_state, proposed_by, source_run_id, agent_run_id, automation_status, testing_scope, testing_type, testing_types, test_plan_ids, test_suite_ids, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22::jsonb,$23::jsonb,$24::jsonb, now(), now())
        ON CONFLICT (id) DO UPDATE SET
          title=EXCLUDED.title, description=EXCLUDED.description, preconditions=EXCLUDED.preconditions,
          steps=EXCLUDED.steps, test_plan_id=EXCLUDED.test_plan_id, test_suite_id=EXCLUDED.test_suite_id,
@@ -948,7 +987,7 @@ export const Cases = {
          approval_state=EXCLUDED.approval_state, proposed_by=EXCLUDED.proposed_by,
          source_run_id=EXCLUDED.source_run_id, agent_run_id=EXCLUDED.agent_run_id,
          automation_status=EXCLUDED.automation_status, testing_scope=EXCLUDED.testing_scope,
-         testing_type=EXCLUDED.testing_type, test_plan_ids=EXCLUDED.test_plan_ids,
+         testing_type=EXCLUDED.testing_type, testing_types=EXCLUDED.testing_types, test_plan_ids=EXCLUDED.test_plan_ids,
          test_suite_ids=EXCLUDED.test_suite_ids, updated_at=now()
        RETURNING *`,
       [
@@ -958,8 +997,8 @@ export const Cases = {
         c.tags || [], c.folderId || null, c.confidence ?? null, c.sources || [],
         c.approvalState || 'approved', c.proposedBy || c.createdBy || 'human',
         c.sourceRunId || null, c.agentRunId || null,
-        c.automationStatus || 'Not Automated', testingScope, c.testingType || 'Functional',
-        JSON.stringify(planIds), JSON.stringify(suiteIds),
+        c.automationStatus || 'Not Automated', testingScope, testingTypes[0] || 'Functional',
+        JSON.stringify(testingTypes), JSON.stringify(planIds), JSON.stringify(suiteIds),
       ],
     );
     await writeScopeCols('cases', id, c);
@@ -1507,12 +1546,16 @@ function mapConversation(r: any, includeTurns = true) {
   };
 }
 
-/** Stamp conversation scope columns post-upsert; COALESCE keeps an existing owner (PG only). */
+/** Stamp conversation scope columns post-upsert (PG only). First-owner-wins: owner_id is set
+ *  ONCE (when currently null/empty) and NEVER overwritten — otherwise any user who merely opens
+ *  or continues a conversation would steal ownership from its creator (the COALESCE was backwards:
+ *  `COALESCE(NULLIF($2,''), owner_id)` overwrote whenever an ownerId was supplied). project_id/
+ *  app_id keep the existing update-when-provided behavior (a conversation's project can change). */
 async function writeConversationScope(id: string, src: { ownerId?: string; projectId?: string; appId?: string }): Promise<void> {
   if (!isPgEnabled() || !id) return;
   if (!src.ownerId && !src.projectId && !src.appId) return;
   await query(
-    `UPDATE chat_conversations SET owner_id = COALESCE(NULLIF($2, ''), owner_id),
+    `UPDATE chat_conversations SET owner_id = COALESCE(NULLIF(owner_id, ''), NULLIF($2, '')),
        project_id = COALESCE(NULLIF($3, ''), project_id), app_id = COALESCE(NULLIF($4, ''), app_id)
      WHERE id = $1`,
     [id, src.ownerId || '', src.projectId || '', src.appId || ''],
@@ -1528,7 +1571,9 @@ export const ChatConversations = {
         .sort((a: any, b: any) => String(b.updatedAt).localeCompare(String(a.updatedAt)))
         .map((c: any) => ({ id: c.id, workspaceId: c.workspaceId, title: c.title || '', ownerId: c.ownerId || '', projectId: c.projectId || '', appId: c.appId || '', turnCount: (c.turns || []).length, createdAt: c.createdAt, updatedAt: c.updatedAt }));
     }
-    const rows = await query(`SELECT c.id, c.workspace_id, c.title, c.turns, c.created_at, c.updated_at,
+    // owner_id/project_id/app_id MUST be selected — the caller filters conversations by owner
+    // for per-user isolation; omitting owner_id made every row read as unowned and leak across users.
+    const rows = await query(`SELECT c.id, c.workspace_id, c.title, c.turns, c.owner_id, c.project_id, c.app_id, c.created_at, c.updated_at,
       GREATEST((SELECT COUNT(*)::int FROM chat_messages m WHERE m.conversation_id = c.id), COALESCE(jsonb_array_length(c.turns), 0)) AS message_count
       FROM chat_conversations c WHERE c.workspace_id = $1 ORDER BY c.updated_at DESC LIMIT 100`, [workspaceId]);
     return rows.map((r: any) => ({ ...mapConversation(r, false), turnCount: Number(r.message_count || 0) }));
@@ -1581,7 +1626,7 @@ export const ChatConversations = {
     await writeConversationScope(c.id, c);
     return mapConversation(r, true);
   },
-  async appendMessages(c: { id: string; workspaceId?: string; title?: string; messages: any[] }): Promise<any> {
+  async appendMessages(c: { id: string; workspaceId?: string; title?: string; messages: any[]; ownerId?: string; projectId?: string; appId?: string }): Promise<any> {
     const incoming = (c.messages || []).map(messagePayload).filter((m) => m.content || Object.keys(m.payload).length > 2);
     if (!incoming.length) return this.get(c.id);
     if (!isPgEnabled()) {
@@ -1613,6 +1658,10 @@ export const ChatConversations = {
         );
       }
     });
+    // Stamp ownership (first-owner-wins) so the conversation belongs to the sender the moment it
+    // is created — otherwise it stays unowned and is invisible to its owner under strict per-user
+    // history isolation (a tester would never see their own chats).
+    await writeConversationScope(c.id, c);
     return this.get(c.id);
   },
   async upsert(c: { id: string; workspaceId?: string; title?: string; turns?: any[]; ownerId?: string; projectId?: string; appId?: string }): Promise<any> {
@@ -1687,6 +1736,7 @@ function mapRequirement(r: any) {
     description: r.description,
     featureQuery: r.feature_query,
     businessRules: r.business_rules || [],
+    srsModules: r.srs_modules || [],
     dataPopulationNotes: r.data_population_notes,
     metadataRefs: r.metadata_refs || [],
     uiSelectors: r.ui_selectors || {},
@@ -1723,11 +1773,11 @@ export const Requirements = {
       return rq;
     }
     const id = rq.id || uid('REQ');
-    const sql = `INSERT INTO requirements (id, title, description, feature_query, business_rules, data_population_notes, admin_behavior, keystone_behavior, metadata_refs, ui_selectors, source_files, coverage_status, status, folder_id, approval_state, proposed_by, source_run_id, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9::jsonb,$10::jsonb,$11::jsonb,$12,$13,$14,$15,$16,$17, now(), now())
+    const sql = `INSERT INTO requirements (id, title, description, feature_query, business_rules, srs_modules, data_population_notes, admin_behavior, keystone_behavior, metadata_refs, ui_selectors, source_files, coverage_status, status, folder_id, approval_state, proposed_by, source_run_id, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5::jsonb,$6::jsonb,$7,$8,$9,$10::jsonb,$11::jsonb,$12::jsonb,$13,$14,$15,$16,$17,$18, now(), now())
        ON CONFLICT (id) DO UPDATE SET
          title=EXCLUDED.title, description=EXCLUDED.description, feature_query=EXCLUDED.feature_query,
-         business_rules=EXCLUDED.business_rules, data_population_notes=EXCLUDED.data_population_notes,
+         business_rules=EXCLUDED.business_rules, srs_modules=EXCLUDED.srs_modules, data_population_notes=EXCLUDED.data_population_notes,
          admin_behavior=EXCLUDED.admin_behavior, keystone_behavior=EXCLUDED.keystone_behavior,
          metadata_refs=EXCLUDED.metadata_refs, ui_selectors=EXCLUDED.ui_selectors, source_files=EXCLUDED.source_files,
          coverage_status=EXCLUDED.coverage_status, status=EXCLUDED.status, folder_id=EXCLUDED.folder_id,
@@ -1736,7 +1786,7 @@ export const Requirements = {
        RETURNING *`;
     const params = (folderId: string | null) => [
       id, rq.title || 'Untitled Requirement', rq.description || '', rq.featureQuery || '',
-      JSON.stringify(rq.businessRules || []), rq.dataPopulationNotes || '',
+      JSON.stringify(rq.businessRules || []), JSON.stringify(rq.srsModules || []), rq.dataPopulationNotes || '',
       '', '',
       JSON.stringify(rq.metadataRefs || []), JSON.stringify(rq.uiSelectors || {}),
       JSON.stringify(rq.sourceFiles || []),

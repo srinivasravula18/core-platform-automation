@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { resolveUnderstanding } from '../server/agent-runtime/context/goalContext';
 import { structureRequirementText } from '../server/features/requirements/requirementText';
 
@@ -29,5 +30,11 @@ assert.deepEqual(structured.businessRules, [
   'Required fields: Submit without Label and expect a required-field error.',
   'Required fields: Submit without Parent App and expect a required-field error.',
 ]);
+
+const agentRoutes = readFileSync(new URL('../server/features/agent/routes.ts', import.meta.url), 'utf8');
+const runCreated = agentRoutes.indexOf('db.agentRuns.unshift(newRun);');
+const runReturned = agentRoutes.indexOf('res.json({ task_id: taskId });', runCreated);
+const requirementSaved = agentRoutes.lastIndexOf('await persistAgentRequirementArtifacts(newRun);', runCreated);
+assert.ok(requirementSaved > 0 && requirementSaved < runCreated && runCreated < runReturned);
 
 console.log('agent requirement persistence: ok');

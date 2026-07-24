@@ -6,6 +6,8 @@ import {
   Trash2,
 } from 'lucide-react';
 import { cn } from '@/src/lib/utils';
+import { formatBusinessRulesMarkdown, formatRequirementSrs, type RequirementSrsModule } from '@/src/lib/requirementSrs';
+import { MarkdownText } from '@/src/components/MarkdownText';
 
 const COVERAGE_BADGE: Record<string, { label: string; cls: string }> = {
   covered: { label: 'Covered', cls: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400' },
@@ -42,6 +44,7 @@ export function RequirementDraftReview({
   onDiscard: () => void;
 }) {
   const requirement = result?.requirement || {};
+  const srsModules: RequirementSrsModule[] = Array.isArray(result?.understanding?.srsModules) ? result.understanding.srsModules : [];
   const businessRules: string[] = Array.isArray(requirement.businessRules) ? requirement.businessRules : [];
   const metadataRefs: any[] = Array.isArray(requirement.metadataRefs) ? requirement.metadataRefs : [];
   const uiSelectorRows = selectorRows(requirement.uiSelectors);
@@ -57,14 +60,20 @@ export function RequirementDraftReview({
       </div>
 
       <div className="space-y-3">
-        <div>
+        {srsModules.length > 0 && (
+          <div className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-xs leading-relaxed text-[var(--text-primary)]">
+            <MarkdownText value={formatRequirementSrs(srsModules)} />
+          </div>
+        )}
+
+        {srsModules.length === 0 && <div>
           <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">Title</div>
           <div className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm font-medium text-[var(--text-primary)]">
             {requirement.title || 'Untitled requirement'}
           </div>
-        </div>
+        </div>}
 
-        {requirement.description && (
+        {srsModules.length === 0 && requirement.description && (
           <div>
             <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">Description</div>
             <div className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-xs leading-relaxed text-[var(--text-primary)]">
@@ -73,14 +82,9 @@ export function RequirementDraftReview({
           </div>
         )}
 
-        {businessRules.length > 0 && (
-          <div>
-            <div className="mb-1 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
-              <ScrollText className="h-3.5 w-3.5" /> Business rules
-            </div>
-            <ul className="list-disc space-y-1 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-5 py-2 text-xs text-[var(--text-primary)]">
-              {businessRules.map((rule, index) => <li key={index}>{rule}</li>)}
-            </ul>
+        {srsModules.length === 0 && businessRules.length > 0 && (
+          <div className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-xs text-[var(--text-primary)]">
+            <MarkdownText value={formatBusinessRulesMarkdown(businessRules)} />
           </div>
         )}
 

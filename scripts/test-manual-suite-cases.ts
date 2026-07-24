@@ -3,6 +3,7 @@ import {
   caseBelongsToSuite,
   caseSuiteAssignment,
   caseSuiteIds,
+  caseSuiteMembershipUpdate,
   orderSuitesByHierarchy,
   relatedCasesForSuite,
   suiteHierarchyDepth,
@@ -23,6 +24,16 @@ assert.deepEqual(relatedCasesForSuite(cases, 'F-1', '').map((item) => item.id), 
 assert.deepEqual(caseSuiteAssignment(cases[0], 'SUITE-NEW'), {
   testSuiteId: 'SUITE-NEW',
   testSuiteIds: ['PARENT-1', 'SUITE-NEW'],
+  folderId: 'F-1',
+});
+assert.deepEqual(caseSuiteMembershipUpdate({ folderId: 'F-1', testSuiteId: 'SUITE-1', testSuiteIds: ['SUITE-1', 'SUITE-2'] }, 'SUITE-1', false), {
+  testSuiteId: 'SUITE-2',
+  testSuiteIds: ['SUITE-2'],
+  folderId: 'F-1',
+});
+assert.deepEqual(caseSuiteMembershipUpdate({ folderId: 'F-1', testSuiteId: 'SUITE-1', testSuiteIds: ['SUITE-1'] }, 'SUITE-2', true), {
+  testSuiteId: 'SUITE-1',
+  testSuiteIds: ['SUITE-1', 'SUITE-2'],
   folderId: 'F-1',
 });
 assert.deepEqual(caseSuiteIds({ testSuiteId: 'SUITE-1', testSuiteIds: ['SUITE-1', 'SUITE-2'] }), ['SUITE-1', 'SUITE-2']);

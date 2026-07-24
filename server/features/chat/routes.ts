@@ -113,6 +113,12 @@ export function registerChatRoutes(app: Express) {
         workspaceId: String(sessionId || 'default'),
         title: (existing as any)?.title || message.slice(0, 120),
         messages: [{ role: 'user', text: message }, { role: 'assistant', kind: 'text', text: final }],
+        // Stamp ownership at creation so the conversation belongs to the sender. Without this the
+        // row was left unowned; under strict per-user isolation a tester's own chats then never
+        // appeared in their history (admin still saw unowned rows, so it looked admin-only).
+        ownerId: scope.userId,
+        projectId: scope.projectId,
+        appId: scope.appId || undefined,
       }).catch(() => null);
       persistDataInBackground('chat turn');
     } catch (err: any) {
@@ -125,10 +131,16 @@ export function registerChatRoutes(app: Express) {
   app.get('/api/chat/conversations', async (req, res, next) => {
     try {
       const workspaceId = String(req.query.workspaceId || 'default');
-      // Phase 7 tenant isolation: users see their own conversations (+ legacy unowned rows).
+      // Strict per-user isolation: a TESTER sees ONLY their own conversations; ADMIN sees
+      // their own plus legacy/unowned rows (admin/system domain); unauthenticated callers see
+      // all (back-compat). Never surface one user's conversations to another.
       const scope = reqScope(req);
       const all = await ChatConversations.list(workspaceId);
-      const conversations = scope.userId ? all.filter((c: any) => !c.ownerId || c.ownerId === scope.userId) : all;
+      const conversations = !scope.userId
+        ? all
+        : scope.role === 'admin'
+          ? all.filter((c: any) => !c.ownerId || c.ownerId === scope.userId)
+          : all.filter((c: any) => c.ownerId === scope.userId);
       if (conversations.length) return res.json({ conversations });
       const runs = scopeFilter(await AgentRuns.list(), reqScope(req))
         .slice()
@@ -150,8 +162,9 @@ export function registerChatRoutes(app: Express) {
       }
       const convo = await ChatConversations.get(req.params.id);
       if (!convo) return res.json({ id: req.params.id, turns: [], title: '' });
-      // Another user's conversation reads as absent, not as a hint that it exists.
-      if (ownerMismatch(convo, reqScope(req))) return res.json({ id: req.params.id, turns: [], title: '' });
+      // Another user's conversation reads as absent — but flag it `foreign` so the client can
+      // fork to a fresh, own conversation instead of silently writing into someone else's thread.
+      if (ownerMismatch(convo, reqScope(req))) return res.json({ id: req.params.id, turns: [], title: '', foreign: true });
       res.json(convo);
     } catch (err) {
       next(err);

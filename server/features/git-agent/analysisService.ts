@@ -14,6 +14,7 @@ import { Cases, Scripts } from '../../db/repository';
 import { db } from '../../shared/storage';
 import { pushInboxItem } from '../inbox/routes';
 import { scanGitAgentChanges, getGitAgentDiff } from './gitAgentService';
+import { nextArtifactId } from '../../shared/artifactIds';
 
 const analysisSchema = z.object({
   summary: z.string(),
@@ -138,8 +139,9 @@ export async function applyCodeChangeTests(
   const workspaceId = opts.workspaceId || 'default';
   const createdCases: any[] = [];
   for (const c of input.proposedCases || []) {
+    const id = await nextArtifactId('TC', { sourceText: `${c.title || ''} ${c.rationale || ''}` });
     const rec = await Cases.upsert({
-      id: `TC-GIT-${Math.random().toString(36).slice(2, 6).toUpperCase()}`,
+      id,
       title: c.title,
       description: c.rationale || '',
       steps: Array.isArray(c.steps) ? c.steps : [],

@@ -5,6 +5,8 @@ import ExportMenu from '../components/ExportMenu';
 import { useBulkDelete } from '@/src/lib/useBulkDelete';
 import { Modal } from '@/src/components/Modal';
 import { showAlert, showConfirm } from '@/src/lib/dialog';
+import { MarkdownText } from '@/src/components/MarkdownText';
+import { formatBusinessRulesMarkdown, formatRequirementSrs, type RequirementSrsModule } from '@/src/lib/requirementSrs';
 
 const REQ_STATUSES = ['Draft', 'Under Review', 'Approved', 'Deprecated'];
 
@@ -130,7 +132,9 @@ export default function Requirements() {
     const q = searchTerm.toLowerCase();
     return !q || `${req.id} ${req.title} ${req.featureQuery} ${req.description}`.toLowerCase().includes(q);
   });
-
+  const exportRequirements = bulk.selectedCount
+    ? filtered.filter((req) => bulk.selectedIds.has(req.id))
+    : filtered;
   return (
     <div className="app-page-shell h-full flex flex-col">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-6 flex-shrink-0">
@@ -142,13 +146,16 @@ export default function Requirements() {
           <ExportMenu
             filename="requirements"
             title="Requirements"
-            rows={filtered}
+            rows={exportRequirements}
+            label={bulk.selectedCount ? `Export selected (${bulk.selectedCount})` : 'Export'}
             columns={[
               { key: 'id', label: 'ID' },
               { key: 'title', label: 'Title' },
               { key: 'status', label: 'Status', get: (r) => r.status || 'Draft' },
               { key: 'coverageStatus', label: 'Coverage' },
+              { key: 'testCaseTypes', label: 'Type Of Test Case', get: (r) => Array.isArray(r.testCaseTypes) ? r.testCaseTypes.join(', ') : '' },
               { key: 'description', label: 'Description' },
+              { key: 'srsModules', label: 'SRS Markdown', get: (r) => Array.isArray(r.srsModules) && r.srsModules.length ? formatRequirementSrs(r.srsModules) : '' },
               { key: 'businessRules', label: 'Business Rules' },
               { key: 'dataPopulationNotes', label: 'Data Population Notes' },
             ]}
@@ -285,6 +292,14 @@ export default function Requirements() {
         }
       >
         <div className="space-y-4">
+          {Array.isArray(selected?.srsModules) && selected.srsModules.length > 0 && (
+            <div>
+              <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">Software Requirements Specification</div>
+              <div className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-xs leading-relaxed text-[var(--text-primary)]">
+                <MarkdownText value={formatRequirementSrs(selected.srsModules as RequirementSrsModule[])} />
+              </div>
+            </div>
+          )}
           <div>
             <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Title</label>
             <input value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} className={inputClass} />
@@ -294,7 +309,12 @@ export default function Requirements() {
             <textarea value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} className={`${inputClass} h-20 resize-y`} />
           </div>
           <div>
-            <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Business rules (one per line)</label>
+            {form.businessRules.trim() && (
+              <div className="mb-2 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-xs text-[var(--text-primary)]">
+                <MarkdownText value={formatBusinessRulesMarkdown(form.businessRules.split('\n').map((rule) => rule.trim()).filter(Boolean))} />
+              </div>
+            )}
+            <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Edit business rules (one per line)</label>
             <textarea value={form.businessRules} onChange={(e) => setForm({ ...form, businessRules: e.target.value })} className={`${inputClass} h-28 resize-y font-mono text-xs`} />
           </div>
           <div>

@@ -789,8 +789,8 @@ export default function AgentConsole() {
   const [selectedEffort, setSelectedEffort] = useState('medium');
   // Existing repository folders, for the deep-run "save results to folder" picker.
   const [folderOptions, setFolderOptions] = useState<Array<{ id: string; name: string; path?: string }>>([]);
-  // Requirement mode: toggled with Shift+Tab. When on, every message is routed to
-  // the requirement-discovery pipeline regardless of phrasing.
+  // Requirement mode: selected from the composer. When on, every message is routed
+  // to the requirement-discovery pipeline regardless of phrasing.
   const [reqMode, setReqMode] = useState(false);
   const [scriptAuthorMode, setScriptAuthorMode] = useState(false);
   const handleProviderChange = useCallback((provider: string) => {
@@ -909,11 +909,21 @@ export default function AgentConsole() {
     try {
       const r = await fetch(`/api/chat/conversations/${id}`);
       const d = await r.json();
+      if (token !== loadReqRef.current) return; // a newer load won — discard this result
+      // The conversation belongs to another user (e.g. a stale pinned id from before login).
+      // Never keep it or write into it — fork to a fresh, own conversation so new messages are
+      // saved under this user and show up in their history.
+      if (d?.foreign) {
+        convTitleRef.current = '';
+        setConversationId(makeConversationId());
+        setTurns([]);
+        loadedRef.current = true;
+        return;
+      }
       // Drop any transient "thinking" turns that may have been persisted.
       const clean = (Array.isArray(d.turns) ? d.turns : []).filter(
         (t: Turn) => !(t.role === 'assistant' && t.kind === 'thinking'),
       );
-      if (token !== loadReqRef.current) return; // a newer load won — discard this result
       convTitleRef.current = String(d.title || '');
       setTurns(clean);
     } catch {
@@ -945,15 +955,18 @@ export default function AgentConsole() {
       let chosen = preferredId;
       let chosenTurns: Turn[] = [];
       let chosenTitle = '';
+      let preferredForeign = false;
       try {
         const r = await fetch(`/api/chat/conversations/${preferredId}`);
         const d = await r.json();
+        if (d?.foreign) preferredForeign = true; // pinned id belongs to another user
         chosenTurns = cleanTurns(d?.turns);
         chosenTitle = String(d?.title || '');
       } catch { /* ignore */ }
 
-      // Only fall back when this wasn't an explicit deep link to a specific chat.
-      if (chosenTurns.length === 0 && !urlChatId && !rememberedConversationIdRef.current) {
+      // Fall back to a recent OWN chat when the preferred one is empty (and not a deep link) OR
+      // when it belongs to another user — never land the user inside a foreign conversation.
+      if ((chosenTurns.length === 0 && !urlChatId && !rememberedConversationIdRef.current) || preferredForeign) {
         const recent = [...convs]
           .filter((c) => (c.turnCount || 0) > 0)
           .sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''))[0];
@@ -966,6 +979,14 @@ export default function AgentConsole() {
             chosen = recent.id;
           } catch { /* ignore */ }
         }
+      }
+
+      // If the preferred conversation was foreign and no own chat was chosen instead, mint a
+      // fresh id so we never keep (or write into) another user's conversation.
+      if (preferredForeign && chosen === preferredId) {
+        chosen = makeConversationId();
+        chosenTurns = [];
+        chosenTitle = '';
       }
 
       if (token !== loadReqRef.current) return; // a newer load (chat switch/new chat) won
@@ -1030,6 +1051,13 @@ export default function AgentConsole() {
   }, [historyOpen]);
 
   const newConversation = useCallback(() => {
+    // Cancel any in-flight generation from the conversation we're leaving. Otherwise `busy`
+    // stays true and the toolbar is stuck showing "Stop" in the new chat with no way to send
+    // (send() early-returns while busy), and nothing generates.
+    activeAbortRef.current?.abort();
+    activeAbortRef.current = null;
+    activeThinkingIdRef.current = null;
+    setBusy(false);
     loadReqRef.current++; // invalidate any in-flight conversation load
     convTitleRef.current = '';
     setConversationId(makeConversationId());
@@ -1044,6 +1072,12 @@ export default function AgentConsole() {
         setHistoryOpen(false);
         return;
       }
+      // Leaving this conversation: cancel any in-flight run so `busy`/the "Stop" button don't
+      // carry over into the conversation we're opening.
+      activeAbortRef.current?.abort();
+      activeAbortRef.current = null;
+      activeThinkingIdRef.current = null;
+      setBusy(false);
       setConversationId(id);
       loadConversation(id);
       setHistoryOpen(false);
@@ -2170,7 +2204,7 @@ export default function AgentConsole() {
       }
 
       // 2) Requirement creation only:
-      //    - Shift+Tab requirement mode keeps forcing this route.
+      //    - Composer requirement mode keeps forcing this route.
       //    - Plain-text requests like "create requirements only for list view" also bypass
       //      the goal router, so the console drafts a requirement without starting a deep run.
       const requirementOnly = isExplicitRequirementOnlyRequest(text);
@@ -3333,16 +3367,10 @@ export default function AgentConsole() {
           )}
         >
           {reqMode && (
-            <div className="mb-1 flex items-center justify-between gap-2 px-1">
+            <div className="mb-1 flex items-center gap-2 px-1">
               <span className="inline-flex items-center gap-1.5 rounded-full bg-[var(--accent)]/10 px-2.5 py-1 text-[11px] font-semibold text-[var(--accent)]">
                 <Target className="h-3.5 w-3.5" /> Requirement mode
               </span>
-              <button
-                onClick={() => setReqMode(false)}
-                className="text-[11px] font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]"
-              >
-                Exit (Shift+Tab)
-              </button>
             </div>
           )}
           <textarea
@@ -3366,11 +3394,6 @@ export default function AgentConsole() {
               requestAnimationFrame(() => { try { el.selectionStart = el.selectionEnd = caret; } catch { /* ignore */ } });
             }}
             onKeyDown={(e) => {
-              if (e.key === 'Tab' && e.shiftKey) {
-                e.preventDefault();
-                setReqMode((m) => !m);
-                return;
-              }
               if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
                 void send();
@@ -3444,6 +3467,21 @@ export default function AgentConsole() {
               </div>
               <button
                 type="button"
+                onClick={() => setReqMode((mode) => !mode)}
+                aria-pressed={reqMode}
+                title="Create source-grounded requirements"
+                className={cn(
+                  'inline-flex items-center gap-1 rounded-md border px-2 py-1 text-[11px] font-medium transition-colors',
+                  reqMode
+                    ? 'border-[var(--accent)] bg-[var(--accent)]/10 text-[var(--accent)]'
+                    : 'border-[var(--border)] text-[var(--text-muted)] hover:border-[var(--accent)]',
+                )}
+              >
+                <Target className="h-3.5 w-3.5" />
+                Requirements
+              </button>
+              <button
+                type="button"
                 onClick={() => setScriptAuthorMode((m) => !m)}
                 title="Author one Playwright script by driving the live app from your exact steps"
                 className={cn(
@@ -3462,7 +3500,7 @@ export default function AgentConsole() {
                 </span>
               ) : (
                 <span className="hidden sm:inline">
-                  {scriptAuthorMode ? 'Script author mode: enter exact UI steps' : `Enter to send · Shift+Enter for a new line · Shift+Tab for ${reqMode ? 'normal' : 'requirement'} mode`}
+                  {scriptAuthorMode ? 'Script author mode: enter exact UI steps' : 'Enter to send · Shift+Enter for a new line'}
                 </span>
               )}
             </div>
