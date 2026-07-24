@@ -132,7 +132,6 @@ export default function Requirements() {
     const q = searchTerm.toLowerCase();
     return !q || `${req.id} ${req.title} ${req.featureQuery} ${req.description}`.toLowerCase().includes(q);
   });
-
   return (
     <div className="app-page-shell h-full flex flex-col">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-6 flex-shrink-0">
@@ -150,6 +149,7 @@ export default function Requirements() {
               { key: 'title', label: 'Title' },
               { key: 'status', label: 'Status', get: (r) => r.status || 'Draft' },
               { key: 'coverageStatus', label: 'Coverage' },
+              { key: 'testCaseTypes', label: 'Type Of Test Case', get: (r) => Array.isArray(r.testCaseTypes) ? r.testCaseTypes.join(', ') : '' },
               { key: 'description', label: 'Description' },
               { key: 'srsModules', label: 'SRS Markdown', get: (r) => Array.isArray(r.srsModules) && r.srsModules.length ? formatRequirementSrs(r.srsModules) : '' },
               { key: 'businessRules', label: 'Business Rules' },

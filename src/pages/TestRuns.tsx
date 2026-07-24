@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, CheckCircle, Filter, Folder, PlayCircle, Search, SlidersHorizontal, Sparkles, Trash2 } from 'lucide-react';
+import { ArrowLeft, CheckCircle, Download, Filter, Folder, PlayCircle, Search, SlidersHorizontal, Sparkles, Trash2 } from 'lucide-react';
 import ExportMenu from '../components/ExportMenu';
 import { useAiSearch } from '@/src/lib/useAiSearch';
 import { useBulkDelete } from '@/src/lib/useBulkDelete';
@@ -16,6 +16,18 @@ import { showAlert } from '@/src/lib/dialog';
 import { withBasePath } from '@/src/lib/base-path';
 import { caseSuiteIds } from '@/src/lib/suiteCaseSelection';
 import { casesForPlan, casesForRun, manualRunSelection, runExecutionState, runnableCases, scriptsForRun } from '@/src/lib/manualTestRun';
+import { collectRunEvidence, evidenceDownloadName } from '@/core/shared/runEvidence';
+
+async function downloadFromUrl(url: string, filename: string) {
+  const response = await fetch(url);
+  if (!response.ok) throw new Error('Download failed.');
+  const objectUrl = URL.createObjectURL(await response.blob());
+  const anchor = document.createElement('a');
+  anchor.href = objectUrl;
+  anchor.download = filename;
+  anchor.click();
+  setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
+}
 
 function getRunStats(run: any) {
   const steps = Array.isArray(run?.steps) ? run.steps : [];
@@ -274,13 +286,28 @@ export default function TestRuns() {
     const selectedExecution = runExecutionState(selectedRun);
     const selectedProgress = runProgress[selectedRun.id] || selectedExecution.label;
     const selectedIsRunning = selectedExecution.running || Boolean(runProgress[selectedRun.id]);
-    const selectedEvidence = Array.from(new Set<string>([
-      ...(Array.isArray(selectedRun.evidence) ? selectedRun.evidence : []),
-      ...(Array.isArray(selectedRun.steps) ? selectedRun.steps.flatMap((step: any) => [
-        step?.screenshot,
-        ...(Array.isArray(step?.screenshots) ? step.screenshots : []),
-      ]) : []),
-    ].filter(Boolean)));
+    const evidenceItems = collectRunEvidence(selectedRun, selectedRunCases);
+    const exportEvidenceItems = caseBulk.selectedCount
+      ? evidenceItems.filter((item) => caseBulk.selectedIds.has(item.caseId))
+      : evidenceItems;
+    const evidenceRows = exportEvidenceItems.map((item) => ({
+      runId: selectedRun.id,
+      runName: selectedRun.name,
+      caseId: item.caseId,
+      caseTitle: item.caseTitle,
+      step: item.stepLabel,
+      action: item.action,
+      outcome: item.outcome,
+      screenshot: new URL(withBasePath(item.url), window.location.origin).href,
+    }));
+    const downloadEvidenceZip = async () => {
+      const query = caseBulk.selectedCount ? `?caseIds=${encodeURIComponent([...caseBulk.selectedIds].join(','))}` : '';
+      try {
+        await downloadFromUrl(`/api/runs/${encodeURIComponent(selectedRun.id)}/evidence/export${query}`, `${selectedRun.id}-evidence.zip`);
+      } catch (error: any) {
+        void showAlert(error.message || 'Failed to export run evidence.');
+      }
+    };
 
     return (
       <div className="app-page-shell h-full flex flex-col">
@@ -324,18 +351,58 @@ export default function TestRuns() {
               <AutomationRunArtifacts jobId={selectedRun.triggerMeta.automationJobId} />
             </div>
           )}
-          {selectedEvidence.length > 0 && (
+          {evidenceItems.length > 0 && (
             <div className="border-b border-[var(--border)] p-5">
-              <h2 className="mb-3 text-sm font-semibold">Execution evidence ({selectedEvidence.length})</h2>
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                <h2 className="text-sm font-semibold">Execution evidence ({evidenceItems.length})</h2>
+                <ExportMenu
+                  filename={`${selectedRun.id}-evidence`}
+                  title={`${selectedRun.name} — Execution Evidence`}
+                  rows={evidenceRows}
+                  columns={[
+                    { key: 'runId', label: 'Run ID' },
+                    { key: 'runName', label: 'Run' },
+                    { key: 'caseId', label: 'Test Case ID' },
+                    { key: 'caseTitle', label: 'Test Case' },
+                    { key: 'step', label: 'Step' },
+                    { key: 'action', label: 'Action' },
+                    { key: 'outcome', label: 'Outcome' },
+                    { key: 'screenshot', label: 'Screenshot', kind: 'image' },
+                  ]}
+                  formats={['csv', 'json', 'md', 'pdf', 'html']}
+                  label={caseBulk.selectedCount ? `Export selected (${caseBulk.selectedCount})` : 'Export evidence'}
+                  extraItems={[{
+                    label: caseBulk.selectedCount ? 'Screenshots for selected cases (.zip)' : 'All screenshots (.zip)',
+                    onClick: () => { void downloadEvidenceZip(); },
+                  }]}
+                />
+              </div>
               <div className="flex gap-3 overflow-x-auto pb-1">
-                {selectedEvidence.map((url, index) => (
-                  <a key={url} href={withBasePath(url)} target="_blank" rel="noreferrer" className="shrink-0">
-                    <img
-                      src={withBasePath(url)}
-                      alt={`Execution evidence ${index + 1}`}
-                      className="h-28 w-44 rounded-md border border-[var(--border)] bg-black object-cover"
-                    />
-                  </a>
+                {evidenceItems.map((item, index) => (
+                  <div key={item.url} className="group relative w-44 shrink-0">
+                    <a href={withBasePath(item.url)} target="_blank" rel="noreferrer">
+                      <img
+                        src={withBasePath(item.url)}
+                        alt={`${item.caseTitle} ${item.stepLabel}`}
+                        className="h-28 w-44 rounded-md border border-[var(--border)] bg-black object-cover"
+                      />
+                    </a>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void downloadFromUrl(withBasePath(item.url), evidenceDownloadName(selectedRun.id, item))
+                          .catch((error) => showAlert(error.message || 'Failed to download screenshot.'));
+                      }}
+                      title={`Download ${item.caseTitle} ${item.stepLabel}`}
+                      aria-label={`Download ${item.caseTitle} ${item.stepLabel}`}
+                      className="absolute right-1.5 top-1.5 rounded-md border border-white/20 bg-black/75 p-1.5 text-white opacity-0 shadow transition-opacity hover:bg-black group-hover:opacity-100 focus:opacity-100"
+                    >
+                      <Download className="h-3.5 w-3.5" />
+                    </button>
+                    <div className="mt-1 truncate text-[10px] text-[var(--text-muted)]" title={`${item.caseId || item.caseTitle} · ${item.stepLabel}`}>
+                      {item.caseId || item.caseTitle} · {item.stepLabel || `Screenshot ${index + 1}`}
+                    </div>
+                  </div>
                 ))}
               </div>
             </div>

@@ -9,6 +9,7 @@ import { resolveCredentials } from '../credentials/credentialsService';
 import { buildCorePlatformApplicationContext } from '../agent/applicationContext';
 import { assembleConversationContext } from '../../ai/memory/contextAssembler';
 import { resolveModelForAgent, resolveProviderForAgent } from '../../ai/orchestrator';
+import { normalizeTestCaseTypes } from '../../../core/shared/testCaseTypes';
 
 // Server-side conversation reconstruction for requirement drafting, so follow-ups
 // ("also add requirements for X") enrich the running scope instead of starting cold.
@@ -168,16 +169,23 @@ export function registerRequirementRoutes(app: Express) {
     try {
       const requirements = scopeFilter(await Requirements.list(), reqScope(req));
       const links = await RequirementLinks.list();
+      const cases = scopeFilter(await Cases.list(), reqScope(req));
+      const casesById = new Map(cases.map((testCase: any) => [testCase.id, testCase]));
       const byReq = new Map<string, { existing: number; generated: number }>();
+      const typesByReq = new Map<string, Set<string>>();
       for (const l of links) {
         const entry = byReq.get(l.requirementId) || { existing: 0, generated: 0 };
         if (l.linkType === 'generated') entry.generated += 1;
         else entry.existing += 1;
         byReq.set(l.requirementId, entry);
+        const typeSet = typesByReq.get(l.requirementId) || new Set<string>();
+        const linkedCase = casesById.get(l.caseId);
+        if (linkedCase) normalizeTestCaseTypes(linkedCase).forEach((type) => typeSet.add(type));
+        typesByReq.set(l.requirementId, typeSet);
       }
       res.json(requirements.map((r: any) => {
         const counts = byReq.get(r.id) || { existing: 0, generated: 0 };
-        return { ...r, existingCaseCount: counts.existing, generatedCaseCount: counts.generated, linkedCaseCount: counts.existing + counts.generated };
+        return { ...r, testCaseTypes: [...(typesByReq.get(r.id) || [])], existingCaseCount: counts.existing, generatedCaseCount: counts.generated, linkedCaseCount: counts.existing + counts.generated };
       }));
     } catch (error: any) {
       res.status(500).json({ error: error?.message || 'Failed to list requirements.' });

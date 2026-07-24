@@ -3,6 +3,7 @@ import { useSearchParams } from 'react-router-dom';
 import { ChevronDown, ChevronRight, Sparkles, Loader2, Target, ShieldCheck, AlertTriangle } from 'lucide-react';
 import ExportMenu from '../components/ExportMenu';
 import EditableCaseCard from '../components/EditableCaseCard';
+import { normalizeTestCaseTypes } from '@/core/shared/testCaseTypes';
 
 const COVERAGE_BADGE: Record<string, { label: string; cls: string }> = {
   covered: { label: 'Covered', cls: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400' },
@@ -143,7 +144,7 @@ export default function Traceability() {
     // not on the link object itself (the Detailed view reads lc.case for the same reason).
     return linked.map((lc) => {
       const c = lc.case || { id: lc.caseId || '', title: '(deleted case)' };
-      return { ...base, caseId: c.id || '', caseTitle: c.title || '(deleted case)', casePriority: c.priority || '', caseStatus: c.status || '' };
+      return { ...base, caseId: c.id || '', caseTitle: c.title || '(deleted case)', caseTypes: lc.case ? normalizeTestCaseTypes(c).join(', ') : '', casePriority: c.priority || '', caseStatus: c.status || '' };
     });
   });
 
@@ -171,6 +172,7 @@ export default function Traceability() {
               { key: 'coverage', label: 'Coverage' },
               { key: 'caseId', label: 'Case ID' },
               { key: 'caseTitle', label: 'Linked Case' },
+              { key: 'caseTypes', label: 'Type Of Test Case' },
               { key: 'casePriority', label: 'Case Priority' },
               { key: 'caseStatus', label: 'Case Status' },
             ]}

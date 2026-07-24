@@ -1,5 +1,8 @@
 import type { Express, NextFunction, Request, Response } from 'express';
 import { randomUUID } from 'crypto';
+import fs from 'fs';
+import path from 'path';
+import * as archiverNs from 'archiver';
 import { z } from 'zod';
 import { generateObject } from 'ai';
 import { db, addActivity, persistDataInBackground } from '../../shared/storage';
@@ -11,6 +14,10 @@ import { getOrchestrator } from '../../ai/orchestrator';
 import { reqScope, scopeFilter, scopeStamp } from '../../shared/scope';
 import { getAuthUser } from '../auth/routes';
 import { runPlaywrightRequest } from '../playwright/routes';
+import { testCaseTypeFields } from '../../../core/shared/testCaseTypes';
+import { collectRunEvidence, evidenceDownloadName } from '../../../core/shared/runEvidence';
+
+const archiver = ((archiverNs as any).default ?? archiverNs) as (format: string, options?: Record<string, any>) => any;
 
 import {
   Plans,
@@ -223,6 +230,49 @@ export function registerResourceRoutes(app: Express) {
       return failed;
     }));
     res.json(scopeFilter(healed, reqScope(req)));
+  });
+  app.get('/api/runs/:id/evidence/export', async (req, res) => {
+    const run = await Runs.get(req.params.id);
+    if (!run || !scopeFilter([run], reqScope(req)).length) return res.status(404).json({ error: 'Run not found.' });
+
+    const allCases = scopeFilter(await Cases.list(), reqScope(req));
+    const casesById = new Map(allCases.map((testCase: any) => [String(testCase.id), testCase]));
+    const linkedCases = Array.isArray(run.caseIds) && run.caseIds.length
+      ? run.caseIds.map((id: any) => casesById.get(String(id))).filter(Boolean)
+      : allCases.filter((testCase: any) => run.agentRunId && testCase.agentRunId === run.agentRunId);
+    const selectedCaseIds = new Set(String(req.query.caseIds || '').split(',').map((id) => id.trim()).filter(Boolean));
+    const evidence = collectRunEvidence(run, linkedCases)
+      .filter((item) => !selectedCaseIds.size || selectedCaseIds.has(item.caseId));
+    const evidenceRoot = path.resolve(process.cwd(), 'evidence');
+    const files = evidence.flatMap((item, index) => {
+      let pathname = '';
+      try { pathname = new URL(item.url, 'http://local').pathname; } catch { return []; }
+      if (!pathname.startsWith('/evidence/')) return [];
+      const relative = decodeURIComponent(pathname.slice('/evidence/'.length));
+      const absolute = path.resolve(evidenceRoot, relative);
+      if (!absolute.toLowerCase().startsWith(`${evidenceRoot.toLowerCase()}${path.sep}`) || !fs.existsSync(absolute)) return [];
+      const folder = String(item.caseId || item.caseTitle || `case-${item.caseIndex + 1}`)
+        .replace(/[^a-z0-9._-]+/gi, '-').replace(/^-+|-+$/g, '') || `case-${item.caseIndex + 1}`;
+      return [{ item, absolute, name: `${folder}/${String(index + 1).padStart(2, '0')}-${evidenceDownloadName(run.id, item)}` }];
+    });
+    if (!files.length) return res.status(404).json({ error: 'No downloadable screenshots were found for this run.' });
+
+    const filename = `${String(run.id || 'run').replace(/[^a-z0-9._-]+/gi, '-')}-evidence.zip`;
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    const archive = archiver('zip', { zlib: { level: 9 } });
+    archive.on('error', (error: Error) => {
+      console.error('[runs] evidence export failed:', error.message);
+      if (!res.headersSent) res.status(500).json({ error: 'Failed to export run evidence.' });
+      else res.destroy(error);
+    });
+    archive.pipe(res);
+    archive.append(JSON.stringify({
+      run: { id: run.id, name: run.name, status: run.status, date: run.date },
+      evidence: evidence.map((item) => ({ ...item, filename: evidenceDownloadName(run.id, item) })),
+    }, null, 2), { name: 'run-summary.json' });
+    files.forEach((file) => archive.file(file.absolute, { name: file.name }));
+    await archive.finalize();
   });
   app.post('/api/runs/:id/execute', async (req, res) => {
     const run = await Runs.get(req.params.id);
@@ -728,6 +778,7 @@ export function registerResourceRoutes(app: Express) {
   /* ---------- POST /api/cases ---------- */
   app.post('/api/cases', requireRepositoryFolder, async (req, res) => {
     const c = req.body;
+    const typeFields = testCaseTypeFields(c.testingTypes, c.testingType);
     const newCase = {
       ...scopeStamp(reqScope(req)),
       id: `TC-${Math.random().toString(36).substring(2, 6).toUpperCase()}`,
@@ -745,7 +796,7 @@ export function registerResourceRoutes(app: Express) {
       priority: c.priority || 'Medium',
       automationStatus: c.automationStatus || 'Not Automated',
       testingScope: c.testingScope || (c.type === 'Automated' ? 'Automation' : 'Manual'),
-      testingType: c.testingType || 'Functional',
+      ...typeFields,
       captureEvidenceOnManualRun: c.captureEvidenceOnManualRun !== false,
       folderId: c.folderId || '',
       createdBy: c.createdBy || 'User',

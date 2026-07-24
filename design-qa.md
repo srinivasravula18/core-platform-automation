@@ -49,3 +49,23 @@
 - Left Create Schedule disabled without a date and did not submit the final QA state.
 
 final result: passed
+
+---
+
+## Test run evidence export — 2026-07-24
+
+**Comparison target**
+
+- Source visual truth: `C:\Users\bdevi\AppData\Local\Temp\codex-clipboard-FPSm36.png`
+- Local preview: `http://localhost:3000/runs`
+- State requested: run detail with execution-evidence thumbnails and export controls.
+
+**Verification**
+
+- The local application loaded and authenticated successfully in desktop Chrome.
+- The Test Runs page rendered without layout or navigation errors.
+- The local sandbox contains zero test runs, so the requested run-detail evidence state could not be opened or compared without adding fabricated test data.
+- No production or user test data was changed for visual QA.
+- Static validation completed through TypeScript compilation, the production build, lint, and the focused run-evidence export check.
+
+final result: blocked — no test run with execution evidence exists in the local sandbox
