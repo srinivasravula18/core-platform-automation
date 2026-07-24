@@ -36,11 +36,18 @@ export function ScheduleRecordingModal({ isOpen, onClose, recordingId }: { isOpe
           {busy && <Loader2 className="h-4 w-4 animate-spin" />} Schedule
         </button>
       </div>}>
-      <label className="block text-xs font-medium text-[var(--text-muted)]">
-        Run at (date &amp; time)
-        <input type="datetime-local" value={runAt} onChange={(e) => setRunAt(e.target.value)}
-          className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
-      </label>
+      <div>
+        <label htmlFor="recording-schedule-run-at" className="block text-xs font-medium text-[var(--text-muted)]">
+          Run at (date &amp; time)
+        </label>
+        <input
+          id="recording-schedule-run-at"
+          type="datetime-local"
+          value={runAt}
+          onChange={(e) => setRunAt(e.target.value)}
+          className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
+        />
+      </div>
       <p className="mt-3 text-xs text-[var(--text-muted)]">The run executes on the server headless at this time — your local agent does not need to be online.</p>
     </Modal>
   );

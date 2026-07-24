@@ -15,6 +15,7 @@ export default function Schedules() {
   const { schedules, loading, refresh } = useSchedules();
   const { recordings } = useRecordings();
   const [createOpen, setCreateOpen] = useState(false);
+  const [togglingIds, setTogglingIds] = useState<Set<string>>(new Set());
 
   const nameFor = useMemo(() => {
     const m = new Map(recordings.map((r) => [r.id, r.name] as const));
@@ -22,8 +23,27 @@ export default function Schedules() {
   }, [recordings]);
 
   const toggle = async (id: string, enabled: boolean) => {
-    try { await fetch(`/api/automation/schedules/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: !enabled }) }); void refresh(); }
-    catch { showToast('Could not update the schedule.', { tone: 'error' }); }
+    setTogglingIds((prev) => {
+      const next = new Set(prev);
+      next.add(id);
+      return next;
+    });
+    try {
+      await fetch(`/api/automation/schedules/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: !enabled }),
+      });
+      await refresh();
+    } catch {
+      showToast('Could not update the schedule.', { tone: 'error' });
+    } finally {
+      setTogglingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+    }
   };
 
   const remove = async (id: string) => {
@@ -66,21 +86,39 @@ export default function Schedules() {
               </tr>
             </thead>
             <tbody>
-              {schedules.map((s) => (
-                <tr key={s.id} className="border-b border-[var(--border)] last:border-0 hover:bg-[var(--bg-secondary)]">
-                  <td className="px-4 py-2.5 font-medium text-[var(--text-primary)]">{nameFor(s.recordingId)}</td>
-                  <td className="px-4 py-2.5 text-xs text-[var(--text-muted)]">{fmt(s.nextRunAt)}</td>
-                  <td className="px-4 py-2.5 text-xs text-[var(--text-muted)]">{fmt(s.lastRunAt)}</td>
-                  <td className="px-4 py-2.5">
-                    <button onClick={() => toggle(s.id, s.enabled)} className={`inline-flex h-5 w-9 items-center rounded-full px-0.5 transition-colors ${s.enabled ? 'bg-[var(--accent)]' : 'bg-slate-500/40'}`}>
-                      <span className={`h-4 w-4 rounded-full bg-white transition-transform ${s.enabled ? 'translate-x-4' : ''}`} />
-                    </button>
-                  </td>
-                  <td className="px-4 py-2.5 text-right">
-                    <button onClick={() => remove(s.id)} className="inline-flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-xs text-red-400 hover:border-red-500"><Trash2 className="h-3.5 w-3.5" /></button>
-                  </td>
-                </tr>
-              ))}
+              {schedules.map((s) => {
+                const isToggling = togglingIds.has(s.id);
+                return (
+                  <tr key={s.id} className="border-b border-[var(--border)] last:border-0 hover:bg-[var(--bg-secondary)]">
+                    <td className="px-4 py-2.5 font-medium text-[var(--text-primary)]">{nameFor(s.recordingId)}</td>
+                    <td className="px-4 py-2.5 text-xs text-[var(--text-muted)]">{fmt(s.nextRunAt)}</td>
+                    <td className="px-4 py-2.5 text-xs text-[var(--text-muted)]">{fmt(s.lastRunAt)}</td>
+                    <td className="px-4 py-2.5">
+                      <button
+                        onClick={() => toggle(s.id, s.enabled)}
+                        disabled={isToggling}
+                        role="switch"
+                        aria-checked={s.enabled}
+                        aria-label={`Toggle schedule for ${nameFor(s.recordingId)}`}
+                        className={`inline-flex h-5 w-9 items-center rounded-full px-0.5 transition-colors focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-[var(--accent)] outline-none disabled:opacity-50 ${
+                          s.enabled ? 'bg-[var(--accent)]' : 'bg-slate-500/40'
+                        }`}
+                      >
+                        <span className={`h-4 w-4 rounded-full bg-white transition-transform ${s.enabled ? 'translate-x-4' : ''}`} />
+                      </button>
+                    </td>
+                    <td className="px-4 py-2.5 text-right">
+                      <button
+                        onClick={() => remove(s.id)}
+                        aria-label={`Delete schedule for ${nameFor(s.recordingId)}`}
+                        className="inline-flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-xs text-red-400 hover:border-red-500 hover:bg-red-500/10 focus-visible:ring-2 focus-visible:ring-red-500 focus-visible:ring-offset-2 outline-none"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         )}
@@ -227,11 +265,18 @@ function NewScheduleModal({ isOpen, onClose, onCreated }: { isOpen: boolean; onC
             ))}
         </div>
       </div>
-      <label className="mt-4 block text-xs font-medium text-[var(--text-muted)]">
-        Run at (date &amp; time)
-        <input type="datetime-local" value={runAt} onChange={(e) => setRunAt(e.target.value)}
-          className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
-      </label>
+      <div className="mt-4">
+        <label htmlFor="new-schedule-run-at" className="block text-xs font-medium text-[var(--text-muted)]">
+          Run at (date &amp; time)
+        </label>
+        <input
+          id="new-schedule-run-at"
+          type="datetime-local"
+          value={runAt}
+          onChange={(e) => setRunAt(e.target.value)}
+          className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
+        />
+      </div>
       <p className="mt-3 text-xs text-[var(--text-muted)]">Runs on the server headless at this time. Snapshots and video appear under Test Runs.</p>
     </Modal>
   );
