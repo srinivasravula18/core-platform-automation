@@ -11,6 +11,7 @@
  */
 
 import type { Request } from 'express';
+import { type Actor, SYSTEM_ACTOR } from './metadata';
 
 export interface Scope {
   /** Selected project id, or '' when none is selected. */
@@ -51,6 +52,17 @@ export function scopeMiddleware(req: Request, _res: any, next: any) {
 /** Read the scope a middleware attached (or resolve it on demand). */
 export function reqScope(req: Request): Scope {
   return (req as any).scope || getScope(req);
+}
+
+/**
+ * The acting user for a request, as an Actor for lifecycle-metadata attribution. Falls back to
+ * SYSTEM for unauthenticated/internal callers. (Agent-runtime writes attribute to AGENT_ACTOR by
+ * running under runWithActor(AGENT_ACTOR, …).)
+ */
+export function reqActor(req: Request): Actor {
+  const authUser = (req as any).authUser as { userId?: string; username?: string } | null | undefined;
+  if (authUser?.userId) return { id: authUser.userId, name: authUser.username || authUser.userId, kind: 'user' };
+  return SYSTEM_ACTOR;
 }
 
 /**

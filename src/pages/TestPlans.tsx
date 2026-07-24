@@ -1,6 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft, Search, Filter, Pencil, Plus, Sparkles, Trash2, PlayCircle, Loader2 } from 'lucide-react';
+import { RowMoreMenu } from '@/src/components/RowMoreMenu';
+import { Timestamp, actorName } from '@/src/components/Timestamp';
+import { TimeSortSelect } from '@/src/components/filters/TimeSortSelect';
+import { TimeRangeFilter, passesTimeFilter, type TimeFilterValue } from '@/src/components/filters/TimeRangeFilter';
+import { sortByTime, type TimeSortKey } from '@/src/lib/time';
 import ExportMenu from '../components/ExportMenu';
 import { useAiSearch } from '@/src/lib/useAiSearch';
 import { useBulkDelete } from '@/src/lib/useBulkDelete';
@@ -77,6 +82,8 @@ export default function TestPlans() {
   const [searchTerm, setSearchTerm] = useState('');
   const aiSearch = useAiSearch('test plans');
   const [isFilterOpen, setIsFilterOpen] = useState(false);
+  const [timeSort, setTimeSort] = useState<TimeSortKey>('recentlyUpdated');
+  const [updatedFilter, setUpdatedFilter] = useState<TimeFilterValue>({ key: 'all' });
   const filterRef = useRef<HTMLDivElement | null>(null);
   const [filters, setFilters] = useState(emptyTestPlanFilters);
   const [matchMode, setMatchMode] = useState<'all' | 'any'>('all');
@@ -243,13 +250,14 @@ export default function TestPlans() {
   const activeFilterCount = filters.statuses.length + filters.owners.length + filters.tags.length + filters.folders.length
     + (filters.startFrom || filters.endTo ? 1 : 0) + (filters.environments.trim() ? 1 : 0)
     + (filters.roles.trim() ? 1 : 0) + filters.runIds.length + (filters.notYetExecuted ? 1 : 0);
-  const filteredPlans = plans.filter((plan) => {
+  const filteredPlans: any[] = sortByTime(plans.filter((plan) => {
     const query = searchTerm.toLowerCase();
     const matchesSearch = aiSearch.isAiQuery(searchTerm)
       ? (aiSearch.matchedIds ? aiSearch.matchedIds.has(plan.id) : true)
       : (!query || `${plan.id || ''} ${plan.name || ''} ${plan.description || ''} ${plan.owner || ''} ${(plan.tags || []).join(' ')}`.toLowerCase().includes(query));
-    return matchesSearch && matchesTestPlanFilters(plan, runs, filters, matchMode);
-  });
+    const matchesUpdated = passesTimeFilter(plan.metadata?.updatedAt || plan.updatedAt, updatedFilter);
+    return matchesSearch && matchesTestPlanFilters(plan, runs, filters, matchMode) && matchesUpdated;
+  }), timeSort);
 
   return (
     <div className="app-page-shell h-full flex flex-col">
@@ -278,6 +286,9 @@ export default function TestPlans() {
               { key: 'description', label: 'Description' },
               { key: 'suiteCount', label: 'Suites', get: (p) => suites.filter((s) => suitePlanIds(s).includes(p.id)).length },
               { key: 'caseCount', label: 'Cases', get: (p) => cases.filter((c) => c.testPlanId === p.id).length },
+              { key: 'updatedAt', label: 'Updated', get: (p: any) => p.metadata?.updatedAt || p.updatedAt || '' },
+              { key: 'updatedBy', label: 'Updated By', get: (p: any) => p.metadata?.updatedBy?.name || '' },
+              { key: 'createdAt', label: 'Created', get: (p: any) => p.metadata?.createdAt || p.createdAt || '' },
             ]}
           />
           <button onClick={openNewModal} className="flex items-center gap-2 bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white px-4 py-2 rounded-md text-sm font-medium transition-colors">
@@ -402,6 +413,13 @@ export default function TestPlans() {
                   <FolderBadge folders={folders} folderId={selectedDetailPlan.folderId} />
                   <span>{getPlanSuites(selectedDetailPlan.id).length} suites</span>
                   <span>{getPlanCases(selectedDetailPlan.id).length} cases</span>
+                  {selectedDetailPlan.metadata?.createdAt && (
+                    <span>Created <Timestamp value={selectedDetailPlan.metadata.createdAt} />{actorName(selectedDetailPlan.metadata.createdBy) ? ` by ${actorName(selectedDetailPlan.metadata.createdBy)}` : ''}</span>
+                  )}
+                  {selectedDetailPlan.metadata?.updatedAt && (
+                    <span>Updated <Timestamp value={selectedDetailPlan.metadata.updatedAt} />{actorName(selectedDetailPlan.metadata.updatedBy) ? ` by ${actorName(selectedDetailPlan.metadata.updatedBy)}` : ''}</span>
+                  )}
+                  {typeof selectedDetailPlan.metadata?.version === 'number' && <span>v{selectedDetailPlan.metadata.version}</span>}
                 </div>
               </div>
               <button onClick={() => openEditModal(selectedDetailPlan)} className="px-3 py-2 rounded-md border border-[var(--border)] text-sm hover:bg-[var(--border)]">Edit Plan</button>
@@ -543,6 +561,8 @@ export default function TestPlans() {
               className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md pl-9 pr-4 py-1.5 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]"
             />
           </div>
+          <TimeSortSelect value={timeSort} onChange={setTimeSort} />
+          <TimeRangeFilter value={updatedFilter} onChange={setUpdatedFilter} />
           <div ref={filterRef} className="relative">
             <button onClick={() => setIsFilterOpen(!isFilterOpen)} aria-expanded={isFilterOpen} className="flex items-center gap-2 border border-[var(--border)] bg-[var(--bg-secondary)] hover:bg-[var(--border)] text-[var(--text-primary)] px-3 py-1.5 rounded-md text-sm transition-colors">
               <Filter className="w-4 h-4" /> Filters
@@ -634,14 +654,15 @@ export default function TestPlans() {
                 <th className="w-52 px-4 py-3 font-medium">Start / End Date</th>
                 <th className="w-28 px-4 py-3 text-center font-medium">Linked Runs</th>
                 <th className="w-28 px-4 py-3 text-center font-medium">Test Cases</th>
+                <th className="font-medium py-3 px-4 w-32">Updated</th>
                 <th className="font-medium py-3 px-4 w-24 text-right">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-[var(--border)]">
               {loading ? (
-                <tr><td colSpan={10} className="py-8 text-center text-[var(--text-muted)]">Loading plans...</td></tr>
+                <tr><td colSpan={11} className="py-8 text-center text-[var(--text-muted)]">Loading plans...</td></tr>
               ) : filteredPlans.length === 0 ? (
-                <tr><td colSpan={10} className="py-8 text-center text-[var(--text-muted)]">No plans found.</td></tr>
+                <tr><td colSpan={11} className="py-8 text-center text-[var(--text-muted)]">No plans found.</td></tr>
               ) : filteredPlans.map((plan) => {
                 const planCases = getPlanCases(plan.id);
                 const linkedRunCount = getPlanRuns(plan).length;
@@ -689,6 +710,10 @@ export default function TestPlans() {
                       </span>
                     </td>
                     <td className="py-3 px-4 text-center">{planCases.length}</td>
+                    <td className="py-3 px-4 whitespace-nowrap text-xs text-[var(--text-muted)]">
+                      <Timestamp value={plan.metadata?.updatedAt || plan.updatedAt} />
+                      {actorName(plan.metadata?.updatedBy) && <div className="text-[10px]">by {actorName(plan.metadata?.updatedBy)}</div>}
+                    </td>
                     <td className="py-3 px-4 text-right">
                       <div className="relative inline-flex items-center gap-1">
                         <button
@@ -712,13 +737,7 @@ export default function TestPlans() {
                         >
                           <Pencil className="w-4 h-4" />
                         </button>
-                        <button
-                          onClick={(e) => { e.stopPropagation(); bulk.deleteOne(plan.id); }}
-                          title="Delete"
-                          className="p-1 rounded hover:bg-red-500/10 text-[var(--text-muted)] hover:text-red-500 transition-colors"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
+                        <RowMoreMenu items={[{ label: 'Delete', onClick: () => bulk.deleteOne(plan.id), danger: true }]} />
                       </div>
                     </td>
                   </tr>

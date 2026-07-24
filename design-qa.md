@@ -52,6 +52,32 @@ final result: passed
 
 ---
 
+## AI rework corner-radius polish — 2026-07-24
+
+**Comparison target**
+
+- Source visual truth: `D:\core-platform-automation\docs\design-qa\ai-rework-radius-source.png`
+- Implementation screenshot: `D:\core-platform-automation\docs\design-qa\ai-rework-radius-implementation.png`
+- Side-by-side comparison: `D:\core-platform-automation\docs\design-qa\ai-rework-radius-comparison.png`
+- Viewport and pixels: 1513 × 543 CSS px at device scale factor 1; both captures are 1513 × 543 px.
+- State: one selected test case, suite rework active, and the Agent Console scoped to that selected case.
+
+**Evidence**
+
+- The three highlighted controls now use a 6px radius: the selected-case scope, selected-case chip, and Agent Console rework-context chip.
+- Full-view comparison confirms the controls remain aligned, readable, and visually associated with the existing rework flow.
+- Focused inspection confirms the previous capsule treatment is removed without changing typography, spacing, colors, icons, copy, or interaction state.
+- No image assets were added or changed.
+
+**Findings**
+
+- No actionable P0/P1/P2 findings remain.
+- Browser console checked with zero errors or warnings.
+
+final result: passed
+
+---
+
 ## Test run evidence export — 2026-07-24
 
 **Comparison target**
@@ -69,3 +95,45 @@ final result: passed
 - Static validation completed through TypeScript compilation, the production build, lint, and the focused run-evidence export check.
 
 final result: blocked — no test run with execution evidence exists in the local sandbox
+
+---
+
+## AI rework workflow — 2026-07-24
+
+**Comparison target**
+
+- Source visual truth: `D:\core-platform-automation\docs\design-qa\ai-rework-source.png`
+- Implementation screenshot: `D:\core-platform-automation\docs\design-qa\ai-rework-implementation-final.png`
+- Side-by-side comparison: `D:\core-platform-automation\docs\design-qa\ai-rework-comparison.png`
+- Viewport: 1587 × 870 CSS px, desktop Chrome, device scale factor 1
+- State: completed Functional Validation run with one generated case. The inline suite rework control is active and the Agent Console is scoped to all cases.
+
+**Full-view comparison evidence**
+
+- The implementation retains the source dark palette, typography, borders, tab hierarchy, case-row density, and existing Lucide icon language.
+- Rework is now a contextual workflow instead of an always-on ambiguous text field: scope, request, and Preview action are visible together in one compact row.
+- Activating rework scrolls the control into view and exposes the same scope in the persistent Agent Console, without taking over ordinary chat.
+
+**Focused region comparison evidence**
+
+- Typography: existing Inter weights and muted/accent hierarchy are preserved.
+- Spacing/layout: the compact desktop row keeps the Preview action above the fixed composer; narrow layouts stack responsively.
+- Colors/tokens: existing application tokens are reused for borders, focus, selected scope, success, and destructive actions.
+- Images/assets: no new raster assets were required; existing icon components are reused.
+- Copy/content: scope is explicit (`all cases`, selected cases, or one named case), and the action says `Preview changes` before any draft is mutated.
+
+**Findings and comparison history**
+
+1. P2: the first implementation made the rework surface taller, leaving its primary action clipped behind the fixed Agent Console.
+2. Fix: compacted the desktop composer into a single row and scrolled the activated rework surface to the viewport center.
+3. Final comparison: the request, scope, Preview action, case-level entry point, and bottom context pill are all visible together. No actionable P0/P1/P2 findings remain.
+
+**Primary interactions tested**
+
+- Activated suite rework from the inline request field.
+- Verified the bottom Agent Console changed to the exact active scope and `Preview changes`.
+- Cleared rework context and verified ordinary chat/Send behavior returned.
+- Verified the final state at the source viewport with no browser console errors or warnings.
+- Did not invoke a live AI model during visual QA; proposal application, partial selection, undo prerequisites, and stale-draft blocking are covered by `scripts/test-ai-rework-proposal.ts`.
+
+final result: passed

@@ -1,6 +1,11 @@
 import { useEffect, useState, useRef, useMemo } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Search, Filter, Pencil, Plus, Sparkles, Loader2, Trash2, PlayCircle, Code2 } from 'lucide-react';
+import { RowMoreMenu } from '@/src/components/RowMoreMenu';
+import { Timestamp, actorName } from '@/src/components/Timestamp';
+import { TimeSortSelect } from '@/src/components/filters/TimeSortSelect';
+import { TimeRangeFilter, passesTimeFilter, type TimeFilterValue } from '@/src/components/filters/TimeRangeFilter';
+import { sortByTime, type TimeSortKey } from '@/src/lib/time';
 import ExportMenu from '../components/ExportMenu';
 import { useAiSearch } from '@/src/lib/useAiSearch';
 import { useBulkDelete } from '@/src/lib/useBulkDelete';
@@ -50,6 +55,8 @@ export default function TestCases() {
   const [platformFilter, setPlatformFilter] = useState('All');
   const [appFilter, setAppFilter] = useState('All');
   const [isFilterOpen, setIsFilterOpen] = useState(false);
+  const [timeSort, setTimeSort] = useState<TimeSortKey>('recentlyUpdated');
+  const [updatedFilter, setUpdatedFilter] = useState<TimeFilterValue>({ key: 'all' });
   const filterRef = useRef<HTMLDivElement | null>(null);
   // Advanced filter state (bug: expanded filter set + AND/OR combine logic).
   const emptyFilters = {
@@ -514,7 +521,7 @@ export default function TestCases() {
     if (!conds.length) return true;
     return matchMode === 'all' ? conds.every(Boolean) : conds.some(Boolean);
   };
-  const filteredCases = cases.filter((testCase) => {
+  const filteredCases: any[] = sortByTime(cases.filter((testCase) => {
     const query = searchTerm.toLowerCase();
     const appLabel = appName(testCase.appId || '');
     const matchesSearch = aiSearch.isAiQuery(searchTerm)
@@ -522,8 +529,9 @@ export default function TestCases() {
       : (!query || `${testCase.id || ''} ${testCase.title || ''} ${testCase.description || ''} ${appLabel} ${(testCase.tags || []).join(' ')}`.toLowerCase().includes(query));
     const matchesPlatform = platformFilter === 'All' || casePlatformId(testCase) === platformFilter;
     const matchesApp = appFilter === 'All' || caseAppLabel(testCase) === appFilter;
-    return matchesSearch && matchesPlatform && matchesApp && advancedMatch(testCase);
-  }).sort((a, b) => String(a.id || '').localeCompare(String(b.id || ''), undefined, { numeric: true }));
+    const matchesUpdated = passesTimeFilter(testCase.metadata?.updatedAt || testCase.updatedAt, updatedFilter);
+    return matchesSearch && matchesPlatform && matchesApp && advancedMatch(testCase) && matchesUpdated;
+  }), timeSort);
 
   // New Case → Automation records a Playwright flow via the desktop agent (codegen) and the backend
   // saves it as an Automated, script-linked case. Only offered for NEW cases when the agent feature is on.
@@ -556,6 +564,9 @@ export default function TestCases() {
               { key: 'suite', label: 'Suite', get: (c) => (suites.find((s) => s.id === c.testSuiteId) || {}).name || '' },
               { key: 'stepCount', label: 'Steps', get: (c) => (c.steps || []).length },
               { key: 'stepDetail', label: 'Step Detail', get: (c) => (c.steps || []).map((s: any, i: number) => `${i + 1}. ${s.action || ''}${s.expected ? ' => ' + s.expected : ''}`).join('\n') },
+              { key: 'updatedAt', label: 'Updated', get: (c: any) => c.metadata?.updatedAt || c.updatedAt || '' },
+              { key: 'updatedBy', label: 'Updated By', get: (c: any) => c.metadata?.updatedBy?.name || '' },
+              { key: 'createdAt', label: 'Created', get: (c: any) => c.metadata?.createdAt || c.createdAt || '' },
             ]}
           />
           <button onClick={openNewModal} className="flex items-center gap-2 bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white px-4 py-2 rounded-md text-sm font-medium transition-colors">
@@ -872,6 +883,8 @@ export default function TestCases() {
               className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md pl-9 pr-4 py-1.5 text-sm outline-none focus:border-[var(--accent)]"
             />
           </div>
+          <TimeSortSelect value={timeSort} onChange={setTimeSort} />
+          <TimeRangeFilter value={updatedFilter} onChange={setUpdatedFilter} />
           <div ref={filterRef} className="relative">
             <button
               onClick={() => setIsFilterOpen(!isFilterOpen)}
@@ -1055,15 +1068,16 @@ export default function TestCases() {
                 <th className="font-medium py-3 px-4 w-32">Script</th>
                 <th className="font-medium py-3 px-4 w-32">Evidence</th>
                 <th className="font-medium py-3 px-4 w-28">Tags</th>
+                <th className="font-medium py-3 px-4 w-32">Updated</th>
                 <th className="font-medium py-3 px-4 w-24 text-right">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-[var(--border)]">
               {loading && (
-                <tr><td colSpan={15} className="py-8 text-center text-[var(--text-muted)]">Loading test cases...</td></tr>
+                <tr><td colSpan={16} className="py-8 text-center text-[var(--text-muted)]">Loading test cases...</td></tr>
               )}
               {!loading && filteredCases.length === 0 && (
-                <tr><td colSpan={15} className="py-8 text-center text-[var(--text-muted)]">No test cases found.</td></tr>
+                <tr><td colSpan={16} className="py-8 text-center text-[var(--text-muted)]">No test cases found.</td></tr>
               )}
               {filteredCases.map((tc) => (
                 <tr key={tc.id} onClick={() => openEditModal(tc)} className="hover:bg-[var(--bg-secondary)] transition-colors cursor-pointer">
@@ -1200,6 +1214,10 @@ export default function TestCases() {
                       onChange={(tags) => updateCaseInline(tc, { tags })}
                     />
                   </td>
+                  <td className="py-3 px-4 whitespace-nowrap text-xs text-[var(--text-muted)]">
+                    <Timestamp value={tc.metadata?.updatedAt || tc.updatedAt} />
+                    {actorName(tc.metadata?.updatedBy) && <div className="text-[10px]">by {actorName(tc.metadata?.updatedBy)}</div>}
+                  </td>
                   <td className="py-3 px-4 text-right flex gap-1 justify-end">
                     <button
                       onClick={(e) => {
@@ -1223,16 +1241,7 @@ export default function TestCases() {
                     >
                       <Pencil className="w-4 h-4" />
                     </button>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        bulk.deleteOne(tc.id);
-                      }}
-                      title="Delete"
-                      className="p-1 rounded hover:bg-red-500/10 text-[var(--text-muted)] hover:text-red-500 transition-colors"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
+                    <RowMoreMenu items={[{ label: 'Delete', onClick: () => bulk.deleteOne(tc.id), danger: true }]} />
                   </td>
                 </tr>
               ))}

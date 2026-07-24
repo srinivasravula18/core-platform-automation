@@ -1,6 +1,8 @@
 import { Fragment, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ChevronDown, ChevronRight, Search, Filter, Pencil, Plus, Sparkles, Trash2, PlayCircle, Loader2 } from 'lucide-react';
+import { RowMoreMenu } from '@/src/components/RowMoreMenu';
+import { Timestamp, actorName } from '@/src/components/Timestamp';
 import ExportMenu from '../components/ExportMenu';
 import { useAiSearch } from '@/src/lib/useAiSearch';
 import { useBulkDelete } from '@/src/lib/useBulkDelete';
@@ -527,14 +529,15 @@ export default function TestSuites() {
                 <th className="font-medium py-3 px-4">Test Plan</th>
                 <th className="font-medium py-3 px-4 w-32">Module</th>
                 <th className="font-medium py-3 px-4 w-28">Tags</th>
+                <th className="font-medium py-3 px-4 w-32">Updated</th>
                 <th className="font-medium py-3 px-4 w-36 text-right">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-[var(--border)]">
               {loading ? (
-                <tr><td colSpan={8} className="py-8 text-center text-[var(--text-muted)]">Loading suites...</td></tr>
+                <tr><td colSpan={9} className="py-8 text-center text-[var(--text-muted)]">Loading suites...</td></tr>
               ) : filteredSuites.length === 0 ? (
-                <tr><td colSpan={8} className="py-8 text-center text-[var(--text-muted)]">No suites found.</td></tr>
+                <tr><td colSpan={9} className="py-8 text-center text-[var(--text-muted)]">No suites found.</td></tr>
               ) : orderedSuites.map((suite) => {
                 const suiteCases = getSuiteCases(suite.id);
                 const isExpanded = expandedSuiteIds.includes(suite.id);
@@ -615,6 +618,10 @@ export default function TestSuites() {
                           onChange={(tags) => updateSuiteInline(suite, { tags })}
                         />
                       </td>
+                      <td className="py-3 px-4 whitespace-nowrap text-xs text-[var(--text-muted)]">
+                        <Timestamp value={suite.metadata?.updatedAt || suite.updatedAt} />
+                        {actorName(suite.metadata?.updatedBy) && <div className="text-[10px]">by {actorName(suite.metadata?.updatedBy)}</div>}
+                      </td>
                       <td className="py-3 px-4 text-right whitespace-nowrap">
                         <div className="flex items-center justify-end gap-1">
                           <button
@@ -648,19 +655,13 @@ export default function TestSuites() {
                           >
                             <Pencil className="w-4 h-4" />
                           </button>
-                          <button
-                            onClick={(e) => { e.stopPropagation(); bulk.deleteOne(suite.id); }}
-                            title="Delete"
-                            className="shrink-0 p-1 rounded hover:bg-red-500/10 text-[var(--text-muted)] hover:text-red-500 transition-colors"
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </button>
+                          <RowMoreMenu items={[{ label: 'Delete', onClick: () => bulk.deleteOne(suite.id), danger: true }]} />
                         </div>
                       </td>
                     </tr>
                     {isExpanded && (
                       <tr>
-                        <td colSpan={8} className="bg-[var(--bg-secondary)]/50 px-10 py-4">
+                        <td colSpan={9} className="bg-[var(--bg-secondary)]/50 px-10 py-4">
                           <div className="border border-[var(--border)] rounded-lg bg-[var(--bg-card)] overflow-hidden">
                             <div className="px-4 py-2 border-b border-[var(--border)] text-xs font-bold uppercase tracking-wider text-[var(--text-muted)]">
                               Related Test Cases

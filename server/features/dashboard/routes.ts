@@ -1,5 +1,5 @@
 import type { Express } from 'express';
-import { Activity, Cases, Defects, Plans, Reports, Runs, Suites, AgentRuns, AutomationSchedules, AutomationJobs, isPgEnabled } from '../../db/repository';
+import { Activity, Audit, Cases, Defects, Plans, Reports, Runs, Suites, AgentRuns, AutomationSchedules, AutomationJobs, isPgEnabled } from '../../db/repository';
 import { reqScope, scopeFilter } from '../../shared/scope';
 
 function toLocalDateKey(date: Date) {
@@ -49,6 +49,21 @@ function buildStatsChartData(runs: any[]) {
 }
 
 export function registerDashboardRoutes(app: Express) {
+  // Durable audit trail (Phase 4). Personal by default: a user sees the actions they performed;
+  // ordered deterministically by (at, seq) in the repository.
+  app.get('/api/audit', async (req, res) => {
+    const scope = reqScope(req);
+    const entries = await Audit.list({ ownerId: scope.userId || undefined, limit: Number(req.query.limit) || 200 });
+    res.json({ entries });
+  });
+  // Per-record change history (a record's own audit trail), scoped to the caller.
+  app.get('/api/audit/:entityType/:entityId', async (req, res) => {
+    const scope = reqScope(req);
+    const all = await Audit.list({ entityType: req.params.entityType, entityId: req.params.entityId, limit: 200 });
+    const entries = scope.userId ? all.filter((e: any) => !e.ownerId || e.ownerId === scope.userId) : all;
+    res.json({ entries });
+  });
+
   app.get('/api/stats', async (req, res) => {
     // Scope every collection to the caller EXACTLY as the list endpoints do (see
     // server/features/resources/routes.ts), so dashboard counts always match what the

@@ -1,8 +1,15 @@
 import { useEffect, useState, type ReactElement } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { FlaskConical, Pencil, SplitSquareHorizontal, Send, Loader2, Check, Link2Off, Paperclip, X } from 'lucide-react';
+import { FlaskConical, Pencil, SplitSquareHorizontal, Loader2, Check, Link2Off, Paperclip, Sparkles, X } from 'lucide-react';
 import { showAlert } from '@/src/lib/dialog';
 import StepGroupList from '@/src/components/StepGroupList';
+import { AIReworkPanel } from '@/src/components/AIReworkPanel';
+import {
+  applyAIReworkProposal,
+  isAIReworkProposalStale,
+  singleCaseProposal,
+  type AIReworkProposal,
+} from '@/src/lib/aiRework';
 
 /**
  * A single test case rendered as an inline-editable card — the same editing
@@ -84,6 +91,10 @@ export default function EditableCaseCard({ initial, linkType, selected, onToggle
   const [attachError, setAttachError] = useState('');
   const [busy, setBusy] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
+  const [reworkProposal, setReworkProposal] = useState<AIReworkProposal<EditableCase> | null>(null);
+  const [reworkUndoSnapshot, setReworkUndoSnapshot] = useState<EditableCase | null>(null);
+  const [reworkMessage, setReworkMessage] = useState<string | null>(null);
+  const [reworkError, setReworkError] = useState<string | null>(null);
   // Indices of steps ticked for merging into one.
   const [mergePick, setMergePick] = useState<Set<number>>(new Set());
 
@@ -195,6 +206,7 @@ export default function EditableCaseCard({ initial, linkType, selected, onToggle
   /* ---------- AI actions ---------- */
   const reworkCase = async () => {
     setBusy('rework');
+    setReworkError(null);
     try {
       const res = await fetch('/api/agent/rework-case', {
         method: 'POST',
@@ -202,10 +214,36 @@ export default function EditableCaseCard({ initial, linkType, selected, onToggle
         body: JSON.stringify({ testCase: c, feedback, targetUrl: '', attachments: attachments.length ? attachments : undefined }),
       });
       const data = await res.json();
-      if (res.ok) { patch(data); setFeedback(''); setAttachments([]); setAttachError(''); }
+      if (!res.ok) throw new Error(data?.error || `Rework failed (${res.status})`);
+      setReworkProposal(singleCaseProposal(c, { ...c, ...data }));
+    } catch (error: any) {
+      setReworkError(error?.message || 'Could not build the AI preview.');
     } finally {
       setBusy(null);
     }
+  };
+  const applyReworkProposal = (selectedKeys: Set<string>) => {
+    if (!reworkProposal) return;
+    try {
+      const result = applyAIReworkProposal([c], reworkProposal, selectedKeys);
+      setReworkUndoSnapshot(c);
+      setC(result.cases[0]);
+      setSaved(false);
+      setFeedback('');
+      setAttachments([]);
+      setAttachError('');
+      setReworkProposal(null);
+      setReworkMessage('AI change applied to the draft. Save to persist.');
+    } catch (error: any) {
+      setReworkError(error?.message || 'Could not apply the AI proposal.');
+    }
+  };
+  const undoRework = () => {
+    if (!reworkUndoSnapshot) return;
+    setC(reworkUndoSnapshot);
+    setReworkUndoSnapshot(null);
+    setReworkMessage('AI changes undone.');
+    setSaved(false);
   };
 
   const inputCls = 'w-full rounded-md border border-[var(--border)] bg-[var(--bg-card)] px-2 py-1.5 text-xs text-[var(--text-primary)] outline-none focus:border-[var(--accent)]';
@@ -290,6 +328,9 @@ export default function EditableCaseCard({ initial, linkType, selected, onToggle
               <button onClick={() => navigate(`/cases?search=${encodeURIComponent(c.id)}`)} className="text-xs font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:underline">
                 Open in Test Cases
               </button>
+              <button onClick={() => setEditing(true)} className="inline-flex min-h-8 items-center gap-1.5 rounded px-1.5 text-xs font-medium text-[var(--text-muted)] hover:bg-[var(--accent)]/10 hover:text-[var(--accent)]">
+                <Sparkles className="h-3.5 w-3.5" /> Rework
+              </button>
               <button onClick={() => setEditing(true)} className="inline-flex items-center gap-1.5 text-xs font-medium text-[var(--accent)] hover:underline">
                 <Pencil className="h-3.5 w-3.5" /> Edit
               </button>
@@ -358,29 +399,39 @@ export default function EditableCaseCard({ initial, linkType, selected, onToggle
             <button onClick={addStep} className="text-[11px] font-medium text-[var(--accent)] hover:underline">+ Add step</button>
           </div>
 
-          {/* Rework with AI */}
-          <div className="space-y-1.5 border-t border-[var(--border)] pt-2">
-            <textarea value={feedback} onChange={(e) => setFeedback(e.target.value)} placeholder="Tell the AI how to rework this case (e.g. add negative + boundary checks)…" className={`${inputCls} h-14`} />
-            <div className="flex flex-wrap items-center gap-1.5">
-              <label className="inline-flex cursor-pointer items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-card)] px-2 py-1 text-[11px] font-medium text-[var(--text-muted)] hover:border-[var(--accent)] hover:text-[var(--text-primary)]">
-                <Paperclip className="h-3 w-3" /> Attach
-                <input type="file" accept="image/*" multiple className="sr-only" onChange={(e) => { void addAttachments(e.target.files); e.target.value = ''; }} />
-              </label>
-              {attachments.map((a, ai) => (
-                <span key={ai} className="inline-flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-0.5 text-[11px] text-[var(--text-muted)]">
-                  {a.name}
-                  <button type="button" onClick={() => removeAttachment(ai)} aria-label={`Remove ${a.name}`} className="hover:text-red-400">
-                    <X className="h-3 w-3" />
-                  </button>
-                </span>
-              ))}
-            </div>
-            {attachError && <p role="alert" className="text-[11px] text-red-400">{attachError}</p>}
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <button onClick={reworkCase} disabled={busy === 'rework' || !feedback.trim()} className="inline-flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-card)] px-3 py-1.5 text-[11px] font-medium text-[var(--text-primary)] hover:border-[var(--accent)] disabled:opacity-50">
-                {busy === 'rework' ? <Loader2 className="h-3 w-3 animate-spin" /> : <Send className="h-3 w-3" />}
-                Rework with AI
-              </button>
+          <div className="space-y-2 border-t border-[var(--border)] pt-2">
+            <AIReworkPanel
+              compact
+              scopeLabel={c.title || 'Current case'}
+              value={feedback}
+              onChange={setFeedback}
+              onPreview={() => void reworkCase()}
+              loading={busy === 'rework'}
+              error={reworkError || attachError}
+              proposal={reworkProposal}
+              stale={Boolean(reworkProposal && isAIReworkProposalStale([c], reworkProposal))}
+              onApply={applyReworkProposal}
+              onDiscard={() => setReworkProposal(null)}
+              appliedMessage={reworkMessage}
+              onUndo={reworkUndoSnapshot ? undoRework : undefined}
+              accessory={(
+                <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                  <label className="inline-flex min-h-8 cursor-pointer items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-card)] px-2 text-[11px] font-medium text-[var(--text-muted)] hover:border-[var(--accent)] hover:text-[var(--text-primary)]">
+                    <Paperclip className="h-3 w-3" /> Attach
+                    <input type="file" accept="image/*" multiple className="sr-only" onChange={(e) => { void addAttachments(e.target.files); e.target.value = ''; }} />
+                  </label>
+                  {attachments.map((a, ai) => (
+                    <span key={ai} className="inline-flex min-h-8 items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 text-[11px] text-[var(--text-muted)]">
+                      {a.name}
+                      <button type="button" onClick={() => removeAttachment(ai)} aria-label={`Remove ${a.name}`} className="rounded p-1 hover:text-red-400">
+                        <X className="h-3 w-3" />
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
+            />
+            <div className="flex justify-end">
               <div className="flex items-center gap-2">
                 <button onClick={() => { setEditing(false); setC({ ...initial, steps: (initial.steps || []).map((s) => ({ ...s })) }); }} className="rounded-md border border-[var(--border)] bg-[var(--bg-card)] px-3 py-1.5 text-[11px] font-medium text-[var(--text-muted)] hover:border-[var(--accent)] hover:text-[var(--text-primary)]">
                   Cancel

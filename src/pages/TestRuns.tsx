@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, CheckCircle, Download, Filter, Folder, PlayCircle, Search, SlidersHorizontal, Sparkles, Trash2 } from 'lucide-react';
+import { ArrowLeft, CheckCircle, Download, Filter, Folder, Pencil, PlayCircle, Search, SlidersHorizontal, Sparkles, Trash2 } from 'lucide-react';
+import { Timestamp, actorName } from '@/src/components/Timestamp';
+import { TimeSortSelect } from '@/src/components/filters/TimeSortSelect';
+import { TimeRangeFilter, passesTimeFilter, type TimeFilterValue } from '@/src/components/filters/TimeRangeFilter';
+import { sortByTime, type TimeSortKey } from '@/src/lib/time';
 import ExportMenu from '../components/ExportMenu';
 import { useAiSearch } from '@/src/lib/useAiSearch';
 import { useBulkDelete } from '@/src/lib/useBulkDelete';
@@ -60,6 +64,8 @@ export default function TestRuns() {
   const [folders, setFolders] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
+  const [timeSort, setTimeSort] = useState<TimeSortKey>('recentlyUpdated');
+  const [updatedFilter, setUpdatedFilter] = useState<TimeFilterValue>({ key: 'all' });
   const aiSearch = useAiSearch('test runs');
   const [runView, setRunView] = useState<'active' | 'closed'>('active');
   const [selectedView, setSelectedView] = useState('All Runs');
@@ -68,6 +74,7 @@ export default function TestRuns() {
   const [isCaseFilterOpen, setIsCaseFilterOpen] = useState(false);
   const [isViewMenuOpen, setIsViewMenuOpen] = useState(false);
   const [isRunModalOpen, setIsRunModalOpen] = useState(false);
+  const [editingRunId, setEditingRunId] = useState('');
   const [isAIRunModalOpen, setIsAIRunModalOpen] = useState(false);
   const [newRunName, setNewRunName] = useState('');
   const [newRunRequester, setNewRunRequester] = useState('');
@@ -138,19 +145,20 @@ export default function TestRuns() {
 
   const filteredRuns = useMemo(() => {
     const base = runView === 'active' ? activeRuns : closedRuns;
-    return base.filter((run) => {
+    return sortByTime(base.filter((run) => {
       const searchable = `${run.name || ''} ${run.id || ''} ${run.suiteName || ''} ${run.requestedBy || ''}`.toLowerCase();
       const matchesSearch = aiSearch.isAiQuery(searchTerm)
         ? (aiSearch.matchedIds ? aiSearch.matchedIds.has(run.id) : true)
         : searchable.includes(searchTerm.toLowerCase());
       if (!matchesSearch) return false;
+      if (!passesTimeFilter(run.metadata?.updatedAt || run.updatedAt || run.date, updatedFilter)) return false;
       if (selectedView === 'Failed Runs') return getRunStats(run).failed > 0;
       if (selectedView === 'Manual Runs') return !run.agentRunId;
       if (selectedView === 'Automated Runs') return Boolean(run.agentRunId);
       if (selectedView === 'My Runs') return Boolean(run.requestedBy);
       return true;
-    });
-  }, [activeRuns, closedRuns, runView, searchTerm, selectedView, aiSearch.matchedIds, aiSearch]);
+    }), timeSort);
+  }, [activeRuns, closedRuns, runView, searchTerm, selectedView, aiSearch.matchedIds, aiSearch, updatedFilter, timeSort]);
 
   const selectedRunCases = useMemo(() => selectedRun ? casesForRun(selectedRun, cases, suites) : [], [cases, selectedRun, suites]);
 
@@ -175,6 +183,7 @@ export default function TestRuns() {
   const selectedRunScripts = useMemo(() => selectedRun ? scriptsForRun(selectedRun, selectedRunCases, scripts) : [], [selectedRun, selectedRunCases, scripts]);
 
   const openNewModal = () => {
+    setEditingRunId('');
     setNewRunName('');
     setNewRunRequester('');
     setNewRunExecutionTime('');
@@ -187,33 +196,48 @@ export default function TestRuns() {
     setIsRunModalOpen(true);
   };
 
+  const openEditModal = (run: any) => {
+    setEditingRunId(run.id);
+    setNewRunName(run.name || '');
+    setNewRunRequester(run.requestedBy || '');
+    setNewRunExecutionTime(run.executionTime || '');
+    setNewRunTargetUrl(run.targetUrl || '');
+    setNewRunFolderId(run.folderId || '');
+    setNewRunPlanId(run.testPlanId || '');
+    setNewRunAssignedTo(run.assignedTo || '');
+    setNewRunTags(Array.isArray(run.tags) ? run.tags : []);
+    setNewRunCaseIds(new Set(Array.isArray(run.caseIds) ? run.caseIds : []));
+    setIsRunModalOpen(true);
+  };
+
   const handleSaveRun = async () => {
     if (!newRunName.trim()) return;
     if (!newRunFolderId) { void showAlert('Select a folder or create one first.'); return; }
     const caseIds = [...newRunCaseIds] as string[];
-    if (!caseIds.length) { void showAlert('Select at least one test case with a Playwright script.'); return; }
+    if (!editingRunId && !caseIds.length) { void showAlert('Select at least one test case with a Playwright script.'); return; }
     const shared = {
       name: newRunName,
       testPlanId: newRunPlanId,
       requestedBy: newRunRequester,
       assignedTo: newRunAssignedTo,
       tags: newRunTags,
-      state: 'Not Started',
       executionTime: newRunExecutionTime,
       targetUrl: newRunTargetUrl,
       folderId: newRunFolderId,
     };
-    const url = '/api/runs/from-selection';
-    const body = { ...shared, ...manualRunSelection(newRunPlanId, caseIds) };
+    const url = editingRunId ? `/api/runs/${encodeURIComponent(editingRunId)}` : '/api/runs/from-selection';
+    const body = editingRunId ? shared : { ...shared, state: 'Not Started', ...manualRunSelection(newRunPlanId, caseIds) };
     try {
-      const response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      const response = await fetch(url, { method: editingRunId ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
       const rsp = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(rsp.error || 'Failed to create manual run.');
+      if (!response.ok) throw new Error(rsp.error || `Failed to ${editingRunId ? 'update' : 'create'} test run.`);
       setIsRunModalOpen(false);
+      const wasEditing = Boolean(editingRunId);
+      setEditingRunId('');
       fetchData();
-      if (rsp.run?.id) navigate(`/runs/${rsp.run.id}`);
+      if (!wasEditing && rsp.run?.id) navigate(`/runs/${rsp.run.id}`);
     } catch (error: any) {
-      void showAlert(error.message || 'Failed to create manual run.');
+      void showAlert(error.message || `Failed to ${editingRunId ? 'update' : 'create'} test run.`);
     }
   };
 
@@ -578,17 +602,19 @@ export default function TestRuns() {
 
       <Modal
         isOpen={isRunModalOpen}
-        onClose={() => setIsRunModalOpen(false)}
-        title="Create Manual Run"
+        onClose={() => { setIsRunModalOpen(false); setEditingRunId(''); }}
+        title={editingRunId ? 'Edit Test Run' : 'Create Manual Run'}
         footer={
           <div className="flex justify-end gap-3">
-            <button onClick={() => setIsRunModalOpen(false)} className="px-4 py-2 text-sm text-[var(--text-muted)]">Cancel</button>
-            <button onClick={handleSaveRun} disabled={!newRunName.trim() || !newRunFolderId || newRunCaseIds.size === 0} className="px-4 py-2 bg-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-50 text-white text-sm rounded-md">Create Run</button>
+            <button onClick={() => { setIsRunModalOpen(false); setEditingRunId(''); }} className="px-4 py-2 text-sm text-[var(--text-muted)]">Cancel</button>
+            <button onClick={handleSaveRun} disabled={!newRunName.trim() || !newRunFolderId || (!editingRunId && newRunCaseIds.size === 0)} className="px-4 py-2 bg-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-50 text-white text-sm rounded-md">{editingRunId ? 'Save Changes' : 'Create Run'}</button>
           </div>
         }
       >
         <div className="space-y-4">
-          <input value={newRunName} onChange={(e) => setNewRunName(e.target.value)} placeholder="Run name" className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm" />
+          <label className="block text-xs font-medium text-[var(--text-muted)]">Run Name
+            <input value={newRunName} onChange={(e) => setNewRunName(e.target.value)} placeholder="Run name" className="mt-1 w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm text-[var(--text-primary)]" />
+          </label>
 
           {/* #4 — map the run to an existing Test Plan (not a free-text suite). */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -607,7 +633,7 @@ export default function TestRuns() {
               <input value={newRunAssignedTo} onChange={(e) => setNewRunAssignedTo(e.target.value)} placeholder="e.g. QA name" className="mt-1 w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm text-[var(--text-primary)]" />
             </label>
             <label className="block text-xs font-medium text-[var(--text-muted)]">State
-              <span className="mt-1 block w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)]">Not Started</span>
+              <span className="mt-1 block w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)]">{editingRunId ? runs.find((run) => run.id === editingRunId)?.state || 'Not Started' : 'Not Started'}</span>
             </label>
             <div>
               <label className="block text-xs font-medium text-[var(--text-muted)]">Tags</label>
@@ -617,20 +643,29 @@ export default function TestRuns() {
             </div>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <input value={newRunRequester} onChange={(e) => setNewRunRequester(e.target.value)} placeholder="Requested by" className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm" />
-            <input value={newRunTargetUrl} onChange={(e) => setNewRunTargetUrl(e.target.value)} placeholder="Target URL (optional)" className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm" />
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <label className="block text-xs font-medium text-[var(--text-muted)]">Requested By
+              <input value={newRunRequester} onChange={(e) => setNewRunRequester(e.target.value)} placeholder="Requester" className="mt-1 w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm text-[var(--text-primary)]" />
+            </label>
+            <label className="block text-xs font-medium text-[var(--text-muted)]">Target URL
+              <input value={newRunTargetUrl} onChange={(e) => setNewRunTargetUrl(e.target.value)} placeholder="Optional" className="mt-1 w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm text-[var(--text-primary)]" />
+            </label>
+            <label className="block text-xs font-medium text-[var(--text-muted)]">Estimated Duration
+              <input value={newRunExecutionTime} onChange={(e) => setNewRunExecutionTime(e.target.value)} placeholder="e.g. 15m" className="mt-1 w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm text-[var(--text-primary)]" />
+            </label>
           </div>
 
-          <div>
-            <label className="mb-1 block text-xs font-medium text-[var(--text-muted)]">Test Cases with Playwright Scripts</label>
-            <MultiSelectDropdown
-              label={runnableCaseOptions.length ? 'Select test cases from any repository folder' : 'No runnable test cases'}
-              options={runnableCaseOptions}
-              value={[...newRunCaseIds]}
-              onChange={(ids) => setNewRunCaseIds(new Set(ids))}
-            />
-          </div>
+          {!editingRunId && (
+            <div>
+              <label className="mb-1 block text-xs font-medium text-[var(--text-muted)]">Test Cases with Playwright Scripts</label>
+              <MultiSelectDropdown
+                label={runnableCaseOptions.length ? 'Select test cases from any repository folder' : 'No runnable test cases'}
+                options={runnableCaseOptions}
+                value={[...newRunCaseIds]}
+                onChange={(ids) => setNewRunCaseIds(new Set(ids))}
+              />
+            </div>
+          )}
         </div>
       </Modal>
 
@@ -653,6 +688,8 @@ export default function TestRuns() {
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--text-muted)]" />
               <input value={searchTerm} onChange={(e) => { const v = e.target.value; setSearchTerm(v); if (aiSearch.isAiQuery(v)) aiSearch.run(v, runs.map((r) => ({ id: r.id, name: r.name, status: r.status, suiteName: r.suiteName, requestedBy: r.requestedBy, date: r.date }))); else aiSearch.reset(); }} placeholder="Search runs…  or @ai find smartly" className="w-96 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md pl-9 pr-4 py-2 text-sm outline-none focus:border-[var(--accent)]" />
             </div>
+            <TimeSortSelect value={timeSort} onChange={setTimeSort} />
+            <TimeRangeFilter value={updatedFilter} onChange={setUpdatedFilter} />
             <button onClick={() => setIsViewMenuOpen(!isViewMenuOpen)} title="Open run view filters" className="p-2 rounded-md border border-[var(--border)]"><Filter className="w-4 h-4" /></button>
             {bulk.selectedCount > 0 && (
               <>
@@ -683,14 +720,15 @@ export default function TestRuns() {
                 <th className="w-28 px-4 py-3 font-medium">Duration</th>
                 <th className="w-56 px-4 py-3 font-medium">Tests Status</th>
                 <th className="w-40 px-4 py-3 font-medium">Failure Analysis</th>
-                <th className="w-12 px-4 py-3"></th>
+                <th className="w-32 px-4 py-3 font-medium">Updated</th>
+                <th className="w-20 px-4 py-3"></th>
               </tr>
             </thead>
             <tbody className="divide-y divide-[var(--border)]">
               {loading ? (
-                <tr><td colSpan={9} className="px-4 py-8 text-center text-[var(--text-muted)]">Loading runs...</td></tr>
+                <tr><td colSpan={10} className="px-4 py-8 text-center text-[var(--text-muted)]">Loading runs...</td></tr>
               ) : filteredRuns.length === 0 ? (
-                <tr><td colSpan={9} className="px-4 py-8 text-center text-[var(--text-muted)]">No test runs found.</td></tr>
+                <tr><td colSpan={10} className="px-4 py-8 text-center text-[var(--text-muted)]">No test runs found.</td></tr>
               ) : filteredRuns.map((run) => {
                 const stats = getRunStats(run);
                 const hasScripts = scriptsForRun(run, casesForRun(run, cases, suites), scripts).length > 0;
@@ -743,8 +781,15 @@ export default function TestRuns() {
                       </div>}
                     </td>
                     <td className="px-4 py-4 text-[var(--text-muted)]">{stats.failed ? `${stats.failed} failed` : '-'}</td>
+                    <td className="px-4 py-4 whitespace-nowrap text-xs text-[var(--text-muted)]">
+                      <Timestamp value={run.metadata?.updatedAt || run.updatedAt || run.date} />
+                      {actorName(run.metadata?.updatedBy) && <div className="text-[10px]">by {actorName(run.metadata?.updatedBy)}</div>}
+                    </td>
                     <td className="px-4 py-4">
                       <div className="flex items-center gap-1">
+                        <button onClick={(e) => { e.stopPropagation(); openEditModal(run); }} disabled={running} title={running ? 'A running test run cannot be edited' : 'Edit test run'} className="p-1 rounded hover:bg-[var(--border)] text-[var(--text-muted)] hover:text-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-40 transition-colors">
+                          <Pencil className="w-4 h-4" />
+                        </button>
                         <button onClick={(e) => { e.stopPropagation(); bulk.deleteOne(run.id); }} title="Delete" className="p-1 rounded hover:bg-red-500/10 text-[var(--text-muted)] hover:text-red-500 transition-colors">
                           <Trash2 className="w-4 h-4" />
                         </button>

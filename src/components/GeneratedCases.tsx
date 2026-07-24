@@ -1,7 +1,15 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { CheckSquare, Square, Pencil, Trash2, SplitSquareHorizontal, Send, Loader2, Check, Paperclip, X } from 'lucide-react';
+import { CheckSquare, Square, Pencil, Trash2, SplitSquareHorizontal, Loader2, Check, Paperclip, Sparkles, X } from 'lucide-react';
 import { invalidateData } from '@/src/store/data';
+import { AIReworkPanel } from '@/src/components/AIReworkPanel';
+import {
+  applyAIReworkProposal,
+  isAIReworkProposalStale,
+  singleCaseProposal,
+  suiteCaseProposal,
+  type AIReworkProposal,
+} from '@/src/lib/aiRework';
 
 /**
  * Renders the test cases the Agent Console just generated, inline in the chat,
@@ -160,6 +168,10 @@ export function GeneratedCases({ cases: initial, onCasesChange }: { cases: Case[
   const [bulkErrors, setBulkErrors] = useState<Record<string, string>>({});
   const [bulkRunning, setBulkRunning] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
+  const [reworkProposal, setReworkProposal] = useState<AIReworkProposal<Case> | null>(null);
+  const [reworkProposalOwner, setReworkProposalOwner] = useState<string | null>(null);
+  const [reworkUndoSnapshot, setReworkUndoSnapshot] = useState<Case[] | null>(null);
+  const [reworkAppliedMessage, setReworkAppliedMessage] = useState<string | null>(null);
 
   // Cancel any in-flight bulk requests when the component unmounts.
   useEffect(() => () => abortRef.current?.abort(), []);
@@ -270,10 +282,8 @@ export function GeneratedCases({ cases: initial, onCasesChange }: { cases: Case[
       });
       const data = await res.json();
       if (res.ok) {
-        patchCase(i, data);
-        setFeedback((p) => ({ ...p, [i]: '' }));
-        setAttachments((p) => ({ ...p, [i]: [] }));
-        setAttachError((p) => ({ ...p, [i]: '' }));
+        setReworkProposal(singleCaseProposal(c, { ...c, ...data }, i));
+        setReworkProposalOwner(`case-${i}`);
       }
     } finally {
       setBusy(null);
@@ -307,6 +317,7 @@ export function GeneratedCases({ cases: initial, onCasesChange }: { cases: Case[
     setBulkStatus(Object.fromEntries(ids.map((id) => [id, 'pending' as const])));
     setBulkErrors({});
     let failed = 0;
+    const proposedUpdates: Array<{ index: number; testCase: Case }> = [];
     // Each worker drains the shared queue — one case failing never stops the others.
     const queue = [...ids];
     const worker = async () => {
@@ -324,7 +335,8 @@ export function GeneratedCases({ cases: initial, onCasesChange }: { cases: Case[
           const data = await res.json();
           if (!res.ok) throw new Error(data?.error || `Rework failed (${res.status})`);
           // Patch in place by id — order is preserved even with concurrent completions.
-          setCases((prev) => prev.map((c) => (c.id === id ? { ...c, ...data } : c)));
+          const sourceIndex = cases.findIndex((c) => c.id === id);
+          if (sourceIndex >= 0) proposedUpdates.push({ index: sourceIndex, testCase: { ...cases[sourceIndex], ...data } });
           setBulkStatus((p) => ({ ...p, [id]: 'done' }));
         } catch (e: any) {
           if (controller.signal.aborted) return;
@@ -338,9 +350,53 @@ export function GeneratedCases({ cases: initial, onCasesChange }: { cases: Case[
     abortRef.current = null;
     if (!controller.signal.aborted) {
       setBulkRunning(false);
-      // A fully clean run consumes the shared prompt + attachments.
-      if (failed === 0) { setBulkPrompt(''); setBulkAttachments([]); setBulkAttachError(''); }
+      if (proposedUpdates.length) {
+        proposedUpdates.sort((a, b) => a.index - b.index);
+        setReworkProposal(suiteCaseProposal(cases, {
+          updatedCases: proposedUpdates,
+          note: failed ? `${proposedUpdates.length} proposals ready; ${failed} cases could not be generated.` : `${proposedUpdates.length} case proposals ready to review.`,
+        }));
+        setReworkProposalOwner('bulk');
+      }
     }
+  };
+
+  const discardReworkProposal = () => {
+    setReworkProposal(null);
+    setReworkProposalOwner(null);
+  };
+  const applyReworkProposal = (selectedKeys: Set<string>) => {
+    if (!reworkProposal) return;
+    try {
+      const result = applyAIReworkProposal(cases, reworkProposal, selectedKeys);
+      const changedIndexes = reworkProposal.items
+        .filter((item) => selectedKeys.has(item.key) && item.sourceIndex != null)
+        .map((item) => item.sourceIndex!);
+      setReworkUndoSnapshot(cases);
+      setCases(result.cases);
+      setDirtyIdx((current) => new Set([...current, ...changedIndexes]));
+      setReworkAppliedMessage(`${result.appliedCount} AI change${result.appliedCount === 1 ? '' : 's'} applied to the draft. Save to persist.`);
+      if (reworkProposalOwner === 'bulk') {
+        setBulkPrompt('');
+        setBulkAttachments([]);
+        setBulkAttachError('');
+        setBulkStatus({});
+      } else if (reworkProposalOwner?.startsWith('case-')) {
+        const index = Number(reworkProposalOwner.slice(5));
+        setFeedback((current) => ({ ...current, [index]: '' }));
+        setAttachments((current) => ({ ...current, [index]: [] }));
+        setAttachError((current) => ({ ...current, [index]: '' }));
+      }
+      discardReworkProposal();
+    } catch (error: any) {
+      setBulkAttachError(error?.message || 'Could not apply the AI proposal.');
+    }
+  };
+  const undoRework = () => {
+    if (!reworkUndoSnapshot) return;
+    setCases(reworkUndoSnapshot);
+    setReworkUndoSnapshot(null);
+    setReworkAppliedMessage('AI changes undone.');
   };
 
   const bulkTotal = Object.keys(bulkStatus).length;
@@ -367,40 +423,36 @@ export function GeneratedCases({ cases: initial, onCasesChange }: { cases: Case[
         )}
       </div>
 
-      {/* Bulk rework bar — shown while at least one case is selected */}
+      {/* Bulk rework preview — shown while at least one case is selected */}
       {selectedIds.size > 0 && (
-        <div className="space-y-1.5 rounded-2xl border border-[var(--border)] bg-[var(--bg-card)] p-3">
-          <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
-            Rework {selectedIds.size} selected case{selectedIds.size === 1 ? '' : 's'} with AI
-          </div>
-          <textarea
-            value={bulkPrompt}
-            onChange={(e) => setBulkPrompt(e.target.value)}
-            disabled={bulkRunning}
-            placeholder="Tell the AI how to rework the selected cases (applies to every selected case)…"
-            className={`${inputCls} h-14 disabled:opacity-50`}
-          />
-          <AttachmentPicker
-            attachments={bulkAttachments}
-            error={bulkAttachError}
-            disabled={bulkRunning}
-            onAdd={(files) => void addBulkAttachments(files)}
-            onRemove={(idx) => setBulkAttachments((prev) => prev.filter((_, x) => x !== idx))}
-          />
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <button
-              onClick={() => void runBulkRework()}
-              disabled={bulkRunning || !bulkPrompt.trim()}
-              className="inline-flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-card)] px-3 py-1.5 text-[11px] font-medium text-[var(--text-primary)] hover:border-[var(--accent)] disabled:opacity-50"
-            >
-              {bulkRunning ? <Loader2 className="h-3 w-3 animate-spin" /> : <Send className="h-3 w-3" />}
-              Rework selected with AI
-            </button>
-            <span aria-live="polite" className="text-[11px] text-[var(--text-muted)]">
-              {bulkTotal > 0 ? `${bulkDone}/${bulkTotal} done${bulkFailed ? `, ${bulkFailed} failed` : ''}` : ''}
-            </span>
-          </div>
-        </div>
+        <AIReworkPanel
+          scopeLabel={`${selectedIds.size} selected case${selectedIds.size === 1 ? '' : 's'}`}
+          value={bulkPrompt}
+          onChange={setBulkPrompt}
+          onPreview={() => void runBulkRework()}
+          loading={bulkRunning}
+          error={bulkAttachError}
+          proposal={reworkProposalOwner === 'bulk' ? reworkProposal : null}
+          stale={Boolean(reworkProposalOwner === 'bulk' && reworkProposal && isAIReworkProposalStale(cases, reworkProposal))}
+          onApply={applyReworkProposal}
+          onDiscard={discardReworkProposal}
+          appliedMessage={reworkAppliedMessage}
+          onUndo={reworkUndoSnapshot ? undoRework : undefined}
+          accessory={(
+            <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+              <AttachmentPicker
+                attachments={bulkAttachments}
+                error=""
+                disabled={bulkRunning}
+                onAdd={(files) => void addBulkAttachments(files)}
+                onRemove={(idx) => setBulkAttachments((prev) => prev.filter((_, x) => x !== idx))}
+              />
+              <span aria-live="polite" className="text-[11px] text-[var(--text-muted)]">
+                {bulkTotal > 0 ? `${bulkDone}/${bulkTotal} ready${bulkFailed ? `, ${bulkFailed} failed` : ''}` : ''}
+              </span>
+            </div>
+          )}
+        />
       )}
       {cases.map((c, i) => (
         <div key={c.id || i} className="rounded-2xl border border-[var(--border)] bg-[var(--bg-card)] p-4">
@@ -517,6 +569,13 @@ export function GeneratedCases({ cases: initial, onCasesChange }: { cases: Case[
                   <button
                     onClick={() => setEditing(i)}
                     disabled={bulkRunning}
+                    className="inline-flex min-h-8 items-center gap-1.5 rounded px-1.5 text-xs font-medium text-[var(--text-muted)] hover:bg-[var(--accent)]/10 hover:text-[var(--accent)] disabled:opacity-50"
+                  >
+                    <Sparkles className="h-3.5 w-3.5" /> Rework
+                  </button>
+                  <button
+                    onClick={() => setEditing(i)}
+                    disabled={bulkRunning}
                     className="inline-flex items-center gap-1.5 text-xs font-medium text-[var(--accent)] hover:underline disabled:opacity-50"
                   >
                     <Pencil className="h-3.5 w-3.5" /> Edit
@@ -596,33 +655,34 @@ export function GeneratedCases({ cases: initial, onCasesChange }: { cases: Case[
                 </button>
               </div>
 
-              {/* Rework with AI */}
-              <div className="space-y-1.5 border-t border-[var(--border)] pt-2">
-                <textarea
+              <div className="space-y-2 border-t border-[var(--border)] pt-2">
+                <AIReworkPanel
+                  compact
+                  scopeLabel={c.title || `Case ${i + 1}`}
                   value={feedback[i] || ''}
-                  onChange={(e) => setFeedback((p) => ({ ...p, [i]: e.target.value }))}
-                  placeholder="Tell the AI how to rework this case (e.g. add negative + boundary checks)…"
-                  className={`${inputCls} h-14`}
+                  onChange={(value) => setFeedback((current) => ({ ...current, [i]: value }))}
+                  onPreview={() => void reworkCase(i)}
+                  loading={busy === `rework-${i}`}
+                  error={attachError[i] || saveError[i]}
+                  proposal={reworkProposalOwner === `case-${i}` ? reworkProposal : null}
+                  stale={Boolean(reworkProposalOwner === `case-${i}` && reworkProposal && isAIReworkProposalStale(cases, reworkProposal))}
+                  onApply={applyReworkProposal}
+                  onDiscard={discardReworkProposal}
+                  appliedMessage={reworkAppliedMessage}
+                  onUndo={reworkUndoSnapshot ? undoRework : undefined}
+                  accessory={(
+                    <div className="mt-2">
+                      <AttachmentPicker
+                        attachments={attachments[i] || []}
+                        error=""
+                        disabled={bulkRunning}
+                        onAdd={(files) => void addCaseAttachments(i, files)}
+                        onRemove={(idx) => removeCaseAttachment(i, idx)}
+                      />
+                    </div>
+                  )}
                 />
-                <AttachmentPicker
-                  attachments={attachments[i] || []}
-                  error={attachError[i]}
-                  disabled={bulkRunning}
-                  onAdd={(files) => void addCaseAttachments(i, files)}
-                  onRemove={(idx) => removeCaseAttachment(i, idx)}
-                />
-                {saveError[i] && (
-                  <p role="alert" className="text-[11px] text-red-400">{saveError[i]}</p>
-                )}
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <button
-                    onClick={() => reworkCase(i)}
-                    disabled={bulkRunning || busy === `rework-${i}` || !(feedback[i] || '').trim()}
-                    className="inline-flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-card)] px-3 py-1.5 text-[11px] font-medium text-[var(--text-primary)] hover:border-[var(--accent)] disabled:opacity-50"
-                  >
-                    {busy === `rework-${i}` ? <Loader2 className="h-3 w-3 animate-spin" /> : <Send className="h-3 w-3" />}
-                    Rework with AI
-                  </button>
+                <div className="flex justify-end">
                   <div className="flex items-center gap-2">
                     <button
                       onClick={() => setEditing(null)}

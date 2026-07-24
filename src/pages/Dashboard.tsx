@@ -6,6 +6,7 @@ import { Modal } from '@/src/components/Modal';
 import { FolderSelect } from '@/src/components/FolderSelect';
 import { cn } from '@/src/lib/utils';
 import { showAlert } from '@/src/lib/dialog';
+import { relativeTime } from '@/src/lib/time';
 
 // Recent Activity: per-type icon + the page each entry deep-links to.
 const ACTIVITY_ICON: Record<string, any> = { case: TestTube2, plan: Target, suite: Layers, run: PlayCircle, defect: ShieldAlert, report: FileText };
@@ -19,17 +20,6 @@ function activityRoute(act: any): string {
     case 'report': return '/reports';
     default: return '';
   }
-}
-function relativeTime(iso?: string): string {
-  if (!iso) return '';
-  const then = new Date(iso).getTime();
-  if (Number.isNaN(then)) return '';
-  const s = Math.floor((Date.now() - then) / 1000);
-  if (s < 45) return 'just now';
-  const m = Math.floor(s / 60); if (m < 60) return `${m || 1} min ago`;
-  const h = Math.floor(m / 60); if (h < 24) return `${h}h ago`;
-  const d = Math.floor(h / 24); if (d < 7) return `${d}d ago`;
-  return new Date(iso).toLocaleDateString();
 }
 function activityOutcome(act: any): string {
   const meta = act?.meta || {};

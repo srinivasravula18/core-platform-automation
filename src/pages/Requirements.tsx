@@ -1,6 +1,10 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Search, Sparkles, Loader2, Target, FileCode2, ArrowRight, Trash2 } from 'lucide-react';
+import { Timestamp, actorName } from '@/src/components/Timestamp';
+import { TimeSortSelect } from '@/src/components/filters/TimeSortSelect';
+import { TimeRangeFilter, passesTimeFilter, type TimeFilterValue } from '@/src/components/filters/TimeRangeFilter';
+import { sortByTime, type TimeSortKey } from '@/src/lib/time';
 import ExportMenu from '../components/ExportMenu';
 import { useBulkDelete } from '@/src/lib/useBulkDelete';
 import { Modal } from '@/src/components/Modal';
@@ -38,6 +42,8 @@ export default function Requirements() {
   const [requirements, setRequirements] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
+  const [timeSort, setTimeSort] = useState<TimeSortKey>('recentlyUpdated');
+  const [updatedFilter, setUpdatedFilter] = useState<TimeFilterValue>({ key: 'all' });
   const [discoverQuery, setDiscoverQuery] = useState('');
   const [discovering, setDiscovering] = useState(false);
   const [discoverMessage, setDiscoverMessage] = useState('');
@@ -128,10 +134,11 @@ export default function Requirements() {
     }
   };
 
-  const filtered = requirements.filter((req) => {
+  const filtered: any[] = sortByTime(requirements.filter((req) => {
     const q = searchTerm.toLowerCase();
-    return !q || `${req.id} ${req.title} ${req.featureQuery} ${req.description}`.toLowerCase().includes(q);
-  });
+    const matchesSearch = !q || `${req.id} ${req.title} ${req.featureQuery} ${req.description}`.toLowerCase().includes(q);
+    return matchesSearch && passesTimeFilter(req.metadata?.updatedAt || req.updatedAt, updatedFilter);
+  }), timeSort);
   const exportRequirements = bulk.selectedCount
     ? filtered.filter((req) => bulk.selectedIds.has(req.id))
     : filtered;
@@ -158,6 +165,9 @@ export default function Requirements() {
               { key: 'srsModules', label: 'SRS Markdown', get: (r) => Array.isArray(r.srsModules) && r.srsModules.length ? formatRequirementSrs(r.srsModules) : '' },
               { key: 'businessRules', label: 'Business Rules' },
               { key: 'dataPopulationNotes', label: 'Data Population Notes' },
+              { key: 'updatedAt', label: 'Updated', get: (r: any) => r.metadata?.updatedAt || r.updatedAt || '' },
+              { key: 'updatedBy', label: 'Updated By', get: (r: any) => r.metadata?.updatedBy?.name || '' },
+              { key: 'createdAt', label: 'Created', get: (r: any) => r.metadata?.createdAt || r.createdAt || '' },
             ]}
           />
           <button
@@ -207,6 +217,8 @@ export default function Requirements() {
               className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md pl-9 pr-4 py-1.5 text-sm outline-none focus:border-[var(--accent)]"
             />
           </div>
+          <TimeSortSelect value={timeSort} onChange={setTimeSort} />
+          <TimeRangeFilter value={updatedFilter} onChange={setUpdatedFilter} />
           {bulk.selectedCount > 0 && (
             <button onClick={bulk.deleteSelected} disabled={bulk.busy} className="ml-auto flex items-center gap-1.5 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
               <Trash2 className="w-4 h-4" /> Delete selected ({bulk.selectedCount})
@@ -227,12 +239,13 @@ export default function Requirements() {
                 <th className="font-medium py-3 px-4 w-36">Coverage</th>
                 <th className="font-medium py-3 px-4 w-44">Cases</th>
                 <th className="font-medium py-3 px-4 w-28">Status</th>
+                <th className="font-medium py-3 px-4 w-32">Updated</th>
                 <th className="font-medium py-3 px-4 w-16 text-right">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-[var(--border)]">
-              {loading && (<tr><td colSpan={8} className="py-8 text-center text-[var(--text-muted)]">Loading requirements...</td></tr>)}
-              {!loading && filtered.length === 0 && (<tr><td colSpan={8} className="py-8 text-center text-[var(--text-muted)]">No requirements yet. Create one with the agent above.</td></tr>)}
+              {loading && (<tr><td colSpan={9} className="py-8 text-center text-[var(--text-muted)]">Loading requirements...</td></tr>)}
+              {!loading && filtered.length === 0 && (<tr><td colSpan={9} className="py-8 text-center text-[var(--text-muted)]">No requirements yet. Create one with the agent above.</td></tr>)}
               {filtered.map((req) => {
                 const badge = COVERAGE_BADGE[req.coverageStatus] || COVERAGE_BADGE.unknown;
                 return (
@@ -250,6 +263,10 @@ export default function Requirements() {
                       <span className="text-emerald-400">{req.existingCaseCount || 0} existing</span> · <span className="text-sky-400">{req.generatedCaseCount || 0} new</span>
                     </td>
                     <td className="py-3 px-4 text-xs">{req.status}</td>
+                    <td className="py-3 px-4 whitespace-nowrap text-xs text-[var(--text-muted)]">
+                      <Timestamp value={req.metadata?.updatedAt || req.updatedAt} />
+                      {actorName(req.metadata?.updatedBy) && <div className="text-[10px]">by {actorName(req.metadata?.updatedBy)}</div>}
+                    </td>
                     <td className="py-3 px-4 text-right">
                       <button
                         onClick={(e) => { e.stopPropagation(); bulk.deleteOne(req.id); }}

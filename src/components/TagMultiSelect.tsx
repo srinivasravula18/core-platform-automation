@@ -1,8 +1,19 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 export function TagMultiSelect({ options, value, onChange }: { options: string[]; value: string[]; onChange: (tags: string[]) => void }) {
   const [selected, setSelected] = useState(value);
+  const [open, setOpen] = useState(false);
+  const boxRef = useRef<HTMLDetailsElement | null>(null);
   useEffect(() => setSelected(value), [value]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onClickAway = (event: PointerEvent) => {
+      if (!boxRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    document.addEventListener('pointerdown', onClickAway);
+    return () => document.removeEventListener('pointerdown', onClickAway);
+  }, [open]);
 
   const toggle = (tag: string) => setSelected((current) => {
     const next = current.includes(tag) ? current.filter((item) => item !== tag) : [...current, tag];
@@ -11,10 +22,11 @@ export function TagMultiSelect({ options, value, onChange }: { options: string[]
   });
 
   return (
-    <details className="group relative" onClick={(event) => event.stopPropagation()}>
+    <details ref={boxRef} open={open} className="group relative" onClick={(event) => event.stopPropagation()}>
       <summary
         className="w-full cursor-pointer list-none truncate rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs font-medium text-[var(--text-primary)] outline-none hover:border-[var(--accent)] [&::-webkit-details-marker]:hidden"
         title={selected.length ? selected.join(', ') : 'No tags'}
+        onClick={(event) => { event.preventDefault(); setOpen((prev) => !prev); }}
       >
         {selected.length ? `${selected.length} tag${selected.length === 1 ? '' : 's'}` : 'No tags'}
       </summary>

@@ -32,24 +32,71 @@ interface AtomicStep {
   locator: string;
 }
 
-// Parse a codegen spec line-by-line into atomic steps. Same regexes as the original scriptToSteps,
-// plus a kind/locator tag per step so we can coalesce and group. waitForURL is treated as a nav
-// because scriptHardening rewrites post-login gotos into waitForURL.
+// Field names/labels that mean the value is a secret — mask it so it never lands in a test step.
+const SECRET_LABEL_RE = /pass|pwd|secret|token|otp|cvv|\bpin\b|api[_-]?key/i;
+
+/**
+ * Extract a human phrase for a `getBy…` locator. The key fix: for `getByRole('textbox', { name:
+ * 'Username' })`, codegen puts the ROLE first — the old regex captured that ('textbox') instead of
+ * the accessible NAME ('Username'). This reads the `name:` option for getByRole and the first arg for
+ * getByLabel/Placeholder/Text/TestId/Title/AltText.
+ */
+function describeLocator(line: string): { role: string; label: string } {
+  const m = line.match(/getBy(\w+)\(\s*(['"`])([^'"`]*)\2(?:\s*,\s*\{[^}]*?\bname:\s*(['"`])([^'"`]*)\4)?/);
+  if (!m) return { role: '', label: '' };
+  const method = m[1];
+  if (method === 'Role') return { role: m[3], label: m[5] || '' };
+  return { role: '', label: m[3] }; // Label/Placeholder/Text/TestId/Title/AltText: first arg is the name
+}
+
+function roleNoun(role: string): string {
+  switch (role) {
+    case 'textbox': case 'searchbox': case 'combobox': case 'spinbutton': return 'field';
+    case 'button': return 'button';
+    case 'link': return 'link';
+    case 'checkbox': return 'checkbox';
+    case 'radio': return 'option';
+    case 'tab': return 'tab';
+    case 'menuitem': return 'menu item';
+    default: return role || 'element';
+  }
+}
+
+/** e.g. `the "Username" field`, `the "Log in" button`, or `the field` when there's no name. */
+function elementPhrase(d: { role: string; label: string }): string {
+  const noun = roleNoun(d.role);
+  return d.label ? `the "${d.label}" ${noun}` : `the ${noun}`;
+}
+
+function locatorKey(d: { role: string; label: string }): string {
+  return d.label || d.role || '';
+}
+
+// Parse a codegen spec line-by-line into atomic steps with a kind/locator tag per step so we can
+// coalesce and group. waitForURL is a nav because scriptHardening rewrites post-login gotos to it.
 export function parseAtomicSteps(script: string): AtomicStep[] {
   const steps: AtomicStep[] = [];
   for (const raw of String(script || '').split('\n')) {
     const line = raw.trim();
     let m: RegExpMatchArray | null;
     if ((m = line.match(/\.(?:goto|waitForURL)\(['"`]([^'"`]+)['"`]/))) {
-      steps.push({ action: `Navigate to ${m[1]}`, expected: '', kind: 'nav', locator: m[1] });
-    } else if ((m = line.match(/getBy\w+\(['"`]([^'"`]+)['"`][^)]*\)\s*\.click\(/))) {
-      steps.push({ action: `Click "${m[1]}"`, expected: '', kind: 'click', locator: m[1] });
-    } else if ((m = line.match(/getBy\w+\(['"`]([^'"`]+)['"`][^)]*\)\s*\.fill\(['"`]([^'"`]*)['"`]/))) {
-      steps.push({ action: `Fill "${m[1]}" with "${m[2]}"`, expected: '', kind: 'fill', locator: m[1] });
-    } else if ((m = line.match(/getBy\w+\(['"`]([^'"`]+)['"`][^)]*\)\s*\.(check|selectOption|press)\(/))) {
-      steps.push({ action: `${m[2]} "${m[1]}"`, expected: '', kind: m[2] === 'check' ? 'check' : m[2] === 'press' ? 'press' : 'select', locator: m[1] });
-    } else if (/expect\(/.test(line) && (m = line.match(/getBy\w+\(['"`]([^'"`]+)['"`]/))) {
-      steps.push({ action: `Verify "${m[1]}"`, expected: 'Element is present/visible.', kind: 'verify', locator: m[1] });
+      steps.push({ action: `Navigate to ${m[1]}`, expected: 'The page loads successfully.', kind: 'nav', locator: m[1] });
+    } else if (/getBy\w+\(/.test(line) && /\.click\(/.test(line)) {
+      const d = describeLocator(line);
+      steps.push({ action: `Click ${elementPhrase(d)}`, expected: 'The action is performed successfully.', kind: 'click', locator: locatorKey(d) });
+    } else if (/getBy\w+\(/.test(line) && /\.fill\(/.test(line)) {
+      const d = describeLocator(line);
+      const v = line.match(/\.fill\(\s*(['"`])([^'"`]*)\1/);
+      const value = SECRET_LABEL_RE.test(d.label) ? '••••••' : (v ? v[2] : '');
+      steps.push({ action: `Enter "${value}" in ${elementPhrase(d)}`, expected: `The ${d.label || 'field'} accepts the value.`, kind: 'fill', locator: locatorKey(d) });
+    } else if (/getBy\w+\(/.test(line) && /\.(check|selectOption|press)\(/.test(line)) {
+      const d = describeLocator(line);
+      const verb = /\.check\(/.test(line) ? 'Check' : /\.press\(/.test(line) ? 'Press a key in' : 'Select an option in';
+      const kind: StepKind = /\.check\(/.test(line) ? 'check' : /\.press\(/.test(line) ? 'press' : 'select';
+      steps.push({ action: `${verb} ${elementPhrase(d)}`, expected: 'The input is applied.', kind, locator: locatorKey(d) });
+    } else if (/expect\(/.test(line) && /getBy\w+\(/.test(line)) {
+      const d = describeLocator(line);
+      steps.push({ action: `Verify ${elementPhrase(d)} is visible`, expected: 'The element is present and visible.', kind: 'verify', locator: locatorKey(d) });
     }
   }
   return steps;
@@ -63,6 +110,9 @@ export function coalesceAtomicSteps(steps: AtomicStep[]): AtomicStep[] {
     if (prev) {
       // Repeated fills on the same field are typing/correction noise — keep only the final value.
       if (s.kind === 'fill' && prev.kind === 'fill' && s.locator === prev.locator) { out[out.length - 1] = s; continue; }
+      // A click on a field immediately followed by a fill on the SAME field is codegen noise
+      // (focus-then-type) — drop the click and keep only the fill.
+      if (s.kind === 'fill' && prev.kind === 'click' && s.locator === prev.locator && s.locator) { out[out.length - 1] = s; continue; }
       // A navigation identical to the one just before it is redundant.
       if (s.kind === 'nav' && prev.kind === 'nav' && s.locator === prev.locator) continue;
     }

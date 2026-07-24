@@ -7,6 +7,9 @@ export interface RevisionSnapshot {
   title?: string;
   description?: string;
   preconditions?: string;
+  priority?: string;
+  type?: string;
+  tags?: string[];
   steps?: RevisionStep[];
 }
 
@@ -29,6 +32,8 @@ export function diffCaseRevisions(before: RevisionSnapshot, after: RevisionSnaps
     ['Title', 'title'],
     ['Description', 'description'],
     ['Preconditions', 'preconditions'],
+    ['Priority', 'priority'],
+    ['Type', 'type'],
   ] as const;
 
   for (const [label, key] of fields) {
@@ -43,6 +48,18 @@ export function diffCaseRevisions(before: RevisionSnapshot, after: RevisionSnaps
         after: { value: current },
       });
     }
+  }
+
+  const previousTags = (before.tags || []).join(', ');
+  const currentTags = (after.tags || []).join(', ');
+  if (previousTags !== currentTags) {
+    differences.push({
+      label: 'Tags',
+      type: 'field',
+      status: !previousTags ? 'added' : !currentTags ? 'removed' : 'changed',
+      before: { value: previousTags },
+      after: { value: currentTags },
+    });
   }
 
   const beforeSteps = Array.isArray(before.steps) ? before.steps : [];

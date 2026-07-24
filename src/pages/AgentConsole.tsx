@@ -36,6 +36,7 @@ import {
   Info,
   RotateCcw,
   Pencil,
+  X,
 } from 'lucide-react';
 
 /**
@@ -58,6 +59,8 @@ function looksLikeAgentError(text: string): boolean {
 }
 import { cn } from '@/src/lib/utils';
 import { withEventSourceAuth } from '@/src/lib/base-path';
+import { MessageMeta, type ExecutionMeta } from '@/src/components/MessageMeta';
+import { getUsername } from '@/src/components/AuthGate';
 import { readScopedStorage, writeScopedStorage } from '@/src/lib/storage';
 import { containsPrivateFileActivity, hasPrivateResearchToolCall } from '@/src/lib/userFacingAgentActivity';
 import { useProjects, type ProjectApp } from '@/src/store/project';
@@ -66,7 +69,7 @@ import { useSpeechToText } from '@/src/lib/useSpeechToText';
 import { showAlert, showConfirm } from '@/src/lib/dialog';
 import { showToast } from '@/src/lib/dialog';
 import { WorkflowRunner } from '@/src/components/WorkflowRunner';
-import { DeepRunResult } from '@/src/components/DeepRunResult';
+import { DeepRunResult, type AgentReworkTarget } from '@/src/components/DeepRunResult';
 import { CodeChangeReview } from '@/src/components/CodeChangeReview';
 import { RequirementDiscoveryResult } from '@/src/components/RequirementDiscoveryResult';
 import { RequirementDraftReview } from '@/src/components/RequirementDraftReview';
@@ -349,9 +352,9 @@ function initialThinkingLabel(text: string, opts: { selectedApps: number; requir
 
 type Turn =
   | { id: string; role: 'user'; text: string }
-  | { id: string; role: 'assistant'; kind: 'text'; text: string; authoredScript?: string; authoredTargetUrl?: string; screenshotUrls?: string[]; isError?: boolean; stopped?: boolean }
+  | { id: string; role: 'assistant'; kind: 'text'; text: string; authoredScript?: string; authoredTargetUrl?: string; screenshotUrls?: string[]; isError?: boolean; stopped?: boolean; createdAt?: string; execution?: ExecutionMeta }
   | { id: string; role: 'assistant'; kind: 'plan'; plan: any }
-  | { id: string; role: 'assistant'; kind: 'deeprun'; taskId: string; saved?: boolean }
+  | { id: string; role: 'assistant'; kind: 'deeprun'; taskId: string; saved?: boolean; createdAt?: string; execution?: ExecutionMeta }
   | { id: string; role: 'assistant'; kind: 'codereview'; analysis: any }
   | { id: string; role: 'assistant'; kind: 'reqdiscovery'; result: any }
   | { id: string; role: 'assistant'; kind: 'reqdraft'; result: any; query: string; revisionCount?: number }
@@ -754,6 +757,7 @@ export default function AgentConsole() {
   const [turns, setTurns] = useState<Turn[]>([]);
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
+  const [activeReworkTarget, setActiveReworkTarget] = useState<AgentReworkTarget | null>(null);
   const rememberedConversationIdRef = useRef<string | null>(null);
   const [conversationId, setConversationId] = useState<string>(() => {
     if (urlChatId) return urlChatId;
@@ -820,6 +824,29 @@ export default function AgentConsole() {
   // (for per-chat memory) without depending on a possibly-stale render closure.
   const turnsRef = useRef<Turn[]>([]);
   useEffect(() => { turnsRef.current = turns; }, [turns]);
+
+  // Snapshot the current execution context (AI + scope) for a response's metadata panel.
+  const currentExecution = useCallback((): ExecutionMeta => ({
+    provider: selectedProvider,
+    model: selectedModel || undefined,
+    effort: selectedEffort,
+    workspace: workspaceId,
+    projectId: selectedProjectId || undefined,
+    appId: selectedAppId || undefined,
+    userName: getUsername() || undefined,
+    conversationId,
+  }), [selectedProvider, selectedModel, selectedEffort, workspaceId, selectedProjectId, selectedAppId, conversationId]);
+
+  // Stamp createdAt + execution metadata on each assistant response the moment it appears, so the
+  // per-message footer can show the exact time (with seconds) and the execution details (Phase 3).
+  useEffect(() => {
+    if (!turns.some((t) => t.role === 'assistant' && (t.kind === 'text' || t.kind === 'deeprun') && !(t as any).createdAt)) return;
+    setTurns((prev) => prev.map((t) =>
+      t.role === 'assistant' && (t.kind === 'text' || t.kind === 'deeprun') && !(t as any).createdAt
+        ? { ...t, createdAt: new Date().toISOString(), execution: currentExecution() }
+        : t,
+    ));
+  }, [turns, currentExecution]);
   // Load existing repository folders for the deep-run results folder picker.
   useEffect(() => {
     fetch('/api/folders')
@@ -2013,6 +2040,20 @@ export default function AgentConsole() {
     async (raw?: string, editTurnIdArg?: string | null) => {
       const text = (raw ?? input).trim();
       if (!text || busy) return;
+      if (activeReworkTarget && raw === undefined && !editingTurnId) {
+        stopListening();
+        setInput('');
+        setBusy(true);
+        try {
+          await activeReworkTarget.submit(text);
+        } catch (error: any) {
+          showToast(error?.message || 'Could not preview those AI changes.', { tone: 'error' });
+        } finally {
+          setBusy(false);
+          inputRef.current?.focus();
+        }
+        return;
+      }
       stopListening();
       // Inline edit passes the turn id explicitly; the bottom composer uses editingTurnId.
       const editedTurnId = editTurnIdArg !== undefined ? editTurnIdArg : (raw === undefined ? editingTurnId : null);
@@ -2555,7 +2596,7 @@ export default function AgentConsole() {
         inputRef.current?.focus();
       }
     },
-    [input, busy, editingTurnId, conversationId, location.pathname, stopListening, replaceTurn, updateThinkingLabel, appendThinkingDebug, requestDeepUnderstanding, presentDeepUnderstanding, runRequirementDraft, reqMode, scriptAuthorMode, pendingDeep, pendingRequirementDraft, websites, scopeApp, buildHistory, buildDeepContextPrompt, startDeepRun, runViaSupervisor, getSelectedApps, authorScriptFromSteps, selectedProjectId, selectedAppId],
+    [input, busy, editingTurnId, activeReworkTarget, conversationId, location.pathname, stopListening, replaceTurn, updateThinkingLabel, appendThinkingDebug, requestDeepUnderstanding, presentDeepUnderstanding, runRequirementDraft, reqMode, scriptAuthorMode, pendingDeep, pendingRequirementDraft, websites, scopeApp, buildHistory, buildDeepContextPrompt, startDeepRun, runViaSupervisor, getSelectedApps, authorScriptFromSteps, selectedProjectId, selectedAppId],
   );
 
   // Start the deep run directly from a "Here's what I understood" card's OWN stored data
@@ -3102,7 +3143,13 @@ export default function AgentConsole() {
                       </div>
                       <div className="min-w-0 flex-1">
                         {/* saved is threaded through the persisted turn so "Save all" stays "Saved" after navigation. */}
-                        <DeepRunResult taskId={turn.taskId} initialSaved={!!turn.saved} onSaved={() => replaceTurn(turn.id, { ...turn, saved: true })} />
+                        <DeepRunResult
+                          taskId={turn.taskId}
+                          initialSaved={!!turn.saved}
+                          onSaved={() => replaceTurn(turn.id, { ...turn, saved: true })}
+                          onReworkTargetChange={setActiveReworkTarget}
+                        />
+                        <MessageMeta createdAt={turn.createdAt} execution={turn.execution} />
                       </div>
                     </div>
                   </div>
@@ -3290,6 +3337,7 @@ export default function AgentConsole() {
                             </button>
                           )}
                         </div>
+                        <MessageMeta createdAt={turn.createdAt} execution={turn.execution} />
                         {/* Action row: Copy (hover-reveal, always) + Retry (only on agent errors). */}
                         <div className="mt-1 flex items-center gap-1 pl-1">
                           <button
@@ -3366,6 +3414,17 @@ export default function AgentConsole() {
               : 'border-[var(--border)] focus-within:border-[var(--accent)]',
           )}
         >
+          {activeReworkTarget && (
+            <div className="mb-1 flex items-center gap-2 px-1">
+              <span className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-[var(--accent)]/30 bg-[var(--accent)]/10 px-2.5 py-1 text-[11px] font-semibold text-[var(--accent)]">
+                <Sparkles className="h-3.5 w-3.5 shrink-0" />
+                <span className="truncate">Reworking: {activeReworkTarget.label}</span>
+                <button type="button" onClick={() => setActiveReworkTarget(null)} aria-label="Clear rework context" className="rounded-full p-0.5 hover:bg-[var(--accent)]/10">
+                  <X className="h-3 w-3" />
+                </button>
+              </span>
+            </div>
+          )}
           {reqMode && (
             <div className="mb-1 flex items-center gap-2 px-1">
               <span className="inline-flex items-center gap-1.5 rounded-full bg-[var(--accent)]/10 px-2.5 py-1 text-[11px] font-semibold text-[var(--accent)]">
@@ -3400,7 +3459,9 @@ export default function AgentConsole() {
               }
             }}
             rows={1}
-            placeholder={reqMode
+            placeholder={activeReworkTarget
+              ? `Describe how to improve ${activeReworkTarget.label}…`
+              : reqMode
               ? 'Requirement mode — name a feature or section to test (e.g. list view, permissions)…'
               : 'Ask the agent to create cases, plan tests, run a suite, file a defect…'}
             className="max-h-40 min-h-[44px] w-full resize-none bg-transparent px-3 py-2.5 text-sm text-[var(--text-primary)] outline-none placeholder-[var(--text-muted)]"
@@ -3533,8 +3594,8 @@ export default function AgentConsole() {
                   disabled={!input.trim()}
                   className="flex h-9 items-center gap-1.5 rounded-full bg-[var(--accent)] px-4 text-sm font-medium text-white transition-colors hover:bg-[var(--accent-hover)] disabled:opacity-50"
                 >
-                  <Send className="h-4 w-4" />
-                  <span className="hidden sm:inline">Send</span>
+                  {activeReworkTarget ? <Sparkles className="h-4 w-4" /> : <Send className="h-4 w-4" />}
+                  <span className="hidden sm:inline">{activeReworkTarget ? 'Preview changes' : 'Send'}</span>
                 </button>
               )}
             </div>

@@ -5,6 +5,8 @@ import path from 'path';
 import { loadPersistedData, loadPersistedSettings, hydrateJsonCollectionsFromPg, scopeMiddleware } from '../../../core/shared';
 import { AgentRuns, ensureMigrated, isPgEnabled, runSeedIfEmpty } from '../../../core/persistence';
 import { db } from '../../../server/shared/storage';
+import { reqActor } from '../../../server/shared/scope';
+import { runWithActor } from '../../../server/shared/requestContext';
 import { registerAgentRoutes } from '../../../services/agents';
 import { registerAuthRoutes, authContextMiddleware, apiAuthGate, seedAuthUsersIfEmpty, claimLegacyDataForAdmin } from '../../../services/auth';
 import { registerChatRoutes } from '../../../services/chat';
@@ -114,6 +116,9 @@ export async function createExpressApp() {
   app.use(authContextMiddleware);
   app.use(apiAuthGate);
   app.use(scopeMiddleware);
+  // Seed the per-request actor so the repository layer can stamp createdBy/updatedBy on every
+  // write without threading the user through each route (see server/shared/requestContext.ts).
+  app.use((req, _res, next) => runWithActor(reqActor(req), () => next()));
   app.use('/evidence', express.static(path.resolve(process.cwd(), 'evidence')));
 
   app.get('/api/health', (_req, res) => {

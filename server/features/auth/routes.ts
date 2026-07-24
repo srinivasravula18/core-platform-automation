@@ -1,6 +1,7 @@
 import type { Express, Request, Response, NextFunction } from 'express';
 import { randomUUID } from 'crypto';
 import { db, persistDataInBackground } from '../../shared/storage';
+import { recordAudit } from '../../shared/recordAudit';
 import {
   findByUsername,
   verifyPassword,
@@ -196,6 +197,7 @@ export function registerAuthRoutes(app: Express) {
     if (!username || !password) return res.status(400).json({ error: 'username and password are required.' });
     try {
       const u = createAppUser({ username, name, password, role });
+      recordAudit('create', 'user', u.id, `Created profile "${u.username}"`);
       res.status(201).json({ ok: true, user: publicUser(u) });
     } catch (e: any) {
       res.status(400).json({ error: e?.message || 'Could not create user.' });
@@ -210,6 +212,7 @@ export function registerAuthRoutes(app: Express) {
       role,
     });
     if (!u) return res.status(404).json({ error: 'User not found.' });
+    recordAudit('update', 'user', u.id, `Updated profile "${u.username}"`);
     res.json({ ok: true, user: publicUser(u) });
   });
 
@@ -224,6 +227,7 @@ export function registerAuthRoutes(app: Express) {
     }
     const ok = deleteAppUser(req.params.id);
     if (!ok) return res.status(404).json({ error: 'User not found.' });
+    recordAudit('delete', 'user', req.params.id, `Deleted profile "${target?.username || req.params.id}"`);
     res.json({ ok: true });
   });
 }

@@ -1,5 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { Search, Filter, ShieldCheck, ShieldAlert, Sparkles, Plus, Clock, Layers, User, Calendar, Trash2, Eye, EyeOff, AlertTriangle, PlayCircle, ExternalLink, Activity } from 'lucide-react';
+import { Timestamp, actorName } from '@/src/components/Timestamp';
+import { TimeSortSelect } from '@/src/components/filters/TimeSortSelect';
+import { TimeRangeFilter, passesTimeFilter, type TimeFilterValue } from '@/src/components/filters/TimeRangeFilter';
+import { sortByTime, type TimeSortKey } from '@/src/lib/time';
 import ExportMenu from '../components/ExportMenu';
 import { cn } from '@/src/lib/utils';
 import { useAiSearch } from '@/src/lib/useAiSearch';
@@ -246,6 +250,8 @@ export default function Reports() {
   
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
+  const [timeSort, setTimeSort] = useState<TimeSortKey>('recentlyUpdated');
+  const [updatedFilter, setUpdatedFilter] = useState<TimeFilterValue>({ key: 'all' });
   const aiSearch = useAiSearch('reports');
   const [statusFilter, setStatusFilter] = useState<string>('All');
 
@@ -413,18 +419,16 @@ export default function Reports() {
     setNewReportSteps(reindexed);
   };
 
-  const filteredReports = reports.filter(r => {
+  const filteredReports: any[] = sortByTime(reports.filter(r => {
     const matchesSearch = aiSearch.isAiQuery(searchTerm)
       ? (aiSearch.matchedIds ? aiSearch.matchedIds.has(r.id) : true)
       : (r.name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
                           r.planName?.toLowerCase().includes(searchTerm.toLowerCase()) ||
                           r.suiteName?.toLowerCase().includes(searchTerm.toLowerCase()));
-    
-    if (statusFilter === 'All') return matchesSearch;
-    if (statusFilter === 'Passed') return matchesSearch && r.status === 'Passed';
-    if (statusFilter === 'Failed') return matchesSearch && r.status === 'Failed';
-    return matchesSearch;
-  });
+    const matchesStatus = statusFilter === 'All' || r.status === statusFilter;
+    const matchesUpdated = passesTimeFilter(r.metadata?.updatedAt || r.updatedAt || r.date, updatedFilter);
+    return matchesSearch && matchesStatus && matchesUpdated;
+  }), timeSort);
   const totalReportSteps = filteredReports.reduce((total, report) => total + (report.steps?.length || report.totalExecutions || 0), 0);
   const passedReportSteps = filteredReports.reduce((total, report) => {
     const steps = report.steps || [];
@@ -470,6 +474,9 @@ export default function Reports() {
               { key: 'failureReason', label: 'Failure Reason' },
               { key: 'date', label: 'Date' },
               { key: 'stepCount', label: 'Steps', get: (r) => (r.steps || []).length },
+              { key: 'updatedAt', label: 'Updated', get: (r: any) => r.metadata?.updatedAt || r.updatedAt || '' },
+              { key: 'updatedBy', label: 'Updated By', get: (r: any) => r.metadata?.updatedBy?.name || '' },
+              { key: 'createdAt', label: 'Created', get: (r: any) => r.metadata?.createdAt || r.createdAt || '' },
             ]}
           />
           <button onClick={() => setIsNewReportModalOpen(true)} className="flex items-center gap-2 bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white px-4 py-2 rounded-md text-sm font-medium transition-colors">
@@ -531,7 +538,8 @@ export default function Reports() {
                 className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md pl-9 pr-3 py-1.5 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)] placeholder-[var(--text-muted)] transition-colors"
               />
             </div>
-            
+            <TimeSortSelect value={timeSort} onChange={setTimeSort} />
+            <TimeRangeFilter value={updatedFilter} onChange={setUpdatedFilter} />
             <div className="flex bg-[var(--bg-secondary)] p-1 rounded-md text-xs border border-[var(--border)]">
               {['All', 'Passed', 'Failed'].map((tab) => (
                 <button
@@ -575,12 +583,13 @@ export default function Reports() {
                 <th className="w-32 px-4 py-3">Pass / Fail</th>
                 <th className="w-28 px-4 py-3">Duration</th>
                 <th className="w-28 px-4 py-3">Status</th>
+                <th className="w-32 px-4 py-3">Updated</th>
                 <th className="w-14 px-4 py-3"></th>
               </tr>
             </thead>
             <tbody className="divide-y divide-[var(--border)]">
               {filteredReports.length === 0 ? (
-                <tr><td colSpan={8} className="py-12 px-4 text-center text-sm text-[var(--text-muted)]">No test reports found.</td></tr>
+                <tr><td colSpan={9} className="py-12 px-4 text-center text-sm text-[var(--text-muted)]">No test reports found.</td></tr>
               ) : filteredReports.map((r) => {
                 const c = stepCounts(r);
                 const type = r.suiteName?.includes('Regression') ? 'Regression' : r.suiteName?.includes('Sanity') ? 'Sanity' : 'BVT';
@@ -598,6 +607,10 @@ export default function Reports() {
                     <td className="px-4 py-3 text-xs"><span className="font-semibold text-emerald-500">{c.passed}</span> / <span className={c.failed ? 'font-semibold text-red-500' : 'text-[var(--text-muted)]'}>{c.failed}</span> <span className="text-[var(--text-muted)]">of {c.total}</span></td>
                     <td className="px-4 py-3 text-xs text-[var(--text-muted)]">{r.executionTime && r.executionTime !== 'Generated' ? r.executionTime : '—'}</td>
                     <td className="px-4 py-3"><span className={cn('inline-flex rounded border px-2 py-0.5 text-[11px] font-bold', r.status === 'Passed' ? 'border-emerald-500/20 bg-emerald-500/10 text-emerald-600' : r.status === 'Failed' ? 'border-red-500/20 bg-red-500/10 text-red-500' : 'border-slate-500/20 bg-slate-500/10 text-slate-400')}>{r.status}</span></td>
+                    <td className="px-4 py-3 whitespace-nowrap text-xs text-[var(--text-muted)]">
+                      <Timestamp value={r.metadata?.updatedAt || r.updatedAt || r.date} />
+                      {actorName(r.metadata?.updatedBy) && <div className="text-[10px]">by {actorName(r.metadata?.updatedBy)}</div>}
+                    </td>
                     <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}><button onClick={(e) => handleDeleteReport(r.id, e)} title="Delete report" className="rounded p-1 text-[var(--text-muted)] hover:bg-red-500/10 hover:text-red-500"><Trash2 className="h-4 w-4" /></button></td>
                   </tr>
                 );

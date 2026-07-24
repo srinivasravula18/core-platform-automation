@@ -241,6 +241,30 @@ export function registerResourceRoutes(app: Express) {
     }));
     res.json(scopeFilter(healed, reqScope(req)));
   });
+  app.put('/api/runs/:id', async (req, res) => {
+    const run = await Runs.get(req.params.id);
+    if (!run || !scopeFilter([run], reqScope(req)).length) return res.status(404).json({ error: 'Run not found.' });
+    if (isRunningRun(run)) return res.status(409).json({ error: 'A running test run cannot be edited.' });
+    const folderId = String(req.body?.folderId || '').trim();
+    const folder = folderId ? await Folders.get(folderId) : null;
+    if (!folder || !scopeFilter([folder], reqScope(req)).length) return res.status(400).json({ error: FOLDER_REQUIRED_ERROR });
+    const name = String(req.body?.name || '').trim();
+    if (!name) return res.status(400).json({ error: 'Run name is required.' });
+    const updated = await Runs.upsert({
+      ...run,
+      name,
+      testPlanId: String(req.body?.testPlanId || ''),
+      requestedBy: String(req.body?.requestedBy || ''),
+      assignedTo: String(req.body?.assignedTo || ''),
+      tags: Array.isArray(req.body?.tags) ? req.body.tags : normalizeCaseTags(req.body?.tags || []),
+      executionTime: String(req.body?.executionTime || ''),
+      targetUrl: normalizeTargetUrl(req.body?.targetUrl || ''),
+      folderId,
+    });
+    if (!isPgEnabled()) persistDataInBackground('updated run');
+    logActivity(req, `Updated test run: ${name}`, { type: 'run', entityId: updated.id });
+    res.json({ success: true, run: updated });
+  });
   app.get('/api/runs/:id/evidence/export', async (req, res) => {
     const run = await Runs.get(req.params.id);
     if (!run || !scopeFilter([run], reqScope(req)).length) return res.status(404).json({ error: 'Run not found.' });

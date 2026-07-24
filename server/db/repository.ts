@@ -18,6 +18,8 @@ import { getPool, isPostgresEnabled, migrate, query, queryOne, uid, withTransact
 import { eventIdempotencyKey, type WorkflowEvent } from '../features/agent/workflow/events';
 import { normalizeTestCaseTypes } from '../../core/shared/testCaseTypes';
 import { nextArtifactId } from '../shared/artifactIds';
+import { currentActor } from '../shared/requestContext';
+import { composeMetadata } from '../shared/metadata';
 
 export function isPgEnabled(): boolean {
   return isPostgresEnabled();
@@ -47,20 +49,79 @@ function scopeFields(r: any) {
 }
 
 /**
- * Persist scope columns for a row after its main upsert (PG only).
- * COALESCE keeps an existing scope when the new payload doesn't carry one — so a
- * generic update that omits projectId never wipes a row's project assignment.
+ * Read the lifecycle-metadata columns off a row and expose them as flat compat fields PLUS a
+ * nested `metadata` envelope. `created_by`/`updated_by` are the real actor ids; where legacy rows
+ * only have the free-text `proposed_by`, it is used as a createdBy fallback.
+ */
+function metaFields(r: any) {
+  const createdBy = r.created_by || r.proposed_by || '';
+  const createdByName = r.created_by_name || '';
+  const updatedBy = r.updated_by || createdBy;
+  const updatedByName = r.updated_by_name || createdByName;
+  const flat = {
+    createdBy,
+    createdByName,
+    updatedBy,
+    updatedByName,
+    deletedAt: r.deleted_at || null,
+    deletedBy: r.deleted_by || '',
+    deletedByName: r.deleted_by_name || '',
+    version: typeof r.version === 'number' ? r.version : Number(r.version) || 1,
+  };
+  return { ...flat, metadata: composeMetadata({ createdAt: r.created_at, updatedAt: r.updated_at, ...flat }) };
+}
+
+/**
+ * Persist scope + lifecycle-metadata columns for a row after its main upsert (PG only, scoped
+ * tables). COALESCE keeps an existing scope when the payload omits it. Lifecycle: updated_by is
+ * always stamped to the current actor; created_by is set only on first write (COALESCE); version
+ * is 1 on create (created_by was NULL) and increments on every subsequent write.
  */
 async function writeScopeCols(table: string, id: string, src: any): Promise<void> {
   if (!isPgEnabled() || !id || !SCOPED_TABLES.has(table)) return;
   const projectId = src?.projectId || null;
   const appId = src?.appId || null;
   const ownerId = src?.ownerId || null;
-  if (!projectId && !appId && !ownerId) return;
+  const actor = currentActor();
   await query(
-    `UPDATE ${table} SET project_id = COALESCE($2, project_id), app_id = COALESCE($3, app_id), owner_id = COALESCE($4, owner_id) WHERE id = $1`,
-    [id, projectId, appId, ownerId],
+    `UPDATE ${table} SET
+       project_id = COALESCE($2, project_id),
+       app_id = COALESCE($3, app_id),
+       owner_id = COALESCE($4, owner_id),
+       updated_by = $5, updated_by_name = $6,
+       created_by = COALESCE(created_by, $5), created_by_name = COALESCE(created_by_name, $6),
+       version = CASE WHEN created_by IS NULL THEN 1 ELSE COALESCE(version, 1) + 1 END
+     WHERE id = $1`,
+    [id, projectId, appId, ownerId, actor.id, actor.name],
   );
+}
+
+/**
+ * Stamp lifecycle metadata onto an in-memory (JSON-mode) row so createdAt/updatedAt/createdBy/
+ * updatedBy/version are reliable WITHOUT Postgres — mirroring what the PG path does automatically.
+ * `prior` is the existing row on update, null on insert.
+ */
+function stampJsonWrite<T extends Record<string, any>>(next: T, prior: T | null): T {
+  const now = new Date().toISOString();
+  const actor = currentActor();
+  if (prior) {
+    return {
+      ...prior, ...next,
+      createdAt: prior.createdAt || next.createdAt || now,
+      createdBy: prior.createdBy || next.createdBy || actor.id,
+      createdByName: prior.createdByName || next.createdByName || actor.name,
+      updatedAt: now, updatedBy: actor.id, updatedByName: actor.name,
+      version: (Number(prior.version) || 1) + 1,
+    };
+  }
+  return {
+    ...next,
+    createdAt: next.createdAt || now,
+    createdBy: next.createdBy || actor.id,
+    createdByName: next.createdByName || actor.name,
+    updatedAt: now, updatedBy: actor.id, updatedByName: actor.name,
+    version: 1,
+  };
 }
 
 /* ---------- row mappers ---------- */
@@ -100,6 +161,7 @@ function mapPlan(r: any) {
     createdAt: r.created_at,
     updatedAt: r.updated_at,
     ...scopeFields(r),
+    ...metaFields(r),
   };
 }
 
@@ -128,6 +190,7 @@ function mapSuite(r: any) {
     createdAt: r.created_at,
     updatedAt: r.updated_at,
     ...scopeFields(r),
+    ...metaFields(r),
   };
 }
 
@@ -165,6 +228,7 @@ function mapCase(r: any) {
     createdAt: r.created_at,
     updatedAt: r.updated_at,
     ...scopeFields(r),
+    ...metaFields(r),
   };
 }
 
@@ -205,6 +269,7 @@ function mapRun(r: any) {
     createdAt: r.created_at,
     updatedAt: r.updated_at,
     ...scopeFields(r),
+    ...metaFields(r),
   };
 }
 
@@ -235,6 +300,7 @@ function mapDefect(r: any) {
     createdAt: r.created_at,
     updatedAt: r.updated_at,
     ...scopeFields(r),
+    ...metaFields(r),
   };
 }
 
@@ -263,6 +329,7 @@ function mapReport(r: any) {
     createdAt: r.created_at,
     updatedAt: r.updated_at,
     ...scopeFields(r),
+    ...metaFields(r),
   };
 }
 
@@ -279,6 +346,7 @@ function mapWebsite(r: any) {
     tags: r.tags,
     ownerId: r.owner_id || '',
     createdAt: r.created_at,
+    updatedAt: r.updated_at,
   };
 }
 
@@ -325,7 +393,8 @@ export const Websites = {
        ON CONFLICT (id) DO UPDATE SET
          name=EXCLUDED.name, base_url=EXCLUDED.base_url,
          environment=EXCLUDED.environment, description=EXCLUDED.description,
-         tags=EXCLUDED.tags, owner_id=COALESCE(EXCLUDED.owner_id, websites.owner_id)
+         tags=EXCLUDED.tags, owner_id=COALESCE(EXCLUDED.owner_id, websites.owner_id),
+         updated_at=now()
        RETURNING *`,
       [id, w.name, w.baseUrl, w.environment || 'staging', w.description || '', w.tags || [], w.ownerId || null],
     );
@@ -442,6 +511,7 @@ function mapAgentRun(r: any) {
     updated_at: r.updated_at,
     updatedAt: r.updated_at,
     ...scopeFields(r),
+    ...metaFields(r),
   };
 }
 
@@ -468,8 +538,8 @@ export const AgentRuns = {
   async upsert(a: any): Promise<any> {
     if (!isPgEnabled()) {
       const idx = db.agentRuns.findIndex((x: any) => x.id === a.id);
-      if (idx >= 0) db.agentRuns[idx] = { ...db.agentRuns[idx], ...a };
-      else db.agentRuns.unshift(a);
+      if (idx >= 0) db.agentRuns[idx] = stampJsonWrite(a, db.agentRuns[idx]);
+      else db.agentRuns.unshift(stampJsonWrite(a, null));
       return a;
     }
     const id = a.id || uid('AGENT');
@@ -594,6 +664,7 @@ function mapScript(r: any) {
     createdAt: r.created_at,
     updatedAt: r.updated_at,
     ...scopeFields(r),
+    ...metaFields(r),
   };
 }
 
@@ -611,8 +682,8 @@ export const Scripts = {
   async upsert(s: any): Promise<any> {
     if (!isPgEnabled()) {
       const idx = db.scripts.findIndex((x: any) => x.id === s.id);
-      if (idx >= 0) db.scripts[idx] = { ...db.scripts[idx], ...s };
-      else db.scripts.unshift(s);
+      if (idx >= 0) db.scripts[idx] = stampJsonWrite(s, db.scripts[idx]);
+      else db.scripts.unshift(stampJsonWrite(s, null));
       return s;
     }
     const id = s.id || uid('SCRIPT');
@@ -640,7 +711,7 @@ export const Scripts = {
       (db as any).scripts = db.scripts.filter((x: any) => x.id !== id);
       return db.scripts.length < before;
     }
-    const res = await query('UPDATE scripts SET deleted_at = now() WHERE id = $1 AND deleted_at IS NULL', [id]);
+    const res = await query('UPDATE scripts SET deleted_at = now(), deleted_by = $2, deleted_by_name = $3 WHERE id = $1 AND deleted_at IS NULL', [id, currentActor().id, currentActor().name]);
     return res.length > 0;
   },
 };
@@ -662,6 +733,7 @@ function mapFolder(r: any) {
     updatedAt: r.updated_at,
     deletedAt: r.deleted_at,
     ...scopeFields(r),
+    ...metaFields(r),
   };
 }
 
@@ -679,8 +751,8 @@ export const Folders = {
   async upsert(f: any): Promise<any> {
     if (!isPgEnabled()) {
       const idx = db.folders.findIndex((x: any) => x.id === f.id);
-      if (idx >= 0) db.folders[idx] = { ...db.folders[idx], ...f };
-      else db.folders.push(f);
+      if (idx >= 0) db.folders[idx] = stampJsonWrite(f, db.folders[idx]);
+      else db.folders.push(stampJsonWrite(f, null));
       return f;
     }
     const id = f.id || uid('FOLDER');
@@ -704,7 +776,7 @@ export const Folders = {
       (db as any).folders = db.folders.filter((x: any) => x.id !== id);
       return db.folders.length < before;
     }
-    const res = await query('UPDATE folders SET deleted_at = now() WHERE id = $1 AND deleted_at IS NULL', [id]);
+    const res = await query('UPDATE folders SET deleted_at = now(), deleted_by = $2, deleted_by_name = $3 WHERE id = $1 AND deleted_at IS NULL', [id, currentActor().id, currentActor().name]);
     return res.length > 0;
   },
 };
@@ -733,8 +805,8 @@ export const Plans = {
     plan = { ...plan, id };
     if (!isPgEnabled()) {
       const idx = db.plans.findIndex((p: any) => p.id === plan.id);
-      if (idx >= 0) db.plans[idx] = { ...db.plans[idx], ...plan };
-      else db.plans.unshift(plan);
+      if (idx >= 0) db.plans[idx] = stampJsonWrite(plan, db.plans[idx]);
+      else db.plans.unshift(stampJsonWrite(plan, null));
       return plan;
     }
     const row = await queryOne(
@@ -789,7 +861,7 @@ export const Plans = {
       (db as any).plans = db.plans.filter((p: any) => p.id !== id);
       return db.plans.length < before;
     }
-    const res = await query('UPDATE plans SET deleted_at = now() WHERE id = $1 AND deleted_at IS NULL', [id]);
+    const res = await query('UPDATE plans SET deleted_at = now(), deleted_by = $2, deleted_by_name = $3 WHERE id = $1 AND deleted_at IS NULL', [id, currentActor().id, currentActor().name]);
     return res.length > 0;
   },
 };
@@ -823,8 +895,8 @@ export const Suites = {
     if (!isPgEnabled()) {
       const idx = db.suites.findIndex((x: any) => x.id === s.id);
       const normalized = { ...s, parentSuite: primaryParentSuite || '', parentSuiteIds, testPlanId: primaryPlanId || '', testPlanIds: planIds };
-      if (idx >= 0) db.suites[idx] = { ...db.suites[idx], ...normalized };
-      else db.suites.unshift(normalized);
+      if (idx >= 0) db.suites[idx] = stampJsonWrite(normalized, db.suites[idx]);
+      else db.suites.unshift(stampJsonWrite(normalized, null));
       return normalized;
     }
     const row = await queryOne(
@@ -854,7 +926,7 @@ export const Suites = {
       (db as any).suites = db.suites.filter((s: any) => s.id !== id);
       return db.suites.length < before;
     }
-    const res = await query('UPDATE suites SET deleted_at = now() WHERE id = $1 AND deleted_at IS NULL', [id]);
+    const res = await query('UPDATE suites SET deleted_at = now(), deleted_by = $2, deleted_by_name = $3 WHERE id = $1 AND deleted_at IS NULL', [id, currentActor().id, currentActor().name]);
     return res.length > 0;
   },
 };
@@ -959,8 +1031,8 @@ export const Cases = {
     c = { ...c, id };
     if (!isPgEnabled()) {
       const idx = db.cases.findIndex((x: any) => x.id === c.id);
-      if (idx >= 0) db.cases[idx] = { ...db.cases[idx], ...c };
-      else db.cases.unshift(c);
+      if (idx >= 0) db.cases[idx] = stampJsonWrite(c, db.cases[idx]);
+      else db.cases.unshift(stampJsonWrite(c, null));
       return c;
     }
     const stepsJson = JSON.stringify(c.steps || []);
@@ -1015,7 +1087,7 @@ export const Cases = {
       (db as any).cases = db.cases.filter((c: any) => c.id !== id);
       return db.cases.length < before;
     }
-    const res = await query('UPDATE cases SET deleted_at = now() WHERE id = $1 AND deleted_at IS NULL', [id]);
+    const res = await query('UPDATE cases SET deleted_at = now(), deleted_by = $2, deleted_by_name = $3 WHERE id = $1 AND deleted_at IS NULL', [id, currentActor().id, currentActor().name]);
     return res.length > 0;
   },
   async bulkUpsert(cases: any[]): Promise<any[]> {
@@ -1172,8 +1244,8 @@ export const Runs = {
   async upsert(r: any): Promise<any> {
     if (!isPgEnabled()) {
       const idx = db.runs.findIndex((x: any) => x.id === r.id);
-      if (idx >= 0) db.runs[idx] = { ...db.runs[idx], ...r };
-      else db.runs.unshift(r);
+      if (idx >= 0) db.runs[idx] = stampJsonWrite(r, db.runs[idx]);
+      else db.runs.unshift(stampJsonWrite(r, null));
       return r;
     }
     const id = r.id || uid('RUN');
@@ -1219,7 +1291,7 @@ export const Runs = {
       (db as any).runs = db.runs.filter((x: any) => x.id !== id);
       return db.runs.length < before;
     }
-    const res = await query('UPDATE runs SET deleted_at = now() WHERE id = $1 AND deleted_at IS NULL', [id]);
+    const res = await query('UPDATE runs SET deleted_at = now(), deleted_by = $2, deleted_by_name = $3 WHERE id = $1 AND deleted_at IS NULL', [id, currentActor().id, currentActor().name]);
     return res.length > 0;
   },
 };
@@ -1240,8 +1312,8 @@ export const Defects = {
   async upsert(d: any): Promise<any> {
     if (!isPgEnabled()) {
       const idx = db.defects.findIndex((x: any) => x.id === d.id);
-      if (idx >= 0) db.defects[idx] = { ...db.defects[idx], ...d };
-      else db.defects.unshift(d);
+      if (idx >= 0) db.defects[idx] = stampJsonWrite(d, db.defects[idx]);
+      else db.defects.unshift(stampJsonWrite(d, null));
       return d;
     }
     const id = d.id || uid('DEF');
@@ -1277,7 +1349,7 @@ export const Defects = {
       (db as any).defects = db.defects.filter((x: any) => x.id !== id);
       return db.defects.length < before;
     }
-    const res = await query('UPDATE defects SET deleted_at = now() WHERE id = $1 AND deleted_at IS NULL', [id]);
+    const res = await query('UPDATE defects SET deleted_at = now(), deleted_by = $2, deleted_by_name = $3 WHERE id = $1 AND deleted_at IS NULL', [id, currentActor().id, currentActor().name]);
     return res.length > 0;
   },
 };
@@ -1298,8 +1370,8 @@ export const Reports = {
   async upsert(rep: any): Promise<any> {
     if (!isPgEnabled()) {
       const idx = db.reports.findIndex((x: any) => x.id === rep.id);
-      if (idx >= 0) db.reports[idx] = { ...db.reports[idx], ...rep };
-      else db.reports.unshift(rep);
+      if (idx >= 0) db.reports[idx] = stampJsonWrite(rep, db.reports[idx]);
+      else db.reports.unshift(stampJsonWrite(rep, null));
       return rep;
     }
     const id = rep.id || uid('REP');
@@ -1335,7 +1407,7 @@ export const Reports = {
       (db as any).reports = db.reports.filter((x: any) => x.id !== id);
       return db.reports.length < before;
     }
-    const res = await query('UPDATE reports SET deleted_at = now() WHERE id = $1 AND deleted_at IS NULL', [id]);
+    const res = await query('UPDATE reports SET deleted_at = now(), deleted_by = $2, deleted_by_name = $3 WHERE id = $1 AND deleted_at IS NULL', [id, currentActor().id, currentActor().name]);
     return res.length > 0;
   },
 };
@@ -1486,21 +1558,58 @@ export const Inbox = {
 
 /* ---------- audit ---------- */
 
+export interface AuditEntry {
+  actor: string;          // actor id (user id | 'agent' | 'system')
+  actorName?: string;     // denormalized display name
+  action: string;         // 'create' | 'update' | 'delete' | ...
+  entityType?: string;    // 'plan' | 'case' | 'credential' | 'project' | 'user' | ...
+  entityId?: string;
+  ownerId?: string;       // for per-user scoping of the trail
+  target?: string;        // human label (falls back to entityId)
+  detail?: string;        // summary line
+  workspaceId?: string;
+}
+
+function mapAudit(r: any) {
+  return {
+    id: r.id, actor: r.actor, actorName: r.actor_name || '', action: r.action,
+    entityType: r.entity_type || '', entityId: r.entity_id || '', ownerId: r.owner_id || '',
+    target: r.target, detail: r.detail, at: r.at, seq: Number(r.seq) || 0,
+  };
+}
+
 export const Audit = {
-  async list(workspaceId = 'default', limit = 100): Promise<any[]> {
-    if (!isPgEnabled()) return (db.auditLog as any[]).slice(-limit).reverse();
-    const rows = await query('SELECT * FROM audit_log ORDER BY at DESC LIMIT $1', [limit]);
-    return rows.map((r) => ({ id: r.id, actor: r.actor, action: r.action, target: r.target, detail: r.detail, at: r.at }));
-  },
-  async push(entry: { actor: string; action: string; target?: string; detail?: string; workspaceId?: string }) {
+  /** Durable audit trail, newest first. Optionally filter by entity (per-record history) and/or owner. */
+  async list(opts: { entityType?: string; entityId?: string; ownerId?: string; limit?: number } = {}): Promise<any[]> {
+    const limit = Math.min(1000, opts.limit || 200);
     if (!isPgEnabled()) {
-      (db.auditLog as any[]).push({ id: uid('AUD'), at: new Date().toISOString(), ...entry });
-      if (db.auditLog.length > 5000) db.auditLog.length = 5000;
+      let rows = (db.auditLog as any[]).slice();
+      if (opts.entityType) rows = rows.filter((r) => r.entityType === opts.entityType);
+      if (opts.entityId) rows = rows.filter((r) => r.entityId === opts.entityId);
+      if (opts.ownerId) rows = rows.filter((r) => (r.ownerId || '') === opts.ownerId);
+      return rows.slice(-limit).reverse();
+    }
+    const where: string[] = [];
+    const params: any[] = [];
+    if (opts.entityType) { params.push(opts.entityType); where.push(`entity_type = $${params.length}`); }
+    if (opts.entityId) { params.push(opts.entityId); where.push(`entity_id = $${params.length}`); }
+    if (opts.ownerId) { params.push(opts.ownerId); where.push(`owner_id = $${params.length}`); }
+    params.push(limit);
+    const rows = await query(
+      `SELECT * FROM audit_log ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY at DESC, seq DESC LIMIT $${params.length}`,
+      params,
+    );
+    return rows.map(mapAudit);
+  },
+  async push(entry: AuditEntry) {
+    if (!isPgEnabled()) {
+      (db.auditLog as any[]).push({ id: uid('AUD'), at: new Date().toISOString(), seq: db.auditLog.length + 1, ...entry });
+      if (db.auditLog.length > 5000) db.auditLog.splice(0, db.auditLog.length - 5000);
       return;
     }
     await query(
-      'INSERT INTO audit_log (id, workspace_id, actor, action, target, detail) VALUES ($1, $2, $3, $4, $5, $6)',
-      [uid('AUD'), entry.workspaceId || 'default', entry.actor, entry.action, entry.target || null, entry.detail || ''],
+      'INSERT INTO audit_log (id, workspace_id, actor, actor_name, action, entity_type, entity_id, owner_id, target, detail) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)',
+      [uid('AUD'), entry.workspaceId || 'default', entry.actor, entry.actorName || '', entry.action, entry.entityType || null, entry.entityId || null, entry.ownerId || null, entry.target || null, entry.detail || ''],
     );
   },
 };
@@ -1751,6 +1860,7 @@ function mapRequirement(r: any) {
     createdAt: r.created_at,
     updatedAt: r.updated_at,
     ...scopeFields(r),
+    ...metaFields(r),
   };
 }
 
@@ -1768,8 +1878,8 @@ export const Requirements = {
   async upsert(rq: any): Promise<any> {
     if (!isPgEnabled()) {
       const idx = (db.requirements as any[]).findIndex((x: any) => x.id === rq.id);
-      if (idx >= 0) db.requirements[idx] = { ...db.requirements[idx], ...rq };
-      else db.requirements.unshift(rq);
+      if (idx >= 0) db.requirements[idx] = stampJsonWrite(rq, db.requirements[idx]);
+      else db.requirements.unshift(stampJsonWrite(rq, null));
       return rq;
     }
     const id = rq.id || uid('REQ');
@@ -1815,7 +1925,7 @@ export const Requirements = {
       (db as any).requirementLinks = db.requirementLinks.filter((x: any) => x.requirementId !== id);
       return db.requirements.length < before;
     }
-    const res = await query('UPDATE requirements SET deleted_at = now() WHERE id = $1 AND deleted_at IS NULL', [id]);
+    const res = await query('UPDATE requirements SET deleted_at = now(), deleted_by = $2, deleted_by_name = $3 WHERE id = $1 AND deleted_at IS NULL', [id, currentActor().id, currentActor().name]);
     return res.length > 0;
   },
 };

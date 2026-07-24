@@ -9,6 +9,14 @@ import { failureGist } from '@/src/lib/failureAnalysis';
 import { useAgentRun } from '@/src/lib/useAgentRun';
 import { useUiSettings } from '@/src/store/uiSettings';
 import { MarkdownText } from '@/src/components/MarkdownText';
+import { AIReworkPanel } from '@/src/components/AIReworkPanel';
+import {
+  applyAIReworkProposal,
+  isAIReworkProposalStale,
+  singleCaseProposal,
+  suiteCaseProposal,
+  type AIReworkProposal,
+} from '@/src/lib/aiRework';
 import FailureCard from '@/src/components/FailureCard';
 import {
   Loader2,
@@ -36,6 +44,7 @@ import {
   MessageSquareText,
   MinusCircle,
   Bug,
+  Sparkles,
 } from 'lucide-react';
 
 /**
@@ -276,7 +285,23 @@ type Case = {
   reuseMatchReasons?: string[];
 };
 
-export function DeepRunResult({ taskId, initialSaved, onSaved }: { taskId: string; initialSaved?: boolean; onSaved?: () => void }) {
+export interface AgentReworkTarget {
+  id: string;
+  label: string;
+  submit: (instruction: string) => Promise<void>;
+}
+
+export function DeepRunResult({
+  taskId,
+  initialSaved,
+  onSaved,
+  onReworkTargetChange,
+}: {
+  taskId: string;
+  initialSaved?: boolean;
+  onSaved?: () => void;
+  onReworkTargetChange?: (target: AgentReworkTarget | null) => void;
+}) {
   const [tab, setTab] = useState<'cases' | 'code' | 'evidence' | 'bugs'>('cases');
   const [shotOpen, setShotOpen] = useState<number | null>(null); // evidence lightbox index
   // In-modal zoom for a single step frame (replaces the old raw target=_blank image link).
@@ -302,6 +327,9 @@ export function DeepRunResult({ taskId, initialSaved, onSaved }: { taskId: strin
   // Chat-based bulk rework: one free-text intent for the suite ("you missed X — add it").
   const [chatIntent, setChatIntent] = useState('');
   const [chatNote, setChatNote] = useState<string | null>(null);
+  const [reworkProposal, setReworkProposal] = useState<AIReworkProposal<Case> | null>(null);
+  const [reworkProposalOwner, setReworkProposalOwner] = useState<string | null>(null);
+  const [reworkUndoSnapshot, setReworkUndoSnapshot] = useState<Case[] | null>(null);
   const [saved, setSaved] = useState(!!initialSaved);
   const [pwRunning, setPwRunning] = useState(false);
   const [pwResult, setPwResult] = useState<any>(null);
@@ -316,7 +344,7 @@ export function DeepRunResult({ taskId, initialSaved, onSaved }: { taskId: strin
   const showQueryLogs = useUiSettings((s) => s.showQueryLogs);
   const loadUiSettings = useUiSettings((s) => s.load);
   useEffect(() => { void loadUiSettings(); }, [loadUiSettings]);
-  const chatInputRef = useRef<HTMLInputElement | null>(null);
+  const suiteReworkRef = useRef<HTMLDivElement | null>(null);
 
   // Seed the editable copy once the pipeline has written cases.
   useEffect(() => {
@@ -589,22 +617,23 @@ export function DeepRunResult({ taskId, initialSaved, onSaved }: { taskId: strin
   };
 
   /* ---------- AI actions ---------- */
-  const reworkCase = async (i: number) => {
+  const reworkCase = async (i: number, instructionOverride?: string) => {
     const c = list[i];
-    if (!c || !canReworkCase(i)) return;
+    const instruction = instructionOverride ?? feedback[i] ?? '';
+    if (!c || (!instruction.trim() && !canReworkCase(i))) return;
     setBusy(`rework-${i}`);
     setActionError(null);
     try {
       const res = await fetchWithTimeout('/api/agent/rework-case', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ testCase: c, feedback: feedback[i] || '', targetUrl }),
+        body: JSON.stringify({ testCase: c, feedback: instruction, targetUrl }),
       });
       if (!res.ok) throw await errorFromResponse(res);
       const data = await res.json();
-      patchCase(i, data);
-      setReworkBaseline((prev) => prev.map((c, idx) => (idx === i ? data : c)));
-      setFeedback((p) => ({ ...p, [i]: '' }));
+      setFeedback((current) => ({ ...current, [i]: instruction }));
+      setReworkProposal(singleCaseProposal(c, data, i));
+      setReworkProposalOwner(`case-${i}`);
     } catch (e: any) {
       setActionError(actionErrorMessage(e));
     } finally {
@@ -612,9 +641,10 @@ export function DeepRunResult({ taskId, initialSaved, onSaved }: { taskId: strin
     }
   };
   // One intent, whole suite: the server decides whether to modify cases and/or add missing ones.
-  const chatRework = async () => {
-    const intent = chatIntent.trim();
+  const chatRework = async (instructionOverride?: string) => {
+    const intent = (instructionOverride ?? chatIntent).trim();
     if (!intent || !list.length) return;
+    setChatIntent(intent);
     setBusy('chat-rework');
     setActionError(null);
     setChatNote(null);
@@ -626,27 +656,81 @@ export function DeepRunResult({ taskId, initialSaved, onSaved }: { taskId: strin
       }, 180_000);
       if (!res.ok) throw await errorFromResponse(res);
       const data = await res.json();
-      const updates: Array<{ index: number; testCase: any }> = Array.isArray(data.updatedCases) ? data.updatedCases : [];
-      const added: any[] = Array.isArray(data.newCases) ? data.newCases : [];
-      if (updates.length) {
-        const apply = (arr: Case[]) => arr.map((c, idx) => updates.find((u) => u.index === idx)?.testCase ?? c);
-        setCases((prev) => apply(prev || []));
-        setReworkBaseline((prev) => apply(prev));
-      }
-      if (added.length) {
-        // Appended (not prepended) so selected-case indices stay valid without reindexing.
-        setCases((prev) => [...(prev || []), ...added]);
-        setReworkBaseline((prev) => [...prev, ...added]);
-      }
-      setSaved(false);
-      setChatIntent('');
-      setChatNote([data.note, updates.length ? `${updates.length} case${updates.length === 1 ? '' : 's'} updated.` : '', added.length ? `${added.length} case${added.length === 1 ? '' : 's'} added.` : ''].filter(Boolean).join(' ') || 'Done.');
+      setReworkProposal(suiteCaseProposal(list, data));
+      setReworkProposalOwner('suite');
+      suiteReworkRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     } catch (e: any) {
       setActionError(actionErrorMessage(e));
     } finally {
       setBusy(null);
     }
   };
+  const discardReworkProposal = () => {
+    setReworkProposal(null);
+    setReworkProposalOwner(null);
+  };
+  const applyReworkProposal = (selectedKeys: Set<string>) => {
+    if (!reworkProposal) return;
+    try {
+      const result = applyAIReworkProposal(list, reworkProposal, selectedKeys);
+      setReworkUndoSnapshot(list);
+      setCases(result.cases);
+      setSaved(false);
+      setChatNote(`${result.appliedCount} AI change${result.appliedCount === 1 ? '' : 's'} applied to the draft. Save all to persist.`);
+      if (reworkProposalOwner?.startsWith('case-')) {
+        const index = Number(reworkProposalOwner.slice(5));
+        setFeedback((current) => ({ ...current, [index]: '' }));
+      } else {
+        setChatIntent('');
+      }
+      discardReworkProposal();
+    } catch (error: any) {
+      setActionError(error?.message || 'Could not apply the AI proposal.');
+    }
+  };
+  const undoRework = () => {
+    if (!reworkUndoSnapshot) return;
+    setCases(reworkUndoSnapshot);
+    setReworkUndoSnapshot(null);
+    setChatNote('AI changes undone.');
+    setSaved(false);
+  };
+  const activateSuiteRework = () => {
+    const scope = selectedCases.size ? `${selectedCases.size} selected case${selectedCases.size === 1 ? '' : 's'}` : `all ${list.length} cases`;
+    suiteReworkRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    onReworkTargetChange?.({
+      id: `run-${activeTaskId}-suite`,
+      label: `Functional Validation / ${scope}`,
+      submit: async (instruction) => { await chatRework(instruction); },
+    });
+  };
+  const activateCaseRework = (i: number) => {
+    const current = list[i];
+    if (!current) return;
+    onReworkTargetChange?.({
+      id: `run-${activeTaskId}-case-${i}`,
+      label: `Case / ${current.title || `Case ${i + 1}`}`,
+      submit: async (instruction) => { await reworkCase(i, instruction); },
+    });
+  };
+  const renderCaseReworkPanel = (i: number) => (
+    <AIReworkPanel
+      compact
+      scopeLabel={list[i]?.title || `Case ${i + 1}`}
+      value={feedback[i] || ''}
+      onChange={(value) => setFeedback((current) => ({ ...current, [i]: value }))}
+      onPreview={() => void reworkCase(i)}
+      loading={busy === `rework-${i}`}
+      error={actionError}
+      proposal={reworkProposalOwner === `case-${i}` ? reworkProposal : null}
+      stale={Boolean(reworkProposalOwner === `case-${i}` && reworkProposal && isAIReworkProposalStale(list, reworkProposal))}
+      onApply={applyReworkProposal}
+      onDiscard={discardReworkProposal}
+      onActivate={() => activateCaseRework(i)}
+      appliedMessage={chatNote}
+      onUndo={reworkUndoSnapshot ? undoRework : undefined}
+    />
+  );
   const saveAll = async () => {
     // No early-return on `saved`: that flag is persisted per conversation turn (initialSaved) and can
     // be stale — a regenerated/reworked batch inherits it, so the button read "Saved" while the rows
@@ -1323,75 +1407,39 @@ export function DeepRunResult({ taskId, initialSaved, onSaved }: { taskId: strin
                 </div>
               </div>
 
-              {/* Chat-based bulk rework: checked cases appear automatically as @mention chips inside the input. */}
-              {/* Summary header for bulk rework selections — keeps the input reachable. */}
-              {selectedCases.size > 3 && (
-                <div className="mb-1 flex items-center justify-between gap-2 text-[11px] text-[var(--text-muted)]">
-                  <span>{selectedCases.size} cases selected for rework</span>
-                  <button
-                    onClick={() => setSelectedCases(new Set())}
-                    className="font-medium text-[var(--text-muted)] hover:text-[var(--accent)]"
-                  >
-                    Clear all
-                  </button>
-                </div>
-              )}
-              <div className="mb-2 flex items-center gap-2">
-                <MessageSquareText className="h-4 w-4 shrink-0 text-[var(--accent)]" />
-                <div
-                  onClick={() => chatInputRef.current?.focus()}
-                  className="flex min-w-0 flex-1 cursor-text flex-wrap items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 max-h-24 overflow-y-auto focus-within:border-[var(--accent)]"
-                >
-                  {[...selectedCases].sort((a, b) => a - b).map((i) => list[i] && (
-                    <span
-                      key={i}
-                      title={list[i].title}
-                      className="inline-flex max-w-[14rem] shrink-0 items-center gap-1 rounded border border-[var(--accent)]/30 bg-[var(--accent)]/10 px-1.5 py-0.5 text-[10px] font-semibold text-[var(--accent)]"
-                    >
-                      <span className="truncate">@{list[i].title || `Case ${i + 1}`}</span>
-                      <button
-                        onClick={(e) => { e.stopPropagation(); toggleCaseSelection(i); }}
-                        className="shrink-0 opacity-70 hover:opacity-100"
-                        title="Remove from rework"
-                        aria-label={`Remove case ${i + 1} from rework`}
-                      >
-                        <XCircle className="h-3 w-3" />
-                      </button>
-                    </span>
-                  ))}
-                  <input
-                    ref={chatInputRef}
-                    value={chatIntent}
-                    onChange={(e) => setChatIntent(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === 'Enter' && chatIntent.trim()) void chatRework(); }}
-                    disabled={busy === 'chat-rework' || !list.length}
-                    placeholder={selectedCases.size
-                      ? `Rework the ${selectedCases.size} mentioned case${selectedCases.size === 1 ? '' : 's'} (e.g. "add negative checks")…`
-                      : 'Rework with AI — e.g. "you missed the export permission check, please add it"…'}
-                    className="min-w-[10rem] flex-1 bg-transparent px-0.5 py-0.5 text-xs text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none disabled:opacity-50"
-                  />
-                </div>
-                <button
-                  onClick={chatRework}
-                  disabled={busy === 'chat-rework' || !chatIntent.trim() || !list.length}
-                  className="inline-flex shrink-0 items-center gap-1 rounded-md bg-[var(--accent)] px-2.5 py-1.5 text-xs font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50"
-                >
-                  {busy === 'chat-rework' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
-                  Rework with AI
-                </button>
+              <div ref={suiteReworkRef} className="mb-2">
+                <AIReworkPanel
+                  compact
+                  scopeLabel={selectedCases.size
+                    ? `${selectedCases.size} selected case${selectedCases.size === 1 ? '' : 's'}`
+                    : `all ${list.length} cases`}
+                  value={chatIntent}
+                  onChange={setChatIntent}
+                  onPreview={() => void chatRework()}
+                  loading={busy === 'chat-rework'}
+                  error={actionError}
+                  proposal={reworkProposalOwner === 'suite' ? reworkProposal : null}
+                  stale={Boolean(reworkProposalOwner === 'suite' && reworkProposal && isAIReworkProposalStale(list, reworkProposal))}
+                  onApply={applyReworkProposal}
+                  onDiscard={discardReworkProposal}
+                  onActivate={activateSuiteRework}
+                  appliedMessage={chatNote}
+                  onUndo={reworkUndoSnapshot ? undoRework : undefined}
+                  accessory={selectedCases.size ? (
+                    <div className="mt-2 flex max-h-20 flex-wrap gap-1 overflow-y-auto">
+                      {[...selectedCases].sort((a, b) => a - b).map((i) => list[i] && (
+                        <span key={i} className="inline-flex max-w-[14rem] items-center gap-1 rounded-md border border-[var(--accent)]/30 bg-[var(--accent)]/10 px-2 py-1 text-[10px] font-medium text-[var(--accent)]">
+                          <span className="truncate">@{list[i].title || `Case ${i + 1}`}</span>
+                          <button type="button" onClick={() => toggleCaseSelection(i)} aria-label={`Remove case ${i + 1} from rework`} className="rounded-full p-0.5 hover:bg-[var(--accent)]/10">
+                            <XCircle className="h-3 w-3" />
+                          </button>
+                        </span>
+                      ))}
+                      <button type="button" onClick={() => setSelectedCases(new Set())} className="min-h-7 rounded-full px-2 text-[10px] font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]">Clear</button>
+                    </div>
+                  ) : null}
+                />
               </div>
-              {chatNote && (
-                <div aria-live="polite" className="mb-2 flex items-start gap-1.5 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-1.5 text-[11px] text-emerald-400">
-                  <CheckCircle2 className="mt-0.5 h-3 w-3 shrink-0" />
-                  <span>{chatNote}</span>
-                </div>
-              )}
-              {actionError && (
-                <div className="mb-2 flex items-start gap-1.5 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-1.5 text-[11px] text-red-400">
-                  <XCircle className="mt-0.5 h-3 w-3 shrink-0" />
-                  <span className="min-w-0 flex-1 break-words">{actionError}</span>
-                </div>
-              )}
 
               {!list.length && (
                 <div className="py-4 text-center text-xs text-[var(--text-muted)]">
@@ -1436,6 +1484,13 @@ export function DeepRunResult({ taskId, initialSaved, onSaved }: { taskId: strin
                         </span>
                       ))}
                       <span className="text-[10px] text-[var(--text-muted)]">{(c.steps || []).length} steps</span>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); setEditing(i); activateCaseRework(i); }}
+                        className="inline-flex min-h-8 items-center gap-1 rounded px-1.5 text-[10px] font-medium text-[var(--text-muted)] hover:bg-[var(--accent)]/10 hover:text-[var(--accent)]"
+                        title="Improve this case with AI"
+                      >
+                        <Sparkles className="h-3.5 w-3.5" /> Rework
+                      </button>
                       <button
                         onClick={(e) => { e.stopPropagation(); setEditing(i); }}
                         className="rounded p-1 text-[var(--text-muted)] hover:text-[var(--accent)]"
@@ -1541,31 +1596,8 @@ export function DeepRunResult({ taskId, initialSaved, onSaved }: { taskId: strin
                           </button>
                         </div>
 
-                        {/* Rework with AI */}
-                        <div className="space-y-1.5 border-t border-[var(--border)] pt-2">
-                          <textarea
-                            value={feedback[i] || ''}
-                            onChange={(e) => setFeedback((p) => ({ ...p, [i]: e.target.value }))}
-                            placeholder="Tell the AI how to rework this case (e.g. add negative + boundary checks)…"
-                            className="h-14 w-full rounded-md border border-[var(--border)] bg-[var(--bg-card)] px-2 py-1.5 text-[11px] text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
-                          />
-                          <div className="flex justify-end gap-2">
-                            <button
-                              onClick={() => { setFeedback((p) => ({ ...p, [i]: '' })); setEditing(null); }}
-                              disabled={busy === `rework-${i}`}
-                              className="inline-flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-card)] px-3 py-1.5 text-[11px] font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:border-[var(--accent)] disabled:opacity-50"
-                            >
-                              <XCircle className="h-3 w-3" /> Cancel
-                            </button>
-                            <button
-                              onClick={() => reworkCase(i)}
-                              disabled={busy === `rework-${i}` || !canReworkCase(i)}
-                              className="inline-flex items-center gap-1 rounded-md bg-[var(--accent)] px-3 py-1.5 text-[11px] font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50"
-                            >
-                              {busy === `rework-${i}` ? <Loader2 className="h-3 w-3 animate-spin" /> : <Send className="h-3 w-3" />}
-                              Rework with AI
-                            </button>
-                          </div>
+                        <div className="border-t border-[var(--border)] pt-2">
+                          {renderCaseReworkPanel(i)}
                         </div>
                       </div>
                     )}
@@ -1612,35 +1644,47 @@ export function DeepRunResult({ taskId, initialSaved, onSaved }: { taskId: strin
                       </div>
 
                       <div className="space-y-3 overflow-y-auto px-12 py-3">
-                        <input
-                          value={c.title || ''}
-                          onChange={(e) => patchCase(i, { title: e.target.value })}
-                          placeholder="Title"
-                          className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
-                        />
-                        <textarea
-                          value={c.description || ''}
-                          onChange={(e) => patchCase(i, { description: e.target.value })}
-                          placeholder="Description"
-                          className="h-20 w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
-                        />
-                        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                          <select
-                            value={c.priority || 'Medium'}
-                            onChange={(e) => patchCase(i, { priority: e.target.value })}
-                            className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
-                          >
-                            <option>Low</option>
-                            <option>Medium</option>
-                            <option>High</option>
-                            <option>Critical</option>
-                          </select>
+                        <label className="block space-y-1 text-[10px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">
+                          Title
                           <input
-                            value={Array.isArray(c.tags) ? c.tags.join(', ') : c.tags || ''}
-                            onChange={(e) => patchCase(i, { tags: e.target.value.split(',').map((t) => t.trim()).filter(Boolean) })}
-                            placeholder="Tags (comma separated)"
-                            className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
+                            value={c.title || ''}
+                            onChange={(e) => patchCase(i, { title: e.target.value })}
+                            placeholder="Test case title"
+                            className="block w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs font-normal normal-case tracking-normal text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
                           />
+                        </label>
+                        <label className="block space-y-1 text-[10px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">
+                          Description
+                          <textarea
+                            value={c.description || ''}
+                            onChange={(e) => patchCase(i, { description: e.target.value })}
+                            placeholder="What this test case validates"
+                            className="block h-20 w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs font-normal normal-case tracking-normal text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
+                          />
+                        </label>
+                        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                          <label className="block space-y-1 text-[10px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">
+                            Priority
+                            <select
+                              value={c.priority || 'Medium'}
+                              onChange={(e) => patchCase(i, { priority: e.target.value })}
+                              className="block w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs font-normal normal-case tracking-normal text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
+                            >
+                              <option>Low</option>
+                              <option>Medium</option>
+                              <option>High</option>
+                              <option>Critical</option>
+                            </select>
+                          </label>
+                          <label className="block space-y-1 text-[10px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">
+                            Tags
+                            <input
+                              value={Array.isArray(c.tags) ? c.tags.join(', ') : c.tags || ''}
+                              onChange={(e) => patchCase(i, { tags: e.target.value.split(',').map((t) => t.trim()).filter(Boolean) })}
+                              placeholder="Comma separated"
+                              className="block w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs font-normal normal-case tracking-normal text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
+                            />
+                          </label>
                         </div>
 
                         <div className="space-y-1.5">
@@ -1674,21 +1718,27 @@ export function DeepRunResult({ taskId, initialSaved, onSaved }: { taskId: strin
                           {(c.steps || []).map((s, si) => (
                             <div key={si} className="grid grid-cols-1 gap-1.5 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] p-1.5 lg:grid-cols-[auto_1fr_1fr_auto]">
                               <label className="flex items-start justify-center pt-1" title="Tick steps, then Expand or Merge">
-                                <input type="checkbox" checked={(mergePick[i] || []).includes(si)} onChange={() => toggleMergePick(i, si)} className="h-3.5 w-3.5 accent-[var(--accent)]" />
+                                <input type="checkbox" aria-label={`Select step ${si + 1}`} checked={(mergePick[i] || []).includes(si)} onChange={() => toggleMergePick(i, si)} className="h-3.5 w-3.5 accent-[var(--accent)]" />
                               </label>
-                              <textarea
-                                value={s.action || ''}
-                                onChange={(e) => patchStep(i, si, { action: e.target.value })}
-                                placeholder={`Step ${si + 1} action`}
-                                className="min-h-[3rem] resize-y rounded border border-[var(--border)] bg-[var(--bg-card)] px-2 py-1 text-[11px] text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
-                              />
-                              <textarea
-                                value={s.expected || ''}
-                                onChange={(e) => patchStep(i, si, { expected: e.target.value })}
-                                placeholder="Expected result"
-                                className="min-h-[3rem] resize-y rounded border border-[var(--border)] bg-[var(--bg-card)] px-2 py-1 text-[11px] text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
-                              />
-                              <button onClick={() => removeStep(i, si)} className="rounded px-2 text-[11px] text-red-400 hover:bg-red-500/10">
+                              <label className="space-y-1 text-[10px] font-medium text-[var(--text-muted)]">
+                                Action
+                                <textarea
+                                  value={s.action || ''}
+                                  onChange={(e) => patchStep(i, si, { action: e.target.value })}
+                                  placeholder={`Step ${si + 1} action`}
+                                  className="block min-h-[3rem] w-full resize-y rounded border border-[var(--border)] bg-[var(--bg-card)] px-2 py-1 text-[11px] text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
+                                />
+                              </label>
+                              <label className="space-y-1 text-[10px] font-medium text-[var(--text-muted)]">
+                                Expected Result
+                                <textarea
+                                  value={s.expected || ''}
+                                  onChange={(e) => patchStep(i, si, { expected: e.target.value })}
+                                  placeholder="Expected result"
+                                  className="block min-h-[3rem] w-full resize-y rounded border border-[var(--border)] bg-[var(--bg-card)] px-2 py-1 text-[11px] text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
+                                />
+                              </label>
+                              <button onClick={() => removeStep(i, si)} title={`Delete step ${si + 1}`} className="rounded px-2 text-[11px] text-red-400 hover:bg-red-500/10">
                                 <Trash2 className="h-3.5 w-3.5" />
                               </button>
                             </div>
@@ -1698,30 +1748,8 @@ export function DeepRunResult({ taskId, initialSaved, onSaved }: { taskId: strin
                           </button>
                         </div>
 
-                        <div className="space-y-1.5 border-t border-[var(--border)] pt-2">
-                          <textarea
-                            value={feedback[i] || ''}
-                            onChange={(e) => setFeedback((p) => ({ ...p, [i]: e.target.value }))}
-                            placeholder="Tell the AI how to rework this case (e.g. add negative + boundary checks)..."
-                            className="h-14 w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-[11px] text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
-                          />
-                          <div className="flex justify-end gap-2">
-                            <button
-                              onClick={() => { setFeedback((p) => ({ ...p, [i]: '' })); setEditing(null); }}
-                              disabled={busy === `rework-${i}`}
-                              className="inline-flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-1.5 text-[11px] font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:border-[var(--accent)] disabled:opacity-50"
-                            >
-                              <XCircle className="h-3 w-3" /> Close
-                            </button>
-                            <button
-                              onClick={() => reworkCase(i)}
-                              disabled={busy === `rework-${i}` || !canReworkCase(i)}
-                              className="inline-flex items-center gap-1 rounded-md bg-[var(--accent)] px-3 py-1.5 text-[11px] font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50"
-                            >
-                              {busy === `rework-${i}` ? <Loader2 className="h-3 w-3 animate-spin" /> : <Send className="h-3 w-3" />}
-                              Rework with AI
-                            </button>
-                          </div>
+                        <div className="border-t border-[var(--border)] pt-2">
+                          {renderCaseReworkPanel(i)}
                         </div>
                       </div>
                     </div>

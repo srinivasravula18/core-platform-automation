@@ -1,5 +1,10 @@
 import { Fragment, useEffect, useState } from 'react';
 import { Search, Filter, Pencil, ShieldAlert, Camera, Sparkles, Trash2, ChevronDown, ChevronRight } from 'lucide-react';
+import { RowMoreMenu } from '@/src/components/RowMoreMenu';
+import { Timestamp, actorName } from '@/src/components/Timestamp';
+import { TimeSortSelect } from '@/src/components/filters/TimeSortSelect';
+import { TimeRangeFilter, passesTimeFilter, type TimeFilterValue } from '@/src/components/filters/TimeRangeFilter';
+import { sortByTime, type TimeSortKey } from '@/src/lib/time';
 import ExportMenu from '../components/ExportMenu';
 import DefectReport, { hasRichReport } from '../components/DefectReport';
 import { useAiSearch } from '@/src/lib/useAiSearch';
@@ -26,6 +31,8 @@ export default function Defects() {
   const [searchTerm, setSearchTerm] = useState('');
   const aiSearch = useAiSearch('defects');
   const [severityFilter, setSeverityFilter] = useState('All');
+  const [timeSort, setTimeSort] = useState<TimeSortKey>('recentlyUpdated');
+  const [updatedFilter, setUpdatedFilter] = useState<TimeFilterValue>({ key: 'all' });
   const [isFilterOpen, setIsFilterOpen] = useState(false);
   const [isDefectModalOpen, setIsDefectModalOpen] = useState(false);
   const [isAIDefectModalOpen, setIsAIDefectModalOpen] = useState(false);
@@ -109,14 +116,15 @@ export default function Defects() {
     else void showAlert('No failure snapshot was captured for this defect. Snapshots come from the failing test run.');
   };
 
-  const filteredDefects = defects.filter((defect) => {
+  const filteredDefects: any[] = sortByTime(defects.filter((defect) => {
     const query = searchTerm.toLowerCase();
     const matchesSearch = aiSearch.isAiQuery(searchTerm)
       ? (aiSearch.matchedIds ? aiSearch.matchedIds.has(defect.id) : true)
       : (!query || `${defect.id || ''} ${defect.title || ''} ${defect.status || ''} ${defect.severity || ''}`.toLowerCase().includes(query));
     const matchesSeverity = severityFilter === 'All' || (defect.severity || 'Medium') === severityFilter;
-    return matchesSearch && matchesSeverity;
-  });
+    const matchesUpdated = passesTimeFilter(defect.metadata?.updatedAt || defect.updatedAt, updatedFilter);
+    return matchesSearch && matchesSeverity && matchesUpdated;
+  }), timeSort);
 
   return (
     <div className="app-page-shell h-full flex flex-col">
@@ -137,6 +145,9 @@ export default function Defects() {
               { key: 'status', label: 'Status' },
               { key: 'assignedTo', label: 'Assigned To' },
               { key: 'description', label: 'Description' },
+              { key: 'updatedAt', label: 'Updated', get: (d: any) => d.metadata?.updatedAt || d.updatedAt || '' },
+              { key: 'updatedBy', label: 'Updated By', get: (d: any) => d.metadata?.updatedBy?.name || '' },
+              { key: 'createdAt', label: 'Created', get: (d: any) => d.metadata?.createdAt || d.createdAt || '' },
             ]}
           />
           <button onClick={openNewModal} className="flex items-center gap-2 bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-md text-sm font-medium transition-colors">
@@ -216,6 +227,8 @@ export default function Defects() {
               className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md pl-9 pr-4 py-1.5 text-sm outline-none focus:border-red-500 text-[var(--text-primary)]"
             />
           </div>
+          <TimeSortSelect value={timeSort} onChange={setTimeSort} />
+          <TimeRangeFilter value={updatedFilter} onChange={setUpdatedFilter} />
           <div className="relative">
             <button onClick={() => setIsFilterOpen(!isFilterOpen)} className="flex items-center gap-2 border border-[var(--border)] bg-[var(--bg-secondary)] hover:bg-[var(--border)] text-[var(--text-primary)] px-3 py-1.5 rounded-md text-sm transition-colors">
               <Filter className="w-4 h-4" /> {severityFilter === 'All' ? 'Filters' : severityFilter}
@@ -248,14 +261,15 @@ export default function Defects() {
                 <th className="font-medium py-3 px-4">Title</th>
                 <th className="font-medium py-3 px-4 w-32">Severity</th>
                 <th className="font-medium py-3 px-4 w-32">Status</th>
+                <th className="font-medium py-3 px-4 w-32">Updated</th>
                 <th className="font-medium py-3 px-4 w-24 text-right">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-[var(--border)]">
               {loading ? (
-                <tr><td colSpan={6} className="py-8 text-center text-[var(--text-muted)]">Loading defects...</td></tr>
+                <tr><td colSpan={7} className="py-8 text-center text-[var(--text-muted)]">Loading defects...</td></tr>
               ) : filteredDefects.length === 0 ? (
-                <tr><td colSpan={6} className="py-8 text-center text-[var(--text-muted)]">No defects found.</td></tr>
+                <tr><td colSpan={7} className="py-8 text-center text-[var(--text-muted)]">No defects found.</td></tr>
               ) : filteredDefects.map((defect) => (
                 <Fragment key={defect.id}>
                 <tr
@@ -299,6 +313,10 @@ export default function Defects() {
                       {defect.status}
                     </span>
                   </td>
+                  <td className="py-3 px-4 whitespace-nowrap text-xs text-[var(--text-muted)]">
+                    <Timestamp value={defect.metadata?.updatedAt || defect.updatedAt} />
+                    {actorName(defect.metadata?.updatedBy) && <div className="text-[10px]">by {actorName(defect.metadata?.updatedBy)}</div>}
+                  </td>
                   <td className="py-3 px-4 text-right flex gap-1 justify-end">
                     <button onClick={(e) => { e.stopPropagation(); openDefectSnapshot(defect); }} title={defectSnapshotUrl(defect) ? 'View failure snapshot' : 'No snapshot captured'} className={cn('p-1 rounded transition-colors border border-transparent', defectSnapshotUrl(defect) ? 'text-red-500 hover:bg-[var(--bg-primary)] hover:border-red-500' : 'text-[var(--text-muted)] opacity-50')}>
                       <Camera className="w-4 h-4" />
@@ -313,21 +331,12 @@ export default function Defects() {
                     >
                       <Pencil className="w-4 h-4" />
                     </button>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        bulk.deleteOne(defect.id);
-                      }}
-                      title="Delete defect"
-                      className="p-1 rounded hover:bg-red-500/10 text-[var(--text-muted)] hover:text-red-500 transition-colors"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
+                    <RowMoreMenu items={[{ label: 'Delete', onClick: () => bulk.deleteOne(defect.id), danger: true }]} />
                   </td>
                 </tr>
                 {expandedId === defect.id && hasRichReport(defect) && (
                   <tr>
-                    <td colSpan={6} className="p-0 whitespace-normal">
+                    <td colSpan={7} className="p-0 whitespace-normal">
                       <DefectReport defect={defect} />
                     </td>
                   </tr>

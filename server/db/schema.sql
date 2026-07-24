@@ -373,6 +373,16 @@ CREATE TABLE IF NOT EXISTS audit_log (
   at          TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS audit_log_at ON audit_log(at DESC);
+-- Durable per-record change history (Phase 4). entity_type/entity_id let a record's History view
+-- filter its own trail; owner_id scopes it per-user; seq (monotonic) guarantees stable ordering for
+-- same-second events (ORDER BY at, seq). Additive so existing deployments upgrade in place.
+ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS entity_type TEXT;
+ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS entity_id   TEXT;
+ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS owner_id    TEXT;
+ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS actor_name  TEXT;
+ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS seq         BIGSERIAL;
+CREATE INDEX IF NOT EXISTS audit_log_entity ON audit_log(entity_type, entity_id, at DESC);
+CREATE INDEX IF NOT EXISTS audit_log_owner  ON audit_log(owner_id, at DESC);
 
 -- Users (for future multi-tenant)
 CREATE TABLE IF NOT EXISTS users (
@@ -602,8 +612,23 @@ BEGIN
     EXECUTE format('ALTER TABLE %I ADD COLUMN IF NOT EXISTS owner_id TEXT', t);
     EXECUTE format('CREATE INDEX IF NOT EXISTS %I ON %I(project_id)', t || '_project_idx', t);
     EXECUTE format('CREATE INDEX IF NOT EXISTS %I ON %I(owner_id)', t || '_owner_idx', t);
+    -- Lifecycle metadata (who + version) — the record stores the LATEST actor so the UI never
+    -- queries the audit log to render "last updated by X". Actor is denormalized (id + name).
+    -- created_at/updated_at/deleted_at already exist on these tables.
+    EXECUTE format('ALTER TABLE %I ADD COLUMN IF NOT EXISTS created_by TEXT', t);
+    EXECUTE format('ALTER TABLE %I ADD COLUMN IF NOT EXISTS created_by_name TEXT', t);
+    EXECUTE format('ALTER TABLE %I ADD COLUMN IF NOT EXISTS updated_by TEXT', t);
+    EXECUTE format('ALTER TABLE %I ADD COLUMN IF NOT EXISTS updated_by_name TEXT', t);
+    EXECUTE format('ALTER TABLE %I ADD COLUMN IF NOT EXISTS deleted_by TEXT', t);
+    EXECUTE format('ALTER TABLE %I ADD COLUMN IF NOT EXISTS deleted_by_name TEXT', t);
+    EXECUTE format('ALTER TABLE %I ADD COLUMN IF NOT EXISTS version INT NOT NULL DEFAULT 1', t);
+    -- Backfill legacy rows: attribute authorship to the owner so an already-set created_by marks
+    -- them as "not new" (the write path treats a NULL created_by as a first insert).
+    EXECUTE format('UPDATE %I SET created_by = COALESCE(created_by, owner_id), updated_by = COALESCE(updated_by, owner_id) WHERE created_by IS NULL AND owner_id IS NOT NULL', t);
   END LOOP;
 END $$;
+-- websites lacked updated_at entirely (created_at only). Add it so edits are trackable.
+ALTER TABLE websites ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
 
 -- ===== API Intelligence — Phase A (run envelope + regression baselines) =====
 -- The run envelope mirrors agent_runs (JSONB blobs for phases/endpoints/scenarios/executions/evidence;

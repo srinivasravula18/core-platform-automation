@@ -17,6 +17,7 @@ import { validateRemoteAccess, type RemoteCheck } from './repoSync';
 import { projectRepo } from './projectRepo';
 import { GitHubError } from './githubApi';
 import { reqScope } from '../../shared/scope';
+import { recordAudit } from '../../shared/recordAudit';
 
 /** Every logged-in user sees only their own projects (no cross-user visibility). */
 function visibleToScope<T extends { ownerId?: string }>(items: T[], req: any): T[] {
@@ -96,6 +97,7 @@ export function registerProjectRoutes(app: Express) {
       const project = createProject({ ...rest, ownerId: reqScope(req).userId || '' });
       if (token) setRepoToken(project.id, token);
       if (check) applyRemoteStatus(project, check); // reuse the check — no second network call
+      recordAudit('create', 'project', project.id, `Created project "${project.name}"`);
       res.status(201).json(withTokenFlag(getProject(project.id)!));
     } catch (e: any) {
       res.status(400).json({ error: e?.message || 'Failed to create project.' });
@@ -121,6 +123,7 @@ export function registerProjectRoutes(app: Express) {
         applyRemoteStatus(project, check);
         if (!check.ok && check.authFailed) return res.status(400).json({ error: check.error });
       }
+      recordAudit('update', 'project', project.id, `Updated project "${project.name}"`);
       res.json(withTokenFlag(getProject(project.id)!));
     } catch (e: any) {
       const code = /not found/i.test(e?.message || '') ? 404 : 400;
@@ -132,6 +135,7 @@ export function registerProjectRoutes(app: Express) {
     const ok = deleteProject(req.params.id);
     if (!ok) return res.status(404).json({ error: 'Project not found.' });
     clearRepoToken(req.params.id);
+    recordAudit('delete', 'project', req.params.id, 'Deleted a project');
     res.json({ ok: true });
   });
 
@@ -197,6 +201,7 @@ export function registerProjectRoutes(app: Express) {
     if (!ownsProject(req, req.params.id)) return res.status(404).json({ error: 'Project not found.' });
     try {
       const created = createApp(req.params.id, req.body || {});
+      recordAudit('create', 'app', created.id, `Added application "${created.name}"`);
       res.status(201).json(created);
     } catch (e: any) {
       const code = /not found/i.test(e?.message || '') ? 404 : 400;
@@ -208,6 +213,7 @@ export function registerProjectRoutes(app: Express) {
     if (!ownsApp(req, req.params.id)) return res.status(404).json({ error: 'App not found.' });
     try {
       const updated = updateApp(req.params.id, req.body || {});
+      recordAudit('update', 'app', updated.id, `Updated application "${updated.name}"`);
       res.json(updated);
     } catch (e: any) {
       const code = /not found/i.test(e?.message || '') ? 404 : 400;
@@ -219,6 +225,7 @@ export function registerProjectRoutes(app: Express) {
     if (!ownsApp(req, req.params.id)) return res.status(404).json({ error: 'App not found.' });
     const ok = deleteApp(req.params.id);
     if (!ok) return res.status(404).json({ error: 'App not found.' });
+    recordAudit('delete', 'app', req.params.id, 'Deleted an application');
     res.json({ ok: true });
   });
 }

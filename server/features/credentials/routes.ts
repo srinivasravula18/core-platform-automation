@@ -11,6 +11,7 @@
 import type { Express } from 'express';
 import { persistDataInBackground } from '../../shared/storage';
 import { reqScope } from '../../shared/scope';
+import { recordAudit } from '../../shared/recordAudit';
 import {
   listWebsites,
   getWebsite,
@@ -76,6 +77,7 @@ export function registerCredentialsRoutes(app: Express) {
       ownerId: reqScope(req).userId || '',
     });
     persistDataInBackground('create website');
+    recordAudit('create', 'credential', w.id, `Added website credential "${w.name}"`);
     res.json({ ok: true, website: w });
   });
 
@@ -84,6 +86,7 @@ export function registerCredentialsRoutes(app: Express) {
     const w = updateWebsite(req.params.id, req.body || {});
     if (!w) return res.status(404).json({ error: 'Website not found' });
     persistDataInBackground('update website');
+    recordAudit('update', 'credential', w.id, `Updated website credential "${w.name}"`);
     res.json({ ok: true, website: w });
   });
 
@@ -91,6 +94,7 @@ export function registerCredentialsRoutes(app: Express) {
     if (!canAccessWebsite(req, req.params.id)) return res.status(404).json({ error: 'Website not found' });
     const ok = deleteWebsite(req.params.id);
     persistDataInBackground('delete website');
+    recordAudit('delete', 'credential', req.params.id, 'Deleted a website credential');
     res.json({ ok });
   });
 
@@ -107,6 +111,7 @@ export function registerCredentialsRoutes(app: Express) {
     }
     const u = createUser({ websiteId: req.params.id, label, username, password, role, customRole, notes, pageName, pageUrl });
     persistDataInBackground('create website user');
+    recordAudit('create', 'credential-login', u.id, `Added login "${u.username}"`);
     res.json({ ok: true, user: userResponse(u) });
   });
 
@@ -115,6 +120,7 @@ export function registerCredentialsRoutes(app: Express) {
     const u = updateUser(req.params.id, req.body || {});
     if (!u) return res.status(404).json({ error: 'User not found' });
     persistDataInBackground('update user');
+    recordAudit('update', 'credential-login', u.id, `Updated login "${u.username}"`);
     res.json({ ok: true, user: userResponse(u) });
   });
 
@@ -122,6 +128,7 @@ export function registerCredentialsRoutes(app: Express) {
     if (!canAccessUser(req, req.params.id)) return res.status(404).json({ error: 'User not found' });
     const ok = deleteUser(req.params.id);
     persistDataInBackground('delete user');
+    recordAudit('delete', 'credential-login', req.params.id, 'Deleted a login');
     res.json({ ok });
   });
 

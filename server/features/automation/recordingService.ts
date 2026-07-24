@@ -18,7 +18,8 @@ import { emitEvent } from './eventsService';
 import { onAgentFrame, dispatchToAgent, isAgentConnected } from './agentGateway';
 import { testCaseTypeFields } from '../../../core/shared/testCaseTypes';
 import { hardenRecordedScript } from './scriptHardening';
-import { scriptToGroupedSteps } from './stepGrouping';
+import { scriptToGroupedSteps, parseAtomicSteps, coalesceAtomicSteps } from './stepGrouping';
+import { humanizeRecordedSteps } from './humanizeSteps';
 import { isRecorderStepGroupingEnabled } from './flag';
 import type { AgentFrame } from './types';
 import { nextArtifactId } from '../../shared/artifactIds';
@@ -116,18 +117,10 @@ export function scriptToSteps(script: string): Array<{ action: string; expected:
     const grouped = scriptToGroupedSteps(script);
     if (grouped.length) return grouped;
   } else {
-    // Legacy path (flag off): 1 recognized script line -> 1 flat step, byte-for-byte as before.
-    const steps: Array<{ action: string; expected: string }> = [];
-    for (const raw of String(script || '').split('\n')) {
-      const line = raw.trim();
-      let m: RegExpMatchArray | null;
-      if ((m = line.match(/\.goto\(['"`]([^'"`]+)['"`]/))) steps.push({ action: `Navigate to ${m[1]}`, expected: '' });
-      else if ((m = line.match(/getBy\w+\(['"`]([^'"`]+)['"`][^)]*\)\s*\.click\(/))) steps.push({ action: `Click "${m[1]}"`, expected: '' });
-      else if ((m = line.match(/getBy\w+\(['"`]([^'"`]+)['"`][^)]*\)\s*\.fill\(['"`]([^'"`]*)['"`]/))) steps.push({ action: `Fill "${m[1]}" with "${m[2]}"`, expected: '' });
-      else if ((m = line.match(/getBy\w+\(['"`]([^'"`]+)['"`][^)]*\)\s*\.(check|selectOption|press)\(/))) steps.push({ action: `${m[2]} "${m[1]}"`, expected: '' });
-      else if (/expect\(/.test(line) && (m = line.match(/getBy\w+\(['"`]([^'"`]+)['"`]/))) steps.push({ action: `Verify "${m[1]}"`, expected: 'Element is present/visible.' });
-    }
-    if (steps.length) return steps;
+    // Flat path (grouping flag off): reuse the SAME improved parser + noise-coalesce as the grouped
+    // path (real field names, secret masking, click→fill collapse), just without the group tags.
+    const flat = coalesceAtomicSteps(parseAtomicSteps(script)).map((s) => ({ action: s.action, expected: s.expected }));
+    if (flat.length) return flat;
   }
   return [{ action: 'Run the recorded Playwright script.', expected: 'The recorded flow completes without errors.' }];
 }
@@ -148,7 +141,10 @@ async function reflectRecordingAsCase(rec: any, finalScript: string): Promise<st
     id: caseId,
     title,
     description: `Recorded via codegen against ${rec.appUrl || 'the target app'}.`,
-    steps: normalizeCaseSteps(scriptToSteps(finalScript)),
+    // Stage 1 (scriptToSteps) yields clean, correctly-labelled, secret-masked steps; Stage 2
+    // (humanizeRecordedSteps) rewrites them into a natural, intent-level manual case with real
+    // expected results — falling back to the Stage-1 steps if no AI provider is available.
+    steps: normalizeCaseSteps(await humanizeRecordedSteps(scriptToSteps(finalScript), { title, url: rec.appUrl })),
     type: 'Automated',
     testingScope: 'Automation',
     automationStatus: 'Automated',
