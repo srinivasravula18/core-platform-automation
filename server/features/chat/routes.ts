@@ -162,8 +162,9 @@ export function registerChatRoutes(app: Express) {
       }
       const convo = await ChatConversations.get(req.params.id);
       if (!convo) return res.json({ id: req.params.id, turns: [], title: '' });
-      // Another user's conversation reads as absent, not as a hint that it exists.
-      if (ownerMismatch(convo, reqScope(req))) return res.json({ id: req.params.id, turns: [], title: '' });
+      // Another user's conversation reads as absent — but flag it `foreign` so the client can
+      // fork to a fresh, own conversation instead of silently writing into someone else's thread.
+      if (ownerMismatch(convo, reqScope(req))) return res.json({ id: req.params.id, turns: [], title: '', foreign: true });
       res.json(convo);
     } catch (err) {
       next(err);

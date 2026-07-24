@@ -909,11 +909,21 @@ export default function AgentConsole() {
     try {
       const r = await fetch(`/api/chat/conversations/${id}`);
       const d = await r.json();
+      if (token !== loadReqRef.current) return; // a newer load won — discard this result
+      // The conversation belongs to another user (e.g. a stale pinned id from before login).
+      // Never keep it or write into it — fork to a fresh, own conversation so new messages are
+      // saved under this user and show up in their history.
+      if (d?.foreign) {
+        convTitleRef.current = '';
+        setConversationId(makeConversationId());
+        setTurns([]);
+        loadedRef.current = true;
+        return;
+      }
       // Drop any transient "thinking" turns that may have been persisted.
       const clean = (Array.isArray(d.turns) ? d.turns : []).filter(
         (t: Turn) => !(t.role === 'assistant' && t.kind === 'thinking'),
       );
-      if (token !== loadReqRef.current) return; // a newer load won — discard this result
       convTitleRef.current = String(d.title || '');
       setTurns(clean);
     } catch {
@@ -945,15 +955,18 @@ export default function AgentConsole() {
       let chosen = preferredId;
       let chosenTurns: Turn[] = [];
       let chosenTitle = '';
+      let preferredForeign = false;
       try {
         const r = await fetch(`/api/chat/conversations/${preferredId}`);
         const d = await r.json();
+        if (d?.foreign) preferredForeign = true; // pinned id belongs to another user
         chosenTurns = cleanTurns(d?.turns);
         chosenTitle = String(d?.title || '');
       } catch { /* ignore */ }
 
-      // Only fall back when this wasn't an explicit deep link to a specific chat.
-      if (chosenTurns.length === 0 && !urlChatId && !rememberedConversationIdRef.current) {
+      // Fall back to a recent OWN chat when the preferred one is empty (and not a deep link) OR
+      // when it belongs to another user — never land the user inside a foreign conversation.
+      if ((chosenTurns.length === 0 && !urlChatId && !rememberedConversationIdRef.current) || preferredForeign) {
         const recent = [...convs]
           .filter((c) => (c.turnCount || 0) > 0)
           .sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''))[0];
@@ -966,6 +979,14 @@ export default function AgentConsole() {
             chosen = recent.id;
           } catch { /* ignore */ }
         }
+      }
+
+      // If the preferred conversation was foreign and no own chat was chosen instead, mint a
+      // fresh id so we never keep (or write into) another user's conversation.
+      if (preferredForeign && chosen === preferredId) {
+        chosen = makeConversationId();
+        chosenTurns = [];
+        chosenTitle = '';
       }
 
       if (token !== loadReqRef.current) return; // a newer load (chat switch/new chat) won
