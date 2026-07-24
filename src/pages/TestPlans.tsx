@@ -618,35 +618,29 @@ export default function TestPlans() {
         </div>
 
         <div className="flex-1 overflow-auto">
-          <table className="w-full text-left text-sm whitespace-nowrap">
+          <table className="w-full min-w-[1120px] table-fixed text-left text-sm whitespace-nowrap">
             <thead className="sticky top-0 bg-[var(--bg-secondary)] border-b border-[var(--border)] z-10">
               <tr className="text-[var(--text-muted)]">
                 <th className="font-medium py-3 px-4 w-10">
                   <input type="checkbox" checked={bulk.allSelected(filteredPlans.map((p) => p.id))} onChange={() => bulk.toggleAll(filteredPlans.map((p) => p.id))} />
                 </th>
-                <th className="font-medium py-3 px-4 w-24">ID</th>
-                <th className="font-medium py-3 px-4">Title</th>
-                <th className="font-medium py-3 px-4 w-56">Repository Folder</th>
-                <th className="font-medium py-3 px-4">Start Date</th>
-                <th className="font-medium py-3 px-4">End Date</th>
-                <th className="font-medium py-3 px-4">Owner</th>
-                <th className="font-medium py-3 px-4">Tags</th>
-                <th className="font-medium py-3 px-4 w-32">Status</th>
-                <th className="font-medium py-3 px-4">Environments</th>
-                <th className="font-medium py-3 px-4">Resources &amp; Roles</th>
-                <th className="font-medium py-3 px-4">Deliverables</th>
-                <th className="font-medium py-3 px-4 text-center">Linked Test Runs</th>
-                <th className="font-medium py-3 px-4">Description</th>
+                <th className="w-32 px-4 py-3 font-medium">ID</th>
+                <th className="w-72 px-4 py-3 font-medium">Name</th>
+                <th className="w-48 px-4 py-3 font-medium">Owner</th>
+                <th className="w-40 px-4 py-3 font-medium">Status</th>
+                <th className="w-32 px-4 py-3 font-medium">Risk Level</th>
+                <th className="w-52 px-4 py-3 font-medium">Start / End Date</th>
+                <th className="w-28 px-4 py-3 text-center font-medium">Linked Runs</th>
+                <th className="w-28 px-4 py-3 text-center font-medium">Test Cases</th>
                 <th className="font-medium py-3 px-4 w-24 text-right">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-[var(--border)]">
               {loading ? (
-                <tr><td colSpan={15} className="py-8 text-center text-[var(--text-muted)]">Loading plans...</td></tr>
+                <tr><td colSpan={10} className="py-8 text-center text-[var(--text-muted)]">Loading plans...</td></tr>
               ) : filteredPlans.length === 0 ? (
-                <tr><td colSpan={15} className="py-8 text-center text-[var(--text-muted)]">No plans found.</td></tr>
+                <tr><td colSpan={10} className="py-8 text-center text-[var(--text-muted)]">No plans found.</td></tr>
               ) : filteredPlans.map((plan) => {
-                const planSuites = getPlanSuites(plan.id);
                 const planCases = getPlanCases(plan.id);
                 const linkedRunCount = getPlanRuns(plan).length;
                 const isSelected = planId === plan.id;
@@ -656,46 +650,18 @@ export default function TestPlans() {
                     key={plan.id}
                     onClick={() => navigate(`/plans/${plan.id}`)}
                     className={cn(
-                      "transition-colors cursor-pointer",
+                      "h-14 cursor-pointer align-middle transition-colors",
                       isSelected ? "bg-[var(--accent)]/10" : "hover:bg-[var(--bg-secondary)]"
                     )}
                   >
                     <td className="py-3 px-4" onClick={(e) => e.stopPropagation()}>
                       <input type="checkbox" checked={bulk.isSelected(plan.id)} onChange={() => bulk.toggle(plan.id)} />
                     </td>
-                    <td className="py-3 px-4 font-mono text-xs text-[var(--text-muted)]">{plan.id}</td>
+                    <td className="truncate py-3 px-4 font-mono text-xs text-[var(--text-muted)]" title={plan.id}>{plan.id}</td>
                     <td className="py-3 px-4">
-                      <div className="min-w-0 max-w-[420px]">
-                        <span className="block truncate font-medium" title={plan.name}>{plan.name}</span>
-                        <span className="text-xs text-[var(--text-muted)]">
-                          {planSuites.length} suites / {planCases.length} cases
-                        </span>
-                      </div>
+                      <span className="block max-w-[420px] truncate font-medium" title={plan.name}>{plan.name}</span>
                     </td>
-                    <td className="py-3 px-4">
-                      <select
-                        value={plan.folderId || ''}
-                        onClick={(event) => event.stopPropagation()}
-                        onChange={(event) => updatePlanInline(plan, { folderId: event.target.value })}
-                        className={inlineSelectClass}
-                        title="Update folder"
-                      >
-                        <option value="" disabled>Select a folder</option>
-                        {folders.map((folder) => (
-                          <option key={folder.id} value={folder.id}>{folder.path || folder.name}</option>
-                        ))}
-                      </select>
-                    </td>
-                    <td className="py-3 px-4 text-[var(--text-muted)]">{plan.startDate || '-'}</td>
-                    <td className="py-3 px-4 text-[var(--text-muted)]">{plan.endDate || '-'}</td>
-                    <td className="py-3 px-4 text-[var(--text-muted)]">{plan.owner || '-'}</td>
-                    <td className="py-3 px-4">
-                      <div className="flex max-w-56 flex-wrap gap-1">
-                        {(Array.isArray(plan.tags) && plan.tags.length) ? plan.tags.map((tag: string) => (
-                          <span key={tag} className="rounded bg-[var(--accent)]/10 px-1.5 py-0.5 text-xs text-[var(--accent)]">{tag}</span>
-                        )) : <span className="text-[var(--text-muted)]">-</span>}
-                      </div>
-                    </td>
+                    <td className="truncate py-3 px-4 text-[var(--text-muted)]" title={plan.owner || undefined}>{plan.owner || '-'}</td>
                     <td className="py-3 px-4">
                       <select
                         value={plan.status || 'Draft'}
@@ -709,15 +675,18 @@ export default function TestPlans() {
                         ))}
                       </select>
                     </td>
-                    <td className="max-w-64 whitespace-normal py-3 px-4 text-[var(--text-muted)]">{plan.environments || '-'}</td>
-                    <td className="max-w-64 whitespace-normal py-3 px-4 text-[var(--text-muted)]">{plan.roles || '-'}</td>
-                    <td className="max-w-64 whitespace-normal py-3 px-4 text-[var(--text-muted)]">{plan.deliverables || '-'}</td>
+                    <td className="py-3 px-4">
+                      <span className={cn("inline-flex rounded px-2 py-0.5 text-xs font-bold uppercase tracking-wider", getRiskBadgeClass(plan.riskLevel || 'Medium'))}>
+                        {plan.riskLevel || 'Medium'}
+                      </span>
+                    </td>
+                    <td className="py-3 px-4 text-[var(--text-muted)]">{plan.startDate || '-'} / {plan.endDate || '-'}</td>
                     <td className="py-3 px-4 text-center">
                       <span className="inline-flex min-w-7 justify-center rounded-full bg-[var(--accent)]/10 px-2 py-0.5 text-xs font-semibold text-[var(--accent)]" title={`${linkedRunCount} linked test run${linkedRunCount === 1 ? '' : 's'}`}>
                         {linkedRunCount}
                       </span>
                     </td>
-                    <td className="max-w-80 whitespace-normal py-3 px-4 text-[var(--text-muted)]">{plan.description || plan.objectives || '-'}</td>
+                    <td className="py-3 px-4 text-center">{planCases.length}</td>
                     <td className="py-3 px-4 text-right">
                       <div className="relative inline-flex items-center gap-1">
                         <button
