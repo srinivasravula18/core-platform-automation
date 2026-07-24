@@ -1030,6 +1030,13 @@ export default function AgentConsole() {
   }, [historyOpen]);
 
   const newConversation = useCallback(() => {
+    // Cancel any in-flight generation from the conversation we're leaving. Otherwise `busy`
+    // stays true and the toolbar is stuck showing "Stop" in the new chat with no way to send
+    // (send() early-returns while busy), and nothing generates.
+    activeAbortRef.current?.abort();
+    activeAbortRef.current = null;
+    activeThinkingIdRef.current = null;
+    setBusy(false);
     loadReqRef.current++; // invalidate any in-flight conversation load
     convTitleRef.current = '';
     setConversationId(makeConversationId());
@@ -1044,6 +1051,12 @@ export default function AgentConsole() {
         setHistoryOpen(false);
         return;
       }
+      // Leaving this conversation: cancel any in-flight run so `busy`/the "Stop" button don't
+      // carry over into the conversation we're opening.
+      activeAbortRef.current?.abort();
+      activeAbortRef.current = null;
+      activeThinkingIdRef.current = null;
+      setBusy(false);
       setConversationId(id);
       loadConversation(id);
       setHistoryOpen(false);
