@@ -132,6 +132,9 @@ export default function Requirements() {
     const q = searchTerm.toLowerCase();
     return !q || `${req.id} ${req.title} ${req.featureQuery} ${req.description}`.toLowerCase().includes(q);
   });
+  const exportRequirements = bulk.selectedCount
+    ? filtered.filter((req) => bulk.selectedIds.has(req.id))
+    : filtered;
   return (
     <div className="app-page-shell h-full flex flex-col">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-6 flex-shrink-0">
@@ -143,7 +146,8 @@ export default function Requirements() {
           <ExportMenu
             filename="requirements"
             title="Requirements"
-            rows={filtered}
+            rows={exportRequirements}
+            label={bulk.selectedCount ? `Export selected (${bulk.selectedCount})` : 'Export'}
             columns={[
               { key: 'id', label: 'ID' },
               { key: 'title', label: 'Title' },

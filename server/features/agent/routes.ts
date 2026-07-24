@@ -75,6 +75,7 @@ import { renderTargetCatalogForPrompt } from './compiler/renderCatalogForPrompt'
 import { testPlanSchema, parseTestPlan } from './compiler/testPlan';
 import { semanticPlanFromCase } from './compiler/semanticPlanner';
 import { linkedExistingCases, scoreCaseReuse } from './caseReuse';
+import { reviewedCasesForRun, syncReviewedCases } from './caseCollection';
 import { pushInboxItem } from '../inbox/routes';
 import { AgentRuns, ChatConversations, Plans, Suites, Cases, Runs, Reports, Scripts, Folders, Requirements, RequirementLinks, Defects, isPgEnabled } from '../../db/repository';
 import { loadConversationHandoff } from '../../ai/memory/conversationState';
@@ -1088,7 +1089,7 @@ async function persistAgentCaseArtifacts(run: any) {
   const planId = agentPlanId(run);
   const suiteId = agentSuiteId(run);
 
-  const cases = run.generated_cases || [];
+  const cases = reviewedCasesForRun(run);
   // Rework rounds replace the set: rows from a prior save of THIS run that are no longer in
   // the current case list are removed (reused existing cases keep their original run link).
   const keepIds = new Set(cases.map((c: any, i: number) => c?.id || agentCaseId(run, i)));
@@ -1237,19 +1238,13 @@ function pushPhase(run: any, msg: any): void {
   run.messages.push({ ...msg, at: nowIso() });
 }
 
-function allCasesForRun(run: any): any[] {
-  if (Array.isArray(run?.all_generated_cases) && run.all_generated_cases.length) return run.all_generated_cases;
-  const msg = [...(run?.messages || [])].reverse().find((m: any) => m?.agent === 'TestGenerationAgent' && Array.isArray(m?.output?.test_cases));
-  return msg?.output?.test_cases || run?.generated_cases || [];
-}
-
 function runDetailsPayload(run: any): any {
   return {
     ...run,
     // Same graph-gate derivation as runStatusSnapshot so the full-details refetch agrees with polling.
     review_stage: run?.review_stage || run?.pending_review?.kind || '',
     generated_cases: annotateGeneratedCasesWithProof(normalizeGeneratedCasesText(run.generated_cases || [], run), run),
-    all_generated_cases: annotateGeneratedCasesWithProof(normalizeGeneratedCasesText(allCasesForRun(run), run), run),
+    all_generated_cases: annotateGeneratedCasesWithProof(normalizeGeneratedCasesText(reviewedCasesForRun(run), run), run),
   };
 }
 
@@ -6597,6 +6592,10 @@ Do both when the request implies both. Never delete or renumber cases. Steps mus
     const linkedPlanId = linkedRun ? `PLAN-${linkedRun.id.substring(0, 8).toUpperCase()}` : '';
     const linkedSuiteId = linkedRun ? `SUITE-${linkedRun.id.substring(0, 8).toUpperCase()}` : '';
     if (Array.isArray(cases)) {
+      if (linkedRun) {
+        syncReviewedCases(linkedRun, cases);
+        await saveAgentRunState(linkedRun, 'saved reviewed cases');
+      }
       // Cases FK-reference the linked plan/suite, so they MUST exist before the upserts below.
       // The legacy engine created them at the review pause; the graph engine does not — saving
       // at a graph run's review previously hit cases_test_plan_id_fkey and hung the request.
