@@ -113,6 +113,12 @@ export function registerChatRoutes(app: Express) {
         workspaceId: String(sessionId || 'default'),
         title: (existing as any)?.title || message.slice(0, 120),
         messages: [{ role: 'user', text: message }, { role: 'assistant', kind: 'text', text: final }],
+        // Stamp ownership at creation so the conversation belongs to the sender. Without this the
+        // row was left unowned; under strict per-user isolation a tester's own chats then never
+        // appeared in their history (admin still saw unowned rows, so it looked admin-only).
+        ownerId: scope.userId,
+        projectId: scope.projectId,
+        appId: scope.appId || undefined,
       }).catch(() => null);
       persistDataInBackground('chat turn');
     } catch (err: any) {

@@ -30,13 +30,18 @@ function nativeReplayOptions(assembled: Awaited<ReturnType<typeof assembleFastCo
     : { questionPrefix: '', seedMessages: assembled.history, memoryBlock: assembled.memoryBlock };
 }
 
-async function persistExchange(conversationId: unknown, workspaceId: unknown, userMessage: string, reply: string) {
+async function persistExchange(conversationId: unknown, workspaceId: unknown, userMessage: string, reply: string, scope?: { userId?: string; projectId?: string; appId?: string | null }) {
   if (typeof conversationId !== 'string' || !conversationId) return;
   await ChatConversations.appendMessages({
     id: conversationId,
     workspaceId: typeof workspaceId === 'string' ? workspaceId : 'default',
     title: userMessage.slice(0, 120),
     messages: [{ role: 'user', text: userMessage }, { role: 'assistant', kind: 'text', text: reply }],
+    // Stamp ownership so the conversation belongs to the sender — otherwise it is created unowned
+    // and, under strict per-user history isolation, a tester never sees their own chats.
+    ownerId: scope?.userId,
+    projectId: scope?.projectId,
+    appId: scope?.appId || undefined,
   });
 }
 
@@ -177,7 +182,7 @@ export function registerControllerRoutes(app: Express) {
       // FAST PATH 1: simple count/list questions answered straight from the DB (no LLM).
       const quick = await quickWorkspaceAnswer(userMessage, scope);
       if (quick) {
-        await persistExchange(conversationId, workspaceId, userMessage, quick);
+        await persistExchange(conversationId, workspaceId, userMessage, quick, scope);
         return res.json({ reply: quick, accepted: true, fast: true, actions: [], trace: [] });
       }
       // FAST PATH 2: app-knowledge QUESTIONS get a single git-grounded LLM call (retrieval
@@ -206,7 +211,7 @@ export function registerControllerRoutes(app: Express) {
           seedMessages: replay.seedMessages,
           memoryBlock: replay.memoryBlock,
         });
-        await persistExchange(conversationId, workspaceId, userMessage, reply);
+        await persistExchange(conversationId, workspaceId, userMessage, reply, scope);
         return res.json({ reply, accepted: true, fast: true, actions: [{ tool: 'search_codebase', arguments: {} }], trace: [] });
       }
       const result = await runSupervisor({
@@ -220,7 +225,7 @@ export function registerControllerRoutes(app: Express) {
         pageContext,
         apps,
       });
-      await persistExchange(conversationId, workspaceId, userMessage, result.finalText);
+      await persistExchange(conversationId, workspaceId, userMessage, result.finalText, scope);
       res.json({
         reply: result.finalText,
         accepted: result.accepted,
@@ -255,7 +260,7 @@ export function registerControllerRoutes(app: Express) {
       flushStream(res);
       // Instant path: simple count/list answered from the DB, no steps.
       const quick = await quickWorkspaceAnswer(userMessage, effectiveUserId);
-      if (quick) { await persistExchange(conversationId, workspaceId, userMessage, quick); await sendFinalReply(res, send, quick, { fast: true }); return res.end(); }
+      if (quick) { await persistExchange(conversationId, workspaceId, userMessage, quick, scope); await sendFinalReply(res, send, quick, { fast: true }); return res.end(); }
       // Fast git-grounded path for app-knowledge QUESTIONS: ONE LLM call after deterministic
       // retrieval. Emits the search/read progress so the UI still animates the live steps.
       if (!ACTION_RE.test(userMessage) && !isWorkspaceDataQuestion(userMessage, Array.isArray(history) ? history : [])) {
@@ -290,7 +295,7 @@ export function registerControllerRoutes(app: Express) {
             flushStream(res);
           },
         });
-        await persistExchange(conversationId, workspaceId, userMessage, reply);
+        await persistExchange(conversationId, workspaceId, userMessage, reply, scope);
         await sendFinalReply(res, send, reply, { fast: true });
         return res.end();
       }
@@ -314,7 +319,7 @@ export function registerControllerRoutes(app: Express) {
           flushStream(res);
         },
       });
-      await persistExchange(conversationId, workspaceId, userMessage, result.finalText);
+      await persistExchange(conversationId, workspaceId, userMessage, result.finalText, scope);
       await sendFinalReply(res, send, result.finalText, { accepted: result.accepted });
     } catch (err: any) {
       send({ type: 'error', error: err?.message || 'supervisor failed' });

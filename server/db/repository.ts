@@ -1590,7 +1590,7 @@ export const ChatConversations = {
     await writeConversationScope(c.id, c);
     return mapConversation(r, true);
   },
-  async appendMessages(c: { id: string; workspaceId?: string; title?: string; messages: any[] }): Promise<any> {
+  async appendMessages(c: { id: string; workspaceId?: string; title?: string; messages: any[]; ownerId?: string; projectId?: string; appId?: string }): Promise<any> {
     const incoming = (c.messages || []).map(messagePayload).filter((m) => m.content || Object.keys(m.payload).length > 2);
     if (!incoming.length) return this.get(c.id);
     if (!isPgEnabled()) {
@@ -1622,6 +1622,10 @@ export const ChatConversations = {
         );
       }
     });
+    // Stamp ownership (first-owner-wins) so the conversation belongs to the sender the moment it
+    // is created — otherwise it stays unowned and is invisible to its owner under strict per-user
+    // history isolation (a tester would never see their own chats).
+    await writeConversationScope(c.id, c);
     return this.get(c.id);
   },
   async upsert(c: { id: string; workspaceId?: string; title?: string; turns?: any[]; ownerId?: string; projectId?: string; appId?: string }): Promise<any> {
