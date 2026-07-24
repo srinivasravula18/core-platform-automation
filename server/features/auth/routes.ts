@@ -1,5 +1,6 @@
 import type { Express, Request, Response, NextFunction } from 'express';
 import { randomUUID } from 'crypto';
+import { db, persistDataInBackground } from '../../shared/storage';
 import {
   findByUsername,
   verifyPassword,
@@ -13,9 +14,12 @@ import {
 } from './userStore';
 
 // Multi-user app login with RBAC. Users live in the user store (server/features/
-// auth/userStore.ts); tokens (sessions) are issued in-memory on login and validated
-// per request. A backend restart simply forces a re-login. Roles are dynamic strings
-// resolved at runtime via the user store (own data only).
+// auth/userStore.ts). Sessions are DURABLE: stored in db.sessions (persisted to the
+// JSON store / Postgres json_store like every other collection) so a backend restart
+// — which happens on every code change since there is no hot-reload — does NOT silently
+// log everyone out. A stored session holds only { token, userId, createdAt }; the
+// username/role are resolved live from the user store on each request, so a role change
+// or a deleted profile takes effect immediately without a re-login.
 
 export interface AuthUser {
   userId: string;
@@ -23,7 +27,40 @@ export interface AuthUser {
   role: Role;
 }
 
-const sessions = new Map<string, AuthUser>();
+interface StoredSession {
+  token: string;
+  userId: string;
+  createdAt: string;
+}
+
+// Sessions expire after 30 days so durable tokens don't live forever.
+const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+
+function sessionStore(): StoredSession[] {
+  if (!Array.isArray(db.sessions)) db.sessions = [];
+  return db.sessions as StoredSession[];
+}
+
+function isExpired(s: StoredSession): boolean {
+  const t = Date.parse(s.createdAt || '');
+  return Number.isFinite(t) && Date.now() - t > SESSION_TTL_MS;
+}
+
+function findSession(token: string): StoredSession | null {
+  if (!token) return null;
+  return sessionStore().find((s) => s.token === token) || null;
+}
+
+function addSession(token: string, userId: string) {
+  sessionStore().unshift({ token, userId, createdAt: new Date().toISOString() });
+  persistDataInBackground('create session');
+}
+
+function removeSession(token: string) {
+  if (!token) return;
+  db.sessions = sessionStore().filter((s) => s.token !== token);
+  persistDataInBackground('delete session');
+}
 
 export function getTokenFromRequest(req: Request): string {
   const header = req.headers.authorization || '';
@@ -40,7 +77,14 @@ export function getTokenFromRequest(req: Request): string {
 export function getAuthUser(req: Request): AuthUser | null {
   const token = getTokenFromRequest(req);
   if (!token) return null;
-  return sessions.get(token) || null;
+  const session = findSession(token);
+  if (!session) return null;
+  if (isExpired(session)) { removeSession(token); return null; }
+  // Resolve identity + role LIVE from the user store so role changes / deletions apply
+  // immediately. A session whose user no longer exists is treated as logged out.
+  const user = getUserById(session.userId);
+  if (!user) return null;
+  return { userId: user.id, username: user.username, role: user.role };
 }
 
 export function isAuthed(req: Request): boolean {
@@ -104,9 +148,12 @@ export function apiAuthGate(req: Request, res: Response, next: NextFunction) {
   return res.status(401).json({ error: 'Authentication required.' });
 }
 
+/** Admin gate: ONLY users whose role is exactly 'admin'. A 'tester' (or any other
+ *  non-empty role string) must NOT pass — the previous truthy check let testers reach
+ *  every admin-only route (user CRUD, etc.). */
 export function requireAdmin(req: Request, res: Response, next: NextFunction) {
   const u = getAuthUser(req);
-  if (u && u.role) return next();
+  if (u && u.role === 'admin') return next();
   return res.status(403).json({ error: 'Admin access required.' });
 }
 
@@ -122,7 +169,7 @@ export function registerAuthRoutes(app: Express) {
       return res.status(401).json({ error: 'Invalid username or password.' });
     }
     const token = randomUUID();
-    sessions.set(token, { userId: user.id, username: user.username, role: user.role });
+    addSession(token, user.id);
     res.json({ token, username: user.username, role: user.role, name: user.name });
   });
 
@@ -134,7 +181,7 @@ export function registerAuthRoutes(app: Express) {
 
   app.post('/api/auth/logout', (req: Request, res: Response) => {
     const token = getTokenFromRequest(req);
-    if (token) sessions.delete(token);
+    removeSession(token);
     res.json({ success: true });
   });
 

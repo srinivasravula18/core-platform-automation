@@ -42,7 +42,7 @@ function userResponse(u: any) {
   };
 }
 
-// Every logged-in user may only see/use their own websites (no cross-user access).
+// Strict per-user isolation: every logged-in user may only see/use their OWN websites.
 function canAccessWebsite(req: any, websiteId: string): boolean {
   const scope = reqScope(req);
   if (!scope.userId) return true;
@@ -136,6 +136,7 @@ export function registerCredentialsRoutes(app: Express) {
       baseUrl: opts.baseUrl,
       targetUrl: opts.targetUrl,
       inline: opts.inline,
+      // Strict isolation: a run only ever resolves against the acting user's own websites.
       ownerId: scope.userId || undefined,
     });
     if (!resolved) return res.status(404).json({ error: 'No matching credentials' });

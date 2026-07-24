@@ -131,7 +131,11 @@ export function seedAuthUsersIfEmpty(): void {
  * in-memory store and Postgres.
  */
 export async function claimLegacyDataForAdmin(): Promise<{ adminId: string; claimedInMemory: number } | null> {
-  const admin = listUsers().find((u) => u.role);
+  // The real admin is role === 'admin'. The old `find(u => u.role)` matched the FIRST
+  // user with any truthy role — and since new users are unshifted to the front, that was
+  // whichever profile (often a tester) was created most recently, so legacy/unowned data
+  // could be handed to a tester. Fall back to the first user only if no admin exists.
+  const admin = listUsers().find((u) => u.role === 'admin') || listUsers().find((u) => u.role);
   if (!admin) return null;
   const adminId = admin.id;
   // Ids that belong to a real current user — their data must be preserved.
@@ -140,7 +144,7 @@ export async function claimLegacyDataForAdmin(): Promise<{ adminId: string; clai
 
   // In-memory stores (projects + websites are always in-memory; QA arrays back the
   // no-Postgres mode).
-  const memCollections = ['projects', 'websites', 'cases', 'runs', 'suites', 'plans', 'defects', 'scripts', 'reports', 'folders', 'requirements', 'agentRuns', 'appKnowledge'];
+  const memCollections = ['projects', 'websites', 'cases', 'runs', 'suites', 'plans', 'defects', 'scripts', 'reports', 'folders', 'requirements', 'agentRuns', 'appKnowledge', 'chatConversations'];
   let claimedInMemory = 0;
   for (const key of memCollections) {
     const arr = (db as any)[key];
@@ -166,7 +170,7 @@ export async function claimLegacyDataForAdmin(): Promise<{ adminId: string; clai
   // Reassign rows that are unowned OR owned by an id that is not a current user.
   if (isPostgresEnabled()) {
     const ids = Array.from(validIds);
-    const pgTables = ['plans', 'suites', 'cases', 'runs', 'defects', 'reports', 'scripts', 'folders', 'requirements', 'agent_runs', 'websites'];
+    const pgTables = ['plans', 'suites', 'cases', 'runs', 'defects', 'reports', 'scripts', 'folders', 'requirements', 'agent_runs', 'websites', 'chat_conversations'];
     for (const t of pgTables) {
       try {
         await query(

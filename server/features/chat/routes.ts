@@ -125,10 +125,16 @@ export function registerChatRoutes(app: Express) {
   app.get('/api/chat/conversations', async (req, res, next) => {
     try {
       const workspaceId = String(req.query.workspaceId || 'default');
-      // Phase 7 tenant isolation: users see their own conversations (+ legacy unowned rows).
+      // Strict per-user isolation: a TESTER sees ONLY their own conversations; ADMIN sees
+      // their own plus legacy/unowned rows (admin/system domain); unauthenticated callers see
+      // all (back-compat). Never surface one user's conversations to another.
       const scope = reqScope(req);
       const all = await ChatConversations.list(workspaceId);
-      const conversations = scope.userId ? all.filter((c: any) => !c.ownerId || c.ownerId === scope.userId) : all;
+      const conversations = !scope.userId
+        ? all
+        : scope.role === 'admin'
+          ? all.filter((c: any) => !c.ownerId || c.ownerId === scope.userId)
+          : all.filter((c: any) => c.ownerId === scope.userId);
       if (conversations.length) return res.json({ conversations });
       const runs = scopeFilter(await AgentRuns.list(), reqScope(req))
         .slice()

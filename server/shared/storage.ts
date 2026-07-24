@@ -403,7 +403,7 @@ export function persistSettingsInBackground(reason: string) {
  */
 export function addActivity(
   message: string,
-  opts?: { type?: string; entityId?: string; actor?: string; meta?: Record<string, any> },
+  opts?: { type?: string; entityId?: string; actor?: string; ownerId?: string; meta?: Record<string, any> },
 ) {
   db.recentActivity.unshift({
     message,
@@ -412,6 +412,9 @@ export function addActivity(
     type: opts?.type || 'general',
     entityId: opts?.entityId || '',
     actor: opts?.actor || '',
+    // Owner of the entry, for the per-user history feed: admin (super-admin) sees all;
+    // a tester sees only their own + unowned system/AI events. '' = system/unowned.
+    ownerId: opts?.ownerId || '',
     meta: opts?.meta || {},
   });
   // Keep a short history (not just 6) so a future "view all" works; the dashboard slices what it needs.

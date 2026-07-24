@@ -1242,40 +1242,52 @@ function CredentialsSection() {
     if (!r.name || !r.url) return; // need at least a name + URL to persist
     setRows((prev) => prev.map((x) => (x.key === key ? { ...x, saving: true } : x)));
     try {
+      // Read the server's error text on any non-2xx so the UI shows the REAL reason
+      // (e.g. session expired → 401, or forbidden → 403) instead of a generic message.
+      const failIfNotOk = async (res: Response, fallback: string) => {
+        if (res.ok) return;
+        const d = await res.json().catch(() => ({} as any));
+        throw new Error(d?.error || `${fallback} (HTTP ${res.status})`);
+      };
+
       let websiteId = r.websiteId;
       if (websiteId) {
-        await fetch(`/api/credentials/websites/${websiteId}`, {
+        const res = await fetch(`/api/credentials/websites/${websiteId}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ name: r.name, baseUrl: r.url }),
         });
+        await failIfNotOk(res, 'Could not update website');
       } else {
         const res = await fetch('/api/credentials/websites', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ name: r.name, baseUrl: r.url, environment: 'staging' }),
         });
+        await failIfNotOk(res, 'Could not create website');
         const d = await res.json().catch(() => ({}));
         websiteId = d?.website?.id;
       }
-      if (!websiteId) throw new Error('no website id');
+      if (!websiteId) throw new Error('The server did not return a website id.');
 
       const notes = r.useForPlaywright ? '' : 'no-playwright';
       let userId = r.userId;
       if (userId) {
         const body: any = { username: r.username, notes };
         if (r.password) body.password = r.password; // blank = keep existing
-        await fetch(`/api/credentials/users/${userId}`, {
+        const res = await fetch(`/api/credentials/users/${userId}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body),
         });
+        await failIfNotOk(res, 'Could not update login');
       } else if (r.username && r.password) {
         const res = await fetch(`/api/credentials/websites/${websiteId}/users`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ label: r.name || r.username, username: r.username, password: r.password, role: 'standard', notes }),
         });
+        await failIfNotOk(res, 'Could not save login');
         const d = await res.json().catch(() => ({}));
         userId = d?.user?.id;
       }
@@ -1289,9 +1301,9 @@ function CredentialsSection() {
         saving: false,
       } : x)));
       setStatus({ type: 'success', message: 'Saved' });
-    } catch {
+    } catch (err: any) {
       setRows((prev) => prev.map((x) => (x.key === key ? { ...x, saving: false } : x)));
-      setStatus({ type: 'error', message: 'Failed to save credential' });
+      setStatus({ type: 'error', message: err?.message || 'Failed to save credential' });
     }
   };
 

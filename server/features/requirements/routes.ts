@@ -214,7 +214,7 @@ export function registerRequirementRoutes(app: Express) {
     const updated = { ...existing, ...req.body, updatedAt: new Date() };
     await Requirements.upsert(updated);
     if (!isPgEnabled()) persistDataInBackground('requirement update');
-    addActivity(`Updated requirement: ${updated.title}`);
+    addActivity(`Updated requirement: ${updated.title}`, { ownerId: reqScope(req).userId || '' });
     res.json({ success: true });
   });
 
@@ -223,7 +223,7 @@ export function registerRequirementRoutes(app: Express) {
     if (!existing) return res.status(404).json({ error: 'Requirement not found.' });
     await Requirements.remove(req.params.id);
     if (!isPgEnabled()) persistDataInBackground('requirement delete');
-    addActivity(`Deleted requirement: ${existing.title}`);
+    addActivity(`Deleted requirement: ${existing.title}`, { ownerId: reqScope(req).userId || '' });
     res.json({ success: true });
   });
 
@@ -238,7 +238,7 @@ export function registerRequirementRoutes(app: Express) {
       deleted += 1;
     }
     if (!isPgEnabled()) persistDataInBackground('requirement bulk delete');
-    addActivity(`Deleted ${deleted} requirements`);
+    addActivity(`Deleted ${deleted} requirements`, { ownerId: reqScope(req).userId || '' });
     res.json({ success: true, deleted });
   });
 
@@ -257,7 +257,7 @@ export function registerRequirementRoutes(app: Express) {
       note: req.body?.note || '',
     });
     if (!isPgEnabled()) persistDataInBackground('requirement link');
-    addActivity(`Linked case ${caseId} to requirement ${requirement.title}`);
+    addActivity(`Linked case ${caseId} to requirement ${requirement.title}`, { ownerId: reqScope(req).userId || '' });
     res.json({ success: true, link });
   });
 

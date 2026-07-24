@@ -1510,12 +1510,16 @@ function mapConversation(r: any, includeTurns = true) {
   };
 }
 
-/** Stamp conversation scope columns post-upsert; COALESCE keeps an existing owner (PG only). */
+/** Stamp conversation scope columns post-upsert (PG only). First-owner-wins: owner_id is set
+ *  ONCE (when currently null/empty) and NEVER overwritten — otherwise any user who merely opens
+ *  or continues a conversation would steal ownership from its creator (the COALESCE was backwards:
+ *  `COALESCE(NULLIF($2,''), owner_id)` overwrote whenever an ownerId was supplied). project_id/
+ *  app_id keep the existing update-when-provided behavior (a conversation's project can change). */
 async function writeConversationScope(id: string, src: { ownerId?: string; projectId?: string; appId?: string }): Promise<void> {
   if (!isPgEnabled() || !id) return;
   if (!src.ownerId && !src.projectId && !src.appId) return;
   await query(
-    `UPDATE chat_conversations SET owner_id = COALESCE(NULLIF($2, ''), owner_id),
+    `UPDATE chat_conversations SET owner_id = COALESCE(NULLIF(owner_id, ''), NULLIF($2, '')),
        project_id = COALESCE(NULLIF($3, ''), project_id), app_id = COALESCE(NULLIF($4, ''), app_id)
      WHERE id = $1`,
     [id, src.ownerId || '', src.projectId || '', src.appId || ''],
@@ -1531,7 +1535,9 @@ export const ChatConversations = {
         .sort((a: any, b: any) => String(b.updatedAt).localeCompare(String(a.updatedAt)))
         .map((c: any) => ({ id: c.id, workspaceId: c.workspaceId, title: c.title || '', ownerId: c.ownerId || '', projectId: c.projectId || '', appId: c.appId || '', turnCount: (c.turns || []).length, createdAt: c.createdAt, updatedAt: c.updatedAt }));
     }
-    const rows = await query(`SELECT c.id, c.workspace_id, c.title, c.turns, c.created_at, c.updated_at,
+    // owner_id/project_id/app_id MUST be selected — the caller filters conversations by owner
+    // for per-user isolation; omitting owner_id made every row read as unowned and leak across users.
+    const rows = await query(`SELECT c.id, c.workspace_id, c.title, c.turns, c.owner_id, c.project_id, c.app_id, c.created_at, c.updated_at,
       GREATEST((SELECT COUNT(*)::int FROM chat_messages m WHERE m.conversation_id = c.id), COALESCE(jsonb_array_length(c.turns), 0)) AS message_count
       FROM chat_conversations c WHERE c.workspace_id = $1 ORDER BY c.updated_at DESC LIMIT 100`, [workspaceId]);
     return rows.map((r: any) => ({ ...mapConversation(r, false), turnCount: Number(r.message_count || 0) }));
