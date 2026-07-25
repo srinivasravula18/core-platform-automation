@@ -72,12 +72,24 @@ export default function Schedules() {
                   <td className="px-4 py-2.5 text-xs text-[var(--text-muted)]">{fmt(s.nextRunAt)}</td>
                   <td className="px-4 py-2.5 text-xs text-[var(--text-muted)]">{fmt(s.lastRunAt)}</td>
                   <td className="px-4 py-2.5">
-                    <button onClick={() => toggle(s.id, s.enabled)} className={`inline-flex h-5 w-9 items-center rounded-full px-0.5 transition-colors ${s.enabled ? 'bg-[var(--accent)]' : 'bg-slate-500/40'}`}>
+                    <button
+                      onClick={() => toggle(s.id, s.enabled)}
+                      role="switch"
+                      aria-checked={s.enabled}
+                      aria-label={`Toggle schedule for ${nameFor(s.recordingId)}`}
+                      className={`inline-flex h-5 w-9 items-center rounded-full px-0.5 transition-colors focus-visible:ring-2 focus-visible:ring-[var(--accent)] focus-visible:ring-offset-2 outline-none ${s.enabled ? 'bg-[var(--accent)]' : 'bg-slate-500/40'}`}
+                    >
                       <span className={`h-4 w-4 rounded-full bg-white transition-transform ${s.enabled ? 'translate-x-4' : ''}`} />
                     </button>
                   </td>
                   <td className="px-4 py-2.5 text-right">
-                    <button onClick={() => remove(s.id)} className="inline-flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-xs text-red-400 hover:border-red-500"><Trash2 className="h-3.5 w-3.5" /></button>
+                    <button
+                      onClick={() => remove(s.id)}
+                      aria-label={`Delete schedule for ${nameFor(s.recordingId)}`}
+                      className="inline-flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-xs text-red-400 hover:border-red-500 focus-visible:ring-2 focus-visible:ring-red-500 focus-visible:ring-offset-2 outline-none"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
                   </td>
                 </tr>
               ))}

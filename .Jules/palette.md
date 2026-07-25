@@ -1,0 +1,3 @@
+## 2026-07-24 - Custom Toggle/Switch Accessibility Pattern
+**Learning:** Purely visual custom switches and toggles in React applications are often built using styled `button` or `div` elements, but they lack essential screen reader roles (`role="switch"`), state indicators (`aria-checked`), descriptive labels (`aria-label`), and keyboard focus indication (`focus-visible`). This makes them completely unusable and invisible for keyboard-only and assistive-tech users.
+**Action:** When creating or modifying custom toggles or switches, always ensure they are semantic interactive controls by adding `role="switch"`, updating `aria-checked` dynamically, providing a descriptive `aria-label`, and styling the keyboard focus states using `focus-visible` classes.
