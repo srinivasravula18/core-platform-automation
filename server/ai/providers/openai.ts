@@ -29,8 +29,30 @@ import {
   extractBalancedJson, structuredTruncationError,
 } from './structuredOutput';
 
-function openAIJsonFormat<T>(format: T): T | { type: 'json_object' } {
-  return JSON.stringify(format).includes('"propertyNames"') ? { type: 'json_object' } : format;
+function getOpenAIResponsesFormat(schema: z.ZodTypeAny | undefined) {
+  if (!schema) return { type: 'json_object' as const };
+  try {
+    const format = zodTextFormat(schema, 'structured_output');
+    if (JSON.stringify(format).includes('"propertyNames"')) {
+      return { type: 'json_object' as const };
+    }
+    return format;
+  } catch {
+    return { type: 'json_object' as const };
+  }
+}
+
+function getOpenAIChatResponseFormat(schema: z.ZodTypeAny | undefined) {
+  if (!schema) return { type: 'json_object' as const };
+  try {
+    const format = zodResponseFormat(schema, 'structured_output');
+    if (JSON.stringify(format).includes('"propertyNames"')) {
+      return { type: 'json_object' as const };
+    }
+    return format;
+  } catch {
+    return { type: 'json_object' as const };
+  }
 }
 
 /** Map a provider-agnostic ChatMessage to an OpenAI chat message param. */
@@ -191,7 +213,7 @@ export class OpenAIProvider implements AIProvider {
           store: false,
           include: ['reasoning.encrypted_content'],
           ...this.responseParams(modelId, opts.maxTokens, opts.effort),
-          ...(jsonMode ? { text: { format: schema ? openAIJsonFormat(zodTextFormat(schema, 'structured_output')) : { type: 'json_object' as const } } } : {}),
+          ...(jsonMode ? { text: { format: getOpenAIResponsesFormat(schema) } } : {}),
         }, { signal: opts.signal });
         // Surface output-length truncation so generateObject can refuse to parse a partial payload.
         const finishReason = response.incomplete_details?.reason === 'max_output_tokens' ? 'length' as const : 'stop' as const;
@@ -215,7 +237,7 @@ export class OpenAIProvider implements AIProvider {
           ],
           ...this.sampling(modelId, opts.maxTokens, opts.temperature),
           ...(opts.effort ? { reasoning_effort: opts.effort } : {}),
-          ...(jsonMode ? { response_format: schema ? openAIJsonFormat(zodResponseFormat(schema, 'structured_output')) : { type: 'json_object' as const } } : {}),
+          ...(jsonMode ? { response_format: getOpenAIChatResponseFormat(schema) } : {}),
         },
         { signal: opts.signal },
       );

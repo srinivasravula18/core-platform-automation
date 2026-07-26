@@ -50,7 +50,10 @@ export default function ExportMenu({
         onClick={() => !disabled && setOpen((o) => !o)}
         disabled={disabled}
         title={disabled ? 'Nothing to export yet' : `Export ${rows.length} row(s)`}
-        className="flex items-center gap-1.5 border border-[var(--border)] bg-[var(--bg-secondary)] hover:border-[var(--accent)] text-[var(--text-primary)] px-3 py-2 rounded-md text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+        aria-label={disabled ? 'Nothing to export yet' : `Export ${rows.length} row(s)`}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        className="flex items-center gap-1.5 border border-[var(--border)] bg-[var(--bg-secondary)] hover:border-[var(--accent)] text-[var(--text-primary)] px-3 py-2 rounded-md text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed focus-visible:ring-2 focus-visible:ring-[var(--accent)] focus-visible:outline-none"
       >
         <Download className="w-4 h-4" /> {label}
         <ChevronDown className={`w-3.5 h-3.5 transition-transform ${open ? 'rotate-180' : ''}`} />
@@ -60,7 +63,11 @@ export default function ExportMenu({
         <>
           {/* click-away overlay */}
           <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          <div className={`absolute right-0 z-50 w-52 overflow-hidden rounded-md border border-[var(--border)] bg-[var(--bg-card)] shadow-lg ${dropUp ? 'bottom-full mb-1' : 'mt-1'}`}>
+          <div
+            role="menu"
+            aria-label="Export options"
+            className={`absolute right-0 z-50 w-52 overflow-hidden rounded-md border border-[var(--border)] bg-[var(--bg-card)] shadow-lg ${dropUp ? 'bottom-full mb-1' : 'mt-1'}`}
+          >
             <div className="px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] border-b border-[var(--border)]">
               Export {rows.length} row{rows.length === 1 ? '' : 's'}
             </div>
@@ -70,8 +77,9 @@ export default function ExportMenu({
               return (
                 <button
                   key={fmt}
+                  role="menuitem"
                   onClick={() => run(fmt)}
-                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-[var(--text-primary)] hover:bg-[var(--bg-secondary)] transition-colors"
+                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-[var(--text-primary)] hover:bg-[var(--bg-secondary)] transition-colors focus-visible:bg-[var(--bg-secondary)] focus-visible:outline-none"
                 >
                   <Icon className="w-4 h-4 text-[var(--accent)]" /> {Meta.label}
                 </button>
@@ -82,8 +90,9 @@ export default function ExportMenu({
               return (
                 <button
                   key={item.label}
+                  role="menuitem"
                   onClick={() => { setOpen(false); item.onClick(); }}
-                  className="flex w-full items-center gap-2 border-t border-[var(--border)] px-3 py-2 text-left text-sm text-[var(--text-primary)] hover:bg-[var(--bg-secondary)] transition-colors"
+                  className="flex w-full items-center gap-2 border-t border-[var(--border)] px-3 py-2 text-left text-sm text-[var(--text-primary)] hover:bg-[var(--bg-secondary)] transition-colors focus-visible:bg-[var(--bg-secondary)] focus-visible:outline-none"
                 >
                   <Icon className="w-4 h-4 text-[var(--accent)]" /> {item.label}
                 </button>
