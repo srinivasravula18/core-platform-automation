@@ -780,7 +780,13 @@ export default function TestPlans() {
             <thead className="sticky top-0 bg-[var(--bg-secondary)] border-b border-[var(--border)] z-10">
               <tr className="text-[var(--text-muted)]">
                 <th className="font-medium py-3 px-4 w-10">
-                  <input type="checkbox" checked={bulk.allSelected(filteredPlans.map((p) => p.id))} onChange={() => bulk.toggleAll(filteredPlans.map((p) => p.id))} />
+                  <input
+                    type="checkbox"
+                    checked={bulk.allSelected(filteredPlans.map((p) => p.id))}
+                    onChange={() => bulk.toggleAll(filteredPlans.map((p) => p.id))}
+                    aria-label="Select all test plans"
+                    className="focus-visible:ring-2 focus-visible:ring-[var(--accent)] focus-visible:outline-none rounded"
+                  />
                 </th>
                 <th className="w-32 px-4 py-3 font-medium">ID</th>
                 <th className="w-72 px-4 py-3 font-medium">Name</th>
@@ -816,7 +822,13 @@ export default function TestPlans() {
                     )}
                   >
                     <td className="py-3 px-4" onClick={(e) => e.stopPropagation()}>
-                      <input type="checkbox" checked={bulk.isSelected(plan.id)} onChange={() => bulk.toggle(plan.id)} />
+                      <input
+                        type="checkbox"
+                        checked={bulk.isSelected(plan.id)}
+                        onChange={() => bulk.toggle(plan.id)}
+                        aria-label={`Select test plan: ${plan.name}`}
+                        className="focus-visible:ring-2 focus-visible:ring-[var(--accent)] focus-visible:outline-none rounded"
+                      />
                     </td>
                     <td className="truncate py-3 px-4 font-mono text-xs text-[var(--text-muted)]" title={plan.id}>{plan.id}</td>
                     <td className="py-3 px-4">
@@ -828,8 +840,9 @@ export default function TestPlans() {
                         value={plan.status || 'Draft'}
                         onClick={(event) => event.stopPropagation()}
                         onChange={(event) => updatePlanInline(plan, { status: event.target.value })}
-                        className="w-full min-w-[130px] rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs font-medium text-[var(--text-primary)] outline-none transition-colors hover:border-[var(--accent)] focus:border-[var(--accent)]"
+                        className="w-full min-w-[130px] rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs font-medium text-[var(--text-primary)] outline-none transition-colors hover:border-[var(--accent)] focus:border-[var(--accent)] focus-visible:ring-2 focus-visible:ring-[var(--accent)] focus-visible:outline-none"
                         title="Update status"
+                        aria-label={`Update status for test plan: ${plan.name}`}
                       >
                         {(plan.status === 'In Progress' ? PLAN_STATUSES : MANUAL_PLAN_STATUSES).map((status) => (
                           <option key={status} value={status}>{status}</option>
@@ -875,9 +888,9 @@ export default function TestPlans() {
                             runSelectedPlans([plan.id]);
                           }}
                           disabled={isStartingRun || planCases.length === 0}
-                          title="Run all linked suites"
-                          aria-label="Run all linked suites"
-                          className="p-1 rounded hover:bg-emerald-500/10 text-[var(--text-muted)] hover:text-emerald-400 disabled:opacity-50 transition-colors"
+                          title={planCases.length === 0 ? "No test cases linked to this plan to run" : "Run all linked suites"}
+                          aria-label={planCases.length === 0 ? "No test cases linked to this plan to run" : "Run all linked suites"}
+                          className="p-1 rounded hover:bg-emerald-500/10 text-[var(--text-muted)] hover:text-emerald-400 disabled:opacity-50 transition-colors focus-visible:ring-2 focus-visible:ring-[var(--accent)] focus-visible:outline-none"
                         >
                           <PlayCircle className="w-4 h-4" />
                         </button>
@@ -887,7 +900,8 @@ export default function TestPlans() {
                             openEditModal(plan);
                           }}
                           title="Edit plan"
-                          className="p-1 rounded hover:bg-[var(--border)] text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors"
+                          aria-label={`Edit test plan: ${plan.name}`}
+                          className="p-1 rounded hover:bg-[var(--border)] text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors focus-visible:ring-2 focus-visible:ring-[var(--accent)] focus-visible:outline-none"
                         >
                           <Pencil className="w-4 h-4" />
                         </button>
