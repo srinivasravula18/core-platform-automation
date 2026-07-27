@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
+import { Link } from 'react-router-dom';
 import { ChevronDown } from 'lucide-react';
 import { cn } from '@/src/lib/utils';
 
@@ -49,7 +50,22 @@ export function TopbarActions({
     return () => document.removeEventListener('mousedown', onClick);
   }, []);
 
-  const current = providers.find((p) => p.name === selectedProvider);
+  // Callers commonly receive the full Settings list, which includes disabled and
+  // unconfigured providers. Replace a stale default selection with a short, direct
+  // setup prompt when none can run.
+  const callableProviders = providers.filter((provider) => provider.callable);
+  if (callableProviders.length === 0) {
+    return (
+      <Link
+        to="/settings"
+        className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-xs font-medium text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-card)] hover:text-[var(--accent)]"
+      >
+        Connect an AI provider
+      </Link>
+    );
+  }
+
+  const current = callableProviders.find((p) => p.name === selectedProvider) || callableProviders[0];
   const models = current
     ? [current.defaultModel, ...current.alternatives].filter((m) => m !== selectedModel)
     : [];
@@ -68,7 +84,7 @@ export function TopbarActions({
         </button>
         {providerOpen && (
           <div className="absolute top-full right-0 mt-1 min-w-[8rem] rounded-lg border border-[var(--border)] bg-[var(--bg-card)] shadow-xl z-50 overflow-hidden">
-            {providers.filter((p) => p.callable).map((p) => (
+            {callableProviders.map((p) => (
               <button
                 key={p.name}
                 onClick={() => { onProviderChange(p.name); setProviderOpen(false); }}

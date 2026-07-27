@@ -2833,6 +2833,9 @@ export default function AgentConsole() {
 
   const isEmpty = turns.length === 0;
 
+  // The provider endpoint always lists every supported provider, including ones that are
+  // disabled or lack credentials. The topbar renders selectors only for callable providers,
+  // or a compact Settings prompt when none is available.
   const providerPortal = providers.length > 0
     ? document.getElementById('topbar-actions')
     : null;
