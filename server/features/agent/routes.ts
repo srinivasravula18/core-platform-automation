@@ -846,16 +846,83 @@ function agentReportId(run: any): string {
   return `REP-${run.id.substring(0, 8).toUpperCase()}`;
 }
 
+// The bare SUBJECT of a run's artifacts — the feature/area under test, with NO scope suffix (the name
+// builders below add scope). Prefers the LLM-designed feature title (from the user's request) so names
+// read as a QA engineer would write them; falls back to app·module context, then the URL host, then
+// the prompt. Never contains a tool label like "Agent".
+function artifactSubject(run: any): string {
+  // The agent-authored suite title (written from the actual generated cases + the user's request — see
+  // ensureSuiteTitle) is the best, most human-readable name; prefer it over any derived label.
+  const authored = String(run.suiteTitle || '').trim();
+  if (authored) return authored;
+  const llm = String(run.feature_understanding?.title || '').trim();
+  if (llm) return llm;
+  const app = String(run.target_app_label || run.appName || '').trim();
+  const module = String(run.mission_context?.module?.name || run.mission_context?.tab?.name || '').trim();
+  const subject = [app, module].filter(Boolean).join(' · ');
+  if (subject) return subject;
+  try {
+    const host = new URL(run.app_url || '').hostname.replace(/^www\./, '').split('.')[0].replace(/[-_]/g, ' ').trim();
+    if (host) return host.replace(/\b\w/g, (c) => c.toUpperCase());
+  } catch { /* no usable URL */ }
+  return String(run.prompt || 'Test').replace(/\s+/g, ' ').trim().slice(0, 60) || 'Test';
+}
+
+// Human display name for reports/scripts/requirement titles — the clean subject, no "Agent"/scope noise.
 function agentDisplayName(run: any): string {
-  // Contextual name outranks the host-derived fallback so pre-fix runs also render meaningfully.
-  return run.artifactName
-    || buildContextualArtifactName({
-      appLabel: run.target_app_label,
-      appName: run.appName,
-      moduleName: run.mission_context?.module?.name || run.mission_context?.tab?.name,
-      prompt: run.prompt,
-    })
-    || buildFallbackArtifactName(run.prompt || '', run.app_url || '');
+  return artifactSubject(run);
+}
+
+// QA-standard artifact naming (no tool prefix like "Agent", no formula suffix). A SUITE/PLAN is just
+// the agent-authored title. A RUN appends execution context (timestamp + environment) so repeated
+// executions of the same suite stay distinguishable and traceable, as every QA tool expects.
+function formatRunStamp(run: any): string {
+  const raw = run?.startedAt || run?.createdAt || run?.created_at;
+  const dt = raw ? new Date(raw) : new Date();
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())} ${pad(dt.getHours())}:${pad(dt.getMinutes())}`;
+}
+function agentSuiteName(run: any): string {
+  return artifactSubject(run);
+}
+function agentRunName(run: any): string {
+  const env = String(run?.environment || run?.target_environment || '').trim();
+  return `${artifactSubject(run)} · ${formatRunStamp(run)}${env ? ` · ${env}` : ''}`;
+}
+function agentPlanName(run: any): string {
+  return artifactSubject(run);
+}
+
+// Have the AGENT author a clear, human-readable suite title from the actual generated cases + the
+// user's request — so a suite/run/plan reads like a QA engineer named it ("Admin list view: display,
+// filtering, sorting, and export"), not a terse feature label. Best-effort and idempotent: runs once
+// per completed run (only when cases exist and no title is set yet); any failure leaves the derived
+// fallback name in place. Provider access respects the owner's Access-Group grants (userId threaded).
+async function ensureSuiteTitle(run: any): Promise<void> {
+  if (String(run?.suiteTitle || '').trim()) return;
+  const cases = Array.isArray(run?.generated_cases) ? run.generated_cases : [];
+  if (cases.length === 0) return;
+  try {
+    const caseTitles = cases.map((c: any) => String(c?.title || c?.name || '').trim()).filter(Boolean).slice(0, 20);
+    if (caseTitles.length === 0) return;
+    const orchestrator = await getOrchestrator('chatAssistant', { workspaceId: run.ownerId || 'default', userId: run.ownerId });
+    const res = await orchestrator.generateObject<{ title: string }>({
+      prompt: `You are naming a QA TEST SUITE so a tester or manager understands it at a glance.
+
+User's request: ${String(run.prompt || '').slice(0, 300) || 'not provided'}
+Feature under test: ${String(run.feature_understanding?.title || '').slice(0, 120) || 'not provided'}
+Titles of the generated test cases:
+${caseTitles.map((t: string) => `- ${t}`).join('\n')}
+
+Write ONE clear, human-readable suite title in Title Case, 5-10 words, that names the feature/area under test and what it broadly covers. Good examples: "Admin List View: Display, Filtering, and Export", "Leads Record Creation and Validation", "User Login and Session Handling". Rules: plain English a non-engineer understands; NO tool words like "agent"; no credentials, URLs, dates, or the word "test"/"suite" padding. Return only the title.`,
+      schema: z.object({ title: z.string() }),
+      userMessage: String(run.prompt || ''),
+    });
+    const title = String((res as any)?.object?.title || '').trim();
+    if (title) run.suiteTitle = title.slice(0, 120);
+  } catch {
+    // Best-effort — fall back to the derived subject name.
+  }
 }
 
 function agentRunStatusForList(status: string): string {
@@ -972,6 +1039,7 @@ async function persistAgentRequirementArtifacts(run: any) {
 }
 
 async function persistAgentRunAndReportArtifacts(run: any) {
+  await ensureSuiteTitle(run); // agent-author the artifact title before run/suite/report names are built
   const baseName = agentDisplayName(run);
   const date = new Date().toISOString().split('T')[0];
   const { executionSteps, failed, passed, notVerified, firstFailure, reportStatus, progressLabel } = summarizeAgentRunExecution(run);
@@ -987,7 +1055,7 @@ async function persistAgentRunAndReportArtifacts(run: any) {
 
   await Runs.upsert({
     id: runRecordId,
-    name: `Agent Run - ${baseName}`,
+    name: agentRunName(run),
     suiteId: agentSuiteId(run),
     testPlanId: agentPlanId(run),
     caseIds,
@@ -1015,12 +1083,12 @@ async function persistAgentRunAndReportArtifacts(run: any) {
 
   await Reports.upsert({
     id: agentReportId(run),
-    name: `Agent Report - ${baseName}`,
+    name: `${baseName} — Report`,
     runId: runRecordId,
     planId: agentPlanId(run),
     suiteId: agentSuiteId(run),
-    planName: run.testPlanId ? `Agent Plan - ${baseName}` : '',
-    suiteName: `Agent Suite - ${baseName}`,
+    planName: run.testPlanId ? agentPlanName(run) : '',
+    suiteName: agentSuiteName(run),
     requestedBy: 'QA Assistant',
     executionTime: durationLabel,
     totalExecutions: executionSteps.length,
@@ -1042,7 +1110,7 @@ async function persistAgentRunAndReportArtifacts(run: any) {
   if (String(run.status || '').toLowerCase() === 'failed') {
     await Defects.upsert({
       id: `DEF-${run.id.substring(0, 8).toUpperCase()}`,
-      title: `Agent run failed - ${baseName}`,
+      title: `${baseName} — Run failed`,
       description: (run.messages || []).slice(-3).map((m: any) => typeof m.output === 'string' ? m.output : JSON.stringify(m.output || '')).filter(Boolean).join('\n\n'),
       severity: 'High',
       status: 'Open',
@@ -1155,6 +1223,7 @@ async function persistAgentCaseArtifacts(run: any) {
 // Suite creation shared by terminal persistence AND /api/agent/save-cases. A plan is linked
 // only when the user selected one; generating cases must not create a Test Plan implicitly.
 async function ensureAgentPlanAndSuite(run: any) {
+  await ensureSuiteTitle(run); // idempotent — ensures the agent-authored title exists for the suite name
   const planId = agentPlanId(run);
   const suiteId = agentSuiteId(run);
   const baseName = agentDisplayName(run);
@@ -1170,7 +1239,7 @@ async function ensureAgentPlanAndSuite(run: any) {
   if (!run.testSuiteId) {
     await Suites.upsert({
       id: suiteId,
-      name: `Agent Suite - ${baseName}`,
+      name: agentSuiteName(run),
       description: `Generated suite for ${run.app_url || baseName}`,
       testPlanId: planId || null,
       parentSuite: '',
@@ -1202,7 +1271,7 @@ async function persistAgentScripts(run: any) {
     const scriptId = `SCR-${run.id.substring(0, 8).toUpperCase()}-${index + 1}`;
     await Scripts.upsert({
       id: scriptId,
-      name: script.filename || script.test_case_title || `Agent Script - ${baseName} - ${index + 1}`,
+      name: script.filename || script.test_case_title || `${baseName} — Script ${index + 1}`,
       filename: script.filename || `agent-script-${run.id.substring(0, 8)}-${index + 1}.spec.ts`,
       title: script.test_case_title || script.filename || `Agent Script - ${index + 1}`,
       code: script.code || '',
@@ -2108,7 +2177,7 @@ async function persistAgentRunArtifacts(run: any) {
 
   await Runs.upsert({
     id: existingRunId,
-    name: `Agent Run - ${baseName}`,
+    name: agentRunName(run),
     suiteId: agentSuiteId(run),
     testPlanId: agentPlanId(run),
     caseIds: (run.generated_cases || []).map((_: any, index: number) => runCaseId(run, index)),
@@ -2136,12 +2205,12 @@ async function persistAgentRunArtifacts(run: any) {
 
   await Reports.upsert({
     id: existingReportId,
-    name: `Agent Report - ${baseName}`,
+    name: `${baseName} — Report`,
     runId: existingRunId,
     planId: agentPlanId(run),
     suiteId: agentSuiteId(run),
-    planName: run.testPlanId ? `Agent Plan - ${baseName}` : '',
-    suiteName: `Agent Suite - ${baseName}`,
+    planName: run.testPlanId ? agentPlanName(run) : '',
+    suiteName: agentSuiteName(run),
     requestedBy: 'QA Assistant',
     executionTime: durationLabel,
     totalExecutions: executionSteps.length,
