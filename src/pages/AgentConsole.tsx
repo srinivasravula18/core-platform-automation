@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useRef, useState, type MouseEvent } from 'react';
+import { memo, useCallback, useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { TopbarActions } from '@/src/components/TopbarActions';
@@ -1097,7 +1097,7 @@ export default function AgentConsole() {
 
   // Close the history dropdown on outside click.
   useEffect(() => {
-    const onClick = (e: MouseEvent) => {
+    const onClick = (e: globalThis.MouseEvent) => {
       if (historyRef.current && !historyRef.current.contains(e.target as Node)) setHistoryOpen(false);
     };
     if (historyOpen) document.addEventListener('mousedown', onClick);
@@ -1145,7 +1145,7 @@ export default function AgentConsole() {
     } catch { /* ignore */ }
   }, [favorites]);
 
-  const toggleFavorite = useCallback((id: string, e: MouseEvent) => {
+  const toggleFavorite = useCallback((id: string, e: ReactMouseEvent) => {
     e.stopPropagation();
     setFavorites((prev) => {
       const next = new Set(prev);
@@ -1154,7 +1154,7 @@ export default function AgentConsole() {
     });
   }, []);
 
-  const deleteConversation = useCallback(async (id: string, e: MouseEvent) => {
+  const deleteConversation = useCallback(async (id: string, e: ReactMouseEvent) => {
     e.stopPropagation();
     try {
       await fetch(`/api/chat/conversations/${id}`, { method: 'DELETE' });
@@ -2106,10 +2106,10 @@ export default function AgentConsole() {
         if (activeThinkingIdRef.current === thinkingId) activeThinkingIdRef.current = null;
       };
       setTurns((prev) => {
-        const nextTurns = editedTurnId
+        const nextTurns: Turn[] = editedTurnId
           ? prev.map((t) => (t.id === editedTurnId && t.role === 'user' ? { ...t, text } : t))
           : [...prev, { id: nextId(), role: 'user', text }];
-        return [...nextTurns, {
+        const thinkingTurn: Turn = {
           id: thinkingId,
           role: 'assistant',
           kind: 'thinking',
@@ -2124,12 +2124,13 @@ export default function AgentConsole() {
               `Current page: ${location.pathname}`,
               `Selected project: ${selectedProjectId || 'none'}`,
               `Selected app: ${selectedAppId || 'none'}`,
-              `Apps in scope: ${getSelectedApps().map((app) => app.name || app.baseUrl || app.id).filter(Boolean).join(', ') || 'none'}`,
+              `Apps in scope: ${getSelectedApps().map((app) => app.name || app.baseUrl).filter(Boolean).join(', ') || 'none'}`,
               `Requirement mode: ${reqMode ? 'on' : 'off'}`,
               `Script author mode: ${scriptAuthorMode ? 'on' : 'off'}`,
             ].join('\n'),
           ],
-        }];
+        };
+        return [...nextTurns, thinkingTurn];
       });
 
       if (pendingRequirementDraft) {
@@ -2802,7 +2803,7 @@ export default function AgentConsole() {
     if (idx < 0) return;
     for (let i = idx - 1; i >= 0; i -= 1) {
       const t = list[i];
-      if (t.role === 'user' && t.kind === 'text' && t.text.trim()) {
+      if (t.role === 'user' && t.text.trim()) {
         void send(t.text);
         return;
       }
@@ -2837,7 +2838,7 @@ export default function AgentConsole() {
     : null;
 
   return (
-    <><div className="flex h-full w-full flex-col px-4 sm:px-6">
+    <><div className="flex h-full w-full flex-col">
       {/* Header */}
       <div className="mb-2 flex items-center justify-between gap-3">
         <div className="flex items-center gap-2">
@@ -2998,7 +2999,7 @@ export default function AgentConsole() {
       </div>
 
       {/* Thread */}
-      <div ref={scrollRef} onScroll={handleChatScroll} className="flex-1 min-h-0 overflow-y-auto rounded-xl">
+      <div ref={scrollRef} onScroll={handleChatScroll} className="-mr-3 flex-1 min-h-0 overflow-y-auto rounded-xl pr-3 sm:-mr-6 sm:pr-6">
         {isEmpty ? (
           <div className="flex min-h-full flex-col items-center justify-center px-4 text-center">
             <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-[var(--accent)]/10 text-[var(--accent)]">

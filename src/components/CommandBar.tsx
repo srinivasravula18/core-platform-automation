@@ -1,34 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { Search, Command, Loader2, ArrowRight, Bot, LayoutDashboard, TestTube2, Bug, BrainCircuit, PlayCircle, FolderTree, Layers, ClipboardList, GitBranch, Settings, Sparkles } from 'lucide-react';
-import { WorkflowRunner } from '@/src/components/WorkflowRunner';
+import { WorkflowRunner, type Plan } from '@/src/components/WorkflowRunner';
 import { useProjects } from '@/src/store/project';
 import { navigationHref } from '@/src/lib/controllerIntent';
-
-interface PlanStep {
-  id: string;
-  index: number;
-  intent: any;
-  status: string;
-  startedAt?: string;
-  finishedAt?: string;
-  result?: any;
-  error?: string;
-  inboxItemId?: string;
-}
-
-interface Plan {
-  id: string;
-  userMessage: string;
-  summary: string;
-  reasoning: string;
-  steps: PlanStep[];
-  estimatedCostUsd: number;
-  createdAt: string;
-  status: string;
-  workspaceId: string;
-  userId?: string;
-}
 
 interface ClassifyResult {
   intents: any[];

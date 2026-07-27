@@ -154,7 +154,7 @@ export default function TestPlans() {
 
   const openEditModal = (plan: any) => {
     setSelectedPlanId(plan.id);
-    const linkedRunIds = new Set((Array.isArray(plan.runIds) ? plan.runIds : []).map(String));
+    const linkedRunIds = new Set<string>((Array.isArray(plan.runIds) ? plan.runIds : []).map(String));
     runs.filter((run) => run.testPlanId === plan.id).forEach((run) => linkedRunIds.add(String(run.id)));
     setFormData({
       name: plan.name || '',

@@ -34,7 +34,7 @@ interface PlanStep {
   inboxItemId?: string;
 }
 
-interface Plan {
+export interface Plan {
   id: string;
   userMessage: string;
   summary: string;

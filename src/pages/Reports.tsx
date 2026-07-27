@@ -37,6 +37,8 @@ interface Report {
   date: string;
   steps: Step[];
   evidence?: any[];
+  updatedAt?: string;
+  metadata?: { updatedAt?: string };
 }
 
 function stepEvidence(report: Report, step: Step, index: number): string {

@@ -138,7 +138,7 @@ export default function Traceability() {
     const linked = (details[req.id]?.linkedCases || []) as any[];
     const base = { reqId: req.id, requirement: req.title, reqStatus: req.status || '', coverage: req.coverageStatus || 'unknown' };
     if (!linked.length) {
-      return [{ ...base, caseId: '', caseTitle: details[req.id] ? '(no linked cases)' : '(expand to load coverage)', casePriority: '', caseStatus: '' }];
+      return [{ ...base, caseId: '', caseTitle: details[req.id] ? '(no linked cases)' : '(expand to load coverage)', caseTypes: '', casePriority: '', caseStatus: '' }];
     }
     // Each linked entry is { linkType, note, case: {...} } — the case fields live under `.case`,
     // not on the link object itself (the Detailed view reads lc.case for the same reason).
