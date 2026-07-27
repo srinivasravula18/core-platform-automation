@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef, useMemo } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Search, Filter, Pencil, Plus, Sparkles, Loader2, Trash2, PlayCircle, Code2, FolderCheck } from 'lucide-react';
+import { Search, Filter, Pencil, Plus, Sparkles, Loader2, Trash2, PlayCircle, Code2, FolderCheck, ChevronDown } from 'lucide-react';
 import { RowMoreMenu } from '@/src/components/RowMoreMenu';
 import { Timestamp, actorName } from '@/src/components/Timestamp';
 import { TimeSortSelect } from '@/src/components/filters/TimeSortSelect';
@@ -28,6 +28,20 @@ const PRIORITIES = ['Low', 'Medium', 'High', 'Critical'];
 const AUTOMATION_STATUSES = ['Automated', 'Not Automated', 'Automation Not Required', 'Cannot Be Automated'];
 const TESTING_SCOPES = ['Manual', 'Automation'];
 const TESTING_TYPES = ['Functional', 'Smoke', 'Sanity', 'Regression', 'Integration', 'End to End', 'Acceptance', 'Performance', 'Security', 'Usability', 'Exploratory'];
+
+function InlineCaseSelect({ children, ...props }: React.ComponentProps<'select'>) {
+  return (
+    <div className="relative min-w-0">
+      <select
+        {...props}
+        className="w-full min-w-0 appearance-none rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] py-1.5 pl-2 pr-7 text-xs font-medium text-[var(--text-primary)] outline-none transition-colors hover:border-[var(--accent)] focus:border-[var(--accent)]"
+      >
+        {children}
+      </select>
+      <ChevronDown aria-hidden="true" className="pointer-events-none absolute right-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--text-primary)] opacity-70" />
+    </div>
+  );
+}
 
 export default function TestCases() {
   const navigate = useNavigate();
@@ -81,8 +95,6 @@ export default function TestCases() {
   const emptyStep = { action: '', expected: '' };
   const blankForm = { title: '', description: '', preconditions: '', testPlanIds: [] as string[], testSuiteIds: [] as string[], createdBy: 'Admin', tags: [] as string[], testingScope: 'Manual', automationStatus: 'Not Automated', testingTypes: ['Functional'] as string[], priority: 'Medium', status: 'Draft', folderId: '', captureEvidenceOnManualRun: true, steps: [emptyStep] };
   const [formData, setFormData] = useState(blankForm);
-  const inlineSelectClass = "w-full min-w-0 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs font-medium text-[var(--text-primary)] outline-none transition-colors hover:border-[var(--accent)] focus:border-[var(--accent)]";
-
   const [selectedCaseId, setSelectedCaseId] = useState<string | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
   const stepEditorRef = useRef<HTMLDivElement | null>(null);
@@ -1104,36 +1116,34 @@ export default function TestCases() {
                   <td className="py-3 px-4 font-medium truncate" title={tc.title}>{tc.title}</td>
                   <td className="py-3 px-4 text-xs text-[var(--text-muted)] truncate" title={tc.preconditions || ''}>{tc.preconditions ? tc.preconditions : <span className="text-[var(--text-muted)]">—</span>}</td>
                   <td className="py-3 px-4">
-                    <select
+                    <InlineCaseSelect
                       value={tc.folderId || ''}
                       onClick={(event) => event.stopPropagation()}
                       onChange={(event) => updateCaseInline(tc, { folderId: event.target.value })}
-                      className={inlineSelectClass}
                       title="Update folder"
                     >
                       <option value="" disabled>Select a folder</option>
                       {folders.map((folder) => (
                         <option key={folder.id} value={folder.id}>{folder.path || folder.name}</option>
                       ))}
-                    </select>
+                    </InlineCaseSelect>
                   </td>
                   <td className="py-3 px-4 text-xs text-[var(--text-muted)] truncate" title={caseScopeLabel(tc)}>{caseScopeLabel(tc)}</td>
                   <td className="py-3 px-4">
-                    <select
+                    <InlineCaseSelect
                       value={resolvePlanId(tc)}
                       onClick={(event) => event.stopPropagation()}
                       onChange={(event) => updateCaseInline(tc, { testPlanId: event.target.value })}
-                      className={inlineSelectClass}
                       title="Update test plan"
                     >
                       <option value="">None</option>
                       {plans.map((plan) => (
                         <option key={plan.id} value={plan.id}>{plan.name}</option>
                       ))}
-                    </select>
+                    </InlineCaseSelect>
                   </td>
                   <td className="py-3 px-4">
-                    <select
+                    <InlineCaseSelect
                       value={resolveSuiteId(tc)}
                       onClick={(event) => event.stopPropagation()}
                       onChange={(event) => {
@@ -1144,40 +1154,37 @@ export default function TestCases() {
                           ...(selectedSuite?.testPlanId ? { testPlanId: selectedSuite.testPlanId } : {}),
                         });
                       }}
-                      className={inlineSelectClass}
                       title="Update test suite"
                     >
                       <option value="">None</option>
                       {suites.map((suite) => (
                         <option key={suite.id} value={suite.id}>{suite.name}</option>
                       ))}
-                    </select>
+                    </InlineCaseSelect>
                   </td>
                   <td className="py-3 px-4">
-                    <select
+                    <InlineCaseSelect
                       value={tc.status || 'Draft'}
                       onClick={(event) => event.stopPropagation()}
                       onChange={(event) => updateCaseInline(tc, { status: event.target.value })}
-                      className="w-full min-w-0 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs font-medium text-[var(--text-primary)] outline-none transition-colors hover:border-[var(--accent)] focus:border-[var(--accent)]"
                       title="Update status"
                     >
                       {CASE_STATUSES.map((status) => (
                         <option key={status} value={status}>{status}</option>
                       ))}
-                    </select>
+                    </InlineCaseSelect>
                   </td>
                   <td className="py-3 px-4">
-                    <select
+                    <InlineCaseSelect
                       value={tc.automationStatus || 'Not Automated'}
                       onClick={(event) => event.stopPropagation()}
                       onChange={(event) => updateCaseInline(tc, { automationStatus: event.target.value })}
-                      className="w-full min-w-0 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs font-medium text-[var(--text-primary)] outline-none transition-colors hover:border-[var(--accent)] focus:border-[var(--accent)]"
                       title="Update automation status"
                     >
                       {AUTOMATION_STATUSES.map((status) => (
                         <option key={status} value={status}>{status}</option>
                       ))}
-                    </select>
+                    </InlineCaseSelect>
                   </td>
                   <td className="py-3 px-4">
                     <MultiSelectDropdown
@@ -1206,16 +1213,15 @@ export default function TestCases() {
                     })()}
                   </td>
                   <td className="py-3 px-4">
-                    <select
+                    <InlineCaseSelect
                       value={tc.captureEvidenceOnManualRun !== false ? 'on' : 'off'}
                       onClick={(event) => event.stopPropagation()}
                       onChange={(event) => updateCaseInline(tc, { captureEvidenceOnManualRun: event.target.value === 'on' })}
-                      className="w-full min-w-0 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs font-medium text-[var(--text-primary)] outline-none transition-colors hover:border-[var(--accent)] focus:border-[var(--accent)]"
                       title="Update evidence capture"
                     >
                       <option value="on">Snapshot On</option>
                       <option value="off">Snapshot Off</option>
-                    </select>
+                    </InlineCaseSelect>
                   </td>
                   <td className="py-3 px-4">
                     <TagMultiSelect
