@@ -108,6 +108,21 @@ const featureAnalystSchema = z.object({
     requirements: arrayField(z.object({
       title: textField('Requirement'),
       statement: textField(''),
+      // MoSCoW priority (Must/Should/Could/Won't). Tolerant string — the prompt asks for MoSCoW;
+      // coercion keeps a well-shaped draft even if the model emits a near-miss.
+      priority: textField('Should'),
+      // '' for functional requirements; a category name (Performance/Security/Accessibility/…) marks
+      // a Non-Functional requirement so the renderer can group it under the NFR heading.
+      category: textField(''),
+      // Gherkin acceptance criteria — the pass/fail proof for this requirement. Bare strings are
+      // coerced into a {then}-only scenario rather than dropped, mirroring the candidateScenarios steps.
+      acceptanceCriteria: arrayField(z.preprocess((value) => {
+        if (typeof value === 'string') return { given: '', when: '', then: value };
+        if (value && typeof value === 'object' && !Array.isArray(value)) return value;
+        return { given: '', when: '', then: value == null ? '' : String(value) };
+      }, z.object({ given: textField(''), when: textField(''), then: textField('') }))),
+      // Per-requirement code citations (file or file:line) — the fine-grained code↔requirement trace.
+      sources: arrayField(textField('')),
       details: arrayField(textField('')),
     })),
   })),
@@ -803,7 +818,15 @@ Produce the requirement understanding as strict JSON matching the schema:
 - title: a concise, plain-language requirement title a non-technical reader would recognize.
 - description: 1-3 plain sentences on what the feature does and why it matters, written for someone who has not seen the code.
 - businessRules: the concrete, testable rules the code enforces, each stated in simple words a non-programmer can follow (still exact about values and conditions).
-- srsModules: organize every business rule into distinct functional modules for the Agent Console's Notion-style Markdown Requirements response. Each module needs a concise title and ordered requirements. Each requirement needs a short plain-language title, one complete "The system shall..." statement written in simple everyday words (no jargon or unexplained abbreviations; the reader may be a manual tester), and optional detail lines for conditions, defaults, enumerated values, or validation rules. Do not include numbering or Markdown syntax in these fields; the UI deterministically adds the Markdown headings, 1., 1.1, 1.2 numbering, and detail bullets. Do not omit a business rule from this structure.
+- srsModules: organize every business rule into distinct functional modules for the Agent Console's Notion-style Markdown Requirements response. Each module needs a concise title and ordered requirements. Each requirement needs:
+  - title: a short plain-language title.
+  - statement: one complete "The system shall..." statement in simple everyday words (no jargon or unexplained abbreviations; the reader may be a manual tester). Keep it ATOMIC — one testable behavior per requirement; split compound "and/or" rules into separate requirements.
+  - priority: a MoSCoW value — exactly one of "Must", "Should", "Could", or "Won't". Use Must for behavior core to the feature or enforced by security/permissions/validation; Should for important-but-not-blocking; Could for nice-to-have; Won't for explicitly out-of-scope. Do not leave it blank.
+  - acceptanceCriteria: 1-3 Gherkin scenarios ({given, when, then}) that prove the statement pass/fail. Write concrete, observable Given/When/Then using real labels/values from the evidence; do not restate the "shall" sentence. For a negative/permission rule, include the deny path.
+  - sources: the specific file path(s) from the evidence that justify THIS requirement (add a line range like "path:120-140" only when the excerpt makes the lines certain — never guess line numbers). This is the fine-grained code↔requirement trace; keep it to the 1-3 files that actually prove the rule.
+  - details: optional lines for conditions, defaults, enumerated values, or validation rules.
+  Do not include numbering or Markdown syntax in these fields; the UI deterministically adds headings, numbering, and bullets. Do not omit a business rule from this structure.
+  Non-functional requirements: when the evidence establishes performance limits/budgets, security/authorization, concurrency, reliability, or accessibility behavior, add ONE module titled exactly "Non-Functional Requirements" whose requirements each set "category" to the NFR type (e.g. "Performance", "Security", "Reliability", "Accessibility") plus the same priority/acceptanceCriteria/sources fields. Only include NFRs the code actually proves — never invent a performance budget or security control that the evidence does not show.
 - dataPopulationNotes: what the backend populates/seeds/syncs in the background as preconditions for this feature (only if the research shows it).
 - sharedComponents: reusable components/modules discovered by code search. For each one, include its real source files, where it is reused, the controls/behaviors the code proves, metadata/permission gates, and the exact test focus. This is the main way downstream agents avoid searching the whole repo again.
 - metadataRefs: the EXACT metadata object api_names that are the source of truth for this feature. Each entry's "object" MUST be a verbatim api_name taken from the LIVE METADATA OBJECT CATALOG provided above — never a descriptive phrase, label, invented name, or DB-table/column name. List ONLY the 1-5 objects that are the PRIMARY source of truth for THIS specific feature — do NOT list every object that is loosely or indirectly related, and do NOT dump the catalog. Prefer fewer, highly-relevant refs. Put any table/column-level detail in businessRules or dataPopulationNotes instead. If no catalog was provided above, or none of its objects are the source of truth for this feature, leave metadataRefs empty rather than inventing entries.

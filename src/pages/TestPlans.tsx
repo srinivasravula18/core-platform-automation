@@ -286,14 +286,16 @@ export default function TestPlans() {
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Test Plans</h1>
           <p className="text-sm text-[var(--text-muted)] mt-1">Manage your high-level test plans and objectives.</p>
-          <div className="mt-4 flex gap-8 text-sm">
-            <button onClick={() => setPlanView('active')} className={cn('border-b-2 pb-2', planView === 'active' ? 'border-[var(--accent)] text-[var(--accent)]' : 'border-transparent text-[var(--text-muted)]')}>
-              Active Plans <span className="ml-2 rounded-full bg-[var(--bg-secondary)] px-2 py-0.5">{activePlans.length}</span>
-            </button>
-            <button onClick={() => setPlanView('closed')} className={cn('border-b-2 pb-2', planView === 'closed' ? 'border-[var(--accent)] text-[var(--accent)]' : 'border-transparent text-[var(--text-muted)]')}>
-              Closed Plans <span className="ml-2 rounded-full bg-[var(--bg-secondary)] px-2 py-0.5">{closedPlans.length}</span>
-            </button>
-          </div>
+          {!selectedDetailPlan && (
+            <div className="mt-4 flex gap-8 text-sm" role="tablist" aria-label="Test plan views">
+              <button role="tab" aria-selected={planView === 'active'} onClick={() => setPlanView('active')} className={cn('border-b-2 pb-2', planView === 'active' ? 'border-[var(--accent)] text-[var(--accent)]' : 'border-transparent text-[var(--text-muted)]')}>
+                Active Test Plans <span className="ml-2 rounded-full bg-[var(--bg-secondary)] px-2 py-0.5">{activePlans.length}</span>
+              </button>
+              <button role="tab" aria-selected={planView === 'closed'} onClick={() => setPlanView('closed')} className={cn('border-b-2 pb-2', planView === 'closed' ? 'border-[var(--accent)] text-[var(--accent)]' : 'border-transparent text-[var(--text-muted)]')}>
+                Closed Test Plans <span className="ml-2 rounded-full bg-[var(--bg-secondary)] px-2 py-0.5">{closedPlans.length}</span>
+              </button>
+            </div>
+          )}
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <ExportMenu
