@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, Search, Filter, Pencil, Plus, Sparkles, Trash2, PlayCircle, Loader2 } from 'lucide-react';
+import { ArrowLeft, Search, Filter, Pencil, Plus, Sparkles, Trash2, PlayCircle, Loader2, Rocket } from 'lucide-react';
 import { RowMoreMenu } from '@/src/components/RowMoreMenu';
 import { Timestamp, actorName } from '@/src/components/Timestamp';
 import { TimeSortSelect } from '@/src/components/filters/TimeSortSelect';
@@ -22,6 +22,8 @@ import { caseBelongsToSuite, suitePlanIds } from '@/src/lib/suiteCaseSelection';
 import { emptyTestPlanFilters, linkedRunsForPlan, matchesTestPlanFilters } from '@/src/lib/testPlanFilters';
 
 const PLAN_STATUSES = ['Draft', 'Under Review', 'Approved', 'In Progress', 'Completed', 'Blocked', 'Cancelled', 'Archived'];
+const MANUAL_PLAN_STATUSES = PLAN_STATUSES.filter((status) => status !== 'In Progress');
+const canStartPlan = (plan: any) => ['Draft', 'Under Review', 'Approved'].includes(plan.status || 'Draft');
 const emptyPlanForm = () => ({
   name: '',
   folderId: '',
@@ -91,6 +93,7 @@ export default function TestPlans() {
   const [isPlanModalOpen, setIsPlanModalOpen] = useState(false);
   const [isAIPlanModalOpen, setIsAIPlanModalOpen] = useState(false);
   const [isStartingRun, setIsStartingRun] = useState(false);
+  const [startingPlanId, setStartingPlanId] = useState<string | null>(null);
   const [formData, setFormData] = useState(emptyPlanForm);
 
   const [selectedPlanId, setSelectedPlanId] = useState<string | null>(null);
@@ -214,18 +217,32 @@ export default function TestPlans() {
   };
 
   const updatePlanInline = async (plan: any, updates: Record<string, any>) => {
-    const res = await fetch(`/api/plans/${plan.id}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(updates),
-    });
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
-      void showAlert(data.error || 'Failed to update test plan.');
-      return;
+    try {
+      const res = await fetch(`/api/plans/${plan.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updates),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        void showAlert(data.error || 'Failed to update test plan.');
+        return;
+      }
+      fetchPlans();
+      fetchPlanRelations();
+    } catch {
+      void showAlert('Failed to update test plan.');
     }
-    fetchPlans();
-    fetchPlanRelations();
+  };
+
+  const startPlan = async (plan: any) => {
+    if (!canStartPlan(plan) || startingPlanId) return;
+    setStartingPlanId(plan.id);
+    try {
+      await updatePlanInline(plan, { status: 'In Progress' });
+    } finally {
+      setStartingPlanId(null);
+    }
   };
 
   const runSelectedPlans = async (planIds = selectedPlanIds) => {
@@ -246,7 +263,7 @@ export default function TestPlans() {
   const selectedDetailPlan = plans.find((plan) => plan.id === planId) || null;
   const getPlanRuns = (plan: any) => linkedRunsForPlan(plan, runs);
   const runCaseCountLabel = (count: number) => count ? `Run ${count} test case${count === 1 ? '' : 's'}` : 'No test cases linked to this plan';
-  const tagOptions = Array.from(new Set<string>(plans.flatMap((plan) => Array.isArray(plan.tags) ? plan.tags.map(String) : []))).sort();
+  const tagOptions = Array.from(new Set<string>([...plans, ...suites, ...cases, ...runs].flatMap((item) => Array.isArray(item.tags) ? item.tags.map(String) : []))).sort();
   const ownerOptions = Array.from(new Set<string>(plans.map((plan) => String(plan.owner || '').trim()).filter(Boolean))).sort();
   const activeFilterCount = filters.statuses.length + filters.owners.length + filters.tags.length + filters.folders.length
     + (filters.startFrom || filters.endTo ? 1 : 0) + (filters.environments.trim() ? 1 : 0)
@@ -370,7 +387,7 @@ export default function TestPlans() {
           <div>
             <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Status</label>
             <select value={formData.status} onChange={(e) => setFormData({...formData, status: e.target.value})} className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]">
-              {PLAN_STATUSES.map((status) => <option key={status} value={status}>{status}</option>)}
+              {(formData.status === 'In Progress' ? PLAN_STATUSES : MANUAL_PLAN_STATUSES).map((status) => <option key={status} value={status}>{status}</option>)}
             </select>
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -434,7 +451,19 @@ export default function TestPlans() {
                   {typeof selectedDetailPlan.metadata?.version === 'number' && <span>v{selectedDetailPlan.metadata.version}</span>}
                 </div>
               </div>
-              <button onClick={() => openEditModal(selectedDetailPlan)} className="px-3 py-2 rounded-md border border-[var(--border)] text-sm hover:bg-[var(--border)]">Edit Plan</button>
+              <div className="flex items-center gap-2">
+                {canStartPlan(selectedDetailPlan) && (
+                  <button
+                    onClick={() => startPlan(selectedDetailPlan)}
+                    disabled={startingPlanId !== null}
+                    className="inline-flex items-center gap-1.5 rounded-md bg-[var(--accent)] px-3 py-2 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50"
+                  >
+                    {startingPlanId === selectedDetailPlan.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Rocket className="h-4 w-4" />}
+                    Start Plan
+                  </button>
+                )}
+                <button onClick={() => openEditModal(selectedDetailPlan)} className="px-3 py-2 rounded-md border border-[var(--border)] text-sm hover:bg-[var(--border)]">Edit Plan</button>
+              </div>
             </div>
           </div>
 
@@ -668,7 +697,7 @@ export default function TestPlans() {
                 <th className="w-28 px-4 py-3 text-center font-medium">Linked Suites</th>
                 <th className="w-28 px-4 py-3 text-center font-medium">Test Cases</th>
                 <th className="font-medium py-3 px-4 w-32">Updated</th>
-                <th className="font-medium py-3 px-4 w-24 text-right">Actions</th>
+                <th className="font-medium py-3 px-4 w-52 text-right">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-[var(--border)]">
@@ -707,7 +736,7 @@ export default function TestPlans() {
                         className="w-full min-w-[130px] rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs font-medium text-[var(--text-primary)] outline-none transition-colors hover:border-[var(--accent)] focus:border-[var(--accent)]"
                         title="Update status"
                       >
-                        {PLAN_STATUSES.map((status) => (
+                        {(plan.status === 'In Progress' ? PLAN_STATUSES : MANUAL_PLAN_STATUSES).map((status) => (
                           <option key={status} value={status}>{status}</option>
                         ))}
                       </select>
@@ -731,6 +760,20 @@ export default function TestPlans() {
                     </td>
                     <td className="py-3 px-4 text-right">
                       <div className="relative inline-flex items-center gap-1">
+                        {canStartPlan(plan) && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              startPlan(plan);
+                            }}
+                            disabled={startingPlanId !== null}
+                            title="Start plan"
+                            className="inline-flex items-center gap-1 rounded bg-[var(--accent)] px-2 py-1 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
+                          >
+                            {startingPlanId === plan.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Rocket className="h-3.5 w-3.5" />}
+                            Start Plan
+                          </button>
+                        )}
                         <button
                           onClick={(e) => {
                             e.stopPropagation();

@@ -51,7 +51,7 @@ export function TagEditor({ options, value, onChange }: { options: string[]; val
           onKeyDown={(event) => {
             if (event.key === 'Enter') {
               event.preventDefault();
-              if (canCreate || suggestions.length) add(canCreate ? query : suggestions[0]);
+              if (suggestions.length) add(suggestions[0]);
             }
             if (event.key === 'Backspace' && !query && value.length) remove(value[value.length - 1]);
           }}
