@@ -7,6 +7,7 @@ set DB_PORT=5432
 set DB_USER=postgres
 set DB_PASS=postgres
 set DB_NAME=testflowai
+set "SCHEMA_FILE=%~dp0..\server\db\schema.sql"
 
 echo ===================================================
 echo TestFlow AI Database Setup
@@ -61,8 +62,8 @@ if %ERRORLEVEL% neq 0 (
 
 :: Apply the schema
 echo.
-echo [2/2] Applying schema to "%DB_NAME%" from database\schema.sql...
-psql -h %DB_HOST% -p %DB_PORT% -U %DB_USER% -d %DB_NAME% -f database\schema.sql
+echo [2/2] Applying latest schema to "%DB_NAME%" from server\db\schema.sql...
+psql -v ON_ERROR_STOP=1 -h %DB_HOST% -p %DB_PORT% -U %DB_USER% -d %DB_NAME% -f "%SCHEMA_FILE%"
 if %ERRORLEVEL% equ 0 (
     echo.
     echo ===================================================

@@ -55,5 +55,6 @@ Forensic, code-cited reports already exist from prior sessions — read them bef
 ## Working conventions
 
 - Keep deliverable files (reports, diagnostics, plans) inside this repo (e.g. under `docs/`), not in the OS temp/scratchpad directory.
+- `server/db/schema.sql` is the authoritative database schema. Whenever its location or application process changes, update and verify `scripts/setup-db.bat` in the same change so developer setup always applies the current schema.
 - Do not publish reports/plans/diagnostics to any external hosted-artifact/preview service — keep everything as files in this repo only.
 - Commits/PRs must not mention any AI tool by name or add an AI co-author trailer.

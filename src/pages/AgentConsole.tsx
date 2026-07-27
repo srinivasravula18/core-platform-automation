@@ -66,6 +66,7 @@ import { containsPrivateFileActivity, hasPrivateResearchToolCall } from '@/src/l
 import { useProjects, type ProjectApp } from '@/src/store/project';
 import { useUiSettings } from '@/src/store/uiSettings';
 import { useSpeechToText } from '@/src/lib/useSpeechToText';
+import { useFlushOnUnload } from '@/src/lib/useFlushOnUnload';
 import { showAlert, showConfirm } from '@/src/lib/dialog';
 import { showToast } from '@/src/lib/dialog';
 import { WorkflowRunner } from '@/src/components/WorkflowRunner';
@@ -1044,29 +1045,55 @@ export default function AgentConsole() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // The latest savable snapshot, kept in a ref so the unmount/page-hide flush below can persist it
+  // even though the debounced timer is cleared on unmount before it fires. Without this, a rich turn
+  // created moments before navigating away — notably a deep-run card holding the run's task_id — is
+  // never written, so returning to the console shows only the user's message and the still-running
+  // durable run is orphaned (this was the "my request disappears when I switch pages" bug).
+  const pendingSnapshotRef = useRef<{ conversationId: string; workspaceId: string; turns: typeof turns } | null>(null);
+
+  const writeConversationSnapshot = useCallback(
+    (snap: { conversationId: string; workspaceId: string; turns: typeof turns }, keepalive = false) => {
+      if (!snap.turns.length) return undefined; // don't persist empty conversations
+      const firstUser = snap.turns.find((t) => t.role === 'user') as { text?: string } | undefined;
+      // Full turn snapshot (not just title): rich turns (deep-run cards, drafts, cases) only live in
+      // React state, so without this they vanish on navigation/restart and history opens blank.
+      // A custom (renamed) title always wins over the auto-title from the first user message.
+      return fetch(`/api/chat/conversations/${snap.conversationId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        keepalive,
+        body: JSON.stringify({ workspaceId: snap.workspaceId, title: convTitleRef.current || firstUser?.text?.slice(0, 80) || 'New chat', turns: snap.turns }),
+      });
+    },
+    [],
+  );
+
   // Persist the conversation (debounced) whenever the turns change.
   useEffect(() => {
     if (!loadedRef.current) return;
     const clean = turns.filter((t) => !(t.role === 'assistant' && t.kind === 'thinking'));
+    pendingSnapshotRef.current = clean.length ? { conversationId, workspaceId, turns: clean } : null;
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => {
-      if (!clean.length) return; // don't persist empty conversations
-      const firstUser = clean.find((t) => t.role === 'user') as { text?: string } | undefined;
-      fetch(`/api/chat/conversations/${conversationId}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        // Full turn snapshot (not just title): rich turns (deep-run cards, drafts, cases) only live in
-        // React state, so without this they vanish on navigation/restart and history opens blank.
-        // A custom (renamed) title always wins over the auto-title from the first user message.
-        body: JSON.stringify({ workspaceId, title: convTitleRef.current || firstUser?.text?.slice(0, 80) || 'New chat', turns: clean }),
-      })
-        .then(() => loadConversations())
-        .catch(() => {});
+      const res = writeConversationSnapshot({ conversationId, workspaceId, turns: clean });
+      if (res) res.then(() => loadConversations()).catch(() => {});
     }, 700);
     return () => {
       if (saveTimer.current) clearTimeout(saveTimer.current);
     };
-  }, [turns, conversationId, workspaceId, loadConversations]);
+  }, [turns, conversationId, workspaceId, loadConversations, writeConversationSnapshot]);
+
+  // Flush the pending snapshot when the console unmounts (SPA navigation, scope remount) or the page
+  // is hidden/closed — the app-level safety net. This is what actually rescues a deep-run card (its
+  // task_id) created just before navigating away: because the snapshot lands, returning restores the
+  // turn and DeepRunResult/useAgentRun re-attach to the still-running durable run instead of the
+  // console showing only the user turn.
+  useFlushOnUnload(() => {
+    if (!loadedRef.current) return;
+    const snap = pendingSnapshotRef.current;
+    if (snap) writeConversationSnapshot(snap, true);
+  });
 
   // Close the history dropdown on outside click.
   useEffect(() => {
