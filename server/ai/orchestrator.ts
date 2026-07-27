@@ -25,6 +25,8 @@ import { canonicalAgent } from './systemPrompts';
 import { db } from '../shared/storage';
 import { logExecutionTrace, serializePrompt } from './tracer';
 import { rememberToolResult } from './memory/artifactMemory';
+import { getUserById } from '../features/auth/userStore';
+import { effectiveGrantsForUser, isAllowed } from '../features/auth/groupStore';
 
 export interface ProviderCredentials {
   apiKey: string;
@@ -108,10 +110,17 @@ export function buildProvider(provider: ProviderName, modelOverride?: string): A
   }
 }
 
-export function listConfiguredProviders(): ProviderName[] {
+// A provider is usable by `userId` when an Access Group grants it. No userId (internal/system) or an
+// admin/ungrouped user is UNRESTRICTED. Provider config is global, so this is a per-user allow-list.
+function providerAllowedForUser(userId: string | undefined, provider: ProviderName): boolean {
+  if (!userId) return true;
+  return isAllowed(effectiveGrantsForUser(getUserById(userId)), 'providers', provider);
+}
+
+export function listConfiguredProviders(userId?: string): ProviderName[] {
   const out: ProviderName[] = [];
   for (const name of PROVIDERS) {
-    if (getProviderCredentials(name)) out.push(name);
+    if (getProviderCredentials(name) && providerAllowedForUser(userId, name)) out.push(name);
   }
   return out;
 }
@@ -125,12 +134,12 @@ export function isAnyProviderConfigured(): boolean {
   return listConfiguredProviders().length > 0;
 }
 
-export function resolveProviderForAgent(agent: string): ProviderName {
+export function resolveProviderForAgent(agent: string, userId?: string): ProviderName {
   const map = db.settings?.agentProviderMap;
   const rawPreferred = map && (map as any)[agent] ? (map as any)[agent] : db.settings?.defaultProvider;
   const preferred = isProviderName(rawPreferred) ? rawPreferred : undefined;
-  if (preferred && getProviderCredentials(preferred)) return preferred;
-  const configured = listConfiguredProviders();
+  if (preferred && getProviderCredentials(preferred) && providerAllowedForUser(userId, preferred)) return preferred;
+  const configured = listConfiguredProviders(userId);
   if (configured.length > 0) return configured[0];
   return preferred || 'gemini';
 }
@@ -628,8 +637,8 @@ function safeJson(value: unknown): string {
  */
 export async function getToolCapableOrchestrator(agent: string, opts: { workspaceId?: string; userId?: string; effort?: string } = {}): Promise<AgentOrchestrator> {
   const canonical = canonicalAgent(agent);
-  const preferred = resolveProviderForAgent(canonical);
-  const order: ProviderName[] = [preferred, ...listConfiguredProviders().filter((p) => p !== preferred)];
+  const preferred = resolveProviderForAgent(canonical, opts.userId);
+  const order: ProviderName[] = [preferred, ...listConfiguredProviders(opts.userId).filter((p) => p !== preferred)];
   for (const provider of order) {
     const creds = getProviderCredentials(provider);
     if (!creds) continue;
@@ -651,7 +660,7 @@ export async function getOrchestrator(agent: string, opts: { workspaceId?: strin
   // Resolve legacy agent names onto the 7 canonical roles so prompt overrides,
   // provider/model routing, and usage logging all use one consolidated identity.
   const canonical = canonicalAgent(agent);
-  const provider = resolveProviderForAgent(canonical);
+  const provider = resolveProviderForAgent(canonical, opts.userId);
   const model = resolveModelForAgent(canonical, provider);
   const base = buildProvider(provider);
   if (model && (base as any).defaultModel !== model) {

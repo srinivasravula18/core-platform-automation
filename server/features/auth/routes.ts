@@ -13,6 +13,15 @@ import {
   publicUser,
   type Role,
 } from './userStore';
+import {
+  listGroups,
+  getGroup,
+  createGroup,
+  updateGroup,
+  deleteGroup,
+  publicGroup,
+  effectiveGrantsForUser,
+} from './groupStore';
 
 // Multi-user app login with RBAC. Users live in the user store (server/features/
 // auth/userStore.ts). Sessions are DURABLE: stored in db.sessions (persisted to the
@@ -171,13 +180,16 @@ export function registerAuthRoutes(app: Express) {
     }
     const token = randomUUID();
     addSession(token, user.id);
-    res.json({ token, username: user.username, role: user.role, name: user.name });
+    res.json({ token, username: user.username, role: user.role, name: user.name, grants: effectiveGrantsForUser(user) });
   });
 
   app.get('/api/auth/me', (req: Request, res: Response) => {
     const u = getAuthUser(req);
     if (!u) return res.status(401).json({ error: 'Not authenticated.' });
-    res.json({ authenticated: true, username: u.username, role: u.role, userId: u.userId });
+    // Effective access grants (UNION of the user's groups; UNRESTRICTED for admin / ungrouped) so the
+    // client can gate nav + routes. Resource APIs are still enforced server-side (Phase 2/3).
+    const grants = effectiveGrantsForUser(getUserById(u.userId));
+    res.json({ authenticated: true, username: u.username, role: u.role, userId: u.userId, grants });
   });
 
   app.post('/api/auth/logout', (req: Request, res: Response) => {
@@ -228,6 +240,40 @@ export function registerAuthRoutes(app: Express) {
     const ok = deleteAppUser(req.params.id);
     if (!ok) return res.status(404).json({ error: 'User not found.' });
     recordAudit('delete', 'user', req.params.id, `Deleted profile "${target?.username || req.params.id}"`);
+    res.json({ ok: true });
+  });
+
+  /* ---------- access groups (admin only) ---------- */
+
+  app.get('/api/groups', requireAdmin, (_req: Request, res: Response) => {
+    res.json({ groups: listGroups().map(publicGroup) });
+  });
+
+  app.post('/api/groups', requireAdmin, (req: Request, res: Response) => {
+    const { name, description, memberUserIds, grants } = req.body || {};
+    if (!name) return res.status(400).json({ error: 'A group name is required.' });
+    try {
+      const g = createGroup({ name, description, memberUserIds, grants });
+      recordAudit('create', 'group', g.id, `Created access group "${g.name}"`);
+      res.status(201).json({ ok: true, group: publicGroup(g) });
+    } catch (e: any) {
+      res.status(400).json({ error: e?.message || 'Could not create group.' });
+    }
+  });
+
+  app.put('/api/groups/:id', requireAdmin, (req: Request, res: Response) => {
+    const { name, description, memberUserIds, grants } = req.body || {};
+    const g = updateGroup(req.params.id, { name, description, memberUserIds, grants });
+    if (!g) return res.status(404).json({ error: 'Group not found.' });
+    recordAudit('update', 'group', g.id, `Updated access group "${g.name}"`);
+    res.json({ ok: true, group: publicGroup(g) });
+  });
+
+  app.delete('/api/groups/:id', requireAdmin, (req: Request, res: Response) => {
+    const target = getGroup(req.params.id);
+    const ok = deleteGroup(req.params.id);
+    if (!ok) return res.status(404).json({ error: 'Group not found.' });
+    recordAudit('delete', 'group', req.params.id, `Deleted access group "${target?.name || req.params.id}"`);
     res.json({ ok: true });
   });
 }

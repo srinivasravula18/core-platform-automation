@@ -31,6 +31,7 @@ const {
   AgentRuns,
 } = await import('../core/persistence');
 const { ChatConversations } = await import('../server/db/repository');
+const { runToTurns } = await import('../server/features/chat/routes');
 const { sessionRepository, canonicalMessages, entityRefIndex, runReader } = await import(
   '../services/runtime/src/adapters/sessionRepository'
 );
@@ -46,6 +47,21 @@ function check(name: string, cond: boolean, detail?: string) {
 }
 
 // ── 1. Session snapshot: create, version, state round trip ──────────────────────────────
+{
+  const turns = runToTurns({
+    id: 'AGENT-RECOVER',
+    prompt: 'Generate login tests',
+    chat_history: [
+      { role: 'user', content: 'Test the login page' },
+      { role: 'assistant', content: 'I will cover valid and invalid login.' },
+    ],
+  });
+  check(
+    'agent-run fallback restores chat and resumable run card',
+    turns.length === 3 && turns[0]?.text === 'Test the login page' && turns[2]?.kind === 'deeprun' && turns[2]?.taskId === 'AGENT-RECOVER',
+  );
+}
+
 {
   console.log('1. session snapshot commit + read');
   const id = 'conv-persist-session';

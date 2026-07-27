@@ -53,20 +53,25 @@ function runToConversation(run: any, workspaceId: string) {
     id: `agent-run:${run.id}`,
     workspaceId,
     title: runHistoryTitle(run),
-    turnCount: 2,
+    turnCount: runToTurns(run).length,
     createdAt: run?.createdAt || run?.created_at || updatedAt,
     updatedAt,
   };
 }
 
-function runToTurns(run: any) {
+export function runToTurns(run: any) {
   const prompt = runHistoryTitle(run);
-  const status = String(run?.status || 'saved');
-  const folder = run?.folderPath || 'Uncategorized';
-  return [
-    { role: 'user', text: prompt },
-    { role: 'assistant', kind: 'text', text: `Recovered saved agent run ${run.id}. Status: ${status}. Folder: ${folder}.` },
-  ];
+  const history: any[] = (Array.isArray(run?.chat_history) ? run.chat_history : [])
+    .map((turn: any, index: number) => {
+      const text = String(turn?.content ?? turn?.text ?? '').trim();
+      return turn?.role === 'assistant'
+        ? { id: `run-history-${run.id}-${index}`, role: 'assistant', kind: 'text', text }
+        : { id: `run-history-${run.id}-${index}`, role: 'user', text };
+    })
+    .filter((turn: any) => turn.text);
+  if (!history.length) history.push({ id: `run-history-${run.id}-0`, role: 'user', text: prompt });
+  history.push({ id: `run-${run.id}`, role: 'assistant', kind: 'deeprun', taskId: run.id });
+  return history;
 }
 
 export function registerChatRoutes(app: Express) {

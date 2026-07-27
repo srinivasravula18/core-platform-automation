@@ -18,7 +18,8 @@ import { FolderBadge } from '@/src/components/FolderBadge';
 import { MultiSelectDropdown } from '@/src/components/MultiSelectDropdown';
 import { TagEditor } from '@/src/components/TagEditor';
 import { showAlert, showConfirm } from '@/src/lib/dialog';
-import { caseBelongsToSuite, suitePlanIds } from '@/src/lib/suiteCaseSelection';
+import { caseBelongsToSuite, suitePlanIds, suitePlanMembershipUpdate } from '@/src/lib/suiteCaseSelection';
+import { casesForPlan } from '@/src/lib/manualTestRun';
 import { emptyTestPlanFilters, linkedRunsForPlan, matchesTestPlanFilters } from '@/src/lib/testPlanFilters';
 import { localDateKey, normalizeDateKey, planStartConflict } from '@/core/shared/testPlanStart';
 
@@ -40,6 +41,7 @@ const emptyPlanForm = () => ({
   environments: '',
   roles: '',
   deliverables: '',
+  suiteIds: [] as string[],
   runIds: [] as string[],
   description: '',
 });
@@ -167,36 +169,43 @@ export default function TestPlans() {
       environments: plan.environments || '',
       roles: plan.roles || '',
       deliverables: plan.deliverables || '',
+      suiteIds: suites.filter((suite) => suitePlanIds(suite).includes(plan.id)).map((suite) => String(suite.id)),
       runIds: Array.from(linkedRunIds),
       description: plan.description || plan.objectives || '',
     });
     setIsPlanModalOpen(true);
   };
 
-  const handleSavePlan = () => {
+  const handleSavePlan = async () => {
     if (!formData.name.trim()) return;
     if (!formData.folderId) { void showAlert('Select a folder or create one first.'); return; }
-    
-    if (selectedPlanId) {
-      fetch(`/api/plans/${selectedPlanId}`, {
-        method: 'PUT',
+    const { suiteIds, ...planPayload } = formData;
+    try {
+      const response = await fetch(selectedPlanId ? `/api/plans/${selectedPlanId}` : '/api/plans', {
+        method: selectedPlanId ? 'PUT' : 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify(formData)
-      }).then(() => {
-         setIsPlanModalOpen(false);
-         fetchPlans();
-         fetchPlanRelations();
+        body: JSON.stringify(planPayload),
       });
-    } else {
-      fetch('/api/plans', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify(formData)
-      }).then(() => {
-         setIsPlanModalOpen(false);
-         fetchPlans();
-         fetchPlanRelations();
-      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data?.error || 'Failed to save test plan.');
+      const planId = selectedPlanId || String(data?.id || data?.plan?.id || '');
+      const selectedSuiteIds = new Set(suiteIds);
+      const changedSuites = suites.filter((suite) =>
+        suitePlanIds(suite).includes(planId) !== selectedSuiteIds.has(String(suite.id)),
+      );
+      const suiteResponses = await Promise.all(changedSuites.map((suite) =>
+        fetch(`/api/suites/${suite.id}`, {
+          method: 'PUT',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(suitePlanMembershipUpdate(suite, planId, selectedSuiteIds.has(String(suite.id)))),
+        }),
+      ));
+      if (suiteResponses.some((result) => !result.ok)) throw new Error('Plan saved, but one or more suite links could not be updated.');
+      setIsPlanModalOpen(false);
+      fetchPlans();
+      fetchPlanRelations();
+    } catch (error: any) {
+      void showAlert(error?.message || 'Failed to save test plan.');
     }
   };
 
@@ -292,7 +301,7 @@ export default function TestPlans() {
   };
 
   const getPlanSuites = (planId: string) => suites.filter((suite) => suitePlanIds(suite).includes(planId));
-  const getPlanCases = (planId: string) => cases.filter((testCase) => testCase.testPlanId === planId);
+  const getPlanCases = (planId: string) => casesForPlan(cases, suites, planId);
   const selectedDetailPlan = plans.find((plan) => plan.id === planId) || null;
   const getPlanRuns = (plan: any) => linkedRunsForPlan(plan, runs);
   const runCaseCountLabel = (count: number) => count ? `Run ${count} test case${count === 1 ? '' : 's'}` : 'No test cases linked to this plan';
@@ -480,6 +489,15 @@ export default function TestPlans() {
           <div>
             <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Deliverables</label>
             <textarea value={formData.deliverables} onChange={(e) => setFormData({...formData, deliverables: e.target.value})} placeholder="e.g. Test report, defect summary" className="min-h-20 w-full resize-y rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
+          </div>
+          <div>
+            <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Link Test Suites</label>
+            <MultiSelectDropdown
+              label="Select test suites"
+              options={suites.map((suite) => ({ id: String(suite.id), name: String(suite.name || suite.id) }))}
+              value={formData.suiteIds}
+              onChange={(suiteIds) => setFormData({...formData, suiteIds})}
+            />
           </div>
           <div>
             <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Link Test Runs</label>
@@ -687,7 +705,7 @@ export default function TestPlans() {
               {activeFilterCount > 0 && <span className="rounded-full bg-[var(--accent)] px-1.5 text-[11px] font-semibold text-white">{activeFilterCount}</span>}
             </button>
             {isFilterOpen && (
-              <div className="absolute left-0 top-10 z-30 max-h-[70vh] w-[24rem] overflow-auto rounded-md border border-[var(--border)] bg-[var(--bg-card)] p-3 shadow-xl">
+              <div className="absolute right-0 top-10 z-30 max-h-[calc(100dvh-20rem)] w-[min(24rem,calc(100vw-2rem))] overflow-auto rounded-md border border-[var(--border)] bg-[var(--bg-card)] p-3 shadow-xl">
                 <div className="mb-3 flex items-center justify-between gap-2">
                   <div className="inline-flex rounded-md border border-[var(--border)] p-0.5 text-[11px] font-medium">
                     <button onClick={() => setMatchMode('all')} className={`rounded px-2 py-1 ${matchMode === 'all' ? 'bg-[var(--accent)] text-white' : 'text-[var(--text-muted)]'}`}>Match all</button>

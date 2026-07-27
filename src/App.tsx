@@ -7,7 +7,8 @@ import { useTheme } from '@/src/store/theme';
 import { CommandBar } from '@/src/components/CommandBar';
 import { ProjectSwitcher } from '@/src/components/ProjectSwitcher';
 import { useProjects } from '@/src/store/project';
-import { AuthGate, logout, getUsername } from '@/src/components/AuthGate';
+import { AuthGate, logout, getUsername, getGrants } from '@/src/components/AuthGate';
+import { FEATURES, grantAllows, featureKeyForPath } from '@/src/lib/features';
 import { appBasePath } from '@/src/lib/base-path';
 import { DialogHost } from '@/src/lib/dialog';
 import { useResizableTables } from '@/src/lib/useResizableTables';
@@ -85,6 +86,19 @@ function Sidebar({ isOpen }: { isOpen: boolean }) {
     },
   ];
 
+  // Access-Group feature gating: hide nav items whose feature the user's groups don't grant (admins
+  // and ungrouped users are UNRESTRICTED, so they see everything). Empty groups drop out entirely.
+  const grants = getGrants();
+  const visibleGroups = navGroups
+    .map((group) => ({
+      ...group,
+      items: group.items.filter((item) => {
+        const key = featureKeyForPath(item.href);
+        return !key || grantAllows(grants, 'features', key);
+      }),
+    }))
+    .filter((group) => group.items.length > 0);
+
   return (
     <div className={cn(
       "border-r border-[var(--border)] bg-[var(--bg-card)] flex flex-col h-full flex-shrink-0 transition-all duration-300",
@@ -97,7 +111,7 @@ function Sidebar({ isOpen }: { isOpen: boolean }) {
         </div>
       </div>
       <div className="flex-1 py-4 px-3 flex flex-col gap-4 overflow-y-auto overflow-x-hidden">
-        {navGroups.map((group) => {
+        {visibleGroups.map((group) => {
           const isCollapsed = collapsed[group.label];
           return (
             <div key={group.label} className="flex flex-col gap-1">
@@ -471,11 +485,27 @@ function Shell({ children }: { children: React.ReactNode }) {
   );
 }
 
+/**
+ * Redirect away from a route the user's Access Groups don't grant (feature gating). Admins / ungrouped
+ * users are UNRESTRICTED and pass through; ungated paths (settings, unknown) also pass. A blocked route
+ * sends the user to the first feature they DO have (or /settings if none).
+ */
+function FeatureGuard({ children }: { children: React.ReactNode }) {
+  const location = useLocation();
+  const grants = getGrants();
+  if (grants === 'UNRESTRICTED') return <>{children}</>;
+  const key = featureKeyForPath(location.pathname);
+  if (!key || grantAllows(grants, 'features', key)) return <>{children}</>;
+  const firstAllowed = FEATURES.find((f) => grantAllows(grants, 'features', f.key));
+  return <Navigate to={firstAllowed ? firstAllowed.hrefs[0] : '/settings'} replace />;
+}
+
 export default function App() {
   return (
     <AuthGate>
       <BrowserRouter basename={appBasePath || undefined}>
       <Shell>
+        <FeatureGuard>
         <Routes>
           <Route path="/" element={<AgentConsole />} />
           <Route path="/chat/:chatId" element={<AgentConsole />} />
@@ -513,6 +543,7 @@ export default function App() {
             </div>
           } />
         </Routes>
+        </FeatureGuard>
       </Shell>
       </BrowserRouter>
       <DialogHost />

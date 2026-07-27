@@ -243,7 +243,20 @@ export async function stopRecording(recordingId: string) {
 export async function listRecordings() { return Recordings.list(); }
 export async function getRecording(id: string) { return Recordings.get(id); }
 
-export async function listRecordingSteps(recordingId: string) { return RecordingSteps.list(recordingId); }
+export async function listRecordingSteps(recordingId: string) {
+  const existing = await RecordingSteps.list(recordingId);
+  if (existing.length) return existing;
+  const recording = await Recordings.get(recordingId);
+  const derived = parseRecordingSteps(String(recording?.script || ''));
+  if (!derived.length) return [];
+  await RecordingSteps.replaceForRecording(recordingId, derived.map((step, ordinal) => ({
+    ...step,
+    id: `${recordingId}:step:${ordinal + 1}`,
+    recordingId,
+  })));
+  persist('recording steps backfilled');
+  return RecordingSteps.list(recordingId);
+}
 
 function validOverride(value: unknown, kind: RecordingFieldKind): value is string | boolean | null {
   if (value === null) return true;

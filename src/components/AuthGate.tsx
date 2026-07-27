@@ -1,10 +1,12 @@
 import React, { useEffect, useState } from 'react';
 import { BrainCircuit, Lock, Loader2, Eye, EyeOff } from 'lucide-react';
 import { readScopedStorage, writeScopedStorage } from '@/src/lib/storage';
+import type { ClientGrants } from '@/src/lib/features';
 
 const TOKEN_KEY = 'tfa_auth_token';
 const USERNAME_KEY = 'tfa_username';
 const ROLE_KEY = 'tfa_role';
+const GRANTS_KEY = 'tfa_grants';
 
 export function getAuthToken(): string {
   return readScopedStorage(TOKEN_KEY) || '';
@@ -23,6 +25,21 @@ export function isAdmin(): boolean {
   return getRole() === 'admin';
 }
 
+/** The signed-in user's effective Access-Group grants (from /me or login). Defaults to UNRESTRICTED. */
+export function getGrants(): ClientGrants {
+  try {
+    const raw = readScopedStorage(GRANTS_KEY);
+    if (!raw) return 'UNRESTRICTED';
+    return JSON.parse(raw) as ClientGrants;
+  } catch {
+    return 'UNRESTRICTED';
+  }
+}
+
+function storeGrants(grants: unknown) {
+  try { writeScopedStorage(GRANTS_KEY, grants === undefined ? null : JSON.stringify(grants)); } catch { /* ignore */ }
+}
+
 export function logout() {
   try {
     const token = getAuthToken();
@@ -35,6 +52,7 @@ export function logout() {
     writeScopedStorage(TOKEN_KEY, null);
     writeScopedStorage(USERNAME_KEY, null);
     writeScopedStorage(ROLE_KEY, null);
+    writeScopedStorage(GRANTS_KEY, null);
   } catch {
     /* ignore */
   }
@@ -62,6 +80,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
           const me = await r.json().catch(() => ({}));
           if (me?.role) writeScopedStorage(ROLE_KEY, me.role);
           if (me?.username) writeScopedStorage(USERNAME_KEY, me.username);
+          if (me?.grants !== undefined) storeGrants(me.grants);
           setStatus('in');
         } else {
           writeScopedStorage(TOKEN_KEY, null);
@@ -90,6 +109,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
       writeScopedStorage(TOKEN_KEY, data.token);
       writeScopedStorage(USERNAME_KEY, (data.username || username).trim());
       if (data.role) writeScopedStorage(ROLE_KEY, data.role);
+      if (data.grants !== undefined) storeGrants(data.grants);
       setStatus('in');
     } catch {
       setError('Could not reach the server. Please try again.');

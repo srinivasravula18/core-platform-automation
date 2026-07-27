@@ -16,24 +16,33 @@ import { setRepoToken, getRepoToken, hasRepoToken, clearRepoToken } from './repo
 import { validateRemoteAccess, type RemoteCheck } from './repoSync';
 import { projectRepo } from './projectRepo';
 import { GitHubError } from './githubApi';
-import { reqScope } from '../../shared/scope';
+import { reqScope, reqGrants } from '../../shared/scope';
+import { isAllowed, UNRESTRICTED } from '../auth/groupStore';
 import { recordAudit } from '../../shared/recordAudit';
 
-/** Every logged-in user sees only their own projects (no cross-user visibility). */
-function visibleToScope<T extends { ownerId?: string }>(items: T[], req: any): T[] {
+/**
+ * A user sees a project if they OWN it OR an Access Group grants it (share semantic). UNRESTRICTED
+ * (admin / ungrouped user / internal) keeps the original own-only isolation — grants only WIDEN for a
+ * grouped user; they never expose everyone's projects to an ungrouped user.
+ */
+function visibleToScope<T extends { id?: string; ownerId?: string }>(items: T[], req: any): T[] {
   const scope = reqScope(req);
-  if (scope.userId) {
-    return items.filter((p) => (p.ownerId || '') === scope.userId);
-  }
-  return items;
+  if (!scope.userId) return items;
+  const owned = (p: T) => (p.ownerId || '') === scope.userId;
+  const grants = reqGrants(req);
+  if (grants === UNRESTRICTED) return items.filter(owned);
+  return items.filter((p) => owned(p) || isAllowed(grants, 'projects', p.id || ''));
 }
 
-/** True if the request's user owns the project (or no user scope is set). */
+/** True if the request's user owns the project, or (when grouped) an Access Group grants it. */
 function ownsProject(req: any, projectId: string): boolean {
   const project = getProject(projectId);
   if (!project) return false;
   const scope = reqScope(req);
-  return !scope.userId || (project.ownerId || '') === scope.userId;
+  if (!scope.userId) return true;
+  if ((project.ownerId || '') === scope.userId) return true;
+  const grants = reqGrants(req);
+  return grants !== UNRESTRICTED && isAllowed(grants, 'projects', projectId);
 }
 
 /** True if the request's user owns the project the app belongs to. Apps are scoped via their project. */

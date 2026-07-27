@@ -52,6 +52,57 @@ final result: passed
 
 ---
 
+## Test Plans filter popover responsiveness — 2026-07-27
+
+**Comparison target**
+
+- Source visual truth: `C:\Users\bdevi\AppData\Local\Temp\codex-clipboard-IC74V4.png`
+- Implementation screenshot: `D:\core-platform-automation\docs\diagnostics\test-plans-filter-responsive-768.png`
+- Side-by-side comparison: `D:\core-platform-automation\docs\diagnostics\test-plans-filter-responsive-comparison.png`
+- Source pixels: 1600 × 745. Implementation pixels/CSS viewport: 768 × 720 at device scale factor 1. The comparison preserves both native captures because this check targets viewport containment rather than pixel-identical content.
+- State: dark-theme Test Plans list with the Filters popover expanded.
+
+**Full-view comparison evidence**
+
+- The source popover is left-aligned to a right-edge trigger and extends beyond the visible screen.
+- The implementation right-aligns the same popover to its trigger, preserves the existing visual language, and keeps the entire panel within the 768 × 720 viewport.
+- Final measured bounds: left 273.8, right 657.8, top 271.2, bottom 671.2 within a 768 × 720 viewport.
+
+**Focused region comparison evidence**
+
+- The filter panel itself is readable in both captures, so a separate crop was unnecessary.
+- Fonts/typography: existing family, weights, labels, and hierarchy are unchanged.
+- Spacing/layout: panel width remains 24rem when space permits; viewport width and height caps add internal scrolling instead of clipping.
+- Colors/tokens: existing background, border, accent, and muted-text tokens are unchanged.
+- Image/asset quality: no image assets were introduced or changed.
+- Copy/content: filter labels and actions are unchanged.
+
+**Findings and comparison history**
+
+1. P1: the source filter panel extends outside the viewport, hiding lower controls on smaller screens.
+2. Fix: right-aligned the panel to the Filters trigger and capped its width to the viewport.
+3. P2: the first fix still allowed the panel bottom to reach 863px in a 720px viewport.
+4. Fix: capped panel height to the available below-toolbar region and retained internal scrolling.
+5. Post-fix evidence: the panel is fully contained at both 1024 × 720 and 768 × 720, with no console errors.
+
+**Primary interactions tested**
+
+- Opened Test Plans and expanded Filters.
+- Verified the open panel at 1024 × 720 and 768 × 720.
+- Confirmed the panel remains scrollable and all viewport bounds are contained.
+- Browser console checked: 0 errors.
+
+**Implementation checklist**
+
+- [x] Right-edge collision prevented.
+- [x] Narrow viewport width constrained.
+- [x] Short viewport height constrained with internal scrolling.
+- [x] Existing filter controls and styling preserved.
+
+final result: passed
+
+---
+
 ## AI rework corner-radius polish — 2026-07-24
 
 **Comparison target**
@@ -137,3 +188,26 @@ final result: blocked — no test run with execution evidence exists in the loca
 - Did not invoke a live AI model during visual QA; proposal application, partial selection, undo prerequisites, and stale-draft blocking are covered by `scripts/test-ai-rework-proposal.ts`.
 
 final result: passed
+
+---
+
+## Automation data preview containment — 2026-07-27
+
+**Comparison target**
+
+- Source visual truth: `C:\Users\bdevi\AppData\Local\Temp\codex-clipboard-9X2sCc.png`
+- Local preview evidence: `D:\core-platform-automation\docs\diagnostics\data-preview-qa-no-dataset.png`
+- Source pixels: 1848 × 550.
+- Local viewport and pixels: 1400 × 800 CSS px at device scale factor 1; capture is 1400 × 800 px.
+- Requested state: an imported dataset with the first 50 rows visible.
+
+**Verification**
+
+- The preview now has an accessible Close action and a non-destructive Show data preview action.
+- Table scrolling is contained inside a bounded panel with a sticky header.
+- Ordinary columns retain stable minimum widths; Step Detail receives a readable 28rem minimum width and preserves line breaks.
+- TypeScript compilation, production frontend/backend builds, and `git diff --check` pass.
+- Browser console checked: 0 errors.
+- The local project/app scope contains no imported datasets, so the populated preview, Close/reopen interaction, and same-state visual comparison could not be exercised without adding persistent QA data.
+
+final result: blocked — no imported dataset exists in the local project/app scope

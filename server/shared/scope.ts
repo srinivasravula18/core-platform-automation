@@ -12,6 +12,8 @@
 
 import type { Request } from 'express';
 import { type Actor, SYSTEM_ACTOR } from './metadata';
+import { getUserById } from '../features/auth/userStore';
+import { effectiveGrantsForUser, type EffectiveGrants } from '../features/auth/groupStore';
 
 export interface Scope {
   /** Selected project id, or '' when none is selected. */
@@ -52,6 +54,17 @@ export function scopeMiddleware(req: Request, _res: any, next: any) {
 /** Read the scope a middleware attached (or resolve it on demand). */
 export function reqScope(req: Request): Scope {
   return (req as any).scope || getScope(req);
+}
+
+/**
+ * The acting user's effective Access-Group grants. Returns UNRESTRICTED for admins, ungrouped users,
+ * and internal/unauthenticated callers (no userId) — mirroring the `if (scope.userId)` guard in
+ * scopeFilter, so enforcement only ever narrows access for a grouped non-admin user. Resource choke
+ * points call this and compose the grant test on top of their existing ownerId filter.
+ */
+export function reqGrants(req: Request): EffectiveGrants {
+  const scope = reqScope(req);
+  return effectiveGrantsForUser(getUserById(scope.userId || ''));
 }
 
 /**

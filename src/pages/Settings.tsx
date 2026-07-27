@@ -9,6 +9,7 @@ import {
 import { GoogleSheetsIntegration } from '../components/GoogleSheetsIntegration';
 import { isAdmin } from '../components/AuthGate';
 import { showConfirm } from '@/src/lib/dialog';
+import { FEATURE_OPTIONS } from '../lib/features';
 
 type Provider = 'gemini' | 'openai' | 'anthropic';
 
@@ -90,7 +91,8 @@ export default function Settings() {
     ['credentials', 'Credentials', Globe],
     ['cost', 'Cost & Logs', Activity],
     ...(admin ? [['data', 'Data', Trash2] as [typeof tab, string, any]] : []),
-    // Admin-only: create/manage the people who can log in and use the app.
+    // Admin-only: manage the people who can log in (People) and the access groups that grant them
+    // features/projects/providers/URLs (Access Groups) — both live under one Profiles tab.
     ...(admin ? [['profiles', 'Profiles', Users] as [typeof tab, string, any]] : []),
     // Admin-only: where repos live on THIS server (so a deployed instance finds the right folders).
     ...(admin ? [['deployment', 'Deployment', FolderTree] as [typeof tab, string, any]] : []),
@@ -127,7 +129,7 @@ export default function Settings() {
       {tab === 'credentials' && <CredentialsSection />}
       {tab === 'cost' && <CostSection />}
       {tab === 'data' && admin && <DataSection />}
-      {tab === 'profiles' && admin && <ProfilesSection />}
+      {tab === 'profiles' && admin && <AccessManagement />}
       {tab === 'deployment' && admin && <DeploymentSection />}
     </div>
   );
@@ -188,6 +190,37 @@ interface AppUserRow {
   name: string;
   role: 'admin' | 'tester';
   createdAt: string;
+}
+
+/**
+ * Admin-only Profiles tab: manage the People who can log in and the Access Groups that grant them
+ * features/projects/providers/URLs — one screen, a segmented toggle between the two related jobs
+ * (create users in People, then bundle + restrict them in Access Groups).
+ */
+function AccessManagement() {
+  const [view, setView] = useState<'people' | 'groups'>('people');
+  const items: Array<['people' | 'groups', string, any]> = [
+    ['people', 'People', Users],
+    ['groups', 'Access Groups', Shield],
+  ];
+  return (
+    <div className="space-y-4">
+      <div className="inline-flex gap-1 rounded-lg border border-[var(--border)] bg-[var(--bg-card)] p-1 text-sm">
+        {items.map(([key, label, Icon]) => (
+          <button
+            key={key}
+            onClick={() => setView(key)}
+            className={`inline-flex items-center gap-2 rounded-md px-3 py-1.5 font-medium transition-colors ${
+              view === key ? 'bg-[var(--accent)] text-white' : 'text-[var(--text-muted)] hover:bg-[var(--bg-secondary)] hover:text-[var(--text-primary)]'
+            }`}
+          >
+            <Icon className="h-4 w-4" /> {label}
+          </button>
+        ))}
+      </div>
+      {view === 'people' ? <ProfilesSection /> : <GroupsSection />}
+    </div>
+  );
 }
 
 /**
@@ -339,6 +372,219 @@ function ProfilesSection() {
                 >
                   <Trash2 className="h-4 w-4" />
                 </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// A grant category value is either '*' (all) or an explicit list of ids.
+type GrantValue = string[] | '*';
+interface GroupGrants { features: GrantValue; projects: GrantValue; websites: GrantValue; providers: GrantValue }
+interface GroupRow { id: string; name: string; description?: string; memberUserIds: string[]; grants: GroupGrants; createdAt: string }
+
+const PROVIDER_OPTIONS = [{ id: 'gemini', name: 'Gemini' }, { id: 'openai', name: 'OpenAI' }, { id: 'anthropic', name: 'Anthropic' }];
+const EMPTY_GRANTS: GroupGrants = { features: [], projects: [], websites: [], providers: [] };
+
+/** One grant category: an "All" master toggle plus a checkbox per option. `value` is '*' or ids. */
+function GrantCheckboxes({ title, options, value, onChange }: { title: string; options: Array<{ id: string; name: string }>; value: GrantValue; onChange: (v: GrantValue) => void }) {
+  const all = value === '*';
+  const ids = Array.isArray(value) ? value : [];
+  const toggleOne = (id: string) => onChange(ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id]);
+  return (
+    <div className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] p-3">
+      <div className="mb-2 flex items-center justify-between">
+        <span className="text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">{title}</span>
+        <label className="flex items-center gap-1.5 text-xs text-[var(--text-primary)]">
+          <input type="checkbox" className="accent-[var(--accent)]" checked={all} onChange={(e) => onChange(e.target.checked ? '*' : [])} />
+          All (unrestricted)
+        </label>
+      </div>
+      {all ? (
+        <p className="text-xs text-[var(--text-muted)]">All {title.toLowerCase()} granted.</p>
+      ) : options.length === 0 ? (
+        <p className="text-xs text-[var(--text-muted)]">None available.</p>
+      ) : (
+        <div className="grid grid-cols-2 gap-1 sm:grid-cols-3">
+          {options.map((o) => (
+            <label key={o.id} className="flex cursor-pointer items-center gap-1.5 truncate rounded px-1.5 py-1 text-xs text-[var(--text-primary)] hover:bg-[var(--bg-card)]" title={o.name}>
+              <input type="checkbox" className="accent-[var(--accent)]" checked={ids.includes(o.id)} onChange={() => toggleOne(o.id)} />
+              <span className="truncate">{o.name}</span>
+            </label>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function grantSummary(v: GrantValue): string {
+  if (v === '*') return 'All';
+  return v.length ? String(v.length) : 'None';
+}
+
+/**
+ * Admin-only: Access Groups. Put non-admin users in a group and toggle what it grants — features
+ * (pages), projects, deployment URLs, and AI providers. A user's effective access is the union of
+ * their groups; admins and ungrouped users are unrestricted. Saved via /api/groups.
+ */
+function GroupsSection() {
+  const [groups, setGroups] = useState<GroupRow[]>([]);
+  const [users, setUsers] = useState<AppUserRow[]>([]);
+  const [projects, setProjects] = useState<Array<{ id: string; name: string }>>([]);
+  const [websites, setWebsites] = useState<Array<{ id: string; name: string }>>([]);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState<SaveStatus>({ type: 'idle', message: '' });
+  // `editing` holds the working draft; id '' = creating a new group.
+  const [editing, setEditing] = useState<GroupRow | null>(null);
+
+  const load = useCallback(() => {
+    setLoading(true);
+    Promise.all([
+      fetch('/api/groups').then((r) => r.json()).catch(() => ({})),
+      fetch('/api/users').then((r) => r.json()).catch(() => ({})),
+      fetch('/api/projects').then((r) => r.json()).catch(() => ({})),
+      fetch('/api/credentials/websites').then((r) => r.json()).catch(() => ({})),
+    ]).then(([g, u, p, w]) => {
+      setGroups(Array.isArray(g.groups) ? g.groups : []);
+      setUsers(Array.isArray(u.users) ? u.users : []);
+      const projList = Array.isArray(p) ? p : (Array.isArray(p.projects) ? p.projects : []);
+      setProjects(projList.map((x: any) => ({ id: x.id, name: x.name || x.id })));
+      setWebsites((Array.isArray(w.websites) ? w.websites : []).map((x: any) => ({ id: x.id, name: x.name || x.baseUrl || x.id })));
+    }).finally(() => setLoading(false));
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const nonAdminUsers = users.filter((u) => u.role !== 'admin');
+  const startCreate = () => setEditing({ id: '', name: '', description: '', memberUserIds: [], grants: { ...EMPTY_GRANTS }, createdAt: '' });
+  const startEdit = (g: GroupRow) => setEditing({ ...g, grants: { ...EMPTY_GRANTS, ...g.grants } });
+
+  const save = async () => {
+    if (!editing) return;
+    if (!editing.name.trim()) { setStatus({ type: 'error', message: 'Give the group a name.' }); return; }
+    setBusy(true);
+    setStatus({ type: 'idle', message: '' });
+    try {
+      const body = JSON.stringify({ name: editing.name.trim(), description: editing.description || '', memberUserIds: editing.memberUserIds, grants: editing.grants });
+      const res = editing.id
+        ? await fetch(`/api/groups/${editing.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body })
+        : await fetch('/api/groups', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || 'Could not save group.');
+      setStatus({ type: 'success', message: `Group "${editing.name.trim()}" saved.` });
+      setEditing(null);
+      load();
+    } catch (e: any) {
+      setStatus({ type: 'error', message: e?.message || 'Could not save group.' });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const remove = async (g: GroupRow) => {
+    if (!await showConfirm(`Delete access group "${g.name}"? Members will return to unrestricted access unless they belong to other groups.`, { tone: 'danger' })) return;
+    setBusy(true);
+    try {
+      const res = await fetch(`/api/groups/${g.id}`, { method: 'DELETE' });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({})))?.error || 'Could not delete group.');
+      load();
+    } catch (e: any) {
+      setStatus({ type: 'error', message: e?.message || 'Could not delete group.' });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const setGrant = (cat: keyof GroupGrants, v: GrantValue) => setEditing((e) => e ? { ...e, grants: { ...e.grants, [cat]: v } } : e);
+  const toggleMember = (id: string) => setEditing((e) => e ? { ...e, memberUserIds: e.memberUserIds.includes(id) ? e.memberUserIds.filter((x) => x !== id) : [...e.memberUserIds, id] } : e);
+
+  return (
+    <div className="space-y-4">
+      <StatusBanner status={status} />
+      <div className="flex items-center justify-between">
+        <p className="max-w-2xl text-sm text-[var(--text-muted)]">
+          Group non-admin users and grant each group access to specific features, projects, deployment URLs, and AI providers. A user's access is the union of their groups. Admins and users in no group have full access.
+        </p>
+        {!editing && (
+          <button onClick={startCreate} className="inline-flex shrink-0 items-center gap-2 rounded-md bg-[var(--accent)] px-3 py-2 text-sm font-medium text-white hover:bg-[var(--accent-hover)]">
+            <Plus className="h-4 w-4" /> New group
+          </button>
+        )}
+      </div>
+
+      {editing && (
+        <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-card)] p-5 shadow-sm">
+          <h3 className="mb-3 font-medium text-[var(--text-primary)]">{editing.id ? 'Edit group' : 'New group'}</h3>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <label className="block">
+              <span className="mb-1 block text-xs font-medium text-[var(--text-muted)]">Name</span>
+              <input value={editing.name} onChange={(e) => setEditing({ ...editing, name: e.target.value })} placeholder="e.g. QA Team" className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2.5 py-1.5 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-xs font-medium text-[var(--text-muted)]">Description (optional)</span>
+              <input value={editing.description || ''} onChange={(e) => setEditing({ ...editing, description: e.target.value })} placeholder="What this group is for" className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2.5 py-1.5 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
+            </label>
+          </div>
+
+          <div className="mt-3 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] p-3">
+            <span className="mb-2 block text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">Members</span>
+            {nonAdminUsers.length === 0 ? (
+              <p className="text-xs text-[var(--text-muted)]">No non-admin profiles yet. Create some in the Profiles tab.</p>
+            ) : (
+              <div className="grid grid-cols-2 gap-1 sm:grid-cols-3">
+                {nonAdminUsers.map((u) => (
+                  <label key={u.id} className="flex cursor-pointer items-center gap-1.5 truncate rounded px-1.5 py-1 text-xs text-[var(--text-primary)] hover:bg-[var(--bg-card)]" title={`${u.name} @${u.username}`}>
+                    <input type="checkbox" className="accent-[var(--accent)]" checked={editing.memberUserIds.includes(u.id)} onChange={() => toggleMember(u.id)} />
+                    <span className="truncate">{u.name} <span className="text-[var(--text-muted)]">@{u.username}</span></span>
+                  </label>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-2">
+            <GrantCheckboxes title="Features" options={FEATURE_OPTIONS} value={editing.grants.features} onChange={(v) => setGrant('features', v)} />
+            <GrantCheckboxes title="Projects" options={projects} value={editing.grants.projects} onChange={(v) => setGrant('projects', v)} />
+            <GrantCheckboxes title="Deployment URLs" options={websites} value={editing.grants.websites} onChange={(v) => setGrant('websites', v)} />
+            <GrantCheckboxes title="AI Providers" options={PROVIDER_OPTIONS} value={editing.grants.providers} onChange={(v) => setGrant('providers', v)} />
+          </div>
+
+          <div className="mt-4 flex items-center gap-2">
+            <button onClick={save} disabled={busy} className="inline-flex items-center gap-2 rounded-md bg-[var(--accent)] px-3 py-2 text-sm font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-60">
+              {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />} Save group
+            </button>
+            <button onClick={() => setEditing(null)} disabled={busy} className="rounded-md border border-[var(--border)] px-3 py-2 text-sm text-[var(--text-muted)] hover:text-[var(--text-primary)]">Cancel</button>
+          </div>
+        </div>
+      )}
+
+      <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-card)] p-5 shadow-sm">
+        <h3 className="mb-3 font-medium text-[var(--text-primary)]">Access groups</h3>
+        {loading ? (
+          <p className="text-sm text-[var(--text-muted)]">Loading…</p>
+        ) : groups.length === 0 ? (
+          <p className="text-sm text-[var(--text-muted)]">No groups yet. Create one to restrict what a set of users can access.</p>
+        ) : (
+          <div className="space-y-1.5">
+            {groups.map((g) => (
+              <div key={g.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm">
+                <span className="font-medium text-[var(--text-primary)]">{g.name}</span>
+                <span className="text-xs text-[var(--text-muted)]">{g.memberUserIds.length} member{g.memberUserIds.length === 1 ? '' : 's'}</span>
+                <span className="text-xs text-[var(--text-muted)]">
+                  Features {grantSummary(g.grants?.features ?? [])} · Projects {grantSummary(g.grants?.projects ?? [])} · URLs {grantSummary(g.grants?.websites ?? [])} · Providers {grantSummary(g.grants?.providers ?? [])}
+                </span>
+                <div className="ml-auto flex items-center gap-1">
+                  <button onClick={() => startEdit(g)} disabled={busy} title="Edit group" className="rounded p-1.5 text-[var(--text-muted)] hover:text-[var(--accent)] disabled:opacity-30">
+                    <Pencil className="h-4 w-4" />
+                  </button>
+                  <button onClick={() => remove(g)} disabled={busy} title="Delete group" className="rounded p-1.5 text-[var(--text-muted)] hover:text-red-500 disabled:opacity-30">
+                    <Trash2 className="h-4 w-4" />
+                  </button>
+                </div>
               </div>
             ))}
           </div>

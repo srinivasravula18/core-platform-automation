@@ -2185,7 +2185,7 @@ export const Recordings = {
   },
 };
 
-function mapRecordingStep(r: any, override: any = null) {
+function mapRecordingStep(r: any, override: any = null, history = { canUndo: false, canRedo: false }) {
   if (!r) return null;
   return {
     id: r.id,
@@ -2197,6 +2197,7 @@ function mapRecordingStep(r: any, override: any = null) {
     fieldKind: r.field_kind,
     originalValue: r.original_value,
     currentOverride: override?.value ?? null,
+    ...history,
     readOnly: !!r.read_only,
     metadata: r.metadata || {},
     createdAt: r.created_at,
@@ -2226,14 +2227,30 @@ export const RecordingSteps = {
   async list(recordingId: string): Promise<any[]> {
     if (!isPgEnabled()) {
       return db.recordingSteps.filter((s: any) => s.recordingId === recordingId).sort((a: any, b: any) => a.ordinal - b.ordinal)
-        .map((s: any) => ({ ...s, currentOverride: db.recordingStepOverrides.filter((o: any) => o.stepId === s.id && o.state === 'active').sort((a: any, b: any) => b.version - a.version)[0]?.value ?? null }));
+        .map((s: any) => {
+          const overrides = db.recordingStepOverrides.filter((o: any) => o.stepId === s.id);
+          return {
+            ...s,
+            currentOverride: overrides.filter((o: any) => o.state === 'active').sort((a: any, b: any) => b.version - a.version)[0]?.value ?? null,
+            canUndo: overrides.some((o: any) => o.state === 'active'),
+            canRedo: overrides.some((o: any) => o.state === 'undone'),
+          };
+        });
     }
-    const [steps, overrides] = await Promise.all([
+    const [steps, overrides, history] = await Promise.all([
       query('SELECT * FROM automation_recording_steps WHERE recording_id = $1 ORDER BY ordinal ASC', [recordingId]),
       query(`SELECT DISTINCT ON (step_id) * FROM automation_step_overrides WHERE recording_id = $1 AND state = 'active' ORDER BY step_id, version DESC`, [recordingId]),
+      query(`SELECT step_id,
+        bool_or(state = 'active') AS can_undo,
+        bool_or(state = 'undone') AS can_redo
+        FROM automation_step_overrides WHERE recording_id = $1 GROUP BY step_id`, [recordingId]),
     ]);
     const byStep = new Map(overrides.map((o: any) => [o.step_id, o]));
-    return steps.map((s: any) => mapRecordingStep(s, byStep.get(s.id)));
+    const historyByStep = new Map(history.map((item: any) => [item.step_id, {
+      canUndo: item.can_undo,
+      canRedo: item.can_redo,
+    }]));
+    return steps.map((s: any) => mapRecordingStep(s, byStep.get(s.id), historyByStep.get(s.id)));
   },
   async addOverride(recordingId: string, stepId: string, value: string | boolean | null): Promise<any> {
     if (!isPgEnabled()) {

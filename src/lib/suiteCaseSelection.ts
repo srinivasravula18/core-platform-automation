@@ -60,6 +60,17 @@ export function suitePlanIds(suite: any): string[] {
     : (suite?.testPlanId ? [suite.testPlanId] : []);
 }
 
+export function suitePlanMembershipUpdate(suite: any, planId: string, selected: boolean) {
+  const currentIds = Array.from(new Set(suitePlanIds(suite)));
+  const testPlanIds = selected
+    ? Array.from(new Set([...currentIds, planId]))
+    : currentIds.filter((id) => id !== planId);
+  return {
+    testPlanId: testPlanIds.includes(suite.testPlanId) ? suite.testPlanId : (testPlanIds[0] || ''),
+    testPlanIds,
+  };
+}
+
 export function suiteParentIds(suite: any): string[] {
   return Array.isArray(suite?.parentSuiteIds) && suite.parentSuiteIds.length
     ? suite.parentSuiteIds

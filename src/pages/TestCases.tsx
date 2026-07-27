@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef, useMemo } from 'react';
+import { useEffect, useState, useRef, useMemo, type ComponentProps } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Search, Filter, Pencil, Plus, Sparkles, Loader2, Trash2, PlayCircle, Code2, FolderCheck, ChevronDown } from 'lucide-react';
 import { RowMoreMenu } from '@/src/components/RowMoreMenu';
@@ -29,7 +29,7 @@ const AUTOMATION_STATUSES = ['Automated', 'Not Automated', 'Automation Not Requi
 const TESTING_SCOPES = ['Manual', 'Automation'];
 const TESTING_TYPES = ['Functional', 'Smoke', 'Sanity', 'Regression', 'Integration', 'End to End', 'Acceptance', 'Performance', 'Security', 'Usability', 'Exploratory'];
 
-function InlineCaseSelect({ children, ...props }: React.ComponentProps<'select'>) {
+function InlineCaseSelect({ children, ...props }: ComponentProps<'select'>) {
   return (
     <div className="relative min-w-0">
       <select
@@ -63,7 +63,10 @@ export default function TestCases() {
   const aiSearch = useAiSearch('test cases');
   const [runs, setRuns] = useState<any[]>([]);
   const [scripts, setScripts] = useState<any[]>([]);
-  const [scriptViewer, setScriptViewer] = useState<{ title: string; filename: string; code: string } | null>(null);
+  const [scriptViewer, setScriptViewer] = useState<{ id: string; title: string; filename: string; code: string } | null>(null);
+  const [scriptDraft, setScriptDraft] = useState('');
+  const [isEditingScript, setIsEditingScript] = useState(false);
+  const [isSavingScript, setIsSavingScript] = useState(false);
   // Platform + App are two independent dropdowns (bug: single merged dropdown showed duplicate names).
   const [platformFilter, setPlatformFilter] = useState('All');
   const [appFilter, setAppFilter] = useState('All');
@@ -147,6 +150,50 @@ export default function TestCases() {
       .then(r => r.json())
       .then(data => setScripts(Array.isArray(data) ? data : []))
       .catch(console.error);
+  };
+
+  const openScript = (script: any, testCase: any, edit = false) => {
+    const code = String(script.code || '');
+    setScriptViewer({
+      id: script.id,
+      title: script.title || testCase.title || 'Script',
+      filename: script.filename || script.name || 'script.spec.ts',
+      code,
+    });
+    setScriptDraft(code);
+    setIsEditingScript(edit);
+  };
+
+  const closeScript = () => {
+    if (isSavingScript) return;
+    setScriptViewer(null);
+    setScriptDraft('');
+    setIsEditingScript(false);
+  };
+
+  const saveScript = async () => {
+    if (!scriptViewer || isSavingScript) return;
+    if (!scriptDraft.trim()) {
+      void showAlert('Script code cannot be empty.');
+      return;
+    }
+    setIsSavingScript(true);
+    try {
+      const response = await fetch(`/api/scripts/${scriptViewer.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: scriptDraft }),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.error || 'Failed to save script.');
+      setScripts((current) => current.map((script) => script.id === scriptViewer.id ? { ...script, code: scriptDraft } : script));
+      setScriptViewer({ ...scriptViewer, code: scriptDraft });
+      setIsEditingScript(false);
+    } catch (error: any) {
+      void showAlert(error.message || 'Failed to save script.');
+    } finally {
+      setIsSavingScript(false);
+    }
   };
 
   // Map each run to the platform + individual app it targeted, so cases can display them.
@@ -849,28 +896,47 @@ export default function TestCases() {
         title="AI Auto: New Test Case"
       />
 
-      {/* Read-only viewer for the Playwright script related to a test case. */}
       <Modal
         isOpen={!!scriptViewer}
-        onClose={() => setScriptViewer(null)}
+        onClose={closeScript}
         title={scriptViewer ? `Script — ${scriptViewer.filename}` : 'Script'}
         size="xl"
         footer={
           <div className="flex justify-end gap-3">
             <button
-              onClick={() => { if (scriptViewer?.code) navigator.clipboard?.writeText(scriptViewer.code); }}
+              onClick={() => { if (scriptViewer) navigator.clipboard?.writeText(isEditingScript ? scriptDraft : scriptViewer.code); }}
               className="px-4 py-2 text-sm font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]"
             >
               Copy code
             </button>
-            <button onClick={() => setScriptViewer(null)} className="px-4 py-2 bg-[var(--accent)] text-white text-sm font-medium rounded-md hover:bg-[var(--accent-hover)]">Close</button>
+            {isEditingScript ? (
+              <>
+                <button disabled={isSavingScript} onClick={() => { setScriptDraft(scriptViewer?.code || ''); setIsEditingScript(false); }} className="px-4 py-2 text-sm font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)] disabled:opacity-50">Cancel</button>
+                <button disabled={isSavingScript || !scriptDraft.trim()} onClick={() => void saveScript()} className="rounded-md bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white hover:bg-[var(--accent-hover)] disabled:cursor-not-allowed disabled:opacity-50">{isSavingScript ? 'Saving…' : 'Save'}</button>
+              </>
+            ) : (
+              <>
+                <button onClick={() => setIsEditingScript(true)} className="rounded-md border border-[var(--border)] px-4 py-2 text-sm font-medium hover:border-[var(--accent)]">Edit</button>
+                <button onClick={closeScript} className="rounded-md bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white hover:bg-[var(--accent-hover)]">Close</button>
+              </>
+            )}
           </div>
         }
       >
         {scriptViewer && (
           <div>
             <div className="mb-2 text-sm text-[var(--text-muted)]">Generated Playwright script for <span className="font-medium text-[var(--text-primary)]">{scriptViewer.title}</span></div>
-            <pre className="max-h-[60vh] overflow-auto rounded-lg border border-[var(--border)] bg-[var(--bg-primary)] p-3 text-xs leading-5 text-[var(--text-primary)]"><code>{scriptViewer.code || 'No code available for this script.'}</code></pre>
+            {isEditingScript ? (
+              <textarea
+                aria-label={`Edit ${scriptViewer.filename}`}
+                value={scriptDraft}
+                onChange={(event) => setScriptDraft(event.target.value)}
+                spellCheck={false}
+                className="h-[60vh] w-full resize-y rounded-lg border border-[var(--border)] bg-[var(--bg-primary)] p-3 font-mono text-xs leading-5 text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
+              />
+            ) : (
+              <pre className="max-h-[60vh] overflow-auto rounded-lg border border-[var(--border)] bg-[var(--bg-primary)] p-3 text-xs leading-5 text-[var(--text-primary)]"><code>{scriptViewer.code || 'No code available for this script.'}</code></pre>
+            )}
           </div>
         )}
       </Modal>
@@ -1198,18 +1264,22 @@ export default function TestCases() {
                     {(() => {
                       const script = relatedScript(tc);
                       if (!script) return <span className="text-xs text-[var(--text-muted)]">—</span>;
-                      return (
+                      return <div className="flex items-center gap-1">
                         <button
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            setScriptViewer({ title: script.title || tc.title || 'Script', filename: script.filename || script.name || 'script.spec.ts', code: script.code || '' });
-                          }}
+                          onClick={(event) => { event.stopPropagation(); openScript(script, tc); }}
                           title={script.filename || script.name || 'View generated script'}
                           className="inline-flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-xs font-medium text-[var(--accent)] hover:border-[var(--accent)]"
                         >
                           <Code2 className="h-3.5 w-3.5" /> View
                         </button>
-                      );
+                        <button
+                          onClick={(event) => { event.stopPropagation(); openScript(script, tc, true); }}
+                          title={`Edit ${script.filename || script.name || 'script'}`}
+                          className="inline-flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-xs font-medium hover:border-[var(--accent)]"
+                        >
+                          <Pencil className="h-3.5 w-3.5" /> Edit
+                        </button>
+                      </div>;
                     })()}
                   </td>
                   <td className="py-3 px-4">

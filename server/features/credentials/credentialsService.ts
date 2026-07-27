@@ -26,6 +26,8 @@
 import { createCipheriv, createDecipheriv, randomBytes, scryptSync, createHash } from 'crypto';
 import { db } from '../../shared/storage';
 import type { AgentRunCredentials } from './types';
+import { getUserById } from '../auth/userStore';
+import { effectiveGrantsForUser, isAllowed, UNRESTRICTED } from '../auth/groupStore';
 
 // Derive the key LAZILY (on first encrypt/decrypt), NOT at module load. server.ts runs
 // dotenv.config() AFTER its imports evaluate, so reading CRED_ENC_KEY at module-load time misses
@@ -344,9 +346,16 @@ export function resolveCredentials(opts: ResolveOptions): ResolvedCredential | n
   const inline = opts.inline || {};
   const inlineUsername = String(inline.username || '').trim();
   const inlinePassword = String(inline.password || '');
-  // Per-user isolation: when an owner is given, a run may only resolve against that
-  // user's own websites/logins (never another user's credentials).
-  const ownerOk = (w: any) => !opts.ownerId || (w?.ownerId || '') === opts.ownerId;
+  // Per-user isolation: when an owner is given, a run resolves against that user's OWN websites, plus
+  // any website an Access Group grants them (share). UNRESTRICTED (ungrouped/admin) stays own-only,
+  // matching the /api/credentials list + canAccessWebsite gates, so a run can only use creds the user
+  // can actually access.
+  const ownerGrants = opts.ownerId ? effectiveGrantsForUser(getUserById(opts.ownerId)) : UNRESTRICTED;
+  const ownerOk = (w: any) => {
+    if (!opts.ownerId) return true;
+    if ((w?.ownerId || '') === opts.ownerId) return true;
+    return ownerGrants !== UNRESTRICTED && isAllowed(ownerGrants, 'websites', w?.id || '');
+  };
   const sites = (db.websites as any[]).filter(ownerOk);
 
   if (opts.userId) {

@@ -1,23 +1,28 @@
 import ts from 'typescript';
 
-const VALUE_METHODS = new Set(['fill', 'press', 'selectOption', 'setInputFiles', 'type']);
+const VALUE_METHODS = new Set(['fill', 'press', 'selectOption', 'select', 'setInputFiles', 'type']);
 
 type Replacement = { start: number; end: number; text: string };
+type EditableCall = { call: ts.CallExpression; valueArgument: number };
 
 /** Compile the immutable action locations once, then materialize any number of dataset rows. */
 export function createScriptMaterializer(script: string, steps: any[], mappings: any[], columns: any[]) {
   const source = ts.createSourceFile('recording.spec.ts', script, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
-  const calls: ts.CallExpression[] = [];
+  const calls: EditableCall[] = [];
   const visit = (node: ts.Node) => {
     if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
       const method = node.expression.name.text;
-      const locator = node.expression.expression.getText(source);
-      if ((VALUE_METHODS.has(method) || method === 'check' || method === 'uncheck') && /getBy\w+\(/.test(locator)) calls.push(node);
+      const receiver = node.expression.expression.getText(source);
+      if ((VALUE_METHODS.has(method) || method === 'check' || method === 'uncheck') && /getBy\w+\(/.test(receiver)) {
+        calls.push({ call: node, valueArgument: 0 });
+      } else if (receiver === 'runner' && ['fill', 'press', 'select', 'check', 'uncheck'].includes(method)) {
+        calls.push({ call: node, valueArgument: 1 });
+      }
     }
     ts.forEachChild(node, visit);
   };
   visit(source);
-  calls.sort((a, b) => a.getStart(source) - b.getStart(source));
+  calls.sort((a, b) => a.call.getStart(source) - b.call.getStart(source));
 
   return (row: any): string => {
     const replacements: Replacement[] = [];
@@ -29,8 +34,9 @@ export function createScriptMaterializer(script: string, steps: any[], mappings:
       if (mapping && !column) throw new Error(`Mapping for ${step.metadata?.label || step.locator} references a missing column.`);
       if (mapping && (value === null || value === undefined || value === '')) throw new Error(`Row ${row.rowNumber}: ${column.name} is empty.`);
 
-      const call = calls[step.ordinal];
-      if (!call || !ts.isPropertyAccessExpression(call.expression)) {
+      const editable = calls[step.ordinal];
+      const call = editable?.call;
+      if (!editable || !call || !ts.isPropertyAccessExpression(call.expression)) {
         throw new Error(`Could not materialize ${step.metadata?.label || step.locator}.`);
       }
       const method = call.expression.name.text;
@@ -39,7 +45,7 @@ export function createScriptMaterializer(script: string, steps: any[], mappings:
         replacements.push({ start: call.expression.name.getStart(source), end: call.expression.name.getEnd(), text: checked ? 'check' : 'uncheck' });
         continue;
       }
-      const argument = call.arguments[0];
+      const argument = call.arguments[editable.valueArgument];
       if (!argument) throw new Error(`Could not materialize ${step.metadata?.label || step.locator}.`);
       replacements.push({ start: argument.getStart(source), end: argument.getEnd(), text: JSON.stringify(String(value)) });
     }

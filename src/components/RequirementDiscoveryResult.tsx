@@ -83,11 +83,6 @@ export function RequirementDiscoveryResult({ result, onGenerateTests }: { result
         <Target className="h-4 w-4 text-[var(--accent)]" />
         <span className="text-sm font-semibold text-[var(--text-primary)]">{requirement?.title || 'Requirement'}</span>
         <span className={cn('rounded-md border px-1.5 py-0.5 text-[10px] font-semibold uppercase', badge.cls)}>{badge.label}</span>
-        {result?.repoPath && (
-          <span className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-1.5 py-0.5 font-mono text-[10px] text-[var(--text-muted)]">
-            {result.repoPath}
-          </span>
-        )}
       </div>
 
       {srsModules.length > 0 && (

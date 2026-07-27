@@ -10,7 +10,8 @@
 
 import type { Express } from 'express';
 import { persistDataInBackground } from '../../shared/storage';
-import { reqScope } from '../../shared/scope';
+import { reqScope, reqGrants } from '../../shared/scope';
+import { isAllowed, UNRESTRICTED } from '../auth/groupStore';
 import { recordAudit } from '../../shared/recordAudit';
 import {
   listWebsites,
@@ -43,12 +44,16 @@ function userResponse(u: any) {
   };
 }
 
-// Strict per-user isolation: every logged-in user may only see/use their OWN websites.
+// A user may see/use a website they OWN or that an Access Group grants (share semantic). UNRESTRICTED
+// (admin / ungrouped / internal) keeps own-only isolation — grants only WIDEN for a grouped user.
 function canAccessWebsite(req: any, websiteId: string): boolean {
   const scope = reqScope(req);
   if (!scope.userId) return true;
   const w = getWebsite(websiteId);
-  return !!w && (w.ownerId || '') === scope.userId;
+  if (!w) return false;
+  if ((w.ownerId || '') === scope.userId) return true;
+  const grants = reqGrants(req);
+  return grants !== UNRESTRICTED && isAllowed(grants, 'websites', websiteId);
 }
 function canAccessUser(req: any, userId: string): boolean {
   const u = getUser(userId);
@@ -60,7 +65,9 @@ export function registerCredentialsRoutes(app: Express) {
     const scope = reqScope(req);
     let websites = listWebsites();
     if (scope.userId) {
-      websites = websites.filter((w) => (w.ownerId || '') === scope.userId);
+      const owned = (w: any) => (w.ownerId || '') === scope.userId;
+      const grants = reqGrants(req);
+      websites = grants === UNRESTRICTED ? websites.filter(owned) : websites.filter((w) => owned(w) || isAllowed(grants, 'websites', w.id));
     }
     res.json({ websites });
   });

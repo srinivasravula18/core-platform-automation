@@ -16,6 +16,7 @@
  */
 
 import type { RecordingFieldKind, RecordingStep, RecordingStepType } from './types';
+import ts from 'typescript';
 
 export interface GroupedStep {
   action: string;
@@ -103,6 +104,45 @@ function literalValue(line: string, method: 'fill' | 'press' | 'selectOption' | 
   return null;
 }
 
+function missionRunnerRecordingSteps(script: string): Omit<RecordingStep, 'id' | 'recordingId' | 'currentOverride' | 'createdAt' | 'updatedAt'>[] {
+  const source = ts.createSourceFile('agent.spec.ts', script, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const steps: Omit<RecordingStep, 'id' | 'recordingId' | 'currentOverride' | 'createdAt' | 'updatedAt'>[] = [];
+  const valueMethods: Record<string, RecordingStepType> = { fill: 'fill', press: 'press', select: 'select', check: 'check', uncheck: 'uncheck' };
+  const visit = (node: ts.Node) => {
+    if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)
+      && node.expression.expression.getText(source) === 'runner' && valueMethods[node.expression.name.text]) {
+      const type = valueMethods[node.expression.name.text];
+      const spec = node.arguments[0];
+      if (ts.isObjectLiteralExpression(spec)) {
+        const property = (name: string) => {
+          const match = spec.properties.find((item) => ts.isPropertyAssignment(item) && item.name.getText(source).replace(/['"]/g, '') === name);
+          if (!match || !ts.isPropertyAssignment(match) || !ts.isStringLiteralLike(match.initializer)) return '';
+          return match.initializer.text;
+        };
+        const label = property('label');
+        const role = property('role');
+        const selector = property('selector');
+        const valueNode = node.arguments[1];
+        const value = type === 'check' ? true : type === 'uncheck' ? false : valueNode && ts.isStringLiteralLike(valueNode) ? valueNode.text : null;
+        const sensitive = SECRET_LABEL_RE.test(label);
+        steps.push({
+          ordinal: steps.length,
+          type,
+          locator: label || role || selector,
+          locatorStrategy: role ? 'role' : label ? 'label' : 'unknown',
+          fieldKind: fieldKind(label, type),
+          originalValue: sensitive ? null : value,
+          readOnly: value === null,
+          metadata: { label: label || selector, role, sensitive, source: 'mission-runner' },
+        });
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return steps;
+}
+
 /**
  * Extract only codegen actions we can later materialize safely. The recording script remains the
  * authority; dynamic/unrecognized expressions are represented as read-only rather than guessed.
@@ -132,7 +172,7 @@ export function parseRecordingSteps(script: string): Omit<RecordingStep, 'id' | 
       metadata: { label: d.label, role: d.role, sensitive },
     });
   }
-  return steps;
+  return steps.length ? steps : missionRunnerRecordingSteps(script);
 }
 
 // Parse a codegen spec line-by-line into atomic steps with a kind/locator tag per step so we can

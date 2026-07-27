@@ -17,8 +17,17 @@ test('profile', async ({ page }) => {
   await page.getByLabel('Calculated field').fill(makeValue());
 });`;
 
+const MISSION_SCRIPT = `test('agent profile', async ({ page }) => {
+  const runner = new MissionRunner(page, MISSION);
+  await runner.fill({"selector":"#email","selectorType":"css","role":"textbox","label":"Email Address"}, "john@example.com");
+  await runner.select({"selector":"#role","selectorType":"css","role":"combobox","label":"Role"}, "Admin");
+  await runner.check({"selector":"#enabled","selectorType":"css","role":"checkbox","label":"Enabled"});
+});`;
+
 async function main() {
   const service = await import('../server/features/automation/recordingService');
+  const { createScriptMaterializer } = await import('../server/features/automation/scriptMaterializer');
+  const { Scripts } = await import('../server/db/repository');
   const { db } = await import('../server/shared/storage');
   db.recordings = []; db.recordingSteps = []; db.recordingStepOverrides = [];
   const scope = { projectId: 'p1', appId: 'a1', userId: 'u1', role: '' } as any;
@@ -36,14 +45,37 @@ async function main() {
 
   const changed = await service.overrideRecordingStep(recording.id, steps[0].id, 'alice@example.com');
   assert.ok(!('error' in changed), 'valid inline override is accepted');
-  assert.strictEqual((await service.listRecordingSteps(recording.id))[0].currentOverride, 'alice@example.com');
+  let editedStep = (await service.listRecordingSteps(recording.id))[0];
+  assert.strictEqual(editedStep.currentOverride, 'alice@example.com');
+  assert.strictEqual(editedStep.canUndo, true);
+  assert.strictEqual(editedStep.canRedo, false);
   assert.strictEqual((await service.getRecording(recording.id)).script, source.script, 'override never changes immutable source script');
   assert.strictEqual(await service.undoRecordingStepOverride(recording.id, steps[0].id), true);
-  assert.strictEqual((await service.listRecordingSteps(recording.id))[0].currentOverride, null, 'undo restores the original value');
+  editedStep = (await service.listRecordingSteps(recording.id))[0];
+  assert.strictEqual(editedStep.currentOverride, null, 'undo restores the original value');
+  assert.strictEqual(editedStep.canUndo, false);
+  assert.strictEqual(editedStep.canRedo, true);
   assert.strictEqual(await service.redoRecordingStepOverride(recording.id, steps[0].id), true);
-  assert.strictEqual((await service.listRecordingSteps(recording.id))[0].currentOverride, 'alice@example.com', 'redo restores the override');
+  editedStep = (await service.listRecordingSteps(recording.id))[0];
+  assert.strictEqual(editedStep.currentOverride, 'alice@example.com', 'redo restores the override');
+  assert.strictEqual(editedStep.canUndo, true);
+  assert.strictEqual(editedStep.canRedo, false);
   const invalid = await service.overrideRecordingStep(recording.id, steps[0].id, 'not-an-email');
   assert.ok('error' in invalid && invalid.status === 400, 'field-type validation rejects invalid email');
+
+  await Scripts.upsert({
+    id: 'SCR-AGENT-1', name: 'Agent profile', filename: 'agent-profile.spec.ts', code: MISSION_SCRIPT,
+    projectId: scope.projectId, appId: scope.appId, ownerId: scope.userId,
+  });
+  const repositoryRecording = await service.recordingForScript('SCR-AGENT-1', scope);
+  assert.ok(repositoryRecording, 'repository script is exposed as a recording');
+  const missionSteps = await service.listRecordingSteps(repositoryRecording.id);
+  assert.strictEqual(missionSteps.length, 3, 'repository MissionRunner inputs are lazily backfilled');
+  assert.deepStrictEqual(missionSteps.map((step) => step.type), ['fill', 'select', 'check']);
+  await service.overrideRecordingStep(repositoryRecording.id, missionSteps[0].id, 'alice@example.com');
+  const editedMissionSteps = await service.listRecordingSteps(repositoryRecording.id);
+  const materialized = createScriptMaterializer(MISSION_SCRIPT, editedMissionSteps, [], [])({ values: {} });
+  assert.ok(materialized.includes('"alice@example.com"'), 'MissionRunner value override is materialized');
   console.log('PASS: recording step derivation, immutable overrides, and undo/redo.');
 }
 
