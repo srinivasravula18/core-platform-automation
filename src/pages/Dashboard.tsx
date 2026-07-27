@@ -81,6 +81,7 @@ function EmptyNote({ children }: { children: any }) {
 
 export default function Dashboard() {
   const [stats, setStats] = useState<any>(null);
+  const [activityInfoOpen, setActivityInfoOpen] = useState(false);
   const [suitesCount, setSuitesCount] = useState(0);
   const [nowTick, setNowTick] = useState(() => Date.now()); // drives the Next Run countdown
   useEffect(() => { const t = window.setInterval(() => setNowTick(Date.now()), 60_000); return () => window.clearInterval(t); }, []);
@@ -311,12 +312,29 @@ export default function Dashboard() {
         <div className="p-5 rounded-xl border border-[var(--border)] bg-[var(--bg-card)] shadow-sm flex max-h-[420px] min-h-0 flex-col">
           <div className="mb-4 flex items-center gap-1.5">
             <h2 className="text-base font-semibold">Recent Activity</h2>
-            <Info
-              className="h-4 w-4 text-[var(--text-muted)]"
-              aria-label="Shows the latest changes across test cases, plans, suites, runs, defects, and reports. Select an item to open it."
-              role="img"
-              title="Shows the latest changes across test cases, plans, suites, runs, defects, and reports. Select an item to open it."
-            />
+            <div className="group relative">
+              <button
+                type="button"
+                aria-label="About Recent Activity"
+                aria-describedby="recent-activity-info"
+                aria-expanded={activityInfoOpen}
+                onClick={() => setActivityInfoOpen((open) => !open)}
+                className="flex rounded p-0.5 text-[var(--text-muted)] hover:bg-[var(--bg-secondary)] hover:text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
+              >
+                <Info className="h-4 w-4" />
+              </button>
+              <div
+                id="recent-activity-info"
+                role="tooltip"
+                className={cn(
+                  "absolute right-0 top-7 z-40 w-72 rounded-lg border border-[var(--border)] bg-[var(--bg-card)] p-3 text-left text-xs leading-5 text-[var(--text-secondary)] shadow-xl",
+                  activityInfoOpen ? "block" : "hidden group-hover:block group-focus-within:block",
+                )}
+              >
+                <div className="mb-1 font-semibold text-[var(--text-primary)]">What Recent Activity shows</div>
+                The latest changes to test cases, plans, suites, runs, defects, and reports for your current workspace. Each entry includes what changed, when it happened, who performed it, and an outcome when available. Select an entry to open the related record.
+              </div>
+            </div>
           </div>
           <div className="min-h-0 flex-1 space-y-4 overflow-y-auto pr-2">
             {!stats?.recentActivity ? (

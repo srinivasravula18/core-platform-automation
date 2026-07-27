@@ -432,12 +432,12 @@ export default function Reports() {
   const totalReportSteps = filteredReports.reduce((total, report) => total + (report.steps?.length || report.totalExecutions || 0), 0);
   const passedReportSteps = filteredReports.reduce((total, report) => {
     const steps = report.steps || [];
-    if (steps.length > 0) return total + steps.filter(step => step.outcome === 'Pass').length;
+    if (steps.length > 0) return total + steps.filter(step => /pass/i.test(String(step.outcome || ''))).length;
     return total + (report.status === 'Passed' ? (report.totalExecutions || 0) : 0);
   }, 0);
   const failedReportSteps = filteredReports.reduce((total, report) => {
     const steps = report.steps || [];
-    if (steps.length > 0) return total + steps.filter(step => step.outcome === 'Fail').length;
+    if (steps.length > 0) return total + steps.filter(step => /fail/i.test(String(step.outcome || ''))).length;
     return total + (report.status === 'Failed' ? 1 : 0);
   }, 0);
   const requestedBySummary = filteredReports.find(report => report.requestedBy)?.requestedBy || 'No reports logged';
@@ -937,7 +937,6 @@ export default function Reports() {
     </div>
   );
 }
-
 
 
 

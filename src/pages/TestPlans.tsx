@@ -79,6 +79,7 @@ export default function TestPlans() {
   const [folders, setFolders] = useState<any[]>([]);
   const [activeDetailTab, setActiveDetailTab] = useState<'suites' | 'cases' | 'runs'>('suites');
   const [loading, setLoading] = useState(true);
+  const [planView, setPlanView] = useState<'active' | 'closed'>('active');
   const [searchTerm, setSearchTerm] = useState('');
   const aiSearch = useAiSearch('test plans');
   const [isFilterOpen, setIsFilterOpen] = useState(false);
@@ -244,13 +245,16 @@ export default function TestPlans() {
   const getPlanCases = (planId: string) => cases.filter((testCase) => testCase.testPlanId === planId);
   const selectedDetailPlan = plans.find((plan) => plan.id === planId) || null;
   const getPlanRuns = (plan: any) => linkedRunsForPlan(plan, runs);
-  const runCountLabel = (count: number) => `Run ${count} test run${count === 1 ? '' : 's'}`;
+  const runCaseCountLabel = (count: number) => count ? `Run ${count} test case${count === 1 ? '' : 's'}` : 'No test cases linked to this plan';
   const tagOptions = Array.from(new Set<string>(plans.flatMap((plan) => Array.isArray(plan.tags) ? plan.tags.map(String) : []))).sort();
   const ownerOptions = Array.from(new Set<string>(plans.map((plan) => String(plan.owner || '').trim()).filter(Boolean))).sort();
   const activeFilterCount = filters.statuses.length + filters.owners.length + filters.tags.length + filters.folders.length
     + (filters.startFrom || filters.endTo ? 1 : 0) + (filters.environments.trim() ? 1 : 0)
     + (filters.roles.trim() ? 1 : 0) + filters.runIds.length + (filters.notYetExecuted ? 1 : 0);
-  const filteredPlans: any[] = sortByTime(plans.filter((plan) => {
+  const activePlans = plans.filter((plan) => !/completed|cancelled|archived/i.test(plan.status || ''));
+  const closedPlans = plans.filter((plan) => /completed|cancelled|archived/i.test(plan.status || ''));
+  const visiblePlans = planView === 'active' ? activePlans : closedPlans;
+  const filteredPlans: any[] = sortByTime(visiblePlans.filter((plan) => {
     const query = searchTerm.toLowerCase();
     const matchesSearch = aiSearch.isAiQuery(searchTerm)
       ? (aiSearch.matchedIds ? aiSearch.matchedIds.has(plan.id) : true)
@@ -265,6 +269,14 @@ export default function TestPlans() {
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Test Plans</h1>
           <p className="text-sm text-[var(--text-muted)] mt-1">Manage your high-level test plans and objectives.</p>
+          <div className="mt-4 flex gap-8 text-sm">
+            <button onClick={() => setPlanView('active')} className={cn('border-b-2 pb-2', planView === 'active' ? 'border-[var(--accent)] text-[var(--accent)]' : 'border-transparent text-[var(--text-muted)]')}>
+              Active Plans <span className="ml-2 rounded-full bg-[var(--bg-secondary)] px-2 py-0.5">{activePlans.length}</span>
+            </button>
+            <button onClick={() => setPlanView('closed')} className={cn('border-b-2 pb-2', planView === 'closed' ? 'border-[var(--accent)] text-[var(--accent)]' : 'border-transparent text-[var(--text-muted)]')}>
+              Closed Plans <span className="ml-2 rounded-full bg-[var(--bg-secondary)] px-2 py-0.5">{closedPlans.length}</span>
+            </button>
+          </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <ExportMenu
@@ -623,12 +635,12 @@ export default function TestPlans() {
             )}
           </div>
           <div aria-live="polite" className="ml-auto whitespace-nowrap text-xs font-medium text-[var(--text-muted)]">
-            {filteredPlans.length}{(searchTerm || activeFilterCount > 0) ? ` of ${plans.length}` : ''} test plan{filteredPlans.length === 1 ? '' : 's'}
+            {filteredPlans.length}{(searchTerm || activeFilterCount > 0) ? ` of ${visiblePlans.length}` : ''} test plan{filteredPlans.length === 1 ? '' : 's'}
           </div>
           {bulk.selectedCount > 0 && (
             <div className="ml-auto flex items-center gap-2">
               {bulk.selectedCount > 1 && (
-                <button onClick={() => runSelectedPlans()} disabled={isStartingRun} title={runCountLabel(selectedPlanIds.reduce((count, id) => count + getPlanRuns(plans.find((plan) => plan.id === id)).length, 0))} className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
+                <button onClick={() => runSelectedPlans()} disabled={isStartingRun || selectedPlanIds.reduce((count, id) => count + getPlanCases(id).length, 0) === 0} title={runCaseCountLabel(selectedPlanIds.reduce((count, id) => count + getPlanCases(id).length, 0))} className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
                   {isStartingRun ? <Loader2 className="w-4 h-4 animate-spin" /> : <PlayCircle className="w-4 h-4" />} Run selected ({bulk.selectedCount})
                 </button>
               )}
@@ -640,7 +652,7 @@ export default function TestPlans() {
         </div>
 
         <div className="flex-1 overflow-auto">
-          <table className="w-full min-w-[1120px] table-fixed text-left text-sm whitespace-nowrap">
+          <table className="w-full min-w-[1240px] table-fixed text-left text-sm whitespace-nowrap">
             <thead className="sticky top-0 bg-[var(--bg-secondary)] border-b border-[var(--border)] z-10">
               <tr className="text-[var(--text-muted)]">
                 <th className="font-medium py-3 px-4 w-10">
@@ -653,6 +665,7 @@ export default function TestPlans() {
                 <th className="w-32 px-4 py-3 font-medium">Risk Level</th>
                 <th className="w-52 px-4 py-3 font-medium">Start / End Date</th>
                 <th className="w-28 px-4 py-3 text-center font-medium">Linked Runs</th>
+                <th className="w-28 px-4 py-3 text-center font-medium">Linked Suites</th>
                 <th className="w-28 px-4 py-3 text-center font-medium">Test Cases</th>
                 <th className="font-medium py-3 px-4 w-32">Updated</th>
                 <th className="font-medium py-3 px-4 w-24 text-right">Actions</th>
@@ -660,11 +673,12 @@ export default function TestPlans() {
             </thead>
             <tbody className="divide-y divide-[var(--border)]">
               {loading ? (
-                <tr><td colSpan={11} className="py-8 text-center text-[var(--text-muted)]">Loading plans...</td></tr>
+                <tr><td colSpan={12} className="py-8 text-center text-[var(--text-muted)]">Loading plans...</td></tr>
               ) : filteredPlans.length === 0 ? (
-                <tr><td colSpan={11} className="py-8 text-center text-[var(--text-muted)]">No plans found.</td></tr>
+                <tr><td colSpan={12} className="py-8 text-center text-[var(--text-muted)]">No plans found.</td></tr>
               ) : filteredPlans.map((plan) => {
                 const planCases = getPlanCases(plan.id);
+                const planSuites = getPlanSuites(plan.id);
                 const linkedRunCount = getPlanRuns(plan).length;
                 const isSelected = planId === plan.id;
 
@@ -709,6 +723,7 @@ export default function TestPlans() {
                         {linkedRunCount}
                       </span>
                     </td>
+                    <td className="py-3 px-4 text-center">{planSuites.length}</td>
                     <td className="py-3 px-4 text-center">{planCases.length}</td>
                     <td className="py-3 px-4 whitespace-nowrap text-xs text-[var(--text-muted)]">
                       <Timestamp value={plan.metadata?.updatedAt || plan.updatedAt} />
@@ -721,8 +736,9 @@ export default function TestPlans() {
                             e.stopPropagation();
                             runSelectedPlans([plan.id]);
                           }}
-                          disabled={isStartingRun}
-                          title={runCountLabel(linkedRunCount)}
+                          disabled={isStartingRun || planCases.length === 0}
+                          title="Run all linked suites"
+                          aria-label="Run all linked suites"
                           className="p-1 rounded hover:bg-emerald-500/10 text-[var(--text-muted)] hover:text-emerald-400 disabled:opacity-50 transition-colors"
                         >
                           <PlayCircle className="w-4 h-4" />
@@ -751,6 +767,3 @@ export default function TestPlans() {
     </div>
   );
 }
-
-
-
