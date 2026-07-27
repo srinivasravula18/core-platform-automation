@@ -1239,7 +1239,7 @@ function CredentialsSection() {
   const saveRow = async (key: string) => {
     const r = rows.find((x) => x.key === key);
     if (!r || r.saving) return;
-    if (!r.name || !r.url) return; // need at least a name + URL to persist
+    if (!r.name.trim() || !r.url.trim() || !r.username.trim() || (!r.userId && !r.password)) return;
     setRows((prev) => prev.map((x) => (x.key === key ? { ...x, saving: true } : x)));
     try {
       // Read the server's error text on any non-2xx so the UI shows the REAL reason
@@ -1353,21 +1353,22 @@ function CredentialsSection() {
               <div>Username / Email</div>
               <div>Password</div>
               <div>Playwright</div>
-              <div />
+              <div>Actions</div>
             </div>
           )}
 
           {rows.map((r) => {
             const hasSavedPassword = Boolean(r.userId);
+            const canSave = Boolean(r.name.trim() && r.url.trim() && r.username.trim() && (r.userId || r.password));
             const passwordValue = r.password || (r.passwordVisible ? r.revealedPassword || '' : hasSavedPassword ? SAVED_PASSWORD_MASK : '');
             return (
               <div
                 key={r.key}
                 className="grid grid-cols-1 items-center gap-2 rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] p-2 lg:grid-cols-[1.2fr_1.5fr_1.2fr_1.2fr_auto_auto]"
               >
-              <input value={r.name} onChange={(e) => patch(r.key, { name: e.target.value })} onBlur={() => saveRow(r.key)} placeholder="Website name" className="rounded-md border border-[var(--border)] bg-[var(--bg-primary)] px-2 py-1.5 text-sm outline-none focus:border-[var(--accent)]" />
-              <input value={r.url} onChange={(e) => patch(r.key, { url: e.target.value })} onBlur={() => saveRow(r.key)} placeholder="https://app.example.com" className="rounded-md border border-[var(--border)] bg-[var(--bg-primary)] px-2 py-1.5 text-sm outline-none focus:border-[var(--accent)]" />
-              <input value={r.username} onChange={(e) => patch(r.key, { username: e.target.value })} onBlur={() => saveRow(r.key)} placeholder="Username / email" className="rounded-md border border-[var(--border)] bg-[var(--bg-primary)] px-2 py-1.5 text-sm outline-none focus:border-[var(--accent)]" />
+              <input value={r.name} onChange={(e) => patch(r.key, { name: e.target.value })} placeholder="Website name" className="rounded-md border border-[var(--border)] bg-[var(--bg-primary)] px-2 py-1.5 text-sm outline-none focus:border-[var(--accent)]" />
+              <input value={r.url} onChange={(e) => patch(r.key, { url: e.target.value })} placeholder="https://app.example.com" className="rounded-md border border-[var(--border)] bg-[var(--bg-primary)] px-2 py-1.5 text-sm outline-none focus:border-[var(--accent)]" />
+              <input value={r.username} onChange={(e) => patch(r.key, { username: e.target.value })} placeholder="Username / email" className="rounded-md border border-[var(--border)] bg-[var(--bg-primary)] px-2 py-1.5 text-sm outline-none focus:border-[var(--accent)]" />
               <div className="flex min-w-0 rounded-md border border-[var(--border)] bg-[var(--bg-primary)] focus-within:border-[var(--accent)]">
                 <input
                   type={r.passwordVisible ? 'text' : 'password'}
@@ -1378,7 +1379,6 @@ function CredentialsSection() {
                       : e.target.value;
                     patch(r.key, { password: next });
                   }}
-                  onBlur={() => saveRow(r.key)}
                   onFocus={(e) => {
                     if (!r.passwordVisible && hasSavedPassword && !r.password) e.currentTarget.select();
                   }}
@@ -1396,17 +1396,22 @@ function CredentialsSection() {
                 </button>
               </div>
               <label className="flex items-center justify-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--bg-primary)] px-2 py-1.5 text-xs text-[var(--text-muted)]">
-                <input type="checkbox" checked={r.useForPlaywright} onChange={(e) => { patch(r.key, { useForPlaywright: e.target.checked }); setTimeout(() => saveRow(r.key), 0); }} className="accent-[var(--accent)]" />
+                <input type="checkbox" checked={r.useForPlaywright} onChange={(e) => patch(r.key, { useForPlaywright: e.target.checked })} className="accent-[var(--accent)]" />
                 <span className="hidden sm:inline">Use for Playwright</span>
               </label>
-              <div className="flex items-center justify-center">
-                {r.saving ? (
-                  <Loader2 className="h-4 w-4 animate-spin text-[var(--accent)]" />
-                ) : (
-                  <button onClick={() => deleteRow(r.key)} title="Delete" className="rounded-md border border-[var(--border)] bg-[var(--bg-primary)] p-2 text-[var(--text-muted)] hover:border-red-500 hover:text-red-500">
-                    <Trash2 className="h-4 w-4" />
-                  </button>
-                )}
+              <div className="flex items-center justify-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => saveRow(r.key)}
+                  disabled={!canSave || r.saving}
+                  title="Save credential"
+                  className="rounded-md bg-[var(--accent)] p-2 text-white hover:bg-[var(--accent-hover)] disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {r.saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                </button>
+                <button type="button" onClick={() => deleteRow(r.key)} disabled={r.saving} title="Delete" className="rounded-md border border-[var(--border)] bg-[var(--bg-primary)] p-2 text-[var(--text-muted)] hover:border-red-500 hover:text-red-500 disabled:cursor-not-allowed disabled:opacity-50">
+                  <Trash2 className="h-4 w-4" />
+                </button>
               </div>
             </div>
             );
