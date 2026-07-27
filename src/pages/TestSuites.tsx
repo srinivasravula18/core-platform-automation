@@ -560,7 +560,7 @@ export default function TestSuites() {
                           >
                             {isExpanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
                           </button>
-                          <button onClick={() => openEditModal(suite)} className="block min-w-0 max-w-[240px] text-left">
+                          <button onClick={() => openEditModal(suite)} className="block min-w-0 flex-1 text-left">
                             <span className="block font-medium hover:text-[var(--accent)] transition-colors truncate" title={suite.name}>{suite.name}</span>
                             <span className="block text-xs text-[var(--text-muted)] font-normal truncate">{suite.description}</span>
                             <span className="block text-xs text-[var(--text-muted)]">{suiteCases.length} related cases</span>
