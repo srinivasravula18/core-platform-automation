@@ -36,4 +36,5 @@ assert.deepEqual(runExecutionState({
   percent: 50,
   label: 'Completed 2/4 scripts',
 });
+assert.equal(runExecutionState({ status: 'In Progress' }).running, true);
 console.log('PASS: manual runs use current plan cases, linked scripts, and real execution outcomes.');

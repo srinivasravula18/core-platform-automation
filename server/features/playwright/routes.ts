@@ -43,34 +43,56 @@ function applySettingsCredentials(code: string, baseUrl: string) {
   return next;
 }
 
-export async function runPlaywrightRequest({ scripts, baseUrl, runId, executionId, singleSession, screenshotMode, onProgress }: any) {
+export async function runPlaywrightRequest({ scripts, baseUrl, runId, executionId, singleSession, screenshotMode, onProgress, requireAuth, authContext }: any) {
   if (!Array.isArray(scripts) || scripts.length === 0) throw new Error('No linked Playwright scripts were found.');
-  const runnableScripts = scripts.map((script: any) => ({ ...script, code: applySettingsCredentials(String(script?.code || ''), String(baseUrl || '')) }));
+  const runnableScripts = scripts.map((script: any) => ({
+    ...script,
+    code: requireAuth ? String(script?.code || '') : applySettingsCredentials(String(script?.code || ''), String(baseUrl || '')),
+  }));
   const needsMissionRunner = runnableScripts.some((script: any) => /from\s+['"]\.\/mission-runner['"]/.test(String(script?.code || '')));
+  const matchedOriginRun = runId ? db.agentRuns.find((run: any) => run.id === runId || String(runId).startsWith(String(run.id))) : null;
+  const originRun = matchedOriginRun && (!authContext?.ownerId || matchedOriginRun.ownerId === authContext.ownerId) ? matchedOriginRun : null;
   let storageStatePath: string | undefined;
   let sessionStorageState: { origin: string; items: Record<string, string> } | undefined;
-  if (needsMissionRunner && baseUrl) {
-    const originRun = runId ? db.agentRuns.find((run: any) => run.id === runId || String(runId).startsWith(String(run.id))) : null;
-    const stored = resolveCredentials({
-      targetUrl: String(baseUrl),
-      websiteId: originRun?.websiteId || undefined,
-      role: originRun?.credentials?.role || undefined,
-      ownerId: originRun?.ownerId || undefined,
-    });
-    const settings = findSettingsCredentials(String(baseUrl));
-    const creds = stored?.username && stored?.password
-      ? { username: stored.username, password: stored.password }
-      : settings.username && settings.password ? { username: settings.username, password: settings.password } : null;
-    if (creds) {
-      const authPath = path.join(process.cwd(), '.testflow-pw', `rerun-${safeId(String(executionId || runId || Date.now()))}-auth.json`);
-      await fs.mkdir(path.dirname(authPath), { recursive: true });
-      let auth = await createAuthStorageState(String(baseUrl), creds, authPath).catch(() => null);
-      if (auth?.ok && !auth.sessionStorage) {
-        auth = await createAuthStorageState(String(baseUrl), creds, authPath).catch(() => auth);
-      }
-      if (auth?.ok || auth?.sessionStorage) {
-        storageStatePath = authPath;
-        sessionStorageState = auth?.sessionStorage;
+  if (needsMissionRunner || requireAuth) {
+    if (!baseUrl && requireAuth) throw new Error('Authentication is required, but this test run has no target URL.');
+    if (baseUrl) {
+      const agentAuthPath = originRun ? path.join(process.cwd(), '.testflow-pw', `${safeId(originRun.id)}-auth.json`) : '';
+      const agentSessionPath = originRun ? path.join(process.cwd(), '.testflow-pw', `${safeId(originRun.id)}-session-storage.json`) : '';
+      const agentAuthFresh = agentAuthPath
+        ? await fs.stat(agentAuthPath).then((stat) => Date.now() - stat.mtimeMs < 15 * 60 * 1000).catch(() => false)
+        : false;
+      if (agentAuthFresh) {
+        storageStatePath = agentAuthPath;
+        sessionStorageState = await fs.readFile(agentSessionPath, 'utf8').then((raw) => JSON.parse(raw)).catch(() => undefined);
+      } else {
+        const stored = resolveCredentials({
+          targetUrl: String(baseUrl),
+          websiteId: originRun?.websiteId || authContext?.websiteId || undefined,
+          role: originRun?.credentials?.role || authContext?.role || undefined,
+          ownerId: originRun?.ownerId || authContext?.ownerId || undefined,
+        });
+        const settings = originRun?.ownerId || authContext?.ownerId ? { username: '', password: '' } : findSettingsCredentials(String(baseUrl));
+        const creds = stored?.username && stored?.password
+          ? { username: stored.username, password: stored.password }
+          : settings.username && settings.password ? { username: settings.username, password: settings.password } : null;
+        if (!creds && requireAuth) throw new Error('Authentication is required, but no matching credentials are configured for this application.');
+        if (!creds) {
+          storageStatePath = undefined;
+        } else {
+          const authPath = path.join(process.cwd(), '.testflow-pw', `rerun-${safeId(String(executionId || runId || Date.now()))}-auth.json`);
+          await fs.mkdir(path.dirname(authPath), { recursive: true });
+          let auth = await createAuthStorageState(String(baseUrl), creds, authPath).catch(() => null);
+          if (auth?.ok && !auth.sessionStorage) {
+            auth = await createAuthStorageState(String(baseUrl), creds, authPath).catch(() => auth);
+          }
+          if (auth?.ok || auth?.sessionStorage) {
+            storageStatePath = authPath;
+            sessionStorageState = auth?.sessionStorage;
+          } else if (requireAuth) {
+            throw new Error(`Authentication failed before script execution${auth?.reason ? `: ${auth.reason}` : '.'}`);
+          }
+        }
       }
     }
   }

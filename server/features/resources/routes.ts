@@ -380,6 +380,9 @@ export function registerResourceRoutes(app: Express) {
               runId: run.sourceRunId || run.agentRunId || runnableScripts[0]?.agentRunId || run.id,
               executionId: executionAttemptId,
               screenshotMode: 'on',
+              requireAuth: Boolean(run.agentRunId || run.sourceRunId || run.triggerType === 'agent'
+                || runnableScripts.some((script: any) => script.agentRunId || script.sourceRunId)),
+              authContext: { websiteId: run.websiteId, role: run.credentialRole, ownerId: run.ownerId },
               onProgress: async (progress: any) => {
                 const latest = await Runs.get(run.id);
                 if (!latest || manualExecutionMeta(latest).attemptId !== executionAttemptId) throw new Error('Execution was superseded by a newer attempt.');

@@ -55,6 +55,8 @@ function statusDot(status: string) {
   return 'bg-slate-500';
 }
 
+const scriptLabel = (script: any) => script.filename || script.name || script.title || script.id || 'Unnamed script';
+
 export default function TestRuns() {
   const navigate = useNavigate();
   const { runId } = useParams();
@@ -141,8 +143,8 @@ export default function TestRuns() {
     const t = setInterval(() => { void refreshRunsQuiet(); }, 2000);
     return () => clearInterval(t);
   }, [hasRunningRuns, refreshRunsQuiet]);
-  const activeRuns = runs.filter((run) => !/completed|closed/i.test(run.status || ''));
-  const closedRuns = runs.filter((run) => /completed|closed/i.test(run.status || ''));
+  const activeRuns = runs.filter((run) => !/completed|closed|failed|cancelled/i.test(run.status || ''));
+  const closedRuns = runs.filter((run) => /completed|closed|failed|cancelled/i.test(run.status || ''));
 
   const filteredRuns = useMemo(() => {
     const base = runView === 'active' ? activeRuns : closedRuns;
@@ -602,6 +604,7 @@ export default function TestRuns() {
               { key: 'status', label: 'Status' },
               { key: 'requestedBy', label: 'Requested By' },
               { key: 'suiteName', label: 'Suite' },
+              { key: 'scripts', label: 'Scripts', get: (r) => scriptsForRun(r, casesForRun(r, cases, suites), scripts).map(scriptLabel).join(', ') },
               { key: 'executionTime', label: 'Execution Time' },
               { key: 'passed', label: 'Passed', get: (r) => (r.steps || []).filter((s: any) => /pass/i.test(s?.outcome || s?.status || '')).length },
               { key: 'failed', label: 'Failed', get: (r) => (r.steps || []).filter((s: any) => /fail/i.test(s?.outcome || s?.status || '')).length },
@@ -731,7 +734,7 @@ export default function TestRuns() {
         </div>
 
         <div className="flex-1 overflow-auto">
-          <table className="w-full min-w-[1264px] table-fixed text-left text-sm whitespace-nowrap">
+          <table className="w-full min-w-[1520px] table-fixed text-left text-sm whitespace-nowrap">
             <thead className="sticky top-0 bg-[var(--bg-secondary)] border-b border-[var(--border)] text-[var(--text-muted)]">
               <tr>
                 <th className="px-4 py-3 w-10">
@@ -740,6 +743,7 @@ export default function TestRuns() {
                 <th className="px-4 py-3 w-10"></th>
                 <th className="w-80 px-4 py-3 font-medium">Run</th>
                 <th className="w-60 px-4 py-3 font-medium">Folder</th>
+                <th className="w-64 px-4 py-3 font-medium">Scripts</th>
                 <th className="w-28 px-4 py-3 font-medium">Tests</th>
                 <th className="w-28 px-4 py-3 font-medium">Duration</th>
                 <th className="w-56 px-4 py-3 font-medium">Tests Status</th>
@@ -750,12 +754,14 @@ export default function TestRuns() {
             </thead>
             <tbody className="divide-y divide-[var(--border)]">
               {loading ? (
-                <tr><td colSpan={10} className="px-4 py-8 text-center text-[var(--text-muted)]">Loading runs...</td></tr>
+                <tr><td colSpan={11} className="px-4 py-8 text-center text-[var(--text-muted)]">Loading runs...</td></tr>
               ) : filteredRuns.length === 0 ? (
-                <tr><td colSpan={10} className="px-4 py-8 text-center text-[var(--text-muted)]">No test runs found.</td></tr>
+                <tr><td colSpan={11} className="px-4 py-8 text-center text-[var(--text-muted)]">No test runs found.</td></tr>
               ) : filteredRuns.map((run) => {
                 const stats = getRunStats(run);
-                const hasScripts = scriptsForRun(run, casesForRun(run, cases, suites), scripts).length > 0;
+                const runScripts = scriptsForRun(run, casesForRun(run, cases, suites), scripts);
+                const scriptNames = runScripts.map(scriptLabel);
+                const hasScripts = runScripts.length > 0;
                 const execution = runExecutionState(run);
                 const progress = runProgress[run.id] || execution.label;
                 const running = execution.running || Boolean(runProgress[run.id]);
@@ -784,6 +790,12 @@ export default function TestRuns() {
                     <td className="overflow-hidden px-4 py-4">
                       <FolderBadge folders={folders} folderId={run.folderId} />
                     </td>
+                    <td className="overflow-hidden px-4 py-4">
+                      <div className="truncate text-[var(--text-primary)]" title={scriptNames.join(', ') || 'No linked scripts'}>
+                        {scriptNames.join(', ') || '-'}
+                      </div>
+                      {scriptNames.length > 0 && <div className="text-xs text-[var(--text-muted)]">{scriptNames.length} script{scriptNames.length === 1 ? '' : 's'}</div>}
+                    </td>
                     <td className="px-4 py-4">{stats.total} Tests</td>
                     <td className="px-4 py-4">{running ? 'Running…' : run.executionTime || '-'}</td>
                     <td className="px-4 py-4">
@@ -804,7 +816,9 @@ export default function TestRuns() {
                         <span title={`Untested: ${stats.untested}`} className="px-2 py-1 rounded bg-[var(--bg-secondary)] text-[var(--text-muted)] cursor-default">{stats.untested}</span>
                       </div>}
                     </td>
-                    <td className="px-4 py-4 text-[var(--text-muted)]">{stats.failed ? `${stats.failed} failed` : '-'}</td>
+                    <td className="px-4 py-4 text-[var(--text-muted)]">
+                      {stats.failed ? `${stats.failed} failed` : (/failed/i.test(run.status || '') ? run.progress || 'Execution failed' : '-')}
+                    </td>
                     <td className="px-4 py-4 whitespace-nowrap text-xs text-[var(--text-muted)]">
                       <Timestamp value={run.metadata?.updatedAt || run.updatedAt || run.date} />
                       {actorName(run.metadata?.updatedBy) && <div className="text-[10px]">by {actorName(run.metadata?.updatedBy)}</div>}

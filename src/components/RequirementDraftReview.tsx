@@ -50,6 +50,9 @@ export function RequirementDraftReview({
   const uiSelectorRows = selectorRows(requirement.uiSelectors);
   const sourceFiles: any[] = Array.isArray(requirement.sourceFiles) ? requirement.sourceFiles : [];
   const badge = COVERAGE_BADGE[requirement.coverageStatus || 'unknown'] || COVERAGE_BADGE.unknown;
+  const duplicateOf = result?.duplicateOf;
+  const qualityFindings: Array<{ requirement: string; module: string; issue: string; severity: string }> = Array.isArray(result?.qualityFindings) ? result.qualityFindings : [];
+  const qualityWarnings = qualityFindings.filter((f) => f.severity === 'warn');
 
   return (
     <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-card)] p-3">
@@ -60,6 +63,31 @@ export function RequirementDraftReview({
       </div>
 
       <div className="space-y-3">
+        {duplicateOf && (
+          <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[11px] leading-relaxed text-[var(--text-primary)]">
+            <span className="font-semibold">Updates an existing requirement.</span> This matches <span className="font-mono">{duplicateOf.id}</span>{duplicateOf.title ? ` ("${duplicateOf.title}")` : ''} — {duplicateOf.reason} Confirming will update it in place instead of creating a duplicate.
+          </div>
+        )}
+
+        {qualityFindings.length > 0 && (
+          <div className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2">
+            <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+              Quality checks — {qualityWarnings.length} warning{qualityWarnings.length === 1 ? '' : 's'}, {qualityFindings.length - qualityWarnings.length} note{qualityFindings.length - qualityWarnings.length === 1 ? '' : 's'}
+            </div>
+            <ul className="space-y-0.5">
+              {qualityFindings.slice(0, 12).map((f, i) => (
+                <li key={i} className="text-[11px] leading-relaxed text-[var(--text-primary)]">
+                  <span className={cn('mr-1 font-semibold', f.severity === 'warn' ? 'text-amber-500' : 'text-[var(--text-muted)]')}>{f.severity === 'warn' ? '⚠' : 'ℹ'}</span>
+                  <span className="font-medium">{f.requirement}:</span> {f.issue}
+                </li>
+              ))}
+              {qualityFindings.length > 12 && (
+                <li className="text-[10px] text-[var(--text-muted)]">+{qualityFindings.length - 12} more…</li>
+              )}
+            </ul>
+          </div>
+        )}
+
         {srsModules.length > 0 && (
           <div className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-xs leading-relaxed text-[var(--text-primary)]">
             <MarkdownText value={formatRequirementSrs(srsModules)} />

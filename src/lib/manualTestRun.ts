@@ -77,7 +77,7 @@ export function manualRunSelection(planId: string, caseIds: string[]) {
 }
 
 export function runExecutionState(run: any) {
-  const running = /^running$/i.test(String(run?.status || ''));
+  const running = /^(running|in progress)$/i.test(String(run?.status || ''));
   const execution = run?.triggerMeta?.manualExecution || {};
   const total = Math.max(0, Number(execution.total ?? run?.executionTotal) || 0);
   const completed = Math.min(total, Math.max(0, Number(execution.completed ?? run?.executionCompleted) || 0));

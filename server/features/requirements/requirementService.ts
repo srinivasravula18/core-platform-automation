@@ -28,6 +28,7 @@ import { fetchCorePlatformObjectCatalog } from '../../ai/tools/corePlatformData'
 import { getApp } from '../projects/projectService';
 import { resolveCredentials } from '../credentials/credentialsService';
 import { isUnderScope, type ResolvedSurfaceScope } from './surfaceScope';
+import { lintRequirementQuality, findDuplicateRequirement, type QualityFinding, type DuplicateMatch } from './requirementQuality';
 import { extractSelectorMap, type SelectorMap } from '../agent/selectorMap';
 import { nextArtifactId } from '../../shared/artifactIds';
 
@@ -1080,6 +1081,10 @@ export interface DiscoverResult {
   searchedFiles: Array<{ path: string; area: string; surface: string }>;
   repoPath: string;
   apiAnalysis?: ApiAnalysis;
+  /** Post-generation quality-gate findings (weak wording, missing AC/priority/citations, etc.). */
+  qualityFindings?: QualityFinding[];
+  /** Set when this requirement updated an existing near-duplicate instead of creating a new one. */
+  duplicateOf?: DuplicateMatch;
 }
 
 export type RequirementDraftResult = DiscoverResult & { draft: true };
@@ -1254,7 +1259,14 @@ export async function draftRequirement(
     reasoning: 'Not evaluated for draft creation. Requirement drafts are grounded only in the selected codebase.',
   };
   const coverageStatus = 'unknown';
-  const requirement = buildRequirementRecord(genId('REQ'), cleanQuery, understanding, files, coverageStatus, ownerId, { projectId: opts.projectId, appId: opts.appId });
+  // Reuse an existing near-duplicate's id (same owner+project+surface) so confirming the draft
+  // UPDATES it in place rather than minting a second REQ for the same feature.
+  const duplicateOf = findDuplicateRequirement(understanding, cleanQuery, await Requirements.list(), { ownerId, projectId: opts.projectId, appId: opts.appId }) || undefined;
+  if (duplicateOf) opts.onProgress?.(`This matches an existing requirement (${duplicateOf.id}); the draft will update it.`);
+  const requirementId = duplicateOf ? duplicateOf.id : genId('REQ');
+  const requirement = buildRequirementRecord(requirementId, cleanQuery, understanding, files, coverageStatus, ownerId, { projectId: opts.projectId, appId: opts.appId });
+  const qualityFindings = lintRequirementQuality(understanding);
+  if (qualityFindings.length) opts.onProgress?.(`Quality gate: ${qualityFindings.filter((f) => f.severity === 'warn').length} warning(s) to review.`);
 
   return {
     draft: true,
@@ -1265,6 +1277,8 @@ export async function draftRequirement(
     generatedCases: [],
     searchedFiles: files,
     repoPath: opts.repoPath || resolveTargetRepo(),
+    qualityFindings,
+    duplicateOf,
   };
 }
 
@@ -1343,8 +1357,10 @@ export async function discoverRequirement(
   const existingCases = await existingCasesForRequirement(ownerId);
   const reconciliation = await reconcileRequirementCoverage(understanding, existingCases, opts, requirementsOnly);
 
-  // 3) Persist the requirement.
-  const requirementId = genId('REQ');
+  // 3) Persist the requirement. Reuse an existing near-duplicate's id (same owner+project+surface)
+  // so re-running the same discovery UPDATES the requirement in place instead of duplicating it.
+  const duplicateOf = findDuplicateRequirement(understanding, cleanQuery, await Requirements.list(), { ownerId, projectId: opts.projectId, appId: opts.appId }) || undefined;
+  const requirementId = duplicateOf ? duplicateOf.id : genId('REQ');
   const existingIds = new Set(existingCases.map((c) => c.id));
   const validCovered = (reconciliation.coverage.coveredBy || []).filter((cb) => existingIds.has(cb.id));
 
@@ -1413,7 +1429,7 @@ export async function discoverRequirement(
   }
 
   if (!isPgEnabled()) persistDataInBackground('requirement discovery');
-  addActivity(`Feature Analyst discovered requirement "${requirement.title}" with ${existingLinks.length} existing and ${generatedCases.length} new case(s).`);
+  addActivity(`Feature Analyst ${duplicateOf ? 'updated' : 'discovered'} requirement "${requirement.title}" with ${existingLinks.length} existing and ${generatedCases.length} new case(s).`);
 
   return {
     requirement,
@@ -1425,6 +1441,8 @@ export async function discoverRequirement(
     searchedFiles: files,
     repoPath: opts.repoPath || resolveTargetRepo(),
     apiAnalysis,
+    qualityFindings: lintRequirementQuality(understanding),
+    duplicateOf,
   };
 }
 
