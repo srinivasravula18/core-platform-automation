@@ -18,7 +18,7 @@ import { createReadStream } from 'fs';
 import { reqScope, scopeFilter } from '../../shared/scope';
 import { requireAuth } from '../auth/routes';
 import { hashPassword, verifyPassword } from '../auth/userStore';
-import { Agents, AutomationJobs, AutomationSchedules, Recordings, Cases, Runs } from '../../db/repository';
+import { Agents, AutomationJobs, AutomationSchedules, AutomationDatasets, AutomationDatasetRows, AutomationDataMappings, AutomationExecutionBatches, Recordings, Cases, Runs } from '../../db/repository';
 import { uid, isPostgresEnabled } from '../../db/pool';
 import { persistDataInBackground } from '../../shared/storage';
 import { scopeStamp } from '../../shared/scope';
@@ -40,14 +40,20 @@ import {
   updateRecording,
   removeRecording,
   recordingForScript,
+  listRecordingSteps,
+  overrideRecordingStep,
+  undoRecordingStepOverride,
+  redoRecordingStepOverride,
 } from './recordingService';
-import { createJob, cancelJob } from './jobService';
+import { createJob, cancelJob, refreshExecutionBatch } from './jobService';
 import { isAgentConnected } from './agentGateway';
 import { computeNextRun } from './schedulerService';
 import { saveArtifact, listArtifacts, resolveArtifact, contentTypeFor } from './artifactService';
 import { subscribe } from './eventsService';
 import { streamAgentZip, agentLatestInfo, agentDirExists } from './downloadService';
 import { ensureBundledChromium } from './bundleBrowsers';
+import { datasetPage, getDataset, importDataset, listDatasets } from './datasetService';
+import { createScriptMaterializer, materializeScript } from './scriptMaterializer';
 import type { AgentRecord, ArtifactKind, ScheduleKind } from './types';
 
 /** Authenticate an agent from its `Authorization: Bearer <agentId>.<secret>` token. */
@@ -145,6 +151,47 @@ export function registerAutomationRoutes(app: Express) {
     return ok ? row : null;
   }
 
+  async function createExecutionBatch(rec: any, dataset: any, agentId: string, rows: any[], scope: ReturnType<typeof reqScope>) {
+    if (!rows.length) throw new Error('No dataset rows were selected.');
+    const steps = await listRecordingSteps(rec.id);
+    const mappings = (await AutomationDataMappings.list(rec.id)).filter((mapping: any) => mapping.datasetId === dataset.id);
+    if (!mappings.length) throw new Error('Map at least one dataset column before running.');
+    const compile = createScriptMaterializer(rec.script, steps, mappings, dataset.columns);
+    // Compile once before persisting anything so an unsupported recording cannot leave a partial batch.
+    compile(rows[0]);
+    for (const row of rows) {
+      for (const mapping of mappings) {
+        const column = dataset.columns.find((item: any) => item.id === mapping.columnId);
+        if (!column || row.values?.[column.id] === null || row.values?.[column.id] === undefined || row.values?.[column.id] === '') {
+          throw new Error(`Row ${row.rowNumber}: ${column?.name || 'mapped column'} is empty.`);
+        }
+      }
+    }
+    let batch = await AutomationExecutionBatches.upsert({
+      id: uid('BATCH'),
+      recordingId: rec.id,
+      datasetId: dataset.id,
+      agentId,
+      status: 'queued',
+      selection: rows.map((row: any) => row.rowNumber),
+      summary: { total: rows.length, queued: rows.length, running: 0, passed: 0, failed: 0, cancelled: 0 },
+      ...scopeStamp(scope),
+    });
+    for (const row of rows) {
+      await createJob({
+        recordingId: rec.id,
+        agentId,
+        trigger: 'manual',
+        script: compile(row),
+        batchId: batch.id,
+        datasetRowId: row.id,
+        rowNumber: row.rowNumber,
+      }, scope);
+    }
+    batch = await refreshExecutionBatch(batch.id);
+    return batch;
+  }
+
   app.post('/api/automation/recordings', requireAuth, async (req: Request, res: Response) => {
     const { name, appUrl, browser, environment, agentId, caseMeta } = req.body || {};
     if (!appUrl) return res.status(400).json({ error: 'appUrl is required.' });
@@ -176,6 +223,34 @@ export function registerAutomationRoutes(app: Express) {
     res.json({ ok: await removeRecording(req.params.id) });
   });
 
+  app.get('/api/automation/recordings/:id/steps', requireAuth, async (req: Request, res: Response) => {
+    const rec = await scopedGet((id) => Recordings.get(id), req.params.id, req);
+    if (!rec) return res.status(404).json({ error: 'Recording not found.' });
+    res.json({ steps: await listRecordingSteps(rec.id) });
+  });
+
+  app.patch('/api/automation/recordings/:id/steps/:stepId/override', requireAuth, async (req: Request, res: Response) => {
+    const rec = await scopedGet((id) => Recordings.get(id), req.params.id, req);
+    if (!rec) return res.status(404).json({ error: 'Recording not found.' });
+    const out = await overrideRecordingStep(rec.id, req.params.stepId, req.body?.value);
+    if ('error' in out) return res.status(out.status).json({ error: out.error });
+    res.json(out);
+  });
+
+  app.post('/api/automation/recordings/:id/steps/:stepId/undo', requireAuth, async (req: Request, res: Response) => {
+    const rec = await scopedGet((id) => Recordings.get(id), req.params.id, req);
+    if (!rec) return res.status(404).json({ error: 'Recording not found.' });
+    const ok = await undoRecordingStepOverride(rec.id, req.params.stepId);
+    res.json({ ok, step: ok ? (await listRecordingSteps(rec.id)).find((step: any) => step.id === req.params.stepId) : null });
+  });
+
+  app.post('/api/automation/recordings/:id/steps/:stepId/redo', requireAuth, async (req: Request, res: Response) => {
+    const rec = await scopedGet((id) => Recordings.get(id), req.params.id, req);
+    if (!rec) return res.status(404).json({ error: 'Recording not found.' });
+    const ok = await redoRecordingStepOverride(rec.id, req.params.stepId);
+    res.json({ ok, step: ok ? (await listRecordingSteps(rec.id)).find((step: any) => step.id === req.params.stepId) : null });
+  });
+
   app.post('/api/automation/recordings/:id/start', requireAuth, async (req: Request, res: Response) => {
     const rec = await scopedGet((id) => Recordings.get(id), req.params.id, req);
     if (!rec) return res.status(404).json({ error: 'Recording not found.' });
@@ -192,6 +267,97 @@ export function registerAutomationRoutes(app: Express) {
     const out = await stopRecording(req.params.id);
     if ('error' in out) return res.status(out.status).json({ error: out.error });
     res.json(out);
+  });
+
+  /* ---------- datasets (human, scoped) ---------- */
+
+  app.post('/api/automation/datasets/import', requireAuth, express.raw({ type: 'application/octet-stream', limit: '25mb' }), async (req: Request, res: Response) => {
+    const provider = String(req.header('x-dataset-provider') || '').toLowerCase();
+    const filename = String(req.header('x-dataset-filename') || 'dataset');
+    if (provider !== 'csv' && provider !== 'xlsx') return res.status(400).json({ error: 'x-dataset-provider must be csv or xlsx.' });
+    try {
+      const dataset = await importDataset({ provider, filename, name: req.header('x-dataset-name') || undefined, buffer: req.body }, reqScope(req));
+      res.status(201).json({ dataset });
+    } catch (error: any) {
+      res.status(400).json({ error: error?.message || 'Dataset import failed.' });
+    }
+  });
+
+  app.get('/api/automation/datasets', requireAuth, async (req: Request, res: Response) => {
+    res.json({ datasets: scopeFilter(await listDatasets() as any[], reqScope(req)) });
+  });
+
+  app.get('/api/automation/datasets/:id', requireAuth, async (req: Request, res: Response) => {
+    const dataset = await getDataset(req.params.id);
+    const [scoped] = dataset ? scopeFilter([dataset] as any[], reqScope(req)) : [];
+    if (!scoped) return res.status(404).json({ error: 'Dataset not found.' });
+    res.json({ dataset: scoped });
+  });
+
+  app.get('/api/automation/datasets/:id/rows', requireAuth, async (req: Request, res: Response) => {
+    const dataset = await getDataset(req.params.id);
+    const [scoped] = dataset ? scopeFilter([dataset] as any[], reqScope(req)) : [];
+    if (!scoped) return res.status(404).json({ error: 'Dataset not found.' });
+    const offset = Number(req.query.offset || 0);
+    const limit = Number(req.query.limit || 100);
+    res.json(await datasetPage(scoped.id, Number.isFinite(offset) ? offset : 0, Number.isFinite(limit) ? limit : 100));
+  });
+
+  app.get('/api/automation/recordings/:id/mappings', requireAuth, async (req, res) => { const rec = await scopedGet((id) => Recordings.get(id), req.params.id, req); if (!rec) return res.status(404).json({ error: 'Recording not found.' }); res.json({ mappings: await AutomationDataMappings.list(rec.id) }); });
+  app.put('/api/automation/recordings/:id/mappings/:stepId', requireAuth, async (req, res) => { const rec = await scopedGet((id) => Recordings.get(id), req.params.id, req); const dataset = await getDataset(String(req.body?.datasetId || '')); if (!rec || !dataset || !scopeFilter([dataset] as any[], reqScope(req))[0]) return res.status(404).json({ error: 'Recording or dataset not found.' }); const column = dataset.columns?.find((c: any) => c.id === req.body?.columnId); if (!column) return res.status(400).json({ error: 'Column not found.' }); const steps = await listRecordingSteps(rec.id); if (!steps.some((s: any) => s.id === req.params.stepId && !s.readOnly)) return res.status(400).json({ error: 'Step cannot be mapped.' }); const mapping = await AutomationDataMappings.upsert({ id: `MAP-${rec.id}-${req.params.stepId}`, recordingId: rec.id, stepId: req.params.stepId, datasetId: dataset.id, columnId: column.id, expression: `{{${column.name}}}` }); res.json({ mapping }); });
+  app.delete('/api/automation/recordings/:id/mappings/:stepId', requireAuth, async (req, res) => { const rec = await scopedGet((id) => Recordings.get(id), req.params.id, req); if (!rec) return res.status(404).json({ error: 'Recording not found.' }); res.json({ ok: await AutomationDataMappings.remove(rec.id, req.params.stepId) }); });
+  app.post('/api/automation/recordings/:id/preview', requireAuth, async (req, res) => { const rec = await scopedGet((id) => Recordings.get(id), req.params.id, req); const dataset = await getDataset(String(req.body?.datasetId || '')); if (!rec || !dataset || !scopeFilter([dataset] as any[], reqScope(req))[0]) return res.status(404).json({ error: 'Recording or dataset not found.' }); const page = await datasetPage(dataset.id, Number(req.body?.offset || 0), 1); const row = page.rows[0]; if (!row) return res.status(400).json({ error: 'No row selected.' }); try { const steps = await listRecordingSteps(rec.id); const mappings = await AutomationDataMappings.list(rec.id); res.json({ rowNumber: row.rowNumber, script: materializeScript(rec.script, steps, mappings, row, dataset.columns) }); } catch (error: any) { res.status(400).json({ error: error.message }); } });
+  app.post('/api/automation/recordings/:id/batches', requireAuth, async (req, res) => {
+    const rec = await scopedGet((id) => Recordings.get(id), req.params.id, req);
+    const dataset = await getDataset(String(req.body?.datasetId || ''));
+    if (!rec || !dataset || !scopeFilter([dataset] as any[], reqScope(req))[0]) return res.status(404).json({ error: 'Recording or dataset not found.' });
+    const agentId = String(req.body?.agentId || rec.agentId || '');
+    if (!agentId) return res.status(400).json({ error: 'agentId is required.' });
+    const rowNumbers: number[] | undefined = Array.isArray(req.body?.rowNumbers)
+      ? [...new Set<number>(req.body.rowNumbers.map(Number).filter((value: number) => Number.isInteger(value) && value > 0))]
+      : undefined;
+    const from = Number(req.body?.from || 1);
+    const to = Number(req.body?.to || dataset.rowCount);
+    if (!rowNumbers?.length && (!Number.isInteger(from) || !Number.isInteger(to) || from < 1 || to < from)) {
+      return res.status(400).json({ error: 'Invalid row range.' });
+    }
+    try {
+      const rows = await AutomationDatasetRows.select(dataset.id, rowNumbers, from, to);
+      const batch = await createExecutionBatch(rec, dataset, agentId, rows, reqScope(req));
+      res.status(201).json({ batch });
+    } catch (error: any) {
+      res.status(400).json({ error: error?.message || 'Could not create execution batch.' });
+    }
+  });
+
+  app.get('/api/automation/batches', requireAuth, async (req, res) => {
+    res.json({ batches: scopeFilter(await AutomationExecutionBatches.list(), reqScope(req)) });
+  });
+
+  app.get('/api/automation/batches/:id', requireAuth, async (req, res) => {
+    const batch = await scopedGet((id) => AutomationExecutionBatches.get(id), req.params.id, req);
+    if (!batch) return res.status(404).json({ error: 'Execution batch not found.' });
+    const jobs = scopeFilter((await AutomationJobs.list()).filter((job: any) => job.batchId === batch.id), reqScope(req));
+    res.json({ batch, jobs });
+  });
+
+  app.post('/api/automation/batches/:id/retry', requireAuth, async (req, res) => {
+    const oldBatch = await scopedGet((id) => AutomationExecutionBatches.get(id), req.params.id, req);
+    if (!oldBatch) return res.status(404).json({ error: 'Execution batch not found.' });
+    const failedRows = (await AutomationJobs.list())
+      .filter((job: any) => job.batchId === oldBatch.id && job.status === 'failed')
+      .map((job: any) => job.rowNumber);
+    if (!failedRows.length) return res.status(400).json({ error: 'This batch has no failed rows.' });
+    const rec = await scopedGet((id) => Recordings.get(id), oldBatch.recordingId, req);
+    const dataset = await getDataset(oldBatch.datasetId);
+    if (!rec || !dataset) return res.status(404).json({ error: 'Recording or dataset not found.' });
+    try {
+      const rows = await AutomationDatasetRows.select(dataset.id, failedRows);
+      const batch = await createExecutionBatch(rec, dataset, oldBatch.agentId, rows, reqScope(req));
+      res.status(201).json({ batch });
+    } catch (error: any) {
+      res.status(400).json({ error: error?.message || 'Could not retry failed rows.' });
+    }
   });
 
   /* ---------- jobs (human, scoped) ---------- */
@@ -295,7 +461,11 @@ export function registerAutomationRoutes(app: Express) {
     let nextRunAt: string | null = null;
     if (k === 'once') nextRunAt = runAt ? new Date(runAt).toISOString() : null;
     else if (k === 'now') nextRunAt = now.toISOString();
-    else if (k !== 'webhook') { const n = computeNextRun(k, cron || '', timezone || 'UTC', now); nextRunAt = n ? n.toISOString() : null; }
+    else if (k !== 'webhook') {
+      const n = computeNextRun(k, cron || '', timezone || 'UTC', now);
+      if (k === 'cron' && !n) return res.status(400).json({ error: 'Invalid cron expression.' });
+      nextRunAt = n ? n.toISOString() : null;
+    }
     const sched = await AutomationSchedules.upsert({
       id: uid('SCHED'),
       recordingId, agentId: agentId || '', kind: k, cron: cron || '', timezone: timezone || 'UTC',

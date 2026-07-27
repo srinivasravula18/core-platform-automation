@@ -13,7 +13,7 @@
 import type { Response } from 'express';
 import { AutomationEvents } from '../../db/repository';
 
-export type EventScopeType = 'agent' | 'job' | 'recording';
+export type EventScopeType = 'agent' | 'job' | 'recording' | 'batch';
 
 export interface AutomationEvent {
   scopeType: EventScopeType;

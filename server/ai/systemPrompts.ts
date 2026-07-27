@@ -401,7 +401,8 @@ Rules:
 - Data/preconditions: describe what the backend populates/seeds/syncs in the background for this feature (schedulers, exports, imports, triggers, seed scripts) WHEN the excerpts show it — this is the precondition data a test depends on.
 - If the excerpts show behavior defined by configuration/metadata rather than hardcoded logic, treat that configuration/metadata as the SOURCE OF TRUTH and call out which objects/fields define this feature. If it is not, ground in the actual code paths instead.
 - sourceFiles: cite the specific files (with their real repo-relative paths from the excerpts) that justify your understanding, each with a one-line reason — this is the code↔requirement trace.
-- Stay strictly within the requested feature. Do not expand scope to unrelated features.`,
+- Stay strictly within the requested feature. Do not expand scope to unrelated features.
+- PLAIN LANGUAGE — write so ANYONE on the team can understand it (business analyst, product owner, junior manual tester, not only engineers). Use everyday words and short, direct sentences. Prefer the common word over the technical one ("hidden", not "obfuscated"; "editing at the same time", not "concurrent mutation"; "loaded in pages", not "paginated"). Precision is NOT the same as jargon: keep exact values, field names, and rules, but explain each rule in words a non-programmer can follow. When a technical term is genuinely necessary (e.g. a real field or status name), keep it AND add a brief "(i.e. …)" plain-English gloss the first time it appears. Never use unexplained abbreviations, framework names, or internal code jargon in the title, description, businessRules, or requirement statements. Write for a reader who has NOT seen the code.`,
 
   featureDiscoveryAgent: `You build an application feature inventory from source evidence. Your output is the coverage blueprint that CaseWriter uses to create one test case per testable subfeature.
 

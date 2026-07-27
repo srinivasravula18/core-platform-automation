@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts';
-import { PlayCircle, Target, TestTube2, ShieldAlert, Sparkles, Layers, Activity, FileText, CalendarClock, Clock, AlertTriangle, Gauge, Bug, CheckCircle2, ListChecks } from 'lucide-react';
+import { PlayCircle, Target, TestTube2, ShieldAlert, Sparkles, Layers, Activity, FileText, CalendarClock, Clock, AlertTriangle, Gauge, Bug, CheckCircle2, ListChecks, Info } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { Modal } from '@/src/components/Modal';
 import { FolderSelect } from '@/src/components/FolderSelect';
@@ -309,7 +309,15 @@ export default function Dashboard() {
         </div>
 
         <div className="p-5 rounded-xl border border-[var(--border)] bg-[var(--bg-card)] shadow-sm flex max-h-[420px] min-h-0 flex-col">
-          <h2 className="text-base font-semibold mb-4">Recent Activity</h2>
+          <div className="mb-4 flex items-center gap-1.5">
+            <h2 className="text-base font-semibold">Recent Activity</h2>
+            <Info
+              className="h-4 w-4 text-[var(--text-muted)]"
+              aria-label="Shows the latest changes across test cases, plans, suites, runs, defects, and reports. Select an item to open it."
+              role="img"
+              title="Shows the latest changes across test cases, plans, suites, runs, defects, and reports. Select an item to open it."
+            />
+          </div>
           <div className="min-h-0 flex-1 space-y-4 overflow-y-auto pr-2">
             {!stats?.recentActivity ? (
               <div className="text-sm text-[var(--text-muted)]">Loading activity...</div>

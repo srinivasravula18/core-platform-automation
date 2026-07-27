@@ -9,7 +9,7 @@
  * LangGraph runtime uses for agent runs.
  */
 
-import { AutomationJobs, Recordings, Runs } from '../../db/repository';
+import { AutomationExecutionBatches, AutomationJobs, Recordings, Runs } from '../../db/repository';
 import { uid, isPostgresEnabled } from '../../db/pool';
 import { persistDataInBackground } from '../../shared/storage';
 import type { Scope } from '../../shared/scope';
@@ -29,6 +29,7 @@ export async function setJobStatus(jobId: string, status: JobStatus, patch: Reco
   const saved = await AutomationJobs.upsert({ ...job, status, ...patch });
   persist('job status');
   await emitEvent({ scopeType: 'job', scopeId: jobId, type: `job.${status}`, ownerId: job.ownerId, data: { job: saved } });
+  if (saved.batchId) await refreshExecutionBatch(saved.batchId);
   return saved;
 }
 const setStatus = setJobStatus;
@@ -67,13 +68,16 @@ async function tryDispatch(jobId: string): Promise<boolean> {
   const job = await AutomationJobs.get(jobId);
   if (!job || job.status !== 'queued') return false;
   if (!job.agentId || !isAgentConnected(job.agentId)) return false;
+  const active = (await AutomationJobs.list()).some((item) =>
+    item.id !== job.id && item.agentId === job.agentId && ['dispatched', 'running', 'uploading'].includes(item.status));
+  if (active) return false;
   const rec = job.recordingId ? await Recordings.get(job.recordingId) : null;
   const ok = dispatchToAgent(job.agentId, {
     type: 'job.dispatch',
     payload: {
       jobId: job.id,
       recordingId: job.recordingId,
-      script: rec?.script || '',
+      script: (job as any).script || rec?.script || '',
       browser: rec?.browser || 'chromium',
       environment: rec?.environment || 'QA',
       appUrl: rec?.appUrl || '',
@@ -90,7 +94,37 @@ async function tryDispatch(jobId: string): Promise<boolean> {
   return ok;
 }
 
-export async function createJob(input: { recordingId: string; agentId: string; trigger?: JobTrigger; scheduleId?: string; headed?: boolean }, scope: Scope) {
+async function dispatchNextForAgent(agentId: string): Promise<void> {
+  const next = (await AutomationJobs.list())
+    .filter((job) => job.agentId === agentId && job.status === 'queued')
+    .sort((a, b) => new Date(a.queuedAt || 0).getTime() - new Date(b.queuedAt || 0).getTime())[0];
+  if (next) await tryDispatch(next.id);
+}
+
+export async function refreshExecutionBatch(batchId: string): Promise<any> {
+  const batch = await AutomationExecutionBatches.get(batchId);
+  if (!batch) return null;
+  const jobs = (await AutomationJobs.list()).filter((job) => job.batchId === batchId);
+  const count = (status: string) => jobs.filter((job) => job.status === status).length;
+  const summary = {
+    total: jobs.length,
+    queued: count('queued'),
+    running: count('dispatched') + count('running') + count('uploading'),
+    passed: count('done'),
+    failed: count('failed'),
+    cancelled: count('cancelled'),
+  };
+  const terminal = summary.passed + summary.failed + summary.cancelled;
+  const status = jobs.length > 0 && terminal === jobs.length
+    ? (summary.failed > 0 ? 'failed' : summary.cancelled === jobs.length ? 'cancelled' : 'done')
+    : summary.running > 0 || terminal > 0 ? 'running' : 'queued';
+  await AutomationExecutionBatches.upsert({ ...batch, status, summary });
+  persist('execution batch status');
+  await emitEvent({ scopeType: 'batch', scopeId: batchId, type: `batch.${status}`, ownerId: batch.ownerId, data: { batch: { ...batch, status, summary } } });
+  return { ...batch, status, summary };
+}
+
+export async function createJob(input: { recordingId: string; agentId: string; trigger?: JobTrigger; scheduleId?: string; headed?: boolean; script?: string; batchId?: string; datasetRowId?: string; rowNumber?: number }, scope: Scope) {
   const now = new Date().toISOString();
   const job = {
     id: uid('JOB'),
@@ -102,6 +136,7 @@ export async function createJob(input: { recordingId: string; agentId: string; t
     queuedAt: now,
     summary: {},
     error: '',
+    script: input.script || '', batchId: input.batchId || '', datasetRowId: input.datasetRowId || '', rowNumber: input.rowNumber || null,
     ...scopeStamp(scope),
   };
   const saved = await AutomationJobs.upsert(job);
@@ -120,6 +155,7 @@ export async function cancelJob(jobId: string) {
   if (job.agentId && isAgentConnected(job.agentId)) dispatchToAgent(job.agentId, { type: 'cancel', payload: { jobId } });
   else cancelServerJob(jobId); // server-side run (scheduled): kill the local playwright process
   await setStatus(jobId, 'cancelled', { finishedAt: new Date().toISOString() });
+  if (job.agentId) await dispatchNextForAgent(job.agentId);
   return { ok: true };
 }
 
@@ -147,12 +183,7 @@ export async function recoverOrphanedJobs(): Promise<number> {
 /* ---------- wiring: flush queued jobs on (re)connect + result frame handlers ---------- */
 
 onAgentConnected((agentId) => {
-  void (async () => {
-    const jobs = await AutomationJobs.list();
-    for (const job of jobs) {
-      if (job.agentId === agentId && job.status === 'queued') await tryDispatch(job.id);
-    }
-  })();
+  void dispatchNextForAgent(agentId);
 });
 
 onAgentFrame('job.progress', async (_agentId, frame: AgentFrame) => {
@@ -176,6 +207,8 @@ onAgentFrame('job.done', async (_agentId, frame: AgentFrame) => {
   const status: JobStatus = Number(exitCode) === 0 ? 'done' : 'failed';
   await setStatus(jobId, status, { exitCode: Number(exitCode) || 0, summary: summary || {}, error: error || '', finishedAt: new Date().toISOString() });
   await syncLinkedRun(jobId, status, summary || {});
+  const job = await AutomationJobs.get(jobId);
+  if (job?.agentId) await dispatchNextForAgent(job.agentId);
 });
 
 // A Test Run started via POST /api/automation/runs is linked to this job by trigger_meta. When the

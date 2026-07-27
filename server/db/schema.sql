@@ -761,6 +761,90 @@ CREATE TABLE IF NOT EXISTS recordings (
 CREATE INDEX IF NOT EXISTS recordings_owner_idx ON recordings(owner_id);
 CREATE INDEX IF NOT EXISTS recordings_project_idx ON recordings(project_id);
 
+-- Derived editable actions. The recording script stays immutable; overrides are independent rows.
+CREATE TABLE IF NOT EXISTS automation_recording_steps (
+  id               TEXT PRIMARY KEY,
+  recording_id     TEXT NOT NULL REFERENCES recordings(id) ON DELETE CASCADE,
+  ordinal          INTEGER NOT NULL,
+  action_type      TEXT NOT NULL,
+  locator          TEXT DEFAULT '',
+  locator_strategy TEXT DEFAULT 'unknown',
+  field_kind       TEXT DEFAULT 'unknown',
+  original_value   JSONB,
+  read_only        BOOLEAN NOT NULL DEFAULT false,
+  metadata         JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE(recording_id, ordinal)
+);
+CREATE INDEX IF NOT EXISTS automation_recording_steps_recording_idx ON automation_recording_steps(recording_id, ordinal);
+
+-- Append-only inline-edit history. `state` permits durable undo/redo without touching source steps.
+CREATE TABLE IF NOT EXISTS automation_step_overrides (
+  id           TEXT PRIMARY KEY,
+  recording_id TEXT NOT NULL REFERENCES recordings(id) ON DELETE CASCADE,
+  step_id      TEXT NOT NULL REFERENCES automation_recording_steps(id) ON DELETE CASCADE,
+  value        JSONB,
+  version      INTEGER NOT NULL,
+  state        TEXT NOT NULL DEFAULT 'active', -- active | undone
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE(step_id, version)
+);
+CREATE INDEX IF NOT EXISTS automation_step_overrides_step_idx ON automation_step_overrides(step_id, state, version DESC);
+
+-- Imported data is normalized so execution never depends on CSV/XLSX-specific structures.
+CREATE TABLE IF NOT EXISTS automation_datasets (
+  id              TEXT PRIMARY KEY,
+  project_id      TEXT,
+  app_id          TEXT,
+  owner_id        TEXT,
+  name            TEXT NOT NULL DEFAULT '',
+  provider        TEXT NOT NULL, -- csv | xlsx; future IDataProvider implementations add values
+  source_filename TEXT NOT NULL DEFAULT '',
+  source_hash     TEXT NOT NULL DEFAULT '',
+  columns         JSONB NOT NULL DEFAULT '[]'::jsonb,
+  row_count       INTEGER NOT NULL DEFAULT 0,
+  status          TEXT NOT NULL DEFAULT 'ready',
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS automation_datasets_scope_idx ON automation_datasets(owner_id, project_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS automation_dataset_rows (
+  id            TEXT PRIMARY KEY,
+  dataset_id    TEXT NOT NULL REFERENCES automation_datasets(id) ON DELETE CASCADE,
+  row_number    INTEGER NOT NULL,
+  values        JSONB NOT NULL DEFAULT '{}'::jsonb,
+  validation    JSONB NOT NULL DEFAULT '[]'::jsonb,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE(dataset_id, row_number)
+);
+CREATE INDEX IF NOT EXISTS automation_dataset_rows_page_idx ON automation_dataset_rows(dataset_id, row_number);
+
+CREATE TABLE IF NOT EXISTS automation_data_mappings (
+  id TEXT PRIMARY KEY, recording_id TEXT NOT NULL REFERENCES recordings(id) ON DELETE CASCADE,
+  step_id TEXT NOT NULL REFERENCES automation_recording_steps(id) ON DELETE CASCADE,
+  dataset_id TEXT NOT NULL REFERENCES automation_datasets(id) ON DELETE CASCADE,
+  column_id TEXT NOT NULL, expression TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE(step_id)
+);
+CREATE TABLE IF NOT EXISTS automation_execution_batches (
+  id           TEXT PRIMARY KEY,
+  project_id   TEXT,
+  app_id       TEXT,
+  owner_id     TEXT,
+  recording_id TEXT NOT NULL,
+  dataset_id   TEXT NOT NULL,
+  agent_id     TEXT NOT NULL,
+  status       TEXT NOT NULL DEFAULT 'queued',
+  selection    JSONB NOT NULL DEFAULT '[]'::jsonb,
+  summary      JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS automation_execution_batches_scope_idx ON automation_execution_batches(owner_id, project_id, created_at DESC);
+
 -- One execution of a recording on an agent. Lifecycle: queued → dispatched → running → uploading → done/failed/cancelled.
 CREATE TABLE IF NOT EXISTS automation_jobs (
   id           TEXT PRIMARY KEY,
@@ -778,12 +862,27 @@ CREATE TABLE IF NOT EXISTS automation_jobs (
   exit_code    INTEGER,
   summary      JSONB DEFAULT '{}'::jsonb,
   error        TEXT DEFAULT '',
+  materialized_script TEXT DEFAULT '',
+  batch_id     TEXT,
+  dataset_row_id TEXT,
+  row_number   INTEGER,
   created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+-- Additive upgrade path for deployments created before data-driven execution.
+ALTER TABLE automation_jobs ADD COLUMN IF NOT EXISTS materialized_script TEXT DEFAULT '';
+ALTER TABLE automation_jobs ADD COLUMN IF NOT EXISTS batch_id TEXT;
+ALTER TABLE automation_jobs ADD COLUMN IF NOT EXISTS dataset_row_id TEXT;
+ALTER TABLE automation_jobs ADD COLUMN IF NOT EXISTS row_number INTEGER;
+ALTER TABLE automation_execution_batches ADD COLUMN IF NOT EXISTS project_id TEXT;
+ALTER TABLE automation_execution_batches ADD COLUMN IF NOT EXISTS app_id TEXT;
+ALTER TABLE automation_execution_batches ADD COLUMN IF NOT EXISTS owner_id TEXT;
+ALTER TABLE automation_execution_batches ADD COLUMN IF NOT EXISTS summary JSONB NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE automation_execution_batches ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
 CREATE INDEX IF NOT EXISTS automation_jobs_owner_idx ON automation_jobs(owner_id);
 CREATE INDEX IF NOT EXISTS automation_jobs_agent_idx ON automation_jobs(agent_id);
 CREATE INDEX IF NOT EXISTS automation_jobs_status_idx ON automation_jobs(status);
+CREATE INDEX IF NOT EXISTS automation_jobs_batch_idx ON automation_jobs(batch_id, row_number);
 
 -- Schedules that enqueue jobs. kind: now | daily | weekly | monthly | cron | webhook.
 CREATE TABLE IF NOT EXISTS automation_schedules (

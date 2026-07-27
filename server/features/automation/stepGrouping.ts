@@ -15,6 +15,8 @@
  * so every existing consumer keeps working. Grouping is presentation-only — playback is unaffected.
  */
 
+import type { RecordingFieldKind, RecordingStep, RecordingStepType } from './types';
+
 export interface GroupedStep {
   action: string;
   expected: string;
@@ -70,6 +72,67 @@ function elementPhrase(d: { role: string; label: string }): string {
 
 function locatorKey(d: { role: string; label: string }): string {
   return d.label || d.role || '';
+}
+
+function locatorStrategy(line: string): RecordingStep['locatorStrategy'] {
+  if (/getByRole\(/.test(line)) return 'role';
+  if (/getByLabel\(/.test(line)) return 'label';
+  if (/getByPlaceholder\(/.test(line)) return 'placeholder';
+  if (/getByTestId\(/.test(line)) return 'testId';
+  return 'unknown';
+}
+
+function fieldKind(label: string, type: RecordingStepType): RecordingFieldKind {
+  if (type === 'check' || type === 'uncheck') return 'boolean';
+  if (type === 'select') return 'select';
+  if (type === 'upload') return 'file';
+  if (/email/i.test(label)) return 'email';
+  if (/phone|mobile|tel/i.test(label)) return 'phone';
+  if (/date|birthday|dob/i.test(label)) return 'date';
+  if (/amount|price|quantity|number|count|age/i.test(label)) return 'number';
+  return 'text';
+}
+
+function literalValue(line: string, method: 'fill' | 'press' | 'selectOption' | 'setInputFiles' | 'type'): string | null {
+  const direct = line.match(new RegExp('\\.' + method + '\\(\\s*([\'\"])([^\'\"]*)\\1'));
+  if (direct) return direct[2];
+  if (method === 'selectOption') {
+    const option = line.match(/\.selectOption\(\s*\{\s*(?:label|value):\s*(['"`])([^'"`]*)\1/);
+    if (option) return option[2];
+  }
+  return null;
+}
+
+/**
+ * Extract only codegen actions we can later materialize safely. The recording script remains the
+ * authority; dynamic/unrecognized expressions are represented as read-only rather than guessed.
+ */
+export function parseRecordingSteps(script: string): Omit<RecordingStep, 'id' | 'recordingId' | 'currentOverride' | 'createdAt' | 'updatedAt'>[] {
+  const steps: Omit<RecordingStep, 'id' | 'recordingId' | 'currentOverride' | 'createdAt' | 'updatedAt'>[] = [];
+  for (const raw of String(script || '').split('\n')) {
+    const line = raw.trim();
+    const d = describeLocator(line);
+    if (!d.label && !d.role) continue;
+    const action: Array<[RecordingStepType, 'fill' | 'press' | 'selectOption' | 'setInputFiles' | 'type']> = [
+      ['fill', 'fill'], ['press', 'press'], ['select', 'selectOption'], ['upload', 'setInputFiles'], ['fill', 'type'],
+    ];
+    const matched = action.find(([, method]) => new RegExp(`\\.${method}\\(`).test(line));
+    const type: RecordingStepType | null = /\.check\(/.test(line) ? 'check' : /\.uncheck\(/.test(line) ? 'uncheck' : matched?.[0] || null;
+    if (!type) continue;
+    const value = type === 'check' ? true : type === 'uncheck' ? false : literalValue(line, matched![1]);
+    const sensitive = SECRET_LABEL_RE.test(d.label);
+    steps.push({
+      ordinal: steps.length,
+      type,
+      locator: locatorKey(d),
+      locatorStrategy: locatorStrategy(line),
+      fieldKind: fieldKind(d.label, type),
+      originalValue: sensitive ? null : value,
+      readOnly: value === null,
+      metadata: { label: d.label, role: d.role, sensitive },
+    });
+  }
+  return steps;
 }
 
 // Parse a codegen spec line-by-line into atomic steps with a kind/locator tag per step so we can

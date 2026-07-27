@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { BrowserRouter, Routes, Route, Link, Navigate, useLocation, useNavigate } from 'react-router-dom';
-import { LayoutDashboard, TestTube2, Bug, Settings, BrainCircuit, PlayCircle, FolderTree, Sun, Moon, Search, CircleUser, Layers, Menu, ClipboardList, GitBranch, Command, MessagesSquare, ChevronDown, LogOut, Target, ScrollText, Radio, HardDrive, CalendarClock, Gauge, BookOpen } from 'lucide-react';
+import { LayoutDashboard, TestTube2, Bug, Settings, BrainCircuit, PlayCircle, FolderTree, Sun, Moon, Search, CircleUser, Layers, Menu, ClipboardList, GitBranch, Command, MessagesSquare, ChevronDown, LogOut, Target, ScrollText, Radio, HardDrive, CalendarClock, Gauge, BookOpen, Database } from 'lucide-react';
 import { useRemoteAgentFlag } from '@/src/lib/useAutomation';
 import { cn } from '@/src/lib/utils';
 import { useTheme } from '@/src/store/theme';
@@ -32,6 +32,7 @@ import RecordPlay from '@/src/pages/RecordPlay';
 import LocalAgent from '@/src/pages/automation/LocalAgent';
 import AutomationDashboard from '@/src/pages/automation/AutomationDashboard';
 import Schedules from '@/src/pages/automation/Schedules';
+import DataBindings from '@/src/pages/automation/DataBindings';
 
 function Sidebar({ isOpen }: { isOpen: boolean }) {
   const location = useLocation();
@@ -45,6 +46,7 @@ function Sidebar({ isOpen }: { isOpen: boolean }) {
       { name: 'Automation', href: '/automation', icon: Gauge },
       { name: 'Schedules', href: '/automation/schedules', icon: CalendarClock },
       { name: 'Local Agent', href: '/automation/agent', icon: HardDrive },
+      { name: 'Automation Data', href: '/automation/data', icon: Database },
     ] : [
       { name: 'Record & Play', href: '/record-play', icon: Radio },
     ]),
@@ -107,7 +109,11 @@ function Sidebar({ isOpen }: { isOpen: boolean }) {
                 <ChevronDown className={cn("w-3.5 h-3.5 transition-transform", isCollapsed && "-rotate-90")} />
               </button>
               {!isCollapsed && group.items.map((item) => {
-                const isActive = location.pathname === item.href || (item.href !== '/' && location.pathname.startsWith(`${item.href}/`));
+                const matches = (href: string) => href === '/'
+                  ? location.pathname === '/' || location.pathname.startsWith('/chat/') || location.pathname === '/agent' || location.pathname.startsWith('/agent/chat/')
+                  : location.pathname === href || location.pathname.startsWith(`${href}/`);
+                const isActive = matches(item.href)
+                  && !group.items.some((candidate) => candidate.href.length > item.href.length && matches(candidate.href));
                 return (
                   <Link
                     key={item.name}
@@ -456,6 +462,7 @@ export default function App() {
           <Route path="/automation/executions" element={<Navigate to="/runs" replace />} />
           <Route path="/automation/schedules" element={<Schedules />} />
           <Route path="/automation/agent" element={<LocalAgent />} />
+          <Route path="/automation/data" element={<DataBindings />} />
           <Route path="/git-agent" element={<GitAgent />} />
           <Route path="/settings" element={<SettingsPage />} />
           <Route path="/documentation" element={<Documentation />} />

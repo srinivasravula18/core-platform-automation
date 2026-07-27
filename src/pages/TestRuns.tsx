@@ -81,6 +81,7 @@ export default function TestRuns() {
   const [newRunExecutionTime, setNewRunExecutionTime] = useState('');
   const [newRunTargetUrl, setNewRunTargetUrl] = useState('');
   const [newRunFolderId, setNewRunFolderId] = useState('');
+  const [newRunCaseFolderId, setNewRunCaseFolderId] = useState('');
   // #3/#4/#5 — pick cases from the folder tree, map to a Test Plan, and set Assign To / Tags / State.
   const [newRunPlanId, setNewRunPlanId] = useState('');
   const [newRunAssignedTo, setNewRunAssignedTo] = useState('');
@@ -189,6 +190,7 @@ export default function TestRuns() {
     setNewRunExecutionTime('');
     setNewRunTargetUrl('');
     setNewRunFolderId('');
+    setNewRunCaseFolderId('');
     setNewRunPlanId('');
     setNewRunAssignedTo('');
     setNewRunTags([]);
@@ -289,12 +291,13 @@ export default function TestRuns() {
     if (errors.length) void showAlert(errors.join('\n'));
   };
 
-  const runnableCaseOptions = useMemo(() => runnableCases(casesForPlan(cases, suites, newRunPlanId), scripts)
+  const runnableTestCases = useMemo(() => runnableCases(casesForPlan(cases, suites, newRunPlanId), scripts), [cases, suites, scripts, newRunPlanId]);
+  const runnableCaseOptions = useMemo(() => runnableTestCases
     .map((testCase) => ({
       id: String(testCase.id),
       name: `${folders.find((folder) => folder.id === testCase.folderId)?.path || folders.find((folder) => folder.id === testCase.folderId)?.name || 'Unfiled'} — ${testCase.id}: ${testCase.title}`,
     }))
-    .sort((a, b) => a.name.localeCompare(b.name)), [cases, suites, scripts, folders, newRunPlanId]);
+    .sort((a, b) => a.name.localeCompare(b.name)), [runnableTestCases, folders]);
 
   const handleAIApprove = (data: any) => {
     fetch('/api/runs', {
@@ -305,7 +308,7 @@ export default function TestRuns() {
   };
 
 
-  if (selectedRun) {
+  if (selectedRun && !isRunModalOpen) {
     const stats = getRunStats(selectedRun);
     const selectedExecution = runExecutionState(selectedRun);
     const selectedProgress = runProgress[selectedRun.id] || selectedExecution.label;
@@ -358,14 +361,24 @@ export default function TestRuns() {
                   {Array.isArray(selectedRun.tags) && selectedRun.tags.map((t: string) => <span key={t} className="rounded bg-[var(--bg-secondary)] px-2 py-0.5 text-xs">{t}</span>)}
                 </div>
               </div>
-              <button
-                onClick={() => handleExecuteRuns([selectedRun])}
-                disabled={selectedExecution.running || Boolean(runProgress[selectedRun.id]) || selectedRunScripts.length === 0}
-                title={selectedRunScripts.length ? 'Execute linked Playwright scripts' : 'No Playwright scripts are linked to these cases'}
-                className="inline-flex items-center gap-2 rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                <PlayCircle className="h-4 w-4" /> {selectedProgress || 'Run scripts'}
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => openEditModal(selectedRun)}
+                  disabled={selectedIsRunning}
+                  title={selectedIsRunning ? 'A running test run cannot be edited' : 'Edit test run'}
+                  className="inline-flex items-center gap-2 rounded-md border border-[var(--border)] px-4 py-2 text-sm font-medium text-[var(--text-primary)] hover:bg-[var(--bg-secondary)] disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <Pencil className="h-4 w-4" /> Edit
+                </button>
+                <button
+                  onClick={() => handleExecuteRuns([selectedRun])}
+                  disabled={selectedExecution.running || Boolean(runProgress[selectedRun.id]) || selectedRunScripts.length === 0}
+                  title={selectedRunScripts.length ? 'Execute linked Playwright scripts' : 'No Playwright scripts are linked to these cases'}
+                  className="inline-flex items-center gap-2 rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <PlayCircle className="h-4 w-4" /> {selectedProgress || 'Run scripts'}
+                </button>
+              </div>
             </div>
           </div>
 
@@ -658,6 +671,17 @@ export default function TestRuns() {
           {!editingRunId && (
             <div>
               <label className="mb-1 block text-xs font-medium text-[var(--text-muted)]">Test Cases with Playwright Scripts</label>
+              <div className="mb-2 flex items-end gap-2">
+                <FolderSelect value={newRunCaseFolderId} onChange={setNewRunCaseFolderId} label="Test Case Folder" allowCreate={false} className="flex-1" />
+                <button
+                  type="button"
+                  disabled={!newRunCaseFolderId || !runnableTestCases.some((testCase) => testCase.folderId === newRunCaseFolderId)}
+                  onClick={() => setNewRunCaseIds((current) => new Set([...current, ...runnableTestCases.filter((testCase) => testCase.folderId === newRunCaseFolderId).map((testCase) => String(testCase.id))]))}
+                  className="shrink-0 rounded-md border border-[var(--border)] px-3 py-2 text-sm font-medium text-[var(--text-primary)] hover:bg-[var(--bg-secondary)] disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Add all in folder
+                </button>
+              </div>
               <MultiSelectDropdown
                 label={runnableCaseOptions.length ? 'Select test cases from any repository folder' : 'No runnable test cases'}
                 options={runnableCaseOptions}

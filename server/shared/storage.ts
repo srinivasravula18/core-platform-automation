@@ -94,6 +94,12 @@ export const db: any = {
   // agents/recordings/automation_* Postgres tables. Empty + inert when the feature flag is off.
   agents: [] as any[],
   recordings: [] as any[],
+  recordingSteps: [] as any[],
+  recordingStepOverrides: [] as any[],
+  automationDatasets: [] as any[],
+  automationDatasetRows: [] as any[],
+  automationDataMappings: [] as any[],
+  automationExecutionBatches: [] as any[],
   automationJobs: [] as any[],
   automationSchedules: [] as any[],
   automationArtifacts: [] as any[],
@@ -141,6 +147,12 @@ function getPersistableDbSnapshot() {
     objectRepository: db.objectRepository,
     agents: db.agents,
     recordings: db.recordings,
+    recordingSteps: db.recordingSteps,
+    recordingStepOverrides: db.recordingStepOverrides,
+    automationDatasets: db.automationDatasets,
+    automationDatasetRows: db.automationDatasetRows,
+    automationDataMappings: db.automationDataMappings,
+    automationExecutionBatches: db.automationExecutionBatches,
     automationJobs: db.automationJobs,
     automationSchedules: db.automationSchedules,
     automationArtifacts: db.automationArtifacts,
@@ -201,6 +213,12 @@ export async function loadPersistedData() {
     db.objectRepository = Array.isArray(data.objectRepository) ? data.objectRepository : [];
     db.agents = Array.isArray(data.agents) ? data.agents : [];
     db.recordings = Array.isArray(data.recordings) ? data.recordings : [];
+    db.recordingSteps = Array.isArray(data.recordingSteps) ? data.recordingSteps : [];
+    db.recordingStepOverrides = Array.isArray(data.recordingStepOverrides) ? data.recordingStepOverrides : [];
+    db.automationDatasets = Array.isArray(data.automationDatasets) ? data.automationDatasets : [];
+    db.automationDatasetRows = Array.isArray(data.automationDatasetRows) ? data.automationDatasetRows : [];
+    db.automationDataMappings = Array.isArray(data.automationDataMappings) ? data.automationDataMappings : [];
+    db.automationExecutionBatches = Array.isArray(data.automationExecutionBatches) ? data.automationExecutionBatches : [];
     db.automationJobs = Array.isArray(data.automationJobs) ? data.automationJobs : [];
     db.automationSchedules = Array.isArray(data.automationSchedules) ? data.automationSchedules : [];
     db.automationArtifacts = Array.isArray(data.automationArtifacts) ? data.automationArtifacts : [];

@@ -78,7 +78,7 @@ import { semanticPlanFromCase } from './compiler/semanticPlanner';
 import { linkedExistingCases, scoreCaseReuse } from './caseReuse';
 import { reviewedCasesForRun, syncReviewedCases } from './caseCollection';
 import { pushInboxItem } from '../inbox/routes';
-import { AgentRuns, ChatConversations, Plans, Suites, Cases, Runs, Reports, Scripts, Folders, Requirements, RequirementLinks, Defects, isPgEnabled } from '../../db/repository';
+import { AgentRuns, ChatConversations, Suites, Cases, Runs, Reports, Scripts, Folders, Requirements, RequirementLinks, Defects, isPgEnabled } from '../../db/repository';
 import { loadConversationHandoff } from '../../ai/memory/conversationState';
 import { runGuardrailPipeline } from '../../ai/guardrails';
 import { assessInspection, assessCasesGrounding, assessExecution, assessFeatureCompleteness } from '../../ai/verifier';
@@ -817,7 +817,7 @@ async function ensureFolderInPg(folderId: string) {
 }
 
 function agentPlanId(run: any): string {
-  return run.testPlanId || run.generatedPlanId || `PLAN-${run.id.substring(0, 8).toUpperCase()}`;
+  return run.testPlanId || '';
 }
 
 function agentSuiteId(run: any): string {
@@ -997,7 +997,7 @@ async function persistAgentRunAndReportArtifacts(run: any) {
     runId: runRecordId,
     planId: agentPlanId(run),
     suiteId: agentSuiteId(run),
-    planName: `Agent Plan - ${baseName}`,
+    planName: run.testPlanId ? `Agent Plan - ${baseName}` : '',
     suiteName: `Agent Suite - ${baseName}`,
     requestedBy: 'QA Assistant',
     executionTime: durationLabel,
@@ -1130,40 +1130,14 @@ async function persistAgentCaseArtifacts(run: any) {
   persistDataInBackground('agent case artifacts');
 }
 
-// Plan+suite creation shared by terminal persistence AND /api/agent/save-cases: cases carry
-// FK refs to these rows, so whichever path runs first must materialize them (the graph engine
-// has no review-pause persistence, unlike the legacy engine this endpoint assumed).
+// Suite creation shared by terminal persistence AND /api/agent/save-cases. A plan is linked
+// only when the user selected one; generating cases must not create a Test Plan implicitly.
 async function ensureAgentPlanAndSuite(run: any) {
   const planId = agentPlanId(run);
   const suiteId = agentSuiteId(run);
   const baseName = agentDisplayName(run);
 
   await ensureFolderInPg(run.folderId || '');
-
-  // Plan must exist before the suite (suites.test_plan_id FK) and the suite before
-  // the cases (cases.test_suite_id FK). Only create the ones the run didn't reuse.
-  if (!run.testPlanId) {
-    await Plans.upsert({
-      id: planId,
-      name: `Agent Plan - ${baseName}`,
-      scope: run.app_url || 'Generated from QA Assistant',
-      objectives: 'Validate generated user flows, test cases, automation scripts, and evidence.',
-      strategy: 'AI-assisted functional and UI validation',
-      testTypes: 'Functional, UI, Regression, Sanity',
-      environments: run.app_url || '',
-      roles: 'QA Assistant, CodeAnalyst, FeatureDiscoveryAgent, FeatureWriter, RequirementWriter, CoverageScout, PlaywrightAgent, EvidenceAgent',
-      status: getAgentPlanStatus(run),
-      riskLevel: getAgentPlanRiskLevel(run),
-      folderId: run.folderId || null,
-      createdBy: 'QA Assistant',
-      proposedBy: 'QA Assistant',
-      approvalState: 'approved',
-      sourceRunId: run.id,
-      projectId: run.projectId || '',
-      appId: run.appId || '',
-      ownerId: run.ownerId || '',
-    });
-  }
 
   // The suite's tags should reflect the coverage it actually holds  -  reuse the real tags the
   // cases were generated with (deduped), not a generic "@agent" label the user doesn't recognize.
@@ -1176,7 +1150,7 @@ async function ensureAgentPlanAndSuite(run: any) {
       id: suiteId,
       name: `Agent Suite - ${baseName}`,
       description: `Generated suite for ${run.app_url || baseName}`,
-      testPlanId: planId,
+      testPlanId: planId || null,
       parentSuite: '',
       module: db.folders.find((folder: any) => folder.id === run.folderId)?.name || getFolderPath(run.folderId || ''),
       owner: 'QA Assistant',
@@ -2143,7 +2117,7 @@ async function persistAgentRunArtifacts(run: any) {
     runId: existingRunId,
     planId: agentPlanId(run),
     suiteId: agentSuiteId(run),
-    planName: `Agent Plan - ${baseName}`,
+    planName: run.testPlanId ? `Agent Plan - ${baseName}` : '',
     suiteName: `Agent Suite - ${baseName}`,
     requestedBy: 'QA Assistant',
     executionTime: durationLabel,
@@ -5487,7 +5461,6 @@ Rules:
       targetUrl,
       sourceText: prompt || '',
     };
-    const generatedPlanId = req.body.testPlanId ? '' : await nextArtifactId('PLAN', artifactIdContext);
     const generatedSuiteId = req.body.testSuiteId ? '' : await nextArtifactId('SUITE', artifactIdContext);
 
     const newRun = {
@@ -5524,7 +5497,6 @@ Rules:
       testPlanId: req.body.testPlanId || '',
       testSuiteId: req.body.testSuiteId || '',
       testCaseId: req.body.testCaseId || '',
-      generatedPlanId,
       generatedSuiteId,
       credentials: safeCredentialsForLog,
       // Stamp only when real context resolved it; empty lets agentDisplayName resolve contextually

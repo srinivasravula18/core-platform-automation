@@ -3,8 +3,8 @@ import { Requirements, RequirementLinks, Cases, isPgEnabled } from '../../db/rep
 import { addActivity, persistDataInBackground } from '../../shared/storage';
 import { getAIErrorMessage } from '../../shared/ai';
 import { confirmRequirementDraft, discoverRequirement, draftRequirement, getRequirementWithCases } from './requirementService';
+import { resolveSurfaceScope, type ResolvedSurfaceScope } from './surfaceScope';
 import { reqScope, scopeFilter } from '../../shared/scope';
-import { getApp, getProjectRepoPath } from '../projects/projectService';
 import { resolveCredentials } from '../credentials/credentialsService';
 import { buildCorePlatformApplicationContext } from '../agent/applicationContext';
 import { assembleConversationContext } from '../../ai/memory/contextAssembler';
@@ -31,13 +31,14 @@ async function conversationContextForDraft(conversationId: unknown, history: unk
   }
 }
 
-function repoPathForScope(scope: ReturnType<typeof reqScope>): string {
-  return scope.projectId ? getProjectRepoPath(scope.projectId) : '';
+// Resolve the selected surface (App OR Website) once per request: which repo + sub-root(s) to
+// ground in, and which live app to connect to for the metadata catalog. See surfaceScope.ts.
+function surfaceForScope(scope: ReturnType<typeof reqScope>): ResolvedSurfaceScope {
+  return resolveSurfaceScope({ projectId: scope.projectId, ref: scope.appId || '', ownerId: scope.userId });
 }
 
-async function applicationContextPromptForScope(scope: ReturnType<typeof reqScope>, query: string): Promise<string> {
-  const app = scope.appId ? getApp(scope.appId) : undefined;
-  const targetUrl = app?.baseUrl || '';
+async function applicationContextPromptForScope(scope: ReturnType<typeof reqScope>, surface: ResolvedSurfaceScope, query: string): Promise<string> {
+  const targetUrl = surface.baseUrl || '';
   const credentials = targetUrl
     ? resolveCredentials({ targetUrl, ownerId: scope.userId || undefined }) || undefined
     : undefined;
@@ -97,17 +98,21 @@ export function registerRequirementRoutes(app: Express) {
         flushStream(res);
       };
       onProgress('Starting requirement drafting agent...');
+      const surface = surfaceForScope(scope);
+      if (surface.source === 'fingerprint') onProgress(`Resolved the chosen URL to code root(s): ${surface.scopePaths.join(', ')}.`);
+      else if (surface.source === 'unscoped' && surface.baseUrl) onProgress('Could not localize the surface from the URL — grounding across the whole repository.');
       const [applicationContextPrompt, conversationContextPrompt] = await Promise.all([
-        applicationContextPromptForScope(scope, query).catch(() => ''),
+        applicationContextPromptForScope(scope, surface, query).catch(() => ''),
         conversationContextForDraft(req.body?.conversationId, req.body?.history, query),
       ]);
       const result = await draftRequirement(query, {
         workspaceId: req.body?.workspaceId || 'default',
         userId: scope.userId,
         role: scope.role,
-        repoPath: repoPathForScope(scope),
+        repoPath: surface.repoPath,
         projectId: scope.projectId,
         appId: scope.appId || '',
+        surface,
         applicationContextPrompt,
         conversationContextPrompt,
         requirementsOnly: true,
@@ -128,11 +133,12 @@ export function registerRequirementRoutes(app: Express) {
       const query = String(req.body?.query || '').trim();
       if (!query) return res.status(400).json({ error: 'Tell me which feature or section to test.' });
       const scope = reqScope(req);
+      const surface = surfaceForScope(scope);
       const [applicationContextPrompt, conversationContextPrompt] = await Promise.all([
-        applicationContextPromptForScope(scope, query).catch(() => ''),
+        applicationContextPromptForScope(scope, surface, query).catch(() => ''),
         conversationContextForDraft(req.body?.conversationId, req.body?.history, query),
       ]);
-      const result = await draftRequirement(query, { workspaceId: req.body?.workspaceId || 'default', userId: scope.userId, role: scope.role, repoPath: repoPathForScope(scope), projectId: scope.projectId, appId: scope.appId || '', applicationContextPrompt, conversationContextPrompt, requirementsOnly: true });
+      const result = await draftRequirement(query, { workspaceId: req.body?.workspaceId || 'default', userId: scope.userId, role: scope.role, repoPath: surface.repoPath, projectId: scope.projectId, appId: scope.appId || '', surface, applicationContextPrompt, conversationContextPrompt, requirementsOnly: true });
       res.json(result);
     } catch (error: any) {
       res.status(500).json({ error: getAIErrorMessage(error) || error?.message || 'Failed to draft requirement.' });
@@ -156,8 +162,9 @@ export function registerRequirementRoutes(app: Express) {
       if (!query) return res.status(400).json({ error: 'Tell me which feature or section to test.' });
       const scope = reqScope(req);
       const requirementsOnly = req.body?.requirementsOnly === true || req.body?.mode === 'requirements_only';
-      const applicationContextPrompt = await applicationContextPromptForScope(scope, query).catch(() => '');
-      const result = await discoverRequirement(query, { workspaceId: req.body?.workspaceId || 'default', userId: scope.userId, role: scope.role, repoPath: repoPathForScope(scope), projectId: scope.projectId, appId: scope.appId || '', applicationContextPrompt, requirementsOnly });
+      const surface = surfaceForScope(scope);
+      const applicationContextPrompt = await applicationContextPromptForScope(scope, surface, query).catch(() => '');
+      const result = await discoverRequirement(query, { workspaceId: req.body?.workspaceId || 'default', userId: scope.userId, role: scope.role, repoPath: surface.repoPath, projectId: scope.projectId, appId: scope.appId || '', surface, applicationContextPrompt, requirementsOnly });
       res.json(result);
     } catch (error: any) {
       res.status(500).json({ error: getAIErrorMessage(error) || error?.message || 'Failed to discover requirement.' });

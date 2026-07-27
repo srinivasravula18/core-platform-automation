@@ -1,10 +1,9 @@
 import { useEffect, useState, useRef, useMemo } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Search, Filter, Pencil, Plus, Sparkles, Loader2, Trash2, PlayCircle, Code2 } from 'lucide-react';
+import { Search, Filter, Pencil, Plus, Sparkles, Loader2, Trash2, PlayCircle, Code2, FolderCheck } from 'lucide-react';
 import { RowMoreMenu } from '@/src/components/RowMoreMenu';
 import { Timestamp, actorName } from '@/src/components/Timestamp';
 import { TimeSortSelect } from '@/src/components/filters/TimeSortSelect';
-import { TimeRangeFilter, passesTimeFilter, type TimeFilterValue } from '@/src/components/filters/TimeRangeFilter';
 import { sortByTime, type TimeSortKey } from '@/src/lib/time';
 import ExportMenu from '../components/ExportMenu';
 import { useAiSearch } from '@/src/lib/useAiSearch';
@@ -56,7 +55,6 @@ export default function TestCases() {
   const [appFilter, setAppFilter] = useState('All');
   const [isFilterOpen, setIsFilterOpen] = useState(false);
   const [timeSort, setTimeSort] = useState<TimeSortKey>('recentlyUpdated');
-  const [updatedFilter, setUpdatedFilter] = useState<TimeFilterValue>({ key: 'all' });
   const filterRef = useRef<HTMLDivElement | null>(null);
   // Advanced filter state (bug: expanded filter set + AND/OR combine logic).
   const emptyFilters = {
@@ -487,7 +485,8 @@ export default function TestCases() {
     filters.statuses.length + filters.priorities.length + filters.automationStatuses.length +
     filters.testingTypes.length + filters.tags.length + filters.owners.length + filters.folders.length +
     (filters.requirement.trim() ? 1 : 0) + (filters.createdFrom || filters.createdTo ? 1 : 0) +
-    (filters.updatedFrom || filters.updatedTo ? 1 : 0) + (filters.notInAnyRun ? 1 : 0)
+    (filters.updatedFrom || filters.updatedTo ? 1 : 0) + (filters.notInAnyRun ? 1 : 0) +
+    (platformFilter !== 'All' ? 1 : 0) + (appFilter !== 'All' ? 1 : 0)
   );
   const inDateRange = (value: any, from: string, to: string) => {
     if (!from && !to) return true;
@@ -529,8 +528,7 @@ export default function TestCases() {
       : (!query || `${testCase.id || ''} ${testCase.title || ''} ${testCase.description || ''} ${appLabel} ${(testCase.tags || []).join(' ')}`.toLowerCase().includes(query));
     const matchesPlatform = platformFilter === 'All' || casePlatformId(testCase) === platformFilter;
     const matchesApp = appFilter === 'All' || caseAppLabel(testCase) === appFilter;
-    const matchesUpdated = passesTimeFilter(testCase.metadata?.updatedAt || testCase.updatedAt, updatedFilter);
-    return matchesSearch && matchesPlatform && matchesApp && advancedMatch(testCase) && matchesUpdated;
+    return matchesSearch && matchesPlatform && matchesApp && advancedMatch(testCase);
   }), timeSort);
 
   // New Case → Automation records a Playwright flow via the desktop agent (codegen) and the backend
@@ -883,8 +881,6 @@ export default function TestCases() {
               className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md pl-9 pr-4 py-1.5 text-sm outline-none focus:border-[var(--accent)]"
             />
           </div>
-          <TimeSortSelect value={timeSort} onChange={setTimeSort} />
-          <TimeRangeFilter value={updatedFilter} onChange={setUpdatedFilter} />
           <div ref={filterRef} className="relative">
             <button
               onClick={() => setIsFilterOpen(!isFilterOpen)}
@@ -901,9 +897,29 @@ export default function TestCases() {
                     <button onClick={() => setMatchMode('all')} className={`rounded px-2 py-1 ${matchMode === 'all' ? 'bg-[var(--accent)] text-white' : 'text-[var(--text-muted)]'}`}>Match all</button>
                     <button onClick={() => setMatchMode('any')} className={`rounded px-2 py-1 ${matchMode === 'any' ? 'bg-[var(--accent)] text-white' : 'text-[var(--text-muted)]'}`}>Match any</button>
                   </div>
-                  <button onClick={() => setFilters(emptyFilters)} className="text-xs font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]">Clear all</button>
+                  <button onClick={() => { setFilters(emptyFilters); setPlatformFilter('All'); setAppFilter('All'); }} className="text-xs font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]">Clear all</button>
                 </div>
                 <div className="flex flex-col gap-3">
+                  <div>
+                    <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Sort by</label>
+                    <TimeSortSelect value={timeSort} onChange={setTimeSort} className="w-full" />
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Platform</label>
+                      <select value={platformFilter} onChange={(event) => { setPlatformFilter(event.target.value); setAppFilter('All'); }} className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2.5 py-2 text-xs text-[var(--text-primary)]">
+                        <option value="All">All platforms</option>
+                        {platformFilterOptions.map((option) => <option key={option.id} value={option.id}>{option.name}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">App</label>
+                      <select value={appFilter} onChange={(event) => setAppFilter(event.target.value)} className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2.5 py-2 text-xs text-[var(--text-primary)]">
+                        <option value="All">All apps</option>
+                        {appFilterOptions.map((option) => <option key={option} value={option}>{option}</option>)}
+                      </select>
+                    </div>
+                  </div>
                   <div>
                     <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">State</label>
                     <MultiSelectDropdown label="Any state" options={CASE_STATUSES.map((s) => ({ id: s, name: s }))} value={filters.statuses} onChange={(v) => setFilters((f) => ({ ...f, statuses: v }))} />
@@ -931,6 +947,24 @@ export default function TestCases() {
                   <div>
                     <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Folder ({filters.folders.length} selected)</label>
                     <MultiSelectDropdown label="Any folder" options={folders.map((folder) => ({ id: String(folder.id), name: String(folder.path || folder.name) }))} value={filters.folders} onChange={(v) => setFilters((f) => ({ ...f, folders: v }))} />
+                    <label className="mb-1 mt-2 flex items-center gap-1 text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]"><FolderCheck className="h-3.5 w-3.5" />Select cases for a run</label>
+                    <select
+                      aria-label="Select every test case in a folder"
+                      value=""
+                      onChange={(event) => {
+                        const folderId = event.target.value;
+                        if (!folderId) return;
+                        bulk.selectOnly(cases.filter((testCase) => String(testCase.folderId || '') === folderId).map((testCase) => String(testCase.id)));
+                        setIsFilterOpen(false);
+                      }}
+                      className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2.5 py-2 text-xs text-[var(--text-primary)]"
+                    >
+                      <option value="">Select all cases in one folder...</option>
+                      {folders.map((folder) => {
+                        const count = cases.filter((testCase) => String(testCase.folderId || '') === String(folder.id)).length;
+                        return <option key={folder.id} value={folder.id} disabled={count === 0}>{folder.path || folder.name} ({count})</option>;
+                      })}
+                    </select>
                   </div>
                   <div>
                     <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Requirements (Jira key / reference)</label>
@@ -963,38 +997,6 @@ export default function TestCases() {
           <div aria-live="polite" className="ml-auto whitespace-nowrap text-xs font-medium text-[var(--text-muted)]">
             {filteredCases.length}{(searchTerm || activeFilterCount > 0) ? ` of ${cases.length}` : ''} test case{filteredCases.length === 1 ? '' : 's'}
           </div>
-          <select
-            value={platformFilter}
-            onChange={(event) => { setPlatformFilter(event.target.value); setAppFilter('All'); }}
-            className="min-w-[150px] rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-1.5 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
-            title="Filter by platform"
-          >
-            <option value="All">All platforms</option>
-            {platformFilterOptions.map((option) => (
-              <option key={option.id} value={option.id}>{option.name}</option>
-            ))}
-          </select>
-          <select
-            value={appFilter}
-            onChange={(event) => setAppFilter(event.target.value)}
-            className="min-w-[150px] rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-1.5 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
-            title="Filter by app"
-          >
-            <option value="All">All apps</option>
-            {appFilterOptions.map((option) => (
-              <option key={option} value={option}>{option}</option>
-            ))}
-          </select>
-          <div className="ml-auto flex items-center gap-2">
-            {bulk.selectedCount > 1 && (
-              <button onClick={() => runSelectedCases()} disabled={isStartingRun} title="Run selected" className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
-                {isStartingRun ? <Loader2 className="w-4 h-4 animate-spin" /> : <PlayCircle className="w-4 h-4" />} Run selected ({bulk.selectedCount})
-              </button>
-            )}
-            <button onClick={bulk.deleteSelected} disabled={bulk.busy || bulk.selectedCount === 0} title={bulk.selectedCount === 0 ? 'Select at least one test case' : 'Delete selected'} className="flex items-center gap-1.5 bg-red-600 hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
-              <Trash2 className="w-4 h-4" /> Delete selected{bulk.selectedCount > 0 ? ` (${bulk.selectedCount})` : ''}
-            </button>
-          </div>
           </div>
           {selectedCaseIds.length > 0 && (
             <div className="rounded-lg border border-[var(--accent)]/30 bg-[var(--accent)]/10 p-3">
@@ -1002,17 +1004,25 @@ export default function TestCases() {
                 <div className="text-sm font-semibold text-[var(--text-primary)]">
                   {selectedCaseIds.length} case{selectedCaseIds.length === 1 ? '' : 's'} selected
                 </div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    bulk.clearSelection();
-                    setCaseAIInstruction('');
-                    setCaseAIMessage('');
-                  }}
-                  className="text-xs font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]"
-                >
-                  Clear
-                </button>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button onClick={() => runSelectedCases()} disabled={isStartingRun} className="flex items-center gap-1.5 rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700 disabled:opacity-50">
+                    {isStartingRun ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <PlayCircle className="h-3.5 w-3.5" />} Run selected
+                  </button>
+                  <button onClick={bulk.deleteSelected} disabled={bulk.busy} className="flex items-center gap-1.5 rounded-md border border-red-500/40 px-3 py-1.5 text-xs font-medium text-red-400 hover:bg-red-500/10 disabled:opacity-50">
+                    <Trash2 className="h-3.5 w-3.5" /> Delete
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      bulk.clearSelection();
+                      setCaseAIInstruction('');
+                      setCaseAIMessage('');
+                    }}
+                    className="px-2 py-1.5 text-xs font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+                  >
+                    Clear
+                  </button>
+                </div>
               </div>
               <div className="flex flex-col gap-2 lg:flex-row">
                 <input
@@ -1252,5 +1262,3 @@ export default function TestCases() {
     </div>
   );
 }
-
-

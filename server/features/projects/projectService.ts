@@ -63,6 +63,14 @@ export interface AppRecord {
   repoSubpath?: string;
   /** Optional named code roots (surface -> sub-path) for grounding/search. */
   searchRoots?: Record<string, string>;
+  /**
+   * Poly-repo: when this app has its OWN repository (separate from the project's repo, e.g. a
+   * project that aggregates several GitHub repos, one per app). When set, grounding uses this
+   * repo instead of the project repo; `repoSubpath`/`searchRoots` are then relative to it.
+   */
+  repoUrl?: string;
+  repoPath?: string;
+  repoAuthRef?: string;
   /** Bound knowledge pack id (app structure / DB / APIs / services spec). */
   knowledgePackId?: string;
   createdAt: string;

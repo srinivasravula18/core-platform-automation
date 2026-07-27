@@ -7,7 +7,7 @@
  * only ever runs on the user's machine — the cloud stores the resulting artifact.
  */
 
-import { Recordings, Cases, Scripts } from '../../db/repository';
+import { Recordings, Cases, Scripts, RecordingSteps } from '../../db/repository';
 import { uid } from '../../db/pool';
 import { persistDataInBackground } from '../../shared/storage';
 import { isPostgresEnabled } from '../../db/pool';
@@ -18,10 +18,11 @@ import { emitEvent } from './eventsService';
 import { onAgentFrame, dispatchToAgent, isAgentConnected } from './agentGateway';
 import { testCaseTypeFields } from '../../../core/shared/testCaseTypes';
 import { hardenRecordedScript } from './scriptHardening';
-import { scriptToGroupedSteps, parseAtomicSteps, coalesceAtomicSteps } from './stepGrouping';
+import { scriptToGroupedSteps, parseAtomicSteps, coalesceAtomicSteps, parseRecordingSteps } from './stepGrouping';
 import { humanizeRecordedSteps } from './humanizeSteps';
 import { isRecorderStepGroupingEnabled } from './flag';
 import type { AgentFrame } from './types';
+import type { RecordingFieldKind } from './types';
 import { nextArtifactId } from '../../shared/artifactIds';
 
 // Case metadata captured on the New Case → Automation flow, carried on the recording so the
@@ -100,6 +101,13 @@ export async function finalizeRecording(recordingId: string, patch: { script?: s
     metadata: { ...rec.metadata, ...(patch.metadata || {}) },
     completedAt: new Date().toISOString(),
   });
+  // Keep editable data independent from the immutable recording script. Re-finalizing a ready
+  // recording is already a no-op, so replacing this derived model cannot erase user edits.
+  await RecordingSteps.replaceForRecording(saved.id, parseRecordingSteps(finalScript).map((step, ordinal) => ({
+    ...step,
+    id: `${saved.id}:step:${ordinal + 1}`,
+    recordingId: saved.id,
+  })));
   // Reflect the recording into Test Management as an Automated, script-linked test case. Isolated
   // so a case-write failure never blocks the recording from finalizing.
   let caseId = '';
@@ -234,6 +242,40 @@ export async function stopRecording(recordingId: string) {
 
 export async function listRecordings() { return Recordings.list(); }
 export async function getRecording(id: string) { return Recordings.get(id); }
+
+export async function listRecordingSteps(recordingId: string) { return RecordingSteps.list(recordingId); }
+
+function validOverride(value: unknown, kind: RecordingFieldKind): value is string | boolean | null {
+  if (value === null) return true;
+  if (kind === 'boolean') return typeof value === 'boolean';
+  if (typeof value !== 'string') return false;
+  if (kind === 'email') return !value || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+  if (kind === 'number') return !value || Number.isFinite(Number(value));
+  if (kind === 'date') return !value || !Number.isNaN(new Date(value).getTime());
+  return true;
+}
+
+export async function overrideRecordingStep(recordingId: string, stepId: string, value: unknown) {
+  const step = (await RecordingSteps.list(recordingId)).find((item: any) => item.id === stepId);
+  if (!step) return { error: 'Recording step not found.', status: 404 } as const;
+  if (step.readOnly) return { error: 'This recorded action cannot be edited safely.', status: 409 } as const;
+  if (!validOverride(value, step.fieldKind)) return { error: `Value is not valid for ${step.fieldKind} input.`, status: 400 } as const;
+  const override = await RecordingSteps.addOverride(recordingId, stepId, value);
+  persist('recording step override');
+  return { step: (await RecordingSteps.list(recordingId)).find((item: any) => item.id === stepId), override };
+}
+
+export async function undoRecordingStepOverride(recordingId: string, stepId: string) {
+  const changed = await RecordingSteps.undo(recordingId, stepId);
+  if (changed) persist('recording step override undo');
+  return changed;
+}
+
+export async function redoRecordingStepOverride(recordingId: string, stepId: string) {
+  const changed = await RecordingSteps.redo(recordingId, stepId);
+  if (changed) persist('recording step override redo');
+  return changed;
+}
 
 export async function updateRecording(id: string, patch: { name?: string }) {
   const rec = await Recordings.get(id);

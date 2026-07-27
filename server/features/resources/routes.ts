@@ -629,6 +629,10 @@ export function registerResourceRoutes(app: Express) {
         if (!folder || !scopeFilter([folder], reqScope(req)).length) return res.status(400).json({ error: FOLDER_REQUIRED_ERROR });
         req.body.folderId = folderId;
       }
+      if (e.name === 'cases') {
+        if ('testPlanId' in req.body && !('testPlanIds' in req.body)) req.body.testPlanIds = req.body.testPlanId ? [req.body.testPlanId] : [];
+        if ('testSuiteId' in req.body && !('testSuiteIds' in req.body)) req.body.testSuiteIds = req.body.testSuiteId ? [req.body.testSuiteId] : [];
+      }
       const updated = { ...existing, ...req.body, updatedAt: new Date() };
       await e.repo.upsert(updated);
       if (!isPgEnabled()) persistDataInBackground(`${e.name} update`);

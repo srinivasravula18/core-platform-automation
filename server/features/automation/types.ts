@@ -8,6 +8,52 @@
 
 export type AgentStatus = 'offline' | 'online' | 'busy';
 
+export type RecordingStepType = 'fill' | 'press' | 'check' | 'uncheck' | 'select' | 'upload';
+export type RecordingFieldKind = 'text' | 'number' | 'email' | 'phone' | 'date' | 'boolean' | 'select' | 'file' | 'unknown';
+export type DatasetProviderType = 'csv' | 'xlsx';
+export type DatasetColumnKind = 'text' | 'number' | 'email' | 'phone' | 'date' | 'boolean';
+
+export interface DatasetColumn {
+  id: string;
+  name: string;
+  ordinal: number;
+  kind: DatasetColumnKind;
+  nullable: boolean;
+}
+
+export interface AutomationDataset {
+  id: string;
+  name: string;
+  provider: DatasetProviderType;
+  sourceFilename: string;
+  sourceHash: string;
+  columns: DatasetColumn[];
+  rowCount: number;
+  status: 'ready' | 'failed';
+  createdAt: string;
+  updatedAt: string;
+  projectId: string;
+  appId: string;
+  ownerId: string;
+}
+
+/** Immutable, safe-to-display action metadata derived from a finalized codegen script. */
+export interface RecordingStep {
+  id: string;
+  recordingId: string;
+  ordinal: number;
+  type: RecordingStepType;
+  locator: string;
+  locatorStrategy: 'role' | 'label' | 'placeholder' | 'testId' | 'unknown';
+  fieldKind: RecordingFieldKind;
+  originalValue: string | boolean | null;
+  currentOverride: string | boolean | null;
+  readOnly: boolean;
+  metadata: Record<string, unknown>;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
 export interface AgentRecord {
   id: string;
   name: string;

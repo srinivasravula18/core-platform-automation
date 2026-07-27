@@ -10,6 +10,14 @@ function fmt(iso: string | null): string {
   return Number.isNaN(d.getTime()) ? '—' : d.toLocaleString();
 }
 
+const CRON_PRESETS = [
+  { label: 'Every 15 minutes', value: '*/15 * * * *' },
+  { label: 'Every hour', value: '0 * * * *' },
+  { label: 'Daily at 2:00 AM', value: '0 2 * * *' },
+  { label: 'Weekdays at 9:00 AM', value: '0 9 * * 1-5' },
+  { label: 'Weekly on Monday at 9:00 AM', value: '0 9 * * 1' },
+];
+
 export default function Schedules() {
   const flag = useRemoteAgentFlag();
   const { schedules, loading, refresh } = useSchedules();
@@ -127,7 +135,8 @@ function FolderPicker({ node, selectedId, counts, onSelect, depth = 0 }: { key?:
 
 function NewScheduleModal({ isOpen, onClose, onCreated }: { isOpen: boolean; onClose: () => void; onCreated: () => void }) {
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [runAt, setRunAt] = useState('');
+  const [cronPreset, setCronPreset] = useState(CRON_PRESETS[2].value);
+  const [customCron, setCustomCron] = useState('');
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(false);
   const [folders, setFolders] = useState<FolderNode[]>([]);
@@ -168,24 +177,26 @@ function NewScheduleModal({ isOpen, onClose, onCreated }: { isOpen: boolean; onC
       : (script.folderId || UNCATEGORIZED_ID) === selectedFolderId);
   }, [scripts, search, selectedFolderId]);
   const toggle = (id: string) => setSelected((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const cron = cronPreset === 'custom' ? customCron.trim() : cronPreset;
 
   const submit = async () => {
     if (selected.size === 0) { showToast('Select at least one item.', { tone: 'error' }); return; }
-    if (!runAt) { showToast('Pick a date and time.', { tone: 'error' }); return; }
+    if (!cron) { showToast('Enter a cron expression.', { tone: 'error' }); return; }
     setBusy(true);
     try {
-      const iso = new Date(runAt).toISOString();
-      const results = await Promise.all([...selected].map((id) =>
-        fetch('/api/automation/schedules', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ scriptId: id, kind: 'once', runAt: iso }) }).then((r) => r.ok),
-      ));
+      const results = await Promise.all([...selected].map(async (id) => {
+        const response = await fetch('/api/automation/schedules', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ scriptId: id, kind: 'cron', cron, timezone: 'UTC' }) });
+        if (!response.ok) throw new Error((await response.json().catch(() => ({})))?.error || 'Could not create the schedule.');
+        return true;
+      }));
       const ok = results.filter(Boolean).length;
       if (ok === 0) throw new Error();
-      showToast(`Scheduled ${ok} item${ok > 1 ? 's' : ''} for ${new Date(runAt).toLocaleString()}.`, { tone: 'success' });
+      showToast(`Created ${ok} cron schedule${ok > 1 ? 's' : ''}.`, { tone: 'success' });
       if (ok < selected.size) showToast(`${selected.size - ok} script${selected.size - ok > 1 ? 's were' : ' was'} skipped.`, { tone: 'error' });
-      setSelected(new Set()); setRunAt('');
+      setSelected(new Set()); setCustomCron('');
       onCreated();
       onClose();
-    } catch { showToast('Could not create the schedule.', { tone: 'error' }); }
+    } catch (error: any) { showToast(error?.message || 'Could not create the schedule.', { tone: 'error' }); }
     finally { setBusy(false); }
   };
 
@@ -193,7 +204,7 @@ function NewScheduleModal({ isOpen, onClose, onCreated }: { isOpen: boolean; onC
     <Modal isOpen={isOpen} onClose={onClose} title="New schedule" size="xl"
       footer={<div className="flex justify-end gap-2">
         <button onClick={onClose} className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)]">Cancel</button>
-        <button onClick={submit} disabled={busy || selected.size === 0 || !runAt} className="inline-flex items-center gap-2 rounded-md bg-[var(--accent)] px-3 py-2 text-sm font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50">
+        <button onClick={submit} disabled={busy || selected.size === 0 || !cron} className="inline-flex items-center gap-2 rounded-md bg-[var(--accent)] px-3 py-2 text-sm font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50">
           {busy && <Loader2 className="h-4 w-4 animate-spin" />} Create Schedule
         </button>
       </div>}>
@@ -228,11 +239,18 @@ function NewScheduleModal({ isOpen, onClose, onCreated }: { isOpen: boolean; onC
         </div>
       </div>
       <label className="mt-4 block text-xs font-medium text-[var(--text-muted)]">
-        Run at (date &amp; time)
-        <input type="datetime-local" value={runAt} onChange={(e) => setRunAt(e.target.value)}
-          className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
+        Schedule (UTC)
+        <select value={cronPreset} onChange={(e) => setCronPreset(e.target.value)} className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]">
+          {CRON_PRESETS.map((preset) => <option key={preset.value} value={preset.value}>{preset.label}</option>)}
+          <option value="custom">Custom cron expression</option>
+        </select>
       </label>
-      <p className="mt-3 text-xs text-[var(--text-muted)]">Runs on the server headless at this time. Snapshots and video appear under Test Runs.</p>
+      {cronPreset === 'custom' && <label className="mt-3 block text-xs font-medium text-[var(--text-muted)]">Custom cron expression
+        <input value={customCron} onChange={(e) => setCustomCron(e.target.value)} placeholder="0 2 * * *" className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 font-mono text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
+        <span className="mt-1 block font-normal">Five space-separated values: minute, hour, day of month, month, day of week.</span>
+        <span className="mt-1 block font-normal">Examples: <code>0 2 * * *</code> every day at 2 AM; <code>0 9 * * 1-5</code> weekdays at 9 AM; <code>*/15 * * * *</code> every 15 minutes.</span>
+      </label>}
+      <p className="mt-3 text-xs text-[var(--text-muted)]">Cron uses minute, hour, day of month, month, and day of week. Snapshots and video appear under Test Runs.</p>
     </Modal>
   );
 }

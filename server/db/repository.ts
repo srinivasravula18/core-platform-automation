@@ -2184,6 +2184,241 @@ export const Recordings = {
   },
 };
 
+function mapRecordingStep(r: any, override: any = null) {
+  if (!r) return null;
+  return {
+    id: r.id,
+    recordingId: r.recording_id,
+    ordinal: r.ordinal,
+    type: r.action_type,
+    locator: r.locator,
+    locatorStrategy: r.locator_strategy,
+    fieldKind: r.field_kind,
+    originalValue: r.original_value,
+    currentOverride: override?.value ?? null,
+    readOnly: !!r.read_only,
+    metadata: r.metadata || {},
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+  };
+}
+
+/** Structured, derived recording inputs. Never writes to recordings.script. */
+export const RecordingSteps = {
+  async replaceForRecording(recordingId: string, steps: any[]): Promise<void> {
+    if (!isPgEnabled()) {
+      db.recordingSteps = db.recordingSteps.filter((s: any) => s.recordingId !== recordingId);
+      db.recordingStepOverrides = db.recordingStepOverrides.filter((o: any) => o.recordingId !== recordingId);
+      db.recordingSteps.push(...steps);
+      return;
+    }
+    await query('DELETE FROM automation_recording_steps WHERE recording_id = $1', [recordingId]);
+    for (const step of steps) {
+      await query(
+        `INSERT INTO automation_recording_steps (id, recording_id, ordinal, action_type, locator, locator_strategy, field_kind, original_value, read_only, metadata)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10::jsonb)`,
+        [step.id, recordingId, step.ordinal, step.type, step.locator, step.locatorStrategy, step.fieldKind,
+          JSON.stringify(step.originalValue), step.readOnly, JSON.stringify(step.metadata || {})],
+      );
+    }
+  },
+  async list(recordingId: string): Promise<any[]> {
+    if (!isPgEnabled()) {
+      return db.recordingSteps.filter((s: any) => s.recordingId === recordingId).sort((a: any, b: any) => a.ordinal - b.ordinal)
+        .map((s: any) => ({ ...s, currentOverride: db.recordingStepOverrides.filter((o: any) => o.stepId === s.id && o.state === 'active').sort((a: any, b: any) => b.version - a.version)[0]?.value ?? null }));
+    }
+    const [steps, overrides] = await Promise.all([
+      query('SELECT * FROM automation_recording_steps WHERE recording_id = $1 ORDER BY ordinal ASC', [recordingId]),
+      query(`SELECT DISTINCT ON (step_id) * FROM automation_step_overrides WHERE recording_id = $1 AND state = 'active' ORDER BY step_id, version DESC`, [recordingId]),
+    ]);
+    const byStep = new Map(overrides.map((o: any) => [o.step_id, o]));
+    return steps.map((s: any) => mapRecordingStep(s, byStep.get(s.id)));
+  },
+  async addOverride(recordingId: string, stepId: string, value: string | boolean | null): Promise<any> {
+    if (!isPgEnabled()) {
+      const version = Math.max(0, ...db.recordingStepOverrides.filter((o: any) => o.stepId === stepId).map((o: any) => o.version)) + 1;
+      const row = { id: uid('RSO'), recordingId, stepId, value, version, state: 'active', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+      db.recordingStepOverrides.push(row);
+      return row;
+    }
+    const versionRow = await queryOne<{ version: number }>('SELECT COALESCE(MAX(version), 0) + 1 AS version FROM automation_step_overrides WHERE step_id = $1', [stepId]);
+    const row = await queryOne(
+      `INSERT INTO automation_step_overrides (id, recording_id, step_id, value, version) VALUES ($1,$2,$3,$4::jsonb,$5) RETURNING *`,
+      [uid('RSO'), recordingId, stepId, JSON.stringify(value), Number(versionRow?.version || 1)],
+    );
+    return { id: row?.id, recordingId: row?.recording_id, stepId: row?.step_id, value: row?.value, version: row?.version, state: row?.state };
+  },
+  async undo(recordingId: string, stepId: string): Promise<boolean> {
+    if (!isPgEnabled()) {
+      const row = db.recordingStepOverrides.filter((o: any) => o.recordingId === recordingId && o.stepId === stepId && o.state === 'active').sort((a: any, b: any) => b.version - a.version)[0];
+      if (!row) return false;
+      row.state = 'undone'; row.updatedAt = new Date().toISOString(); return true;
+    }
+    const row = await queryOne(`UPDATE automation_step_overrides SET state = 'undone', updated_at = now() WHERE id = (
+      SELECT id FROM automation_step_overrides WHERE recording_id = $1 AND step_id = $2 AND state = 'active' ORDER BY version DESC LIMIT 1
+    ) RETURNING id`, [recordingId, stepId]);
+    return !!row;
+  },
+  async redo(recordingId: string, stepId: string): Promise<boolean> {
+    if (!isPgEnabled()) {
+      const row = db.recordingStepOverrides.filter((o: any) => o.recordingId === recordingId && o.stepId === stepId && o.state === 'undone').sort((a: any, b: any) => b.version - a.version)[0];
+      if (!row) return false;
+      row.state = 'active'; row.updatedAt = new Date().toISOString(); return true;
+    }
+    const row = await queryOne(`UPDATE automation_step_overrides SET state = 'active', updated_at = now() WHERE id = (
+      SELECT id FROM automation_step_overrides WHERE recording_id = $1 AND step_id = $2 AND state = 'undone' ORDER BY version DESC LIMIT 1
+    ) RETURNING id`, [recordingId, stepId]);
+    return !!row;
+  },
+};
+
+function mapDataset(r: any) {
+  if (!r) return null;
+  return {
+    id: r.id,
+    name: r.name,
+    provider: r.provider,
+    sourceFilename: r.source_filename,
+    sourceHash: r.source_hash,
+    columns: r.columns || [],
+    rowCount: r.row_count,
+    status: r.status,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+    projectId: r.project_id || '',
+    appId: r.app_id || '',
+    ownerId: r.owner_id || '',
+  };
+}
+
+export const AutomationDatasets = {
+  async list(): Promise<any[]> {
+    if (!isPgEnabled()) return db.automationDatasets as any[];
+    return (await query('SELECT * FROM automation_datasets ORDER BY created_at DESC')).map(mapDataset);
+  },
+  async get(id: string): Promise<any | null> {
+    if (!isPgEnabled()) return db.automationDatasets.find((item: any) => item.id === id) || null;
+    return mapDataset(await queryOne('SELECT * FROM automation_datasets WHERE id = $1', [id]));
+  },
+  async upsert(dataset: any): Promise<any> {
+    if (!isPgEnabled()) {
+      const idx = db.automationDatasets.findIndex((item: any) => item.id === dataset.id);
+      if (idx >= 0) db.automationDatasets[idx] = { ...db.automationDatasets[idx], ...dataset };
+      else db.automationDatasets.unshift(dataset);
+      return dataset;
+    }
+    const id = dataset.id || uid('DATASET');
+    return mapDataset(await queryOne(
+      `INSERT INTO automation_datasets (id, project_id, app_id, owner_id, name, provider, source_filename, source_hash, columns, row_count, status, created_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11,COALESCE($12::timestamptz, now()))
+       ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, columns=EXCLUDED.columns, row_count=EXCLUDED.row_count, status=EXCLUDED.status, updated_at=now()
+       RETURNING *`,
+      [id, dataset.projectId || null, dataset.appId || null, dataset.ownerId || null, dataset.name || '', dataset.provider,
+        dataset.sourceFilename || '', dataset.sourceHash || '', JSON.stringify(dataset.columns || []), dataset.rowCount || 0,
+        dataset.status || 'ready', dataset.createdAt || null],
+    ));
+  },
+};
+
+export const AutomationDatasetRows = {
+  async replace(datasetId: string, rows: Array<{ id: string; rowNumber: number; values: Record<string, string | null>; validation?: any[] }>): Promise<void> {
+    if (!isPgEnabled()) {
+      db.automationDatasetRows = db.automationDatasetRows.filter((row: any) => row.datasetId !== datasetId);
+      db.automationDatasetRows.push(...rows.map((row) => ({ ...row, datasetId, validation: row.validation || [] })));
+      return;
+    }
+    await query('DELETE FROM automation_dataset_rows WHERE dataset_id = $1', [datasetId]);
+    for (let start = 0; start < rows.length; start += 500) {
+      const chunk = rows.slice(start, start + 500);
+      const values: any[] = [];
+      const placeholders = chunk.map((row, index) => {
+        const n = index * 5;
+        values.push(row.id, datasetId, row.rowNumber, JSON.stringify(row.values), JSON.stringify(row.validation || []));
+        return `($${n + 1},$${n + 2},$${n + 3},$${n + 4}::jsonb,$${n + 5}::jsonb)`;
+      });
+      await query(`INSERT INTO automation_dataset_rows (id, dataset_id, row_number, values, validation) VALUES ${placeholders.join(',')}`, values);
+    }
+  },
+  async page(datasetId: string, offset = 0, limit = 100): Promise<{ rows: any[]; total: number }> {
+    const safeOffset = Math.max(0, offset);
+    const safeLimit = Math.min(500, Math.max(1, limit));
+    if (!isPgEnabled()) {
+      const all = db.automationDatasetRows.filter((row: any) => row.datasetId === datasetId).sort((a: any, b: any) => a.rowNumber - b.rowNumber);
+      return { total: all.length, rows: all.slice(safeOffset, safeOffset + safeLimit) };
+    }
+    const [rows, count] = await Promise.all([
+      query('SELECT id, dataset_id, row_number, values, validation, created_at FROM automation_dataset_rows WHERE dataset_id = $1 ORDER BY row_number ASC OFFSET $2 LIMIT $3', [datasetId, safeOffset, safeLimit]),
+      queryOne<{ count: string }>('SELECT COUNT(*)::text AS count FROM automation_dataset_rows WHERE dataset_id = $1', [datasetId]),
+    ]);
+    return { total: Number(count?.count || 0), rows: rows.map((row: any) => ({ id: row.id, datasetId: row.dataset_id, rowNumber: row.row_number, values: row.values, validation: row.validation, createdAt: row.created_at })) };
+  },
+  async select(datasetId: string, rowNumbers?: number[], from?: number, to?: number): Promise<any[]> {
+    if (!isPgEnabled()) {
+      const wanted = rowNumbers?.length ? new Set(rowNumbers) : null;
+      return db.automationDatasetRows
+        .filter((row: any) => row.datasetId === datasetId)
+        .filter((row: any) => wanted ? wanted.has(row.rowNumber) : row.rowNumber >= (from || 1) && row.rowNumber <= (to || Number.MAX_SAFE_INTEGER))
+        .sort((a: any, b: any) => a.rowNumber - b.rowNumber);
+    }
+    const rows = rowNumbers?.length
+      ? await query('SELECT * FROM automation_dataset_rows WHERE dataset_id = $1 AND row_number = ANY($2::int[]) ORDER BY row_number', [datasetId, rowNumbers])
+      : await query('SELECT * FROM automation_dataset_rows WHERE dataset_id = $1 AND row_number BETWEEN $2 AND $3 ORDER BY row_number', [datasetId, from || 1, to || 2147483647]);
+    return rows.map((row: any) => ({ id: row.id, datasetId: row.dataset_id, rowNumber: row.row_number, values: row.values, validation: row.validation, createdAt: row.created_at }));
+  },
+};
+
+export const AutomationDataMappings = {
+  async list(recordingId: string) { if (!isPgEnabled()) return db.automationDataMappings.filter((m: any) => m.recordingId === recordingId); return query('SELECT id, recording_id AS "recordingId", step_id AS "stepId", dataset_id AS "datasetId", column_id AS "columnId", expression FROM automation_data_mappings WHERE recording_id=$1', [recordingId]); },
+  async upsert(m: any) { if (!isPgEnabled()) { db.automationDataMappings = db.automationDataMappings.filter((x: any) => x.stepId !== m.stepId); db.automationDataMappings.push(m); return m; } return queryOne(`INSERT INTO automation_data_mappings (id,recording_id,step_id,dataset_id,column_id,expression) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (step_id) DO UPDATE SET dataset_id=EXCLUDED.dataset_id,column_id=EXCLUDED.column_id,expression=EXCLUDED.expression,updated_at=now() RETURNING id,recording_id AS "recordingId",step_id AS "stepId",dataset_id AS "datasetId",column_id AS "columnId",expression`, [m.id,m.recordingId,m.stepId,m.datasetId,m.columnId,m.expression]); },
+  async remove(recordingId: string, stepId: string) { if (!isPgEnabled()) { const n=db.automationDataMappings.length; db.automationDataMappings=db.automationDataMappings.filter((m:any)=>m.recordingId!==recordingId||m.stepId!==stepId); return n!==db.automationDataMappings.length; } return !!await queryOne('DELETE FROM automation_data_mappings WHERE recording_id=$1 AND step_id=$2 RETURNING id',[recordingId,stepId]); },
+};
+
+function mapExecutionBatch(r: any) {
+  if (!r) return null;
+  return {
+    id: r.id,
+    recordingId: r.recording_id,
+    datasetId: r.dataset_id,
+    agentId: r.agent_id,
+    status: r.status,
+    selection: r.selection || [],
+    summary: r.summary || {},
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+    projectId: r.project_id || '',
+    appId: r.app_id || '',
+    ownerId: r.owner_id || '',
+  };
+}
+
+export const AutomationExecutionBatches = {
+  async list(): Promise<any[]> {
+    if (!isPgEnabled()) return db.automationExecutionBatches as any[];
+    return (await query('SELECT * FROM automation_execution_batches ORDER BY created_at DESC')).map(mapExecutionBatch);
+  },
+  async get(id: string): Promise<any | null> {
+    if (!isPgEnabled()) return db.automationExecutionBatches.find((batch: any) => batch.id === id) || null;
+    return mapExecutionBatch(await queryOne('SELECT * FROM automation_execution_batches WHERE id = $1', [id]));
+  },
+  async upsert(batch: any): Promise<any> {
+    if (!isPgEnabled()) {
+      const index = db.automationExecutionBatches.findIndex((item: any) => item.id === batch.id);
+      const saved = { createdAt: new Date().toISOString(), ...db.automationExecutionBatches[index], ...batch, updatedAt: new Date().toISOString() };
+      if (index >= 0) db.automationExecutionBatches[index] = saved;
+      else db.automationExecutionBatches.unshift(saved);
+      return saved;
+    }
+    return mapExecutionBatch(await queryOne(
+      `INSERT INTO automation_execution_batches (id,project_id,app_id,owner_id,recording_id,dataset_id,agent_id,status,selection,summary)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10::jsonb)
+       ON CONFLICT (id) DO UPDATE SET status=EXCLUDED.status,selection=EXCLUDED.selection,summary=EXCLUDED.summary,updated_at=now()
+       RETURNING *`,
+      [batch.id, batch.projectId || null, batch.appId || null, batch.ownerId || null, batch.recordingId, batch.datasetId, batch.agentId,
+       batch.status || 'queued', JSON.stringify(batch.selection || []), JSON.stringify(batch.summary || {})],
+    ));
+  },
+};
+
 function mapJob(r: any) {
   if (!r) return null;
   return {
@@ -2199,6 +2434,10 @@ function mapJob(r: any) {
     exitCode: r.exit_code,
     summary: r.summary,
     error: r.error,
+    script: r.materialized_script || '',
+    batchId: r.batch_id || '',
+    datasetRowId: r.dataset_row_id || '',
+    rowNumber: r.row_number,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
     projectId: r.project_id || '',
@@ -2235,17 +2474,19 @@ export const AutomationJobs = {
     }
     const id = j.id || uid('JOB');
     const row = await queryOne(
-      `INSERT INTO automation_jobs (id, project_id, app_id, owner_id, recording_id, agent_id, schedule_id, trigger, status, queued_at, started_at, finished_at, exit_code, summary, error, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9, COALESCE($10::timestamptz, now()),$11::timestamptz,$12::timestamptz,$13,$14::jsonb,$15, now(), now())
+      `INSERT INTO automation_jobs (id, project_id, app_id, owner_id, recording_id, agent_id, schedule_id, trigger, status, queued_at, started_at, finished_at, exit_code, summary, error, materialized_script, batch_id, dataset_row_id, row_number, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9, COALESCE($10::timestamptz, now()),$11::timestamptz,$12::timestamptz,$13,$14::jsonb,$15,$16,$17,$18,$19, now(), now())
        ON CONFLICT (id) DO UPDATE SET
          recording_id=EXCLUDED.recording_id, agent_id=EXCLUDED.agent_id, schedule_id=EXCLUDED.schedule_id,
          trigger=EXCLUDED.trigger, status=EXCLUDED.status, started_at=EXCLUDED.started_at,
          finished_at=EXCLUDED.finished_at, exit_code=EXCLUDED.exit_code, summary=EXCLUDED.summary,
-         error=EXCLUDED.error, updated_at=now()
+         error=EXCLUDED.error, materialized_script=EXCLUDED.materialized_script, batch_id=EXCLUDED.batch_id,
+         dataset_row_id=EXCLUDED.dataset_row_id, row_number=EXCLUDED.row_number, updated_at=now()
        RETURNING *`,
       [id, j.projectId || null, j.appId || null, j.ownerId || null, j.recordingId || null, j.agentId || null,
        j.scheduleId || null, j.trigger || 'manual', j.status || 'queued', j.queuedAt || null, j.startedAt || null,
-       j.finishedAt || null, typeof j.exitCode === 'number' ? j.exitCode : null, JSON.stringify(j.summary || {}), j.error || ''],
+       j.finishedAt || null, typeof j.exitCode === 'number' ? j.exitCode : null, JSON.stringify(j.summary || {}), j.error || '',
+       j.script || '', j.batchId || null, j.datasetRowId || null, typeof j.rowNumber === 'number' ? j.rowNumber : null],
     );
     return mapJob(row);
   },

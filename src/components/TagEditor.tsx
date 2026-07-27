@@ -8,11 +8,11 @@ export function TagEditor({ options, value, onChange }: { options: string[]; val
 
   useEffect(() => {
     if (!open) return;
-    const onClickAway = (event: PointerEvent) => {
+    const onClickAway = (event: MouseEvent) => {
       if (!boxRef.current?.contains(event.target as Node)) setOpen(false);
     };
-    document.addEventListener('pointerdown', onClickAway);
-    return () => document.removeEventListener('pointerdown', onClickAway);
+    document.addEventListener('click', onClickAway, true);
+    return () => document.removeEventListener('click', onClickAway, true);
   }, [open]);
 
   const add = (tag: string) => {

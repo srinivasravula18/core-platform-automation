@@ -27,6 +27,7 @@ import { analyzeApiAndMetadataFromSource, type ApiAnalysis } from './apiAnalystS
 import { fetchCorePlatformObjectCatalog } from '../../ai/tools/corePlatformData';
 import { getApp } from '../projects/projectService';
 import { resolveCredentials } from '../credentials/credentialsService';
+import { isUnderScope, type ResolvedSurfaceScope } from './surfaceScope';
 import { extractSelectorMap, type SelectorMap } from '../agent/selectorMap';
 import { nextArtifactId } from '../../shared/artifactIds';
 
@@ -438,13 +439,17 @@ function structuralGroupKey(pathValue: string): string {
   return parts.slice(0, Math.min(parts.length, 2)).join('/') || pathValue;
 }
 
-function discoverStructuralSourceFiles(query: string, keywords: string[], repoPath?: string, limit = 180): SourceFileMeta[] {
+function discoverStructuralSourceFiles(query: string, keywords: string[], repoPath?: string, limit = 180, scopePaths: string[] = []): SourceFileMeta[] {
   let all: SourceFileMeta[] = [];
   try {
     all = listRepoSourceFiles(repoPath, 10000);
   } catch {
     return [];
   }
+  // Bias seed/structural files to the selected surface's sub-root(s). BFS import-following below
+  // still reaches shared packages the surface actually imports — we only constrain the ENTRY points,
+  // so the other surface's code never seeds the analysis.
+  if (scopePaths.length) all = all.filter((f) => isUnderScope(f.path, scopePaths));
   const broad = isBroadDiscoveryQuery(query);
   const terms = Array.from(new Set([...keywords, ...sourcePathTokens(query), ...FULL_APP_DISCOVERY_TERMS]));
   const scored = all
@@ -542,10 +547,12 @@ function harvestReferenceTerms(content: string): string[] {
 async function dynamicBfsDiscovery(
   keywords: string[],
   repoPath?: string,
-  opts: { structuralSeeds?: SourceFileMeta[] } = {},
+  opts: { structuralSeeds?: SourceFileMeta[]; scopePaths?: string[] } = {},
 ): Promise<{ files: Array<{ path: string; area: string; surface: string }>; excerpts: string }> {
-  // Step 1: grep → relevance-ranked seed paths.
-  const grepHits = gitGrep(keywords, undefined, 80, repoPath);
+  const scopePaths = opts.scopePaths || [];
+  // Step 1: grep → relevance-ranked seed paths. Seeds are constrained to the surface's sub-root(s);
+  // BFS below then follows real imports out of those seeds (into shared packages) without restriction.
+  const grepHits = gitGrep(keywords, undefined, 80, repoPath).filter((h) => isUnderScope(h.path, scopePaths));
   const hitMeta = new Map(grepHits.map((h) => [h.path, h]));
   for (const s of opts.structuralSeeds || []) {
     if (s?.path && !hitMeta.has(s.path)) hitMeta.set(s.path, s);
@@ -628,14 +635,18 @@ function summarizeFeatureInventoryForPrompt(inventory: FeatureInventory): string
  */
 export async function analyzeFeatureFromSource(
   query: string,
-  opts: { workspaceId?: string; userId?: string; repoPath?: string; projectId?: string; appId?: string; applicationContextPrompt?: string; conversationContextPrompt?: string; onProgress?: (label: string) => void } = {},
+  opts: { workspaceId?: string; userId?: string; repoPath?: string; projectId?: string; appId?: string; surface?: ResolvedSurfaceScope; applicationContextPrompt?: string; conversationContextPrompt?: string; onProgress?: (label: string) => void } = {},
 ): Promise<{ understanding: FeatureUnderstanding; files: Array<{ path: string; area: string; surface: string }>; keywords: string[] }> {
   const cleanQuery = String(query || '').trim();
   const keywords = deriveKeywords(cleanQuery);
   const inventoryKeywords = deriveInventoryKeywords(cleanQuery);
-  const repoPath = opts.repoPath;
+  // The resolved surface decides WHICH repo and WHICH sub-root(s) to ground in. When absent
+  // (older callers), fall back to the raw repoPath and whole-repo scope — fully back-compatible.
+  const repoPath = opts.surface?.repoPath || opts.repoPath;
+  const scopePaths = opts.surface?.scopePaths || [];
+  if (scopePaths.length) opts.onProgress?.(`Scoping to surface code root(s): ${scopePaths.join(', ')}...`);
   opts.onProgress?.('Scanning route, feature, service, metadata, and UI structure...');
-  const structuralFiles = discoverStructuralSourceFiles(cleanQuery, inventoryKeywords, repoPath, 120);
+  const structuralFiles = discoverStructuralSourceFiles(cleanQuery, inventoryKeywords, repoPath, 120, scopePaths);
   const structuralMap = buildStructuralMapForPrompt(structuralFiles, repoPath, 80, 12000);
 
   // BFS import-graph discovery: keyword → grep seeds → follow actual TS/JS imports
@@ -644,7 +655,7 @@ export async function analyzeFeatureFromSource(
   const { files, excerpts } = await dynamicBfsDiscovery(
     Array.from(new Set([...keywords, ...inventoryKeywords])),
     repoPath,
-    { structuralSeeds: structuralFiles },
+    { structuralSeeds: structuralFiles, scopePaths },
   );
 
   // Deep parallel research: decompose the feature into investigation angles and research
@@ -657,7 +668,8 @@ export async function analyzeFeatureFromSource(
       question: cleanQuery,
       io: {
         search: async (terms) => {
-          const hits = relevantSourcePaths(gitGrep(terms, undefined, 80, repoPath).map((h) => h.path), terms);
+          const scopedHits = gitGrep(terms, undefined, 80, repoPath).filter((h) => isUnderScope(h.path, scopePaths));
+          const hits = relevantSourcePaths(scopedHits.map((h) => h.path), terms);
           const graph = await expandByReferences(
             hits.slice(0, 14),
             { read: async (p, b) => readRepoFile(p, b, repoPath) },
@@ -691,18 +703,26 @@ export async function analyzeFeatureFromSource(
     // Falls back to the global config when no app is selected or it has no base URL.
     let appConn: { baseUrl?: string; specPath?: string; catalogStrategy?: string; username?: string; password?: string } | undefined;
     try {
-      const activeApp = opts.appId ? getApp(opts.appId) : undefined;
-      if (activeApp?.baseUrl) {
+      // Prefer the resolved surface connection — it unifies App AND Website selections (a bare
+      // URL selection is a Website, which getApp() alone would miss, leaving the catalog unfetched).
+      const surfaceBaseUrl = opts.surface?.baseUrl || '';
+      const activeApp = !surfaceBaseUrl && opts.appId ? getApp(opts.appId) : undefined;
+      const conn = surfaceBaseUrl
+        ? { baseUrl: surfaceBaseUrl, specPath: opts.surface?.specPath, catalogStrategy: opts.surface?.catalogStrategy }
+        : activeApp?.baseUrl
+          ? { baseUrl: activeApp.baseUrl, specPath: activeApp.specPath, catalogStrategy: activeApp.catalogStrategy }
+          : undefined;
+      if (conn?.baseUrl) {
         appConn = {
-          baseUrl: activeApp.baseUrl,
-          specPath: activeApp.specPath,
-          catalogStrategy: activeApp.catalogStrategy,
+          baseUrl: conn.baseUrl,
+          specPath: conn.specPath,
+          catalogStrategy: conn.catalogStrategy,
         };
         // Per-app credentials: resolve THIS app's stored login, scoped to the owner, so the
         // business-objects half authenticates as the tenant's own read-only user — never a
         // shared/global credential, and never another tenant's.
         try {
-          const cred = resolveCredentials({ baseUrl: activeApp.baseUrl, ownerId: opts.userId });
+          const cred = resolveCredentials({ baseUrl: conn.baseUrl, ownerId: opts.userId });
           if (cred?.username && cred?.password) {
             appConn.username = cred.username;
             appConn.password = cred.password;
@@ -755,14 +775,21 @@ export async function analyzeFeatureFromSource(
   const conversationContextBlock = opts.conversationContextPrompt
     ? `\n\nCONVERSATION CONTEXT - the chat that led to this request. Use it ONLY to resolve references (pronouns, "the same page/module", earlier decisions and constraints) and to carry forward scope already agreed in the conversation. Do not let it override the user query or the source evidence:\n${opts.conversationContextPrompt}`
     : '';
+  // Resolved surface identity — tells the analyst WHICH surface the chosen URL/app maps to and
+  // which code root the evidence above was drawn from, so it doesn't conflate sibling surfaces
+  // (e.g. an admin/config surface vs an end-user surface) that share components. Derived from the
+  // chosen URL/app, never hardcoded. Low/none confidence is stated plainly so the model stays cautious.
+  const surfaceScopeBlock = opts.surface && (opts.surface.scopePaths.length || opts.surface.confidence !== 'none')
+    ? `\n\nRESOLVED SURFACE (which app the chosen URL/selection maps to) - the source evidence above was drawn from this surface's code${opts.surface.scopePaths.length ? ` (repo root(s): ${opts.surface.scopePaths.join(', ')})` : ''}. Confidence: ${opts.surface.confidence} (via ${opts.surface.source}). ${opts.surface.evidence}\nScope the requirement to THIS surface. Name it as the code names it. Do NOT describe a sibling surface's behavior. ${opts.surface.confidence === 'low' || opts.surface.confidence === 'none' ? 'Because surface identity is UNVERIFIED here, avoid surface-specific claims unless the source evidence proves them, and say so.' : ''}`
+    : '';
   const analystRes = await analyst.generateObject<FeatureUnderstanding>({
     prompt: `Feature/section to analyze (user query): "${cleanQuery}"
 
 Search keywords used: ${keywords.join(', ')}
 
-${groundingBlock}${metaCatalogBlock}${selectorCatalogBlock}${applicationContextBlock}${conversationContextBlock}
+${groundingBlock}${metaCatalogBlock}${selectorCatalogBlock}${applicationContextBlock}${surfaceScopeBlock}${conversationContextBlock}
 
-INFER the application's architecture from the research notes and excerpts above — do NOT assume any specific product, framework, or surface names. Let the code tell you. Use ONLY behaviour the research actually establishes; never invent meta-concepts (CI/seeding/regression scaffolding) that aren't real user features.
+INFER the application's architecture from the research notes and excerpts above — do NOT assume any specific product, framework, or surface names; let the code tell you. When a RESOLVED SURFACE is given above, scope the requirement to THAT surface and name it as the code names it (still infer its architecture from the evidence — do not invent). Use ONLY behaviour the research actually establishes; never invent meta-concepts (CI/seeding/regression scaffolding) that aren't real user features.
 ${readDraftingSkill() ? `\nLEARNED DRAFTING SKILL (general QA-drafting guidance refined over prior runs — apply it):\n${readDraftingSkill()}\n` : ''}
 SCOPE DISCIPLINE — write the requirement at the altitude the query actually asks for; do not narrow it to a subject the user did not name:
 - If the query NAMES a specific object, section, module, or screen, scope the requirement to THAT subject.
@@ -770,11 +797,13 @@ SCOPE DISCIPLINE — write the requirement at the altitude the query actually as
 - In the generic case, metadataRefs should be the generic config object(s) the capability operates on (e.g. the list-view / view-definition object) if the catalog has them, and you should leave specific business-object refs empty unless the query named one.
 - Before writing scenarios, group the source evidence by reusable UI/component modules that implement the requested capability. Search related imports, child components, hooks, adapters, metadata gates, and permission gates. If a reusable component is used by many apps/objects/views, describe that shared component instead of anchoring coverage to one object. Do not hardcode a universal control list: include only controls and behaviours proven by source evidence or live selector evidence.
 
+WRITING STYLE — the whole team reads these requirements, not only engineers. Write in plain, everyday language and short sentences so a business analyst, product owner, or junior manual tester understands them on first read. Use the common word, not the technical one; spell out anything an abbreviation would hide; and when you must keep a real field/status/term, add a brief "(i.e. …)" plain-English gloss the first time it appears. Keep every exact value and rule — plain wording must not drop precision.
+
 Produce the requirement understanding as strict JSON matching the schema:
-- title: a concise requirement title for this feature.
-- description: 1-3 sentences on what the feature does and why it matters.
-- businessRules: the concrete, testable rules the code enforces.
-- srsModules: organize every business rule into distinct functional modules for the Agent Console's Notion-style Markdown Requirements response. Each module needs a concise title and ordered requirements. Each requirement needs a short title, one complete "The system shall..." statement, and optional detail lines for conditions, defaults, enumerated values, or validation rules. Do not include numbering or Markdown syntax in these fields; the UI deterministically adds the Markdown headings, 1., 1.1, 1.2 numbering, and detail bullets. Do not omit a business rule from this structure.
+- title: a concise, plain-language requirement title a non-technical reader would recognize.
+- description: 1-3 plain sentences on what the feature does and why it matters, written for someone who has not seen the code.
+- businessRules: the concrete, testable rules the code enforces, each stated in simple words a non-programmer can follow (still exact about values and conditions).
+- srsModules: organize every business rule into distinct functional modules for the Agent Console's Notion-style Markdown Requirements response. Each module needs a concise title and ordered requirements. Each requirement needs a short plain-language title, one complete "The system shall..." statement written in simple everyday words (no jargon or unexplained abbreviations; the reader may be a manual tester), and optional detail lines for conditions, defaults, enumerated values, or validation rules. Do not include numbering or Markdown syntax in these fields; the UI deterministically adds the Markdown headings, 1., 1.1, 1.2 numbering, and detail bullets. Do not omit a business rule from this structure.
 - dataPopulationNotes: what the backend populates/seeds/syncs in the background as preconditions for this feature (only if the research shows it).
 - sharedComponents: reusable components/modules discovered by code search. For each one, include its real source files, where it is reused, the controls/behaviors the code proves, metadata/permission gates, and the exact test focus. This is the main way downstream agents avoid searching the whole repo again.
 - metadataRefs: the EXACT metadata object api_names that are the source of truth for this feature. Each entry's "object" MUST be a verbatim api_name taken from the LIVE METADATA OBJECT CATALOG provided above — never a descriptive phrase, label, invented name, or DB-table/column name. List ONLY the 1-5 objects that are the PRIMARY source of truth for THIS specific feature — do NOT list every object that is loosely or indirectly related, and do NOT dump the catalog. Prefer fewer, highly-relevant refs. Put any table/column-level detail in businessRules or dataPopulationNotes instead. If no catalog was provided above, or none of its objects are the source of truth for this feature, leave metadataRefs empty rather than inventing entries.
@@ -1186,7 +1215,7 @@ function mergeInventoryIntoUnderstanding(base: FeatureUnderstanding, inventory: 
 
 export async function draftRequirement(
   query: string,
-  opts: { workspaceId?: string; userId?: string; role?: string; repoPath?: string; projectId?: string; appId?: string; applicationContextPrompt?: string; conversationContextPrompt?: string; requirementsOnly?: boolean; onProgress?: (label: string) => void } = {},
+  opts: { workspaceId?: string; userId?: string; role?: string; repoPath?: string; projectId?: string; appId?: string; surface?: ResolvedSurfaceScope; applicationContextPrompt?: string; conversationContextPrompt?: string; requirementsOnly?: boolean; onProgress?: (label: string) => void } = {},
 ): Promise<RequirementDraftResult> {
   const ownerId = opts.userId || '';
   const cleanQuery = String(query || '').trim();
@@ -1268,7 +1297,7 @@ export async function confirmRequirementDraft(
 
 export async function discoverRequirement(
   query: string,
-  opts: { workspaceId?: string; userId?: string; role?: string; repoPath?: string; projectId?: string; appId?: string; applicationContextPrompt?: string; requirementsOnly?: boolean } = {},
+  opts: { workspaceId?: string; userId?: string; role?: string; repoPath?: string; projectId?: string; appId?: string; surface?: ResolvedSurfaceScope; applicationContextPrompt?: string; requirementsOnly?: boolean } = {},
 ): Promise<DiscoverResult> {
   const workspaceId = opts.workspaceId || 'default';
   const ownerId = opts.userId || '';

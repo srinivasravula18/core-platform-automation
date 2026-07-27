@@ -25,6 +25,7 @@ export function useBulkDelete(entity: string, onChanged: () => void, labelSingul
   const [busy, setBusy] = useState(false);
 
   const clearSelection = useCallback(() => setSelectedIds(new Set()), []);
+  const selectOnly = useCallback((ids: string[]) => setSelectedIds(new Set(ids)), []);
 
   const isSelected = useCallback((id: string) => selectedIds.has(id), [selectedIds]);
 
@@ -112,10 +113,11 @@ export function useBulkDelete(entity: string, onChanged: () => void, labelSingul
       toggleAll,
       allSelected,
       clearSelection,
+      selectOnly,
       deleteOne,
       deleteSelected,
       busy,
     }),
-    [selectedIds, selectedCount, isSelected, toggle, toggleAll, allSelected, clearSelection, deleteOne, deleteSelected, busy],
+    [selectedIds, selectedCount, isSelected, toggle, toggleAll, allSelected, clearSelection, selectOnly, deleteOne, deleteSelected, busy],
   );
 }

@@ -517,20 +517,20 @@ export default function TestSuites() {
         </div>
 
         <div className="flex-1 overflow-auto">
-          <table className="w-full text-left text-sm whitespace-nowrap">
+          <table className="w-full min-w-[1656px] table-fixed text-left text-sm whitespace-nowrap">
             <thead className="sticky top-0 bg-[var(--bg-secondary)] border-b border-[var(--border)] z-10">
               <tr className="text-[var(--text-muted)]">
                 <th className="font-medium py-3 px-4 w-10">
                   <input type="checkbox" checked={bulk.allSelected(filteredSuites.map((s) => s.id))} onChange={() => bulk.toggleAll(filteredSuites.map((s) => s.id))} />
                 </th>
-                <th className="font-medium py-3 px-4 w-24">ID</th>
-                <th className="font-medium py-3 px-4">Name</th>
-                <th className="font-medium py-3 px-4">Folder</th>
-                <th className="font-medium py-3 px-4">Test Plan</th>
-                <th className="font-medium py-3 px-4 w-32">Module</th>
-                <th className="font-medium py-3 px-4 w-28">Tags</th>
-                <th className="font-medium py-3 px-4 w-32">Updated</th>
-                <th className="font-medium py-3 px-4 w-36 text-right">Actions</th>
+                <th className="w-36 px-4 py-3 font-medium">ID</th>
+                <th className="w-72 px-4 py-3 font-medium">Name</th>
+                <th className="w-72 px-4 py-3 font-medium">Folder</th>
+                <th className="w-80 px-4 py-3 font-medium">Test Plan</th>
+                <th className="w-48 px-4 py-3 font-medium">Module</th>
+                <th className="w-36 px-4 py-3 font-medium">Tags</th>
+                <th className="w-32 px-4 py-3 font-medium">Updated</th>
+                <th className="w-28 px-4 py-3 text-right font-medium">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-[var(--border)]">
@@ -697,5 +697,4 @@ export default function TestSuites() {
     </div>
   );
 }
-
 
