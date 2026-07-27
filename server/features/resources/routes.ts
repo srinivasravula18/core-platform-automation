@@ -1081,7 +1081,9 @@ Rules:
       status: 'Not Started',
       progress: 'Not started',
       date: new Date().toISOString().split('T')[0],
-      totalExecutions: steps.length,
+      // Run progress is per selected test case. `steps` is retained for the
+      // checklist/report, but must not inflate the test-case summary count.
+      totalExecutions: selectedCases.length,
       passed,
       failed,
       targetUrl,

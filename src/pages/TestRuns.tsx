@@ -34,14 +34,35 @@ async function downloadFromUrl(url: string, filename: string) {
   setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
 }
 
-function getRunStats(run: any) {
+function getRunStats(run: any, caseCount?: number) {
   const steps = Array.isArray(run?.steps) ? run.steps : [];
-  const total = Number(run?.totalExecutions) || steps.length || 0;
-  const passed = Number(run?.passed) || steps.filter((step: any) => /pass|passed/i.test(step?.outcome || step?.status || '')).length;
-  const failed = Number(run?.failed) || steps.filter((step: any) => /fail|failed/i.test(step?.outcome || step?.status || '')).length;
-  const blocked = steps.filter((step: any) => /block|blocked/i.test(step?.outcome || step?.status || '')).length;
-  const skipped = steps.filter((step: any) => /skip|skipped/i.test(step?.outcome || step?.status || '')).length;
-  const retest = steps.filter((step: any) => /retest/i.test(step?.outcome || step?.status || '')).length;
+  // A run detail displays test cases, not the individual instructions inside each
+  // case. Older runs persisted their instruction count in totalExecutions, which
+  // made "Untested" larger than the cases shown in this table.
+  const storedTotal = Number(run?.totalExecutions) || 0;
+  const total = caseCount || storedTotal || steps.length || 0;
+  const hasLegacyStepTotal = Boolean(caseCount && storedTotal > caseCount);
+  const caseOutcomes = new Map<string, string>();
+  if (hasLegacyStepTotal) {
+    steps.forEach((step: any, index: number) => {
+      const caseKey = String(step?.testCaseId || step?.testCaseTitle || String(step?.step || '').match(/^(\d+)\./)?.[1] || index);
+      const outcome = String(step?.outcome || step?.status || '');
+      const previous = caseOutcomes.get(caseKey) || '';
+      // Retain the most serious result when a legacy checklist contains several
+      // instruction rows for the same case.
+      if (/fail/i.test(outcome) || !previous) caseOutcomes.set(caseKey, outcome);
+    });
+  }
+  const outcomes = hasLegacyStepTotal ? [...caseOutcomes.values()] : steps.map((step: any) => String(step?.outcome || step?.status || ''));
+  const passed = hasLegacyStepTotal
+    ? outcomes.filter((outcome) => /pass|passed/i.test(outcome)).length
+    : Number(run?.passed) || outcomes.filter((outcome) => /pass|passed/i.test(outcome)).length;
+  const failed = hasLegacyStepTotal
+    ? outcomes.filter((outcome) => /fail|failed/i.test(outcome)).length
+    : Number(run?.failed) || outcomes.filter((outcome) => /fail|failed/i.test(outcome)).length;
+  const blocked = outcomes.filter((outcome) => /block|blocked/i.test(outcome)).length;
+  const skipped = outcomes.filter((outcome) => /skip|skipped/i.test(outcome)).length;
+  const retest = outcomes.filter((outcome) => /retest/i.test(outcome)).length;
   const untested = Math.max(0, total - passed - failed - blocked - skipped - retest);
   const completed = total ? Math.round(((passed + failed + blocked + skipped + retest) / total) * 100) : 0;
 
@@ -312,7 +333,7 @@ export default function TestRuns() {
 
 
   if (selectedRun && !isRunModalOpen) {
-    const stats = getRunStats(selectedRun);
+    const stats = getRunStats(selectedRun, selectedRunCases.length);
     const selectedExecution = runExecutionState(selectedRun);
     const selectedProgress = runProgress[selectedRun.id] || selectedExecution.label;
     const selectedIsRunning = selectedExecution.running || Boolean(runProgress[selectedRun.id]);

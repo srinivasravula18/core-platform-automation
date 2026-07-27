@@ -889,6 +889,26 @@ function summarizeAgentRunExecution(run: any) {
   return { executionSteps, failed, passed, notVerified, firstFailure, reportStatus, progressLabel };
 }
 
+/**
+ * Test Run summaries are case-level. Generated-case steps are checklist rows and
+ * must not turn five cases with four steps each into twenty "untested" cases.
+ */
+function summarizeAgentCaseExecution(run: any) {
+  const cases = Array.isArray(run.generated_cases) ? run.generated_cases : [];
+  const evidenceByCaseIndex = new Map<number, any>(
+    (Array.isArray(run.evidence_screenshots) ? run.evidence_screenshots : [])
+      .map((evidence: any) => [evidence.testCaseIndex, evidence]),
+  );
+  let passed = 0;
+  let failed = 0;
+  for (let index = 0; index < cases.length; index++) {
+    const status = String(evidenceByCaseIndex.get(index)?.status || '');
+    if (/pass/i.test(status)) passed += 1;
+    else if (/(fail|timedout|interrupted)/i.test(status)) failed += 1;
+  }
+  return { total: cases.length, passed, failed };
+}
+
 async function persistAgentRequirementArtifacts(run: any) {
   const cases = Array.isArray(run.generated_cases) ? run.generated_cases : [];
   const existingMatches = linkedExistingCases(Array.isArray(run.existing_matches) ? run.existing_matches : [], cases);
@@ -955,6 +975,7 @@ async function persistAgentRunAndReportArtifacts(run: any) {
   const baseName = agentDisplayName(run);
   const date = new Date().toISOString().split('T')[0];
   const { executionSteps, failed, passed, notVerified, firstFailure, reportStatus, progressLabel } = summarizeAgentRunExecution(run);
+  const caseExecution = summarizeAgentCaseExecution(run);
   const runRecordId = agentRunRecordId(run);
   const listStatus = agentRunStatusForList(run.status);
   const caseIds = (Array.isArray(run.generated_cases) ? run.generated_cases : []).map((_: any, index: number) => runCaseId(run, index));
@@ -975,9 +996,9 @@ async function persistAgentRunAndReportArtifacts(run: any) {
     status: listStatus,
     progress: progressLabel,
     date,
-    totalExecutions: executionSteps.length,
-    passed,
-    failed,
+    totalExecutions: caseExecution.total,
+    passed: caseExecution.passed,
+    failed: caseExecution.failed,
     targetUrl: run.app_url || '',
     folderId: run.folderId || null,
     steps: executionSteps,
@@ -2062,6 +2083,7 @@ async function persistAgentRunArtifacts(run: any) {
   await persistAgentScripts(run);
 
   const executionSteps = buildAgentExecutionSteps(run);
+  const caseExecution = summarizeAgentCaseExecution(run);
   // Count only REAL verdicts. "Not Executed"/"Blocked"/"Skipped" are neither a pass
   // nor a fail  -  counting them as passed is the false-green bug we are removing.
   const failed = executionSteps.filter((s: any) => /fail/i.test(String(s.outcome || ''))).length;
@@ -2095,9 +2117,9 @@ async function persistAgentRunArtifacts(run: any) {
     status: 'Completed',
     progress: progressLabel,
     date,
-    totalExecutions: executionSteps.length,
-    passed,
-    failed,
+    totalExecutions: caseExecution.total,
+    passed: caseExecution.passed,
+    failed: caseExecution.failed,
     targetUrl: run.app_url || '',
     folderId: run.folderId || null,
     steps: executionSteps,
