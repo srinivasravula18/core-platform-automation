@@ -18,6 +18,7 @@ import { routeTurn, capabilityToLegacyRouteKind } from '../../services/runtime/s
 import type { ChatTurn, SelectedApp } from '../ai/controller';
 import { buildPlan } from '../ai/controller';
 import { quickWorkspaceAnswer } from '../ai/tools/registry';
+import { agentSetupReadiness } from '../features/agent/setupReadiness';
 import { reqScope } from '../shared/scope';
 import { listApps } from '../features/projects/projectService';
 
@@ -79,6 +80,15 @@ export function registerAgentRuntimeRoutes(app: Express) {
       }
 
       const scope = reqScope(req);
+
+      // Fail fast when the workspace isn't set up (no LLM / no target URL+credentials / no project):
+      // return one friendly answer turn with the exact setup steps instead of starting work that
+      // spins then fails, or silently degrades to a heuristic/canned response. Every Agent Console
+      // action routes through here first, so this single gate covers chat, deep runs, and drafts.
+      const readiness = agentSetupReadiness(scope);
+      if (!readiness.ready) {
+        return res.json({ kind: 'answer', reply: readiness.message, route: { kind: 'answer', reason: `setup incomplete: ${readiness.missing.join(', ')}` }, source: 'setup' });
+      }
       const workspaceId = body.workspaceId || 'default';
       const history = Array.isArray(body.history) ? body.history : undefined;
       const apps = Array.isArray(body.apps) ? body.apps : undefined;

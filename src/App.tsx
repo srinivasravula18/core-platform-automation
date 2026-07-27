@@ -153,12 +153,16 @@ function Topbar({ onMenuClick, onCommandBarOpen }: { onMenuClick: () => void; on
   const username = getUsername();
   const [globalSearch, setGlobalSearch] = useState('');
   const [searchResults, setSearchResults] = useState<{ intents: any[]; summary: string } | null>(null);
+  const [searchAnswer, setSearchAnswer] = useState('');
+  const [searchError, setSearchError] = useState('');
   const [searching, setSearching] = useState(false);
+  const [answering, setAnswering] = useState(false);
   const [showResults, setShowResults] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
   const searchRef = useRef<HTMLDivElement>(null);
   const profileRef = useRef<HTMLDivElement>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const aiSearchRequestRef = useRef(0);
 
   useEffect(() => {
     const onClick = (e: MouseEvent) => {
@@ -174,7 +178,11 @@ function Topbar({ onMenuClick, onCommandBarOpen }: { onMenuClick: () => void; on
   }, []);
 
   const onSearchInput = (value: string) => {
+    aiSearchRequestRef.current += 1;
     setGlobalSearch(value);
+    setSearchAnswer('');
+    setSearchError('');
+    setAnswering(false);
     const q = value.trim();
     if (q.length < 2) {
       setSearchResults(null);
@@ -201,6 +209,30 @@ function Topbar({ onMenuClick, onCommandBarOpen }: { onMenuClick: () => void; on
     }, 300);
   };
 
+  const runAiSearch = (query: string) => {
+    const requestId = ++aiSearchRequestRef.current;
+    setAnswering(true);
+    setSearchAnswer('');
+    setSearchError('');
+    setShowResults(true);
+    fetch('/api/controller/explain', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ topic: query, workspaceId: 'default' }),
+    })
+      .then(async (response) => {
+        const data = await response.json();
+        if (!response.ok) throw new Error(data?.error || `Search failed (${response.status})`);
+        if (aiSearchRequestRef.current === requestId) setSearchAnswer(data?.answer || 'No answer found.');
+      })
+      .catch((error) => {
+        if (aiSearchRequestRef.current === requestId) setSearchError(error?.message || 'Search failed.');
+      })
+      .finally(() => {
+        if (aiSearchRequestRef.current === requestId) setAnswering(false);
+      });
+  };
+
   const submitGlobalSearch = (event: React.FormEvent) => {
     event.preventDefault();
     const query = globalSearch.trim();
@@ -212,8 +244,7 @@ function Topbar({ onMenuClick, onCommandBarOpen }: { onMenuClick: () => void; on
       return;
     }
     if (searchResults?.intents?.length && searchResults.intents.some((i) => i.kind !== 'navigate')) {
-      onCommandBarOpen();
-      setShowResults(false);
+      runAiSearch(query);
       return;
     }
     navigate(`/cases?search=${encodeURIComponent(query)}`);
@@ -241,23 +272,31 @@ function Topbar({ onMenuClick, onCommandBarOpen }: { onMenuClick: () => void; on
               className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md pl-10 pr-4 py-1.5 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)] placeholder-[var(--text-muted)] transition-colors"
             />
           </form>
-          {showResults && searchResults && (
+          {showResults && (searchResults || searchAnswer || searchError || searching || answering) && (
             <div className="absolute top-full left-0 right-0 mt-1 rounded-xl border border-[var(--border)] bg-[var(--bg-card)] shadow-xl overflow-hidden z-50">
               <div className="p-2 space-y-0.5">
                 <div className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
-                  {searching ? 'Searching...' : 'Search result'}
+                  {searching || answering ? 'Searching...' : searchAnswer ? 'AI answer' : 'Search result'}
                 </div>
-                {searchResults.intents.map((intent, i) => (
+                {answering ? (
+                  <div className="px-3 py-3 text-xs text-[var(--text-muted)]">Searching with AI...</div>
+                ) : searchAnswer ? (
+                  <div className="max-h-72 overflow-y-auto whitespace-pre-wrap px-3 py-2 text-xs leading-5 text-[var(--text-primary)]">
+                    {searchAnswer}
+                  </div>
+                ) : searchError ? (
+                  <div className="px-3 py-2 text-xs text-red-400">{searchError}</div>
+                ) : searchResults?.intents.map((intent, i) => (
                   <button
                     key={i}
                     onClick={() => {
                       const href = searchResultHref(intent, globalSearch);
                       if (href) {
                         navigate(href);
+                        setShowResults(false);
                       } else {
-                        onCommandBarOpen();
+                        runAiSearch(globalSearch);
                       }
-                      setShowResults(false);
                     }}
                     className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm text-[var(--text-primary)] hover:bg-[var(--bg-secondary)] transition-colors"
                   >

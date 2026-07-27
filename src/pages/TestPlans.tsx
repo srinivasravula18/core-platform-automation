@@ -20,6 +20,7 @@ import { TagEditor } from '@/src/components/TagEditor';
 import { showAlert, showConfirm } from '@/src/lib/dialog';
 import { caseBelongsToSuite, suitePlanIds } from '@/src/lib/suiteCaseSelection';
 import { emptyTestPlanFilters, linkedRunsForPlan, matchesTestPlanFilters } from '@/src/lib/testPlanFilters';
+import { localDateKey, planStartConflict } from '@/core/shared/testPlanStart';
 
 const PLAN_STATUSES = ['Draft', 'Under Review', 'Approved', 'In Progress', 'Completed', 'Blocked', 'Cancelled', 'Archived'];
 const MANUAL_PLAN_STATUSES = PLAN_STATUSES.filter((status) => status !== 'In Progress');
@@ -94,6 +95,8 @@ export default function TestPlans() {
   const [isAIPlanModalOpen, setIsAIPlanModalOpen] = useState(false);
   const [isStartingRun, setIsStartingRun] = useState(false);
   const [startingPlanId, setStartingPlanId] = useState<string | null>(null);
+  const [startSchedulePlan, setStartSchedulePlan] = useState<any | null>(null);
+  const [startSchedule, setStartSchedule] = useState({ startDate: '', endDate: '' });
   const [formData, setFormData] = useState(emptyPlanForm);
 
   const [selectedPlanId, setSelectedPlanId] = useState<string | null>(null);
@@ -226,20 +229,46 @@ export default function TestPlans() {
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         void showAlert(data.error || 'Failed to update test plan.');
-        return;
+        return false;
       }
       fetchPlans();
       fetchPlanRelations();
+      return true;
     } catch {
       void showAlert('Failed to update test plan.');
+      return false;
     }
   };
 
-  const startPlan = async (plan: any) => {
+  const startPlan = async (plan: any, schedule?: { startDate: string; endDate: string }) => {
     if (!canStartPlan(plan) || startingPlanId) return;
+    const candidate = { ...plan, ...schedule };
+    const conflict = planStartConflict(candidate);
+    if (conflict === 'missing-dates') {
+      setStartSchedulePlan(plan);
+      setStartSchedule({ startDate: plan.startDate || '', endDate: plan.endDate || '' });
+      return;
+    }
+    if (conflict === 'invalid-range') {
+      void showAlert('End date cannot be earlier than start date.');
+      return;
+    }
+    if (conflict === 'future-start') {
+      const date = new Date(`${candidate.startDate}T00:00:00`).toLocaleDateString();
+      if (!await showConfirm(`This plan's scheduled start date is ${date}. Start it now anyway?`, { title: 'Start plan early', confirmText: 'Start now' })) return;
+    }
+    if (conflict === 'past-end') {
+      const date = new Date(`${candidate.endDate}T00:00:00`).toLocaleDateString();
+      if (!await showConfirm(`This plan's end date (${date}) has already passed. Start it anyway? The end date will not be changed.`, { title: 'Plan schedule is overdue', confirmText: 'Start anyway' })) return;
+    }
     setStartingPlanId(plan.id);
     try {
-      await updatePlanInline(plan, { status: 'In Progress' });
+      const started = await updatePlanInline(plan, {
+        ...schedule,
+        status: 'In Progress',
+        scheduleConflictConfirmed: conflict === 'future-start' || conflict === 'past-end',
+      });
+      if (started) setStartSchedulePlan(null);
     } finally {
       setStartingPlanId(null);
     }
@@ -330,6 +359,48 @@ export default function TestPlans() {
           </button>
         </div>
       </div>
+
+      <Modal
+        isOpen={!!startSchedulePlan}
+        onClose={() => setStartSchedulePlan(null)}
+        title="Schedule and Start Plan"
+        size="md"
+        footer={
+          <div className="flex justify-end gap-3">
+            <button onClick={() => setStartSchedulePlan(null)} className="px-4 py-2 text-sm font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]">Cancel</button>
+            <button
+              onClick={() => startSchedulePlan && startPlan(startSchedulePlan, startSchedule)}
+              disabled={!startSchedule.startDate || !startSchedule.endDate || startingPlanId !== null}
+              className="px-4 py-2 bg-[var(--accent)] text-white text-sm font-medium rounded-md hover:bg-[var(--accent-hover)] disabled:opacity-50"
+            >
+              {startingPlanId === startSchedulePlan?.id ? 'Starting…' : 'Start Plan'}
+            </button>
+          </div>
+        }
+      >
+        <p className="mb-4 text-sm text-[var(--text-muted)]">Enter the planned start and end dates before starting this plan.</p>
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <div>
+            <label className="mb-1 block text-sm font-medium text-[var(--text-muted)]">Start Date</label>
+            <input
+              type="date"
+              value={startSchedule.startDate}
+              onChange={(event) => setStartSchedule({ ...startSchedule, startDate: event.target.value })}
+              className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-sm font-medium text-[var(--text-muted)]">End Date</label>
+            <input
+              type="date"
+              min={startSchedule.startDate || localDateKey()}
+              value={startSchedule.endDate}
+              onChange={(event) => setStartSchedule({ ...startSchedule, endDate: event.target.value })}
+              className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
+            />
+          </div>
+        </div>
+      </Modal>
 
       <Modal
         isOpen={isPlanModalOpen}

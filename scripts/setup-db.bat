@@ -44,9 +44,9 @@ if %ERRORLEVEL% neq 0 (
     exit /b 1
 )
 
-:: Create the database if it doesn't exist
+:: Create the database if missing; existing databases are updated in place below.
 echo.
-echo [1/2] Creating database "%DB_NAME%" (if it doesn't already exist)...
+echo [1/2] Checking database "%DB_NAME%"...
 psql -h %DB_HOST% -p %DB_PORT% -U %DB_USER% -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname='%DB_NAME%'" | findstr "1" >nul
 if %ERRORLEVEL% neq 0 (
     psql -h %DB_HOST% -p %DB_PORT% -U %DB_USER% -d postgres -c "CREATE DATABASE \"%DB_NAME%\";"
@@ -57,12 +57,12 @@ if %ERRORLEVEL% neq 0 (
     )
     echo Database created successfully.
 ) else (
-    echo Database already exists. Skipping creation.
+    echo Database already exists. Applying the latest schema changes in place.
 )
 
-:: Apply the schema
+:: The authoritative schema is idempotent, so this handles both new and existing databases.
 echo.
-echo [2/2] Applying latest schema to "%DB_NAME%" from server\db\schema.sql...
+echo [2/2] Creating or updating schema from server\db\schema.sql...
 psql -v ON_ERROR_STOP=1 -h %DB_HOST% -p %DB_PORT% -U %DB_USER% -d %DB_NAME% -f "%SCHEMA_FILE%"
 if %ERRORLEVEL% equ 0 (
     echo.
@@ -72,6 +72,8 @@ if %ERRORLEVEL% equ 0 (
 ) else (
     echo.
     echo ERROR: Failed to apply schema.
+    pause
+    exit /b 1
 )
 
 endlocal

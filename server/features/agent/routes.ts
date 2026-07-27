@@ -50,6 +50,7 @@ import { exploreAndVerifyPage, exploreAppElements, rankVerifiedElements } from '
 import { getFeatureGrounding } from './knowledge';
 import { projectRunLifecycleSafe } from '../../../services/runtime/src/application/sessionProjector';
 import { getOrchestrator, listConfiguredProviders, resolveProviderForAgent, resolveModelForAgent } from '../../ai/orchestrator';
+import { agentSetupReadiness } from './setupReadiness';
 import { assembleConversationContext } from '../../ai/memory/contextAssembler';
 import { answerAppQuestionFromCode, stripCodebaseLocationsForAgentConsole } from '../../ai/supervisor';
 import { buildKnowledgeBlock, recordObservation } from '../knowledge/knowledgeService';
@@ -5165,6 +5166,13 @@ Rules:
 
   app.post('/api/agent/start', async (req, res) => {
     const { app_url, prompt } = req.body;
+    // Fail fast when the workspace isn't set up (no LLM / no target URL+credentials / no project):
+    // refuse before creating a run so the user gets an immediate setup message instead of a run that
+    // starts, spins, then flips to failed. `chat_response` renders as a normal assistant turn.
+    const setup = agentSetupReadiness(reqScope(req));
+    if (!setup.ready) {
+      return res.json({ chat_response: setup.message });
+    }
     const conversationId = String(req.body.conversationId || req.body.agentConsoleId || req.body.sessionId || '').trim();
     let approvedUnderstanding = String(req.body.approvedUnderstanding || '').trim();
     const understandingSource = String(req.body.understandingSource || '').trim();

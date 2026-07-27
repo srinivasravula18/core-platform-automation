@@ -15,6 +15,7 @@ import { reqScope, scopeFilter, scopeStamp } from '../../shared/scope';
 import { runPlaywrightRequest } from '../playwright/routes';
 import { testCaseTypeFields } from '../../../core/shared/testCaseTypes';
 import { collectRunEvidence, evidenceDownloadName } from '../../../core/shared/runEvidence';
+import { planStartConflict } from '../../../core/shared/testPlanStart';
 
 const archiver = ((archiverNs as any).default ?? archiverNs) as (format: string, options?: Record<string, any>) => any;
 
@@ -626,6 +627,16 @@ export function registerResourceRoutes(app: Express) {
     app.put(`/api/${e.name}/:id`, async (req, res) => {
       const existing = await e.repo.get(req.params.id);
       if (!existing) return res.status(404).json({ error: 'Not found' });
+      const scheduleConflictConfirmed = req.body?.scheduleConflictConfirmed === true;
+      delete req.body.scheduleConflictConfirmed;
+      if (e.name === 'plans' && req.body?.status === 'In Progress' && existing.status !== 'In Progress') {
+        const conflict = planStartConflict({ ...existing, ...req.body });
+        if (conflict === 'missing-dates') return res.status(400).json({ error: 'Start and end dates are required before starting the plan.' });
+        if (conflict === 'invalid-range') return res.status(400).json({ error: 'End date cannot be earlier than start date.' });
+        if ((conflict === 'future-start' || conflict === 'past-end') && !scheduleConflictConfirmed) {
+          return res.status(409).json({ error: 'Confirm the schedule conflict before starting the plan.' });
+        }
+      }
       if (['plans', 'suites', 'cases', 'runs'].includes(e.name)) {
         const folderId = String(req.body?.folderId ?? existing.folderId ?? '').trim();
         const folder = folderId ? await Folders.get(folderId) : null;

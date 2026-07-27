@@ -116,6 +116,15 @@ export function listConfiguredProviders(): ProviderName[] {
   return out;
 }
 
+// User-facing message shown when no LLM provider is connected. Kept in one place so every agent
+// entry point fails fast with the SAME actionable text instead of starting work that then errors.
+export const NO_PROVIDER_MESSAGE = 'No AI provider is connected. Add an API key in Settings → AI Providers to run the agent.';
+
+/** True when at least one LLM provider has usable credentials (stored or env). */
+export function isAnyProviderConfigured(): boolean {
+  return listConfiguredProviders().length > 0;
+}
+
 export function resolveProviderForAgent(agent: string): ProviderName {
   const map = db.settings?.agentProviderMap;
   const rawPreferred = map && (map as any)[agent] ? (map as any)[agent] : db.settings?.defaultProvider;
