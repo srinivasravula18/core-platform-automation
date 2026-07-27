@@ -16,6 +16,7 @@ import { runPlaywrightRequest } from '../playwright/routes';
 import { testCaseTypeFields } from '../../../core/shared/testCaseTypes';
 import { collectRunEvidence, evidenceDownloadName } from '../../../core/shared/runEvidence';
 import { planStartConflict } from '../../../core/shared/testPlanStart';
+import { isStaleManualTestRun } from '../../../core/shared/testRunStatus';
 
 const archiver = ((archiverNs as any).default ?? archiverNs) as (format: string, options?: Record<string, any>) => any;
 
@@ -50,7 +51,6 @@ function logActivity(
 const FOLDER_REQUIRED_ERROR = 'Select a folder or create one first.';
 // Process-local execution lock; use a durable worker queue before multi-instance deployment.
 const activeManualRunExecutions = new Map<string, string>();
-const MANUAL_RUN_STALE_MS = 15 * 60 * 1000;
 
 function isRunningRun(run: any): boolean {
   return /^running$/i.test(String(run?.status || ''));
@@ -71,13 +71,7 @@ function withManualExecutionMeta(run: any, patch: any): any {
 }
 
 function isStaleManualRun(run: any, now = Date.now()): boolean {
-  if (!isRunningRun(run) || activeManualRunExecutions.has(String(run.id))) return false;
-  const execution = manualExecutionMeta(run);
-  if (!execution.attemptId && run?.triggerMeta?.automationJobId) return false;
-  const heartbeat = Date.parse(String(
-    execution.heartbeatAt || execution.startedAt || run.updatedAt || run.startedAt || '',
-  ));
-  return Number.isFinite(heartbeat) && now - heartbeat > MANUAL_RUN_STALE_MS;
+  return !activeManualRunExecutions.has(String(run.id)) && isStaleManualTestRun(run, now);
 }
 
 async function requireRepositoryFolder(req: Request, res: Response, next: NextFunction) {

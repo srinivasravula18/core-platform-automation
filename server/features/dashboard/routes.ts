@@ -1,7 +1,7 @@
 import type { Express } from 'express';
 import { Activity, Audit, Cases, Defects, Plans, Reports, Runs, Suites, AutomationSchedules, AutomationJobs, isPgEnabled } from '../../db/repository';
 import { reqScope, scopeFilter } from '../../shared/scope';
-import { isActiveTestRun } from '../../../core/shared/testRunStatus';
+import { isActiveTestRun, isStaleManualTestRun } from '../../../core/shared/testRunStatus';
 
 function toLocalDateKey(date: Date) {
   const year = date.getFullYear();
@@ -101,7 +101,10 @@ export function registerDashboardRoutes(app: Express) {
     if (!scope.userId) recentActivity = activityAll.slice(0, 8);
     else if (scope.role === 'admin') recentActivity = activityAll.filter((a: any) => !a?.ownerId || a.ownerId === scope.userId).slice(0, 8);
     else recentActivity = activityAll.filter((a: any) => a?.ownerId === scope.userId).slice(0, 8);
-    const activeRunsCount = runs.filter(isActiveTestRun).length;
+    // /api/runs heals abandoned manual executions before returning them. Apply
+    // the same classification here because this endpoint reads the repository
+    // directly; otherwise a stale `Running` record inflates this card.
+    const activeRunsCount = runs.filter((run) => isActiveTestRun(run) && !isStaleManualTestRun(run)).length;
 
     // Pass Rate / Case Health: passed vs (passed+failed) aggregated across all runs with outcomes.
     const totalPassed = runs.reduce((sum: number, run: any) => sum + Number(run?.passed || 0), 0);

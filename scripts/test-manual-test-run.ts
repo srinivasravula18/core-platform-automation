@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { casesForPlan, casesForRun, manualRunSelection, runExecutionState, runnableCases, scriptsForCases, scriptsForRun } from '../src/lib/manualTestRun';
-import { isActiveTestRun, isClosedTestRun } from '../core/shared/testRunStatus';
+import { isActiveTestRun, isClosedTestRun, isStaleManualTestRun } from '../core/shared/testRunStatus';
 
 const suites = [
   { id: 'S1', testPlanId: 'P1' },
@@ -42,4 +42,12 @@ assert.equal(isActiveTestRun({ status: 'In Progress' }), true);
 assert.equal(isActiveTestRun({ status: 'Review Required' }), true);
 assert.equal(isClosedTestRun({ status: 'Completed' }), true);
 assert.equal(isClosedTestRun({ status: 'Failed' }), true);
+assert.equal(isStaleManualTestRun({
+  status: 'Running',
+  triggerMeta: { manualExecution: { attemptId: 'attempt-1', heartbeatAt: '2026-01-01T00:00:00.000Z' } },
+}, Date.parse('2026-01-01T00:16:00.000Z')), true);
+assert.equal(isStaleManualTestRun({
+  status: 'Running',
+  triggerMeta: { automationJobId: 'job-1' },
+}, Date.parse('2026-01-01T00:16:00.000Z')), false);
 console.log('PASS: manual runs use current plan cases, linked scripts, and real execution outcomes.');
