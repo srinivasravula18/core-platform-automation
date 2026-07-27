@@ -85,6 +85,28 @@ export function loadAdminNavModules(repoPath: string): AdminNavModule[] {
 }
 
 /**
+ * Auto-resolve ONE admin nav module from a requirement's metadata object api_names (e.g. "app" → the
+ * Apps section). Returns the nav id only when the refs point to exactly one section (singular/plural
+ * tolerant); returns '' when they match zero or several — so a genuinely cross-cutting requirement
+ * (e.g. metadataRefs = list_view) still falls through to the "which navigation?" question. Conservative
+ * by design: it never guesses across multiple or unknown subjects, so it can only REMOVE a redundant
+ * ask, never send the run to the wrong section.
+ */
+export function resolveAdminModuleFromRefs(refs: string[], navModules: AdminNavModule[]): string {
+  if (!Array.isArray(refs) || refs.length === 0 || navModules.length === 0) return '';
+  const eq = (a: string, b: string) => a === b || a === `${b}s` || b === `${a}s` || a === `${b}es` || b === `${a}es`;
+  const matched = new Set<string>();
+  for (const ref of refs) {
+    const r = normalize(ref);
+    if (r.length < 3) continue;
+    for (const m of navModules) {
+      if (eq(r, normalize(m.id)) || eq(r, normalize(m.name))) matched.add(m.id);
+    }
+  }
+  return matched.size === 1 ? Array.from(matched)[0] : '';
+}
+
+/**
  * Detect the surface kind from URL query parameters. Defaults to admin.
  */
 export function detectSurfaceKind(_appName: string, _baseUrl: string): SurfaceKind {

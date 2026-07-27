@@ -361,7 +361,7 @@ type Turn =
   | { id: string; role: 'assistant'; kind: 'reqdraft'; result: any; query: string; revisionCount?: number }
   | { id: string; role: 'assistant'; kind: 'cases'; cases: any[] }
   | { id: string; role: 'assistant'; kind: 'clarify'; plan: any; summary: string; confidence: number }
-  | { id: string; role: 'assistant'; kind: 'folderask'; text: string; understanding?: string; understandingSource?: string; folderName?: string; originalPrompt?: string; contextPrompt?: string; caseCountPrompt?: string; targetUrl?: string; websiteId?: string; websiteName?: string; revisionCount?: number }
+  | { id: string; role: 'assistant'; kind: 'folderask'; text: string; understanding?: string; understandingSource?: string; folderName?: string; originalPrompt?: string; contextPrompt?: string; caseCountPrompt?: string; targetUrl?: string; websiteId?: string; websiteName?: string; revisionCount?: number; metadataRefs?: string[] }
   | { id: string; role: 'assistant'; kind: 'appask'; text: string; surface: string; platform: 'ADMIN' | 'RUNTIME'; allowAllApps: boolean; apps: Array<{ id: string; name: string; tabs: string[]; group?: string }>; runArgs: Record<string, any> }
   | { id: string; role: 'assistant'; kind: 'thinking'; label: string; debug?: string[] };
 
@@ -1486,6 +1486,7 @@ export default function AgentConsole() {
     applicationName?: string;
     moduleId?: string;
     moduleName?: string;
+    metadataRefs?: string[];
   }) => {
     updateThinkingLabel(args.thinkingId, 'Starting agent run...');
     const res = await fetch('/api/agent/start', {
@@ -1514,6 +1515,10 @@ export default function AgentConsole() {
         applicationName: args.applicationName || targetChoiceRef.current?.applicationName || undefined,
         moduleId: args.moduleId || targetChoiceRef.current?.moduleId || undefined,
         moduleName: args.moduleName || targetChoiceRef.current?.moduleName || undefined,
+        // The requirement's metadata objects, so the server can auto-resolve the admin section
+        // (e.g. "app" → Apps) and skip the "which navigation?" question when the requirement
+        // already identifies one concrete section.
+        metadataRefs: args.metadataRefs && args.metadataRefs.length ? args.metadataRefs : undefined,
         // Carry the conversation so case generation is grounded in what was actually
         // discussed — not just the (sometimes generic) prompt.
         history: buildHistory(),
@@ -2631,7 +2636,7 @@ export default function AgentConsole() {
   // the Proceed buttons working even if the user typed other messages after the card
   // appeared (which clears pendingDeep), so they never misfire into the planner.
   const proceedDeepFromTurn = useCallback(
-    async (turn: { id: string; understanding?: string; understandingSource?: string; originalPrompt?: string; contextPrompt?: string; caseCountPrompt?: string; targetUrl?: string; websiteId?: string; websiteName?: string }, folderName?: string) => {
+    async (turn: { id: string; understanding?: string; understandingSource?: string; originalPrompt?: string; contextPrompt?: string; caseCountPrompt?: string; targetUrl?: string; websiteId?: string; websiteName?: string; metadataRefs?: string[] }, folderName?: string) => {
       if (busy) return;
       setBusy(true);
       setPendingDeep(null);
@@ -2667,6 +2672,7 @@ export default function AgentConsole() {
           priorGrounding: turn.understanding || '',
           folderMention: folderName || 'auto',
           caseCountPrompt: turn.caseCountPrompt || turn.originalPrompt || '',
+          metadataRefs: turn.metadataRefs,
         });
       } catch (err: any) {
         replaceTurn(runTurnId, { id: runTurnId, role: 'assistant', kind: 'text', text: `Something went wrong starting the run: ${err?.message || 'unknown error'}.` });
@@ -3212,6 +3218,10 @@ export default function AgentConsole() {
                             const prompt = `Generate test cases for: ${reqTitle}`;
                             const targetUrl = (scopeApp?.baseUrl || '').trim() || getSelectedApps()[0]?.baseUrl || '';
                             const namedSite = websites?.find((w: any) => w.baseUrl === targetUrl);
+                            // The requirement's metadata objects — let the server auto-resolve the admin
+                            // section from these and skip the "which navigation?" ask when they name one.
+                            const metadataRefs: string[] = ((turn.result?.requirement?.metadataRefs || turn.result?.understanding?.metadataRefs || []) as any[])
+                              .map((m) => String(m?.object || '').trim()).filter(Boolean);
                             setTurns((prev) => [
                               ...prev,
                               { id: `user-${Date.now()}`, role: 'user', text: `Generate tests for the "${reqTitle}" requirement` },
@@ -3243,6 +3253,7 @@ export default function AgentConsole() {
                               targetUrl,
                               websiteId: namedSite?.id,
                               websiteName: namedSite?.name,
+                              metadataRefs,
                             });
                             setBusy(false);
                             setTimeout(() => inputRef.current?.focus(), 50);

@@ -11,7 +11,7 @@ import { Command, MemorySaver } from '@langchain/langgraph';
 import {
   buildTestRunGraph,
   routeAfterAuthorCases, routeAfterReviewCases, routeAfterCompile,
-  rediscoveryTargetsFromCompilation, MAX_REDISCOVERY_ATTEMPTS, MAX_REVIEW_REVISE,
+  rediscoveryTargetsFromCompilation, selectReviewedCases, MAX_REDISCOVERY_ATTEMPTS, MAX_REVIEW_REVISE,
 } from '../server/features/agent/workflow/testRunGraph';
 import {
   startGraphRun, resumeGraphRun, cancelGraphRun, getGraphRunState, isGraphRunActive, projectStateToLegacyRun,
@@ -167,6 +167,8 @@ function testRouters() {
   eq(routeAfterReviewCases({ review: resolution('revised'), retryCounters: { review_revise: 1 } }), 'author_cases', `revised within bound (${MAX_REVIEW_REVISE}) → re-author`);
   eq(routeAfterReviewCases({ review: resolution('revised'), retryCounters: { review_revise: 2 } }), 'author_plans', 'revised past bound → proceed to plans');
   eq(routeAfterReviewCases({ review: resolution('approved'), retryCounters: {} }), 'author_plans', 'approved → author_plans');
+
+  eq(selectReviewedCases(['one', 'two', 'three'], [0, 2]), ['one', 'three'], 'case review selection scopes downstream authoring');
 
   const unresolvedCompilation = {
     scripts: [], compilerVersion: 'x@1',

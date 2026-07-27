@@ -57,7 +57,7 @@ import { buildKnowledgeBlock, recordObservation } from '../knowledge/knowledgeSe
 import { resolveCredentials, maskPassword } from '../credentials/credentialsService';
 import {
   detectSurfaceKind, resolveTargetApp, buildAppScopedUrl, connForRun,
-  fetchCorePlatformApps, fetchCorePlatformAppTabs, ALL_APPS_ID, loadAdminNavModules, isMutationIntent,
+  fetchCorePlatformApps, fetchCorePlatformAppTabs, ALL_APPS_ID, loadAdminNavModules, resolveAdminModuleFromRefs, isMutationIntent,
 } from './appTargeting';
 import {
   buildMissionContext, platformTypeFromSurface, runtimeSurfaceFromSurface, moduleFromUrl,
@@ -5226,11 +5226,21 @@ Rules:
     approvedUnderstanding = stripScriptBlocksFromScope(approvedUnderstanding);
     priorGrounding = stripScriptBlocksFromScope(priorGrounding);
     const scopeContextText = [selectedProject?.name, selectedApp?.name].filter(Boolean).join(' ');
-    const explicitModuleId = String(req.body.moduleId || req.body.module || '').trim();
+    const explicitModuleIdRaw = String(req.body.moduleId || req.body.module || '').trim();
     // Admin-only question: its examples (Apps/Objects/Roles/Users) are Admin modules. A RUNTIME surface
     // (keystone/shockwave) falls through to the app-resolution flow below, which asks with the REAL
     // app list + tabs instead of admin module names.
     const provisionalPlatform = platformTypeFromSurface(selectedApp?.name || '', app_url || selectedApp?.baseUrl || '');
+    // Auto-resolve the admin section from the requirement's metadata objects (e.g. "app" → Apps), so a
+    // requirement that already names one concrete section skips the "which navigation?" ask. Fills in
+    // ONLY on an unambiguous single match; a cross-cutting requirement (e.g. list_view) still asks.
+    const metadataRefs: string[] = Array.isArray(req.body.metadataRefs)
+      ? req.body.metadataRefs.map((r: any) => String(r || '').trim()).filter(Boolean)
+      : [];
+    const autoModuleId = (!explicitModuleIdRaw && provisionalPlatform === 'ADMIN')
+      ? resolveAdminModuleFromRefs(metadataRefs, loadAdminNavModules(getProjectRepoPath(scope.projectId || '')))
+      : '';
+    const explicitModuleId = explicitModuleIdRaw || autoModuleId;
     if (provisionalPlatform === 'ADMIN' && needsExplicitListViewModule(prompt || '', explicitModuleId)) {
       // Structured options drive the console's dropdown card (ids = admin URL nav keys);
       // chat_response stays as the plain-text fallback and still accepts a typed module reply.
@@ -6172,7 +6182,7 @@ Rules:
   });
 
   app.post('/api/agent/continue', async (req, res) => {
-    const { taskId, cases, executionCases, scripts } = req.body;
+    const { taskId, cases, executionCases, selectedCaseIndexes, scripts } = req.body;
     const run = db.agentRuns.find((item: any) => item.id === taskId);
 
     if (!run) return res.status(404).json({ error: 'Run not found' });
@@ -6183,10 +6193,27 @@ Rules:
         const pending = await getPendingReview(taskId);
         const correlationId = pending?.correlationId;
         if (!correlationId) return res.status(409).json({ error: 'This run has no pending review to continue.' });
+        if (pending?.kind === 'cases' && (!Array.isArray(cases) || cases.length === 0)) {
+          return res.status(400).json({ error: 'Reviewed cases are required to continue.' });
+        }
+        const reviewedCaseCount = Array.isArray(cases) ? cases.length : 0;
+        const selectedIndexes = Array.isArray(selectedCaseIndexes)
+          ? [...new Set(selectedCaseIndexes.map(Number).filter((index: number) => Number.isInteger(index) && index >= 0 && index < reviewedCaseCount))]
+          : [];
+        if (pending?.kind === 'cases') {
+          (run as any).all_generated_cases = cases;
+          (run as any).execution_case_count = selectedIndexes.length || cases.length;
+        }
         run.status = 'running';
         persistDataInBackground('continued graph run');
         res.json({ success: true });
-        await resumeGraphRun(taskId, { correlationId, decision: 'approved', actor: reqScope(req).userId || 'user' });
+        await resumeGraphRun(taskId, {
+          correlationId,
+          decision: 'approved',
+          actor: reqScope(req).userId || 'user',
+          selectedCaseIndexes: selectedIndexes,
+          reviewedCases: pending?.kind === 'cases' ? cases : undefined,
+        });
       } catch (err: any) {
         console.error('Graph continue error:', err);
         if (!res.headersSent) res.status(500).json({ error: String(err?.message || err) });

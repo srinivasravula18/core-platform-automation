@@ -7,12 +7,17 @@ export function localDateKey(now = new Date()): string {
   return `${year}-${month}-${day}`;
 }
 
+export function normalizeDateKey(value: unknown): string {
+  if (!value) return '';
+  return value instanceof Date ? localDateKey(value) : String(value).slice(0, 10);
+}
+
 export function planStartConflict(
   plan: { startDate?: string | null; endDate?: string | null },
   today = localDateKey(),
 ): PlanStartConflict {
-  const startDate = String(plan.startDate || '').slice(0, 10);
-  const endDate = String(plan.endDate || '').slice(0, 10);
+  const startDate = normalizeDateKey(plan.startDate);
+  const endDate = normalizeDateKey(plan.endDate);
   if (!startDate || !endDate) return 'missing-dates';
   if (endDate < startDate) return 'invalid-range';
   if (startDate > today) return 'future-start';

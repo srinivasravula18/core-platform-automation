@@ -21,7 +21,7 @@ import { buildDefectDrafts, type DefectReport, type PriorRunSummary, type StepLo
 import { buildAnalystReport, isAnalystEnabled, type AnalystReport } from './analyst';
 import { startEvent, terminalEvent, type WorkflowEvent } from './events';
 import { projectRunLifecycleSafe } from '../../../../services/runtime/src/application/sessionProjector';
-import { buildTestRunGraph, getAuthoredCases, type TestRunGraphDeps } from './testRunGraph';
+import { buildTestRunGraph, getAuthoredCases, setAuthoredCases, type TestRunGraphDeps } from './testRunGraph';
 import {
   createInitialWorkflowState,
   type MissionRef,
@@ -63,6 +63,8 @@ export interface ReviewResolutionInput {
   decision: 'approved' | 'rejected' | 'revised';
   actor: string;
   decidedAt?: string;
+  selectedCaseIndexes?: number[];
+  reviewedCases?: any[];
 }
 
 interface RunRegistryEntry {
@@ -267,6 +269,8 @@ export function projectStateToLegacyRun(state: WorkflowState, seed?: any): any {
     })(),
     // Release-intelligence report (AGENT_ANALYST) — set on the seed by the runAnalyst terminal hook.
     analyst_report: seed?.analyst_report ?? null,
+    all_generated_cases: seed?.all_generated_cases,
+    execution_case_count: seed?.execution_case_count,
     engine: 'langgraph',
   };
   for (const key of SEED_FIELDS) {
@@ -745,7 +749,16 @@ export async function resumeGraphRun(runId: string, resolution: ReviewResolution
   if (entry.pumping) throw new Error(`Run ${runId} is still executing — cannot resume until it pauses or finishes.`);
   if (entry.controller.signal.aborted) entry.controller = new AbortController();
   entry.cancelled = false;
-  void pump(runId, entry, new Command({ resume: { ...resolution } })).catch(() => undefined);
+  const { reviewedCases, ...reviewResolution } = resolution;
+  if (Array.isArray(reviewedCases) && reviewedCases.length) {
+    setAuthoredCases(runId, reviewedCases);
+    entry.legacy = {
+      ...entry.legacy,
+      all_generated_cases: reviewedCases,
+      execution_case_count: resolution.selectedCaseIndexes?.length || reviewedCases.length,
+    };
+  }
+  void pump(runId, entry, new Command({ resume: reviewResolution })).catch(() => undefined);
 }
 
 /** Aborts the run's stream (best-effort mid-node) and projects a truthful 'cancelled' record immediately. */

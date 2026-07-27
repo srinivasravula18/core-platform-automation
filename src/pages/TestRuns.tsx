@@ -7,6 +7,7 @@ import { TimeRangeFilter, passesTimeFilter, type TimeFilterValue } from '@/src/c
 import { sortByTime, type TimeSortKey } from '@/src/lib/time';
 import ExportMenu from '../components/ExportMenu';
 import { useAiSearch } from '@/src/lib/useAiSearch';
+import { isActiveTestRun, isClosedTestRun } from '@/core/shared/testRunStatus';
 import { useBulkDelete } from '@/src/lib/useBulkDelete';
 import { cn } from '@/src/lib/utils';
 import { Modal } from '@/src/components/Modal';
@@ -143,8 +144,8 @@ export default function TestRuns() {
     const t = setInterval(() => { void refreshRunsQuiet(); }, 2000);
     return () => clearInterval(t);
   }, [hasRunningRuns, refreshRunsQuiet]);
-  const activeRuns = runs.filter((run) => !/completed|closed|failed|cancelled/i.test(run.status || ''));
-  const closedRuns = runs.filter((run) => /completed|closed|failed|cancelled/i.test(run.status || ''));
+  const activeRuns = runs.filter(isActiveTestRun);
+  const closedRuns = runs.filter(isClosedTestRun);
 
   const filteredRuns = useMemo(() => {
     const base = runView === 'active' ? activeRuns : closedRuns;

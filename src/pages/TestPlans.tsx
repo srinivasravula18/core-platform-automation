@@ -20,11 +20,15 @@ import { TagEditor } from '@/src/components/TagEditor';
 import { showAlert, showConfirm } from '@/src/lib/dialog';
 import { caseBelongsToSuite, suitePlanIds } from '@/src/lib/suiteCaseSelection';
 import { emptyTestPlanFilters, linkedRunsForPlan, matchesTestPlanFilters } from '@/src/lib/testPlanFilters';
-import { localDateKey, planStartConflict } from '@/core/shared/testPlanStart';
+import { localDateKey, normalizeDateKey, planStartConflict } from '@/core/shared/testPlanStart';
 
 const PLAN_STATUSES = ['Draft', 'Under Review', 'Approved', 'In Progress', 'Completed', 'Blocked', 'Cancelled', 'Archived'];
 const MANUAL_PLAN_STATUSES = PLAN_STATUSES.filter((status) => status !== 'In Progress');
 const canStartPlan = (plan: any) => ['Draft', 'Under Review', 'Approved'].includes(plan.status || 'Draft');
+const displayPlanDate = (value: unknown) => {
+  const date = normalizeDateKey(value);
+  return date ? new Date(`${date}T00:00:00`).toLocaleDateString() : '-';
+};
 const emptyPlanForm = () => ({
   name: '',
   folderId: '',
@@ -155,8 +159,8 @@ export default function TestPlans() {
     setFormData({
       name: plan.name || '',
       folderId: plan.folderId || '',
-      startDate: plan.startDate || '',
-      endDate: plan.endDate || '',
+      startDate: normalizeDateKey(plan.startDate),
+      endDate: normalizeDateKey(plan.endDate),
       owner: plan.owner || '',
       tags: Array.isArray(plan.tags) ? plan.tags : [],
       status: plan.status || 'Draft',
@@ -246,7 +250,7 @@ export default function TestPlans() {
     const conflict = planStartConflict(candidate);
     if (conflict === 'missing-dates') {
       setStartSchedulePlan(plan);
-      setStartSchedule({ startDate: plan.startDate || '', endDate: plan.endDate || '' });
+      setStartSchedule({ startDate: normalizeDateKey(plan.startDate), endDate: normalizeDateKey(plan.endDate) });
       return;
     }
     if (conflict === 'invalid-range') {
@@ -819,7 +823,7 @@ export default function TestPlans() {
                         {plan.riskLevel || 'Medium'}
                       </span>
                     </td>
-                    <td className="py-3 px-4 text-[var(--text-muted)]">{plan.startDate || '-'} / {plan.endDate || '-'}</td>
+                    <td className="py-3 px-4 text-[var(--text-muted)]">{displayPlanDate(plan.startDate)} / {displayPlanDate(plan.endDate)}</td>
                     <td className="py-3 px-4 text-center">
                       <span className="inline-flex min-w-7 justify-center rounded-full bg-[var(--accent)]/10 px-2 py-0.5 text-xs font-semibold text-[var(--accent)]" title={`${linkedRunCount} linked test run${linkedRunCount === 1 ? '' : 's'}`}>
                         {linkedRunCount}

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { casesForPlan, casesForRun, manualRunSelection, runExecutionState, runnableCases, scriptsForCases, scriptsForRun } from '../src/lib/manualTestRun';
+import { isActiveTestRun, isClosedTestRun } from '../core/shared/testRunStatus';
 
 const suites = [
   { id: 'S1', testPlanId: 'P1' },
@@ -37,4 +38,8 @@ assert.deepEqual(runExecutionState({
   label: 'Completed 2/4 scripts',
 });
 assert.equal(runExecutionState({ status: 'In Progress' }).running, true);
+assert.equal(isActiveTestRun({ status: 'In Progress' }), true);
+assert.equal(isActiveTestRun({ status: 'Review Required' }), true);
+assert.equal(isClosedTestRun({ status: 'Completed' }), true);
+assert.equal(isClosedTestRun({ status: 'Failed' }), true);
 console.log('PASS: manual runs use current plan cases, linked scripts, and real execution outcomes.');

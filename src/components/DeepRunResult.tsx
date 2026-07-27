@@ -769,6 +769,7 @@ export function DeepRunResult({
           taskId: activeTaskId,
           cases: list,
           executionCases: reviewedCases,
+          selectedCaseIndexes: [...selectedCases],
           scripts: scriptReviewing ? scripts : undefined,
         }),
       });

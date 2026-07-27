@@ -20,6 +20,7 @@ import { normalizeTestCaseTypes } from '../../core/shared/testCaseTypes';
 import { nextArtifactId } from '../shared/artifactIds';
 import { currentActor } from '../shared/requestContext';
 import { composeMetadata } from '../shared/metadata';
+import { normalizeDateKey } from '../../core/shared/testPlanStart';
 
 export function isPgEnabled(): boolean {
   return isPostgresEnabled();
@@ -144,8 +145,8 @@ function mapPlan(r: any) {
     risks: r.risks,
     deliverables: r.deliverables,
     description: r.description,
-    startDate: r.start_date,
-    endDate: r.end_date,
+    startDate: normalizeDateKey(r.start_date),
+    endDate: normalizeDateKey(r.end_date),
     owner: r.owner,
     tags: r.tags || [],
     runIds: r.run_ids || [],

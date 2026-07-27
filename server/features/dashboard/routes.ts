@@ -1,6 +1,7 @@
 import type { Express } from 'express';
-import { Activity, Audit, Cases, Defects, Plans, Reports, Runs, Suites, AgentRuns, AutomationSchedules, AutomationJobs, isPgEnabled } from '../../db/repository';
+import { Activity, Audit, Cases, Defects, Plans, Reports, Runs, Suites, AutomationSchedules, AutomationJobs, isPgEnabled } from '../../db/repository';
 import { reqScope, scopeFilter } from '../../shared/scope';
+import { isActiveTestRun } from '../../../core/shared/testRunStatus';
 
 function toLocalDateKey(date: Date) {
   const year = date.getFullYear();
@@ -71,7 +72,7 @@ export function registerDashboardRoutes(app: Express) {
     // computed globally while the lists filtered by owner — non-zero cards, empty pages.
     const scope = reqScope(req);
     const scoped = <T extends { projectId?: string; appId?: string; ownerId?: string }>(items: T[]) => scopeFilter(items, scope);
-    const [plansAll, suitesAll, casesAll, runsAll, defectsAll, reportsAll, activityAll, agentRunsAll, schedules, jobs] = await Promise.all([
+    const [plansAll, suitesAll, casesAll, runsAll, defectsAll, reportsAll, activityAll, schedules, jobs] = await Promise.all([
       Plans.list(),
       Suites.list(),
       Cases.list(),
@@ -80,7 +81,6 @@ export function registerDashboardRoutes(app: Express) {
       Reports.list(),
       // Pull a wider window so the per-user history filter below still has ~8 to show.
       Activity.list('default', 100),
-      AgentRuns.list(),
       AutomationSchedules.list().catch(() => []),
       AutomationJobs.list().catch(() => []),
     ]);
@@ -90,7 +90,6 @@ export function registerDashboardRoutes(app: Express) {
     const runs = scoped(runsAll);
     const defects = scoped(defectsAll);
     const reports = scoped(reportsAll);
-    const agentRuns = scoped(agentRunsAll as any[]);
     // History feed under strict per-user isolation:
     //  - a TESTER sees ONLY their own activity — never another user's, and not unowned
     //    system/legacy lines (those belong to the admin/system domain).
@@ -102,9 +101,7 @@ export function registerDashboardRoutes(app: Express) {
     if (!scope.userId) recentActivity = activityAll.slice(0, 8);
     else if (scope.role === 'admin') recentActivity = activityAll.filter((a: any) => !a?.ownerId || a.ownerId === scope.userId).slice(0, 8);
     else recentActivity = activityAll.filter((a: any) => a?.ownerId === scope.userId).slice(0, 8);
-    const activeRunsCount = agentRuns.filter((run: any) =>
-      ['running', 'review_required'].includes(String(run?.status || ''))
-    ).length;
+    const activeRunsCount = runs.filter(isActiveTestRun).length;
 
     // Pass Rate / Case Health: passed vs (passed+failed) aggregated across all runs with outcomes.
     const totalPassed = runs.reduce((sum: number, run: any) => sum + Number(run?.passed || 0), 0);

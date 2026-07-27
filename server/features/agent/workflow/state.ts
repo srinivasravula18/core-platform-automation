@@ -176,6 +176,7 @@ export interface ReviewResolution {
   decision: 'approved' | 'rejected' | 'revised';
   actor: string;
   decidedAt: string;
+  selectedCaseIndexes?: number[];
 }
 export interface WorkflowReview {
   pending: PendingReview | null;

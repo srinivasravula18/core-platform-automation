@@ -70,6 +70,9 @@ function validateResolution(pending: PendingReview, resumed: unknown): ReviewRes
     actor: typeof r.actor === 'string' && r.actor ? r.actor : 'unknown',
     // decidedAt is filled here when the resume layer omitted it.
     decidedAt: typeof r.decidedAt === 'string' && r.decidedAt ? r.decidedAt : new Date().toISOString(),
+    selectedCaseIndexes: Array.isArray(r.selectedCaseIndexes)
+      ? [...new Set(r.selectedCaseIndexes.filter((index) => Number.isInteger(index) && index >= 0))]
+      : undefined,
   };
 }
 

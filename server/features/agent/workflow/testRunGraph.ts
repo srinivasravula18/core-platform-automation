@@ -90,6 +90,15 @@ export function getAuthoredCases(runId: string): AuthoredTestCase[] {
   return authoredCasesByRun.get(runId) ?? [];
 }
 
+export function setAuthoredCases(runId: string, cases: AuthoredTestCase[]): void {
+  authoredCasesByRun.set(runId, cases);
+}
+
+export function selectReviewedCases<T>(cases: T[], selectedIndexes?: number[]): T[] {
+  const valid = [...new Set(selectedIndexes ?? [])].filter((index) => Number.isInteger(index) && index >= 0 && index < cases.length);
+  return valid.length ? valid.map((index) => cases[index]) : cases;
+}
+
 function sha1(value: unknown): string {
   return createHash('sha1').update(typeof value === 'string' ? value : JSON.stringify(value)).digest('hex');
 }
@@ -396,6 +405,19 @@ export function buildTestRunGraph(deps: TestRunGraphDeps = {}, opts: BuildTestRu
     const pending = buildPendingReview('cases', digest);
     // interrupt() throws GraphInterrupt on the first pass — everything above this line must stay pure.
     const resolution = requestReviewInterrupt('cases', digest);
+    const reviewedFullCases = authoredCasesByRun.get(state.runId) ?? [];
+    const reviewedCases = reviewedFullCases.length === state.cases.length
+      ? reviewedFullCases.map((testCase, index) => ({
+          id: state.cases[index].id,
+          title: testCase.title,
+          description: testCase.description || undefined,
+          tags: testCase.tags?.length ? testCase.tags : undefined,
+        }))
+      : state.cases;
+    const selectedCases = selectReviewedCases(reviewedCases, resolution.selectedCaseIndexes);
+    if (reviewedFullCases.length) {
+      authoredCasesByRun.set(state.runId, selectReviewedCases(reviewedFullCases, resolution.selectedCaseIndexes));
+    }
     const retryCounters = { ...(state.retryCounters ?? {}) };
     const errors: WorkflowError[] = [];
     if (resolution.decision === 'revised') {
@@ -405,7 +427,7 @@ export function buildTestRunGraph(deps: TestRunGraphDeps = {}, opts: BuildTestRu
         errors.push(nodeError('review_cases', `Review revise limit (${MAX_REVIEW_REVISE}) reached — proceeding with the current cases despite the 'revised' decision.`));
       }
     }
-    return { review: { pending, resolution }, retryCounters, stage: 'review_cases', updatedAt: nowIso(), errors };
+    return { cases: selectedCases, review: { pending, resolution }, retryCounters, stage: 'review_cases', updatedAt: nowIso(), errors };
   };
 
   const authorPlansNode = async (state: WorkflowState): Promise<WorkflowStateUpdate> => {
