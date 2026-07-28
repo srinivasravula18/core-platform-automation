@@ -53,6 +53,7 @@
     "test:agent-request-graph": "tsx scripts/test-agent-request-graph.ts",
     "test:agent-script-batches": "tsx scripts/test-agent-script-batches.ts",
     "test:agent-setup-readiness": "tsx scripts/test-agent-setup-readiness.ts",
+    "test:agent-requirement-persistence": "tsx scripts/test-agent-requirement-persistence.ts",
     "test:case-reuse": "tsx scripts/test-case-reuse.ts",
     "test:testdata-engine": "tsx scripts/test-testdata-engine.ts",
     "test:execution-evidence": "tsx scripts/test-playwright-execution-evidence.ts",

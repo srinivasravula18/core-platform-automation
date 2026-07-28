@@ -630,14 +630,14 @@ async function executeStep(step: PlanStep, plan: Plan): Promise<any> {
         captureEvidenceOnManualRun: rec.captureEvidenceOnManualRun !== false,
       });
 
-      // PRIMARY PATH: run requirement discovery so the prompt is stored as a
-      // first-class Requirement + Traceability links instantly (identical to the
-      // Requirements / Traceability screens), with source-grounded generated cases.
+      // PRIMARY PATH: reuse requirement discovery as the source-grounded case generator, but
+      // without saving a Requirement — requirements are created only via the explicit Requirements flow.
       let created: any[] = [];
       let requirementId = '';
       let requirementTitle = '';
       try {
-        const disc = await discoverRequirement(scope, { workspaceId, userId });
+        // Generating cases must NOT auto-create a requirement — only the explicit Requirements flow does.
+        const disc = await discoverRequirement(scope, { workspaceId, userId, persistRequirement: false });
         requirementId = disc.requirement?.id || '';
         requirementTitle = disc.requirement?.title || '';
         for (const gc of disc.generatedCases || []) {

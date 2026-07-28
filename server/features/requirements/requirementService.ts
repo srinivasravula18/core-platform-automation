@@ -1380,11 +1380,14 @@ export async function confirmRequirementDraft(
 
 export async function discoverRequirement(
   query: string,
-  opts: { workspaceId?: string; userId?: string; role?: string; repoPath?: string; projectId?: string; appId?: string; surface?: ResolvedSurfaceScope; applicationContextPrompt?: string; requirementsOnly?: boolean } = {},
+  opts: { workspaceId?: string; userId?: string; role?: string; repoPath?: string; projectId?: string; appId?: string; surface?: ResolvedSurfaceScope; applicationContextPrompt?: string; requirementsOnly?: boolean; persistRequirement?: boolean } = {},
 ): Promise<DiscoverResult> {
   const workspaceId = opts.workspaceId || 'default';
   const ownerId = opts.userId || '';
   const requirementsOnly = opts.requirementsOnly === true;
+  // Save the Requirement + Traceability links ONLY for the explicit Requirements flow. Test-case
+  // creation passes false so generating cases never auto-creates a requirement (default: true).
+  const persistRequirement = opts.persistRequirement !== false;
   const cleanQuery = String(query || '').trim();
   if (!cleanQuery) throw new Error('A feature or section to test is required.');
 
@@ -1425,7 +1428,7 @@ export async function discoverRequirement(
       tags,
       type: pc.type || 'Manual',
       priority: pc.priority || 'Medium',
-      sources: [requirementId],
+      sources: persistRequirement ? [requirementId] : [],
       createdBy: 'Feature Analyst',
       proposedBy: 'Feature Analyst',
       approvalState: 'pending_review',
@@ -1442,16 +1445,21 @@ export async function discoverRequirement(
     generatedCases.length,
   );
 
-  const requirement = await Requirements.upsert(buildRequirementRecord(requirementId, cleanQuery, understanding, files, coverageStatus, ownerId, { projectId: opts.projectId, appId: opts.appId }));
+  const requirementRecord = buildRequirementRecord(requirementId, cleanQuery, understanding, files, coverageStatus, ownerId, { projectId: opts.projectId, appId: opts.appId });
+  // Persist the requirement only for the explicit Requirements flow; case generation keeps the
+  // record in memory (for the response) but never writes it to the Requirements store.
+  const requirement = persistRequirement ? await Requirements.upsert(requirementRecord) : requirementRecord;
 
-  // 4) Link existing covering cases and the generated gap cases.
+  // 4) Link existing covering cases and the generated gap cases — only when the requirement is saved.
   const existingLinks: Array<{ caseId: string; title: string; reason: string }> = [];
-  for (const cb of validCovered) {
-    await RequirementLinks.upsert({ requirementId, caseId: cb.id, linkType: 'existing', note: cb.reason || '' });
-    existingLinks.push({ caseId: cb.id, title: cb.title, reason: cb.reason });
-  }
-  for (const gc of generatedCases) {
-    await RequirementLinks.upsert({ requirementId, caseId: gc.id, linkType: 'generated', note: 'Generated to close a coverage gap.' });
+  if (persistRequirement) {
+    for (const cb of validCovered) {
+      await RequirementLinks.upsert({ requirementId, caseId: cb.id, linkType: 'existing', note: cb.reason || '' });
+      existingLinks.push({ caseId: cb.id, title: cb.title, reason: cb.reason });
+    }
+    for (const gc of generatedCases) {
+      await RequirementLinks.upsert({ requirementId, caseId: gc.id, linkType: 'generated', note: 'Generated to close a coverage gap.' });
+    }
   }
 
   // 5) Queue the generated cases for human approval in the AI Inbox.
@@ -1461,21 +1469,29 @@ export async function discoverRequirement(
       workspaceId,
       source: 'case',
       sourceId: generatedCases[0].id,
-      title: `Approve ${generatedCases.length} case(s) for requirement: ${requirement.title}`,
-      summary: `Generated from requirement-based analysis of "${cleanQuery}" to cover gaps not tested by existing cases.`,
+      title: persistRequirement
+        ? `Approve ${generatedCases.length} case(s) for requirement: ${requirement.title}`
+        : `Approve ${generatedCases.length} generated test case(s)`,
+      summary: `Generated from analysis of "${cleanQuery}" to cover gaps not tested by existing cases.`,
       confidence: 78,
       proposedBy: 'Feature Analyst',
-      payload: { requirementId, caseIds: generatedCases.map((c) => c.id) },
-      links: [
-        { label: 'Open Traceability', href: '/traceability' },
-        { label: 'Open Requirements', href: '/requirements' },
-      ],
+      payload: persistRequirement
+        ? { requirementId, caseIds: generatedCases.map((c) => c.id) }
+        : { caseIds: generatedCases.map((c) => c.id) },
+      links: persistRequirement
+        ? [
+            { label: 'Open Traceability', href: '/traceability' },
+            { label: 'Open Requirements', href: '/requirements' },
+          ]
+        : [{ label: 'Open Test Cases', href: '/test-cases' }],
     });
     inboxItemId = inbox.id;
   }
 
   if (!isPgEnabled()) persistDataInBackground('requirement discovery');
-  addActivity(`Feature Analyst ${duplicateOf ? 'updated' : 'discovered'} requirement "${requirement.title}" with ${existingLinks.length} existing and ${generatedCases.length} new case(s).`);
+  addActivity(persistRequirement
+    ? `Feature Analyst ${duplicateOf ? 'updated' : 'discovered'} requirement "${requirement.title}" with ${existingLinks.length} existing and ${generatedCases.length} new case(s).`
+    : `Feature Analyst generated ${generatedCases.length} test case(s) for "${cleanQuery}".`);
 
   return {
     requirement,

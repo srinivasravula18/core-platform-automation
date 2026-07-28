@@ -226,6 +226,10 @@ export default function TestRepository() {
       body: JSON.stringify({ name }),
     });
     const data = await res.json();
+    if (!res.ok) {
+      void showAlert(data.error || 'Failed to create folder.');
+      return;
+    }
     if (data.folder?.id) {
       setSelectedFolderId(data.folder.id);
       setNewRootFolderName('');
@@ -242,6 +246,10 @@ export default function TestRepository() {
       body: JSON.stringify({ name, parentId: selectedFolderId }),
     });
     const data = await res.json();
+    if (!res.ok) {
+      void showAlert(data.error || 'Failed to create folder.');
+      return;
+    }
     if (data.folder?.id) {
       setSelectedFolderId(data.folder.id);
       setNewSubfolderName('');

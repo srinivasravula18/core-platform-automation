@@ -32,9 +32,11 @@ assert.deepEqual(structured.businessRules, [
 ]);
 
 const agentRoutes = readFileSync(new URL('../server/features/agent/routes.ts', import.meta.url), 'utf8');
-const runCreated = agentRoutes.indexOf('db.agentRuns.unshift(newRun);');
-const runReturned = agentRoutes.indexOf('res.json({ task_id: taskId });', runCreated);
-const requirementSaved = agentRoutes.lastIndexOf('await persistAgentRequirementArtifacts(newRun);', runCreated);
-assert.ok(requirementSaved > 0 && requirementSaved < runCreated && runCreated < runReturned);
+const requirementService = readFileSync(new URL('../server/features/requirements/requirementService.ts', import.meta.url), 'utf8');
+assert.ok(!agentRoutes.includes('persistAgentRequirementArtifacts'));
+assert.ok(!agentRoutes.includes('RequirementLinks.upsert'));
+assert.ok(agentRoutes.includes('Requirements are created only when the user starts the explicit Requirements flow.'));
+assert.ok(requirementService.includes('export async function confirmRequirementDraft'));
+assert.ok(requirementService.includes('const requirement = await Requirements.upsert'));
 
 console.log('agent requirement persistence: ok');

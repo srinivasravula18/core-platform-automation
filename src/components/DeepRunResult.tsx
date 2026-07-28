@@ -811,11 +811,13 @@ export function DeepRunResult({
         return;
       }
 
-      // Backend says it can't cheaply resume (no inspection yet) → fresh run from scratch.
+      // Fresh run from scratch. Prefer the server's `restart` params (carry the resolved target so the
+      // start doesn't re-ask and return no task_id); fall back to a run-derived body for older backends.
+      const restart = resume?.restart && typeof resume.restart === 'object' ? resume.restart : null;
       const res = await fetchWithTimeout('/api/agent/start', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+        body: JSON.stringify(restart || {
           app_url: run?.app_url || '',
           websiteId: run?.website_id || run?.websiteId || undefined,
           projectId: run?.project_id || run?.projectId || undefined,
@@ -837,6 +839,19 @@ export function DeepRunResult({
         setSaved(false);
         setTab('cases');
         setActiveTaskId(data.task_id);
+      } else {
+        // No task_id back — surface why instead of a dead button.
+        const why = String(
+          (data?.app_options && (data.chat_response || 'Retry needs a target choice.'))
+          || data?.chat_response
+          || data?.error
+          || 'Retry could not start a new run.',
+        );
+        setActionError(
+          data?.app_options || data?.chat_response
+            ? `${why} Please start this request again from the chat so you can pick the target.`
+            : why,
+        );
       }
     } catch (e: any) {
       setActionError(actionErrorMessage(e));

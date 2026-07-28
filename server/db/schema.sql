@@ -646,6 +646,62 @@ BEGIN
     EXECUTE format('UPDATE %I SET created_by = COALESCE(created_by, owner_id), updated_by = COALESCE(updated_by, owner_id) WHERE created_by IS NULL AND owner_id IS NOT NULL', t);
   END LOOP;
 END $$;
+
+-- Folder names are unique among active siblings in the same user/project/app scope.
+-- Merge legacy duplicates first so the constraint can be applied without losing linked artifacts.
+DO $$
+DECLARE
+  duplicate_id TEXT;
+  canonical_id TEXT;
+  t TEXT;
+BEGIN
+  LOOP
+    SELECT ranked.id, ranked.canonical_id
+    INTO duplicate_id, canonical_id
+    FROM (
+      SELECT
+        id,
+        first_value(id) OVER folder_group AS canonical_id,
+        row_number() OVER folder_group AS duplicate_number
+      FROM folders
+      WHERE deleted_at IS NULL
+      WINDOW folder_group AS (
+        PARTITION BY
+          COALESCE(owner_id, ''),
+          COALESCE(project_id, ''),
+          COALESCE(app_id, ''),
+          COALESCE(parent_id, ''),
+          lower(btrim(name))
+        ORDER BY created_at, id
+      )
+    ) ranked
+    WHERE ranked.duplicate_number > 1
+    LIMIT 1;
+
+    EXIT WHEN duplicate_id IS NULL;
+
+    FOREACH t IN ARRAY ARRAY['plans','suites','cases','runs','defects','reports','scripts','requirements','agent_runs'] LOOP
+      EXECUTE format('UPDATE %I SET folder_id = $1 WHERE folder_id = $2', t)
+        USING canonical_id, duplicate_id;
+    END LOOP;
+    UPDATE folders SET parent_id = canonical_id WHERE parent_id = duplicate_id AND deleted_at IS NULL;
+    UPDATE folders SET deleted_at = now() WHERE id = duplicate_id;
+
+    duplicate_id := NULL;
+    canonical_id := NULL;
+  END LOOP;
+END $$;
+
+CREATE UNIQUE INDEX IF NOT EXISTS folders_active_sibling_name_unique
+ON folders (
+  COALESCE(owner_id, ''),
+  COALESCE(project_id, ''),
+  COALESCE(app_id, ''),
+  COALESCE(parent_id, ''),
+  lower(btrim(name))
+)
+WHERE deleted_at IS NULL;
+
 -- websites lacked updated_at entirely (created_at only). Add it so edits are trackable.
 ALTER TABLE websites ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
 

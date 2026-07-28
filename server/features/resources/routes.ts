@@ -6,7 +6,7 @@ import * as archiverNs from 'archiver';
 import { z } from 'zod';
 import { generateObject } from 'ai';
 import { db, addActivity, persistDataInBackground } from '../../shared/storage';
-import { createFolder, getFolderPath, resolveFolderPath } from '../../shared/folders';
+import { createFolder, findFolderByName, getFolderPath, resolveFolderPath } from '../../shared/folders';
 import { buildCaseDescription, normalizeCaseSteps, normalizeCaseTags } from '../../shared/testCases';
 import { findSettingsPlaywrightTargetUrl, normalizeTargetUrl } from '../../shared/url';
 import { getAIErrorMessage } from '../../shared/ai';
@@ -492,11 +492,15 @@ export function registerResourceRoutes(app: Express) {
 
   /* ---------- folders: hierarchical create/resolve/update/delete (still tree-aware, uses repository) ---------- */
   app.post('/api/folders', async (req, res) => {
+    const scopedFolders = scopeFilter(await Folders.list(), reqScope(req));
+    if (findFolderByName(req.body.name, req.body.parentId || '', scopedFolders)) {
+      return res.status(409).json({ error: 'A folder with this name already exists here.' });
+    }
     const folder = createFolder(req.body.name, req.body.parentId || '', {
       description: req.body.description || '',
       kind: req.body.kind || 'Feature',
       createdBy: req.body.createdBy || 'User',
-    });
+    }, scopedFolders);
     if (!folder) return res.status(400).json({ error: 'Folder name is required' });
     Object.assign(folder, scopeStamp(reqScope(req)));
     // Compute the path BEFORE upsert — folders.path is NOT NULL in Postgres, so an unset path
@@ -510,11 +514,12 @@ export function registerResourceRoutes(app: Express) {
   });
 
   app.post('/api/folders/resolve', async (req, res) => {
+    const scopedFolders = scopeFilter(await Folders.list(), reqScope(req));
     const folder = resolveFolderPath(req.body.path || req.body.name || '', {
       description: req.body.description || '',
       kind: req.body.kind || 'Feature',
       createdBy: req.body.createdBy || 'User',
-    });
+    }, scopedFolders);
     if (!folder) return res.status(400).json({ error: 'Folder path is required' });
     Object.assign(folder, scopeStamp(reqScope(req)));
     if (!folder.path) folder.path = getFolderPath(folder.id);
@@ -530,8 +535,7 @@ export function registerResourceRoutes(app: Express) {
     const allFolders = await Folders.list();
     const scopedFolders = scopeFilter(allFolders, reqScope(req));
     if (!scopedFolders.some((item: any) => item.id === folder.id)) return res.status(404).json({ error: 'Folder not found' });
-    const requestedParentId = req.body.parentId ?? folder.parentId ?? '';
-    const parentId = String(requestedParentId || '');
+    const parentId = String(req.body.parentId ?? folder.parentId ?? '');
 
     // A folder may be moved to the root or below another folder in the same workspace,
     // but never below itself or any of its descendants (which would create a cycle).
@@ -550,6 +554,11 @@ export function registerResourceRoutes(app: Express) {
         }
       }
       if (descendants.has(parentId)) return res.status(400).json({ error: 'A folder cannot be moved into itself or one of its subfolders.' });
+    }
+
+    const duplicate = findFolderByName(req.body.name || folder.name, parentId, scopedFolders);
+    if (duplicate && duplicate.id !== folder.id) {
+      return res.status(409).json({ error: 'A folder with this name already exists here.' });
     }
     const updated = {
       ...folder,

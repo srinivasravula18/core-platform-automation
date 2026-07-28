@@ -3,8 +3,16 @@ import { db } from './storage';
 
 const artifactKeys = ['plans', 'suites', 'cases', 'runs', 'reports', 'scripts', 'agentRuns'] as const;
 
-function normalizeFolderName(name: string) {
+export function normalizeFolderName(name: string) {
   return String(name || '').trim().replace(/\s+/g, ' ');
+}
+
+export function findFolderByName(name: string, parentId = '', folderList: any[] = db.folders) {
+  const normalizedName = normalizeFolderName(name).toLowerCase();
+  return folderList.find((item: any) =>
+    normalizeFolderName(item.name).toLowerCase() === normalizedName &&
+    (item.parentId || '') === (parentId || '')
+  );
 }
 
 function slugifyFolderName(name: string) {
@@ -51,14 +59,11 @@ export function getFolderPath(folderId: string, folderList?: any[]) {
   return getFolderPathParts(folder, list).join(' / ') || folder.name || 'Uncategorized';
 }
 
-export function createFolder(name: string, parentId = '', extra: any = {}) {
+export function createFolder(name: string, parentId = '', extra: any = {}, folderList: any[] = db.folders) {
   const normalizedName = normalizeFolderName(name);
   if (!normalizedName) return null;
 
-  const existing = db.folders.find((item: any) =>
-    normalizeFolderName(item.name).toLowerCase() === normalizedName.toLowerCase() &&
-    (item.parentId || '') === (parentId || '')
-  );
+  const existing = findFolderByName(normalizedName, parentId, folderList);
   if (existing) return existing;
 
   const now = new Date();
@@ -73,10 +78,11 @@ export function createFolder(name: string, parentId = '', extra: any = {}) {
     updatedAt: now,
   };
   db.folders.unshift(folder);
+  if (folderList !== db.folders) folderList.unshift(folder);
   return folder;
 }
 
-export function resolveFolderPath(pathText: string, extra: any = {}) {
+export function resolveFolderPath(pathText: string, extra: any = {}, folderList: any[] = db.folders) {
   const parts = String(pathText || '')
     .split('/')
     .map((part) => normalizeFolderName(part))
@@ -85,7 +91,7 @@ export function resolveFolderPath(pathText: string, extra: any = {}) {
   let parentId = '';
   let folder: any = null;
   for (const part of parts) {
-    folder = createFolder(part, parentId, extra);
+    folder = createFolder(part, parentId, extra, folderList);
     parentId = folder?.id || '';
   }
   return folder;
@@ -96,26 +102,26 @@ export function extractFolderMention(prompt: string) {
   return match ? normalizeFolderName(match[1]).replace(/[.,;!?]+$/, '') : '';
 }
 
-export function resolveFolderForAgent(options: { folderId?: string; folderMention?: string; prompt?: string; targetUrl?: string }) {
-  if (options.folderId && db.folders.some((folder: any) => folder.id === options.folderId)) {
-    return db.folders.find((folder: any) => folder.id === options.folderId);
+export function resolveFolderForAgent(options: { folderId?: string; folderMention?: string; prompt?: string; targetUrl?: string }, folderList: any[] = db.folders) {
+  if (options.folderId && folderList.some((folder: any) => folder.id === options.folderId)) {
+    return folderList.find((folder: any) => folder.id === options.folderId);
   }
 
   const mention = normalizeFolderName(options.folderMention || extractFolderMention(options.prompt || ''));
   if (mention) {
     const mentionSlug = slugifyFolderName(mention);
-    const matched = db.folders.find((folder: any) =>
+    const matched = folderList.find((folder: any) =>
       slugifyFolderName(folder.name) === mentionSlug ||
-      slugifyFolderName(getFolderPath(folder.id)) === mentionSlug
+      slugifyFolderName(getFolderPath(folder.id, folderList)) === mentionSlug
     );
     if (matched) return matched;
-    return resolveFolderPath(mention, { createdBy: 'QA Assistant', kind: 'Feature' });
+    return resolveFolderPath(mention, { createdBy: 'QA Assistant', kind: 'Feature' }, folderList);
   }
 
   return resolveFolderPath(inferFolderNameFromPrompt(options.prompt || '', options.targetUrl || ''), {
     createdBy: 'QA Assistant',
     kind: 'Auto',
-  });
+  }, folderList);
 }
 
 export function folderHasArtifacts(folderId: string) {

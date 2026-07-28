@@ -911,6 +911,20 @@ export default function TestPlans() {
                     </td>
                     <td className="py-3 px-4 text-right">
                       <div className="relative inline-flex items-center gap-1">
+                        {canStartPlan(plan) && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              startPlan(plan);
+                            }}
+                            disabled={startingPlanId !== null}
+                            title="Start plan"
+                            className="inline-flex items-center gap-1 rounded bg-[var(--accent)] px-2 py-1 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
+                          >
+                            {startingPlanId === plan.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Rocket className="h-3.5 w-3.5" />}
+                            Start Plan
+                          </button>
+                        )}
                         <button
                           onClick={(e) => {
                             e.stopPropagation();

@@ -12,7 +12,6 @@ import { nextArtifactId } from '../../shared/artifactIds';
 import { capturePlaywrightEvidence, createAuthStorageState } from '../evidence/evidenceService';
 import { gitGrep, readRepoFile, searchCodeWithContext } from '../git-agent/gitAgentService';
 import { analyzeFeatureFromSource, discoverFeatureInventoryFromSource, proposeGapCases } from '../requirements/requirementService';
-import { structureRequirementText } from '../requirements/requirementText';
 import { executePlaywrightScripts, killRunProcesses, sanitizeTestCode, repairTestCode } from '../playwright/executionService';
 import { liveAuthor, emitScript, canLiveAuthorGoal, actionableAuthorBlockers } from './liveAuthor';
 import { inspectFlow, flowToScript } from './flowInspector';
@@ -76,10 +75,10 @@ import type { MissionRef } from './workflow/state';
 import { renderTargetCatalogForPrompt } from './compiler/renderCatalogForPrompt';
 import { testPlanSchema, parseTestPlan } from './compiler/testPlan';
 import { semanticPlanFromCase } from './compiler/semanticPlanner';
-import { linkedExistingCases, scoreCaseReuse } from './caseReuse';
+import { scoreCaseReuse } from './caseReuse';
 import { mergeScriptsByCase, reviewedCasesForRun, syncReviewedCases } from './caseCollection';
 import { pushInboxItem } from '../inbox/routes';
-import { AgentRuns, ChatConversations, Suites, Cases, Runs, Reports, Scripts, Folders, Requirements, RequirementLinks, Defects, isPgEnabled } from '../../db/repository';
+import { AgentRuns, ChatConversations, Suites, Cases, Runs, Reports, Scripts, Folders, Requirements, Defects, isPgEnabled } from '../../db/repository';
 import { loadConversationHandoff } from '../../ai/memory/conversationState';
 import { runGuardrailPipeline } from '../../ai/guardrails';
 import { assessInspection, assessCasesGrounding, assessExecution, assessFeatureCompleteness } from '../../ai/verifier';
@@ -826,10 +825,6 @@ function runCaseId(run: any, index: number): string {
   return testCase?.reused && testCase?.existingCaseId ? testCase.existingCaseId : agentCaseId(run, index);
 }
 
-function agentRequirementId(run: any): string {
-  return `REQ-${run.id.substring(0, 8).toUpperCase()}`;
-}
-
 function agentRunRecordId(run: any): string {
   return `RUN-${run.id.substring(0, 8).toUpperCase()}`;
 }
@@ -968,73 +963,6 @@ function summarizeAgentCaseExecution(run: any) {
   return { total: cases.length, passed, failed };
 }
 
-async function persistAgentRequirementArtifacts(run: any) {
-  // Requirements are saved ONLY through the explicit Requirements flow (the user generating a
-  // requirement via confirmRequirementDraft). Generating test cases or running scripts must NOT
-  // auto-create requirements. This is the pipeline's legacy auto-save; off by default. Set
-  // AGENT_PERSIST_REQUIREMENTS=1 to restore writing a Requirement + case links for every deep run.
-  if (String(process.env.AGENT_PERSIST_REQUIREMENTS || '').trim() !== '1') return;
-  const cases = Array.isArray(run.generated_cases) ? run.generated_cases : [];
-  const existingMatches = linkedExistingCases(Array.isArray(run.existing_matches) ? run.existing_matches : [], cases);
-  const requirementId = agentRequirementId(run);
-  run.requirement_id = requirementId;
-  const understanding = run.feature_understanding && typeof run.feature_understanding === 'object' ? run.feature_understanding : {};
-  const resolvedUnderstanding = resolveUnderstanding(run);
-  const structuredUnderstanding = structureRequirementText(resolvedUnderstanding);
-  const baseName = agentDisplayName(run);
-  const isFinished = ['completed', 'failed', 'cancelled'].includes(String(run.status || '').toLowerCase());
-  const coverageStatus = run.status === 'completed'
-    ? 'covered'
-    : cases.length
-      ? 'gaps-proposed'
-      : existingMatches.length
-        ? 'partial'
-        : 'unknown';
-  await Requirements.upsert({
-    id: requirementId,
-    title: understanding.title || baseName,
-    description: understanding.description || structuredUnderstanding.description || resolvedUnderstanding || run.prompt || '',
-    featureQuery: run.prompt || baseName,
-    businessRules: Array.isArray(understanding.businessRules) && understanding.businessRules.length
-      ? understanding.businessRules
-      : structuredUnderstanding.businessRules,
-    srsModules: Array.isArray(understanding.srsModules) ? understanding.srsModules : [],
-    dataPopulationNotes: understanding.dataPopulationNotes || '',
-    metadataRefs: Array.isArray(understanding.metadataRefs) ? understanding.metadataRefs : [],
-    sourceFiles: [],
-    coverageStatus,
-    status: isFinished ? 'Approved' : 'Draft',
-    folderId: run.folderId || null,
-    approvalState: 'proposed',
-    proposedBy: 'QA Assistant',
-    sourceRunId: run.id,
-    projectId: run.projectId || '',
-    appId: run.appId || '',
-    ownerId: run.ownerId || '',
-  });
-
-  for (const existing of existingMatches) {
-    const caseId = existing.existingCaseId || existing.id;
-    if (!caseId) continue;
-    await RequirementLinks.upsert({
-      requirementId,
-      caseId,
-      linkType: 'existing',
-      note: `Matched by agent run ${run.id}.`,
-    });
-  }
-
-  for (let index = 0; index < cases.length; index++) {
-    if (cases[index]?.reused && cases[index]?.existingCaseId) continue;
-    await RequirementLinks.upsert({
-      requirementId,
-      caseId: runCaseId(run, index),
-      linkType: 'generated',
-      note: `Generated by agent run ${run.id}.`,
-    });
-  }
-}
-
 async function persistAgentRunAndReportArtifacts(run: any) {
   await ensureSuiteTitle(run); // agent-author the artifact title before run/suite/report names are built
   const baseName = agentDisplayName(run);
@@ -1167,7 +1095,6 @@ async function persistAgentRunAndReportArtifacts(run: any) {
 
 async function persistAgentQualityArtifacts(run: any) {
   await persistAgentCaseArtifacts(run);
-  await persistAgentRequirementArtifacts(run);
   await persistAgentRunAndReportArtifacts(run);
   await saveAgentRunState(run, 'agent quality artifacts');
 }
@@ -2145,7 +2072,6 @@ async function persistAgentRunArtifacts(run: any) {
   const baseName = agentDisplayName(run);
 
   await persistAgentCaseArtifacts(run);
-  await persistAgentRequirementArtifacts(run);
   await persistAgentScripts(run);
 
   const executionSteps = buildAgentExecutionSteps(run);
@@ -2696,8 +2622,6 @@ ${CASE_AUTHORING_CONTRACT}`,
   if (opts.flowMode !== 'review_cases') {
     await persistAgentCaseArtifacts(run);
   }
-  await persistAgentRequirementArtifacts(run);
-
   // Push every generated case to the inbox as a pending decision, so the human can
   // approve / reject per-case from the inbox instead of just seeing a "review" button.
   (run.generated_cases || []).forEach((tc: any, idx: number) => {
@@ -5028,6 +4952,25 @@ Rules:
     }));
   });
 
+  // Runs are keyed by conversation (indexed), so the console can recover a run whose deep-run card
+  // never reached the chat snapshot (navigated away mid-start). Slim descriptors — id is enough.
+  app.get('/api/agent-runs/for-conversation/:conversationId', async (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    const conversationId = String(req.params.conversationId || '').trim();
+    if (!conversationId) return res.json({ runs: [] });
+    const runs = await AgentRuns.listByConversation(conversationId, { limit: 25 });
+    const scoped = scopeFilter(runs, reqScope(req));
+    res.json({
+      runs: scoped.map((run: any) => {
+        // Truthful status: heal an orphaned "running" run (dead process) to failed, as the main list does.
+        const healed = orphanedRunFailure(run);
+        if (healed) void reconcileRunIfOrphaned(run).catch(() => undefined);
+        const shown = healed ?? run;
+        return { id: shown.id, status: shown.status, created_at: shown.created_at, prompt: shown.prompt || '' };
+      }),
+    });
+  });
+
   app.get('/api/agent-runs/:id/status', async (req, res) => {
     res.set('Cache-Control', 'no-store');
     const run = await loadAgentRun(req.params.id);
@@ -5533,10 +5476,11 @@ Rules:
     // supplied in the folderMention field. Do NOT infer one from the prompt text  -  the prompt is the
     // test request (and derived context can contain stray @tokens like "@bvt" that would falsely
     // look like an @folder mention and bypass this gate).
-    const explicitFolderId = !!(req.body.folderId && db.folders.some((f: any) => f.id === req.body.folderId));
+    const availableFolders = scopeFilter(await Folders.list(), scope);
+    const explicitFolderId = !!(req.body.folderId && availableFolders.some((f: any) => f.id === req.body.folderId));
     const explicitFolderMention = !!String(req.body.folderMention || '').trim();
     if (!explicitFolderId && !explicitFolderMention) {
-      const existing = [...new Set((db.folders as any[]).map((f: any) => getFolderPath(f.id)).filter(Boolean))].slice(0, 25);
+      const existing = [...new Set(availableFolders.map((f: any) => getFolderPath(f.id, availableFolders)).filter(Boolean))].slice(0, 25);
       const listing = existing.length ? `\n\nExisting folders: ${existing.join(' - ')}` : '';
       return res.json({
         chat_response: `Before I start, which folder should I save this under? Pick an existing folder or name a new one  -  I won't begin a run without a folder, so every test plan, suite, case, run, requirement, report and defect stays together and easy to find.${listing}\n\nTip: say it in the prompt, e.g. "test the list view, save under Regression".`,
@@ -5548,10 +5492,10 @@ Rules:
       folderMention: req.body.folderMention,
       prompt: prompt || '',
       targetUrl,
-    });
+    }, availableFolders);
     if (folder) {
       Object.assign(folder, scopeStamp(scope));
-      folder.path = getFolderPath(folder.id);
+      folder.path = getFolderPath(folder.id, availableFolders);
       await ensureFolderInPg(folder.id);
       if (!isPgEnabled()) persistDataInBackground('agent folder');
       addActivity(`Agent folder ready: ${folder.path}`);
@@ -5675,12 +5619,6 @@ Rules:
         status: 'completed',
         output: `Approved understanding:\n${approvedUnderstanding}`,
       });
-    }
-
-    // Proceed is the approval boundary. Save the Draft before either background engine can
-    // pause or fail; later phases update this id and attach cases for Traceability.
-    if (newRun.understandingSource !== 'requirement') {
-      await persistAgentRequirementArtifacts(newRun);
     }
 
     db.agentRuns.unshift(newRun);
@@ -6013,18 +5951,7 @@ Rules:
         pushPhase(newRun, { agent: 'FeatureWriter', status: 'skipped', output: 'Requirement context already available  -  feature discovery skipped.' });
       }
 
-      // -- Phase 5: Write New Requirements (missing)  -  per-feature loop --------
-      if (newRun.understandingSource === 'requirement') {
-        pushPhase(newRun, { agent: 'RequirementWriter', status: 'skipped', output: 'Requirement already exists  -  skipping draft phase.' });
-      } else {
-        pushPhase(newRun, { agent: 'RequirementWriter', status: 'running' });
-        await persistAgentRequirementArtifacts(newRun);
-        pushPhase(newRun, {
-          agent: 'RequirementWriter',
-          status: 'completed',
-          output: { requirementId: agentRequirementId(newRun), status: 'Draft', source: 'feature_inventory' },
-        });
-      }
+      pushPhase(newRun, { agent: 'RequirementWriter', status: 'skipped', output: 'Requirements are created only when the user starts the explicit Requirements flow.' });
 
       // Auto-grow the app knowledge
       try {
@@ -6148,7 +6075,6 @@ Rules:
           output: { test_cases: newRun.generated_cases, grounded: true, grounding: 'Per-feature case generation complete.' },
         });
         await persistAgentCaseArtifacts(newRun);
-        await persistAgentRequirementArtifacts(newRun);
         (newRun.generated_cases || []).forEach((tc: any, idx: number) => {
           pushInboxItem({
             workspaceId: 'default', source: 'case', sourceId: `${newRun.id}:${idx}`,
@@ -6173,7 +6099,6 @@ Rules:
         pushPhase(newRun, { agent: 'CoverageScout', status: 'running' });
         const relatedExisting = await findRelatedExistingCases(newRun);
         newRun.existing_matches = relatedExisting.map(mapExistingToRunCase);
-        await persistAgentRequirementArtifacts(newRun);
         pushPhase(newRun, { agent: 'CoverageScout', status: 'completed', output: `${relatedExisting.length} related existing test case(s) found.` });
         if (relatedExisting.length && flowMode === 'review_cases') {
           newRun.status = 'coverage_options';
@@ -6453,6 +6378,35 @@ Rules:
     res.json({ success: true, status: 'cancelled', killed });
   });
 
+  // Restart body the client forwards to /api/agent/start. Reuses the run's resolved MissionContext so
+  // the fresh start doesn't re-ask for the target (which returns no task_id → Retry silently no-ops).
+  function fullRestartParams(run: any) {
+    const mc = (run?.mission_context || {}) as any;
+    const folder = run?.folderPath || run?.folder_path || '';
+    return {
+      app_url: mc.targetUrl || run?.app_url || '',
+      websiteId: run?.websiteId || run?.website_id || undefined,
+      projectId: run?.projectId || run?.project_id || undefined,
+      appId: run?.appId || run?.app_id || undefined,
+      prompt: run?.prompt || '',
+      testCaseCount: Number(run?.requested_case_count || run?.requestedCaseCount || 0) || 0,
+      flowMode: 'review_cases',
+      folderMention: folder && folder !== 'Uncategorized' ? folder : undefined,
+      applicationId: mc.application?.id || undefined,
+      applicationName: mc.application?.name || undefined,
+      moduleId: mc.module?.id || mc.tab?.id || undefined,
+      moduleName: mc.module?.name || mc.tab?.name || undefined,
+      approvedUnderstanding: run?.approvedUnderstanding || run?.approved_understanding || '',
+      understandingSource: run?.understandingSource || '',
+      priorGrounding: run?.priorGrounding || run?.approvedUnderstanding || '',
+      provider: run?.requestedProvider || run?.provider || undefined,
+      model: run?.requestedModel || run?.model || undefined,
+      effort: run?.requestedEffort || undefined,
+      conversationId: run?.conversationId || run?.conversation_id || '',
+      metadataRefs: Array.isArray(run?.metadata_refs) ? run.metadata_refs : undefined,
+    };
+  }
+
   app.post('/api/agent/retry', async (req, res) => {
     const { taskId } = req.body;
     const run = db.agentRuns.find((item: any) => item.id === taskId);
@@ -6460,12 +6414,12 @@ Rules:
     // Graph-engine runs never resume through the legacy pipeline (their seed can carry a STALE
     // inspection_context from a prior session run, which fooled this path into a blind-inspection
     // block). needsFullRestart → the UI starts a fresh run, which routes per the current engine flag.
-    if ((run as any).engine === 'langgraph') return res.json({ success: false, needsFullRestart: true });
+    if ((run as any).engine === 'langgraph') return res.json({ success: false, needsFullRestart: true, restart: fullRestartParams(run) });
 
     const hasInspection = !!run.inspection_context;
     const hasCases = Array.isArray(run.generated_cases) && run.generated_cases.length > 0;
     const liveCreds = resolveCredentials({ targetUrl: run.app_url, websiteId: run.websiteId, role: (run.credentials || {}).role, ownerId: ownerScopeForRun(run) }) || undefined;
-    if (!hasInspection) return res.json({ success: false, needsFullRestart: true });
+    if (!hasInspection) return res.json({ success: false, needsFullRestart: true, restart: fullRestartParams(run) });
     // A cancelled run retains both terminal status and cancelRequested. Clear them before any
     // revalidation work, otherwise the phase guard aborts the retry as RUN_CANCELLED.
     run.cancelRequested = false;
@@ -6494,7 +6448,7 @@ Rules:
         pushPhase(run, { agent: 'DOMExplorer', status: 'failed', output: `Retry grounding refresh failed: ${error?.message || String(error)}` });
         run.status = 'cancelled';
         run.completed_at = nowIso();
-        return res.json({ success: false, needsFullRestart: true });
+        return res.json({ success: false, needsFullRestart: true, restart: fullRestartParams(run) });
       }
     }
     if (run.review_started_at) {

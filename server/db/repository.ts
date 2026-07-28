@@ -762,15 +762,16 @@ export const Folders = {
     }
     const id = f.id || uid('FOLDER');
     const row = await queryOne(
-      `INSERT INTO folders (id, name, parent_id, path, description, kind, icon, created_by, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8, now(), now())
+      `INSERT INTO folders (id, name, parent_id, path, description, kind, icon, created_by, project_id, app_id, owner_id, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11, now(), now())
        ON CONFLICT (id) DO UPDATE SET
          name=EXCLUDED.name, parent_id=EXCLUDED.parent_id, path=EXCLUDED.path,
          description=EXCLUDED.description, kind=EXCLUDED.kind, icon=EXCLUDED.icon,
          created_by=EXCLUDED.created_by, updated_at=now()
        RETURNING *`,
       [id, f.name || 'Untitled', f.parentId || null, f.path || null, f.description || '',
-       f.kind || 'Feature', f.icon || null, f.createdBy || 'User'],
+       f.kind || 'Feature', f.icon || null, f.createdBy || 'User',
+       f.projectId || null, f.appId || null, f.ownerId || null],
     );
     await writeScopeCols('folders', id, f);
     return mapFolder(row);

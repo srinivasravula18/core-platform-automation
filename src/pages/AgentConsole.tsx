@@ -930,6 +930,27 @@ export default function AgentConsole() {
   // The ACTIVE conversation's stored title — the snapshot PUT reuses it so a custom rename is
   // never clobbered by the auto-title derived from the first user message.
   const convTitleRef = useRef('');
+  // Append a deep-run card for any server run not already shown, recovering runs the snapshot lost
+  // (navigated away mid-start). Best-effort, idempotent (dedup by taskId); the append re-persists.
+  const reconcileConversationRuns = useCallback(async (id: string, token: number) => {
+    try {
+      const r = await fetch(`/api/agent-runs/for-conversation/${encodeURIComponent(id)}`);
+      if (!r.ok || token !== loadReqRef.current) return;
+      const d = await r.json();
+      const runs: Array<{ id?: string; created_at?: string }> = Array.isArray(d?.runs) ? d.runs : [];
+      if (!runs.length) return;
+      const ordered = [...runs].sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || '')));
+      setTurns((prev) => {
+        if (token !== loadReqRef.current) return prev; // conversation changed under us — don't graft
+        const shown = new Set(prev.filter((t) => t.kind === 'deeprun').map((t) => t.taskId));
+        const cards: Turn[] = ordered
+          .filter((run) => run.id && !shown.has(run.id))
+          .map((run) => ({ id: nextId(), role: 'assistant', kind: 'deeprun', taskId: run.id as string }));
+        return cards.length ? [...prev, ...cards] : prev;
+      });
+    } catch { /* best-effort recovery */ }
+  }, []);
+
   const loadConversation = useCallback(async (id: string) => {
     const token = ++loadReqRef.current;
     loadedRef.current = false;
@@ -953,13 +974,15 @@ export default function AgentConsole() {
       );
       convTitleRef.current = String(d.title || '');
       setTurns(clean);
+      // Re-attach any run the snapshot lost (navigated away mid-start) — see reconcileConversationRuns.
+      void reconcileConversationRuns(id, token);
     } catch {
       // Never wipe a live thread on a failed load — only clear when nothing is on screen.
       if (token === loadReqRef.current && turnsRef.current.length === 0) setTurns([]);
     } finally {
       if (token === loadReqRef.current) loadedRef.current = true;
     }
-  }, []);
+  }, [reconcileConversationRuns]);
 
   // Initial load: restore the active conversation + the history list. If the remembered id has no
   // content (e.g. a fresh id was minted before the scope settled, or the user navigated away and
@@ -1022,6 +1045,8 @@ export default function AgentConsole() {
       convTitleRef.current = chosenTitle;
       if (chosen !== conversationId) setConversationId(chosen);
       setTurns(chosenTurns);
+      // Re-attach any run the snapshot lost for the restored conversation (navigated away mid-start).
+      void reconcileConversationRuns(chosen, token);
     })();
     fetch('/api/credentials/websites')
       .then((r) => r.json())
@@ -1261,6 +1286,18 @@ export default function AgentConsole() {
   const replaceTurn = useCallback((id: string, turn: Turn) => {
     setTurns((prev) => prev.map((t) => (t.id === id ? turn : t)));
   }, []);
+
+  // replaceTurn + persist immediately from turnsRef (not React state), so a terminal result — notably
+  // a deep-run card's task_id — still lands if the console unmounted mid-start. Use for TERMINAL results.
+  const commitTurn = useCallback((id: string, turn: Turn) => {
+    replaceTurn(id, turn);
+    if (!loadedRef.current) return;
+    const nextTurns = turnsRef.current.map((t) => (t.id === id ? turn : t));
+    const clean = nextTurns.filter((t) => !(t.role === 'assistant' && t.kind === 'thinking'));
+    if (!clean.length) return;
+    pendingSnapshotRef.current = { conversationId, workspaceId, turns: clean };
+    writeConversationSnapshot({ conversationId, workspaceId, turns: clean }, true)?.catch(() => {});
+  }, [replaceTurn, writeConversationSnapshot, conversationId, workspaceId]);
 
   const updateThinkingLabel = useCallback((id: string, label: string) => {
     setTurns((prev) => prev.map((t) => (
@@ -1529,7 +1566,10 @@ export default function AgentConsole() {
       // Ambiguous target: pause and let the user pick the app/navigation from a dropdown
       // instead of a plain-text question; Continue resubmits this same run with the choice.
       const { thinkingId: _omit, ...runArgs } = args;
-      replaceTurn(args.thinkingId, {
+      // commitTurn (not replaceTurn): these are terminal results of the multi-minute start pipeline,
+      // which may resolve after the user has navigated away. Persist them durably so the run/choice
+      // isn't lost on an unmounted console.
+      commitTurn(args.thinkingId, {
         id: args.thinkingId,
         role: 'assistant',
         kind: 'appask',
@@ -1541,18 +1581,18 @@ export default function AgentConsole() {
         runArgs,
       });
     } else if (data?.chat_response) {
-      replaceTurn(args.thinkingId, { id: args.thinkingId, role: 'assistant', kind: 'text', text: data.chat_response });
+      commitTurn(args.thinkingId, { id: args.thinkingId, role: 'assistant', kind: 'text', text: data.chat_response });
     } else if (data?.task_id) {
-      replaceTurn(args.thinkingId, { id: args.thinkingId, role: 'assistant', kind: 'deeprun', taskId: data.task_id });
+      commitTurn(args.thinkingId, { id: args.thinkingId, role: 'assistant', kind: 'deeprun', taskId: data.task_id });
     } else {
-      replaceTurn(args.thinkingId, {
+      commitTurn(args.thinkingId, {
         id: args.thinkingId,
         role: 'assistant',
         kind: 'text',
         text: data?.error || 'I could not start the generation. Check that an AI provider key is set in Settings.',
       });
     }
-  }, [replaceTurn, buildHistory, updateThinkingLabel, selectedProvider, selectedModel, selectedEffort, conversationId]);
+  }, [commitTurn, buildHistory, updateThinkingLabel, selectedProvider, selectedModel, selectedEffort, conversationId]);
 
   const requestDeepUnderstanding = useCallback(async (args: {
     prompt: string;
