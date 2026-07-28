@@ -70,7 +70,7 @@ import { useFlushOnUnload } from '@/src/lib/useFlushOnUnload';
 import { showAlert, showConfirm } from '@/src/lib/dialog';
 import { showToast } from '@/src/lib/dialog';
 import { WorkflowRunner } from '@/src/components/WorkflowRunner';
-import { DeepRunResult, type AgentReworkTarget } from '@/src/components/DeepRunResult';
+import { DeepRunResult } from '@/src/components/DeepRunResult';
 import { CodeChangeReview } from '@/src/components/CodeChangeReview';
 import { RequirementDiscoveryResult } from '@/src/components/RequirementDiscoveryResult';
 import { RequirementDraftReview } from '@/src/components/RequirementDraftReview';
@@ -758,7 +758,6 @@ export default function AgentConsole() {
   const [turns, setTurns] = useState<Turn[]>([]);
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
-  const [activeReworkTarget, setActiveReworkTarget] = useState<AgentReworkTarget | null>(null);
   const rememberedConversationIdRef = useRef<string | null>(null);
   const [conversationId, setConversationId] = useState<string>(() => {
     if (urlChatId) return urlChatId;
@@ -1848,6 +1847,25 @@ export default function AgentConsole() {
     inputRef.current?.focus();
   }, [replaceTurn]);
 
+  // Explicit "Rework with AI" from the draft card: re-run the drafting agent seeded with the current
+  // draft + the user's instruction so it realigns/expands in place (same path a chat follow-up uses).
+  const reworkRequirementDraft = useCallback(async (turn: { id: string; result: any; query?: string; revisionCount?: number }, instruction: string) => {
+    if (busy || !instruction.trim()) return;
+    const previousDraft: PendingRequirementDraft = {
+      turnId: turn.id,
+      query: turn.query || pendingRequirementDraft?.query || '',
+      result: turn.result,
+      revisionCount: turn.revisionCount || 0,
+    };
+    setBusy(true);
+    try {
+      await runRequirementDraft(turn.id, previousDraft.query, previousDraft, instruction.trim());
+    } finally {
+      setBusy(false);
+      inputRef.current?.focus();
+    }
+  }, [busy, runRequirementDraft, pendingRequirementDraft]);
+
   // The apps the user explicitly selected in the composer (all of them), as target
   // context for the agent. Mirrored to a ref so callbacks read the latest without churn.
   const selectedApps = websites.filter((w) => selectedAppIds.has(w.id)).map((w) => ({ name: w.name, baseUrl: w.baseUrl }));
@@ -2072,20 +2090,6 @@ export default function AgentConsole() {
     async (raw?: string, editTurnIdArg?: string | null) => {
       const text = (raw ?? input).trim();
       if (!text || busy) return;
-      if (activeReworkTarget && raw === undefined && !editingTurnId) {
-        stopListening();
-        setInput('');
-        setBusy(true);
-        try {
-          await activeReworkTarget.submit(text);
-        } catch (error: any) {
-          showToast(error?.message || 'Could not preview those AI changes.', { tone: 'error' });
-        } finally {
-          setBusy(false);
-          inputRef.current?.focus();
-        }
-        return;
-      }
       stopListening();
       // Inline edit passes the turn id explicitly; the bottom composer uses editingTurnId.
       const editedTurnId = editTurnIdArg !== undefined ? editTurnIdArg : (raw === undefined ? editingTurnId : null);
@@ -2629,7 +2633,7 @@ export default function AgentConsole() {
         inputRef.current?.focus();
       }
     },
-    [input, busy, editingTurnId, activeReworkTarget, conversationId, location.pathname, stopListening, replaceTurn, updateThinkingLabel, appendThinkingDebug, requestDeepUnderstanding, presentDeepUnderstanding, runRequirementDraft, reqMode, scriptAuthorMode, pendingDeep, pendingRequirementDraft, websites, scopeApp, buildHistory, buildDeepContextPrompt, startDeepRun, runViaSupervisor, getSelectedApps, authorScriptFromSteps, selectedProjectId, selectedAppId],
+    [input, busy, editingTurnId, conversationId, location.pathname, stopListening, replaceTurn, updateThinkingLabel, appendThinkingDebug, requestDeepUnderstanding, presentDeepUnderstanding, runRequirementDraft, reqMode, scriptAuthorMode, pendingDeep, pendingRequirementDraft, websites, scopeApp, buildHistory, buildDeepContextPrompt, startDeepRun, runViaSupervisor, getSelectedApps, authorScriptFromSteps, selectedProjectId, selectedAppId],
   );
 
   // Start the deep run directly from a "Here's what I understood" card's OWN stored data
@@ -3184,7 +3188,6 @@ export default function AgentConsole() {
                           taskId={turn.taskId}
                           initialSaved={!!turn.saved}
                           onSaved={() => replaceTurn(turn.id, { ...turn, saved: true })}
-                          onReworkTargetChange={setActiveReworkTarget}
                         />
                         <MessageMeta createdAt={turn.createdAt} execution={turn.execution} />
                       </div>
@@ -3281,6 +3284,11 @@ export default function AgentConsole() {
                           busy={busy || (!!pendingRequirementDraft && pendingRequirementDraft.turnId !== turn.id)}
                           onCreate={() => void confirmRequirementDraft(turn)}
                           onDiscard={() => discardRequirementDraft(turn.id)}
+                          onRework={(instruction) => void reworkRequirementDraft(turn, instruction)}
+                          onChange={(result) => {
+                            replaceTurn(turn.id, { ...turn, result });
+                            setPendingRequirementDraft((current) => current?.turnId === turn.id ? { ...current, result } : current);
+                          }}
                         />
                       </div>
                     </div>
@@ -3449,31 +3457,8 @@ export default function AgentConsole() {
       {/* Composer */}
       <div className="mt-3 shrink-0">
         <div
-          className={cn(
-            'rounded-2xl border bg-[var(--bg-card)] p-2 shadow-sm transition-colors',
-            reqMode
-              ? 'border-[var(--accent)] ring-2 ring-[var(--accent)]/30'
-              : 'border-[var(--border)] focus-within:border-[var(--accent)]',
-          )}
+          className="rounded-2xl border border-[var(--border)] bg-[var(--bg-card)] p-2 shadow-sm transition-colors focus-within:border-[var(--accent)]"
         >
-          {activeReworkTarget && (
-            <div className="mb-1 flex items-center gap-2 px-1">
-              <span className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-[var(--accent)]/30 bg-[var(--accent)]/10 px-2.5 py-1 text-[11px] font-semibold text-[var(--accent)]">
-                <Sparkles className="h-3.5 w-3.5 shrink-0" />
-                <span className="truncate">Reworking: {activeReworkTarget.label}</span>
-                <button type="button" onClick={() => setActiveReworkTarget(null)} aria-label="Clear rework context" className="rounded-full p-0.5 hover:bg-[var(--accent)]/10">
-                  <X className="h-3 w-3" />
-                </button>
-              </span>
-            </div>
-          )}
-          {reqMode && (
-            <div className="mb-1 flex items-center gap-2 px-1">
-              <span className="inline-flex items-center gap-1.5 rounded-full bg-[var(--accent)]/10 px-2.5 py-1 text-[11px] font-semibold text-[var(--accent)]">
-                <Target className="h-3.5 w-3.5" /> Requirement mode
-              </span>
-            </div>
-          )}
           <textarea
             ref={inputRef}
             value={input}
@@ -3501,11 +3486,7 @@ export default function AgentConsole() {
               }
             }}
             rows={1}
-            placeholder={activeReworkTarget
-              ? `Describe how to improve ${activeReworkTarget.label}…`
-              : reqMode
-              ? 'Requirement mode — name a feature or section to test (e.g. list view, permissions)…'
-              : 'Ask the agent to create cases, plan tests, run a suite, file a defect…'}
+            placeholder="Ask the agent to create cases, plan tests, run a suite, file a defect…"
             className="max-h-40 min-h-[44px] w-full resize-none bg-transparent px-3 py-2.5 text-sm text-[var(--text-primary)] outline-none placeholder-[var(--text-muted)]"
           />
           <div className="flex items-center justify-between gap-2 px-1">
@@ -3637,8 +3618,8 @@ export default function AgentConsole() {
                   disabled={!input.trim()}
                   className="flex h-9 items-center gap-1.5 rounded-full bg-[var(--accent)] px-4 text-sm font-medium text-white transition-colors hover:bg-[var(--accent-hover)] disabled:opacity-50"
                 >
-                  {activeReworkTarget ? <Sparkles className="h-4 w-4" /> : <Send className="h-4 w-4" />}
-                  <span className="hidden sm:inline">{activeReworkTarget ? 'Preview changes' : 'Send'}</span>
+                  <Send className="h-4 w-4" />
+                  <span className="hidden sm:inline">Send</span>
                 </button>
               )}
             </div>

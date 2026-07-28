@@ -66,7 +66,7 @@ export function TimeRangeFilter({
       {open && (
         <>
           <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          <div className="absolute right-0 z-50 mt-1 w-56 overflow-hidden rounded-md border border-[var(--border)] bg-[var(--bg-card)] p-1 shadow-lg">
+          <div className="absolute right-0 z-50 mt-1 w-[min(24rem,calc(100vw-1rem))] overflow-hidden rounded-md border border-[var(--border)] bg-[var(--bg-card)] p-1 shadow-lg">
             {PRESETS.map((p) => (
               <button
                 key={p.key}
@@ -78,19 +78,19 @@ export function TimeRangeFilter({
             ))}
             <div className="border-t border-[var(--border)] p-2">
               <div className="mb-1 text-xs font-medium text-[var(--text-muted)]">Custom range</div>
-              <div className="flex items-center gap-1.5">
+              <div className="grid grid-cols-1 items-center gap-1.5 sm:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]">
                 <input
                   type="date"
                   value={value.customFrom || ''}
                   onChange={(e) => onChange({ key: 'custom', customFrom: e.target.value, customTo: value.customTo })}
-                  className="w-full rounded border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-xs text-[var(--text-primary)]"
+                  className="min-w-0 w-full rounded border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-xs text-[var(--text-primary)]"
                 />
                 <span className="text-xs text-[var(--text-muted)]">to</span>
                 <input
                   type="date"
                   value={value.customTo || ''}
                   onChange={(e) => onChange({ key: 'custom', customFrom: value.customFrom, customTo: e.target.value })}
-                  className="w-full rounded border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-xs text-[var(--text-primary)]"
+                  className="min-w-0 w-full rounded border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-xs text-[var(--text-primary)]"
                 />
               </div>
             </div>

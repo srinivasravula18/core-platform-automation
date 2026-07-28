@@ -19,6 +19,7 @@ import {
   Layers,
   GitBranch,
   Boxes,
+  Info,
 } from 'lucide-react';
 
 /**
@@ -153,12 +154,18 @@ export function RequirementDiscoveryResult({ result, onGenerateTests }: { result
         </div>
       )}
 
-      {/* Coverage verdict */}
-      <div className={cn('rounded-md border p-2.5', coverage.sufficient ? 'border-emerald-500/20 bg-emerald-500/5' : 'border-amber-500/20 bg-amber-500/5')}>
+      {/* Coverage verdict. Three states, not two: when coverage against existing tests was NOT
+          evaluated (e.g. draft creation), show a NEUTRAL "not checked yet" note instead of the amber
+          "New tests are needed" — the old default falsely asserted a gap that was never assessed. */}
+      {(() => {
+        const notEvaluated = (coverage as any).evaluated === false;
+        const tone = notEvaluated ? 'border-[var(--border)] bg-[var(--surface-2)]' : coverage.sufficient ? 'border-emerald-500/20 bg-emerald-500/5' : 'border-amber-500/20 bg-amber-500/5';
+        return (
+      <div className={cn('rounded-md border p-2.5', tone)}>
         <div className="flex items-center gap-2">
-          {coverage.sufficient ? <ShieldCheck className="h-4 w-4 text-emerald-400" /> : <AlertTriangle className="h-4 w-4 text-amber-400" />}
+          {notEvaluated ? <Info className="h-4 w-4 text-[var(--text-muted)]" /> : coverage.sufficient ? <ShieldCheck className="h-4 w-4 text-emerald-400" /> : <AlertTriangle className="h-4 w-4 text-amber-400" />}
           <span className="text-xs font-semibold text-[var(--text-primary)]">
-            {coverage.sufficient ? 'Existing tests already cover this requirement' : 'New tests are needed to cover this requirement'}
+            {notEvaluated ? 'Test coverage not checked yet' : coverage.sufficient ? 'Existing tests already cover this requirement' : 'New tests are needed to cover this requirement'}
           </span>
         </div>
         {coverage.reasoning && <p className="mt-1 pl-6 text-[11px] text-[var(--text-muted)]">{coverage.reasoning}</p>}
@@ -188,6 +195,8 @@ export function RequirementDiscoveryResult({ result, onGenerateTests }: { result
           </div>
         )}
       </div>
+        );
+      })()}
 
       {/* Generated (gap) cases — pending review */}
       {generatedCases.length > 0 && (

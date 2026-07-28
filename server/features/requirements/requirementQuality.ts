@@ -59,6 +59,11 @@ function jaccard(a: unknown, b: unknown): number {
 
 /** Lint the generated understanding for common requirement-quality defects. Never throws. */
 export function lintRequirementQuality(understanding: any): QualityFinding[] {
+  // Disabled by request: the requirement quality gate (ambiguous wording, missing AC/priority, etc.)
+  // is turned OFF so no advisory findings surface in the Agent Console. Return early with none.
+  // To re-enable, delete this guard.
+  return [];
+
   const findings: QualityFinding[] = [];
   const modules = Array.isArray(understanding?.srsModules) ? understanding.srsModules : [];
   for (const mod of modules) {

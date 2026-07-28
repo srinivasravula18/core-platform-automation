@@ -24,7 +24,6 @@ interface Props<T extends AIReworkCase> {
   stale?: boolean;
   onApply: (selectedKeys: Set<string>) => void;
   onDiscard: () => void;
-  onActivate?: () => void;
   accessory?: ReactNode;
   appliedMessage?: string | null;
   onUndo?: () => void;
@@ -42,7 +41,6 @@ export function AIReworkPanel<T extends AIReworkCase>({
   stale = false,
   onApply,
   onDiscard,
-  onActivate,
   accessory,
   appliedMessage,
   onUndo,
@@ -180,7 +178,6 @@ export function AIReworkPanel<T extends AIReworkCase>({
   return (
     <section
       aria-label="Improve with AI"
-      onFocus={onActivate}
       className={`rounded-xl border border-[var(--border)] bg-[var(--bg-card)] ${compact ? 'p-2.5' : 'p-3'}`}
     >
       {!compact && <div className="mb-2 flex flex-wrap items-center justify-between gap-2">

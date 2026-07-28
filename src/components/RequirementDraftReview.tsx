@@ -2,12 +2,16 @@ import {
   Check,
   Database,
   FileCode2,
+  Pencil,
   ScrollText,
+  Sparkles,
   Trash2,
 } from 'lucide-react';
+import { useState } from 'react';
 import { cn } from '@/src/lib/utils';
 import { formatBusinessRulesMarkdown, formatRequirementSrs, type RequirementSrsModule } from '@/src/lib/requirementSrs';
 import { MarkdownText } from '@/src/components/MarkdownText';
+import { RequirementSrsEditor } from '@/src/components/RequirementSrsEditor';
 
 const COVERAGE_BADGE: Record<string, { label: string; cls: string }> = {
   covered: { label: 'Covered', cls: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400' },
@@ -37,11 +41,15 @@ export function RequirementDraftReview({
   busy,
   onCreate,
   onDiscard,
+  onChange,
+  onRework,
 }: {
   result: any;
   busy?: boolean;
   onCreate: () => void;
   onDiscard: () => void;
+  onChange: (result: any) => void;
+  onRework?: (instruction: string) => void;
 }) {
   const requirement = result?.requirement || {};
   const srsModules: RequirementSrsModule[] = Array.isArray(result?.understanding?.srsModules) ? result.understanding.srsModules : [];
@@ -53,6 +61,27 @@ export function RequirementDraftReview({
   const duplicateOf = result?.duplicateOf;
   const qualityFindings: Array<{ requirement: string; module: string; issue: string; severity: string }> = Array.isArray(result?.qualityFindings) ? result.qualityFindings : [];
   const qualityWarnings = qualityFindings.filter((f) => f.severity === 'warn');
+  // SRS shows the clean read-only rendered spec by default; the field-by-field editor is revealed
+  // only when the user clicks Edit (the raw editor form is hard to scan for review).
+  const [editingSrs, setEditingSrs] = useState(false);
+  const [reworkOpen, setReworkOpen] = useState(false);
+  const [reworkText, setReworkText] = useState('');
+  const submitRework = () => {
+    const instruction = reworkText.trim();
+    if (!instruction || !onRework) return;
+    onRework(instruction);
+    setReworkText('');
+    setReworkOpen(false);
+  };
+  const updateRequirement = (updates: Record<string, unknown>) =>
+    onChange({ ...result, requirement: { ...requirement, ...updates } });
+  const updateSrsModules = (modules: RequirementSrsModule[]) =>
+    onChange({
+      ...result,
+      requirement: { ...requirement, srsModules: modules },
+      understanding: { ...result?.understanding, srsModules: modules },
+    });
+  const inputClass = 'w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]';
 
   return (
     <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-card)] p-3">
@@ -89,42 +118,64 @@ export function RequirementDraftReview({
         )}
 
         {srsModules.length > 0 && (
-          <div className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-xs leading-relaxed text-[var(--text-primary)]">
-            <MarkdownText value={formatRequirementSrs(srsModules)} />
-          </div>
-        )}
-
-        {srsModules.length === 0 && <div>
-          <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">Title</div>
-          <div className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm font-medium text-[var(--text-primary)]">
-            {requirement.title || 'Untitled requirement'}
-          </div>
-        </div>}
-
-        {srsModules.length === 0 && requirement.description && (
           <div>
-            <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">Description</div>
-            <div className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-xs leading-relaxed text-[var(--text-primary)]">
-              {requirement.description}
+            <div className="mb-1 flex items-center justify-between">
+              <div className="text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">Software Requirements Specification</div>
+              <button
+                type="button"
+                onClick={() => setEditingSrs((v) => !v)}
+                className="inline-flex items-center gap-1 rounded border border-[var(--border)] px-2 py-0.5 text-[10px] font-medium text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)]"
+              >
+                <Pencil className="h-3 w-3" />
+                {editingSrs ? 'Done' : 'Edit'}
+              </button>
             </div>
-          </div>
-        )}
-
-        {srsModules.length === 0 && businessRules.length > 0 && (
-          <div className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-xs text-[var(--text-primary)]">
-            <MarkdownText value={formatBusinessRulesMarkdown(businessRules)} />
+            {editingSrs ? (
+              <RequirementSrsEditor modules={srsModules} onChange={updateSrsModules} />
+            ) : (
+              <div className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-xs text-[var(--text-primary)]">
+                <MarkdownText value={formatRequirementSrs(srsModules)} />
+              </div>
+            )}
           </div>
         )}
 
         <div>
-          {requirement.dataPopulationNotes && (
-            <div className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] p-2">
-              <div className="mb-1 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
-                <Database className="h-3.5 w-3.5" /> Data
-              </div>
-              <p className="text-[11px] leading-relaxed text-[var(--text-primary)]">{requirement.dataPopulationNotes}</p>
+          <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">Title</label>
+          <input value={requirement.title || ''} onChange={(event) => updateRequirement({ title: event.target.value })} className={inputClass} />
+        </div>
+
+        <div>
+          <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">Description</label>
+          <textarea value={requirement.description || ''} onChange={(event) => updateRequirement({ description: event.target.value })} className={`${inputClass} min-h-20 resize-y`} />
+        </div>
+
+        <div>
+          {businessRules.length > 0 && (
+            <div className="mb-2 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-xs text-[var(--text-primary)]">
+              <MarkdownText value={formatBusinessRulesMarkdown(businessRules)} />
             </div>
           )}
+          <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">Business rules (one per line)</label>
+          <textarea
+            value={businessRules.join('\n')}
+            onChange={(event) => updateRequirement({ businessRules: event.target.value.split('\n') })}
+            className={`${inputClass} min-h-24 resize-y font-mono text-xs`}
+          />
+        </div>
+
+        <div>
+          <label className="mb-1 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+            <Database className="h-3.5 w-3.5" /> Background data population
+          </label>
+          <textarea value={requirement.dataPopulationNotes || ''} onChange={(event) => updateRequirement({ dataPopulationNotes: event.target.value })} className={`${inputClass} min-h-20 resize-y`} />
+        </div>
+
+        <div>
+          <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">Status</label>
+          <select value={requirement.status || 'Draft'} onChange={(event) => updateRequirement({ status: event.target.value })} className={inputClass}>
+            {['Draft', 'Under Review', 'Approved', 'Deprecated'].map((status) => <option key={status} value={status}>{status}</option>)}
+          </select>
         </div>
 
         {metadataRefs.length > 0 && (
@@ -173,23 +224,55 @@ export function RequirementDraftReview({
         )}
       </div>
 
-      <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-[var(--border)] pt-3">
-        <span className="text-[11px] text-[var(--text-muted)]">Need changes? Tell the agent what to include before creating it.</span>
-        <div className="flex flex-wrap gap-2">
-          <button
-            onClick={onDiscard}
-            disabled={busy}
-            className="inline-flex items-center gap-1.5 rounded-md border border-red-500/30 bg-red-500/5 px-3 py-1.5 text-xs font-medium text-red-400 hover:bg-red-500/10 disabled:opacity-50"
-          >
-            <Trash2 className="h-3.5 w-3.5" /> Discard
-          </button>
-          <button
-            onClick={onCreate}
-            disabled={busy}
-            className="inline-flex items-center gap-1.5 rounded-md bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50"
-          >
-            <Check className="h-3.5 w-3.5" /> Create requirement
-          </button>
+      <div className="mt-3 border-t border-[var(--border)] pt-3">
+        {onRework && reworkOpen && (
+          <div className="mb-2 flex items-center gap-2">
+            <input
+              value={reworkText}
+              onChange={(event) => setReworkText(event.target.value)}
+              onKeyDown={(event) => { if (event.key === 'Enter') submitRework(); }}
+              placeholder="What should the AI realign or add? e.g. add error-handling requirements, tighten wording, cover empty states"
+              className={inputClass}
+              autoFocus
+            />
+            <button
+              type="button"
+              onClick={submitRework}
+              disabled={busy || !reworkText.trim()}
+              className="inline-flex shrink-0 items-center gap-1.5 rounded-md bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50"
+            >
+              <Sparkles className="h-3.5 w-3.5" /> Send
+            </button>
+          </div>
+        )}
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <span className="text-[11px] text-[var(--text-muted)]">Review and edit the fields before creating the requirement.</span>
+          <div className="flex flex-wrap gap-2">
+            {onRework && (
+              <button
+                type="button"
+                onClick={() => setReworkOpen((v) => !v)}
+                disabled={busy}
+                className="inline-flex items-center gap-1.5 rounded-md border border-[var(--border)] px-3 py-1.5 text-xs font-medium text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)] disabled:opacity-50"
+              >
+                <Sparkles className="h-3.5 w-3.5" /> Rework with AI
+              </button>
+            )}
+            <button
+              onClick={onDiscard}
+              disabled={busy}
+              className="inline-flex items-center gap-1.5 rounded-md border border-red-500/30 bg-red-500/5 px-3 py-1.5 text-xs font-medium text-red-400 hover:bg-red-500/10 disabled:opacity-50"
+            >
+              <Trash2 className="h-3.5 w-3.5" /> Discard
+            </button>
+            <button
+              onClick={onCreate}
+              disabled={busy}
+              className="inline-flex items-center gap-1.5 rounded-md bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50"
+            >
+              <Check className="h-3.5 w-3.5" /> Create requirement
+            </button>
+          </div>
         </div>
       </div>
     </div>

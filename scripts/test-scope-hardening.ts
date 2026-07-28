@@ -5,7 +5,7 @@
  *   3. The compiler derives mutationIntent deterministically from the plan and emits it in MISSION.
  *   npx tsx scripts/test-scope-hardening.ts   (npm run test:scope-hardening)
  */
-import { isMutationIntent, ALL_APPS_ID } from '../server/features/agent/appTargeting';
+import { isAdminAppsIntent, isMutationIntent, resolveAdminModuleFromRefs, ALL_APPS_ID } from '../server/features/agent/appTargeting';
 import { TestDataEngine } from '../server/features/agent/testdata';
 import { buildMissionContext } from '../server/features/agent/mission/missionContext';
 import { buildEvidenceGraphFromRun } from '../server/features/agent/graph/evidenceGraph';
@@ -16,6 +16,16 @@ let passed = 0, failed = 0;
 const ok = (c: boolean, n: string) => { if (c) { passed++; console.log(`  ✓ ${n}`); } else { failed++; console.error(`  ✗ ${n}`); } };
 
 function main() {
+  console.log('isAdminAppsIntent: obvious Apps-section requirements resolve without a navigation prompt');
+  ok(isAdminAppsIntent('Generate tests for app creation and generated API name'), 'app creation');
+  ok(isAdminAppsIntent('Prevent app creation when no parent apps exist'), 'parent app rule');
+  ok(!isAdminAppsIntent('Generate tests for App Hierarchy'), 'App Hierarchy remains distinct');
+  ok(!isAdminAppsIntent('Verify how users should use the feature'), 'generic users wording is not navigation');
+  ok(resolveAdminModuleFromRefs(['app'], [
+    { id: 'apps', name: 'Apps', group: 'Core' },
+    { id: 'app_hierarchy', name: 'App Hierarchy', group: 'Core' },
+  ]) === 'apps', 'app intent pins Apps, not App Hierarchy');
+
   console.log('isMutationIntent: data-mutating goals detected');
   ok(isMutationIntent('Create 2 test cases that create a new account'), 'create');
   ok(isMutationIntent('update the customer phone number'), 'update');

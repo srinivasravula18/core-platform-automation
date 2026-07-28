@@ -285,22 +285,14 @@ type Case = {
   reuseMatchReasons?: string[];
 };
 
-export interface AgentReworkTarget {
-  id: string;
-  label: string;
-  submit: (instruction: string) => Promise<void>;
-}
-
 export function DeepRunResult({
   taskId,
   initialSaved,
   onSaved,
-  onReworkTargetChange,
 }: {
   taskId: string;
   initialSaved?: boolean;
   onSaved?: () => void;
-  onReworkTargetChange?: (target: AgentReworkTarget | null) => void;
 }) {
   const [tab, setTab] = useState<'cases' | 'code' | 'evidence' | 'bugs'>('cases');
   const [shotOpen, setShotOpen] = useState<number | null>(null); // evidence lightbox index
@@ -695,24 +687,6 @@ export function DeepRunResult({
     setChatNote('AI changes undone.');
     setSaved(false);
   };
-  const activateSuiteRework = () => {
-    const scope = selectedCases.size ? `${selectedCases.size} selected case${selectedCases.size === 1 ? '' : 's'}` : `all ${list.length} cases`;
-    suiteReworkRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    onReworkTargetChange?.({
-      id: `run-${activeTaskId}-suite`,
-      label: `Functional Validation / ${scope}`,
-      submit: async (instruction) => { await chatRework(instruction); },
-    });
-  };
-  const activateCaseRework = (i: number) => {
-    const current = list[i];
-    if (!current) return;
-    onReworkTargetChange?.({
-      id: `run-${activeTaskId}-case-${i}`,
-      label: `Case / ${current.title || `Case ${i + 1}`}`,
-      submit: async (instruction) => { await reworkCase(i, instruction); },
-    });
-  };
   const renderCaseReworkPanel = (i: number) => (
     <AIReworkPanel
       compact
@@ -726,7 +700,6 @@ export function DeepRunResult({
       stale={Boolean(reworkProposalOwner === `case-${i}` && reworkProposal && isAIReworkProposalStale(list, reworkProposal))}
       onApply={applyReworkProposal}
       onDiscard={discardReworkProposal}
-      onActivate={() => activateCaseRework(i)}
       appliedMessage={chatNote}
       onUndo={reworkUndoSnapshot ? undoRework : undefined}
     />
@@ -1423,7 +1396,6 @@ export function DeepRunResult({
                   stale={Boolean(reworkProposalOwner === 'suite' && reworkProposal && isAIReworkProposalStale(list, reworkProposal))}
                   onApply={applyReworkProposal}
                   onDiscard={discardReworkProposal}
-                  onActivate={activateSuiteRework}
                   appliedMessage={chatNote}
                   onUndo={reworkUndoSnapshot ? undoRework : undefined}
                   accessory={selectedCases.size ? (
@@ -1486,7 +1458,7 @@ export function DeepRunResult({
                       ))}
                       <span className="text-[10px] text-[var(--text-muted)]">{(c.steps || []).length} steps</span>
                       <button
-                        onClick={(e) => { e.stopPropagation(); setEditing(i); activateCaseRework(i); }}
+                        onClick={(e) => { e.stopPropagation(); setEditing(i); }}
                         className="inline-flex min-h-8 items-center gap-1 rounded px-1.5 text-[10px] font-medium text-[var(--text-muted)] hover:bg-[var(--accent)]/10 hover:text-[var(--accent)]"
                         title="Improve this case with AI"
                       >
