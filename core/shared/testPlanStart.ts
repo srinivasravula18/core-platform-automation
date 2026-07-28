@@ -1,4 +1,5 @@
 export type PlanStartConflict = 'missing-dates' | 'invalid-range' | 'future-start' | 'past-end' | null;
+export type PlanDateWarning = 'future-start' | 'past-end';
 
 export function localDateKey(now = new Date()): string {
   const year = now.getFullYear();
@@ -10,6 +11,17 @@ export function localDateKey(now = new Date()): string {
 export function normalizeDateKey(value: unknown): string {
   if (!value) return '';
   return value instanceof Date ? localDateKey(value) : String(value).slice(0, 10);
+}
+
+export function planDateWarnings(
+  plan: { startDate?: string | null; endDate?: string | null },
+  today = localDateKey(),
+): PlanDateWarning[] {
+  const warnings: PlanDateWarning[] = [];
+  if (normalizeDateKey(plan.startDate) > today) warnings.push('future-start');
+  const endDate = normalizeDateKey(plan.endDate);
+  if (endDate && endDate < today) warnings.push('past-end');
+  return warnings;
 }
 
 export function planStartConflict(

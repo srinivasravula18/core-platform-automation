@@ -112,7 +112,7 @@ function FolderTreeItem({
   );
 }
 
-function MoveDestinationItem({ node, selectedId, onSelect, depth = 0 }: { node: FolderNode; selectedId: string; onSelect: (id: string) => void; depth?: number }) {
+function MoveDestinationItem({ node, selectedId, onSelect, depth = 0 }: { key?: string; node: FolderNode; selectedId: string; onSelect: (id: string) => void; depth?: number }) {
   return (
     <div>
       <button

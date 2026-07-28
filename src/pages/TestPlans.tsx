@@ -20,7 +20,7 @@ import { showAlert, showConfirm } from '@/src/lib/dialog';
 import { caseBelongsToSuite, suitePlanIds, suitePlanMembershipUpdate } from '@/src/lib/suiteCaseSelection';
 import { casesForPlan } from '@/src/lib/manualTestRun';
 import { emptyTestPlanFilters, linkedRunsForPlan, matchesTestPlanFilters } from '@/src/lib/testPlanFilters';
-import { localDateKey, normalizeDateKey, planStartConflict } from '@/core/shared/testPlanStart';
+import { localDateKey, normalizeDateKey, planDateWarnings, planStartConflict } from '@/core/shared/testPlanStart';
 import { withBasePath } from '@/src/lib/base-path';
 
 const PLAN_STATUSES = ['Draft', 'Under Review', 'Approved', 'In Progress', 'Completed', 'Blocked', 'Cancelled', 'Archived'];
@@ -109,6 +109,12 @@ export default function TestPlans() {
 
   const [selectedPlanId, setSelectedPlanId] = useState<string | null>(null);
   const inlineSelectClass = "w-full min-w-[140px] rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs font-medium text-[var(--text-primary)] outline-none transition-colors hover:border-[var(--accent)] focus:border-[var(--accent)]";
+  const dateWarnings = planDateWarnings(formData);
+  const dateWarningMessage = [
+    dateWarnings.includes('future-start') ? 'Start date is in the future.' : '',
+    dateWarnings.includes('past-end') ? 'End date is in the past.' : '',
+    dateWarnings.length ? 'You can still save this plan.' : '',
+  ].filter(Boolean).join(' ');
 
   const fetchPlans = () => {
     fetch('/api/plans')
@@ -471,6 +477,11 @@ export default function TestPlans() {
               {dateValidationMessage}
             </div>
           )}
+          {dateWarningMessage && (
+            <div role="status" className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-300">
+              {dateWarningMessage}
+            </div>
+          )}
           <div>
             <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Title</label>
             <input 
@@ -494,7 +505,7 @@ export default function TestPlans() {
             </div>
             <div>
               <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">End Date</label>
-              <input type="date" min={formData.startDate || undefined} value={formData.endDate} onChange={(e) => { setFormData({...formData, endDate: e.target.value}); setDateValidationMessage(''); }} className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
+              <input type="date" value={formData.endDate} onChange={(e) => { setFormData({...formData, endDate: e.target.value}); setDateValidationMessage(''); }} className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
             </div>
           </div>
           <div>
