@@ -23,6 +23,7 @@ import { caseBelongsToSuite, suitePlanIds, suitePlanMembershipUpdate } from '@/s
 import { casesForPlan } from '@/src/lib/manualTestRun';
 import { emptyTestPlanFilters, linkedRunsForPlan, matchesTestPlanFilters } from '@/src/lib/testPlanFilters';
 import { localDateKey, normalizeDateKey, planStartConflict } from '@/core/shared/testPlanStart';
+import { withBasePath } from '@/src/lib/base-path';
 
 const PLAN_STATUSES = ['Draft', 'Under Review', 'Approved', 'In Progress', 'Completed', 'Blocked', 'Cancelled', 'Archived'];
 const MANUAL_PLAN_STATUSES = PLAN_STATUSES.filter((status) => status !== 'In Progress');
@@ -140,6 +141,12 @@ export default function TestPlans() {
   useEffect(() => {
     fetchPlans();
     fetchPlanRelations();
+  }, []);
+
+  useEffect(() => {
+    const refreshRelations = () => fetchPlanRelations();
+    window.addEventListener('focus', refreshRelations);
+    return () => window.removeEventListener('focus', refreshRelations);
   }, []);
 
   useEffect(() => {
@@ -505,11 +512,32 @@ export default function TestPlans() {
               options={suites.map((suite) => ({ id: String(suite.id), name: String(suite.name || suite.id) }))}
               value={formData.suiteIds}
               onChange={(suiteIds) => setFormData({...formData, suiteIds})}
+              emptyContent={
+                <div className="px-2 py-2 text-xs text-[var(--text-muted)]">
+                  <p>No test suites available. Create one first from the Test Suites section, then link it here.</p>
+                  <a href={withBasePath('/suites')} target="_blank" rel="noreferrer" className="mt-2 inline-flex items-center gap-1 font-medium text-[var(--accent)] hover:underline">
+                    <Plus className="h-3.5 w-3.5" /> Create Test Suite
+                  </a>
+                </div>
+              }
             />
           </div>
           <div>
             <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Link Test Runs</label>
-            <MultiSelectDropdown label="Select test runs" options={runs.map((run) => ({ id: String(run.id), name: String(run.name || run.id) }))} value={formData.runIds} onChange={(runIds) => setFormData({...formData, runIds})} />
+            <MultiSelectDropdown
+              label="Select test runs"
+              options={runs.map((run) => ({ id: String(run.id), name: String(run.name || run.id) }))}
+              value={formData.runIds}
+              onChange={(runIds) => setFormData({...formData, runIds})}
+              emptyContent={
+                <div className="px-2 py-2 text-xs text-[var(--text-muted)]">
+                  <p>No test runs available. Create one from the Test Runs section, then link it here.</p>
+                  <a href={withBasePath('/runs')} target="_blank" rel="noreferrer" className="mt-2 inline-flex items-center gap-1 font-medium text-[var(--accent)] hover:underline">
+                    <Plus className="h-3.5 w-3.5" /> Create Test Run
+                  </a>
+                </div>
+              }
+            />
           </div>
           <div>
             <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Description</label>

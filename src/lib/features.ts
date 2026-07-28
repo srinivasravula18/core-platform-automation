@@ -58,10 +58,11 @@ export type ClientGrants =
   | 'UNRESTRICTED'
   | { features: ClientGrantList; projects: ClientGrantList; websites: ClientGrantList; providers: ClientGrantList };
 
-/** True when grants permit `id` in `category`. UNRESTRICTED / '*' / a missing/invalid grants object all pass (back-compat). */
+/** True when grants explicitly permit `id` in `category`. Missing/invalid grants fail closed. */
 export function grantAllows(grants: ClientGrants | null | undefined, category: 'features' | 'projects' | 'websites' | 'providers', id: string): boolean {
-  if (!grants || grants === 'UNRESTRICTED') return true;
+  if (!grants) return false;
+  if (grants === 'UNRESTRICTED') return true;
   const list = (grants as any)[category];
-  if (list === '*' || list === undefined) return true;
+  if (list === '*') return true;
   return Array.isArray(list) && list.includes(id);
 }

@@ -25,14 +25,14 @@ export function isAdmin(): boolean {
   return getRole() === 'admin';
 }
 
-/** The signed-in user's effective Access-Group grants (from /me or login). Defaults to UNRESTRICTED. */
+/** The signed-in user's effective Access-Group grants (from /me or login). Missing/corrupt state fails closed. */
 export function getGrants(): ClientGrants {
   try {
     const raw = readScopedStorage(GRANTS_KEY);
-    if (!raw) return 'UNRESTRICTED';
+    if (!raw) return { features: [], projects: [], websites: [], providers: [] };
     return JSON.parse(raw) as ClientGrants;
   } catch {
-    return 'UNRESTRICTED';
+    return { features: [], projects: [], websites: [], providers: [] };
   }
 }
 

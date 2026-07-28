@@ -3,9 +3,9 @@
  *
  * An admin puts non-admin app users into a named group and toggles what that group may access:
  * FEATURES (pages), PROJECTS, deployment WEBSITES, and AI PROVIDERS. A user may belong to several
- * groups; their effective access is the UNION of their groups' grants. Admins and users in no group
- * are UNRESTRICTED (back-compat), so this only ever narrows access for a user once an admin groups
- * them. Enforcement lives at the existing resource choke points (projects/websites/providers) and
+ * groups; their effective access is the UNION of their groups' grants. Admins are unrestricted;
+ * non-admin users in no group are denied by default until an admin assigns a group. Enforcement
+ * lives at the existing resource choke points (projects/websites/providers) and
  * the nav; this module only owns the group data + the grant-resolution helpers every gate calls.
  *
  * Stored in the in-memory `db.groups` array (persisted to the JSON store / Postgres json_store like
@@ -41,7 +41,7 @@ export interface AccessGroup {
   createdAt: string;
 }
 
-/** Fully-open access. Admins, unauthenticated/internal callers, and ungrouped users get this. */
+/** Fully-open access. Admins and unauthenticated/internal callers get this. */
 export const UNRESTRICTED = 'UNRESTRICTED' as const;
 export type EffectiveGrants = Grants | typeof UNRESTRICTED;
 
@@ -145,7 +145,9 @@ export function effectiveGrantsForUser(user: AppUser | null | undefined): Effect
   if (!user) return UNRESTRICTED;
   if (user.role === 'admin') return UNRESTRICTED;
   const mine = groupsForUser(user.id);
-  if (mine.length === 0) return UNRESTRICTED;
+  // Non-admin access is deny-by-default. An administrator must explicitly add the user to a
+  // group before any feature or resource can be used.
+  if (mine.length === 0) return emptyGrants();
   let acc = emptyGrants();
   for (const g of mine) {
     acc = {

@@ -486,7 +486,7 @@ function GroupsSection() {
   };
 
   const remove = async (g: GroupRow) => {
-    if (!await showConfirm(`Delete access group "${g.name}"? Members will return to unrestricted access unless they belong to other groups.`, { tone: 'danger' })) return;
+    if (!await showConfirm(`Delete access group "${g.name}"? Members without another group will lose access.`, { tone: 'danger' })) return;
     setBusy(true);
     try {
       const res = await fetch(`/api/groups/${g.id}`, { method: 'DELETE' });
@@ -507,7 +507,7 @@ function GroupsSection() {
       <StatusBanner status={status} />
       <div className="flex items-center justify-between">
         <p className="max-w-2xl text-sm text-[var(--text-muted)]">
-          Group non-admin users and grant each group access to specific features, projects, deployment URLs, and AI providers. A user's access is the union of their groups. Admins and users in no group have full access.
+          Group non-admin users and grant each group access to specific features, projects, deployment URLs, and AI providers. A user's access is the union of their groups. Admins have full access; users in no group have no access.
         </p>
         {!editing && (
           <button onClick={startCreate} className="inline-flex shrink-0 items-center gap-2 rounded-md bg-[var(--accent)] px-3 py-2 text-sm font-medium text-white hover:bg-[var(--accent-hover)]">
@@ -1392,9 +1392,31 @@ type CredRow = {
   revealing?: boolean;
   useForPlaywright: boolean;
   saving?: boolean;
+  saved?: CredentialValues;
 };
 
+type CredentialValues = Pick<CredRow, 'name' | 'url' | 'username' | 'useForPlaywright'>;
+
 const SAVED_PASSWORD_MASK = '********';
+
+const credentialValues = (row: CredRow): CredentialValues => ({
+  name: row.name,
+  url: row.url,
+  username: row.username,
+  useForPlaywright: row.useForPlaywright,
+});
+
+const hasCredentialChanges = (row: CredRow) => {
+  // A new row has no persisted snapshot. It becomes saveable once it is valid.
+  if (!row.saved) return true;
+
+  const current = credentialValues(row);
+  return row.password !== ''
+    || current.name !== row.saved.name
+    || current.url !== row.saved.url
+    || current.username !== row.saved.username
+    || current.useForPlaywright !== row.saved.useForPlaywright;
+};
 
 function CredentialsSection() {
   const [rows, setRows] = useState<CredRow[]>([]);
@@ -1419,7 +1441,7 @@ function CredentialsSection() {
           } catch {
             /* ignore */
           }
-          return {
+          const row = {
             key: newKey(),
             websiteId: w.id,
             userId: user?.id,
@@ -1431,6 +1453,7 @@ function CredentialsSection() {
             passwordVisible: false,
             useForPlaywright: user ? !String(user.notes || '').includes('no-playwright') : true,
           } as CredRow;
+          return { ...row, saved: credentialValues(row) };
         }),
       );
       setRows(built);
@@ -1545,6 +1568,7 @@ function CredentialsSection() {
         revealedPassword: x.password ? x.password : x.revealedPassword,
         password: '',
         saving: false,
+        saved: credentialValues(r),
       } : x)));
       setStatus({ type: 'success', message: 'Saved' });
     } catch (err: any) {
@@ -1605,7 +1629,13 @@ function CredentialsSection() {
 
           {rows.map((r) => {
             const hasSavedPassword = Boolean(r.userId);
-            const canSave = Boolean(r.name.trim() && r.url.trim() && r.username.trim() && (r.userId || r.password));
+            const canSave = Boolean(
+              r.name.trim()
+              && r.url.trim()
+              && r.username.trim()
+              && (r.userId || r.password)
+              && hasCredentialChanges(r),
+            );
             const passwordValue = r.password || (r.passwordVisible ? r.revealedPassword || '' : hasSavedPassword ? SAVED_PASSWORD_MASK : '');
             return (
               <div
@@ -1743,19 +1773,35 @@ function CostSection() {
   const [usage, setUsage] = useState<any[]>([]);
   const [caps, setCaps] = useState<{ day: number; week: number; month: number; year: number }>({ day: 50, week: 0, month: 0, year: 0 });
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
 
   const load = useCallback(async () => {
     setLoading(true);
+    setLoadError('');
     try {
       const [c, s, u] = await Promise.all([
-        fetch('/api/ai/cost').then((r) => r.json()),
-        fetch('/api/ai/usage/summary').then((r) => r.json()),
-        fetch('/api/ai/usage').then((r) => r.json()),
+        fetch('/api/ai/cost').then(async (r) => {
+          const data = await r.json().catch(() => ({}));
+          if (!r.ok) throw new Error(data?.error || 'Could not load cost details.');
+          return data;
+        }),
+        fetch('/api/ai/usage/summary').then(async (r) => {
+          const data = await r.json().catch(() => ({}));
+          if (!r.ok) throw new Error(data?.error || 'Could not load usage summary.');
+          return data;
+        }),
+        fetch('/api/ai/usage').then(async (r) => {
+          const data = await r.json().catch(() => ({}));
+          if (!r.ok) throw new Error(data?.error || 'Could not load usage history.');
+          return data;
+        }),
       ]);
       setCost(c);
       setSummary(s);
       setUsage(u.usage || []);
       if (s?.caps) setCaps(s.caps);
+    } catch (error: any) {
+      setLoadError(error?.message || 'Could not load Cost & Logs.');
     } finally {
       setLoading(false);
     }
@@ -1772,7 +1818,22 @@ function CostSection() {
     await load();
   };
 
-  if (loading || !summary) return <SkeletonCard />;
+  if (loading) return <SkeletonCard />;
+  if (loadError || !summary) {
+    return (
+      <div className="rounded-xl border border-red-500/30 bg-[var(--bg-card)] p-5 shadow-sm">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h2 className="text-lg font-medium">Cost & Logs unavailable</h2>
+            <p className="mt-1 text-sm text-[var(--text-muted)]">{loadError || 'The cost summary did not return usable data.'}</p>
+          </div>
+          <button onClick={() => void load()} className="inline-flex shrink-0 items-center gap-2 rounded-md border border-[var(--border)] px-3 py-2 text-sm hover:bg-[var(--bg-secondary)]">
+            <RefreshCw className="h-4 w-4" /> Retry
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   const windows = summary.windows || {};
   const capStatus = summary.capStatus || {};
@@ -1805,7 +1866,7 @@ function CostSection() {
       {/* Spend by window, each with its cap progress. */}
       <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-card)] p-4 sm:p-6 shadow-sm">
         <h2 className="text-lg font-medium">Spend</h2>
-        <p className="mt-1 text-sm text-[var(--text-muted)]">Real cost across every AI call, priced from each provider's official rates for the model you selected. Deployment-wide.</p>
+        <p className="mt-1 text-sm text-[var(--text-muted)]">Your AI usage and estimated cost, priced from each provider's official rates for the model used.</p>
         <div className="mt-4 grid grid-cols-2 gap-3 lg:grid-cols-5">
           {WINDOW_META.map(({ key, capKey, label }) => {
             const w = windows[key] || emptyWin;
@@ -1878,7 +1939,7 @@ function CostSection() {
 
       {/* Per-model breakdown. */}
       <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-card)] p-4 sm:p-6 shadow-sm">
-        <h2 className="text-lg font-medium">By model (all time)</h2>
+        <h2 className="text-lg font-medium">Your usage by model (all time)</h2>
         <div className="mt-3 max-h-96 overflow-auto">
           <table className="w-full text-sm whitespace-nowrap">
             <thead className="sticky top-0 z-10 bg-[var(--bg-card)] text-xs text-[var(--text-muted)]">

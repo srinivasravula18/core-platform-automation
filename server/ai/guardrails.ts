@@ -45,6 +45,8 @@ export interface GuardrailContext {
 
 export interface GuardrailLog {
   requestId: string;
+  /** App user that initiated the request; absent only on legacy/internal log entries. */
+  userId?: string;
   agent: AgentName;
   layer: 'input' | 'policy' | 'injection' | 'cost' | 'output';
   decision: 'allow' | 'short-circuit' | 'sanitize';
@@ -56,8 +58,8 @@ export interface GuardrailLog {
 const logs: GuardrailLog[] = [];
 const MAX_LOGS = 500;
 
-export function recentGuardrailLogs(): GuardrailLog[] {
-  return [...logs].slice(-100);
+export function recentGuardrailLogs(userId?: string): GuardrailLog[] {
+  return logs.filter((entry) => !userId || entry.userId === userId).slice(-100);
 }
 
 function log(entry: Omit<GuardrailLog, 'ts'>) {
@@ -213,6 +215,7 @@ export function costGuardrail(ctx: GuardrailContext): GuardrailVerdict {
   if (used >= limit) {
     log({
       requestId: ctx.requestId,
+      userId: ctx.userId || ctx.workspaceId,
       agent: ctx.agent,
       layer: 'cost',
       decision: 'short-circuit',
@@ -254,6 +257,7 @@ export interface PipelineResult {
 export function runGuardrailPipeline(input: PipelineInput): PipelineResult {
   const requestId = randomUUID();
   const ctx: GuardrailContext = { ...input, requestId };
+  const userId = input.userId || input.workspaceId;
 
   // Analyze the complete input before applying the provider-facing length cap. Otherwise an
   // injection or policy signal after character 8,000 is invisible to the guardrail.
@@ -262,6 +266,7 @@ export function runGuardrailPipeline(input: PipelineInput): PipelineResult {
   const normalized = normalizeInput(injection.sanitized);
   log({
     requestId,
+    userId,
     agent: input.agent,
     layer: 'input',
     decision: normalized.truncated || normalized.stripped > 0 ? 'sanitize' : 'allow',
@@ -275,7 +280,7 @@ export function runGuardrailPipeline(input: PipelineInput): PipelineResult {
 
   const cost = costGuardrail(ctx);
   if (cost.kind !== 'allow') {
-    log({ requestId, agent: input.agent, layer: 'cost', decision: 'short-circuit', reason: cost.reason });
+    log({ requestId, userId, agent: input.agent, layer: 'cost', decision: 'short-circuit', reason: cost.reason });
     return {
       requestId,
       sanitizedInput: normalized.value,
@@ -286,7 +291,7 @@ export function runGuardrailPipeline(input: PipelineInput): PipelineResult {
 
   const policy = preLLMPolicyCheck(ctx, full.value);
   if (policy.kind !== 'allow') {
-    log({ requestId, agent: input.agent, layer: 'policy', decision: 'short-circuit', reason: policy.reason });
+    log({ requestId, userId, agent: input.agent, layer: 'policy', decision: 'short-circuit', reason: policy.reason });
     return {
       requestId,
       sanitizedInput: normalized.value,
@@ -296,7 +301,7 @@ export function runGuardrailPipeline(input: PipelineInput): PipelineResult {
   }
 
   if (injection.hits.length) {
-    log({ requestId, agent: input.agent, layer: 'injection', decision: 'sanitize', reason: `filtered ${injection.hits.length} injection pattern(s): ${injection.hits.join(', ')}`, details: { hits: injection.hits } });
+    log({ requestId, userId, agent: input.agent, layer: 'injection', decision: 'sanitize', reason: `filtered ${injection.hits.length} injection pattern(s): ${injection.hits.join(', ')}`, details: { hits: injection.hits } });
   }
   const sanitized = normalized.value;
   const systemPrompt = systemPromptFor(input.agent);

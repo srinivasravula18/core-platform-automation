@@ -2137,7 +2137,11 @@ export default function AgentConsole() {
         return [...nextTurns, thinkingTurn];
       });
 
-      if (pendingRequirementDraft) {
+      // A pending requirement draft only swallows the NEXT message as a rework while Requirement mode
+      // is ON. With the mode OFF, only an explicit approve/discard acts on the draft; any other message
+      // (e.g. "generate test cases") falls through to normal routing instead of being turned into another
+      // requirement. (Reworking a draft with the mode off is still available via the card's own buttons.)
+      if (pendingRequirementDraft && (reqMode || isRequirementDraftApprove(text) || isRequirementDraftCancel(text))) {
         try {
           if (isRequirementDraftCancel(text)) {
             updateThinkingLabel(thinkingId, 'Discarding requirement draft...');

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { BrowserRouter, Routes, Route, Link, Navigate, useLocation, useNavigate } from 'react-router-dom';
-import { LayoutDashboard, TestTube2, Bug, Settings, BrainCircuit, PlayCircle, FolderTree, Sun, Moon, Search, CircleUser, Layers, Menu, ClipboardList, GitBranch, Command, MessagesSquare, ChevronDown, LogOut, Target, ScrollText, Radio, HardDrive, CalendarClock, Gauge, BookOpen, Database } from 'lucide-react';
+import { LayoutDashboard, TestTube2, Bug, Settings, BrainCircuit, PlayCircle, FolderTree, Sun, Moon, Search, CircleUser, Layers, Menu, ClipboardList, GitBranch, Command, MessagesSquare, ChevronDown, LogOut, Target, ScrollText, Radio, HardDrive, CalendarClock, Gauge, BookOpen, Database, ShieldAlert } from 'lucide-react';
 import { useRemoteAgentFlag } from '@/src/lib/useAutomation';
 import { cn } from '@/src/lib/utils';
 import { useTheme } from '@/src/store/theme';
@@ -86,8 +86,8 @@ function Sidebar({ isOpen }: { isOpen: boolean }) {
     },
   ];
 
-  // Access-Group feature gating: hide nav items whose feature the user's groups don't grant (admins
-  // and ungrouped users are UNRESTRICTED, so they see everything). Empty groups drop out entirely.
+  // Access-Group feature gating: hide nav items whose feature the user's groups do not grant. Admins
+  // are unrestricted; users without grants retain shared chrome but see no grouped navigation.
   const grants = getGrants();
   const visibleGroups = navGroups
     .map((group) => ({
@@ -147,6 +147,12 @@ function Sidebar({ isOpen }: { isOpen: boolean }) {
             </div>
           );
         })}
+        {visibleGroups.length === 0 && (
+          <div className="px-3 py-4 text-center text-xs leading-5 text-[var(--text-muted)]">
+            No features assigned.<br />
+            Contact an administrator for access.
+          </div>
+        )}
       </div>
       <div className="p-4 border-t border-[var(--border)] whitespace-nowrap">
         <Link
@@ -485,27 +491,43 @@ function Shell({ children }: { children: React.ReactNode }) {
   );
 }
 
-/**
- * Redirect away from a route the user's Access Groups don't grant (feature gating). Admins / ungrouped
- * users are UNRESTRICTED and pass through; ungated paths (settings, unknown) also pass. A blocked route
- * sends the user to the first feature they DO have (or /settings if none).
- */
+/** Redirect away from a feature route the user's Access Groups do not explicitly grant. */
+function NoAccessMessage() {
+  return (
+    <div className="flex h-full min-h-0 items-center justify-center p-4 text-[var(--text-primary)]">
+      <div className="w-full max-w-md rounded-xl border border-[var(--border)] bg-[var(--bg-card)] p-7 text-center shadow-xl">
+        <ShieldAlert className="mx-auto mb-4 h-10 w-10 text-[var(--accent)]" />
+        <h1 className="text-xl font-semibold">No access assigned</h1>
+        <p className="mt-2 text-sm text-[var(--text-muted)]">Your account has not been assigned to an access group. Contact an administrator to request access.</p>
+        <button onClick={logout} className="mt-6 rounded-md border border-[var(--border)] px-4 py-2 text-sm font-medium text-[var(--text-primary)] hover:bg-[var(--bg-secondary)]">Sign out</button>
+      </div>
+    </div>
+  );
+}
+
+/** Shared chrome remains available; individual grouped features are guarded below. */
+function AccessBoundary({ children }: { children: React.ReactNode }) {
+  return <>{children}</>;
+}
+
 function FeatureGuard({ children }: { children: React.ReactNode }) {
   const location = useLocation();
   const grants = getGrants();
   if (grants === 'UNRESTRICTED') return <>{children}</>;
+  const firstAllowed = FEATURES.find((f) => grantAllows(grants, 'features', f.key));
   const key = featureKeyForPath(location.pathname);
   if (!key || grantAllows(grants, 'features', key)) return <>{children}</>;
-  const firstAllowed = FEATURES.find((f) => grantAllows(grants, 'features', f.key));
-  return <Navigate to={firstAllowed ? firstAllowed.hrefs[0] : '/settings'} replace />;
+  if (!firstAllowed) return <NoAccessMessage />;
+  return <Navigate to={firstAllowed ? firstAllowed.hrefs[0] : '/'} replace />;
 }
 
 export default function App() {
   return (
     <AuthGate>
       <BrowserRouter basename={appBasePath || undefined}>
-      <Shell>
-        <FeatureGuard>
+      <AccessBoundary>
+        <Shell>
+          <FeatureGuard>
         <Routes>
           <Route path="/" element={<AgentConsole />} />
           <Route path="/chat/:chatId" element={<AgentConsole />} />
@@ -543,8 +565,9 @@ export default function App() {
             </div>
           } />
         </Routes>
-        </FeatureGuard>
-      </Shell>
+          </FeatureGuard>
+        </Shell>
+      </AccessBoundary>
       </BrowserRouter>
       <DialogHost />
     </AuthGate>
