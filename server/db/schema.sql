@@ -274,6 +274,8 @@ CREATE TABLE IF NOT EXISTS website_users (
 -- A website can have multiple logins (child pages / personas) on the same URL.
 -- These idempotent migrations fix login persistence and add the page fields.
 ALTER TABLE websites ADD COLUMN IF NOT EXISTS owner_id TEXT;
+-- shared: an admin-owned URL the admin opted to share with their testers. Tester URLs stay private.
+ALTER TABLE websites ADD COLUMN IF NOT EXISTS shared BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE website_users ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
 ALTER TABLE website_users ADD COLUMN IF NOT EXISTS page_name  TEXT DEFAULT '';
 ALTER TABLE website_users ADD COLUMN IF NOT EXISTS page_url   TEXT DEFAULT '';
@@ -281,6 +283,16 @@ ALTER TABLE website_users ADD COLUMN IF NOT EXISTS page_url   TEXT DEFAULT '';
 -- Professional defect reports (bug-investigation framework): structured signature/cluster/regression/risk
 -- payload lives in an additive JSONB bag so the defects contract stays unchanged for existing readers.
 ALTER TABLE defects ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}'::jsonb;
+
+-- Older auto-filed workflow defects omitted folder_id even though source_run_id points to the
+-- folder-scoped agent run. Backfill only missing values and only when the folder still exists.
+UPDATE defects d
+SET folder_id = ar.folder_id
+FROM agent_runs ar
+JOIN folders f ON f.id = ar.folder_id
+WHERE d.folder_id IS NULL
+  AND d.source_run_id = ar.id
+  AND ar.folder_id IS NOT NULL;
 
 -- Test-case classification fields: automation status, testing scope (Manual/Automation),
 -- and testing type (Functional/Smoke/Sanity/Regression/...). Additive so existing readers are unaffected.

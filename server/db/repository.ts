@@ -348,6 +348,7 @@ function mapWebsite(r: any) {
     description: r.description,
     tags: r.tags,
     ownerId: r.owner_id || '',
+    shared: r.shared === true,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   };
@@ -391,15 +392,16 @@ export const Websites = {
     }
     const id = w.id || uid('WEB');
     const r = await queryOne(
-      `INSERT INTO websites (id, name, base_url, environment, description, tags, owner_id)
-       VALUES ($1,$2,$3,$4,$5,$6,$7)
+      `INSERT INTO websites (id, name, base_url, environment, description, tags, owner_id, shared)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
        ON CONFLICT (id) DO UPDATE SET
          name=EXCLUDED.name, base_url=EXCLUDED.base_url,
          environment=EXCLUDED.environment, description=EXCLUDED.description,
          tags=EXCLUDED.tags, owner_id=COALESCE(EXCLUDED.owner_id, websites.owner_id),
+         shared=EXCLUDED.shared,
          updated_at=now()
        RETURNING *`,
-      [id, w.name, w.baseUrl, w.environment || 'staging', w.description || '', w.tags || [], w.ownerId || null],
+      [id, w.name, w.baseUrl, w.environment || 'staging', w.description || '', w.tags || [], w.ownerId || null, w.shared === true],
     );
     return mapWebsite(r);
   },

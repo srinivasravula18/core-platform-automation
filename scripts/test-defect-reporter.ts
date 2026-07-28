@@ -54,6 +54,8 @@ function main() {
   ok(r1.drafts[0].tags.some((t) => t.startsWith('@sig:')), 'carries its signature tag');
   ok(r1.drafts[0].description.includes('3 test(s) failed'), 'description names the cluster size');
   ok(r1.drafts[0].stepsToReproduce.length > 0, 'repro steps never empty');
+  const scoped = buildDefectDrafts(baseInput([failedTest('Scoped case', err)], { scope: { folderId: 'folder-apps' } }));
+  eq(scoped.drafts[0].folderId, 'folder-apps', 'defect inherits its source run folder');
 
   console.log('distinct symptoms → distinct defects');
   const r2 = buildDefectDrafts(baseInput([

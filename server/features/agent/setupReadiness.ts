@@ -15,6 +15,8 @@
 import { isAnyProviderConfigured } from '../../ai/orchestrator';
 import { listWebsites } from '../credentials/credentialsService';
 import { listProjects } from '../projects/projectService';
+import { effectiveGrantsForUser, isAllowed, UNRESTRICTED, type EffectiveGrants, type GrantCategory } from '../auth/groupStore';
+import { getUserById } from '../auth/userStore';
 
 export interface SetupReadiness {
   ready: boolean;
@@ -24,13 +26,23 @@ export interface SetupReadiness {
   message: string;
 }
 
-function ownedBy<T extends { ownerId?: string }>(rows: T[], ownerId: string): T[] {
-  return ownerId ? rows.filter((r) => (r.ownerId || '') === ownerId) : rows;
+export function hasOwnedOrGrantedResource<T extends { id?: string; ownerId?: string }>(
+  rows: T[],
+  ownerId: string,
+  grants: EffectiveGrants,
+  category: GrantCategory,
+): boolean {
+  if (!ownerId) return rows.length > 0;
+  return rows.some((row) =>
+    (row.ownerId || '') === ownerId
+    || (grants !== UNRESTRICTED && isAllowed(grants, category, row.id || '')),
+  );
 }
 
 /** Evaluate whether the workspace is set up enough for the agent to run, for the given user scope. */
 export function agentSetupReadiness(scope: { userId?: string }): SetupReadiness {
   const ownerId = scope.userId || '';
+  const grants = effectiveGrantsForUser(getUserById(ownerId));
   const missing: string[] = [];
   const steps: string[] = [];
 
@@ -38,11 +50,11 @@ export function agentSetupReadiness(scope: { userId?: string }): SetupReadiness 
     missing.push('provider');
     steps.push('• Connect an AI provider so the agent can think — Settings → AI Providers.');
   }
-  if (ownedBy(listWebsites(), ownerId).length === 0) {
+  if (!hasOwnedOrGrantedResource(listWebsites(), ownerId, grants, 'websites')) {
     missing.push('url');
     steps.push('• Add the target application URL and its login credentials — Settings → Websites.');
   }
-  if (ownedBy(listProjects(), ownerId).length === 0) {
+  if (!hasOwnedOrGrantedResource(listProjects(), ownerId, grants, 'projects')) {
     missing.push('project');
     steps.push('• Create a Project and connect its code repository, then add an App for it — Projects.');
   }

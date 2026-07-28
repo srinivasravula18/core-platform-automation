@@ -76,7 +76,7 @@ export interface DefectReporterInput {
   consoleByTitle?: Record<string, Array<{ type?: string; text?: string }>>;
   priorRuns?: PriorRunSummary[];
   existingDefects?: ExistingDefectRef[];
-  scope?: { projectId?: string | null; appId?: string | null; ownerId?: string | null };
+  scope?: { projectId?: string | null; appId?: string | null; ownerId?: string | null; folderId?: string | null };
 }
 
 export interface DefectDraft {
@@ -97,6 +97,7 @@ export interface DefectDraft {
   projectId?: string | null;
   appId?: string | null;
   ownerId?: string | null;
+  folderId?: string | null;
   metadata: DefectMetadata;
 }
 
@@ -364,6 +365,7 @@ export function buildDefectDrafts(input: DefectReporterInput): DefectReport {
       projectId: input.scope?.projectId ?? null,
       appId: input.scope?.appId ?? null,
       ownerId: input.scope?.ownerId ?? null,
+      folderId: input.scope?.folderId ?? null,
       metadata: {
         signature: sig.hash,
         errorKind: sig.errorKind,

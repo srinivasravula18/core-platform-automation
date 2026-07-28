@@ -446,6 +446,7 @@ export async function fileDefectsForRun(state: WorkflowState, seed?: any): Promi
         projectId: seed?.projectId ?? state.projectId ?? null,
         appId: seed?.appId ?? state.applicationId ?? null,
         ownerId: seed?.ownerId ?? null,
+        folderId: seed?.folderId ?? null,
       },
     });
 
@@ -493,6 +494,7 @@ export async function fileDefectsForRun(state: WorkflowState, seed?: any): Promi
           projectId: seed?.projectId ?? state.projectId ?? null,
           appId: seed?.appId ?? state.applicationId ?? null,
           ownerId: seed?.ownerId ?? null,
+          folderId: seed?.folderId ?? null,
           metadata: {
             signature: `intent-${i + 1}`,
             errorKind: 'intent-mismatch',

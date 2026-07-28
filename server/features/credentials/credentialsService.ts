@@ -97,6 +97,8 @@ export interface Website {
   tags: string[];
   /** App user who owns this website + its logins (per-user isolation). '' = legacy/admin. */
   ownerId?: string;
+  /** Admin-owned URL shared with the admin's testers. Tester-owned URLs are always private (false). */
+  shared?: boolean;
   createdAt: string;
 }
 
@@ -197,6 +199,7 @@ export function createWebsite(opts: Omit<Website, 'id' | 'createdAt'> & { id?: s
     description: opts.description || '',
     tags: opts.tags || [],
     ownerId: opts.ownerId || '',
+    shared: opts.shared === true,
     createdAt: new Date().toISOString(),
   };
   (db.websites as any[]).unshift(rec);

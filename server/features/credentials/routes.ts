@@ -44,8 +44,14 @@ function userResponse(u: any) {
   };
 }
 
-// A user may see/use a website they OWN or that an Access Group grants (share semantic). UNRESTRICTED
-// (admin / ungrouped / internal) keeps own-only isolation — grants only WIDEN for a grouped user.
+/** Only an admin may mark a URL as shared-with-team; testers' URLs stay private. */
+function reqIsAdmin(req: any): boolean {
+  return reqScope(req).role === 'admin';
+}
+
+// MANAGE access (edit/delete/logins): a user may manage a website they OWN or that an Access Group
+// grants. Shared is deliberately NOT here — an admin-shared URL is usable by testers (it shows in
+// their list) but only the owning admin may manage it. UNRESTRICTED keeps own-only isolation.
 function canAccessWebsite(req: any, websiteId: string): boolean {
   const scope = reqScope(req);
   if (!scope.userId) return true;
@@ -67,13 +73,16 @@ export function registerCredentialsRoutes(app: Express) {
     if (scope.userId) {
       const owned = (w: any) => (w.ownerId || '') === scope.userId;
       const grants = reqGrants(req);
-      websites = grants === UNRESTRICTED ? websites.filter(owned) : websites.filter((w) => owned(w) || isAllowed(grants, 'websites', w.id));
+      // Admin/UNRESTRICTED: own-only. Testers also see admin-shared URLs and anything a group grants.
+      websites = grants === UNRESTRICTED
+        ? websites.filter(owned)
+        : websites.filter((w) => owned(w) || w.shared === true || isAllowed(grants, 'websites', w.id));
     }
     res.json({ websites });
   });
 
   app.post('/api/credentials/websites', (req, res) => {
-    const { name, baseUrl, environment, description, tags } = req.body || {};
+    const { name, baseUrl, environment, description, tags, shared } = req.body || {};
     if (!name || !baseUrl) return res.status(400).json({ error: 'name and baseUrl are required' });
     const w = createWebsite({
       name,
@@ -82,6 +91,8 @@ export function registerCredentialsRoutes(app: Express) {
       description: description || '',
       tags: Array.isArray(tags) ? tags : [],
       ownerId: reqScope(req).userId || '',
+      // Only an admin may share; a tester's URL is always private regardless of what the client sends.
+      shared: reqIsAdmin(req) && shared === true,
     });
     persistDataInBackground('create website');
     recordAudit('create', 'credential', w.id, `Added website credential "${w.name}"`);
@@ -90,7 +101,13 @@ export function registerCredentialsRoutes(app: Express) {
 
   app.put('/api/credentials/websites/:id', (req, res) => {
     if (!canAccessWebsite(req, req.params.id)) return res.status(404).json({ error: 'Website not found' });
-    const w = updateWebsite(req.params.id, req.body || {});
+    const patch = { ...(req.body || {}) };
+    // Only an admin may change sharing; a tester's URL stays private no matter what is sent.
+    if ('shared' in patch) {
+      if (reqIsAdmin(req)) patch.shared = patch.shared === true;
+      else delete patch.shared;
+    }
+    const w = updateWebsite(req.params.id, patch);
     if (!w) return res.status(404).json({ error: 'Website not found' });
     persistDataInBackground('update website');
     recordAudit('update', 'credential', w.id, `Updated website credential "${w.name}"`);

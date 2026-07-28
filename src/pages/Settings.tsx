@@ -1391,11 +1391,13 @@ type CredRow = {
   passwordVisible?: boolean;
   revealing?: boolean;
   useForPlaywright: boolean;
+  /** Admin-only: share this URL with the admin's testers. Ignored for tester-owned URLs. */
+  shared?: boolean;
   saving?: boolean;
   saved?: CredentialValues;
 };
 
-type CredentialValues = Pick<CredRow, 'name' | 'url' | 'username' | 'useForPlaywright'>;
+type CredentialValues = Pick<CredRow, 'name' | 'url' | 'username' | 'useForPlaywright' | 'shared'>;
 
 const SAVED_PASSWORD_MASK = '********';
 
@@ -1404,6 +1406,7 @@ const credentialValues = (row: CredRow): CredentialValues => ({
   url: row.url,
   username: row.username,
   useForPlaywright: row.useForPlaywright,
+  shared: row.shared === true,
 });
 
 const hasCredentialChanges = (row: CredRow) => {
@@ -1452,6 +1455,7 @@ function CredentialsSection() {
             revealedPassword: '',
             passwordVisible: false,
             useForPlaywright: user ? !String(user.notes || '').includes('no-playwright') : true,
+            shared: (w as any).shared === true,
           } as CredRow;
           return { ...row, saved: credentialValues(row) };
         }),
@@ -1524,14 +1528,14 @@ function CredentialsSection() {
         const res = await fetch(`/api/credentials/websites/${websiteId}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: r.name, baseUrl: r.url }),
+          body: JSON.stringify({ name: r.name, baseUrl: r.url, shared: r.shared === true }),
         });
         await failIfNotOk(res, 'Could not update website');
       } else {
         const res = await fetch('/api/credentials/websites', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: r.name, baseUrl: r.url, environment: 'staging' }),
+          body: JSON.stringify({ name: r.name, baseUrl: r.url, environment: 'staging', shared: r.shared === true }),
         });
         await failIfNotOk(res, 'Could not create website');
         const d = await res.json().catch(() => ({}));
@@ -1675,6 +1679,12 @@ function CredentialsSection() {
                 <input type="checkbox" checked={r.useForPlaywright} onChange={(e) => patch(r.key, { useForPlaywright: e.target.checked })} className="accent-[var(--accent)]" />
                 <span className="hidden sm:inline">Use for Playwright</span>
               </label>
+              {isAdmin() && (
+                <label className="flex items-center justify-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--bg-primary)] px-2 py-1.5 text-xs text-[var(--text-muted)]" title="Share this URL with your testers (tester URLs stay private)">
+                  <input type="checkbox" checked={r.shared === true} onChange={(e) => patch(r.key, { shared: e.target.checked })} className="accent-[var(--accent)]" />
+                  <span className="hidden sm:inline">Share with team</span>
+                </label>
+              )}
               <div className="flex items-center justify-center gap-1">
                 <button
                   type="button"

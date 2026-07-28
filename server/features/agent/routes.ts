@@ -969,6 +969,11 @@ function summarizeAgentCaseExecution(run: any) {
 }
 
 async function persistAgentRequirementArtifacts(run: any) {
+  // Requirements are saved ONLY through the explicit Requirements flow (the user generating a
+  // requirement via confirmRequirementDraft). Generating test cases or running scripts must NOT
+  // auto-create requirements. This is the pipeline's legacy auto-save; off by default. Set
+  // AGENT_PERSIST_REQUIREMENTS=1 to restore writing a Requirement + case links for every deep run.
+  if (String(process.env.AGENT_PERSIST_REQUIREMENTS || '').trim() !== '1') return;
   const cases = Array.isArray(run.generated_cases) ? run.generated_cases : [];
   const existingMatches = linkedExistingCases(Array.isArray(run.existing_matches) ? run.existing_matches : [], cases);
   const requirementId = agentRequirementId(run);
@@ -1151,7 +1156,7 @@ async function persistAgentRunAndReportArtifacts(run: any) {
         evidenceShots: run.evidence_screenshots || [],
         priorRuns,
         existingDefects: priorDefects,
-        scope: { projectId: run.projectId || null, appId: run.appId || null, ownerId: run.ownerId || null },
+        scope: { projectId: run.projectId || null, appId: run.appId || null, ownerId: run.ownerId || null, folderId: run.folderId || null },
       });
       await persistDefectReport(report, run.id);
     }
