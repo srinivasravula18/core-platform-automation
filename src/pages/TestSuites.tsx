@@ -1,7 +1,6 @@
 import { Fragment, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ChevronDown, ChevronRight, Search, Filter, Pencil, Plus, Sparkles, Trash2, PlayCircle, Loader2 } from 'lucide-react';
-import { RowMoreMenu } from '@/src/components/RowMoreMenu';
 import { Timestamp, actorName } from '@/src/components/Timestamp';
 import ExportMenu from '../components/ExportMenu';
 import { useAiSearch } from '@/src/lib/useAiSearch';
@@ -655,7 +654,17 @@ export default function TestSuites() {
                           >
                             <Pencil className="w-4 h-4" />
                           </button>
-                          <RowMoreMenu items={[{ label: 'Delete', onClick: () => bulk.deleteOne(suite.id), danger: true }]} />
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              bulk.deleteOne(suite.id);
+                            }}
+                            title="Delete test suite"
+                            aria-label="Delete test suite"
+                            className="shrink-0 p-1 rounded text-[var(--text-muted)] transition-colors hover:bg-red-500/10 hover:text-red-400"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
                         </div>
                       </td>
                     </tr>
