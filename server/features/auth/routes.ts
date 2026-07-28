@@ -186,7 +186,7 @@ export function registerAuthRoutes(app: Express) {
   app.get('/api/auth/me', (req: Request, res: Response) => {
     const u = getAuthUser(req);
     if (!u) return res.status(401).json({ error: 'Not authenticated.' });
-    // Effective access grants (UNION of the user's groups; UNRESTRICTED for admin / ungrouped) so the
+    // Effective access grants (UNION of the user's groups; UNRESTRICTED for admins only) so the
     // client can gate nav + routes. Resource APIs are still enforced server-side (Phase 2/3).
     const grants = effectiveGrantsForUser(getUserById(u.userId));
     res.json({ authenticated: true, username: u.username, role: u.role, userId: u.userId, grants });

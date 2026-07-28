@@ -486,7 +486,7 @@ function GroupsSection() {
   };
 
   const remove = async (g: GroupRow) => {
-    if (!await showConfirm(`Delete access group "${g.name}"? Members will return to unrestricted access unless they belong to other groups.`, { tone: 'danger' })) return;
+    if (!await showConfirm(`Delete access group "${g.name}"? Members without another group will lose access.`, { tone: 'danger' })) return;
     setBusy(true);
     try {
       const res = await fetch(`/api/groups/${g.id}`, { method: 'DELETE' });
@@ -507,7 +507,7 @@ function GroupsSection() {
       <StatusBanner status={status} />
       <div className="flex items-center justify-between">
         <p className="max-w-2xl text-sm text-[var(--text-muted)]">
-          Group non-admin users and grant each group access to specific features, projects, deployment URLs, and AI providers. A user's access is the union of their groups. Admins and users in no group have full access.
+          Group non-admin users and grant each group access to specific features, projects, deployment URLs, and AI providers. A user's access is the union of their groups. Admins have full access; users in no group have no access.
         </p>
         {!editing && (
           <button onClick={startCreate} className="inline-flex shrink-0 items-center gap-2 rounded-md bg-[var(--accent)] px-3 py-2 text-sm font-medium text-white hover:bg-[var(--accent-hover)]">
@@ -1743,19 +1743,35 @@ function CostSection() {
   const [usage, setUsage] = useState<any[]>([]);
   const [caps, setCaps] = useState<{ day: number; week: number; month: number; year: number }>({ day: 50, week: 0, month: 0, year: 0 });
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
 
   const load = useCallback(async () => {
     setLoading(true);
+    setLoadError('');
     try {
       const [c, s, u] = await Promise.all([
-        fetch('/api/ai/cost').then((r) => r.json()),
-        fetch('/api/ai/usage/summary').then((r) => r.json()),
-        fetch('/api/ai/usage').then((r) => r.json()),
+        fetch('/api/ai/cost').then(async (r) => {
+          const data = await r.json().catch(() => ({}));
+          if (!r.ok) throw new Error(data?.error || 'Could not load cost details.');
+          return data;
+        }),
+        fetch('/api/ai/usage/summary').then(async (r) => {
+          const data = await r.json().catch(() => ({}));
+          if (!r.ok) throw new Error(data?.error || 'Could not load usage summary.');
+          return data;
+        }),
+        fetch('/api/ai/usage').then(async (r) => {
+          const data = await r.json().catch(() => ({}));
+          if (!r.ok) throw new Error(data?.error || 'Could not load usage history.');
+          return data;
+        }),
       ]);
       setCost(c);
       setSummary(s);
       setUsage(u.usage || []);
       if (s?.caps) setCaps(s.caps);
+    } catch (error: any) {
+      setLoadError(error?.message || 'Could not load Cost & Logs.');
     } finally {
       setLoading(false);
     }
@@ -1772,7 +1788,22 @@ function CostSection() {
     await load();
   };
 
-  if (loading || !summary) return <SkeletonCard />;
+  if (loading) return <SkeletonCard />;
+  if (loadError || !summary) {
+    return (
+      <div className="rounded-xl border border-red-500/30 bg-[var(--bg-card)] p-5 shadow-sm">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h2 className="text-lg font-medium">Cost & Logs unavailable</h2>
+            <p className="mt-1 text-sm text-[var(--text-muted)]">{loadError || 'The cost summary did not return usable data.'}</p>
+          </div>
+          <button onClick={() => void load()} className="inline-flex shrink-0 items-center gap-2 rounded-md border border-[var(--border)] px-3 py-2 text-sm hover:bg-[var(--bg-secondary)]">
+            <RefreshCw className="h-4 w-4" /> Retry
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   const windows = summary.windows || {};
   const capStatus = summary.capStatus || {};
