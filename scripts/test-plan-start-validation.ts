@@ -4,6 +4,7 @@ import { normalizeDateKey, planStartConflict } from '../core/shared/testPlanStar
 const today = '2026-07-27';
 
 assert.equal(planStartConflict({}, today), 'missing-dates');
+assert.equal(planStartConflict({ endDate: '2026-07-28' }, today), 'missing-dates');
 assert.equal(planStartConflict({ startDate: today, endDate: '2026-07-28' }, today), null);
 assert.equal(planStartConflict({ startDate: '2026-07-28', endDate: '2026-08-01' }, today), 'future-start');
 assert.equal(planStartConflict({ startDate: '2026-07-01', endDate: '2026-07-26' }, today), 'past-end');

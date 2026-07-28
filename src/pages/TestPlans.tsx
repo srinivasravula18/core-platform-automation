@@ -104,7 +104,9 @@ export default function TestPlans() {
   const [startingPlanId, setStartingPlanId] = useState<string | null>(null);
   const [startSchedulePlan, setStartSchedulePlan] = useState<any | null>(null);
   const [startSchedule, setStartSchedule] = useState({ startDate: '', endDate: '' });
+  const [startScheduleValidationMessage, setStartScheduleValidationMessage] = useState('');
   const [formData, setFormData] = useState(emptyPlanForm);
+  const [dateValidationMessage, setDateValidationMessage] = useState('');
 
   const [selectedPlanId, setSelectedPlanId] = useState<string | null>(null);
   const inlineSelectClass = "w-full min-w-[140px] rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs font-medium text-[var(--text-primary)] outline-none transition-colors hover:border-[var(--accent)] focus:border-[var(--accent)]";
@@ -158,11 +160,13 @@ export default function TestPlans() {
   const openNewModal = () => {
     setSelectedPlanId(null);
     setFormData(emptyPlanForm());
+    setDateValidationMessage('');
     setIsPlanModalOpen(true);
   };
 
   const openEditModal = (plan: any) => {
     setSelectedPlanId(plan.id);
+    setDateValidationMessage('');
     const linkedRunIds = new Set<string>((Array.isArray(plan.runIds) ? plan.runIds : []).map(String));
     runs.filter((run) => run.testPlanId === plan.id).forEach((run) => linkedRunIds.add(String(run.id)));
     setFormData({
@@ -186,6 +190,11 @@ export default function TestPlans() {
   const handleSavePlan = async () => {
     if (!formData.name.trim()) return;
     if (!formData.folderId) { void showAlert('Select a folder or create one first.'); return; }
+    if (formData.endDate && !formData.startDate) {
+      setDateValidationMessage('Enter a start date when an end date is provided.');
+      return;
+    }
+    setDateValidationMessage('');
     const { suiteIds, ...planPayload } = formData;
     try {
       const response = await fetch(selectedPlanId ? `/api/plans/${selectedPlanId}` : '/api/plans', {
@@ -267,6 +276,7 @@ export default function TestPlans() {
     if (conflict === 'missing-dates') {
       setStartSchedulePlan(plan);
       setStartSchedule({ startDate: normalizeDateKey(plan.startDate), endDate: normalizeDateKey(plan.endDate) });
+      setStartScheduleValidationMessage('');
       return;
     }
     if (conflict === 'invalid-range') {
@@ -292,6 +302,15 @@ export default function TestPlans() {
     } finally {
       setStartingPlanId(null);
     }
+  };
+
+  const handleStartSchedule = () => {
+    if (!startSchedule.startDate || !startSchedule.endDate) {
+      setStartScheduleValidationMessage('Select both a start date and an end date before starting the plan.');
+      return;
+    }
+    setStartScheduleValidationMessage('');
+    if (startSchedulePlan) void startPlan(startSchedulePlan, startSchedule);
   };
 
   const runSelectedPlans = async (planIds = selectedPlanIds) => {
@@ -382,15 +401,15 @@ export default function TestPlans() {
 
       <Modal
         isOpen={!!startSchedulePlan}
-        onClose={() => setStartSchedulePlan(null)}
+        onClose={() => { setStartSchedulePlan(null); setStartScheduleValidationMessage(''); }}
         title="Schedule and Start Plan"
         size="md"
         footer={
           <div className="flex justify-end gap-3">
-            <button onClick={() => setStartSchedulePlan(null)} className="px-4 py-2 text-sm font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]">Cancel</button>
+            <button onClick={() => { setStartSchedulePlan(null); setStartScheduleValidationMessage(''); }} className="px-4 py-2 text-sm font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]">Cancel</button>
             <button
-              onClick={() => startSchedulePlan && startPlan(startSchedulePlan, startSchedule)}
-              disabled={!startSchedule.startDate || !startSchedule.endDate || startingPlanId !== null}
+              onClick={handleStartSchedule}
+              disabled={startingPlanId !== null}
               className="px-4 py-2 bg-[var(--accent)] text-white text-sm font-medium rounded-md hover:bg-[var(--accent-hover)] disabled:opacity-50"
             >
               {startingPlanId === startSchedulePlan?.id ? 'Starting…' : 'Start Plan'}
@@ -399,13 +418,18 @@ export default function TestPlans() {
         }
       >
         <p className="mb-4 text-sm text-[var(--text-muted)]">Enter the planned start and end dates before starting this plan.</p>
+        {startScheduleValidationMessage && (
+          <div role="alert" className="mb-4 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-300">
+            {startScheduleValidationMessage}
+          </div>
+        )}
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <div>
             <label className="mb-1 block text-sm font-medium text-[var(--text-muted)]">Start Date</label>
             <input
               type="date"
               value={startSchedule.startDate}
-              onChange={(event) => setStartSchedule({ ...startSchedule, startDate: event.target.value })}
+              onChange={(event) => { setStartSchedule({ ...startSchedule, startDate: event.target.value }); setStartScheduleValidationMessage(''); }}
               className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
             />
           </div>
@@ -415,7 +439,7 @@ export default function TestPlans() {
               type="date"
               min={startSchedule.startDate || localDateKey()}
               value={startSchedule.endDate}
-              onChange={(event) => setStartSchedule({ ...startSchedule, endDate: event.target.value })}
+              onChange={(event) => { setStartSchedule({ ...startSchedule, endDate: event.target.value }); setStartScheduleValidationMessage(''); }}
               className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
             />
           </div>
@@ -443,6 +467,11 @@ export default function TestPlans() {
         }
       >
         <div className="space-y-4">
+          {dateValidationMessage && (
+            <div role="alert" className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-300">
+              {dateValidationMessage}
+            </div>
+          )}
           <div>
             <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Title</label>
             <input 
@@ -462,11 +491,11 @@ export default function TestPlans() {
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Start Date</label>
-              <input type="date" value={formData.startDate} onChange={(e) => setFormData({...formData, startDate: e.target.value})} className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
+              <input type="date" value={formData.startDate} onChange={(e) => { setFormData({...formData, startDate: e.target.value}); setDateValidationMessage(''); }} className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
             </div>
             <div>
               <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">End Date</label>
-              <input type="date" min={formData.startDate || undefined} value={formData.endDate} onChange={(e) => setFormData({...formData, endDate: e.target.value})} className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
+              <input type="date" min={formData.startDate || undefined} value={formData.endDate} onChange={(e) => { setFormData({...formData, endDate: e.target.value}); setDateValidationMessage(''); }} className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
             </div>
           </div>
           <div>
