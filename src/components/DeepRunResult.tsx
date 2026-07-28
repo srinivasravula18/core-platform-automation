@@ -879,8 +879,8 @@ export function DeepRunResult({
     setPwRunning(true);
     setPwResult(onlyFailed ? pwResult : null);
     try {
-      // Playwright executions legitimately run long — use a generous 10-minute cap.
-      const res = await fetchWithTimeout('/api/playwright/run', {
+      // Start asynchronously so a reverse proxy cannot terminate the request while browsers run.
+      const startRes = await fetchWithTimeout('/api/playwright/run/start', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -888,8 +888,18 @@ export function DeepRunResult({
           baseUrl: targetUrl,
           runId: `${activeTaskId}-pw`,
         }),
-      }, 600_000);
-      const data = await readRunJson(res);
+      }, 30_000);
+      const started = await readRunJson(startRes);
+      if (!started?.job_id) throw new Error('Playwright run did not return a job id.');
+      const deadline = Date.now() + 20 * 60_000;
+      let data: any;
+      while (Date.now() < deadline) {
+        await new Promise((resolve) => window.setTimeout(resolve, 1500));
+        const poll = await fetchWithTimeout(`/api/playwright/run/${encodeURIComponent(started.job_id)}`, {}, 30_000);
+        const state = await readRunJson(poll);
+        if (state?.status === 'done') { data = state.result; break; }
+      }
+      if (!data) throw new Error('Playwright run timed out while waiting for the server job.');
       // Merge re-run results over the prior ones so passed tests aren't lost from the view.
       if (onlyFailed && pwResult?.tests?.length) {
         const byTitle = new Map<string, any>();

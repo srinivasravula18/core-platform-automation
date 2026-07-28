@@ -10,6 +10,14 @@ import { createAuthStorageState } from '../evidence/evidenceService';
 import { db } from '../../shared/storage';
 
 const codegenRuns = new Map<string, { child: ChildProcess; outputPath: string; url: string; startedAt: string }>();
+type PlaywrightJob = { status: 'running' | 'done' | 'failed'; createdAt: number; result?: any; error?: string };
+const playwrightJobs = new Map<string, PlaywrightJob>();
+const PLAYWRIGHT_JOB_TTL_MS = 30 * 60 * 1000;
+
+function prunePlaywrightJobs() {
+  const cutoff = Date.now() - PLAYWRIGHT_JOB_TTL_MS;
+  for (const [id, job] of playwrightJobs) if (job.createdAt < cutoff) playwrightJobs.delete(id);
+}
 
 function safeId(value: string) {
   return String(value || '').replace(/[^a-zA-Z0-9._-]/g, '-').slice(0, 80) || randomUUID();
@@ -184,6 +192,31 @@ export async function runPlaywrightRequest({ scripts, baseUrl, runId, executionI
 }
 
 export function registerPlaywrightRoutes(app: Express) {
+  app.post('/api/playwright/run/start', (req, res) => {
+    prunePlaywrightJobs();
+    const jobId = randomUUID();
+    playwrightJobs.set(jobId, { status: 'running', createdAt: Date.now() });
+    void runPlaywrightRequest(req.body || {})
+      .then((result) => {
+        const job = playwrightJobs.get(jobId);
+        if (job) { job.status = 'done'; job.result = result; }
+      })
+      .catch((err: any) => {
+        const job = playwrightJobs.get(jobId);
+        if (job) { job.status = 'failed'; job.error = err?.message || 'Failed to run Playwright scripts.'; }
+      });
+    res.json({ job_id: jobId });
+  });
+
+  app.get('/api/playwright/run/:jobId', (req, res) => {
+    prunePlaywrightJobs();
+    const job = playwrightJobs.get(String(req.params.jobId));
+    if (!job) return res.status(404).json({ error: 'Unknown or expired Playwright job.' });
+    if (job.status === 'running') return res.json({ status: 'running' });
+    if (job.status === 'failed') return res.status(500).json({ status: 'failed', error: job.error });
+    return res.json({ status: 'done', result: job.result });
+  });
+
   app.post('/api/playwright/run', async (req, res) => {
     try {
       res.json(await runPlaywrightRequest(req.body || {}));
