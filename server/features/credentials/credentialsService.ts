@@ -179,6 +179,36 @@ export function getWebsite(id: string): Website | null {
   return (db.websites as any[]).find((w) => w.id === id) || null;
 }
 
+/**
+ * Canonical key used when deciding whether a Settings credential already exists.
+ * Fragments, query strings, case, and a trailing slash do not identify a different
+ * target application, so they must not allow a second credential row.
+ */
+function credentialWebsiteKey(value: string): string {
+  const raw = String(value || '').trim();
+  try {
+    const url = new URL(raw);
+    url.hash = '';
+    url.search = '';
+    url.pathname = url.pathname.replace(/\/+$/, '') || '/';
+    return url.toString().toLowerCase();
+  } catch {
+    return raw.replace(/\/+$/, '').toLowerCase();
+  }
+}
+
+/** Finds another website credential for the same owner and target URL. */
+export function findDuplicateWebsite(baseUrl: string, ownerId = '', excludeId?: string): Website | null {
+  ensureTables();
+  const target = credentialWebsiteKey(baseUrl);
+  if (!target) return null;
+  return (db.websites as any[]).find((w) =>
+    w.id !== excludeId
+    && (w.ownerId || '') === ownerId
+    && credentialWebsiteKey(w.baseUrl) === target,
+  ) || null;
+}
+
 export function listUsersForWebsite(websiteId: string): WebsiteUser[] {
   ensureTables();
   return (db.websiteUsers as any[]).filter((u) => u.websiteId === websiteId);
@@ -187,6 +217,18 @@ export function listUsersForWebsite(websiteId: string): WebsiteUser[] {
 export function getUser(id: string): WebsiteUser | null {
   ensureTables();
   return (db.websiteUsers as any[]).find((u) => u.id === id) || null;
+}
+
+/** A website may have distinct roles, but not the same login twice. */
+export function findDuplicateWebsiteUser(websiteId: string, username: string, excludeId?: string): WebsiteUser | null {
+  ensureTables();
+  const target = String(username || '').trim().toLowerCase();
+  if (!target) return null;
+  return (db.websiteUsers as any[]).find((u) =>
+    u.id !== excludeId
+    && u.websiteId === websiteId
+    && String(u.username || '').trim().toLowerCase() === target,
+  ) || null;
 }
 
 export function createWebsite(opts: Omit<Website, 'id' | 'createdAt'> & { id?: string }): Website {

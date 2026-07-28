@@ -21,9 +21,11 @@ import {
   createWebsite,
   updateWebsite,
   deleteWebsite,
+  findDuplicateWebsite,
   createUser,
   updateUser,
   deleteUser,
+  findDuplicateWebsiteUser,
   resolveCredentials,
   revealPassword,
   maskPassword,
@@ -84,13 +86,17 @@ export function registerCredentialsRoutes(app: Express) {
   app.post('/api/credentials/websites', (req, res) => {
     const { name, baseUrl, environment, description, tags, shared } = req.body || {};
     if (!name || !baseUrl) return res.status(400).json({ error: 'name and baseUrl are required' });
+    const ownerId = reqScope(req).userId || '';
+    if (findDuplicateWebsite(baseUrl, ownerId)) {
+      return res.status(409).json({ error: 'Credentials for this website URL already exist.' });
+    }
     const w = createWebsite({
       name,
       baseUrl,
       environment: environment || 'staging',
       description: description || '',
       tags: Array.isArray(tags) ? tags : [],
-      ownerId: reqScope(req).userId || '',
+      ownerId,
       // Only an admin may share; a tester's URL is always private regardless of what the client sends.
       shared: reqIsAdmin(req) && shared === true,
     });
@@ -101,7 +107,11 @@ export function registerCredentialsRoutes(app: Express) {
 
   app.put('/api/credentials/websites/:id', (req, res) => {
     if (!canAccessWebsite(req, req.params.id)) return res.status(404).json({ error: 'Website not found' });
+    const existing = getWebsite(req.params.id);
     const patch = { ...(req.body || {}) };
+    if (existing && patch.baseUrl && findDuplicateWebsite(patch.baseUrl, existing.ownerId || '', req.params.id)) {
+      return res.status(409).json({ error: 'Credentials for this website URL already exist.' });
+    }
     // Only an admin may change sharing; a tester's URL stays private no matter what is sent.
     if ('shared' in patch) {
       if (reqIsAdmin(req)) patch.shared = patch.shared === true;
@@ -133,6 +143,9 @@ export function registerCredentialsRoutes(app: Express) {
     if (!label || !username || !password || !role) {
       return res.status(400).json({ error: 'label, username, password, role are required' });
     }
+    if (findDuplicateWebsiteUser(req.params.id, username)) {
+      return res.status(409).json({ error: 'This username already has credentials for the website.' });
+    }
     const u = createUser({ websiteId: req.params.id, label, username, password, role, customRole, notes, pageName, pageUrl });
     persistDataInBackground('create website user');
     recordAudit('create', 'credential-login', u.id, `Added login "${u.username}"`);
@@ -141,6 +154,10 @@ export function registerCredentialsRoutes(app: Express) {
 
   app.put('/api/credentials/users/:id', (req, res) => {
     if (!canAccessUser(req, req.params.id)) return res.status(404).json({ error: 'User not found' });
+    const existing = getUser(req.params.id);
+    if (existing && req.body?.username && findDuplicateWebsiteUser(existing.websiteId, req.body.username, req.params.id)) {
+      return res.status(409).json({ error: 'This username already has credentials for the website.' });
+    }
     const u = updateUser(req.params.id, req.body || {});
     if (!u) return res.status(404).json({ error: 'User not found' });
     persistDataInBackground('update user');

@@ -1421,6 +1421,18 @@ const hasCredentialChanges = (row: CredRow) => {
     || current.useForPlaywright !== row.saved.useForPlaywright;
 };
 
+const credentialUrlKey = (value: string) => {
+  try {
+    const url = new URL(value.trim());
+    url.hash = '';
+    url.search = '';
+    url.pathname = url.pathname.replace(/\/+$/, '') || '/';
+    return url.toString().toLowerCase();
+  } catch {
+    return value.trim().replace(/\/+$/, '').toLowerCase();
+  }
+};
+
 function CredentialsSection() {
   const [rows, setRows] = useState<CredRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -1513,6 +1525,15 @@ function CredentialsSection() {
     const r = rows.find((x) => x.key === key);
     if (!r || r.saving) return;
     if (!r.name.trim() || !r.url.trim() || !r.username.trim() || (!r.userId && !r.password)) return;
+    const duplicate = rows.find((candidate) =>
+      candidate.key !== r.key
+      && credentialUrlKey(candidate.url) === credentialUrlKey(r.url)
+      && candidate.username.trim().toLowerCase() === r.username.trim().toLowerCase(),
+    );
+    if (duplicate) {
+      setStatus({ type: 'error', message: 'Credentials for this website and username already exist.' });
+      return;
+    }
     setRows((prev) => prev.map((x) => (x.key === key ? { ...x, saving: true } : x)));
     try {
       // Read the server's error text on any non-2xx so the UI shows the REAL reason
