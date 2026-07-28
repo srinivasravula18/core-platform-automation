@@ -291,6 +291,82 @@ export async function expandByReferences(
 }
 
 /**
+ * Relevance-windowed excerpt of a (possibly very large) file. Enterprise apps park the real logic
+ * — validation, limits, error branches — deep inside multi-thousand-line container files. Dumping
+ * such a file whole either blows the excerpt budget or gets truncated at the top, so the deep logic
+ * (e.g. a submit handler at line ~10,900) is never seen. Instead of head-truncating, this keeps the
+ * REGIONS around lines that mention the feature terms — so a 500 KB file contributes only its few
+ * relevant KB, from anywhere in the file. Small files (<= maxChars) are returned whole. Pure +
+ * deterministic (line-based, no AST) so it is unit-testable and works over any language.
+ */
+export function extractRelevantWindows(
+  content: string,
+  terms: string[],
+  opts?: { maxChars?: number; context?: number },
+): string {
+  const maxChars = opts?.maxChars ?? 8000;
+  const context = opts?.context ?? 10;
+  const text = String(content || '');
+  if (text.length <= maxChars) return text;
+  const termSet = (terms || []).map((t) => String(t).toLowerCase()).filter((t) => t.length >= 3);
+  if (!termSet.length) return text.slice(0, maxChars) + '\n… [truncated] …';
+
+  const lines = text.split(/\r?\n/);
+  const hits: number[] = [];
+  lines.forEach((ln, i) => {
+    const l = ln.toLowerCase();
+    if (termSet.some((t) => l.includes(t))) hits.push(i);
+  });
+  if (!hits.length) return text.slice(0, maxChars) + '\n… [truncated] …';
+
+  // Merge overlapping/adjacent context windows into contiguous ranges.
+  const ranges: Array<{ start: number; end: number }> = [];
+  for (const h of hits) {
+    const start = Math.max(0, h - context);
+    const end = Math.min(lines.length - 1, h + context);
+    const last = ranges[ranges.length - 1];
+    if (last && start <= last.end + 1) last.end = Math.max(last.end, end);
+    else ranges.push({ start, end });
+  }
+
+  // Rank ranges by RELEVANCE DENSITY before spending the budget, then keep the densest that fit.
+  // A file can match a term scattered near the top (one weak mention per region) while the region
+  // that actually implements the behavior — many DISTINCT terms clustered together, thousands of
+  // lines down — is what we want. Taking ranges top-to-bottom would burn the budget on the weak
+  // early mentions and never reach the real one. Score = matching lines + a bonus per distinct term
+  // present, so a dense multi-term region (e.g. a validation handler) outranks a lone keyword.
+  const scoreOf = (r: { start: number; end: number }): number => {
+    let matchLines = 0;
+    const seenTerms = new Set<string>();
+    for (let i = r.start; i <= r.end; i += 1) {
+      const l = lines[i].toLowerCase();
+      let lineMatched = false;
+      for (const t of termSet) if (l.includes(t)) { lineMatched = true; seenTerms.add(t); }
+      if (lineMatched) matchLines += 1;
+    }
+    return matchLines + seenTerms.size * 3;
+  };
+  const ranked = ranges
+    .map((r) => ({ r, score: scoreOf(r) }))
+    .sort((a, b) => b.score - a.score);
+
+  // Greedily take the highest-scoring ranges until the budget is full…
+  const chosen: Array<{ start: number; end: number }> = [];
+  let used = 0;
+  for (const { r } of ranked) {
+    const size = (r.end - r.start + 1) * 40 + 24; // rough char estimate incl. the range header
+    if (used + size > maxChars && chosen.length) continue;
+    chosen.push(r);
+    used += size;
+    if (used >= maxChars) break;
+  }
+  // …then emit them in FILE ORDER so the excerpt still reads top-to-bottom.
+  chosen.sort((a, b) => a.start - b.start);
+  const parts = chosen.map((r) => `… [lines ${r.start + 1}-${r.end + 1}] …\n${lines.slice(r.start, r.end + 1).join('\n')}`);
+  return parts.join('\n\n');
+}
+
+/**
  * Short human-readable summary of a traversal result: total files plus a per-depth breakdown,
  * e.g. "12 files across the reference graph: 3 roots, 6 at depth 1, 3 at depth 2".
  */

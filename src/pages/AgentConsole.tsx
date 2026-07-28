@@ -3265,6 +3265,10 @@ export default function AgentConsole() {
                           busy={busy || (!!pendingRequirementDraft && pendingRequirementDraft.turnId !== turn.id)}
                           onCreate={() => void confirmRequirementDraft(turn)}
                           onDiscard={() => discardRequirementDraft(turn.id)}
+                          onChange={(result) => {
+                            replaceTurn(turn.id, { ...turn, result });
+                            setPendingRequirementDraft((current) => current?.turnId === turn.id ? { ...current, result } : current);
+                          }}
                         />
                       </div>
                     </div>

@@ -17,7 +17,7 @@ import { readFileSync, existsSync } from 'fs';
 import { z } from 'zod';
 import { getOrchestrator } from '../../ai/orchestrator';
 import { deepParallelResearch, relevantSourcePaths, facetCeiling } from '../../ai/research/deepResearch';
-import { expandByReferences } from '../../ai/exploration/referenceGraph';
+import { expandByReferences, extractRelevantWindows } from '../../ai/exploration/referenceGraph';
 import { Cases, Requirements, RequirementLinks, isPgEnabled } from '../../db/repository';
 import { persistDataInBackground, addActivity } from '../../shared/storage';
 import { normalizeCaseSteps, normalizeCaseTags } from '../../shared/testCases';
@@ -547,18 +547,52 @@ function harvestReferenceTerms(content: string): string[] {
 }
 
 /**
+ * Reverse reference edges — the CALLERS of the seed files. expandByReferences follows imports
+ * DOWNSTREAM (a file → what it imports), so it can reach a component's children but never its
+ * PARENT — the container that renders it and owns its real logic (submit/validation handlers are
+ * routinely defined in the parent and passed down as props like onSubmit). Missing that parent is
+ * why grounding sees a presentational component but not the rule it enforces. This closes the loop:
+ * for each seed, grep the repo for its module identifier and keep the files whose import lines
+ * reference it — i.e. the files that USE the seed. Bounded + scoped so it stays on the feature.
+ */
+function findImporters(seedPaths: string[], repoPath: string | undefined, scopePaths: string[]): string[] {
+  const seedSet = new Set(seedPaths.map((p) => String(p).replace(/\\/g, '/')));
+  const importers = new Set<string>();
+  for (const seed of seedPaths.slice(0, 16)) {
+    const stem = String(seed).replace(/\\/g, '/').split('/').pop()?.replace(/\.(tsx?|jsx?|mjs|cjs|vue|svelte)$/i, '') || '';
+    if (stem.length < 3) continue;
+    // Match import/from lines that reference this module by name (covers relative AND aliased imports).
+    const importRe = new RegExp(`\\b(?:import|from)\\b[^\\n]*\\b${stem.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`);
+    let candidates: Array<{ path: string }> = [];
+    try { candidates = gitGrep([stem], undefined, 40, repoPath).filter((h) => isUnderScope(h.path, scopePaths)); } catch { candidates = []; }
+    for (const cand of candidates) {
+      const path = String(cand.path).replace(/\\/g, '/');
+      if (seedSet.has(path) || importers.has(path)) continue;
+      try {
+        if (importRe.test(readRepoFile(path, 0, repoPath))) importers.add(path);
+      } catch { /* unreadable — skip */ }
+      if (importers.size >= 12) break;
+    }
+    if (importers.size >= 12) break;
+  }
+  return [...importers];
+}
+
+/**
  * Dynamic, BFS-driven source discovery — Claude-Code style.
  *
  * 1. Keyword extraction → broad git grep → relevance-ranked seed files.
- * 2. expandByReferences: real import-graph BFS from those seeds following actual
- *    TS/JS `import` statements depth-first through child → grandchild … → leaf nodes.
- *    Relevance-pruned beyond freeDepth=1 so the walk terminates naturally at the
- *    boundary of the feature's subgraph — no artificial file-count or byte budget.
- * 3. Return nodes in BFS order (seeds → direct imports → transitive dependencies).
+ * 2. Reverse edges: also seed the CALLERS of those files (findImporters), so the walk covers the
+ *    parent/container that owns a component's real logic, not just the component itself.
+ * 3. expandByReferences: real import-graph BFS from those seeds following actual TS/JS `import`
+ *    statements depth-first through child → grandchild … → leaf nodes. Relevance-pruned beyond
+ *    freeDepth=1 so the walk terminates naturally at the boundary of the feature's subgraph.
+ * 4. Read each node RELEVANCE-WINDOWED (extractRelevantWindows): large container files contribute
+ *    only the regions around the feature terms — so logic buried deep in a huge file is captured
+ *    instead of being truncated away by the total-excerpt budget.
  *
- * Termination is purely graph-driven: when there are no more reachable nodes whose
- * path or content matches the keywords, the BFS stops. Per-file read size (maxBytesPerFile)
- * prevents any single large file from dominating, but the total set size is emergent.
+ * Termination is purely graph-driven: when there are no more reachable nodes whose path or content
+ * matches the keywords, the BFS stops. The total set size is emergent.
  */
 async function dynamicBfsDiscovery(
   keywords: string[],
@@ -575,12 +609,18 @@ async function dynamicBfsDiscovery(
   }
   const seedPaths = relevantSourcePaths(Array.from(hitMeta.keys()), keywords).slice(0, 24);
 
+  // Step 1b: reverse edges — add the CALLERS of the seeds so the walk reaches the parent/container
+  // that owns a component's submit/validation logic (defined in the parent, passed down as props).
+  const importerSeeds = findImporters(seedPaths, repoPath, scopePaths);
+  for (const p of importerSeeds) if (!hitMeta.has(p)) hitMeta.set(p, { path: p, area: 'code', surface: '' } as any);
+  const allSeeds = Array.from(new Set([...seedPaths, ...importerSeeds]));
+
   // Step 2: BFS over the actual import graph.
   // - freeDepth=1: every direct import of a seed is followed unconditionally.
   // - Beyond depth 1: only nodes whose path OR content contains a keyword are enqueued.
   //   This naturally terminates at the feature's subgraph without an artificial cap.
   const graphNodes = await expandByReferences(
-    seedPaths,
+    allSeeds,
     { read: async (p, b) => readRepoFile(p, b, repoPath) },
     { terms: keywords, maxDepth: 6, maxFiles: 80, maxBytesPerFile: 2000, freeDepth: 1 },
   );
@@ -598,15 +638,17 @@ async function dynamicBfsDiscovery(
     if (!seenPaths.has(p)) { seenPaths.add(p); ordered.push(p); }
   }
 
-  // Step 4: read every node in BFS order and assemble the excerpts block.
-  // expandByReferences already read each file up to maxBytesPerFile during the walk;
-  // we re-read here to get the content for the prompt (same byte cap).
+  // Step 4: read every node in BFS order and assemble the excerpts block. Large container files are
+  // RELEVANCE-WINDOWED (regions around the feature terms) rather than dumped whole — so deep logic
+  // (validation/limits/error branches parked thousands of lines into a file) survives the total
+  // excerpt budget instead of being truncated off the end. Small files are kept whole.
   const files: Array<{ path: string; area: string; surface: string }> = [];
   const parts: string[] = [];
   for (const p of ordered) {
     try {
-      const content = readRepoFile(p, 3000, repoPath);
-      if (!content.trim()) continue;
+      const whole = readRepoFile(p, 0, repoPath);
+      if (!whole.trim()) continue;
+      const content = whole.length > 12000 ? extractRelevantWindows(whole, keywords, { maxChars: 9000, context: 12 }) : whole;
       const meta = hitMeta.get(p);
       files.push({ path: p, area: meta?.area ?? 'code', surface: (meta as any)?.surface ?? '' });
       parts.push(`FILE: ${p}  [area: ${meta?.area ?? 'code'}]\n${content}`);
@@ -1254,9 +1296,13 @@ export async function draftRequirement(
   opts.onProgress?.('Building code-grounded requirement review card...');
   const coverage = {
     sufficient: false,
+    // Draft creation does NOT run coverage analysis against existing tests — so the UI must not
+    // claim a gap ("New tests are needed") that was never assessed. `evaluated: false` drives the
+    // neutral "not checked yet" state instead.
+    evaluated: false,
     coveredBy: [],
     gaps: [],
-    reasoning: 'Not evaluated for draft creation. Requirement drafts are grounded only in the selected codebase.',
+    reasoning: 'Existing-test coverage isn’t checked while drafting — it runs after you confirm the requirement. This draft is grounded only in the selected codebase.',
   };
   const coverageStatus = 'unknown';
   // Reuse an existing near-duplicate's id (same owner+project+surface) so confirming the draft

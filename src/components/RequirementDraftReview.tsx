@@ -6,8 +6,9 @@ import {
   Trash2,
 } from 'lucide-react';
 import { cn } from '@/src/lib/utils';
-import { formatBusinessRulesMarkdown, formatRequirementSrs, type RequirementSrsModule } from '@/src/lib/requirementSrs';
+import { formatBusinessRulesMarkdown, type RequirementSrsModule } from '@/src/lib/requirementSrs';
 import { MarkdownText } from '@/src/components/MarkdownText';
+import { RequirementSrsEditor } from '@/src/components/RequirementSrsEditor';
 
 const COVERAGE_BADGE: Record<string, { label: string; cls: string }> = {
   covered: { label: 'Covered', cls: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400' },
@@ -37,11 +38,13 @@ export function RequirementDraftReview({
   busy,
   onCreate,
   onDiscard,
+  onChange,
 }: {
   result: any;
   busy?: boolean;
   onCreate: () => void;
   onDiscard: () => void;
+  onChange: (result: any) => void;
 }) {
   const requirement = result?.requirement || {};
   const srsModules: RequirementSrsModule[] = Array.isArray(result?.understanding?.srsModules) ? result.understanding.srsModules : [];
@@ -53,6 +56,15 @@ export function RequirementDraftReview({
   const duplicateOf = result?.duplicateOf;
   const qualityFindings: Array<{ requirement: string; module: string; issue: string; severity: string }> = Array.isArray(result?.qualityFindings) ? result.qualityFindings : [];
   const qualityWarnings = qualityFindings.filter((f) => f.severity === 'warn');
+  const updateRequirement = (updates: Record<string, unknown>) =>
+    onChange({ ...result, requirement: { ...requirement, ...updates } });
+  const updateSrsModules = (modules: RequirementSrsModule[]) =>
+    onChange({
+      ...result,
+      requirement: { ...requirement, srsModules: modules },
+      understanding: { ...result?.understanding, srsModules: modules },
+    });
+  const inputClass = 'w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]';
 
   return (
     <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-card)] p-3">
@@ -89,42 +101,48 @@ export function RequirementDraftReview({
         )}
 
         {srsModules.length > 0 && (
-          <div className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-xs leading-relaxed text-[var(--text-primary)]">
-            <MarkdownText value={formatRequirementSrs(srsModules)} />
-          </div>
-        )}
-
-        {srsModules.length === 0 && <div>
-          <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">Title</div>
-          <div className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm font-medium text-[var(--text-primary)]">
-            {requirement.title || 'Untitled requirement'}
-          </div>
-        </div>}
-
-        {srsModules.length === 0 && requirement.description && (
           <div>
-            <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">Description</div>
-            <div className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-xs leading-relaxed text-[var(--text-primary)]">
-              {requirement.description}
-            </div>
-          </div>
-        )}
-
-        {srsModules.length === 0 && businessRules.length > 0 && (
-          <div className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-xs text-[var(--text-primary)]">
-            <MarkdownText value={formatBusinessRulesMarkdown(businessRules)} />
+            <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">Edit Software Requirements Specification</div>
+            <RequirementSrsEditor modules={srsModules} onChange={updateSrsModules} />
           </div>
         )}
 
         <div>
-          {requirement.dataPopulationNotes && (
-            <div className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] p-2">
-              <div className="mb-1 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
-                <Database className="h-3.5 w-3.5" /> Data
-              </div>
-              <p className="text-[11px] leading-relaxed text-[var(--text-primary)]">{requirement.dataPopulationNotes}</p>
+          <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">Title</label>
+          <input value={requirement.title || ''} onChange={(event) => updateRequirement({ title: event.target.value })} className={inputClass} />
+        </div>
+
+        <div>
+          <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">Description</label>
+          <textarea value={requirement.description || ''} onChange={(event) => updateRequirement({ description: event.target.value })} className={`${inputClass} min-h-20 resize-y`} />
+        </div>
+
+        <div>
+          {businessRules.length > 0 && (
+            <div className="mb-2 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-xs text-[var(--text-primary)]">
+              <MarkdownText value={formatBusinessRulesMarkdown(businessRules)} />
             </div>
           )}
+          <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">Business rules (one per line)</label>
+          <textarea
+            value={businessRules.join('\n')}
+            onChange={(event) => updateRequirement({ businessRules: event.target.value.split('\n') })}
+            className={`${inputClass} min-h-24 resize-y font-mono text-xs`}
+          />
+        </div>
+
+        <div>
+          <label className="mb-1 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+            <Database className="h-3.5 w-3.5" /> Background data population
+          </label>
+          <textarea value={requirement.dataPopulationNotes || ''} onChange={(event) => updateRequirement({ dataPopulationNotes: event.target.value })} className={`${inputClass} min-h-20 resize-y`} />
+        </div>
+
+        <div>
+          <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">Status</label>
+          <select value={requirement.status || 'Draft'} onChange={(event) => updateRequirement({ status: event.target.value })} className={inputClass}>
+            {['Draft', 'Under Review', 'Approved', 'Deprecated'].map((status) => <option key={status} value={status}>{status}</option>)}
+          </select>
         </div>
 
         {metadataRefs.length > 0 && (
@@ -174,7 +192,7 @@ export function RequirementDraftReview({
       </div>
 
       <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-[var(--border)] pt-3">
-        <span className="text-[11px] text-[var(--text-muted)]">Need changes? Tell the agent what to include before creating it.</span>
+        <span className="text-[11px] text-[var(--text-muted)]">Review and edit the fields before creating the requirement.</span>
         <div className="flex flex-wrap gap-2">
           <button
             onClick={onDiscard}

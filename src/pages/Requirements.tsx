@@ -10,6 +10,7 @@ import { useBulkDelete } from '@/src/lib/useBulkDelete';
 import { Modal } from '@/src/components/Modal';
 import { showAlert, showConfirm } from '@/src/lib/dialog';
 import { MarkdownText } from '@/src/components/MarkdownText';
+import { RequirementSrsEditor } from '@/src/components/RequirementSrsEditor';
 import { formatBusinessRulesMarkdown, formatRequirementSrs, type RequirementSrsModule } from '@/src/lib/requirementSrs';
 
 const REQ_STATUSES = ['Draft', 'Under Review', 'Approved', 'Deprecated'];
@@ -49,7 +50,9 @@ export default function Requirements() {
   const [discoverMessage, setDiscoverMessage] = useState('');
   const [selected, setSelected] = useState<any | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
-  const [form, setForm] = useState({ title: '', description: '', status: 'Draft', businessRules: '', dataPopulationNotes: '' });
+  const [form, setForm] = useState<{ title: string; description: string; status: string; businessRules: string; dataPopulationNotes: string; srsModules: RequirementSrsModule[] }>({
+    title: '', description: '', status: 'Draft', businessRules: '', dataPopulationNotes: '', srsModules: [],
+  });
   const navigate = useNavigate();
 
   const inputClass = 'w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]';
@@ -100,6 +103,7 @@ export default function Requirements() {
         status: data.status || 'Draft',
         businessRules: Array.isArray(data.businessRules) ? data.businessRules.join('\n') : '',
         dataPopulationNotes: data.dataPopulationNotes || '',
+        srsModules: Array.isArray(data.srsModules) ? data.srsModules : [],
       });
       setIsModalOpen(true);
     } catch {
@@ -309,12 +313,10 @@ export default function Requirements() {
         }
       >
         <div className="space-y-4">
-          {Array.isArray(selected?.srsModules) && selected.srsModules.length > 0 && (
+          {form.srsModules.length > 0 && (
             <div>
-              <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">Software Requirements Specification</div>
-              <div className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-xs leading-relaxed text-[var(--text-primary)]">
-                <MarkdownText value={formatRequirementSrs(selected.srsModules as RequirementSrsModule[])} />
-              </div>
+              <div className="mb-1 text-sm font-medium text-[var(--text-muted)]">Edit Software Requirements Specification</div>
+              <RequirementSrsEditor modules={form.srsModules} onChange={(srsModules) => setForm({ ...form, srsModules })} />
             </div>
           )}
           <div>
