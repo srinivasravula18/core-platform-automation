@@ -1917,16 +1917,16 @@ export default function AgentConsole() {
   // The top-bar scope app, mirrored to a ref so callbacks read the latest.
   const scopeAppRef = useRef<{ name: string; baseUrl: string } | null>(null);
   useEffect(() => { scopeAppRef.current = scopeApp ? { name: scopeApp.name, baseUrl: scopeApp.baseUrl } : null; });
-  // The single "selected apps" payload sent on EVERY chat fetch: merges the top-bar
-  // scope app and the composer multi-select, deduped by baseUrl. This is the target the
-  // agent must use so it never asks "which app" when an app is selected.
+  // The single "selected apps" payload sent on EVERY chat fetch: merges the top-bar scope app and the
+  // composer multi-select. Deduped by name+baseUrl (not baseUrl alone) so distinct apps that share a
+  // base URL — common in core-platform where tenant/admin apps sit under one host — aren't collapsed.
   const getSelectedApps = useCallback((): Array<{ name: string; baseUrl: string }> => {
     const out: Array<{ name: string; baseUrl: string }> = [];
     const seen = new Set<string>();
     const add = (a?: { name: string; baseUrl: string } | null) => {
       if (!a || !a.baseUrl) return;
-      const key = a.baseUrl.trim().toLowerCase();
-      if (!key || seen.has(key)) return;
+      const key = `${(a.name || '').trim().toLowerCase()}|${a.baseUrl.trim().toLowerCase()}`;
+      if (seen.has(key)) return;
       seen.add(key);
       out.push({ name: a.name, baseUrl: a.baseUrl });
     };
@@ -2168,7 +2168,7 @@ export default function AgentConsole() {
               `Current page: ${location.pathname}`,
               `Selected project: ${selectedProjectId || 'none'}`,
               `Selected app: ${selectedAppId || 'none'}`,
-              `Apps in scope: ${getSelectedApps().map((app) => app.name || app.baseUrl).filter(Boolean).join(', ') || 'none'}`,
+              `Apps in scope: ${getSelectedApps().map((app) => app.baseUrl ? `${app.name || 'app'} — ${app.baseUrl}` : app.name).filter(Boolean).join(', ') || 'none'}`,
               `Requirement mode: ${reqMode ? 'on' : 'off'}`,
               `Script author mode: ${scriptAuthorMode ? 'on' : 'off'}`,
             ].join('\n'),
