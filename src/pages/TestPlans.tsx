@@ -918,8 +918,8 @@ export default function TestPlans() {
                             runSelectedPlans([plan.id]);
                           }}
                           disabled={isStartingRun || planCases.length === 0}
-                          title="Run all linked suites"
-                          aria-label="Run all linked suites"
+                          title={isStartingRun ? 'Starting test plan run…' : runCaseCountLabel(planCases.length)}
+                          aria-label={isStartingRun ? 'Starting test plan run' : runCaseCountLabel(planCases.length)}
                           className="p-1 rounded hover:bg-emerald-500/10 text-[var(--text-muted)] hover:text-emerald-400 disabled:opacity-50 transition-colors"
                         >
                           <PlayCircle className="w-4 h-4" />
