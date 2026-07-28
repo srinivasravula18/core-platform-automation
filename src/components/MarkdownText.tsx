@@ -23,13 +23,19 @@ function MermaidDiagram({ source }: { source: string }) {
 }
 
 function inlineParts(text: string) {
-  const parts = String(text || '').split(/(`[^`]+`|\*\*[^*]+\*\*)/g);
+  // Split on inline code, **bold**, then *italic*. Bold is matched before italic so a `**x**`
+  // span is never mis-parsed as an empty italic; a lone `*` (bullet/multiplication) needs a
+  // closing `*` to match, so it stays literal.
+  const parts = String(text || '').split(/(`[^`]+`|\*\*[^*]+\*\*|\*[^*]+\*)/g);
   return parts.map((part, i) => {
     if (/^`[^`]+`$/.test(part)) {
       return <code key={i} className="rounded bg-black/20 px-1 py-0.5 font-mono text-[0.92em]">{part.slice(1, -1)}</code>;
     }
     if (/^\*\*[^*]+\*\*$/.test(part)) {
       return <strong key={i} className="font-semibold">{part.slice(2, -2)}</strong>;
+    }
+    if (/^\*[^*]+\*$/.test(part)) {
+      return <em key={i} className="italic">{part.slice(1, -1)}</em>;
     }
     return <Fragment key={i}>{part}</Fragment>;
   });

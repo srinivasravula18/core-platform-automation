@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { DragEvent } from 'react';
-import { Braces, Database, Download, FileSpreadsheet, GripVertical, Link2, Play, Redo2, Search, Table, Trash2, Undo2, Upload, Wand2, X } from 'lucide-react';
+import { Braces, Database, Download, FileSpreadsheet, GripVertical, Link2, Play, Redo2, Table, Trash2, Undo2, Upload, Wand2, X } from 'lucide-react';
 
 // Variable palette, grouped (mirrors server variableEngine BUILTIN_VARIABLES).
 const VARIABLE_GROUPS: Array<{ title: string; items: Array<{ token: string; label: string }> }> = [
@@ -80,7 +80,6 @@ export default function DataBindings() {
   const [mappings, setMappings] = useState<any[]>([]);
   const [rows, setRows] = useState<any[]>([]);
   const [selectedRows, setSelectedRows] = useState<number[]>([]);
-  const [columnSearch, setColumnSearch] = useState('');
   const [range, setRange] = useState({ from: 1, to: 10 });
   const [batch, setBatch] = useState<any>(null);
   const [busy, setBusy] = useState(false);
@@ -143,8 +142,6 @@ export default function DataBindings() {
     mappings.filter((mapping) => datasetId && mapping.datasetId === datasetId).map((mapping) => [mapping.stepId, mapping]),
   ), [mappings, datasetId]);
   const mappableSteps = useMemo(() => steps.filter((step) => !step.readOnly), [steps]);
-  const columns = useMemo(() => (dataset?.columns || []).filter((column: any) =>
-    column.name.toLowerCase().includes(columnSearch.toLowerCase())), [dataset, columnSearch]);
 
   // Ask the server to resolve every bound field for the first selected (or first) row.
   const refreshResolved = async () => {
@@ -378,7 +375,7 @@ export default function DataBindings() {
       <div className="flex flex-col gap-3">
       <div className="flex items-start gap-2 rounded-md border border-[var(--accent)]/30 bg-[var(--accent)]/5 px-3 py-2 text-xs text-[var(--text-secondary)]">
         <Braces className="mt-0.5 h-4 w-4 shrink-0 text-[var(--accent)]" />
-        <span><b>How to bind:</b> drag a <b>Column</b> or <b>Variable</b> from the right onto a recorded field on the left — or use the field's <b>Bind ▾</b> menu, or type a fixed value. Then set each field's <b>intent</b> (Fixed · Unique · Reference) and Run.</span>
+        <span><b>How to bind:</b> drag an Excel <b>column header</b> (from the data table below) or a <b>Variable</b> (right panel) onto a recorded field — or use the field's <b>Bind ▾</b> menu, or type a fixed value. Then set each field's <b>intent</b> (Fixed · Unique · Reference) and Run.</span>
       </div>
       <div className="grid gap-4 lg:h-[clamp(22rem,58vh,42rem)] lg:grid-cols-[minmax(0,1fr)_22rem]">
 
@@ -444,52 +441,32 @@ export default function DataBindings() {
           </div>
         </div>
 
-        {/* Right — data sources: fixed-height panel, scrolls internally */}
+        {/* Right — Variables (generated data). Excel columns are dragged from the preview table below. */}
         <aside onDragOver={(event) => { if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); setFileOver(true); } }} onDragLeave={() => setFileOver(false)} onDrop={dropFile}
           className={`flex min-h-0 flex-col overflow-hidden rounded-lg border ${fileOver ? 'border-[var(--accent)] bg-[var(--accent)]/5' : 'border-[var(--border)] bg-[var(--bg-card)]'}`}>
-          {!dataset ? <div className="flex flex-1 flex-col items-center justify-center gap-2 p-6 text-center text-sm text-[var(--text-muted)]">
-            <FileSpreadsheet className="h-6 w-6" />Drop an .xlsx or .csv here, or use Import above.
-          </div> : <>
-            <div className="shrink-0 border-b border-[var(--border)] p-3">
-              <div className="mb-2 flex items-center justify-between gap-2"><span className="text-sm font-semibold">Data sources</span><span className="truncate text-[11px] text-[var(--text-muted)]">{dataset.name}</span></div>
-              <label className="flex items-center gap-2 rounded border border-[var(--border)] px-2"><Search className="h-4 w-4 shrink-0 text-[var(--text-muted)]" /><input aria-label="Search columns" value={columnSearch} onChange={(event) => setColumnSearch(event.target.value)} placeholder="Search columns" className="min-w-0 flex-1 bg-transparent py-1.5 text-sm outline-none" /></label>
+          <div className="flex shrink-0 items-center gap-2 border-b border-[var(--border)] p-3 text-sm font-semibold">Variables<span className="text-[11px] font-normal text-[var(--text-muted)]">generated — not from your sheet</span></div>
+          <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3">
+            <div className="rounded-md border border-dashed border-[var(--border)] p-2 text-center text-[11px] text-[var(--text-muted)]">
+              <FileSpreadsheet className="mx-auto mb-1 h-4 w-4" />{dataset ? 'Excel columns live in the preview table below — drag a header onto a field.' : 'Import a spreadsheet (top) to run with real rows. Variables below work without one.'}
             </div>
-            <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-3">
-              <div>
-                <div className="mb-1.5 text-[10px] uppercase tracking-wide text-[var(--text-muted)]">Columns · drag onto a field</div>
-                <div className="space-y-1.5">
-                  {columns.map((column: any) => <button key={column.id} draggable onDragStart={(event) => dragColumn(event, column.id)}
-                    onClick={() => { const target = mappableSteps.find((step) => !byStep.has(step.id)); if (target) { void mapColumn(target.id, column.id); setAnnounce(`${column.name} bound to ${labelOfStep(target.id)}.`); } }}
-                    title="Drag onto a field, or click to bind the next unbound field"
-                    className="flex w-full cursor-grab items-center gap-2 rounded border border-[var(--border)] p-2 text-left text-sm hover:border-[var(--accent)] hover:bg-[var(--accent)]/5 active:cursor-grabbing">
-                    <GripVertical className="h-4 w-4 shrink-0 text-[var(--text-muted)]" /><span className="flex-1 truncate">{column.name}</span><span className="shrink-0 text-[11px] text-[var(--text-muted)]">{column.kind}</span></button>)}
-                  {!columns.length && <div className="text-[11px] text-[var(--text-muted)]">No columns match “{columnSearch}”.</div>}
-                </div>
+            {VARIABLE_GROUPS.map((group) => <div key={group.title}>
+              <div className="mb-1 text-[10px] uppercase tracking-wide text-[var(--text-muted)]">{group.title}</div>
+              <div className="flex flex-wrap gap-1.5">
+                {group.items.map((variable) => <button key={variable.token} draggable onDragStart={(event) => dragVariable(event, variable.token)}
+                  onClick={() => { if (activeStep.current) void appendToken(activeStep.current, variable.token); else setMessage('Click a field first, then a variable to insert it.'); }}
+                  title={`${variable.label} — drag onto a field, or click to insert into the focused field`}
+                  className="cursor-grab rounded border border-[var(--border)] px-2 py-1 font-mono text-[11px] hover:border-[var(--accent)]">{variable.token}</button>)}
               </div>
-              <div>
-                <div className="mb-1.5 text-[10px] uppercase tracking-wide text-[var(--text-muted)]">Variables · drag onto a field</div>
-                <div className="space-y-2">
-                  {VARIABLE_GROUPS.map((group) => <div key={group.title}>
-                    <div className="mb-1 text-[10px] text-[var(--text-muted)]">{group.title}</div>
-                    <div className="flex flex-wrap gap-1.5">
-                      {group.items.map((variable) => <button key={variable.token} draggable onDragStart={(event) => dragVariable(event, variable.token)}
-                        onClick={() => { if (activeStep.current) void appendToken(activeStep.current, variable.token); else setMessage('Click a field first, then a variable to insert it.'); }}
-                        title={`${variable.label} — drag onto a field, or click to insert into the focused field`}
-                        className="cursor-grab rounded border border-[var(--border)] px-2 py-1 font-mono text-[11px] hover:border-[var(--accent)]">{variable.token}</button>)}
-                    </div>
-                  </div>)}
-                </div>
-                <p className="mt-2 text-[10px] leading-4 text-[var(--text-muted)]">Pipe transforms: <span className="font-mono">{TRANSFORM_HINT}</span></p>
-              </div>
-            </div>
-          </>}
+            </div>)}
+            <p className="text-[10px] leading-4 text-[var(--text-muted)]">Pipe transforms: <span className="font-mono">{TRANSFORM_HINT}</span></p>
+          </div>
         </aside>
       </div>
       </div>}
 
     {dataset && <section aria-label="Dataset preview" className="min-h-0 overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--bg-card)]">
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--border)] p-3">
-        <span className="text-sm font-semibold">Data preview · first 50 rows</span>
+        <div><div className="text-sm font-semibold">Data preview · your Excel rows</div><div className="text-[11px] text-[var(--text-muted)]">Drag a column header ↑ onto a field to bind it · one run per row</div></div>
         <div className="flex flex-wrap items-center gap-2 text-xs">
           <select aria-label="Data policy" value={dataPolicy} onChange={(event) => setDataPolicy(event.target.value)} title="fresh = generate new data · ephemeral = also delete after · pooled = consume rows once" className="rounded border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-2">
             <option value="fresh">Fresh data</option>
@@ -530,7 +507,11 @@ export default function DataBindings() {
       </div>}
       <div className="max-h-[min(45vh,30rem)] overflow-auto">
         <table className="min-w-max text-xs">
-          <thead className="sticky top-0 z-10 bg-[var(--bg-card)]"><tr><th className="p-2 text-left"><input aria-label="Select all rows" type="checkbox" checked={rows.length > 0 && selectedRows.length === rows.length} onChange={(event) => setSelectedRows(event.target.checked ? rows.map((row) => row.rowNumber) : [])} /></th><th className="whitespace-nowrap p-2 text-left">Row</th>{dataset.columns.map((column: any) => <th key={column.id} className="min-w-36 whitespace-nowrap p-2 text-left">{column.name}</th>)}</tr></thead>
+          <thead className="sticky top-0 z-10 bg-[var(--bg-card)]"><tr><th className="p-2 text-left"><input aria-label="Select all rows" type="checkbox" checked={rows.length > 0 && selectedRows.length === rows.length} onChange={(event) => setSelectedRows(event.target.checked ? rows.map((row) => row.rowNumber) : [])} /></th><th className="whitespace-nowrap p-2 text-left">Row</th>{dataset.columns.map((column: any) => <th key={column.id} draggable
+              onDragStart={(event) => dragColumn(event, column.id)}
+              onClick={() => { const target = mappableSteps.find((step) => !byStep.has(step.id)); if (target) { void mapColumn(target.id, column.id); setAnnounce(`${column.name} bound to ${labelOfStep(target.id)}.`); } }}
+              title="Drag this column onto a field above (or click) to bind it"
+              className="min-w-36 cursor-grab whitespace-nowrap p-2 text-left hover:text-[var(--accent)] active:cursor-grabbing"><span className="inline-flex items-center gap-1"><GripVertical className="h-3.5 w-3.5 text-[var(--text-muted)]" />{column.name}</span></th>)}</tr></thead>
           <tbody>{rows.map((row) => { const consumed = row.state === 'consumed'; return <tr key={row.id} className={`border-t border-[var(--border)] align-top ${consumed ? 'opacity-50' : ''}`} title={consumed ? 'Already consumed by an earlier pooled run' : undefined}><td className="p-2"><input aria-label={`Select row ${row.rowNumber}`} type="checkbox" disabled={consumed} checked={selectedRows.includes(row.rowNumber)} onChange={() => setSelectedRows((current) => current.includes(row.rowNumber) ? current.filter((number) => number !== row.rowNumber) : [...current, row.rowNumber])} /></td><td className="p-2 text-[var(--text-muted)]">{row.rowNumber}{consumed ? ' · used' : ''}</td>{dataset.columns.map((column: any) => <td key={column.id} className="max-w-72 overflow-hidden text-ellipsis whitespace-nowrap p-2">{row.values[column.id] || '—'}</td>)}</tr>; })}</tbody>
         </table>
       </div>

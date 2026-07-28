@@ -57,7 +57,7 @@ import { buildKnowledgeBlock, recordObservation } from '../knowledge/knowledgeSe
 import { resolveCredentials, maskPassword } from '../credentials/credentialsService';
 import {
   detectSurfaceKind, resolveTargetApp, buildAppScopedUrl, connForRun,
-  fetchCorePlatformApps, fetchCorePlatformAppTabs, ALL_APPS_ID, loadAdminNavModules, resolveAdminModuleFromRefs, isMutationIntent,
+  fetchCorePlatformApps, fetchCorePlatformAppTabs, ALL_APPS_ID, loadAdminNavModules, resolveAdminModuleFromRefs, isAdminAppsIntent, isMutationIntent,
 } from './appTargeting';
 import {
   buildMissionContext, platformTypeFromSurface, runtimeSurfaceFromSurface, moduleFromUrl,
@@ -138,14 +138,6 @@ function listRepoSrcApps(repoPath: string): string[] {
 
 function wantsGenericOrAllApps(text: string): boolean {
   return /\b(all apps?|every app|generic(?:ally)?|common feature|shared feature|not app specific|app[-\s]?agnostic|irrespective of (?:the )?app|everywhere)\b/i.test(String(text || ''));
-}
-
-function wantsPlatformAdminScope(value: string): boolean {
-  const text = String(value || '').toLowerCase();
-  return /\b(?:create|add|new|edit|update|delete)\s+(?:an?\s+)?app\b/.test(text)
-    || /\bapp\s+(?:creation|catalog|management|manager|list|settings?|configuration)\b/.test(text)
-    || /\b(?:parent\s+app|child\s+app|api\s*name|icon[_\s-]*id)\b/.test(text)
-    || (/\bprefix\b/.test(text) && /\blabel\b/.test(text) && /\bapp\b/.test(text));
 }
 
 function platformCandidates(repoPath = ''): string[] {
@@ -233,7 +225,7 @@ function needsExplicitAppScope(prompt: string, selectedApp: any, explicitUrl: st
   const text = String(prompt || '').toLowerCase();
   if (selectedApp || explicitUrl) return '';
   if (wantsGenericOrAllApps(text)) return '';
-  if (wantsPlatformAdminScope(text)) return '';
+  if (isAdminAppsIntent(text)) return '';
   if (!/\b(test|run|generate|create|write|draft|validate)\b/.test(text)) return '';
   const configured = platformCandidates(repoPath);
   if (configured.some((name) => text.includes(name.toLowerCase()))) return '';
@@ -5328,8 +5320,14 @@ Rules:
     const metadataRefs: string[] = Array.isArray(req.body.metadataRefs)
       ? req.body.metadataRefs.map((r: any) => String(r || '').trim()).filter(Boolean)
       : [];
+    const adminNavModules = provisionalPlatform === 'ADMIN'
+      ? loadAdminNavModules(getProjectRepoPath(scope.projectId || ''))
+      : [];
     const autoModuleId = (!explicitModuleIdRaw && provisionalPlatform === 'ADMIN')
-      ? resolveAdminModuleFromRefs(metadataRefs, loadAdminNavModules(getProjectRepoPath(scope.projectId || '')))
+      ? resolveAdminModuleFromRefs(metadataRefs, adminNavModules)
+        || (isAdminAppsIntent([prompt, approvedUnderstanding, priorGrounding].join('\n'))
+          ? resolveAdminModuleFromRefs(['app'], adminNavModules)
+          : '')
       : '';
     const explicitModuleId = explicitModuleIdRaw || autoModuleId;
     if (provisionalPlatform === 'ADMIN' && needsExplicitListViewModule(prompt || '', explicitModuleId)) {
@@ -5337,7 +5335,6 @@ Rules:
       // chat_response stays as the plain-text fallback and still accepts a typed module reply.
       // Repo-parsed side-nav modules drive the dropdown; when the repo has none the plain
       // question remains (older behavior) and the user can type the module name.
-      const adminNavModules = loadAdminNavModules(getProjectRepoPath(scope.projectId || ''));
       return res.json({
         chat_response: 'Which list view should I test? Name the module or record type, for example Apps, Objects, Roles, or Users.',
         ...(adminNavModules.length ? {
