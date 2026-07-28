@@ -289,7 +289,7 @@ export function registerSettingsRoutes(app: Express) {
     const workspaceId = usageWorkspace(req);
     const limit = getDailyLimit();
     const used = getDailyCost(workspaceId);
-    res.json({ workspaceId, used, limit, currency: 'USD', autonomyLevel: db.settings?.autonomyLevel || 'review', guardrailLogs: recentGuardrailLogs() });
+    res.json({ workspaceId, used, limit, currency: 'USD', autonomyLevel: db.settings?.autonomyLevel || 'review', guardrailLogs: recentGuardrailLogs(workspaceId) });
   });
 
   app.put('/api/settings/autonomy', (req, res) => {
@@ -316,13 +316,12 @@ export function registerSettingsRoutes(app: Express) {
     res.json({ usage: listUsage(workspaceId, limit) });
   });
 
-  // All-time-through-now spend analysis: per-window token+cost totals, per-model breakdown, caps.
-  // ?scope=all (default) aggregates the whole deployment; ?scope=project uses the request's project.
+  // All-time-through-now spend analysis for the signed-in user: per-window token+cost totals,
+  // per-model breakdown, and caps. Never expose deployment-wide usage in an individual's Settings.
   app.get('/api/ai/usage/summary', async (req, res) => {
     try {
-      const scoped = String(req.query.scope || 'all') === 'project';
-      const workspaceId = scoped ? usageWorkspace(req) : undefined;
-      res.json(await getSpendSummary(workspaceId));
+      const userId = usageWorkspace(req);
+      res.json(await getSpendSummary(userId));
     } catch (err: any) {
       res.status(500).json({ error: err?.message || 'Failed to compute usage summary.' });
     }

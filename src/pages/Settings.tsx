@@ -1836,7 +1836,7 @@ function CostSection() {
       {/* Spend by window, each with its cap progress. */}
       <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-card)] p-4 sm:p-6 shadow-sm">
         <h2 className="text-lg font-medium">Spend</h2>
-        <p className="mt-1 text-sm text-[var(--text-muted)]">Real cost across every AI call, priced from each provider's official rates for the model you selected. Deployment-wide.</p>
+        <p className="mt-1 text-sm text-[var(--text-muted)]">Your AI usage and estimated cost, priced from each provider's official rates for the model used.</p>
         <div className="mt-4 grid grid-cols-2 gap-3 lg:grid-cols-5">
           {WINDOW_META.map(({ key, capKey, label }) => {
             const w = windows[key] || emptyWin;
@@ -1909,7 +1909,7 @@ function CostSection() {
 
       {/* Per-model breakdown. */}
       <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-card)] p-4 sm:p-6 shadow-sm">
-        <h2 className="text-lg font-medium">By model (all time)</h2>
+        <h2 className="text-lg font-medium">Your usage by model (all time)</h2>
         <div className="mt-3 max-h-96 overflow-auto">
           <table className="w-full text-sm whitespace-nowrap">
             <thead className="sticky top-0 z-10 bg-[var(--bg-card)] text-xs text-[var(--text-muted)]">
