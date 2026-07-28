@@ -67,6 +67,7 @@ import { useProjects, type ProjectApp } from '@/src/store/project';
 import { useUiSettings } from '@/src/store/uiSettings';
 import { useSpeechToText } from '@/src/lib/useSpeechToText';
 import { useFlushOnUnload } from '@/src/lib/useFlushOnUnload';
+import { useAgentSessionManager } from '@/src/lib/agentSession/AgentSessionProvider';
 import { showAlert, showConfirm } from '@/src/lib/dialog';
 import { showToast } from '@/src/lib/dialog';
 import { WorkflowRunner } from '@/src/components/WorkflowRunner';
@@ -753,6 +754,7 @@ export default function AgentConsole() {
   // it always threw, fell into the catch, and minted a NEW id, silently ignoring a shared /chat/:id link.
   const navigate = useNavigate();
   const location = useLocation();
+  const agentSessionManager = useAgentSessionManager();
   const { chatId: urlChatId } = useParams<{ chatId?: string }>();
 
   const [turns, setTurns] = useState<Turn[]>([]);
@@ -764,6 +766,19 @@ export default function AgentConsole() {
     rememberedConversationIdRef.current = readScopedStorage(convKey);
     return rememberedConversationIdRef.current || makeConversationId();
   });
+  const agentSessionId = `agent-console:${conversationId}`;
+
+  // A route can unmount at any time; register the durable conversation at application scope first.
+  // This does not start a run and does not cancel one on cleanup.
+  useEffect(() => {
+    agentSessionManager.createOrActivateSession({
+      id: agentSessionId,
+      conversationId,
+      workspaceId,
+      projectId: selectedProjectId || undefined,
+      appId: selectedAppId || undefined,
+    });
+  }, [agentSessionManager, agentSessionId, conversationId, workspaceId, selectedProjectId, selectedAppId]);
   const [conversations, setConversations] = useState<ConversationMeta[]>([]);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [selectedConversationIds, setSelectedConversationIds] = useState<Set<string>>(new Set());
@@ -1543,6 +1558,9 @@ export default function AgentConsole() {
     } else if (data?.chat_response) {
       replaceTurn(args.thinkingId, { id: args.thinkingId, role: 'assistant', kind: 'text', text: data.chat_response });
     } else if (data?.task_id) {
+      // Register before rendering the card: the global manager owns reconnection if navigation
+      // happens immediately after this response.
+      agentSessionManager.registerRun(agentSessionId, data.task_id);
       replaceTurn(args.thinkingId, { id: args.thinkingId, role: 'assistant', kind: 'deeprun', taskId: data.task_id });
     } else {
       replaceTurn(args.thinkingId, {
@@ -1552,7 +1570,7 @@ export default function AgentConsole() {
         text: data?.error || 'I could not start the generation. Check that an AI provider key is set in Settings.',
       });
     }
-  }, [replaceTurn, buildHistory, updateThinkingLabel, selectedProvider, selectedModel, selectedEffort, conversationId]);
+  }, [replaceTurn, buildHistory, updateThinkingLabel, selectedProvider, selectedModel, selectedEffort, conversationId, agentSessionManager, agentSessionId]);
 
   const requestDeepUnderstanding = useCallback(async (args: {
     prompt: string;
