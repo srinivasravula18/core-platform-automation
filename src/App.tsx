@@ -416,6 +416,7 @@ function Topbar({ onMenuClick, onCommandBarOpen }: { onMenuClick: () => void; on
 
 function Shell({ children }: { children: React.ReactNode }) {
   const { theme } = useTheme();
+  const location = useLocation();
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [isCommandBarOpen, setIsCommandBarOpen] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
@@ -430,6 +431,9 @@ function Shell({ children }: { children: React.ReactNode }) {
   // fetch error, so this never deadlocks.)
   const projectsLoaded = useProjects((s) => s.loaded);
   const fetchProjects = useProjects((s) => s.fetchProjects);
+  // Keep one console instance alive for the entire signed-in application. Route changes only
+  // change which pane is visible; they never unmount a running console request.
+  const isAgentConsoleRoute = location.pathname === '/' || /^\/(?:agent(?:\/chat\/[^/]+)?|chat\/[^/]+)$/.test(location.pathname);
 
   // Guarantee the workspace loads even if the ProjectSwitcher is not mounted, so the gate above never
   // deadlocks on "Loading workspace…". Idempotent and only runs until loaded.
@@ -479,9 +483,14 @@ function Shell({ children }: { children: React.ReactNode }) {
         <Topbar onMenuClick={() => setIsSidebarOpen(!isSidebarOpen)} onCommandBarOpen={() => setIsCommandBarOpen(true)} />
         <main data-sidebar={isSidebarOpen ? 'open' : 'closed'} className="flex-1 min-h-0 overflow-hidden relative flex flex-col">
           {projectsLoaded ? (
-            <div key={scopeKey} className="flex-1 min-h-0 overflow-auto p-3 sm:p-6 flex flex-col">
-              {children}
-            </div>
+            <>
+              <div className={cn('flex-1 min-h-0 overflow-auto p-3 sm:p-6 flex flex-col', !isAgentConsoleRoute && 'hidden')}>
+                <AgentConsole />
+              </div>
+              <div key={scopeKey} className={cn('flex-1 min-h-0 overflow-auto p-3 sm:p-6 flex flex-col', isAgentConsoleRoute && 'hidden')}>
+                {children}
+              </div>
+            </>
           ) : (
             <div className="flex-1 min-h-0 flex items-center justify-center text-sm text-[var(--text-muted)]">
               Loading workspace…
@@ -533,8 +542,8 @@ export default function App() {
           <Shell>
             <FeatureGuard>
         <Routes>
-          <Route path="/" element={<AgentConsole />} />
-          <Route path="/chat/:chatId" element={<AgentConsole />} />
+          <Route path="/" element={null} />
+          <Route path="/chat/:chatId" element={null} />
           <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/repository" element={<TestRepository />} />
           <Route path="/plans" element={<TestPlans />} />
@@ -547,8 +556,8 @@ export default function App() {
           <Route path="/traceability" element={<Traceability />} />
           <Route path="/reports" element={<Reports />} />
           <Route path="/defects" element={<Defects />} />
-          <Route path="/agent" element={<AgentConsole />} />
-          <Route path="/agent/chat/:chatId" element={<AgentConsole />} />
+          <Route path="/agent" element={null} />
+          <Route path="/agent/chat/:chatId" element={null} />
           <Route path="/studio" element={<AgentPanel />} />
           <Route path="/record-play" element={<RecordPlay />} />
           <Route path="/automation" element={<AutomationDashboard />} />

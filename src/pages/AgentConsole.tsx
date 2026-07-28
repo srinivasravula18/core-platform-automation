@@ -755,7 +755,10 @@ export default function AgentConsole() {
   const navigate = useNavigate();
   const location = useLocation();
   const agentSessionManager = useAgentSessionManager();
-  const { chatId: urlChatId } = useParams<{ chatId?: string }>();
+  const { chatId: routeChatId } = useParams<{ chatId?: string }>();
+  // The console is deliberately hosted outside <Routes> so it survives navigation. Recover the
+  // chat id from the URL there, while retaining route params for any future embedded usage.
+  const urlChatId = routeChatId || location.pathname.match(/(?:^|\/)chat\/([^/]+)$/)?.[1];
 
   const [turns, setTurns] = useState<Turn[]>([]);
   const [input, setInput] = useState('');
