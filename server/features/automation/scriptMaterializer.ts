@@ -1,4 +1,5 @@
 import ts from 'typescript';
+import { resolveExpression } from './variableEngine';
 
 const VALUE_METHODS = new Set(['fill', 'press', 'selectOption', 'select', 'setInputFiles', 'type']);
 
@@ -6,7 +7,7 @@ type Replacement = { start: number; end: number; text: string };
 type EditableCall = { call: ts.CallExpression; valueArgument: number };
 
 /** Compile the immutable action locations once, then materialize any number of dataset rows. */
-export function createScriptMaterializer(script: string, steps: any[], mappings: any[], columns: any[]) {
+export function createScriptMaterializer(script: string, steps: any[], mappings: any[], columns: any[], runToken?: string) {
   const source = ts.createSourceFile('recording.spec.ts', script, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
   const calls: EditableCall[] = [];
   const visit = (node: ts.Node) => {
@@ -28,11 +29,19 @@ export function createScriptMaterializer(script: string, steps: any[], mappings:
     const replacements: Replacement[] = [];
     for (const step of steps) {
       const mapping = mappings.find((item) => item.stepId === step.id && (!item.datasetId || item.datasetId === row.datasetId));
-      const column = mapping && columns.find((item: any) => item.id === mapping.columnId);
-      const value = mapping ? row.values?.[column?.id] : step.currentOverride;
-      if (!mapping && (value === null || value === undefined)) continue;
-      if (mapping && !column) throw new Error(`Mapping for ${step.metadata?.label || step.locator} references a missing column.`);
-      if (mapping && (value === null || value === undefined || value === '')) throw new Error(`Row ${row.rowNumber}: ${column.name} is empty.`);
+      let value: any;
+      if (mapping) {
+        // A mapping resolves an expression (column reference, generator, or literal+transform mix).
+        const column = columns.find((item: any) => item.id === mapping.columnId);
+        const expression = mapping.expression || (column ? `{{${column.name}}}` : '');
+        value = resolveExpression(expression, { columns, values: row.values || {}, rowNumber: row.rowNumber, runToken, rowSeq: row.rowSeq ?? row.rowNumber });
+        if (value === null || value === undefined || value === '') {
+          throw new Error(`Row ${row.rowNumber}: ${step.metadata?.label || step.locator} resolved to an empty value.`);
+        }
+      } else {
+        value = step.currentOverride;
+        if (value === null || value === undefined) continue;
+      }
 
       const editable = calls[step.ordinal];
       const call = editable?.call;
@@ -59,6 +68,6 @@ export function createScriptMaterializer(script: string, steps: any[], mappings:
 }
 
 /** Build one throwaway runtime script. The finalized recording remains unchanged. */
-export function materializeScript(script: string, steps: any[], mappings: any[], row: any, columns: any[]): string {
-  return createScriptMaterializer(script, steps, mappings, columns)(row);
+export function materializeScript(script: string, steps: any[], mappings: any[], row: any, columns: any[], runToken?: string): string {
+  return createScriptMaterializer(script, steps, mappings, columns, runToken)(row);
 }

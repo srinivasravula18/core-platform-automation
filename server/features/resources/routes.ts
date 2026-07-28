@@ -13,12 +13,23 @@ import { getAIErrorMessage } from '../../shared/ai';
 import { getOrchestrator } from '../../ai/orchestrator';
 import { reqScope, scopeFilter, scopeStamp } from '../../shared/scope';
 import { runPlaywrightRequest } from '../playwright/routes';
+import { resolveCredentials } from '../credentials/credentialsService';
 import { testCaseTypeFields } from '../../../core/shared/testCaseTypes';
 import { collectRunEvidence, evidenceDownloadName } from '../../../core/shared/runEvidence';
 import { planStartConflict } from '../../../core/shared/testPlanStart';
 import { isStaleManualTestRun } from '../../../core/shared/testRunStatus';
 
 const archiver = ((archiverNs as any).default ?? archiverNs) as (format: string, options?: Record<string, any>) => any;
+
+// Pin the exact saved credential website on a run at creation time, resolved ONCE from the target URL
+// (+ the owner's own/shared websites). Storing websiteId makes execution an exact match rather than a
+// hostname guess, so two apps on one host (e.g. /admin-ui vs /shockwave) can never hand a run the wrong
+// login. Empty when nothing resolves — execution then falls back to the (path-aware) URL match.
+function pinRunWebsite(targetUrl: string, ownerId?: string): { websiteId: string; credentialRole: string } {
+  if (!targetUrl) return { websiteId: '', credentialRole: '' };
+  const resolved = resolveCredentials({ targetUrl, ownerId: ownerId || undefined });
+  return { websiteId: resolved?.websiteId || '', credentialRole: resolved?.role || '' };
+}
 
 import {
   Plans,
@@ -1088,6 +1099,7 @@ Rules:
       suiteIds: Array.from(suiteIds),
       planIds: Array.from(planIds),
       captureEvidence: Boolean(targetUrl),
+      ...pinRunWebsite(targetUrl, scope.userId),
       steps,
     };
     await Runs.upsert(newRun);
@@ -1149,6 +1161,7 @@ Rules:
       testCaseTitle: selectedCase?.title || '',
       caseIds: Array.isArray(req.body.caseIds) && req.body.caseIds.length ? req.body.caseIds : (selectedCase?.id ? [selectedCase.id] : []),
       captureEvidence: shouldCaptureCaseEvidence,
+      ...pinRunWebsite(targetUrl, reqScope(req).userId),
       steps,
     };
     await Runs.upsert(newRun);

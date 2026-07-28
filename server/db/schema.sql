@@ -301,6 +301,13 @@ ALTER TABLE runs ADD COLUMN IF NOT EXISTS assigned_to TEXT DEFAULT '';
 ALTER TABLE runs ADD COLUMN IF NOT EXISTS tags        TEXT[] DEFAULT ARRAY[]::TEXT[];
 ALTER TABLE runs ADD COLUMN IF NOT EXISTS state       TEXT DEFAULT '';
 
+-- Pin the exact saved credential website on the run so execution resolves credentials by an
+-- exact websiteId match instead of guessing from the target URL's hostname (two apps on one
+-- host — e.g. /admin-ui vs /shockwave — otherwise collided). Additive + nullable: existing
+-- runs (website_id NULL) fall back to URL matching.
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS website_id      TEXT DEFAULT '';
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS credential_role TEXT DEFAULT '';
+
 -- System prompt store: per-agent versioned overrides
 CREATE TABLE IF NOT EXISTS prompts (
   id          TEXT PRIMARY KEY,
@@ -817,18 +824,25 @@ CREATE TABLE IF NOT EXISTS automation_dataset_rows (
   row_number    INTEGER NOT NULL,
   values        JSONB NOT NULL DEFAULT '{}'::jsonb,
   validation    JSONB NOT NULL DEFAULT '[]'::jsonb,
+  state         TEXT NOT NULL DEFAULT 'available', -- available | consumed (pooled data policy, Phase 4)
+  consumed_by_batch TEXT DEFAULT '',
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE(dataset_id, row_number)
 );
 CREATE INDEX IF NOT EXISTS automation_dataset_rows_page_idx ON automation_dataset_rows(dataset_id, row_number);
+ALTER TABLE automation_dataset_rows ADD COLUMN IF NOT EXISTS state TEXT NOT NULL DEFAULT 'available';
+ALTER TABLE automation_dataset_rows ADD COLUMN IF NOT EXISTS consumed_by_batch TEXT DEFAULT '';
 
 CREATE TABLE IF NOT EXISTS automation_data_mappings (
   id TEXT PRIMARY KEY, recording_id TEXT NOT NULL REFERENCES recordings(id) ON DELETE CASCADE,
   step_id TEXT NOT NULL REFERENCES automation_recording_steps(id) ON DELETE CASCADE,
   dataset_id TEXT NOT NULL REFERENCES automation_datasets(id) ON DELETE CASCADE,
-  column_id TEXT NOT NULL, expression TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  column_id TEXT NOT NULL, expression TEXT NOT NULL,
+  intent TEXT NOT NULL DEFAULT 'fixed', -- fixed | unique | reference (drives pre-flight data validation)
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE(step_id)
 );
+ALTER TABLE automation_data_mappings ADD COLUMN IF NOT EXISTS intent TEXT NOT NULL DEFAULT 'fixed';
 CREATE TABLE IF NOT EXISTS automation_execution_batches (
   id           TEXT PRIMARY KEY,
   project_id   TEXT,
@@ -840,10 +854,33 @@ CREATE TABLE IF NOT EXISTS automation_execution_batches (
   status       TEXT NOT NULL DEFAULT 'queued',
   selection    JSONB NOT NULL DEFAULT '[]'::jsonb,
   summary      JSONB NOT NULL DEFAULT '{}'::jsonb,
+  run_token    TEXT NOT NULL DEFAULT '', -- per-batch uniqueness seed for {{unique.*}} generators
+  stop_on_failure BOOLEAN NOT NULL DEFAULT false,
+  data_policy  TEXT NOT NULL DEFAULT 'fresh', -- fresh | ephemeral | pooled
   created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS automation_execution_batches_scope_idx ON automation_execution_batches(owner_id, project_id, created_at DESC);
+
+-- Run-data ledger: every resolved field value written per batch row, so we always know what was
+-- sent to the SUT (reproduction, debugging, and Phase-3 teardown). One row per (batch,row,field).
+CREATE TABLE IF NOT EXISTS automation_run_data (
+  id             TEXT PRIMARY KEY,
+  batch_id       TEXT NOT NULL REFERENCES automation_execution_batches(id) ON DELETE CASCADE,
+  job_id         TEXT DEFAULT '',
+  row_number     INTEGER NOT NULL,
+  field_key      TEXT NOT NULL,
+  field_label    TEXT NOT NULL DEFAULT '',
+  intent         TEXT NOT NULL DEFAULT 'fixed',
+  value          TEXT NOT NULL DEFAULT '',
+  cleanup_status TEXT NOT NULL DEFAULT 'none', -- none | pending | done | failed | skipped (Phase 3)
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE(batch_id, row_number, field_key)
+);
+CREATE INDEX IF NOT EXISTS automation_run_data_batch_idx ON automation_run_data(batch_id, row_number);
+CREATE INDEX IF NOT EXISTS automation_run_data_value_idx ON automation_run_data(value);
+-- A `unique`-intent field must never repeat a value inside a batch (catches a generator collision bug).
+CREATE UNIQUE INDEX IF NOT EXISTS automation_run_data_unique_value_idx ON automation_run_data(batch_id, field_key, value) WHERE intent = 'unique';
 
 -- One execution of a recording on an agent. Lifecycle: queued → dispatched → running → uploading → done/failed/cancelled.
 CREATE TABLE IF NOT EXISTS automation_jobs (
@@ -879,6 +916,9 @@ ALTER TABLE automation_execution_batches ADD COLUMN IF NOT EXISTS app_id TEXT;
 ALTER TABLE automation_execution_batches ADD COLUMN IF NOT EXISTS owner_id TEXT;
 ALTER TABLE automation_execution_batches ADD COLUMN IF NOT EXISTS summary JSONB NOT NULL DEFAULT '{}'::jsonb;
 ALTER TABLE automation_execution_batches ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
+ALTER TABLE automation_execution_batches ADD COLUMN IF NOT EXISTS run_token TEXT NOT NULL DEFAULT '';
+ALTER TABLE automation_execution_batches ADD COLUMN IF NOT EXISTS stop_on_failure BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE automation_execution_batches ADD COLUMN IF NOT EXISTS data_policy TEXT NOT NULL DEFAULT 'fresh';
 CREATE INDEX IF NOT EXISTS automation_jobs_owner_idx ON automation_jobs(owner_id);
 CREATE INDEX IF NOT EXISTS automation_jobs_agent_idx ON automation_jobs(agent_id);
 CREATE INDEX IF NOT EXISTS automation_jobs_status_idx ON automation_jobs(status);

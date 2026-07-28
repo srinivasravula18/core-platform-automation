@@ -128,6 +128,25 @@ export async function importDataset(input: { provider: DatasetProviderType; file
   return dataset;
 }
 
+// Build a dataset from hand-entered rows (the "+ Manual" grid). Columns are the field labels, so a
+// manual dataset maps 1:1 to the recording's fields exactly like a filled template does.
+export async function createManualDataset(input: { name?: string; columns: string[]; rows: Array<Record<string, string>> }, scope: Scope) {
+  const columns = (input.columns || []).map((name) => String(name || '').trim()).filter(Boolean);
+  if (!columns.length) throw new Error('At least one column is required.');
+  const matrix: unknown[][] = [columns, ...(input.rows || []).map((row) => columns.map((name) => row?.[name] ?? ''))];
+  const parsed = normalize(matrix);
+  if (!parsed.rows.length) throw new Error('Enter at least one row of data.');
+  const now = new Date().toISOString();
+  const dataset = await AutomationDatasets.upsert({
+    id: uid('DATASET'), name: input.name?.trim() || 'Manual dataset', provider: 'csv',
+    sourceFilename: 'manual', sourceHash: '', columns: parsed.columns, rowCount: parsed.rows.length,
+    status: 'ready', createdAt: now, ...scopeStamp(scope),
+  });
+  await AutomationDatasetRows.replace(dataset.id, parsed.rows.map((row) => ({ id: uid('DROW'), ...row })));
+  persist('automation manual dataset created');
+  return dataset;
+}
+
 export async function listDatasets() { return AutomationDatasets.list(); }
 export async function getDataset(id: string) { return AutomationDatasets.get(id); }
 export async function datasetPage(id: string, offset?: number, limit?: number) { return AutomationDatasetRows.page(id, offset, limit); }

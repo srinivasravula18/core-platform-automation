@@ -320,23 +320,46 @@ function hostKey(url: string): string {
   try { return new URL(url).hostname.toLowerCase(); } catch { return ''; }
 }
 
+/** URL path (no trailing slash, lowercased) for prefix comparison; '' for root or unparseable. */
+function pathKey(url: string): string {
+  try { return new URL(url).pathname.replace(/\/+$/, '').toLowerCase(); } catch { return ''; }
+}
+
 /**
  * Match a website by URL. Prefer an EXACT host:port match so different ports on the
  * same host never collide — e.g. two different apps on localhost with different ports
  * used to both resolve to host "localhost" and pick whichever website was first,
  * handing a run the WRONG credentials. Fall back to hostname-only for setups that
  * registered a base URL without a port.
+ *
+ * When SEVERAL registered sites share the same host:port (two apps on one host distinguished
+ * only by PATH — e.g. .../admin-ui vs .../shockwave), host matching alone is ambiguous and used
+ * to hand a run whichever site was stored first (wrong credentials). Disambiguate by path: the
+ * site whose registered path is the longest prefix of the target path wins; a root-path ('')
+ * site acts as the catch-all. If a genuine collision can't be resolved by path, return null so
+ * the caller surfaces "no matching credentials" instead of silently logging in as the wrong app.
+ * Sites with an unparseable base URL yield an empty host key and are skipped naturally.
  */
 function matchWebsiteByUrl(sites: Website[], url: string): Website | null {
+  const targetPath = pathKey(url);
+  const pickByPath = (candidates: Website[]): Website | null => {
+    if (candidates.length <= 1) return candidates[0] || null;
+    const ranked = candidates
+      .map((w) => ({ w, p: pathKey(w.baseUrl) }))
+      .filter(({ p }) => p === '' || targetPath === p || targetPath.startsWith(p + '/'))
+      .sort((a, b) => b.p.length - a.p.length);
+    return ranked.length ? ranked[0].w : null;
+  };
+
   const hp = hostPortKey(url);
   if (hp) {
-    const exact = sites.find((w) => hostPortKey(w.baseUrl) === hp);
-    if (exact) return exact;
+    const sameHostPort = sites.filter((w) => hostPortKey(w.baseUrl) === hp);
+    if (sameHostPort.length) return pickByPath(sameHostPort);
   }
   const h = hostKey(url);
   if (h) {
-    const byHost = sites.find((w) => hostKey(w.baseUrl) === h);
-    if (byHost) return byHost;
+    const sameHost = sites.filter((w) => hostKey(w.baseUrl) === h);
+    if (sameHost.length) return pickByPath(sameHost);
   }
   return null;
 }

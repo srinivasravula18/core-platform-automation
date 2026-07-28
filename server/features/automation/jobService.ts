@@ -17,6 +17,7 @@ import { scopeStamp } from '../../shared/scope';
 import { emitEvent } from './eventsService';
 import { onAgentFrame, onAgentConnected, dispatchToAgent, isAgentConnected } from './agentGateway';
 import { cancelServerJob } from './serverRunner';
+import { runTeardown } from './teardownService';
 import type { AgentFrame, JobStatus, JobTrigger } from './types';
 
 function persist(reason: string) {
@@ -121,6 +122,8 @@ export async function refreshExecutionBatch(batchId: string): Promise<any> {
   await AutomationExecutionBatches.upsert({ ...batch, status, summary });
   persist('execution batch status');
   await emitEvent({ scopeType: 'batch', scopeId: batchId, type: `batch.${status}`, ownerId: batch.ownerId, data: { batch: { ...batch, status, summary } } });
+  // Ephemeral policy: once every row is terminal, clean up the data this batch wrote (idempotent).
+  if (terminal === jobs.length && jobs.length > 0 && batch.dataPolicy === 'ephemeral') void runTeardown(batchId);
   return { ...batch, status, summary };
 }
 
@@ -208,8 +211,18 @@ onAgentFrame('job.done', async (_agentId, frame: AgentFrame) => {
   await setStatus(jobId, status, { exitCode: Number(exitCode) || 0, summary: summary || {}, error: error || '', finishedAt: new Date().toISOString() });
   await syncLinkedRun(jobId, status, summary || {});
   const job = await AutomationJobs.get(jobId);
+  // Result gate: on a failed row in a stop-on-failure batch, cancel the rest so no more bad data is written.
+  if (status === 'failed' && job?.batchId) await enforceStopOnFailure(job.batchId);
   if (job?.agentId) await dispatchNextForAgent(job.agentId);
 });
+
+/** Cancel a batch's still-pending rows once one has failed (only when the batch opted into stop-on-failure). */
+async function enforceStopOnFailure(batchId: string): Promise<void> {
+  const batch = await AutomationExecutionBatches.get(batchId);
+  if (!batch?.stopOnFailure) return;
+  const pending = (await AutomationJobs.list()).filter((job) => job.batchId === batchId && ['queued', 'dispatched', 'running', 'uploading'].includes(job.status));
+  for (const job of pending) await cancelJob(job.id);
+}
 
 // A Test Run started via POST /api/automation/runs is linked to this job by trigger_meta. When the
 // job finishes, mirror its real pass/fail/duration onto the run so the Test Runs list shows it.

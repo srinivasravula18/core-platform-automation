@@ -261,11 +261,9 @@ export async function listRecordingSteps(recordingId: string) {
 function validOverride(value: unknown, kind: RecordingFieldKind): value is string | boolean | null {
   if (value === null) return true;
   if (kind === 'boolean') return typeof value === 'boolean';
-  if (typeof value !== 'string') return false;
-  if (kind === 'email') return !value || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
-  if (kind === 'number') return !value || Number.isFinite(Number(value));
-  if (kind === 'date') return !value || !Number.isNaN(new Date(value).getTime());
-  return true;
+  // The recorded field kind is only a display hint, so a manual override accepts any string —
+  // an "Email or Username" login field legitimately takes a non-email username, etc.
+  return typeof value === 'string';
 }
 
 export async function overrideRecordingStep(recordingId: string, stepId: string, value: unknown) {

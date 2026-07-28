@@ -253,6 +253,8 @@ function mapRun(r: any) {
     tags: r.tags || [],
     state: r.state || '',
     targetUrl: r.target_url,
+    websiteId: r.website_id || '',
+    credentialRole: r.credential_role || '',
     folderId: r.folder_id,
     steps: r.steps || [],
     evidence: r.evidence || [],
@@ -1254,8 +1256,8 @@ export const Runs = {
     const evidenceJson = JSON.stringify(r.evidence || []);
     const triggerMetaJson = JSON.stringify(r.triggerMeta || {});
     const row = await queryOne(
-      `INSERT INTO runs (id, name, suite_id, test_plan_id, case_ids, requested_by, execution_time, total_executions, passed, failed, progress, status, target_url, folder_id, steps, evidence, trigger_type, trigger_meta, started_at, completed_at, approval_state, proposed_by, source_run_id, date, assigned_to, tags, state, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::jsonb,$16::jsonb,$17,$18::jsonb,$19,$20,$21,$22,$23, COALESCE($24, CURRENT_DATE), $25, $26, $27, now(), now())
+      `INSERT INTO runs (id, name, suite_id, test_plan_id, case_ids, requested_by, execution_time, total_executions, passed, failed, progress, status, target_url, folder_id, steps, evidence, trigger_type, trigger_meta, started_at, completed_at, approval_state, proposed_by, source_run_id, date, assigned_to, tags, state, website_id, credential_role, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::jsonb,$16::jsonb,$17,$18::jsonb,$19,$20,$21,$22,$23, COALESCE($24, CURRENT_DATE), $25, $26, $27, $28, $29, now(), now())
        ON CONFLICT (id) DO UPDATE SET
          name=EXCLUDED.name, suite_id=EXCLUDED.suite_id, test_plan_id=EXCLUDED.test_plan_id,
          case_ids=EXCLUDED.case_ids, requested_by=EXCLUDED.requested_by, execution_time=EXCLUDED.execution_time,
@@ -1267,6 +1269,7 @@ export const Runs = {
          approval_state=EXCLUDED.approval_state, proposed_by=EXCLUDED.proposed_by,
          source_run_id=EXCLUDED.source_run_id,
          assigned_to=EXCLUDED.assigned_to, tags=EXCLUDED.tags, state=EXCLUDED.state,
+         website_id=EXCLUDED.website_id, credential_role=EXCLUDED.credential_role,
          updated_at=now()
        RETURNING *`,
       [
@@ -1281,6 +1284,7 @@ export const Runs = {
         r.sourceRunId || r.agentRunId || null,
         r.date || null,
         r.assignedTo || '', r.tags || [], r.state || '',
+        r.websiteId || '', r.credentialRole || '',
       ],
     );
     await writeScopeCols('runs', id, r);
@@ -2365,29 +2369,40 @@ export const AutomationDatasetRows = {
       return { total: all.length, rows: all.slice(safeOffset, safeOffset + safeLimit) };
     }
     const [rows, count] = await Promise.all([
-      query('SELECT id, dataset_id, row_number, values, validation, created_at FROM automation_dataset_rows WHERE dataset_id = $1 ORDER BY row_number ASC OFFSET $2 LIMIT $3', [datasetId, safeOffset, safeLimit]),
+      query('SELECT id, dataset_id, row_number, values, validation, state, created_at FROM automation_dataset_rows WHERE dataset_id = $1 ORDER BY row_number ASC OFFSET $2 LIMIT $3', [datasetId, safeOffset, safeLimit]),
       queryOne<{ count: string }>('SELECT COUNT(*)::text AS count FROM automation_dataset_rows WHERE dataset_id = $1', [datasetId]),
     ]);
-    return { total: Number(count?.count || 0), rows: rows.map((row: any) => ({ id: row.id, datasetId: row.dataset_id, rowNumber: row.row_number, values: row.values, validation: row.validation, createdAt: row.created_at })) };
+    return { total: Number(count?.count || 0), rows: rows.map((row: any) => ({ id: row.id, datasetId: row.dataset_id, rowNumber: row.row_number, values: row.values, validation: row.validation, state: row.state || 'available', createdAt: row.created_at })) };
   },
-  async select(datasetId: string, rowNumbers?: number[], from?: number, to?: number): Promise<any[]> {
+  async select(datasetId: string, rowNumbers?: number[], from?: number, to?: number, availableOnly = false): Promise<any[]> {
     if (!isPgEnabled()) {
       const wanted = rowNumbers?.length ? new Set(rowNumbers) : null;
       return db.automationDatasetRows
         .filter((row: any) => row.datasetId === datasetId)
         .filter((row: any) => wanted ? wanted.has(row.rowNumber) : row.rowNumber >= (from || 1) && row.rowNumber <= (to || Number.MAX_SAFE_INTEGER))
+        .filter((row: any) => !availableOnly || (row.state || 'available') === 'available')
         .sort((a: any, b: any) => a.rowNumber - b.rowNumber);
     }
+    const availClause = availableOnly ? " AND COALESCE(state,'available') = 'available'" : '';
     const rows = rowNumbers?.length
-      ? await query('SELECT * FROM automation_dataset_rows WHERE dataset_id = $1 AND row_number = ANY($2::int[]) ORDER BY row_number', [datasetId, rowNumbers])
-      : await query('SELECT * FROM automation_dataset_rows WHERE dataset_id = $1 AND row_number BETWEEN $2 AND $3 ORDER BY row_number', [datasetId, from || 1, to || 2147483647]);
-    return rows.map((row: any) => ({ id: row.id, datasetId: row.dataset_id, rowNumber: row.row_number, values: row.values, validation: row.validation, createdAt: row.created_at }));
+      ? await query(`SELECT * FROM automation_dataset_rows WHERE dataset_id = $1 AND row_number = ANY($2::int[])${availClause} ORDER BY row_number`, [datasetId, rowNumbers])
+      : await query(`SELECT * FROM automation_dataset_rows WHERE dataset_id = $1 AND row_number BETWEEN $2 AND $3${availClause} ORDER BY row_number`, [datasetId, from || 1, to || 2147483647]);
+    return rows.map((row: any) => ({ id: row.id, datasetId: row.dataset_id, rowNumber: row.row_number, values: row.values, validation: row.validation, state: row.state || 'available', createdAt: row.created_at }));
+  },
+  async markConsumed(datasetId: string, rowNumbers: number[], batchId: string): Promise<void> {
+    if (!rowNumbers.length) return;
+    if (!isPgEnabled()) {
+      const wanted = new Set(rowNumbers);
+      for (const row of db.automationDatasetRows) if (row.datasetId === datasetId && wanted.has(row.rowNumber)) { row.state = 'consumed'; row.consumedByBatch = batchId; }
+      return;
+    }
+    await query("UPDATE automation_dataset_rows SET state = 'consumed', consumed_by_batch = $3 WHERE dataset_id = $1 AND row_number = ANY($2::int[])", [datasetId, rowNumbers, batchId]);
   },
 };
 
 export const AutomationDataMappings = {
-  async list(recordingId: string) { if (!isPgEnabled()) return db.automationDataMappings.filter((m: any) => m.recordingId === recordingId); return query('SELECT id, recording_id AS "recordingId", step_id AS "stepId", dataset_id AS "datasetId", column_id AS "columnId", expression FROM automation_data_mappings WHERE recording_id=$1', [recordingId]); },
-  async upsert(m: any) { if (!isPgEnabled()) { db.automationDataMappings = db.automationDataMappings.filter((x: any) => x.stepId !== m.stepId); db.automationDataMappings.push(m); return m; } return queryOne(`INSERT INTO automation_data_mappings (id,recording_id,step_id,dataset_id,column_id,expression) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (step_id) DO UPDATE SET dataset_id=EXCLUDED.dataset_id,column_id=EXCLUDED.column_id,expression=EXCLUDED.expression,updated_at=now() RETURNING id,recording_id AS "recordingId",step_id AS "stepId",dataset_id AS "datasetId",column_id AS "columnId",expression`, [m.id,m.recordingId,m.stepId,m.datasetId,m.columnId,m.expression]); },
+  async list(recordingId: string) { if (!isPgEnabled()) return db.automationDataMappings.filter((m: any) => m.recordingId === recordingId); return query('SELECT id, recording_id AS "recordingId", step_id AS "stepId", dataset_id AS "datasetId", column_id AS "columnId", expression, intent FROM automation_data_mappings WHERE recording_id=$1', [recordingId]); },
+  async upsert(m: any) { const intent = m.intent || 'fixed'; if (!isPgEnabled()) { db.automationDataMappings = db.automationDataMappings.filter((x: any) => x.stepId !== m.stepId); const saved = { ...m, intent }; db.automationDataMappings.push(saved); return saved; } return queryOne(`INSERT INTO automation_data_mappings (id,recording_id,step_id,dataset_id,column_id,expression,intent) VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (step_id) DO UPDATE SET dataset_id=EXCLUDED.dataset_id,column_id=EXCLUDED.column_id,expression=EXCLUDED.expression,intent=EXCLUDED.intent,updated_at=now() RETURNING id,recording_id AS "recordingId",step_id AS "stepId",dataset_id AS "datasetId",column_id AS "columnId",expression,intent`, [m.id,m.recordingId,m.stepId,m.datasetId,m.columnId,m.expression,intent]); },
   async remove(recordingId: string, stepId: string) { if (!isPgEnabled()) { const n=db.automationDataMappings.length; db.automationDataMappings=db.automationDataMappings.filter((m:any)=>m.recordingId!==recordingId||m.stepId!==stepId); return n!==db.automationDataMappings.length; } return !!await queryOne('DELETE FROM automation_data_mappings WHERE recording_id=$1 AND step_id=$2 RETURNING id',[recordingId,stepId]); },
 };
 
@@ -2401,6 +2416,9 @@ function mapExecutionBatch(r: any) {
     status: r.status,
     selection: r.selection || [],
     summary: r.summary || {},
+    runToken: r.run_token || '',
+    stopOnFailure: !!r.stop_on_failure,
+    dataPolicy: r.data_policy || 'fresh',
     createdAt: r.created_at,
     updatedAt: r.updated_at,
     projectId: r.project_id || '',
@@ -2427,13 +2445,48 @@ export const AutomationExecutionBatches = {
       return saved;
     }
     return mapExecutionBatch(await queryOne(
-      `INSERT INTO automation_execution_batches (id,project_id,app_id,owner_id,recording_id,dataset_id,agent_id,status,selection,summary)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10::jsonb)
+      `INSERT INTO automation_execution_batches (id,project_id,app_id,owner_id,recording_id,dataset_id,agent_id,status,selection,summary,run_token,stop_on_failure,data_policy)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10::jsonb,$11,$12,$13)
        ON CONFLICT (id) DO UPDATE SET status=EXCLUDED.status,selection=EXCLUDED.selection,summary=EXCLUDED.summary,updated_at=now()
        RETURNING *`,
       [batch.id, batch.projectId || null, batch.appId || null, batch.ownerId || null, batch.recordingId, batch.datasetId, batch.agentId,
-       batch.status || 'queued', JSON.stringify(batch.selection || []), JSON.stringify(batch.summary || {})],
+       batch.status || 'queued', JSON.stringify(batch.selection || []), JSON.stringify(batch.summary || {}), batch.runToken || '', !!batch.stopOnFailure, batch.dataPolicy || 'fresh'],
     ));
+  },
+};
+
+// Run-data ledger — the record of every resolved value written per batch row.
+export const AutomationRunData = {
+  async replaceForBatch(batchId: string, rows: Array<{ id: string; jobId?: string; rowNumber: number; fieldKey: string; fieldLabel?: string; intent?: string; value: string }>): Promise<void> {
+    if (!isPgEnabled()) {
+      db.automationRunData = (db.automationRunData || []).filter((r: any) => r.batchId !== batchId);
+      db.automationRunData.push(...rows.map((r) => ({ cleanupStatus: 'none', jobId: '', fieldLabel: '', intent: 'fixed', ...r, batchId })));
+      return;
+    }
+    await query('DELETE FROM automation_run_data WHERE batch_id = $1', [batchId]);
+    for (let start = 0; start < rows.length; start += 500) {
+      const chunk = rows.slice(start, start + 500);
+      const values: any[] = [];
+      const placeholders = chunk.map((r, index) => {
+        const n = index * 7;
+        values.push(r.id, batchId, r.jobId || '', r.rowNumber, r.fieldKey, r.fieldLabel || '', r.intent || 'fixed');
+        return `($${n + 1},$${n + 2},$${n + 3},$${n + 4},$${n + 5},$${n + 6},$${n + 7},$${chunk.length * 7 + index + 1})`;
+      });
+      values.push(...chunk.map((r) => r.value ?? ''));
+      await query(`INSERT INTO automation_run_data (id,batch_id,job_id,row_number,field_key,field_label,intent,value) VALUES ${placeholders.join(',')}`, values);
+    }
+  },
+  async listForBatch(batchId: string): Promise<any[]> {
+    if (!isPgEnabled()) return (db.automationRunData || []).filter((r: any) => r.batchId === batchId).sort((a: any, b: any) => a.rowNumber - b.rowNumber);
+    const rows = await query('SELECT * FROM automation_run_data WHERE batch_id = $1 ORDER BY row_number, field_key', [batchId]);
+    return rows.map((r: any) => ({ id: r.id, batchId: r.batch_id, jobId: r.job_id, rowNumber: r.row_number, fieldKey: r.field_key, fieldLabel: r.field_label, intent: r.intent, value: r.value, cleanupStatus: r.cleanup_status }));
+  },
+  async setCleanupStatus(batchId: string, rowNumber: number, status: string): Promise<void> {
+    if (!isPgEnabled()) {
+      for (const r of (db.automationRunData || [])) if (r.batchId === batchId && r.rowNumber === rowNumber) r.cleanupStatus = status;
+      return;
+    }
+    await query('UPDATE automation_run_data SET cleanup_status = $3 WHERE batch_id = $1 AND row_number = $2', [batchId, rowNumber, status]);
   },
 };
 
