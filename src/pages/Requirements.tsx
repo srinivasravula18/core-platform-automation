@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Search, Sparkles, Loader2, Target, FileCode2, ArrowRight, Trash2 } from 'lucide-react';
+import { Search, Sparkles, Loader2, Target, FileCode2, ArrowRight, Trash2, TestTube2 } from 'lucide-react';
 import { Timestamp, actorName } from '@/src/components/Timestamp';
 import { TimeSortSelect } from '@/src/components/filters/TimeSortSelect';
 import { TimeRangeFilter, passesTimeFilter, type TimeFilterValue } from '@/src/components/filters/TimeRangeFilter';
@@ -299,6 +299,14 @@ export default function Requirements() {
               <Trash2 className="h-4 w-4" /> Delete
             </button>
             <div className="flex gap-3">
+              <button
+                onClick={() => navigate(`/chat/${encodeURIComponent(`agent-run:${selected?.sourceRunId}`)}`)}
+                disabled={!selected?.sourceRunId || !selected?.linkedCases?.length}
+                title={!selected?.linkedCases?.length ? 'No test cases are linked to this requirement.' : !selected?.sourceRunId ? 'These cases were not created by an Agent Console run.' : 'Open the originating Agent Console run on its Cases tab.'}
+                className="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-[var(--text-primary)] border border-[var(--border)] rounded-md hover:border-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <TestTube2 className="h-4 w-4 text-[var(--accent)]" /> Go to Linked Cases
+              </button>
               <button
                 onClick={() => navigate(`/traceability?req=${encodeURIComponent(selected?.id || '')}`)}
                 className="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-[var(--text-primary)] border border-[var(--border)] rounded-md hover:border-[var(--accent)]"

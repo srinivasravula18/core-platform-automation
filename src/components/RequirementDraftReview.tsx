@@ -4,6 +4,7 @@ import {
   FileCode2,
   Pencil,
   ScrollText,
+  Sparkles,
   Trash2,
 } from 'lucide-react';
 import { useState } from 'react';
@@ -41,12 +42,14 @@ export function RequirementDraftReview({
   onCreate,
   onDiscard,
   onChange,
+  onRework,
 }: {
   result: any;
   busy?: boolean;
   onCreate: () => void;
   onDiscard: () => void;
   onChange: (result: any) => void;
+  onRework?: (instruction: string) => void;
 }) {
   const requirement = result?.requirement || {};
   const srsModules: RequirementSrsModule[] = Array.isArray(result?.understanding?.srsModules) ? result.understanding.srsModules : [];
@@ -61,6 +64,15 @@ export function RequirementDraftReview({
   // SRS shows the clean read-only rendered spec by default; the field-by-field editor is revealed
   // only when the user clicks Edit (the raw editor form is hard to scan for review).
   const [editingSrs, setEditingSrs] = useState(false);
+  const [reworkOpen, setReworkOpen] = useState(false);
+  const [reworkText, setReworkText] = useState('');
+  const submitRework = () => {
+    const instruction = reworkText.trim();
+    if (!instruction || !onRework) return;
+    onRework(instruction);
+    setReworkText('');
+    setReworkOpen(false);
+  };
   const updateRequirement = (updates: Record<string, unknown>) =>
     onChange({ ...result, requirement: { ...requirement, ...updates } });
   const updateSrsModules = (modules: RequirementSrsModule[]) =>
@@ -212,23 +224,55 @@ export function RequirementDraftReview({
         )}
       </div>
 
-      <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-[var(--border)] pt-3">
-        <span className="text-[11px] text-[var(--text-muted)]">Review and edit the fields before creating the requirement.</span>
-        <div className="flex flex-wrap gap-2">
-          <button
-            onClick={onDiscard}
-            disabled={busy}
-            className="inline-flex items-center gap-1.5 rounded-md border border-red-500/30 bg-red-500/5 px-3 py-1.5 text-xs font-medium text-red-400 hover:bg-red-500/10 disabled:opacity-50"
-          >
-            <Trash2 className="h-3.5 w-3.5" /> Discard
-          </button>
-          <button
-            onClick={onCreate}
-            disabled={busy}
-            className="inline-flex items-center gap-1.5 rounded-md bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50"
-          >
-            <Check className="h-3.5 w-3.5" /> Create requirement
-          </button>
+      <div className="mt-3 border-t border-[var(--border)] pt-3">
+        {onRework && reworkOpen && (
+          <div className="mb-2 flex items-center gap-2">
+            <input
+              value={reworkText}
+              onChange={(event) => setReworkText(event.target.value)}
+              onKeyDown={(event) => { if (event.key === 'Enter') submitRework(); }}
+              placeholder="What should the AI realign or add? e.g. add error-handling requirements, tighten wording, cover empty states"
+              className={inputClass}
+              autoFocus
+            />
+            <button
+              type="button"
+              onClick={submitRework}
+              disabled={busy || !reworkText.trim()}
+              className="inline-flex shrink-0 items-center gap-1.5 rounded-md bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50"
+            >
+              <Sparkles className="h-3.5 w-3.5" /> Send
+            </button>
+          </div>
+        )}
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <span className="text-[11px] text-[var(--text-muted)]">Review and edit the fields before creating the requirement.</span>
+          <div className="flex flex-wrap gap-2">
+            {onRework && (
+              <button
+                type="button"
+                onClick={() => setReworkOpen((v) => !v)}
+                disabled={busy}
+                className="inline-flex items-center gap-1.5 rounded-md border border-[var(--border)] px-3 py-1.5 text-xs font-medium text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)] disabled:opacity-50"
+              >
+                <Sparkles className="h-3.5 w-3.5" /> Rework with AI
+              </button>
+            )}
+            <button
+              onClick={onDiscard}
+              disabled={busy}
+              className="inline-flex items-center gap-1.5 rounded-md border border-red-500/30 bg-red-500/5 px-3 py-1.5 text-xs font-medium text-red-400 hover:bg-red-500/10 disabled:opacity-50"
+            >
+              <Trash2 className="h-3.5 w-3.5" /> Discard
+            </button>
+            <button
+              onClick={onCreate}
+              disabled={busy}
+              className="inline-flex items-center gap-1.5 rounded-md bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50"
+            >
+              <Check className="h-3.5 w-3.5" /> Create requirement
+            </button>
+          </div>
         </div>
       </div>
     </div>

@@ -1847,6 +1847,25 @@ export default function AgentConsole() {
     inputRef.current?.focus();
   }, [replaceTurn]);
 
+  // Explicit "Rework with AI" from the draft card: re-run the drafting agent seeded with the current
+  // draft + the user's instruction so it realigns/expands in place (same path a chat follow-up uses).
+  const reworkRequirementDraft = useCallback(async (turn: { id: string; result: any; query?: string; revisionCount?: number }, instruction: string) => {
+    if (busy || !instruction.trim()) return;
+    const previousDraft: PendingRequirementDraft = {
+      turnId: turn.id,
+      query: turn.query || pendingRequirementDraft?.query || '',
+      result: turn.result,
+      revisionCount: turn.revisionCount || 0,
+    };
+    setBusy(true);
+    try {
+      await runRequirementDraft(turn.id, previousDraft.query, previousDraft, instruction.trim());
+    } finally {
+      setBusy(false);
+      inputRef.current?.focus();
+    }
+  }, [busy, runRequirementDraft, pendingRequirementDraft]);
+
   // The apps the user explicitly selected in the composer (all of them), as target
   // context for the agent. Mirrored to a ref so callbacks read the latest without churn.
   const selectedApps = websites.filter((w) => selectedAppIds.has(w.id)).map((w) => ({ name: w.name, baseUrl: w.baseUrl }));
@@ -3265,6 +3284,7 @@ export default function AgentConsole() {
                           busy={busy || (!!pendingRequirementDraft && pendingRequirementDraft.turnId !== turn.id)}
                           onCreate={() => void confirmRequirementDraft(turn)}
                           onDiscard={() => discardRequirementDraft(turn.id)}
+                          onRework={(instruction) => void reworkRequirementDraft(turn, instruction)}
                           onChange={(result) => {
                             replaceTurn(turn.id, { ...turn, result });
                             setPendingRequirementDraft((current) => current?.turnId === turn.id ? { ...current, result } : current);
