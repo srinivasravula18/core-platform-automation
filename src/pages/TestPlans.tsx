@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft, Search, Filter, Pencil, Plus, Sparkles, Trash2, PlayCircle, Loader2, Rocket } from 'lucide-react';
-import { RowMoreMenu } from '@/src/components/RowMoreMenu';
 import { Timestamp, actorName } from '@/src/components/Timestamp';
 import { TimeSortSelect } from '@/src/components/filters/TimeSortSelect';
 import { TimeRangeFilter, passesTimeFilter, type TimeFilterValue } from '@/src/components/filters/TimeRangeFilter';
@@ -934,7 +933,17 @@ export default function TestPlans() {
                         >
                           <Pencil className="w-4 h-4" />
                         </button>
-                        <RowMoreMenu items={[{ label: 'Delete', onClick: () => bulk.deleteOne(plan.id), danger: true }]} />
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            bulk.deleteOne(plan.id);
+                          }}
+                          title="Delete test plan"
+                          aria-label="Delete test plan"
+                          className="p-1 rounded text-[var(--text-muted)] transition-colors hover:bg-red-500/10 hover:text-red-400"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
                       </div>
                     </td>
                   </tr>

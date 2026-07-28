@@ -1,7 +1,6 @@
 import { useEffect, useState, useRef, useMemo, type ComponentProps } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Search, Filter, Pencil, Plus, Sparkles, Loader2, Trash2, PlayCircle, Code2, FolderCheck, ChevronDown } from 'lucide-react';
-import { RowMoreMenu } from '@/src/components/RowMoreMenu';
 import { Timestamp, actorName } from '@/src/components/Timestamp';
 import { TimeSortSelect } from '@/src/components/filters/TimeSortSelect';
 import { sortByTime, type TimeSortKey } from '@/src/lib/time';
@@ -1327,7 +1326,17 @@ export default function TestCases() {
                     >
                       <Pencil className="w-4 h-4" />
                     </button>
-                    <RowMoreMenu items={[{ label: 'Delete', onClick: () => bulk.deleteOne(tc.id), danger: true }]} />
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        bulk.deleteOne(tc.id);
+                      }}
+                      title="Delete test case"
+                      aria-label="Delete test case"
+                      className="p-1 rounded text-[var(--text-muted)] transition-colors hover:bg-red-500/10 hover:text-red-400"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
                   </td>
                 </tr>
               ))}
