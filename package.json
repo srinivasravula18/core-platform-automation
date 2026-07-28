@@ -51,6 +51,7 @@
     "test:agent-authoring-graph": "tsx scripts/test-agent-authoring-graph.ts",
     "test:agent-workflow-resume": "tsx scripts/test-agent-workflow-resume.ts",
     "test:agent-request-graph": "tsx scripts/test-agent-request-graph.ts",
+    "test:agent-script-batches": "tsx scripts/test-agent-script-batches.ts",
     "test:case-reuse": "tsx scripts/test-case-reuse.ts",
     "test:testdata-engine": "tsx scripts/test-testdata-engine.ts",
     "test:execution-evidence": "tsx scripts/test-playwright-execution-evidence.ts",

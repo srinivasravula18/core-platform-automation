@@ -11,6 +11,7 @@
  * written to state, checkpoints, projections, or events. Projections whitelist seed fields explicitly.
  */
 import { readFile } from 'fs/promises';
+import { mergeScriptsByCase } from '../caseCollection';
 import { Command, isInterrupted } from '@langchain/langgraph';
 import { AgentRuns, AgentRunEvents, Defects } from '../../../db/repository';
 import { db } from '../../../shared/storage';
@@ -229,7 +230,9 @@ export function projectStateToLegacyRun(state: WorkflowState, seed?: any): any {
         steps: [],
       }));
     })(),
-    playwright_scripts: playwrightScripts,
+    playwright_scripts: seed?.preserve_playwright_scripts
+      ? mergeScriptsByCase(Array.isArray(seed.playwright_scripts) ? seed.playwright_scripts : [], playwrightScripts)
+      : playwrightScripts,
     // Per-case "why no script" reasons — surfaced in the UI so a run with more cases than scripts
     // explains its gap instead of looking arbitrary. Scripted cases are excluded; only cases the
     // deterministic compiler could NOT ground/plan/validate remain. Same field the legacy path uses.

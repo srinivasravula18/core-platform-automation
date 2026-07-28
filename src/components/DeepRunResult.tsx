@@ -390,6 +390,7 @@ export function DeepRunResult({
   const reviewStage = String((run as any)?.review_stage || 'cases');
   const scriptReviewing = reviewing && reviewStage === 'scripts';
   const canRegenerateScripts = failed && (run as any)?.engine !== 'langgraph';
+  const canGenerateAdditionalScripts = ['completed', 'failed'].includes(status) && scripts.length > 0 && selectedCases.size > 0;
   const coverageGate = status === 'coverage_options';
   const existingMatches: Case[] = run?.existing_matches || [];
   // Cases the user removed from the coverage card (by index) — dropped before reuse/gaps.
@@ -744,11 +745,19 @@ export function DeepRunResult({
           executionCases: reviewedCases,
           selectedCaseIndexes: [...selectedCases],
           scripts: scriptReviewing ? scripts : undefined,
+          appendScripts: !scriptReviewing && scripts.length > 0,
         }),
       });
       if (!res.ok) throw await errorFromResponse(res);
-      setRun((prev: any) => (prev ? { ...prev, status: 'running' } : prev));
-      setTimeout(pollStatus, 800); // resume polling for scripts + evidence
+      const data = await res.json().catch(() => ({}));
+      if (!scriptReviewing) setSelectedCases(new Set());
+      if (data?.taskId) {
+        setRun(null);
+        setActiveTaskId(data.taskId);
+      } else {
+        setRun((prev: any) => (prev ? { ...prev, status: 'running' } : prev));
+        setTimeout(pollStatus, 800); // resume polling for scripts + evidence
+      }
     } catch (e: any) {
       setActionError(actionErrorMessage(e));
     } finally {
@@ -1364,7 +1373,7 @@ export function DeepRunResult({
                     {busy === 'save' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
                     {saved ? 'Saved' : 'Save all'}
                   </button>
-                  {(reviewing || canRegenerateScripts) && (
+                  {(reviewing || canRegenerateScripts || canGenerateAdditionalScripts) && (
                     <button
                       onClick={continueFlow}
                       disabled={busy === 'continue' || (!list.length && !scriptReviewing)}
@@ -1373,6 +1382,8 @@ export function DeepRunResult({
                       {busy === 'continue' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
                       {scriptReviewing
                         ? 'Run scripts & capture evidence'
+                        : canGenerateAdditionalScripts
+                          ? `Generate scripts for ${selectedCases.size} selected`
                         : canRegenerateScripts
                           ? `Generate scripts for ${selectedCases.size ? `${selectedCases.size} selected` : `all ${list.length}`}`
                           : selectedCases.size ? `Continue selected (${selectedCases.size}) -> scripts` : 'Continue -> scripts'}

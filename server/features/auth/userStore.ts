@@ -12,7 +12,7 @@
  * tester on first run.
  */
 
-import { randomUUID, scryptSync, randomBytes, timingSafeEqual } from 'crypto';
+import { scryptSync, randomBytes, timingSafeEqual, createHash } from 'crypto';
 import { db, persistDataInBackground } from '../../shared/storage';
 import { isPostgresEnabled, query } from '../../db/pool';
 
@@ -61,13 +61,19 @@ export function getUserById(id: string): AppUser | null {
   return users().find((x) => x.id === id) || null;
 }
 
+/** Stable id derived from the username so a re-created/re-hydrated profile keeps the same id (never orphaned). */
+export function stableUserId(username: string): string {
+  const norm = String(username || '').trim().toLowerCase();
+  return `U-${createHash('sha256').update(norm).digest('hex').slice(0, 8)}`;
+}
+
 export function createAppUser(opts: { username: string; name?: string; password: string; role?: Role }): AppUser {
   const username = String(opts.username || '').trim();
   if (!username) throw new Error('A username is required.');
   if (!opts.password) throw new Error('A password is required.');
   if (findByUsername(username)) throw new Error(`A user named "${username}" already exists.`);
   const rec: AppUser = {
-    id: `U-${randomUUID().slice(0, 8)}`,
+    id: stableUserId(username),
     username,
     name: (opts.name || '').trim() || username,
     passwordHash: hashPassword(opts.password),
@@ -140,7 +146,10 @@ export async function claimLegacyDataForAdmin(): Promise<{ adminId: string; clai
   const adminId = admin.id;
   // Ids that belong to a real current user — their data must be preserved.
   const validIds = new Set(listUsers().map((u) => u.id));
-  const isOrphan = (owner: any) => !owner || !validIds.has(owner);
+  // With testers present, only adopt genuinely unowned rows; never confiscate a tester's owned
+  // row just because its id churned. The dead-id sweep runs only in a solo-admin deployment.
+  const hasTesters = listUsers().some((u) => u.role !== 'admin');
+  const isOrphan = (owner: any) => !owner || (!hasTesters && !validIds.has(owner));
 
   // In-memory stores (projects + websites are always in-memory; QA arrays back the
   // no-Postgres mode).
@@ -171,12 +180,14 @@ export async function claimLegacyDataForAdmin(): Promise<{ adminId: string; clai
   if (isPostgresEnabled()) {
     const ids = Array.from(validIds);
     const pgTables = ['plans', 'suites', 'cases', 'runs', 'defects', 'reports', 'scripts', 'folders', 'requirements', 'agent_runs', 'websites', 'chat_conversations'];
+    // Mirror the in-memory guard.
+    const where = hasTesters
+      ? `owner_id IS NULL OR owner_id = ''`
+      : `owner_id IS NULL OR owner_id = '' OR NOT (owner_id = ANY($2::text[]))`;
+    const params = hasTesters ? [adminId] : [adminId, ids];
     for (const t of pgTables) {
       try {
-        await query(
-          `UPDATE ${t} SET owner_id = $1 WHERE owner_id IS NULL OR owner_id = '' OR NOT (owner_id = ANY($2::text[]))`,
-          [adminId, ids],
-        );
+        await query(`UPDATE ${t} SET owner_id = $1 WHERE ${where}`, params);
       } catch (e: any) {
         console.error(`[claim] ${t}:`, e?.message || e);
       }

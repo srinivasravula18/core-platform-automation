@@ -77,7 +77,7 @@ import { renderTargetCatalogForPrompt } from './compiler/renderCatalogForPrompt'
 import { testPlanSchema, parseTestPlan } from './compiler/testPlan';
 import { semanticPlanFromCase } from './compiler/semanticPlanner';
 import { linkedExistingCases, scoreCaseReuse } from './caseReuse';
-import { reviewedCasesForRun, syncReviewedCases } from './caseCollection';
+import { mergeScriptsByCase, reviewedCasesForRun, syncReviewedCases } from './caseCollection';
 import { pushInboxItem } from '../inbox/routes';
 import { AgentRuns, ChatConversations, Suites, Cases, Runs, Reports, Scripts, Folders, Requirements, RequirementLinks, Defects, isPgEnabled } from '../../db/repository';
 import { loadConversationHandoff } from '../../ai/memory/conversationState';
@@ -6270,7 +6270,7 @@ Rules:
   });
 
   app.post('/api/agent/continue', async (req, res) => {
-    const { taskId, cases, executionCases, selectedCaseIndexes, scripts } = req.body;
+    const { taskId, cases, executionCases, selectedCaseIndexes, scripts, appendScripts } = req.body;
     const run = db.agentRuns.find((item: any) => item.id === taskId);
 
     if (!run) return res.status(404).json({ error: 'Run not found' });
@@ -6280,7 +6280,51 @@ Rules:
       try {
         const pending = await getPendingReview(taskId);
         const correlationId = pending?.correlationId;
-        if (!correlationId) return res.status(409).json({ error: 'This run has no pending review to continue.' });
+        if (!correlationId) {
+          const selectedExecutionCases = Array.isArray(executionCases) ? executionCases : [];
+          const canStartAdditionalBatch = appendScripts
+            && ['completed', 'failed'].includes(String(run.status || ''))
+            && selectedExecutionCases.length > 0;
+          if (!canStartAdditionalBatch) return res.status(409).json({ error: 'This run has no pending review to continue.' });
+
+          const nextTaskId = randomUUID();
+          const now = nowIso();
+          const nextRun = {
+            ...run,
+            id: nextTaskId,
+            previousAgentRunId: run.id,
+            status: 'running',
+            messages: [],
+            phases: {},
+            generated_cases: selectedExecutionCases,
+            all_generated_cases: Array.isArray(cases) && cases.length ? cases : selectedExecutionCases,
+            playwright_scripts: Array.isArray(run.playwright_scripts) ? run.playwright_scripts : [],
+            preserve_playwright_scripts: true,
+            compiler_diagnostics: [],
+            execution_result: null,
+            execution_case_count: Math.min(
+              Array.isArray(cases) ? cases.length : selectedExecutionCases.length,
+              Number((run as any).execution_case_count || 0) + selectedExecutionCases.length,
+            ),
+            review_stage: '',
+            review_started_at: null,
+            pending_review: null,
+            cancelRequested: false,
+            completed_at: null,
+            created_at: now,
+            updated_at: now,
+            graph_start: {
+              ...((run as any).graph_start || {}),
+              requestedCaseCount: selectedExecutionCases.length,
+              reviewPolicy: 'auto',
+            },
+          };
+          db.agentRuns.unshift(nextRun);
+          await saveAgentRunState(nextRun, 'started additional selected graph batch');
+          res.json({ success: true, taskId: nextTaskId });
+          await beginGraphRunFor(nextRun, { seedCases: selectedExecutionCases });
+          return;
+        }
         if (pending?.kind === 'cases' && (!Array.isArray(cases) || cases.length === 0)) {
           return res.status(400).json({ error: 'Reviewed cases are required to continue.' });
         }
@@ -6339,6 +6383,8 @@ Rules:
       return res.status(400).json({ error: 'Reviewed cases are required to continue.' });
     }
     const selectedExecutionCases = Array.isArray(executionCases) && executionCases.length ? executionCases : cases;
+    const priorScripts = appendScripts && Array.isArray(run.playwright_scripts) ? [...run.playwright_scripts] : [];
+    const priorExecutionCaseCount = Number((run as any).execution_case_count || 0);
 
     run.status = 'running';
     run.completed_at = null;
@@ -6364,6 +6410,13 @@ Rules:
       // evidence run can actually log in.
       const liveCreds = resolveCredentials({ targetUrl: run.app_url, websiteId: run.websiteId, role: (run.credentials || {}).role, ownerId: ownerScopeForRun(run) }) || undefined;
       await runPostCaseAgentFlow(run, undefined as any, { test_cases: selectedExecutionCases }, run.app_url || '', liveCreds);
+      if (priorScripts.length) {
+        run.playwright_scripts = mergeScriptsByCase(priorScripts, Array.isArray(run.playwright_scripts) ? run.playwright_scripts : []);
+        run.generated_cases = cases;
+        (run as any).execution_case_count = Math.min(cases.length, priorExecutionCaseCount + selectedExecutionCases.length);
+        await persistAgentScripts(run);
+        await saveAgentRunState(run, 'additional selected scripts merged');
+      }
     } catch (err: any) {
       console.error('AI Continue Error:', err);
       markRunDone(run, 'failed');
