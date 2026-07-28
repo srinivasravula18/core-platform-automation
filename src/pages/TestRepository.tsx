@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { ChevronRight, FileText, Folder, FolderPlus, Layers, PlayCircle, Search, Trash2, ClipboardList, TestTube2, Code2, Copy, Download, Check, CheckSquare, X, Bug, ScrollText } from 'lucide-react';
+import { ChevronRight, FileText, Folder, FolderPlus, Layers, PlayCircle, Search, Trash2, ClipboardList, TestTube2, Code2, Copy, Download, Check, CheckSquare, X, Bug, ScrollText, MoveRight } from 'lucide-react';
 import { cn } from '@/src/lib/utils';
 import { Modal } from '@/src/components/Modal';
 import { showAlert, showConfirm } from '@/src/lib/dialog';
@@ -112,6 +112,26 @@ function FolderTreeItem({
   );
 }
 
+function MoveDestinationItem({ node, selectedId, onSelect, depth = 0 }: { node: FolderNode; selectedId: string; onSelect: (id: string) => void; depth?: number }) {
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={() => onSelect(node.id)}
+        className={cn(
+          'flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-sm transition-colors',
+          selectedId === node.id ? 'bg-[var(--accent)]/15 text-[var(--accent)]' : 'text-[var(--text-primary)] hover:bg-[var(--bg-card)]',
+        )}
+        style={{ paddingLeft: `${8 + depth * 18}px` }}
+      >
+        <Folder className="h-4 w-4 shrink-0" />
+        <span className="truncate">{node.name}</span>
+      </button>
+      {node.children.map((child) => <MoveDestinationItem key={child.id} node={child} selectedId={selectedId} onSelect={onSelect} depth={depth + 1} />)}
+    </div>
+  );
+}
+
 export default function TestRepository() {
   const [folders, setFolders] = useState<any[]>([]);
   const [artifacts, setArtifacts] = useState<Record<string, any[]>>({ plans: [], suites: [], cases: [], runs: [], reports: [], scripts: [], evidence: [] });
@@ -125,6 +145,9 @@ export default function TestRepository() {
   const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set());
   const [selectedFolderIds, setSelectedFolderIds] = useState<Set<string>>(new Set());
   const [deleting, setDeleting] = useState(false);
+  const [moveFolderOpen, setMoveFolderOpen] = useState(false);
+  const [moveParentId, setMoveParentId] = useState('');
+  const [movingFolder, setMovingFolder] = useState(false);
   const dataVersion = useDataVersion((s) => s.version);
   const { selectedProjectId, selectedAppId } = useProjects();
 
@@ -252,6 +275,78 @@ export default function TestRepository() {
 
   const toggleAllFolders = () => {
     setSelectedFolderIds(allFoldersSelected ? new Set() : new Set(allFolderIds));
+  };
+
+  const foldersToMove = useMemo(() => {
+    const requestedIds = new Set(selectedFolderIds);
+    // When both a parent and its child are selected, moving the parent already
+    // moves the child. Keep only top-level selected folders to preserve nesting.
+    return folders.filter((folder) => {
+      if (!requestedIds.has(folder.id)) return false;
+      let parentId = folder.parentId || '';
+      const visited = new Set<string>();
+      while (parentId && !visited.has(parentId)) {
+        if (requestedIds.has(parentId)) return false;
+        visited.add(parentId);
+        parentId = folders.find((candidate) => candidate.id === parentId)?.parentId || '';
+      }
+      return true;
+    });
+  }, [folders, selectedFolder, selectedFolderIds]);
+
+  const moveDestinationFolders = useMemo(() => {
+    const excluded = new Set<string>(foldersToMove.map((folder) => folder.id));
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const folder of folders) {
+        if (!excluded.has(folder.id) && excluded.has(folder.parentId || '')) {
+          excluded.add(folder.id);
+          changed = true;
+        }
+      }
+    }
+    return folders.filter((folder) => !excluded.has(folder.id));
+  }, [folders, foldersToMove]);
+  const moveDestinationTree = useMemo(() => buildTree(moveDestinationFolders), [moveDestinationFolders]);
+
+  const openMoveFolder = async () => {
+    if (selectedFolderIds.size === 0) return;
+    // Reload immediately before opening: the destination hierarchy must reflect
+    // folders that may have been moved in another interaction or browser tab.
+    try {
+      const response = await fetch('/api/folders');
+      const latestFolders = await response.json();
+      if (response.ok && Array.isArray(latestFolders)) setFolders(latestFolders);
+    } catch (error) {
+      console.error('Failed to refresh folders before moving.', error);
+    }
+    setMoveParentId('');
+    setMoveFolderOpen(true);
+  };
+
+  const moveFolder = async () => {
+    if (!foldersToMove.length || movingFolder) return;
+    setMovingFolder(true);
+    try {
+      const responses = await Promise.all(foldersToMove.map((folder) => fetch(`/api/folders/${folder.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ parentId: moveParentId }),
+      })));
+      const failed = responses.find((response) => !response.ok);
+      if (failed) {
+        const data = await failed.json().catch(() => ({}));
+        throw new Error(data.error || 'Failed to move folders.');
+      }
+      setMoveFolderOpen(false);
+      setSelectedFolderIds(new Set());
+      fetchData();
+    } catch (error) {
+      void showAlert(error instanceof Error ? error.message : 'Failed to move folder.');
+    } finally {
+      setMovingFolder(false);
+    }
   };
 
   const deleteSelectedFolders = async () => {
@@ -402,6 +497,15 @@ export default function TestRepository() {
             >
               <CheckSquare className="h-3.5 w-3.5" />
               {allFoldersSelected ? 'Clear all' : 'Select all'}
+            </button>
+            <button
+              onClick={openMoveFolder}
+              disabled={foldersToMove.length === 0}
+              className="inline-flex items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2.5 py-1.5 text-xs font-medium text-[var(--text-primary)] hover:border-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-50"
+              title={foldersToMove.length ? `Move ${foldersToMove.length} selected folder${foldersToMove.length === 1 ? '' : 's'}` : 'Select a folder to move'}
+            >
+              <MoveRight className="h-3.5 w-3.5" />
+              Move
             </button>
             {selectedFolderIds.size > 0 && (
               <button
@@ -570,6 +674,35 @@ export default function TestRepository() {
             </pre>
           </div>
         )}
+      </Modal>
+
+      <Modal isOpen={moveFolderOpen} onClose={() => !movingFolder && setMoveFolderOpen(false)} title="Move Folder">
+        <div className="space-y-4">
+          <p className="text-sm text-[var(--text-muted)]">
+            Move <span className="font-medium text-[var(--text-primary)]">{foldersToMove.length === 1 ? (foldersToMove[0].path || foldersToMove[0].name) : `${foldersToMove.length} selected folders`}</span> and their subfolders to:
+          </p>
+          <div className="overflow-hidden rounded-md border border-[var(--border)] bg-[var(--bg-secondary)]">
+            <div className="border-b border-[var(--border)] px-3 py-2 text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">Destination folder</div>
+            <div className="max-h-64 overflow-y-auto p-2">
+              <button
+                type="button"
+                onClick={() => setMoveParentId('')}
+                disabled={movingFolder}
+                className={cn('flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-sm transition-colors', moveParentId === '' ? 'bg-[var(--accent)]/15 text-[var(--accent)]' : 'text-[var(--text-primary)] hover:bg-[var(--bg-card)]')}
+              >
+                <Folder className="h-4 w-4 shrink-0" /> Root level
+              </button>
+              {moveDestinationTree.map((folder) => <MoveDestinationItem key={folder.id} node={folder} selectedId={moveParentId} onSelect={setMoveParentId} />)}
+              {moveDestinationTree.length === 0 && <div className="px-2 py-3 text-sm text-[var(--text-muted)]">No valid destination folders.</div>}
+            </div>
+          </div>
+          <div className="flex justify-end gap-2">
+            <button onClick={() => setMoveFolderOpen(false)} disabled={movingFolder} className="rounded-md border border-[var(--border)] px-3 py-2 text-sm font-medium text-[var(--text-primary)] disabled:opacity-50">Cancel</button>
+            <button onClick={moveFolder} disabled={movingFolder || !foldersToMove.length} className="inline-flex items-center gap-1.5 rounded-md bg-[var(--accent)] px-3 py-2 text-sm font-medium text-white disabled:opacity-50">
+              <MoveRight className="h-4 w-4" /> {movingFolder ? 'Moving…' : `Move ${foldersToMove.length === 1 ? 'folder' : 'folders'}`}
+            </button>
+          </div>
+        </div>
       </Modal>
     </div>
   );

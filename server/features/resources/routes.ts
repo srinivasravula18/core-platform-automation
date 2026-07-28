@@ -484,7 +484,10 @@ export function registerResourceRoutes(app: Express) {
   app.get('/api/folders', async (req, res) => {
     const folders = await Folders.list();
     const scoped = scopeFilter(folders, reqScope(req));
-    res.json(scoped.map((f: any) => ({ ...f, path: f.path || getFolderPath(f.id, folders) })));
+    // parentId is canonical. Compute paths on every read so the picker/tree can
+    // never show a stale pre-move location, even for folders created before path
+    // updates were introduced.
+    res.json(scoped.map((f: any) => ({ ...f, path: getFolderPath(f.id, folders) })));
   });
 
   /* ---------- folders: hierarchical create/resolve/update/delete (still tree-aware, uses repository) ---------- */
@@ -524,18 +527,60 @@ export function registerResourceRoutes(app: Express) {
   app.put('/api/folders/:id', async (req, res) => {
     const folder = await Folders.get(req.params.id);
     if (!folder) return res.status(404).json({ error: 'Folder not found' });
+    const allFolders = await Folders.list();
+    const scopedFolders = scopeFilter(allFolders, reqScope(req));
+    if (!scopedFolders.some((item: any) => item.id === folder.id)) return res.status(404).json({ error: 'Folder not found' });
+    const requestedParentId = req.body.parentId ?? folder.parentId ?? '';
+    const parentId = String(requestedParentId || '');
+
+    // A folder may be moved to the root or below another folder in the same workspace,
+    // but never below itself or any of its descendants (which would create a cycle).
+    if (parentId) {
+      const parent = scopedFolders.find((item: any) => item.id === parentId);
+      if (!parent) return res.status(400).json({ error: 'Destination folder was not found in this workspace.' });
+      const descendants = new Set<string>([folder.id]);
+      let changed = true;
+      while (changed) {
+        changed = false;
+        for (const item of allFolders as any[]) {
+          if (!descendants.has(item.id) && descendants.has(item.parentId || '')) {
+            descendants.add(item.id);
+            changed = true;
+          }
+        }
+      }
+      if (descendants.has(parentId)) return res.status(400).json({ error: 'A folder cannot be moved into itself or one of its subfolders.' });
+    }
     const updated = {
       ...folder,
       name: req.body.name || folder.name,
-      parentId: req.body.parentId ?? folder.parentId ?? '',
+      parentId,
       description: req.body.description ?? folder.description ?? '',
       kind: req.body.kind || folder.kind || 'Feature',
     };
-    await Folders.upsert(updated);
+    // Keep persisted paths correct for the moved folder and every descendant.  The
+    // parentId is the hierarchy source of truth, but paths are used by selectors/UI.
+    const movedTree = (allFolders as any[]).map((item) => item.id === folder.id ? updated : item);
+    const movedIds = new Set<string>([folder.id]);
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const item of movedTree) {
+        if (!movedIds.has(item.id) && movedIds.has(item.parentId || '')) {
+          movedIds.add(item.id);
+          changed = true;
+        }
+      }
+    }
+    for (const item of movedTree) {
+      if (!movedIds.has(item.id)) continue;
+      await Folders.upsert({ ...item, path: getFolderPath(item.id, movedTree) });
+    }
     if (!isPgEnabled()) persistDataInBackground('folder update');
-    const allFolders = await Folders.list();
-    logActivity(req, `Updated folder: ${updated.path || getFolderPath(updated.id, allFolders)}`);
-    res.json({ success: true, folder: { ...updated, path: updated.path || getFolderPath(updated.id, allFolders) } });
+    const refreshedFolders = await Folders.list();
+    const moved = parentId !== (folder.parentId || '');
+    logActivity(req, `${moved ? 'Moved' : 'Updated'} folder: ${getFolderPath(updated.id, refreshedFolders)}`);
+    res.json({ success: true, folder: { ...updated, path: getFolderPath(updated.id, refreshedFolders) } });
   });
 
   // CASCADE DELETE: deleting a folder deletes the folder, ALL its descendant subfolders, and
