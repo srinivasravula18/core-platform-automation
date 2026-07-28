@@ -104,10 +104,11 @@ export function setDailyLimit(limit: number) {
   db.settings.dailyCostLimit = limit;
 }
 
-export function listUsage(workspaceId: string, limit = 100): UsageRecord[] {
+/** Recent usage owned by one app user. `workspaceId` is included for legacy records that predate userId threading. */
+export function listUsage(userId: string, limit = 100): UsageRecord[] {
   ensureUsage();
   return (db.usageLog as any[])
-    .filter((r) => r.workspaceId === workspaceId)
+    .filter((r) => r.userId === userId || r.workspaceId === userId)
     .slice(0, limit);
 }
 
@@ -187,9 +188,10 @@ const PG_SUM_COLS =
 /**
  * All-time-through-now spend analysis: token + cost totals for each window (today/7d/30d/365d/all),
  * a per-model breakdown, and the configured caps with over-status. Reads from Postgres when enabled
- * (durable + uncapped), else the in-memory log. Omit workspaceId for a DEPLOYMENT-WIDE total.
+ * (durable + uncapped), else the in-memory log. When `userId` is supplied, only that user's usage
+ * is returned; the workspace fallback preserves visibility of older records that lack user_id.
  */
-export async function getSpendSummary(workspaceId?: string, now: Date = new Date()) {
+export async function getSpendSummary(userId?: string, now: Date = new Date()) {
   const since = windowSince(now);
   const caps = getCostCaps();
 
@@ -197,22 +199,22 @@ export async function getSpendSummary(workspaceId?: string, now: Date = new Date
   let byModel: Array<{ model: string } & WindowTotals>;
 
   if (isPostgresEnabled()) {
-    const wsClause = workspaceId ? 'AND workspace_id = $2' : '';
+    const userClause = userId ? 'AND (user_id = $2 OR workspace_id = $2)' : '';
     const entries = await Promise.all(
       (Object.keys(since) as SpendWindow[]).map(async (w) => {
-        const params = workspaceId ? [since[w], workspaceId] : [since[w]];
-        const rows = await query(`SELECT ${PG_SUM_COLS} FROM usage_log WHERE created_at >= $1 ${wsClause}`, params);
+        const params = userId ? [since[w], userId] : [since[w]];
+        const rows = await query(`SELECT ${PG_SUM_COLS} FROM usage_log WHERE created_at >= $1 ${userClause}`, params);
         return [w, totalsFromPgRow(rows[0])] as const;
       }),
     );
     windows = Object.fromEntries(entries) as Record<SpendWindow, WindowTotals>;
-    const mParams = workspaceId ? [workspaceId] : [];
-    const mWhere = workspaceId ? 'WHERE workspace_id = $1' : '';
+    const mParams = userId ? [userId] : [];
+    const mWhere = userId ? 'WHERE (user_id = $1 OR workspace_id = $1)' : '';
     const mRows = await query(`SELECT model, ${PG_SUM_COLS} FROM usage_log ${mWhere} GROUP BY model ORDER BY cost DESC LIMIT 50`, mParams);
     byModel = mRows.map((r: any) => ({ model: r.model, ...totalsFromPgRow(r) }));
   } else {
     ensureUsage();
-    const rows = (db.usageLog as UsageRecord[]).filter((r) => !workspaceId || r.workspaceId === workspaceId);
+    const rows = (db.usageLog as UsageRecord[]).filter((r) => !userId || r.userId === userId || r.workspaceId === userId);
     const acc = (list: UsageRecord[]): WindowTotals => list.reduce((t, r) => {
       t.inputTokens += r.inputTokens || 0; t.outputTokens += r.outputTokens || 0;
       t.cacheReadTokens += r.cacheReadTokens || 0; t.cacheWriteTokens += r.cacheWriteTokens || 0;
@@ -236,7 +238,7 @@ export async function getSpendSummary(workspaceId?: string, now: Date = new Date
     year: { limit: caps.year, spent: windows.year.costUsd, over: caps.year > 0 && windows.year.costUsd >= caps.year },
   };
 
-  return { workspaceId: workspaceId || 'all', currency: 'USD', windows, byModel, caps, capStatus };
+  return { userId: userId || 'all', currency: 'USD', windows, byModel, caps, capStatus };
 }
 
 /* ---------- Per-project quota (book Ch 16: Resource-Aware Optimization) ----------
