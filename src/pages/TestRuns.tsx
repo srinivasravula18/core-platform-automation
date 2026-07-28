@@ -17,6 +17,7 @@ import { FolderBadge } from '@/src/components/FolderBadge';
 import { AutomationRunArtifacts } from '@/src/components/AutomationRunArtifacts';
 import { TagEditor } from '@/src/components/TagEditor';
 import { MultiSelectDropdown } from '@/src/components/MultiSelectDropdown';
+import { EntityLinker } from '@/src/components/EntityLinker';
 import { showAlert } from '@/src/lib/dialog';
 import { withBasePath } from '@/src/lib/base-path';
 import { caseSuiteIds } from '@/src/lib/suiteCaseSelection';
@@ -98,6 +99,8 @@ export default function TestRuns() {
   const [isCaseFilterOpen, setIsCaseFilterOpen] = useState(false);
   const [isViewMenuOpen, setIsViewMenuOpen] = useState(false);
   const [isRunModalOpen, setIsRunModalOpen] = useState(false);
+  // Opens the unified EntityLinker (search + tag-driven) to pick the run's cases.
+  const [isCaseLinkerOpen, setIsCaseLinkerOpen] = useState(false);
   const [editingRunId, setEditingRunId] = useState('');
   const [isAIRunModalOpen, setIsAIRunModalOpen] = useState(false);
   const [newRunName, setNewRunName] = useState('');
@@ -695,7 +698,12 @@ export default function TestRuns() {
 
           {!editingRunId && (
             <div>
-              <label className="mb-1 block text-xs font-medium text-[var(--text-muted)]">Test Cases with Playwright Scripts</label>
+              <div className="mb-1 flex items-center justify-between">
+                <label className="block text-xs font-medium text-[var(--text-muted)]">Test Cases with Playwright Scripts</label>
+                <button type="button" onClick={() => setIsCaseLinkerOpen(true)} className="text-xs font-medium text-[var(--accent)] hover:underline">
+                  Search &amp; link by tag
+                </button>
+              </div>
               <div className="mb-2 flex items-end gap-2">
                 <FolderSelect value={newRunCaseFolderId} onChange={setNewRunCaseFolderId} label="Test Case Folder" allowCreate={false} className="flex-1" />
                 <button
@@ -719,6 +727,20 @@ export default function TestRuns() {
       </Modal>
 
       <AIActionModal isOpen={isAIRunModalOpen} onClose={() => setIsAIRunModalOpen(false)} taskType="run" onApprove={handleAIApprove} title="AI Auto: New Test Run" />
+
+      {/* Unified linker: pick the run's cases by search/tag; writes back to newRunCaseIds,
+          which handleSaveRun feeds into POST /api/runs/from-selection. */}
+      {isCaseLinkerOpen && (
+        <EntityLinker
+          isOpen={isCaseLinkerOpen}
+          onClose={() => setIsCaseLinkerOpen(false)}
+          title="Link test cases to this run"
+          target="cases"
+          confirmLabel="Use selected cases"
+          initialSelectedIds={[...newRunCaseIds]}
+          onConfirm={(ids) => { setNewRunCaseIds(new Set(ids)); setIsCaseLinkerOpen(false); }}
+        />
+      )}
 
       <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl flex flex-col flex-1 min-h-0 overflow-hidden">
         <div className="p-4 border-b border-[var(--border)] flex items-center justify-between gap-4">

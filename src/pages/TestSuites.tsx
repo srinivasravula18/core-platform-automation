@@ -25,6 +25,8 @@ import { FolderSelect } from '@/src/components/FolderSelect';
 import { TagEditor } from '@/src/components/TagEditor';
 import { TagMultiSelect } from '@/src/components/TagMultiSelect';
 import { MultiSelectDropdown } from '@/src/components/MultiSelectDropdown';
+import { EntityLinker } from '@/src/components/EntityLinker';
+import { diffSelection, linkSuiteCases } from '@/src/lib/entityLinking';
 import { showAlert, showConfirm } from '@/src/lib/dialog';
 
 export default function TestSuites() {
@@ -49,6 +51,8 @@ export default function TestSuites() {
   const [subsuiteParentId, setSubsuiteParentId] = useState('');
 
   const [selectedSuiteId, setSelectedSuiteId] = useState<string | null>(null);
+  // Suite whose cases are being mapped through the unified EntityLinker (null = closed).
+  const [linkerSuite, setLinkerSuite] = useState<any | null>(null);
   const inlineSelectClass = "w-full min-w-[140px] rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs font-medium text-[var(--text-primary)] outline-none transition-colors hover:border-[var(--accent)] focus:border-[var(--accent)]";
 
   const fetchSuites = () => {
@@ -468,6 +472,25 @@ export default function TestSuites() {
         title="AI Auto: New Test Suite"
       />
 
+      {/* Unified linker: map existing cases into a suite (bulk, tag/search-driven). */}
+      {linkerSuite && (
+        <EntityLinker
+          isOpen={!!linkerSuite}
+          onClose={() => setLinkerSuite(null)}
+          title={`Link cases to ${linkerSuite.name}`}
+          target="cases"
+          confirmLabel="Save links"
+          initialSelectedIds={cases.filter((c) => caseBelongsToSuite(c, linkerSuite.id)).map((c) => c.id)}
+          onConfirm={async (ids) => {
+            const initial = cases.filter((c) => caseBelongsToSuite(c, linkerSuite.id)).map((c) => c.id);
+            const { add, remove } = diffSelection(initial, ids);
+            await linkSuiteCases(linkerSuite.id, add, remove);
+            await fetchCases();
+            setLinkerSuite(null);
+          }}
+        />
+      )}
+
       <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl flex flex-col flex-1 min-h-0 shadow-sm">
         <div className="p-4 border-b border-[var(--border)] flex gap-3 h-[68px] flex-shrink-0 items-center">
           <div className="relative flex-1 max-w-sm">
@@ -655,7 +678,10 @@ export default function TestSuites() {
                           >
                             <Pencil className="w-4 h-4" />
                           </button>
-                          <RowMoreMenu items={[{ label: 'Delete', onClick: () => bulk.deleteOne(suite.id), danger: true }]} />
+                          <RowMoreMenu items={[
+                            { label: 'Link cases…', onClick: () => setLinkerSuite(suite) },
+                            { label: 'Delete', onClick: () => bulk.deleteOne(suite.id), danger: true },
+                          ]} />
                         </div>
                       </td>
                     </tr>

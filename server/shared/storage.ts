@@ -77,6 +77,10 @@ export const db: any = {
   groups: [] as any[],
   requirements: [] as any[],
   requirementLinks: [] as any[],
+  // Shared tag catalog (vocabulary registry). Membership stays the tags TEXT[] on each
+  // entity row; this is a scoped registry of distinct tag names + color for autocomplete,
+  // rename, recolor, and cross-entity grouping.
+  tags: [] as any[],
   appKnowledge: [] as any[],
   projects: [] as any[],
   apps: [] as any[],
@@ -138,6 +142,7 @@ function getPersistableDbSnapshot() {
     groups: db.groups,
     requirements: db.requirements,
     requirementLinks: db.requirementLinks,
+    tags: db.tags,
     appKnowledge: db.appKnowledge,
     projects: db.projects,
     apps: db.apps,
@@ -205,6 +210,7 @@ export async function loadPersistedData() {
     db.groups = Array.isArray(data.groups) ? data.groups : [];
     db.requirements = Array.isArray(data.requirements) ? data.requirements : [];
     db.requirementLinks = Array.isArray(data.requirementLinks) ? data.requirementLinks : [];
+    db.tags = Array.isArray(data.tags) ? data.tags : [];
     db.appKnowledge = Array.isArray(data.appKnowledge) ? data.appKnowledge : [];
     db.projects = Array.isArray(data.projects) ? data.projects : [];
     db.apps = Array.isArray(data.apps) ? data.apps : [];

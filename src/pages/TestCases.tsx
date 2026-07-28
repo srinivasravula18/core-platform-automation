@@ -21,6 +21,9 @@ import { useDataVersion } from '@/src/store/data';
 import { TagEditor } from '@/src/components/TagEditor';
 import { TagMultiSelect } from '@/src/components/TagMultiSelect';
 import { MultiSelectDropdown } from '@/src/components/MultiSelectDropdown';
+import { EntityLinker } from '@/src/components/EntityLinker';
+import { TagManagerModal } from '@/src/components/TagManagerModal';
+import { linkSuiteCases } from '@/src/lib/entityLinking';
 import { normalizeTestCaseTypes, testCaseTypeFields } from '@/core/shared/testCaseTypes';
 
 const CASE_STATUSES = ['Draft', 'Under Review', 'Approved', 'Automated', 'Deprecated'];
@@ -222,6 +225,9 @@ export default function TestCases() {
   };
 
   const bulk = useBulkDelete('cases', fetchCases, 'case');
+  // Tag-driven assembly: open the unified linker to collect cases (by tag/search) into a NEW suite.
+  const [isAssembleOpen, setIsAssembleOpen] = useState(false);
+  const [isTagManagerOpen, setIsTagManagerOpen] = useState(false);
   // The always-on checkbox column drives a single selection that powers BOTH
   // bulk-delete and the AI multi-select action below.
   const selectedCaseIds = Array.from(bulk.selectedIds).map(String);
@@ -626,6 +632,12 @@ export default function TestCases() {
               { key: 'createdAt', label: 'Created', get: (c: any) => c.metadata?.createdAt || c.createdAt || '' },
             ]}
           />
+          <button onClick={() => setIsTagManagerOpen(true)} className="flex items-center gap-2 border border-[var(--border)] hover:border-[var(--accent)] text-[var(--text-primary)] px-3 py-2 rounded-md text-sm font-medium transition-colors" title="Create, rename, recolor and delete tags across all entities">
+            <FolderCheck className="w-4 h-4" /> Manage tags
+          </button>
+          <button onClick={() => setIsAssembleOpen(true)} className="flex items-center gap-2 border border-[var(--border)] hover:border-[var(--accent)] text-[var(--text-primary)] px-3 py-2 rounded-md text-sm font-medium transition-colors" title="Filter by tag/search, then create a suite from the selection">
+            <FolderCheck className="w-4 h-4" /> Group into suite
+          </button>
           <button onClick={openNewModal} className="flex items-center gap-2 bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white px-4 py-2 rounded-md text-sm font-medium transition-colors">
             <Plus className="w-4 h-4" /> New Case
           </button>
@@ -895,6 +907,35 @@ export default function TestCases() {
         onApprove={handleAIApprove}
         title="AI Auto: New Test Case"
       />
+
+      <TagManagerModal isOpen={isTagManagerOpen} onClose={() => setIsTagManagerOpen(false)} onChanged={fetchCases} />
+
+      {/* Tag-driven assembly: pick cases (filter by tag/search) → create a new suite from them. */}
+      {isAssembleOpen && (
+        <EntityLinker
+          isOpen={isAssembleOpen}
+          onClose={() => setIsAssembleOpen(false)}
+          title="Create a suite from selected cases"
+          target="cases"
+          initialSelectedIds={selectedCaseIds}
+          confirmLabel="Create suite"
+          onConfirm={async (ids) => {
+            if (!ids.length) { await showAlert('Select at least one case.'); return; }
+            const folderId = cases.find((c) => ids.includes(c.id))?.folderId || '';
+            if (!folderId) { await showAlert('Selected cases have no repository folder; open one and set a folder first.'); return; }
+            const res = await fetch('/api/suites', {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ name: `Suite from ${ids.length} case(s)`, folderId }),
+            });
+            if (!res.ok) { await showAlert('Could not create the suite.'); return; }
+            const { id: suiteId } = await res.json();
+            await linkSuiteCases(suiteId, ids, []);
+            setIsAssembleOpen(false);
+            await showAlert(`Created a suite with ${ids.length} case(s). Find it in Test Suites.`);
+            refetchAll();
+          }}
+        />
+      )}
 
       <Modal
         isOpen={!!scriptViewer}
