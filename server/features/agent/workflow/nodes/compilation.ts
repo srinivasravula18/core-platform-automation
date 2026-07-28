@@ -106,7 +106,9 @@ export function runCompilationNode(input: RunCompilationNodeInput): RunCompilati
 
     const rediscoveryTargets = Array.from(rediscovery);
     const errors: WorkflowError[] = [];
-    if (rediscoveryTargets.length > 0) {
+    // Only a blocking error when NOTHING compiled. With usable scripts present, unresolved targets stay
+    // reported as diagnostics and the run proceeds to evidence instead of looping back to rediscovery.
+    if (rediscoveryTargets.length > 0 && scripts.length === 0) {
       // Returned (never thrown) so the graph routes to targeted rediscovery per the Section 10.5 retry table.
       errors.push(new WorkflowRuntimeError(
         WORKFLOW_ERROR_CLASSES.TARGET_UNRESOLVED,

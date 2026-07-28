@@ -181,6 +181,12 @@ function testRouters() {
   // Script review removed: clean scripts ALWAYS go straight to execution regardless of review policy.
   eq(routeAfterCompile({ compilation: cleanCompilation, rediscoveryAttempts: 0, request: request('manual') }), 'execute_tests', 'clean scripts + manual → execute_tests (script gate removed)');
   eq(routeAfterCompile({ compilation: cleanCompilation, rediscoveryAttempts: 0, request: request('auto') }), 'execute_tests', 'clean scripts + auto → execute_tests');
+  // A skipped case (unresolved selector) must NOT halt a run that already has runnable scripts.
+  const partialCompilation = {
+    scripts: [{ caseId: 'c1', scriptRef: 'r', digest: 'd', ok: true }], compilerVersion: 'x@1',
+    diagnostics: [{ caseId: 'c2', kind: 'UNRESOLVED_SELECTOR' as const, message: 'm', target: 'Ghost' }],
+  };
+  eq(routeAfterCompile({ compilation: partialCompilation, rediscoveryAttempts: 0, request: request('manual') }), 'execute_tests', 'some scripts + one unresolved skip → execute_tests (skip must not halt the pipeline)');
 }
 
 // ---------------------------------------------------------------------------
@@ -426,7 +432,7 @@ function testProjectionUnit() {
   eq(proj.generated_cases[0]?.description, 'Case description', 'case description mapped');
   eq(proj.generated_cases[0]?.tags, ['@ui'], 'case tags mapped');
   eq(proj.playwright_scripts[0]?.test_case_title, 'Case title', 'script test_case_title mapped from the case');
-  eq(proj.playwright_scripts[0]?.filename, 'case-1.spec.ts', 'script filename derived from the case id');
+  eq(proj.playwright_scripts[0]?.filename, 'case-title.spec.ts', 'script filename derived from the case title (see specFilename.ts)');
   eq(proj.playwright_scripts[0]?.code, 'compiled-code-here', 'script code read from the artifact stash');
   eq(proj.evidence_screenshots?.[0]?.screenshotUrl, '/evidence/x-graph-1.png', 'UI-ready evidence cards projected from the stash');
   eq(proj.evidence_screenshots?.[0]?.title, 'Case title', 'evidence card carries the test title');

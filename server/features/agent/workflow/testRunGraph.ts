@@ -170,10 +170,13 @@ export function routeAfterReviewCases(state: Pick<WorkflowState, 'review' | 'ret
 // they go straight to execution. The human gate lives at CASE review (author_cases); a second script
 // review only slowed the loop without adding safety, since the compiler already refuses anything unverified.
 export function routeAfterCompile(state: Pick<WorkflowState, 'compilation' | 'rediscoveryAttempts' | 'request'>): 'discover_and_ground' | 'finalize' | 'execute_tests' {
-  if (rediscoveryTargetsFromCompilation(state.compilation).length > 0 && (state.rediscoveryAttempts ?? 0) < MAX_REDISCOVERY_ATTEMPTS) {
+  const scriptCount = state.compilation?.scripts?.length ?? 0;
+  // Only re-ground when NOTHING compiled. A skipped case (unresolved selector) must never halt a run
+  // that already has runnable scripts — proceed to evidence; the skipped cases stay as diagnostics.
+  if (scriptCount === 0 && rediscoveryTargetsFromCompilation(state.compilation).length > 0 && (state.rediscoveryAttempts ?? 0) < MAX_REDISCOVERY_ATTEMPTS) {
     return 'discover_and_ground';
   }
-  if (!state.compilation?.scripts?.length) return 'finalize';
+  if (scriptCount === 0) return 'finalize';
   return 'execute_tests';
 }
 
