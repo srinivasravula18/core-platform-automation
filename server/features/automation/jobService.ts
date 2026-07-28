@@ -14,6 +14,7 @@ import { uid, isPostgresEnabled } from '../../db/pool';
 import { persistDataInBackground } from '../../shared/storage';
 import type { Scope } from '../../shared/scope';
 import { scopeStamp } from '../../shared/scope';
+import { agentRunStatusForList } from '../../../core/shared/testRunStatus';
 import { emitEvent } from './eventsService';
 import { onAgentFrame, onAgentConnected, dispatchToAgent, isAgentConnected } from './agentGateway';
 import { cancelServerJob } from './serverRunner';
@@ -232,9 +233,12 @@ export async function syncLinkedRun(jobId: string, status: JobStatus, summary: a
   const passed = Number(summary.passed || 0);
   const failed = Number(summary.failed || 0);
   const skipped = Number(summary.skipped || 0);
+  const runStatus = agentRunStatusForList(status === 'done' ? 'completed' : 'failed');
   await Runs.upsert({
     ...run,
-    status: status === 'done' ? 'Completed' : 'Failed',
+    status: runStatus,
+    state: 'Pending Review',
+    approvalState: 'pending_review',
     passed,
     failed,
     totalExecutions: passed + failed + skipped,

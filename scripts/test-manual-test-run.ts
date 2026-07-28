@@ -43,6 +43,8 @@ assert.equal(isActiveTestRun({ status: 'Review Required' }), true);
 assert.equal(agentRunStatusForList('completed'), 'Completed — Pending Review');
 assert.equal(isPendingReviewTestRun({ status: agentRunStatusForList('completed') }), true);
 assert.equal(isActiveTestRun({ status: agentRunStatusForList('completed') }), true);
+assert.equal(agentRunStatusForList('failed'), 'Failed — Pending Review');
+assert.equal(isActiveTestRun({ status: agentRunStatusForList('failed') }), true);
 assert.equal(isClosedTestRun({ status: 'Completed' }), true);
 assert.equal(isClosedTestRun({ status: 'Closed' }), true);
 assert.equal(isClosedTestRun({ status: 'Failed' }), true);

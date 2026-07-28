@@ -18,7 +18,9 @@ async function main() {
   // Passing run.
   await syncLinkedRun(jobId, 'done', { passed: 2, failed: 1, skipped: 0, durationMs: 5000 });
   let run = await Runs.get('RUN-TEST-1');
-  assert.strictEqual(run.status, 'Completed', 'done → Completed');
+  assert.strictEqual(run.status, 'Completed — Pending Review', 'done → pending human review');
+  assert.strictEqual(run.state, 'Pending Review', 'done remains active until reviewed');
+  assert.strictEqual(run.approvalState, 'pending_review', 'done requires explicit approval');
   assert.strictEqual(run.passed, 2, 'passed mirrored');
   assert.strictEqual(run.failed, 1, 'failed mirrored');
   assert.strictEqual(run.totalExecutions, 3, 'total = passed+failed+skipped');
@@ -27,7 +29,7 @@ async function main() {
   // Failing run.
   await syncLinkedRun(jobId, 'failed', { passed: 0, failed: 3 });
   run = await Runs.get('RUN-TEST-1');
-  assert.strictEqual(run.status, 'Failed', 'failed → Failed');
+  assert.strictEqual(run.status, 'Failed — Pending Review', 'failed → pending human review');
 
   // Unknown job id must be a no-op (no throw, no stray run created).
   const before = (await Runs.list()).length;

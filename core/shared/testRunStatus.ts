@@ -18,7 +18,7 @@ export function isActiveTestRun(run: { status?: unknown }): boolean {
 export function agentRunStatusForList(status: unknown): string {
   switch (String(status || '').toLowerCase()) {
     case 'completed': return 'Completed — Pending Review';
-    case 'failed': return 'Failed';
+    case 'failed': return 'Failed — Pending Review';
     case 'cancelled': return 'Draft';
     case 'review_required': return 'Review Required';
     case 'coverage_options': return 'Coverage Options';
