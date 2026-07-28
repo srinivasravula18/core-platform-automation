@@ -1392,9 +1392,31 @@ type CredRow = {
   revealing?: boolean;
   useForPlaywright: boolean;
   saving?: boolean;
+  saved?: CredentialValues;
 };
 
+type CredentialValues = Pick<CredRow, 'name' | 'url' | 'username' | 'useForPlaywright'>;
+
 const SAVED_PASSWORD_MASK = '********';
+
+const credentialValues = (row: CredRow): CredentialValues => ({
+  name: row.name,
+  url: row.url,
+  username: row.username,
+  useForPlaywright: row.useForPlaywright,
+});
+
+const hasCredentialChanges = (row: CredRow) => {
+  // A new row has no persisted snapshot. It becomes saveable once it is valid.
+  if (!row.saved) return true;
+
+  const current = credentialValues(row);
+  return row.password !== ''
+    || current.name !== row.saved.name
+    || current.url !== row.saved.url
+    || current.username !== row.saved.username
+    || current.useForPlaywright !== row.saved.useForPlaywright;
+};
 
 function CredentialsSection() {
   const [rows, setRows] = useState<CredRow[]>([]);
@@ -1419,7 +1441,7 @@ function CredentialsSection() {
           } catch {
             /* ignore */
           }
-          return {
+          const row = {
             key: newKey(),
             websiteId: w.id,
             userId: user?.id,
@@ -1431,6 +1453,7 @@ function CredentialsSection() {
             passwordVisible: false,
             useForPlaywright: user ? !String(user.notes || '').includes('no-playwright') : true,
           } as CredRow;
+          return { ...row, saved: credentialValues(row) };
         }),
       );
       setRows(built);
@@ -1545,6 +1568,7 @@ function CredentialsSection() {
         revealedPassword: x.password ? x.password : x.revealedPassword,
         password: '',
         saving: false,
+        saved: credentialValues(r),
       } : x)));
       setStatus({ type: 'success', message: 'Saved' });
     } catch (err: any) {
@@ -1605,7 +1629,13 @@ function CredentialsSection() {
 
           {rows.map((r) => {
             const hasSavedPassword = Boolean(r.userId);
-            const canSave = Boolean(r.name.trim() && r.url.trim() && r.username.trim() && (r.userId || r.password));
+            const canSave = Boolean(
+              r.name.trim()
+              && r.url.trim()
+              && r.username.trim()
+              && (r.userId || r.password)
+              && hasCredentialChanges(r),
+            );
             const passwordValue = r.password || (r.passwordVisible ? r.revealedPassword || '' : hasSavedPassword ? SAVED_PASSWORD_MASK : '');
             return (
               <div
