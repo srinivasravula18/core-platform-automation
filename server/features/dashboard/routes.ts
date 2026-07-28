@@ -49,6 +49,23 @@ function buildStatsChartData(runs: any[]) {
   return days.map(({ key, ...rest }) => rest);
 }
 
+/**
+ * Automation jobs and Test Runs are completed by separate lifecycle handlers.  A job is the
+ * source of truth when it has a runner summary, while its linked Test Run is the durable fallback
+ * for older/in-flight result payloads that have not populated that summary yet.
+ */
+function automationOutcome(job: any, linkedRun: any) {
+  const numberOrUndefined = (value: unknown) => {
+    const n = Number(value);
+    return Number.isFinite(n) && n >= 0 ? n : undefined;
+  };
+  const summary = job?.summary || {};
+  return {
+    passed: numberOrUndefined(summary.passed) ?? numberOrUndefined(summary.expected) ?? numberOrUndefined(linkedRun?.passed) ?? 0,
+    failed: numberOrUndefined(summary.failed) ?? numberOrUndefined(summary.unexpected) ?? numberOrUndefined(linkedRun?.failed) ?? 0,
+  };
+}
+
 export function registerDashboardRoutes(app: Express) {
   // Durable audit trail (Phase 4). Personal by default: a user sees the actions they performed;
   // ordered deterministically by (at, seq) in the repository.
@@ -90,6 +107,7 @@ export function registerDashboardRoutes(app: Express) {
     const runs = scoped(runsAll);
     const defects = scoped(defectsAll);
     const reports = scoped(reportsAll);
+    const scopedJobs = scoped(jobs);
     // History feed under strict per-user isolation:
     //  - a TESTER sees ONLY their own activity — never another user's, and not unowned
     //    system/legacy lines (those belong to the admin/system domain).
@@ -147,12 +165,15 @@ export function registerDashboardRoutes(app: Express) {
     const scheduleHealth = { total: schedules.length, enabled: enabledSchedules.length, missed: missedSchedules };
 
     // Last automation run (#11): most recently finished agent/server job, with its real outcome.
-    const finishedJobs = jobs
+    const finishedJobs = scopedJobs
       .filter((j: any) => ['done', 'failed', 'cancelled'].includes(String(j?.status || '')))
       .sort((a: any, b: any) => new Date(b?.finishedAt || 0).getTime() - new Date(a?.finishedAt || 0).getTime());
     const lastJob = finishedJobs[0] || null;
+    const linkedRun = lastJob
+      ? runs.find((run: any) => run?.triggerMeta?.automationJobId === lastJob.id)
+      : null;
     const lastAutomationRun = lastJob
-      ? { id: lastJob.id, status: lastJob.status, trigger: lastJob.trigger, finishedAt: lastJob.finishedAt, summary: lastJob.summary || {} }
+      ? { id: lastJob.id, status: lastJob.status, trigger: lastJob.trigger, finishedAt: lastJob.finishedAt, summary: automationOutcome(lastJob, linkedRun) }
       : null;
 
     // Top failing features (#14): attribute real run-step failures to the case's tags (features).

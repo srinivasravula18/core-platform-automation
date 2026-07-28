@@ -13,7 +13,7 @@ import { spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import { AutomationJobs, Recordings } from '../../db/repository';
-import { setJobStatus } from './jobService';
+import { setJobStatus, syncLinkedRun } from './jobService';
 import { saveArtifact } from './artifactService';
 import { emitEvent } from './eventsService';
 import type { ArtifactKind } from './types';
@@ -108,7 +108,11 @@ export async function runJobOnServer(jobId: string): Promise<void> {
   }
 
   const summary = parseSummary(runDir);
-  await setJobStatus(jobId, exitCode === 0 ? 'done' : 'failed', { exitCode, summary, error: exitCode === 0 ? '' : 'Test run reported failures.', finishedAt: new Date().toISOString() });
+  const status = exitCode === 0 ? 'done' : 'failed';
+  await setJobStatus(jobId, status, { exitCode, summary, error: exitCode === 0 ? '' : 'Test run reported failures.', finishedAt: new Date().toISOString() });
+  // Keep server-scheduled execution in parity with agent execution: the linked Test Run is what
+  // powers durable dashboard/test-management outcome views.
+  await syncLinkedRun(jobId, status, summary);
 }
 
 /** Cancel a server-side run in flight. */
