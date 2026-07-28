@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { ChevronDown } from 'lucide-react';
 
 export function MultiSelectDropdown({
@@ -7,12 +7,14 @@ export function MultiSelectDropdown({
   value,
   onChange,
   className = '',
+  emptyContent,
 }: {
   label: string;
   options: Array<{ id: string; name: string }>;
   value: string[];
   onChange: (ids: string[]) => void;
   className?: string;
+  emptyContent?: ReactNode;
 }) {
   const [open, setOpen] = useState(false);
   const [selected, setSelected] = useState(value);
@@ -52,7 +54,7 @@ export function MultiSelectDropdown({
               />
               <span className="min-w-0 truncate" title={option.name}>{option.name}</span>
             </label>
-          )) : <span className="block px-2 py-1.5 text-xs text-[var(--text-muted)]">No options</span>}
+          )) : emptyContent || <span className="block px-2 py-1.5 text-xs text-[var(--text-muted)]">No options</span>}
         </div>
       )}
     </div>
