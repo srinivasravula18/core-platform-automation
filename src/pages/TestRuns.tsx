@@ -7,7 +7,7 @@ import { TimeRangeFilter, passesTimeFilter, type TimeFilterValue } from '@/src/c
 import { sortByTime, type TimeSortKey } from '@/src/lib/time';
 import ExportMenu from '../components/ExportMenu';
 import { useAiSearch } from '@/src/lib/useAiSearch';
-import { isActiveTestRun, isClosedTestRun } from '@/core/shared/testRunStatus';
+import { isActiveTestRun, isClosedTestRun, isPendingReviewTestRun } from '@/core/shared/testRunStatus';
 import { useBulkDelete } from '@/src/lib/useBulkDelete';
 import { cn } from '@/src/lib/utils';
 import { Modal } from '@/src/components/Modal';
@@ -17,7 +17,7 @@ import { FolderBadge } from '@/src/components/FolderBadge';
 import { AutomationRunArtifacts } from '@/src/components/AutomationRunArtifacts';
 import { TagEditor } from '@/src/components/TagEditor';
 import { MultiSelectDropdown } from '@/src/components/MultiSelectDropdown';
-import { showAlert } from '@/src/lib/dialog';
+import { showAlert, showConfirm } from '@/src/lib/dialog';
 import { withBasePath } from '@/src/lib/base-path';
 import { caseSuiteIds } from '@/src/lib/suiteCaseSelection';
 import { casesForPlan, casesForRun, manualRunSelection, runExecutionState, runnableCases, scriptsForRun } from '@/src/lib/manualTestRun';
@@ -114,6 +114,7 @@ export default function TestRuns() {
   const [plans, setPlans] = useState<any[]>([]);
   const [scripts, setScripts] = useState<any[]>([]);
   const [runProgress, setRunProgress] = useState<Record<string, string>>({});
+  const [closingRunId, setClosingRunId] = useState('');
   const tagOptions = useMemo(() => Array.from(new Set<string>(cases
     .flatMap((testCase) => Array.isArray(testCase.tags) ? testCase.tags : [])
     .map((tag: any) => String(tag).trim())
@@ -315,6 +316,24 @@ export default function TestRuns() {
     if (errors.length) void showAlert(errors.join('\n'));
   };
 
+  const handleCloseRun = async (run: any) => {
+    if (!await showConfirm('Confirm that you reviewed the execution results and close this test run?', {
+      title: 'Close test run',
+      confirmText: 'Confirm & Close',
+    })) return;
+    setClosingRunId(run.id);
+    try {
+      const response = await fetch(`/api/runs/${encodeURIComponent(run.id)}/close`, { method: 'POST' });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || 'Failed to close test run.');
+      setRuns((current) => current.map((item) => item.id === run.id ? data.run : item));
+    } catch (error: any) {
+      void showAlert(error.message || 'Failed to close test run.');
+    } finally {
+      setClosingRunId('');
+    }
+  };
+
   const runnableTestCases = useMemo(() => runnableCases(casesForPlan(cases, suites, newRunPlanId), scripts), [cases, suites, scripts, newRunPlanId]);
   const runnableCaseOptions = useMemo(() => runnableTestCases
     .map((testCase) => ({
@@ -386,6 +405,15 @@ export default function TestRuns() {
                 </div>
               </div>
               <div className="flex items-center gap-2">
+                {isPendingReviewTestRun(selectedRun) && (
+                  <button
+                    onClick={() => { void handleCloseRun(selectedRun); }}
+                    disabled={closingRunId === selectedRun.id}
+                    className="inline-flex items-center gap-2 rounded-md bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <CheckCircle className="h-4 w-4" /> {closingRunId === selectedRun.id ? 'Closing…' : 'Confirm & Close'}
+                  </button>
+                )}
                 <button
                   onClick={() => openEditModal(selectedRun)}
                   disabled={selectedIsRunning}

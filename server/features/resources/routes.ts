@@ -17,7 +17,7 @@ import { resolveCredentials } from '../credentials/credentialsService';
 import { testCaseTypeFields } from '../../../core/shared/testCaseTypes';
 import { collectRunEvidence, evidenceDownloadName } from '../../../core/shared/runEvidence';
 import { planStartConflict } from '../../../core/shared/testPlanStart';
-import { isStaleManualTestRun } from '../../../core/shared/testRunStatus';
+import { isPendingReviewTestRun, isStaleManualTestRun } from '../../../core/shared/testRunStatus';
 
 const archiver = ((archiverNs as any).default ?? archiverNs) as (format: string, options?: Record<string, any>) => any;
 
@@ -270,6 +270,23 @@ export function registerResourceRoutes(app: Express) {
     if (!isPgEnabled()) persistDataInBackground('updated run');
     logActivity(req, `Updated test run: ${name}`, { type: 'run', entityId: updated.id });
     res.json({ success: true, run: updated });
+  });
+  app.post('/api/runs/:id/close', async (req, res) => {
+    const run = await Runs.get(req.params.id);
+    if (!run || !scopeFilter([run], reqScope(req)).length) return res.status(404).json({ error: 'Run not found.' });
+    if (!isPendingReviewTestRun(run)) return res.status(409).json({ error: 'Only a run pending review can be closed.' });
+    const scope = reqScope(req);
+    const closed = await Runs.upsert({
+      ...run,
+      status: 'Closed',
+      state: 'Closed',
+      approvalState: 'approved',
+      reviewedAt: new Date().toISOString(),
+      reviewedBy: scope.username || scope.userId || 'User',
+    });
+    if (!isPgEnabled()) persistDataInBackground('closed reviewed run');
+    logActivity(req, `Reviewed and closed test run: ${run.name}`, { type: 'run', entityId: run.id });
+    res.json({ success: true, run: closed });
   });
   app.get('/api/runs/:id/evidence/export', async (req, res) => {
     const run = await Runs.get(req.params.id);

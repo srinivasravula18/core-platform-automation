@@ -78,6 +78,7 @@ import { semanticPlanFromCase } from './compiler/semanticPlanner';
 import { scoreCaseReuse } from './caseReuse';
 import { mergeScriptsByCase, reviewedCasesForRun, syncReviewedCases } from './caseCollection';
 import { pushInboxItem } from '../inbox/routes';
+import { agentRunStatusForList, isPendingReviewTestRun } from '../../../core/shared/testRunStatus';
 import { AgentRuns, ChatConversations, Suites, Cases, Runs, Reports, Scripts, Folders, Requirements, Defects, isPgEnabled } from '../../db/repository';
 import { loadConversationHandoff } from '../../ai/memory/conversationState';
 import { runGuardrailPipeline } from '../../ai/guardrails';
@@ -912,20 +913,6 @@ Write ONE clear, human-readable suite title in Title Case, 5-10 words, that name
   }
 }
 
-function agentRunStatusForList(status: string): string {
-  switch (String(status || '').toLowerCase()) {
-    case 'completed': return 'Completed';
-    case 'failed': return 'Failed';
-    // A cancelled/interrupted generation still produced usable cases — surface it as a Draft run
-    // rather than 'Cancelled', so freshly-generated runs aren't mislabelled (bug #18).
-    case 'cancelled': return 'Draft';
-    case 'review_required': return 'Review Required';
-    case 'coverage_options': return 'Coverage Options';
-    case 'running': return 'In Progress';
-    default: return 'Draft';
-  }
-}
-
 function summarizeAgentRunExecution(run: any) {
   const executionSteps = buildAgentExecutionSteps(run);
   const failed = executionSteps.filter((s: any) => /fail/i.test(String(s.outcome || ''))).length;
@@ -971,6 +958,7 @@ async function persistAgentRunAndReportArtifacts(run: any) {
   const caseExecution = summarizeAgentCaseExecution(run);
   const runRecordId = agentRunRecordId(run);
   const listStatus = agentRunStatusForList(run.status);
+  const pendingReview = isPendingReviewTestRun({ status: listStatus });
   const caseIds = (Array.isArray(run.generated_cases) ? run.generated_cases : []).map((_: any, index: number) => runCaseId(run, index));
   // Real elapsed time (excludes human review pause) — shared by the run AND its report so the
   // report's Duration is an actual time, not the literal "Generated" (#6).
@@ -987,6 +975,7 @@ async function persistAgentRunAndReportArtifacts(run: any) {
     requestedBy: 'QA Assistant',
     executionTime: durationLabel,
     status: listStatus,
+    state: pendingReview ? 'Pending Review' : listStatus,
     progress: progressLabel,
     date,
     totalExecutions: caseExecution.total,
@@ -998,7 +987,7 @@ async function persistAgentRunAndReportArtifacts(run: any) {
     evidence: run.evidence_screenshots || [],
     triggerType: 'agent',
     proposedBy: 'QA Assistant',
-    approvalState: 'approved',
+    approvalState: pendingReview ? 'pending_review' : 'approved',
     sourceRunId: run.id,
     agentRunId: run.id,
     projectId: run.projectId || '',
@@ -2097,6 +2086,8 @@ async function persistAgentRunArtifacts(run: any) {
   const durationLabel = run.completed_at && run.created_at
     ? `${Math.max(0, Math.round((Date.parse(run.completed_at) - Date.parse(run.created_at) - (run.paused_ms || 0)) / 1000))}s`
     : 'Pending';
+  const listStatus = agentRunStatusForList(run.status);
+  const pendingReview = isPendingReviewTestRun({ status: listStatus });
 
   await Runs.upsert({
     id: existingRunId,
@@ -2106,7 +2097,8 @@ async function persistAgentRunArtifacts(run: any) {
     caseIds: (run.generated_cases || []).map((_: any, index: number) => runCaseId(run, index)),
     requestedBy: 'QA Assistant',
     executionTime: durationLabel,
-    status: 'Completed',
+    status: listStatus,
+    state: pendingReview ? 'Pending Review' : listStatus,
     progress: progressLabel,
     date,
     totalExecutions: caseExecution.total,
@@ -2118,7 +2110,7 @@ async function persistAgentRunArtifacts(run: any) {
     evidence: run.evidence_screenshots || [],
     triggerType: 'agent',
     proposedBy: 'QA Assistant',
-    approvalState: 'approved',
+    approvalState: pendingReview ? 'pending_review' : 'approved',
     sourceRunId: run.id,
     agentRunId: run.id,
     projectId: run.projectId || '',

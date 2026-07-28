@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { casesForPlan, casesForRun, manualRunSelection, runExecutionState, runnableCases, scriptsForCases, scriptsForRun } from '../src/lib/manualTestRun';
-import { isActiveTestRun, isClosedTestRun, isStaleManualTestRun } from '../core/shared/testRunStatus';
+import { agentRunStatusForList, isActiveTestRun, isClosedTestRun, isPendingReviewTestRun, isStaleManualTestRun } from '../core/shared/testRunStatus';
 
 const suites = [
   { id: 'S1', testPlanId: 'P1' },
@@ -40,7 +40,11 @@ assert.deepEqual(runExecutionState({
 assert.equal(runExecutionState({ status: 'In Progress' }).running, true);
 assert.equal(isActiveTestRun({ status: 'In Progress' }), true);
 assert.equal(isActiveTestRun({ status: 'Review Required' }), true);
+assert.equal(agentRunStatusForList('completed'), 'Completed — Pending Review');
+assert.equal(isPendingReviewTestRun({ status: agentRunStatusForList('completed') }), true);
+assert.equal(isActiveTestRun({ status: agentRunStatusForList('completed') }), true);
 assert.equal(isClosedTestRun({ status: 'Completed' }), true);
+assert.equal(isClosedTestRun({ status: 'Closed' }), true);
 assert.equal(isClosedTestRun({ status: 'Failed' }), true);
 assert.equal(isStaleManualTestRun({
   status: 'Running',
