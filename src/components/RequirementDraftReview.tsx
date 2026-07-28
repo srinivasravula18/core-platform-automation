@@ -2,11 +2,13 @@ import {
   Check,
   Database,
   FileCode2,
+  Pencil,
   ScrollText,
   Trash2,
 } from 'lucide-react';
+import { useState } from 'react';
 import { cn } from '@/src/lib/utils';
-import { formatBusinessRulesMarkdown, type RequirementSrsModule } from '@/src/lib/requirementSrs';
+import { formatBusinessRulesMarkdown, formatRequirementSrs, type RequirementSrsModule } from '@/src/lib/requirementSrs';
 import { MarkdownText } from '@/src/components/MarkdownText';
 import { RequirementSrsEditor } from '@/src/components/RequirementSrsEditor';
 
@@ -56,6 +58,9 @@ export function RequirementDraftReview({
   const duplicateOf = result?.duplicateOf;
   const qualityFindings: Array<{ requirement: string; module: string; issue: string; severity: string }> = Array.isArray(result?.qualityFindings) ? result.qualityFindings : [];
   const qualityWarnings = qualityFindings.filter((f) => f.severity === 'warn');
+  // SRS shows the clean read-only rendered spec by default; the field-by-field editor is revealed
+  // only when the user clicks Edit (the raw editor form is hard to scan for review).
+  const [editingSrs, setEditingSrs] = useState(false);
   const updateRequirement = (updates: Record<string, unknown>) =>
     onChange({ ...result, requirement: { ...requirement, ...updates } });
   const updateSrsModules = (modules: RequirementSrsModule[]) =>
@@ -102,8 +107,24 @@ export function RequirementDraftReview({
 
         {srsModules.length > 0 && (
           <div>
-            <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">Edit Software Requirements Specification</div>
-            <RequirementSrsEditor modules={srsModules} onChange={updateSrsModules} />
+            <div className="mb-1 flex items-center justify-between">
+              <div className="text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">Software Requirements Specification</div>
+              <button
+                type="button"
+                onClick={() => setEditingSrs((v) => !v)}
+                className="inline-flex items-center gap-1 rounded border border-[var(--border)] px-2 py-0.5 text-[10px] font-medium text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)]"
+              >
+                <Pencil className="h-3 w-3" />
+                {editingSrs ? 'Done' : 'Edit'}
+              </button>
+            </div>
+            {editingSrs ? (
+              <RequirementSrsEditor modules={srsModules} onChange={updateSrsModules} />
+            ) : (
+              <div className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-xs text-[var(--text-primary)]">
+                <MarkdownText value={formatRequirementSrs(srsModules)} />
+              </div>
+            )}
           </div>
         )}
 
