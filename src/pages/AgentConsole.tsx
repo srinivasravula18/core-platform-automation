@@ -3625,10 +3625,11 @@ export default function AgentConsole() {
                 <button
                   type="button"
                   onClick={stopActiveRequest}
-                  className="flex h-9 items-center gap-1.5 rounded-full border border-red-500/40 bg-red-500/15 px-4 text-sm font-semibold text-red-300 transition-colors hover:bg-red-500/25 hover:text-red-200"
+                  title="Stop the active agent response"
+                  className="flex h-9 items-center gap-1.5 rounded-full border border-red-500/50 bg-red-50 px-4 text-sm font-semibold text-red-700 transition-colors hover:bg-red-100 hover:text-red-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500 focus-visible:ring-offset-2 dark:bg-red-500/15 dark:text-red-100 dark:hover:bg-red-500/25 dark:hover:text-white"
                 >
                   <StopCircle className="h-4 w-4" />
-                  <span className="hidden sm:inline">Stop</span>
+                  <span>Stop</span>
                 </button>
               ) : (
                 <button
