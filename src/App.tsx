@@ -14,7 +14,6 @@ import { DialogHost } from '@/src/lib/dialog';
 import { useResizableTables } from '@/src/lib/useResizableTables';
 import { searchResultHref } from '@/src/lib/controllerIntent';
 import { AgentSessionProvider } from '@/src/lib/agentSession/AgentSessionProvider';
-import { AgentActivityIndicator } from '@/src/components/AgentActivityIndicator';
 
 import AgentConsole from '@/src/pages/AgentConsole';
 import AgentPanel from '@/src/pages/AgentPanel';
@@ -346,7 +345,6 @@ function Topbar({ onMenuClick, onCommandBarOpen }: { onMenuClick: () => void; on
       </div>
       <div id="topbar-actions" className="flex items-center gap-2" />
       <div className="flex items-center gap-2 sm:gap-4">
-        <AgentActivityIndicator />
         <ProjectSwitcher />
         <button
           onClick={onCommandBarOpen}

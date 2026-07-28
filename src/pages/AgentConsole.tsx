@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react';
+import { memo, useCallback, useEffect, useRef, useState, type MouseEvent as ReactMouseEvent, type SetStateAction } from 'react';
 import { createPortal } from 'react-dom';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { TopbarActions } from '@/src/components/TopbarActions';
@@ -68,6 +68,7 @@ import { useUiSettings } from '@/src/store/uiSettings';
 import { useSpeechToText } from '@/src/lib/useSpeechToText';
 import { useFlushOnUnload } from '@/src/lib/useFlushOnUnload';
 import { useAgentSessionManager } from '@/src/lib/agentSession/AgentSessionProvider';
+import { useAgentConsoleRuntime } from '@/src/store/agentConsoleRuntime';
 import { showAlert, showConfirm } from '@/src/lib/dialog';
 import { showToast } from '@/src/lib/dialog';
 import { WorkflowRunner } from '@/src/components/WorkflowRunner';
@@ -756,19 +757,39 @@ export default function AgentConsole() {
   const location = useLocation();
   const agentSessionManager = useAgentSessionManager();
   const { chatId: routeChatId } = useParams<{ chatId?: string }>();
-  // The console is deliberately hosted outside <Routes> so it survives navigation. Recover the
-  // chat id from the URL there, while retaining route params for any future embedded usage.
+  // Retain the pathname fallback for shared chat URLs as well as normal route-param rendering.
   const urlChatId = routeChatId || location.pathname.match(/(?:^|\/)chat\/([^/]+)$/)?.[1];
 
-  const [turns, setTurns] = useState<Turn[]>([]);
-  const [input, setInput] = useState('');
-  const [busy, setBusy] = useState(false);
   const rememberedConversationIdRef = useRef<string | null>(null);
   const [conversationId, setConversationId] = useState<string>(() => {
     if (urlChatId) return urlChatId;
     rememberedConversationIdRef.current = readScopedStorage(convKey);
     return rememberedConversationIdRef.current || makeConversationId();
   });
+  const conversationIdRef = useRef(conversationId);
+  useEffect(() => { conversationIdRef.current = conversationId; }, [conversationId]);
+  const storedRuntime = useAgentConsoleRuntime((state) => state.sessions[conversationId]);
+  const updateRuntimeTurns = useAgentConsoleRuntime((state) => state.setTurns);
+  const updateRuntimeBusy = useAgentConsoleRuntime((state) => state.setBusy);
+  const [turns, setLocalTurns] = useState<Turn[]>(() => (storedRuntime?.turns || []) as Turn[]);
+  const [input, setInput] = useState('');
+  const [busy, setLocalBusy] = useState(() => storedRuntime?.busy || false);
+  // Keep async callbacks alive across a route unmount: they write their result to the shared
+  // runtime first, then update this mounted view when it still exists.
+  const setTurns = useCallback((update: SetStateAction<Turn[]>) => {
+    updateRuntimeTurns(conversationIdRef.current, update as any);
+    setLocalTurns(update);
+  }, [updateRuntimeTurns]);
+  const setBusy = useCallback((next: SetStateAction<boolean>) => {
+    const current = useAgentConsoleRuntime.getState().sessions[conversationIdRef.current]?.busy || false;
+    const value = typeof next === 'function' ? next(current) : next;
+    updateRuntimeBusy(conversationIdRef.current, value);
+    setLocalBusy(value);
+  }, [updateRuntimeBusy]);
+  useEffect(() => {
+    setLocalTurns((storedRuntime?.turns || []) as Turn[]);
+    setLocalBusy(storedRuntime?.busy || false);
+  }, [conversationId, storedRuntime]);
   const agentSessionId = `agent-console:${conversationId}`;
 
   // A route can unmount at any time; register the durable conversation at application scope first.
