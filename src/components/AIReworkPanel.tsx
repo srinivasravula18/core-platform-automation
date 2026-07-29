@@ -28,6 +28,7 @@ interface Props<T extends AIReworkCase> {
   appliedMessage?: string | null;
   onUndo?: () => void;
   compact?: boolean;
+  showScopeLabel?: boolean;
 }
 
 export function AIReworkPanel<T extends AIReworkCase>({
@@ -45,6 +46,7 @@ export function AIReworkPanel<T extends AIReworkCase>({
   appliedMessage,
   onUndo,
   compact = false,
+  showScopeLabel = true,
 }: Props<T>) {
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
@@ -219,9 +221,11 @@ export function AIReworkPanel<T extends AIReworkCase>({
         />
         {compact && (
           <>
-            <span className="inline-flex shrink-0 items-center justify-center rounded-md border border-[var(--accent)]/30 bg-[var(--accent)]/10 px-2 text-[10px] font-medium text-[var(--accent)]">
-              {scopeLabel}
-            </span>
+            {showScopeLabel && (
+              <span className="inline-flex shrink-0 items-center justify-center rounded-md border border-[var(--accent)]/30 bg-[var(--accent)]/10 px-2 text-[10px] font-medium text-[var(--accent)]">
+                {scopeLabel}
+              </span>
+            )}
             <button
               type="button"
               onClick={onPreview}

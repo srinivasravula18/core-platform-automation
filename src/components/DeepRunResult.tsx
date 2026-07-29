@@ -322,6 +322,9 @@ export function DeepRunResult({
   const [reworkProposal, setReworkProposal] = useState<AIReworkProposal<Case> | null>(null);
   const [reworkProposalOwner, setReworkProposalOwner] = useState<string | null>(null);
   const [reworkUndoSnapshot, setReworkUndoSnapshot] = useState<Case[] | null>(null);
+  // Kept separately from the case data so an applied AI rework remains visibly
+  // distinguishable from ordinary edits until the user moves on or undoes it.
+  const [aiUpdatedCases, setAiUpdatedCases] = useState<Set<number>>(new Set());
   const [saved, setSaved] = useState(!!initialSaved);
   const [pwRunning, setPwRunning] = useState(false);
   const [pwResult, setPwResult] = useState<any>(null);
@@ -666,8 +669,14 @@ export function DeepRunResult({
     if (!reworkProposal) return;
     try {
       const result = applyAIReworkProposal(list, reworkProposal, selectedKeys);
+      const updatedIndexes = reworkProposal.items
+        .filter((item) => item.kind === 'updated' && selectedKeys.has(item.key) && item.sourceIndex != null)
+        .map((item) => item.sourceIndex!);
       setReworkUndoSnapshot(list);
       setCases(result.cases);
+      if (updatedIndexes.length) {
+        setAiUpdatedCases((current) => new Set([...current, ...updatedIndexes]));
+      }
       setSaved(false);
       setChatNote(`${result.appliedCount} AI change${result.appliedCount === 1 ? '' : 's'} applied to the draft. Save all to persist.`);
       if (reworkProposalOwner?.startsWith('case-')) {
@@ -685,6 +694,7 @@ export function DeepRunResult({
     if (!reworkUndoSnapshot) return;
     setCases(reworkUndoSnapshot);
     setReworkUndoSnapshot(null);
+    setAiUpdatedCases(new Set());
     setChatNote('AI changes undone.');
     setSaved(false);
   };
@@ -692,6 +702,7 @@ export function DeepRunResult({
     <AIReworkPanel
       compact
       scopeLabel={list[i]?.title || `Case ${i + 1}`}
+      showScopeLabel={false}
       value={feedback[i] || ''}
       onChange={(value) => setFeedback((current) => ({ ...current, [i]: value }))}
       onPreview={() => void reworkCase(i)}
@@ -1458,7 +1469,10 @@ export function DeepRunResult({
 
               <div className="max-h-[min(28rem,60dvh)] space-y-1.5 overflow-y-auto pr-1">
                 {list.map((c, i) => (
-                  <div key={i} className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)]">
+                  <div key={i} className={cn(
+                    'rounded-md border bg-[var(--bg-secondary)]',
+                    aiUpdatedCases.has(i) ? 'border-emerald-500/45 ring-1 ring-emerald-500/15' : 'border-[var(--border)]',
+                  )}>
                     <div
                       onClick={() => setEditing(i)}
                       className="flex cursor-pointer items-center gap-2 px-3 py-2"
@@ -1477,6 +1491,11 @@ export function DeepRunResult({
                       {c.reused && (
                         <span title={`Existing case ${c.existingCaseId || ''}${c.reuseMatchReasons?.length ? `; matched: ${c.reuseMatchReasons.join(', ')}` : ''}`} className="rounded border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[9px] font-bold uppercase text-amber-300">
                           Reused
+                        </span>
+                      )}
+                      {aiUpdatedCases.has(i) && (
+                        <span className="rounded border border-emerald-500/35 bg-emerald-500/10 px-1.5 py-0.5 text-[9px] font-bold uppercase text-emerald-300">
+                          AI updated
                         </span>
                       )}
                       <span className="min-w-0 flex-1">
@@ -1618,7 +1637,10 @@ export function DeepRunResult({
                 const c = list[i];
                 return (
                   <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={() => setEditing(null)}>
-                    <div className="relative flex max-h-[90dvh] w-full max-w-5xl flex-col overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--bg-card)] shadow-2xl" onClick={(e) => e.stopPropagation()}>
+                    <div className={cn(
+                      'relative flex max-h-[90dvh] w-full max-w-5xl flex-col overflow-hidden rounded-lg border bg-[var(--bg-card)] shadow-2xl',
+                      aiUpdatedCases.has(i) ? 'border-emerald-500/45' : 'border-[var(--border)]',
+                    )} onClick={(e) => e.stopPropagation()}>
                       <button
                         type="button"
                         onClick={() => setEditing(Math.max(0, i - 1))}
@@ -1640,7 +1662,10 @@ export function DeepRunResult({
                       <div className="flex items-center gap-2 border-b border-[var(--border)] px-3 py-2">
                         <div className="min-w-0 flex-1">
                           <div className="truncate text-sm font-semibold text-[var(--text-primary)]">{c.title || 'Untitled case'}</div>
-                          <div className="text-[10px] text-[var(--text-muted)]">Case {i + 1} of {list.length}</div>
+                          <div className="flex items-center gap-2 text-[10px] text-[var(--text-muted)]">
+                            <span>Case {i + 1} of {list.length}</span>
+                            {aiUpdatedCases.has(i) && <span className="rounded border border-emerald-500/35 bg-emerald-500/10 px-1.5 py-0.5 font-semibold uppercase tracking-wide text-emerald-300">AI updated</span>}
+                          </div>
                         </div>
                         <button
                           type="button"
@@ -1760,6 +1785,18 @@ export function DeepRunResult({
                         <div className="border-t border-[var(--border)] pt-2">
                           {renderCaseReworkPanel(i)}
                         </div>
+                      </div>
+                      <div className="flex items-center justify-between gap-3 border-t border-[var(--border)] bg-[var(--bg-secondary)] px-4 py-3">
+                        <span className="text-[11px] text-[var(--text-muted)]">{saved ? 'All changes are saved.' : 'Save your edits before closing this test case.'}</span>
+                        <button
+                          type="button"
+                          onClick={() => void saveAll()}
+                          disabled={busy === 'save'}
+                          className="inline-flex min-h-9 items-center gap-1.5 rounded-md bg-[var(--accent)] px-3 text-xs font-semibold text-white hover:bg-[var(--accent-hover)] disabled:opacity-50"
+                        >
+                          {busy === 'save' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
+                          {busy === 'save' ? 'Saving...' : 'Save changes'}
+                        </button>
                       </div>
                     </div>
                   </div>

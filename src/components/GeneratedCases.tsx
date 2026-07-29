@@ -659,6 +659,7 @@ export function GeneratedCases({ cases: initial, onCasesChange }: { cases: Case[
                 <AIReworkPanel
                   compact
                   scopeLabel={c.title || `Case ${i + 1}`}
+                  showScopeLabel={false}
                   value={feedback[i] || ''}
                   onChange={(value) => setFeedback((current) => ({ ...current, [i]: value }))}
                   onPreview={() => void reworkCase(i)}
