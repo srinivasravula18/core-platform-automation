@@ -403,6 +403,7 @@ export default function EditableCaseCard({ initial, linkType, selected, onToggle
             <AIReworkPanel
               compact
               scopeLabel={c.title || 'Current case'}
+              showScopeLabel={false}
               value={feedback}
               onChange={setFeedback}
               onPreview={() => void reworkCase()}
