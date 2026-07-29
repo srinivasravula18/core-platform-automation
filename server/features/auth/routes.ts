@@ -27,7 +27,6 @@ import {
 import { isPostgresEnabled, query } from '../../db/pool';
 import { persistSession as persistSessionRow, deleteSession as deleteSessionRow } from './authRepo';
 import { catalogForClient } from './permissions';
-import { isRbacEnforced } from './rbacGate';
 
 // Multi-user app login with RBAC. Users live in the user store (server/features/
 // auth/userStore.ts). Sessions are DURABLE: stored in db.sessions (persisted to the
@@ -198,14 +197,14 @@ export function registerAuthRoutes(app: Express) {
     // Effective access grants (UNION of the user's groups; UNRESTRICTED for admins only) so the
     // client can gate nav + routes. Resource APIs are still enforced server-side (Phase 2/3).
     const grants = effectiveGrantsForUser(getUserById(u.userId));
-    res.json({ authenticated: true, username: u.username, role: u.role, userId: u.userId, grants, rbacEnforced: isRbacEnforced() });
+    res.json({ authenticated: true, username: u.username, role: u.role, userId: u.userId, grants, rbacEnforced: true });
   });
 
   // Permission catalog (pages, resource verbs, capabilities) so the admin UI + client button-gating
   // render from a single server-owned source. Any authenticated user may read it.
   app.get('/api/auth/rbac/catalog', (req: Request, res: Response) => {
     if (!getAuthUser(req)) return res.status(401).json({ error: 'Not authenticated.' });
-    res.json({ ...catalogForClient(), rbacEnforced: isRbacEnforced() });
+    res.json({ ...catalogForClient(), rbacEnforced: true });
   });
 
   app.post('/api/auth/logout', (req: Request, res: Response) => {

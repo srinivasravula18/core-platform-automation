@@ -120,7 +120,7 @@ export async function createExpressApp() {
   app.use(authContextMiddleware);
   app.use(apiAuthGate);
   app.use(scopeMiddleware);
-  app.use(rbacGate); // coarse authorization (flag RBAC_ENFORCEMENT_V1; shadow-logs until enabled)
+  app.use(rbacGate); // coarse authorization — always enforced; denials are audited + 403'd
   // Seed the per-request actor so the repository layer can stamp createdBy/updatedBy on every
   // write without threading the user through each route (see server/shared/requestContext.ts).
   app.use((req, _res, next) => runWithActor(reqActor(req), () => next()));
