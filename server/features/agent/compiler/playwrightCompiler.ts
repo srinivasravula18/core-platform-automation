@@ -42,12 +42,17 @@ function invalidValidationSteps(plan: { steps: PlanStep[]; title?: string | null
   // placement rules as VERIFY_VALIDATION — treat them as validation asserts here too.
   const negative = isNegativeCase(plan);
   const isValidationAssert = (s: PlanStep) => isAssertStep(s) && (VALIDATION_ASSERTS.has(s.assert) || (negative && s.assert === 'HAS_VALUE'));
-  const sel = plan.steps.map((s) => { const g = resolveTarget(String((s as any).target || ''), evidenceGraph, run); return g.status === 'RESOLVED' ? (g.selector as string ?? null) : null; });
+  const resolved = plan.steps.map((s) => { const g = resolveTarget(String((s as any).target || ''), evidenceGraph, run); return g.status === 'RESOLVED' ? { sel: (g.selector as string ?? null), node: g.node } : { sel: null, node: null }; });
+  const sel = resolved.map((r) => r.sel);
+  // A NEGATIVE case's create is REJECTED, so the create form/modal STAYS open — a NOT_VISIBLE assert on a
+  // form-state control (a field or the "New App" heading) is always wrong (it never closes). Drop those.
+  if (negative) plan.steps.forEach((s, i) => {
+    if (isAssertStep(s) && s.assert === 'NOT_VISIBLE' && resolved[i].node?.stateTag === 'form') drops.add(i);
+  });
   let submitIdx = -1;
   plan.steps.forEach((s, i) => {
     if (submitIdx >= 0 || !isActionStep(s) || s.action !== 'CLICK') return;
-    const g = resolveTarget(String((s as any).target || ''), evidenceGraph, run);
-    if (g.status === 'RESOLVED' && isSubmitClick(s, g.node)) submitIdx = i;
+    if (resolved[i].node && isSubmitClick(s, resolved[i].node)) submitIdx = i;
   });
   const filled = new Map<string, boolean>();
   plan.steps.forEach((s, i) => {
@@ -55,8 +60,8 @@ function invalidValidationSteps(plan: { steps: PlanStep[]; title?: string | null
     if (FILL_ACTIONS.has(s.action)) filled.set(sel[i] as string, true);
     else if (s.action === 'CLEAR') filled.set(sel[i] as string, false);
   });
-  // Only prune when a submit exists (else the app may validate on blur — leave it to the critic). Drop a
-  // validation assert placed BEFORE that submit, or targeting a field that is FILLED at submit.
+  // Only prune validation asserts when a submit exists (else the app may validate on blur — leave it to the
+  // critic). Drop a validation assert placed BEFORE that submit, or targeting a field that is FILLED at submit.
   if (submitIdx < 0) return drops;
   plan.steps.forEach((s, i) => {
     if (!isValidationAssert(s)) return;

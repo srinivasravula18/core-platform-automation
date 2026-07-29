@@ -221,6 +221,22 @@ function main() {
     ok(!/expectValidation\(\{[^}]*#f-api/.test(rs.code), 'a negative-case HAS_VALUE→expectValidation before the submit is also dropped');
     ok(/expectValidation\(\{[^}]*#f-prefix/.test(rs.code), 'validation on the EMPTY (cleared) Prefix field survives');
     ok(rs.code.indexOf('runner.click') < rs.code.lastIndexOf('#f-prefix'), 'the surviving Prefix validation is asserted AFTER the submit click');
+
+    // Modal-close hygiene: a NEGATIVE case's create is rejected, so the form stays open — a NOT_VISIBLE assert
+    // on a form-state control (field or heading) always fails and must be dropped.
+    const modalRun: any = { id: 'run-modal', selector_registry: { verified_selectors: [
+      { ...vs('m_label', 'textbox', 'Label *', '#create-app-label', 'css'), stateTag: 'form' },
+      { ...vs('m_head', 'heading', 'New App', 'role=heading[name="New App"]', 'role'), stateTag: 'form' },
+      { ...vs('m_create', 'button', 'Create', 'role=button[name="Create"]', 'role'), stateTag: 'form' },
+    ] } };
+    const modalGraph = buildEvidenceGraphFromRun(modalRun, { platform: 'Admin', module: 'apps' });
+    const negModal: TestPlan = { mission: runtime.executionScope, title: 'Label is required to create an app', steps: [
+      { action: 'CLICK', target: 'Create' },
+      { assert: 'NOT_VISIBLE', target: 'New App' },       // modal-close assert on the form heading → DROP
+    ] };
+    const rmc = playwrightCompiler.compile({ mission: runtime, plan: negModal, evidenceGraph: modalGraph, run: modalRun });
+    ok(/dropped validation assert/.test(rmc.code), 'the modal-close NOT_VISIBLE assert is dropped in a negative case');
+    ok(!/expectHidden\([^)]*New App/.test(rmc.code), 'no expectHidden on the New App heading survives for a negative case');
   }
 
   console.log('semantic selection uses the target role, never the English verb alone');
