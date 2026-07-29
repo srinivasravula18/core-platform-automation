@@ -210,6 +210,21 @@ export function analyzeFailure(rawError: string): FailureAnalysis {
   }
 
   if (isAssertion && notFound) {
+    // A check that waited for an ERROR/validation message and found none is usually NOT a product defect: the
+    // app may have behaved correctly (nothing to error about), or it shows validation a different way. Say that
+    // honestly instead of implying a wrong-screen bug — this is the #1 source of confusing "error not shown" cards.
+    if (/\[role="alert"|aria-invalid|aria-errormessage/i.test(target || '')) {
+      return {
+        kind: 'element-not-found', label: 'No error appeared', attempted, target, resolvedElement,
+        expected: 'an error or validation message appears after the steps run.',
+        actual: `No error or validation message appeared, even after waiting ${waited}.`,
+        likelyCause: "Often this means the app behaved CORRECTLY — it accepted the input, so there was nothing to warn about — and this check does not fit this case. Otherwise the app shows validation a different way (an inline message or a banner) that this check did not look for.",
+        suggestedFixes: [
+          'Do the steps yourself: if the app accepts the input with no error, the check is wrong for this case — it should confirm the successful result instead of an error.',
+          'If an error truly should appear, look at how the app shows it (inline text or a banner) and match that; only then is a missing error a real product bug.',
+        ],
+      };
+    }
     return {
       kind: 'element-not-found', label: "Expected thing wasn't there", attempted, target, resolvedElement,
       expected: `${humanTarget(target)} shows up on screen after the steps run.`,

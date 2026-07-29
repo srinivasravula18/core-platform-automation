@@ -17,7 +17,9 @@ import { isBehaviorOracleEnabled } from '../behaviorOracleFlag';
  * grounded control's role+label so completing the form before it fires makes create/submit flows succeed. */
 function isSubmitClick(step: PlanStep, node: EvidenceNode | null): boolean {
   if (!isActionStep(step) || step.action !== 'CLICK' || String(node?.role || '').toLowerCase() !== 'button') return false;
-  return /^(save|create|submit|add|confirm|finish|done|save\s*&\s*new|create\s*&\s*new|save and new|create and new)\b/i.test(String(node?.label || '').trim());
+  // Include wizard-advance verbs (Next/Continue/Proceed): a multi-step create commits the current step and
+  // triggers its validation, so it must count as the submit for required-completion + observe-then-assert.
+  return /^(save|create|submit|add|confirm|finish|done|next|continue|proceed|save\s*&\s*new|create\s*&\s*new|save and new|create and new)\b/i.test(String(node?.label || '').trim());
 }
 
 /** A negative/validation case deliberately leaves fields empty (that emptiness IS the test) — never auto-complete it. */
@@ -439,6 +441,16 @@ export class PlaywrightCompiler implements Compiler {
         if (assertStep.assert === 'HAS_VALUE' && String(value ?? '').trim() === '' && !clearedSelectors.has(g.selector as string)) {
           diagnostics.push({ kind: 'INVALID_STEP', target, stepIndex: i, message: 'HAS_VALUE "" dropped — emptiness is only assertable right after a CLEAR (field may auto-derive/default).', severity: 'skippable' });
           body.push(`  // dropped empty-value assert (step ${i + 1}): field not cleared — cannot assert blank (may auto-derive/default)`);
+          return;
+        }
+        // A VERIFY_VALIDATION in a POSITIVE case on an editable field, whose expected text is NOT error/requirement
+        // flavored, is not an error check — it means "the field is correctly populated/valid" (e.g. an auto-derived
+        // value). expectValidation hunts for an error element a correct app never shows, so assert a non-empty
+        // value instead. Genuine error-intent ("required"/"invalid"/…) stays expectValidation.
+        if (assertStep.assert === 'VERIFY_VALIDATION' && !isNegativeCase(plan)
+          && ['textbox', 'searchbox', 'spinbutton', 'combobox'].includes(assertRole)
+          && !/\b(required|invalid|mandatory|must|error|cannot|not\s+allowed|blocked|missing|empty|blank)\b/i.test(String(assertStep.value ?? ''))) {
+          body.push(`  await runner.expectNonEmptyValue(${spec});`);
           return;
         }
         // Role↔assertion gate: a value/checked assert on an incompatible role can never pass — drop that one
