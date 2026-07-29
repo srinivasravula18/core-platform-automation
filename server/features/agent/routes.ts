@@ -1292,10 +1292,13 @@ async function ensureAgentPlanAndSuite(run: any) {
 
   if (!run.testSuiteId) {
     const suiteName = agentSuiteName(run);
+    // A suite's identity is folder + name. Reuse a same-folder, same-name suite regardless of plan — each run
+    // synthesizes its OWN per-run plan id, and requiring plan-equality here fragmented one subject into a new
+    // suite per run (the "1 suite for some, 2 for others" inconsistency). This restores the documented
+    // reuse-by-name-in-folder intent; a suite can group cases across runs/plans (runIds already tracks them).
     const matchingSuite = (await Suites.list()).find((suite: any) =>
       suite.folderId === (run.folderId || null)
-      && normalizedSuiteName(suite.name) === normalizedSuiteName(suiteName)
-      && (!planId || !suite.testPlanId || suite.testPlanId === planId),
+      && normalizedSuiteName(suite.name) === normalizedSuiteName(suiteName),
     );
 
     if (matchingSuite) {
