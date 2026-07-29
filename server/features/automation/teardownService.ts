@@ -14,17 +14,14 @@
 import { AutomationExecutionBatches, AutomationRunData, Recordings } from '../../db/repository';
 import { resolveExpression } from './variableEngine';
 
-export async function runTeardown(batchId: string): Promise<void> {
-  const batch = await AutomationExecutionBatches.get(batchId);
-  if (!batch || batch.dataPolicy !== 'ephemeral') return;
-  const ledger = await AutomationRunData.listForBatch(batchId);
-  const pendingRows = [...new Set(ledger.filter((row: any) => row.cleanupStatus === 'none').map((row: any) => row.rowNumber))];
-  if (!pendingRows.length) return;
-  const rec = await Recordings.get(batch.recordingId);
+// Fire the recording's teardown hook for a set of ledger rows. Returns how many rows were processed.
+async function cleanupRows(batchId: string, recordingId: string, ledger: any[], rowNumbers: number[]): Promise<number> {
+  const rec = await Recordings.get(recordingId);
   const hook = (rec?.metadata as any)?.teardown as { method?: string; url?: string; headers?: Record<string, string> } | undefined;
-
-  for (const rowNumber of pendingRows) {
+  let count = 0;
+  for (const rowNumber of rowNumbers) {
     const fields = ledger.filter((row: any) => row.rowNumber === rowNumber);
+    count += 1;
     if (!hook?.url) { await AutomationRunData.setCleanupStatus(batchId, rowNumber, 'skipped'); continue; }
     await AutomationRunData.setCleanupStatus(batchId, rowNumber, 'pending');
     try {
@@ -38,4 +35,25 @@ export async function runTeardown(batchId: string): Promise<void> {
       await AutomationRunData.setCleanupStatus(batchId, rowNumber, 'failed');
     }
   }
+  return count;
+}
+
+export async function runTeardown(batchId: string): Promise<void> {
+  const batch = await AutomationExecutionBatches.get(batchId);
+  if (!batch || batch.dataPolicy !== 'ephemeral') return;
+  const ledger = await AutomationRunData.listForBatch(batchId);
+  const pendingRows = [...new Set(ledger.filter((row: any) => row.cleanupStatus === 'none').map((row: any) => row.rowNumber))];
+  if (!pendingRows.length) return;
+  await cleanupRows(batchId, batch.recordingId, ledger, pendingRows as number[]);
+}
+
+// Reap orphans: re-fire teardown for rows whose earlier cleanup was left 'pending' (crashed mid-run) or
+// 'failed' (hook errored). Does not touch 'none' rows — those are the automatic teardown's job.
+export async function reapBatch(batchId: string): Promise<number> {
+  const batch = await AutomationExecutionBatches.get(batchId);
+  if (!batch) return 0;
+  const ledger = await AutomationRunData.listForBatch(batchId);
+  const rows = [...new Set(ledger.filter((row: any) => row.cleanupStatus === 'pending' || row.cleanupStatus === 'failed').map((row: any) => row.rowNumber))];
+  if (!rows.length) return 0;
+  return cleanupRows(batchId, batch.recordingId, ledger, rows as number[]);
 }

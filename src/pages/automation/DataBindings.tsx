@@ -1,36 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { DragEvent } from 'react';
-import { Braces, Database, Download, FileSpreadsheet, GripVertical, Link2, Play, Redo2, Table, Trash2, Undo2, Upload, Wand2, X } from 'lucide-react';
+import { ChevronDown, Database, Download, FileSpreadsheet, Play, Redo2, Search, Table, Trash2, Undo2, Upload, Wand2, X } from 'lucide-react';
+import { Runnable, RunnablePicker, runnableKey } from './RunnablePicker';
+import { FieldChipEditor, PalettePill, tokenLabel } from './FieldChips';
 
-// Variable palette, grouped (mirrors server variableEngine BUILTIN_VARIABLES).
-const VARIABLE_GROUPS: Array<{ title: string; items: Array<{ token: string; label: string }> }> = [
-  { title: 'Fresh · unique each run', items: [
-    { token: '{{unique.email}}', label: 'Fresh email' },
-    { token: '{{unique.username}}', label: 'Fresh username' },
-    { token: '{{unique.id}}', label: 'Fresh id' },
-    { token: '{{uuid}}', label: 'UUID' },
-    { token: '{{timestamp}}', label: 'Timestamp' },
-  ] },
-  { title: 'Realistic · faker', items: [
-    { token: '{{faker.firstName}}', label: 'First name' },
-    { token: '{{faker.lastName}}', label: 'Last name' },
-    { token: '{{faker.fullName}}', label: 'Full name' },
-    { token: '{{faker.email}}', label: 'Realistic email' },
-    { token: '{{faker.company}}', label: 'Company' },
-    { token: '{{faker.phone}}', label: 'Phone' },
-    { token: '{{faker.city}}', label: 'City' },
-    { token: '{{faker.country}}', label: 'Country' },
-    { token: '{{faker.jobTitle}}', label: 'Job title' },
-    { token: '{{faker.int}}', label: 'Number' },
-  ] },
-  { title: 'Other', items: [
-    { token: '{{seq}}', label: 'Batch sequence' },
-    { token: '{{run.id}}', label: 'Run id' },
-    { token: '{{today}}', label: 'Today' },
-    { token: '{{rowNumber}}', label: 'Row number' },
-  ] },
+// Variable palette, grouped (mirrors server variableEngine BUILTIN_VARIABLES). Tokens are bare (no braces).
+const VARIABLE_GROUPS: Array<{ title: string; items: string[] }> = [
+  { title: 'Fresh · unique each run', items: ['unique.email', 'unique.username', 'unique.id', 'uuid', 'timestamp'] },
+  { title: 'Realistic · faker', items: ['faker.firstName', 'faker.lastName', 'faker.fullName', 'faker.email', 'faker.company', 'faker.phone', 'faker.city', 'faker.country', 'faker.jobTitle', 'faker.int'] },
+  { title: 'Other', items: ['seq', 'run.id', 'today', 'rowNumber'] },
 ];
-const TRANSFORM_HINT = '| upper  | lower  | title  | trim  | default(x)  | replace(a,b)  | dateformat(YYYY-MM-DD)';
+const TRANSFORM_HINT = 'upper · lower · title · trim · default(x) · replace(a,b) · dateformat(YYYY-MM-DD)';
 const INTENTS = [{ value: 'fixed', label: 'Fixed' }, { value: 'unique', label: 'Unique' }, { value: 'reference', label: 'Reference' }];
 // Client mirror of the server's unique-generator check (drives the inline "unique needs a generator" warning).
 const isUniqueExpr = (expression: string) => /\{\{\s*(unique(\.|\b)|uuid\b|timestamp\b|faker\.email\b)/i.test(expression || '');
@@ -68,17 +48,58 @@ async function json(url: string, init?: RequestInit) {
 }
 
 type DragPayload = { type: 'column'; columnId: string } | { type: 'variable'; token: string };
+const PAGE = 50;
+
+// Searchable single-select (replaces raw <select> for dataset/profile so it scales to long lists).
+function SearchableSelect({ items, value, onChange, placeholder, ariaLabel, disabled }: {
+  items: Array<{ id: string; label: string; sub?: string }>; value: string; onChange: (id: string) => void;
+  placeholder: string; ariaLabel: string; disabled?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const selected = items.find((item) => item.id === value);
+  const filtered = query ? items.filter((item) => item.label.toLowerCase().includes(query.toLowerCase())) : items;
+  return <div className="relative">
+    <button type="button" disabled={disabled} aria-label={ariaLabel} onClick={() => setOpen((v) => !v)}
+      className="flex w-full items-center justify-between gap-2 rounded-md border border-[var(--border)] bg-[var(--bg-card)] px-2 py-2 text-sm disabled:opacity-40">
+      <span className={`truncate ${selected ? '' : 'text-[var(--text-muted)]'}`}>{selected ? selected.label : placeholder}</span>
+      <ChevronDown className="h-4 w-4 shrink-0 text-[var(--text-muted)]" />
+    </button>
+    {open && <>
+      <div className="fixed inset-0 z-20" onClick={() => { setOpen(false); setQuery(''); }} />
+      <div className="absolute z-30 mt-1 max-h-72 w-full overflow-hidden rounded-md border border-[var(--border)] bg-[var(--bg-card)] shadow-lg">
+        <label className="relative block border-b border-[var(--border)] p-1.5">
+          <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--text-muted)]" />
+          <input autoFocus type="search" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search…" aria-label={`Search ${ariaLabel}`}
+            className="w-full rounded border border-[var(--border)] bg-[var(--bg-secondary)] py-1.5 pl-8 pr-2 text-sm outline-none focus:border-[var(--accent)]" />
+        </label>
+        <div className="max-h-56 overflow-y-auto">
+          {filtered.length === 0 ? <div className="p-3 text-sm text-[var(--text-muted)]">No matches.</div>
+            : filtered.map((item) => <button key={item.id} type="button" onClick={() => { onChange(item.id); setOpen(false); setQuery(''); }}
+              className={`flex w-full flex-col items-start px-3 py-2 text-left text-sm hover:bg-[var(--bg-secondary)] ${item.id === value ? 'text-[var(--accent)]' : ''}`}>
+              <span className="truncate">{item.label}</span>{item.sub && <span className="text-[11px] text-[var(--text-muted)]">{item.sub}</span>}
+            </button>)}
+        </div>
+      </div>
+    </>}
+  </div>;
+}
 
 export default function DataBindings() {
-  const [recordings, setRecordings] = useState<any[]>([]);
   const [datasets, setDatasets] = useState<any[]>([]);
   const [agents, setAgents] = useState<any[]>([]);
+  const [profiles, setProfiles] = useState<any[]>([]);
+  const [runnable, setRunnable] = useState<Runnable | null>(null);
   const [recordingId, setRecordingId] = useState('');
   const [datasetId, setDatasetId] = useState('');
   const [agentId, setAgentId] = useState('');
+  const [profileId, setProfileId] = useState('');
   const [steps, setSteps] = useState<any[]>([]);
   const [mappings, setMappings] = useState<any[]>([]);
+  const [fieldSearch, setFieldSearch] = useState('');
   const [rows, setRows] = useState<any[]>([]);
+  const [total, setTotal] = useState(0);
+  const [offset, setOffset] = useState(0);
   const [selectedRows, setSelectedRows] = useState<number[]>([]);
   const [range, setRange] = useState({ from: 1, to: 10 });
   const [batch, setBatch] = useState<any>(null);
@@ -92,20 +113,22 @@ export default function DataBindings() {
   const [batchJobs, setBatchJobs] = useState<any[]>([]);
   const [batchData, setBatchData] = useState<any[]>([]);
   const [manual, setManual] = useState<{ name: string; columns: string[]; rows: Array<Record<string, string>> } | null>(null);
+  const [saveProfile, setSaveProfile] = useState<{ name: string } | null>(null);
   const [announce, setAnnounce] = useState('');
   const [dragOverStep, setDragOverStep] = useState('');
   const activeStep = useRef('');
   const dataset = datasets.find((item) => item.id === datasetId);
+  const columnNames = useMemo(() => (dataset?.columns || []).map((column: any) => column.name), [dataset]);
 
   const load = async () => {
-    const [recordingBody, datasetBody, agentBody] = await Promise.all([
-      json('/api/automation/recordings'),
+    const [datasetBody, agentBody, profileBody] = await Promise.all([
       json('/api/automation/datasets'),
       json('/api/automation/agents'),
+      json('/api/automation/data-profiles').catch(() => ({ profiles: [] })),
     ]);
-    setRecordings(recordingBody.recordings || []);
     setDatasets(datasetBody.datasets || []);
     setAgents(agentBody.agents || []);
+    setProfiles(profileBody.profiles || []);
   };
   const loadSteps = async () => {
     if (!recordingId) { setSteps([]); setMappings([]); return; }
@@ -117,18 +140,16 @@ export default function DataBindings() {
     setMappings(mappingBody.mappings || []);
   };
   const loadRows = async () => {
-    if (!datasetId) { setRows([]); return; }
-    const body = await json(`/api/automation/datasets/${datasetId}/rows?limit=50`);
+    if (!datasetId) { setRows([]); setTotal(0); return; }
+    const body = await json(`/api/automation/datasets/${datasetId}/rows?offset=${offset}&limit=${PAGE}`);
     setRows(body.rows || []);
-    setRange((current) => ({ from: current.from, to: Math.min(body.total || 1, Math.max(current.to, 1)) }));
+    setTotal(body.total || 0);
   };
 
   useEffect(() => { void load().catch((error) => setMessage(error.message)); }, []);
   useEffect(() => { void loadSteps().catch((error) => setMessage(error.message)); }, [recordingId]);
-  useEffect(() => {
-    setSelectedRows([]);
-    void loadRows().catch((error) => setMessage(error.message));
-  }, [datasetId]);
+  useEffect(() => { setSelectedRows([]); setOffset(0); }, [datasetId]);
+  useEffect(() => { void loadRows().catch((error) => setMessage(error.message)); }, [datasetId, offset]);
   useEffect(() => {
     if (!batch?.id) return;
     const poll = () => void json(`/api/automation/batches/${batch.id}`).then((body) => { setBatch(body.batch); setBatchJobs(body.jobs || []); setBatchData(body.runData || []); }).catch(() => undefined);
@@ -142,6 +163,10 @@ export default function DataBindings() {
     mappings.filter((mapping) => datasetId && mapping.datasetId === datasetId).map((mapping) => [mapping.stepId, mapping]),
   ), [mappings, datasetId]);
   const mappableSteps = useMemo(() => steps.filter((step) => !step.readOnly), [steps]);
+  const visibleSteps = useMemo(() => {
+    const query = fieldSearch.trim().toLowerCase();
+    return query ? steps.filter((step) => String(step.metadata?.label || step.locator || '').toLowerCase().includes(query)) : steps;
+  }, [steps, fieldSearch]);
 
   // Ask the server to resolve every bound field for the first selected (or first) row.
   const refreshResolved = async () => {
@@ -158,6 +183,20 @@ export default function DataBindings() {
     } catch { setResolved({}); }
   };
   useEffect(() => { void refreshResolved(); }, [recordingId, datasetId, mappings, selectedRows]);
+
+  // Selecting a runnable prepares its data-drivable recording (a case's script becomes bindable).
+  const pickRunnable = async (item: Runnable) => {
+    setBusy(true);
+    try {
+      const payload = item.kind === 'recording' ? { recordingId: item.recordingId } : { scriptId: item.scriptId };
+      const body = await json('/api/automation/runnables/prepare', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+      });
+      setRunnable(item);
+      setRecordingId(body.recordingId);
+      setMessage(`Ready to bind “${item.name}”.`);
+    } catch (error: any) { setMessage(error.message); } finally { setBusy(false); }
+  };
 
   const currentIntent = (stepId: string) => byStep.get(stepId)?.intent || 'fixed';
   const putMapping = async (stepId: string, body: Record<string, unknown>) => {
@@ -180,9 +219,15 @@ export default function DataBindings() {
   const setIntent = async (stepId: string, intent: string) => {
     await putMapping(stepId, { expression: byStep.get(stepId)?.expression || '', intent });
   };
+  // Append a bare token as a chip (clean single-column bind when empty, otherwise concatenate).
   const appendToken = async (stepId: string, token: string) => {
     const current = byStep.get(stepId)?.expression || '';
-    await saveExpression(stepId, `${current}${token}`);
+    await saveExpression(stepId, `${current}{{${token}}}`, isUniqueExpr(`{{${token}}}`) ? 'unique' : currentIntent(stepId));
+  };
+  const appendColumn = async (stepId: string, column: any) => {
+    const current = byStep.get(stepId)?.expression || '';
+    if (!current) await mapColumn(stepId, column.id);
+    else await saveExpression(stepId, `${current}{{${column.name}}}`);
   };
   const removeMapping = async (stepId: string) => {
     await json(`/api/automation/recordings/${recordingId}/mappings/${stepId}`, { method: 'DELETE' });
@@ -197,7 +242,7 @@ export default function DataBindings() {
       await loadSteps();
     } catch (error: any) { setMessage(error.message); }
   };
-  const history = async (stepId: string, redo = false) => {
+  const historyStep = async (stepId: string, redo = false) => {
     try {
       await json(`/api/automation/recordings/${recordingId}/steps/${stepId}/${redo ? 'redo' : 'undo'}`, { method: 'POST' });
       await loadSteps();
@@ -210,7 +255,7 @@ export default function DataBindings() {
     if (!raw) return;
     try {
       const payload: DragPayload = JSON.parse(raw);
-      if (payload.type === 'column') void mapColumn(step.id, payload.columnId);
+      if (payload.type === 'column') { const column = (dataset?.columns || []).find((c: any) => c.id === payload.columnId); if (column) void appendColumn(step.id, column); }
       else void appendToken(step.id, payload.token);
     } catch { /* ignore malformed drag */ }
   };
@@ -229,11 +274,7 @@ export default function DataBindings() {
       await load();
       setDatasetId(body.dataset.id);
       setMessage(`${body.dataset.name} imported · ${body.dataset.rowCount} rows.`);
-    } catch (error: any) {
-      setMessage(error.message);
-    } finally {
-      setBusy(false);
-    }
+    } catch (error: any) { setMessage(error.message); } finally { setBusy(false); }
   };
   const dropFile = (event: DragEvent) => {
     event.preventDefault();
@@ -242,11 +283,13 @@ export default function DataBindings() {
   };
 
   const run = async (mode: 'all' | 'selected' | 'range') => {
-    if (!recordingId || !datasetId || !agentId) return setMessage('Select a recorded script, dataset, and agent.');
+    if (!recordingId || !datasetId) return setMessage('Select a runnable and a dataset.');
     if (!byStep.size) return setMessage('Bind at least one field before running.');
     if (mode === 'selected' && !selectedRows.length) return setMessage('Select at least one preview row.');
     setBusy(true);
     try {
+      // agentId is optional — batches run headless on the server. A chosen agent is still sent (for a
+      // future headed/local option) but isn't required.
       const body: any = { datasetId, agentId, stopOnFailure, dataPolicy };
       if (mode === 'selected') body.rowNumbers = selectedRows;
       if (mode === 'range') Object.assign(body, range);
@@ -255,36 +298,33 @@ export default function DataBindings() {
       });
       setBatch(result.batch);
       setMessage(`Batch queued · ${result.batch.summary?.total || 0} rows.`);
-    } catch (error: any) {
-      setMessage(error.message);
-    } finally {
-      setBusy(false);
-    }
+    } catch (error: any) { setMessage(error.message); } finally { setBusy(false); }
   };
 
   const downloadTemplate = async () => {
-    if (!recordingId) return setMessage('Select a recorded script first.');
+    if (!recordingId) return setMessage('Select a runnable first.');
     try {
       const res = await fetch(`/api/automation/recordings/${recordingId}/template`);
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Template download failed.');
       const url = URL.createObjectURL(await res.blob());
       const anchor = document.createElement('a');
       anchor.href = url;
-      anchor.download = `${recordings.find((item) => item.id === recordingId)?.name || 'recording'}__template.xlsx`;
+      anchor.download = `${runnable?.name || 'runnable'}__template.xlsx`;
       document.body.appendChild(anchor); anchor.click(); anchor.remove(); URL.revokeObjectURL(url);
       setMessage('Template downloaded · fill the “Data” sheet, then re-upload here.');
     } catch (error: any) { setMessage(error.message); }
   };
+
   const openAutoMap = () => {
     if (!dataset) return setMessage('Import a dataset first.');
-    const rows: AutoRow[] = mappableSteps.map((step) => {
+    const autoRows: AutoRow[] = mappableSteps.map((step) => {
       const label = step.metadata?.label || step.locator;
       const normalized = normName(label);
       const options: AutoOption[] = [{ label: 'Skip', kind: 'skip' }];
       const emailish = /mail/.test(normalized);
       const userish = /user|login/.test(normalized);
-      if (emailish) options.push({ label: 'Generate · {{unique.email}}', kind: 'gen', expression: '{{unique.email}}', intent: 'unique' });
-      if (userish) options.push({ label: 'Generate · {{unique.username}}', kind: 'gen', expression: '{{unique.username}}', intent: 'unique' });
+      if (emailish) options.push({ label: 'Generate · fresh email', kind: 'gen', expression: '{{unique.email}}', intent: 'unique' });
+      if (userish) options.push({ label: 'Generate · fresh username', kind: 'gen', expression: '{{unique.username}}', intent: 'unique' });
       const best = bestColumn(label, dataset.columns);
       for (const column of dataset.columns) options.push({ label: `Column · ${column.name}`, kind: 'col', expression: `{{${column.name}}}`, intent: 'fixed', columnId: column.id });
       let choice = 0;
@@ -292,20 +332,18 @@ export default function DataBindings() {
       else if (best) choice = options.findIndex((option) => option.columnId === best.id);
       return { stepId: step.id, label, options, choice: choice < 0 ? 0 : choice };
     });
-    setAutoMap({ rows });
+    setAutoMap({ rows: autoRows });
   };
+  // P3 fix: apply the whole auto-map in ONE atomic bulk request (no partial binds).
   const applyAutoMap = async () => {
     if (!autoMap) return;
-    const picks = autoMap.rows.filter((row) => row.options[row.choice]?.kind !== 'skip');
+    const picks = autoMap.rows.map((row) => ({ row, option: row.options[row.choice] })).filter((pick) => pick.option?.kind !== 'skip');
     setBusy(true);
     try {
-      for (const pick of picks) {
-        const option = pick.options[pick.choice];
-        await json(`/api/automation/recordings/${recordingId}/mappings/${pick.stepId}`, {
-          method: 'PUT', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ datasetId, expression: option.expression, intent: option.intent }),
-        });
-      }
+      await json(`/api/automation/recordings/${recordingId}/mappings`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ datasetId, mappings: picks.map(({ row, option }) => ({ stepId: row.stepId, columnId: option.columnId, expression: option.columnId ? undefined : option.expression, intent: option.intent })) }),
+      });
       setAutoMap(null);
       await loadSteps();
       setMessage(`Auto-mapped ${picks.length} field${picks.length === 1 ? '' : 's'}.`);
@@ -315,14 +353,14 @@ export default function DataBindings() {
   const labelOfStep = (stepId: string) => { const step = steps.find((item) => item.id === stepId); return step?.metadata?.label || step?.locator || 'field'; };
   // UI-4: keyboard/no-drag binding — pick a column or variable from a menu instead of dragging.
   const bindFromMenu = async (stepId: string, value: string) => {
-    if (value.startsWith('col:')) { await mapColumn(stepId, value.slice(4)); setAnnounce(`${labelOfStep(stepId)} bound to a column.`); }
-    else if (value.startsWith('var:')) { const token = value.slice(4); await saveExpression(stepId, token, isUniqueExpr(token) ? 'unique' : 'fixed'); setAnnounce(`${labelOfStep(stepId)} bound to ${token}.`); }
+    if (value.startsWith('col:')) { const column = (dataset?.columns || []).find((c: any) => c.id === value.slice(4)); if (column) { await appendColumn(stepId, column); setAnnounce(`${labelOfStep(stepId)} bound to ${column.name}.`); } }
+    else if (value.startsWith('var:')) { const token = value.slice(4); await appendToken(stepId, token); setAnnounce(`${labelOfStep(stepId)} bound to ${tokenLabel(token)}.`); }
   };
 
-  // UI-3: hand-entered dataset. Columns mirror the recording's field labels; unsaved until Save.
+  // UI-3: hand-entered dataset (secondary bulk option). Columns mirror the recording's field labels.
   const openManual = () => {
     const columns = [...new Set(mappableSteps.map((step) => step.metadata?.label || step.locator))];
-    if (!columns.length) return setMessage('Select a recorded script with editable fields first.');
+    if (!columns.length) return setMessage('Select a runnable with editable fields first.');
     setManual({ name: '', columns, rows: [Object.fromEntries(columns.map((c) => [c, '']))] });
   };
   const saveManual = async () => {
@@ -340,16 +378,56 @@ export default function DataBindings() {
     } catch (error: any) { setMessage(error.message); } finally { setBusy(false); }
   };
 
+  // Data Profiles — configure bindings once, reuse across many scripts.
+  const applyProfile = async () => {
+    if (!recordingId || !profileId) return setMessage('Pick a saved profile first.');
+    setBusy(true);
+    try {
+      const body = await json(`/api/automation/recordings/${recordingId}/apply-profile`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ profileId, datasetId: datasetId || undefined }),
+      });
+      await loadSteps();
+      const unmatched = (body.unmatched || []).length;
+      setMessage(`Applied profile · ${(body.mappings || []).length} field${(body.mappings || []).length === 1 ? '' : 's'}${unmatched ? ` · ${unmatched} unmatched` : ''}.`);
+    } catch (error: any) { setMessage(error.message); } finally { setBusy(false); }
+  };
+  const saveCurrentProfile = async () => {
+    if (!saveProfile) return;
+    setBusy(true);
+    try {
+      const body = await json('/api/automation/data-profiles/from-recording', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ recordingId, name: saveProfile.name || 'Data profile' }),
+      });
+      setSaveProfile(null);
+      await load();
+      if (body.profile?.id) setProfileId(body.profile.id);
+      setMessage(`Saved profile “${body.profile?.name || 'Data profile'}”.`);
+    } catch (error: any) { setMessage(error.message); } finally { setBusy(false); }
+  };
+
+  const resetPool = async () => {
+    if (!datasetId) return;
+    try { await json(`/api/automation/datasets/${datasetId}/pool/reset`, { method: 'POST' }); await loadRows(); setMessage('Pool reset · all rows available again.'); }
+    catch (error: any) { setMessage(error.message); }
+  };
+  const reapOrphans = async () => {
+    if (!batch?.id) return;
+    try { const body = await json(`/api/automation/batches/${batch.id}/reap`, { method: 'POST' }); setMessage(`Reaped ${body.reaped ?? 0} orphaned record${body.reaped === 1 ? '' : 's'}.`); }
+    catch (error: any) { setMessage(error.message); }
+  };
+
   const dragColumn = (event: DragEvent, columnId: string) =>
     event.dataTransfer.setData('application/x-binding', JSON.stringify({ type: 'column', columnId }));
   const dragVariable = (event: DragEvent, token: string) =>
     event.dataTransfer.setData('application/x-binding', JSON.stringify({ type: 'variable', token }));
 
+  const shownTo = Math.min(offset + rows.length, total);
+
   return <div className="flex flex-1 flex-col gap-4">
     <div className="flex flex-wrap items-start justify-between gap-3">
       <div>
         <h1 className="text-xl font-semibold text-[var(--text-primary)]">Automation Data</h1>
-        <p className="mt-1 text-sm text-[var(--text-muted)]">Upload a spreadsheet, drag its columns onto recorded fields, then run one row or thousands.</p>
+        <p className="mt-1 text-sm text-[var(--text-muted)]">Pick a test case, script, or recording; bind its fields to data columns or generators, then run one row or thousands.</p>
       </div>
       <label className="inline-flex cursor-pointer items-center gap-2 rounded-md border border-[var(--border)] px-3 py-2 text-sm hover:border-[var(--accent)]">
         <Upload className="h-4 w-4" />{busy ? 'Working…' : 'Import CSV/XLSX'}
@@ -357,122 +435,149 @@ export default function DataBindings() {
       </label>
     </div>
 
-    <div className="grid gap-3 md:grid-cols-3">
-      <select aria-label="Recorded script" value={recordingId} onChange={(event) => setRecordingId(event.target.value)} className="rounded-md border border-[var(--border)] bg-[var(--bg-card)] p-2 text-sm"><option value="">Select recorded script</option>{recordings.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select>
-      <select aria-label="Dataset" value={datasetId} onChange={(event) => setDatasetId(event.target.value)} className="rounded-md border border-[var(--border)] bg-[var(--bg-card)] p-2 text-sm"><option value="">Select dataset</option>{datasets.map((item) => <option key={item.id} value={item.id}>{item.name} ({item.rowCount})</option>)}</select>
-      <select aria-label="Desktop agent" value={agentId} onChange={(event) => setAgentId(event.target.value)} className="rounded-md border border-[var(--border)] bg-[var(--bg-card)] p-2 text-sm"><option value="">Select desktop agent</option>{agents.map((item) => <option key={item.id} value={item.id}>{item.name} · {item.status}</option>)}</select>
+    <div className="grid gap-3 sm:grid-cols-2">
+      <SearchableSelect ariaLabel="Dataset" placeholder="Select dataset" value={datasetId} onChange={setDatasetId}
+        items={datasets.map((item) => ({ id: item.id, label: item.name, sub: `${item.rowCount} rows` }))} />
+      <SearchableSelect ariaLabel="Runner" placeholder="Server (headless) — default" value={agentId} onChange={setAgentId}
+        items={agents.map((item) => ({ id: item.id, label: item.name, sub: item.status }))} />
     </div>
-    {recordingId && <div className="flex flex-wrap items-center gap-2 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm">
-      <button onClick={() => void downloadTemplate()} className="inline-flex items-center gap-1.5 rounded border border-[var(--border)] bg-[var(--bg-card)] px-2.5 py-1.5 hover:border-[var(--accent)]"><Download className="h-4 w-4" />Download Excel template</button>
-      <button disabled={!dataset} onClick={openAutoMap} title={dataset ? 'Suggest field↔column bindings by name' : 'Import a dataset first'} className="inline-flex items-center gap-1.5 rounded border border-[var(--border)] bg-[var(--bg-card)] px-2.5 py-1.5 hover:border-[var(--accent)] disabled:opacity-40"><Wand2 className="h-4 w-4" />Auto-map columns → fields</button>
-      <button onClick={openManual} title="Type rows by hand instead of uploading" className="inline-flex items-center gap-1.5 rounded border border-[var(--border)] bg-[var(--bg-card)] px-2.5 py-1.5 hover:border-[var(--accent)]"><Table className="h-4 w-4" />Enter data manually</button>
-      <span className="text-[11px] text-[var(--text-muted)]">Fill the template’s “Data” sheet, re-upload, then Auto-map.</span>
-    </div>}
+
     <div aria-live="polite" className="sr-only">{announce}</div>
     {message && <div role="status" className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-secondary)]">{message}</div>}
 
-    {!recordingId ? <div className="rounded-lg border border-dashed border-[var(--border)] p-10 text-center text-sm text-[var(--text-muted)]"><Database className="mx-auto mb-2 h-6 w-6" />Select a recorded script to bind its captured input values.</div> :
-      <div className="flex flex-col gap-3">
-      <div className="flex items-start gap-2 rounded-md border border-[var(--accent)]/30 bg-[var(--accent)]/5 px-3 py-2 text-xs text-[var(--text-secondary)]">
-        <Braces className="mt-0.5 h-4 w-4 shrink-0 text-[var(--accent)]" />
-        <span><b>How to bind:</b> drag an Excel <b>column header</b> (from the data table below) or a <b>Variable</b> (right panel) onto a recorded field — or use the field's <b>Bind ▾</b> menu, or type a fixed value. Then set each field's <b>intent</b> (Fixed · Unique · Reference) and Run.</span>
-      </div>
-      <div className="grid gap-4 lg:h-[clamp(22rem,58vh,42rem)] lg:grid-cols-[minmax(0,1fr)_22rem]">
+    <div className="grid gap-4 lg:h-[clamp(24rem,60vh,44rem)] lg:grid-cols-[18rem_minmax(0,1fr)_20rem]">
 
-        {/* Left — recorded fields: compact, scrollable list that scales to any field count */}
-        <div className="flex min-h-0 flex-col overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--bg-card)]">
-          <div className="flex shrink-0 items-center justify-between border-b border-[var(--border)] p-3 text-sm font-semibold">Recorded fields<span className="text-xs font-normal text-[var(--text-muted)]">{byStep.size}/{mappableSteps.length} bound</span></div>
+      {/* Left — RUN WHAT: searchable, folder-grouped runnables (cases/scripts/recordings) */}
+      <RunnablePicker selectedKey={runnable ? runnableKey(runnable) : ''} onSelect={pickRunnable} />
+
+      {/* Middle — fields of the selected runnable */}
+      <div className="flex min-h-0 flex-col overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--bg-card)]">
+        {!recordingId ? <div className="flex flex-1 flex-col items-center justify-center p-10 text-center text-sm text-[var(--text-muted)]"><Database className="mb-2 h-6 w-6" />Pick a runnable on the left to bind its captured fields.</div> : <>
+          <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-[var(--border)] p-2">
+            <div className="mr-auto min-w-0 truncate px-1 text-sm font-semibold" title={runnable?.name}>Fields · {runnable?.name}</div>
+            <span className="text-xs text-[var(--text-muted)]">{byStep.size}/{mappableSteps.length} bound</span>
+          </div>
+          <div className="flex shrink-0 flex-wrap items-center gap-1.5 border-b border-[var(--border)] p-2">
+            <button onClick={() => void downloadTemplate()} className="inline-flex items-center gap-1.5 rounded border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-xs hover:border-[var(--accent)]"><Download className="h-3.5 w-3.5" />Template</button>
+            <button disabled={!dataset} onClick={openAutoMap} title={dataset ? 'Suggest field↔column bindings by name' : 'Import a dataset first'} className="inline-flex items-center gap-1.5 rounded border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-xs hover:border-[var(--accent)] disabled:opacity-40"><Wand2 className="h-3.5 w-3.5" />Auto-map</button>
+            <button onClick={openManual} title="Type rows by hand instead of uploading" className="inline-flex items-center gap-1.5 rounded border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-xs hover:border-[var(--accent)]"><Table className="h-3.5 w-3.5" />Manual grid</button>
+            <label className="relative ml-auto block w-40">
+              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--text-muted)]" />
+              <input type="search" value={fieldSearch} onChange={(e) => setFieldSearch(e.target.value)} placeholder="Filter fields" aria-label="Filter fields"
+                className="w-full rounded border border-[var(--border)] bg-[var(--bg-secondary)] py-1 pl-8 pr-2 text-xs outline-none focus:border-[var(--accent)]" />
+            </label>
+          </div>
           <div className="min-h-0 flex-1 overflow-y-auto">
-            {!steps.length && <div className="p-8 text-center text-sm text-[var(--text-muted)]">This script has no editable input actions.</div>}
-            {steps.map((step) => {
+            {!steps.length && <div className="p-8 text-center text-sm text-[var(--text-muted)]">This runnable has no editable input actions.</div>}
+            {steps.length > 0 && !visibleSteps.length && <div className="p-8 text-center text-sm text-[var(--text-muted)]">No fields match your filter.</div>}
+            {visibleSteps.map((step) => {
               const mapping = byStep.get(step.id);
               const modified = step.currentOverride !== null && step.currentOverride !== undefined;
               const preview = resolved[step.id];
               const over = dragOverStep === step.id;
               const label = step.metadata?.label || step.locator;
               return <div key={step.id}
-                onDragOver={(event) => { if (!mapping && !step.readOnly) { event.preventDefault(); setDragOverStep(step.id); } }}
+                onDragOver={(event) => { if (!step.readOnly) { event.preventDefault(); setDragOverStep(step.id); } }}
                 onDragLeave={() => setDragOverStep((current) => (current === step.id ? '' : current))}
                 onDrop={(event) => { setDragOverStep(''); dropOnField(event, step); }}
                 className={`border-b border-[var(--border)] px-3 py-2.5 last:border-0 ${over ? 'bg-[var(--accent)]/10 ring-1 ring-inset ring-[var(--accent)]' : mapping ? 'bg-[var(--accent)]/5' : ''}`}>
                 <div className="flex items-center gap-2">
-                  <Link2 className={`h-4 w-4 shrink-0 ${mapping ? 'text-[var(--accent)]' : 'text-[var(--text-muted)]'}`} />
-                  <div className="w-36 shrink-0">
+                  <div className="w-32 shrink-0">
                     <div className="truncate text-sm font-medium text-[var(--text-primary)]" title={label}>{label}</div>
                     <div className="text-[10px] uppercase tracking-wide text-[var(--text-muted)]">{step.fieldKind}{step.readOnly ? ' · read-only' : ''}</div>
                   </div>
-                  <div className="min-w-0 flex-1">
-                    {mapping ? <div className="flex items-center gap-1.5 rounded border border-[var(--accent)]/40 bg-[var(--bg-secondary)] px-2">
-                        <Braces className="h-3.5 w-3.5 shrink-0 text-[var(--accent)]" />
-                        <input key={`${step.id}:${mapping.expression}`} aria-label={`Expression for ${label}`} defaultValue={mapping.expression}
-                          onFocus={() => { activeStep.current = step.id; }} onBlur={(event) => void saveExpression(step.id, event.target.value)}
-                          className="min-w-0 flex-1 bg-transparent py-1.5 font-mono text-xs text-[var(--text-primary)] outline-none" />
-                      </div>
-                    : step.readOnly ? <span className="text-xs text-[var(--text-muted)]">Recorded action — not editable</span>
-                    : <div className={`flex items-center gap-2 rounded border border-dashed px-2 py-1 ${over ? 'border-[var(--accent)]' : 'border-[var(--border)]'}`}>
-                        <span className="min-w-0 flex-1 truncate text-[11px] text-[var(--text-muted)]">{over ? 'Release to bind' : dataset ? 'Drop a column / variable, or' : 'Import data, or type →'}</span>
-                        {dataset && <select aria-label={`Bind ${label}`} value="" onChange={(event) => { if (event.target.value) void bindFromMenu(step.id, event.target.value); }} className="shrink-0 rounded border border-[var(--border)] bg-[var(--bg-secondary)] px-1.5 py-1 text-[11px]">
+                  <div className="flex min-w-0 flex-1 items-center gap-1.5">
+                    {step.readOnly ? <span className="text-xs text-[var(--text-muted)]">Recorded action — not editable</span>
+                      : dataset ? <>
+                        <FieldChipEditor expression={mapping?.expression || ''} columnNames={columnNames}
+                          ariaLabel={`Binding for ${label}`} placeholder={over ? 'Release to bind' : 'type, or drop a column/variable'}
+                          onFocusField={() => { activeStep.current = step.id; }} onSave={(expression) => void saveExpression(step.id, expression)} />
+                        <select aria-label={`Bind ${label}`} value="" onChange={(event) => { if (event.target.value) void bindFromMenu(step.id, event.target.value); }} className="shrink-0 rounded border border-[var(--border)] bg-[var(--bg-secondary)] px-1.5 py-1 text-[11px]">
                           <option value="">Bind ▾</option>
                           <optgroup label="Columns">{(dataset.columns || []).map((column: any) => <option key={column.id} value={`col:${column.id}`}>{column.name}</option>)}</optgroup>
-                          <optgroup label="Variables">{VARIABLE_GROUPS.flatMap((group) => group.items).map((variable) => <option key={variable.token} value={`var:${variable.token}`}>{variable.token}</option>)}</optgroup>
-                        </select>}
-                      </div>}
+                          <optgroup label="Variables">{VARIABLE_GROUPS.flatMap((group) => group.items).map((token) => <option key={token} value={`var:${token}`}>{tokenLabel(token)}</option>)}</optgroup>
+                        </select>
+                      </> : <>
+                        <input key={`${step.id}-${step.currentOverride}`} aria-label={`Value for ${label}`} placeholder="fixed value" defaultValue={step.currentOverride ?? step.originalValue ?? ''}
+                          onFocus={() => { activeStep.current = step.id; }} onBlur={(event) => void saveOverride(step, event.target.value)}
+                          className={`min-w-0 flex-1 rounded border px-2 py-1 text-xs ${modified ? 'border-amber-500 bg-amber-500/10' : 'border-[var(--border)] bg-[var(--bg-secondary)]'}`} />
+                        <button type="button" disabled={!step.canUndo} title="Undo" onClick={() => void historyStep(step.id)} className="inline-flex shrink-0 items-center rounded border border-[var(--border)] p-1 text-xs disabled:opacity-40"><Undo2 className="h-3.5 w-3.5" /></button>
+                        <button type="button" disabled={!step.canRedo} title="Redo" onClick={() => void historyStep(step.id, true)} className="inline-flex shrink-0 items-center rounded border border-[var(--border)] p-1 text-xs disabled:opacity-40"><Redo2 className="h-3.5 w-3.5" /></button>
+                      </>}
                   </div>
-                  {mapping ? <>
+                  {mapping && <>
                     <select aria-label={`Intent for ${label}`} value={mapping.intent || 'fixed'} onChange={(event) => void setIntent(step.id, event.target.value)} title="Fixed = same each run · Unique = fresh each run · Reference = must already exist"
                       className={`shrink-0 rounded border bg-[var(--bg-secondary)] px-1 py-1 text-[11px] ${mapping.intent === 'unique' ? 'border-emerald-500 text-emerald-500' : mapping.intent === 'reference' ? 'border-sky-500 text-sky-500' : 'border-[var(--border)] text-[var(--text-muted)]'}`}>
                       {INTENTS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
                     </select>
                     <button aria-label="Remove binding" title="Remove binding" onClick={() => void removeMapping(step.id)} className="shrink-0 text-[var(--text-muted)] hover:text-red-500"><Trash2 className="h-4 w-4" /></button>
-                  </> : !step.readOnly && <>
-                    <input key={`${step.id}-${step.currentOverride}`} aria-label={`Value for ${label}`} placeholder="fixed value" defaultValue={step.currentOverride ?? step.originalValue ?? ''}
-                      onFocus={() => { activeStep.current = step.id; }} onBlur={(event) => void saveOverride(step, event.target.value)}
-                      className={`w-24 shrink-0 rounded border px-2 py-1 text-xs ${modified ? 'border-amber-500 bg-amber-500/10' : 'border-[var(--border)] bg-[var(--bg-secondary)]'}`} />
-                    <button type="button" disabled={!step.canUndo} title="Undo" onClick={() => void history(step.id)} className="inline-flex shrink-0 items-center rounded border border-[var(--border)] p-1 text-xs disabled:opacity-40"><Undo2 className="h-3.5 w-3.5" /></button>
-                    <button type="button" disabled={!step.canRedo} title="Redo" onClick={() => void history(step.id, true)} className="inline-flex shrink-0 items-center rounded border border-[var(--border)] p-1 text-xs disabled:opacity-40"><Redo2 className="h-3.5 w-3.5" /></button>
                   </>}
                 </div>
-                {mapping && (preview || (mapping.intent === 'unique' && !isUniqueExpr(mapping.expression))) && <div className="mt-1 pl-[10.5rem]">
+                {mapping && (preview || (mapping.intent === 'unique' && !isUniqueExpr(mapping.expression))) && <div className="mt-1 pl-[8.5rem]">
                   {preview && <div className={`truncate text-[10px] ${preview.error ? 'text-red-500' : 'text-[var(--text-muted)]'}`}>→ {preview.error || (preview.value === '' ? '(empty)' : preview.value)}{!preview.error && isUniqueExpr(mapping.expression) ? ' · fresh each run' : ''}</div>}
-                  {mapping.intent === 'unique' && !isUniqueExpr(mapping.expression) && <div className="text-[10px] text-red-500">⚠ Unique needs a generator, e.g. {'{{unique.email}}'}.</div>}
+                  {mapping.intent === 'unique' && !isUniqueExpr(mapping.expression) && <div className="text-[10px] text-red-500">⚠ Unique needs a generator — add a fresh chip.</div>}
                 </div>}
               </div>;
             })}
           </div>
-        </div>
-
-        {/* Right — Variables (generated data). Excel columns are dragged from the preview table below. */}
-        <aside onDragOver={(event) => { if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); setFileOver(true); } }} onDragLeave={() => setFileOver(false)} onDrop={dropFile}
-          className={`flex min-h-0 flex-col overflow-hidden rounded-lg border ${fileOver ? 'border-[var(--accent)] bg-[var(--accent)]/5' : 'border-[var(--border)] bg-[var(--bg-card)]'}`}>
-          <div className="flex shrink-0 items-center gap-2 border-b border-[var(--border)] p-3 text-sm font-semibold">Variables<span className="text-[11px] font-normal text-[var(--text-muted)]">generated — not from your sheet</span></div>
-          <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3">
-            <div className="rounded-md border border-dashed border-[var(--border)] p-2 text-center text-[11px] text-[var(--text-muted)]">
-              <FileSpreadsheet className="mx-auto mb-1 h-4 w-4" />{dataset ? 'Excel columns live in the preview table below — drag a header onto a field.' : 'Import a spreadsheet (top) to run with real rows. Variables below work without one.'}
-            </div>
-            {VARIABLE_GROUPS.map((group) => <div key={group.title}>
-              <div className="mb-1 text-[10px] uppercase tracking-wide text-[var(--text-muted)]">{group.title}</div>
-              <div className="flex flex-wrap gap-1.5">
-                {group.items.map((variable) => <button key={variable.token} draggable onDragStart={(event) => dragVariable(event, variable.token)}
-                  onClick={() => { if (activeStep.current) void appendToken(activeStep.current, variable.token); else setMessage('Click a field first, then a variable to insert it.'); }}
-                  title={`${variable.label} — drag onto a field, or click to insert into the focused field`}
-                  className="cursor-grab rounded border border-[var(--border)] px-2 py-1 font-mono text-[11px] hover:border-[var(--accent)]">{variable.token}</button>)}
-              </div>
-            </div>)}
-            <p className="text-[10px] leading-4 text-[var(--text-muted)]">Pipe transforms: <span className="font-mono">{TRANSFORM_HINT}</span></p>
-          </div>
-        </aside>
+        </>}
       </div>
-      </div>}
+
+      {/* Right — DATA: profile bar + draggable column & variable pills */}
+      <aside onDragOver={(event) => { if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); setFileOver(true); } }} onDragLeave={() => setFileOver(false)} onDrop={dropFile}
+        className={`flex min-h-0 flex-col overflow-hidden rounded-lg border ${fileOver ? 'border-[var(--accent)] bg-[var(--accent)]/5' : 'border-[var(--border)] bg-[var(--bg-card)]'}`}>
+        <div className="shrink-0 border-b border-[var(--border)] p-2">
+          <div className="mb-1.5 px-1 text-sm font-semibold">Data profile<span className="ml-1 text-[11px] font-normal text-[var(--text-muted)]">reuse across scripts</span></div>
+          <SearchableSelect ariaLabel="Data profile" placeholder="Select a saved profile" value={profileId} onChange={setProfileId}
+            items={profiles.map((item) => ({ id: item.id, label: item.name, sub: item.description }))} />
+          <div className="mt-1.5 flex gap-1.5">
+            <button disabled={!recordingId || !profileId || busy} onClick={() => void applyProfile()} className="flex-1 rounded border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-xs hover:border-[var(--accent)] disabled:opacity-40">Apply</button>
+            <button disabled={!recordingId || !byStep.size || busy} onClick={() => setSaveProfile({ name: '' })} title="Save current field bindings as a reusable profile" className="flex-1 rounded border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-xs hover:border-[var(--accent)] disabled:opacity-40">Save current…</button>
+          </div>
+        </div>
+        <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3">
+          {dataset ? <div>
+            <div className="mb-1 text-[10px] uppercase tracking-wide text-[var(--text-muted)]">Columns · from your sheet</div>
+            <div className="flex flex-wrap gap-1.5">
+              {(dataset.columns || []).map((column: any) => <PalettePill key={column.id} label={column.name} variant="column" draggable
+                onDragStart={(event) => dragColumn(event, column.id)}
+                onClick={() => { if (activeStep.current) void appendColumn(activeStep.current, column); else setMessage('Focus a field first, then click a column to insert it.'); }}
+                title={`${column.name} — drag onto a field, or click to insert into the focused field`} />)}
+            </div>
+          </div> : <div className="rounded-md border border-dashed border-[var(--border)] p-2 text-center text-[11px] text-[var(--text-muted)]">
+            <FileSpreadsheet className="mx-auto mb-1 h-4 w-4" />Import a spreadsheet (top-right) to bind real columns. Variables below work without one.
+          </div>}
+          {VARIABLE_GROUPS.map((group) => <div key={group.title}>
+            <div className="mb-1 text-[10px] uppercase tracking-wide text-[var(--text-muted)]">{group.title}</div>
+            <div className="flex flex-wrap gap-1.5">
+              {group.items.map((token) => <PalettePill key={token} label={tokenLabel(token)} variant="generator" draggable
+                onDragStart={(event) => dragVariable(event, token)}
+                onClick={() => { if (activeStep.current) void appendToken(activeStep.current, token); else setMessage('Focus a field first, then click a variable to insert it.'); }}
+                title={`${tokenLabel(token)} — drag onto a field, or click to insert into the focused field`} />)}
+            </div>
+          </div>)}
+          <p className="text-[10px] leading-4 text-[var(--text-muted)]">Pipe transforms: {TRANSFORM_HINT}</p>
+        </div>
+      </aside>
+    </div>
 
     {dataset && <section aria-label="Dataset preview" className="min-h-0 overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--bg-card)]">
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--border)] p-3">
-        <div><div className="text-sm font-semibold">Data preview · your Excel rows</div><div className="text-[11px] text-[var(--text-muted)]">Drag a column header ↑ onto a field to bind it · one run per row</div></div>
+        <div>
+          <div className="text-sm font-semibold">Data preview · {dataset.name}</div>
+          <div className="flex items-center gap-2 text-[11px] text-[var(--text-muted)]">
+            <span>Rows {total ? offset + 1 : 0}–{shownTo} of {total}</span>
+            <button disabled={offset === 0} onClick={() => setOffset((value) => Math.max(0, value - PAGE))} className="rounded border border-[var(--border)] px-1.5 py-0.5 disabled:opacity-30">◀ Prev</button>
+            <button disabled={shownTo >= total} onClick={() => setOffset((value) => value + PAGE)} className="rounded border border-[var(--border)] px-1.5 py-0.5 disabled:opacity-30">Next ▶</button>
+          </div>
+        </div>
         <div className="flex flex-wrap items-center gap-2 text-xs">
           <select aria-label="Data policy" value={dataPolicy} onChange={(event) => setDataPolicy(event.target.value)} title="fresh = generate new data · ephemeral = also delete after · pooled = consume rows once" className="rounded border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-2">
             <option value="fresh">Fresh data</option>
             <option value="ephemeral">Ephemeral (clean up after)</option>
             <option value="pooled">Pooled (consume rows)</option>
           </select>
+          {dataPolicy === 'pooled' && <button onClick={() => void resetPool()} title="Mark every pooled row available again" className="rounded border border-[var(--border)] px-2 py-2 hover:border-[var(--accent)]">Reset pool</button>}
           <label className="inline-flex items-center gap-1 rounded border border-[var(--border)] px-2 py-2"><input type="checkbox" checked={stopOnFailure} onChange={(event) => setStopOnFailure(event.target.checked)} />Stop on first failure</label>
           <button disabled={busy} onClick={() => void run('all')} className="rounded bg-[var(--accent)] px-3 py-2 text-white"><Play className="mr-1 inline h-3 w-3" />Run all</button>
           <button disabled={busy} onClick={() => void run('selected')} className="rounded border border-[var(--border)] px-3 py-2">Run selected ({selectedRows.length})</button>
@@ -482,13 +587,16 @@ export default function DataBindings() {
           <button disabled={busy} onClick={() => void run('range')} className="rounded border border-[var(--border)] px-3 py-2">Run range</button>
         </div>
       </div>
-      {batch && <div className="flex items-center gap-3 border-b border-[var(--border)] px-3 py-2 text-xs text-[var(--text-secondary)]">
+      {batch && <div className="flex flex-wrap items-center gap-3 border-b border-[var(--border)] px-3 py-2 text-xs text-[var(--text-secondary)]">
         <span className="font-medium capitalize">{batch.status}</span>
         <span className="text-emerald-500">{batch.summary?.passed || 0} passed</span>
         <span className="text-red-500">{batch.summary?.failed || 0} failed</span>
         <span>{batch.summary?.running || 0} running</span>
         <span>{batch.summary?.queued || 0} queued</span>
-        {batch.status === 'failed' && <button onClick={() => void json(`/api/automation/batches/${batch.id}/retry`, { method: 'POST' }).then((body) => setBatch(body.batch)).catch((error) => setMessage(error.message))} className="ml-auto rounded border border-[var(--border)] px-2 py-1">Retry failed rows</button>}
+        <div className="ml-auto flex gap-2">
+          {batch.status === 'failed' && <button onClick={() => void json(`/api/automation/batches/${batch.id}/retry`, { method: 'POST' }).then((body) => setBatch(body.batch)).catch((error) => setMessage(error.message))} className="rounded border border-[var(--border)] px-2 py-1">Retry failed rows</button>}
+          {['done', 'failed', 'cancelled'].includes(batch.status) && <button onClick={() => void reapOrphans()} title="Delete SUT records this batch created but orphaned" className="rounded border border-[var(--border)] px-2 py-1">Reap orphans</button>}
+        </div>
       </div>}
       {batch && batchJobs.length > 0 && <div className="max-h-56 overflow-auto border-b border-[var(--border)]">
         <table className="min-w-max text-[11px]">
@@ -509,9 +617,9 @@ export default function DataBindings() {
         <table className="min-w-max text-xs">
           <thead className="sticky top-0 z-10 bg-[var(--bg-card)]"><tr><th className="p-2 text-left"><input aria-label="Select all rows" type="checkbox" checked={rows.length > 0 && selectedRows.length === rows.length} onChange={(event) => setSelectedRows(event.target.checked ? rows.map((row) => row.rowNumber) : [])} /></th><th className="whitespace-nowrap p-2 text-left">Row</th>{dataset.columns.map((column: any) => <th key={column.id} draggable
               onDragStart={(event) => dragColumn(event, column.id)}
-              onClick={() => { const target = mappableSteps.find((step) => !byStep.has(step.id)); if (target) { void mapColumn(target.id, column.id); setAnnounce(`${column.name} bound to ${labelOfStep(target.id)}.`); } }}
+              onClick={() => { const target = mappableSteps.find((step) => !byStep.has(step.id)); if (target) { void appendColumn(target.id, column); setAnnounce(`${column.name} bound to ${labelOfStep(target.id)}.`); } }}
               title="Drag this column onto a field above (or click) to bind it"
-              className="min-w-36 cursor-grab whitespace-nowrap p-2 text-left hover:text-[var(--accent)] active:cursor-grabbing"><span className="inline-flex items-center gap-1"><GripVertical className="h-3.5 w-3.5 text-[var(--text-muted)]" />{column.name}</span></th>)}</tr></thead>
+              className="min-w-36 cursor-grab whitespace-nowrap p-2 text-left hover:text-[var(--accent)] active:cursor-grabbing">{column.name}</th>)}</tr></thead>
           <tbody>{rows.map((row) => { const consumed = row.state === 'consumed'; return <tr key={row.id} className={`border-t border-[var(--border)] align-top ${consumed ? 'opacity-50' : ''}`} title={consumed ? 'Already consumed by an earlier pooled run' : undefined}><td className="p-2"><input aria-label={`Select row ${row.rowNumber}`} type="checkbox" disabled={consumed} checked={selectedRows.includes(row.rowNumber)} onChange={() => setSelectedRows((current) => current.includes(row.rowNumber) ? current.filter((number) => number !== row.rowNumber) : [...current, row.rowNumber])} /></td><td className="p-2 text-[var(--text-muted)]">{row.rowNumber}{consumed ? ' · used' : ''}</td>{dataset.columns.map((column: any) => <td key={column.id} className="max-w-72 overflow-hidden text-ellipsis whitespace-nowrap p-2">{row.values[column.id] || '—'}</td>)}</tr>; })}</tbody>
         </table>
       </div>
@@ -522,7 +630,7 @@ export default function DataBindings() {
         <div className="flex items-center justify-between border-b border-[var(--border)] p-3">
           <div>
             <div className="text-sm font-semibold">Auto-map · review before applying</div>
-            <div className="text-[11px] text-[var(--text-muted)]">Nothing binds until you click Apply. Change any suggestion below.</div>
+            <div className="text-[11px] text-[var(--text-muted)]">Nothing binds until you click Apply. Applied in one atomic request.</div>
           </div>
           <button aria-label="Close" onClick={() => setAutoMap(null)} className="text-[var(--text-muted)] hover:text-[var(--text-primary)]"><X className="h-4 w-4" /></button>
         </div>
@@ -544,6 +652,20 @@ export default function DataBindings() {
         <div className="flex items-center justify-end gap-2 border-t border-[var(--border)] p-3">
           <button onClick={() => setAutoMap(null)} className="rounded border border-[var(--border)] px-3 py-1.5 text-sm">Cancel</button>
           <button disabled={busy} onClick={() => void applyAutoMap()} className="rounded bg-[var(--accent)] px-3 py-1.5 text-sm text-white disabled:opacity-40">Apply selected</button>
+        </div>
+      </div>
+    </div>}
+
+    {saveProfile && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" role="dialog" aria-label="Save data profile">
+      <div className="w-full max-w-md rounded-lg border border-[var(--border)] bg-[var(--bg-card)] p-4">
+        <div className="mb-1 text-sm font-semibold">Save current bindings as a profile</div>
+        <p className="mb-3 text-[11px] text-[var(--text-muted)]">Reuse these field bindings on other scripts by field label.</p>
+        <input autoFocus aria-label="Profile name" value={saveProfile.name} onChange={(event) => setSaveProfile({ name: event.target.value })} placeholder="e.g. Signups"
+          onKeyDown={(event) => { if (event.key === 'Enter') void saveCurrentProfile(); }}
+          className="w-full rounded border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-2 text-sm outline-none focus:border-[var(--accent)]" />
+        <div className="mt-3 flex items-center justify-end gap-2">
+          <button onClick={() => setSaveProfile(null)} className="rounded border border-[var(--border)] px-3 py-1.5 text-sm">Cancel</button>
+          <button disabled={busy || !saveProfile.name.trim()} onClick={() => void saveCurrentProfile()} className="rounded bg-[var(--accent)] px-3 py-1.5 text-sm text-white disabled:opacity-40">Save profile</button>
         </div>
       </div>
     </div>}

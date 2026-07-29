@@ -12,7 +12,7 @@
 import { spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
-import { AutomationJobs, Recordings } from '../../db/repository';
+import { AutomationJobs, AutomationExecutionBatches, Recordings } from '../../db/repository';
 import { setJobStatus, syncLinkedRun } from './jobService';
 import { saveArtifact } from './artifactService';
 import { emitEvent } from './eventsService';
@@ -76,15 +76,18 @@ export async function runJobOnServer(jobId: string): Promise<void> {
   const job = await AutomationJobs.get(jobId);
   if (!job) return;
   const rec = job.recordingId ? await Recordings.get(job.recordingId) : null;
-  if (!rec || !rec.script) {
-    await setJobStatus(jobId, 'failed', { error: 'Recording has no script to run.', finishedAt: new Date().toISOString() });
+  // A data-driven batch job carries its own per-row MATERIALIZED script (row values already resolved
+  // + fresh unique tokens baked in); scheduled/plain runs carry none, so fall back to the recording.
+  const scriptSource = String((job as any).script || '').trim() || String(rec?.script || '');
+  if (!scriptSource) {
+    await setJobStatus(jobId, 'failed', { error: 'No script to run.', finishedAt: new Date().toISOString() });
     return;
   }
 
   const runDir = path.join(RUN_ROOT, jobId.replace(/[^a-zA-Z0-9._-]/g, '_'));
   fs.mkdirSync(path.join(runDir, 'tests'), { recursive: true });
-  fs.writeFileSync(path.join(runDir, 'playwright.config.ts'), configTemplate(rec.browser));
-  fs.writeFileSync(path.join(runDir, 'tests', 'recording.spec.ts'), rec.script);
+  fs.writeFileSync(path.join(runDir, 'playwright.config.ts'), configTemplate(rec?.browser || 'chromium'));
+  fs.writeFileSync(path.join(runDir, 'tests', 'recording.spec.ts'), scriptSource);
 
   await setJobStatus(jobId, 'running', { startedAt: new Date().toISOString() });
   const log = (line: string) => emitEvent({ scopeType: 'job', scopeId: jobId, type: 'job.log', ownerId: job.ownerId, data: { line } });
@@ -113,6 +116,28 @@ export async function runJobOnServer(jobId: string): Promise<void> {
   // Keep server-scheduled execution in parity with agent execution: the linked Test Run is what
   // powers durable dashboard/test-management outcome views.
   await syncLinkedRun(jobId, status, summary);
+}
+
+/**
+ * Execute a whole data-driven BATCH headless on the server (no desktop agent). Rows run SEQUENTIALLY
+ * so stop-on-failure stays meaningful and the host never spawns N headless browsers at once. Each
+ * row's job already holds its materialized per-row script, so no agent is needed to run it.
+ */
+export async function runBatchOnServer(batchId: string): Promise<void> {
+  const batch = await AutomationExecutionBatches.get(batchId);
+  if (!batch) return;
+  const queued = (await AutomationJobs.list())
+    .filter((j: any) => j.batchId === batchId && j.status === 'queued')
+    .sort((a: any, b: any) => new Date(a.queuedAt || 0).getTime() - new Date(b.queuedAt || 0).getTime());
+  for (const job of queued) {
+    const cur = await AutomationJobs.get(job.id);
+    if (!cur || cur.status !== 'queued') continue; // already cancelled (e.g. by stop-on-failure) — skip
+    await runJobOnServer(job.id);
+    if (batch.stopOnFailure) {
+      const finished = await AutomationJobs.get(job.id);
+      if (finished?.status === 'failed') break; // the job.done handler cancels the remaining rows
+    }
+  }
 }
 
 /** Cancel a server-side run in flight. */

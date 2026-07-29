@@ -2345,6 +2345,58 @@ export const AutomationDatasets = {
   },
 };
 
+function mapDataProfile(r: any) {
+  if (!r) return null;
+  return {
+    id: r.id,
+    name: r.name,
+    description: r.description || '',
+    bindings: r.bindings || [],
+    iterations: r.iterations ?? 1,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+    projectId: r.project_id || '',
+    appId: r.app_id || '',
+    ownerId: r.owner_id || '',
+  };
+}
+
+export const AutomationDataProfiles = {
+  async list(): Promise<any[]> {
+    if (!isPgEnabled()) return db.automationDataProfiles as any[];
+    return (await query('SELECT * FROM automation_data_profiles ORDER BY created_at DESC')).map(mapDataProfile);
+  },
+  async get(id: string): Promise<any | null> {
+    if (!isPgEnabled()) return db.automationDataProfiles.find((item: any) => item.id === id) || null;
+    return mapDataProfile(await queryOne('SELECT * FROM automation_data_profiles WHERE id = $1', [id]));
+  },
+  async upsert(profile: any): Promise<any> {
+    if (!isPgEnabled()) {
+      const idx = db.automationDataProfiles.findIndex((item: any) => item.id === profile.id);
+      if (idx >= 0) db.automationDataProfiles[idx] = { ...db.automationDataProfiles[idx], ...profile, updatedAt: new Date().toISOString() };
+      else db.automationDataProfiles.unshift({ createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), ...profile });
+      return db.automationDataProfiles.find((item: any) => item.id === profile.id);
+    }
+    const id = profile.id || uid('DPROFILE');
+    return mapDataProfile(await queryOne(
+      `INSERT INTO automation_data_profiles (id, project_id, app_id, owner_id, name, description, bindings, iterations, created_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,COALESCE($9::timestamptz, now()))
+       ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, description=EXCLUDED.description, bindings=EXCLUDED.bindings, iterations=EXCLUDED.iterations, updated_at=now()
+       RETURNING *`,
+      [id, profile.projectId || null, profile.appId || null, profile.ownerId || null, profile.name || '', profile.description || '',
+        JSON.stringify(profile.bindings || []), profile.iterations ?? 1, profile.createdAt || null],
+    ));
+  },
+  async remove(id: string): Promise<boolean> {
+    if (!isPgEnabled()) {
+      const before = db.automationDataProfiles.length;
+      db.automationDataProfiles = db.automationDataProfiles.filter((item: any) => item.id !== id);
+      return db.automationDataProfiles.length < before;
+    }
+    return !!await queryOne('DELETE FROM automation_data_profiles WHERE id = $1 RETURNING id', [id]);
+  },
+};
+
 export const AutomationDatasetRows = {
   async replace(datasetId: string, rows: Array<{ id: string; rowNumber: number; values: Record<string, string | null>; validation?: any[] }>): Promise<void> {
     if (!isPgEnabled()) {
@@ -2400,6 +2452,16 @@ export const AutomationDatasetRows = {
       return;
     }
     await query("UPDATE automation_dataset_rows SET state = 'consumed', consumed_by_batch = $3 WHERE dataset_id = $1 AND row_number = ANY($2::int[])", [datasetId, rowNumbers, batchId]);
+  },
+  // Return a pooled dataset to a fully-available state so it isn't terminally exhausted.
+  async resetPool(datasetId: string): Promise<number> {
+    if (!isPgEnabled()) {
+      let count = 0;
+      for (const row of db.automationDatasetRows) if (row.datasetId === datasetId) { row.state = 'available'; row.consumedByBatch = null; count += 1; }
+      return count;
+    }
+    const res = await query("UPDATE automation_dataset_rows SET state = 'available', consumed_by_batch = NULL WHERE dataset_id = $1 RETURNING id", [datasetId]);
+    return res.length;
   },
 };
 

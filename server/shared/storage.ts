@@ -99,6 +99,7 @@ export const db: any = {
   recordingSteps: [] as any[],
   recordingStepOverrides: [] as any[],
   automationDatasets: [] as any[],
+  automationDataProfiles: [] as any[],
   automationDatasetRows: [] as any[],
   automationDataMappings: [] as any[],
   automationExecutionBatches: [] as any[],
@@ -154,6 +155,7 @@ function getPersistableDbSnapshot() {
     recordingSteps: db.recordingSteps,
     recordingStepOverrides: db.recordingStepOverrides,
     automationDatasets: db.automationDatasets,
+    automationDataProfiles: db.automationDataProfiles,
     automationDatasetRows: db.automationDatasetRows,
     automationDataMappings: db.automationDataMappings,
     automationExecutionBatches: db.automationExecutionBatches,
@@ -222,6 +224,7 @@ export async function loadPersistedData() {
     db.recordingSteps = Array.isArray(data.recordingSteps) ? data.recordingSteps : [];
     db.recordingStepOverrides = Array.isArray(data.recordingStepOverrides) ? data.recordingStepOverrides : [];
     db.automationDatasets = Array.isArray(data.automationDatasets) ? data.automationDatasets : [];
+    db.automationDataProfiles = Array.isArray(data.automationDataProfiles) ? data.automationDataProfiles : [];
     db.automationDatasetRows = Array.isArray(data.automationDatasetRows) ? data.automationDatasetRows : [];
     db.automationDataMappings = Array.isArray(data.automationDataMappings) ? data.automationDataMappings : [];
     db.automationExecutionBatches = Array.isArray(data.automationExecutionBatches) ? data.automationExecutionBatches : [];

@@ -18,7 +18,7 @@ import { createReadStream } from 'fs';
 import { reqScope, scopeFilter } from '../../shared/scope';
 import { requireAuth } from '../auth/routes';
 import { hashPassword, verifyPassword } from '../auth/userStore';
-import { Agents, AutomationJobs, AutomationSchedules, AutomationDatasets, AutomationDatasetRows, AutomationDataMappings, AutomationExecutionBatches, AutomationRunData, Recordings, Cases, Runs } from '../../db/repository';
+import { Agents, AutomationJobs, AutomationSchedules, AutomationDatasets, AutomationDatasetRows, AutomationDataMappings, AutomationExecutionBatches, AutomationRunData, Recordings, Cases, Runs, Scripts } from '../../db/repository';
 import { uid, isPostgresEnabled } from '../../db/pool';
 import { persistDataInBackground } from '../../shared/storage';
 import { scopeStamp } from '../../shared/scope';
@@ -46,6 +46,7 @@ import {
   redoRecordingStepOverride,
 } from './recordingService';
 import { createJob, cancelJob, refreshExecutionBatch } from './jobService';
+import { runBatchOnServer } from './serverRunner';
 import { isAgentConnected } from './agentGateway';
 import { computeNextRun } from './schedulerService';
 import { saveArtifact, listArtifacts, resolveArtifact, contentTypeFor } from './artifactService';
@@ -53,6 +54,8 @@ import { subscribe } from './eventsService';
 import { streamAgentZip, agentLatestInfo, agentDirExists } from './downloadService';
 import { ensureBundledChromium } from './bundleBrowsers';
 import { createManualDataset, datasetPage, getDataset, importDataset, listDatasets } from './datasetService';
+import { listProfiles, getProfile, createProfile, updateProfile, removeProfile, captureFromRecording, applyProfile } from './dataProfileService';
+import { reapBatch } from './teardownService';
 import { createScriptMaterializer, materializeScript } from './scriptMaterializer';
 import { resolveExpression, newRunToken, expressionHasUniqueGenerator } from './variableEngine';
 import { buildTemplateWorkbook, inferIntent, intentTip } from './templateService';
@@ -200,9 +203,10 @@ export function registerAutomationRoutes(app: Express) {
     if (dataPolicy === 'pooled') await AutomationDatasetRows.markConsumed(dataset.id, rows.map((row: any) => row.rowNumber), batch.id);
     for (let index = 0; index < rows.length; index++) {
       const row = rows[index];
+      // agentId '' => the job stays queued (no agent dispatch); it executes on the server below.
       await createJob({
         recordingId: rec.id,
-        agentId,
+        agentId: '',
         trigger: 'manual',
         script: scripts[index],
         batchId: batch.id,
@@ -211,6 +215,9 @@ export function registerAutomationRoutes(app: Express) {
       }, scope);
     }
     batch = await refreshExecutionBatch(batch.id);
+    // Execute the batch headless on the SERVER — no desktop agent needed. Fire-and-forget so the HTTP
+    // response returns immediately; progress streams via job events + batch polling.
+    void runBatchOnServer(batch.id).catch((err) => console.error('[automation] batch server run failed:', err?.message || err));
     return batch;
   }
 
@@ -224,6 +231,36 @@ export function registerAutomationRoutes(app: Express) {
   app.get('/api/automation/recordings', requireAuth, async (req: Request, res: Response) => {
     const mine = scopeFilter((await Recordings.list()) as any[], reqScope(req));
     res.json({ recordings: mine });
+  });
+
+  // Data-drivable RUNNABLES = repository Scripts (each linked to a Test Case) + finalized recordings.
+  // The user selects one of these; .../runnables/prepare resolves it to the recordingId the binding +
+  // batch flow uses, so a Test Case's generated script is data-driven through the SAME engine as a
+  // recording (closes the "where do I select cases?" gap without touching the resolver).
+  app.get('/api/automation/runnables', requireAuth, async (req: Request, res: Response) => {
+    const scope = reqScope(req);
+    const scripts = scopeFilter((await Scripts.list()) as any[], scope)
+      .filter((s: any) => String(s.code || '').trim())
+      .map((s: any) => ({ kind: 'script' as const, scriptId: s.id, caseId: s.caseId || '', name: s.title || s.name || s.filename || s.id, folderId: s.folderId || '', targetUrl: s.targetUrl || '', updatedAt: s.updatedAt || s.createdAt || '' }));
+    const linkedScriptIds = new Set(scripts.map((s) => s.scriptId));
+    const recordings = scopeFilter((await Recordings.list()) as any[], scope)
+      .filter((r: any) => r.status === 'ready' && String(r.script || '').trim() && !(r.metadata?.scriptId && linkedScriptIds.has(r.metadata.scriptId)))
+      .map((r: any) => ({ kind: 'recording' as const, recordingId: r.id, scriptId: r.metadata?.scriptId || '', caseId: r.metadata?.caseId || '', name: r.name || r.id, folderId: '', targetUrl: r.appUrl || '', updatedAt: r.completedAt || r.createdAt || '' }));
+    res.json({ runnables: [...scripts, ...recordings] });
+  });
+
+  app.post('/api/automation/runnables/prepare', requireAuth, async (req: Request, res: Response) => {
+    const scope = reqScope(req);
+    const { scriptId, recordingId } = req.body || {};
+    if (recordingId) {
+      const rec = await scopedGet((id) => Recordings.get(id), String(recordingId), req);
+      if (!rec) return res.status(404).json({ error: 'Recording not found.' });
+      return res.json({ recordingId: rec.id, caseId: rec.metadata?.caseId || '' });
+    }
+    if (!scriptId) return res.status(400).json({ error: 'scriptId or recordingId is required.' });
+    const recording = await recordingForScript(String(scriptId), scope);
+    if (!recording) return res.status(404).json({ error: 'That script has no runnable Playwright code yet.' });
+    res.json({ recordingId: recording.id, caseId: recording.metadata?.caseId || '' });
   });
 
   app.get('/api/automation/recordings/:id', requireAuth, async (req: Request, res: Response) => {
@@ -357,6 +394,15 @@ export function registerAutomationRoutes(app: Express) {
     res.json(await datasetPage(scoped.id, Number.isFinite(offset) ? offset : 0, Number.isFinite(limit) ? limit : 100));
   });
 
+  // Reset a pooled dataset so all rows are available again (recover from terminal exhaustion).
+  app.post('/api/automation/datasets/:id/pool/reset', requireAuth, async (req, res) => {
+    const dataset = await getDataset(req.params.id);
+    const [scoped] = dataset ? scopeFilter([dataset] as any[], reqScope(req)) : [];
+    if (!scoped) return res.status(404).json({ error: 'Dataset not found.' });
+    const reset = await AutomationDatasetRows.resetPool(scoped.id);
+    res.json({ ok: true, reset });
+  });
+
   app.get('/api/automation/recordings/:id/mappings', requireAuth, async (req, res) => { const rec = await scopedGet((id) => Recordings.get(id), req.params.id, req); if (!rec) return res.status(404).json({ error: 'Recording not found.' }); res.json({ mappings: await AutomationDataMappings.list(rec.id) }); });
   app.put('/api/automation/recordings/:id/mappings/:stepId', requireAuth, async (req, res) => {
     const rec = await scopedGet((id) => Recordings.get(id), req.params.id, req);
@@ -373,6 +419,74 @@ export function registerAutomationRoutes(app: Express) {
     res.json({ mapping });
   });
   app.delete('/api/automation/recordings/:id/mappings/:stepId', requireAuth, async (req, res) => { const rec = await scopedGet((id) => Recordings.get(id), req.params.id, req); if (!rec) return res.status(404).json({ error: 'Recording not found.' }); res.json({ ok: await AutomationDataMappings.remove(rec.id, req.params.stepId) }); });
+  // Atomic bulk upsert (auto-map / apply-many) — one dataset, validated once, so a partial bind can
+  // never leave the field set half-mapped (fixes the abort-mid-loop behavior of N sequential PUTs).
+  app.put('/api/automation/recordings/:id/mappings', requireAuth, async (req, res) => {
+    const rec = await scopedGet((id) => Recordings.get(id), req.params.id, req);
+    const dataset = await getDataset(String(req.body?.datasetId || ''));
+    if (!rec || !dataset || !scopeFilter([dataset] as any[], reqScope(req))[0]) return res.status(404).json({ error: 'Recording or dataset not found.' });
+    const steps = await listRecordingSteps(rec.id);
+    const editable = new Set(steps.filter((s: any) => !s.readOnly).map((s: any) => s.id));
+    const items = Array.isArray(req.body?.mappings) ? req.body.mappings : [];
+    const out: any[] = [];
+    for (const item of items) {
+      const stepId = String(item?.stepId || '');
+      if (!editable.has(stepId)) continue;
+      const column = dataset.columns?.find((c: any) => c.id === item?.columnId);
+      const expression = String(item?.expression || '').trim() || (column ? `{{${column.name}}}` : '');
+      if (!expression) continue;
+      const intent = ['fixed', 'unique', 'reference'].includes(item?.intent) ? item.intent : 'fixed';
+      out.push(await AutomationDataMappings.upsert({ id: `MAP-${rec.id}-${stepId}`, recordingId: rec.id, stepId, datasetId: dataset.id, columnId: column?.id || '', expression, intent }));
+    }
+    res.json({ mappings: out });
+  });
+  /* ---------- data profiles (reusable binding sets, scoped) ---------- */
+
+  app.get('/api/automation/data-profiles', requireAuth, async (req, res) => {
+    res.json({ profiles: scopeFilter(await listProfiles() as any[], reqScope(req)) });
+  });
+  app.post('/api/automation/data-profiles', requireAuth, async (req, res) => {
+    const { name, description, bindings, iterations } = req.body || {};
+    try {
+      const profile = await createProfile({ name, description, bindings, iterations }, reqScope(req));
+      res.status(201).json({ profile });
+    } catch (error: any) {
+      res.status(400).json({ error: error?.message || 'Could not create data profile.' });
+    }
+  });
+  app.post('/api/automation/data-profiles/from-recording', requireAuth, async (req, res) => {
+    const rec = await scopedGet((id) => Recordings.get(id), String(req.body?.recordingId || ''), req);
+    if (!rec) return res.status(404).json({ error: 'Recording not found.' });
+    try {
+      const profile = await captureFromRecording(rec.id, String(req.body?.name || '').trim() || rec.name || 'Data profile', reqScope(req));
+      res.status(201).json({ profile });
+    } catch (error: any) {
+      res.status(400).json({ error: error?.message || 'Could not capture data profile.' });
+    }
+  });
+  app.put('/api/automation/data-profiles/:id', requireAuth, async (req, res) => {
+    const existing = await getProfile(req.params.id);
+    if (!existing || !scopeFilter([existing] as any[], reqScope(req))[0]) return res.status(404).json({ error: 'Data profile not found.' });
+    const { name, description, bindings, iterations } = req.body || {};
+    const profile = await updateProfile(req.params.id, { name, description, bindings, iterations });
+    res.json({ profile });
+  });
+  app.delete('/api/automation/data-profiles/:id', requireAuth, async (req, res) => {
+    const existing = await getProfile(req.params.id);
+    if (!existing || !scopeFilter([existing] as any[], reqScope(req))[0]) return res.status(404).json({ error: 'Data profile not found.' });
+    res.json({ ok: await removeProfile(req.params.id) });
+  });
+  app.post('/api/automation/recordings/:id/apply-profile', requireAuth, async (req, res) => {
+    const rec = await scopedGet((id) => Recordings.get(id), req.params.id, req);
+    if (!rec) return res.status(404).json({ error: 'Recording not found.' });
+    const profile = await getProfile(String(req.body?.profileId || ''));
+    if (!profile || !scopeFilter([profile] as any[], reqScope(req))[0]) return res.status(404).json({ error: 'Data profile not found.' });
+    const datasetId = req.body?.datasetId ? String(req.body.datasetId) : undefined;
+    const result = await applyProfile(rec.id, profile.id, datasetId, reqScope(req));
+    if ('error' in result) return res.status(result.status).json({ error: result.error });
+    res.json({ mappings: result.mappings, unmatched: result.unmatched });
+  });
+
   app.post('/api/automation/recordings/:id/preview', requireAuth, async (req, res) => { const rec = await scopedGet((id) => Recordings.get(id), req.params.id, req); const dataset = await getDataset(String(req.body?.datasetId || '')); if (!rec || !dataset || !scopeFilter([dataset] as any[], reqScope(req))[0]) return res.status(404).json({ error: 'Recording or dataset not found.' }); const page = await datasetPage(dataset.id, Number(req.body?.offset || 0), 1); const row = page.rows[0]; if (!row) return res.status(400).json({ error: 'No row selected.' }); try {
     const steps = await listRecordingSteps(rec.id);
     const mappings = await AutomationDataMappings.list(rec.id);
@@ -400,8 +514,9 @@ export function registerAutomationRoutes(app: Express) {
     const rec = await scopedGet((id) => Recordings.get(id), req.params.id, req);
     const dataset = await getDataset(String(req.body?.datasetId || ''));
     if (!rec || !dataset || !scopeFilter([dataset] as any[], reqScope(req))[0]) return res.status(404).json({ error: 'Recording or dataset not found.' });
+    // agentId is now OPTIONAL — data-driven batches execute headless on the server, so a paired
+    // desktop agent is no longer required to run them (recording still needs a local agent).
     const agentId = String(req.body?.agentId || rec.agentId || '');
-    if (!agentId) return res.status(400).json({ error: 'agentId is required.' });
     const rowNumbers: number[] | undefined = Array.isArray(req.body?.rowNumbers)
       ? [...new Set<number>(req.body.rowNumbers.map(Number).filter((value: number) => Number.isInteger(value) && value > 0))]
       : undefined;
@@ -451,6 +566,14 @@ export function registerAutomationRoutes(app: Express) {
     } catch (error: any) {
       res.status(400).json({ error: error?.message || 'Could not retry failed rows.' });
     }
+  });
+
+  // Reap orphans: re-fire teardown for rows left pending/failed by an earlier cleanup.
+  app.post('/api/automation/batches/:id/reap', requireAuth, async (req, res) => {
+    const batch = await scopedGet((id) => AutomationExecutionBatches.get(id), req.params.id, req);
+    if (!batch) return res.status(404).json({ error: 'Execution batch not found.' });
+    const reaped = await reapBatch(batch.id);
+    res.json({ reaped });
   });
 
   /* ---------- jobs (human, scoped) ---------- */

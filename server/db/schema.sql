@@ -1379,3 +1379,18 @@ CREATE TABLE IF NOT EXISTS rbac_audit (
 );
 CREATE INDEX IF NOT EXISTS rbac_audit_principal_idx ON rbac_audit(principal_type, principal_id, seq DESC);
 CREATE INDEX IF NOT EXISTS rbac_audit_event_idx ON rbac_audit(event, seq DESC);
+
+-- Data Profiles: named, scoped, reusable field-binding sets so ONE data strategy binds to MANY scripts.
+CREATE TABLE IF NOT EXISTS automation_data_profiles (
+  id          TEXT PRIMARY KEY,
+  name        TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  bindings    JSONB NOT NULL DEFAULT '[]'::jsonb, -- [{fieldLabel, expression, intent}]
+  iterations  INTEGER NOT NULL DEFAULT 1,
+  project_id  TEXT,
+  app_id      TEXT,
+  owner_id    TEXT,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS automation_data_profiles_owner_idx ON automation_data_profiles(owner_id);

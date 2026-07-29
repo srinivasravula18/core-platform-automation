@@ -25,9 +25,11 @@ export interface RowContext {
   rowSeq?: number;     // per-row sequence within the batch
 }
 
-/** Mint a short, unique, human-greppable token for one batch run. */
+/** Mint a unique, human-greppable token for one batch run. 6 bytes (48 bits) is birthday-safe to
+ *  millions of runs — the 3-byte token collided in the low thousands, undermining the whole
+ *  "reruns never collide" guarantee. Still short enough to embed in emails/usernames and grep for. */
 export function newRunToken(): string {
-  return randomBytes(3).toString('hex');
+  return randomBytes(6).toString('hex');
 }
 
 type Transform = (input: string, args: string[]) => string;
