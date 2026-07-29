@@ -11,6 +11,7 @@ import { playwrightCompiler } from '../server/features/agent/compiler/playwright
 import { validateCompiledOutput } from '../server/features/agent/compiler/validateCompiledOutput';
 import type { TestPlan } from '../server/features/agent/compiler/testPlan';
 import { semanticPlanFromCase } from '../server/features/agent/compiler/semanticPlanner';
+import { catalogTargetIssues } from '../server/features/agent/workflow/nodes/authoring';
 
 let passed = 0, failed = 0;
 const ok = (c: boolean, n: string) => { if (c) { passed++; console.log(`  ✓ ${n}`); } else { failed++; console.error(`  ✗ ${n}`); } };
@@ -107,6 +108,44 @@ function main() {
   console.log('empty plan');
   const r3 = playwrightCompiler.compile({ mission: runtime, plan: { mission: 'x', steps: [] }, evidenceGraph: graph, run });
   ok(!r3.ok && r3.diagnostics[0].kind === 'EMPTY_PLAN', 'empty plan → EMPTY_PLAN diagnostic');
+  ok(r3.diagnostics[0].severity === 'blocking', 'EMPTY_PLAN is blocking');
+
+  console.log('P2 severity: a skippable assertion failure still ships a script; a blocking action failure drops the case');
+  {
+    // Only failure is an ASSERT on an ungrounded target → skippable → the case still compiles its good steps.
+    const partial: TestPlan = { mission: runtime.executionScope, title: 'partial', steps: [
+      { action: 'FILL', target: 'Search', value: 'acme' }, // grounds fine
+      { assert: 'VISIBLE', target: 'Ghost' },              // ungrounded ASSERT → skippable
+    ] };
+    const rp = playwrightCompiler.compile({ mission: runtime, plan: partial, evidenceGraph: graph, run });
+    ok(rp.ok, 'a case whose ONLY failure is an ungrounded assertion still ships a script (was previously dropped)');
+    ok(rp.diagnostics.length === 1 && rp.diagnostics[0].severity === 'skippable', 'the ungrounded assertion is classified skippable');
+    ok(rp.code.includes('await runner.fill('), 'the groundable action step is still emitted');
+    ok(rp.code.includes('// UNRESOLVED_SELECTOR: "Ghost"'), 'the skipped assertion is marked, never guessed');
+
+    // An ungrounded ACTION step is blocking → the case is dropped.
+    const blocked: TestPlan = { mission: runtime.executionScope, title: 'blocked', steps: [
+      { action: 'FILL', target: 'Search', value: 'acme' },
+      { action: 'CLICK', target: 'Ghost' }, // ungrounded ACTION → blocking
+    ] };
+    const rb = playwrightCompiler.compile({ mission: runtime, plan: blocked, evidenceGraph: graph, run });
+    ok(!rb.ok, 'a case with an ungrounded ACTION step is still dropped (blocking)');
+    ok(rb.diagnostics.some((d) => d.severity === 'blocking'), 'the ungrounded action is classified blocking');
+  }
+
+  console.log('P2 template: an unresolved {{token}} in an assertion fails loud (skippable), never emitted as a literal');
+  {
+    // Fill and assert on DIFFERENT fields (the production shape) so the token cannot thread through resolvedBySelector.
+    const tpl: TestPlan = { mission: runtime.executionScope, title: 'template', steps: [
+      { action: 'FILL', target: 'Label *', value: 'unique_label' },
+      { assert: 'HAS_VALUE', target: 'API Name *', value: '{{run_unique_app_api_name}}' },
+    ] };
+    const rt = playwrightCompiler.compile({ mission: runtime, plan: tpl, evidenceGraph: graph, run });
+    ok(rt.ok, 'the case still ships — the unresolved-template assertion is skippable, not fatal');
+    ok(rt.diagnostics.some((d) => d.kind === 'UNRESOLVED_TEMPLATE' && d.severity === 'skippable'), 'an UNRESOLVED_TEMPLATE diagnostic is raised');
+    ok(!rt.code.split('\n').some((l) => !l.trim().startsWith('//') && l.includes('{{run_unique_app_api_name}}')), 'the raw template token appears only in a skip comment, never in executable code');
+    ok(rt.code.includes('await runner.fill('), 'the fill step is still emitted');
+  }
 
   console.log('semantic planner maps reviewed language to verified catalog targets');
   const semantic = semanticPlanFromCase({ title: 'Create app form', steps: [
@@ -258,6 +297,24 @@ function main() {
     for (const helper of ['expectUrl', 'expectStatusRegion', 'expectEmptyState', 'expectErrorState', 'expectRowInList', 'searchGlobalFor', 'expectTable', 'expectFiltered', 'expectSorted', 'expectValidation']) {
       ok(src.includes(`async ${helper}(`), `runner has ${helper}()`);
     }
+  }
+
+  console.log('P6 catalogTargetIssues: an invented target is flagged; catalog names + advisory targets are not');
+  {
+    // 'New' and 'Search' are real catalog controls; 'Nonexistent Widget' is not.
+    const good: TestPlan = { mission: runtime.executionScope, steps: [
+      { action: 'OPEN_MODULE', target: 'anything-advisory' },   // advisory → never validated
+      { action: 'CLICK', target: 'New' },                        // real catalog control
+      { assert: 'ROW_IN_LIST', target: 'not-a-catalog-name', value: 'x' }, // context assert → advisory
+    ] };
+    eq(catalogTargetIssues(good, graph), [], 'no issues for catalog + advisory targets');
+    const bad: TestPlan = { mission: runtime.executionScope, steps: [
+      { action: 'CLICK', target: 'New' },
+      { action: 'FILL', target: 'Nonexistent Widget', value: 'x' }, // invented → flagged
+    ] };
+    const issues = catalogTargetIssues(bad, graph);
+    ok(issues.length === 1 && /Nonexistent Widget/.test(issues[0]), 'an invented, non-catalog target is flagged for repair');
+    eq(catalogTargetIssues(bad, null), [], 'no graph → no issues (never blocks when the catalog is absent)');
   }
 
   console.log(`\n${passed} passed, ${failed} failed`);

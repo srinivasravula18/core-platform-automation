@@ -1,4 +1,5 @@
 import { launchChromiumWithRetry } from '../../shared/browser';
+import { isGroundingDisambiguationEnabled } from './groundingDisambiguationFlag';
 
 export interface DomElement {
   tag: string;
@@ -646,6 +647,7 @@ function slug(...parts: (string | null | undefined)[]): string {
 
 function candidatesFor(el: DomElement): { strategy: SelectorStrategy; selector: string }[] {
   const out: { strategy: SelectorStrategy; selector: string }[] = [];
+  const accName = cleanLabel(el.accName || el.ariaLabel || el.labelText || el.text || '');
   if (el.testId) out.push({ strategy: 'data-testid', selector: `[data-testid="${q(el.testId)}"]` });
   if (el.id && !isDynamicId(el.id)) out.push({ strategy: 'id', selector: simpleId(el.id) ? `#${el.id}` : `[id="${q(el.id)}"]` });
   if (el.name) out.push({ strategy: 'name', selector: `[name="${q(el.name)}"]` });
@@ -654,7 +656,15 @@ function candidatesFor(el: DomElement): { strategy: SelectorStrategy; selector: 
   if (el.placeholder) out.push({ strategy: 'placeholder', selector: `[placeholder="${q(el.placeholder)}"]` });
   if (el.role === 'row' && el.rowKey) out.push({ strategy: 'row-key', selector: `tr:has-text("${q(el.rowKey)}")` });
   if (el.role === 'checkbox' && el.rowKey) out.push({ strategy: 'row-key', selector: `tr:has-text("${q(el.rowKey)}") input[type="checkbox"]` });
-  const accName = cleanLabel(el.accName || el.ariaLabel || el.labelText || el.text || '');
+  // P1 (GROUNDING_DISAMBIGUATION_V1): a per-row interactive control (one "Edit"/"Delete" per grid row) is
+  // NOT unique by role+name alone — scope it to its row so it becomes a genuinely unique, executable locator
+  // instead of being discarded as non-unique. Placed BEFORE role+name so resolveBestSelector prefers the
+  // unique scoped form; the live uniqueness check still verifies it, so a non-unique row scope is never
+  // falsely promoted. Off (default) = legacy: no scoped candidate, non-unique controls excluded.
+  if (isGroundingDisambiguationEnabled() && el.rowKey && accName
+      && ['button', 'link', 'menuitem', 'tab', 'switch'].includes(String(el.role))) {
+    out.push({ strategy: 'row-key', selector: `tr:has-text("${q(el.rowKey)}") >> role=${el.role}[name="${q(accName)}"]` });
+  }
   if (el.role && accName) out.push({ strategy: 'role+name', selector: `role=${el.role}[name="${q(accName)}"]` });
   if (!el.role && el.tag === 'th' && el.text) out.push({ strategy: 'role+name', selector: `role=columnheader[name="${q(el.text)}"]` });
   if (el.text && el.text.length <= 40) out.push({ strategy: 'text', selector: `text="${q(el.text)}"` });

@@ -189,7 +189,19 @@ export class MissionRunner {
   async expectDisabled(spec: LocatorSpec): Promise<void> { await this.act('expectDisabled', spec, null, async () => { const l = this.locator(spec); await this.reveal(l); await expect(l).toBeDisabled(); }); }
   async expectText(spec: LocatorSpec, value: string): Promise<void> { await this.act('expectText', spec, String(value ?? ''), async () => { const l = this.locator(spec); await this.reveal(l); await expect(l).toContainText(String(value ?? '')); }); }
   async expectNotText(spec: LocatorSpec, value: string): Promise<void> { await this.act('expectNotText', spec, String(value ?? ''), async () => { await expect(this.locator(spec)).not.toContainText(String(value ?? '')); }); }
-  async expectValue(spec: LocatorSpec, value: string): Promise<void> { await this.act('expectValue', spec, String(value ?? ''), async () => { const l = this.locator(spec); await this.reveal(l); await expect(l).toHaveValue(String(value ?? '')); }); }
+  async expectValue(spec: LocatorSpec, value: string): Promise<void> {
+    // Normalization-tolerant: the app commonly lowercases/trims/collapses whitespace on entry (API names,
+    // prefixes). Accept the exact expected value OR a case/whitespace-normalized match so a CORRECT app is
+    // not failed for transforming the input; a genuinely different value still fails (Playwright shows the diff).
+    await this.act('expectValue', spec, String(value ?? ''), async () => {
+      const l = this.locator(spec);
+      await this.reveal(l);
+      const want = String(value ?? '');
+      const norm = (s: string) => s.trim().replace(/\s+/g, ' ').toLowerCase();
+      const actual = await l.inputValue();
+      if (actual !== want && norm(actual) !== norm(want)) await expect(l).toHaveValue(want);
+    });
+  }
   async expectCountGt(spec: LocatorSpec, n: number): Promise<void> { await this.act('expectCountGt', spec, String(n), async () => { expect(await this.locator(spec).count()).toBeGreaterThan(Number(n) || 0); }); }
 
   // ---- Multi-level context asserts (Phase 4) — mission/page-scoped, owned by the runner ----

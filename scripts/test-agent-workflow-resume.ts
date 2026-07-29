@@ -187,6 +187,13 @@ function testRouters() {
     diagnostics: [{ caseId: 'c2', kind: 'UNRESOLVED_SELECTOR' as const, message: 'm', target: 'Ghost' }],
   };
   eq(routeAfterCompile({ compilation: partialCompilation, rediscoveryAttempts: 0, request: request('manual') }), 'execute_tests', 'some scripts + one unresolved skip → execute_tests (skip must not halt the pipeline)');
+  // P3 (PER_CASE_REPAIR_V1): the SAME partial run re-grounds to recover the dropped case when the flag is on,
+  // and is bounded — attempts exhausted proceeds with the partial scripts (never loops).
+  process.env.PER_CASE_REPAIR_V1 = '1';
+  eq(routeAfterCompile({ compilation: partialCompilation, rediscoveryAttempts: 0, request: request('auto') }), 'discover_and_ground', 'P3 on: partial run + unresolved targets + attempts left → re-ground to recover dropped cases');
+  eq(routeAfterCompile({ compilation: partialCompilation, rediscoveryAttempts: MAX_REDISCOVERY_ATTEMPTS, request: request('auto') }), 'execute_tests', 'P3 on: attempts exhausted → proceed with the partial scripts (bounded, never loops)');
+  delete process.env.PER_CASE_REPAIR_V1;
+  eq(routeAfterCompile({ compilation: partialCompilation, rediscoveryAttempts: 0, request: request('auto') }), 'execute_tests', 'P3 off (default): partial run proceeds to execution unchanged');
 }
 
 // ---------------------------------------------------------------------------

@@ -21,4 +21,26 @@ const nameHeader = resolveBestSelector({ ...base, tag: 'th', role: 'columnheader
 const descriptionHeader = resolveBestSelector({ ...base, tag: 'th', role: 'columnheader', rowKey: 'Name', accName: 'Description Resize Description column', text: null });
 assert.notEqual(nameHeader.key, descriptionHeader.key);
 
-console.log('DOM selector resolution: 5 checks passed');
+// P1 — a per-row interactive control (one "Edit" per grid row) with a rowKey but no unique id.
+const rowButton: DomElement = { ...base, tag: 'button', role: 'button', text: 'Edit', accName: 'Edit', ariaLabel: null, id: null, testId: null, name: null, rowKey: 'system_admin' };
+
+// Flag OFF (default): resolves to the ambiguous role+name (legacy behavior, unchanged).
+delete process.env.GROUNDING_DISAMBIGUATION_V1;
+const off = resolveBestSelector(rowButton);
+assert.equal(off.strategy, 'role+name');
+assert.equal(off.selector, 'role=button[name="Edit"]');
+
+// Flag ON: resolves to a ROW-KEY-SCOPED, genuinely unique locator (not a banned .first()).
+process.env.GROUNDING_DISAMBIGUATION_V1 = '1';
+const on = resolveBestSelector(rowButton);
+assert.equal(on.strategy, 'row-key');
+assert.equal(on.selector, 'tr:has-text("system_admin") >> role=button[name="Edit"]');
+assert.ok(!on.selector?.includes('.first('), 'row scope is a unique locator, never .first()');
+// The ambiguous role+name is retained as the fallback.
+assert.equal(on.fallback, 'role=button[name="Edit"]');
+// A control with NO rowKey is unaffected even with the flag on (no false scoping).
+const noRow = resolveBestSelector({ ...rowButton, rowKey: null });
+assert.equal(noRow.strategy, 'role+name');
+delete process.env.GROUNDING_DISAMBIGUATION_V1;
+
+console.log('DOM selector resolution: 11 checks passed');

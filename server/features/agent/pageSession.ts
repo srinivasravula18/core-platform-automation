@@ -129,16 +129,22 @@ export async function openPageSession(opts: {
 export async function observePage(sessionId: string): Promise<PageObservation> {
   const s = sessions.get(sessionId);
   if (!s) throw new Error(`Page session ${sessionId} not found (expired or closed).`);
-  // Give async grids a moment to settle before reading (same rationale as the classic inspector).
+  // Grid-ready wait (ported from the classic inspector, inspectionService.ts): the shell/nav renders first
+  // and the grid is fetched async. Wait on the POSITIVE signal (real grid ROWS present) rather than the weak
+  // "any a/button exists" check a nav bar satisfies instantly — reading a half-loaded grid was a top cause of
+  // shallow, ungrounded inspection. hasContent excludes a/button so a bare nav can't mark the page ready.
+  // Best-effort: proceed anyway if it never clears.
   await s.page.waitForFunction(
     () => {
       const body = (document.body && document.body.innerText) || '';
       const stillLoading = /loading\s+records|\bloading…?\b/i.test(body);
-      const hasContent = document.querySelectorAll('table, [role="grid"], form, h1, h2, a, button').length > 0;
-      return !stillLoading && hasContent;
+      const hasGridRows = !!document.querySelector('table tbody tr, [role="grid"] [role="row"], [role="row"] [role="gridcell"]');
+      const hasContent = document.querySelectorAll('table, [role="grid"], form, h1, h2').length > 0;
+      return hasGridRows || (!stillLoading && hasContent);
     },
-    { timeout: 15000 },
+    { timeout: 20000 },
   ).catch(() => undefined);
+  await s.page.waitForTimeout(700).catch(() => undefined); // brief settle so late rows/toolbar controls mount
   const ctx = await collectPageContext(s.page);
   s.lastRaw = ctx;
   s.observedPages.push({ stage: `observe-${s.observedPages.length}`, url: ctx.url, actions: ctx.actions, tables: ctx.tables, forms: ctx.forms, headings: ctx.headings });

@@ -22,8 +22,10 @@ import { callOpenAIResponsesStructured } from '../../../../ai/openai/responsesCl
 import { canonicalAgent, systemPromptFor } from '../../../../ai/systemPrompts';
 import type { ProviderName } from '../../../../ai/providers/types';
 import { testCasesSchema } from '../../../../shared/schemas';
-import { PLAN_ACTIONS, PLAN_ASSERTS, parseTestPlanStrict, type TestPlan } from '../../compiler/testPlan';
+import { PLAN_ACTIONS, PLAN_ASSERTS, CONTEXT_ASSERTS, parseTestPlanStrict, type TestPlan } from '../../compiler/testPlan';
 import { renderTargetCatalogForPrompt } from '../../compiler/renderCatalogForPrompt';
+import { resolveTarget } from '../../graph/groundingEngine';
+import { isPlanTargetValidationEnabled } from '../../compiler/planTargetValidationFlag';
 import type { EvidenceGraph } from '../../graph/evidenceGraph';
 import { classifyError, WorkflowRuntimeError, WORKFLOW_ERROR_CLASSES, type WorkflowError } from '../errors';
 import type { MissionRef, UsageRecord } from '../state';
@@ -402,6 +404,7 @@ PLAN RULES:
 - Context asserts (URL_MATCHES, HAS_STATUS, EMPTY_STATE, ERROR_STATE, ROW_IN_LIST, FOUND_IN_GLOBAL_SEARCH) are page-scoped: their target/value is the EXPECTED TEXT (a URL fragment, a status/error message, or row text), never a catalog name. Use ROW_IN_LIST after creating a record to confirm it appears in its list, and FOUND_IN_GLOBAL_SEARCH to cross-check it via global search.
 - Translate EVERY source step into plan steps — never drop or merge away behavior.
 - CREATE/SUBMIT flows: before any save/create/submit CLICK, emit a FILL (or SELECT) for EVERY catalog field marked (required). A form submitted with an empty required field is rejected — this is the #1 cause of failed creates.
+- TRANSFORMED FIELDS: when a step fills a field and a later step checks that field (or a field derived from it) and the case is about a normalization/derivation, the HAS_VALUE value MUST be the app's transformed OUTPUT, never the value that was filled. When the exact transformed output is not known from the catalog/analysis, do NOT emit HAS_VALUE with the typed input — emit VERIFY_VALIDATION describing the expected property (e.g. the value is lowercased / trimmed / spaces replaced) instead.
 - Set unused optional fields (mission/module/title/value) to null.`;
 }
 
@@ -421,6 +424,28 @@ function validateCases(wire: unknown): { value: AuthoredTestCase[] | null; issue
 function validatePlan(wire: unknown): { value: TestPlan | null; issues: string[] } {
   const { plan, issues } = parseTestPlanStrict(stripNullsDeep(wire));
   return { value: plan, issues };
+}
+
+/** P6 (PLAN_TARGET_VALIDATION_V1): every locator-bearing target must match a verified catalog entry. Uses the
+ * compiler's own resolveTarget so it can never false-reject a target the compiler WOULD resolve — it flags
+ * ONLY targets with no catalog candidate at all (an invented/mis-phrased name), which is exactly the
+ * naming-variance the repair call can fix. OPEN_MODULE + context asserts carry advisory text targets, skipped. */
+export function catalogTargetIssues(plan: TestPlan, graph: EvidenceGraph | null): string[] {
+  if (!graph) return [];
+  const issues: string[] = [];
+  plan.steps.forEach((step, i) => {
+    if ('action' in step && step.action === 'OPEN_MODULE') return;
+    if ('assert' in step && CONTEXT_ASSERTS.has(step.assert)) return;
+    const target = String((step as { target?: string }).target || '').trim();
+    if (!target) return;
+    const r = resolveTarget(target, graph);
+    // node === null with UNRESOLVED means candidates() found nothing — a target name absent from the catalog.
+    // (An ambiguous/untrusted match keeps node !== null; that is a grounding issue, not a naming one — never flag it.)
+    if (r.status === 'UNRESOLVED_SELECTOR' && r.node === null) {
+      issues.push(`Step ${i + 1} targets "${target}", which is not a verified catalog control — use an EXACT target name from the catalog above, or remove the step.`);
+    }
+  });
+  return issues;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -463,7 +488,16 @@ export async function authorAbstractPlan(input: AuthorAbstractPlanInput): Promis
       schemaName: 'test_plan',
       system: input.system || PLAN_AUTHORING_SYSTEM,
       prompt: buildPlanPrompt(input, catalog),
-      validate: validatePlan,
+      validate: (wire) => {
+        const { value, issues } = validatePlan(wire);
+        // P6: reject an otherwise-valid plan whose targets are not in the catalog, so the ONE repair call
+        // re-authors them with exact catalog names before the all-or-nothing compiler drops the case.
+        if (value && isPlanTargetValidationEnabled()) {
+          const targetIssues = catalogTargetIssues(value, input.evidenceGraph);
+          if (targetIssues.length) return { value: null, issues: targetIssues };
+        }
+        return { value, issues };
+      },
       signal: input.signal,
       overrides: input.overrides,
     });

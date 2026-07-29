@@ -153,7 +153,7 @@ export interface CompiledScriptRef {
 }
 export interface CompilationDiagnostic {
   caseId: string;
-  kind: 'AMBIGUOUS_SELECTOR' | 'UNRESOLVED_SELECTOR' | 'INVALID_STEP' | 'EMPTY_PLAN';
+  kind: 'AMBIGUOUS_SELECTOR' | 'UNRESOLVED_SELECTOR' | 'INVALID_STEP' | 'EMPTY_PLAN' | 'UNRESOLVED_TEMPLATE';
   message: string;
   target?: string;
 }
@@ -445,7 +445,7 @@ const workflowCompilationSchema = z.object({
   scripts: z.array(z.object({ caseId: z.string(), scriptRef: z.string(), digest: z.string(), ok: z.boolean() })),
   diagnostics: z.array(z.object({
     caseId: z.string(),
-    kind: z.enum(['AMBIGUOUS_SELECTOR', 'UNRESOLVED_SELECTOR', 'INVALID_STEP', 'EMPTY_PLAN']),
+    kind: z.enum(['AMBIGUOUS_SELECTOR', 'UNRESOLVED_SELECTOR', 'INVALID_STEP', 'EMPTY_PLAN', 'UNRESOLVED_TEMPLATE']),
     message: z.string(),
     target: z.string().optional(),
   })),

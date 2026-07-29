@@ -158,7 +158,7 @@ export class PlaywrightCompiler implements Compiler {
     const { mission, plan, evidenceGraph, run } = input;
     const diagnostics: Diagnostic[] = [];
     if (!plan?.steps?.length) {
-      return { code: '', diagnostics: [{ kind: 'EMPTY_PLAN', message: 'Plan has no steps.' }], ok: false };
+      return { code: '', diagnostics: [{ kind: 'EMPTY_PLAN', message: 'Plan has no steps.', severity: 'blocking' }], ok: false };
     }
 
     // Seed from the run-UNIQUE id (falling back to mission scope) so every case in the run shares ONE
@@ -279,13 +279,15 @@ export class PlaywrightCompiler implements Compiler {
       const target = (step as any).target as string;
       const g = resolveTarget(target, evidenceGraph, run);
       if (g.status !== 'RESOLVED') {
-        diagnostics.push({ kind: g.status, target, stepIndex: i, message: g.reason || g.status });
+        // An unresolved ACTION breaks the flow (blocking → drop the case); an unresolved ASSERTION is an
+        // observation we simply cannot make (skippable → drop the step, keep the rest of the script).
+        diagnostics.push({ kind: g.status, target, stepIndex: i, message: g.reason || g.status, severity: isActionStep(step) ? 'blocking' : 'skippable' });
         // Emit an explicit marker — NEVER a guessed locator.
         body.push(`  // ${g.status}: "${target}" — ${g.reason || ''}`);
         return;
       }
       if (isActionStep(step) && !actionFitsRole(step, g.node?.role)) {
-        diagnostics.push({ kind: 'INVALID_STEP', target, stepIndex: i, message: `${step.action} is incompatible with role "${g.node?.role || 'unknown'}".` });
+        diagnostics.push({ kind: 'INVALID_STEP', target, stepIndex: i, message: `${step.action} is incompatible with role "${g.node?.role || 'unknown'}".`, severity: 'blocking' });
         body.push(`  // INVALID_STEP: ${step.action} cannot target role "${g.node?.role || 'unknown'}" (${JSON.stringify(target)})`);
         return;
       }
@@ -326,6 +328,14 @@ export class PlaywrightCompiler implements Compiler {
             value = nodeLabel;
           }
         }
+        // Fail loud on an unresolved {{token}} that survived threading — NEVER emit a literal template as an
+        // expectation (toHaveValue('{{run_unique_app_api_name}}') can never pass). Skippable: drop this one
+        // assertion and keep the rest of the script (the fill it referenced still ran with a real value).
+        if (/\{\{[^}]+\}\}/.test(String(value ?? ''))) {
+          diagnostics.push({ kind: 'UNRESOLVED_TEMPLATE', target, stepIndex: i, message: `Assertion expects an unresolved template token ${JSON.stringify(value)} — a generated value must be resolved to its concrete form before it is asserted.`, severity: 'skippable' });
+          body.push(`  // UNRESOLVED_TEMPLATE: ${JSON.stringify(value)} — skipped (cannot assert a raw {{token}})`);
+          return;
+        }
         body.push(emitAssert(assertStep, spec, value));
       }
     });
@@ -342,7 +352,9 @@ export class PlaywrightCompiler implements Compiler {
       `${body.join('\n')}\n` +
       `});\n`;
 
-    return { code, diagnostics, ok: diagnostics.length === 0 };
+    // ok = no BLOCKING diagnostics. A case whose only failures are skippable (an assertion that couldn't be
+    // grounded) still ships a runnable script for its groundable steps, instead of being deleted entirely.
+    return { code, diagnostics, ok: diagnostics.every((d) => d.severity !== 'blocking') };
   }
 }
 

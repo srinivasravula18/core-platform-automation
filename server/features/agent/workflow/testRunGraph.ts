@@ -38,6 +38,7 @@ import { isAgentNativeEnabled } from '../../../agent-core/agentNativeFlag';
 import { critiqueCases } from '../../../agent-core/critic/caseCritic';
 import { publishGroundingFacts } from '../../../agent-core/grounding/groundingFacts';
 import { recordCapabilityDelegation } from '../../../agent-core/registry/capabilities';
+import { isPerCaseRepairEnabled } from './perCaseRepairFlag';
 import { extractGoalTerms } from './goalTerms';
 import { specFilenameFromTitle } from './specFilename';
 import { WorkflowRuntimeError, WORKFLOW_ERROR_CLASSES, backoffDelayMs, type WorkflowError } from './errors';
@@ -177,9 +178,12 @@ export function routeAfterReviewCases(state: Pick<WorkflowState, 'review' | 'ret
 // review only slowed the loop without adding safety, since the compiler already refuses anything unverified.
 export function routeAfterCompile(state: Pick<WorkflowState, 'compilation' | 'rediscoveryAttempts' | 'request'>): 'discover_and_ground' | 'finalize' | 'execute_tests' {
   const scriptCount = state.compilation?.scripts?.length ?? 0;
-  // Only re-ground when NOTHING compiled. A skipped case (unresolved selector) must never halt a run
-  // that already has runnable scripts — proceed to evidence; the skipped cases stay as diagnostics.
-  if (scriptCount === 0 && rediscoveryTargetsFromCompilation(state.compilation).length > 0 && (state.rediscoveryAttempts ?? 0) < MAX_REDISCOVERY_ATTEMPTS) {
+  const hasTargets = rediscoveryTargetsFromCompilation(state.compilation).length > 0;
+  const attemptsLeft = (state.rediscoveryAttempts ?? 0) < MAX_REDISCOVERY_ATTEMPTS;
+  // Default: only re-ground when NOTHING compiled — a skipped case must never halt a run that already has
+  // runnable scripts. P3 (PER_CASE_REPAIR_V1): also re-ground on a PARTIAL run to recover the dropped cases,
+  // bounded by MAX_REDISCOVERY_ATTEMPTS. Flag off → legacy behavior (the scriptCount===0 path only).
+  if (hasTargets && attemptsLeft && (scriptCount === 0 || isPerCaseRepairEnabled())) {
     return 'discover_and_ground';
   }
   if (scriptCount === 0) return 'finalize';

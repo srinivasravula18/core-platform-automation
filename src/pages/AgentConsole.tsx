@@ -1278,7 +1278,8 @@ export default function AgentConsole() {
       return;
     }
     if (!atBottomRef.current) return; // user scrolled up — leave them alone
-    if (scrollRef.current?.contains(document.activeElement)) return;
+    const active = document.activeElement;
+    if (active && scrollRef.current?.contains(active) && active.matches('input, textarea, select, [contenteditable="true"]')) return;
     // 'auto' (not 'smooth'): retargeting a smooth scroll on every streamed token is jerky.
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'auto' });
   }, [turns]);

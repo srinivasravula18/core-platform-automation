@@ -72,6 +72,53 @@ async function main() {
     ok(catalogVocabulary([]).size === 0 && catalogVocabulary(['New Button']).has('new'), 'catalogVocabulary tokenizes labels');
   }
 
+  console.log('Critic — refutes assertion-vs-behavior contradictions (the production failure class)');
+  {
+    setMessageBus(new InMemoryMessageBus());
+    setBlackboard(new InMemoryBlackboard());
+    const cases = [
+      // A1 lowercase contradiction (input-tied): asserts raw "ABC" under a lowercase title.
+      { title: 'API name is converted to lowercase', preconditions: 'Signed in as Admin',
+        steps: [{ action: 'Fill the Account Name Field with "ABC"' }, { action: 'Click the Save Button', expected: 'The API name shows "ABC"' }] },
+      // A2 trim contradiction (quoted assert violates trim).
+      { title: 'Name is trimmed on save', preconditions: 'Signed in',
+        steps: [{ action: 'Click the Save Button', expected: 'The Account Name Field shows " widget "' }] },
+      // B unresolved template token in an assertion.
+      { title: 'New account gets a unique name', preconditions: 'Signed in',
+        steps: [{ action: 'Click the New Button' }, { action: 'Click the Save Button', expected: 'The grid shows "{{unique.username}}"' }] },
+      // C preservation self-contradiction (case/whitespace variant).
+      { title: 'Manual value is preserved as entered', preconditions: 'Signed in',
+        steps: [{ action: 'Fill the Account Name Field with "Acme Corp"' }, { action: 'Click the Save Button', expected: 'The Account Name Field shows "acme corp"' }] },
+    ];
+    const r = await critiqueCases({ runId: 'r-contra', goal: 'x', cases, catalogLabels: CATALOG });
+    const by = (t: string) => r.verdicts.find((v) => v.title === t)!;
+    ok(by('API name is converted to lowercase').issues.some((i) => /not lowercased|contradicts|lowercase/i.test(i)), 'raw-uppercase assert under a lowercase title is refuted');
+    ok(by('Name is trimmed on save').issues.some((i) => /trim/i.test(i)), 'an untrimmed asserted literal under a trim title is refuted');
+    ok(by('New account gets a unique name').issues.some((i) => /template token|\{\{/i.test(i)), 'an unresolved {{token}} in an assertion is refuted');
+    ok(by('Manual value is preserved as entered').issues.some((i) => /preserv|case\/whitespace/i.test(i)), 'a case/whitespace variant under a "preserved" title is refuted');
+    ok(by('API name is converted to lowercase').codes.includes('assert-transform'), 'the transform contradiction carries a stable code');
+    ok(by('New account gets a unique name').codes.includes('assert-template'), 'the template leak carries a stable code');
+  }
+
+  console.log('Critic — does NOT false-refute legitimate transform/preserve cases');
+  {
+    setMessageBus(new InMemoryMessageBus());
+    setBlackboard(new InMemoryBlackboard());
+    const cases = [
+      // Correct lowercase assert.
+      { title: 'API name is converted to lowercase', preconditions: 'Signed in',
+        steps: [{ action: 'Fill the Account Name Field with "ABC"' }, { action: 'Click the Save Button', expected: 'The API name shows "abc"' }] },
+      // Prose with capitalized proper nouns but NO quoted contradiction.
+      { title: 'Name is trimmed on save', preconditions: 'Signed in',
+        steps: [{ action: 'Click the Save Button', expected: 'The Account Name Field updates and the Save Button is enabled' }] },
+      // Genuine preservation: assert === input verbatim.
+      { title: 'Manual value is preserved as entered', preconditions: 'Signed in',
+        steps: [{ action: 'Fill the Account Name Field with "Acme Corp"' }, { action: 'Click the Save Button', expected: 'The Account Name Field shows "Acme Corp"' }] },
+    ];
+    const r = await critiqueCases({ runId: 'r-clean2', goal: 'x', cases, catalogLabels: CATALOG });
+    ok(!r.hasIssues, 'correctly-asserted transform/preserve cases are all accepted (no false refutation)');
+  }
+
   setMessageBus(null);
   setBlackboard(null);
   console.log(`\n${passed} passed, ${failed} failed`);

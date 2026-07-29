@@ -69,7 +69,6 @@ export function RequirementDiscoveryResult({ result, onGenerateTests }: { result
   const businessRules: string[] = understanding?.businessRules || [];
   const metadataRefs: any[] = understanding?.metadataRefs || [];
   const uiSelectorRows = selectorRows(understanding?.uiSelectors || requirement?.uiSelectors);
-  const sourceFiles: any[] = understanding?.sourceFiles || [];
   const scenarios: any[] = understanding?.candidateScenarios || [];
   const badge = COVERAGE_BADGE[requirement?.coverageStatus || 'unknown'] || COVERAGE_BADGE.unknown;
   const apiAnalysis: any = result?.apiAnalysis || null;
@@ -139,20 +138,8 @@ export function RequirementDiscoveryResult({ result, onGenerateTests }: { result
         </div>
       )}
 
-      {/* Cited source files (code <-> requirement trace) */}
-      {sourceFiles.length > 0 && (
-        <div className="mb-3">
-          <div className="mb-1 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]"><FileCode2 className="h-3.5 w-3.5" /> Source files</div>
-          <div className="space-y-0.5">
-            {sourceFiles.map((f, i) => (
-              <div key={i} className="flex items-start gap-1.5 text-[11px]">
-                <span className="shrink-0 font-mono text-[var(--accent)]">{f.path}</span>
-                {f.why && <span className="text-[var(--text-muted)]">— {f.why}</span>}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
+      {/* Source files (repo paths) are intentionally NOT rendered — repo file locations must never surface
+          in agent-facing output. `understanding.sourceFiles` stays in the data for downstream grounding. */}
 
       {/* Coverage verdict. Three states, not two: when coverage against existing tests was NOT
           evaluated (e.g. draft creation), show a NEUTRAL "not checked yet" note instead of the amber
@@ -455,9 +442,8 @@ export function RequirementDiscoveryResult({ result, onGenerateTests }: { result
                 lines.push('Repo UI hooks for testing:');
                 uiSelectorRows.forEach((row) => lines.push(`  - ${row.label}: ${row.values.join(' | ')}`));
               }
-              if (sourceFiles.length) {
-                lines.push('Key source files: ' + sourceFiles.slice(0, 6).map((f: any) => f.path || f).join(', '));
-              }
+              // Source-file repo paths are intentionally omitted from the copyable summary too — repo
+              // locations must never surface in agent-facing output (the data stays for grounding).
               if (scenarios.length) {
                 lines.push(`Candidate scenarios (${scenarios.length}):`);
                 scenarios.forEach((s: any) => lines.push(`  - ${s.title}`));

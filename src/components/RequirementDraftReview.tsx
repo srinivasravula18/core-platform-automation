@@ -56,7 +56,6 @@ export function RequirementDraftReview({
   const businessRules: string[] = Array.isArray(requirement.businessRules) ? requirement.businessRules : [];
   const metadataRefs: any[] = Array.isArray(requirement.metadataRefs) ? requirement.metadataRefs : [];
   const uiSelectorRows = selectorRows(requirement.uiSelectors);
-  const sourceFiles: any[] = Array.isArray(requirement.sourceFiles) ? requirement.sourceFiles : [];
   const badge = COVERAGE_BADGE[requirement.coverageStatus || 'unknown'] || COVERAGE_BADGE.unknown;
   const duplicateOf = result?.duplicateOf;
   const qualityFindings: Array<{ requirement: string; module: string; issue: string; severity: string }> = Array.isArray(result?.qualityFindings) ? result.qualityFindings : [];
@@ -206,22 +205,9 @@ export function RequirementDraftReview({
             </div>
           </div>
         )}
-
-        {sourceFiles.length > 0 && (
-          <div>
-            <div className="mb-1 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
-              <FileCode2 className="h-3.5 w-3.5" /> Source files
-            </div>
-            <div className="max-h-36 space-y-0.5 overflow-auto rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] p-2">
-              {sourceFiles.map((file, index) => (
-                <div key={index} className="flex items-start gap-1.5 text-[11px]">
-                  <span className="shrink-0 font-mono text-[var(--accent)]">{file.path}</span>
-                  {file.why && <span className="text-[var(--text-muted)]">- {file.why}</span>}
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
+        {/* Source files (repo paths) are intentionally NOT rendered in the requirement draft — repo file
+            locations must never surface in agent-facing output. The data stays on `requirement.sourceFiles`
+            for downstream grounding/agent memory; it is just hidden from this view. */}
       </div>
 
       <div className="mt-3 border-t border-[var(--border)] pt-3">
