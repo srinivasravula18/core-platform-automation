@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
-import { ChevronRight, Code2, Folder, Loader2, Search, Video } from 'lucide-react';
+import { ChevronRight, Code2, Folder, Loader2, Search, Tag, Video, X } from 'lucide-react';
 
 // A runnable = anything the data engine can bind to: a Test Case's script, or a captured recording.
 export interface Runnable {
   kind: 'script' | 'recording';
   scriptId?: string; recordingId?: string; caseId?: string;
   name: string; folderId?: string | null; targetUrl?: string; updatedAt?: string;
+  tags?: string[]; // from the linked Test Case — drives tag filtering (e.g. "regression")
 }
 export const runnableKey = (item: Runnable) => item.scriptId || item.recordingId || item.name;
 
@@ -57,10 +58,12 @@ function TreeNode({ node, items, selectedKey, counts, onSelect, depth }: {
 }
 
 function RunnableRow({ item, depth, selected, onSelect }: { item: Runnable; depth: number; selected: boolean; onSelect: (item: Runnable) => void }) {
+  const tags = (item.tags || []).slice(0, 3);
   return <button type="button" onClick={() => onSelect(item)} style={{ paddingLeft: `${12 + depth * 12}px` }}
     className={`flex w-full items-center gap-2 py-1.5 pr-2 text-left text-sm ${selected ? 'bg-[var(--accent)]/10 text-[var(--accent)]' : 'text-[var(--text-primary)] hover:bg-[var(--bg-secondary)]'}`}>
     {item.kind === 'recording' ? <Video className="h-4 w-4 shrink-0 text-[var(--text-muted)]" /> : <Code2 className="h-4 w-4 shrink-0 text-[var(--accent)]" />}
     <span className="min-w-0 flex-1 truncate">{item.name}</span>
+    {tags.map((tag) => <span key={tag} className="hidden shrink-0 rounded bg-[var(--bg-secondary)] px-1.5 py-0.5 text-[10px] text-[var(--text-muted)] sm:inline">{tag}</span>)}
   </button>;
 }
 
@@ -70,6 +73,8 @@ export function RunnablePicker({ selectedKey, onSelect }: { selectedKey: string;
   const [tree, setTree] = useState<FolderNode[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
+  const [activeTags, setActiveTags] = useState<string[]>([]);
+  const toggleTag = (tag: string) => setActiveTags((prev) => prev.includes(tag) ? prev.filter((t) => t !== tag) : [...prev, tag]);
 
   useEffect(() => {
     setLoading(true);
@@ -108,24 +113,49 @@ export function RunnablePicker({ selectedKey, onSelect }: { selectedKey: string;
     return total;
   }, [tree, items]);
 
+  // Distinct tags across all runnables (for the tag-filter chips), most-common-ish first by name.
+  const allTags = useMemo(() => {
+    const set = new Set<string>();
+    for (const item of runnables) for (const tag of item.tags || []) set.add(tag);
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }, [runnables]);
+
+  // A tag/text filter is active whenever the user typed a query OR picked tag chips. Matching a runnable:
+  // its name OR any of its tags contains the text, AND (if tags are picked) it carries at least one.
+  const filtering = search.trim().length > 0 || activeTags.length > 0;
   const filtered = useMemo(() => {
+    if (!filtering) return [];
     const query = search.trim().toLowerCase();
-    return query ? runnables.filter((item) => item.name.toLowerCase().includes(query)) : [];
-  }, [runnables, search]);
+    return runnables.filter((item) => {
+      const tags = item.tags || [];
+      const textOk = !query || item.name.toLowerCase().includes(query) || tags.some((t) => t.toLowerCase().includes(query));
+      const tagsOk = !activeTags.length || tags.some((t) => activeTags.includes(t));
+      return textOk && tagsOk;
+    });
+  }, [runnables, search, activeTags, filtering]);
 
   return <div className="flex min-h-0 flex-col overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--bg-card)]">
     <div className="shrink-0 border-b border-[var(--border)] p-2">
       <div className="mb-2 px-1 text-sm font-semibold">Run what<span className="ml-1 text-[11px] font-normal text-[var(--text-muted)]">cases · scripts · recordings</span></div>
       <label className="relative block">
         <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--text-muted)]" />
-        <input type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search runnables" aria-label="Search runnables"
+        <input type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search by name or tag (e.g. regression)" aria-label="Search runnables by name or tag"
           className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] py-1.5 pl-8 pr-3 text-sm outline-none focus:border-[var(--accent)]" />
       </label>
+      {allTags.length > 0 && <div className="mt-2 flex flex-wrap items-center gap-1">
+        <Tag className="h-3 w-3 text-[var(--text-muted)]" />
+        {allTags.map((tag) => {
+          const on = activeTags.includes(tag);
+          return <button key={tag} type="button" onClick={() => toggleTag(tag)} aria-pressed={on}
+            className={`rounded-full border px-2 py-0.5 text-[11px] ${on ? 'border-[var(--accent)] bg-[var(--accent)]/10 text-[var(--accent)]' : 'border-[var(--border)] text-[var(--text-muted)] hover:border-[var(--accent)]'}`}>{tag}</button>;
+        })}
+        {activeTags.length > 0 && <button type="button" onClick={() => setActiveTags([])} className="ml-1 inline-flex items-center gap-0.5 text-[11px] text-[var(--text-muted)] hover:text-[var(--text-primary)]"><X className="h-3 w-3" />clear</button>}
+      </div>}
     </div>
     <div className="min-h-0 flex-1 overflow-y-auto p-1">
       {loading ? <div className="flex items-center gap-2 p-4 text-sm text-[var(--text-muted)]"><Loader2 className="h-4 w-4 animate-spin" />Loading…</div>
-        : search ? (filtered.length ? filtered.map((item) => <RunnableRow key={runnableKey(item)} item={item} depth={0} selected={selectedKey === runnableKey(item)} onSelect={onSelect} />)
-            : <div className="p-4 text-sm text-[var(--text-muted)]">No runnables match your search.</div>)
+        : filtering ? (filtered.length ? filtered.map((item) => <RunnableRow key={runnableKey(item)} item={item} depth={0} selected={selectedKey === runnableKey(item)} onSelect={onSelect} />)
+            : <div className="p-4 text-sm text-[var(--text-muted)]">No runnables match{activeTags.length ? ` tag ${activeTags.map((t) => `“${t}”`).join(', ')}` : ' your search'}.</div>)
         : (runnables.length ? tree.map((node) => <TreeNode key={node.id} node={node} items={items} selectedKey={selectedKey} counts={counts} onSelect={onSelect} depth={0} />)
             : <div className="p-4 text-sm text-[var(--text-muted)]">No test cases, scripts, or recordings yet.</div>)}
     </div>

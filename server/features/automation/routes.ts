@@ -239,13 +239,20 @@ export function registerAutomationRoutes(app: Express) {
   // recording (closes the "where do I select cases?" gap without touching the resolver).
   app.get('/api/automation/runnables', requireAuth, async (req: Request, res: Response) => {
     const scope = reqScope(req);
+    // Tags + folder come from the linked Test Case, so a runnable can be filtered by tag (e.g. "regression").
+    const casesById = new Map<string, any>();
+    for (const c of scopeFilter((await Cases.list()) as any[], scope)) casesById.set(c.id, c);
+    const tagsFor = (caseId: string): string[] => {
+      const list = Array.isArray(casesById.get(caseId)?.tags) ? casesById.get(caseId).tags : [];
+      return Array.from(new Set(list.map((t: any) => String(t || '').trim()).filter(Boolean)));
+    };
     const scripts = scopeFilter((await Scripts.list()) as any[], scope)
       .filter((s: any) => String(s.code || '').trim())
-      .map((s: any) => ({ kind: 'script' as const, scriptId: s.id, caseId: s.caseId || '', name: s.title || s.name || s.filename || s.id, folderId: s.folderId || '', targetUrl: s.targetUrl || '', updatedAt: s.updatedAt || s.createdAt || '' }));
+      .map((s: any) => ({ kind: 'script' as const, scriptId: s.id, caseId: s.caseId || '', name: s.title || s.name || s.filename || s.id, folderId: s.folderId || casesById.get(s.caseId)?.folderId || '', targetUrl: s.targetUrl || '', updatedAt: s.updatedAt || s.createdAt || '', tags: tagsFor(s.caseId) }));
     const linkedScriptIds = new Set(scripts.map((s) => s.scriptId));
     const recordings = scopeFilter((await Recordings.list()) as any[], scope)
       .filter((r: any) => r.status === 'ready' && String(r.script || '').trim() && !(r.metadata?.scriptId && linkedScriptIds.has(r.metadata.scriptId)))
-      .map((r: any) => ({ kind: 'recording' as const, recordingId: r.id, scriptId: r.metadata?.scriptId || '', caseId: r.metadata?.caseId || '', name: r.name || r.id, folderId: '', targetUrl: r.appUrl || '', updatedAt: r.completedAt || r.createdAt || '' }));
+      .map((r: any) => ({ kind: 'recording' as const, recordingId: r.id, scriptId: r.metadata?.scriptId || '', caseId: r.metadata?.caseId || '', name: r.name || r.id, folderId: '', targetUrl: r.appUrl || '', updatedAt: r.completedAt || r.createdAt || '', tags: tagsFor(r.metadata?.caseId || '') }));
     res.json({ runnables: [...scripts, ...recordings] });
   });
 
