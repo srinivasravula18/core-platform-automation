@@ -137,6 +137,39 @@ function transformContradiction(c: CritiqueCase): string | null {
   return null;
 }
 
+// Submit / create triggers and validation-error indicators — generic verb conventions, no product names.
+const SUBMIT_VERB = /\b(creat|sav(e|ing)|submit|add\b|confirm|apply|register|sign[\s-]?up|update|delete|remov)/i;
+const VALIDATION_INTENT = /\b(required|mandatory|validation|invalid|rejected|cannot|not\s+allowed|blank|empty|error)\b/i;
+/** An EXPECTED result that asserts a validation/error indicator (not a bare "required" — that also appears in
+ * positive "all required fields" prose, which is not an error assertion). */
+const assertsValidation = (expected: string) =>
+  /\b(error|warning|alert|invalid|rejected|not\s+allowed|cannot|must\s+(be\s+)?(provided|entered|filled|selected)|is\s+required|required\s+(field\s+)?(error|message|indicator)|validation)\b/i.test(expected);
+
+/** Is this a validation/negative case (a requirement is being ENFORCED)? Excludes positive "with required fields". */
+function isValidationCase(c: CritiqueCase): boolean {
+  const t = `${c.title ?? ''}. ${c.description ?? ''}`;
+  if (/\bwith\s+(all\s+)?required\b/i.test(t)) return false;
+  return VALIDATION_INTENT.test(t);
+}
+
+/** Check D (authoring-side): a validation/required case must assert the error AFTER a submit/create attempt —
+ * a required-field error does not exist until you try to save with the field empty. Refutes when the validation
+ * is asserted BEFORE the submit step, or when there is no submit step at all. Deterministic from the NL steps. */
+function validationSequencing(c: CritiqueCase): string | null {
+  if (!isValidationCase(c)) return null;
+  const steps = Array.isArray(c.steps) ? c.steps : [];
+  const firstVal = steps.findIndex((s) => assertsValidation(String(s.expected ?? '')));
+  if (firstVal < 0) return null; // no validation assertion → nothing to sequence
+  const submitIdx = steps.findIndex((s) => SUBMIT_VERB.test(String(s.action ?? '')));
+  if (submitIdx < 0) {
+    return `Validation is asserted but no submit/create/save step triggers it — a required-field/validation error only appears AFTER you attempt to save with the field empty. Add the submit step that triggers the validation, or drop the validation assertion.`;
+  }
+  if (firstVal < submitIdx) {
+    return `The validation error is asserted at step ${firstVal + 1}, BEFORE the submit at step ${submitIdx + 1} that would trigger it — the error does not exist until the create/save is attempted. Move the validation check to AFTER the submit step (leave the field empty, submit, THEN assert the error).`;
+  }
+  return null;
+}
+
 /** Check C: the case claims the value is PRESERVED as entered, but asserts a case/whitespace variant of the
  * input — internally inconsistent regardless of app behavior. Provable from the draft alone. */
 function preservationContradiction(c: CritiqueCase): string | null {
@@ -202,6 +235,7 @@ export async function critiqueCases(input: {
     const tc = transformContradiction(c); if (tc) flag('assert-transform', tc);
     const tt = unresolvedTemplate(c); if (tt) flag('assert-template', tt);
     const pc = preservationContradiction(c); if (pc) flag('assert-preserve', pc);
+    const vs = validationSequencing(c); if (vs) flag('assert-sequencing', vs);
 
     verdicts.push({ index, title, accepted: issues.length === 0, issues, codes });
   });

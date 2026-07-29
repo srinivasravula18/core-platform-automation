@@ -21,7 +21,12 @@ function isSubmitClick(step: PlanStep, node: EvidenceNode | null): boolean {
 
 /** A negative/validation case deliberately leaves fields empty (that emptiness IS the test) — never auto-complete it. */
 function isNegativeCase(plan: { title?: string | null }): boolean {
-  return /\b(empty|blank|without|missing|invalid|blocked|required\s+error|validation|negative|cannot|not\s+allowed|leave\s+\w+\s+empty|no\s+\w+\s+(provided|entered))\b/i.test(String(plan?.title || ''));
+  const t = String(plan?.title || '');
+  // Positive create cases often say "with (all) required fields" — that fills them, it is NOT a validation test.
+  if (/\bwith\s+(all\s+)?required\b/i.test(t)) return false;
+  return /\b(empty|blank|without|missing|invalid|blocked|required\s+error|validation|negative|cannot|not\s+allowed|leave\s+\w+\s+empty|no\s+\w+\s+(provided|entered))\b/i.test(t)
+    // Requirement-enforcement intent: "<field> is required", "is mandatory", "requires a …", "must be entered".
+    || /\bis\s+(required|mandatory)\b|\brequires?\s+(a|an|the)\b|\bmust\s+(be\s+)?(provided|entered|filled|specified|set|selected)\b/i.test(t);
 }
 
 /** A create/open TRIGGER — the toolbar control ("New"/"Add"/"+") that reveals a create dialog/drawer, as
@@ -324,6 +329,13 @@ export class PlaywrightCompiler implements Compiler {
         body.push(emitAction(step, spec, value));
       } else {
         const assertStep = step as AssertStep;
+        // In a NEGATIVE/validation case, a HAS_VALUE assert expresses "this requirement is enforced" — assert a
+        // validation error is shown (robust), not a specific field value (brittle: the field may auto-derive or
+        // stay empty, so toHaveValue fails on a correct app). expectValidation confirms the constraint fired.
+        if (assertStep.assert === 'HAS_VALUE' && isNegativeCase(plan)) {
+          body.push(`  await runner.expectValidation(${spec}, ${JSON.stringify(String(assertStep.value ?? ''))});`);
+          return;
+        }
         const raw = String(assertStep.value ?? '');
         const swappable = assertStep.assert === 'HAS_VALUE' || assertStep.assert === 'HAS_TEXT' || assertStep.assert === 'NOT_HAS_TEXT';
         // Deliberate empty-value expectations ("field stays blank") are never rewritten.

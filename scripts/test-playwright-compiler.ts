@@ -389,6 +389,32 @@ function main() {
     ok(openerAt > 0 && headAt > 0 && openerAt < headAt, 'the create opener is injected BEFORE asserting the modal heading (was: heading asserted on the list → not visible)');
   }
 
+  console.log('Negative/validation case: HAS_VALUE → expectValidation (not toHaveValue, which fails on auto-derive/empty)');
+  {
+    const nvRun: any = { id: 'run-nv', selector_registry: { verified_selectors: [
+      vs('lbl', 'textbox', 'Label *', '#lbl', 'css'),
+      vs('api', 'textbox', 'API Name *', '#api', 'css'),
+    ] } };
+    const nvGraph = buildEvidenceGraphFromRun(nvRun, { platform: 'Admin', module: 'apps' });
+    // Negative title: "API Name is required to create an App" → HAS_VALUE becomes a validation check.
+    const neg: TestPlan = { mission: runtime.executionScope, title: 'API Name is required to create an App', steps: [
+      { action: 'CLICK', target: 'Create' as any },
+      { assert: 'HAS_VALUE', target: 'API Name *', value: 'something' },
+    ] };
+    // No Create control in the catalog → the CLICK is unresolved (skippable), but the assert still compiles.
+    const rneg = playwrightCompiler.compile({ mission: runtime, plan: neg, evidenceGraph: nvGraph, run: nvRun });
+    ok(rneg.code.includes('runner.expectValidation('), 'negative-case HAS_VALUE compiles to expectValidation');
+    ok(!/expectValue\([^)]*#api/.test(rneg.code), 'negative case never emits toHaveValue on the field');
+    // Positive create title with "required fields" is NOT negative → HAS_VALUE stays a value check.
+    const pos: TestPlan = { mission: runtime.executionScope, title: 'App is created with all required fields', steps: [
+      { action: 'FILL', target: 'Label *', value: 'x' },
+      { assert: 'HAS_VALUE', target: 'Label *', value: 'x' },
+    ] };
+    const rpos = playwrightCompiler.compile({ mission: runtime, plan: pos, evidenceGraph: nvGraph, run: nvRun });
+    ok(rpos.code.includes('runner.expectValue('), 'positive "with required fields" case keeps expectValue');
+    ok(!rpos.code.includes('expectValidation('), 'positive case is not treated as a validation case');
+  }
+
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed === 0 ? 0 : 1);
 }

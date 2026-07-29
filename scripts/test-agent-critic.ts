@@ -119,6 +119,47 @@ async function main() {
     ok(!r.hasIssues, 'correctly-asserted transform/preserve cases are all accepted (no false refutation)');
   }
 
+  console.log('Critic — validation must be asserted AFTER the submit that triggers it (authoring-side)');
+  {
+    setMessageBus(new InMemoryMessageBus());
+    setBlackboard(new InMemoryBlackboard());
+    const cases = [
+      // Validation asserted BEFORE the Create submit → refuted (the error does not exist yet).
+      { title: 'API Name is required to create an App', preconditions: 'Signed in as Admin',
+        steps: [
+          { action: 'Click the New Button' },
+          { action: 'Observe the API Name field', expected: 'A required-field error is shown for API Name' },
+          { action: 'Click the Create Button', expected: 'The app is not created' },
+        ] },
+      // No submit step at all → refuted (nothing triggers the validation).
+      { title: 'Prefix is required', preconditions: 'Signed in',
+        steps: [
+          { action: 'Click the New Button' },
+          { action: 'Look at the Prefix field', expected: 'A validation error is displayed' },
+        ] },
+      // Correct order: leave empty, submit, THEN assert the error → accepted.
+      { title: 'Label is required', preconditions: 'Signed in',
+        steps: [
+          { action: 'Click the New Button' },
+          { action: 'Leave the Label field empty and click the Create Button' },
+          { action: 'Observe the form', expected: 'A required-field error is shown for Label' },
+        ] },
+      // Positive create case that merely mentions "required fields" → NOT a validation case, not refuted.
+      { title: 'App is created with all required fields', preconditions: 'Signed in',
+        steps: [
+          { action: 'Click the New Button' },
+          { action: 'Fill the Label Field' },
+          { action: 'Click the Create Button', expected: 'The app is created and appears in the list' },
+        ] },
+    ];
+    const r = await critiqueCases({ runId: 'r-seq', goal: 'x', cases, catalogLabels: [] });
+    const by = (t: string) => r.verdicts.find((v) => v.title === t)!;
+    ok(!by('API Name is required to create an App').accepted && by('API Name is required to create an App').codes.includes('assert-sequencing'), 'validation asserted BEFORE the submit is refuted');
+    ok(!by('Prefix is required').accepted && by('Prefix is required').codes.includes('assert-sequencing'), 'validation with no submit step is refuted');
+    ok(by('Label is required').accepted, 'validation asserted AFTER the submit is accepted');
+    ok(by('App is created with all required fields').accepted, 'a positive "with required fields" create case is not treated as validation');
+  }
+
   setMessageBus(null);
   setBlackboard(null);
   console.log(`\n${passed} passed, ${failed} failed`);
