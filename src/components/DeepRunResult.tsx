@@ -429,6 +429,13 @@ export function DeepRunResult({
 
   const messages = run?.messages || [];
   const visibleMessages = messages.filter((message: any) => !containsPrivateFileActivity(message));
+  // P2 — the REAL agent-to-agent substrate for this run (typed bus messages + blackboard facts), present
+  // only when AGENT_NATIVE_V1 is on. When it exists, the "Background communication" panel renders the
+  // actual conversation agents had, not the templated chip log; otherwise it falls back to the legacy view.
+  const conversation = run?.conversation;
+  const a2aMessages: any[] = Array.isArray(conversation?.messages) ? conversation.messages : [];
+  const a2aFacts: any[] = Array.isArray(conversation?.facts) ? conversation.facts : [];
+  const hasA2A = a2aMessages.length > 0;
   const latestAgentMessage = (agent: string) => messages.filter((m: any) => m.agent === agent).pop();
   const hasPhase = (...agents: string[]) => agents.some((agent) => messages.some((m: any) => m.agent === agent));
 
@@ -1143,12 +1150,17 @@ export function DeepRunResult({
         })}
       </div>
 
-      {showQueryLogs && (
-      <details className="mb-3 rounded-lg border border-[var(--border)] bg-[var(--bg-primary)]">
+      {/* P7 — when the live A2A substrate exists it is the PRIMARY view (rendered + expanded by default),
+          not hidden behind the query-logs toggle; the templated chip log remains only as the fallback. */}
+      {(showQueryLogs || hasA2A) && (
+      <details open={hasA2A} className="mb-3 rounded-lg border border-[var(--border)] bg-[var(--bg-primary)]">
         <summary className="flex cursor-pointer items-center gap-2 px-3 py-2 text-xs font-semibold text-[var(--text-primary)]">
           <MessageSquareText className="h-4 w-4 text-[var(--accent)]" />
-          Background communication
-          <span className="text-[11px] font-normal text-[var(--text-muted)]">({visibleMessages.length} messages)</span>
+          {hasA2A ? 'Agent-to-agent communication' : 'Background communication'}
+          <span className="text-[11px] font-normal text-[var(--text-muted)]">
+            ({hasA2A ? `${a2aMessages.length} messages · ${a2aFacts.length} facts` : `${visibleMessages.length} messages`})
+          </span>
+          {hasA2A && <span className="rounded border border-[var(--accent)]/40 bg-[var(--accent)]/10 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-[var(--accent)]">live substrate</span>}
         </summary>
         <div className="border-t border-[var(--border)] p-3">
           <div className="mb-3 grid gap-2 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] p-3 text-xs text-[var(--text-primary)] md:grid-cols-2">
@@ -1157,7 +1169,51 @@ export function DeepRunResult({
             <div><span className="text-[var(--text-muted)]">Provider:</span> {run?.provider || 'default'}</div>
             <div><span className="text-[var(--text-muted)]">Status:</span> {run?.status || 'working'}</div>
           </div>
-          {visibleMessages.length === 0 ? (
+          {hasA2A ? (
+            <div className="space-y-1.5">
+              {a2aMessages.map((m: any, index: number) => {
+                const payload = m.payload && typeof m.payload === 'object' ? m.payload : null;
+                const summary = payload?.summary || (typeof m.payload === 'string' ? m.payload : payload?.task || '');
+                const typeColor = m.type === 'RESULT' ? 'text-emerald-400 border-emerald-500/40 bg-emerald-500/10'
+                  : m.type === 'CRITIQUE' ? 'text-amber-400 border-amber-500/40 bg-amber-500/10'
+                  : m.type === 'HANDOFF' || m.type === 'DELEGATE' ? 'text-sky-400 border-sky-500/40 bg-sky-500/10'
+                  : 'text-[var(--text-muted)] border-[var(--border)] bg-[var(--bg-primary)]';
+                return (
+                  <div key={m.id || index} className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] p-2.5">
+                    <div className="mb-1 flex flex-wrap items-center gap-2">
+                      <span className={`rounded border px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider ${typeColor}`}>{m.type}</span>
+                      <span className="font-mono text-[11px] font-semibold text-[var(--text-primary)]">{m.from}</span>
+                      <span className="text-[var(--text-muted)]">→</span>
+                      <span className="font-mono text-[11px] font-semibold text-[var(--text-primary)]">{m.to || 'all'}</span>
+                      {m.at && <span className="ml-auto text-[10px] text-[var(--text-muted)]">{new Date(m.at).toLocaleTimeString()}</span>}
+                    </div>
+                    {summary && <div className="text-xs leading-5 text-[var(--text-primary)]">{String(summary)}</div>}
+                    {payload && Object.keys(payload).filter((k) => k !== 'summary' && k !== 'task' && k !== 'stage').length > 0 && (
+                      <details className="mt-1.5 text-xs">
+                        <summary className="cursor-pointer text-[var(--accent)]">payload</summary>
+                        <pre className="custom-scrollbar mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-md bg-[var(--bg-primary)] p-2 text-[11px] leading-5 text-[var(--text-primary)]">
+                          {JSON.stringify(m.payload, null, 2)}
+                        </pre>
+                      </details>
+                    )}
+                  </div>
+                );
+              })}
+              {a2aFacts.length > 0 && (
+                <details className="mt-2 text-xs">
+                  <summary className="cursor-pointer font-semibold text-[var(--accent)]">Shared blackboard ({a2aFacts.length} facts)</summary>
+                  <div className="mt-1 space-y-1">
+                    {a2aFacts.map((f: any, i: number) => (
+                      <div key={f.id || i} className="flex flex-wrap items-center gap-2 rounded border border-[var(--border)] bg-[var(--bg-primary)] px-2 py-1 text-[11px]">
+                        <span className="font-mono font-semibold text-[var(--text-primary)]">{f.kind}{f.key ? `:${f.key}` : ''}</span>
+                        <span className="text-[var(--text-muted)]">by {f.by}</span>
+                      </div>
+                    ))}
+                  </div>
+                </details>
+              )}
+            </div>
+          ) : visibleMessages.length === 0 ? (
             <div className="py-6 text-center text-xs text-[var(--text-muted)]">No background messages recorded yet.</div>
           ) : (
             <div className="space-y-2">

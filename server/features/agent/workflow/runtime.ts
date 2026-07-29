@@ -22,7 +22,7 @@ import { buildDefectDrafts, type DefectReport, type PriorRunSummary, type StepLo
 import { buildAnalystReport, isAnalystEnabled, type AnalystReport } from './analyst';
 import { startEvent, terminalEvent, type WorkflowEvent } from './events';
 import { projectRunLifecycleSafe } from '../../../../services/runtime/src/application/sessionProjector';
-import { recordRunStageTransition } from '../../../agent-core/bus/runInstrumentation';
+import { recordRunStageProgress, recordRunTerminal } from '../../../agent-core/bus/runInstrumentation';
 import { buildTestRunGraph, getAuthoredCases, setAuthoredCases, type TestRunGraphDeps } from './testRunGraph';
 import {
   createInitialWorkflowState,
@@ -620,10 +620,11 @@ async function pump(runId: string, entry: RunRegistryEntry, input: unknown): Pro
       if (!state?.runId) continue;
       lastState = state;
       await projectAndPersist(runId, entry, lastState, null);
-      // Phase 1 cutover (shadow): record each stage transition onto the coordination bus + blackboard.
+      // Phase 1 cutover (shadow): project each stage transition onto the coordination bus + blackboard at
+      // full fidelity (HANDOFF + prior stage's RESULT with the real artifact it produced + blackboard fact).
       // No-op unless AGENT_NATIVE_V1 is on; best-effort; changes no decision. First live A2A consumer.
       if (state.stage && state.stage !== lastEmittedStage) {
-        await recordRunStageTransition(runId, state.stage, String(state.status ?? ''), lastEmittedStage);
+        await recordRunStageProgress(runId, state, state.stage, String(state.status ?? ''), lastEmittedStage);
         lastEmittedStage = state.stage;
       }
       await appendEventSafe(progressEvent(runId, lastState, ++entry.eventSeq));
@@ -651,6 +652,8 @@ async function pump(runId: string, entry: RunRegistryEntry, input: unknown): Pro
       // Terminal enrichment hooks run BEFORE the last projection so their outputs land on the final record.
       const defectReport = await fileDefectsForRun(finalState, entry.legacy);
       await runAnalyst(finalState, entry.legacy, defectReport);
+      // Shadow: flush the final stage's RESULT onto the bus (the boundary path can't — no next transition).
+      await recordRunTerminal(runId, finalState);
       await projectAndPersist(runId, entry, finalState, null);
       // Materialize the first-class QA rows the legacy engine used to create — plan → suite →
       // cases → run → report — from the final projected record (idempotent deterministic ids).

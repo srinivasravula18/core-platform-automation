@@ -27,7 +27,9 @@ export function useAgentRun(runId: string) {
     const r = await fetch(`/api/agent-runs/${runId}/details`, { cache: 'no-store' });
     if (!r.ok) throw new Error(r.status === 404 ? 'This agent run is no longer available. Start a new run to continue.' : `Failed to load run (${r.status}).`);
     const data = await r.json();
-    if (activeRef.current) setRun(data);
+    // The details payload replaces the run wholesale; keep the live A2A conversation the status stream
+    // may have already delivered if this payload doesn't carry its own (avoids the panel flickering away).
+    if (activeRef.current) setRun((prev: any) => (data?.conversation ? data : { ...data, conversation: prev?.conversation }));
     return data;
   }, [runId]);
 

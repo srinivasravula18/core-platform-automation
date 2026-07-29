@@ -12,6 +12,11 @@
  */
 import { canonicalAgent, systemPromptFor, type AgentName } from '../../ai/systemPrompts';
 
+/** Resolve a prompt for a display-roster agent by borrowing an existing canonical role's prompt. Keeps the
+ * pipeline specialists (the names the console + instrumentation use) first-class and addressable without
+ * inventing new prompt text. */
+const promptVia = (canonical: AgentName) => () => systemPromptFor(canonical);
+
 export interface AgentDefinition {
   /** Canonical or alias agent name (routed through canonicalAgent). */
   name: string;
@@ -87,6 +92,16 @@ function seed(reg: AgentRegistry): void {
     toolNames: ['query_workspace', 'search_codebase', 'read_code_file'],
     tags: ['chat'],
   });
+
+  // Pipeline specialists — the roster the console + run instrumentation speak (one shared vocabulary across
+  // P1 instrumentation, P3 routing, and P4 critique). Each borrows an existing canonical prompt so it is a
+  // real, addressable agent, not a bare label. Deterministic stages (compile/execute) are capabilities, not
+  // LLM agents, so they are registered as tool-owning liaisons in Phase 6, not here.
+  reg.register({ name: 'ApplicationInspector', description: 'Inspects the live application and grounds evidence (DOM, selectors, API).', toolNames: ['explore_page', 'verify_selectors', 'list_surfaces', 'list_api_endpoints'], resolveSystem: promptVia('appInspector'), tags: ['grounding', 'deep-run'] });
+  reg.register({ name: 'TestGenerationAgent', description: 'Authors test cases from the goal + verified evidence.', toolNames: ['list_api_endpoints'], resolveSystem: promptVia('caseWriter'), tags: ['authoring', 'deep-run'] });
+  reg.register({ name: 'PlaywrightAgent', description: 'Plans per-case scripts and drives compilation from verified evidence.', toolNames: ['explore_page', 'verify_selectors'], resolveSystem: promptVia('playwrightCoder'), tags: ['authoring', 'compile', 'deep-run'] });
+  reg.register({ name: 'CriticAgent', description: 'Adversarially reviews authored cases/selectors and refutes ungrounded or duplicate drafts before compile.', toolNames: ['verify_selectors', 'list_api_endpoints'], resolveSystem: promptVia('caseWriter'), tags: ['verification', 'critic', 'deep-run'] });
+  reg.register({ name: 'QAAnalyst', description: 'Summarizes run outcomes, risk, and defects for release intelligence.', toolNames: [], resolveSystem: promptVia('defectTriage'), tags: ['analysis'] });
 }
 
 /** The process agent registry, seeded with the canonical agents on first use. Injectable via setAgentRegistry (tests). */

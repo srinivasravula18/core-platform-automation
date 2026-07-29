@@ -47,6 +47,11 @@ import { generateCompiledScripts, aiqaCompilerEnabled } from './compiler/compile
 // LangGraph workflow runtime (flag-gated by AGENT_GRAPH_V2; legacy path is default and untouched).
 import { isWorkflowGraphEnabled } from './workflow/checkpointer';
 import { startGraphRun, resumeGraphRun, cancelGraphRun, getPendingReview, reconcileRunIfOrphaned, orphanedRunFailure, persistDefectReport, registerTerminalArtifactPersister } from './workflow/runtime';
+// Agent-native substrate (P2): the console renders the REAL A2A bus + blackboard for a run. Flag-gated.
+import { isAgentNativeEnabled } from '../../agent-core/agentNativeFlag';
+import { getMessageBus } from '../../agent-core/bus/messageBus';
+import { getBlackboard } from '../../agent-core/bus/blackboard';
+import { orchestrateRunStart } from '../../agent-core/router/orchestrateRun';
 import { buildDefectDrafts } from './workflow/defectReporter';
 import type { MissionRef } from './workflow/state';
 import { renderTargetCatalogForPrompt } from './compiler/renderCatalogForPrompt';
@@ -669,7 +674,41 @@ function runStatusSignature(snapshot: any) {
     counts: snapshot.counts,
     messages: snapshot.messages?.map((m: any) => [m.agent, m.status, m.at, typeof m.output === 'string' ? m.output : JSON.stringify(m.output || '').slice(0, 200)]),
     execution: snapshot.execution_result && [snapshot.execution_result.ok, snapshot.execution_result.total, snapshot.execution_result.passed, snapshot.execution_result.failed, snapshot.execution_result.error],
+    // Fold the substrate's size in so a new A2A message/fact pushes an SSE update to the console.
+    conversation: snapshot.conversation && [snapshot.conversation.messages?.length ?? 0, snapshot.conversation.facts?.length ?? 0],
   });
+}
+
+/** Trim a payload/value to a bounded, JSON-safe shape for the wire (the console expands these inline). */
+function lightPayload(value: any) {
+  if (value == null) return value;
+  if (typeof value === 'string') return value.slice(0, 800);
+  try { return JSON.parse(JSON.stringify(value).slice(0, 1600)); }
+  catch { return String(value).slice(0, 800); }
+}
+
+/**
+ * P2 — the live agent-to-agent CONVERSATION for a run: the real typed messages exchanged on the bus plus
+ * the append-only blackboard facts, straight from the substrate P1 populates. Flag-gated by AGENT_NATIVE_V1
+ * (off → null, so the console falls back to the legacy chips and nothing changes). Best-effort: any substrate
+ * read error yields null rather than failing the status endpoint. This is what makes the console "real" —
+ * it renders what agents actually said, not a template.
+ */
+async function attachConversation(snapshot: any, runId: string): Promise<void> {
+  if (!snapshot || !isAgentNativeEnabled()) return;
+  try {
+    const [messages, facts] = await Promise.all([
+      getMessageBus().history(runId),
+      getBlackboard().all(runId),
+    ]);
+    if (!messages.length && !facts.length) return; // nothing on the substrate yet — keep chips as the view
+    snapshot.conversation = {
+      messages: messages.map((m) => ({ id: m.id, seq: m.seq, from: m.from, to: m.to, type: m.type, at: m.at, causationId: m.causationId, payload: lightPayload(m.payload) })),
+      facts: facts.map((f) => ({ id: f.id, seq: f.seq, kind: f.kind, key: f.key, at: f.provenance.at, by: f.provenance.by, value: lightPayload(f.value) })),
+    };
+  } catch {
+    /* substrate read failed — leave the snapshot on its legacy chips */
+  }
 }
 
 function buildSelectedQaContext(input: { testPlanId?: string; testSuiteId?: string; testCaseId?: string }) {
@@ -1852,6 +1891,10 @@ async function beginGraphRunFor(run: any, opts?: { seedCases?: any[]; avoidCaseT
   const priorVerifiedElements = Number.isFinite(priorCapturedAt) && Date.now() - priorCapturedAt < 15 * 60 * 1000
     ? (run.session_context?.selector_registry?.verified_selectors || [])
     : [];
+  // P3 (shadow, flag-gated): the orchestrator delegates the run's plan over the bus before the deterministic
+  // graph executes. Fire-and-forget so it never blocks or fails the run — the graph remains the executor.
+  void orchestrateRunStart({ runId: run.id, goal: run.prompt || '', context: (resolveUnderstanding(run) || '').trim().slice(0, 1200) || undefined })
+    .catch(() => undefined);
   await startGraphRun({
     runId: run.id,
     workspaceId: run.projectId || undefined,
@@ -5067,7 +5110,9 @@ Rules:
     res.set('Cache-Control', 'no-store');
     const run = await loadAgentRun(req.params.id);
     if (!run) return res.status(404).json({ error: 'Run not found' });
-    res.json(runStatusSnapshot(run));
+    const snapshot = runStatusSnapshot(run);
+    await attachConversation(snapshot, req.params.id);
+    res.json(snapshot);
   });
 
   app.get('/api/agent-runs/:id/events', async (req, res) => {
@@ -5091,6 +5136,7 @@ Rules:
         return;
       }
       const snapshot = runStatusSnapshot(current);
+      await attachConversation(snapshot, req.params.id);
       const sig = runStatusSignature(snapshot);
       if (sig !== last) {
         last = sig;
@@ -5115,7 +5161,9 @@ Rules:
     res.set('Cache-Control', 'no-store');
     const run = await loadAgentRun(req.params.id);
     if (!run) return res.status(404).json({ error: 'Run not found' });
-    res.json(runDetailsPayload(run));
+    const payload = runDetailsPayload(run);
+    await attachConversation(payload, req.params.id);
+    res.json(payload);
   });
 
   app.get('/api/agent-runs/:id', async (req, res) => {
@@ -5123,9 +5171,13 @@ Rules:
     const run = await loadAgentRun(req.params.id);
     if (!run) return res.status(404).json({ error: 'Run not found' });
     if (req.query.include === 'details') {
-      return res.json(runDetailsPayload(run));
+      const payload = runDetailsPayload(run);
+      await attachConversation(payload, req.params.id);
+      return res.json(payload);
     }
-    res.json(runStatusSnapshot(run));
+    const snapshot = runStatusSnapshot(run);
+    await attachConversation(snapshot, req.params.id);
+    res.json(snapshot);
   });
 
   app.delete('/api/agent-runs/:id', async (req, res) => {

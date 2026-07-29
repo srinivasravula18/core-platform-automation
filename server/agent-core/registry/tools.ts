@@ -27,13 +27,17 @@ export interface ToolDefinition {
   /** True for capabilities that require a live external session to execute (e.g. Playwright MCP) —
    * registered so they are DISCOVERABLE by intent (RC-4), bound to a real executor only when a session exists. */
   sessionScoped?: boolean;
+  /** True for DETERMINISTIC capabilities (the compiler, the executor) — invoked as tools an agent DELEGATEs
+   * to, never LLM agents. "Agents decide; deterministic code executes." Registered so the orchestrator can
+   * delegate to them by name (Phase 6); they run through the existing graph nodes, not an AgentTool. */
+  deterministic?: boolean;
 }
 
 /** Declare a tool for the registry. Pure — just validates + normalizes the definition. */
 export function defineTool(def: ToolDefinition): ToolDefinition {
   if (!def.name) throw new Error('defineTool: name is required.');
-  if (!def.tool && !def.sessionScoped) throw new Error(`defineTool(${def.name}): a non-session-scoped tool must provide an executable 'tool'.`);
-  return { cost: 0, tags: [], sessionScoped: false, ...def };
+  if (!def.tool && !def.sessionScoped && !def.deterministic) throw new Error(`defineTool(${def.name}): a capability must provide an executable 'tool', or be sessionScoped/deterministic.`);
+  return { cost: 0, tags: [], sessionScoped: false, deterministic: false, ...def };
 }
 
 export class ToolRegistry {
@@ -90,6 +94,13 @@ function seed(reg: ToolRegistry): void {
   for (const name of ['browser_navigate', 'browser_snapshot', 'browser_click', 'browser_type']) {
     reg.register({ name, description: `Playwright MCP browser capability (${name}) — bound to a live MCP session at run time.`, sessionScoped: true, tags: ['mcp', 'browser', 'dom'] });
   }
+
+  // Phase 6: the deterministic pipeline steps registered as CAPABILITIES the orchestrator delegates to.
+  // These are NOT LLM agents — the compiler emits verified Playwright from grounded plans, the executor runs
+  // it against the live app. Registering them makes "agents decide, deterministic code executes" explicit and
+  // addressable; they run through the existing graph nodes (correctness stays deterministic).
+  reg.register({ name: 'compile_scripts', description: 'Deterministic compiler: turns grounded abstract plans into verified Playwright scripts (LLM never emits raw code).', deterministic: true, tags: ['compile', 'deterministic'] });
+  reg.register({ name: 'execute_scripts', description: 'Deterministic executor: runs compiled scripts against the live application and captures evidence + verdicts.', deterministic: true, tags: ['execute', 'deterministic'] });
 }
 
 /** The process tool registry. Seeded on first use. Injectable via setToolRegistry (tests). */

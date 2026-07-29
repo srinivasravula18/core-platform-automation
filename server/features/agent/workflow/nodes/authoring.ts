@@ -56,6 +56,9 @@ export interface AuthorTestCasesInput {
   hasStoredCredentials?: boolean;
   /** Coverage "gaps": existing case titles to NOT duplicate — author only genuinely new behaviors. */
   avoidCaseTitles?: string[];
+  /** P4 critic feedback — when the CriticAgent refutes a draft, its objections are folded into a single
+   * revision pass so the author addresses them (the author↔critic negotiation). Empty on the first pass. */
+  critique?: string;
 }
 
 export interface AuthorTestCasesResult {
@@ -351,6 +354,10 @@ function buildCasesPrompt(input: AuthorTestCasesInput, catalog: string): string 
   const avoid = input.avoidCaseTitles?.length
     ? `\nGAP MODE: the user ALREADY has these test cases — do NOT re-author them or trivial rewordings; author only genuinely NEW behaviors not covered below:\n${input.avoidCaseTitles.slice(0, 40).map((t) => `- ${t}`).join('\n')}`
     : '';
+  // P4: the critic's objections to the previous draft — fix EVERY one in this revision.
+  const critiqueBlock = String(input.critique || '').trim()
+    ? `\nCRITIC REVIEW OF YOUR PREVIOUS DRAFT — you MUST resolve every objection in this revision:\n${String(input.critique).trim().slice(0, 3000)}\n`
+    : '';
   // The chat's code-grounded analysis — the writer's SOURCE OF BEHAVIORS. Bounded so the prompt stays sane;
   // the catalog stays the locator authority (every step still names a real catalog control).
   const understanding = String(input.understanding || '').trim();
@@ -364,7 +371,7 @@ function buildCasesPrompt(input: AuthorTestCasesInput, catalog: string): string 
   return `Author test cases for this goal.
 GOAL: ${input.goal}
 ${countLine}
-${renderMissionRefForPrompt(input.mission)}${authNote(input.hasStoredCredentials)}${understandingBlock}${metadataBlock}${avoid}
+${renderMissionRefForPrompt(input.mission)}${authNote(input.hasStoredCredentials)}${understandingBlock}${metadataBlock}${avoid}${critiqueBlock}
 ${catalog}
 CASE RULES:
 - Each case: short plain-English title naming ONE behavior; one-sentence description; a concrete, NON-EMPTY precondition.

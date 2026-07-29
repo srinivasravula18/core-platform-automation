@@ -942,7 +942,11 @@ export default function AgentConsole() {
       const ordered = [...runs].sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || '')));
       setTurns((prev) => {
         if (token !== loadReqRef.current) return prev; // conversation changed under us — don't graft
-        const shown = new Set(prev.filter((t) => t.kind === 'deeprun').map((t) => t.taskId));
+        const shown = new Set(
+          prev
+            .filter((t): t is Extract<Turn, { kind: 'deeprun' }> => t.role === 'assistant' && t.kind === 'deeprun')
+            .map((t) => t.taskId),
+        );
         const cards: Turn[] = ordered
           .filter((run) => run.id && !shown.has(run.id))
           .map((run) => ({ id: nextId(), role: 'assistant', kind: 'deeprun', taskId: run.id as string }));
