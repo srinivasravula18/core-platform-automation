@@ -233,7 +233,7 @@ export function AIReworkPanel<T extends AIReworkCase>({
               className="inline-flex min-h-10 shrink-0 items-center justify-center gap-1.5 rounded-md bg-[var(--accent)] px-3 text-xs font-semibold text-white hover:bg-[var(--accent-hover)] disabled:opacity-50"
             >
               {loading ? <Loader2 className="h-4 w-4 animate-spin motion-reduce:animate-none" /> : <Sparkles className="h-4 w-4" />}
-              {loading ? 'Building preview...' : 'Preview changes'}
+              {loading ? 'Building preview...' : 'Rework with AI'}
             </button>
           </>
         )}
@@ -256,7 +256,7 @@ export function AIReworkPanel<T extends AIReworkCase>({
           className="inline-flex min-h-10 items-center gap-1.5 rounded-md bg-[var(--accent)] px-3 text-xs font-semibold text-white hover:bg-[var(--accent-hover)] disabled:opacity-50"
         >
           {loading ? <Loader2 className="h-4 w-4 animate-spin motion-reduce:animate-none" /> : <Sparkles className="h-4 w-4" />}
-          {loading ? 'Building preview...' : 'Preview changes'}
+          {loading ? 'Building preview...' : 'Rework with AI'}
         </button>
       </div>}
     </section>
