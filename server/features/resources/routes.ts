@@ -226,6 +226,13 @@ function executionSteps(tests: any[]): any[] {
   }));
 }
 
+const MANUAL_RUN_STATUSES = new Set(['Not Started', 'In Progress', 'Passed', 'Failed', 'Blocked', 'Completed']);
+
+function manualRunStatus(value: unknown): string | null {
+  const status = String(value || 'Not Started').trim();
+  return MANUAL_RUN_STATUSES.has(status) ? status : null;
+}
+
 export function registerResourceRoutes(app: Express) {
   /* ---------- read endpoints (PG-backed, scoped to the selected project/app) ---------- */
   app.get('/api/plans', async (req, res) => res.json(scopeFilter(await Plans.list(), reqScope(req))));
@@ -256,6 +263,8 @@ export function registerResourceRoutes(app: Express) {
     if (!folder || !scopeFilter([folder], reqScope(req)).length) return res.status(400).json({ error: FOLDER_REQUIRED_ERROR });
     const name = String(req.body?.name || '').trim();
     if (!name) return res.status(400).json({ error: 'Run name is required.' });
+    const status = manualRunStatus(req.body?.status);
+    if (!status) return res.status(400).json({ error: 'Select a supported test-run status.' });
     const updated = await Runs.upsert({
       ...run,
       name,
@@ -266,6 +275,7 @@ export function registerResourceRoutes(app: Express) {
       executionTime: String(req.body?.executionTime || ''),
       targetUrl: normalizeTargetUrl(req.body?.targetUrl || ''),
       folderId,
+      status,
     });
     if (!isPgEnabled()) persistDataInBackground('updated run');
     logActivity(req, `Updated test run: ${name}`, { type: 'run', entityId: updated.id });
@@ -1141,6 +1151,8 @@ Rules:
         ? selectedPlans[0].name
         : 'Selected Test Repository';
 
+    const status = manualRunStatus(req.body?.status);
+    if (!status) return res.status(400).json({ error: 'Select a supported test-run status.' });
     const newRun = {
       ...scopeStamp(scope),
       id: runId,
@@ -1154,7 +1166,7 @@ Rules:
       tags: Array.isArray(req.body?.tags) ? req.body.tags : normalizeCaseTags(req.body?.tags || []),
       state: 'Not Started',
       executionTime: req.body?.executionTime || '',
-      status: 'Not Started',
+      status,
       progress: 'Not started',
       date: new Date().toISOString().split('T')[0],
       // Run progress is per selected test case. `steps` is retained for the
@@ -1206,6 +1218,8 @@ Rules:
     const passed = 0;
     const failed = 0;
 
+    const status = manualRunStatus(req.body?.status);
+    if (!status) return res.status(400).json({ error: 'Select a supported test-run status.' });
     const newRun = {
       ...scopeStamp(reqScope(req)),
       id: runId,
@@ -1220,7 +1234,7 @@ Rules:
       tags: Array.isArray(req.body.tags) ? req.body.tags : normalizeCaseTags(req.body.tags || []),
       state: 'Not Started',
       executionTime: req.body.executionTime || '',
-      status: 'Not Started',
+      status,
       progress: 'Not started',
       date: new Date().toISOString().split('T')[0],
       totalExecutions: steps.length,

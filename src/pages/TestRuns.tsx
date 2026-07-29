@@ -78,6 +78,7 @@ function statusDot(status: string) {
 }
 
 const scriptLabel = (script: any) => script.filename || script.name || script.title || script.id || 'Unnamed script';
+const MANUAL_RUN_STATUS_OPTIONS = ['Not Started', 'In Progress', 'Passed', 'Failed', 'Blocked', 'Completed'] as const;
 
 export default function TestRuns() {
   const navigate = useNavigate();
@@ -110,6 +111,7 @@ export default function TestRuns() {
   const [newRunPlanId, setNewRunPlanId] = useState('');
   const [newRunAssignedTo, setNewRunAssignedTo] = useState('');
   const [newRunTags, setNewRunTags] = useState<string[]>([]);
+  const [newRunStatus, setNewRunStatus] = useState<(typeof MANUAL_RUN_STATUS_OPTIONS)[number]>('Not Started');
   const [newRunCaseIds, setNewRunCaseIds] = useState<Set<string>>(new Set());
   const [plans, setPlans] = useState<any[]>([]);
   const [scripts, setScripts] = useState<any[]>([]);
@@ -219,6 +221,7 @@ export default function TestRuns() {
     setNewRunPlanId('');
     setNewRunAssignedTo('');
     setNewRunTags([]);
+    setNewRunStatus('Not Started');
     setNewRunCaseIds(new Set());
     setIsRunModalOpen(true);
   };
@@ -233,6 +236,7 @@ export default function TestRuns() {
     setNewRunPlanId(run.testPlanId || '');
     setNewRunAssignedTo(run.assignedTo || '');
     setNewRunTags(Array.isArray(run.tags) ? run.tags : []);
+    setNewRunStatus(MANUAL_RUN_STATUS_OPTIONS.includes(run.status) ? run.status : 'Not Started');
     setNewRunCaseIds(new Set(Array.isArray(run.caseIds) ? run.caseIds : []));
     setIsRunModalOpen(true);
   };
@@ -251,9 +255,10 @@ export default function TestRuns() {
       executionTime: newRunExecutionTime,
       targetUrl: newRunTargetUrl,
       folderId: newRunFolderId,
+      status: newRunStatus,
     };
     const url = editingRunId ? `/api/runs/${encodeURIComponent(editingRunId)}` : '/api/runs/from-selection';
-    const body = editingRunId ? shared : { ...shared, state: 'Not Started', ...manualRunSelection(newRunPlanId, caseIds) };
+    const body = editingRunId ? shared : { ...shared, ...manualRunSelection(newRunPlanId, caseIds) };
     try {
       const response = await fetch(url, { method: editingRunId ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
       const rsp = await response.json().catch(() => ({}));
@@ -698,8 +703,10 @@ export default function TestRuns() {
             <label className="block text-xs font-medium text-[var(--text-muted)]">Assign To
               <input value={newRunAssignedTo} onChange={(e) => setNewRunAssignedTo(e.target.value)} placeholder="e.g. QA name" className="mt-1 w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm text-[var(--text-primary)]" />
             </label>
-            <label className="block text-xs font-medium text-[var(--text-muted)]">State
-              <span className="mt-1 block w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)]">{editingRunId ? runs.find((run) => run.id === editingRunId)?.state || 'Not Started' : 'Not Started'}</span>
+            <label className="block text-xs font-medium text-[var(--text-muted)]">Status
+              <select value={newRunStatus} onChange={(e) => setNewRunStatus(e.target.value as (typeof MANUAL_RUN_STATUS_OPTIONS)[number])} className="mt-1 w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm text-[var(--text-primary)]">
+                {MANUAL_RUN_STATUS_OPTIONS.map((status) => <option key={status} value={status}>{status}</option>)}
+              </select>
             </label>
             <div>
               <label className="block text-xs font-medium text-[var(--text-muted)]">Tags</label>
