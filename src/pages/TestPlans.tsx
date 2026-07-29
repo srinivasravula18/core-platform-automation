@@ -17,15 +17,19 @@ import { FolderBadge } from '@/src/components/FolderBadge';
 import { MultiSelectDropdown } from '@/src/components/MultiSelectDropdown';
 import { TagEditor } from '@/src/components/TagEditor';
 import { showAlert, showConfirm } from '@/src/lib/dialog';
-import { caseBelongsToSuite, casePlanIds, casePlanMembershipUpdate, suitePlanIds, suitePlanMembershipUpdate } from '@/src/lib/suiteCaseSelection';
+import { caseBelongsToSuite, casePlanIds, casePlanMembershipUpdate, caseSuiteIds, suitePlanIds, suitePlanMembershipUpdate } from '@/src/lib/suiteCaseSelection';
 import { casesForPlan } from '@/src/lib/manualTestRun';
 import { emptyTestPlanFilters, linkedRunsForPlan, matchesTestPlanFilters } from '@/src/lib/testPlanFilters';
+import { emptyTestPlanCaseFilters, matchesTestPlanCaseFilters, resultStatusesForTestCase } from '@/src/lib/testPlanDetailFilters';
 import { localDateKey, normalizeDateKey, planDateWarnings, planStartConflict } from '@/core/shared/testPlanStart';
 import { withBasePath } from '@/src/lib/base-path';
 import { normalizeTags } from '@/src/lib/tags';
 
 const PLAN_STATUSES = ['Draft', 'Under Review', 'Approved', 'In Progress', 'Completed', 'Blocked', 'Cancelled', 'Archived'];
 const MANUAL_PLAN_STATUSES = PLAN_STATUSES.filter((status) => status !== 'In Progress');
+const CASE_RESULT_STATUSES = ['Passed', 'Failed', 'Skipped', 'Retest', 'Blocked', 'Untested'];
+const CASE_STATES = ['Active', 'Draft', 'Under Review', 'Approved', 'Automated', 'Deprecated', 'Archived'];
+const CASE_PRIORITIES = ['Critical', 'High', 'Medium', 'Low'];
 const canStartPlan = (plan: any) => ['Draft', 'Under Review', 'Approved'].includes(plan.status || 'Draft');
 const displayPlanDate = (value: unknown) => {
   const date = normalizeDateKey(value);
@@ -99,6 +103,9 @@ export default function TestPlans() {
   const filterRef = useRef<HTMLDivElement | null>(null);
   const [filters, setFilters] = useState(emptyTestPlanFilters);
   const [matchMode, setMatchMode] = useState<'all' | 'any'>('all');
+  const [detailCaseFilters, setDetailCaseFilters] = useState(emptyTestPlanCaseFilters);
+  const [isDetailFilterOpen, setIsDetailFilterOpen] = useState(false);
+  const detailFilterRef = useRef<HTMLDivElement | null>(null);
   const [isPlanModalOpen, setIsPlanModalOpen] = useState(false);
   const [isAIPlanModalOpen, setIsAIPlanModalOpen] = useState(false);
   const [isStartingRun, setIsStartingRun] = useState(false);
@@ -163,6 +170,20 @@ export default function TestPlans() {
     document.addEventListener('pointerdown', closeOnOutsideClick);
     return () => document.removeEventListener('pointerdown', closeOnOutsideClick);
   }, [isFilterOpen]);
+
+  useEffect(() => {
+    if (!isDetailFilterOpen) return;
+    const closeOnOutsideClick = (event: PointerEvent) => {
+      if (!detailFilterRef.current?.contains(event.target as Node)) setIsDetailFilterOpen(false);
+    };
+    document.addEventListener('pointerdown', closeOnOutsideClick);
+    return () => document.removeEventListener('pointerdown', closeOnOutsideClick);
+  }, [isDetailFilterOpen]);
+
+  useEffect(() => {
+    setDetailCaseFilters(emptyTestPlanCaseFilters());
+    setIsDetailFilterOpen(false);
+  }, [planId]);
 
   const openNewModal = () => {
     setSelectedPlanId(null);
@@ -354,6 +375,23 @@ export default function TestPlans() {
   const getPlanCases = (planId: string) => casesForPlan(cases, suites, planId);
   const selectedDetailPlan = plans.find((plan) => plan.id === planId) || null;
   const getPlanRuns = (plan: any) => linkedRunsForPlan(plan, runs);
+  const detailPlanCases = selectedDetailPlan ? getPlanCases(selectedDetailPlan.id) : [];
+  const detailPlanSuites = selectedDetailPlan ? getPlanSuites(selectedDetailPlan.id) : [];
+  const detailPlanRuns = selectedDetailPlan ? getPlanRuns(selectedDetailPlan) : [];
+  // Plans have no parent/child field yet; additional case-plan memberships are the available sub-plan relation.
+  const detailSubPlans = selectedDetailPlan ? plans.filter((plan) =>
+    plan.id !== selectedDetailPlan.id && detailPlanCases.some((testCase) => casePlanIds(testCase).includes(plan.id)),
+  ) : [];
+  const filteredDetailPlanCases = selectedDetailPlan ? detailPlanCases.filter((testCase) =>
+    matchesTestPlanCaseFilters(testCase, selectedDetailPlan.id, detailPlanRuns, suites, detailCaseFilters),
+  ) : [];
+  const detailResultStatuses = Array.from(new Set([
+    ...CASE_RESULT_STATUSES,
+    ...detailPlanCases.flatMap((testCase) => resultStatusesForTestCase(testCase, detailPlanRuns, selectedDetailPlan?.id || '')),
+  ])).filter(Boolean);
+  const detailStates = Array.from(new Set([...CASE_STATES, ...detailPlanCases.map((testCase) => String(testCase.state || testCase.status || 'Draft'))]));
+  const detailPriorities = Array.from(new Set([...CASE_PRIORITIES, ...detailPlanCases.map((testCase) => String(testCase.priority || 'Medium'))]));
+  const detailFilterCount = Object.values(detailCaseFilters).reduce((count, values) => count + values.length, 0);
   const runCaseCountLabel = (count: number) => count ? `Run ${count} test case${count === 1 ? '' : 's'}` : 'No test cases linked to this plan';
   const tagOptions = normalizeTags([...plans, ...suites, ...cases, ...runs]
     .flatMap((item) => Array.isArray(item.tags) ? item.tags : [])).sort();
@@ -658,7 +696,7 @@ export default function TestPlans() {
             </div>
           </div>
 
-          <div className="border-b border-[var(--border)] px-5 flex gap-6">
+          <div className="flex items-center gap-6 border-b border-[var(--border)] px-5">
             {[
               { id: 'suites', label: `Linked Test Suites (${getPlanSuites(selectedDetailPlan.id).length})` },
               { id: 'cases', label: `Linked Test Cases (${getPlanCases(selectedDetailPlan.id).length})` },
@@ -675,6 +713,60 @@ export default function TestPlans() {
                 {tab.label}
               </button>
             ))}
+            {activeDetailTab === 'cases' && (
+              <div ref={detailFilterRef} className="relative ml-auto">
+                <button
+                  type="button"
+                  onClick={() => setIsDetailFilterOpen((open) => !open)}
+                  aria-expanded={isDetailFilterOpen}
+                  className="inline-flex items-center gap-2 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-1.5 text-sm text-[var(--text-primary)] hover:bg-[var(--border)]"
+                >
+                  <Filter className="h-4 w-4" /> Filters
+                  {detailFilterCount > 0 && <span className="rounded-full bg-[var(--accent)] px-1.5 text-[11px] font-semibold text-white">{detailFilterCount}</span>}
+                </button>
+                {isDetailFilterOpen && (
+                  <div className="absolute right-0 top-10 z-30 max-h-[calc(100dvh-16rem)] w-[min(28rem,calc(100vw-2rem))] overflow-auto rounded-md border border-[var(--border)] bg-[var(--bg-card)] p-3 shadow-xl">
+                    <div className="mb-3 flex items-center justify-between gap-2">
+                      <span className="text-xs font-semibold text-[var(--text-primary)]">Filter linked test cases</span>
+                      <button type="button" onClick={() => setDetailCaseFilters(emptyTestPlanCaseFilters())} className="text-xs font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]">Clear all</button>
+                    </div>
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <div>
+                        <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Folder</label>
+                        <MultiSelectDropdown label="Any folder" options={folders.map((folder) => ({ id: String(folder.id), name: String(folder.path || folder.name) }))} value={detailCaseFilters.folderIds} onChange={(folderIds) => setDetailCaseFilters((current) => ({ ...current, folderIds }))} />
+                      </div>
+                      <div>
+                        <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Test Runs</label>
+                        <MultiSelectDropdown label="Any test run" options={detailPlanRuns.map((run) => ({ id: String(run.id), name: String(run.name || run.id) }))} value={detailCaseFilters.runIds} onChange={(runIds) => setDetailCaseFilters((current) => ({ ...current, runIds }))} />
+                      </div>
+                      <div>
+                        <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Test Suites</label>
+                        <MultiSelectDropdown label="Any test suite" options={detailPlanSuites.map((suite) => ({ id: String(suite.id), name: String(suite.name || suite.id) }))} value={detailCaseFilters.suiteIds} onChange={(suiteIds) => setDetailCaseFilters((current) => ({ ...current, suiteIds }))} />
+                      </div>
+                      <div>
+                        <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Sub Test Plans</label>
+                        <MultiSelectDropdown label="Any sub test plan" options={detailSubPlans.map((plan) => ({ id: String(plan.id), name: String(plan.name || plan.id) }))} value={detailCaseFilters.subPlanIds} onChange={(subPlanIds) => setDetailCaseFilters((current) => ({ ...current, subPlanIds }))} />
+                      </div>
+                      <div>
+                        <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Status</label>
+                        <MultiSelectDropdown label="Any result status" options={detailResultStatuses.map((status) => ({ id: status, name: status }))} value={detailCaseFilters.resultStatuses} onChange={(resultStatuses) => setDetailCaseFilters((current) => ({ ...current, resultStatuses }))} />
+                      </div>
+                      <div>
+                        <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">State</label>
+                        <MultiSelectDropdown label="Any case state" options={detailStates.map((state) => ({ id: state, name: state }))} value={detailCaseFilters.states} onChange={(states) => setDetailCaseFilters((current) => ({ ...current, states }))} />
+                      </div>
+                      <div>
+                        <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Priority</label>
+                        <MultiSelectDropdown label="Any priority" options={detailPriorities.map((priority) => ({ id: priority, name: priority }))} value={detailCaseFilters.priorities} onChange={(priorities) => setDetailCaseFilters((current) => ({ ...current, priorities }))} />
+                      </div>
+                    </div>
+                    <p aria-live="polite" className="mt-3 text-xs text-[var(--text-muted)]">
+                      Showing {filteredDetailPlanCases.length} of {detailPlanCases.length} linked test cases
+                    </p>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
 
           <div className="p-5 flex-1 overflow-auto">
@@ -723,19 +815,27 @@ export default function TestPlans() {
                       <th className="px-4 py-3 font-medium">ID</th>
                       <th className="px-4 py-3 font-medium">Title</th>
                       <th className="px-4 py-3 font-medium">Suite</th>
-                      <th className="px-4 py-3 font-medium">Status</th>
+                      <th className="px-4 py-3 font-medium">Result Status</th>
+                      <th className="px-4 py-3 font-medium">State</th>
                       <th className="px-4 py-3 font-medium">Priority</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-[var(--border)]">
-                    {getPlanCases(selectedDetailPlan.id).length === 0 ? (
-                      <tr><td colSpan={5} className="px-4 py-6 text-center text-[var(--text-muted)]">No test cases are linked to this plan.</td></tr>
-                    ) : getPlanCases(selectedDetailPlan.id).map((testCase) => (
+                    {detailPlanCases.length === 0 ? (
+                      <tr><td colSpan={6} className="px-4 py-6 text-center text-[var(--text-muted)]">No test cases are linked to this plan.</td></tr>
+                    ) : filteredDetailPlanCases.length === 0 ? (
+                      <tr><td colSpan={6} className="px-4 py-6 text-center text-[var(--text-muted)]">No linked test cases match these filters.</td></tr>
+                    ) : filteredDetailPlanCases.map((testCase) => (
                       <tr key={testCase.id}>
                         <td className="px-4 py-3 font-mono text-xs text-[var(--text-muted)]">{testCase.id}</td>
                         <td className="px-4 py-3 font-medium">{testCase.title}</td>
-                        <td className="px-4 py-3 text-[var(--text-muted)]">{suites.find((suite) => suite.id === testCase.testSuiteId)?.name || 'None'}</td>
-                        <td className="px-4 py-3 text-[var(--text-muted)]">{testCase.status || 'Draft'}</td>
+                        <td className="px-4 py-3 text-[var(--text-muted)]">
+                          {caseSuiteIds(testCase).map((suiteId) => suites.find((suite) => suite.id === suiteId)?.name || suiteId).join(', ') || 'None'}
+                        </td>
+                        <td className="px-4 py-3 text-[var(--text-muted)]">
+                          {resultStatusesForTestCase(testCase, detailPlanRuns, selectedDetailPlan.id).join(', ') || 'Untested'}
+                        </td>
+                        <td className="px-4 py-3 text-[var(--text-muted)]">{testCase.state || testCase.status || 'Draft'}</td>
                         <td className="px-4 py-3 text-[var(--text-muted)]">{testCase.priority || 'Medium'}</td>
                       </tr>
                     ))}

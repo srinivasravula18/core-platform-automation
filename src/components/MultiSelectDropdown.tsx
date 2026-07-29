@@ -17,9 +17,7 @@ export function MultiSelectDropdown({
   emptyContent?: ReactNode;
 }) {
   const [open, setOpen] = useState(false);
-  const [selected, setSelected] = useState(value);
   const ref = useRef<HTMLDivElement | null>(null);
-  useEffect(() => setSelected(value), [value]);
   useEffect(() => {
     if (!open) return;
     const close = (event: PointerEvent) => {
@@ -29,13 +27,9 @@ export function MultiSelectDropdown({
     return () => document.removeEventListener('pointerdown', close);
   }, [open]);
 
-  const toggle = (id: string) => setSelected((current) => {
-    const next = current.includes(id) ? current.filter((item) => item !== id) : [...current, id];
-    onChange(next);
-    return next;
-  });
-  const selectedName = selected.length === 1 ? options.find((option) => option.id === selected[0])?.name : '';
-  const summary = selectedName || (selected.length ? `${selected.length} selected` : label);
+  const toggle = (id: string) => onChange(value.includes(id) ? value.filter((item) => item !== id) : [...value, id]);
+  const selectedName = value.length === 1 ? options.find((option) => option.id === value[0])?.name : '';
+  const summary = selectedName || (value.length ? `${value.length} selected` : label);
 
   return (
     <div ref={ref} className={`relative ${className}`} onClick={(event) => event.stopPropagation()}>
@@ -49,7 +43,7 @@ export function MultiSelectDropdown({
             <label key={option.id} className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-[var(--bg-secondary)]">
               <input
                 type="checkbox"
-                checked={selected.includes(option.id)}
+                checked={value.includes(option.id)}
                 onChange={() => toggle(option.id)}
               />
               <span className="min-w-0 truncate" title={option.name}>{option.name}</span>

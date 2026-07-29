@@ -86,6 +86,7 @@ import { renderMcpDomFactsForPrompt } from './mcpDomFacts';
 // and resolveUnderstanding is the one place that decides the run's understanding,
 // so the case writer, coder, and analyst can no longer disagree.
 import { isNoiseTurn, deriveUnderstandingFromChat, resolveUnderstanding } from '../../agent-runtime/context/goalContext';
+import { generateValidCaseRework, requestsAdditionalCaseStep } from './reworkCaseValidation';
 
 function wantsCodeGroundedTestUnderstanding(value: string): boolean {
   const text = String(value || '').toLowerCase();
@@ -6726,26 +6727,38 @@ Rules:
       const reworkRunScope = { appName: (scope.appId ? getApp(scope.appId)?.name : '') || '', app_url: targetUrl || '' };
       const repoContext = buildReworkRepoContext({ scope, testCase, feedback: String(feedback || '') });
       const ai = await getOrchestrator('caseReworker', { workspaceId: reqScope(req).userId || 'default' });
-      const result = await ai.generateObject<any>({
-        prompt: `Target URL: ${targetUrl || 'not provided'}. Current case: ${JSON.stringify(testCase)}. Feedback: ${feedback || 'Improve clarity and coverage.'}
-${repoContext}
-${images ? `The user attached ${images.length} image(s) as additional context for this rework — use what they show when improving the case.\n` : ''}Return a complete test case object. Preserve any useful existing fields. If no explicit preconditions are needed, return preconditions as an empty string. Do not omit required keys.`,
-        schema: z.object({
-          title: z.string(),
-          description: z.string().optional().default(''),
-          preconditions: z.string().optional().default(''),
-          tags: z.array(z.string()).optional().default([]),
-          priority: z.enum(['Low', 'Medium', 'High', 'Critical']).optional().default('Medium'),
-          type: z.enum(['Manual', 'Automated', 'Both']).optional().default('Manual'),
-          steps: z.array(z.object({
-            action: z.string(),
-            expected: z.string(),
-          })),
-        }),
-        userMessage: feedback || 'Rework the case for clarity and coverage.',
-        images,
+      const originalSteps = normalizeCaseSteps(testCase?.steps || []);
+      const mustAddStep = requestsAdditionalCaseStep(feedback);
+      const caseSchema = z.object({
+        title: z.string(),
+        description: z.string().optional().default(''),
+        preconditions: z.string().optional().default(''),
+        tags: z.array(z.string()).optional().default([]),
+        priority: z.enum(['Low', 'Medium', 'High', 'Critical']).optional().default('Medium'),
+        type: z.enum(['Manual', 'Automated', 'Both']).optional().default('Manual'),
+        steps: z.array(z.object({
+          action: z.string(),
+          expected: z.string(),
+        })),
       });
-      const reworked = result.object || {};
+      const addStepRequirement = mustAddStep
+        ? `\nMANDATORY ADD-STEP REQUIREMENT: The current case has ${originalSteps.length} steps. Return at least ${originalSteps.length + 1} steps. Preserve the existing steps and add the requested new step; rewriting an existing step does not satisfy the request.`
+        : '';
+      const reworked = await generateValidCaseRework<any>(feedback, originalSteps, async (isRetry) => {
+        const result = await ai.generateObject<any>({
+          prompt: `Target URL: ${targetUrl || 'not provided'}. Current case: ${JSON.stringify(testCase)}. Feedback: ${feedback || 'Improve clarity and coverage.'}
+${repoContext}
+${images ? `The user attached ${images.length} image(s) as additional context for this rework — use what they show when improving the case.\n` : ''}Return a complete test case object. Preserve any useful existing fields. If no explicit preconditions are needed, return preconditions as an empty string. Do not omit required keys.${addStepRequirement}${isRetry ? '\nCORRECTION: The previous response did not add a step. Follow the mandatory add-step requirement exactly.' : ''}`,
+          schema: caseSchema,
+          userMessage: feedback || 'Rework the case for clarity and coverage.',
+          images,
+        });
+        const object = result.object || {};
+        return { ...object, steps: normalizeCaseSteps(object.steps || []) };
+      });
+      if (!reworked) {
+        return res.status(422).json({ error: `The AI did not add a new step after two attempts. The original ${originalSteps.length} steps were left unchanged; please refine the request and try again.` });
+      }
       res.json(normalizeGeneratedCaseText({
         ...testCase,
         ...reworked,
