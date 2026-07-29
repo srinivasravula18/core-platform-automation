@@ -1864,6 +1864,14 @@ const CASE_MATCH_STOP = new Set([
   'your', 'will', 'must', 'should', 'verify', 'check', 'across', 'have', 'page', 'app', 'application',
   'when', 'then', 'should', 'using', 'about', 'flow', 'flows', 'scenario', 'scenarios',
 ]);
+// The CURRENT request signal for reuse/requirement matching: the prompt with its embedded "Prior agent answer
+// (background only …)" block removed, so a new request ("list view") is not matched against the PREVIOUS
+// answer's vocabulary (app creation). The user request, resolved scope, and user-selected target are kept.
+function currentRequestText(run: any): string {
+  return String(run?.prompt || '')
+    .replace(/Prior agent answer \(background only[\s\S]*?(?=\n\s*(?:User[-\s]selected target:|User follow-up\/request|Resolved scope from router:)|$)/i, '')
+    .trim();
+}
 function caseMatchKeywords(run: any): string[] {
   const u = run.feature_understanding || {};
   const inv = run.feature_inventory || {};
@@ -1874,7 +1882,7 @@ function caseMatchKeywords(run: any): string[] {
     ]) : []),
     ...(Array.isArray(inv.e2eFlows) ? inv.e2eFlows.map((flow: any) => flow?.name) : []),
   ];
-  const text = [run.prompt, run.approvedUnderstanding, u.title, ...(Array.isArray(u.businessRules) ? u.businessRules : []), ...inventoryTerms]
+  const text = [currentRequestText(run), run.approvedUnderstanding, u.title, ...(Array.isArray(u.businessRules) ? u.businessRules : []), ...inventoryTerms]
     .filter(Boolean).join(' ').toLowerCase();
   const toks = (text.match(/[a-z][a-z0-9-]{2,}/g) || []).filter((t) => !CASE_MATCH_STOP.has(t));
   return Array.from(new Set(toks));
@@ -1951,7 +1959,7 @@ async function findRelatedExistingCases(run: any): Promise<any[]> {
   if (!Array.isArray(all) || !all.length) return [];
   const scoped = scopeFilter(all as any[], { projectId: run.projectId || '', appId: run.appId || null, userId: run.ownerId || '', role: '' });
   const kws = caseMatchKeywords(run);
-  const query = `${run.prompt || ''} ${run.feature_understanding?.title || ''}`.trim();
+  const query = `${currentRequestText(run)} ${run.feature_understanding?.title || ''}`.trim();
   if (!kws.length || !scoped.length) return [];
   return scoped
     .map((c: any) => {
