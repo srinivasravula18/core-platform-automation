@@ -119,10 +119,11 @@ const RUN_UNIQUE_KINDS = new Set<FieldKind>(['apiName', 'username', 'employeeId'
  * a repeat run — so REGENERATE a run-seeded value instead of keeping the literal. */
 const REGEN_UNIQUE_KINDS = new Set<FieldKind>(['codePrefix']);
 
-/** Resolve any inline placeholder the author used for uniqueness (${TOKEN} or {{token}}) to a run-seeded value.
- * A name-ish token gets digits, else a short alnum. Deterministic per (field, run) via the passed RNG. */
+/** Resolve any inline placeholder the author used for uniqueness (${TOKEN}, {{token}}, or a [keyword] bracket)
+ * to a run-seeded value. A name-ish token gets digits, else a short alnum. Deterministic per (field, run). */
 function resolveInlineTokens(value: string, r: SeededRandom): string {
-  return value.replace(/\$\{[^{}]*\}|\{\{[^{}]*\}\}/g, (m) => (/num|digit|count|\bid\b|suffix|seq/i.test(m) ? r.digits(4) : r.alnum(4, 'abcdefghijkmnpqrstuvwxyz')));
+  return value.replace(/\$\{[^{}]*\}|\{\{[^{}]*\}\}|\[(?:unique|uuid|guid|timestamp|ts|random|rand|id|seq|counter|now|date)\]/gi,
+    (m) => (/num|digit|count|\bid\b|suffix|seq|ts|timestamp|now|date/i.test(m) ? r.digits(4) : r.alnum(4, 'abcdefghijkmnpqrstuvwxyz')));
 }
 
 export class TestDataEngine {

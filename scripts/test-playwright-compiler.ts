@@ -82,6 +82,7 @@ function main() {
       { assert: 'HAS_VALUE', target: 'Label *', value: 'unique_label' },
       { action: 'FILL', target: 'API Name *', value: 'unique_api_name' },
       { assert: 'HAS_VALUE', target: 'API Name *', value: 'unique_api_name' },
+      { action: 'CLEAR', target: 'Prefix *' },
       { assert: 'HAS_VALUE', target: 'Prefix *', value: '' },
     ] };
     const rc = playwrightCompiler.compile({ mission: runtime, plan: p, evidenceGraph: graph, run });
@@ -92,7 +93,28 @@ function main() {
     ok(!!fillLabel && !!expectLabel && fillLabel[1] === expectLabel[1], `expectValue matches the resolved fill (${fillLabel?.[1]} vs ${expectLabel?.[1]})`);
     const fillApi = /runner\.fill\(\{[^}]*create-app-api[^}]*\}, ("[^"]+")\)/.exec(rc.code);
     ok(!!fillApi && /^"[a-z]+_\d{2}"$/.test(fillApi[1]), `api name resolved to an identifier shape (${fillApi?.[1]})`);
-    ok(/expectValue\(\{[^}]*create-app-prefix[^}]*\}, ""\)/.test(rc.code), 'deliberate empty-value expectation stays ""');
+    ok(/expectValue\(\{[^}]*create-app-prefix[^}]*\}, ""\)/.test(rc.code), 'empty-value expectation stays "" AFTER a deliberate CLEAR');
+  }
+
+  console.log('empty HAS_VALUE on a field the plan never cleared is dropped (auto-derive/default false failure)');
+  {
+    const p: TestPlan = { mission: runtime.executionScope, title: 'verify API Name is derived from Label', steps: [
+      { action: 'FILL', target: 'Label *', value: 'smoke test' },
+      { assert: 'HAS_VALUE', target: 'API Name *', value: '' },
+    ] };
+    const rc = playwrightCompiler.compile({ mission: runtime, plan: p, evidenceGraph: graph, run });
+    ok(!/expectValue\(\{[^}]*create-app-api[^}]*\}, ""\)/.test(rc.code), 'no expectValue("") on an uncleared auto-derived field');
+    ok(rc.diagnostics.some((d) => /HAS_VALUE ""/.test(d.message) && d.severity === 'skippable'), 'the empty-value assert is dropped as skippable');
+  }
+
+  console.log('a [unique] bracket placeholder is resolved to a run-seeded value, never typed/asserted literally');
+  {
+    const p: TestPlan = { mission: runtime.executionScope, title: 'create app', steps: [
+      { action: 'FILL', target: 'Label *', value: 'Default Version App [unique]' },
+    ] };
+    const rc = playwrightCompiler.compile({ mission: runtime, plan: p, evidenceGraph: graph, run });
+    ok(!/\[unique\]/.test(rc.code), 'no literal [unique] placeholder survives into the fill value');
+    ok(/fill\(\{[^}]*create-app-label[^}]*\}, "Default Version App [a-z0-9]{4}"\)/.test(rc.code), 'the placeholder became a run-seeded suffix');
   }
 
   console.log('ungrounded target → diagnostic + marker, never a guess');
@@ -237,6 +259,23 @@ function main() {
     const rmc = playwrightCompiler.compile({ mission: runtime, plan: negModal, evidenceGraph: modalGraph, run: modalRun });
     ok(/dropped validation assert/.test(rmc.code), 'the modal-close NOT_VISIBLE assert is dropped in a negative case');
     ok(!/expectHidden\([^)]*New App/.test(rmc.code), 'no expectHidden on the New App heading survives for a negative case');
+
+    // Class A: the same NOT_VISIBLE on a form INPUT that discovery did NOT tag 'form' (default 'page') — the
+    // old net (stateTag-only) missed these, shipping a false "not visible" bug. Structural detection (the input
+    // role / the plan fills it) must still drop it.
+    const pageRun: any = { id: 'run-page', selector_registry: { verified_selectors: [
+      vs('p_label', 'textbox', 'Label *', '#create-app-label', 'css'),   // NO stateTag → defaults to 'page'
+      vs('p_create', 'button', 'Create', 'role=button[name="Create"]', 'role'),
+    ] } };
+    const pageGraph = buildEvidenceGraphFromRun(pageRun, { platform: 'Admin', module: 'apps' });
+    const negField: TestPlan = { mission: runtime.executionScope, title: 'Label is required to create an app', steps: [
+      { assert: 'NOT_VISIBLE', target: 'Label *' },      // bogus modal-close on a visible input → DROP
+      { action: 'FILL', target: 'Label *', value: 'x' },
+      { action: 'CLICK', target: 'Create' },
+    ] };
+    const rnf = playwrightCompiler.compile({ mission: runtime, plan: negField, evidenceGraph: pageGraph, run: pageRun });
+    ok(!/expectHidden\(\{[^}]*create-app-label/.test(rnf.code), 'no expectHidden on a page-tagged input survives (structural drop, not stateTag)');
+    ok(/create-app-label[^)]*\}, "x"\)/.test(rnf.code) || /fill\(\{[^}]*create-app-label/.test(rnf.code), 'the field is still filled — only the bogus hidden-assert was dropped');
   }
 
   console.log('semantic selection uses the target role, never the English verb alone');

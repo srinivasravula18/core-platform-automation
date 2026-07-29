@@ -426,6 +426,8 @@ PLAN RULES:
 - Translate EVERY source step into plan steps — never drop or merge away behavior.
 - CREATE/SUBMIT flows: before any save/create/submit CLICK, emit a FILL (or SELECT) for EVERY catalog field marked (required). A form submitted with an empty required field is rejected — this is the #1 cause of failed creates.
 - TRANSFORMED FIELDS: when a step fills a field and a later step checks that field (or a field derived from it) and the case is about a normalization/derivation, the HAS_VALUE value MUST be the app's transformed OUTPUT, never the value that was filled. When the exact transformed output is not known from the catalog/analysis, do NOT emit HAS_VALUE with the typed input — emit VERIFY_VALIDATION describing the expected property (e.g. the value is lowercased / trimmed / spaces replaced) instead.
+- NEVER emit HAS_VALUE with an empty value to mean "auto-populated"/"non-empty"/"derived" — an empty HAS_VALUE asserts the field is BLANK and fails a correctly auto-filled field; use VERIFY_VALIDATION for the expected property instead. NOT_VISIBLE belongs on headings/static controls that truly disappear, NEVER on an input/combobox you filled or that stays on-screen.
+- UNIQUENESS PLACEHOLDERS: express run-uniqueness only as a {{unique}} token inside a value (e.g. "Version App {{unique}}"); never author bracket placeholders like [unique] — they are typed and asserted literally.
 - Set unused optional fields (mission/module/title/value) to null.`;
 }
 

@@ -32,6 +32,8 @@ function isNegativeCase(plan: { title?: string | null }): boolean {
 
 const VALIDATION_ASSERTS = new Set(['VERIFY_VALIDATION', 'VERIFY_ERROR']);
 const FILL_ACTIONS = new Set(['FILL', 'SELECT', 'CHECK']);
+const FIELD_TOUCH_ACTIONS = new Set(['FILL', 'SELECT', 'CHECK', 'UNCHECK', 'CLEAR']);
+const FORM_CONTROL_ROLES = new Set(['textbox', 'searchbox', 'spinbutton', 'combobox', 'listbox', 'checkbox', 'radio', 'switch']);
 
 /** Observe-then-assert hygiene: a validation assert can only be true AFTER a submit, on a field that is EMPTY at
  * submit. The plan author scatters expectValidation before the submit and on fields it just filled (both always
@@ -44,10 +46,20 @@ function invalidValidationSteps(plan: { steps: PlanStep[]; title?: string | null
   const isValidationAssert = (s: PlanStep) => isAssertStep(s) && (VALIDATION_ASSERTS.has(s.assert) || (negative && s.assert === 'HAS_VALUE'));
   const resolved = plan.steps.map((s) => { const g = resolveTarget(String((s as any).target || ''), evidenceGraph, run); return g.status === 'RESOLVED' ? { sel: (g.selector as string ?? null), node: g.node } : { sel: null, node: null }; });
   const sel = resolved.map((r) => r.sel);
-  // A NEGATIVE case's create is REJECTED, so the create form/modal STAYS open — a NOT_VISIBLE assert on a
-  // form-state control (a field or the "New App" heading) is always wrong (it never closes). Drop those.
+  // A rejected negative-case submit keeps the modal open, so NOT_VISIBLE on any live form control is wrong.
+  // stateTag==='form' is not reliably set (portal timing/dedup/inline forms), so also detect the control from
+  // the plan's own structure: an editable/toggle role, a required field, or a target the plan fills/clears.
+  const touchedSelectors = new Set<string>();
+  plan.steps.forEach((s, i) => { if (isActionStep(s) && FIELD_TOUCH_ACTIONS.has(s.action) && sel[i]) touchedSelectors.add(sel[i] as string); });
+  const isOpenFormControl = (i: number): boolean => {
+    const node = resolved[i].node;
+    if (node?.stateTag === 'form') return true;
+    if (FORM_CONTROL_ROLES.has(String(node?.role || '').toLowerCase())) return true;
+    if (node && isRequiredFieldNode(node)) return true;
+    return !!sel[i] && touchedSelectors.has(sel[i] as string);
+  };
   if (negative) plan.steps.forEach((s, i) => {
-    if (isAssertStep(s) && s.assert === 'NOT_VISIBLE' && resolved[i].node?.stateTag === 'form') drops.add(i);
+    if (isAssertStep(s) && s.assert === 'NOT_VISIBLE' && isOpenFormControl(i)) drops.add(i);
   });
   let submitIdx = -1;
   plan.steps.forEach((s, i) => {
@@ -257,6 +269,8 @@ export class PlaywrightCompiler implements Compiler {
     // values, or every expectValue after a generated fill fails on the plan's placeholder text.
     const resolvedBySelector = new Map<string, string>();
     const planToResolved = new Map<string, string>();
+    // Selectors the plan deliberately CLEARs — the only fields whose emptiness a HAS_VALUE "" may assert.
+    const clearedSelectors = new Set<string>();
 
     // Required-field completion: the authored plan often fills only the fields the case happened to name, then
     // clicks Save — and the create fails because OTHER required fields are empty. Before the first submit, fill
@@ -376,6 +390,7 @@ export class PlaywrightCompiler implements Compiler {
           if (pv && pv !== value) planToResolved.set(pv.toLowerCase(), value);
         } else if (step.action === 'CLEAR') {
           resolvedBySelector.delete(g.selector as string); // a cleared field's later empty-value check must stay ""
+          clearedSelectors.add(g.selector as string);
         }
         body.push(emitAction(step, spec, value));
       } else {
@@ -417,6 +432,13 @@ export class PlaywrightCompiler implements Compiler {
         const assertRole = String(g.node?.role || '').toLowerCase();
         if (assertStep.assert === 'HAS_VALUE' && ['checkbox', 'radio', 'switch'].includes(assertRole)) {
           body.push(`  await runner.expectChecked(${spec}, ${JSON.stringify(String(value ?? ''))});`);
+          return;
+        }
+        // HAS_VALUE "" is only reliable right after a deliberate CLEAR; on any other field it is a mis-authored
+        // "should be empty" for a value that auto-derives/defaults (toHaveValue("") fails a correct app). Drop it.
+        if (assertStep.assert === 'HAS_VALUE' && String(value ?? '').trim() === '' && !clearedSelectors.has(g.selector as string)) {
+          diagnostics.push({ kind: 'INVALID_STEP', target, stepIndex: i, message: 'HAS_VALUE "" dropped — emptiness is only assertable right after a CLEAR (field may auto-derive/default).', severity: 'skippable' });
+          body.push(`  // dropped empty-value assert (step ${i + 1}): field not cleared — cannot assert blank (may auto-derive/default)`);
           return;
         }
         // Role↔assertion gate: a value/checked assert on an incompatible role can never pass — drop that one

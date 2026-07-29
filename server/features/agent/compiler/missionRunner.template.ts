@@ -263,28 +263,36 @@ export class MissionRunner {
     });
   }
 
-  /** A data row containing the text exists in the current list/grid (role=row — app-agnostic). */
+  /** True when the record text is shown as a list/grid row OR on its own record page (cell/heading/tab/detail
+   * text). Caller must have closed the create form first, so a match is the persisted record, not typed input. */
+  private async recordShown(want: string): Promise<boolean> {
+    if (!want) return false;
+    const vis = async (l: Locator) => (await l.count().catch(() => 0)) > 0 && await l.first().isVisible().catch(() => false);
+    if (await vis(this.page.getByRole('row').filter({ hasText: want }))) return true;
+    if (await vis(this.page.getByRole('cell', { name: want, exact: false }))) return true;
+    if (await vis(this.page.getByRole('heading', { name: want, exact: false }))) return true;
+    if (await vis(this.page.getByRole('tab', { name: want, exact: false }))) return true;
+    return await vis(this.page.getByText(want, { exact: false }));
+  }
+
+  /** The record is now shown — as a list/grid row, OR on its own details page (a create that navigates to the
+   * new record instead of back to the list is still "created & shown"). Polls the current page first, then
+   * reloads the list to cover an SPA that did not re-fetch or a short server-side list cache. */
   async expectRowInList(text: string): Promise<void> {
     await this.act('expectRowInList', null, text, async () => {
       const want = String(text || '');
-      const rowVisible = async () => {
-        const row = this.page.getByRole('row').filter({ hasText: want });
-        return (await row.count()) > 0 && await row.first().isVisible().catch(() => false);
-      };
-      // A just-created record is often absent from the post-submit DOM (the SPA did not re-fetch the list, or a
-      // short server-side list cache): reload the list and poll a few times before failing, so a genuinely
-      // created row is found rather than reported missing.
       const deadline = Date.now() + 40000;
+      let reloaded = false;
       for (;;) {
-        if (await rowVisible()) return;
+        if (await this.recordShown(want)) return;
         if (Date.now() > deadline) break;
         await this.page.goto(this.mission.targetUrl).catch(() => {});
         await this.page.waitForLoadState('domcontentloaded').catch(() => {});
         await this.page.waitForSelector('table tbody tr, [role="row"]', { timeout: 8000 }).catch(() => {});
         await this.page.waitForTimeout(1500);
+        reloaded = true;
       }
-      const row = this.page.getByRole('row').filter({ hasText: want });
-      await expect(row.first()).toBeVisible({ timeout: 5000 });
+      throw new Error('RECORD NOT SHOWN [' + this.mission.executionScope + '] — "' + want + '" was not found as a list row or on its record page' + (reloaded ? ' after reloading the list.' : '.'));
     });
   }
 
@@ -305,14 +313,26 @@ export class MissionRunner {
 
   // ---- Real VERIFY_* expansions (Phase 4) — richer than bare visibility, still evidence-scoped ----
 
-  /** A grounded table/grid is visible; with expected text, a matching data row must exist too. */
+  /** A grounded table/grid is visible and (with expected text) shows a matching row — OR, when a create landed
+   * on the record's details page instead of the list, the expected value shown there confirms it. */
   async expectTable(spec: LocatorSpec, value?: string): Promise<void> {
     await this.act('expectTable', spec, value ?? null, async () => {
+      const want = String(value || '').trim();
       const l = this.locator(spec);
+      const tableVisible = await l.isVisible().catch(() => false);
+      if (!tableVisible) {
+        // Not on the list/grid (create navigated to the record): the value shown on the record page confirms it.
+        if (want && await this.recordShown(want)) return;
+        await expect(l).toBeVisible(); // truly absent → surface the original clear failure
+        return;
+      }
       await this.reveal(l);
       await expect(l).toBeVisible();
-      if (String(value || '').trim()) {
-        await expect(this.page.getByRole('row').filter({ hasText: String(value) }).first()).toBeVisible({ timeout: 10000 });
+      if (want) {
+        const row = this.page.getByRole('row').filter({ hasText: want });
+        if ((await row.count().catch(() => 0)) > 0 && await row.first().isVisible().catch(() => false)) return;
+        if (await this.recordShown(want)) return; // value shown on the record's own page
+        await expect(row.first()).toBeVisible({ timeout: 10000 });
       }
     });
   }
