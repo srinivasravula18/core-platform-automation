@@ -24,6 +24,10 @@ export interface RunArtifacts {
   /** FULL app metadata map (objects/fields) — fetched at context load; state holds only a summary digest.
    * RC-0: graph mode previously dropped this after computing the summary, leaving authoring un-grounded. */
   metadataMap?: import('../../../ai/tools/corePlatformData').CorePlatformMetadataMap;
+  /** Observe-then-assert facts measured during discovery — fed to the case author + critic. */
+  behaviorOracle?: import('../behaviorOracle').BehaviorObservation;
+  /** Validator-loop output (VALIDATE_OUTCOME_V1): each failure classified assertion-defect / app-defect / infra. */
+  outcomeValidation?: import('../outcomeValidator').OutcomeSummary;
 }
 
 const stash = new Map<string, RunArtifacts>();

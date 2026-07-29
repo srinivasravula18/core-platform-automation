@@ -11,6 +11,7 @@ import { isActionStep, isAssertStep, CONTEXT_ASSERTS, type ActionStep, type Asse
 import { TestDataEngine, type FieldSemantics } from '../testdata';
 import { isRequiredFieldNode, type EvidenceNode } from '../graph/evidenceGraph';
 import { isAssertionGroundingEnabled } from './assertionGroundingFlag';
+import { isBehaviorOracleEnabled } from '../behaviorOracleFlag';
 
 /** A submit-intent CLICK — the button that commits a create/edit. App-agnostic verbs; matched against the
  * grounded control's role+label so completing the form before it fires makes create/submit flows succeed. */
@@ -27,6 +28,42 @@ function isNegativeCase(plan: { title?: string | null }): boolean {
   return /\b(empty|blank|without|missing|invalid|blocked|required\s+error|validation|negative|cannot|not\s+allowed|leave\s+\w+\s+empty|no\s+\w+\s+(provided|entered))\b/i.test(t)
     // Requirement-enforcement intent: "<field> is required", "is mandatory", "requires a …", "must be entered".
     || /\bis\s+(required|mandatory)\b|\brequires?\s+(a|an|the)\b|\bmust\s+(be\s+)?(provided|entered|filled|specified|set|selected)\b/i.test(t);
+}
+
+const VALIDATION_ASSERTS = new Set(['VERIFY_VALIDATION', 'VERIFY_ERROR']);
+const FILL_ACTIONS = new Set(['FILL', 'SELECT', 'CHECK']);
+
+/** Observe-then-assert hygiene: a validation assert can only be true AFTER a submit, on a field that is EMPTY at
+ * submit. The plan author scatters expectValidation before the submit and on fields it just filled (both always
+ * fail). Deterministically drop those — grounded in the plan's own fill/clear/submit structure. */
+function invalidValidationSteps(plan: { steps: PlanStep[]; title?: string | null }, evidenceGraph: any, run: any): Set<number> {
+  const drops = new Set<number>();
+  // On a negative case the compiler turns HAS_VALUE into expectValidation (see below), so those obey the same
+  // placement rules as VERIFY_VALIDATION — treat them as validation asserts here too.
+  const negative = isNegativeCase(plan);
+  const isValidationAssert = (s: PlanStep) => isAssertStep(s) && (VALIDATION_ASSERTS.has(s.assert) || (negative && s.assert === 'HAS_VALUE'));
+  const sel = plan.steps.map((s) => { const g = resolveTarget(String((s as any).target || ''), evidenceGraph, run); return g.status === 'RESOLVED' ? (g.selector as string ?? null) : null; });
+  let submitIdx = -1;
+  plan.steps.forEach((s, i) => {
+    if (submitIdx >= 0 || !isActionStep(s) || s.action !== 'CLICK') return;
+    const g = resolveTarget(String((s as any).target || ''), evidenceGraph, run);
+    if (g.status === 'RESOLVED' && isSubmitClick(s, g.node)) submitIdx = i;
+  });
+  const filled = new Map<string, boolean>();
+  plan.steps.forEach((s, i) => {
+    if ((submitIdx >= 0 && i >= submitIdx) || !isActionStep(s) || !sel[i]) return;
+    if (FILL_ACTIONS.has(s.action)) filled.set(sel[i] as string, true);
+    else if (s.action === 'CLEAR') filled.set(sel[i] as string, false);
+  });
+  // Only prune when a submit exists (else the app may validate on blur — leave it to the critic). Drop a
+  // validation assert placed BEFORE that submit, or targeting a field that is FILLED at submit.
+  if (submitIdx < 0) return drops;
+  plan.steps.forEach((s, i) => {
+    if (!isValidationAssert(s)) return;
+    if (i < submitIdx) { drops.add(i); return; }                         // asserted before the submit that triggers it
+    if (sel[i] && filled.get(sel[i] as string) === true) drops.add(i);   // asserted on a field that is filled at submit
+  });
+  return drops;
 }
 
 /** A create/open TRIGGER — the toolbar control ("New"/"Add"/"+") that reveals a create dialog/drawer, as
@@ -278,9 +315,18 @@ export class PlaywrightCompiler implements Compiler {
       if (missingRequired.length) body.push('  // ^ required fields the plan omitted, auto-completed with API-accepted values so the submit is not blocked by empty required inputs');
     };
 
+    // Observe-then-assert hygiene: validation asserts that can't be true (before the submit, or on a field
+    // filled at submit) are dropped so the plan author's scattered expectValidation can't fail the script.
+    const validationDrops = isBehaviorOracleEnabled() ? invalidValidationSteps(plan, evidenceGraph, run) : new Set<number>();
+
     plan.steps.forEach((step: PlanStep, i: number) => {
       // Complete the form's remaining required fields immediately BEFORE the submit click fires.
       if (i === submitIndex) emitRequiredCompletion();
+      if (validationDrops.has(i)) {
+        diagnostics.push({ kind: 'INVALID_STEP', target: String((step as any).target || ''), stepIndex: i, message: 'validation assert dropped — not after a submit on an empty field (observe-then-assert)', severity: 'skippable' });
+        body.push(`  // dropped validation assert (step ${i + 1}): only valid AFTER a submit, on an empty field`);
+        return;
+      }
       // OPEN_MODULE is mission-owned navigation: emit runner.openModule() and never ground it as a locator.
       if (isActionStep(step) && step.action === 'OPEN_MODULE') {
         body.push('  await runner.openModule();');

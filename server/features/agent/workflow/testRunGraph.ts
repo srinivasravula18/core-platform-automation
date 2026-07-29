@@ -33,6 +33,9 @@ import { diffRunSteps, isVisualRegressionEnabled } from '../validation/visualBas
 import { executePlaywrightScripts } from '../../playwright/executionService';
 import { routeAfterDiscoverAndGround, type ResolvedCredential } from './graphs/discoveryGraph';
 import { stashArtifacts, readArtifacts } from './artifactStash';
+import { renderBehaviorForPrompt } from '../behaviorOracle';
+import { classifyOutcomes } from '../outcomeValidator';
+import { isOutcomeValidatorEnabled } from '../outcomeValidatorFlag';
 import { renderMetadataForPrompt } from '../../../ai/tools/corePlatformData';
 import { isAgentNativeEnabled } from '../../../agent-core/agentNativeFlag';
 import { critiqueCases } from '../../../agent-core/critic/caseCritic';
@@ -346,6 +349,8 @@ export function buildTestRunGraph(deps: TestRunGraphDeps = {}, opts: BuildTestRu
     });
     // Full graph/registry go to the run stash for authoring/compilation; state gets refs/digests only.
     stashArtifacts(state.runId, { evidenceGraph: grounding.evidenceGraph, verifiedSelectors: grounding.verifiedSelectors });
+    // Observe-then-assert (BEHAVIOR_ORACLE_V1): stash the probed form behaviour for the author + critic.
+    if (discovery.behavior?.probed) stashArtifacts(state.runId, { behaviorOracle: discovery.behavior });
     // P5 (shadow, flag-gated): publish the verified catalog + gate as SHARED facts so the author/critic read
     // one grounding fact instead of re-deriving it. Fire-and-forget; never affects the grounding result.
     if (isAgentNativeEnabled()) {
@@ -387,7 +392,7 @@ export function buildTestRunGraph(deps: TestRunGraphDeps = {}, opts: BuildTestRu
       return { cases, stage: 'author_cases', updatedAt: nowIso(), errors: [], usage: [] };
     }
 
-    const { evidenceGraph, metadataMap } = readArtifacts(state.runId);
+    const { evidenceGraph, metadataMap, behaviorOracle } = readArtifacts(state.runId);
     const authorInput = {
       mission: state.mission,
       goal: state.request.goal,
@@ -397,6 +402,9 @@ export function buildTestRunGraph(deps: TestRunGraphDeps = {}, opts: BuildTestRu
       evidenceGraph: evidenceGraph ?? null,
       // RC-0: authoritative backend required/readonly field truth (empty string when no app/metadata resolved).
       metadataHint: renderMetadataForPrompt(metadataMap),
+      // Observe-then-assert (BEHAVIOR_ORACLE_V1): measured form behaviour so validation cases are authored the
+      // one correct way (single-field isolation) instead of guessing which fields are required. Empty when off.
+      behaviorHint: renderBehaviorForPrompt(behaviorOracle),
       overrides: deps.modelOverrides,
       hasStoredCredentials: await hasStoredCredentials(state),
       // Coverage "gaps": don't re-author cases the user already has.
@@ -409,11 +417,15 @@ export function buildTestRunGraph(deps: TestRunGraphDeps = {}, opts: BuildTestRu
     // then does exactly ONE revision addressing the objections. Flag off → authoring is byte-identical.
     if (isAgentNativeEnabled() && result.cases.length) {
       const catalogLabels = (evidenceGraph?.nodes ?? []).flatMap((n) => [n.semanticName, n.label]);
-      const critique = await critiqueCases({ runId: state.runId, goal: state.request.goal, cases: result.cases, catalogLabels });
+      console.log(`[behavior-critic] author drafted ${result.cases.length} case(s): ${result.cases.map((c) => c.title).join(' | ')}`);
+      const critique = await critiqueCases({ runId: state.runId, goal: state.request.goal, cases: result.cases, catalogLabels, behavior: behaviorOracle });
       if (critique.hasIssues) {
+        const refuted = critique.verdicts.filter((v) => !v.accepted);
+        console.log(`[behavior-critic] refuted ${refuted.length}: ${refuted.map((v) => `${v.title}[${v.codes.join(',')}]`).join('; ')}`);
         const revised = await authorCases({ ...authorInput, critique: critique.feedback });
         // Only accept the revision if it produced cases — never regress to an empty set on a critic pass.
         if (revised.cases.length) result = { cases: revised.cases, usage: [...result.usage, ...revised.usage], errors: revised.errors };
+        console.log(`[behavior-critic] after revision ${result.cases.length} case(s): ${result.cases.map((c) => c.title).join(' | ')}`);
       }
     }
     // Blocked contract (see buildCasesPrompt): an all-@blocked result means the verified catalog lacks the
@@ -475,12 +487,14 @@ export function buildTestRunGraph(deps: TestRunGraphDeps = {}, opts: BuildTestRu
   };
 
   const authorPlansNode = async (state: WorkflowState): Promise<WorkflowStateUpdate> => {
-    const { evidenceGraph, metadataMap } = readArtifacts(state.runId);
+    const { evidenceGraph, metadataMap, behaviorOracle } = readArtifacts(state.runId);
     const fullCases = authoredCasesByRun.get(state.runId) ?? [];
     const authed = await hasStoredCredentials(state);
     // The plan stage picks assertion types — feed it the SAME app context the case author gets (authoritative
     // field metadata + the code-grounded analysis), so it grounds assert types/expected-state instead of guessing.
     const metadataHint = renderMetadataForPrompt(metadataMap);
+    // Observe-then-assert: the same measured form behaviour, so the plan asserts observed validation, not guessed.
+    const behaviorHint = renderBehaviorForPrompt(behaviorOracle);
     const understanding = state.request.understanding;
     const authored = await mapWithConcurrency(state.cases, PLAN_AUTHORING_CONCURRENCY, async (testCase, index) => {
       // Index-aligned with author_cases's mapping; a stash-less resumed thread degrades to title/description only.
@@ -490,6 +504,7 @@ export function buildTestRunGraph(deps: TestRunGraphDeps = {}, opts: BuildTestRu
         testCase: { title: testCase.title, description: testCase.description ?? full?.description, steps: full?.steps },
         evidenceGraph: evidenceGraph ?? null,
         metadataHint,
+        behaviorHint,
         understanding,
         overrides: deps.modelOverrides,
         hasStoredCredentials: authed,
@@ -639,6 +654,18 @@ export function buildTestRunGraph(deps: TestRunGraphDeps = {}, opts: BuildTestRu
     try {
       const arts = readArtifacts(state.runId);
       const fullCases = getAuthoredCases(state.runId);
+
+      // Phase B (VALIDATE_OUTCOME_V1): classify each failure against the behaviour oracle so an assertion-defect
+      // (bad test) and an app-defect (real bug) are never confused. Report-only; stashed for the analyst.
+      if (isOutcomeValidatorEnabled() && arts.behaviorOracle) {
+        const failures = (arts.executionTests ?? []).filter((t) => t.status !== 'passed').map((t) => ({ title: t.title, error: t.error, status: t.status }));
+        if (failures.length) {
+          const outcome = classifyOutcomes(failures, arts.behaviorOracle);
+          stashArtifacts(state.runId, { outcomeValidation: outcome });
+          console.log(`[validate-outcome] ${failures.length} failure(s): assertion-defect=${outcome.assertionDefects} app-defect=${outcome.appDefects} infra=${outcome.infra} unknown=${outcome.unknown}`);
+          for (const c of outcome.classifications) console.log(`[validate-outcome]   ${c.verdict.toUpperCase()}: ${c.title} — ${c.reason}`);
+        }
+      }
 
       // Phase 6: the flake probe — re-run ONE failing spec (bounded per run) with the run's cached login.
       // A pass demotes the cluster from deterministic bug to flaky inside the investigation node.

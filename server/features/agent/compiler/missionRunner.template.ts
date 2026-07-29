@@ -266,8 +266,25 @@ export class MissionRunner {
   /** A data row containing the text exists in the current list/grid (role=row — app-agnostic). */
   async expectRowInList(text: string): Promise<void> {
     await this.act('expectRowInList', null, text, async () => {
-      const row = this.page.getByRole('row').filter({ hasText: String(text || '') });
-      await expect(row.first()).toBeVisible({ timeout: 15000 });
+      const want = String(text || '');
+      const rowVisible = async () => {
+        const row = this.page.getByRole('row').filter({ hasText: want });
+        return (await row.count()) > 0 && await row.first().isVisible().catch(() => false);
+      };
+      // A just-created record is often absent from the post-submit DOM (the SPA did not re-fetch the list, or a
+      // short server-side list cache): reload the list and poll a few times before failing, so a genuinely
+      // created row is found rather than reported missing.
+      const deadline = Date.now() + 40000;
+      for (;;) {
+        if (await rowVisible()) return;
+        if (Date.now() > deadline) break;
+        await this.page.goto(this.mission.targetUrl).catch(() => {});
+        await this.page.waitForLoadState('domcontentloaded').catch(() => {});
+        await this.page.waitForSelector('table tbody tr, [role="row"]', { timeout: 8000 }).catch(() => {});
+        await this.page.waitForTimeout(1500);
+      }
+      const row = this.page.getByRole('row').filter({ hasText: want });
+      await expect(row.first()).toBeVisible({ timeout: 5000 });
     });
   }
 

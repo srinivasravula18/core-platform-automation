@@ -200,6 +200,27 @@ function main() {
     const rn = playwrightCompiler.compile({ mission: runtime, plan: neg, evidenceGraph: formGraph, run: formRun });
     ok(!/#f-api/.test(rn.code), 'negative "API Name empty" case leaves API Name empty (no auto-complete)');
     ok(!/#f-prefix/.test(rn.code) && !/#f-parent/.test(rn.code), 'negative case does not auto-fill any required field');
+
+    // Observe-then-assert hygiene: the plan author scatters expectValidation before the submit and on filled
+    // fields — the compiler must keep ONLY a validation assert that is after the submit on an empty field.
+    const scattered: TestPlan = { mission: runtime.executionScope, title: 'Prefix is required to create an app', steps: [
+      { action: 'FILL', target: 'Label', value: 'x' },
+      { assert: 'VERIFY_VALIDATION', target: 'Label' },        // pre-submit, filled → DROP
+      { action: 'FILL', target: 'API Name', value: 'y' },
+      { assert: 'HAS_VALUE', target: 'API Name', value: 'y' }, // negative-case HAS_VALUE→expectValidation, pre-submit → DROP
+      { action: 'FILL', target: 'Prefix', value: 'z' },
+      { action: 'CLEAR', target: 'Prefix' },                    // Prefix now empty at submit
+      { assert: 'VERIFY_VALIDATION', target: 'Prefix' },        // pre-submit → DROP
+      { action: 'CLICK', target: 'Create' },                    // submit
+      { assert: 'VERIFY_VALIDATION', target: 'Label' },         // post-submit, Label filled → DROP
+      { assert: 'VERIFY_VALIDATION', target: 'Prefix' },        // post-submit, Prefix empty → KEEP
+    ] };
+    const rs = playwrightCompiler.compile({ mission: runtime, plan: scattered, evidenceGraph: formGraph, run: formRun });
+    ok(/dropped validation assert/.test(rs.code), 'invalid validation asserts are pruned with a diagnostic comment');
+    ok(!/expectValidation\(\{[^}]*#f-label/.test(rs.code), 'validation on the FILLED Label field is dropped');
+    ok(!/expectValidation\(\{[^}]*#f-api/.test(rs.code), 'a negative-case HAS_VALUE→expectValidation before the submit is also dropped');
+    ok(/expectValidation\(\{[^}]*#f-prefix/.test(rs.code), 'validation on the EMPTY (cleared) Prefix field survives');
+    ok(rs.code.indexOf('runner.click') < rs.code.lastIndexOf('#f-prefix'), 'the surviving Prefix validation is asserted AFTER the submit click');
   }
 
   console.log('semantic selection uses the target role, never the English verb alone');

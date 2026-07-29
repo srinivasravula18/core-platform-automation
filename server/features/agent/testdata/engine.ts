@@ -111,6 +111,20 @@ function isGenericPlanValue(value: string | undefined | null): boolean {
     || /^your[\s_-][a-z0-9]+/.test(v);
 }
 
+/** Identifier kinds an app typically enforces UNIQUE — a fixed authored value trips "already exists" on a
+ * repeat run. These carry a run-unique SUFFIX appended to the authored value. */
+const RUN_UNIQUE_KINDS = new Set<FieldKind>(['apiName', 'username', 'employeeId', 'customerId', 'orderNumber', 'invoiceNumber', 'referenceId']);
+
+/** Length-capped unique identifiers (a code/prefix) can't carry a suffix — the authored fixed value collides on
+ * a repeat run — so REGENERATE a run-seeded value instead of keeping the literal. */
+const REGEN_UNIQUE_KINDS = new Set<FieldKind>(['codePrefix']);
+
+/** Resolve any inline placeholder the author used for uniqueness (${TOKEN} or {{token}}) to a run-seeded value.
+ * A name-ish token gets digits, else a short alnum. Deterministic per (field, run) via the passed RNG. */
+function resolveInlineTokens(value: string, r: SeededRandom): string {
+  return value.replace(/\$\{[^{}]*\}|\{\{[^{}]*\}\}/g, (m) => (/num|digit|count|\bid\b|suffix|seq/i.test(m) ? r.digits(4) : r.alnum(4, 'abcdefghijkmnpqrstuvwxyz')));
+}
+
 export class TestDataEngine {
   private readonly identity: GeneratedIdentity;
   private readonly runSeed: string;
@@ -141,10 +155,20 @@ export class TestDataEngine {
    * backend field matches; else DOM-semantic generation. Uniqueness-constrained fields are kept distinct. */
   fillValue(sem: FieldSemantics, planValue?: string | null): string {
     if (!isGenericPlanValue(planValue)) {
-      // An explicit authored value still must respect the field's captured HARD constraints (maxLength /
-      // digit-pattern). An over-long value — e.g. a 6-char value the LLM invented for a 3-char prefix — is
-      // rejected by the app and the create silently fails; truncating to the field's real limit prevents that.
-      return applyConstraints(String(planValue), sem, new SeededRandom(`${this.runSeed}:fit:${fieldKey(sem)}`));
+      const r = new SeededRandom(`${this.runSeed}:fit:${fieldKey(sem)}`);
+      const kind = inferFieldKind(sem);
+      // A length-capped unique identifier (code/prefix) can't be suffixed and the authored fixed value collides
+      // on a repeat run — regenerate a run-seeded value within the field's cap instead of keeping the literal.
+      if (REGEN_UNIQUE_KINDS.has(kind)) return applyConstraints((GENERATORS[kind] ?? GENERATORS.unknown)(this.identity, r), sem, r);
+      // Resolve any inline placeholder the author used for uniqueness (${...}/{{...}}) — the engine owns run-
+      // uniqueness, so a leftover literal token never reaches the app (and the row assert threads the same value).
+      let v = resolveInlineTokens(String(planValue), r);
+      // Identifier fields given a FIXED value collide on a repeat run ("already exists") — append a run-unique
+      // suffix BEFORE constraints so the value stays distinct across runs.
+      if (RUN_UNIQUE_KINDS.has(kind) && !/\d{3,}/.test(v)) v = `${v}${r.alnum(3, 'abcdefghijkmnpqrstuvwxyz')}`;
+      // An explicit value still must respect the field's captured HARD constraints (maxLength / digit-pattern):
+      // an over-long value (a 6-char value for a 3-char prefix) is rejected and the create silently fails.
+      return applyConstraints(v, sem, r);
     }
     const field = matchSchemaField(sem, this.schemas);
 

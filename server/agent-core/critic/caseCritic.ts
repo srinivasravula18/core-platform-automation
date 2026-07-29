@@ -17,6 +17,7 @@ import { isAgentNativeEnabled } from '../agentNativeFlag';
 import { getMessageBus } from '../bus/messageBus';
 import { getBlackboard } from '../bus/blackboard';
 import { readSharedCatalog } from '../grounding/groundingFacts';
+import { behaviorCritique, type BehaviorObservation } from '../../features/agent/behaviorOracle';
 
 const CRITIC = 'CriticAgent';
 const AUTHOR = 'TestGenerationAgent';
@@ -208,6 +209,8 @@ export async function critiqueCases(input: {
    * omitted, the critic reads the SHARED `evidence.catalog` fact from the blackboard (P5), so any agent
    * holding only a runId grounds against the same evidence the inspector published — not a re-derivation. */
   catalogLabels?: Array<string | null | undefined>;
+  /** Observe-then-assert: measured form behaviour. Present → refute validation asserts that contradict it. */
+  behavior?: BehaviorObservation;
   causationId?: string | null;
 }): Promise<CritiqueResult> {
   const labels = input.catalogLabels ?? (isAgentNativeEnabled() ? await readSharedCatalog(input.runId) : []);
@@ -236,6 +239,9 @@ export async function critiqueCases(input: {
     const tt = unresolvedTemplate(c); if (tt) flag('assert-template', tt);
     const pc = preservationContradiction(c); if (pc) flag('assert-preserve', pc);
     const vs = validationSequencing(c); if (vs) flag('assert-sequencing', vs);
+
+    // Observe-then-assert: refute validation asserts that contradict the measured form behaviour.
+    for (const b of behaviorCritique(c, input.behavior)) flag(b.code, b.issue);
 
     verdicts.push({ index, title, accepted: issues.length === 0, issues, codes });
   });

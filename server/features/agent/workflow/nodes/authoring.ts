@@ -48,6 +48,8 @@ export interface AuthorTestCasesInput {
   /** Backend object/field metadata block (renderMetadataForPrompt) — authoritative required/readonly truth (RC-0).
    * The catalog stays the locator authority; this only sharpens which fields are required/read-only. */
   metadataHint?: string;
+  /** Observe-then-assert: the OBSERVED FORM BEHAVIOR block — authors validation cases from measurement, not guesses. */
+  behaviorHint?: string;
   /** Settings identity for provider/model/effort routing; defaults to the legacy case-authoring agent. */
   agent?: string;
   system?: string;
@@ -77,6 +79,8 @@ export interface AuthorAbstractPlanInput {
   /** Authoritative backend field truth (required/readonly/type) — the plan stage was previously starved of
    * this, so it mis-picked assertions. Same block the case author gets (renderMetadataForPrompt). */
   metadataHint?: string;
+  /** Observe-then-assert: OBSERVED FORM BEHAVIOR block — grounds the plan's validation asserts on measurement. */
+  behaviorHint?: string;
   /** The chat's code-grounded analysis of the feature — grounds the EXPECTED side of assertions on real
    * behavior instead of invented headings/data. */
   understanding?: string;
@@ -376,10 +380,14 @@ function buildCasesPrompt(input: AuthorTestCasesInput, catalog: string): string 
   const metadataBlock = String(input.metadataHint || '').trim()
     ? `\n${String(input.metadataHint).trim().slice(0, 4000)}\n`
     : '';
+  // Observe-then-assert: measured form behaviour — the strongest authority for validation cases.
+  const behaviorBlock = String(input.behaviorHint || '').trim()
+    ? `\n${String(input.behaviorHint).trim().slice(0, 2500)}\n`
+    : '';
   return `Author test cases for this goal.
 GOAL: ${input.goal}
 ${countLine}
-${renderMissionRefForPrompt(input.mission)}${authNote(input.hasStoredCredentials)}${understandingBlock}${metadataBlock}${avoid}${critiqueBlock}
+${renderMissionRefForPrompt(input.mission)}${authNote(input.hasStoredCredentials)}${understandingBlock}${metadataBlock}${behaviorBlock}${avoid}${critiqueBlock}
 ${catalog}
 CASE RULES:
 - Each case: short plain-English title naming ONE behavior; one-sentence description; a concrete, NON-EMPTY precondition.
@@ -398,8 +406,9 @@ function buildPlanPrompt(input: AuthorAbstractPlanInput, catalog: string): strin
   const understanding = String(input.understanding || '').trim();
   const understandingBlock = understanding ? `\nVERIFIED FEATURE ANALYSIS (ground the EXPECTED side of asserts on these real behaviors — do not invent headings/messages/data):\n${understanding.slice(0, 3000)}\n` : '';
   const metadataBlock = String(input.metadataHint || '').trim() ? `\n${String(input.metadataHint).trim().slice(0, 3000)}\n` : '';
+  const behaviorBlock = String(input.behaviorHint || '').trim() ? `\n${String(input.behaviorHint).trim().slice(0, 2500)}\n` : '';
   return `Author ONE abstract test plan as JSON for the reviewed test case below — NOT Playwright code.
-${renderMissionRefForPrompt(input.mission)}${authNote(input.hasStoredCredentials)}${understandingBlock}${metadataBlock}
+${renderMissionRefForPrompt(input.mission)}${authNote(input.hasStoredCredentials)}${understandingBlock}${metadataBlock}${behaviorBlock}
 ${catalog}
 REVIEWED TEST CASE:
 Title: ${input.testCase.title || ''}

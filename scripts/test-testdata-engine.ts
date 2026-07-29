@@ -92,9 +92,12 @@ console.log('6. Explicit meaningful plan values are respected; generic placehold
   ok(!/known partial app name/.test(e.fillValue({ label: 'Search' }, 'known partial app name')), 'LLM placeholder phrase → generated');
   // An explicit authored value must still respect the field's captured hard length limits — an over-long
   // value that would be rejected by the app (e.g. a 6-char prefix in a 3-char field) is truncated to fit.
-  eq(e.fillValue({ label: 'Prefix', maxLength: 3 }, 'QAA629'), 'QAA', 'explicit value truncated to captured maxLength');
-  eq(e.fillValue({ label: 'Prefix', pattern: '[a-z]{3}' }, 'QAA629'), 'QAA', 'explicit value truncated to a {N} pattern quantifier');
-  eq(e.fillValue({ label: 'Prefix', placeholder: 'cpl' }, 'QAA629'), 'QAA', 'explicit value truncated to a short example placeholder length');
+  // codePrefix is regenerated run-seeded (for cross-run uniqueness) yet still honors the captured hard limit.
+  ok(e.fillValue({ label: 'Prefix', maxLength: 3 }, 'QAA629').length <= 3, 'over-long prefix regenerated within captured maxLength');
+  ok(/^[a-z]{1,3}$/.test(e.fillValue({ label: 'Prefix', pattern: '[a-z]{3}' }, 'QAA629')), 'prefix regenerated to a valid within-cap code');
+  ok(e.fillValue({ label: 'Prefix', placeholder: 'cpl' }, 'QAA629').length <= 3, 'prefix regenerated within the example-placeholder length');
+  // A non-identifier over-long explicit value is still truncated to its maxLength (constraint path intact).
+  eq(e.fillValue({ label: 'Summary', maxLength: 4 }, 'ABCDEFGH'), 'ABCD', 'a non-prefix over-long explicit value is truncated to maxLength');
   eq(e.fillValue({ label: 'App Label', placeholder: 'Enter the app name' }, 'My Full App Name'), 'My Full App Name', 'a prompt-style placeholder is NOT used as a length cap');
 }
 
@@ -172,6 +175,28 @@ console.log('10. Per-run identity is unique across runs but consistent within a 
   ok(a.getIdentity().email !== b.getIdentity().email, 'distinct runIds → distinct identities');
   const first = a.fillValue({ label: 'First Name' });
   ok(a.getIdentity().fullName.startsWith(first), 'within a run the identity stays consistent');
+}
+
+console.log('11. Inline uniqueness tokens resolve + identifier fields are run-unique (create-form freshness)');
+{
+  const a = new TestDataEngine('run-uniq-A');
+  const b = new TestDataEngine('run-uniq-B');
+  // An author's ad-hoc ${...} placeholder must never reach the app as a literal, and must be run-unique.
+  const labelA = a.fillValue({ label: 'Label *' }, 'QA App ${RUN_UNIQUE_NUMERIC_SUFFIX}');
+  const labelB = b.fillValue({ label: 'Label *' }, 'QA App ${RUN_UNIQUE_NUMERIC_SUFFIX}');
+  ok(!/[$\{\}]/.test(labelA), 'inline ${token} is resolved — no literal ${...} reaches the app');
+  ok(/^QA App \d{4}$/.test(labelA), 'a NUMERIC-named token resolves to digits');
+  ok(labelA !== labelB, 'the resolved value differs across runs (run-unique)');
+  // An identifier field given a FIXED authored value is made run-unique so a repeat run does not collide.
+  const apiA = a.fillValue({ label: 'API Name *' }, 'QAAu');
+  const apiB = b.fillValue({ label: 'API Name *' }, 'QAAu');
+  ok(apiA.startsWith('QAAu') && apiA !== 'QAAu', 'identifier (apiName) explicit value gets a run-unique suffix');
+  ok(apiA !== apiB, 'the identifier differs across runs (no "already exists" collision)');
+  // A length-capped prefix can't be suffixed — it is REGENERATED run-seeded, staying within maxLength AND unique.
+  const prefA = a.fillValue({ label: 'Prefix *', maxLength: 3 }, 'QAA');
+  const prefB = b.fillValue({ label: 'Prefix *', maxLength: 3 }, 'QAA');
+  ok(prefA.length <= 3, 'a 3-char-capped prefix stays within maxLength');
+  ok(prefA !== prefB, 'a length-capped prefix is run-unique across runs (regenerated, not the fixed literal)');
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

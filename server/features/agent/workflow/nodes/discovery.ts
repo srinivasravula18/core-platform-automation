@@ -12,6 +12,8 @@
 import { withPageSession, sessionArtifacts } from '../../pageSession';
 import { collectPageContext } from '../../inspectionService';
 import { captureVerifiedElementsForOpenPage, type VerifiedElement } from '../../domExplorer';
+import { probeFormBehavior, type BehaviorObservation } from '../../behaviorOracle';
+import { isBehaviorOracleEnabled } from '../../behaviorOracleFlag';
 import { WorkflowRuntimeError, WORKFLOW_ERROR_CLASSES, type WorkflowError } from '../errors';
 import type { MissionRef } from '../state';
 
@@ -43,6 +45,8 @@ export interface RunDiscoveryNodeResult {
   pageSummary: DiscoveryPageSummary;
   screenshotRef: string | null;
   errors: WorkflowError[];
+  /** Observe-then-assert facts measured on the opened form (absent when off or no form opened). */
+  behavior?: BehaviorObservation;
 }
 
 const EMPTY_PAGE_SUMMARY: DiscoveryPageSummary = { url: '', title: '', headingCount: 0, tableCount: 0, formCount: 0, bodyTextExcerpt: '' };
@@ -155,12 +159,13 @@ async function markOpenFormOverlay(page: any): Promise<string | null> {
  * (inline panel OR new route), then RESTORES the list state (re-navigates if the URL changed) so the rest of
  * the catalog stays valid. Read-mostly: it never clicks Save/Delete — the real submit happens at execution.
  */
-async function exploreFormState(page: any, elements: VerifiedElement[], targetUrl: string, maxElements?: number): Promise<void> {
+async function exploreFormState(page: any, elements: VerifiedElement[], targetUrl: string, maxElements?: number): Promise<BehaviorObservation | null> {
   const seen = new Set(elements.map((e) => e.resolved_selector).filter(Boolean));
   const opener = elements.find((e) => e.status === 'verified' && e.interactive && e.resolved_selector
     && ['button', 'link', 'menuitem'].includes(String(e.role || ''))
     && FORM_OPENER_LABEL.test(String(e.name || '').trim()));
-  if (!opener) return;
+  if (!opener) return null;
+  let behavior: BehaviorObservation | null = null;
   const beforeUrl = String(page.url?.() || '');
   try {
     await page.locator(opener.resolved_selector as string).first().click({ timeout: 5000 });
@@ -187,6 +192,17 @@ async function exploreFormState(page: any, elements: VerifiedElement[], targetUr
       // treat them as modal-state controls (open the form before asserting them), never as list controls.
       elements.push({ ...el, stateTag: 'form' });
     }
+    // Observe-then-assert: probe the OPEN form's real validation/derive/transform before restoring. Non-destructive.
+    if (isBehaviorOracleEnabled()) {
+      behavior = await probeFormBehavior(page, scope || '').catch(() => null);
+      if (behavior?.probed) {
+        const req = behavior.fields.filter((f) => f.requiredObserved || f.requiredDeclared).map((f) => `${f.label}${f.requiredObserved ? '*' : '(decl)'}`);
+        const der = behavior.fields.filter((f) => f.autoDerivedFrom).map((f) => `${f.label}<${f.autoDerivedFrom}`);
+        console.log(`[behavior-oracle] probed ${behavior.fields.length} fields | required=[${req.join(', ')}] | triggered=${behavior.validationTriggered} | mechanism=${behavior.validationMechanism} | derives=[${der.join(', ')}] | submit=${behavior.submitLabel || '?'}`);
+      } else {
+        console.log('[behavior-oracle] probe produced no observation (form not readable)');
+      }
+    }
     if (scope) await page.evaluate(`(() => { const n = document.querySelector('[data-tf-form-scope]'); if (n) n.removeAttribute('data-tf-form-scope'); })()`).catch(() => undefined);
   } catch { /* opener not clickable / form didn't open — enrichment only, never fail discovery */ }
   // Restore the resting list state: re-navigate if we left the page, else Escape an inline panel.
@@ -197,6 +213,7 @@ async function exploreFormState(page: any, elements: VerifiedElement[], targetUr
     await page.keyboard.press('Escape').catch(() => undefined);
     await page.waitForTimeout(300);
   }
+  return behavior;
 }
 
 /** Session open/navigation/login failures all surface here (withPageSession guarantees cleanup regardless of where inside it the throw came from). */
@@ -244,7 +261,8 @@ export async function runDiscoveryNode(input: RunDiscoveryNodeInput): Promise<Ru
         await revalidatePriorElements(page, elements, input.priorElements);
         await revealAndCaptureDisclosedControls(page, elements, input.maxElements);
         // Fold the create/edit form's fields + Save button into the catalog so fill→submit cases can ground.
-        await exploreFormState(page, elements, targetUrl, input.maxElements);
+        // Also returns the observed form behaviour (BEHAVIOR_ORACLE_V1) probed while the form was open.
+        const behavior = await exploreFormState(page, elements, targetUrl, input.maxElements);
 
         // Must read screenshots before the callback returns — withPageSession closes the session right after.
         const artifacts = sessionArtifacts(sessionId);
@@ -256,6 +274,7 @@ export async function runDiscoveryNode(input: RunDiscoveryNodeInput): Promise<Ru
           pageSummary: summarizePageContext(ctx),
           screenshotRef,
           errors: [],
+          ...(behavior ? { behavior } : {}),
         };
       },
     );

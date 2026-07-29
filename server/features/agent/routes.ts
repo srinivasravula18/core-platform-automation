@@ -5721,6 +5721,18 @@ Rules:
     };
     const generatedSuiteId = req.body.testSuiteId ? '' : await nextArtifactId('SUITE', artifactIdContext);
 
+    // In-flight guard: a hard refresh / double-submit can re-drive this endpoint for a conversation whose run is
+    // still going, minting a duplicate run each time. If the conversation's latest run is non-terminal AND this
+    // is the SAME request (same target + prompt), attach to it instead of starting another.
+    const TERMINAL_RUN_STATUS = new Set(['completed', 'failed', 'cancelled']);
+    if (priorSessionRun
+      && !TERMINAL_RUN_STATUS.has(String(priorSessionRun.status || ''))
+      && normTarget(String(priorSessionRun.app_url || '')) === normTarget(targetUrl)
+      && String(priorSessionRun.prompt || '').trim() === String(prompt || '').trim()) {
+      console.log(`[agent/start] duplicate suppressed — conversation ${conversationId} already has in-flight run ${priorSessionRun.id} (status ${priorSessionRun.status}); attaching instead of starting a new one.`);
+      return res.json({ task_id: priorSessionRun.id });
+    }
+
     const newRun = {
       id: taskId,
       app_url: targetUrl,
