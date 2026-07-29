@@ -318,6 +318,9 @@ export function DeepRunResult({
   const [feedback, setFeedback] = useState<Record<number, string>>({});
   const [selectedCases, setSelectedCases] = useState<Set<number>>(new Set());
   const [selectedScripts, setSelectedScripts] = useState<Set<number>>(new Set());
+  // Tracks only rows edited in this review surface. The case popover must never
+  // turn a single row edit into a suite-wide save.
+  const [dirtyCaseIndexes, setDirtyCaseIndexes] = useState<Set<number>>(new Set());
   // Per-case set of step indices ticked for merging into one.
   const [mergePick, setMergePick] = useState<Record<number, number[]>>({});
   const [busy, setBusy] = useState<string | null>(null);
@@ -504,6 +507,7 @@ export function DeepRunResult({
   /* ---------- local case editing ---------- */
   const patchCase = (i: number, patch: Partial<Case>) => {
     setCases((prev) => (prev ? prev.map((c, idx) => (idx === i ? { ...c, ...patch } : c)) : prev));
+    setDirtyCaseIndexes((prev) => new Set(prev).add(i));
     setSaved(false);
   };
   const patchStep = (i: number, si: number, patch: Partial<Step>) => {
@@ -698,6 +702,13 @@ export function DeepRunResult({
       setReworkUndoStack(result.undoSnapshots);
       setReworkAppliedOwner(reworkProposalOwner);
       setCases(result.cases);
+      setDirtyCaseIndexes((current) => {
+        const next = new Set(current);
+        result.cases.forEach((caseAfter, index) => {
+          if (caseSig(list[index]) !== caseSig(caseAfter)) next.add(index);
+        });
+        return next;
+      });
       if (Object.keys(changeMarkers).length) {
         setAiChangeMarkers((current) => ({ ...current, ...changeMarkers }));
       }
@@ -761,6 +772,7 @@ export function DeepRunResult({
       });
       if (!res.ok) throw await errorFromResponse(res);
       setSaved(true); // only mark saved on a verified 2xx
+      setDirtyCaseIndexes(new Set());
       onSaved?.(); // persist savedness into the conversation turn so it survives navigation
       if (wasSaved) void showAlert(`Re-saved ${list.length} test case${list.length === 1 ? '' : 's'} to the Test Cases section.`);
     } catch (e: any) {
@@ -768,6 +780,16 @@ export function DeepRunResult({
     } finally {
       setBusy(null);
     }
+  };
+  const saveCase = async (i: number) => {
+    if (!dirtyCaseIndexes.has(i)) return;
+    // This is deliberately a preview-only checkpoint. Persisting to the Test
+    // Cases folder remains the explicit responsibility of the suite-level Save all.
+    setDirtyCaseIndexes((prev) => {
+      const next = new Set(prev);
+      next.delete(i);
+      return next;
+    });
   };
   const continueFlow = async () => {
     if (!list.length && !scriptReviewing) return;
@@ -1875,11 +1897,11 @@ export function DeepRunResult({
                         </div>
                       </div>
                       <div className="flex items-center justify-between gap-3 border-t border-[var(--border)] bg-[var(--bg-secondary)] px-4 py-3">
-                        <span className="text-[11px] text-[var(--text-muted)]">{saved ? 'All changes are saved.' : 'Save your edits before closing this test case.'}</span>
+                        <span className="text-[11px] text-[var(--text-muted)]">{dirtyCaseIndexes.has(i) ? 'Save your edits before closing this test case.' : 'All changes are saved.'}</span>
                         <button
                           type="button"
-                          onClick={() => void saveAll()}
-                          disabled={busy === 'save'}
+                          onClick={() => void saveCase(i)}
+                          disabled={!dirtyCaseIndexes.has(i)}
                           className="inline-flex min-h-9 items-center gap-1.5 rounded-md bg-[var(--accent)] px-3 text-xs font-semibold text-white hover:bg-[var(--accent-hover)] disabled:opacity-50"
                         >
                           {busy === 'save' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}

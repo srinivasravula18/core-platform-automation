@@ -743,7 +743,6 @@ export default function TestRuns() {
 
           {!editingRunId && (
             <div>
-              <label className="mb-1 block text-xs font-medium text-[var(--text-muted)]">Test Cases with Playwright Scripts</label>
               <div className="mb-2 flex items-end gap-2">
                 <FolderSelect value={newRunCaseFolderId} onChange={setNewRunCaseFolderId} label="Test Case Folder" allowCreate={false} className="flex-1" />
                 <button
