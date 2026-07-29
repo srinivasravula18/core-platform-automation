@@ -117,6 +117,35 @@ function main() {
     ok(/fill\(\{[^}]*create-app-label[^}]*\}, "Default Version App [a-z0-9]{4}"\)/.test(rc.code), 'the placeholder became a run-seeded suffix');
   }
 
+  console.log('SELECT on a textbox is coerced (not dropped): "Select the API Name field" → click/fill, case still ships');
+  {
+    // no value → CLICK (focus/review); the whole case must NOT be skipped for one mis-verbed step.
+    const p: TestPlan = { mission: runtime.executionScope, title: 'Label derives object naming fields', steps: [
+      { action: 'CLICK', target: 'New' },
+      { action: 'FILL', target: 'Label *', value: 'Quarterly Project' },
+      { action: 'SELECT', target: 'API Name *' },   // English "select the field" → review → CLICK
+      { action: 'SELECT', target: 'Prefix *' },      // same
+    ] };
+    const rc = playwrightCompiler.compile({ mission: runtime, plan: p, evidenceGraph: graph, run });
+    ok(rc.ok, 'case still compiles (no blocking diagnostic) — not skipped');
+    ok(!rc.diagnostics.some((d) => d.severity === 'blocking'), 'the SELECT-on-textbox is not blocking');
+    ok(/click\(\{[^}]*create-app-api/.test(rc.code), 'valueless SELECT on the API Name textbox coerced to a click');
+    ok(rc.diagnostics.some((d) => /coerced to CLICK/.test(d.message)), 'the coercion is recorded as a skippable diagnostic');
+    // With a value, the coercion is a FILL instead.
+    const p2: TestPlan = { mission: runtime.executionScope, title: 'pick', steps: [
+      { action: 'CLICK', target: 'New' },
+      { action: 'SELECT', target: 'API Name *', value: 'acme_api' },
+    ] };
+    const rc2 = playwrightCompiler.compile({ mission: runtime, plan: p2, evidenceGraph: graph, run });
+    ok(/runner\.fill\(\{[^}]*create-app-api/.test(rc2.code) && !/runner\.select\(\{[^}]*create-app-api/.test(rc2.code), 'SELECT with a value on a textbox coerced to fill (not select)');
+    // Global, not textbox-specific: a mis-verbed action on ANY role maps to that role's natural action.
+    const p3: TestPlan = { mission: runtime.executionScope, title: 'matrix', steps: [
+      { action: 'FILL', target: 'New', value: 'x' },   // FILL on a BUTTON → CLICK
+    ] };
+    const rc3 = playwrightCompiler.compile({ mission: runtime, plan: p3, evidenceGraph: graph, run });
+    ok(rc3.ok && /runner\.click\(\{[^}]*testid.*new/i.test(rc3.code.replace(/\n/g, ' ')), 'FILL on a button coerced to click (matrix is universal, not per-field)');
+  }
+
   console.log('ungrounded target → diagnostic + marker, never a guess');
   const bad: TestPlan = { mission: runtime.executionScope, steps: [
     { action: 'CLICK', target: 'Apps' },       // not unique → withheld from the graph

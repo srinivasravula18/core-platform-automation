@@ -214,6 +214,28 @@ function actionFitsRole(step: ActionStep, roleValue: unknown): boolean {
   return true;
 }
 
+/** The natural action for a grounded role — the verb that role actually supports. Universal (every control
+ * class), so any mis-verbed step maps to the right action instead of a per-feature special case. A value-bearing
+ * step keeps its value (FILL/SELECT); a value-less one on an editable/choice control is a focus/review CLICK. */
+function naturalActionForRole(roleValue: unknown, hasValue: boolean): ActionStep['action'] | null {
+  const r = String(roleValue || '').toLowerCase();
+  if (['textbox', 'searchbox', 'spinbutton'].includes(r)) return hasValue ? 'FILL' : 'CLICK';
+  if (['combobox', 'listbox', 'select'].includes(r)) return hasValue ? 'SELECT' : 'CLICK';
+  if (['checkbox', 'radio', 'switch'].includes(r)) return 'CLICK'; // click toggles — role-compatible and safe
+  if (['button', 'link', 'tab', 'menuitem', 'option', 'columnheader', 'row'].includes(r)) return 'CLICK';
+  return null;
+}
+
+/** Recover a role-mismatched action by coercing the verb to the grounded role's natural action instead of
+ * dropping the whole case ("Select the API Name textbox" → CLICK/FILL; "Fill the Save button" → CLICK). Returns
+ * the coerced step, or null when no safe coercion fits (then it stays a blocking diagnostic). App-agnostic. */
+function coerceActionToRole(step: ActionStep, roleValue: unknown): ActionStep | null {
+  const hasValue = String((step as any).value ?? '').trim().length > 0;
+  const natural = naturalActionForRole(roleValue, hasValue);
+  if (!natural || natural === step.action) return null;
+  return { ...step, action: natural } as ActionStep;
+}
+
 /** Role↔assertion validator — only gates the assertions that are meaningless on a role (a text-value check on a
  * heading/button, a checked-state check on a non-toggle). Everything else (VISIBLE/TEXT/ENABLED…) fits any role. */
 function assertFitsRole(assert: string, roleValue: unknown): boolean {
@@ -372,9 +394,17 @@ export class PlaywrightCompiler implements Compiler {
         return;
       }
       if (isActionStep(step) && !actionFitsRole(step, g.node?.role)) {
-        diagnostics.push({ kind: 'INVALID_STEP', target, stepIndex: i, message: `${step.action} is incompatible with role "${g.node?.role || 'unknown'}".`, severity: 'blocking' });
-        body.push(`  // INVALID_STEP: ${step.action} cannot target role "${g.node?.role || 'unknown'}" (${JSON.stringify(target)})`);
-        return;
+        // Recover instead of dropping the whole case: coerce the verb to the grounded role when a safe mapping
+        // exists ("Select the X textbox" → CLICK/FILL). Only a truly un-coercible action stays blocking.
+        const coerced = coerceActionToRole(step, g.node?.role);
+        if (coerced) {
+          diagnostics.push({ kind: 'INVALID_STEP', target, stepIndex: i, message: `${step.action} coerced to ${coerced.action} to fit role "${g.node?.role || 'unknown'}".`, severity: 'skippable' });
+          step = coerced;
+        } else {
+          diagnostics.push({ kind: 'INVALID_STEP', target, stepIndex: i, message: `${step.action} is incompatible with role "${g.node?.role || 'unknown'}".`, severity: 'blocking' });
+          body.push(`  // INVALID_STEP: ${step.action} cannot target role "${g.node?.role || 'unknown'}" (${JSON.stringify(target)})`);
+          return;
+        }
       }
       // Open the create dialog before the first step that touches a control living inside it.
       if (shouldInjectOpener && !openerInjected && touchesDialog(step, g.node)) {
