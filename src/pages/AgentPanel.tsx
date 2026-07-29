@@ -8,6 +8,7 @@ import { PlanList, WorkflowRunner } from '@/src/components/WorkflowRunner';
 import { showAlert } from '@/src/lib/dialog';
 import { MarkdownText } from '@/src/components/MarkdownText';
 import { useProjects } from '@/src/store/project';
+import { normalizeTags } from '@/src/lib/tags';
 
 const casualGreetingPattern = /^(hi+|h+i+|hlo+|hello+|hey+|good\s+(morning|afternoon|evening)|thanks?|thank\s+you|ok(?:ay)?)\b[\s!.?]*$/i;
 const identityQuestionPattern = /\b(who\s+are\s+you|what\s+can\s+you\s+do|help|your\s+purpose)\b/i;
@@ -708,7 +709,7 @@ export default function AgentPanel() {
                         </select>
                         <input
                           value={Array.isArray(c.tags) ? c.tags.join(', ') : c.tags || ''}
-                          onChange={(e) => updateGeneratedCase(i, { tags: e.target.value.split(',').map((tag) => tag.trim()).filter(Boolean) })}
+                          onChange={(e) => updateGeneratedCase(i, { tags: normalizeTags(e.target.value.split(',')) })}
                           className="bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-xs outline-none focus:border-[var(--accent)] text-[var(--text-primary)]"
                           placeholder="Tags"
                         />

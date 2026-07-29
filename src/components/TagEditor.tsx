@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Plus, X } from 'lucide-react';
+import { normalizeTag, normalizeTags } from '@/src/lib/tags';
 
 export function TagEditor({ options, value, onChange }: { options: string[]; value: string[]; onChange: (tags: string[]) => void }) {
   const [query, setQuery] = useState('');
@@ -16,19 +17,19 @@ export function TagEditor({ options, value, onChange }: { options: string[]; val
   }, [open]);
 
   const add = (tag: string) => {
-    const clean = tag.trim();
+    const clean = normalizeTag(tag);
     if (!clean || value.includes(clean)) { setQuery(''); return; }
-    onChange([...value, clean]);
+    onChange(normalizeTags([...value, clean]));
     setQuery('');
   };
   const remove = (tag: string) => onChange(value.filter((item) => item !== tag));
 
-  const normalizedQuery = query.trim().toLowerCase();
+  const normalizedQuery = normalizeTag(query);
   const available = options.filter((tag) => !value.includes(tag));
-  const suggestions = normalizedQuery ? available.filter((tag) => tag.toLowerCase().includes(normalizedQuery)) : available;
+  const suggestions = normalizedQuery ? available.filter((tag) => normalizeTag(tag).includes(normalizedQuery)) : available;
   const canCreate = Boolean(normalizedQuery)
-    && !options.some((tag) => tag.toLowerCase() === normalizedQuery)
-    && !value.some((tag) => tag.toLowerCase() === normalizedQuery);
+    && !options.some((tag) => normalizeTag(tag) === normalizedQuery)
+    && !value.some((tag) => normalizeTag(tag) === normalizedQuery);
 
   return (
     <div ref={boxRef} className="relative">
@@ -51,7 +52,7 @@ export function TagEditor({ options, value, onChange }: { options: string[]; val
           onKeyDown={(event) => {
             if (event.key === 'Enter') {
               event.preventDefault();
-              if (suggestions.length) add(suggestions[0]);
+              if (suggestions.length) add(suggestions[0]); else add(query);
             }
             if (event.key === 'Backspace' && !query && value.length) remove(value[value.length - 1]);
           }}

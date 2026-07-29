@@ -262,7 +262,7 @@ export function registerResourceRoutes(app: Express) {
       testPlanId: String(req.body?.testPlanId || ''),
       requestedBy: String(req.body?.requestedBy || ''),
       assignedTo: String(req.body?.assignedTo || ''),
-      tags: Array.isArray(req.body?.tags) ? req.body.tags : normalizeCaseTags(req.body?.tags || []),
+      tags: normalizeCaseTags(req.body?.tags || []),
       executionTime: String(req.body?.executionTime || ''),
       targetUrl: normalizeTargetUrl(req.body?.targetUrl || ''),
       folderId,
@@ -723,6 +723,9 @@ export function registerResourceRoutes(app: Express) {
         if ('testPlanId' in req.body && !('testPlanIds' in req.body)) req.body.testPlanIds = req.body.testPlanId ? [req.body.testPlanId] : [];
         if ('testSuiteId' in req.body && !('testSuiteIds' in req.body)) req.body.testSuiteIds = req.body.testSuiteId ? [req.body.testSuiteId] : [];
       }
+      if (['plans', 'suites', 'cases', 'runs'].includes(e.name) && 'tags' in req.body) {
+        req.body.tags = normalizeCaseTags(req.body.tags || []);
+      }
       const updated = { ...existing, ...req.body, updatedAt: new Date() };
       await e.repo.upsert(updated);
       if (!isPgEnabled()) persistDataInBackground(`${e.name} update`);
@@ -866,7 +869,7 @@ export function registerResourceRoutes(app: Express) {
       startDate: p.startDate || null,
       endDate: p.endDate || null,
       owner: p.owner || '',
-      tags: uniqueStrings(p.tags),
+      tags: normalizeCaseTags(p.tags || []),
       runIds: uniqueStrings(p.runIds),
       status: p.status || 'Draft',
       riskLevel: p.riskLevel || 'Medium',
@@ -895,7 +898,7 @@ export function registerResourceRoutes(app: Express) {
       priority: s.priority || 'Medium',
       status: s.status || 'Active',
       folderId: s.folderId || '',
-      tags: s.tags || [],
+      tags: normalizeCaseTags(s.tags || []),
       riskLevel: s.riskLevel || 'Low',
       createdBy: 'User',
       createdAt: new Date(),
@@ -1151,7 +1154,7 @@ Rules:
       suiteId: Array.from(suiteIds)[0] || '',
       requestedBy: req.body?.requestedBy || '',
       assignedTo: req.body?.assignedTo || '',
-      tags: Array.isArray(req.body?.tags) ? req.body.tags : normalizeCaseTags(req.body?.tags || []),
+      tags: normalizeCaseTags(req.body?.tags || []),
       state: 'Not Started',
       executionTime: req.body?.executionTime || '',
       status: 'Not Started',
@@ -1217,7 +1220,7 @@ Rules:
       requestedBy: req.body.requestedBy || '',
       // Assign To / Tags / State are first-class run fields now.
       assignedTo: req.body.assignedTo || '',
-      tags: Array.isArray(req.body.tags) ? req.body.tags : normalizeCaseTags(req.body.tags || []),
+      tags: normalizeCaseTags(req.body.tags || []),
       state: 'Not Started',
       executionTime: req.body.executionTime || '',
       status: 'Not Started',

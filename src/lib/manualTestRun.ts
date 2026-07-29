@@ -1,4 +1,4 @@
-import { caseBelongsToSuite, caseSuiteIds, suiteParentIds, suitePlanIds } from './suiteCaseSelection';
+import { caseBelongsToSuite, casePlanIds, caseSuiteIds, suiteParentIds, suitePlanIds } from './suiteCaseSelection';
 
 export function casesForPlan(cases: any[], suites: any[], planId: string): any[] {
   if (!planId) return cases;
@@ -14,7 +14,7 @@ export function casesForPlan(cases: any[], suites: any[], planId: string): any[]
     }
   }
   return cases.filter((testCase) =>
-    testCase.testPlanId === planId || caseSuiteIds(testCase).some((id) => suiteIds.has(id)),
+    casePlanIds(testCase).includes(planId) || caseSuiteIds(testCase).some((id) => suiteIds.has(id)),
   );
 }
 

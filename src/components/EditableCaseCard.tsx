@@ -10,6 +10,7 @@ import {
   singleCaseProposal,
   type AIReworkProposal,
 } from '@/src/lib/aiRework';
+import { normalizeTags } from '@/src/lib/tags';
 
 /**
  * A single test case rendered as an inline-editable card — the same editing
@@ -361,7 +362,7 @@ export default function EditableCaseCard({ initial, linkType, selected, onToggle
             </select>
             <input
               value={Array.isArray(c.tags) ? c.tags.join(', ') : (c.tags as any) || ''}
-              onChange={(e) => patch({ tags: e.target.value.split(',').map((t) => t.trim()).filter(Boolean) })}
+              onChange={(e) => patch({ tags: normalizeTags(e.target.value.split(',')) })}
               placeholder="Tags (comma separated)"
               className={inputCls}
             />

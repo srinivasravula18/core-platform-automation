@@ -10,6 +10,7 @@ import {
   suiteCaseProposal,
   type AIReworkProposal,
 } from '@/src/lib/aiRework';
+import { normalizeTags } from '@/src/lib/tags';
 
 /**
  * Renders the test cases the Agent Console just generated, inline in the chat,
@@ -600,7 +601,7 @@ export function GeneratedCases({ cases: initial, onCasesChange }: { cases: Case[
                 </select>
                 <input
                   value={Array.isArray(c.tags) ? c.tags.join(', ') : (c.tags as any) || ''}
-                  onChange={(e) => patchCase(i, { tags: e.target.value.split(',').map((t) => t.trim()).filter(Boolean) })}
+                  onChange={(e) => patchCase(i, { tags: normalizeTags(e.target.value.split(',')) })}
                   placeholder="Tags (comma separated)"
                   className={inputCls}
                 />

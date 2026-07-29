@@ -19,6 +19,24 @@ export function caseBelongsToSuite(testCase: any, suiteId: string): boolean {
   return caseSuiteIds(testCase).includes(suiteId);
 }
 
+export function casePlanIds(testCase: any): string[] {
+  return Array.isArray(testCase?.testPlanIds) && testCase.testPlanIds.length
+    ? testCase.testPlanIds
+    : (testCase?.testPlanId ? [testCase.testPlanId] : []);
+}
+
+export function casePlanMembershipUpdate(testCase: any, planId: string, selected: boolean) {
+  const currentIds = Array.from(new Set(casePlanIds(testCase)));
+  const testPlanIds = selected
+    ? Array.from(new Set([...currentIds, planId]))
+    : currentIds.filter((id) => id !== planId);
+  return {
+    testPlanId: testPlanIds.includes(testCase.testPlanId) ? testCase.testPlanId : (testPlanIds[0] || ''),
+    testPlanIds,
+    folderId: testCase.folderId,
+  };
+}
+
 export function caseSuiteAssignment(testCase: any, suiteId: string) {
   return {
     testSuiteId: suiteId,

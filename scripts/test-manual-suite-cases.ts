@@ -4,6 +4,8 @@ import {
   caseSuiteAssignment,
   caseSuiteIds,
   caseSuiteMembershipUpdate,
+  casePlanIds,
+  casePlanMembershipUpdate,
   orderSuitesByHierarchy,
   relatedCasesForSuite,
   suiteHierarchyDepth,
@@ -35,6 +37,17 @@ assert.deepEqual(caseSuiteMembershipUpdate({ folderId: 'F-1', testSuiteId: 'SUIT
 assert.deepEqual(caseSuiteMembershipUpdate({ folderId: 'F-1', testSuiteId: 'SUITE-1', testSuiteIds: ['SUITE-1'] }, 'SUITE-2', true), {
   testSuiteId: 'SUITE-1',
   testSuiteIds: ['SUITE-1', 'SUITE-2'],
+  folderId: 'F-1',
+});
+assert.deepEqual(casePlanIds({ testPlanId: 'PLAN-1', testPlanIds: ['PLAN-1', 'PLAN-2'] }), ['PLAN-1', 'PLAN-2']);
+assert.deepEqual(casePlanMembershipUpdate({ folderId: 'F-1', testPlanId: 'PLAN-1', testPlanIds: ['PLAN-1'] }, 'PLAN-2', true), {
+  testPlanId: 'PLAN-1',
+  testPlanIds: ['PLAN-1', 'PLAN-2'],
+  folderId: 'F-1',
+});
+assert.deepEqual(casePlanMembershipUpdate({ folderId: 'F-1', testPlanId: 'PLAN-1', testPlanIds: ['PLAN-1', 'PLAN-2'] }, 'PLAN-1', false), {
+  testPlanId: 'PLAN-2',
+  testPlanIds: ['PLAN-2'],
   folderId: 'F-1',
 });
 assert.deepEqual(caseSuiteIds({ testSuiteId: 'SUITE-1', testSuiteIds: ['SUITE-1', 'SUITE-2'] }), ['SUITE-1', 'SUITE-2']);

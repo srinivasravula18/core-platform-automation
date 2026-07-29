@@ -18,6 +18,7 @@ import {
   type AIReworkProposal,
 } from '@/src/lib/aiRework';
 import { diffCaseRevisions } from '@/src/lib/caseRevisionDiff';
+import { normalizeTags } from '@/src/lib/tags';
 import FailureCard from '@/src/components/FailureCard';
 import {
   Loader2,
@@ -1640,7 +1641,7 @@ export function DeepRunResult({
                           </select>
                           <input
                             value={Array.isArray(c.tags) ? c.tags.join(', ') : c.tags || ''}
-                            onChange={(e) => patchCase(i, { tags: e.target.value.split(',').map((t) => t.trim()).filter(Boolean) })}
+                            onChange={(e) => patchCase(i, { tags: normalizeTags(e.target.value.split(',')) })}
                             placeholder="Tags (comma separated)"
                             className="rounded-md border border-[var(--border)] bg-[var(--bg-card)] px-2 py-1.5 text-xs text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
                           />
@@ -1792,7 +1793,7 @@ export function DeepRunResult({
                             Tags
                             <input
                               value={Array.isArray(c.tags) ? c.tags.join(', ') : c.tags || ''}
-                              onChange={(e) => patchCase(i, { tags: e.target.value.split(',').map((t) => t.trim()).filter(Boolean) })}
+                              onChange={(e) => patchCase(i, { tags: normalizeTags(e.target.value.split(',')) })}
                               placeholder="Comma separated"
                               className={cn('block w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs font-normal normal-case tracking-normal text-[var(--text-primary)] outline-none focus:border-[var(--accent)]', aiChangeClass(i, 'Tags'))}
                             />

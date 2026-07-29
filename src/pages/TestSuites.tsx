@@ -25,12 +25,14 @@ import { TagEditor } from '@/src/components/TagEditor';
 import { TagMultiSelect } from '@/src/components/TagMultiSelect';
 import { MultiSelectDropdown } from '@/src/components/MultiSelectDropdown';
 import { showAlert, showConfirm } from '@/src/lib/dialog';
+import { normalizeTags } from '@/src/lib/tags';
 
 export default function TestSuites() {
   const navigate = useNavigate();
   const [suites, setSuites] = useState<any[]>([]);
   const [plans, setPlans] = useState<any[]>([]);
   const [cases, setCases] = useState<any[]>([]);
+  const [runs, setRuns] = useState<any[]>([]);
   const [folders, setFolders] = useState<any[]>([]);
   const [expandedSuiteIds, setExpandedSuiteIds] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
@@ -91,6 +93,7 @@ export default function TestSuites() {
     fetchSuites();
     fetchPlans();
     fetchCases();
+    fetch('/api/runs').then((response) => response.json()).then((data) => setRuns(Array.isArray(data) ? data : [])).catch(console.error);
     fetchFolders();
   }, []);
 
@@ -133,7 +136,7 @@ export default function TestSuites() {
   };
 
   const handleSaveSuite = async () => {
-    if (!formData.name.trim()) return;
+    if (!formData.name.trim()) { void showAlert('Suite name is required.'); return; }
     if (!formData.folderId) { void showAlert('Select a folder or create one first.'); return; }
     const suitePayload = {
       ...formData,
@@ -250,7 +253,8 @@ export default function TestSuites() {
 
   const getSuiteCases = (suiteId: string) => cases.filter((testCase) => caseBelongsToSuite(testCase, suiteId));
   const moduleOptions = Array.from(new Set(suites.map((suite) => suiteModuleName(suite, folders)).filter(Boolean))).sort();
-  const tagOptions: string[] = Array.from(new Set<string>(suites.flatMap((suite) => Array.isArray(suite.tags) ? suite.tags : []).map((tag) => String(tag).trim()).filter(Boolean))).sort();
+  const tagOptions = normalizeTags([...plans, ...suites, ...cases, ...runs]
+    .flatMap((item) => Array.isArray(item.tags) ? item.tags : [])).sort();
   const relatedCases = selectedSuiteId
     ? cases.filter((testCase) => testCase.folderId === formData.folderId || caseBelongsToSuite(testCase, selectedSuiteId))
     : relatedCasesForSuite(cases, formData.folderId, formData.parentSuiteIds.length ? formData.parentSuiteIds : (subsuiteParentId ? [subsuiteParentId] : []));
@@ -315,7 +319,7 @@ export default function TestSuites() {
             </div>
             <div className="flex gap-3">
               <button onClick={() => setIsSuiteModalOpen(false)} className="px-4 py-2 text-sm font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]">Cancel</button>
-              <button onClick={handleSaveSuite} disabled={!formData.name.trim()} className="px-4 py-2 bg-[var(--accent)] text-white text-sm font-medium rounded-md hover:bg-[var(--accent-hover)] disabled:opacity-50">
+              <button onClick={handleSaveSuite} className="px-4 py-2 bg-[var(--accent)] text-white text-sm font-medium rounded-md hover:bg-[var(--accent-hover)]">
                 {selectedSuiteId ? 'Save Changes' : 'Create Suite'}
               </button>
             </div>

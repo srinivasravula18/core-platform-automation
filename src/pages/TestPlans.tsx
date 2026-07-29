@@ -17,11 +17,12 @@ import { FolderBadge } from '@/src/components/FolderBadge';
 import { MultiSelectDropdown } from '@/src/components/MultiSelectDropdown';
 import { TagEditor } from '@/src/components/TagEditor';
 import { showAlert, showConfirm } from '@/src/lib/dialog';
-import { caseBelongsToSuite, suitePlanIds, suitePlanMembershipUpdate } from '@/src/lib/suiteCaseSelection';
+import { caseBelongsToSuite, casePlanIds, casePlanMembershipUpdate, suitePlanIds, suitePlanMembershipUpdate } from '@/src/lib/suiteCaseSelection';
 import { casesForPlan } from '@/src/lib/manualTestRun';
 import { emptyTestPlanFilters, linkedRunsForPlan, matchesTestPlanFilters } from '@/src/lib/testPlanFilters';
 import { localDateKey, normalizeDateKey, planDateWarnings, planStartConflict } from '@/core/shared/testPlanStart';
 import { withBasePath } from '@/src/lib/base-path';
+import { normalizeTags } from '@/src/lib/tags';
 
 const PLAN_STATUSES = ['Draft', 'Under Review', 'Approved', 'In Progress', 'Completed', 'Blocked', 'Cancelled', 'Archived'];
 const MANUAL_PLAN_STATUSES = PLAN_STATUSES.filter((status) => status !== 'In Progress');
@@ -42,6 +43,7 @@ const emptyPlanForm = () => ({
   roles: '',
   deliverables: '',
   suiteIds: [] as string[],
+  caseIds: [] as string[],
   runIds: [] as string[],
   description: '',
 });
@@ -186,6 +188,7 @@ export default function TestPlans() {
       roles: plan.roles || '',
       deliverables: plan.deliverables || '',
       suiteIds: suites.filter((suite) => suitePlanIds(suite).includes(plan.id)).map((suite) => String(suite.id)),
+      caseIds: cases.filter((testCase) => casePlanIds(testCase).includes(plan.id)).map((testCase) => String(testCase.id)),
       runIds: Array.from(linkedRunIds),
       description: plan.description || plan.objectives || '',
     });
@@ -193,14 +196,18 @@ export default function TestPlans() {
   };
 
   const handleSavePlan = async () => {
-    if (!formData.name.trim()) return;
+    if (!formData.name.trim()) { void showAlert('Plan name is required.'); return; }
     if (!formData.folderId) { void showAlert('Select a folder or create one first.'); return; }
     if (formData.endDate && !formData.startDate) {
       setDateValidationMessage('Enter a start date when an end date is provided.');
       return;
     }
+    if (formData.startDate && formData.endDate && formData.endDate < formData.startDate) {
+      setDateValidationMessage('End date cannot be earlier than start date.');
+      return;
+    }
     setDateValidationMessage('');
-    const { suiteIds, ...planPayload } = formData;
+    const { suiteIds, caseIds, ...planPayload } = formData;
     try {
       const response = await fetch(selectedPlanId ? `/api/plans/${selectedPlanId}` : '/api/plans', {
         method: selectedPlanId ? 'PUT' : 'POST',
@@ -222,6 +229,18 @@ export default function TestPlans() {
         }),
       ));
       if (suiteResponses.some((result) => !result.ok)) throw new Error('Plan saved, but one or more suite links could not be updated.');
+      const selectedCaseIds = new Set(caseIds);
+      const changedCases = cases.filter((testCase) =>
+        casePlanIds(testCase).includes(planId) !== selectedCaseIds.has(String(testCase.id)),
+      );
+      const caseResponses = await Promise.all(changedCases.map((testCase) =>
+        fetch(`/api/cases/${testCase.id}`, {
+          method: 'PUT',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(casePlanMembershipUpdate(testCase, planId, selectedCaseIds.has(String(testCase.id)))),
+        }),
+      ));
+      if (caseResponses.some((result) => !result.ok)) throw new Error('Plan saved, but one or more test case links could not be updated.');
       setIsPlanModalOpen(false);
       fetchPlans();
       fetchPlanRelations();
@@ -336,7 +355,8 @@ export default function TestPlans() {
   const selectedDetailPlan = plans.find((plan) => plan.id === planId) || null;
   const getPlanRuns = (plan: any) => linkedRunsForPlan(plan, runs);
   const runCaseCountLabel = (count: number) => count ? `Run ${count} test case${count === 1 ? '' : 's'}` : 'No test cases linked to this plan';
-  const tagOptions = Array.from(new Set<string>([...plans, ...suites, ...cases, ...runs].flatMap((item) => Array.isArray(item.tags) ? item.tags.map(String) : []))).sort();
+  const tagOptions = normalizeTags([...plans, ...suites, ...cases, ...runs]
+    .flatMap((item) => Array.isArray(item.tags) ? item.tags : [])).sort();
   const ownerOptions = Array.from(new Set<string>(plans.map((plan) => String(plan.owner || '').trim()).filter(Boolean))).sort();
   const activeFilterCount = filters.statuses.length + filters.owners.length + filters.tags.length + filters.folders.length
     + (filters.startFrom || filters.endTo ? 1 : 0) + (filters.environments.trim() ? 1 : 0)
@@ -464,7 +484,7 @@ export default function TestPlans() {
             </div>
             <div className="flex gap-3">
               <button onClick={() => setIsPlanModalOpen(false)} className="px-4 py-2 text-sm font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]">Cancel</button>
-              <button onClick={handleSavePlan} disabled={!formData.name.trim()} className="px-4 py-2 bg-[var(--accent)] text-white text-sm font-medium rounded-md hover:bg-[var(--accent-hover)] disabled:opacity-50">
+              <button onClick={handleSavePlan} className="px-4 py-2 bg-[var(--accent)] text-white text-sm font-medium rounded-md hover:bg-[var(--accent-hover)]">
                 {selectedPlanId ? 'Save Changes' : 'Create Plan'}
               </button>
             </div>
@@ -551,6 +571,15 @@ export default function TestPlans() {
                   </a>
                 </div>
               }
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Link Test Cases</label>
+            <MultiSelectDropdown
+              label="Select test cases"
+              options={cases.map((testCase) => ({ id: String(testCase.id), name: String(testCase.title || testCase.id) }))}
+              value={formData.caseIds}
+              onChange={(caseIds) => setFormData({...formData, caseIds})}
             />
           </div>
           <div>

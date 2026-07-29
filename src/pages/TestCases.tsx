@@ -21,6 +21,7 @@ import { TagEditor } from '@/src/components/TagEditor';
 import { TagMultiSelect } from '@/src/components/TagMultiSelect';
 import { MultiSelectDropdown } from '@/src/components/MultiSelectDropdown';
 import { normalizeTestCaseTypes, testCaseTypeFields } from '@/core/shared/testCaseTypes';
+import { normalizeTags } from '@/src/lib/tags';
 
 const CASE_STATUSES = ['Draft', 'Under Review', 'Approved', 'Automated', 'Deprecated'];
 const PRIORITIES = ['Low', 'Medium', 'High', 'Critical'];
@@ -526,10 +527,8 @@ export default function TestCases() {
     .map((testCase) => caseAppLabel(testCase).trim())
     // Exclude the "All apps"/"Unknown app" fallbacks so they never duplicate the placeholder option.
     .filter((label) => label && label !== 'All apps' && label !== 'Unknown app'))).sort();
-  const tagOptions: string[] = Array.from(new Set<string>(cases
-    .flatMap((testCase) => Array.isArray(testCase.tags) ? testCase.tags : [])
-    .map((tag: any) => String(tag).trim())
-    .filter((tag: string) => Boolean(tag)))).sort();
+  const tagOptions = normalizeTags([...plans, ...suites, ...cases, ...runs]
+    .flatMap((item) => Array.isArray(item.tags) ? item.tags : [])).sort();
   const ownerOptions: string[] = Array.from(new Set<string>(cases
     .map((testCase) => String(testCase.createdBy || '').trim())
     .filter(Boolean))).sort();

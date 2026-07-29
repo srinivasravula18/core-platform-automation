@@ -22,6 +22,7 @@ import { withBasePath } from '@/src/lib/base-path';
 import { caseSuiteIds } from '@/src/lib/suiteCaseSelection';
 import { casesForPlan, casesForRun, manualRunSelection, runExecutionState, runnableCases, scriptsForRun } from '@/src/lib/manualTestRun';
 import { collectRunEvidence, evidenceDownloadName } from '@/core/shared/runEvidence';
+import { normalizeTags } from '@/src/lib/tags';
 
 async function downloadFromUrl(url: string, filename: string) {
   const response = await fetch(url);
@@ -115,10 +116,8 @@ export default function TestRuns() {
   const [scripts, setScripts] = useState<any[]>([]);
   const [runProgress, setRunProgress] = useState<Record<string, string>>({});
   const [closingRunId, setClosingRunId] = useState('');
-  const tagOptions = useMemo(() => Array.from(new Set<string>(cases
-    .flatMap((testCase) => Array.isArray(testCase.tags) ? testCase.tags : [])
-    .map((tag: any) => String(tag).trim())
-    .filter(Boolean))).sort(), [cases]);
+  const tagOptions = useMemo(() => normalizeTags([...plans, ...suites, ...cases, ...runs]
+    .flatMap((item) => Array.isArray(item.tags) ? item.tags : [])).sort(), [plans, suites, cases, runs]);
 
   const fetchData = () => {
     setLoading(true);
@@ -238,7 +237,7 @@ export default function TestRuns() {
   };
 
   const handleSaveRun = async () => {
-    if (!newRunName.trim()) return;
+    if (!newRunName.trim()) { void showAlert('Run name is required.'); return; }
     if (!newRunFolderId) { void showAlert('Select a folder or create one first.'); return; }
     const caseIds = [...newRunCaseIds] as string[];
     if (!editingRunId && !caseIds.length) { void showAlert('Select at least one test case with a Playwright script.'); return; }
@@ -335,6 +334,9 @@ export default function TestRuns() {
   };
 
   const runnableTestCases = useMemo(() => runnableCases(casesForPlan(cases, suites, newRunPlanId), scripts), [cases, suites, scripts, newRunPlanId]);
+  const runnableCasesInFolder = useMemo(() => runnableTestCases.filter((testCase) =>
+    String(testCase.folderId || '') === newRunCaseFolderId
+  ), [runnableTestCases, newRunCaseFolderId]);
   const runnableCaseOptions = useMemo(() => runnableTestCases
     .map((testCase) => ({
       id: String(testCase.id),
@@ -673,7 +675,7 @@ export default function TestRuns() {
         footer={
           <div className="flex justify-end gap-3">
             <button onClick={() => { setIsRunModalOpen(false); setEditingRunId(''); }} className="px-4 py-2 text-sm text-[var(--text-muted)]">Cancel</button>
-            <button onClick={handleSaveRun} disabled={!newRunName.trim() || !newRunFolderId || (!editingRunId && newRunCaseIds.size === 0)} className="px-4 py-2 bg-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-50 text-white text-sm rounded-md">{editingRunId ? 'Save Changes' : 'Create Run'}</button>
+            <button onClick={handleSaveRun} className="px-4 py-2 bg-[var(--accent)] text-white text-sm rounded-md">{editingRunId ? 'Save Changes' : 'Create Run'}</button>
           </div>
         }
       >
@@ -728,19 +730,30 @@ export default function TestRuns() {
                 <FolderSelect value={newRunCaseFolderId} onChange={setNewRunCaseFolderId} label="Test Case Folder" allowCreate={false} className="flex-1" />
                 <button
                   type="button"
-                  disabled={!newRunCaseFolderId || !runnableTestCases.some((testCase) => testCase.folderId === newRunCaseFolderId)}
-                  onClick={() => setNewRunCaseIds((current) => new Set([...current, ...runnableTestCases.filter((testCase) => testCase.folderId === newRunCaseFolderId).map((testCase) => String(testCase.id))]))}
+                  disabled={!runnableCasesInFolder.length}
+                  onClick={() => setNewRunCaseIds((current) => new Set([...current, ...runnableCasesInFolder.map((testCase) => String(testCase.id))]))}
                   className="shrink-0 rounded-md border border-[var(--border)] px-3 py-2 text-sm font-medium text-[var(--text-primary)] hover:bg-[var(--bg-secondary)] disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  Add all in folder
+                  Select all
+                </button>
+                <button
+                  type="button"
+                  disabled={!newRunCaseIds.size}
+                  onClick={() => setNewRunCaseIds(new Set())}
+                  className="shrink-0 rounded-md border border-[var(--border)] px-3 py-2 text-sm font-medium text-[var(--text-primary)] hover:bg-[var(--bg-secondary)] disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Clear
                 </button>
               </div>
               <MultiSelectDropdown
-                label={runnableCaseOptions.length ? 'Select test cases from any repository folder' : 'No runnable test cases'}
+                label={runnableCaseOptions.length ? 'Select test cases from any repository folder' : 'This plan has no automated cases with Playwright scripts. Add automated cases or generate scripts to run it.'}
                 options={runnableCaseOptions}
                 value={[...newRunCaseIds]}
                 onChange={(ids) => setNewRunCaseIds(new Set(ids))}
               />
+              <p aria-live="polite" className="mt-1 text-xs text-[var(--text-muted)]">
+                {newRunCaseIds.size} test case{newRunCaseIds.size === 1 ? '' : 's'} selected
+              </p>
             </div>
           )}
         </div>
