@@ -1443,9 +1443,11 @@ export default function AgentConsole() {
     const scope = (resolvedScope || '').trim();
     const prior = richestAssistantContext();
     const parts = [
-      request ? `User follow-up/request: ${request}` : '',
+      request ? `User follow-up/request (AUTHORITATIVE — this is what to act on now): ${request}` : '',
       scope && scope !== request ? `Resolved scope from router: ${scope}` : '',
-      prior ? `Carry forward this prior agent answer as authoritative scope:\n${prior}` : '',
+      // Prior answer is BACKGROUND context, never authoritative — the current request + its target override it
+      // (attention layer: memory informs, it does not re-pin the target/app/surface).
+      prior ? `Prior agent answer (background only — do not let it change the current target/app/surface):\n${prior}` : '',
     ].filter(Boolean);
     return (parts.join('\n\n') || scope || request).trim();
   }, [richestAssistantContext]);
@@ -1903,13 +1905,17 @@ export default function AgentConsole() {
       revisionCount: turn.revisionCount || 0,
     };
     setBusy(true);
+    // Show a LIVE progress indicator during the rework. Without this the reqdraft turn stays static and the
+    // user only sees the stop button — runRequirementDraft's updateThinkingLabel is a no-op on a non-'thinking'
+    // turn, so the reqdraft id must first become a thinking turn (runRequirementDraft swaps it back to the result).
+    replaceTurn(turn.id, { id: turn.id, role: 'assistant', kind: 'thinking', label: 'Applying your requirement changes...' });
     try {
       await runRequirementDraft(turn.id, previousDraft.query, previousDraft, instruction.trim());
     } finally {
       setBusy(false);
       inputRef.current?.focus();
     }
-  }, [busy, runRequirementDraft, pendingRequirementDraft]);
+  }, [busy, runRequirementDraft, pendingRequirementDraft, replaceTurn]);
 
   // The apps the user explicitly selected in the composer (all of them), as target
   // context for the agent. Mirrored to a ref so callbacks read the latest without churn.
@@ -1965,8 +1971,11 @@ export default function AgentConsole() {
       '';
     const normUrl = (u: string) => String(u || '').trim().replace(/\/+$/, '').toLowerCase();
     const urlSite = targetUrl ? websites.find((w) => normUrl(w.baseUrl) === normUrl(targetUrl)) : undefined;
-    const websiteId = namedSite?.id || urlSite?.id || convTargetRef.current?.websiteId;
-    const websiteName = namedTarget?.name || namedSite?.name || urlSite?.name || convTargetRef.current?.websiteName;
+    // Attention layer: if the resolved target URL differs from the conversation's sticky target, the user
+    // switched apps — do NOT fall back to the PRIOR site's identity/creds. Let it resolve from the new URL.
+    const staleRef = Boolean(convTargetRef.current) && normUrl(convTargetRef.current!.targetUrl) !== normUrl(targetUrl);
+    const websiteId = namedSite?.id || urlSite?.id || (staleRef ? undefined : convTargetRef.current?.websiteId);
+    const websiteName = namedTarget?.name || namedSite?.name || urlSite?.name || (staleRef ? undefined : convTargetRef.current?.websiteName);
     if (!targetUrl) {
       replaceTurn(thinkingId, {
         id: thinkingId,
@@ -2518,8 +2527,10 @@ export default function AgentConsole() {
           // target came from the selected app rather than a name mention.
           const normUrl = (u: string) => String(u || '').trim().replace(/\/+$/, '').toLowerCase();
           const urlSite = targetUrl ? websites.find((w) => normUrl(w.baseUrl) === normUrl(targetUrl)) : undefined;
-          const websiteId = namedSite?.id || urlSite?.id || convTargetRef.current?.websiteId;
-          const websiteName = routedName || namedTarget?.name || namedSite?.name || urlSite?.name || convTargetRef.current?.websiteName;
+          // Attention layer: a switched target URL must not inherit the PRIOR site's identity/creds.
+          const staleRef = Boolean(convTargetRef.current) && normUrl(convTargetRef.current!.targetUrl) !== normUrl(targetUrl);
+          const websiteId = namedSite?.id || urlSite?.id || (staleRef ? undefined : convTargetRef.current?.websiteId);
+          const websiteName = routedName || namedTarget?.name || namedSite?.name || urlSite?.name || (staleRef ? undefined : convTargetRef.current?.websiteName);
           if (!targetUrl && !websiteId) {
             // Don't loop the same vague prompt: list the apps we CAN target so the user picks a real
             // one (by name, URL, or the top-bar switcher) instead of guessing again.

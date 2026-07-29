@@ -43,4 +43,11 @@ const noRow = resolveBestSelector({ ...rowButton, rowKey: null });
 assert.equal(noRow.strategy, 'role+name');
 delete process.env.GROUNDING_DISAMBIGUATION_V1;
 
-console.log('DOM selector resolution: 11 checks passed');
+// Column-header accessible name absorbs its resize-affordance button's label — strip the affordance tail.
+const bloatedHeader = resolveBestSelector({ ...base, tag: 'th', role: 'columnheader', rowKey: null, accName: 'Label Resize Label column', text: null });
+assert.equal(bloatedHeader.selector, 'role=columnheader[name="Label"]', 'affordance tail (Resize … column) is stripped from the header name');
+// A legitimate label that merely contains an affordance word is NOT stripped.
+const realLabel = resolveBestSelector({ ...base, tag: 'button', role: 'button', rowKey: null, accName: 'Sort Options', text: null });
+assert.equal(realLabel.selector, 'role=button[name="Sort Options"]', 'a real label containing an affordance word is left intact');
+
+console.log('DOM selector resolution: 13 checks passed');

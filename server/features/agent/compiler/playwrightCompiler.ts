@@ -122,6 +122,8 @@ function emitAssert(step: AssertStep, spec: string, value?: string): string {
     case 'HAS_TEXT': return `  await runner.expectText(${spec}, ${v});`;
     case 'NOT_HAS_TEXT': return `  await runner.expectNotText(${spec}, ${v});`;
     case 'HAS_VALUE': return `  await runner.expectValue(${spec}, ${v});`;
+    case 'CHECKED': return `  await runner.expectChecked(${spec}, "true");`;
+    case 'UNCHECKED': return `  await runner.expectChecked(${spec}, "false");`;
     case 'COUNT_GT': return `  await runner.expectCountGt(${spec}, Number(${v} || 0));`;
     default: return `  // INVALID_STEP assert: ${String((step as any).assert)}`;
   }
@@ -148,6 +150,15 @@ function actionFitsRole(step: ActionStep, roleValue: unknown): boolean {
   if (step.action === 'FILL' || step.action === 'CLEAR') return ['textbox', 'searchbox', 'spinbutton', 'combobox'].includes(role);
   if (step.action === 'CHECK' || step.action === 'UNCHECK') return ['checkbox', 'radio', 'switch'].includes(role);
   if (step.action === 'CLICK') return ['button', 'link', 'tab', 'checkbox', 'radio', 'switch', 'menuitem', 'option', 'columnheader', 'row', 'textbox', 'searchbox', 'combobox'].includes(role);
+  return true;
+}
+
+/** Role↔assertion validator — only gates the assertions that are meaningless on a role (a text-value check on a
+ * heading/button, a checked-state check on a non-toggle). Everything else (VISIBLE/TEXT/ENABLED…) fits any role. */
+function assertFitsRole(assert: string, roleValue: unknown): boolean {
+  const role = String(roleValue || '').toLowerCase();
+  if (assert === 'HAS_VALUE') return ['textbox', 'searchbox', 'spinbutton', 'combobox'].includes(role);
+  if (assert === 'CHECKED' || assert === 'UNCHECKED') return ['checkbox', 'radio', 'switch'].includes(role);
   return true;
 }
 
@@ -238,9 +249,11 @@ export class PlaywrightCompiler implements Compiler {
     });
     const shouldInjectOpener = !!openerNode && !planAlreadyOpens;
     let openerInjected = false;
-    // A step whose target lives inside the create dialog: a required field (fill/select/clear or an assert on it),
-    // the submit button, or a dismiss button. The opener must precede the first such step.
+    // A step whose target lives inside the create dialog must come after the opener. State-model: ANY control
+    // captured in the 'form' state is modal-only (its fields, headings, buttons) — the opener must precede the
+    // first step that touches one. Falls back to the required-field/submit/dismiss heuristic for untagged nodes.
     const touchesDialog = (step: PlanStep, node: EvidenceNode | null): boolean => {
+      if (node?.stateTag === 'form') return true;
       if (isActionStep(step)) {
         if (['FILL', 'SELECT', 'CLEAR', 'CHECK', 'UNCHECK'].includes(step.action)) return isRequiredFieldNode(node);
         if (step.action === 'CLICK') return isSubmitClick(step, node) || isDialogDismissNode(node);
@@ -334,6 +347,20 @@ export class PlaywrightCompiler implements Compiler {
         if (/\{\{[^}]+\}\}/.test(String(value ?? ''))) {
           diagnostics.push({ kind: 'UNRESOLVED_TEMPLATE', target, stepIndex: i, message: `Assertion expects an unresolved template token ${JSON.stringify(value)} — a generated value must be resolved to its concrete form before it is asserted.`, severity: 'skippable' });
           body.push(`  // UNRESOLVED_TEMPLATE: ${JSON.stringify(value)} — skipped (cannot assert a raw {{token}})`);
+          return;
+        }
+        // A checkbox/radio/switch has no text value — HAS_VALUE on it must assert CHECKED state, not toHaveValue
+        // (which always fails). Deterministic role-based correction, independent of what the author emitted.
+        const assertRole = String(g.node?.role || '').toLowerCase();
+        if (assertStep.assert === 'HAS_VALUE' && ['checkbox', 'radio', 'switch'].includes(assertRole)) {
+          body.push(`  await runner.expectChecked(${spec}, ${JSON.stringify(String(value ?? ''))});`);
+          return;
+        }
+        // Role↔assertion gate: a value/checked assert on an incompatible role can never pass — drop that one
+        // assertion (skippable: the case still ships its other steps) instead of emitting a guaranteed failure.
+        if (!assertFitsRole(assertStep.assert, assertRole)) {
+          diagnostics.push({ kind: 'INVALID_STEP', target, stepIndex: i, message: `${assertStep.assert} is incompatible with role "${assertRole || 'unknown'}".`, severity: 'skippable' });
+          body.push(`  // INVALID_STEP assert: ${assertStep.assert} on role "${assertRole || 'unknown'}" — skipped`);
           return;
         }
         body.push(emitAssert(assertStep, spec, value));

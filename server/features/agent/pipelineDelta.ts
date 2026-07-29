@@ -470,6 +470,8 @@ export interface VerifiedSelector {
   fallbackSelector: string | null;
   /** Input-field semantics for the Test Data Engine (present only for fillable controls). */
   fieldMeta?: FieldMeta | null;
+  /** Discovery state this control was captured in — 'form' (inside an opened create/edit modal) or 'page'. */
+  stateTag?: 'form' | 'page';
 }
 
 /** Which Evidence Registry record (Phase A) a selector's proof came from. */

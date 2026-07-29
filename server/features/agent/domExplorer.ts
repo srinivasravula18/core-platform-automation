@@ -305,7 +305,20 @@ function cleanLabel(value: string | null | undefined): string {
   }
   const tokens = text.split(' ').filter(Boolean);
   const out = tokens.filter((token, index, arr) => index === 0 || arr[index - 1] !== token);
-  return out.join(' ');
+  const joined = out.join(' ');
+  // Grid/column headers absorb the accessible name of their sort/resize/filter affordance buttons (e.g.
+  // header "Label" + a "Resize Label column" button → "Label Resize Label column"). Strip the affordance tail
+  // — but ONLY when it looks like one (mentions "column"/a sort direction or repeats the header word), so a
+  // real label such as "Save and Sort" is left intact. App-agnostic; no product names.
+  const m = /\s+(resize|sort|drag|reorder|move|toggle|filter)\b/i.exec(joined);
+  if (m && m.index > 0) {
+    const tail = joined.slice(m.index).toLowerCase();
+    const first = String(tokens[0] || '').toLowerCase();
+    if (/\bcolumn\b|\b(ascending|descending)\b/.test(tail) || (first.length > 2 && tail.includes(first))) {
+      return joined.slice(0, m.index).trim();
+    }
+  }
+  return joined;
 }
 
 function directText(el: Element): string {
@@ -715,6 +728,10 @@ export interface VerifiedElement {
   visible: boolean;
   status: 'verified' | 'not_unique' | 'broken' | 'unresolvable';
   state: { disabled: boolean; readonly: boolean; required: boolean };
+  /** Which discovery state this control was captured in: 'form' = inside an opened create/edit modal (only
+   * exists after the opener is clicked), 'page' = the resting list/page. Lets the catalog + compiler treat
+   * modal controls correctly (open the form before asserting them) instead of asserting them on the list. */
+  stateTag?: 'form' | 'page';
 }
 
 export interface VerifiedPage {

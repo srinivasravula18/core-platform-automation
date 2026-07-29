@@ -74,6 +74,12 @@ export interface AuthorAbstractPlanInput {
   /** ONE reviewed case — the graph fans this node out per case (reducer keyed by case ID). */
   testCase: { title: string; description?: string; steps?: Array<{ action?: string; expected?: string }> };
   evidenceGraph: EvidenceGraph | null;
+  /** Authoritative backend field truth (required/readonly/type) — the plan stage was previously starved of
+   * this, so it mis-picked assertions. Same block the case author gets (renderMetadataForPrompt). */
+  metadataHint?: string;
+  /** The chat's code-grounded analysis of the feature — grounds the EXPECTED side of assertions on real
+   * behavior instead of invented headings/data. */
+  understanding?: string;
   /** Defaults to the legacy plan-authoring agent so existing Settings overrides keep applying. */
   agent?: string;
   system?: string;
@@ -389,8 +395,11 @@ CASE RULES:
 function buildPlanPrompt(input: AuthorAbstractPlanInput, catalog: string): string {
   const steps = Array.isArray(input.testCase.steps) ? input.testCase.steps : [];
   const stepLines = steps.map((s) => `- ${s?.action || ''} => ${s?.expected || ''}`).join('\n') || '- (no source steps provided)';
+  const understanding = String(input.understanding || '').trim();
+  const understandingBlock = understanding ? `\nVERIFIED FEATURE ANALYSIS (ground the EXPECTED side of asserts on these real behaviors — do not invent headings/messages/data):\n${understanding.slice(0, 3000)}\n` : '';
+  const metadataBlock = String(input.metadataHint || '').trim() ? `\n${String(input.metadataHint).trim().slice(0, 3000)}\n` : '';
   return `Author ONE abstract test plan as JSON for the reviewed test case below — NOT Playwright code.
-${renderMissionRefForPrompt(input.mission)}${authNote(input.hasStoredCredentials)}
+${renderMissionRefForPrompt(input.mission)}${authNote(input.hasStoredCredentials)}${understandingBlock}${metadataBlock}
 ${catalog}
 REVIEWED TEST CASE:
 Title: ${input.testCase.title || ''}
@@ -401,6 +410,8 @@ PLAN RULES:
 - steps: [{action|assert, target, value?}] — exactly ONE verb per step (set the unused verb to null).
 - Actions: ${PLAN_ACTIONS.join(', ')}. Asserts: ${PLAN_ASSERTS.join(', ')}.
 - Every locator-bearing target (CLICK/FILL/asserts) MUST be a catalog name verbatim. OPEN_MODULE is mission-scoped navigation intent — its target is advisory and needs no catalog match.
+- MATCH THE ASSERT TO THE TARGET'S [role] (shown in the catalog): HAS_VALUE ONLY on an editable text field ([textbox]/[searchbox]/[spinbutton]/[combobox]); use CHECKED/UNCHECKED for a [checkbox]/[radio]/[switch] (never HAS_VALUE — a toggle has no text value); use VISIBLE/NOT_VISIBLE for a [heading]/[columnheader]/static control; ENABLED/DISABLED for interactive controls. An assert whose type does not fit the target's role will be dropped.
+- Never assert a specific heading, message, or ROW DATA that is not proven by the catalog or the verified analysis — do not invent an expected label/record (e.g. a specific row value) the evidence does not establish. To confirm a record you CREATED in this test, use ROW_IN_LIST with the value the test entered, not a pre-existing row.
 - Context asserts (URL_MATCHES, HAS_STATUS, EMPTY_STATE, ERROR_STATE, ROW_IN_LIST, FOUND_IN_GLOBAL_SEARCH) are page-scoped: their target/value is the EXPECTED TEXT (a URL fragment, a status/error message, or row text), never a catalog name. Use ROW_IN_LIST after creating a record to confirm it appears in its list, and FOUND_IN_GLOBAL_SEARCH to cross-check it via global search.
 - Translate EVERY source step into plan steps — never drop or merge away behavior.
 - CREATE/SUBMIT flows: before any save/create/submit CLICK, emit a FILL (or SELECT) for EVERY catalog field marked (required). A form submitted with an empty required field is rejected — this is the #1 cause of failed creates.

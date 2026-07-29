@@ -78,6 +78,7 @@ function toVerifiedSelector(el: VerifiedElement): VerifiedSelector {
     // 'dom' matches legacy evidenceIdForSource for both 'live-dom-verified' and 'live-dom-pool'.
     sourceEvidenceId: 'dom',
     fallbackSelector: el.fallback_selector,
+    stateTag: el.stateTag ?? 'page',
     // Input-field semantics for the Test Data Engine — harmless on non-fillable controls.
     fieldMeta: {
       name: el.input_name ?? null,

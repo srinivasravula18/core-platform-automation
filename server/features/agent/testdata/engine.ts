@@ -77,7 +77,14 @@ function applyConstraints(value: string, sem: FieldSemantics, r: SeededRandom): 
     const m = /\{(\d+)/.exec(pat);
     out = r.digits(m ? Number(m[1]) : Math.max(3, out.replace(/\D/g, '').length || 4));
   }
-  const max = typeof sem.maxLength === 'number' && sem.maxLength > 0 ? sem.maxLength : null;
+  // Length bound: the HTML maxLength, else a {N}/{N,M} quantifier in the pattern (e.g. "[a-z]{3}"), else a
+  // short single-token example placeholder (e.g. "cpl" for a 3-char prefix) — the app's own length hints.
+  const quant = /\{(\d+)(?:,(\d+))?\}/.exec(pat);
+  const patternMax = quant ? Number(quant[2] || quant[1]) : null;
+  const ph = String(sem.placeholder || '').trim();
+  const placeholderMax = /^[a-z0-9]{2,6}$/.test(ph) ? ph.length : null;
+  const explicitMax = typeof sem.maxLength === 'number' && sem.maxLength > 0 ? sem.maxLength : null;
+  const max = explicitMax ?? patternMax ?? placeholderMax;
   if (max && out.length > max) out = out.slice(0, max);
   const min = typeof sem.minLength === 'number' && sem.minLength > 0 ? sem.minLength : null;
   if (min && out.length < min) out = (out + p.loremPhrase(r).replace(/\s/g, '')).slice(0, Math.max(min, out.length)).padEnd(min, 'x');
@@ -133,7 +140,12 @@ export class TestDataEngine {
   /** Resolve a text value for a FILL. Explicit meaningful plan value wins; else schema-conformant when a
    * backend field matches; else DOM-semantic generation. Uniqueness-constrained fields are kept distinct. */
   fillValue(sem: FieldSemantics, planValue?: string | null): string {
-    if (!isGenericPlanValue(planValue)) return String(planValue);
+    if (!isGenericPlanValue(planValue)) {
+      // An explicit authored value still must respect the field's captured HARD constraints (maxLength /
+      // digit-pattern). An over-long value — e.g. a 6-char value the LLM invented for a 3-char prefix — is
+      // rejected by the app and the create silently fails; truncating to the field's real limit prevents that.
+      return applyConstraints(String(planValue), sem, new SeededRandom(`${this.runSeed}:fit:${fieldKey(sem)}`));
+    }
     const field = matchSchemaField(sem, this.schemas);
 
     // API-acceptance path: a matched backend field's type/picklist/reference decides a conformant value.

@@ -12,6 +12,8 @@ export const PLAN_ACTIONS = ['OPEN_MODULE', 'CLICK', 'FILL', 'SELECT', 'CHECK', 
 /** Observations. VERIFY_* are higher-level QA intents the Compiler expands into concrete assertions. */
 export const PLAN_ASSERTS = [
   'VISIBLE', 'NOT_VISIBLE', 'ENABLED', 'DISABLED', 'HAS_TEXT', 'NOT_HAS_TEXT', 'HAS_VALUE', 'COUNT_GT',
+  // Checkbox/radio/switch state — HAS_VALUE (toHaveValue) has no meaning on these; use CHECKED/UNCHECKED.
+  'CHECKED', 'UNCHECKED',
   'VERIFY_TABLE', 'VERIFY_FILTER', 'VERIFY_SORT', 'VERIFY_PAGINATION', 'VERIFY_LOOKUP', 'VERIFY_PERMISSION',
   'VERIFY_VALIDATION', 'VERIFY_ERROR',
   // Multi-level context asserts (bug-investigation framework, Phase 4): mission/page-scoped observations the

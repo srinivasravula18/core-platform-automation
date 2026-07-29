@@ -4920,7 +4920,16 @@ Rules:
     };
 
     const carriedScope = extractCarriedForwardScope(rawContextPrompt);
-    if (!correction && carriedScope && isShortFollowUpAction(rawOriginalRequest || rawPrompt)) {
+    // Attention layer: only carry the prior scope forward when the CURRENT target hasn't changed. If the user
+    // gave a target URL whose host is absent from the carried scope (they switched app/surface mid-chat), do
+    // NOT reuse the prior scope as authoritative — fall through to fresh grounding for the new target. No
+    // explicit target, or a matching host → carry forward exactly as before (non-regressive).
+    const carriedTargetMatches = (() => {
+      if (!rawTargetUrl) return true;
+      try { return carriedScope.toLowerCase().includes(new URL(rawTargetUrl).host.toLowerCase()); }
+      catch { return true; }
+    })();
+    if (!correction && carriedScope && carriedTargetMatches && isShortFollowUpAction(rawOriginalRequest || rawPrompt)) {
       return {
         ...fallback,
         understanding: buildCarriedForwardUnderstanding({
@@ -4979,9 +4988,8 @@ Rules:
           historyBlock +
           `Original request: ${rawOriginalRequest || rawPrompt}\n` +
           (rawOriginalRequest && rawOriginalRequest !== rawPrompt ? `Router-extracted scope: ${rawPrompt}\n` : '') +
-          (rawContextPrompt ? `Full carried-forward context for this follow-up:\n${rawContextPrompt}\n` : '') +
-          `Detected target name: ${rawTargetName || 'not provided'}\n` +
-          `Detected target URL: ${rawTargetUrl || 'not provided'}\n` +
+          (rawContextPrompt ? `Prior conversation context (BACKGROUND ONLY — informative, not authoritative; it must NEVER change the target/app/surface stated below):\n${rawContextPrompt}\n` : '') +
+          `AUTHORITATIVE target for THIS request (overrides anything implied by the background above) — name: ${rawTargetName || 'not provided'}, URL: ${rawTargetUrl || 'not provided'}\n` +
           (currentUnderstanding ? `Current understanding:\n${String(currentUnderstanding)}\n` : '') +
           (correction ? `User correction/revision:\n${String(correction)}\n` : '') +
           `\nThe "understanding" field must be concise, user-facing plain text with these sections: Here's what I understood, Target, Task, Plan.\n` +
@@ -5410,7 +5418,22 @@ Rules:
       if (understanding.auth.storageKeys.length) setAuthStorageKeys(String(app_url || selectedApp?.baseUrl || ''), understanding.auth.storageKeys);
     } catch (err) { console.warn('[understanding] auth-key registration skipped:', (err as Error)?.message); }
     const priorSessionRun = latestRunForConversation(conversationId, scope);
-    if (priorSessionRun) {
+    // Attention layer: the CURRENT request's target is authoritative. If the user switched the target
+    // app/URL mid-conversation, the prior run's understanding/grounding (and the conversation-memory scope
+    // inherited above) describe the OLD surface — drop them so the new surface is grounded fresh. Prior turns
+    // stay available downstream as conversation CONTEXT, never as authoritative scope. Same target → unchanged.
+    const normTarget = (u: string) => { try { const x = new URL(u); return `${x.origin}${x.pathname}`.replace(/\/+$/, '').toLowerCase(); } catch { return String(u || '').toLowerCase(); } };
+    const currentTargetUrl = String(app_url || selectedApp?.baseUrl || '').trim();
+    const priorTargetUrl = String(priorSessionRun?.app_url || '').trim();
+    const priorAppId = String(priorSessionRun?.appId || priorSessionRun?.mission_context?.application?.id || '').trim();
+    const targetChanged = Boolean(priorSessionRun) && (
+      (Boolean(currentTargetUrl) && Boolean(priorTargetUrl) && normTarget(currentTargetUrl) !== normTarget(priorTargetUrl))
+      || (Boolean(scope.appId) && Boolean(priorAppId) && String(scope.appId) !== priorAppId)
+    );
+    if (targetChanged) {
+      approvedUnderstanding = '';
+      priorGrounding = '';
+    } else if (priorSessionRun) {
       approvedUnderstanding ||= String(priorSessionRun.approvedUnderstanding || '').trim();
       priorGrounding ||= String(priorSessionRun.priorGrounding || priorSessionRun.approvedUnderstanding || '').trim();
     }

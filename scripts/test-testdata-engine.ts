@@ -90,6 +90,12 @@ console.log('6. Explicit meaningful plan values are respected; generic placehold
   ok(e.fillValue({ label: 'Email' }, '') !== '', 'empty plan value → generated');
   ok(e.fillValue({ label: 'Email' }, 'test') !== 'test', 'generic "test" → generated');
   ok(!/known partial app name/.test(e.fillValue({ label: 'Search' }, 'known partial app name')), 'LLM placeholder phrase → generated');
+  // An explicit authored value must still respect the field's captured hard length limits — an over-long
+  // value that would be rejected by the app (e.g. a 6-char prefix in a 3-char field) is truncated to fit.
+  eq(e.fillValue({ label: 'Prefix', maxLength: 3 }, 'QAA629'), 'QAA', 'explicit value truncated to captured maxLength');
+  eq(e.fillValue({ label: 'Prefix', pattern: '[a-z]{3}' }, 'QAA629'), 'QAA', 'explicit value truncated to a {N} pattern quantifier');
+  eq(e.fillValue({ label: 'Prefix', placeholder: 'cpl' }, 'QAA629'), 'QAA', 'explicit value truncated to a short example placeholder length');
+  eq(e.fillValue({ label: 'App Label', placeholder: 'Enter the app name' }, 'My Full App Name'), 'My Full App Name', 'a prompt-style placeholder is NOT used as a length cap');
 }
 
 console.log('7. SELECT picks only REAL options, never invents');

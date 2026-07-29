@@ -42,6 +42,11 @@ export interface EvidenceNode {
   provenance?: string | null;
   /** Input-field semantics carried from the registry for the Test Data Engine (fillable controls only). */
   fieldMeta?: FieldMeta | null;
+  /** Discovery state: 'form' = only exists inside an opened create/edit modal; 'page' = the resting list/page. */
+  stateTag?: 'form' | 'page';
+  /** True when this is a live DATA-row instance (row-key selector), not a structural control — its text is
+   * ephemeral, so tests must not assert it as if it were a fixed control. */
+  isDataInstance?: boolean;
   // Versioning/provenance fields (populated by the Object Repository as evidence accrues).
   domHash?: string | null;
   screenshotRef?: string | null;
@@ -119,6 +124,8 @@ export function buildEvidenceGraphFromRun(run: any, opts: BuildEvidenceGraphOpts
       uniqueness: vs.uniqueness ?? null,
       provenance: (vs.provenance as any) ?? null,
       fieldMeta: vs.fieldMeta ?? null,
+      stateTag: (vs as any).stateTag ?? 'page',
+      isDataInstance: String((vs as any).selectorType || '') === 'row-key' || /^tr:has-text\(/.test(String(vs.selector || '')),
       domHash: null,
       screenshotRef: null,
       lastVerified: null,

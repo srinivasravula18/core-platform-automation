@@ -12,6 +12,7 @@ import { validateCompiledOutput } from '../server/features/agent/compiler/valida
 import type { TestPlan } from '../server/features/agent/compiler/testPlan';
 import { semanticPlanFromCase } from '../server/features/agent/compiler/semanticPlanner';
 import { catalogTargetIssues } from '../server/features/agent/workflow/nodes/authoring';
+import { renderTargetCatalogForPrompt } from '../server/features/agent/compiler/renderCatalogForPrompt';
 
 let passed = 0, failed = 0;
 const ok = (c: boolean, n: string) => { if (c) { passed++; console.log(`  ✓ ${n}`); } else { failed++; console.error(`  ✗ ${n}`); } };
@@ -315,6 +316,77 @@ function main() {
     const issues = catalogTargetIssues(bad, graph);
     ok(issues.length === 1 && /Nonexistent Widget/.test(issues[0]), 'an invented, non-catalog target is flagged for repair');
     eq(catalogTargetIssues(bad, null), [], 'no graph → no issues (never blocks when the catalog is absent)');
+  }
+
+  console.log('HAS_VALUE on a checkbox → expectChecked (not toHaveValue, which always fails on a checkbox)');
+  {
+    const cbRun: any = { id: 'run-cb', selector_registry: { verified_selectors: [
+      vs('cb', 'checkbox', 'system_admin', 'tr:has-text("system_admin") input[type="checkbox"]', 'row-key'),
+      vs('tb', 'textbox', 'Search', '#search', 'css'),
+    ] } };
+    const cbGraph = buildEvidenceGraphFromRun(cbRun, { platform: 'Admin', module: 'roles' });
+    const cbPlan: TestPlan = { mission: runtime.executionScope, title: 'select row', steps: [
+      { action: 'CHECK', target: 'system_admin' },
+      { assert: 'HAS_VALUE', target: 'system_admin', value: 'true' },
+    ] };
+    const rcb = playwrightCompiler.compile({ mission: runtime, plan: cbPlan, evidenceGraph: cbGraph, run: cbRun });
+    ok(rcb.ok, 'checkbox plan compiles');
+    ok(rcb.code.includes('runner.expectChecked('), 'HAS_VALUE on a checkbox emits expectChecked');
+    ok(!/expectValue\([^)]*checkbox|expectValue\([^)]*system_admin/.test(rcb.code), 'never emits expectValue (toHaveValue) for the checkbox');
+    // A textbox HAS_VALUE still uses expectValue (unchanged).
+    const tbPlan: TestPlan = { mission: runtime.executionScope, title: 'search value', steps: [
+      { action: 'FILL', target: 'Search', value: 'acme' },
+      { assert: 'HAS_VALUE', target: 'Search', value: 'acme' },
+    ] };
+    const rtb = playwrightCompiler.compile({ mission: runtime, plan: tbPlan, evidenceGraph: cbGraph, run: cbRun });
+    ok(rtb.code.includes('runner.expectValue('), 'a textbox HAS_VALUE still uses expectValue');
+  }
+
+  console.log('CHECKED/UNCHECKED verb → expectChecked; role↔assert gate drops HAS_VALUE on a non-text role');
+  {
+    const g2Run: any = { id: 'run-g2', selector_registry: { verified_selectors: [
+      vs('cb2', 'checkbox', 'system_admin', 'tr:has-text("system_admin") input[type="checkbox"]', 'row-key'),
+      vs('hd2', 'heading', 'Apps', 'role=heading[name="Apps"]', 'role'),
+    ] } };
+    const g2 = buildEvidenceGraphFromRun(g2Run, { platform: 'Admin', module: 'apps' });
+    // CHECKED verb compiles to expectChecked.
+    const chk: TestPlan = { mission: runtime.executionScope, title: 'checked', steps: [{ assert: 'CHECKED', target: 'system_admin' }] };
+    const rchk = playwrightCompiler.compile({ mission: runtime, plan: chk, evidenceGraph: g2, run: g2Run });
+    ok(rchk.ok && rchk.code.includes('runner.expectChecked('), 'CHECKED verb compiles to expectChecked');
+    // HAS_VALUE on a heading is role-incompatible → skippable diagnostic, never emitted.
+    const badAssert: TestPlan = { mission: runtime.executionScope, title: 'bad', steps: [
+      { assert: 'VISIBLE', target: 'Apps' },
+      { assert: 'HAS_VALUE', target: 'Apps', value: 'x' },
+    ] };
+    const rba = playwrightCompiler.compile({ mission: runtime, plan: badAssert, evidenceGraph: g2, run: g2Run });
+    ok(rba.ok, 'the case still ships (the bad assert is skippable)');
+    ok(rba.diagnostics.some((d) => d.kind === 'INVALID_STEP' && d.severity === 'skippable'), 'HAS_VALUE on a heading is flagged skippable');
+    ok(!/expectValue\([^)]*heading|expectValue\([^)]*Apps/.test(rba.code), 'toHaveValue is never emitted for the heading');
+    ok(rba.code.includes('runner.expectVisible('), 'the compatible VISIBLE assert on the heading still emits');
+  }
+
+  console.log('State-model: form-tagged controls are grouped in the catalog + the opener is injected before them');
+  {
+    const smRun: any = { id: 'run-sm', selector_registry: { verified_selectors: [
+      vs('new', 'button', 'New', '[data-testid="new"]', 'testid'),        // page opener
+      vs('grid', 'columnheader', 'Label', 'role=columnheader[name="Label"]', 'role'), // page control
+      { ...vs('flabel', 'textbox', 'App Label *', '#app-label', 'css'), stateTag: 'form' },     // modal field
+      { ...vs('fhead', 'heading', 'New App', 'role=heading[name="New App"]', 'role'), stateTag: 'form' }, // modal heading
+    ] } };
+    const smGraph = buildEvidenceGraphFromRun(smRun, { platform: 'Admin', module: 'apps' });
+    // Catalog groups page vs form controls.
+    const cat = renderTargetCatalogForPrompt(smGraph);
+    ok(/PAGE \/ LIST CONTROLS/.test(cat) && /CREATE\/EDIT FORM/.test(cat), 'catalog splits page controls from form controls');
+    ok(cat.indexOf('New App') > cat.indexOf('CREATE/EDIT FORM'), 'the modal heading is listed under the form section');
+    // Plan asserts the modal heading first — the compiler must inject the New opener BEFORE it.
+    const smPlan: TestPlan = { mission: runtime.executionScope, title: 'create form opens', steps: [
+      { assert: 'VISIBLE', target: 'New App' },
+    ] };
+    const rsm = playwrightCompiler.compile({ mission: runtime, plan: smPlan, evidenceGraph: smGraph, run: smRun });
+    ok(rsm.ok, 'form-heading plan compiles');
+    const openerAt = rsm.code.indexOf('data-testid');
+    const headAt = rsm.code.indexOf('New App');
+    ok(openerAt > 0 && headAt > 0 && openerAt < headAt, 'the create opener is injected BEFORE asserting the modal heading (was: heading asserted on the list → not visible)');
   }
 
   console.log(`\n${passed} passed, ${failed} failed`);

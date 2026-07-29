@@ -203,6 +203,14 @@ export class MissionRunner {
     });
   }
   async expectCountGt(spec: LocatorSpec, n: number): Promise<void> { await this.act('expectCountGt', spec, String(n), async () => { expect(await this.locator(spec).count()).toBeGreaterThan(Number(n) || 0); }); }
+  // Checkbox/radio/switch have no text value — assert CHECKED state, not toHaveValue. A false-ish value asserts unchecked.
+  async expectChecked(spec: LocatorSpec, value?: string): Promise<void> {
+    await this.act('expectChecked', spec, String(value ?? ''), async () => {
+      const l = this.locator(spec); await this.reveal(l);
+      const wantUnchecked = /^(false|unchecked|no|off|0|empty|none)$/.test(String(value ?? '').trim().toLowerCase());
+      await expect(l).toBeChecked({ checked: !wantUnchecked });
+    });
+  }
 
   // ---- Multi-level context asserts (Phase 4) — mission/page-scoped, owned by the runner ----
   // These are the ONLY sanctioned URL/status/search observations; specs pass expected TEXT, never selectors.
@@ -239,15 +247,19 @@ export class MissionRunner {
     });
   }
 
-  /** An ERROR state is visible: an alert region or an invalid-marked control carrying the expected text. */
+  /** An ERROR state is visible. Confirms an error is PRESENT; the exact message text is app-specific, so match
+   * it when it appears but fall back to "any error/alert is shown" rather than fail on a guessed message. */
   async expectErrorState(text: string): Promise<void> {
     await this.act('expectErrorState', null, text, async () => {
-      const want = String(text || '');
+      const want = String(text || '').trim();
       const alert = this.page.locator('[role="alert"], [aria-invalid="true"], [aria-errormessage]');
-      const scoped = want.trim() ? alert.filter({ hasText: want }) : alert;
-      const fallback = want.trim() ? this.page.getByText(want, { exact: false }) : alert;
-      const found = (await scoped.count()) > 0 ? scoped : fallback;
-      await expect(found.first()).toBeVisible({ timeout: 10000 });
+      if (want) {
+        const byText = alert.filter({ hasText: want });
+        if ((await byText.count().catch(() => 0)) > 0) { await expect(byText.first()).toBeVisible({ timeout: 5000 }); return; }
+        const plain = this.page.getByText(want, { exact: false });
+        if ((await plain.count().catch(() => 0)) > 0) { await expect(plain.first()).toBeVisible({ timeout: 5000 }); return; }
+      }
+      await expect(alert.first()).toBeVisible({ timeout: 10000 });
     });
   }
 
@@ -316,16 +328,22 @@ export class MissionRunner {
     });
   }
 
-  /** A validation failure is visible for the grounded control (invalid marking or an alert nearby). */
+  /** A validation failure is visible for the grounded control (invalid marking or an alert nearby). Confirms a
+   * validation error is PRESENT — the exact message text is app-specific and must never be guessed. If the
+   * grounded text actually appears we match it; otherwise any validation error still satisfies the check, so a
+   * correct app showing a different message does not fail. */
   async expectValidation(spec: LocatorSpec, value: string): Promise<void> {
     await this.act('expectValidation', spec, value, async () => {
       const l = this.locator(spec);
       await this.reveal(l);
-      const invalid = (await l.getAttribute('aria-invalid').catch(() => null)) === 'true';
-      if (invalid) return;
+      if ((await l.getAttribute('aria-invalid').catch(() => null)) === 'true') return;
       const alert = this.page.locator('[role="alert"], [aria-invalid="true"], [aria-errormessage]');
-      const scoped = String(value || '').trim() ? alert.filter({ hasText: String(value) }) : alert;
-      await expect(scoped.first()).toBeVisible({ timeout: 10000 });
+      const want = String(value || '').trim();
+      if (want) {
+        const scoped = alert.filter({ hasText: want });
+        if ((await scoped.count().catch(() => 0)) > 0) { await expect(scoped.first()).toBeVisible({ timeout: 5000 }); return; }
+      }
+      await expect(alert.first()).toBeVisible({ timeout: 10000 });
     });
   }
 

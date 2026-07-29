@@ -34,6 +34,22 @@ function scopeOf(app: UnderstandConnectedApp): MemoryScope {
   return { projectId: app.projectId ?? undefined, appId: app.appId ?? undefined, ownerId: app.ownerId ?? undefined };
 }
 
+/** Attention layer: the understanding memory is keyed by the SURFACE (URL origin+path), not just
+ * project/app/owner — so switching the target URL (e.g. admin → keystone/runtime) is a cache MISS that
+ * re-learns for the new surface, instead of recalling the previous surface's auth keys/nav/grounding. The
+ * scope stays project/app/owner (per the store's "feature is part of the subject" rule); the surface lives in
+ * the subject. App-agnostic (derives from the URL, no product names). Same URL → same subject → unchanged. */
+function surfaceKeyOf(app: UnderstandConnectedApp): string {
+  const url = String(app.appUrl || '').trim();
+  if (!url) return '';
+  try { const u = new URL(url); return `${u.origin}${u.pathname}`.replace(/\/+$/, '').toLowerCase(); }
+  catch { return url.toLowerCase(); }
+}
+export function understandingSubject(app: UnderstandConnectedApp): string {
+  const surface = surfaceKeyOf(app);
+  return surface ? `app.understanding::${surface}` : 'app.understanding';
+}
+
 /** Learn the app's OWN auth storage keys from its repo — grep its auth code, extract the exact storage
  *  keys it reads/writes. Returns the keys + file citations. Empty when no repo/keys are found. */
 export function learnAuthStorageKeys(repoPath: string): { keys: string[]; cites: string[] } {
@@ -104,10 +120,11 @@ export async function resolveAppUnderstanding(input: ResolveUnderstandingInput):
   const blackboard = input.blackboard ?? getBlackboard();
   const memory = input.memory ?? getMemoryStore();
   const scope = scopeOf(input.connectedApp);
+  const subject = understandingSubject(input.connectedApp);
   const runId = input.runId || 'understanding';
 
   if (!input.refresh) {
-    const recalled = await memory.recall({ scope, kind: 'semantic', subject: 'app.understanding', limit: 1 }).catch(() => []);
+    const recalled = await memory.recall({ scope, kind: 'semantic', subject, limit: 1 }).catch(() => []);
     if (recalled[0]?.value) {
       const u = recalled[0].value as AppUnderstanding;
       await blackboard.put(runId, 'app.understanding', u, agent, { causationId: 'memory-recall' }).catch(() => {});
@@ -148,7 +165,7 @@ export async function resolveAppUnderstanding(input: ResolveUnderstandingInput):
 
   await blackboard.put(runId, 'app.understanding', u, agent, { causationId: 'discovery' }).catch(() => {});
   if (learned) {
-    await memory.write({ scope, kind: 'semantic', subject: 'app.understanding', value: u, runId }).catch(() => {});
+    await memory.write({ scope, kind: 'semantic', subject, value: u, runId }).catch(() => {});
   }
   return defineUnderstanding(u); // normalize defensively
 }

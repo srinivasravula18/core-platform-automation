@@ -475,9 +475,13 @@ export function buildTestRunGraph(deps: TestRunGraphDeps = {}, opts: BuildTestRu
   };
 
   const authorPlansNode = async (state: WorkflowState): Promise<WorkflowStateUpdate> => {
-    const { evidenceGraph } = readArtifacts(state.runId);
+    const { evidenceGraph, metadataMap } = readArtifacts(state.runId);
     const fullCases = authoredCasesByRun.get(state.runId) ?? [];
     const authed = await hasStoredCredentials(state);
+    // The plan stage picks assertion types — feed it the SAME app context the case author gets (authoritative
+    // field metadata + the code-grounded analysis), so it grounds assert types/expected-state instead of guessing.
+    const metadataHint = renderMetadataForPrompt(metadataMap);
+    const understanding = state.request.understanding;
     const authored = await mapWithConcurrency(state.cases, PLAN_AUTHORING_CONCURRENCY, async (testCase, index) => {
       // Index-aligned with author_cases's mapping; a stash-less resumed thread degrades to title/description only.
       const full = fullCases[index];
@@ -485,6 +489,8 @@ export function buildTestRunGraph(deps: TestRunGraphDeps = {}, opts: BuildTestRu
         mission: state.mission,
         testCase: { title: testCase.title, description: testCase.description ?? full?.description, steps: full?.steps },
         evidenceGraph: evidenceGraph ?? null,
+        metadataHint,
+        understanding,
         overrides: deps.modelOverrides,
         hasStoredCredentials: authed,
       });

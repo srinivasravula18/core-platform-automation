@@ -183,7 +183,9 @@ async function exploreFormState(page: any, elements: VerifiedElement[], targetUr
     for (const el of formEls) {
       if (el.status !== 'verified' || !el.resolved_selector || seen.has(el.resolved_selector)) continue;
       seen.add(el.resolved_selector);
-      elements.push(el);
+      // These controls only exist AFTER the create/edit opener is clicked — tag them so the catalog + compiler
+      // treat them as modal-state controls (open the form before asserting them), never as list controls.
+      elements.push({ ...el, stateTag: 'form' });
     }
     if (scope) await page.evaluate(`(() => { const n = document.querySelector('[data-tf-form-scope]'); if (n) n.removeAttribute('data-tf-form-scope'); })()`).catch(() => undefined);
   } catch { /* opener not clickable / form didn't open — enrichment only, never fail discovery */ }

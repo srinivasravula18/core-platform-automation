@@ -2,6 +2,11 @@
 
 Project instructions for Claude Code working in this repo.
 
+## Non-negotiable coding rules (apply to me AND every spawned agent)
+
+- **No hardcoding, anywhere.** Never hardcode app/product facts (names like admin/keystone/shockwave, URLs, ports, endpoints, selectors, field names, auth keys, module lists) in code, prompts, or understanding. Everything app-specific must be LEARNED from the connected repo/URL/OpenAPI at runtime. If you find hardcoding, remove it and route the value through the understanding/learning layer — never just report it.
+- **Comments: precise and short.** One line where possible; no large multi-line comment blocks. Say why, not what. Match surrounding density.
+
 ## Architecture-change process ("Principal Architect" mode)
 
 When asked to redesign or overhaul a major subsystem (e.g. the Context & Evidence Pipeline, the orchestrator, the agent pipeline), follow this process. This was requested explicitly and applies to any future "act as Principal/Staff Architect" request.
