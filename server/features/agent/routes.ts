@@ -817,6 +817,11 @@ function agentSuiteId(run: any): string {
   return run.testSuiteId || run.generatedSuiteId || `SUITE-${run.id.substring(0, 8).toUpperCase()}`;
 }
 
+// Match names only inside a folder (and a selected plan) so separately managed areas stay distinct.
+function normalizedSuiteName(name: unknown): string {
+  return String(name || '').trim().replace(/\s+/g, ' ').toLocaleLowerCase();
+}
+
 function agentCaseId(run: any, index: number): string {
   return `TC-${run.id.substring(0, 4).toUpperCase()}-${index + 1}`;
 }
@@ -1138,7 +1143,7 @@ async function persistAgentCaseArtifacts(run: any) {
 async function ensureAgentPlanAndSuite(run: any) {
   await ensureSuiteTitle(run); // idempotent — ensures the agent-authored title exists for the suite name
   const planId = agentPlanId(run);
-  const suiteId = agentSuiteId(run);
+  let suiteId = agentSuiteId(run);
   const baseName = agentDisplayName(run);
 
   await ensureFolderInPg(run.folderId || '');
@@ -1150,26 +1155,39 @@ async function ensureAgentPlanAndSuite(run: any) {
   ));
 
   if (!run.testSuiteId) {
-    await Suites.upsert({
-      id: suiteId,
-      name: agentSuiteName(run),
-      description: `Generated suite for ${run.app_url || baseName}`,
-      testPlanId: planId || null,
-      parentSuite: '',
-      module: db.folders.find((folder: any) => folder.id === run.folderId)?.name || getFolderPath(run.folderId || ''),
-      owner: 'QA Assistant',
-      tags: suiteTags.length ? suiteTags : ['@generated'],
-      priority: 'Medium',
-      status: 'Active',
-      folderId: run.folderId || null,
-      createdBy: 'QA Assistant',
-      proposedBy: 'QA Assistant',
-      approvalState: 'approved',
-      sourceRunId: run.id,
-      projectId: run.projectId || '',
-      appId: run.appId || '',
-      ownerId: run.ownerId || '',
-    });
+    const suiteName = agentSuiteName(run);
+    const matchingSuite = (await Suites.list()).find((suite: any) =>
+      suite.folderId === (run.folderId || null)
+      && normalizedSuiteName(suite.name) === normalizedSuiteName(suiteName)
+      && (!planId || !suite.testPlanId || suite.testPlanId === planId),
+    );
+
+    if (matchingSuite) {
+      // A workspace action may already have created this suite before the agent persists cases.
+      run.generatedSuiteId = matchingSuite.id;
+      suiteId = matchingSuite.id;
+    } else {
+      await Suites.upsert({
+        id: suiteId,
+        name: suiteName,
+        description: `Generated suite for ${run.app_url || baseName}`,
+        testPlanId: planId || null,
+        parentSuite: '',
+        module: db.folders.find((folder: any) => folder.id === run.folderId)?.name || getFolderPath(run.folderId || ''),
+        owner: 'QA Assistant',
+        tags: suiteTags.length ? suiteTags : ['@generated'],
+        priority: 'Medium',
+        status: 'Active',
+        folderId: run.folderId || null,
+        createdBy: 'QA Assistant',
+        proposedBy: 'QA Assistant',
+        approvalState: 'approved',
+        sourceRunId: run.id,
+        projectId: run.projectId || '',
+        appId: run.appId || '',
+        ownerId: run.ownerId || '',
+      });
+    }
   }
 }
 
