@@ -17,6 +17,7 @@ import {
   suiteCaseProposal,
   type AIReworkProposal,
 } from '@/src/lib/aiRework';
+import { diffCaseRevisions } from '@/src/lib/caseRevisionDiff';
 import FailureCard from '@/src/components/FailureCard';
 import {
   Loader2,
@@ -285,6 +286,11 @@ type Case = {
   reuseMatchReasons?: string[];
 };
 
+type AIChangeMarker = {
+  fields: Set<string>;
+  steps: Set<number>;
+};
+
 export function DeepRunResult({
   taskId,
   initialSaved,
@@ -324,7 +330,7 @@ export function DeepRunResult({
   const [reworkUndoSnapshot, setReworkUndoSnapshot] = useState<Case[] | null>(null);
   // Kept separately from the case data so an applied AI rework remains visibly
   // distinguishable from ordinary edits until the user moves on or undoes it.
-  const [aiUpdatedCases, setAiUpdatedCases] = useState<Set<number>>(new Set());
+  const [aiChangeMarkers, setAiChangeMarkers] = useState<Record<number, AIChangeMarker>>({});
   const [saved, setSaved] = useState(!!initialSaved);
   const [pwRunning, setPwRunning] = useState(false);
   const [pwResult, setPwResult] = useState<any>(null);
@@ -669,13 +675,21 @@ export function DeepRunResult({
     if (!reworkProposal) return;
     try {
       const result = applyAIReworkProposal(list, reworkProposal, selectedKeys);
-      const updatedIndexes = reworkProposal.items
-        .filter((item) => item.kind === 'updated' && selectedKeys.has(item.key) && item.sourceIndex != null)
-        .map((item) => item.sourceIndex!);
+      const changeMarkers = Object.fromEntries(reworkProposal.items
+        .filter((item) => item.kind === 'updated' && selectedKeys.has(item.key) && item.sourceIndex != null && item.before)
+        .map((item) => {
+          const differences = diffCaseRevisions(item.before!, item.after);
+          return [item.sourceIndex!, {
+            fields: new Set(differences.filter((difference) => difference.type === 'field').map((difference) => difference.label)),
+            steps: new Set(differences
+              .filter((difference) => difference.type === 'step')
+              .map((difference) => Number(difference.label.replace('Step ', '')) - 1)),
+          } satisfies AIChangeMarker];
+        }));
       setReworkUndoSnapshot(list);
       setCases(result.cases);
-      if (updatedIndexes.length) {
-        setAiUpdatedCases((current) => new Set([...current, ...updatedIndexes]));
+      if (Object.keys(changeMarkers).length) {
+        setAiChangeMarkers((current) => ({ ...current, ...changeMarkers }));
       }
       setSaved(false);
       setChatNote(`${result.appliedCount} AI change${result.appliedCount === 1 ? '' : 's'} applied to the draft. Save all to persist.`);
@@ -694,7 +708,7 @@ export function DeepRunResult({
     if (!reworkUndoSnapshot) return;
     setCases(reworkUndoSnapshot);
     setReworkUndoSnapshot(null);
-    setAiUpdatedCases(new Set());
+    setAiChangeMarkers({});
     setChatNote('AI changes undone.');
     setSaved(false);
   };
@@ -1010,6 +1024,14 @@ export function DeepRunResult({
     w.focus();
     setTimeout(() => { try { w.print(); } catch { /* ignore */ } }, 350);
   };
+  const aiChangeClass = (caseIndex: number, field: string) =>
+    aiChangeMarkers[caseIndex]?.fields.has(field)
+      ? 'border-emerald-500/55 bg-emerald-500/5 ring-1 ring-emerald-500/15'
+      : '';
+  const aiStepChangeClass = (caseIndex: number, stepIndex: number) =>
+    aiChangeMarkers[caseIndex]?.steps.has(stepIndex)
+      ? 'border-emerald-500/55 bg-emerald-500/5 ring-1 ring-emerald-500/15'
+      : '';
 
   return (
     <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-card)] p-3">
@@ -1471,7 +1493,7 @@ export function DeepRunResult({
                 {list.map((c, i) => (
                   <div key={i} className={cn(
                     'rounded-md border bg-[var(--bg-secondary)]',
-                    aiUpdatedCases.has(i) ? 'border-emerald-500/45 ring-1 ring-emerald-500/15' : 'border-[var(--border)]',
+                    aiChangeMarkers[i] ? 'border-emerald-500/45 ring-1 ring-emerald-500/15' : 'border-[var(--border)]',
                   )}>
                     <div
                       onClick={() => setEditing(i)}
@@ -1493,7 +1515,7 @@ export function DeepRunResult({
                           Reused
                         </span>
                       )}
-                      {aiUpdatedCases.has(i) && (
+                      {aiChangeMarkers[i] && (
                         <span className="rounded border border-emerald-500/35 bg-emerald-500/10 px-1.5 py-0.5 text-[9px] font-bold uppercase text-emerald-300">
                           AI updated
                         </span>
@@ -1639,7 +1661,7 @@ export function DeepRunResult({
                   <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={() => setEditing(null)}>
                     <div className={cn(
                       'relative flex max-h-[90dvh] w-full max-w-5xl flex-col overflow-hidden rounded-lg border bg-[var(--bg-card)] shadow-2xl',
-                      aiUpdatedCases.has(i) ? 'border-emerald-500/45' : 'border-[var(--border)]',
+                      aiChangeMarkers[i] ? 'border-emerald-500/45' : 'border-[var(--border)]',
                     )} onClick={(e) => e.stopPropagation()}>
                       <button
                         type="button"
@@ -1664,7 +1686,7 @@ export function DeepRunResult({
                           <div className="truncate text-sm font-semibold text-[var(--text-primary)]">{c.title || 'Untitled case'}</div>
                           <div className="flex items-center gap-2 text-[10px] text-[var(--text-muted)]">
                             <span>Case {i + 1} of {list.length}</span>
-                            {aiUpdatedCases.has(i) && <span className="rounded border border-emerald-500/35 bg-emerald-500/10 px-1.5 py-0.5 font-semibold uppercase tracking-wide text-emerald-300">AI updated</span>}
+                            {aiChangeMarkers[i] && <span className="rounded border border-emerald-500/35 bg-emerald-500/10 px-1.5 py-0.5 font-semibold uppercase tracking-wide text-emerald-300">AI updated</span>}
                           </div>
                         </div>
                         <button
@@ -1684,7 +1706,7 @@ export function DeepRunResult({
                             value={c.title || ''}
                             onChange={(e) => patchCase(i, { title: e.target.value })}
                             placeholder="Test case title"
-                            className="block w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs font-normal normal-case tracking-normal text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
+                            className={cn('block w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs font-normal normal-case tracking-normal text-[var(--text-primary)] outline-none focus:border-[var(--accent)]', aiChangeClass(i, 'Title'))}
                           />
                         </label>
                         <label className="block space-y-1 text-[10px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">
@@ -1693,7 +1715,7 @@ export function DeepRunResult({
                             value={c.description || ''}
                             onChange={(e) => patchCase(i, { description: e.target.value })}
                             placeholder="What this test case validates"
-                            className="block h-20 w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs font-normal normal-case tracking-normal text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
+                            className={cn('block h-20 w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs font-normal normal-case tracking-normal text-[var(--text-primary)] outline-none focus:border-[var(--accent)]', aiChangeClass(i, 'Description'))}
                           />
                         </label>
                         <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
@@ -1702,7 +1724,7 @@ export function DeepRunResult({
                             <select
                               value={c.priority || 'Medium'}
                               onChange={(e) => patchCase(i, { priority: e.target.value })}
-                              className="block w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs font-normal normal-case tracking-normal text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
+                              className={cn('block w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs font-normal normal-case tracking-normal text-[var(--text-primary)] outline-none focus:border-[var(--accent)]', aiChangeClass(i, 'Priority'))}
                             >
                               <option>Low</option>
                               <option>Medium</option>
@@ -1716,7 +1738,7 @@ export function DeepRunResult({
                               value={Array.isArray(c.tags) ? c.tags.join(', ') : c.tags || ''}
                               onChange={(e) => patchCase(i, { tags: e.target.value.split(',').map((t) => t.trim()).filter(Boolean) })}
                               placeholder="Comma separated"
-                              className="block w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs font-normal normal-case tracking-normal text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
+                              className={cn('block w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs font-normal normal-case tracking-normal text-[var(--text-primary)] outline-none focus:border-[var(--accent)]', aiChangeClass(i, 'Tags'))}
                             />
                           </label>
                         </div>
@@ -1750,7 +1772,10 @@ export function DeepRunResult({
                             </div>
                           </div>
                           {(c.steps || []).map((s, si) => (
-                            <div key={si} className="grid grid-cols-1 gap-1.5 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] p-1.5 lg:grid-cols-[auto_1fr_1fr_auto]">
+                            <div key={si} className={cn(
+                              'grid grid-cols-1 gap-1.5 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] p-1.5 lg:grid-cols-[auto_1fr_1fr_auto]',
+                              aiStepChangeClass(i, si),
+                            )}>
                               <label className="flex items-start justify-center pt-1" title="Tick steps, then Expand or Merge">
                                 <input type="checkbox" aria-label={`Select step ${si + 1}`} checked={(mergePick[i] || []).includes(si)} onChange={() => toggleMergePick(i, si)} className="h-3.5 w-3.5 accent-[var(--accent)]" />
                               </label>
