@@ -406,11 +406,17 @@ export default function Dashboard() {
         </Panel>
         <Panel title="Last Automation Run" icon={CheckCircle2}>
           {stats?.lastAutomationRun ? (() => {
-            const r = stats.lastAutomationRun; const ok = r.status === 'done';
+            const r = stats.lastAutomationRun;
+            const status = String(r.status || 'unknown');
+            const ok = status === 'done';
+            const statusLabel = ok ? 'Passed' : status === 'failed' ? 'Failed' : status === 'cancelled' ? 'Cancelled' : status;
             return (
               <div>
-                <span className={cn('inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium', ok ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-500' : 'border-red-500/30 bg-red-500/10 text-red-500')}>{ok ? 'Passed' : r.status}</span>
-                <div className="mt-2 text-xs text-[var(--text-muted)]">{r.summary?.passed ?? 0}✓ {r.summary?.failed ?? 0}✗{r.finishedAt ? ` · ${relativeTime(r.finishedAt)}` : ''}</div>
+                <span className={cn('inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium', ok ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-500' : 'border-red-500/30 bg-red-500/10 text-red-500')}>{statusLabel}</span>
+                <div className="mt-2 text-xs text-[var(--text-muted)]">
+                  {r.summary?.hasResults ? `${r.summary.passed} passed · ${r.summary.failed} failed` : 'No test results produced'}
+                  {r.finishedAt ? ` · ${relativeTime(r.finishedAt)}` : ''}
+                </div>
               </div>
             );
           })() : <EmptyNote>No automation runs yet.</EmptyNote>}

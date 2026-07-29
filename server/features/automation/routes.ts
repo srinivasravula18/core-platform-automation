@@ -45,7 +45,7 @@ import {
   undoRecordingStepOverride,
   redoRecordingStepOverride,
 } from './recordingService';
-import { createJob, cancelJob, refreshExecutionBatch } from './jobService';
+import { createJob, cancelJob, refreshExecutionBatch, tryDispatch } from './jobService';
 import { isAgentConnected } from './agentGateway';
 import { computeNextRun } from './schedulerService';
 import { saveArtifact, listArtifacts, resolveArtifact, contentTypeFor } from './artifactService';
@@ -497,7 +497,9 @@ export function registerAutomationRoutes(app: Express) {
     if (!rec) return res.status(400).json({ error: 'No recorded script for this case yet. Record it via New Case → Automation.' });
     const agentId = String(req.body?.agentId || rec.agentId || '');
     if (!isAgentConnected(agentId)) return res.status(409).json({ error: 'Select a connected agent to run on.' });
-    const job = await createJob({ recordingId: rec.id, agentId, trigger: 'manual', headed: false }, reqScope(req));
+    // Persist the linked run before dispatching. A fast completion must be able to
+    // synchronize its counts onto this record.
+    const job = await createJob({ recordingId: rec.id, agentId, trigger: 'manual', headed: false, dispatch: false }, reqScope(req));
     const run = {
       ...scopeStamp(reqScope(req)),
       id: `RUN-${randomBytes(2).toString('hex').toUpperCase()}`,
@@ -515,6 +517,7 @@ export function registerAutomationRoutes(app: Express) {
     };
     await Runs.upsert(run);
     if (isPostgresEnabled()) { /* persisted */ } else persistDataInBackground('automation run');
+    await tryDispatch(job.id);
     res.status(201).json({ run, jobId: job.id });
   });
 
