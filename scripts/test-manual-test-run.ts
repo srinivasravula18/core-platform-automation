@@ -21,6 +21,7 @@ assert.deepEqual(manualRunSelection('P1', ['C1']), { planIds: [], caseIds: ['C1'
 assert.deepEqual(manualRunSelection('', ['C1', 'C3']), { planIds: [], caseIds: ['C1', 'C3'] });
 assert.deepEqual(manualRunSelection('P1', []), { planIds: ['P1'], caseIds: [] });
 assert.deepEqual(casesForRun({ planIds: ['P1'] }, cases, suites).map(({ id }) => id), ['C1', 'C2']);
+assert.deepEqual(casesForRun({ caseIds: ['C3'] }, cases, suites).map(({ id }) => id), ['C3']);
 assert.deepEqual(scriptsForRun({ agentRunId: 'A1' }, [], [{ id: 'X1', agentRunId: 'A1', code: 'one' }]).map(({ id }) => id), ['X1']);
 assert.deepEqual(runnableCases(
   [{ id: 'C1', folderId: 'F1' }, { id: 'C2', folderId: 'F1' }, { id: 'C3', folderId: 'F2' }],

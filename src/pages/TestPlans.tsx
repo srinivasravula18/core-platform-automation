@@ -644,7 +644,7 @@ export default function TestPlans() {
             />
           </div>
           <div>
-            <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Link Test Cases</label>
+            <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Link Individual Test Cases</label>
             <MultiSelectDropdown
               label="Select test cases"
               options={cases.map((testCase) => ({ id: String(testCase.id), name: String(testCase.title || testCase.id) }))}

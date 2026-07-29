@@ -11,7 +11,6 @@ import {
   caseSuiteAssignment,
   caseSuiteMembershipUpdate,
   orderSuitesByHierarchy,
-  relatedCasesForSuite,
   suiteHierarchyDepth,
   suiteModuleName,
   suiteParentIds,
@@ -256,13 +255,7 @@ export default function TestSuites() {
   const moduleOptions = Array.from(new Set(suites.map((suite) => suiteModuleName(suite, folders)).filter(Boolean))).sort();
   const tagOptions = normalizeTags([...plans, ...suites, ...cases, ...runs]
     .flatMap((item) => Array.isArray(item.tags) ? item.tags : [])).sort();
-  const relatedCases = selectedSuiteId
-    ? cases.filter((testCase) => testCase.folderId === formData.folderId || caseBelongsToSuite(testCase, selectedSuiteId))
-    : relatedCasesForSuite(cases, formData.folderId, formData.parentSuiteIds.length ? formData.parentSuiteIds : (subsuiteParentId ? [subsuiteParentId] : []));
-  useEffect(() => {
-    const visibleIds = new Set(relatedCases.map((testCase) => testCase.id));
-    setSelectedCaseIds((current) => new Set([...current].filter((id) => visibleIds.has(id))));
-  }, [formData.folderId, formData.parentSuiteIds, subsuiteParentId, cases, selectedSuiteId]);
+  const relatedCases = cases;
   const filteredSuites = suites.filter((suite) => {
     const query = searchTerm.toLowerCase();
     const matchesSearch = aiSearch.isAiQuery(searchTerm)
@@ -428,7 +421,7 @@ export default function TestSuites() {
           </div>
           <div>
               <div className="mb-1 flex items-center justify-between">
-                <label className="text-sm font-medium text-[var(--text-muted)]">Related Test Cases</label>
+                <label className="text-sm font-medium text-[var(--text-muted)]">Link Individual Test Cases</label>
                 {relatedCases.length > 0 && (
                   <button
                     type="button"
@@ -444,11 +437,9 @@ export default function TestSuites() {
                 )}
               </div>
               <div className="max-h-48 overflow-auto rounded-md border border-[var(--border)] bg-[var(--bg-secondary)]/40">
-                {!formData.folderId ? (
-                  <div className="px-3 py-5 text-center text-sm text-[var(--text-muted)]">Select a repository folder to see related test cases.</div>
-                ) : relatedCases.length === 0 ? (
+                {relatedCases.length === 0 ? (
                   <div className="px-3 py-5 text-center text-sm text-[var(--text-muted)]">
-                    {selectedSuiteId ? 'No test cases match the selected folder.' : 'No test cases match the selected folder and parent suite.'}
+                    No test cases are available to link.
                   </div>
                 ) : relatedCases.map((testCase) => (
                   <label key={testCase.id} className="flex cursor-pointer items-center gap-2 border-b border-[var(--border)] px-3 py-2 text-sm last:border-0 hover:bg-[var(--bg-secondary)]">

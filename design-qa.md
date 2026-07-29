@@ -211,3 +211,40 @@ final result: passed
 - The local project/app scope contains no imported datasets, so the populated preview, Close/reopen interaction, and same-state visual comparison could not be exercised without adding persistent QA data.
 
 final result: blocked — no imported dataset exists in the local project/app scope
+
+---
+
+## Direct Test Case linking - 2026-07-29
+
+**Comparison target**
+
+- Source visual truth: `C:\Users\bdevi\AppData\Local\Temp\codex-clipboard-e8eC5A.png`
+- Implementation screenshot: `D:\tmp\direct-case-linking-run-edit.png`
+- Side-by-side comparison: `D:\tmp\direct-case-linking-comparison.png`
+- Source pixels: 736 x 371.
+- Implementation viewport and pixels: 1536 x 816 CSS px at device scale factor 1.
+- State: the source shows an expanded linked-artifact hierarchy; the implementation shows Edit Test Run with five directly linked Test Cases.
+
+**Full-view and focused-region evidence**
+
+- The reference communicates an explicit parent artifact with a labeled linked-child section.
+- The implementation follows the same information hierarchy through the Link Individual Test Cases section, selected-count control, and visible total while retaining the existing dark modal design system.
+- The linked-case region was inspected in Plan, Suite, Create Run, and Edit Run states. A separate crop was unnecessary because the controls and counts were legible in the viewport capture and accessibility snapshots.
+- Existing typography, spacing, colors, controls, and copy patterns are preserved. No image assets were required.
+
+**Findings and comparison history**
+
+1. P2: Plans supported direct selection, but Suites were folder-constrained and Run editing did not expose linked cases.
+2. Fix: removed the Suite folder constraint, exposed all scoped cases in Run create/edit, preloaded existing Run links, and persisted validated Run case IDs.
+3. Post-fix evidence: Playwright selected a case in all three artifact flows and showed five preloaded links in Edit Test Run.
+4. No actionable P0/P1/P2 findings remain.
+
+**Primary interactions tested**
+
+- Plan -> New Plan -> selected an individual Test Case.
+- Suite -> New Suite -> viewed individual Test Cases without choosing a folder first.
+- Run -> Create Manual Run -> selected an individual Test Case and observed the selected count.
+- Run -> Edit Test Run -> verified existing linked Test Cases preload and remain editable.
+- Console checked: no application warnings or errors; only a missing favicon response.
+
+final result: passed

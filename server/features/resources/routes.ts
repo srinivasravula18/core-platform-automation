@@ -274,6 +274,16 @@ export function registerResourceRoutes(app: Express) {
     const run = await Runs.get(req.params.id);
     if (!run || !scopeFilter([run], reqScope(req)).length) return res.status(404).json({ error: 'Run not found.' });
     if (isRunningRun(run)) return res.status(409).json({ error: 'A running test run cannot be edited.' });
+    let caseIds = uniqueStrings(run.caseIds);
+    if ('caseIds' in req.body) {
+      const requestedCaseIds = uniqueStrings(req.body.caseIds);
+      const availableCaseIds = new Set(scopeFilter(await Cases.list(), reqScope(req)).map((testCase: any) => String(testCase.id)));
+      if (!requestedCaseIds.length) return res.status(400).json({ error: 'Select at least one test case.' });
+      if (requestedCaseIds.some((caseId) => !availableCaseIds.has(caseId))) {
+        return res.status(400).json({ error: 'One or more selected test cases were not found.' });
+      }
+      caseIds = requestedCaseIds;
+    }
     const folderId = String(req.body?.folderId || '').trim();
     const folder = folderId ? await Folders.get(folderId) : null;
     if (!folder || !scopeFilter([folder], reqScope(req)).length) return res.status(400).json({ error: FOLDER_REQUIRED_ERROR });
@@ -292,6 +302,7 @@ export function registerResourceRoutes(app: Express) {
       targetUrl: normalizeTargetUrl(req.body?.targetUrl || ''),
       folderId,
       status,
+      caseIds,
     });
     if (!isPgEnabled()) persistDataInBackground('updated run');
     logActivity(req, `Updated test run: ${name}`, { type: 'run', entityId: updated.id });

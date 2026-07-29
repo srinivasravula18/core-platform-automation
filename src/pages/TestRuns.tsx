@@ -21,7 +21,7 @@ import { showAlert, showConfirm } from '@/src/lib/dialog';
 import { can } from '@/src/components/AuthGate';
 import { withBasePath } from '@/src/lib/base-path';
 import { caseSuiteIds } from '@/src/lib/suiteCaseSelection';
-import { casesForPlan, casesForRun, manualRunSelection, runExecutionState, runnableCases, scriptsForRun } from '@/src/lib/manualTestRun';
+import { casesForRun, manualRunSelection, runExecutionState, scriptsForRun } from '@/src/lib/manualTestRun';
 import { collectRunEvidence, evidenceDownloadName } from '@/core/shared/runEvidence';
 import { normalizeTags } from '@/src/lib/tags';
 
@@ -237,7 +237,7 @@ export default function TestRuns() {
     setNewRunAssignedTo(run.assignedTo || '');
     setNewRunTags(Array.isArray(run.tags) ? run.tags : []);
     setNewRunStatus(MANUAL_RUN_STATUS_OPTIONS.includes(run.status) ? run.status : 'Not Started');
-    setNewRunCaseIds(new Set(Array.isArray(run.caseIds) ? run.caseIds : []));
+    setNewRunCaseIds(new Set(casesForRun(run, cases, suites).map((testCase) => String(testCase.id))));
     setIsRunModalOpen(true);
   };
 
@@ -245,7 +245,7 @@ export default function TestRuns() {
     if (!newRunName.trim()) { void showAlert('Run name is required.'); return; }
     if (!newRunFolderId) { void showAlert('Select a folder or create one first.'); return; }
     const caseIds = [...newRunCaseIds] as string[];
-    if (!editingRunId && !caseIds.length) { void showAlert('Select at least one test case with a Playwright script.'); return; }
+    if (!caseIds.length) { void showAlert('Select at least one test case.'); return; }
     const shared = {
       name: newRunName,
       testPlanId: newRunPlanId,
@@ -256,6 +256,7 @@ export default function TestRuns() {
       targetUrl: newRunTargetUrl,
       folderId: newRunFolderId,
       status: newRunStatus,
+      caseIds,
     };
     const url = editingRunId ? `/api/runs/${encodeURIComponent(editingRunId)}` : '/api/runs/from-selection';
     const body = editingRunId ? shared : { ...shared, ...manualRunSelection(newRunPlanId, caseIds) };
@@ -339,16 +340,16 @@ export default function TestRuns() {
     }
   };
 
-  const runnableTestCases = useMemo(() => runnableCases(casesForPlan(cases, suites, newRunPlanId), scripts), [cases, suites, scripts, newRunPlanId]);
-  const runnableCasesInFolder = useMemo(() => runnableTestCases.filter((testCase) =>
+  const selectableCases = cases;
+  const selectableCasesInFolder = useMemo(() => selectableCases.filter((testCase) =>
     String(testCase.folderId || '') === newRunCaseFolderId
-  ), [runnableTestCases, newRunCaseFolderId]);
-  const runnableCaseOptions = useMemo(() => runnableTestCases
+  ), [selectableCases, newRunCaseFolderId]);
+  const selectableCaseOptions = useMemo(() => selectableCases
     .map((testCase) => ({
       id: String(testCase.id),
       name: `${folders.find((folder) => folder.id === testCase.folderId)?.path || folders.find((folder) => folder.id === testCase.folderId)?.name || 'Unfiled'} — ${testCase.id}: ${testCase.title}`,
     }))
-    .sort((a, b) => a.name.localeCompare(b.name)), [runnableTestCases, folders]);
+    .sort((a, b) => a.name.localeCompare(b.name)), [selectableCases, folders]);
 
   const handleAIApprove = (data: any) => {
     fetch('/api/runs', {
@@ -710,7 +711,7 @@ export default function TestRuns() {
           {/* #4 — map the run to an existing Test Plan (not a free-text suite). */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <label className="block text-xs font-medium text-[var(--text-muted)]">Test Plan
-              <select value={newRunPlanId} onChange={(e) => { setNewRunPlanId(e.target.value); setNewRunCaseIds(new Set()); }} className="mt-1 w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm text-[var(--text-primary)]">
+              <select value={newRunPlanId} onChange={(e) => setNewRunPlanId(e.target.value)} className="mt-1 w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm text-[var(--text-primary)]">
                 <option value="">No plan</option>
                 {plans.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
               </select>
@@ -748,14 +749,14 @@ export default function TestRuns() {
             </label>
           </div>
 
-          {!editingRunId && (
-            <div>
+          <div>
+              <label className="mb-2 block text-xs font-medium text-[var(--text-muted)]">Link Individual Test Cases</label>
               <div className="mb-2 flex items-end gap-2">
                 <FolderSelect value={newRunCaseFolderId} onChange={setNewRunCaseFolderId} label="Test Case Folder" allowCreate={false} className="flex-1" />
                 <button
                   type="button"
-                  disabled={!runnableCasesInFolder.length}
-                  onClick={() => setNewRunCaseIds((current) => new Set([...current, ...runnableCasesInFolder.map((testCase) => String(testCase.id))]))}
+                  disabled={!selectableCasesInFolder.length}
+                  onClick={() => setNewRunCaseIds((current) => new Set([...current, ...selectableCasesInFolder.map((testCase) => String(testCase.id))]))}
                   className="shrink-0 rounded-md border border-[var(--border)] px-3 py-2 text-sm font-medium text-[var(--text-primary)] hover:bg-[var(--bg-secondary)] disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   Select all
@@ -770,16 +771,15 @@ export default function TestRuns() {
                 </button>
               </div>
               <MultiSelectDropdown
-                label={runnableCaseOptions.length ? 'Select test cases from any repository folder' : 'This plan has no automated cases with Playwright scripts. Add automated cases or generate scripts to run it.'}
-                options={runnableCaseOptions}
+                label={selectableCaseOptions.length ? 'Select individual test cases' : 'No test cases are available to link.'}
+                options={selectableCaseOptions}
                 value={[...newRunCaseIds]}
                 onChange={(ids) => setNewRunCaseIds(new Set(ids))}
               />
               <p aria-live="polite" className="mt-1 text-xs text-[var(--text-muted)]">
                 {newRunCaseIds.size} test case{newRunCaseIds.size === 1 ? '' : 's'} selected
               </p>
-            </div>
-          )}
+          </div>
         </div>
       </Modal>
 
