@@ -66,7 +66,7 @@ export async function createServerJob(input: { recordingId: string; scheduleId?:
 const jobRunOptions = new Map<string, { headed: boolean }>();
 
 /** Push a queued job to its agent if connected; returns true if dispatched. */
-async function tryDispatch(jobId: string): Promise<boolean> {
+export async function tryDispatch(jobId: string): Promise<boolean> {
   const job = await AutomationJobs.get(jobId);
   if (!job || job.status !== 'queued') return false;
   if (!job.agentId || !isAgentConnected(job.agentId)) return false;
@@ -128,7 +128,7 @@ export async function refreshExecutionBatch(batchId: string): Promise<any> {
   return { ...batch, status, summary };
 }
 
-export async function createJob(input: { recordingId: string; agentId: string; trigger?: JobTrigger; scheduleId?: string; headed?: boolean; script?: string; batchId?: string; datasetRowId?: string; rowNumber?: number }, scope: Scope) {
+export async function createJob(input: { recordingId: string; agentId: string; trigger?: JobTrigger; scheduleId?: string; headed?: boolean; script?: string; batchId?: string; datasetRowId?: string; rowNumber?: number; dispatch?: boolean }, scope: Scope) {
   const now = new Date().toISOString();
   const job = {
     id: uid('JOB'),
@@ -147,7 +147,7 @@ export async function createJob(input: { recordingId: string; agentId: string; t
   persist('job created');
   if (input.headed) jobRunOptions.set(saved.id, { headed: true });
   await emitEvent({ scopeType: 'job', scopeId: saved.id, type: 'job.queued', ownerId: job.ownerId || '', data: { job: saved } });
-  await tryDispatch(saved.id);
+  if (input.dispatch !== false) await tryDispatch(saved.id);
   return saved;
 }
 

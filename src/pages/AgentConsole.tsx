@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { TopbarActions } from '@/src/components/TopbarActions';
@@ -824,6 +824,18 @@ export default function AgentConsole() {
   // (for per-chat memory) without depending on a possibly-stale render closure.
   const turnsRef = useRef<Turn[]>([]);
   useEffect(() => { turnsRef.current = turns; }, [turns]);
+
+  // Keep the composer compact for short prompts, then grow it to a readable cap.
+  // Once the cap is reached, the textarea scrolls internally instead of displacing
+  // the conversation above it.
+  useLayoutEffect(() => {
+    const textarea = inputRef.current;
+    if (!textarea) return;
+    const maxHeight = 160;
+    textarea.style.height = 'auto';
+    textarea.style.height = `${Math.min(textarea.scrollHeight, maxHeight)}px`;
+    textarea.style.overflowY = textarea.scrollHeight > maxHeight ? 'auto' : 'hidden';
+  }, [input]);
 
   // Snapshot the current execution context (AI + scope) for a response's metadata panel.
   const currentExecution = useCallback((): ExecutionMeta => ({

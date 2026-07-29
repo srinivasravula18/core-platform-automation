@@ -38,7 +38,7 @@ export default function AutomationDashboard() {
 
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <Metric icon={HardDrive} label="Agents online" value={onlineAgents} to="/automation/agent" />
-        <Metric icon={Radio} label="Recordings" value={recordings.length} to="/test-cases" />
+        <Metric icon={Radio} label="Recordings" value={recordings.length} to="/cases" />
         <Metric icon={CalendarClock} label="Schedules" value={schedules.filter((s) => s.enabled).length} to="/automation/schedules" />
         <Metric icon={PlayCircle} label="Executions" value={jobs.length} to="/runs" />
       </div>

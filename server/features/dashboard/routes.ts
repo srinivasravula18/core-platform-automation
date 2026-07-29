@@ -56,13 +56,24 @@ function buildStatsChartData(runs: any[]) {
  */
 function automationOutcome(job: any, linkedRun: any) {
   const numberOrUndefined = (value: unknown) => {
+    if (value === null || value === undefined || value === '') return undefined;
     const n = Number(value);
     return Number.isFinite(n) && n >= 0 ? n : undefined;
   };
   const summary = job?.summary || {};
+  const jobPassed = numberOrUndefined(summary.passed) ?? numberOrUndefined(summary.expected);
+  const jobFailed = numberOrUndefined(summary.failed) ?? numberOrUndefined(summary.unexpected);
+  const runPassed = numberOrUndefined(linkedRun?.passed);
+  const runFailed = numberOrUndefined(linkedRun?.failed);
+  const jobHasResults = (jobPassed ?? 0) + (jobFailed ?? 0) > 0;
+  const runHasResults = (runPassed ?? 0) + (runFailed ?? 0) > 0;
+  // A launcher error can report zero results before the linked Test Run receives
+  // the runner outcome. Prefer the non-empty durable result set in that case.
+  const useRun = !jobHasResults && runHasResults;
   return {
-    passed: numberOrUndefined(summary.passed) ?? numberOrUndefined(summary.expected) ?? numberOrUndefined(linkedRun?.passed) ?? 0,
-    failed: numberOrUndefined(summary.failed) ?? numberOrUndefined(summary.unexpected) ?? numberOrUndefined(linkedRun?.failed) ?? 0,
+    passed: (useRun ? runPassed : jobPassed ?? runPassed) ?? 0,
+    failed: (useRun ? runFailed : jobFailed ?? runFailed) ?? 0,
+    hasResults: jobHasResults || runHasResults,
   };
 }
 

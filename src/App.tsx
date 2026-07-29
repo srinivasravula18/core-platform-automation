@@ -549,7 +549,7 @@ export default function App() {
           <Route path="/record-play" element={<RecordPlay />} />
           <Route path="/automation" element={<AutomationDashboard />} />
           {/* Folded into Test Management — redirect old automation URLs to their new homes. */}
-          <Route path="/automation/record" element={<Navigate to="/test-cases" replace />} />
+          <Route path="/automation/record" element={<Navigate to="/cases" replace />} />
           <Route path="/automation/executions" element={<Navigate to="/runs" replace />} />
           <Route path="/automation/schedules" element={<Schedules />} />
           <Route path="/automation/agent" element={<LocalAgent />} />
