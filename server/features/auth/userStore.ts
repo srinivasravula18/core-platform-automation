@@ -15,6 +15,7 @@
 import { scryptSync, randomBytes, timingSafeEqual, createHash } from 'crypto';
 import { db, persistDataInBackground } from '../../shared/storage';
 import { isPostgresEnabled, query } from '../../db/pool';
+import { persistUser as persistUserRow, deleteUser as deleteUserRow } from './authRepo';
 
 export type Role = string;
 
@@ -81,6 +82,7 @@ export function createAppUser(opts: { username: string; name?: string; password:
     createdAt: new Date().toISOString(),
   };
   users().unshift(rec);
+  persistUserRow(rec);
   persistDataInBackground('create app user');
   return rec;
 }
@@ -94,6 +96,7 @@ export function updateAppUser(
   if (patch.name !== undefined) u.name = patch.name;
   if (patch.role !== undefined) u.role = patch.role;
   if (patch.password) u.passwordHash = hashPassword(patch.password);
+  persistUserRow(u);
   persistDataInBackground('update app user');
   return u;
 }
@@ -102,6 +105,7 @@ export function deleteAppUser(id: string): boolean {
   const before = users().length;
   db.users = users().filter((x) => x.id !== id);
   if (db.users.length < before) {
+    deleteUserRow(id);
     persistDataInBackground('delete app user');
     return true;
   }

@@ -18,6 +18,7 @@ import { AutomationRunArtifacts } from '@/src/components/AutomationRunArtifacts'
 import { TagEditor } from '@/src/components/TagEditor';
 import { MultiSelectDropdown } from '@/src/components/MultiSelectDropdown';
 import { showAlert, showConfirm } from '@/src/lib/dialog';
+import { can } from '@/src/components/AuthGate';
 import { withBasePath } from '@/src/lib/base-path';
 import { caseSuiteIds } from '@/src/lib/suiteCaseSelection';
 import { casesForPlan, casesForRun, manualRunSelection, runExecutionState, runnableCases, scriptsForRun } from '@/src/lib/manualTestRun';
@@ -407,7 +408,7 @@ export default function TestRuns() {
                 </div>
               </div>
               <div className="flex items-center gap-2">
-                {isPendingReviewTestRun(selectedRun) && (
+                {isPendingReviewTestRun(selectedRun) && can('runs:update') && (
                   <button
                     onClick={() => { void handleCloseRun(selectedRun); }}
                     disabled={closingRunId === selectedRun.id}
@@ -416,6 +417,7 @@ export default function TestRuns() {
                     <CheckCircle className="h-4 w-4" /> {closingRunId === selectedRun.id ? 'Closing…' : 'Confirm & Close'}
                   </button>
                 )}
+                {can('runs:update') && (
                 <button
                   onClick={() => openEditModal(selectedRun)}
                   disabled={selectedIsRunning}
@@ -424,6 +426,8 @@ export default function TestRuns() {
                 >
                   <Pencil className="h-4 w-4" /> Edit
                 </button>
+                )}
+                {can('runs:execute') && (
                 <button
                   onClick={() => handleExecuteRuns([selectedRun])}
                   disabled={selectedExecution.running || Boolean(runProgress[selectedRun.id]) || selectedRunScripts.length === 0}
@@ -432,6 +436,7 @@ export default function TestRuns() {
                 >
                   <PlayCircle className="h-4 w-4" /> {selectedProgress || 'Run scripts'}
                 </button>
+                )}
               </div>
             </div>
           </div>
@@ -446,6 +451,7 @@ export default function TestRuns() {
             <div className="border-b border-[var(--border)] p-5">
               <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                 <h2 className="text-sm font-semibold">Execution evidence ({evidenceItems.length})</h2>
+                {can('runs:export') && (
                 <ExportMenu
                   filename={`${selectedRun.id}-evidence`}
                   title={`${selectedRun.name} — Execution Evidence`}
@@ -467,6 +473,7 @@ export default function TestRuns() {
                     onClick: () => { void downloadEvidenceZip(); },
                   }]}
                 />
+                )}
               </div>
               <div className="flex gap-3 overflow-x-auto pb-1">
                 {evidenceItems.map((item, index) => (
@@ -533,7 +540,7 @@ export default function TestRuns() {
               <option>All Test Cases</option>
             </select>
             <div className="flex flex-wrap items-center gap-2">
-              {caseBulk.selectedCount > 0 && (
+              {caseBulk.selectedCount > 0 && can('cases:delete') && (
                 <button onClick={caseBulk.deleteSelected} disabled={caseBulk.busy} className="flex items-center gap-1.5 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white px-3 py-2 rounded-md text-sm font-medium transition-colors">
                   <Trash2 className="w-4 h-4" /> Delete selected ({caseBulk.selectedCount})
                 </button>
@@ -611,6 +618,7 @@ export default function TestRuns() {
                         </span>
                       </td>
                       <td className="px-4 py-3">
+                        {can('cases:delete') && (
                         <button
                           onClick={() => caseBulk.deleteOne(testCase.id)}
                           disabled={caseBulk.busy}
@@ -619,6 +627,7 @@ export default function TestRuns() {
                         >
                           <Trash2 className="w-4 h-4" />
                         </button>
+                        )}
                       </td>
                     </tr>
                   ))}
@@ -646,6 +655,7 @@ export default function TestRuns() {
           </div>
         </div>
         <div className="flex gap-2">
+          {can('runs:export') && (
           <ExportMenu
             filename={runView === 'closed' ? 'test-runs-closed' : 'test-runs-active'}
             title="Test Runs"
@@ -663,8 +673,14 @@ export default function TestRuns() {
               { key: 'date', label: 'Date' },
             ]}
           />
-          <button onClick={openNewModal} className="bg-[var(--accent)] text-white px-4 py-2 rounded-md text-sm font-medium">Create Manual Run</button>
-          <button onClick={() => setIsAIRunModalOpen(true)} className="bg-[#8b5cf6] text-white px-3 py-2 rounded-md text-sm font-medium"><Sparkles className="inline w-4 h-4" /></button>
+          )}
+          {/* Gate create actions on runs:create */}
+          {can('runs:create') && (
+            <>
+              <button onClick={openNewModal} className="bg-[var(--accent)] text-white px-4 py-2 rounded-md text-sm font-medium">Create Manual Run</button>
+              <button onClick={() => setIsAIRunModalOpen(true)} className="bg-[#8b5cf6] text-white px-3 py-2 rounded-md text-sm font-medium"><Sparkles className="inline w-4 h-4" /></button>
+            </>
+          )}
         </div>
       </div>
 
@@ -675,7 +691,9 @@ export default function TestRuns() {
         footer={
           <div className="flex justify-end gap-3">
             <button onClick={() => { setIsRunModalOpen(false); setEditingRunId(''); }} className="px-4 py-2 text-sm text-[var(--text-muted)]">Cancel</button>
+            {(editingRunId ? can('runs:update') : can('runs:create')) && (
             <button onClick={handleSaveRun} className="px-4 py-2 bg-[var(--accent)] text-white text-sm rounded-md">{editingRunId ? 'Save Changes' : 'Create Run'}</button>
+            )}
           </div>
         }
       >
@@ -783,14 +801,16 @@ export default function TestRuns() {
             <button onClick={() => setIsViewMenuOpen(!isViewMenuOpen)} title="Open run view filters" className="p-2 rounded-md border border-[var(--border)]"><Filter className="w-4 h-4" /></button>
             {bulk.selectedCount > 0 && (
               <>
-                {bulk.selectedCount > 1 && (
+                {bulk.selectedCount > 1 && can('runs:execute') && (
                   <button onClick={() => handleExecuteRuns(runs.filter((run) => bulk.selectedIds.has(run.id)))} disabled={runs.some((run) => bulk.selectedIds.has(run.id) && (runProgress[run.id] || runExecutionState(run).running))} className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
                     <PlayCircle className="w-4 h-4" /> Run selected ({bulk.selectedCount})
                   </button>
                 )}
+                {can('runs:delete') && (
                 <button onClick={bulk.deleteSelected} disabled={bulk.busy} className="flex items-center gap-1.5 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
                   <Trash2 className="w-4 h-4" /> Delete selected ({bulk.selectedCount})
                 </button>
+                )}
               </>
             )}
           </div>
@@ -840,6 +860,7 @@ export default function TestRuns() {
                           <div className="truncate font-semibold" title={run.name}>{run.name}</div>
                       <div className="truncate text-xs text-[var(--text-muted)]">Assigned to {run.assignedTo || run.requestedBy || 'Unassigned'}{run.state ? ` · ${run.state}` : ''}</div>
                         </div>
+                        {can('runs:execute') && (
                         <button
                           onClick={(event) => { event.stopPropagation(); void handleExecuteRuns([run]); }}
                           disabled={running || !hasScripts}
@@ -848,6 +869,7 @@ export default function TestRuns() {
                         >
                           <PlayCircle className="h-3.5 w-3.5" /> {running ? 'Running…' : 'Run'}
                         </button>
+                        )}
                       </div>
                     </td>
                     <td className="overflow-hidden px-4 py-4">
@@ -888,12 +910,16 @@ export default function TestRuns() {
                     </td>
                     <td className="px-4 py-4">
                       <div className="flex items-center gap-1">
+                        {can('runs:update') && (
                         <button onClick={(e) => { e.stopPropagation(); openEditModal(run); }} disabled={running} title={running ? 'A running test run cannot be edited' : 'Edit test run'} className="p-1 rounded hover:bg-[var(--border)] text-[var(--text-muted)] hover:text-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-40 transition-colors">
                           <Pencil className="w-4 h-4" />
                         </button>
+                        )}
+                        {can('runs:delete') && (
                         <button onClick={(e) => { e.stopPropagation(); bulk.deleteOne(run.id); }} title="Delete" className="p-1 rounded hover:bg-red-500/10 text-[var(--text-muted)] hover:text-red-500 transition-colors">
                           <Trash2 className="w-4 h-4" />
                         </button>
+                        )}
                       </div>
                     </td>
                   </tr>

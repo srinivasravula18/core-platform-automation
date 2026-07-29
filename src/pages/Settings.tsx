@@ -235,6 +235,7 @@ function ProfilesSection() {
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<SaveStatus>({ type: 'idle', message: '' });
+  const [accessFor, setAccessFor] = useState<string | null>(null); // user id whose direct access is open
 
   const load = useCallback(() => {
     setLoading(true);
@@ -358,20 +359,34 @@ function ProfilesSection() {
         ) : (
           <div className="space-y-1.5">
             {users.map((u) => (
-              <div key={u.id} className="flex items-center gap-3 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm">
-                <span className="font-medium text-[var(--text-primary)]">{u.name}</span>
-                <span className="text-[var(--text-muted)]">@{u.username}</span>
-                <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${u.role === 'admin' ? 'bg-[var(--accent)]/15 text-[var(--accent)]' : 'bg-[var(--bg-card)] text-[var(--text-muted)]'}`}>
-                  {u.role}
-                </span>
-                <button
-                  onClick={() => remove(u)}
-                  disabled={busy || u.role === 'admin'}
-                  title={u.role === 'admin' ? 'Admin profiles cannot be removed here' : 'Delete profile'}
-                  className="ml-auto rounded p-1.5 text-[var(--text-muted)] hover:text-red-500 disabled:opacity-30"
-                >
-                  <Trash2 className="h-4 w-4" />
-                </button>
+              <div key={u.id}>
+                <div className="flex items-center gap-3 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm">
+                  <span className="font-medium text-[var(--text-primary)]">{u.name}</span>
+                  <span className="text-[var(--text-muted)]">@{u.username}</span>
+                  <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${u.role === 'admin' ? 'bg-[var(--accent)]/15 text-[var(--accent)]' : 'bg-[var(--bg-card)] text-[var(--text-muted)]'}`}>
+                    {u.role}
+                  </span>
+                  <div className="ml-auto flex items-center gap-1">
+                    {u.role !== 'admin' && (
+                      <button
+                        onClick={() => setAccessFor(accessFor === u.id ? null : u.id)}
+                        title="Edit this user's direct access (in addition to their groups)"
+                        className={`rounded p-1.5 hover:text-[var(--accent)] ${accessFor === u.id ? 'text-[var(--accent)]' : 'text-[var(--text-muted)]'}`}
+                      >
+                        <Shield className="h-4 w-4" />
+                      </button>
+                    )}
+                    <button
+                      onClick={() => remove(u)}
+                      disabled={busy || u.role === 'admin'}
+                      title={u.role === 'admin' ? 'Admin profiles cannot be removed here' : 'Delete profile'}
+                      className="rounded p-1.5 text-[var(--text-muted)] hover:text-red-500 disabled:opacity-30"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </button>
+                  </div>
+                </div>
+                {accessFor === u.id && <UserAccessEditor userId={u.id} label={`${u.name} @${u.username}`} onClose={() => setAccessFor(null)} />}
               </div>
             ))}
           </div>
@@ -383,11 +398,22 @@ function ProfilesSection() {
 
 // A grant category value is either '*' (all) or an explicit list of ids.
 type GrantValue = string[] | '*';
-interface GroupGrants { features: GrantValue; projects: GrantValue; websites: GrantValue; providers: GrantValue }
+interface GroupGrants { features: GrantValue; projects: GrantValue; websites: GrantValue; providers: GrantValue; actions?: GrantValue; capabilities?: GrantValue; denies?: GrantValue }
 interface GroupRow { id: string; name: string; description?: string; memberUserIds: string[]; grants: GroupGrants; createdAt: string }
+
+// Permission catalog served by GET /api/auth/rbac/catalog (resource verbs + capabilities).
+interface RbacCatalog { resources: Array<{ resource: string; verbs: string[]; feature: string }>; capabilities: Array<{ id: string; label: string }> }
+const VERB_ORDER = ['read', 'create', 'update', 'delete', 'execute', 'export', 'start', 'stop', 'apply'];
+const TIER_VERBS: Record<'readOnly' | 'editor' | 'full', (verbs: string[]) => string[]> = {
+  readOnly: (v) => v.filter((x) => x === 'read'),
+  editor: (v) => v.filter((x) => x !== 'delete'),
+  full: (v) => v,
+};
 
 const PROVIDER_OPTIONS = [{ id: 'gemini', name: 'Gemini' }, { id: 'openai', name: 'OpenAI' }, { id: 'anthropic', name: 'Anthropic' }];
 const EMPTY_GRANTS: GroupGrants = { features: [], projects: [], websites: [], providers: [] };
+
+const humanizeToken = (s: string) => s.replace(/[-_]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 
 /** One grant category: an "All" master toggle plus a checkbox per option. `value` is '*' or ids. */
 function GrantCheckboxes({ title, options, value, onChange }: { title: string; options: Array<{ id: string; name: string }>; value: GrantValue; onChange: (v: GrantValue) => void }) {
@@ -427,6 +453,124 @@ function grantSummary(v: GrantValue): string {
 }
 
 /**
+ * Verb-level permission editor: rows = resources, columns = verbs. Writes a flat `resource:verb`
+ * list (or '*'). Per-row Read-only / Editor / Full quick-set the access tier. Granting a page under
+ * "Features" already implies read; this is where write/execute/delete are handed out.
+ */
+function ActionsMatrix({ catalog, value, onChange }: { catalog: RbacCatalog; value: GrantValue; onChange: (v: GrantValue) => void }) {
+  const all = value === '*';
+  const ids = Array.isArray(value) ? value : [];
+  const has = (id: string) => ids.includes(id);
+  const toggle = (id: string) => onChange(has(id) ? ids.filter((x) => x !== id) : [...ids, id]);
+  const setRow = (resource: string, verbs: string[]) => {
+    const others = ids.filter((id) => !id.startsWith(`${resource}:`));
+    onChange([...others, ...verbs.map((v) => `${resource}:${v}`)]);
+  };
+  const orderVerbs = (verbs: string[]) => [...verbs].sort((a, b) => VERB_ORDER.indexOf(a) - VERB_ORDER.indexOf(b));
+  return (
+    <div className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] p-3">
+      <div className="mb-2 flex items-center justify-between">
+        <span className="text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">Permissions (per action)</span>
+        <label className="flex items-center gap-1.5 text-xs text-[var(--text-primary)]">
+          <input type="checkbox" className="accent-[var(--accent)]" checked={all} onChange={(e) => onChange(e.target.checked ? '*' : [])} />
+          All (unrestricted)
+        </label>
+      </div>
+      {all ? (
+        <p className="text-xs text-[var(--text-muted)]">Every action on every resource granted.</p>
+      ) : (
+        <div className="space-y-1">
+          {catalog.resources.map((r) => (
+            <div key={r.resource} className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded px-1.5 py-1 hover:bg-[var(--bg-card)]">
+              <span className="w-28 shrink-0 truncate text-xs font-medium text-[var(--text-primary)]" title={r.resource}>{humanizeToken(r.resource)}</span>
+              <div className="flex flex-wrap items-center gap-x-2.5 gap-y-0.5">
+                {orderVerbs(r.verbs).map((v) => (
+                  <label key={v} className="flex cursor-pointer items-center gap-1 text-xs text-[var(--text-muted)]">
+                    <input type="checkbox" className="accent-[var(--accent)]" checked={has(`${r.resource}:${v}`)} onChange={() => toggle(`${r.resource}:${v}`)} />
+                    {v}
+                  </label>
+                ))}
+              </div>
+              <div className="ml-auto flex items-center gap-1">
+                {(['readOnly', 'editor', 'full'] as const).map((tier) => (
+                  <button key={tier} type="button" onClick={() => setRow(r.resource, TIER_VERBS[tier](r.verbs))}
+                    className="rounded border border-[var(--border)] px-1.5 py-0.5 text-[10px] text-[var(--text-muted)] hover:border-[var(--accent)] hover:text-[var(--accent)]">
+                    {tier === 'readOnly' ? 'Read-only' : tier === 'editor' ? 'Editor' : 'Full'}
+                  </button>
+                ))}
+                <button type="button" onClick={() => setRow(r.resource, [])} className="rounded px-1.5 py-0.5 text-[10px] text-[var(--text-muted)] hover:text-red-500">Clear</button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Per-user direct access editor (Profiles tab). Grants a single user permissions ON TOP of their
+ * groups — the concrete "give only this one person Record & Play" flow. Saved via /api/users/:id/grants.
+ */
+function UserAccessEditor({ userId, label, onClose }: { userId: string; label: string; onClose: () => void }) {
+  const [grants, setGrants] = useState<GroupGrants>({ ...EMPTY_GRANTS });
+  const [catalog, setCatalog] = useState<RbacCatalog | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState<SaveStatus>({ type: 'idle', message: '' });
+
+  useEffect(() => {
+    setLoading(true);
+    Promise.all([
+      fetch(`/api/users/${userId}/grants`).then((r) => r.json()).catch(() => ({})),
+      fetch('/api/auth/rbac/catalog').then((r) => r.json()).catch(() => ({})),
+    ]).then(([g, c]) => {
+      setGrants({ ...EMPTY_GRANTS, ...(g?.grants || {}) });
+      if (Array.isArray(c?.resources)) setCatalog({ resources: c.resources, capabilities: Array.isArray(c.capabilities) ? c.capabilities : [] });
+    }).finally(() => setLoading(false));
+  }, [userId]);
+
+  const setGrant = (cat: keyof GroupGrants, v: GrantValue) => setGrants((s) => ({ ...s, [cat]: v }));
+
+  const save = async () => {
+    setBusy(true); setStatus({ type: 'idle', message: '' });
+    try {
+      const res = await fetch(`/api/users/${userId}/grants`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ grants }) });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({})))?.error || 'Could not save.');
+      setStatus({ type: 'success', message: 'Direct access saved.' });
+    } catch (e: any) {
+      setStatus({ type: 'error', message: e?.message || 'Could not save.' });
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <div className="mt-1 rounded-md border border-[var(--border)] bg-[var(--bg-card)] p-3">
+      <div className="mb-2 flex items-center justify-between">
+        <span className="text-xs text-[var(--text-muted)]">Direct access for <span className="font-medium text-[var(--text-primary)]">{label}</span> — added on top of any group grants.</span>
+        <button onClick={onClose} className="rounded p-1 text-[var(--text-muted)] hover:text-[var(--text-primary)]"><X className="h-4 w-4" /></button>
+      </div>
+      {loading ? (
+        <p className="text-xs text-[var(--text-muted)]">Loading…</p>
+      ) : (
+        <div className="space-y-3">
+          <GrantCheckboxes title="Features" options={FEATURE_OPTIONS} value={grants.features} onChange={(v) => setGrant('features', v)} />
+          {catalog && <ActionsMatrix catalog={catalog} value={grants.actions ?? []} onChange={(v) => setGrant('actions', v)} />}
+          {catalog && catalog.capabilities.length > 0 && (
+            <GrantCheckboxes title="Capabilities" options={catalog.capabilities.map((c) => ({ id: c.id, name: c.label }))} value={grants.capabilities ?? []} onChange={(v) => setGrant('capabilities', v)} />
+          )}
+          <div className="flex items-center gap-2">
+            <button onClick={save} disabled={busy} className="inline-flex items-center gap-2 rounded-md bg-[var(--accent)] px-3 py-1.5 text-sm font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-60">
+              {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />} Save access
+            </button>
+            {status.type !== 'idle' && <span className={`text-xs ${status.type === 'success' ? 'text-emerald-500' : 'text-red-500'}`}>{status.message}</span>}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
  * Admin-only: Access Groups. Put non-admin users in a group and toggle what it grants — features
  * (pages), projects, deployment URLs, and AI providers. A user's effective access is the union of
  * their groups; admins and ungrouped users are unrestricted. Saved via /api/groups.
@@ -436,6 +580,7 @@ function GroupsSection() {
   const [users, setUsers] = useState<AppUserRow[]>([]);
   const [projects, setProjects] = useState<Array<{ id: string; name: string }>>([]);
   const [websites, setWebsites] = useState<Array<{ id: string; name: string }>>([]);
+  const [catalog, setCatalog] = useState<RbacCatalog | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<SaveStatus>({ type: 'idle', message: '' });
@@ -449,12 +594,14 @@ function GroupsSection() {
       fetch('/api/users').then((r) => r.json()).catch(() => ({})),
       fetch('/api/projects').then((r) => r.json()).catch(() => ({})),
       fetch('/api/credentials/websites').then((r) => r.json()).catch(() => ({})),
-    ]).then(([g, u, p, w]) => {
+      fetch('/api/auth/rbac/catalog').then((r) => r.json()).catch(() => ({})),
+    ]).then(([g, u, p, w, c]) => {
       setGroups(Array.isArray(g.groups) ? g.groups : []);
       setUsers(Array.isArray(u.users) ? u.users : []);
       const projList = Array.isArray(p) ? p : (Array.isArray(p.projects) ? p.projects : []);
       setProjects(projList.map((x: any) => ({ id: x.id, name: x.name || x.id })));
       setWebsites((Array.isArray(w.websites) ? w.websites : []).map((x: any) => ({ id: x.id, name: x.name || x.baseUrl || x.id })));
+      if (Array.isArray(c?.resources)) setCatalog({ resources: c.resources, capabilities: Array.isArray(c.capabilities) ? c.capabilities : [] });
     }).finally(() => setLoading(false));
   }, []);
   useEffect(() => { load(); }, [load]);
@@ -553,6 +700,15 @@ function GroupsSection() {
             <GrantCheckboxes title="AI Providers" options={PROVIDER_OPTIONS} value={editing.grants.providers} onChange={(v) => setGrant('providers', v)} />
           </div>
 
+          {catalog && (
+            <div className="mt-3 space-y-3">
+              <ActionsMatrix catalog={catalog} value={editing.grants.actions ?? []} onChange={(v) => setGrant('actions', v)} />
+              {catalog.capabilities.length > 0 && (
+                <GrantCheckboxes title="Capabilities" options={catalog.capabilities.map((c) => ({ id: c.id, name: c.label }))} value={editing.grants.capabilities ?? []} onChange={(v) => setGrant('capabilities', v)} />
+              )}
+            </div>
+          )}
+
           <div className="mt-4 flex items-center gap-2">
             <button onClick={save} disabled={busy} className="inline-flex items-center gap-2 rounded-md bg-[var(--accent)] px-3 py-2 text-sm font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-60">
               {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />} Save group
@@ -575,7 +731,7 @@ function GroupsSection() {
                 <span className="font-medium text-[var(--text-primary)]">{g.name}</span>
                 <span className="text-xs text-[var(--text-muted)]">{g.memberUserIds.length} member{g.memberUserIds.length === 1 ? '' : 's'}</span>
                 <span className="text-xs text-[var(--text-muted)]">
-                  Features {grantSummary(g.grants?.features ?? [])} · Projects {grantSummary(g.grants?.projects ?? [])} · URLs {grantSummary(g.grants?.websites ?? [])} · Providers {grantSummary(g.grants?.providers ?? [])}
+                  Features {grantSummary(g.grants?.features ?? [])} · Actions {grantSummary(g.grants?.actions ?? [])} · Capabilities {grantSummary(g.grants?.capabilities ?? [])} · Projects {grantSummary(g.grants?.projects ?? [])} · URLs {grantSummary(g.grants?.websites ?? [])} · Providers {grantSummary(g.grants?.providers ?? [])}
                 </span>
                 <div className="ml-auto flex items-center gap-1">
                   <button onClick={() => startEdit(g)} disabled={busy} title="Edit group" className="rounded p-1.5 text-[var(--text-muted)] hover:text-[var(--accent)] disabled:opacity-30">

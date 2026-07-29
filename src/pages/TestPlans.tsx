@@ -17,6 +17,7 @@ import { FolderBadge } from '@/src/components/FolderBadge';
 import { MultiSelectDropdown } from '@/src/components/MultiSelectDropdown';
 import { TagEditor } from '@/src/components/TagEditor';
 import { showAlert, showConfirm } from '@/src/lib/dialog';
+import { can } from '@/src/components/AuthGate';
 import { caseBelongsToSuite, casePlanIds, casePlanMembershipUpdate, caseSuiteIds, suitePlanIds, suitePlanMembershipUpdate } from '@/src/lib/suiteCaseSelection';
 import { casesForPlan } from '@/src/lib/manualTestRun';
 import { emptyTestPlanFilters, linkedRunsForPlan, matchesTestPlanFilters } from '@/src/lib/testPlanFilters';
@@ -453,12 +454,17 @@ export default function TestPlans() {
               { key: 'createdAt', label: 'Created', get: (p: any) => p.metadata?.createdAt || p.createdAt || '' },
             ]}
           />
-          <button onClick={openNewModal} className="flex items-center gap-2 bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white px-4 py-2 rounded-md text-sm font-medium transition-colors">
-            <Plus className="w-4 h-4" /> New Plan
-          </button>
-          <button onClick={() => setIsAIPlanModalOpen(true)} className="flex items-center gap-1.5 bg-[#8b5cf6] hover:bg-[#7c3aed] text-white px-3 py-2 rounded-md text-sm font-medium transition-colors">
-            <Sparkles className="w-4 h-4" /> AI Auto
-          </button>
+          {/* Gate create actions on plans:create */}
+          {can('plans:create') && (
+            <>
+              <button onClick={openNewModal} className="flex items-center gap-2 bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white px-4 py-2 rounded-md text-sm font-medium transition-colors">
+                <Plus className="w-4 h-4" /> New Plan
+              </button>
+              <button onClick={() => setIsAIPlanModalOpen(true)} className="flex items-center gap-1.5 bg-[#8b5cf6] hover:bg-[#7c3aed] text-white px-3 py-2 rounded-md text-sm font-medium transition-colors">
+                <Sparkles className="w-4 h-4" /> AI Auto
+              </button>
+            </>
+          )}
         </div>
       </div>
 
@@ -470,6 +476,7 @@ export default function TestPlans() {
         footer={
           <div className="flex justify-end gap-3">
             <button onClick={() => { setStartSchedulePlan(null); setStartScheduleValidationMessage(''); }} className="px-4 py-2 text-sm font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]">Cancel</button>
+            {can('plans:update') && (
             <button
               onClick={handleStartSchedule}
               disabled={startingPlanId !== null}
@@ -477,6 +484,7 @@ export default function TestPlans() {
             >
               {startingPlanId === startSchedulePlan?.id ? 'Starting…' : 'Start Plan'}
             </button>
+            )}
           </div>
         }
       >
@@ -516,15 +524,17 @@ export default function TestPlans() {
         footer={
           <div className="flex justify-between items-center">
             <div>
-              {selectedPlanId && (
+              {selectedPlanId && can('plans:delete') && (
                 <button onClick={handleDeletePlan} className="px-4 py-2 text-sm font-medium text-red-500 hover:text-red-400">Delete</button>
               )}
             </div>
             <div className="flex gap-3">
               <button onClick={() => setIsPlanModalOpen(false)} className="px-4 py-2 text-sm font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]">Cancel</button>
+              {(selectedPlanId ? can('plans:update') : can('plans:create')) && (
               <button onClick={handleSavePlan} className="px-4 py-2 bg-[var(--accent)] text-white text-sm font-medium rounded-md hover:bg-[var(--accent-hover)]">
                 {selectedPlanId ? 'Save Changes' : 'Create Plan'}
               </button>
+              )}
             </div>
           </div>
         }
@@ -681,7 +691,7 @@ export default function TestPlans() {
                 </div>
               </div>
               <div className="flex items-center gap-2">
-                {canStartPlan(selectedDetailPlan) && (
+                {canStartPlan(selectedDetailPlan) && can('plans:update') && (
                   <button
                     onClick={() => startPlan(selectedDetailPlan)}
                     disabled={startingPlanId !== null}
@@ -691,7 +701,9 @@ export default function TestPlans() {
                     Start Plan
                   </button>
                 )}
-                <button onClick={() => openEditModal(selectedDetailPlan)} className="px-3 py-2 rounded-md border border-[var(--border)] text-sm hover:bg-[var(--border)]">Edit Plan</button>
+                {can('plans:update') && (
+                  <button onClick={() => openEditModal(selectedDetailPlan)} className="px-3 py-2 rounded-md border border-[var(--border)] text-sm hover:bg-[var(--border)]">Edit Plan</button>
+                )}
               </div>
             </div>
           </div>
@@ -964,9 +976,11 @@ export default function TestPlans() {
                   {isStartingRun ? <Loader2 className="w-4 h-4 animate-spin" /> : <PlayCircle className="w-4 h-4" />} Run selected ({bulk.selectedCount})
                 </button>
               )}
-              <button onClick={bulk.deleteSelected} disabled={bulk.busy} className="flex items-center gap-1.5 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
-                <Trash2 className="w-4 h-4" /> Delete selected ({bulk.selectedCount})
-              </button>
+              {can('plans:delete') && (
+                <button onClick={bulk.deleteSelected} disabled={bulk.busy} className="flex items-center gap-1.5 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
+                  <Trash2 className="w-4 h-4" /> Delete selected ({bulk.selectedCount})
+                </button>
+              )}
             </div>
           )}
         </div>
@@ -1051,7 +1065,7 @@ export default function TestPlans() {
                     </td>
                     <td className="py-3 px-4 text-right">
                       <div className="relative inline-flex items-center gap-1">
-                        {canStartPlan(plan) && (
+                        {canStartPlan(plan) && can('plans:update') && (
                           <button
                             onClick={(e) => {
                               e.stopPropagation();
@@ -1077,6 +1091,7 @@ export default function TestPlans() {
                         >
                           <PlayCircle className="w-4 h-4" />
                         </button>
+                        {can('plans:update') && (
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
@@ -1087,6 +1102,8 @@ export default function TestPlans() {
                         >
                           <Pencil className="w-4 h-4" />
                         </button>
+                        )}
+                        {can('plans:delete') && (
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
@@ -1098,6 +1115,7 @@ export default function TestPlans() {
                         >
                           <Trash2 className="w-4 h-4" />
                         </button>
+                        )}
                       </div>
                     </td>
                   </tr>

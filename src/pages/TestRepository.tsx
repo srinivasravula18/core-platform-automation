@@ -3,6 +3,7 @@ import { ChevronRight, FileText, Folder, FolderPlus, Layers, PlayCircle, Search,
 import { cn } from '@/src/lib/utils';
 import { Modal } from '@/src/components/Modal';
 import { showAlert, showConfirm } from '@/src/lib/dialog';
+import { can } from '@/src/components/AuthGate';
 import { useDataVersion } from '@/src/store/data';
 import { useProjects } from '@/src/store/project';
 
@@ -92,6 +93,7 @@ function FolderTreeItem({
           <Folder className="h-4 w-4 shrink-0" />
           <span className="min-w-0 truncate">{node.name}</span>
         </button>
+        {can('folders:delete') && (
         <button
           onClick={(e) => { e.stopPropagation(); onDelete(node.id, node.name); }}
           title="Delete folder"
@@ -100,6 +102,7 @@ function FolderTreeItem({
         >
           <Trash2 className="h-3.5 w-3.5" />
         </button>
+        )}
       </div>
       {open && hasChildren && (
         <div>
@@ -460,6 +463,8 @@ export default function TestRepository() {
 
       <div className="grid min-h-0 flex-1 grid-cols-1 gap-5 overflow-hidden lg:grid-cols-[clamp(18rem,22vw,21.25rem)_minmax(0,1fr)]">
         <aside className="flex min-h-0 flex-col overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--bg-card)]">
+          {/* Gate folder-creation controls on folders:create */}
+          {can('folders:create') && (
           <div className="space-y-4 border-b border-[var(--border)] p-4">
             <div>
               <div className="mb-2 text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">Create New Folder</div>
@@ -497,6 +502,7 @@ export default function TestRepository() {
               </div>
             </div>
           </div>
+          )}
           <div className="flex items-center gap-2 border-b border-[var(--border)] p-3">
             <button
               onClick={toggleAllFolders}
@@ -506,6 +512,7 @@ export default function TestRepository() {
               <CheckSquare className="h-3.5 w-3.5" />
               {allFoldersSelected ? 'Clear all' : 'Select all'}
             </button>
+            {can('folders:update') && (
             <button
               onClick={openMoveFolder}
               disabled={foldersToMove.length === 0}
@@ -515,7 +522,8 @@ export default function TestRepository() {
               <MoveRight className="h-3.5 w-3.5" />
               Move
             </button>
-            {selectedFolderIds.size > 0 && (
+            )}
+            {selectedFolderIds.size > 0 && can('folders:delete') && (
               <button
                 onClick={deleteSelectedFolders}
                 disabled={deleting}
@@ -562,7 +570,7 @@ export default function TestRepository() {
                   <Trash2 className="h-4 w-4" /> Delete selected ({selectedKeys.size})
                 </button>
               )}
-              {selectedFolder && (
+              {selectedFolder && can('folders:delete') && (
                 <button onClick={deleteFolder} className="rounded-md border border-red-500/20 bg-red-500/10 p-2 text-red-400 hover:bg-red-500/20" title="Delete empty folder">
                   <Trash2 className="h-4 w-4" />
                 </button>

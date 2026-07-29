@@ -25,6 +25,7 @@ import { TagEditor } from '@/src/components/TagEditor';
 import { TagMultiSelect } from '@/src/components/TagMultiSelect';
 import { MultiSelectDropdown } from '@/src/components/MultiSelectDropdown';
 import { showAlert, showConfirm } from '@/src/lib/dialog';
+import { can } from '@/src/components/AuthGate';
 import { normalizeTags } from '@/src/lib/tags';
 
 export default function TestSuites() {
@@ -297,12 +298,17 @@ export default function TestSuites() {
               { key: 'caseCount', label: 'Cases', get: (s) => cases.filter((c) => caseBelongsToSuite(c, s.id)).length },
             ]}
           />
-          <button onClick={openNewModal} className="flex items-center gap-2 bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white px-4 py-2 rounded-md text-sm font-medium transition-colors">
-            <Plus className="w-4 h-4" /> New Suite
-          </button>
-          <button onClick={() => setIsAISuiteModalOpen(true)} className="flex items-center gap-1.5 bg-[#8b5cf6] hover:bg-[#7c3aed] text-white px-3 py-2 rounded-md text-sm font-medium transition-colors">
-            <Sparkles className="w-4 h-4" /> AI Auto
-          </button>
+          {/* Gate create actions on suites:create */}
+          {can('suites:create') && (
+            <>
+              <button onClick={openNewModal} className="flex items-center gap-2 bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white px-4 py-2 rounded-md text-sm font-medium transition-colors">
+                <Plus className="w-4 h-4" /> New Suite
+              </button>
+              <button onClick={() => setIsAISuiteModalOpen(true)} className="flex items-center gap-1.5 bg-[#8b5cf6] hover:bg-[#7c3aed] text-white px-3 py-2 rounded-md text-sm font-medium transition-colors">
+                <Sparkles className="w-4 h-4" /> AI Auto
+              </button>
+            </>
+          )}
         </div>
       </div>
 
@@ -313,15 +319,17 @@ export default function TestSuites() {
         footer={
           <div className="flex justify-between items-center">
             <div>
-              {selectedSuiteId && (
+              {selectedSuiteId && can('suites:delete') && (
                 <button onClick={handleDeleteSuite} className="px-4 py-2 text-sm font-medium text-red-500 hover:text-red-400">Delete</button>
               )}
             </div>
             <div className="flex gap-3">
               <button onClick={() => setIsSuiteModalOpen(false)} className="px-4 py-2 text-sm font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]">Cancel</button>
+              {(selectedSuiteId ? can('suites:update') : can('suites:create')) && (
               <button onClick={handleSaveSuite} className="px-4 py-2 bg-[var(--accent)] text-white text-sm font-medium rounded-md hover:bg-[var(--accent-hover)]">
                 {selectedSuiteId ? 'Save Changes' : 'Create Suite'}
               </button>
+              )}
             </div>
           </div>
         }
@@ -512,9 +520,11 @@ export default function TestSuites() {
                   {isStartingRun ? <Loader2 className="w-4 h-4 animate-spin" /> : <PlayCircle className="w-4 h-4" />} Run selected ({bulk.selectedCount})
                 </button>
               )}
-              <button onClick={bulk.deleteSelected} disabled={bulk.busy} className="flex items-center gap-1.5 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
-                <Trash2 className="w-4 h-4" /> Delete selected ({bulk.selectedCount})
-              </button>
+              {can('suites:delete') && (
+                <button onClick={bulk.deleteSelected} disabled={bulk.busy} className="flex items-center gap-1.5 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
+                  <Trash2 className="w-4 h-4" /> Delete selected ({bulk.selectedCount})
+                </button>
+              )}
             </div>
           )}
         </div>
@@ -638,6 +648,7 @@ export default function TestSuites() {
                           >
                             <PlayCircle className="w-4 h-4" />
                           </button>
+                          {can('suites:create') && (
                           <button
                             onClick={(e) => {
                               e.stopPropagation();
@@ -648,6 +659,8 @@ export default function TestSuites() {
                           >
                             <Plus className="w-4 h-4" />
                           </button>
+                          )}
+                          {can('suites:update') && (
                           <button
                             onClick={(e) => {
                               e.stopPropagation();
@@ -658,6 +671,8 @@ export default function TestSuites() {
                           >
                             <Pencil className="w-4 h-4" />
                           </button>
+                          )}
+                          {can('suites:delete') && (
                           <button
                             onClick={(e) => {
                               e.stopPropagation();
@@ -669,6 +684,7 @@ export default function TestSuites() {
                           >
                             <Trash2 className="w-4 h-4" />
                           </button>
+                          )}
                         </div>
                       </td>
                     </tr>

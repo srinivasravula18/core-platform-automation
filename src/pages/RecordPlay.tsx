@@ -1,6 +1,9 @@
 import { useEffect, useState } from 'react';
 import { Download, Loader2, Radio, RefreshCcw, Square } from 'lucide-react';
 import { showAlert } from '@/src/lib/dialog';
+import { can } from '@/src/components/AuthGate';
+
+const NO_PERM = "You don't have permission for this action";
 
 export default function RecordPlay() {
   const [targetUrl, setTargetUrl] = useState('');
@@ -156,7 +159,8 @@ export default function RecordPlay() {
             <div className="flex flex-wrap gap-2">
               <button
                 onClick={startRecorder}
-                disabled={codegenUnavailable || isBusy || !targetUrl.trim()}
+                disabled={codegenUnavailable || isBusy || !targetUrl.trim() || !can('record-play:start')}
+                title={!can('record-play:start') ? NO_PERM : undefined}
                 className="inline-flex items-center gap-2 rounded-md bg-[var(--accent)] px-3 py-2 text-sm font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50"
               >
                 {isBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Radio className="h-4 w-4" />}
@@ -164,7 +168,8 @@ export default function RecordPlay() {
               </button>
               <button
                 onClick={loadCode}
-                disabled={isBusy || !sessionId}
+                disabled={isBusy || !sessionId || !can('record-play:read')}
+                title={!can('record-play:read') ? NO_PERM : undefined}
                 className="inline-flex items-center gap-2 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm font-medium text-[var(--text-primary)] hover:border-[var(--accent)] disabled:opacity-50"
               >
                 <RefreshCcw className="h-4 w-4" />
@@ -172,7 +177,8 @@ export default function RecordPlay() {
               </button>
               <button
                 onClick={stopRecorder}
-                disabled={isBusy || !sessionId}
+                disabled={isBusy || !sessionId || !can('record-play:stop')}
+                title={!can('record-play:stop') ? NO_PERM : undefined}
                 className="inline-flex items-center gap-2 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm font-medium text-red-400 hover:border-red-500 disabled:opacity-50"
               >
                 <Square className="h-4 w-4" />

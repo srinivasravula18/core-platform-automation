@@ -21,7 +21,13 @@ import {
   deleteGroup,
   publicGroup,
   effectiveGrantsForUser,
+  getUserGrants,
+  setUserGrants,
 } from './groupStore';
+import { isPostgresEnabled, query } from '../../db/pool';
+import { persistSession as persistSessionRow, deleteSession as deleteSessionRow } from './authRepo';
+import { catalogForClient } from './permissions';
+import { isRbacEnforced } from './rbacGate';
 
 // Multi-user app login with RBAC. Users live in the user store (server/features/
 // auth/userStore.ts). Sessions are DURABLE: stored in db.sessions (persisted to the
@@ -62,13 +68,16 @@ function findSession(token: string): StoredSession | null {
 }
 
 function addSession(token: string, userId: string) {
-  sessionStore().unshift({ token, userId, createdAt: new Date().toISOString() });
+  const rec = { token, userId, createdAt: new Date().toISOString() };
+  sessionStore().unshift(rec);
+  persistSessionRow(rec);
   persistDataInBackground('create session');
 }
 
 function removeSession(token: string) {
   if (!token) return;
   db.sessions = sessionStore().filter((s) => s.token !== token);
+  deleteSessionRow(token);
   persistDataInBackground('delete session');
 }
 
@@ -189,7 +198,14 @@ export function registerAuthRoutes(app: Express) {
     // Effective access grants (UNION of the user's groups; UNRESTRICTED for admins only) so the
     // client can gate nav + routes. Resource APIs are still enforced server-side (Phase 2/3).
     const grants = effectiveGrantsForUser(getUserById(u.userId));
-    res.json({ authenticated: true, username: u.username, role: u.role, userId: u.userId, grants });
+    res.json({ authenticated: true, username: u.username, role: u.role, userId: u.userId, grants, rbacEnforced: isRbacEnforced() });
+  });
+
+  // Permission catalog (pages, resource verbs, capabilities) so the admin UI + client button-gating
+  // render from a single server-owned source. Any authenticated user may read it.
+  app.get('/api/auth/rbac/catalog', (req: Request, res: Response) => {
+    if (!getAuthUser(req)) return res.status(401).json({ error: 'Not authenticated.' });
+    res.json({ ...catalogForClient(), rbacEnforced: isRbacEnforced() });
   });
 
   app.post('/api/auth/logout', (req: Request, res: Response) => {
@@ -241,6 +257,38 @@ export function registerAuthRoutes(app: Express) {
     if (!ok) return res.status(404).json({ error: 'User not found.' });
     recordAudit('delete', 'user', req.params.id, `Deleted profile "${target?.username || req.params.id}"`);
     res.json({ ok: true });
+  });
+
+  /* ---------- per-user direct grants (admin only) ---------- */
+
+  app.get('/api/users/:id/grants', requireAdmin, (req: Request, res: Response) => {
+    if (!getUserById(req.params.id)) return res.status(404).json({ error: 'User not found.' });
+    res.json({ grants: getUserGrants(req.params.id) || { features: [], projects: [], websites: [], providers: [] } });
+  });
+
+  app.put('/api/users/:id/grants', requireAdmin, (req: Request, res: Response) => {
+    const user = getUserById(req.params.id);
+    if (!user) return res.status(404).json({ error: 'User not found.' });
+    const grants = setUserGrants(req.params.id, req.body?.grants ?? req.body ?? {});
+    recordAudit('update', 'user', user.id, `Updated direct access for "${user.username}"`);
+    res.json({ ok: true, grants });
+  });
+
+  /* ---------- RBAC audit trail (admin only) ---------- */
+
+  app.get('/api/audit/rbac', requireAdmin, async (req: Request, res: Response) => {
+    if (!isPostgresEnabled()) return res.json({ events: [] });
+    const limit = Math.min(500, Math.max(1, Number(req.query.limit) || 100));
+    try {
+      const events = await query(
+        `SELECT id, actor_id, event, principal_type, principal_id, permission_id, decision, detail, created_at
+         FROM rbac_audit ORDER BY seq DESC LIMIT $1`,
+        [limit],
+      );
+      res.json({ events });
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message || 'Could not read audit log.' });
+    }
   });
 
   /* ---------- access groups (admin only) ---------- */

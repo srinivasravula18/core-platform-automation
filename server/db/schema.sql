@@ -1277,3 +1277,105 @@ CREATE TABLE IF NOT EXISTS agent_run_artifacts (
   PRIMARY KEY (run_id, artifact_key)
 );
 CREATE INDEX IF NOT EXISTS agent_run_artifacts_run_idx ON agent_run_artifacts(run_id);
+
+-- ── Identity + RBAC (granular permissions) ──────────────────────────────────
+-- App users/sessions/groups move OFF the json_store blob onto relational rows here; the
+-- in-memory db.* arrays stay a write-through cache so the synchronous auth path is unchanged.
+-- The pre-existing `users` table was email-centric; the app model is username-centric, so
+-- reconcile it in place (additive, idempotent) instead of a second table.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS username TEXT;
+DO $$ BEGIN
+  BEGIN ALTER TABLE users ALTER COLUMN email DROP NOT NULL; EXCEPTION WHEN others THEN NULL; END;
+END $$;
+CREATE UNIQUE INDEX IF NOT EXISTS users_username_lower_uq ON users(lower(username)) WHERE username IS NOT NULL;
+
+-- Access groups (was db.groups JSON). One row per group; membership + grants are normalized below.
+CREATE TABLE IF NOT EXISTS rbac_groups (
+  id          TEXT PRIMARY KEY,
+  name        TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  owner_id    TEXT,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS rbac_group_members (
+  group_id  TEXT NOT NULL REFERENCES rbac_groups(id) ON DELETE CASCADE,
+  user_id   TEXT NOT NULL,
+  PRIMARY KEY (group_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS rbac_group_members_user_idx ON rbac_group_members(user_id);
+
+-- Catalog of every gate-able permission. Seeded from server/features/auth/permissions.ts at
+-- startup (upsert) so the app's own route surface — never app-under-test facts — stays the source.
+CREATE TABLE IF NOT EXISTS rbac_permissions (
+  id          TEXT PRIMARY KEY,               -- 'cases:create', 'record-play:start', 'project:create'
+  resource    TEXT NOT NULL,                  -- 'cases'
+  action      TEXT NOT NULL,                  -- 'create'|'read'|'update'|'delete'|'execute'|'start'|…
+  category    TEXT NOT NULL DEFAULT 'action', -- 'feature'|'action'|'capability'
+  label       TEXT NOT NULL DEFAULT '',
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS rbac_permissions_res_act_uq ON rbac_permissions(resource, action);
+
+-- Named roles / access tiers (read-only, editor, full, or admin-authored custom).
+CREATE TABLE IF NOT EXISTS rbac_roles (
+  id          TEXT PRIMARY KEY,
+  name        TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  is_system   BOOLEAN NOT NULL DEFAULT false, -- seeded presets can't be deleted
+  owner_id    TEXT,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS rbac_roles_name_lower_uq ON rbac_roles(lower(name));
+
+CREATE TABLE IF NOT EXISTS rbac_role_permissions (
+  role_id       TEXT NOT NULL REFERENCES rbac_roles(id) ON DELETE CASCADE,
+  permission_id TEXT NOT NULL,
+  effect        TEXT NOT NULL DEFAULT 'allow', -- 'allow'|'deny' (deny wins on resolve)
+  PRIMARY KEY (role_id, permission_id)
+);
+
+-- Assign a role to a principal (a user OR a group), optionally scoped to a project/app (Phase 4).
+CREATE TABLE IF NOT EXISTS rbac_role_bindings (
+  id             TEXT PRIMARY KEY,
+  principal_type TEXT NOT NULL,               -- 'user'|'group'
+  principal_id   TEXT NOT NULL,
+  role_id        TEXT NOT NULL REFERENCES rbac_roles(id) ON DELETE CASCADE,
+  scope_type     TEXT NOT NULL DEFAULT 'global', -- 'global'|'project'|'app'
+  scope_id       TEXT,
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS rbac_role_bindings_principal_idx ON rbac_role_bindings(principal_type, principal_id);
+
+-- One-off direct grants/denials on a single permission ("give only this person Record & Play").
+CREATE TABLE IF NOT EXISTS rbac_grants (
+  id             TEXT PRIMARY KEY,
+  principal_type TEXT NOT NULL,               -- 'user'|'group'
+  principal_id   TEXT NOT NULL,
+  permission_id  TEXT NOT NULL,
+  effect         TEXT NOT NULL DEFAULT 'allow', -- 'allow'|'deny' (deny wins)
+  scope_type     TEXT NOT NULL DEFAULT 'global',
+  scope_id       TEXT,
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS rbac_grants_uq
+  ON rbac_grants(principal_type, principal_id, permission_id, scope_type, coalesce(scope_id, ''));
+CREATE INDEX IF NOT EXISTS rbac_grants_principal_idx ON rbac_grants(principal_type, principal_id);
+
+-- Bank-grade authorization audit trail (admin config changes + runtime deny decisions).
+CREATE TABLE IF NOT EXISTS rbac_audit (
+  id             TEXT PRIMARY KEY,
+  seq            BIGSERIAL,
+  actor_id       TEXT,
+  event          TEXT NOT NULL,               -- 'group.update'|'grant.add'|'role.assign'|'decision.deny'|…
+  principal_type TEXT,
+  principal_id   TEXT,
+  permission_id  TEXT,
+  decision       TEXT,                        -- 'allow'|'deny' for runtime decisions
+  detail         JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS rbac_audit_principal_idx ON rbac_audit(principal_type, principal_id, seq DESC);
+CREATE INDEX IF NOT EXISTS rbac_audit_event_idx ON rbac_audit(event, seq DESC);

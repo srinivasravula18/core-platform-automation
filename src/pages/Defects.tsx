@@ -14,6 +14,7 @@ import html2canvas from 'html2canvas';
 import { Modal } from '@/src/components/Modal';
 import { AIActionModal } from '@/src/components/AIActionModal';
 import { showAlert, showConfirm } from '@/src/lib/dialog';
+import { can } from '@/src/components/AuthGate';
 import { withBasePath } from '@/src/lib/base-path';
 
 // A defect's failure snapshot lives in its `evidence` (captured at the failing run). Pull the first usable image URL.
@@ -150,12 +151,17 @@ export default function Defects() {
               { key: 'createdAt', label: 'Created', get: (d: any) => d.metadata?.createdAt || d.createdAt || '' },
             ]}
           />
-          <button onClick={openNewModal} className="flex items-center gap-2 bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-md text-sm font-medium transition-colors">
-            <ShieldAlert className="w-4 h-4" /> Log Defect
-          </button>
-          <button onClick={() => setIsAIDefectModalOpen(true)} className="flex items-center gap-1.5 bg-[#8b5cf6] hover:bg-[#7c3aed] text-white px-3 py-2 rounded-md text-sm font-medium transition-colors">
-            <Sparkles className="w-4 h-4" /> AI Auto
-          </button>
+          {/* Gate create actions on defects:create */}
+          {can('defects:create') && (
+            <>
+              <button onClick={openNewModal} className="flex items-center gap-2 bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-md text-sm font-medium transition-colors">
+                <ShieldAlert className="w-4 h-4" /> Log Defect
+              </button>
+              <button onClick={() => setIsAIDefectModalOpen(true)} className="flex items-center gap-1.5 bg-[#8b5cf6] hover:bg-[#7c3aed] text-white px-3 py-2 rounded-md text-sm font-medium transition-colors">
+                <Sparkles className="w-4 h-4" /> AI Auto
+              </button>
+            </>
+          )}
         </div>
       </div>
 
@@ -166,15 +172,17 @@ export default function Defects() {
         footer={
           <div className="flex justify-between items-center">
             <div>
-              {selectedDefectId && (
+              {selectedDefectId && can('defects:delete') && (
                 <button onClick={handleDeleteDefect} className="px-4 py-2 text-sm font-medium text-red-500 hover:text-red-400">Delete</button>
               )}
             </div>
             <div className="flex gap-3">
               <button onClick={() => setIsDefectModalOpen(false)} className="px-4 py-2 text-sm font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]">Cancel</button>
+              {(selectedDefectId ? can('defects:update') : can('defects:create')) && (
               <button onClick={handleSaveDefect} disabled={!newDefectTitle.trim()} className="px-4 py-2 bg-red-600 text-white text-sm font-medium rounded-md hover:bg-red-700 disabled:opacity-50">
                 {selectedDefectId ? 'Save Changes' : 'Log Defect'}
               </button>
+              )}
             </div>
           </div>
         }
@@ -243,7 +251,7 @@ export default function Defects() {
               </div>
             )}
           </div>
-          {bulk.selectedCount > 0 && (
+          {bulk.selectedCount > 0 && can('defects:delete') && (
             <button onClick={bulk.deleteSelected} disabled={bulk.busy} className="ml-auto flex items-center gap-1.5 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
               <Trash2 className="w-4 h-4" /> Delete selected ({bulk.selectedCount})
             </button>
@@ -321,6 +329,7 @@ export default function Defects() {
                     <button onClick={(e) => { e.stopPropagation(); openDefectSnapshot(defect); }} title={defectSnapshotUrl(defect) ? 'View failure snapshot' : 'No snapshot captured'} className={cn('p-1 rounded transition-colors border border-transparent', defectSnapshotUrl(defect) ? 'text-red-500 hover:bg-[var(--bg-primary)] hover:border-red-500' : 'text-[var(--text-muted)] opacity-50')}>
                       <Camera className="w-4 h-4" />
                     </button>
+                    {can('defects:update') && (
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
@@ -331,7 +340,10 @@ export default function Defects() {
                     >
                       <Pencil className="w-4 h-4" />
                     </button>
+                    )}
+                    {can('defects:delete') && (
                     <RowMoreMenu items={[{ label: 'Delete', onClick: () => bulk.deleteOne(defect.id), danger: true }]} />
+                    )}
                   </td>
                 </tr>
                 {expandedId === defect.id && hasRichReport(defect) && (

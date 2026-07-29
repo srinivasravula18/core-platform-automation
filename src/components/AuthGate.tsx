@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { BrainCircuit, Lock, Loader2, Eye, EyeOff } from 'lucide-react';
 import { readScopedStorage, writeScopedStorage } from '@/src/lib/storage';
-import type { ClientGrants } from '@/src/lib/features';
+import { actionAllowed, capabilityAllowed, type ClientGrants } from '@/src/lib/features';
 
 const TOKEN_KEY = 'tfa_auth_token';
 const USERNAME_KEY = 'tfa_username';
@@ -34,6 +34,17 @@ export function getGrants(): ClientGrants {
   } catch {
     return { features: [], projects: [], websites: [], providers: [] };
   }
+}
+
+/** True when the signed-in user may perform `resource:action` (e.g. 'cases:delete', 'record-play:start').
+ *  UI-only convenience — the server RBAC gate is the real enforcement. */
+export function can(permId: string): boolean {
+  return actionAllowed(getGrants(), permId);
+}
+
+/** True when the user holds a governance capability (project:create / app:create / website:create). */
+export function canCapability(capId: string): boolean {
+  return capabilityAllowed(getGrants(), capId);
 }
 
 function storeGrants(grants: unknown) {

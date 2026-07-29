@@ -15,6 +15,7 @@ import { CodegenPanel, AppUrlField } from '@/src/components/CodegenPanel';
 import CaseHistoryModal from '@/src/components/CaseHistoryModal';
 import { useRemoteAgentFlag } from '@/src/lib/useAutomation';
 import { showAlert, showConfirm } from '@/src/lib/dialog';
+import { can } from '@/src/components/AuthGate';
 import { useProjects } from '@/src/store/project';
 import { useDataVersion } from '@/src/store/data';
 import { TagEditor } from '@/src/components/TagEditor';
@@ -624,12 +625,17 @@ export default function TestCases() {
               { key: 'createdAt', label: 'Created', get: (c: any) => c.metadata?.createdAt || c.createdAt || '' },
             ]}
           />
-          <button onClick={openNewModal} className="flex items-center gap-2 bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white px-4 py-2 rounded-md text-sm font-medium transition-colors">
-            <Plus className="w-4 h-4" /> New Case
-          </button>
-          <button onClick={() => setIsAICaseModalOpen(true)} className="flex items-center gap-1.5 bg-[#8b5cf6] hover:bg-[#7c3aed] text-white px-3 py-2 rounded-md text-sm font-medium transition-colors">
-            <Sparkles className="w-4 h-4" /> AI Auto
-          </button>
+          {/* Gate create actions on cases:create */}
+          {can('cases:create') && (
+            <>
+              <button onClick={openNewModal} className="flex items-center gap-2 bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white px-4 py-2 rounded-md text-sm font-medium transition-colors">
+                <Plus className="w-4 h-4" /> New Case
+              </button>
+              <button onClick={() => setIsAICaseModalOpen(true)} className="flex items-center gap-1.5 bg-[#8b5cf6] hover:bg-[#7c3aed] text-white px-3 py-2 rounded-md text-sm font-medium transition-colors">
+                <Sparkles className="w-4 h-4" /> AI Auto
+              </button>
+            </>
+          )}
         </div>
       </div>
 
@@ -641,7 +647,7 @@ export default function TestCases() {
         footer={
           <div className="flex justify-between items-center">
             <div className="flex items-center gap-3">
-              {selectedCaseId && (
+              {selectedCaseId && can('cases:delete') && (
                 <button onClick={handleDeleteCase} className="px-4 py-2 text-sm font-medium text-red-500 hover:text-red-400">Delete</button>
               )}
               {selectedCaseId && (
@@ -650,8 +656,8 @@ export default function TestCases() {
             </div>
             <div className="flex gap-3">
               <button onClick={() => setIsCaseModalOpen(false)} className="px-4 py-2 text-sm font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]">Cancel</button>
-              {/* Automation mode: the codegen panel owns Start/Done, so the manual Create button is hidden. */}
-              {!automationMode && (
+              {/* Automation mode: the codegen panel owns Start/Done, so the manual Create button is hidden. Gate on create/update. */}
+              {!automationMode && (selectedCaseId ? can('cases:update') : can('cases:create')) && (
                 <button onClick={handleSaveCase} disabled={!formData.title.trim()} className="px-4 py-2 bg-[var(--accent)] text-white text-sm font-medium rounded-md hover:bg-[var(--accent-hover)] disabled:opacity-50">
                   {selectedCaseId ? 'Save Changes' : 'Create Case'}
                 </button>
@@ -1084,9 +1090,11 @@ export default function TestCases() {
                   <button onClick={() => runSelectedCases()} disabled={isStartingRun} className="flex items-center gap-1.5 rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700 disabled:opacity-50">
                     {isStartingRun ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <PlayCircle className="h-3.5 w-3.5" />} Run selected
                   </button>
-                  <button onClick={bulk.deleteSelected} disabled={bulk.busy} className="flex items-center gap-1.5 rounded-md border border-red-500/40 px-3 py-1.5 text-xs font-medium text-red-400 hover:bg-red-500/10 disabled:opacity-50">
-                    <Trash2 className="h-3.5 w-3.5" /> Delete
-                  </button>
+                  {can('cases:delete') && (
+                    <button onClick={bulk.deleteSelected} disabled={bulk.busy} className="flex items-center gap-1.5 rounded-md border border-red-500/40 px-3 py-1.5 text-xs font-medium text-red-400 hover:bg-red-500/10 disabled:opacity-50">
+                      <Trash2 className="h-3.5 w-3.5" /> Delete
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={() => {
@@ -1315,6 +1323,7 @@ export default function TestCases() {
                     >
                       <PlayCircle className="w-4 h-4" />
                     </button>
+                    {can('cases:update') && (
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
@@ -1325,6 +1334,8 @@ export default function TestCases() {
                     >
                       <Pencil className="w-4 h-4" />
                     </button>
+                    )}
+                    {can('cases:delete') && (
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
@@ -1336,6 +1347,7 @@ export default function TestCases() {
                     >
                       <Trash2 className="w-4 h-4" />
                     </button>
+                    )}
                   </td>
                 </tr>
               ))}

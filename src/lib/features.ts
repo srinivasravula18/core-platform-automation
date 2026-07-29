@@ -54,9 +54,11 @@ export function featureKeyForPath(pathname: string): string | null {
 
 // Client-side mirror of the server grant model (from GET /api/auth/me).
 export type ClientGrantList = string[] | '*';
-export type ClientGrants =
-  | 'UNRESTRICTED'
-  | { features: ClientGrantList; projects: ClientGrantList; websites: ClientGrantList; providers: ClientGrantList };
+export interface ClientGrantObj {
+  features: ClientGrantList; projects: ClientGrantList; websites: ClientGrantList; providers: ClientGrantList;
+  actions?: ClientGrantList; capabilities?: ClientGrantList; denies?: ClientGrantList;
+}
+export type ClientGrants = 'UNRESTRICTED' | ClientGrantObj;
 
 /** True when grants explicitly permit `id` in `category`. Missing/invalid grants fail closed. */
 export function grantAllows(grants: ClientGrants | null | undefined, category: 'features' | 'projects' | 'websites' | 'providers', id: string): boolean {
@@ -65,4 +67,40 @@ export function grantAllows(grants: ClientGrants | null | undefined, category: '
   const list = (grants as any)[category];
   if (list === '*') return true;
   return Array.isArray(list) && list.includes(id);
+}
+
+// Mirror of server FEATURE_RESOURCES: a page (feature) implies read of these resources.
+const FEATURE_RESOURCES: Record<string, string[]> = { repository: ['folders', 'scripts'], 'agent-console': ['agent'] };
+const CAPABILITY_IDS = ['project:create', 'app:create', 'website:create'];
+function featureForResource(resource: string): string {
+  for (const [feat, list] of Object.entries(FEATURE_RESOURCES)) if (list.includes(resource)) return feat;
+  return resource;
+}
+function listHas(list: ClientGrantList | undefined, id: string): boolean {
+  return list === '*' || (Array.isArray(list) && list.includes(id));
+}
+
+/**
+ * Mirror of the server `permits()` — the client uses this only to SHOW/HIDE controls. The server is
+ * always the real gate. `permId` is a `resource:action` string (e.g. cases:delete, record-play:start).
+ */
+export function actionAllowed(grants: ClientGrants | null | undefined, permId: string): boolean {
+  if (!grants) return false;
+  if (grants === 'UNRESTRICTED') return true;
+  const g = grants as ClientGrantObj;
+  if (Array.isArray(g.denies) && g.denies.includes(permId)) return false;
+  const [resource, action] = permId.split(':');
+  if (CAPABILITY_IDS.includes(permId)) return listHas(g.capabilities, permId);
+  if (action === 'read' || action === 'view') {
+    if (listHas(g.actions, permId)) return true;
+    return grantAllows(grants, 'features', featureForResource(resource));
+  }
+  return listHas(g.actions, permId);
+}
+
+/** True when grants permit a governance capability (project:create / app:create / website:create). */
+export function capabilityAllowed(grants: ClientGrants | null | undefined, capId: string): boolean {
+  if (!grants) return false;
+  if (grants === 'UNRESTRICTED') return true;
+  return listHas((grants as ClientGrantObj).capabilities, capId);
 }

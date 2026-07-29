@@ -8,7 +8,7 @@ import { db } from '../../../server/shared/storage';
 import { reqActor } from '../../../server/shared/scope';
 import { runWithActor } from '../../../server/shared/requestContext';
 import { registerAgentRoutes } from '../../../services/agents';
-import { registerAuthRoutes, authContextMiddleware, apiAuthGate, seedAuthUsersIfEmpty, claimLegacyDataForAdmin } from '../../../services/auth';
+import { registerAuthRoutes, authContextMiddleware, apiAuthGate, seedAuthUsersIfEmpty, claimLegacyDataForAdmin, hydrateAuthFromPg, seedRbacCatalog, rbacGate } from '../../../services/auth';
 import { registerChatRoutes } from '../../../services/chat';
 import { registerControllerRoutes } from '../../../services/controller';
 import { registerCredentialsRoutes, hydrateFromPg } from '../../../services/credentials';
@@ -78,6 +78,10 @@ export async function createExpressApp() {
       // JSON-only collections (projects/apps/knowledge/repoSecrets/blackboard) become
       // DB-authoritative: hydrate from json_store, seeding it from the file on first boot.
       await hydrateJsonCollectionsFromPg();
+      // Identity + RBAC now live in relational tables — hydrate the cache (and one-time backfill
+      // from the legacy json_store blobs) before any auth seeding runs.
+      await hydrateAuthFromPg();
+      await seedRbacCatalog();
       const seed = await runSeedIfEmpty();
       const creds = await hydrateFromPg();
       db.agentRuns = await AgentRuns.list();
@@ -116,6 +120,7 @@ export async function createExpressApp() {
   app.use(authContextMiddleware);
   app.use(apiAuthGate);
   app.use(scopeMiddleware);
+  app.use(rbacGate); // coarse authorization (flag RBAC_ENFORCEMENT_V1; shadow-logs until enabled)
   // Seed the per-request actor so the repository layer can stamp createdBy/updatedBy on every
   // write without threading the user through each route (see server/shared/requestContext.ts).
   app.use((req, _res, next) => runWithActor(reqActor(req), () => next()));

@@ -6,6 +6,7 @@ import {
 import { cn } from '@/src/lib/utils';
 import { useProjects, type Project, type ProjectApp } from '@/src/store/project';
 import { ProjectWizard } from '@/src/components/ProjectWizard';
+import { canCapability } from '@/src/components/AuthGate';
 
 type WizardSpec =
   | { kind: 'project'; editProject?: Project }
@@ -141,12 +142,14 @@ export function ProjectSwitcher() {
                     Select all
                   </button>
                 )}
-                <button
-                  onClick={() => setWizard({ kind: 'project' })}
-                  className="flex items-center gap-1 rounded-md bg-[var(--accent)]/10 px-2 py-1 text-[11px] font-semibold text-[var(--accent)] hover:bg-[var(--accent)]/20 transition-colors"
-                >
-                  <Plus className="w-3.5 h-3.5" /> New project
-                </button>
+                {canCapability('project:create') && (
+                  <button
+                    onClick={() => setWizard({ kind: 'project' })}
+                    className="flex items-center gap-1 rounded-md bg-[var(--accent)]/10 px-2 py-1 text-[11px] font-semibold text-[var(--accent)] hover:bg-[var(--accent)]/20 transition-colors"
+                  >
+                    <Plus className="w-3.5 h-3.5" /> New project
+                  </button>
+                )}
               </div>
             </div>
             {/* Bulk actions bar */}
@@ -207,12 +210,14 @@ export function ProjectSwitcher() {
               <div className="px-3 py-8 text-center">
                 <Boxes className="w-8 h-8 mx-auto mb-2 text-[var(--text-muted)] opacity-50" />
                 <p className="text-xs text-[var(--text-muted)]">No projects yet.</p>
-                <button
-                  onClick={() => setWizard({ kind: 'project' })}
-                  className="mt-3 inline-flex items-center gap-1 rounded-md bg-[var(--accent)] px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90"
-                >
-                  <Plus className="w-3.5 h-3.5" /> Create your first project
-                </button>
+                {canCapability('project:create') && (
+                  <button
+                    onClick={() => setWizard({ kind: 'project' })}
+                    className="mt-3 inline-flex items-center gap-1 rounded-md bg-[var(--accent)] px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90"
+                  >
+                    <Plus className="w-3.5 h-3.5" /> Create your first project
+                  </button>
+                )}
               </div>
             )}
 
@@ -336,12 +341,14 @@ export function ProjectSwitcher() {
                         );
                       })}
 
-                      <button
-                        onClick={() => setWizard({ kind: 'app', projectId: project.id })}
-                        className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs font-medium text-[var(--text-muted)] hover:text-[var(--accent)] hover:bg-[var(--bg-secondary)]"
-                      >
-                        <Plus className="w-3.5 h-3.5" /> New app
-                      </button>
+                      {canCapability('app:create') && (
+                        <button
+                          onClick={() => setWizard({ kind: 'app', projectId: project.id })}
+                          className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs font-medium text-[var(--text-muted)] hover:text-[var(--accent)] hover:bg-[var(--bg-secondary)]"
+                        >
+                          <Plus className="w-3.5 h-3.5" /> New app
+                        </button>
+                      )}
                     </div>
                   )}
                 </div>

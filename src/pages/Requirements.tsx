@@ -9,6 +9,7 @@ import ExportMenu from '../components/ExportMenu';
 import { useBulkDelete } from '@/src/lib/useBulkDelete';
 import { Modal } from '@/src/components/Modal';
 import { showAlert, showConfirm } from '@/src/lib/dialog';
+import { can } from '@/src/components/AuthGate';
 import { MarkdownText } from '@/src/components/MarkdownText';
 import { RequirementSrsEditor } from '@/src/components/RequirementSrsEditor';
 import { formatBusinessRulesMarkdown, formatRequirementSrs, type RequirementSrsModule } from '@/src/lib/requirementSrs';
@@ -183,7 +184,8 @@ export default function Requirements() {
         </div>
       </div>
 
-      {/* Agent requirement creation */}
+      {/* Agent requirement creation — gated on requirements:create */}
+      {can('requirements:create') && (
       <div className="mb-4 rounded-xl border border-[var(--accent)]/30 bg-[var(--accent)]/5 p-3 flex-shrink-0">
         <div className="mb-2 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
           <Sparkles className="h-3.5 w-3.5" /> Create a requirement with the agent
@@ -208,6 +210,7 @@ export default function Requirements() {
         </div>
         {discoverMessage && <div className="mt-2 text-xs text-[var(--text-muted)]">{discoverMessage}</div>}
       </div>
+      )}
 
       <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl flex flex-col flex-1 min-h-0 shadow-sm">
         <div className="p-4 border-b border-[var(--border)] flex items-center gap-3 flex-shrink-0">
@@ -223,7 +226,7 @@ export default function Requirements() {
           </div>
           <TimeSortSelect value={timeSort} onChange={setTimeSort} />
           <TimeRangeFilter value={updatedFilter} onChange={setUpdatedFilter} />
-          {bulk.selectedCount > 0 && (
+          {bulk.selectedCount > 0 && can('requirements:delete') && (
             <button onClick={bulk.deleteSelected} disabled={bulk.busy} className="ml-auto flex items-center gap-1.5 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
               <Trash2 className="w-4 h-4" /> Delete selected ({bulk.selectedCount})
             </button>
@@ -272,6 +275,7 @@ export default function Requirements() {
                       {actorName(req.metadata?.updatedBy) && <div className="text-[10px]">by {actorName(req.metadata?.updatedBy)}</div>}
                     </td>
                     <td className="py-3 px-4 text-right">
+                      {can('requirements:delete') && (
                       <button
                         onClick={(e) => { e.stopPropagation(); bulk.deleteOne(req.id); }}
                         title="Delete requirement"
@@ -279,6 +283,7 @@ export default function Requirements() {
                       >
                         <Trash2 className="w-4 h-4" />
                       </button>
+                      )}
                     </td>
                   </tr>
                 );
@@ -295,9 +300,11 @@ export default function Requirements() {
         size="xl"
         footer={
           <div className="flex justify-between items-center">
+            {can('requirements:delete') ? (
             <button onClick={deleteRequirement} className="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-red-500 hover:text-red-400">
               <Trash2 className="h-4 w-4" /> Delete
             </button>
+            ) : <span />}
             <div className="flex gap-3">
               <button
                 onClick={() => navigate(`/chat/${encodeURIComponent(`agent-run:${selected?.sourceRunId}`)}`)}
@@ -313,9 +320,11 @@ export default function Requirements() {
               >
                 <Target className="h-4 w-4 text-[var(--accent)]" /> Open in Traceability <ArrowRight className="h-3 w-3" />
               </button>
+              {can('requirements:update') && (
               <button onClick={saveRequirement} disabled={!form.title.trim()} className="px-4 py-2 bg-[var(--accent)] text-white text-sm font-medium rounded-md hover:bg-[var(--accent-hover)] disabled:opacity-50">
                 Save Changes
               </button>
+              )}
             </div>
           </div>
         }

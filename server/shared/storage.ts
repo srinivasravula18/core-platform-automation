@@ -75,6 +75,7 @@ export const db: any = {
   users: [] as any[],
   sessions: [] as any[],
   groups: [] as any[],
+  userGrants: {} as Record<string, any>, // per-user direct grant overrides (userId -> Grants)
   requirements: [] as any[],
   requirementLinks: [] as any[],
   appKnowledge: [] as any[],
@@ -136,6 +137,7 @@ function getPersistableDbSnapshot() {
     users: db.users,
     sessions: db.sessions,
     groups: db.groups,
+    userGrants: db.userGrants,
     requirements: db.requirements,
     requirementLinks: db.requirementLinks,
     appKnowledge: db.appKnowledge,
@@ -203,6 +205,7 @@ export async function loadPersistedData() {
     db.users = Array.isArray(data.users) ? data.users : [];
     db.sessions = Array.isArray(data.sessions) ? data.sessions : [];
     db.groups = Array.isArray(data.groups) ? data.groups : [];
+    db.userGrants = data.userGrants && typeof data.userGrants === 'object' ? data.userGrants : {};
     db.requirements = Array.isArray(data.requirements) ? data.requirements : [];
     db.requirementLinks = Array.isArray(data.requirementLinks) ? data.requirementLinks : [];
     db.appKnowledge = Array.isArray(data.appKnowledge) ? data.appKnowledge : [];
@@ -245,7 +248,9 @@ export async function loadPersistedData() {
 // Collections whose repositories do not write a dedicated PostgreSQL table. In PG mode they
 // persist to the json_store KV table (one row per collection) so the DATABASE is the source
 // of truth; the JSON file remains the store for explicit no-PG development/tests only.
-const PG_JSON_COLLECTIONS = ['projects', 'apps', 'appKnowledge', 'repoSecrets', 'blackboard', 'recentActivity', 'users', 'sessions', 'groups'] as const;
+// users/sessions/groups moved to dedicated relational tables (server/features/auth/authRepo.ts) —
+// they are no longer persisted as json_store blobs.
+const PG_JSON_COLLECTIONS = ['projects', 'apps', 'appKnowledge', 'repoSecrets', 'blackboard', 'recentActivity'] as const;
 
 // Write-through is armed ONLY after successful hydration — a process that never loaded from
 // PG (e.g. a test script) must not clobber the stored collections with its empty arrays.
