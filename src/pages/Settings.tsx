@@ -1642,12 +1642,13 @@ function CredentialsSection() {
           )}
 
           {rows.length > 0 && (
-            <div className="hidden grid-cols-[1.2fr_1.5fr_1.2fr_1.2fr_auto_auto] gap-2 px-1 text-xs font-medium text-[var(--text-muted)] lg:grid">
+            <div className="hidden grid-cols-[1.2fr_1.5fr_1.2fr_1.2fr_auto_auto_auto] gap-2 px-1 text-xs font-medium text-[var(--text-muted)] lg:grid">
               <div>Website Name</div>
               <div>Website URL</div>
               <div>Username / Email</div>
               <div>Password</div>
               <div>Playwright</div>
+              {isAdmin() && <div>Share</div>}
               <div>Actions</div>
             </div>
           )}
@@ -1665,7 +1666,7 @@ function CredentialsSection() {
             return (
               <div
                 key={r.key}
-                className="grid grid-cols-1 items-center gap-2 rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] p-2 lg:grid-cols-[1.2fr_1.5fr_1.2fr_1.2fr_auto_auto]"
+                className="grid grid-cols-1 items-center gap-2 rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] p-2 lg:grid-cols-[1.2fr_1.5fr_1.2fr_1.2fr_auto_auto_auto]"
               >
               <input value={r.name} onChange={(e) => patch(r.key, { name: e.target.value })} placeholder="Website name" className="rounded-md border border-[var(--border)] bg-[var(--bg-primary)] px-2 py-1.5 text-sm outline-none focus:border-[var(--accent)]" />
               <input value={r.url} onChange={(e) => patch(r.key, { url: e.target.value })} placeholder="https://app.example.com" className="rounded-md border border-[var(--border)] bg-[var(--bg-primary)] px-2 py-1.5 text-sm outline-none focus:border-[var(--accent)]" />
