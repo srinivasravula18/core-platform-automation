@@ -93,7 +93,7 @@ export default function EditableCaseCard({ initial, linkType, selected, onToggle
   const [busy, setBusy] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
   const [reworkProposal, setReworkProposal] = useState<AIReworkProposal<EditableCase> | null>(null);
-  const [reworkUndoSnapshot, setReworkUndoSnapshot] = useState<EditableCase | null>(null);
+  const [reworkUndoStack, setReworkUndoStack] = useState<EditableCase[][]>([]);
   const [reworkMessage, setReworkMessage] = useState<string | null>(null);
   const [reworkError, setReworkError] = useState<string | null>(null);
   // Indices of steps ticked for merging into one.
@@ -227,23 +227,27 @@ export default function EditableCaseCard({ initial, linkType, selected, onToggle
     if (!reworkProposal) return;
     try {
       const result = applyAIReworkProposal([c], reworkProposal, selectedKeys);
-      setReworkUndoSnapshot(c);
+      setReworkUndoStack(result.undoSnapshots);
       setC(result.cases[0]);
       setSaved(false);
       setFeedback('');
       setAttachments([]);
       setAttachError('');
       setReworkProposal(null);
-      setReworkMessage('AI change applied to the draft. Save to persist.');
+      setReworkMessage(`${result.appliedCount} AI change${result.appliedCount === 1 ? '' : 's'} applied to the draft. Save to persist.`);
     } catch (error: any) {
       setReworkError(error?.message || 'Could not apply the AI proposal.');
     }
   };
   const undoRework = () => {
-    if (!reworkUndoSnapshot) return;
-    setC(reworkUndoSnapshot);
-    setReworkUndoSnapshot(null);
-    setReworkMessage('AI changes undone.');
+    const snapshot = reworkUndoStack.at(-1)?.[0];
+    if (!snapshot) return;
+    const remaining = reworkUndoStack.slice(0, -1);
+    setC(snapshot);
+    setReworkUndoStack(remaining);
+    setReworkMessage(remaining.length
+      ? `1 AI change undone. ${remaining.length} AI change${remaining.length === 1 ? '' : 's'} remain.`
+      : 'AI changes undone.');
     setSaved(false);
   };
 
@@ -415,7 +419,7 @@ export default function EditableCaseCard({ initial, linkType, selected, onToggle
               onApply={applyReworkProposal}
               onDiscard={() => setReworkProposal(null)}
               appliedMessage={reworkMessage}
-              onUndo={reworkUndoSnapshot ? undoRework : undefined}
+              onUndo={reworkUndoStack.length ? undoRework : undefined}
               accessory={(
                 <div className="mt-2 flex flex-wrap items-center gap-1.5">
                   <label className="inline-flex min-h-8 cursor-pointer items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-card)] px-2 text-[11px] font-medium text-[var(--text-muted)] hover:border-[var(--accent)] hover:text-[var(--text-primary)]">

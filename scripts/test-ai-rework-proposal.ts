@@ -40,6 +40,9 @@ assert.equal(onlyNew.cases[1].steps.length, 1);
 const onlyUpdate = applyAIReworkProposal(cases, proposal, new Set(['updated-1']));
 assert.equal(onlyUpdate.cases.length, 2);
 assert.equal(onlyUpdate.cases[1].steps.length, 2);
+assert.equal(onlyUpdate.appliedCount, 1);
+assert.equal(onlyUpdate.undoSnapshots.length, 1);
+assert.deepEqual(onlyUpdate.undoSnapshots[0], cases);
 
 const staleCases = cases.map((testCase, index) => index === 1 ? { ...testCase, title: 'Edited manually' } : testCase);
 assert.equal(isAIReworkProposalStale(staleCases, proposal), true);
@@ -47,5 +50,16 @@ assert.throws(() => applyAIReworkProposal(staleCases, proposal, new Set(['update
 
 const single = singleCaseProposal(cases[0], { ...cases[0], priority: 'Critical' });
 assert.equal(applyAIReworkProposal([cases[0]], single, new Set(['updated-0'])).cases[0].priority, 'Critical');
+
+const multipleChanges = applyAIReworkProposal([cases[0]], singleCaseProposal(cases[0], {
+  ...cases[0],
+  title: 'Create configured app',
+  priority: 'Critical',
+  steps: [{ action: 'Submit the form', expected: 'Configured app is created' }],
+}), new Set(['updated-0']));
+assert.equal(multipleChanges.appliedCount, 3);
+assert.equal(multipleChanges.undoSnapshots.length, 3);
+assert.equal(multipleChanges.undoSnapshots[2][0].priority, 'Critical');
+assert.equal(multipleChanges.undoSnapshots[2][0].steps[0].action, 'Save');
 
 console.log('AI rework proposal checks passed.');

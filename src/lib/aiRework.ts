@@ -1,3 +1,5 @@
+import { diffCaseRevisions } from './caseRevisionDiff';
+
 export interface AIReworkStep {
   action?: string;
   expected?: string;
@@ -107,17 +109,52 @@ export function applyAIReworkProposal<T extends AIReworkCase>(
   cases: T[],
   proposal: AIReworkProposal<T>,
   selectedKeys: ReadonlySet<string>,
-): { cases: T[]; appliedCount: number } {
+): { cases: T[]; appliedCount: number; undoSnapshots: T[][] } {
   if (isAIReworkProposalStale(cases, proposal)) {
     throw new Error('These cases changed after the preview was generated. Preview the request again before applying it.');
   }
   const chosen = proposal.items.filter((item) => selectedKeys.has(item.key));
-  const updates = new Map(chosen
-    .filter((item) => item.kind === 'updated' && item.sourceIndex != null)
-    .map((item) => [item.sourceIndex!, item.after]));
-  const added = chosen.filter((item) => item.kind === 'new').map((item) => item.after);
+  const undoSnapshots: T[][] = [];
+  let next = cases;
+
+  for (const item of chosen) {
+    if (item.kind === 'new') {
+      undoSnapshots.push(next);
+      next = [...next, item.after];
+      continue;
+    }
+    if (item.sourceIndex == null || !item.before) continue;
+
+    for (const difference of diffCaseRevisions(item.before, item.after)) {
+      undoSnapshots.push(next);
+      const current = next[item.sourceIndex];
+      let updated: T;
+
+      if (difference.type === 'field') {
+        const field = {
+          Title: 'title',
+          Description: 'description',
+          Preconditions: 'preconditions',
+          Priority: 'priority',
+          Type: 'type',
+          Tags: 'tags',
+        }[difference.label] as keyof AIReworkCase;
+        updated = { ...current, [field]: item.after[field] };
+      } else {
+        const stepIndex = Number(difference.label.replace('Step ', '')) - 1;
+        const steps = [...(current.steps || [])];
+        if (!difference.after) steps.splice(stepIndex, 1);
+        else if (!difference.before) steps.splice(stepIndex, 0, item.after.steps![stepIndex]);
+        else steps[stepIndex] = item.after.steps![stepIndex];
+        updated = { ...current, steps };
+      }
+      next = next.map((testCase, index) => (index === item.sourceIndex ? updated : testCase));
+    }
+  }
+
   return {
-    cases: [...cases.map((testCase, index) => updates.get(index) || testCase), ...added],
-    appliedCount: chosen.length,
+    cases: next,
+    appliedCount: undoSnapshots.length,
+    undoSnapshots,
   };
 }

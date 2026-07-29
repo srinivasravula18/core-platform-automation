@@ -171,8 +171,10 @@ export function GeneratedCases({ cases: initial, onCasesChange }: { cases: Case[
   const abortRef = useRef<AbortController | null>(null);
   const [reworkProposal, setReworkProposal] = useState<AIReworkProposal<Case> | null>(null);
   const [reworkProposalOwner, setReworkProposalOwner] = useState<string | null>(null);
-  const [reworkUndoSnapshot, setReworkUndoSnapshot] = useState<Case[] | null>(null);
+  const [reworkUndoStack, setReworkUndoStack] = useState<Case[][]>([]);
+  const [reworkDirtySnapshot, setReworkDirtySnapshot] = useState<Set<number>>(new Set());
   const [reworkAppliedMessage, setReworkAppliedMessage] = useState<string | null>(null);
+  const [reworkAppliedOwner, setReworkAppliedOwner] = useState<string | null>(null);
 
   // Cancel any in-flight bulk requests when the component unmounts.
   useEffect(() => () => abortRef.current?.abort(), []);
@@ -373,7 +375,9 @@ export function GeneratedCases({ cases: initial, onCasesChange }: { cases: Case[
       const changedIndexes = reworkProposal.items
         .filter((item) => selectedKeys.has(item.key) && item.sourceIndex != null)
         .map((item) => item.sourceIndex!);
-      setReworkUndoSnapshot(cases);
+      setReworkUndoStack(result.undoSnapshots);
+      setReworkDirtySnapshot(dirtyIdx);
+      setReworkAppliedOwner(reworkProposalOwner);
       setCases(result.cases);
       setDirtyIdx((current) => new Set([...current, ...changedIndexes]));
       setReworkAppliedMessage(`${result.appliedCount} AI change${result.appliedCount === 1 ? '' : 's'} applied to the draft. Save to persist.`);
@@ -394,10 +398,15 @@ export function GeneratedCases({ cases: initial, onCasesChange }: { cases: Case[
     }
   };
   const undoRework = () => {
-    if (!reworkUndoSnapshot) return;
-    setCases(reworkUndoSnapshot);
-    setReworkUndoSnapshot(null);
-    setReworkAppliedMessage('AI changes undone.');
+    const snapshot = reworkUndoStack.at(-1);
+    if (!snapshot) return;
+    const remaining = reworkUndoStack.slice(0, -1);
+    setCases(snapshot);
+    setReworkUndoStack(remaining);
+    if (!remaining.length) setDirtyIdx(reworkDirtySnapshot);
+    setReworkAppliedMessage(remaining.length
+      ? `1 AI change undone. ${remaining.length} AI change${remaining.length === 1 ? '' : 's'} remain.`
+      : 'AI changes undone.');
   };
 
   const bulkTotal = Object.keys(bulkStatus).length;
@@ -437,8 +446,8 @@ export function GeneratedCases({ cases: initial, onCasesChange }: { cases: Case[
           stale={Boolean(reworkProposalOwner === 'bulk' && reworkProposal && isAIReworkProposalStale(cases, reworkProposal))}
           onApply={applyReworkProposal}
           onDiscard={discardReworkProposal}
-          appliedMessage={reworkAppliedMessage}
-          onUndo={reworkUndoSnapshot ? undoRework : undefined}
+          appliedMessage={reworkAppliedOwner === 'bulk' ? reworkAppliedMessage : null}
+          onUndo={reworkAppliedOwner === 'bulk' && reworkUndoStack.length ? undoRework : undefined}
           accessory={(
             <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
               <AttachmentPicker
@@ -670,8 +679,8 @@ export function GeneratedCases({ cases: initial, onCasesChange }: { cases: Case[
                   stale={Boolean(reworkProposalOwner === `case-${i}` && reworkProposal && isAIReworkProposalStale(cases, reworkProposal))}
                   onApply={applyReworkProposal}
                   onDiscard={discardReworkProposal}
-                  appliedMessage={reworkAppliedMessage}
-                  onUndo={reworkUndoSnapshot ? undoRework : undefined}
+                  appliedMessage={reworkAppliedOwner === `case-${i}` ? reworkAppliedMessage : null}
+                  onUndo={reworkAppliedOwner === `case-${i}` && reworkUndoStack.length ? undoRework : undefined}
                   accessory={(
                     <div className="mt-2">
                       <AttachmentPicker

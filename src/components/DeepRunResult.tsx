@@ -328,7 +328,8 @@ export function DeepRunResult({
   const [chatNote, setChatNote] = useState<string | null>(null);
   const [reworkProposal, setReworkProposal] = useState<AIReworkProposal<Case> | null>(null);
   const [reworkProposalOwner, setReworkProposalOwner] = useState<string | null>(null);
-  const [reworkUndoSnapshot, setReworkUndoSnapshot] = useState<Case[] | null>(null);
+  const [reworkUndoStack, setReworkUndoStack] = useState<Case[][]>([]);
+  const [reworkAppliedOwner, setReworkAppliedOwner] = useState<string | null>(null);
   // Kept separately from the case data so an applied AI rework remains visibly
   // distinguishable from ordinary edits until the user moves on or undoes it.
   const [aiChangeMarkers, setAiChangeMarkers] = useState<Record<number, AIChangeMarker>>({});
@@ -694,7 +695,8 @@ export function DeepRunResult({
               .map((difference) => Number(difference.label.replace('Step ', '')) - 1)),
           } satisfies AIChangeMarker];
         }));
-      setReworkUndoSnapshot(list);
+      setReworkUndoStack(result.undoSnapshots);
+      setReworkAppliedOwner(reworkProposalOwner);
       setCases(result.cases);
       if (Object.keys(changeMarkers).length) {
         setAiChangeMarkers((current) => ({ ...current, ...changeMarkers }));
@@ -713,11 +715,15 @@ export function DeepRunResult({
     }
   };
   const undoRework = () => {
-    if (!reworkUndoSnapshot) return;
-    setCases(reworkUndoSnapshot);
-    setReworkUndoSnapshot(null);
-    setAiChangeMarkers({});
-    setChatNote('AI changes undone.');
+    const snapshot = reworkUndoStack.at(-1);
+    if (!snapshot) return;
+    const remaining = reworkUndoStack.slice(0, -1);
+    setCases(snapshot);
+    setReworkUndoStack(remaining);
+    if (!remaining.length) setAiChangeMarkers({});
+    setChatNote(remaining.length
+      ? `1 AI change undone. ${remaining.length} AI change${remaining.length === 1 ? '' : 's'} remain.`
+      : 'AI changes undone.');
     setSaved(false);
   };
   const renderCaseReworkPanel = (i: number) => (
@@ -734,8 +740,8 @@ export function DeepRunResult({
       stale={Boolean(reworkProposalOwner === `case-${i}` && reworkProposal && isAIReworkProposalStale(list, reworkProposal))}
       onApply={applyReworkProposal}
       onDiscard={discardReworkProposal}
-      appliedMessage={chatNote}
-      onUndo={reworkUndoSnapshot ? undoRework : undefined}
+      appliedMessage={reworkAppliedOwner === `case-${i}` ? chatNote : null}
+      onUndo={reworkAppliedOwner === `case-${i}` && reworkUndoStack.length ? undoRework : undefined}
     />
   );
   const saveAll = async () => {
@@ -1522,8 +1528,8 @@ export function DeepRunResult({
                   stale={Boolean(reworkProposalOwner === 'suite' && reworkProposal && isAIReworkProposalStale(list, reworkProposal))}
                   onApply={applyReworkProposal}
                   onDiscard={discardReworkProposal}
-                  appliedMessage={chatNote}
-                  onUndo={reworkUndoSnapshot ? undoRework : undefined}
+                  appliedMessage={reworkAppliedOwner === 'suite' ? chatNote : null}
+                  onUndo={reworkAppliedOwner === 'suite' && reworkUndoStack.length ? undoRework : undefined}
                   accessory={selectedCases.size ? (
                     <div className="mt-2 flex max-h-20 flex-wrap gap-1 overflow-y-auto">
                       {[...selectedCases].sort((a, b) => a - b).map((i) => list[i] && (
