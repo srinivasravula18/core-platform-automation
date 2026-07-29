@@ -152,6 +152,7 @@ function mapPlan(r: any) {
     runIds: r.run_ids || [],
     status: r.status,
     riskLevel: r.risk_level,
+    parentPlanId: r.parent_plan_id,
     folderId: r.folder_id,
     approvalState: r.approval_state,
     proposedBy: r.proposed_by,
@@ -816,8 +817,8 @@ export const Plans = {
       return plan;
     }
     const row = await queryOne(
-      `INSERT INTO plans (id, name, scope, objectives, in_scope, out_of_scope, strategy, test_types, environments, roles, entry_exit, schedule, risks, deliverables, description, start_date, end_date, owner, tags, run_ids, status, risk_level, folder_id, approval_state, proposed_by, source_run_id, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26, now(), now())
+      `INSERT INTO plans (id, name, scope, objectives, in_scope, out_of_scope, strategy, test_types, environments, roles, entry_exit, schedule, risks, deliverables, description, start_date, end_date, owner, tags, run_ids, status, risk_level, parent_plan_id, folder_id, approval_state, proposed_by, source_run_id, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27, now(), now())
        ON CONFLICT (id) DO UPDATE SET
          name=EXCLUDED.name, scope=EXCLUDED.scope, objectives=EXCLUDED.objectives,
          in_scope=EXCLUDED.in_scope, out_of_scope=EXCLUDED.out_of_scope, strategy=EXCLUDED.strategy,
@@ -826,6 +827,7 @@ export const Plans = {
          deliverables=EXCLUDED.deliverables, description=EXCLUDED.description,
          start_date=EXCLUDED.start_date, end_date=EXCLUDED.end_date, owner=EXCLUDED.owner,
          tags=EXCLUDED.tags, run_ids=EXCLUDED.run_ids, status=EXCLUDED.status, risk_level=EXCLUDED.risk_level,
+         parent_plan_id=EXCLUDED.parent_plan_id,
          folder_id=EXCLUDED.folder_id, approval_state=EXCLUDED.approval_state,
          proposed_by=EXCLUDED.proposed_by, source_run_id=EXCLUDED.source_run_id, updated_at=now()
        RETURNING *`,
@@ -852,6 +854,7 @@ export const Plans = {
         JSON.stringify(Array.isArray(plan.runIds) ? plan.runIds : []),
         plan.status || 'draft',
         plan.riskLevel || 'Medium',
+        plan.parentPlanId || null,
         plan.folderId || null,
         plan.approvalState || 'approved',
         plan.proposedBy || plan.createdBy || 'human',
@@ -864,6 +867,9 @@ export const Plans = {
   async remove(id: string): Promise<boolean> {
     if (!isPgEnabled()) {
       const before = db.plans.length;
+      db.plans.forEach((plan: any) => {
+        if (plan.parentPlanId === id) plan.parentPlanId = '';
+      });
       (db as any).plans = db.plans.filter((p: any) => p.id !== id);
       return db.plans.length < before;
     }

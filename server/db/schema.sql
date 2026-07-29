@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS plans (
   run_ids         JSONB DEFAULT '[]'::jsonb,
   status          TEXT NOT NULL DEFAULT 'draft',
   risk_level      TEXT DEFAULT 'Medium',
+  parent_plan_id  TEXT REFERENCES plans(id) ON DELETE SET NULL,
   folder_id       TEXT REFERENCES folders(id) ON DELETE SET NULL,
   approval_state  TEXT NOT NULL DEFAULT 'approved',
   proposed_by     TEXT DEFAULT 'human',
@@ -56,6 +57,8 @@ ALTER TABLE plans ADD COLUMN IF NOT EXISTS end_date DATE;
 ALTER TABLE plans ADD COLUMN IF NOT EXISTS owner TEXT DEFAULT '';
 ALTER TABLE plans ADD COLUMN IF NOT EXISTS tags TEXT[] DEFAULT ARRAY[]::TEXT[];
 ALTER TABLE plans ADD COLUMN IF NOT EXISTS run_ids JSONB DEFAULT '[]'::jsonb;
+ALTER TABLE plans ADD COLUMN IF NOT EXISTS parent_plan_id TEXT REFERENCES plans(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS idx_plans_parent_plan_id ON plans(parent_plan_id);
 
 CREATE TABLE IF NOT EXISTS suites (
   id              TEXT PRIMARY KEY,

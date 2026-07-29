@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, Search, Filter, Pencil, Plus, Sparkles, Trash2, PlayCircle, Loader2, Rocket } from 'lucide-react';
+import { ArrowLeft, ChevronDown, ChevronRight, Search, Filter, Pencil, Plus, Sparkles, Trash2, PlayCircle, Loader2, Rocket } from 'lucide-react';
 import { Timestamp, actorName } from '@/src/components/Timestamp';
 import { TimeSortSelect } from '@/src/components/filters/TimeSortSelect';
 import { TimeRangeFilter, passesTimeFilter, type TimeFilterValue } from '@/src/components/filters/TimeRangeFilter';
@@ -22,6 +22,7 @@ import { caseBelongsToSuite, casePlanIds, casePlanMembershipUpdate, caseSuiteIds
 import { casesForPlan } from '@/src/lib/manualTestRun';
 import { emptyTestPlanFilters, linkedRunsForPlan, matchesTestPlanFilters } from '@/src/lib/testPlanFilters';
 import { emptyTestPlanCaseFilters, matchesTestPlanCaseFilters, resultStatusesForTestCase } from '@/src/lib/testPlanDetailFilters';
+import { buildTestPlanHierarchy } from '@/src/lib/testPlanHierarchy';
 import { localDateKey, normalizeDateKey, planDateWarnings, planStartConflict } from '@/core/shared/testPlanStart';
 import { withBasePath } from '@/src/lib/base-path';
 import { normalizeTags } from '@/src/lib/tags';
@@ -44,6 +45,7 @@ const emptyPlanForm = () => ({
   owner: '',
   tags: [] as string[],
   status: 'Draft',
+  parentPlanId: '',
   environments: '',
   roles: '',
   deliverables: '',
@@ -116,6 +118,7 @@ export default function TestPlans() {
   const [startScheduleValidationMessage, setStartScheduleValidationMessage] = useState('');
   const [formData, setFormData] = useState(emptyPlanForm);
   const [dateValidationMessage, setDateValidationMessage] = useState('');
+  const [collapsedPlanIds, setCollapsedPlanIds] = useState<Set<string>>(new Set());
 
   const [selectedPlanId, setSelectedPlanId] = useState<string | null>(null);
   const inlineSelectClass = "w-full min-w-[140px] rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs font-medium text-[var(--text-primary)] outline-none transition-colors hover:border-[var(--accent)] focus:border-[var(--accent)]";
@@ -193,6 +196,18 @@ export default function TestPlans() {
     setIsPlanModalOpen(true);
   };
 
+  const openSubPlanModal = (parentPlan: any) => {
+    setSelectedPlanId(null);
+    setFormData({
+      ...emptyPlanForm(),
+      parentPlanId: String(parentPlan.id),
+      folderId: String(parentPlan.folderId || ''),
+      owner: String(parentPlan.owner || ''),
+    });
+    setDateValidationMessage('');
+    setIsPlanModalOpen(true);
+  };
+
   const openEditModal = (plan: any) => {
     setSelectedPlanId(plan.id);
     setDateValidationMessage('');
@@ -206,6 +221,7 @@ export default function TestPlans() {
       owner: plan.owner || '',
       tags: Array.isArray(plan.tags) ? plan.tags : [],
       status: plan.status || 'Draft',
+      parentPlanId: plan.parentPlanId || '',
       environments: plan.environments || '',
       roles: plan.roles || '',
       deliverables: plan.deliverables || '',
@@ -375,14 +391,12 @@ export default function TestPlans() {
   const getPlanSuites = (planId: string) => suites.filter((suite) => suitePlanIds(suite).includes(planId));
   const getPlanCases = (planId: string) => casesForPlan(cases, suites, planId);
   const selectedDetailPlan = plans.find((plan) => plan.id === planId) || null;
+  const selectedParentPlan = selectedDetailPlan ? plans.find((plan) => plan.id === selectedDetailPlan.parentPlanId) || null : null;
   const getPlanRuns = (plan: any) => linkedRunsForPlan(plan, runs);
   const detailPlanCases = selectedDetailPlan ? getPlanCases(selectedDetailPlan.id) : [];
   const detailPlanSuites = selectedDetailPlan ? getPlanSuites(selectedDetailPlan.id) : [];
   const detailPlanRuns = selectedDetailPlan ? getPlanRuns(selectedDetailPlan) : [];
-  // Plans have no parent/child field yet; additional case-plan memberships are the available sub-plan relation.
-  const detailSubPlans = selectedDetailPlan ? plans.filter((plan) =>
-    plan.id !== selectedDetailPlan.id && detailPlanCases.some((testCase) => casePlanIds(testCase).includes(plan.id)),
-  ) : [];
+  const detailSubPlans = selectedDetailPlan ? plans.filter((plan) => plan.parentPlanId === selectedDetailPlan.id) : [];
   const filteredDetailPlanCases = selectedDetailPlan ? detailPlanCases.filter((testCase) =>
     matchesTestPlanCaseFilters(testCase, selectedDetailPlan.id, detailPlanRuns, suites, detailCaseFilters),
   ) : [];
@@ -411,6 +425,8 @@ export default function TestPlans() {
     const matchesUpdated = passesTimeFilter(plan.metadata?.updatedAt || plan.updatedAt, updatedFilter);
     return matchesSearch && matchesTestPlanFilters(plan, runs, filters, matchMode) && matchesUpdated;
   }), timeSort);
+  const hierarchyRows = buildTestPlanHierarchy(filteredPlans, collapsedPlanIds);
+  const modalParentPlan = plans.find((plan) => plan.id === formData.parentPlanId) || null;
 
   return (
     <div className="app-page-shell h-full flex flex-col">
@@ -437,6 +453,7 @@ export default function TestPlans() {
             columns={[
               { key: 'id', label: 'ID' },
               { key: 'name', label: 'Title' },
+              { key: 'parentPlanId', label: 'Parent Plan', get: (p) => plans.find((plan) => plan.id === p.parentPlanId)?.name || '' },
               { key: 'startDate', label: 'Start Date' },
               { key: 'endDate', label: 'End Date' },
               { key: 'owner', label: 'Owner' },
@@ -520,7 +537,7 @@ export default function TestPlans() {
       <Modal
         isOpen={isPlanModalOpen}
         onClose={() => setIsPlanModalOpen(false)}
-        title={selectedPlanId ? "Edit Test Plan" : "Create New Test Plan"}
+        title={selectedPlanId ? "Edit Test Plan" : formData.parentPlanId ? "Create Sub Test Plan" : "Create New Test Plan"}
         footer={
           <div className="flex justify-between items-center">
             <div>
@@ -532,7 +549,7 @@ export default function TestPlans() {
               <button onClick={() => setIsPlanModalOpen(false)} className="px-4 py-2 text-sm font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]">Cancel</button>
               {(selectedPlanId ? can('plans:update') : can('plans:create')) && (
               <button onClick={handleSavePlan} className="px-4 py-2 bg-[var(--accent)] text-white text-sm font-medium rounded-md hover:bg-[var(--accent-hover)]">
-                {selectedPlanId ? 'Save Changes' : 'Create Plan'}
+                {selectedPlanId ? 'Save Changes' : formData.parentPlanId ? 'Create Sub Plan' : 'Create Plan'}
               </button>
               )}
             </div>
@@ -548,6 +565,11 @@ export default function TestPlans() {
           {dateWarningMessage && (
             <div role="status" className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-300">
               {dateWarningMessage}
+            </div>
+          )}
+          {modalParentPlan && (
+            <div className="rounded-md border border-[var(--accent)]/30 bg-[var(--accent)]/10 px-3 py-2 text-sm text-[var(--text-primary)]">
+              Parent Test Plan: <span className="font-semibold">{modalParentPlan.name}</span>
             </div>
           )}
           <div>
@@ -679,6 +701,11 @@ export default function TestPlans() {
                   <span>Status: <span className={cn("ml-1 inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium border", getStatusBadgeClass(selectedDetailPlan.status || 'Draft'))}>{selectedDetailPlan.status || 'Draft'}</span></span>
                   <span>Risk: <span className={cn("ml-1 inline-flex items-center px-2 py-0.5 rounded text-xs font-bold uppercase tracking-wider", getRiskBadgeClass(selectedDetailPlan.riskLevel || 'Medium'))}>{selectedDetailPlan.riskLevel || 'Medium'}</span></span>
                   <FolderBadge folders={folders} folderId={selectedDetailPlan.folderId} />
+                  {selectedParentPlan && (
+                    <button type="button" onClick={() => navigate(`/plans/${selectedParentPlan.id}`)} className="hover:text-[var(--accent)] hover:underline">
+                      Parent: {selectedParentPlan.name}
+                    </button>
+                  )}
                   <span>{getPlanSuites(selectedDetailPlan.id).length} suites</span>
                   <span>{getPlanCases(selectedDetailPlan.id).length} cases</span>
                   {selectedDetailPlan.metadata?.createdAt && (
@@ -691,6 +718,11 @@ export default function TestPlans() {
                 </div>
               </div>
               <div className="flex items-center gap-2">
+                {can('plans:create') && (
+                  <button onClick={() => openSubPlanModal(selectedDetailPlan)} className="inline-flex items-center gap-1.5 rounded-md border border-[var(--accent)] px-3 py-2 text-sm font-medium text-[var(--accent)] hover:bg-[var(--accent)]/10">
+                    <Plus className="h-4 w-4" /> Add Sub-plan
+                  </button>
+                )}
                 {canStartPlan(selectedDetailPlan) && can('plans:update') && (
                   <button
                     onClick={() => startPlan(selectedDetailPlan)}
@@ -706,6 +738,16 @@ export default function TestPlans() {
                 )}
               </div>
             </div>
+            {detailSubPlans.length > 0 && (
+              <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-[var(--border)] pt-3 text-sm">
+                <span className="font-medium text-[var(--text-muted)]">Sub-plans:</span>
+                {detailSubPlans.map((subPlan) => (
+                  <button key={subPlan.id} type="button" onClick={() => navigate(`/plans/${subPlan.id}`)} className="rounded-full border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-1 text-[var(--text-primary)] hover:border-[var(--accent)] hover:text-[var(--accent)]">
+                    {subPlan.name}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
 
           <div className="flex items-center gap-6 border-b border-[var(--border)] px-5">
@@ -1010,7 +1052,7 @@ export default function TestPlans() {
                 <tr><td colSpan={12} className="py-8 text-center text-[var(--text-muted)]">Loading plans...</td></tr>
               ) : filteredPlans.length === 0 ? (
                 <tr><td colSpan={12} className="py-8 text-center text-[var(--text-muted)]">No plans found.</td></tr>
-              ) : filteredPlans.map((plan) => {
+              ) : hierarchyRows.map(({ plan, depth, hasChildren }) => {
                 const planCases = getPlanCases(plan.id);
                 const planSuites = getPlanSuites(plan.id);
                 const linkedRunCount = getPlanRuns(plan).length;
@@ -1030,7 +1072,30 @@ export default function TestPlans() {
                     </td>
                     <td className="truncate py-3 px-4 font-mono text-xs text-[var(--text-muted)]" title={plan.id}>{plan.id}</td>
                     <td className="py-3 px-4">
-                      <span className="block max-w-[420px] truncate font-medium" title={plan.name}>{plan.name}</span>
+                      <div className="flex min-w-0 items-center gap-1.5" style={{ paddingLeft: `${depth * 22}px` }}>
+                        {depth > 0 && <span aria-hidden="true" className="text-[var(--accent)]">└</span>}
+                        {hasChildren ? (
+                          <button
+                            type="button"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              setCollapsedPlanIds((current) => {
+                                const next = new Set(current);
+                                if (next.has(plan.id)) next.delete(plan.id); else next.add(plan.id);
+                                return next;
+                              });
+                            }}
+                            aria-label={`${collapsedPlanIds.has(plan.id) ? 'Expand' : 'Collapse'} ${plan.name}`}
+                            aria-expanded={!collapsedPlanIds.has(plan.id)}
+                            className="rounded p-0.5 text-[var(--text-muted)] hover:bg-[var(--border)] hover:text-[var(--text-primary)]"
+                          >
+                            {collapsedPlanIds.has(plan.id) ? <ChevronRight className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                          </button>
+                        ) : (
+                          <span className="w-5" aria-hidden="true" />
+                        )}
+                        <span className="block max-w-[380px] truncate font-medium" title={plan.name}>{plan.name}</span>
+                      </div>
                     </td>
                     <td className="truncate py-3 px-4 text-[var(--text-muted)]" title={plan.owner || undefined}>{plan.owner || '-'}</td>
                     <td className="py-3 px-4">

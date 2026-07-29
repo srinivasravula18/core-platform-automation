@@ -233,6 +233,22 @@ function manualRunStatus(value: unknown): string | null {
   return MANUAL_RUN_STATUSES.has(status) ? status : null;
 }
 
+async function parentPlanValidationError(parentPlanId: string, currentPlanId: string, req: any): Promise<string | null> {
+  if (!parentPlanId) return null;
+  if (parentPlanId === currentPlanId) return 'A test plan cannot be its own parent.';
+  let parent = await Plans.get(parentPlanId);
+  if (!parent || !scopeFilter([parent], reqScope(req)).length) return 'The selected parent test plan was not found.';
+  const visited = new Set<string>();
+  while (parent) {
+    if (String(parent.id) === currentPlanId) return 'A test plan cannot be moved under one of its sub-plans.';
+    const nextId = String(parent.parentPlanId || '');
+    if (!nextId || visited.has(nextId)) break;
+    visited.add(String(parent.id));
+    parent = await Plans.get(nextId);
+  }
+  return null;
+}
+
 export function registerResourceRoutes(app: Express) {
   /* ---------- read endpoints (PG-backed, scoped to the selected project/app) ---------- */
   app.get('/api/plans', async (req, res) => res.json(scopeFilter(await Plans.list(), reqScope(req))));
@@ -723,6 +739,12 @@ export function registerResourceRoutes(app: Express) {
           return res.status(409).json({ error: 'Confirm the schedule conflict before starting the plan.' });
         }
       }
+      if (e.name === 'plans') {
+        const parentPlanId = String(req.body?.parentPlanId ?? existing.parentPlanId ?? '').trim();
+        const parentError = await parentPlanValidationError(parentPlanId, String(existing.id), req);
+        if (parentError) return res.status(400).json({ error: parentError });
+        req.body.parentPlanId = parentPlanId;
+      }
       if (['plans', 'suites', 'cases', 'runs'].includes(e.name)) {
         const folderId = String(req.body?.folderId ?? existing.folderId ?? '').trim();
         const folder = folderId ? await Folders.get(folderId) : null;
@@ -860,6 +882,9 @@ export function registerResourceRoutes(app: Express) {
   /* ---------- POST /api/plans ---------- */
   app.post('/api/plans', requireRepositoryFolder, async (req, res) => {
     const p = req.body;
+    const parentPlanId = String(p.parentPlanId || '').trim();
+    const parentError = await parentPlanValidationError(parentPlanId, '', req);
+    if (parentError) return res.status(400).json({ error: parentError });
     const newPlan = {
       ...scopeStamp(reqScope(req)),
       name: p.name || 'New Plan',
@@ -883,6 +908,7 @@ export function registerResourceRoutes(app: Express) {
       runIds: uniqueStrings(p.runIds),
       status: p.status || 'Draft',
       riskLevel: p.riskLevel || 'Medium',
+      parentPlanId,
       folderId: p.folderId || '',
       createdAt: new Date(),
     };
