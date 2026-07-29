@@ -10,7 +10,7 @@
  * node never retries itself, it only classifies and returns a WorkflowError for the caller to act on.
  */
 import { createHash } from 'crypto';
-import { fetchCorePlatformMetadataMap, type CatalogConn } from '../../../../ai/tools/corePlatformData';
+import { fetchCorePlatformMetadataMap, type CatalogConn, type CorePlatformMetadataMap } from '../../../../ai/tools/corePlatformData';
 import { WorkflowRuntimeError, WORKFLOW_ERROR_CLASSES, type WorkflowError } from '../errors';
 import type { ContextMetadataSummary, MissionRef } from '../state';
 
@@ -22,6 +22,8 @@ export interface RunContextNodeInput {
 
 export interface RunContextNodeResult {
   context: { metadata: ContextMetadataSummary | null };
+  /** FULL fetched map — carried out-of-state so the caller can stash it (RC-0); checkpointed state keeps only the summary. */
+  metadataMap?: CorePlatformMetadataMap | null;
   errors: WorkflowError[];
 }
 
@@ -78,6 +80,8 @@ export async function runContextNode(input: RunContextNodeInput): Promise<RunCon
           source: 'live',
         },
       },
+      // RC-0: hand the FULL map back so the graph wrapper can stash it for authoring/grounding; state stays summary-only.
+      metadataMap: map,
       errors: [],
     };
   } catch (error) {

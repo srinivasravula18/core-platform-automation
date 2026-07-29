@@ -121,6 +121,8 @@ export interface DefectMetadata {
   investigation?: unknown;
   recoveryAttempts?: unknown[];
   suspiciousPass?: boolean;
+  /** ANSI-stripped, bounded raw failure text — the source the UI humanizer (analyzeFailure) renders a plain-English before→after from. */
+  rawError?: string;
 }
 
 /** Merge instructions for an existing same-signature defect: occurrence bump, never a duplicate row. */
@@ -136,6 +138,15 @@ export interface DefectReport {
 }
 
 const sha1 = (s: string) => createHash('sha1').update(s).digest('hex');
+
+/** Strip ANSI color codes + collapse whitespace so persisted defect text is human-readable, never a raw terminal dump. */
+export function stripAnsiText(error?: string): string {
+  return String(error || '')
+    .replace(/\x1b\[[0-9;]*m/g, '')
+    .replace(/\r\n?/g, '\n')
+    .replace(/[ \t]+\n/g, '\n')
+    .trim();
+}
 
 /** Strip run-specific noise (ANSI, quoted values, durations, big numbers) so one bug = one message shape. */
 export function normalizeFailureMessage(error?: string): string {
@@ -321,9 +332,11 @@ export function buildDefectDrafts(input: DefectReporterInput): DefectReport {
     const expected = caseRef?.steps?.length
       ? caseRef.steps.map((s) => s.expected).filter(Boolean).slice(-1)[0] || 'All case steps complete without errors.'
       : 'All case steps complete without errors.';
+    // Clean the raw Playwright error ONCE: persisted fields stay readable and the UI humanizer gets clean source text.
+    const cleanLeadError = stripAnsiText(lead.error);
     const failedStep = [...(stepLog ?? [])].reverse().find((s) => s.ok === false);
     const actual = [
-      lead.error ? String(lead.error).slice(0, 400) : `Test "${lead.title}" ${lead.status}.`,
+      cleanLeadError ? cleanLeadError.slice(0, 400) : `Test "${lead.title}" ${lead.status}.`,
       failedStep ? `Failing step: ${failedStep.kind || 'step'}${failedStep.label ? ` "${failedStep.label}"` : ''} (step ${failedStep.n ?? '?'}).` : '',
     ].filter(Boolean).join('\n');
 
@@ -333,7 +346,7 @@ export function buildDefectDrafts(input: DefectReporterInput): DefectReport {
       `Affected tests:`,
       ...titles.map((t) => `- ${t}`),
       '',
-      `Error (${sig.errorKind}): ${String(lead.error || 'no error text').slice(0, 300)}`,
+      `Error (${sig.errorKind}): ${(cleanLeadError || 'no error text').slice(0, 300)}`,
       regression && lastPassed ? `\nREGRESSION: passed in run ${lastPassed.runId}${lastPassed.at ? ` (${lastPassed.at})` : ''}, fails now.` : '',
       `\nRisk ${risk.score}/100 (${risk.level}): ${risk.factors.join('; ')}.`,
     ].filter((line) => line !== '').join('\n');
@@ -383,6 +396,7 @@ export function buildDefectDrafts(input: DefectReporterInput): DefectReport {
         occurrences: 1,
         firstSeenRunId: input.runId,
         lastSeenRunId: input.runId,
+        rawError: cleanLeadError.slice(0, 1500),
       },
     });
   }

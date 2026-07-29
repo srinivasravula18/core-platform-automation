@@ -37,7 +37,10 @@ export function scoreCoverageItem(item: CoverageItem, ctx: RiskContext = {}): Ri
   // Change-impact: if the target object's controls have evolved (version > 1) since a prior run, the surface
   // is unstable → raise risk. Read-only over the persistent, versioned repository.
   if (item.targetObject) {
-    const controls = listControls({ platform: ctx.platform, application: ctx.application || undefined, object: item.targetObject });
+    // targetObject is threaded from mission.module?.id (a MODULE id), so query the MODULE dimension — the
+    // repository keys module ids and object slugs in SEPARATE dimensions. The prior `object:` slot compared
+    // a module id against object slugs, which never matched, so this change-impact factor never fired.
+    const controls = listControls({ platform: ctx.platform, application: ctx.application || undefined, module: item.targetObject });
     const evolved = controls.filter((c) => c.current.version > 1).length;
     if (evolved > 0) factors.push({ name: `changed-controls:${evolved}`, weight: Math.min(5, evolved) });
   }

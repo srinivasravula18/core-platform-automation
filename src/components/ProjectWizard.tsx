@@ -248,7 +248,7 @@ export function ProjectWizard({ kind, projectId, editProject, editApp, onClose, 
                   )}
               {pRepoKind === 'local'
                 ? field('Local repo path', 'Absolute path to the repo folder on this machine.', (
-                    <input className={inputCls} value={pRepoPath} onChange={(e) => setPRepoPath(e.target.value)} placeholder="D:\\core-platform" />
+                    <input className={inputCls} value={pRepoPath} onChange={(e) => setPRepoPath(e.target.value)} placeholder="e.g. C:\\path\\to\\repo" />
                   ))
                 : field('Repository URL', 'HTTPS clone URL.', (
                     <input className={inputCls} value={pRepoUrl} onChange={(e) => setPRepoUrl(e.target.value)} placeholder="https://github.com/org/repo.git" />

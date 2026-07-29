@@ -64,7 +64,9 @@ function digestOfSource(code: string): string {
 export function runCompilationNode(input: RunCompilationNodeInput): RunCompilationNodeResult {
   try {
     // Coverage + risk run over the reviewed cases so the pass records WHAT it covers and in what priority.
-    const coveragePlan = input.cases.length ? coveragePlanFromCases(input.cases, input.mission.module?.name) : null;
+    // Use module.id (not .name) so the value threaded to riskAnalysis matches the module id the object
+    // repository stores — the compiled-generation path already uses .id; this aligns the two producers.
+    const coveragePlan = input.cases.length ? coveragePlanFromCases(input.cases, input.mission.module?.id) : null;
     const riskScores = coveragePlan
       ? prioritizeCoverage(coveragePlan.items, { platform: input.mission.platform, application: input.mission.application?.name ?? null })
       : [];

@@ -19,6 +19,7 @@ import { spawnSync } from 'child_process';
 import * as fs from 'fs';
 import type { AgentTool, ToolContext } from './types';
 import { resolveCredentials, getWebsite } from '../../features/credentials/credentialsService';
+import { resolveAppApiContract, fillApiPath, type AppApiContract } from './apiContract';
 
 /* ─── Connection helpers ─────────────────────────────────────────────────── */
 
@@ -103,6 +104,36 @@ async function cpFetch(method: string, path: string, body: unknown, ctx?: ToolCo
 const cpRequest = (method: string, path: string, ctx?: ToolContext) => cpFetch(method, path, undefined, ctx);
 const cpRequestPost = (path: string, body: unknown, ctx?: ToolContext) => cpFetch('POST', path, body, ctx);
 
+/** Resolve the app's API contract (endpoint templates) from its OWN OpenAPI — no path literals. */
+async function metaContract(ctx?: ToolContext): Promise<AppApiContract> {
+  const conn = resolveConnection(ctx);
+  if (!conn.baseUrl) return {};
+  let token: string | undefined;
+  try { token = await getToken(conn); } catch { /* spec is often public */ }
+  return resolveAppApiContract(conn.baseUrl, token);
+}
+async function metaPath(role: keyof AppApiContract, vars: { appId?: string; object?: string }, ctx?: ToolContext): Promise<string> {
+  const c = await metaContract(ctx);
+  if (!c[role]) throw new Error(`The app's OpenAPI exposes no '${role}' endpoint.`);
+  return fillApiPath(c[role]!, vars);
+}
+const asItems = (data: any): any[] => Array.isArray(data?.items) ? data.items : (Array.isArray(data) ? data : []);
+/** Every object across the app's apps — replaces the CP-specific __all_apps__ cross-app scope with iteration. */
+async function listAllObjectsViaContract(ctx?: ToolContext): Promise<any[]> {
+  const c = await metaContract(ctx);
+  if (!c.listApps || !c.listObjects) return [];
+  const apps = asItems(await cpRequest('GET', c.listApps, ctx));
+  const out: any[] = [];
+  for (const app of apps) {
+    if (!app?.id) continue;
+    try {
+      const objs = asItems(await cpRequest('GET', fillApiPath(c.listObjects, { appId: String(app.id) }), ctx));
+      for (const o of objs) out.push({ ...o, app_id: o.app_id || app.id, app_prefix: o.app_prefix || app.app_prefix });
+    } catch { /* skip this app, keep the rest */ }
+  }
+  return out;
+}
+
 /* ─── Stop words for keyword extraction ──────────────────────────────────── */
 
 const STOP = new Set(['the', 'and', 'for', 'to', 'of', 'a', 'an', 'in', 'is', 'are', 'how', 'what', 'test', 'feature', 'page', 'with', 'from', 'this', 'that']);
@@ -132,9 +163,8 @@ export const searchRelevantObjectsTool: AgentTool = {
       const kws = keywords(String(args.query || ''));
       if (!kws.length) return { error: 'query must contain at least one non-stop keyword' };
 
-      // GET /api/apps/__all_apps__/objects → { items: [...] }
-      const data = (await cpRequest('GET', '/api/apps/__all_apps__/objects', ctx)) as any;
-      const allObjects: any[] = Array.isArray(data?.items) ? data.items : (Array.isArray(data) ? data : []);
+      // All objects across the app's apps — from the app's OpenAPI contract, not a hardcoded scope.
+      const allObjects: any[] = await listAllObjectsViaContract(ctx);
 
       if (!allObjects.length) return { note: 'no objects found — check connection', objects: [] };
 
@@ -186,8 +216,7 @@ export const getObjectFieldsTool: AgentTool = {
       if (!apiName) return { error: 'object_api_name is required' };
       if (!appId) return { error: 'app_id is required — get it from search_relevant_objects first' };
 
-      // GET /api/apps/:appId/objects/:object/describe → { object:{}, fields:[] }
-      const data = (await cpRequest('GET', `/api/apps/${encodeURIComponent(appId)}/objects/${encodeURIComponent(apiName)}/describe`, ctx)) as any;
+      const data = (await cpRequest('GET', await metaPath('describeObject', { appId, object: apiName }, ctx), ctx)) as any;
       const fields: any[] = Array.isArray(data?.fields) ? data.fields : [];
       const objectMeta = data?.object ?? {};
 
@@ -250,7 +279,7 @@ export const querySampleRecordsTool: AgentTool = {
       };
       if (args.filters && typeof args.filters === 'object') body.filters = args.filters;
 
-      const data = (await cpRequestPost(`/api/apps/${encodeURIComponent(appId)}/objects/${encodeURIComponent(apiName)}/list-views/query`, body, ctx)) as any;
+      const data = (await cpRequestPost(await metaPath('queryListView', { appId, object: apiName }, ctx), body, ctx)) as any;
       const records: any[] = Array.isArray(data?.items) ? data.items : [];
       return { object: apiName, records, count: records.length, total_count: data?.total_count ?? null };
     } catch (err: any) {
@@ -288,7 +317,7 @@ export const countRecordsTool: AgentTool = {
       };
       if (args.filters && typeof args.filters === 'object') body.filters = args.filters;
 
-      const data = (await cpRequestPost(`/api/apps/${encodeURIComponent(appId)}/objects/${encodeURIComponent(apiName)}/list-views/query`, body, ctx)) as any;
+      const data = (await cpRequestPost(await metaPath('queryListView', { appId, object: apiName }, ctx), body, ctx)) as any;
       const count = data?.summary?.count ?? data?.total_count ?? null;
       return { object: apiName, count };
     } catch (err: any) {
@@ -322,7 +351,7 @@ export const createRecordTool: AgentTool = {
       if (!args.values || typeof args.values !== 'object') return { error: 'values must be an object of field api_name → value' };
 
       const data = await cpRequestPost(
-        `/api/apps/${encodeURIComponent(appId)}/objects/${encodeURIComponent(apiName)}/records`,
+        await metaPath('createRecord', { appId, object: apiName }, ctx),
         args.values,
         ctx,
       );

@@ -106,14 +106,6 @@ export function resolveAdminModuleFromRefs(refs: string[], navModules: AdminNavM
   return matched.size === 1 ? Array.from(matched)[0] : '';
 }
 
-/** Strong Admin Apps-section intent only; avoids treating generic mentions of users/apps as navigation. */
-export function isAdminAppsIntent(value: string): boolean {
-  const text = String(value || '').toLowerCase();
-  return /\b(?:create|add|new|edit|update|delete)\s+(?:an?\s+)?app\b/.test(text)
-    || /\bapp\s+(?:creation|catalog|management|manager|list|settings?|configuration)\b/.test(text)
-    || /\b(?:parent\s+app|child\s+app|api\s*name|icon[_\s-]*id)\b/.test(text)
-    || (/\bprefix\b/.test(text) && /\blabel\b/.test(text) && /\bapp\b/.test(text));
-}
 
 /**
  * Detect the surface kind from URL query parameters. Defaults to admin.

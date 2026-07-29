@@ -15,37 +15,14 @@ import { analyzeFeatureFromSource, discoverFeatureInventoryFromSource, proposeGa
 import { executePlaywrightScripts, killRunProcesses, sanitizeTestCode, repairTestCode } from '../playwright/executionService';
 import { liveAuthor, emitScript, canLiveAuthorGoal, actionableAuthorBlockers } from './liveAuthor';
 import { inspectFlow, flowToScript } from './flowInspector';
-import { extractSelectorMap, renderSelectorMap, mapHas, correctSelectorMethods, type SelectorMap } from './selectorMap';
-
-// Cache the extracted code selector-map per repo+app (the source rarely changes mid-session).
-// Keyed by the SCOPED path AND appId so two apps that share one repo never get each other's
-// selector map. When an app
-// declares a repoSubpath, extraction is scoped to that subtree so its selectors don't include the
-// sibling app's. Falls back to the whole repo when no subpath is set (shared-source apps).
-const selectorMapCache = new Map<string, SelectorMap>();
-function getSelectorMap(repoPath: string, opts: { appId?: string; subpath?: string } = {}): SelectorMap | null {
-  const base = (repoPath || '').trim();
-  if (!base) return null;
-  const scopedPath = opts.subpath ? path.join(base, opts.subpath) : base;
-  const key = `${scopedPath}::${opts.appId || ''}`;
-  if (selectorMapCache.has(key)) return selectorMapCache.get(key)!;
-  try {
-    const target = existsSync(scopedPath) ? scopedPath : base;
-    const m = extractSelectorMap(target);
-    selectorMapCache.set(key, m);
-    return m;
-  } catch { return null; }
-}
-/** Selector map scoped to the run's selected app (its repo subpath + appId)  -  never the sibling app's. */
-function getRunSelectorMap(run: any): SelectorMap | null {
-  const repoPath = getProjectRepoPath(run?.projectId || '').trim();
-  const app = run?.appId ? getApp(run.appId) : undefined;
-  return getSelectorMap(repoPath, { appId: run?.appId || '', subpath: (app as any)?.repoSubpath || '' });
-}
+import { renderSelectorMap, mapHas, correctSelectorMethods, type SelectorMap } from './selectorMap';
+// Phase 8 (decomposition slice 1): the repo selector-map cache moved to its own focused module.
+import { getRunSelectorMap } from './routeHelpers/selectorMapCache';
 import { promises as fsp, readFileSync, existsSync, readdirSync } from 'fs';
 import path from 'path';
 import { inspectApplicationFlow } from './inspectionService';
-import { exploreAndVerifyPage, exploreAppElements, rankVerifiedElements } from './domExplorer';
+import { exploreAndVerifyPage, exploreAppElements, rankVerifiedElements, setAuthStorageKeys } from './domExplorer';
+import { resolveAppUnderstanding } from '../../agent-core/understandingProducer';
 import { getFeatureGrounding } from './knowledge';
 import { projectRunLifecycleSafe } from '../../../services/runtime/src/application/sessionProjector';
 import { getOrchestrator, listConfiguredProviders, resolveProviderForAgent, resolveModelForAgent } from '../../ai/orchestrator';
@@ -56,7 +33,7 @@ import { buildKnowledgeBlock, recordObservation } from '../knowledge/knowledgeSe
 import { resolveCredentials, maskPassword } from '../credentials/credentialsService';
 import {
   detectSurfaceKind, resolveTargetApp, buildAppScopedUrl, connForRun,
-  fetchCorePlatformApps, fetchCorePlatformAppTabs, ALL_APPS_ID, loadAdminNavModules, resolveAdminModuleFromRefs, isAdminAppsIntent, isMutationIntent,
+  fetchCorePlatformApps, fetchCorePlatformAppTabs, ALL_APPS_ID, loadAdminNavModules, resolveAdminModuleFromRefs, isMutationIntent,
 } from './appTargeting';
 import {
   buildMissionContext, platformTypeFromSurface, runtimeSurfaceFromSurface, moduleFromUrl,
@@ -79,7 +56,7 @@ import { scoreCaseReuse } from './caseReuse';
 import { mergeScriptsByCase, reviewedCasesForRun, syncReviewedCases } from './caseCollection';
 import { pushInboxItem } from '../inbox/routes';
 import { agentRunStatusForList, isPendingReviewTestRun } from '../../../core/shared/testRunStatus';
-import { AgentRuns, ChatConversations, Suites, Cases, Runs, Reports, Scripts, Folders, Requirements, Defects, isPgEnabled } from '../../db/repository';
+import { AgentRuns, ChatConversations, Suites, Cases, Runs, Reports, Scripts, Folders, Requirements, Defects, Plans, isPgEnabled } from '../../db/repository';
 import { loadConversationHandoff } from '../../ai/memory/conversationState';
 import { runGuardrailPipeline } from '../../ai/guardrails';
 import { assessInspection, assessCasesGrounding, assessExecution, assessFeatureCompleteness } from '../../ai/verifier';
@@ -225,7 +202,6 @@ function needsExplicitAppScope(prompt: string, selectedApp: any, explicitUrl: st
   const text = String(prompt || '').toLowerCase();
   if (selectedApp || explicitUrl) return '';
   if (wantsGenericOrAllApps(text)) return '';
-  if (isAdminAppsIntent(text)) return '';
   if (!/\b(test|run|generate|create|write|draft|validate)\b/.test(text)) return '';
   const configured = platformCandidates(repoPath);
   if (configured.some((name) => text.includes(name.toLowerCase()))) return '';
@@ -810,7 +786,11 @@ async function ensureFolderInPg(folderId: string) {
 }
 
 function agentPlanId(run: any): string {
-  return run.testPlanId || '';
+  if (run.testPlanId) return run.testPlanId;
+  // Synthesize a plan id ONLY when the run produced cases (so a Plan row is created to satisfy the
+  // cases.test_plan_id FK); a run with no cases carries no plan reference.
+  const hasCases = Array.isArray(run.generated_cases) && run.generated_cases.length > 0;
+  return hasCases ? `PLAN-${run.id.substring(0, 8).toUpperCase()}` : '';
 }
 
 function agentSuiteId(run: any): string {
@@ -902,7 +882,7 @@ Feature under test: ${String(run.feature_understanding?.title || '').slice(0, 12
 Titles of the generated test cases:
 ${caseTitles.map((t: string) => `- ${t}`).join('\n')}
 
-Write ONE clear, human-readable suite title in Title Case, 5-10 words, that names the feature/area under test and what it broadly covers. Good examples: "Admin List View: Display, Filtering, and Export", "Leads Record Creation and Validation", "User Login and Session Handling". Rules: plain English a non-engineer understands; NO tool words like "agent"; no credentials, URLs, dates, or the word "test"/"suite" padding. Return only the title.`,
+Write ONE clear, human-readable suite title in Title Case, 5-10 words, that names the feature/area under test and what it broadly covers. Good examples: "Record Creation and Validation", "Search, Filtering, and Export", "Login and Session Handling". Rules: plain English a non-engineer understands; NO tool words like "agent"; no credentials, URLs, dates, or the word "test"/"suite" padding. Return only the title.`,
       schema: z.object({ title: z.string() }),
       userMessage: String(run.prompt || ''),
     });
@@ -936,6 +916,19 @@ function summarizeAgentRunExecution(run: any) {
  */
 function summarizeAgentCaseExecution(run: any) {
   const cases = Array.isArray(run.generated_cases) ? run.generated_cases : [];
+  // Prefer the authoritative execution result (per-test verdicts) — evidence status is often unset,
+  // which is why the Runs section showed 0 passed/0 failed for a run that actually executed.
+  const tests = Array.isArray(run.execution_result?.tests) ? run.execution_result.tests : [];
+  if (tests.length) {
+    let passed = 0;
+    let failed = 0;
+    for (const t of tests) {
+      const status = String(t?.status || '');
+      if (/pass/i.test(status)) passed += 1;
+      else if (/(fail|timedout|interrupted|error)/i.test(status)) failed += 1;
+    }
+    return { total: cases.length || tests.length, passed, failed };
+  }
   const evidenceByCaseIndex = new Map<number, any>(
     (Array.isArray(run.evidence_screenshots) ? run.evidence_screenshots : [])
       .map((evidence: any) => [evidence.testCaseIndex, evidence]),
@@ -1084,8 +1077,75 @@ async function persistAgentRunAndReportArtifacts(run: any) {
 
 async function persistAgentQualityArtifacts(run: any) {
   await persistAgentCaseArtifacts(run);
+  await persistAgentRequirementArtifact(run).catch((err) => console.warn(`[agent] run ${run.id}: requirement persist failed: ${err?.message || err}`));
   await persistAgentRunAndReportArtifacts(run);
   await saveAgentRunState(run, 'agent quality artifacts');
+}
+
+/** UI-selector index for a requirement — harvested from the run's VERIFIED selectors in the compiled
+ *  scripts (the authoritative source on graph runs) plus live inspection when present. Shape matches the
+ *  Requirements uiSelectors model so the section renders labels/roles/ids the agent actually used. */
+function buildAgentRequirementSelectors(run: any): Record<string, unknown> {
+  const labels = new Set<string>();
+  const aria = new Set<string>();
+  const cssIds = new Set<string>();
+  const roleNames = new Map<string, { role: string; name: string }>();
+  const fieldIds: Array<{ label: string; id: string }> = [];
+
+  const ctx = run.inspection_context || {};
+  for (const form of (ctx.visibleForms || [])) for (const fld of (form?.fields || [])) {
+    if (fld?.label) labels.add(String(fld.label));
+    if (fld?.dom) fieldIds.push({ label: String(fld.label || ''), id: String(fld.dom) });
+  }
+  for (const table of (ctx.visibleTables || [])) for (const h of (table?.headers || [])) {
+    labels.add(String(h)); roleNames.set(`columnheader:${h}`, { role: 'columnheader', name: String(h) });
+  }
+  for (const nav of (ctx.visibleNavigation || [])) if (typeof nav === 'string') labels.add(nav);
+
+  // Verified selectors emitted into the compiled scripts: {selector, selectorType, role, label}.
+  for (const s of (Array.isArray(run.playwright_scripts) ? run.playwright_scripts : [])) {
+    const code = String(s?.code || '');
+    for (const m of code.matchAll(/"label":"((?:[^"\\]|\\.)*)"/g)) { if (m[1]) labels.add(m[1].replace(/\\"/g, '"')); }
+    for (const m of code.matchAll(/"role":"([^"]+)"\s*,\s*"label":"((?:[^"\\]|\\.)*)"/g)) roleNames.set(`${m[1]}:${m[2]}`, { role: m[1], name: m[2].replace(/\\"/g, '"') });
+    for (const m of code.matchAll(/"selector":"#([a-zA-Z0-9_:-]+)"/g)) cssIds.add(m[1]);
+    for (const m of code.matchAll(/aria-label=\\?"([^"\\]+)/g)) aria.add(m[1]);
+  }
+  return {
+    ariaLabels: [...aria], labels: [...labels], roleNames: [...roleNames.values()],
+    uiHooks: [], testIds: [], cssIds: [...cssIds], cssClasses: [], placeholders: [], fieldIds, fileCount: 0,
+  };
+}
+
+/** Persist a REQUIREMENT from a completed run so the Requirements section reflects what the agent tested.
+ *  Uses the code-derived feature_understanding when present, else synthesizes from prompt + live inspection. */
+async function persistAgentRequirementArtifact(run: any) {
+  const cases = reviewedCasesForRun(run);
+  if (!cases.length) return; // no coverage → nothing to require
+  const fu = run.feature_understanding || {};
+  await ensureSuiteTitle(run);
+  const title = String(fu.title || artifactSubject(run) || run.prompt || 'Requirement').slice(0, 200);
+  await Requirements.upsert({
+    id: `REQ-${run.id.substring(0, 8).toUpperCase()}`,
+    title,
+    description: String(fu.description || run.prompt || '').slice(0, 2000),
+    featureQuery: String(run.prompt || '').slice(0, 2000),
+    businessRules: Array.isArray(fu.businessRules) ? fu.businessRules : [],
+    srsModules: Array.isArray(fu.srsModules) ? fu.srsModules : [],
+    dataPopulationNotes: String(fu.dataPopulationNotes || ''),
+    metadataRefs: Array.isArray(fu.metadataRefs) ? fu.metadataRefs : [],
+    uiSelectors: (fu.uiSelectors && Object.keys(fu.uiSelectors).length) ? fu.uiSelectors : buildAgentRequirementSelectors(run),
+    sourceFiles: Array.isArray(fu.sourceFiles) ? fu.sourceFiles : [],
+    coverageStatus: 'covered',
+    status: 'Draft',
+    approvalState: 'pending_review',
+    proposedBy: 'QA Assistant',
+    sourceRunId: run.id,
+    folderId: run.folderId || null,
+    projectId: run.projectId || '',
+    appId: run.appId || '',
+    ownerId: run.ownerId || '',
+  });
+  persistDataInBackground('agent requirement artifact');
 }
 
 async function persistAgentCaseArtifacts(run: any) {
@@ -1148,6 +1208,42 @@ async function ensureAgentPlanAndSuite(run: any) {
   const suiteTags = Array.from(new Set(
     (run.generated_cases || []).flatMap((c: any) => normalizeCaseTags(c.tags || [])),
   ));
+
+  // Persist a Test PLAN from the run's real data so the Plans section is populated and cases link to it.
+  // Agent-synthesized plans only — a user-selected plan (run.testPlanId) is left untouched. Created BEFORE
+  // the suite/cases so the cases.test_plan_id FK to plans(id) resolves.
+  if (!run.testPlanId && planId) {
+    const planCases = reviewedCasesForRun(run);
+    const distinct = (arr: any[]) => Array.from(new Set(arr.map((s) => String(s || '').trim()).filter(Boolean)));
+    const analyst = run.analyst_report || null;
+    const riskScore = Number(analyst?.riskScore ?? 0);
+    const riskLevel = riskScore >= 60 ? 'High' : riskScore >= 25 ? 'Medium' : 'Low';
+    let envHost = String(run.app_url || '');
+    try { envHost = new URL(String(run.app_url)).host; } catch { /* keep raw */ }
+    await Plans.upsert({
+      id: planId,
+      name: baseName,
+      description: String(run.feature_understanding?.description || run.prompt || '').slice(0, 2000),
+      scope: String(run.prompt || '').slice(0, 2000),
+      objectives: String(analyst?.narrative || run.feature_understanding?.title || run.prompt || '').slice(0, 2000),
+      inScope: planCases.map((c: any) => `- ${c.title}`).join('\n'),
+      testTypes: distinct(planCases.map((c: any) => c.testingType || c.testing_type || 'Functional')).join(', '),
+      environments: envHost,
+      risks: analyst ? distinct([...(analyst.rationale || []), ...((analyst.businessRuleViolations || []).map((v: any) => v?.title || v?.rule || v))]).join('\n') : '',
+      riskLevel,
+      status: 'Draft',
+      folderId: run.folderId || null,
+      owner: 'QA Assistant',
+      proposedBy: 'QA Assistant',
+      approvalState: 'pending_review',
+      sourceRunId: run.id,
+      runIds: [run.id],
+      tags: suiteTags.length ? suiteTags : ['@generated'],
+      projectId: run.projectId || '',
+      appId: run.appId || '',
+      ownerId: run.ownerId || '',
+    });
+  }
 
   if (!run.testSuiteId) {
     await Suites.upsert({
@@ -2194,8 +2290,8 @@ const SOURCE_BOUNDARY_CONTRACT = `SOURCE BOUNDARY RULES (non-negotiable):
 - CaseWriter must write only from the approved understanding and current evidence. Any case outside that boundary is invalid and must be dropped before saving.`;
 const CASE_AUTHORING_CONTRACT = `CASE TEXT RULES (apply to every case):
 - Titles must be short, plain-English, QA/business-readable, and name one behavior. Do not force prefixes like app name, surface name, feature name, or "verify" into every title. Prefer titles like "Actions menu shows core options", "Refresh is disabled while loading", or "New is disabled without permission". Never a vague label like "page works" or a compressed fragment like "404 blocks admin entry".
-- When the request or reviewed understanding names a business app/object such as CRM Accounts, use that business name in titles/descriptions; do not expose environment ids such as keystone_local unless that is the only user-facing name available.
-- Never put URLs in titles, descriptions, or steps; mention the selected app/area name instead. Never use "Automations" in a case title.
+- When the request or reviewed understanding names a business app/object, use that business name in titles/descriptions; do not expose environment ids or internal slugs unless that is the only user-facing name available.
+- Never put URLs in titles, descriptions, or steps; mention the selected app/area name instead.
 - If the selected target/surface conflicts with the source-grounded owner of the requested feature, do NOT blend the names. State the mismatch plainly in the reviewed understanding and generate cases for the actual owning surface only if the user approves that target; mention the originally selected target only when it has a real post-flow behavior to verify.
 - Do not mention authentication, login, sign-in, credentials, username, or password anywhere in the case text unless the user explicitly asked for authentication coverage  -  login is only ever a silent setup/precondition step, never the subject of a case.
 - Write titles, descriptions, preconditions, and every step action and expected result in plain, black-box, user-facing English: what a user does and sees on screen, in short sentences with common words. NEVER use internal identifiers (camelCase/snake_case names like "created_at" or "appId", component/file/prop names), database or implementation terms ("bootstrap", "deduplication", "persisted", "AND filters", "descending"), or developer phrasing  -  describe the visible on-screen outcome instead (say "sorted with the newest first", not "created_at descending"; "a default view appears automatically", not "a bootstrap view is created"; "opening it again does not add a duplicate").
@@ -2440,7 +2536,7 @@ ${requestedCaseCount > 0
 When REVIEWED REQUIREMENT CANDIDATE SCENARIOS are present and no exact user count was requested:
 - Generate at least one test case for every listed candidate scenario.
 - Keep the scenario title or its key behavior visible in the case title or description so coverage can be audited.
-- Default to normal UI tests only. Do NOT generate API validation/API contract/backend endpoint cases unless the user explicitly asks for API testing. Do not collapse positive, negative, permission, admin adapter, and specialized-list-view scenarios into one broad case.
+- Default to normal UI tests only. Do NOT generate API validation/API contract/backend endpoint cases unless the user explicitly asks for API testing. Do not collapse positive, negative, permission, and specialized scenarios into one broad case.
 
 If the Approved user-reviewed understanding contains numbered coverage sections, treat those sections as the coverage contract:
 - Generate at least one case for each numbered section unless it is explicitly unproven/skipped/blocked.
@@ -2460,7 +2556,7 @@ Use the inspection result as the source of truth for reachable pages, visible na
 
 When the request involves verifying data views, include steps that verify the visible table/list/grid container, headers, rows or empty-state, and absence of loading/error state using the labels found by inspection.
 
-For metadata/list rows with columns such as Label, API Name, Version, App Prefix, and Parent App, use the Label column as the human-facing row/search value. Never combine Label with API Name or App Prefix (for example, use "Revenue Hub", not "Revenue Hubrev").
+For metadata/list rows, use the human-facing label column as the row/search value; never concatenate it with adjacent technical columns (api names, prefixes, versions).
 
 ${SOURCE_BOUNDARY_CONTRACT}
 
@@ -2783,8 +2879,12 @@ Do NOT write comments such as "Auth is expected to be handled by global setup". 
   // this feature so the coder avoids them instead of re-discovering the same flakiness.
   let coderMemory = '';
   try {
+    // Recall is scoped by project/app/owner (which match the write path in execution.ts). The prior
+    // `feature: run.prompt.slice(0,80)` predicate was the inverted-recall bug: memories are written keyed
+    // by per-case SCRIPT TITLE, and the filter tested scriptTitle.includes(runPrompt) — the prompt is
+    // longer than any title, so the predicate was always false and recall was dead. Scope-only recall is
+    // the correct minimal behavior (case titles don't exist yet at coder-prompt time).
     const mems = await retrieveRunMemories({
-      feature: String(run.prompt || run.artifactName || '').slice(0, 80),
       projectId: run.projectId || undefined,
       appId: run.appId || undefined,
       ownerId: run.ownerId || undefined,
@@ -3003,9 +3103,9 @@ Then handle login with a ROBUST, DYNAMIC-WAIT helper (a session may already be i
     await page.locator('input[type="password"]').first().waitFor({ state: 'detached', timeout: 20000 }).catch(() => {});
   }
 Call await loginIfNeeded(); right after the goto/settle. Use the REAL login field/button selectors from the inspection context when they differ (the verifier corrects them). Do NOT assert anything about the login form.
-WAIT FOR ASYNC CONTENT BEFORE ASSERTING (dynamic, never fixed sleeps): list/grid screens render a "Loading.../Loading records..." placeholder and only mount the real <table> and its toolbar once rows arrive  -  so after login, before any assertion that depends on grid/table/toolbar content, WAIT for the actual content to appear and, if a REAL loading indicator was observed, wait for that loading indicator to disappear. Use guarded dynamic waits only for loading/busy signals, e.g.: await page.getByText(/loading|please wait|fetching/i).first().waitFor({ state: 'hidden', timeout: 20000 }).catch(() => {}); then await page.locator('table tbody tr, [role="row"], [role="gridcell"]').first().waitFor({ state: 'visible', timeout: 20000 }).catch(() => {}); NEVER wait for a normal persistent control/label to become hidden (examples: Refresh list view, Search results, Unpin list view, Tabs, Accounts, Created At) because those are target UI, not loading indicators. Only after the target content is READY do you proceed to the substantive task. NEVER use waitForLoadState('networkidle'). NEVER call APIs with undefined variables. Never leave USERNAME or PASSWORD undefined. Never use a relative URL when an absolute target URL is provided  -  verify only through the page UI.
+WAIT FOR ASYNC CONTENT BEFORE ASSERTING (dynamic, never fixed sleeps): list/grid screens render a loading/busy placeholder and only mount the real <table> and its toolbar once rows arrive  -  so after login, before any assertion that depends on grid/table/toolbar content, WAIT for the actual content to appear and, if a REAL loading indicator was observed, wait for that loading indicator to disappear. Use guarded dynamic waits only for loading/busy signals, e.g.: await page.getByText(/loading|please wait|fetching/i).first().waitFor({ state: 'hidden', timeout: 20000 }).catch(() => {}); then await page.locator('table tbody tr, [role="row"], [role="gridcell"]').first().waitFor({ state: 'visible', timeout: 20000 }).catch(() => {}); NEVER wait for a normal persistent control/label to become hidden (e.g. toolbar buttons, column headers, a search box, or record fields) because those are target UI, not loading indicators. Only after the target content is READY do you proceed to the substantive task. NEVER use waitForLoadState('networkidle'). NEVER call APIs with undefined variables. Never leave USERNAME or PASSWORD undefined. Never use a relative URL when an absolute target URL is provided  -  verify only through the page UI.
 GUARDED ACTIONS: every SETUP / navigation / intermediate click or fill whose exact selector is uncertain MUST be guarded so a missing element does not hang or abort the run. Prefer getByRole/getByText using the EXACT visible labels from the inspection context. After a guarded action, take the step screenshot regardless of whether it succeeded. EXCEPTION: the case's PRIMARY GOAL action and its outcome assertion are NEVER guarded  -  see the ACTION COMPLETION CONTRACT below.
-GROUNDING (no hallucination): only assert text, labels, headings, buttons, or table/list content that ACTUALLY appears in the inspection context above. NEVER assert "assumed" UI  -  no guessed success toasts (e.g. "created successfully"), menu names, or headings you did not see in the inspection context. If unsure an element exists, do not assert it; prefer asserting a URL change or a landmark the inspector recorded. NEVER make contradictory assertions about the same locator in one script (for example, asserting it is visible and later asserting its count is zero) unless a real intervening action is expected to remove it. SELECTOR PRIORITY (choose the HIGHEST that actually resolves in the inspection context, never a lower one when a higher exists): 1) getByTestId (data-testid), 2) getByRole(role, { name }) with the accessible name, 3) getByLabel, 4) getByPlaceholder, 5) a stable #id via page.locator('#id'), 6) exact visible text via getByText, 7) a scoped attribute/CSS selector only as a last resort. NEVER use XPath, nth-child/positional chains, or generated/utility (e.g. Tailwind) class names. SCRIPT QUALITY (web-first, auto-waiting): assert with await expect(locator).toBeVisible()/toHaveText()/toHaveValue()/toBeEnabled()/toHaveURL(); do NOT use waitForTimeout or fixed sleeps to wait for elements or content (the only allowed fixed wait is the short post-navigation settle in SETUP); scope locators to the relevant region and store reused ones in named consts. ICON / TOOLBAR / HEADER CONTROLS: these expose their name via aria-label or title with NO visible text  -  locate them with getByRole(role, { name }) or getByLabel using the EXACT aria-label from the REAL SELECTORS / inspection context; NEVER use getByText(...) for a button or icon control (it matches visible text, which icon buttons lack, so it can never resolve). GENERIC WORDS ARE NOT SELECTORS  -  "More", "...", "Options", "Actions", "resize", "settings" are almost never the real accessible name (often only a hidden responsive label); an overflow/actions menu's real label is the feature it controls (e.g. "List view actions") and column auto-resize is typically "Fit columns"  -  take the EXACT aria-label from the inspection/map and use getByRole/getByLabel, and to reach an item inside an actions menu (e.g. Settings) click the actions button first then the item by its exact text. DISAMBIGUATE REPEATED TEXT: when a record name / cell value can appear on multiple rows, scope to one row (page.locator('tr', { hasText }) ) or add .first() so the locator is not strict-mode-ambiguous. SECTION NAVIGATION (avoid drift): to open an Admin section, navigate DIRECTLY by URL  -  preserve the appId already in the URL and set nav to the section's nav key from FEATURE GROUNDING, e.g. { const u = new URL(page.url()); u.searchParams.set('nav', 'objects'); await page.goto(u.toString()); await page.waitForTimeout(1200); }. Do NOT click the left sidebar to navigate (a sidebar click can land on the WRONG section). Use the EXACT navKey (objects, tabs, users, permissions, access_controls, sharing_settings, flows). STABLE IDS: when FEATURE GROUNDING gives a control's stable #id (e.g. #create-object-label, #field-type), locate it with page.locator('#<id>')  -  never guess its placeholder or text. TRANSIENT / HOVER-ONLY ELEMENTS: never assert .toBeVisible() on a tooltip, popover, or hover hint (it is hidden until hovered, so the assert will flake-fail)  -  instead trigger it explicitly (await locator.hover()) before asserting, OR assert the durable state it reflects (e.g. a disabled action button, or a persistent "N selected" counter) rather than the floating hint itself. CONTROL NOT IN CONTEXT: if a control the case needs is NOT present in the inspection context, do NOT fall back to a selector you "remember" or guessed earlier  -  reach it through the UI the inspector DID record (open the toolbar/overflow/actions menu that would contain it), then operate the now-visible control; if it genuinely cannot be reached, assert the closest grounded landmark instead of inventing a locator. When asserting a URL, match only a STABLE fragment with a loose regex (e.g. expect(page).toHaveURL(/nav=apps/) or expect(page.url()).toContain('nav=apps'))  -  NEVER assert the full URL or a pattern that includes query separators (?, &) or generated ids (appId, record ids) which vary every run.
+GROUNDING (no hallucination): only assert text, labels, headings, buttons, or table/list content that ACTUALLY appears in the inspection context above. NEVER assert "assumed" UI  -  no guessed success toasts (e.g. "created successfully"), menu names, or headings you did not see in the inspection context. If unsure an element exists, do not assert it; prefer asserting a URL change or a landmark the inspector recorded. NEVER make contradictory assertions about the same locator in one script (for example, asserting it is visible and later asserting its count is zero) unless a real intervening action is expected to remove it. SELECTOR PRIORITY (choose the HIGHEST that actually resolves in the inspection context, never a lower one when a higher exists): 1) getByTestId (data-testid), 2) getByRole(role, { name }) with the accessible name, 3) getByLabel, 4) getByPlaceholder, 5) a stable #id via page.locator('#id'), 6) exact visible text via getByText, 7) a scoped attribute/CSS selector only as a last resort. NEVER use XPath, nth-child/positional chains, or generated/utility (e.g. Tailwind) class names. SCRIPT QUALITY (web-first, auto-waiting): assert with await expect(locator).toBeVisible()/toHaveText()/toHaveValue()/toBeEnabled()/toHaveURL(); do NOT use waitForTimeout or fixed sleeps to wait for elements or content (the only allowed fixed wait is the short post-navigation settle in SETUP); scope locators to the relevant region and store reused ones in named consts. ICON / TOOLBAR / HEADER CONTROLS: these expose their name via aria-label or title with NO visible text  -  locate them with getByRole(role, { name }) or getByLabel using the EXACT aria-label from the REAL SELECTORS / inspection context; NEVER use getByText(...) for a button or icon control (it matches visible text, which icon buttons lack, so it can never resolve). GENERIC WORDS ARE NOT SELECTORS  -  "More", "...", "Options", "Actions", "resize", "settings" are almost never the real accessible name (often only a hidden responsive label); an overflow/actions menu's real label is the specific feature it controls (its exact aria-label), never a generic word  -  take the EXACT aria-label from the inspection/map and use getByRole/getByLabel, and to reach an item inside an actions menu click the actions button first then the item by its exact text. DISAMBIGUATE REPEATED TEXT: when a record name / cell value can appear on multiple rows, scope to one row (page.locator('tr', { hasText }) ) or add .first() so the locator is not strict-mode-ambiguous. SECTION NAVIGATION (avoid drift): to open an Admin section, navigate DIRECTLY by URL  -  preserve the appId already in the URL and set nav to the section's nav key from FEATURE GROUNDING, e.g. { const u = new URL(page.url()); u.searchParams.set('nav', '<navKey from FEATURE GROUNDING>'); await page.goto(u.toString()); await page.waitForTimeout(1200); }. Do NOT click the left sidebar to navigate (a sidebar click can land on the WRONG section). Use the EXACT navKey from FEATURE GROUNDING for this app  -  never a remembered or assumed key. STABLE IDS: when FEATURE GROUNDING gives a control's stable #id, locate it with page.locator('#<id>')  -  never guess its placeholder or text. TRANSIENT / HOVER-ONLY ELEMENTS: never assert .toBeVisible() on a tooltip, popover, or hover hint (it is hidden until hovered, so the assert will flake-fail)  -  instead trigger it explicitly (await locator.hover()) before asserting, OR assert the durable state it reflects (e.g. a disabled action button, or a persistent "N selected" counter) rather than the floating hint itself. CONTROL NOT IN CONTEXT: if a control the case needs is NOT present in the inspection context, do NOT fall back to a selector you "remember" or guessed earlier  -  reach it through the UI the inspector DID record (open the toolbar/overflow/actions menu that would contain it), then operate the now-visible control; if it genuinely cannot be reached, assert the closest grounded landmark instead of inventing a locator. When asserting a URL, match only a STABLE fragment you actually observed (a section/route token that stays constant across runs) with a loose regex, e.g. expect(page).toHaveURL(new RegExp('<stable-fragment>')) or expect(page.url()).toContain('<stable-fragment>')  -  NEVER assert the full URL or a pattern that includes query separators (?, &) or generated ids (app/session/record ids) which vary every run.
 RESILIENCE (the user's intent MUST actually be performed): use await expect.soft(...) for every intermediate per-step verification so a single mismatched locator does NOT abort the test before the user's real goal (e.g. creating the record) is carried out. Always run each ACTION step (goto/fill/click/submit) regardless of whether a prior soft assertion failed. Then follow the user-requested path discovered by the inspector; do not invent unrelated pages or menu names.
 ACTION COMPLETION CONTRACT (CRITICAL  -  the test must DO the thing, not just look at it): identify the case's PRIMARY GOAL action from its title/steps, actually PERFORM it, then make exactly ONE hard expect verify its real OUTCOME. Discover every selector from the inspection context / source  -  NEVER hardcode element names; the patterns below show only the Playwright technique per outcome type, not which element to use.
 - Asserting that a control/page is visible (toBeVisible) is NOT performing the action and is NEVER an acceptable primary assertion. Operate the control and verify what it PRODUCED.
@@ -3068,7 +3168,7 @@ Rules:
 - SELECTOR PRIORITY: use the highest-priority selector that actually resolves in the inspection context. NEVER use XPath, nth-child/positional chains, or generated/utility (e.g. Tailwind) class names  -  they break on any re-render.
 - SCRIPT QUALITY (web-first, auto-waiting): assert with await expect(locator).toBeVisible()/toHaveText()/toHaveValue()/toBeEnabled()/toHaveURL()  -  these auto-wait. Do NOT use waitForTimeout or fixed sleeps to wait for elements or content (the only allowed fixed wait is the short post-navigation settle in SETUP). Scope locators to the relevant region (e.g. page.getByRole('table').getByRole('row').filter({ hasText })) and store reused locators in named consts so the test reads clearly.
 - ICON / TOOLBAR / HEADER CONTROLS expose their name via aria-label or title with NO visible text  -  locate them with getByRole(role, { name }) or getByLabel using the EXACT aria-label from the REAL SELECTORS / inspection context above. NEVER use getByText(...) for a button or icon control (it matches visible text, which icon buttons do not have, so it will never resolve).
-- GENERIC WORDS ARE NOT SELECTORS: "More", "...", "Options", "Actions", "resize", "settings" are almost never the real accessible name (they often exist only as a hidden responsive label). An overflow / actions menu's real label is the feature it controls (e.g. "List view actions"); column auto-resize ("fit columns" / "resize columns") is typically labeled "Fit columns". For ANY such control, take the EXACT aria-label from the inspection/map and use getByRole/getByLabel  -  never the generic word. To operate an item inside an actions menu (e.g. Settings), click the actions button (e.g. "List view actions") FIRST, then click the item by its exact text.
+- GENERIC WORDS ARE NOT SELECTORS: "More", "...", "Options", "Actions", "resize", "settings" are almost never the real accessible name (they often exist only as a hidden responsive label). An overflow / actions menu's real label is the specific feature it controls (its exact aria-label), never a generic word. For ANY such control, take the EXACT aria-label from the inspection/map and use getByRole/getByLabel. To operate an item inside an actions menu, click the actions button FIRST, then click the item by its exact text.
 - DISAMBIGUATE REPEATED TEXT: when a label/cell text can appear on multiple rows or cells (record names, column values), scope to a single row (e.g. page.locator('tr', { hasText: '...' })) or add .first() so the locator is not strict-mode-ambiguous (matching 2+ elements fails).
 - SECTION NAVIGATION (avoid drift): open an Admin section DIRECTLY by URL  -  preserve the appId in the current URL and set nav to the section's URL param from the ROUTES / BLACKBOARD context: { const u = new URL(page.url()); u.searchParams.set('nav', discoverableSectionKey); await page.goto(u.toString()); await page.waitForTimeout(1200); }. Do NOT click the left sidebar to navigate (it can drift to the wrong section). Discover section keys from the browser's DOM exploration  -  every accessible nav tab/link is recorded in the inspection context above.
 - STABLE IDS: when the DOM exploration lists a control's stable #id, use page.locator('#<id>')  -  never guess a placeholder/text for it.
@@ -4842,7 +4942,7 @@ Rules:
           (currentUnderstanding ? `Current understanding:\n${String(currentUnderstanding)}\n` : '') +
           (correction ? `User correction/revision:\n${String(correction)}\n` : '') +
           `\nThe "understanding" field must be concise, user-facing plain text with these sections: Here's what I understood, Target, Task, Plan.\n` +
-          `Also create "suggestedFolderName": a short, human-readable folder/artifact name based on the user's request and target app, e.g. "CRM - List View Actions". Do not use a full sentence.`,
+          `Also create "suggestedFolderName": a short, human-readable folder/artifact name based on the user's request and target app, e.g. "<Area> - <Behavior>". Do not use a full sentence.`,
         schema: z.object({
           understanding: z.string().min(20),
           targetName: z.string().default(''),
@@ -5241,6 +5341,22 @@ Rules:
     const scope = reqScope(req);
     const selectedApp = scope.appId ? getApp(scope.appId) : undefined;
     const selectedProject = scope.projectId ? getProject(scope.projectId) : undefined;
+    // Learn the connected app's OWN auth storage keys (from its repo) and register them for the inspector's
+    // token injection — replaces hardcoded product keys with the app's learned keys. Best-effort, non-fatal.
+    try {
+      const understanding = await resolveAppUnderstanding({
+        connectedApp: {
+          projectId: scope.projectId || undefined,
+          appId: scope.appId || undefined,
+          ownerId: scope.userId || undefined,
+          repoPath: getProjectRepoPath(scope.projectId || '') || undefined,
+          appUrl: String(app_url || selectedApp?.baseUrl || '') || undefined,
+          appLabel: selectedApp?.name || undefined,
+        },
+        runId: conversationId || 'run',
+      });
+      if (understanding.auth.storageKeys.length) setAuthStorageKeys(String(app_url || selectedApp?.baseUrl || ''), understanding.auth.storageKeys);
+    } catch (err) { console.warn('[understanding] auth-key registration skipped:', (err as Error)?.message); }
     const priorSessionRun = latestRunForConversation(conversationId, scope);
     if (priorSessionRun) {
       approvedUnderstanding ||= String(priorSessionRun.approvedUnderstanding || '').trim();
@@ -5263,11 +5379,10 @@ Rules:
     const adminNavModules = provisionalPlatform === 'ADMIN'
       ? loadAdminNavModules(getProjectRepoPath(scope.projectId || ''))
       : [];
+    // Auto-resolve a section ONLY from the requirement's real metadata refs matched against the repo-parsed
+    // nav modules — no hardcoded object noun. Ambiguous prompts still fall through to the module question.
     const autoModuleId = (!explicitModuleIdRaw && provisionalPlatform === 'ADMIN')
       ? resolveAdminModuleFromRefs(metadataRefs, adminNavModules)
-        || (isAdminAppsIntent([prompt, approvedUnderstanding, priorGrounding].join('\n'))
-          ? resolveAdminModuleFromRefs(['app'], adminNavModules)
-          : '')
       : '';
     const explicitModuleId = explicitModuleIdRaw || autoModuleId;
     if (provisionalPlatform === 'ADMIN' && needsExplicitListViewModule(prompt || '', explicitModuleId)) {
@@ -5275,8 +5390,10 @@ Rules:
       // chat_response stays as the plain-text fallback and still accepts a typed module reply.
       // Repo-parsed side-nav modules drive the dropdown; when the repo has none the plain
       // question remains (older behavior) and the user can type the module name.
+      // Examples derived from the live repo-parsed side-nav — never a hardcoded app's module names.
+      const moduleExamples = adminNavModules.slice(0, 4).map((m) => m.name).filter(Boolean).join(', ');
       return res.json({
-        chat_response: 'Which list view should I test? Name the module or record type, for example Apps, Objects, Roles, or Users.',
+        chat_response: `Which list view should I test? Name the module or record type${moduleExamples ? `, for example ${moduleExamples}` : ''}.`,
         ...(adminNavModules.length ? {
           app_options: {
             surface: selectedApp?.name || 'Admin',
@@ -5353,9 +5470,9 @@ Rules:
     // targetUrl, materialized as one immutable MissionContext. The Agent Console selection is
     // AUTHORITATIVE; prompt text is advisory and NEVER overrides an explicit platform/application/module.
     const explicitPlatform = String(req.body.platform || req.body.platformType || '').toUpperCase();
-    const platformType: 'ADMIN' | 'RUNTIME' = (explicitPlatform === 'ADMIN' || explicitPlatform === 'RUNTIME')
-      ? (explicitPlatform as 'ADMIN' | 'RUNTIME')
-      : platformTypeFromSurface(selectedApp?.name || '', surfaceBaseUrl);
+    // Accept whatever platform the connected app declares; only infer when none was given.
+    const platformType: string = explicitPlatform
+      || platformTypeFromSurface(selectedApp?.name || '', surfaceBaseUrl);
     const navInUrl = moduleFromUrl(surfaceBaseUrl);
     const selectedModule = explicitModuleId
       ? { id: explicitModuleId, name: String(req.body.moduleName || explicitModuleId).trim() }
@@ -5402,7 +5519,7 @@ Rules:
             const lines = optionApps.slice(0, 8).map((a) => `- ${a.name}${a.tabs.length ? ` — tabs: ${a.tabs.join(', ')}` : ''}`);
             const more = picked.candidates.length > 8 ? `\n(and ${picked.candidates.length - 8} more apps)` : '';
             return res.json({
-              chat_response: `Which app should I test in ${selectedApp?.name || 'this runtime'}?\n\n${lines.join('\n')}${more}\n\nReply with the app name and optionally a tab (e.g. "CRM Accounts list view"), or say "all apps" to sweep every app.`,
+              chat_response: `Which app should I test in ${selectedApp?.name || 'this runtime'}?\n\n${lines.join('\n')}${more}\n\nReply with the app name and optionally a tab, or say "all apps" to sweep every app.`,
               app_options: {
                 surface: selectedApp?.name || 'this runtime',
                 platform: 'RUNTIME',
@@ -5433,7 +5550,7 @@ Rules:
         baseUrl: surfaceBaseUrl,
         runtimeSurface: runtimeSurface || null,
         application,
-        module: selectedModule || { id: 'objects', name: 'Objects' },
+        module: selectedModule || null,
       });
     }
     // Downstream stages consume run.app_url / target_core_app_id / target_app_label unchanged — those
@@ -5475,7 +5592,7 @@ Rules:
       const existing = [...new Set(availableFolders.map((f: any) => getFolderPath(f.id, availableFolders)).filter(Boolean))].slice(0, 25);
       const listing = existing.length ? `\n\nExisting folders: ${existing.join(' - ')}` : '';
       return res.json({
-        chat_response: `Before I start, which folder should I save this under? Pick an existing folder or name a new one  -  I won't begin a run without a folder, so every test plan, suite, case, run, requirement, report and defect stays together and easy to find.${listing}\n\nTip: say it in the prompt, e.g. "test the list view, save under Regression".`,
+        chat_response: `Before I start, which folder should I save this under? Pick an existing folder or name a new one  -  I won't begin a run without a folder, so every test plan, suite, case, run, requirement, report and defect stays together and easy to find.${listing}\n\nTip: name the folder in the prompt, e.g. "…, save under Regression".`,
       });
     }
 
@@ -5636,7 +5753,9 @@ Rules:
 
     // AGENT_GRAPH_V2: route this run through the LangGraph workflow runtime instead of the legacy
     // procedural pipeline. Same run record/SSE/status contracts; the runtime projects graph state
-    // back onto this run. Flag off (default) = the legacy path below runs byte-for-byte unchanged.
+    // back onto this run. AGENT_GRAPH_V2 defaults ON (isWorkflowGraphEnabled() is true unless the flag is
+    // explicitly '0'/'false'), so THIS graph path is the live default; the legacy path below runs only
+    // when the flag is explicitly disabled.
     if (isWorkflowGraphEnabled()) {
       // Non-secret graph-start params, so the coverage decision can launch the graph later (creds re-resolved then).
       (newRun as any).graph_start = {
@@ -5715,12 +5834,9 @@ Rules:
       // case/coder prompts already include.
       if (targetAppLabel) {
         const objectsLine = targetAppObjects.length
-          ? ` Its user-facing list views are for these objects (from the app's tabs): ${targetAppObjects.join(', ')}.`
+          ? ` Its main sections/objects are: ${targetAppObjects.join(', ')}.`
           : '';
-        // Reflection window: metadata and runtime share a store behind a short (~60s) metadata cache,
-        // so a change made in metadata can take a moment to appear in runtime.
-        const reflectionLine = ' If a case changes metadata and then checks it in runtime, allow up to ~60 seconds for the change to appear (wait and re-check) rather than asserting it instantly.';
-        newRun.application_context_prompt = `TARGET APP: Every test case must cover ONLY the "${targetAppLabel}" app within this surface  -  not other apps.${objectsLine} Some objects may be inherited from a parent app; that is expected (the app shows its whole scope).${reflectionLine}\n${String(newRun.application_context_prompt || '')}`;
+        newRun.application_context_prompt = `TARGET APP: Every test case must cover ONLY the "${targetAppLabel}" app within this surface  -  not other apps.${objectsLine}\n${String(newRun.application_context_prompt || '')}`;
       }
       const appContextPrompt = String(newRun.application_context_prompt || '');
       const appContextKey = String(newRun.application_context_cache_key || applicationContextCacheKey(newRun.application_context));
@@ -5943,7 +6059,7 @@ Rules:
         pushPhase(newRun, { agent: 'FeatureWriter', status: 'skipped', output: 'Requirement context already available  -  feature discovery skipped.' });
       }
 
-      pushPhase(newRun, { agent: 'RequirementWriter', status: 'skipped', output: 'Requirements are created only when the user starts the explicit Requirements flow.' });
+      pushPhase(newRun, { agent: 'RequirementWriter', status: 'skipped', output: 'A requirement is recorded from this run\'s verified coverage on completion (see the Requirements section).' });
 
       // Auto-grow the app knowledge
       try {

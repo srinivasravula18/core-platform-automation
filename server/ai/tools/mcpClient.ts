@@ -22,12 +22,39 @@ import { existsSync } from 'fs';
 import type { AgentTool } from './types';
 import type { ToolSpec } from '../providers/types';
 import { chromiumExecutablePath, CHROMIUM_LAUNCH_ARGS } from '../../shared/browser';
+import { mcpConnectTimeoutMs } from './mcpAvailability';
 
 type McpToolDescriptor = {
   name?: string;
   description?: string;
   inputSchema?: Record<string, unknown>;
 };
+
+/**
+ * Strip JSON-Schema document-meta keys ($schema, $id) that an MCP server may include in a tool's
+ * inputSchema. These are never valid tool-PARAMETER definitions and strict provider tool-calling
+ * (OpenAI) rejects the whole tool when they leak through (RC-4 schema leak). Recurses into
+ * properties/items so nested object schemas are cleaned too. Purely removes meta keys — never alters
+ * the semantic schema (property names, types, required stay untouched).
+ */
+export function sanitizeMcpToolSchema(schema: unknown): Record<string, unknown> {
+  if (!schema || typeof schema !== 'object') return { type: 'object', properties: {} };
+  const clean = (node: unknown): unknown => {
+    if (Array.isArray(node)) return node.map(clean);
+    if (node && typeof node === 'object') {
+      const out: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(node as Record<string, unknown>)) {
+        if (k === '$schema' || k === '$id') continue;
+        out[k] = clean(v);
+      }
+      return out;
+    }
+    return node;
+  };
+  const cleaned = clean(schema) as Record<string, unknown>;
+  if (!cleaned.type) cleaned.type = 'object';
+  return cleaned;
+}
 
 type McpListToolsResult = {
   tools?: McpToolDescriptor[];
@@ -137,7 +164,7 @@ export async function startMcpSession(opts: {
 
   const client = new ClientCtor({ name: 'core-platform-inspector', version: '1.0.0' }, { capabilities: {} });
 
-  const timeoutMs = opts.timeoutMs ?? 30_000;
+  const timeoutMs = opts.timeoutMs ?? mcpConnectTimeoutMs();
   await withTimeout(client.connect(transport), timeoutMs, 'MCP connect timed out');
 
   const listed = await withTimeout(client.listTools(), timeoutMs, 'MCP listTools timed out');
@@ -148,9 +175,8 @@ export async function startMcpSession(opts: {
       const spec: ToolSpec = {
         name: String(t.name),
         description: String(t.description || `Playwright MCP tool ${t.name}`),
-        parameters: (t.inputSchema && typeof t.inputSchema === 'object')
-          ? t.inputSchema
-          : { type: 'object', properties: {} },
+        // RC-4: sanitize the MCP-provided schema so leaked $schema/$id meta keys never reach strict provider tool-calling.
+        parameters: sanitizeMcpToolSchema(t.inputSchema),
       };
       return {
         spec,

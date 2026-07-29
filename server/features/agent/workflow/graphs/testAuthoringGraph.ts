@@ -15,6 +15,7 @@ import { runCompilationNode } from '../nodes/compilation';
 import type { MissionContext } from '../../mission/missionContext';
 import type { TestPlan } from '../../compiler/testPlan';
 import { readArtifacts, stashArtifacts } from '../artifactStash';
+import { renderMetadataForPrompt } from '../../../../ai/tools/corePlatformData';
 import { WorkflowRuntimeError, WORKFLOW_ERROR_CLASSES, type WorkflowError } from '../errors';
 import {
   WorkflowStateAnnotation,
@@ -75,7 +76,7 @@ export function buildTestAuthoringGraph(deps: TestAuthoringGraphDeps = {}, opts:
   const authorPlan = deps.authorPlan ?? authorAbstractPlan;
 
   const authorCasesWrapper = async (state: WorkflowState): Promise<WorkflowStateUpdate> => {
-    const { evidenceGraph } = readArtifacts(state.runId);
+    const { evidenceGraph, metadataMap } = readArtifacts(state.runId);
     if (!evidenceGraph) {
       // Stash gone (fresh process / resumed thread) — never author against zero evidence; end via the router.
       const err = new WorkflowRuntimeError(
@@ -91,6 +92,8 @@ export function buildTestAuthoringGraph(deps: TestAuthoringGraphDeps = {}, opts:
       goal: state.request?.goal ?? '',
       requestedCaseCount: state.request?.requestedCaseCount ?? 0,
       evidenceGraph,
+      // RC-0: authoritative backend required/readonly field truth stashed at load_context (empty when none resolved).
+      metadataHint: renderMetadataForPrompt(metadataMap),
     });
     // Bounded WorkflowCase projection — full case bodies (steps text) never enter checkpointed state.
     const cases: WorkflowCase[] = result.cases.map((c, i) => ({

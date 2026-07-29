@@ -22,6 +22,7 @@ import { buildDefectDrafts, type DefectReport, type PriorRunSummary, type StepLo
 import { buildAnalystReport, isAnalystEnabled, type AnalystReport } from './analyst';
 import { startEvent, terminalEvent, type WorkflowEvent } from './events';
 import { projectRunLifecycleSafe } from '../../../../services/runtime/src/application/sessionProjector';
+import { recordRunStageTransition } from '../../../agent-core/bus/runInstrumentation';
 import { buildTestRunGraph, getAuthoredCases, setAuthoredCases, type TestRunGraphDeps } from './testRunGraph';
 import {
   createInitialWorkflowState,
@@ -608,6 +609,7 @@ async function pump(runId: string, entry: RunRegistryEntry, input: unknown): Pro
   const config = { configurable: { thread_id: threadId }, streamMode: 'values' as const, signal: entry.controller.signal };
   await appendEventSafe(startEvent({ runId, threadId, node: 'workflow', attempt: ++entry.eventSeq }));
   let lastState: WorkflowState | null = null;
+  let lastEmittedStage: string | null = null;
   try {
     const stream = await entry.graph.stream(input as any, config);
     for await (const chunk of stream) {
@@ -618,6 +620,12 @@ async function pump(runId: string, entry: RunRegistryEntry, input: unknown): Pro
       if (!state?.runId) continue;
       lastState = state;
       await projectAndPersist(runId, entry, lastState, null);
+      // Phase 1 cutover (shadow): record each stage transition onto the coordination bus + blackboard.
+      // No-op unless AGENT_NATIVE_V1 is on; best-effort; changes no decision. First live A2A consumer.
+      if (state.stage && state.stage !== lastEmittedStage) {
+        await recordRunStageTransition(runId, state.stage, String(state.status ?? ''), lastEmittedStage);
+        lastEmittedStage = state.stage;
+      }
       await appendEventSafe(progressEvent(runId, lastState, ++entry.eventSeq));
     }
     if (entry.cancelled) {

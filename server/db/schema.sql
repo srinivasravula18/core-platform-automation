@@ -1210,3 +1210,70 @@ CREATE INDEX IF NOT EXISTS release_case_pins_case_idx ON release_case_pins(case_
 -- Each run result records the exact case revision it executed, so a historical result always resolves
 -- to the frozen case content even after later edits. Nullable/backfill-null = "HEAD at run time".
 ALTER TABLE reports ADD COLUMN IF NOT EXISTS case_revisions JSONB NOT NULL DEFAULT '{}'::jsonb;
+
+-- ===== Agent-native coordination substrate — Phase 1 (gated by AGENT_NATIVE_V1) =====
+-- The typed A2A surface (server/agent-core/bus). Additive + idempotent: when Postgres is configured the
+-- bus/blackboard persist here so a second worker can resume a run (Phase 4); with no DB the substrate
+-- falls back to an in-memory store. No FKs to runs — the substrate must survive independent of run-row
+-- lifecycle and works for runs that never hit the reports table. Append-only; `seq` is per-run order.
+
+-- Blackboard: the per-run shared reasoning surface (facts stamped with provenance), replacing `run: any`.
+CREATE TABLE IF NOT EXISTS agent_blackboard (
+  id           TEXT PRIMARY KEY,
+  run_id       TEXT NOT NULL,
+  seq          BIGINT NOT NULL,               -- monotonic per run (append order)
+  kind         TEXT NOT NULL,                 -- primary channel, e.g. 'evidence.selectors', 'metadata.objects'
+  sub_key      TEXT,                          -- optional sub-scope within a kind
+  value        JSONB NOT NULL DEFAULT 'null'::jsonb,
+  by_agent     TEXT NOT NULL,                 -- provenance: who wrote it
+  causation_id TEXT,                          -- provenance: the message that caused it (agent_messages.id), if any
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS agent_blackboard_run_kind_idx ON agent_blackboard(run_id, kind, seq);
+CREATE UNIQUE INDEX IF NOT EXISTS agent_blackboard_run_seq_idx ON agent_blackboard(run_id, seq);
+
+-- Message bus: typed inter-agent messages (HANDOFF/DELEGATE/CRITIQUE/REQUEST/RESULT/QUESTION/ANSWER).
+CREATE TABLE IF NOT EXISTS agent_messages (
+  id           TEXT PRIMARY KEY,
+  run_id       TEXT NOT NULL,
+  seq          BIGINT NOT NULL,               -- monotonic per run (append order)
+  from_agent   TEXT NOT NULL,
+  to_agent     TEXT,                          -- NULL = broadcast
+  type         TEXT NOT NULL,
+  payload      JSONB NOT NULL DEFAULT 'null'::jsonb,
+  causation_id TEXT,                          -- the message this one answers/continues (cycle detection)
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS agent_messages_run_idx ON agent_messages(run_id, seq);
+CREATE INDEX IF NOT EXISTS agent_messages_inbox_idx ON agent_messages(run_id, to_agent, seq);
+
+-- Semantic memory (Phase 4, gated by AGENT_NATIVE_V1) — the store whose READ PATH gates a decision:
+-- episodic (selector stability, run verdicts), semantic (learned facts about a target), procedural
+-- (proven approaches). Correctly keyed by (scope_key, kind, subject) so recall actually matches the
+-- write — the fix for the historically inverted recall loop. Additive + idempotent; in-memory fallback
+-- when Postgres is absent. Append-only history; the gate ranks by recency + weight.
+CREATE TABLE IF NOT EXISTS agent_memory (
+  id          TEXT PRIMARY KEY,
+  scope_key   TEXT NOT NULL,                 -- project/app/owner namespace the memory belongs to
+  kind        TEXT NOT NULL,                 -- 'episodic' | 'semantic' | 'procedural'
+  subject     TEXT NOT NULL,                 -- what the memory is ABOUT (a selector, a feature, an approach)
+  outcome     TEXT,                          -- episodic verdict: 'pass' | 'fail' | 'flaky' | 'note'
+  weight      DOUBLE PRECISION NOT NULL DEFAULT 1,
+  value       JSONB NOT NULL DEFAULT 'null'::jsonb,
+  run_id      TEXT,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS agent_memory_lookup_idx ON agent_memory(scope_key, kind, subject, created_at DESC);
+
+-- Shared run store (Phase 5, gated by AGENT_NATIVE_V1) — heavy run artifacts (evidence graph, plans,
+-- compiled sources, metadata map) keyed by (run_id, artifact_key), so a SECOND worker process can resume
+-- a run instead of failing when the originating process's in-memory stash is gone. One row per artifact
+-- key per run (upsert). Additive + idempotent; in-memory fallback when Postgres is absent.
+CREATE TABLE IF NOT EXISTS agent_run_artifacts (
+  run_id       TEXT NOT NULL,
+  artifact_key TEXT NOT NULL,                 -- 'evidenceGraph' | 'plansByCase' | 'compiledSources' | 'metadataMap' | …
+  value        JSONB NOT NULL DEFAULT 'null'::jsonb,
+  updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (run_id, artifact_key)
+);
+CREATE INDEX IF NOT EXISTS agent_run_artifacts_run_idx ON agent_run_artifacts(run_id);

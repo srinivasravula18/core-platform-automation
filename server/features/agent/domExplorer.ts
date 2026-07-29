@@ -118,6 +118,17 @@ const authBlockedUntil = new Map<string, number>();
 const DOM_AUTH_TTL_MS = 15 * 60 * 1000;
 const domAuthCache = new Map<string, { at: number; storageState: any; session?: { origin: string; items: Record<string, string> } }>();
 
+// App-agnostic auth-key registry: the app's OWN session storage keys (learned from its repo by the
+// understanding layer), keyed by host. The run populates this; injectToken reads it — no hardcoded keys.
+const authStorageKeysByHost = new Map<string, string[]>();
+function hostOf(url: string): string { try { return new URL(url).host; } catch { return ''; } }
+/** Register the storage keys the connected app uses (from app.understanding.auth.storageKeys). */
+export function setAuthStorageKeys(url: string, keys: string[]): void {
+  const host = hostOf(url);
+  if (host && Array.isArray(keys) && keys.length) authStorageKeysByHost.set(host, [...new Set(keys)]);
+}
+function getAuthStorageKeys(url: string): string[] { return authStorageKeysByHost.get(hostOf(url)) || []; }
+
 function domAuthKey(targetUrl: string, username?: string): string {
   try { return `${new URL(targetUrl).origin}:${String(username || '').toLowerCase()}`; } catch { return `${targetUrl}:${username || ''}`; }
 }
@@ -177,17 +188,25 @@ async function fetchAuthToken(origin: string, username: string, password: string
   } catch { return null; }
 }
 
-/** Inject an auth token into the page's sessionStorage (platform session keys) and land on the shell. */
+/** Inject an auth token into the page's sessionStorage under the app's OWN learned keys, then land on
+ *  the shell. Keys come from the understanding layer (app's repo), never hardcoded; each key's ROLE is
+ *  read from its own name (family/refresh/username/namespace/token). Empty keys → nothing set, so the
+ *  caller's session check fails and it falls back to the app's real form login. */
 async function injectToken(page: any, uiBaseUrl: string, tok: CachedToken, username: string): Promise<void> {
+  const keys = getAuthStorageKeys(uiBaseUrl);
   await page.goto(new URL('/', uiBaseUrl).toString(), { waitUntil: 'domcontentloaded', timeout: 15000 });
-  await page.evaluate((t: { access: string; refresh?: string; family?: string; user: string }) => {
-    const set = (k: string, v?: string) => { if (v) sessionStorage.setItem(k, v); };
-    sessionStorage.setItem('shockwave.auth_namespace_v1', '1');
-    set('shockwave.auth_token', t.access); set('core_platform.auth_token', t.access);
-    set('shockwave.current_username', t.user); set('core_platform.current_username', t.user);
-    set('shockwave.refresh_token', t.refresh); set('core_platform.refresh_token', t.refresh);
-    set('shockwave.refresh_family_id', t.family); set('core_platform.refresh_family_id', t.family);
-  }, { access: tok.access, refresh: tok.refresh, family: tok.family, user: username });
+  if (!keys.length) return;
+  await page.evaluate((t: { keys: string[]; access: string; refresh?: string; family?: string; user: string }) => {
+    const put = (k: string, v?: string) => { if (v != null && v !== '') sessionStorage.setItem(k, v); };
+    for (const key of t.keys) {
+      const k = key.toLowerCase();
+      if (/namespace/.test(k)) sessionStorage.setItem(key, '1');
+      else if (/family/.test(k)) put(key, t.family);
+      else if (/refresh/.test(k)) put(key, t.refresh);
+      else if (/user|name/.test(k)) put(key, t.user);
+      else put(key, t.access); // auth_token / access_token / token → the access token
+    }
+  }, { keys, access: tok.access, refresh: tok.refresh, family: tok.family, user: username });
 }
 
 /**

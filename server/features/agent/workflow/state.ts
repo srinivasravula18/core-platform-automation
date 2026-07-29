@@ -57,9 +57,9 @@ export interface WorkflowRequest {
 
 /** Frozen mission reference — the execution-scope authority resolved by `resolve_mission`. */
 export interface MissionRef {
-  platformType: 'ADMIN' | 'RUNTIME';
+  platformType: string;
   platform: string;
-  runtimeSurface: 'shockwave' | 'keystone' | null;
+  runtimeSurface: string | null;
   applicationId: string | null;
   moduleId: string | null;
   tabId: string | null;
@@ -380,9 +380,9 @@ const workflowRequestSchema = z.object({
 });
 
 const missionRefSchema = z.object({
-  platformType: z.enum(['ADMIN', 'RUNTIME']),
+  platformType: z.string(),
   platform: z.string(),
-  runtimeSurface: z.enum(['shockwave', 'keystone']).nullable(),
+  runtimeSurface: z.string().nullable(),
   applicationId: z.string().nullable(),
   moduleId: z.string().nullable(),
   tabId: z.string().nullable(),

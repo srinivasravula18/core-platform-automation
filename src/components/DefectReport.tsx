@@ -1,4 +1,5 @@
 import { cn } from '@/src/lib/utils';
+import FailureCard from './FailureCard';
 
 /**
  * Rich professional defect report renderer (bug-investigation framework).
@@ -41,6 +42,8 @@ export default function DefectReport({ defect }: { defect: any }) {
   const testData: Array<{ field: string; value: string }> = Array.isArray(m.testDataUsed) ? m.testDataUsed : [];
   const consoleErrors: Array<{ type?: string; text?: string }> = Array.isArray(m.consoleErrors) ? m.consoleErrors : [];
   const recovery: any[] = Array.isArray(m.recoveryAttempts) ? m.recoveryAttempts : [];
+  // Plain-English before→after for clients/managers: humanize the raw failure via the shared analyzer instead of dumping it.
+  const humanizeSource: string = String(m.rawError || defect?.actual || '').trim();
 
   return (
     <div className="p-4 bg-[var(--bg-primary)] border-t border-[var(--border)]">
@@ -82,7 +85,11 @@ export default function DefectReport({ defect }: { defect: any }) {
         <div>
           {defect.description && <Section title="Description"><Pre text={defect.description} /></Section>}
           {defect.stepsToReproduce && <Section title="Steps to Reproduce"><Pre text={defect.stepsToReproduce} /></Section>}
-          {(defect.expected || defect.actual) && (
+          {humanizeSource ? (
+            <Section title="What went wrong">
+              <FailureCard error={humanizeSource} />
+            </Section>
+          ) : (defect.expected || defect.actual) && (
             <Section title="Expected vs Actual">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
                 <div>

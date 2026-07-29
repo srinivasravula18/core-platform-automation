@@ -21,9 +21,11 @@ function main() {
   eq(perm.factors[0].name, 'kind:Permissions', 'factor is explainable');
 
   console.log('change-impact from versioned Object Repository');
-  // A control on "account" that evolved across runs (version 2) raises the risk of account scenarios.
-  upsertControl({ platform: 'Admin', object: 'account', control: 'NewButton', selector: '#a', selectorType: 'css' }, '2026-07-10T00:00:00Z');
-  upsertControl({ platform: 'Admin', object: 'account', control: 'NewButton', selector: '#b-changed', selectorType: 'css' }, '2026-07-11T00:00:00Z');
+  // A control under the "account" MODULE that evolved across runs (version 2) raises the risk of account
+  // scenarios. targetObject is threaded from mission.module id, so the repository is keyed by MODULE here
+  // (matching the real write path in discoveryAdapter, which stores module: mc.module?.id).
+  upsertControl({ platform: 'Admin', module: 'account', object: 'account', control: 'NewButton', selector: '#a', selectorType: 'css' }, '2026-07-10T00:00:00Z');
+  upsertControl({ platform: 'Admin', module: 'account', object: 'account', control: 'NewButton', selector: '#b-changed', selectorType: 'css' }, '2026-07-11T00:00:00Z');
   const withChange = scoreCoverageItem({ kind: 'CRUD', title: 'c', targetObject: 'account' }, { platform: 'Admin' });
   const noChange = scoreCoverageItem({ kind: 'CRUD', title: 'c', targetObject: 'contact' }, { platform: 'Admin' });
   ok(withChange.score > noChange.score, 'evolved control raises risk');

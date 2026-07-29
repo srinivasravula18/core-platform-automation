@@ -13,8 +13,11 @@
  * (Phase 2: this is now the ONLY place platform/application/module/targetUrl are determined.)
  */
 
-export type PlatformType = 'ADMIN' | 'RUNTIME';
-export type RuntimeSurface = 'shockwave' | 'keystone';
+// App-agnostic: open type. 'ADMIN'/'RUNTIME' remain the values the Core-Platform surface producer emits,
+// but any connected app's platform identity is accepted; consumers branch on values, not the closed type.
+export type PlatformType = string;
+// App-agnostic: a runtime surface is identified by the connected app's own name, not a closed union.
+export type RuntimeSurface = string;
 
 export interface AppRef { id: string; name: string }
 export interface ModuleRef { id: string; name: string }
@@ -175,19 +178,17 @@ export function finalizeMissionFromInspectedSurface(mc: MissionContext, inspecte
   return mc;
 }
 
-/** Infer platform type from a surface name/url (Shockwave & Keystone are RUNTIME). */
-export function platformTypeFromSurface(name: string, url: string): PlatformType {
-  const hay = `${name || ''} ${url || ''}`.toLowerCase();
-  if (/keystone|shockwave|runtime|\/app\b|\/r\//.test(hay)) return 'RUNTIME';
-  return 'ADMIN';
+// App-agnostic surface classification. No product names: a surface is a tenant-app target (RUNTIME)
+// only when its URL already carries an app scope (an appId param); otherwise it's the platform root
+// (ADMIN). The rich understanding layer (app.understanding) overrides this generic floor when learned.
+export function platformTypeFromSurface(_name: string, url: string): PlatformType {
+  try { return new URL(String(url || '')).searchParams.has('appId') ? 'RUNTIME' : 'ADMIN'; }
+  catch { return 'ADMIN'; }
 }
 
-/** Infer which runtime deployment a surface is (null if not clearly runtime). */
-export function runtimeSurfaceFromSurface(name: string, url: string): RuntimeSurface | null {
-  const hay = `${name || ''} ${url || ''}`.toLowerCase();
-  if (/keystone/.test(hay)) return 'keystone';
-  if (/shockwave/.test(hay)) return 'shockwave';
-  return null;
+/** A runtime surface is identified by its own host (generic), never a hardcoded product name. */
+export function runtimeSurfaceFromSurface(_name: string, url: string): RuntimeSurface | null {
+  try { return new URL(String(url || '')).host || null; } catch { return null; }
 }
 
 /** Parse the current nav/module key out of a target URL. */
@@ -319,7 +320,7 @@ MISSION CONTEXT (AUTHORITATIVE — navigate ONLY per this; NEVER infer applicati
 ${appLine}
 - Module: ${mc.module?.name || '(none)'}${mc.tab ? `\n- Tab: ${mc.tab.name}` : ''}
 - Target URL (the ONLY URL to navigate to — use verbatim for the first goto and every re-navigation): ${mc.targetUrl}
-Rules: the appId in the Target URL is FIXED by the mission — never change it, never derive an app/module from prompt text. Re-navigate by rewriting only the "nav" param on this exact URL. Use ONLY verified Selector Registry entries for locators; never concatenate a label with an API name or prefix (never produce values like "App1app1" or "Revenue Hubrev"); preserve each selector's role/selector/text EXACTLY as the registry gives it.
+Rules: navigate to the Target URL EXACTLY as given — never fabricate a different URL, path, or query param, and never derive an app/module from prompt text. Use ONLY verified Selector Registry entries for locators; never concatenate a label with an internal api-name or prefix; preserve each selector's role/selector/text EXACTLY as the registry gives it.
 `;
 }
 

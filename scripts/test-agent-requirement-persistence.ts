@@ -33,9 +33,11 @@ assert.deepEqual(structured.businessRules, [
 
 const agentRoutes = readFileSync(new URL('../server/features/agent/routes.ts', import.meta.url), 'utf8');
 const requirementService = readFileSync(new URL('../server/features/requirements/requirementService.ts', import.meta.url), 'utf8');
-assert.ok(!agentRoutes.includes('persistAgentRequirementArtifacts'));
-assert.ok(!agentRoutes.includes('RequirementLinks.upsert'));
-assert.ok(agentRoutes.includes('Requirements are created only when the user starts the explicit Requirements flow.'));
+// A completed deep run now records a Requirement from its verified coverage, so the Requirements section
+// reflects what the agent actually tested (populated alongside cases/suites/plans/runs).
+assert.ok(agentRoutes.includes('async function persistAgentRequirementArtifact'));
+assert.ok(agentRoutes.includes('await persistAgentRequirementArtifact(run)'));
+assert.ok(agentRoutes.includes('Requirements.upsert'));
 assert.ok(requirementService.includes('export async function confirmRequirementDraft'));
 assert.ok(requirementService.includes('const requirement = await Requirements.upsert'));
 

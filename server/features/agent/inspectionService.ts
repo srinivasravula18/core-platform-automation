@@ -341,17 +341,23 @@ export async function inspectApplicationFlow(options: {
 }) {
   const settings = (await import('../../shared/storage')).db.settings;
 
-  // Option B (flagged): drive inspection through the REAL @playwright/mcp server (headless).
-  // The model calls the Playwright MCP browser tools directly. Same result shape; any failure
-  // falls back to the tool-loop / classic path below. Try MCP first when enabled.
-  const mcpEnabled = String(process.env.INSPECTOR_MCP || '').toLowerCase() === 'true'
-    || (settings as any)?.inspectorMcp === true;
-  if (mcpEnabled) {
+  // Option B: drive inspection through the REAL @playwright/mcp server (headless). The model calls the
+  // Playwright MCP browser tools directly. Same result shape; any failure falls back to the classic path.
+  // RC-4: default-ON now that it is SAFE to be — the availability cache (mcpAvailability) skips the attempt
+  // instantly after one failed probe (bounded by a short connect timeout), so a deployment without a
+  // working MCP server pays the probe once per TTL, not 30s per inspection. Explicit opt-out still wins.
+  const { mcpProbeShouldSkip, markMcpAvailable, markMcpUnavailable } = await import('../../ai/tools/mcpAvailability');
+  const mcpFlag = String(process.env.INSPECTOR_MCP || '').toLowerCase();
+  const mcpDisabled = mcpFlag === 'false' || mcpFlag === '0' || mcpFlag === 'off' || (settings as any)?.inspectorMcp === false;
+  if (!mcpDisabled && !mcpProbeShouldSkip()) {
     try {
       const { inspectApplicationFlowViaMcp } = await import('./mcpInspector');
-      return await inspectApplicationFlowViaMcp(options);
+      const result = await inspectApplicationFlowViaMcp(options);
+      markMcpAvailable();
+      return result;
     } catch (err: any) {
-      console.warn('[inspector] MCP path failed, falling back:', err?.message || err);
+      markMcpUnavailable();
+      console.warn('[inspector] MCP path failed, falling back to classic (MCP marked unavailable for the TTL):', err?.message || err);
     }
   }
 

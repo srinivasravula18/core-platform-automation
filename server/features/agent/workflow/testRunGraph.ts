@@ -33,6 +33,8 @@ import { diffRunSteps, isVisualRegressionEnabled } from '../validation/visualBas
 import { executePlaywrightScripts } from '../../playwright/executionService';
 import { routeAfterDiscoverAndGround, type ResolvedCredential } from './graphs/discoveryGraph';
 import { stashArtifacts, readArtifacts } from './artifactStash';
+import { renderMetadataForPrompt } from '../../../ai/tools/corePlatformData';
+import { extractGoalTerms } from './goalTerms';
 import { specFilenameFromTitle } from './specFilename';
 import { WorkflowRuntimeError, WORKFLOW_ERROR_CLASSES, backoffDelayMs, type WorkflowError } from './errors';
 import {
@@ -262,6 +264,9 @@ export function buildTestRunGraph(deps: TestRunGraphDeps = {}, opts: BuildTestRu
     // Resolved just-in-time, used immediately, never returned — checkpoints stay secret-free.
     const credential = await resolveCredential(state.credentialRef ?? null);
     const result = await contextNode({ mission: state.mission, credential });
+    // RC-0: persist the FULL metadata map (state keeps only the summary) so authoring/grounding can use it and a
+    // resumed worker re-hydrates it — the graph engine previously dropped it, leaving authoring un-grounded.
+    if (result.metadataMap) stashArtifacts(state.runId, { metadataMap: result.metadataMap });
     // API-acceptance test data: fetch the mission object's backend schema once, stash for the compiler (best-effort).
     // Real path only — an injected context seam (tests) skips the live schema fetch, same as the auth prep.
     if (!deps.contextNode && state.mission?.applicationId && credential) {
@@ -324,6 +329,8 @@ export function buildTestRunGraph(deps: TestRunGraphDeps = {}, opts: BuildTestRu
       elements: discovery.elements,
       metadataDigest: state.context?.metadata?.digest ?? null,
       rediscoveryAttempts: attempts,
+      // RC-2: the goal's intent terms — the gate checks the captured evidence covers them (permissive/advisory).
+      goalTerms: extractGoalTerms(state.request?.goal),
       // Zero elements WITH a classified error = discovery never read the page (its throw path always returns
       // empty) — the gate then blocks with this root cause instead of looping on an unreachable target.
       discoveryFailure: discovery.elements.length === 0 ? (discovery.errors[0] ?? null) : null,
@@ -362,7 +369,7 @@ export function buildTestRunGraph(deps: TestRunGraphDeps = {}, opts: BuildTestRu
       return { cases, stage: 'author_cases', updatedAt: nowIso(), errors: [], usage: [] };
     }
 
-    const { evidenceGraph } = readArtifacts(state.runId);
+    const { evidenceGraph, metadataMap } = readArtifacts(state.runId);
     const result = await authorCases({
       mission: state.mission,
       goal: state.request.goal,
@@ -370,6 +377,8 @@ export function buildTestRunGraph(deps: TestRunGraphDeps = {}, opts: BuildTestRu
       understanding: state.request.understanding,
       requestedCaseCount: state.request.requestedCaseCount,
       evidenceGraph: evidenceGraph ?? null,
+      // RC-0: authoritative backend required/readonly field truth (empty string when no app/metadata resolved).
+      metadataHint: renderMetadataForPrompt(metadataMap),
       overrides: deps.modelOverrides,
       hasStoredCredentials: await hasStoredCredentials(state),
       // Coverage "gaps": don't re-author cases the user already has.

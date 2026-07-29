@@ -56,44 +56,13 @@ function list(): AppKnowledgePack[] {
 // (git agent) and inspecting the live app — not from a baked-in pack. Knowledge here
 // is purely what the user authors in Settings → App Knowledge, plus observations
 // auto-captured from real runs (recordObservation). There are no default packs.
-const CORE_PLATFORM_KNOWLEDGE_ID = 'KN-core-platform-doc';
-const CORE_PLATFORM_KNOWLEDGE_PATH = path.resolve(process.cwd(), 'docs', 'app-knowledge-core-platform.md');
-
 /**
- * Seed default packs on first run. Intentionally a no-op now (DEFAULT_PACKS is empty):
- * nothing about any specific application is hardcoded. Kept for call-site compatibility
- * and so future GENERIC (app-agnostic) seeds could be added without touching server.ts.
+ * No-op by design: NOTHING about any specific application is hardcoded or seeded here. App knowledge is
+ * captured per connected app at runtime (recordObservation) and via user-managed packs \u2014 never from a
+ * built-in doc or a hardcoded host/name match. Kept for call-site compatibility.
  */
 export function seedDefaultKnowledgeIfEmpty(): void {
-  const packs = list();
-  if (!existsSync(CORE_PLATFORM_KNOWLEDGE_PATH)) return;
-  const content = readFileSync(CORE_PLATFORM_KNOWLEDGE_PATH, 'utf-8').replace(/^\uFEFF/, '');
-  const websites: Array<{ id: string; name: string; baseUrl: string }> = db.websites || [];
-  const matchHosts = ['localhost:5001', 'localhost:5002', 'localhost:5003', 'ops.acchindra.com'];
-  const matchNames = ['core platform', 'admin', 'keystone', 'shockwave', 'list view'];
-  const websiteIds = websites
-    .filter((w) => {
-      const h = host(w.baseUrl);
-      const n = (w.name || '').toLowerCase();
-      return matchHosts.some((mh) => h === mh || h.endsWith(mh)) || matchNames.some((mn) => n.includes(mn));
-    })
-    .map((w) => w.id);
-  const existing = packs.find((p) => p.id === CORE_PLATFORM_KNOWLEDGE_ID);
-  const next = {
-    name: 'Core Platform App Knowledge',
-    matchHosts,
-    matchNames,
-    websiteIds: Array.from(new Set([...(existing?.websiteIds || []), ...websiteIds])),
-    content,
-    ownerId: '',
-    updatedAt: new Date().toISOString(),
-  };
-  if (existing) {
-    Object.assign(existing, next);
-  } else {
-    packs.push({ id: CORE_PLATFORM_KNOWLEDGE_ID, ...next });
-  }
-  persistDataInBackground('seed core platform app knowledge');
+  /* intentionally empty */
 }
 
 export function listKnowledge(ownerId?: string): AppKnowledgePack[] {

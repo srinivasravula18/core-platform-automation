@@ -43,6 +43,9 @@ export interface AuthorTestCasesInput {
   requestedCaseCount: number;
   /** Grounding vocabulary — rendered via renderTargetCatalogForPrompt, never dumped raw. */
   evidenceGraph: EvidenceGraph | null;
+  /** Backend object/field metadata block (renderMetadataForPrompt) — authoritative required/readonly truth (RC-0).
+   * The catalog stays the locator authority; this only sharpens which fields are required/read-only. */
+  metadataHint?: string;
   /** Settings identity for provider/model/effort routing; defaults to the legacy case-authoring agent. */
   agent?: string;
   system?: string;
@@ -354,10 +357,14 @@ function buildCasesPrompt(input: AuthorTestCasesInput, catalog: string): string 
   const understandingBlock = understanding
     ? `\nVERIFIED FEATURE ANALYSIS (code-grounded — author cases that COVER these real behaviors, rules, derivations, validations, and edges; each step must still target a control from the catalog below):\n${understanding.slice(0, 6000)}\n`
     : '';
+  // RC-0: backend object/field metadata — authoritative required/readonly truth, distinct from the DOM catalog.
+  const metadataBlock = String(input.metadataHint || '').trim()
+    ? `\n${String(input.metadataHint).trim().slice(0, 4000)}\n`
+    : '';
   return `Author test cases for this goal.
 GOAL: ${input.goal}
 ${countLine}
-${renderMissionRefForPrompt(input.mission)}${authNote(input.hasStoredCredentials)}${understandingBlock}${avoid}
+${renderMissionRefForPrompt(input.mission)}${authNote(input.hasStoredCredentials)}${understandingBlock}${metadataBlock}${avoid}
 ${catalog}
 CASE RULES:
 - Each case: short plain-English title naming ONE behavior; one-sentence description; a concrete, NON-EMPTY precondition.

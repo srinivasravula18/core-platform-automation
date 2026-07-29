@@ -59,8 +59,8 @@ function targetAliases(app: RouteTarget): string[] {
   const url = cleanText(app?.url || '');
   const aliases = new Set<string>();
   if (name) aliases.add(name);
-  if (/\badmin\b/.test(name) && (/\blocal\b/.test(name) || /\blocalhost\b|127\.0\.0\.1/.test(url))) aliases.add('local admin');
-  if (/\bkeystone\b/.test(name) && (/\blocal\b/.test(name) || /\blocalhost\b|127\.0\.0\.1/.test(url))) aliases.add('local keystone');
+  // Generic: a locally-hosted app also answers to "local <its own name>" — no product names hardcoded.
+  if (name && (/\blocal\b/.test(name) || /\blocalhost\b|127\.0\.0\.1/.test(url))) aliases.add(`local ${name}`);
   return [...aliases].sort((a, b) => b.length - a.length);
 }
 

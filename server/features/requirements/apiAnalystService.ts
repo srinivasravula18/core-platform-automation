@@ -10,6 +10,7 @@ import { z } from 'zod';
 import { getOrchestrator } from '../../ai/orchestrator';
 import { gitGrep, readRepoFile, resolveTargetRepo } from '../git-agent/gitAgentService';
 import { resolveCredentials, getWebsite } from '../credentials/credentialsService';
+import { resolveAppApiContract, fillApiPath } from '../../ai/tools/apiContract';
 
 /* ─── Schema ─────────────────────────────────────────────────────────────── */
 
@@ -181,11 +182,11 @@ function resolveAppConnection(opts: { websiteId?: string; ownerId?: string }): {
       }
     }
   }
-  // env vars — valid for single-tenant dev/staging deployments
+  // env vars — single-tenant dev/staging. No hardcoded host/creds: absent env → empty, caller skips gracefully.
   return {
-    baseUrl: (process.env.TARGET_BASE_URL || 'http://localhost:5001').replace(/\/$/, ''),
-    username: process.env.TARGET_USERNAME || 'admin',
-    password: process.env.TARGET_PASSWORD || 'admin',
+    baseUrl: (process.env.TARGET_BASE_URL || '').replace(/\/$/, ''),
+    username: process.env.TARGET_USERNAME || '',
+    password: process.env.TARGET_PASSWORD || '',
   };
 }
 
@@ -202,10 +203,22 @@ async function fetchLiveContext(query: string, keywords: string[], conn: { baseU
   const token: string = loginData.token || loginData.accessToken || loginData.access_token || '';
   const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
 
-  // 2. Get all objects — GET /api/apps/__all_apps__/objects → { items: [...] }
-  const objRes = await fetch(`${CP_BASE_URL}/api/apps/__all_apps__/objects`, { headers });
-  const objData = await objRes.json() as any;
-  const allObjects: any[] = Array.isArray(objData?.items) ? objData.items : (Array.isArray(objData) ? objData : []);
+  // Resolve the app's endpoint contract from its OWN OpenAPI — no hardcoded paths/scopes.
+  const contract = await resolveAppApiContract(CP_BASE_URL, token);
+  const asItems = (d: any): any[] => Array.isArray(d?.items) ? d.items : (Array.isArray(d) ? d : []);
+
+  // 2. Get all objects — iterate the app's apps (replaces the __all_apps__ cross-app scope).
+  const allObjects: any[] = [];
+  if (contract.listApps && contract.listObjects) {
+    const appsRes = await fetch(`${CP_BASE_URL}${contract.listApps}`, { headers });
+    for (const app of asItems(await appsRes.json())) {
+      if (!app?.id) continue;
+      try {
+        const r = await fetch(`${CP_BASE_URL}${fillApiPath(contract.listObjects, { appId: String(app.id) })}`, { headers });
+        for (const o of asItems(await r.json())) allObjects.push({ ...o, app_id: o.app_id || app.id });
+      } catch { /* skip this app */ }
+    }
+  }
 
   // 3. Filter to relevant objects (keyword match on label/api_name/table_name)
   const relevant = allObjects.filter((o: any) =>
@@ -221,23 +234,26 @@ async function fetchLiveContext(query: string, keywords: string[], conn: { baseU
   const sections: string[] = [];
 
   for (const obj of relevant) {
-    // 4. Get fields — GET /api/apps/:appId/objects/:object/describe → { object:{}, fields:[] }
+    // 4. Get fields via the object's describe endpoint (from the contract).
     let fields: any[] = [];
     try {
-      const descRes = await fetch(`${CP_BASE_URL}/api/apps/${encodeURIComponent(obj.app_id)}/objects/${encodeURIComponent(obj.api_name)}/describe`, { headers });
-      if (descRes.ok) {
-        const descData = await descRes.json() as any;
-        fields = Array.isArray(descData?.fields) ? descData.fields : [];
+      if (contract.describeObject) {
+        const descRes = await fetch(`${CP_BASE_URL}${fillApiPath(contract.describeObject, { appId: String(obj.app_id), object: String(obj.api_name) })}`, { headers });
+        if (descRes.ok) {
+          const descData = await descRes.json() as any;
+          fields = Array.isArray(descData?.fields) ? descData.fields : [];
+        }
       }
     } catch { /* fields optional */ }
 
-    // 5. Get sample records — GET /api/apps/__all_apps__/objects/:object/records?page_size=2 → { items:[] }
+    // 5. Sample records via the object's list-view query (from the contract).
     let sampleRecords: any[] = [];
     try {
-      const recRes = await fetch(`${CP_BASE_URL}/api/apps/__all_apps__/objects/${encodeURIComponent(obj.api_name)}/records?page_size=2`, { headers });
-      if (recRes.ok) {
-        const recData = await recRes.json() as any;
-        sampleRecords = Array.isArray(recData?.items) ? recData.items : (Array.isArray(recData) ? recData : []);
+      if (contract.queryListView) {
+        const recRes = await fetch(`${CP_BASE_URL}${fillApiPath(contract.queryListView, { appId: String(obj.app_id), object: String(obj.api_name) })}`, {
+          method: 'POST', headers, body: JSON.stringify({ pagination: { page: 1, page_size: 2 } }),
+        });
+        if (recRes.ok) sampleRecords = asItems(await recRes.json());
       }
     } catch { /* sample records optional */ }
 

@@ -16,6 +16,7 @@ import type { VerifiedSelector } from '../../pipelineDelta';
 import { mapSelectorEvidenceType } from '../../evidence/provenance';
 import { buildEvidenceGraphFromRun, type EvidenceGraph } from '../../graph/evidenceGraph';
 import { isEvidenceOracleEnabled } from '../../evidenceOracleFlag';
+import { goalTermCoverage } from '../goalTerms';
 import { WorkflowRuntimeError, WORKFLOW_ERROR_CLASSES, type WorkflowError } from '../errors';
 import type { EvidenceGateDecision, TargetCatalogEntry, WorkflowEvidence } from '../state';
 
@@ -32,6 +33,8 @@ export interface RunGroundingNodeInput {
   discoveryFailure?: WorkflowError | null;
   /** Policy-layer discovery attempts actually made this node invocation — for the truthful gate reason. */
   discoveryAttempts?: number;
+  /** Goal intent terms (RC-2 coverage gate) — the vocabulary the captured evidence should cover. Empty = no signal. */
+  goalTerms?: string[];
 }
 
 export interface RunGroundingNodeResult {
@@ -98,18 +101,47 @@ function toVerifiedSelector(el: VerifiedElement): VerifiedSelector {
   };
 }
 
+/** RC-2 coverage of the goal's intent terms by the captured evidence vocabulary — advisory, never a hard block. */
+interface GoalCoverage {
+  goalTerms: string[];
+  covered: string[];
+  missing: string[];
+}
+
 /** The gate never lets zero verified targets flow through as 'continue' — rediscover or stop, never guess. */
 function decideGate(
   targetCount: number,
   capturedCount: number,
   rediscoveryAttempts: number,
+  coverage: GoalCoverage,
   discoveryFailure?: WorkflowError | null,
   discoveryAttempts?: number,
 ): EvidenceGateDecision {
   if (targetCount >= 1) {
+    const hasGoalSignal = coverage.goalTerms.length > 0;
+    // Permissive-first (RC-2): a goal signal with at least one covered term → continue; no signal → continue (can't judge).
+    if (!hasGoalSignal || coverage.covered.length >= 1) {
+      const covNote = hasGoalSignal ? ` (goal terms covered: ${coverage.covered.join(', ') || 'none-yet'})` : '';
+      return {
+        decision: 'continue',
+        reasons: [`${targetCount} verified-live unique executable targets available${covNote}`],
+        missingRequirements: [],
+      };
+    }
+    // targetCount>=1 but ZERO goal terms matched the evidence — likely the wrong surface/module was grounded.
+    // ONE bounded re-inspect, then proceed with a loud warning: NEVER hard-block on lexical mismatch alone
+    // (Phase 3's semantic Grounding Contract owns real coverage blocking). This adds signal without over-blocking.
+    const mismatch = `Captured ${targetCount} verified target(s) but NONE cover the goal terms [${coverage.goalTerms.join(', ')}] — the grounded page may not be the one this goal targets`;
+    if (rediscoveryAttempts < 1) {
+      return {
+        decision: 'targeted_retry',
+        reasons: [`${mismatch}; re-inspecting once to confirm the target surface`],
+        missingRequirements: [`evidence covering goal terms: ${coverage.goalTerms.join(', ')}`],
+      };
+    }
     return {
       decision: 'continue',
-      reasons: [`${targetCount} verified-live unique executable targets available`],
+      reasons: [`${mismatch}; proceeding after a re-inspection — verify the target URL/module (goal-term coverage unconfirmed)`],
       missingRequirements: [],
     };
   }
@@ -158,6 +190,14 @@ export function runGroundingNode(input: RunGroundingNodeInput): RunGroundingNode
     }));
 
     const liveCount = verifiedSelectors.filter((vs) => vs.confidence === 'verified-live').length;
+    // RC-2 coverage: match goal terms against a RICH evidence vocabulary (semantic names + labels + roles + types)
+    // so lexical matching rarely misfires; the gate treats the result permissively (see decideGate).
+    const goalTerms = input.goalTerms ?? [];
+    const vocabulary = [
+      ...targetCatalog.map((t) => t.semanticName),
+      ...verifiedSelectors.flatMap((vs) => [vs.label, vs.role, vs.elementType].filter(Boolean) as string[]),
+    ];
+    const { covered, missing } = goalTermCoverage(goalTerms, vocabulary);
     const evidence: WorkflowEvidence = {
       registryRef: digestOf(verifiedSelectors),
       metadataGraphRef: input.metadataDigest ?? null,
@@ -165,7 +205,7 @@ export function runGroundingNode(input: RunGroundingNodeInput): RunGroundingNode
       // cached/inferred stay 0 until later phases contribute non-live evidence sources.
       countsByProvenance: { live: liveCount, cached: 0, inferred: 0, unverified: verifiedSelectors.length - liveCount },
       targetCatalog,
-      gate: decideGate(targetCatalog.length, input.elements.length, input.rediscoveryAttempts, input.discoveryFailure, input.discoveryAttempts),
+      gate: decideGate(targetCatalog.length, input.elements.length, input.rediscoveryAttempts, { goalTerms, covered, missing }, input.discoveryFailure, input.discoveryAttempts),
     };
 
     return { evidence, evidenceGraph, verifiedSelectors, errors: [] };

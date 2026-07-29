@@ -209,7 +209,7 @@ Feature blueprint contract:
 - Create one focused case per testable subfeature unless the user explicitly asks for fewer cases.
 - If the user explicitly asks for fewer cases than the blueprint/scenario count, choose only the highest-value cases inside that limit and mention omissions in descriptions/tags only if useful. Do not exceed the user count.
 - Create separate E2E cases for e2eFlows. Do not merge E2E journeys into single-feature cases.
-- Title every case for a QA/business reader in the table style: short, plain English, and one behavior per title. Prefer examples like "Actions menu shows core options", "Refresh is disabled while loading", or "New is disabled without permission". Do NOT prefix every title with the app name, feature name, or "verify"; never generate titles like "keystone - List view - verify...". Keep app/module/scope in tags, description, or metadata instead.
+- Title every case for a QA/business reader in the table style: short, plain English, and one behavior per title. Prefer examples like "Actions menu shows core options", "Refresh is disabled while loading", or "New is disabled without permission". Do NOT prefix every title with the app name, feature name, or "verify"; never generate titles like "<app> - <feature> - verify...". Keep app/module/scope in tags, description, or metadata instead.
 - Cover business rules, permissions, validation branches, empty/error states, table/list behavior, import/export/background behavior, and state transitions when the blueprint shows them.
 - Each title must name exactly one testable behavior. Avoid broad/vague titles like "feature works" or "page loads", and avoid internal technical terms that an end user or QA reviewer would not understand.
 

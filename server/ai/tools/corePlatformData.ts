@@ -17,6 +17,7 @@
 import { createHash } from 'crypto';
 import type { AgentTool, ToolContext } from './types';
 import type { ObjectSchema } from '../../features/agent/testdata/types';
+import { resolveAppApiContract, fillApiPath, type AppApiContract } from './apiContract';
 
 function baseUrl(): string {
   return String(process.env.TARGET_BASE_URL || '').replace(/\/+$/, '');
@@ -51,21 +52,20 @@ async function timedFetch(url: string, init: RequestInit = {}, timeoutMs = FETCH
 }
 
 async function probeServiceBase(candidate: string): Promise<boolean> {
-  // The App Service answers /api/apps with JSON (401 for anonymous callers). A browser SPA
-  // server answers ANY path with 200 + index.html (history fallback), so a response only
-  // counts as "the API is here" when the BODY is actually JSON — never HTML.
+  // The API origin is the one that serves an OpenAPI spec as JSON. A browser SPA answers ANY path
+  // with 200 + index.html (history fallback), so a hit only counts when the BODY is real JSON.
+  // App-agnostic: we detect the API by its published contract, never a product-specific endpoint.
   const isJsonResponse = async (res: any): Promise<boolean> => {
     if (String(res.headers.get('content-type') || '').includes('json')) return true;
     try { JSON.parse(await res.text()); return true; } catch { return false; }
   };
-  try {
-    const res = await fetch(`${candidate}/api/apps`, { signal: AbortSignal.timeout(5000), headers: { accept: 'application/json' } });
-    if (res.status !== 404 && await isJsonResponse(res)) return true;
-  } catch { /* try the spec next */ }
-  try {
-    const res = await fetch(`${candidate}/api/openapi.json`, { signal: AbortSignal.timeout(5000), headers: { accept: 'application/json' } });
-    return res.ok && await isJsonResponse(res);
-  } catch { return false; }
+  for (const specPath of ['/api/openapi.json', '/openapi.json', '/swagger.json']) {
+    try {
+      const res = await fetch(`${candidate}${specPath}`, { signal: AbortSignal.timeout(5000), headers: { accept: 'application/json' } });
+      if (res.ok && await isJsonResponse(res)) return true;
+    } catch { /* try the next spec path */ }
+  }
+  return false;
 }
 
 async function resolveServiceBase(conn?: CatalogConn): Promise<string> {
@@ -176,6 +176,19 @@ async function cpRequest(method: string, path: string, body?: unknown): Promise<
 }
 
 const enc = encodeURIComponent;
+
+/** Build an App Service path from the app's OWN OpenAPI contract (env-configured base) — no path literal. */
+async function cpApiPath(role: keyof AppApiContract, vars: { appId?: string; object?: string } = {}): Promise<string> {
+  const url = baseUrl();
+  if (!url) throw new Error('Data tools are not configured: TARGET_BASE_URL is not set.');
+  let token: string | undefined;
+  try { token = await resolveToken(url); } catch { /* spec is often public; proceed without a token */ }
+  const contract = await resolveAppApiContract(url, token);
+  const tpl = contract[role];
+  if (!tpl) throw new Error(`The app's OpenAPI exposes no '${role}' endpoint; cannot build the request path.`);
+  return fillApiPath(tpl, vars);
+}
+
 const items = (data: unknown) =>
   data && typeof data === 'object' && Array.isArray((data as any).items) ? (data as any).items : data;
 const asFilters = (value: unknown) =>
@@ -186,7 +199,7 @@ const num = { type: 'integer' };
 
 export const listAppsTool: AgentTool = {
   spec: { name: 'list_apps', description: 'List the applications the configured user can access. Use to discover real app ids before describing schema or querying records.', parameters: { type: 'object', properties: {} } },
-  async execute() { return { apps: items(await cpRequest('GET', '/api/apps')) }; },
+  async execute() { return { apps: items(await cpRequest('GET', await cpApiPath('listApps'))) }; },
 };
 
 export const describeAppSchemaTool: AgentTool = {
@@ -197,13 +210,13 @@ export const describeAppSchemaTool: AgentTool = {
   },
   async execute(args) {
     const appId = String(args.app_id || '');
-    const objects = items(await cpRequest('GET', `/api/apps/${enc(appId)}/objects`));
+    const objects = items(await cpRequest('GET', await cpApiPath('listObjects', { appId })));
     const result: Record<string, unknown> = { objects };
     const names = Array.isArray(args.object_api_names) ? (args.object_api_names as string[]) : [];
     if (names.length) {
       const described: Record<string, unknown> = {};
       for (const name of names) {
-        try { described[name] = await cpRequest('GET', `/api/apps/${enc(appId)}/objects/${enc(String(name))}/describe`); }
+        try { described[name] = await cpRequest('GET', await cpApiPath('describeObject', { appId, object: String(name) })); }
         catch (e: any) { described[name] = { error: e?.message || String(e) }; }
       }
       result.described = described;
@@ -219,7 +232,7 @@ export const queryRecordsTool: AgentTool = {
     parameters: { type: 'object', properties: { app_id: str, object_api_name: str, filters: { type: 'object', description: 'Filter tree; omit for all accessible records.' }, page: num, page_size: num }, required: ['app_id', 'object_api_name'] },
   },
   async execute(args) {
-    return cpRequest('POST', `/api/apps/${enc(String(args.app_id))}/objects/${enc(String(args.object_api_name))}/list-views/query`, {
+    return cpRequest('POST', await cpApiPath('queryListView', { appId: String(args.app_id), object: String(args.object_api_name) }), {
       filters: asFilters(args.filters),
       pagination: { page: Number(args.page ?? 1), page_size: Math.min(1000, Number(args.page_size ?? 50)) },
     });
@@ -233,7 +246,7 @@ export const countRecordsTool: AgentTool = {
     parameters: { type: 'object', properties: { app_id: str, object_api_name: str, filters: { type: 'object' } }, required: ['app_id', 'object_api_name'] },
   },
   async execute(args) {
-    const data = (await cpRequest('POST', `/api/apps/${enc(String(args.app_id))}/objects/${enc(String(args.object_api_name))}/list-views/query`, {
+    const data = (await cpRequest('POST', await cpApiPath('queryListView', { appId: String(args.app_id), object: String(args.object_api_name) }), {
       pagination: { page_size: 1 }, summary: { operations: ['count'] }, filters: asFilters(args.filters),
     })) as any;
     return { count: data?.summary?.count ?? data?.total_count ?? null };
@@ -249,7 +262,7 @@ export const aggregateRecordsTool: AgentTool = {
   async execute(args) {
     const chart: Record<string, unknown> = { group_by: String(args.group_by), operation: typeof args.operation === 'string' ? args.operation : 'count', sort_by: 'value', sort_direction: 'desc', max_buckets: 50 };
     if (typeof args.value_field === 'string' && args.value_field) chart.value_field = args.value_field;
-    const data = (await cpRequest('POST', `/api/apps/${enc(String(args.app_id))}/objects/${enc(String(args.object_api_name))}/list-views/query`, {
+    const data = (await cpRequest('POST', await cpApiPath('queryListView', { appId: String(args.app_id), object: String(args.object_api_name) }), {
       view_mode: 'chart', chart, pagination: { page_size: 1 }, filters: asFilters(args.filters),
     })) as any;
     const buckets = Array.isArray(data?.chart?.buckets) ? data.chart.buckets : [];
@@ -267,7 +280,7 @@ export const createRecordTool: AgentTool = {
     parameters: { type: 'object', properties: { app_id: str, object_api_name: str, values: { type: 'object', description: 'field api_name -> value map for the new record.' } }, required: ['app_id', 'object_api_name', 'values'] },
   },
   async execute(args) {
-    return cpRequest('POST', `/api/apps/${enc(String(args.app_id))}/objects/${enc(String(args.object_api_name))}/records`, args.values);
+    return cpRequest('POST', await cpApiPath('createRecord', { appId: String(args.app_id), object: String(args.object_api_name) }), args.values);
   },
 };
 
@@ -307,6 +320,20 @@ export interface CorePlatformMetadataMap {
   }>;
   total_fields: number;
   permission_sensitive_count: number;
+}
+
+/**
+ * Render a metadata map as a bounded authoring-prompt block naming each object's fields + required/readonly
+ * flags. Mirrors pipelineDelta's legacy `metadataForPrompt` so graph-mode authoring grounds on the SAME
+ * backend object/field truth the legacy path always had (RC-0: the graph engine previously dropped this map).
+ */
+export function renderMetadataForPrompt(map?: CorePlatformMetadataMap | null): string {
+  if (!map?.objects?.length) return '';
+  const lines = map.objects.slice(0, 12).map((obj) => {
+    const fields = obj.fields.slice(0, 30).map((f) => `${f.api_name}:${f.label}${f.required ? ':required' : ''}${f.readonly ? ':readonly' : ''}`).join(', ');
+    return `- ${obj.api_name} (${obj.label}): ${fields}`;
+  });
+  return `BACKEND OBJECT/FIELD METADATA (authoritative required/readonly truth for this app — align cases with it; a field marked :required must be filled before save):\n${lines.join('\n')}`;
 }
 
 const metadataMapCache = new Map<string, { at: number; value: CorePlatformMetadataMap }>();
@@ -442,18 +469,20 @@ async function fetchObjectCatalogViaApi(conn?: CatalogConn): Promise<Array<{ app
     if (!url) return [];
     const token = await resolveConnToken(conn || {}, url);
     if (!token) return [];
+    const contract = await resolveAppApiContract(url, token);
+    const cpath = (role: keyof AppApiContract, vars: { appId?: string; object?: string } = {}) => contract[role] ? fillApiPath(contract[role]!, vars) : '';
     const authGet = async (path: string) => {
       const res = await timedFetch(`${url}${path}`, { headers: { authorization: `Bearer ${token}` } });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       return res.json();
     };
-    const apps = items(await authGet('/api/apps')) as any[];
+    const apps = items(await authGet(cpath('listApps'))) as any[];
     const out: Array<{ app: string; api_name: string; label: string }> = [];
     for (const app of Array.isArray(apps) ? apps : []) {
       const appId = app?.id;
       if (!appId) continue;
       try {
-        const objs = items(await authGet(`/api/apps/${enc(String(appId))}/objects`)) as any[];
+        const objs = items(await authGet(cpath('listObjects', { appId: String(appId) }))) as any[];
         for (const o of Array.isArray(objs) ? objs : []) {
           if (o?.api_name) out.push({ app: String(app.api_name || app.id), api_name: String(o.api_name), label: String(o.label || o.api_name) });
         }
@@ -478,7 +507,9 @@ export async function fetchCorePlatformApps(
     if (!url) return [];
     const token = await resolveConnToken(conn, url);
     if (!token) return [];
-    const res = await timedFetch(`${url}/api/apps`, { headers: { authorization: `Bearer ${token}` } });
+    const contract = await resolveAppApiContract(url, token);
+    if (!contract.listApps) return [];
+    const res = await timedFetch(`${url}${contract.listApps}`, { headers: { authorization: `Bearer ${token}` } });
     if (!res.ok) return [];
     const apps = items(await res.json()) as any[];
     return (Array.isArray(apps) ? apps : [])
@@ -510,7 +541,9 @@ export async function fetchCorePlatformAppTabs(
     if (!url || !app) return [];
     const token = await resolveConnToken(conn, url);
     if (!token) return [];
-    const res = await timedFetch(`${url}/api/apps/${enc(app)}/tabs`, { headers: { authorization: `Bearer ${token}` } });
+    const contract = await resolveAppApiContract(url, token);
+    if (!contract.listTabs) return [];
+    const res = await timedFetch(`${url}${fillApiPath(contract.listTabs, { appId: app })}`, { headers: { authorization: `Bearer ${token}` } });
     if (!res.ok) return [];
     const tabs = items(await res.json()) as any[];
     return (Array.isArray(tabs) ? tabs : [])
@@ -600,16 +633,19 @@ async function fetchCorePlatformMetadataMapInner(conn: CatalogConn, appId: strin
 
     const token = await resolveConnToken(conn || {}, url);
     if (!token) return null;
+    const contract = await resolveAppApiContract(url, token);
+    const cpath = (role: keyof AppApiContract, vars: { appId?: string; object?: string } = {}) => contract[role] ? fillApiPath(contract[role]!, vars) : '';
     const authGet = async (path: string) => {
       const res = await timedFetch(`${url}${path}`, { headers: { authorization: `Bearer ${token}` } });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       return res.json();
     };
     const tryGet = async (path: string) => {
+      if (!path) return null;
       try { return await authGet(path); } catch { return null; }
     };
 
-    const rawObjects = items(await authGet(`/api/apps/${enc(app)}/objects`)) as any[];
+    const rawObjects = items(await authGet(cpath('listObjects', { appId: app }))) as any[];
     const objects: CorePlatformMetadataMap['objects'] = [];
 
     for (const obj of Array.isArray(rawObjects) ? rawObjects : []) {
@@ -617,11 +653,11 @@ async function fetchCorePlatformMetadataMapInner(conn: CatalogConn, appId: strin
       if (!apiName) continue;
       const objectId = String(obj?.id || obj?.object_id || obj?.objectId || '').trim();
       const [describe, listViewsRaw, fieldsRaw, layoutsRaw, formRaw] = await Promise.all([
-        tryGet(`/api/apps/${enc(app)}/objects/${enc(apiName)}/describe`),
-        tryGet(`/api/apps/${enc(app)}/objects/${enc(apiName)}/list-views`),
-        objectId ? tryGet(`/admin/objects/${enc(objectId)}/fields`) : Promise.resolve(null),
-        objectId ? tryGet(`/admin/objects/${enc(objectId)}/layouts`) : Promise.resolve(null),
-        objectId ? tryGet(`/admin/objects/${enc(objectId)}/form`) : Promise.resolve(null),
+        tryGet(cpath('describeObject', { appId: app, object: apiName })),
+        tryGet(cpath('listViews', { appId: app, object: apiName })),
+        objectId ? tryGet(cpath('objectFields', { object: objectId })) : Promise.resolve(null),
+        objectId ? tryGet(cpath('objectLayouts', { object: objectId })) : Promise.resolve(null),
+        objectId ? tryGet(cpath('objectForm', { object: objectId })) : Promise.resolve(null),
       ]);
 
       const rawFields = [
@@ -721,6 +757,8 @@ export async function fetchTestDataPack(conn: CatalogConn, hintText: string, obj
     if (!url) return '';
     const token = await resolveConnToken(conn || {}, url);
     if (!token) return '';
+    const contract = await resolveAppApiContract(url, token);
+    const cpath = (role: keyof AppApiContract, vars: { appId?: string; object?: string } = {}) => contract[role] ? fillApiPath(contract[role]!, vars) : '';
     const authGet = async (path: string) => {
       const res = await timedFetch(`${url}${path}`, { headers: { authorization: `Bearer ${token}` } });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -733,7 +771,7 @@ export async function fetchTestDataPack(conn: CatalogConn, hintText: string, obj
     };
     const text = String(hintText || '').toLowerCase();
     const explicit = new Set(objectHints.map((s) => String(s || '').toLowerCase().trim()).filter(Boolean));
-    const apps = items(await authGet('/api/apps')) as any[];
+    const apps = items(await authGet(cpath('listApps'))) as any[];
     // Pick the objects this prompt is about. Priority:
     //   1. explicit object hints (e.g. the understanding's metadataRefs) — authoritative,
     //   2. api_name/label that appears in the hint text (prompt + understanding + inspection),
@@ -744,7 +782,7 @@ export async function fetchTestDataPack(conn: CatalogConn, hintText: string, obj
     for (const app of Array.isArray(apps) ? apps : []) {
       if (!app?.id) continue;
       let objs: any[] = [];
-      try { objs = items(await authGet(`/api/apps/${enc(String(app.id))}/objects`)) as any[]; } catch { continue; }
+      try { objs = items(await authGet(cpath('listObjects', { appId: String(app.id) }))) as any[]; } catch { continue; }
       for (const o of Array.isArray(objs) ? objs : []) {
         const name = String(o?.api_name || '').toLowerCase();
         const label = String(o?.label || '').toLowerCase();
@@ -767,7 +805,7 @@ export async function fetchTestDataPack(conn: CatalogConn, hintText: string, obj
       // Real fields (api_name, type, required, picklist options).
       let fields: any[] = [];
       try {
-        const d = await authGet(`/api/apps/${enc(p.appId)}/objects/${enc(p.objName)}/describe`);
+        const d = await authGet(cpath('describeObject', { appId: p.appId, object: p.objName }));
         fields = (Array.isArray((d as any)?.fields) ? (d as any).fields : items(d)) as any[];
       } catch { /* no schema */ }
       const fieldLines = (Array.isArray(fields) ? fields : []).slice(0, 25).map((f: any) => {
@@ -781,7 +819,7 @@ export async function fetchTestDataPack(conn: CatalogConn, hintText: string, obj
       // One real record to reference / edit.
       let sample = '';
       try {
-        const q = await authPost(`/api/apps/${enc(p.appId)}/objects/${enc(p.objName)}/list-views/query`, { pagination: { page: 1, page_size: 1 } });
+        const q = await authPost(cpath('queryListView', { appId: p.appId, object: p.objName }), { pagination: { page: 1, page_size: 1 } });
         const rec = (items(q) as any[])?.[0];
         if (rec) sample = `  example existing record: ${JSON.stringify(rec).slice(0, 400)}`;
       } catch { /* no records */ }
@@ -811,6 +849,8 @@ export async function fetchObjectSchema(conn: CatalogConn, appId: string, object
     if (!url || !app) return [];
     const token = await resolveConnToken(conn || {}, url);
     if (!token) return [];
+    const contract = await resolveAppApiContract(url, token);
+    const cpath = (role: keyof AppApiContract, vars: { appId?: string; object?: string } = {}) => contract[role] ? fillApiPath(contract[role]!, vars) : '';
     const authGet = async (path: string) => {
       const res = await timedFetch(`${url}${path}`, { headers: { authorization: `Bearer ${token}` } });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -821,7 +861,7 @@ export async function fetchObjectSchema(conn: CatalogConn, appId: string, object
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       return res.json();
     };
-    const objs = items(await authGet(`/api/apps/${enc(app)}/objects`)) as any[];
+    const objs = items(await authGet(cpath('listObjects', { appId: app }))) as any[];
     const names = (Array.isArray(objs) ? objs : []).map((o) => String(o?.api_name || '')).filter(Boolean);
     // Resolve the RIGHT object the user is creating — not just an exact string equality (which misses the
     // common singular/plural + label-vs-api_name mismatch, e.g. hint "accounts" vs api_name "account", and
@@ -846,12 +886,12 @@ export async function fetchObjectSchema(conn: CatalogConn, appId: string, object
     for (const objName of picked) {
       let fields: any[] = [];
       try {
-        const d = await authGet(`/api/apps/${enc(app)}/objects/${enc(objName)}/describe`);
+        const d = await authGet(cpath('describeObject', { appId: app, object: objName }));
         fields = (Array.isArray((d as any)?.fields) ? (d as any).fields : items(d)) as any[];
       } catch { /* no schema for this object */ }
       let sample: Record<string, unknown> | null = null;
       try {
-        const q = await authPost(`/api/apps/${enc(app)}/objects/${enc(objName)}/list-views/query`, { pagination: { page: 1, page_size: 1 } });
+        const q = await authPost(cpath('queryListView', { appId: app, object: objName }), { pagination: { page: 1, page_size: 1 } });
         sample = ((items(q) as any[])?.[0] ?? null) as Record<string, unknown> | null;
       } catch { /* no records */ }
       const schemaFields = (Array.isArray(fields) ? fields : []).map((f: any) => {

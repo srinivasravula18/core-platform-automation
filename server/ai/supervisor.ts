@@ -182,7 +182,9 @@ function isBroadCoverageQuestion(question: string): boolean {
     /\b(features?|test areas?|coverage|scenarios?|workflows?|journeys?|modules?|pages?|screens?)\b/.test(text)
     || /\bwhat\s+(?:should|can)\s+(?:i|we)\s+test\b/.test(text)
     || /\bfeatures?\s+to\s+test\b/.test(text);
-  const multiSurface = /\b(admin|keystone)\b/.test(text) && /\b(admin\b.*\bkeystone|keystone\b.*\badmin)\b/.test(text);
+  // Generic multi-surface signal (no product names): the ask spans two surfaces/apps/consoles joined by "and".
+  const surfaceWord = '(?:surfaces?|apps?|consoles?|portals?|modules?|sites?)';
+  const multiSurface = new RegExp(`\\b${surfaceWord}\\b[^.]*\\band\\b[^.]*\\b${surfaceWord}\\b`).test(text);
   const crossFlow = /\b(end to end|end-to-end|e2e)\b/.test(text);
   return coverageAsk && (broadScope || multiSurface || crossFlow);
 }

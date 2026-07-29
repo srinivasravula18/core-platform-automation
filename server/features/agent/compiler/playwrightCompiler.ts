@@ -10,6 +10,7 @@ import { resolveTarget } from '../graph/groundingEngine';
 import { isActionStep, isAssertStep, CONTEXT_ASSERTS, type ActionStep, type AssertStep, type PlanStep } from './testPlan';
 import { TestDataEngine, type FieldSemantics } from '../testdata';
 import { isRequiredFieldNode, type EvidenceNode } from '../graph/evidenceGraph';
+import { isAssertionGroundingEnabled } from './assertionGroundingFlag';
 
 /** A submit-intent CLICK — the button that commits a create/edit. App-agnostic verbs; matched against the
  * grounded control's role+label so completing the form before it fires makes create/submit flows succeed. */
@@ -311,11 +312,20 @@ export class PlaywrightCompiler implements Compiler {
         const raw = String(assertStep.value ?? '');
         const swappable = assertStep.assert === 'HAS_VALUE' || assertStep.assert === 'HAS_TEXT' || assertStep.assert === 'NOT_HAS_TEXT';
         // Deliberate empty-value expectations ("field stays blank") are never rewritten.
-        const value = swappable && raw.trim()
+        let value = swappable && raw.trim()
           ? (assertStep.assert === 'HAS_VALUE' && resolvedBySelector.has(g.selector as string)
             ? resolvedBySelector.get(g.selector as string)
             : (planToResolved.get(raw.trim().toLowerCase()) ?? raw))
           : raw;
+        // ASSERTION_GROUNDING_V1: if a non-threaded expectText value only reformats the target's own label,
+        // assert the REAL observed text (literal toContainText else fails a correct app).
+        if (isAssertionGroundingEnabled() && assertStep.assert === 'HAS_TEXT' && value === raw && raw.trim()) {
+          const nodeLabel = String(g.node?.label ?? '').trim();
+          const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '');
+          if (nodeLabel && nodeLabel !== raw.trim() && norm(nodeLabel) === norm(raw)) {
+            value = nodeLabel;
+          }
+        }
         body.push(emitAssert(assertStep, spec, value));
       }
     });
