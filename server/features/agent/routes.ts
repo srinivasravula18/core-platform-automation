@@ -4887,7 +4887,9 @@ Rules:
    * POST returns a job id immediately; the client polls GET /:jobId (each poll is a
    * fast request, so no proxy timeout can kill the work).
    */
-  const understandingJobs = new Map<string, { status: 'running' | 'done'; result?: any; createdAt: number }>();
+  // context carries the folder-ask continuation args so a client that navigated away mid-thinking can re-attach
+  // by conversation and rebuild the review card without re-running the understanding.
+  const understandingJobs = new Map<string, { status: 'running' | 'done'; result?: any; createdAt: number; conversationId?: string; ownerId?: string; context?: any }>();
   const UNDERSTANDING_JOB_TTL_MS = 30 * 60 * 1000;
   function pruneUnderstandingJobs() {
     const cutoff = Date.now() - UNDERSTANDING_JOB_TTL_MS;
@@ -5047,7 +5049,16 @@ Rules:
     pruneUnderstandingJobs();
     const scope = reqScope(req);
     const jobId = randomUUID();
-    understandingJobs.set(jobId, { status: 'running', createdAt: Date.now() });
+    understandingJobs.set(jobId, {
+      status: 'running', createdAt: Date.now(),
+      conversationId: String(body.conversationId || '').trim() || undefined,
+      ownerId: scope.userId || undefined,
+      // Enough to rebuild the review card on re-attach (see /for-conversation below).
+      context: {
+        prompt: body.prompt, originalRequest: body.originalRequest, contextPrompt: body.contextPrompt,
+        targetUrl: body.targetUrl, websiteId: body.websiteId, websiteName: body.targetName || body.websiteName,
+      },
+    });
     // Run in the background; the job NEVER fails hard  -  computeUnderstanding already
     // degrades to the deterministic fallback payload on any model/research error.
     computeUnderstanding(body, { userId: scope.userId, projectId: scope.projectId, appId: scope.appId })
@@ -5065,6 +5076,25 @@ Rules:
     if (!job) return res.status(404).json({ error: 'Unknown or expired understanding job.' });
     if (job.status !== 'done') return res.json({ status: 'running' });
     res.json({ status: 'done', result: job.result });
+  });
+
+  // Re-attach after a navigate-away: return the latest understanding job for this conversation (owned by the
+  // caller) with the context needed to rebuild the review card. Lets the console resume a "thinking" that was
+  // in flight when the user left, instead of dropping it.
+  app.get('/api/agent/understand-request/for-conversation/:conversationId', (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    pruneUnderstandingJobs();
+    const conversationId = String(req.params.conversationId || '').trim();
+    const ownerId = reqScope(req).userId || '';
+    if (!conversationId) return res.json({ job: null });
+    let latest: { jobId: string; job: any } | null = null;
+    for (const [jobId, job] of understandingJobs) {
+      if (job.conversationId !== conversationId) continue;
+      if (ownerId && job.ownerId && job.ownerId !== ownerId) continue;
+      if (!latest || job.createdAt > latest.job.createdAt) latest = { jobId, job };
+    }
+    if (!latest) return res.json({ job: null });
+    res.json({ job: { jobId: latest.jobId, status: latest.job.status, result: latest.job.result ?? null, context: latest.job.context ?? null } });
   });
 
   app.get('/api/agent/understand-request/:jobId/events', (req, res) => {

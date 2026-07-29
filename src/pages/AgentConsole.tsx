@@ -967,6 +967,58 @@ export default function AgentConsole() {
     } catch { /* best-effort recovery */ }
   }, []);
 
+  // Resume an understanding ("thinking") that was in flight when the user navigated away: the backend job is
+  // durable, so on return we re-attach by conversation and rebuild the review card instead of dropping it.
+  const reconcileUnderstanding = useCallback(async (id: string, token: number) => {
+    try {
+      // Never double-attach — if the restored turns already show a thinking/folder-ask, it wasn't dropped.
+      if (turnsRef.current.some((t) => t.role === 'assistant' && (t.kind === 'thinking' || t.kind === 'folderask'))) return;
+      const r = await fetch(`/api/agent/understand-request/for-conversation/${encodeURIComponent(id)}`);
+      if (!r.ok || token !== loadReqRef.current) return;
+      const job = (await r.json())?.job;
+      const ctx = job?.context;
+      if (!job || !ctx || !ctx.targetUrl) return;
+
+      const buildCard = (result: any) => {
+        if (token !== loadReqRef.current) return;
+        const prompt = String(ctx.prompt || '');
+        const originalRequest = String(ctx.originalRequest || prompt);
+        const contextPrompt = String(ctx.contextPrompt || '');
+        const targetUrl = String(ctx.targetUrl || '');
+        const websiteId = ctx.websiteId || undefined;
+        const websiteName = ctx.websiteName || undefined;
+        const target = websiteName ? `${websiteName} (${targetUrl})` : targetUrl;
+        const fallbackUnderstanding = `Here's what I understood:\n• Target: ${target}\n• Task: ${prompt}\n\nPlan: log in to the target → perform the steps on the live app → verify the result → capture screenshots as evidence.`;
+        const understanding = String(result?.understanding || '').trim() || fallbackUnderstanding;
+        const understandingSource = String(result?.source || 'fallback');
+        const suggestedFolderName = String(result?.suggestedFolderName || '').trim();
+        const caseCountPrompt = originalRequest || prompt;
+        setPendingDeep({ prompt, originalRequest, contextPrompt, caseCountPrompt, targetUrl, websiteId, websiteName, understanding, understandingSource, revisionCount: 0 });
+        convTargetRef.current = { targetUrl, websiteId, websiteName };
+        const cardId = nextId();
+        setTurns((prev) => (token === loadReqRef.current ? [...prev, {
+          id: cardId, role: 'assistant', kind: 'folderask' as const, understanding, understandingSource,
+          originalPrompt: contextPrompt || prompt, contextPrompt, caseCountPrompt, targetUrl, websiteId, websiteName,
+          revisionCount: 0, folderName: suggestedFolderName || suggestFolderName(originalRequest || prompt, websiteName),
+          text: 'Look right? A folder name is suggested below — keep it and Proceed, or pick an existing folder / type your own first.',
+        }] : prev));
+      };
+
+      if (job.status === 'done') { buildCard(job.result); return; }
+      // Still running: show a resuming spinner and poll the durable job to completion.
+      const thinkingId = nextId();
+      setTurns((prev) => (token === loadReqRef.current ? [...prev, { id: thinkingId, role: 'assistant', kind: 'thinking' as const, label: 'Resuming — finishing what I was analyzing…' }] : prev));
+      for (let i = 0; i < 240; i++) {
+        await new Promise((res) => setTimeout(res, 5000));
+        if (token !== loadReqRef.current) return;
+        const jr = await fetch(`/api/agent/understand-request/${job.jobId}`).then((x) => x.json()).catch(() => null);
+        if (token !== loadReqRef.current) return;
+        if (jr?.status === 'done') { setTurns((prev) => prev.filter((t) => t.id !== thinkingId)); buildCard(jr.result); return; }
+        if (!jr || jr.error) { setTurns((prev) => prev.filter((t) => t.id !== thinkingId)); return; } // job expired (pruned/restart)
+      }
+    } catch { /* best-effort resume */ }
+  }, []);
+
   const loadConversation = useCallback(async (id: string) => {
     const token = ++loadReqRef.current;
     loadedRef.current = false;
@@ -992,13 +1044,15 @@ export default function AgentConsole() {
       setTurns(clean);
       // Re-attach any run the snapshot lost (navigated away mid-start) — see reconcileConversationRuns.
       void reconcileConversationRuns(id, token);
+      // Resume an understanding that was in flight when the user navigated away mid-thinking.
+      void reconcileUnderstanding(id, token);
     } catch {
       // Never wipe a live thread on a failed load — only clear when nothing is on screen.
       if (token === loadReqRef.current && turnsRef.current.length === 0) setTurns([]);
     } finally {
       if (token === loadReqRef.current) loadedRef.current = true;
     }
-  }, [reconcileConversationRuns]);
+  }, [reconcileConversationRuns, reconcileUnderstanding]);
 
   // Initial load: restore the active conversation + the history list. If the remembered id has no
   // content (e.g. a fresh id was minted before the scope settled, or the user navigated away and
@@ -1063,6 +1117,8 @@ export default function AgentConsole() {
       setTurns(chosenTurns);
       // Re-attach any run the snapshot lost for the restored conversation (navigated away mid-start).
       void reconcileConversationRuns(chosen, token);
+      // Resume an understanding that was in flight when the user navigated away mid-thinking.
+      void reconcileUnderstanding(chosen, token);
     })();
     fetch('/api/credentials/websites')
       .then((r) => r.json())
@@ -1619,6 +1675,7 @@ export default function AgentConsole() {
     contextPrompt?: string;
     targetUrl: string;
     targetName?: string;
+    websiteId?: string;
     currentUnderstanding?: string;
     correction?: string;
   }) => {
@@ -1690,7 +1747,7 @@ export default function AgentConsole() {
     let understandingSource = 'fallback';
     let suggestedFolderName = '';
     try {
-      const generated = await requestDeepUnderstanding({ prompt, originalRequest: originalRequest || prompt, contextPrompt, targetUrl, targetName: websiteName || '' });
+      const generated = await requestDeepUnderstanding({ prompt, originalRequest: originalRequest || prompt, contextPrompt, targetUrl, targetName: websiteName || '', websiteId });
       understanding = generated.understanding || fallbackUnderstanding;
       understandingSource = generated.source || understandingSource;
       suggestedFolderName = String(generated?.suggestedFolderName || '').trim();

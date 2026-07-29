@@ -15,6 +15,7 @@ import { useResizableTables } from '@/src/lib/useResizableTables';
 import { searchResultHref } from '@/src/lib/controllerIntent';
 
 import AgentConsole from '@/src/pages/AgentConsole';
+import RunningIndicator from '@/src/components/RunningIndicator';
 import AgentPanel from '@/src/pages/AgentPanel';
 import Dashboard from '@/src/pages/Dashboard';
 import TestPlans from '@/src/pages/TestPlans';
@@ -344,6 +345,7 @@ function Topbar({ onMenuClick, onCommandBarOpen }: { onMenuClick: () => void; on
       </div>
       <div id="topbar-actions" className="flex items-center gap-2" />
       <div className="flex items-center gap-2 sm:gap-4">
+        <RunningIndicator />
         <ProjectSwitcher />
         <button
           onClick={onCommandBarOpen}
