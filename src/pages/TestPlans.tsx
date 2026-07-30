@@ -15,6 +15,7 @@ import { AIActionModal } from '@/src/components/AIActionModal';
 import { FolderSelect } from '@/src/components/FolderSelect';
 import { FolderBadge } from '@/src/components/FolderBadge';
 import { MultiSelectDropdown } from '@/src/components/MultiSelectDropdown';
+import { EntityLinker } from '@/src/components/EntityLinker';
 import { TagEditor } from '@/src/components/TagEditor';
 import { showAlert, showConfirm } from '@/src/lib/dialog';
 import { can } from '@/src/components/AuthGate';
@@ -110,6 +111,8 @@ export default function TestPlans() {
   const [isDetailFilterOpen, setIsDetailFilterOpen] = useState(false);
   const detailFilterRef = useRef<HTMLDivElement | null>(null);
   const [isPlanModalOpen, setIsPlanModalOpen] = useState(false);
+  // Opens the unified EntityLinker (search + tag-driven) to pick the plan's suites.
+  const [isSuiteLinkerOpen, setIsSuiteLinkerOpen] = useState(false);
   const [isAIPlanModalOpen, setIsAIPlanModalOpen] = useState(false);
   const [isStartingRun, setIsStartingRun] = useState(false);
   const [startingPlanId, setStartingPlanId] = useState<string | null>(null);
@@ -627,7 +630,12 @@ export default function TestPlans() {
             <textarea value={formData.deliverables} onChange={(e) => setFormData({...formData, deliverables: e.target.value})} placeholder="e.g. Test report, defect summary" className="min-h-20 w-full resize-y rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
           </div>
           <div>
-            <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Link Test Suites</label>
+            <div className="mb-1 flex items-center justify-between">
+              <label className="block text-sm font-medium text-[var(--text-muted)]">Link Test Suites</label>
+              <button type="button" onClick={() => setIsSuiteLinkerOpen(true)} className="text-xs font-medium text-[var(--accent)] hover:underline">
+                Search &amp; link by tag
+              </button>
+            </div>
             <MultiSelectDropdown
               label="Select test suites"
               options={suites.map((suite) => ({ id: String(suite.id), name: String(suite.name || suite.id) }))}
@@ -675,6 +683,20 @@ export default function TestPlans() {
           </div>
         </div>
       </Modal>
+
+      {/* Unified linker: pick the plan's suites by search/tag; writes back to the same field
+          the modal already persists (per-suite testPlanIds reconciliation in handleSavePlan). */}
+      {isSuiteLinkerOpen && (
+        <EntityLinker
+          isOpen={isSuiteLinkerOpen}
+          onClose={() => setIsSuiteLinkerOpen(false)}
+          title="Link test suites to this plan"
+          target="suites"
+          confirmLabel="Use selected suites"
+          initialSelectedIds={formData.suiteIds}
+          onConfirm={(suiteIds) => { setFormData((f) => ({ ...f, suiteIds })); setIsSuiteLinkerOpen(false); }}
+        />
+      )}
 
       <AIActionModal 
         isOpen={isAIPlanModalOpen}

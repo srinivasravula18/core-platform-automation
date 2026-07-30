@@ -12,6 +12,7 @@ import { findSettingsPlaywrightTargetUrl, normalizeTargetUrl } from '../../share
 import { getAIErrorMessage } from '../../shared/ai';
 import { getOrchestrator } from '../../ai/orchestrator';
 import { reqScope, scopeFilter, scopeStamp } from '../../shared/scope';
+import { ensureTagsInCatalog } from '../tags/routes';
 import { runPlaywrightRequest } from '../playwright/routes';
 import { resolveCredentials } from '../credentials/credentialsService';
 import { testCaseTypeFields } from '../../../core/shared/testCaseTypes';
@@ -249,11 +250,39 @@ async function parentPlanValidationError(parentPlanId: string, currentPlanId: st
   return null;
 }
 
+// Server-side text/tag/folder filtering for list endpoints. Additive + backward compatible:
+// with no query params it returns the list unchanged (removing the old ~300-item client cap
+// only when a filter is actually supplied). `q` matches name/title/description/id substrings;
+// `tags` is a comma list matched any/all via `tagMatch`; `folderId` narrows by folder.
+function filterListByQuery(items: any[], req: any): any[] {
+  const q = String(req.query?.q || '').trim().toLowerCase();
+  const folderId = String(req.query?.folderId || '').trim();
+  const tagList = String(req.query?.tags || '').split(',').map((t) => t.trim()).filter(Boolean);
+  const tagMatch = String(req.query?.tagMatch || 'any').toLowerCase();
+  if (!q && !folderId && !tagList.length) return items;
+  const tagSet = tagList.map((t) => t.toLowerCase());
+  return items.filter((it) => {
+    if (folderId && String(it?.folderId || '') !== folderId) return false;
+    if (tagSet.length) {
+      const rowTags = (Array.isArray(it?.tags) ? it.tags : []).map((t: any) => String(t).toLowerCase());
+      const ok = tagMatch === 'all'
+        ? tagSet.every((t) => rowTags.includes(t))
+        : tagSet.some((t) => rowTags.includes(t));
+      if (!ok) return false;
+    }
+    if (q) {
+      const hay = `${it?.name || ''} ${it?.title || ''} ${it?.description || ''} ${it?.id || ''}`.toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+}
+
 export function registerResourceRoutes(app: Express) {
   /* ---------- read endpoints (PG-backed, scoped to the selected project/app) ---------- */
-  app.get('/api/plans', async (req, res) => res.json(scopeFilter(await Plans.list(), reqScope(req))));
-  app.get('/api/suites', async (req, res) => res.json(scopeFilter(await Suites.list(), reqScope(req))));
-  app.get('/api/cases', async (req, res) => res.json(scopeFilter(await Cases.list(), reqScope(req))));
+  app.get('/api/plans', async (req, res) => res.json(filterListByQuery(scopeFilter(await Plans.list(), reqScope(req)), req)));
+  app.get('/api/suites', async (req, res) => res.json(filterListByQuery(scopeFilter(await Suites.list(), reqScope(req)), req)));
+  app.get('/api/cases', async (req, res) => res.json(filterListByQuery(scopeFilter(await Cases.list(), reqScope(req)), req)));
   app.get('/api/runs', async (req, res) => {
     const runs = await Runs.list();
     const healed = await Promise.all(runs.map(async (run: any) => {
@@ -268,7 +297,7 @@ export function registerResourceRoutes(app: Express) {
       await Runs.upsert(failed);
       return failed;
     }));
-    res.json(scopeFilter(healed, reqScope(req)));
+    res.json(filterListByQuery(scopeFilter(healed, reqScope(req)), req));
   });
   app.put('/api/runs/:id', async (req, res) => {
     const run = await Runs.get(req.params.id);
@@ -305,6 +334,7 @@ export function registerResourceRoutes(app: Express) {
       caseIds,
     });
     if (!isPgEnabled()) persistDataInBackground('updated run');
+    await ensureTagsInCatalog(updated.tags, reqScope(req));
     logActivity(req, `Updated test run: ${name}`, { type: 'run', entityId: updated.id });
     res.json({ success: true, run: updated });
   });
@@ -772,6 +802,7 @@ export function registerResourceRoutes(app: Express) {
       const updated = { ...existing, ...req.body, updatedAt: new Date() };
       await e.repo.upsert(updated);
       if (!isPgEnabled()) persistDataInBackground(`${e.name} update`);
+      if ('tags' in req.body) await ensureTagsInCatalog(updated.tags, reqScope(req));
       logActivity(req, `Updated ${e.name.slice(0, -1)}: ${updated.name || updated.title}`);
       res.json({ success: true });
     });
@@ -925,6 +956,7 @@ export function registerResourceRoutes(app: Express) {
     };
     const savedPlan = await Plans.upsert(newPlan);
     if (!isPgEnabled()) persistDataInBackground('plan');
+    await ensureTagsInCatalog(newPlan.tags, reqScope(req));
     logActivity(req, `Created Plan: ${savedPlan.name}`, { type: 'plan', entityId: savedPlan.id });
     res.json({ success: true, id: savedPlan.id, plan: savedPlan });
   });
@@ -952,8 +984,44 @@ export function registerResourceRoutes(app: Express) {
     };
     const savedSuite = await Suites.upsert(newSuite);
     if (!isPgEnabled()) persistDataInBackground('suite');
+    await ensureTagsInCatalog(newSuite.tags, reqScope(req));
     logActivity(req, `Created Suite: ${savedSuite.name}`, { type: 'suite', entityId: savedSuite.id });
     res.json({ success: true, id: savedSuite.id, suite: savedSuite });
+  });
+
+  /* ---------- POST /api/suites/:id/cases — bulk link/unlink cases to a suite ---------- */
+  // One call to add/remove many cases from a suite, instead of N per-case PUTs. Keeps the
+  // dual testSuiteId/testSuiteIds fields in sync (singular = first of the array) so run and
+  // linking logic keyed on the singular id stays correct (schema.sql:291-294 convention).
+  app.post('/api/suites/:id/cases', async (req, res) => {
+    const scope = reqScope(req);
+    const suite = await Suites.get(req.params.id);
+    if (!suite || !scopeFilter([suite], scope).length) return res.status(404).json({ error: 'Suite not found.' });
+    const suiteId = suite.id;
+    const add = uniqueStrings(Array.isArray(req.body?.add) ? req.body.add.map(String) : []);
+    const remove = uniqueStrings(Array.isArray(req.body?.remove) ? req.body.remove.map(String) : []);
+    if (!add.length && !remove.length) return res.status(400).json({ error: 'Provide case ids to add or remove.' });
+
+    let changed = 0;
+    for (const caseId of [...add, ...remove]) {
+      const testCase = await Cases.get(caseId);
+      if (!testCase || !scopeFilter([testCase], scope).length) continue;
+      const current = uniqueStrings([
+        ...(Array.isArray(testCase.testSuiteIds) ? testCase.testSuiteIds : []),
+        ...(testCase.testSuiteId ? [testCase.testSuiteId] : []),
+      ]);
+      const want = add.includes(caseId);
+      const next = want
+        ? uniqueStrings([...current, suiteId])
+        : current.filter((id: string) => id !== suiteId);
+      if (next.length === current.length && next.every((id, i) => id === current[i])) continue;
+      const singular = next.includes(testCase.testSuiteId) ? testCase.testSuiteId : (next[0] || '');
+      await Cases.upsert({ ...testCase, testSuiteId: singular, testSuiteIds: next, updatedAt: new Date() });
+      changed += 1;
+    }
+    if (!isPgEnabled()) persistDataInBackground('bulk suite link');
+    logActivity(req, `Linked ${changed} case(s) to suite: ${suite.name}`, { type: 'suite', entityId: suiteId });
+    res.json({ success: true, changed });
   });
 
   /* ---------- POST /api/cases ---------- */
@@ -984,6 +1052,7 @@ export function registerResourceRoutes(app: Express) {
     };
     const savedCase = await Cases.upsert(newCase);
     if (!isPgEnabled()) persistDataInBackground('case');
+    await ensureTagsInCatalog(newCase.tags, reqScope(req));
     logActivity(req, `Created Case: ${savedCase.title}`, { type: 'case', entityId: savedCase.id });
     // Return the generated id so clients (e.g. GeneratedCases save-fallback) can adopt it.
     res.json({ success: true, id: savedCase.id });
@@ -1291,6 +1360,7 @@ Rules:
     };
     await Runs.upsert(newRun);
     if (!isPgEnabled()) persistDataInBackground('run');
+    await ensureTagsInCatalog(newRun.tags, reqScope(req));
     logActivity(req, `Created manual run: ${name}`, { type: 'run', entityId: runId });
     res.json({ success: true, run: newRun });
   });

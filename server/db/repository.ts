@@ -2005,6 +2005,134 @@ export const RequirementLinks = {
   },
 };
 
+/* ---------- tag catalog (shared vocabulary registry) ---------- */
+
+function mapTag(r: any) {
+  if (!r) return null;
+  return {
+    id: r.id,
+    name: r.name,
+    color: r.color || '',
+    createdAt: r.created_at,
+    ...scopeFields(r),
+  };
+}
+
+// Entity tables that carry a `tags TEXT[]` column — write-through targets for rename/remove.
+const TAGGED_TABLES = ['cases', 'suites', 'plans', 'runs', 'defects'];
+
+export const Tags = {
+  async list(): Promise<any[]> {
+    if (!isPgEnabled()) return (db.tags as any[]).slice();
+    const rows = await query('SELECT * FROM tags ORDER BY lower(name) ASC');
+    return rows.map(mapTag);
+  },
+  async get(id: string): Promise<any | null> {
+    if (!isPgEnabled()) return (db.tags as any[]).find((t) => t.id === id) || null;
+    const r = await queryOne('SELECT * FROM tags WHERE id = $1', [id]);
+    return mapTag(r);
+  },
+  // Idempotently register a tag name in a scope; updates color when provided. Returns the row.
+  async upsert(tag: any): Promise<any> {
+    const name = String(tag?.name || '').trim();
+    if (!name) return null;
+    const projectId = tag.projectId || '';
+    const appId = tag.appId || '';
+    const ownerId = tag.ownerId || '';
+    if (!isPgEnabled()) {
+      const rows = db.tags as any[];
+      // A provided id means "update this existing tag" (rename/recolor); otherwise match by
+      // scope+name for registration idempotency.
+      const existing = (tag.id && rows.find((t) => t.id === tag.id)) || rows.find((t) =>
+        (t.projectId || '') === projectId && (t.appId || '') === appId &&
+        (t.ownerId || '') === ownerId && String(t.name || '').toLowerCase() === name.toLowerCase());
+      if (existing) {
+        if (tag.color != null) existing.color = tag.color;
+        if (tag.name && tag.name !== existing.name) existing.name = tag.name;
+        return existing;
+      }
+      const rec = { id: tag.id || uid('TAG'), name, color: tag.color || '', projectId, appId, ownerId, createdAt: new Date().toISOString() };
+      rows.push(rec);
+      return rec;
+    }
+    // Updating an existing catalog row (rename/recolor): key on the primary id, not the
+    // scope+name index — a name change would otherwise miss the ON CONFLICT arbiter and try
+    // to re-INSERT the same id (tags_pkey violation).
+    if (tag.id) {
+      const found = await queryOne('SELECT id FROM tags WHERE id = $1', [tag.id]);
+      if (found) {
+        const row = await queryOne(
+          `UPDATE tags SET name = $2, color = CASE WHEN $3 <> '' THEN $3 ELSE color END WHERE id = $1 RETURNING *`,
+          [tag.id, name, tag.color || ''],
+        );
+        return mapTag(row);
+      }
+    }
+    const id = tag.id || uid('TAG');
+    const row = await queryOne(
+      `INSERT INTO tags (id, name, color, project_id, app_id, owner_id)
+       VALUES ($1,$2,$3,$4,$5,$6)
+       ON CONFLICT (COALESCE(project_id,''), COALESCE(app_id,''), COALESCE(owner_id,''), lower(name))
+       DO UPDATE SET name = EXCLUDED.name, color = CASE WHEN EXCLUDED.color <> '' THEN EXCLUDED.color ELSE tags.color END
+       RETURNING *`,
+      [id, name, tag.color || '', projectId || null, appId || null, ownerId || null],
+    );
+    return mapTag(row);
+  },
+  async remove(id: string): Promise<boolean> {
+    if (!isPgEnabled()) {
+      const before = db.tags.length;
+      (db as any).tags = db.tags.filter((t: any) => t.id !== id);
+      return db.tags.length < before;
+    }
+    const res = await query('DELETE FROM tags WHERE id = $1', [id]);
+    return res.length > 0;
+  },
+  // Rename a tag value across every entity's tags[] array (write-through), so the catalog
+  // rename actually propagates to the denormalized membership. Scope-limited to the owner.
+  async renameInEntities(oldName: string, newName: string, ownerId: string): Promise<void> {
+    if (!oldName || !newName || oldName === newName) return;
+    if (!isPgEnabled()) {
+      for (const table of TAGGED_TABLES) {
+        for (const row of (db[table] as any[]) || []) {
+          if ((ownerId && (row.ownerId || '') !== ownerId) || !Array.isArray(row.tags)) continue;
+          row.tags = Array.from(new Set(row.tags.map((t: string) => (t === oldName ? newName : t))));
+        }
+      }
+      return;
+    }
+    for (const table of TAGGED_TABLES) {
+      await query(
+        `UPDATE ${table} SET tags = (
+           SELECT array_agg(DISTINCT CASE WHEN t = $1 THEN $2 ELSE t END)
+           FROM unnest(tags) AS t)
+         WHERE $1 = ANY(tags)${ownerId ? ' AND owner_id = $3' : ''}`,
+        ownerId ? [oldName, newName, ownerId] : [oldName, newName],
+      );
+    }
+  },
+  // Strip a tag value from every entity's tags[] array (used on catalog delete).
+  async removeFromEntities(name: string, ownerId: string): Promise<void> {
+    if (!name) return;
+    if (!isPgEnabled()) {
+      for (const table of TAGGED_TABLES) {
+        for (const row of (db[table] as any[]) || []) {
+          if ((ownerId && (row.ownerId || '') !== ownerId) || !Array.isArray(row.tags)) continue;
+          row.tags = row.tags.filter((t: string) => t !== name);
+        }
+      }
+      return;
+    }
+    for (const table of TAGGED_TABLES) {
+      await query(
+        `UPDATE ${table} SET tags = array_remove(tags, $1)
+         WHERE $1 = ANY(tags)${ownerId ? ' AND owner_id = $2' : ''}`,
+        ownerId ? [name, ownerId] : [name],
+      );
+    }
+  },
+};
+
 /* ---------- agent run events (LangGraph.js workflow runtime, Phase 1) ---------- */
 /* Append-only, run-scoped, ordered audit log — not a CRUD entity like the objects above. */
 

@@ -617,6 +617,31 @@ CREATE TABLE IF NOT EXISTS requirement_case_links (
 CREATE INDEX IF NOT EXISTS requirement_case_links_req ON requirement_case_links(requirement_id);
 CREATE UNIQUE INDEX IF NOT EXISTS requirement_case_links_unique ON requirement_case_links(requirement_id, case_id);
 
+-- Shared tag catalog (vocabulary registry). Tag ASSIGNMENT stays denormalized on each
+-- entity as the `tags TEXT[]` column (cases/suites/plans/runs/defects); this table is only
+-- a scoped registry of distinct tag names + color, so tags can be autocompleted, recolored,
+-- renamed (write-through to the arrays), counted, and used to group work into new entities.
+CREATE TABLE IF NOT EXISTS tags (
+  id          TEXT PRIMARY KEY,
+  name        TEXT NOT NULL,
+  color       TEXT DEFAULT '',
+  project_id  TEXT,
+  app_id      TEXT,
+  owner_id    TEXT,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+-- One catalog entry per tag name within a scope (case-insensitive); COALESCE so NULL scope
+-- columns still collide as a single "unscoped" slot rather than allowing duplicates.
+CREATE UNIQUE INDEX IF NOT EXISTS tags_scope_name ON tags
+  (COALESCE(project_id,''), COALESCE(app_id,''), COALESCE(owner_id,''), lower(name));
+
+-- Accelerate tag-based filtering/grouping on each tagged entity (GIN over the TEXT[] array).
+CREATE INDEX IF NOT EXISTS cases_tags_gin   ON cases   USING gin (tags);
+CREATE INDEX IF NOT EXISTS suites_tags_gin  ON suites  USING gin (tags);
+CREATE INDEX IF NOT EXISTS plans_tags_gin   ON plans   USING gin (tags);
+CREATE INDEX IF NOT EXISTS runs_tags_gin    ON runs    USING gin (tags);
+CREATE INDEX IF NOT EXISTS defects_tags_gin ON defects USING gin (tags);
+
 -- ===== Projects → Apps scope (incremental, idempotent) =====
 -- One project == one git repo; an app is a testable surface within it. Every QA entity
 -- is scoped to a project (required once selected) and optionally an app (null = project-level).

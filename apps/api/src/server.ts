@@ -22,6 +22,7 @@ import { registerResourceRoutes } from '../../../services/resources';
 import { registerAgentRuntimeRoutes, registerConversationalRuntimeRoutes } from '../../../services/runtime';
 import { registerScreenshotRoutes } from '../../../services/screenshots';
 import { registerSearchRoutes } from '../../../services/search';
+import { registerTagRoutes } from '../../../services/tags';
 import { registerSettingsRoutes, registerAiSettingsRoutes } from '../../../services/settings';
 import { registerApiIntelligenceRoutes } from '../../../services/api-intelligence';
 import { getWorkflowCheckpointer, closeWorkflowCheckpointer, isWorkflowGraphEnabled, reconcileOrphanedRunsOnStartup } from '../../../services/orchestration';
@@ -161,6 +162,7 @@ export async function createExpressApp() {
   registerScreenshotRoutes(app);
   registerDashboardRoutes(app);
   registerResourceRoutes(app);
+  registerTagRoutes(app);
   registerApiIntelligenceRoutes(app);
   registerAutomationRoutes(app);
 
