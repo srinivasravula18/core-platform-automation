@@ -65,7 +65,6 @@ function Sidebar({ isOpen }: { isOpen: boolean }) {
     {
       label: 'Test Management',
       items: [
-        { name: 'File System', href: '/repository', icon: FolderTree },
         { name: 'Test Plans', href: '/plans', icon: FolderTree },
         { name: 'Test Suites', href: '/suites', icon: Layers },
         { name: 'Test Cases', href: '/cases', icon: TestTube2 },
