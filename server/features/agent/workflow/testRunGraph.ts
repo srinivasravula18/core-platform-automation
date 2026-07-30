@@ -313,7 +313,7 @@ export function buildTestRunGraph(deps: TestRunGraphDeps = {}, opts: BuildTestRu
     let auth = deps.discoveryNode
       ? undefined // injected discovery seam (tests) owns its own setup — no real login here
       : await ensureRunAuthState(state.runId, state.mission?.targetUrl || '', credential, state.request.conversationId);
-    let discovery = await discoveryNode({ mission: state.mission, credential, runId: state.runId, auth, priorElements: deps.priorVerifiedElements });
+    let discovery = await discoveryNode({ mission: state.mission, credential, runId: state.runId, auth, priorElements: deps.priorVerifiedElements, goalTerms: extractGoalTerms(state.request?.goal) });
     let discoveryAttempts = 1;
     // The node returns classified errors instead of throwing, so the retry policy (workflow/errors.ts) is
     // applied HERE at the invocation layer — with real backoff, real path only. Without this, a transient
@@ -329,7 +329,7 @@ export function buildTestRunGraph(deps: TestRunGraphDeps = {}, opts: BuildTestRu
         if (failure.class === WORKFLOW_ERROR_CLASSES.AUTH_FAILURE) {
           auth = await ensureRunAuthState(state.runId, state.mission?.targetUrl || '', credential, state.request.conversationId);
         }
-        discovery = await discoveryNode({ mission: state.mission, credential, runId: state.runId, auth, priorElements: deps.priorVerifiedElements });
+        discovery = await discoveryNode({ mission: state.mission, credential, runId: state.runId, auth, priorElements: deps.priorVerifiedElements, goalTerms: extractGoalTerms(state.request?.goal) });
         discoveryAttempts += 1;
       }
       // Still auth-failed after the policy attempts — drop the cached session so any later re-entry logs in fresh.
