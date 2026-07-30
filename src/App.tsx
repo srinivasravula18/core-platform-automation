@@ -538,6 +538,7 @@ export default function App() {
           <Route path="/plans" element={<TestPlans />} />
           <Route path="/plans/:planId" element={<TestPlans />} />
           <Route path="/suites" element={<TestSuites />} />
+          <Route path="/suites/:suiteId" element={<TestSuites />} />
           <Route path="/cases" element={<TestCases />} />
           <Route path="/runs" element={<TestRuns />} />
           <Route path="/runs/:runId" element={<TestRuns />} />

@@ -863,7 +863,7 @@ export default function TestPlans() {
                     {getPlanSuites(selectedDetailPlan.id).length === 0 ? (
                       <tr><td colSpan={6} className="px-4 py-6 text-center text-[var(--text-muted)]">No test suites are linked to this plan.</td></tr>
                     ) : getPlanSuites(selectedDetailPlan.id).map((suite) => (
-                      <tr key={suite.id} className="hover:bg-[var(--bg-secondary)]/60">
+                      <tr key={suite.id} onClick={() => navigate(`/suites/${suite.id}`)} className="cursor-pointer hover:bg-[var(--bg-secondary)]/60">
                         <td className="px-4 py-3 font-mono text-xs text-[var(--text-muted)]">{suite.id}</td>
                         <td className="px-4 py-3 font-medium">{suite.name}</td>
                         <td className="px-4 py-3 text-[var(--text-muted)]">{suite.module || '-'}</td>

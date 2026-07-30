@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 import { ChevronDown, ChevronRight, Search, Filter, Pencil, Plus, Sparkles, Trash2, PlayCircle, Loader2 } from 'lucide-react';
 import { Timestamp, actorName } from '@/src/components/Timestamp';
 import ExportMenu from '../components/ExportMenu';
@@ -32,6 +32,7 @@ import { normalizeTags } from '@/src/lib/tags';
 
 export default function TestSuites() {
   const navigate = useNavigate();
+  const { suiteId: routeSuiteId } = useParams();
   const [suites, setSuites] = useState<any[]>([]);
   const [plans, setPlans] = useState<any[]>([]);
   const [cases, setCases] = useState<any[]>([]);
@@ -255,6 +256,16 @@ export default function TestSuites() {
         : [...current, suiteId]
     );
   };
+
+  // Deep link (/suites/:suiteId, e.g. from a Test Plan's linked-suites tab): open that suite's
+  // cases and scroll it into view once suites have loaded.
+  useEffect(() => {
+    if (!routeSuiteId || !suites.length) return;
+    if (!suites.some((suite) => suite.id === routeSuiteId)) return;
+    setExpandedSuiteIds((current) => (current.includes(routeSuiteId) ? current : [...current, routeSuiteId]));
+    const row = document.getElementById(`suite-row-${routeSuiteId}`);
+    if (row) row.scrollIntoView({ block: 'center' });
+  }, [routeSuiteId, suites]);
 
   const getSuiteCases = (suiteId: string) => cases.filter((testCase) => caseBelongsToSuite(testCase, suiteId));
   const moduleOptions = Array.from(new Set(suites.map((suite) => suiteModuleName(suite, folders)).filter(Boolean))).sort();
@@ -545,13 +556,13 @@ export default function TestSuites() {
         </div>
 
         <div className="flex-1 overflow-auto">
-          <table className="w-full min-w-[1656px] table-fixed text-left text-sm whitespace-nowrap">
+          <table className="w-full min-w-[1720px] table-fixed text-left text-sm whitespace-nowrap">
             <thead className="sticky top-0 bg-[var(--bg-secondary)] border-b border-[var(--border)] z-10">
               <tr className="text-[var(--text-muted)]">
                 <th className="font-medium py-3 px-4 w-10">
                   <input type="checkbox" checked={bulk.allSelected(filteredSuites.map((s) => s.id))} onChange={() => bulk.toggleAll(filteredSuites.map((s) => s.id))} />
                 </th>
-                <th className="w-36 px-4 py-3 font-medium">ID</th>
+                <th className="w-52 px-4 py-3 font-medium">ID</th>
                 <th className="w-72 px-4 py-3 font-medium">Name</th>
                 <th className="w-72 px-4 py-3 font-medium">Folder</th>
                 <th className="w-80 px-4 py-3 font-medium">Test Plan</th>
@@ -573,11 +584,11 @@ export default function TestSuites() {
 
                 return (
                   <Fragment key={suite.id}>
-                    <tr className="hover:bg-[var(--bg-secondary)] transition-colors">
+                    <tr id={`suite-row-${suite.id}`} className="hover:bg-[var(--bg-secondary)] transition-colors">
                       <td className="py-3 px-4" onClick={(e) => e.stopPropagation()}>
                         <input type="checkbox" checked={bulk.isSelected(suite.id)} onChange={() => bulk.toggle(suite.id)} />
                       </td>
-                      <td className="py-3 px-4 font-mono text-xs text-[var(--text-muted)]">{suite.id}</td>
+                      <td className="py-3 px-4 font-mono text-xs text-[var(--text-muted)] truncate" title={suite.id}>{suite.id}</td>
                       <td className="py-3 px-4">
                         <div className="flex items-start gap-2" style={{ paddingLeft: `${hierarchyDepth * 24}px` }}>
                           {hierarchyDepth > 0 && <span aria-hidden="true" className="mt-1 text-[var(--accent)]">└</span>}
@@ -588,7 +599,13 @@ export default function TestSuites() {
                           >
                             {isExpanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
                           </button>
-                          <button onClick={() => openEditModal(suite)} className="block min-w-0 flex-1 text-left">
+                          {/* Clicking the suite shows its mapped cases (toggle) and reflects it in the URL so the
+                              view is deep-linkable; Edit stays on the pencil action. */}
+                          <button
+                            onClick={() => { toggleSuiteExpanded(suite.id); navigate(isExpanded ? '/suites' : `/suites/${suite.id}`); }}
+                            className="block min-w-0 flex-1 text-left"
+                            title="Show related test cases"
+                          >
                             <span className="block font-medium hover:text-[var(--accent)] transition-colors truncate" title={suite.name}>{suite.name}</span>
                             <span className="block text-xs text-[var(--text-muted)] font-normal truncate">{suite.description}</span>
                             <span className="block text-xs text-[var(--text-muted)]">{suiteCases.length} related cases</span>
@@ -697,25 +714,47 @@ export default function TestSuites() {
                       <tr>
                         <td colSpan={9} className="bg-[var(--bg-secondary)]/50 px-10 py-4">
                           <div className="border border-[var(--border)] rounded-lg bg-[var(--bg-card)] overflow-hidden">
-                            <div className="px-4 py-2 border-b border-[var(--border)] text-xs font-bold uppercase tracking-wider text-[var(--text-muted)]">
-                              Related Test Cases
+                            <div className="flex items-center justify-between gap-3 px-4 py-2 border-b border-[var(--border)]">
+                              <span className="text-xs font-bold uppercase tracking-wider text-[var(--text-muted)]">
+                                Related Test Cases ({suiteCases.length})
+                              </span>
+                              <button
+                                onClick={() => navigate('/cases')}
+                                className="text-xs font-medium text-[var(--accent)] hover:underline"
+                              >
+                                Open in Test Cases
+                              </button>
                             </div>
-                            <div className="divide-y divide-[var(--border)] max-h-72 overflow-auto">
+                            {/* Mapped cases in the Test Cases section's tabular format (ID · Title · Priority · Status). */}
+                            <div className="max-h-72 overflow-auto">
                               {suiteCases.length === 0 ? (
                                 <div className="px-4 py-3 text-sm text-[var(--text-muted)]">No cases linked to this suite.</div>
-                              ) : suiteCases.map((testCase) => (
-                                <div key={testCase.id} className="px-4 py-3">
-                                  <div className="flex items-start justify-between gap-3">
-                                    <div className="min-w-0">
-                                      <div className="font-medium text-sm whitespace-normal">{testCase.title}</div>
-                                      <div className="text-xs text-[var(--text-muted)] font-mono">{testCase.id}</div>
-                                    </div>
-                                    <span className="text-xs px-2 py-0.5 rounded border border-[var(--border)] text-[var(--text-muted)]">
-                                      {testCase.status || 'Draft'}
-                                    </span>
-                                  </div>
-                                </div>
-                              ))}
+                              ) : (
+                                <table className="w-full text-left text-sm whitespace-nowrap">
+                                  <thead className="sticky top-0 bg-[var(--bg-secondary)] text-[var(--text-muted)]">
+                                    <tr>
+                                      <th className="px-4 py-2 font-medium">ID</th>
+                                      <th className="px-4 py-2 font-medium">Title</th>
+                                      <th className="px-4 py-2 font-medium">Priority</th>
+                                      <th className="px-4 py-2 font-medium">Status</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody className="divide-y divide-[var(--border)]">
+                                    {suiteCases.map((testCase) => (
+                                      <tr key={testCase.id} className="hover:bg-[var(--bg-secondary)]/60">
+                                        <td className="px-4 py-2 font-mono text-xs text-[var(--text-muted)]">{testCase.id}</td>
+                                        <td className="px-4 py-2 font-medium max-w-md whitespace-normal">{testCase.title}</td>
+                                        <td className="px-4 py-2 text-[var(--text-muted)]">{testCase.priority || 'Medium'}</td>
+                                        <td className="px-4 py-2">
+                                          <span className="text-xs px-2 py-0.5 rounded border border-[var(--border)] text-[var(--text-muted)]">
+                                            {testCase.status || 'Draft'}
+                                          </span>
+                                        </td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              )}
                             </div>
                           </div>
                         </td>
