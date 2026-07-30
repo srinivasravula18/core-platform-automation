@@ -5,6 +5,7 @@ import { useSpeechToText } from '@/src/lib/useSpeechToText';
 import { showAlert } from '@/src/lib/dialog';
 import { FolderSelect } from './FolderSelect';
 import { RequiredMark } from './RequiredMark';
+import { readSseJson } from '@/src/lib/sse';
 
 interface AIActionModalProps {
   isOpen: boolean;
@@ -41,18 +42,22 @@ export function AIActionModal({ isOpen, onClose, taskType, onApprove, title }: A
     try {
       const res = await fetch('/api/agent/action', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
         body: JSON.stringify({ taskType, prompt: input })
       });
-      const data = await res.json();
-      if (res.ok && !data.error) {
-        setGeneratedData(data);
-      } else {
-        void showAlert("Failed to generate: " + (data.error || `HTTP ${res.status}`));
+      if (!res.ok || !res.body || !(res.headers.get('content-type') || '').includes('text/event-stream')) {
+        throw new Error('The AI service returned an invalid response.');
       }
-    } catch (e) {
+      let data: any = null;
+      await readSseJson(res.body, (event) => {
+        if (event.type === 'final') data = event.result;
+        if (event.type === 'error') throw new Error(event.error || 'Failed to generate.');
+      });
+      if (!data) throw new Error('Generation ended before completion.');
+      setGeneratedData(data);
+    } catch (e: any) {
       console.error(e);
-      void showAlert("Error generating action.");
+      void showAlert(e.message || 'Error generating action.');
     } finally {
       setIsGenerating(false);
     }

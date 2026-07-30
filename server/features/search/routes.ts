@@ -12,6 +12,7 @@
 import type { Express } from 'express';
 import { z } from 'zod';
 import { getOrchestrator } from '../../ai/orchestrator';
+import { prepareSse, sendSse } from '../../shared/sse';
 
 const MAX_ITEMS = 300;
 const MAX_FIELD_CHARS = 240;
@@ -30,6 +31,8 @@ function trimValue(v: any): any {
 
 export function registerSearchRoutes(app: Express) {
   app.post('/api/ai/search', async (req, res, next) => {
+    const stream = String(req.headers.accept || '').includes('text/event-stream');
+    let heartbeat: ReturnType<typeof setInterval> | undefined;
     try {
       const { query, kind, items, workspaceId } = req.body || {};
       if (typeof query !== 'string' || !Array.isArray(items)) {
@@ -44,8 +47,19 @@ export function registerSearchRoutes(app: Express) {
         .slice(0, MAX_ITEMS)
         .map((it: any) => trimValue({ ...it, id: String(it.id) }));
       const idSet = new Set<string>(safeItems.map((it: any) => String(it.id)));
-      if (idSet.size === 0) return res.json({ matchIds: [] });
+      if (idSet.size === 0) {
+        if (stream) {
+          prepareSse(res);
+          sendSse(res, { type: 'final', result: { matchIds: [] } });
+          return;
+        }
+        return res.json({ matchIds: [] });
+      }
 
+      if (stream) {
+        prepareSse(res);
+        heartbeat = setInterval(() => sendSse(res, { type: 'heartbeat', at: Date.now() }), 10000);
+      }
       const orch = await getOrchestrator('searchAgent', { workspaceId: workspaceId || 'default' });
       const result = await orch.generateObject<{ matchIds: string[] }>({
         prompt: `Filter these ${kind || 'items'} for the query. Return only the ids of matching items.
@@ -63,10 +77,15 @@ Return strict JSON: {"matchIds": ["<id>", ...]}. Only ids from ITEMS. Empty arra
       // Guardrail: the model can only ever return ids that actually exist here.
       const raw: string[] = (result as any).object?.matchIds || [];
       const matchIds = Array.from(new Set(raw.map(String))).filter((id) => idSet.has(id)).slice(0, MAX_ITEMS);
-      res.json({ matchIds });
+      if (stream) sendSse(res, { type: 'final', result: { matchIds } });
+      else res.json({ matchIds });
     } catch (err: any) {
-      if (err?.status) return res.status(err.status).json({ error: err.message, matchIds: [] });
-      next(err);
+      if (stream) sendSse(res, { type: 'error', error: err?.message || 'AI search failed.' });
+      else if (err?.status) return res.status(err.status).json({ error: err.message, matchIds: [] });
+      else next(err);
+    } finally {
+      if (heartbeat) clearInterval(heartbeat);
+      if (String(res.getHeader('Content-Type') || '').includes('text/event-stream')) res.end();
     }
   });
 }

@@ -87,6 +87,7 @@ import { renderMcpDomFactsForPrompt } from './mcpDomFacts';
 // so the case writer, coder, and analyst can no longer disagree.
 import { isNoiseTurn, deriveUnderstandingFromChat, resolveUnderstanding } from '../../agent-runtime/context/goalContext';
 import { generateValidCaseRework, requestsAdditionalCaseStep } from './reworkCaseValidation';
+import { prepareSse, sendSse } from '../../shared/sse';
 
 function wantsCodeGroundedTestUnderstanding(value: string): boolean {
   const text = String(value || '').toLowerCase();
@@ -5321,8 +5322,15 @@ Rules:
 
     const config = agentMap[taskType];
     if (!config) return res.status(400).json({ error: 'Invalid taskType' });
+    const stream = String(req.headers.accept || '').includes('text/event-stream');
+    let heartbeat: ReturnType<typeof setInterval> | undefined;
 
     try {
+      if (stream) {
+        prepareSse(res);
+        sendSse(res, { type: 'step', text: 'Generating the requested artifact...' });
+        heartbeat = setInterval(() => sendSse(res, { type: 'heartbeat', at: Date.now() }), 10000);
+      }
       const ai = await getOrchestrator(config.agent, { workspaceId: reqScope(req).userId || 'default' });
       const result = await ai.generateObject<any>({
         prompt: String(prompt || ''),
@@ -5330,13 +5338,21 @@ Rules:
         userMessage: String(prompt || ''),
       });
       if ((result as any).shortCircuit) {
+        if (stream) return sendSse(res, { type: 'error', error: (result as any).shortCircuit });
         return res.status(422).json({ error: (result as any).shortCircuit });
       }
-      res.json(result.object);
+      if (stream) sendSse(res, { type: 'final', result: result.object });
+      else res.json(result.object);
     } catch (err: any) {
       console.error(err);
-      const status = Number(err?.status);
-      res.status(status >= 400 && status <= 599 ? status : 502).json({ error: getAIErrorMessage(err) });
+      if (stream) sendSse(res, { type: 'error', error: getAIErrorMessage(err) });
+      else {
+        const status = Number(err?.status);
+        res.status(status >= 400 && status <= 599 ? status : 502).json({ error: getAIErrorMessage(err) });
+      }
+    } finally {
+      if (heartbeat) clearInterval(heartbeat);
+      if (String(res.getHeader('Content-Type') || '').includes('text/event-stream')) res.end();
     }
   });
 
