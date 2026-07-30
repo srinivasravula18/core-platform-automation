@@ -58,7 +58,6 @@ export default function TestSuites() {
   const [selectedSuiteId, setSelectedSuiteId] = useState<string | null>(null);
   // Suite whose cases are being mapped through the unified EntityLinker (null = closed).
   const [linkerSuite, setLinkerSuite] = useState<any | null>(null);
-  const inlineSelectClass = "w-full min-w-[140px] rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs font-medium text-[var(--text-primary)] outline-none transition-colors hover:border-[var(--accent)] focus:border-[var(--accent)]";
 
   const fetchSuites = () => {
     fetch('/api/suites')
@@ -588,7 +587,7 @@ export default function TestSuites() {
         </div>
 
         <div className="flex-1 overflow-auto">
-          <table className="w-full min-w-[1720px] table-fixed text-left text-sm whitespace-nowrap">
+          <table className="w-full min-w-[1200px] table-fixed text-left text-sm whitespace-nowrap">
             <thead className="sticky top-0 bg-[var(--bg-secondary)] border-b border-[var(--border)] z-10">
               <tr className="text-[var(--text-muted)]">
                 <th className="font-medium py-3 px-4 w-10">
@@ -596,9 +595,7 @@ export default function TestSuites() {
                 </th>
                 <th className="w-52 px-4 py-3 font-medium">ID</th>
                 <th className="w-72 px-4 py-3 font-medium">Name</th>
-                <th className="w-72 px-4 py-3 font-medium">Folder</th>
                 <th className="w-80 px-4 py-3 font-medium">Test Plan</th>
-                <th className="w-48 px-4 py-3 font-medium">Module</th>
                 <th className="w-36 px-4 py-3 font-medium">Tags</th>
                 <th className="w-32 px-4 py-3 font-medium">Updated</th>
                 <th className="w-28 px-4 py-3 text-right font-medium">Actions</th>
@@ -606,9 +603,9 @@ export default function TestSuites() {
             </thead>
             <tbody className="divide-y divide-[var(--border)]">
               {loading ? (
-                <tr><td colSpan={9} className="py-8 text-center text-[var(--text-muted)]">Loading suites...</td></tr>
+                <tr><td colSpan={7} className="py-8 text-center text-[var(--text-muted)]">Loading suites...</td></tr>
               ) : filteredSuites.length === 0 ? (
-                <tr><td colSpan={9} className="py-8 text-center text-[var(--text-muted)]">No suites found.</td></tr>
+                <tr><td colSpan={7} className="py-8 text-center text-[var(--text-muted)]">No suites found.</td></tr>
               ) : orderedSuites.map((suite) => {
                 const suiteCases = getSuiteCases(suite.id);
                 const isExpanded = expandedSuiteIds.includes(suite.id);
@@ -645,27 +642,6 @@ export default function TestSuites() {
                       </div>
                     </td>
                     <td className="py-3 px-4">
-                      <select
-                        value={suite.folderId || ''}
-                        onClick={(event) => event.stopPropagation()}
-                        onChange={(event) => {
-                          const folderId = event.target.value;
-                          const folderName = folders.find((folder) => folder.id === folderId)?.name || '';
-                          updateSuiteInline(suite, {
-                            folderId,
-                            ...((!suite.module || suite.module === 'QA Assistant') && folderName ? { module: folderName } : {}),
-                          });
-                        }}
-                        className={inlineSelectClass}
-                        title="Update folder"
-                      >
-                        <option value="" disabled>Select a folder</option>
-                        {folders.map((folder) => (
-                          <option key={folder.id} value={folder.id}>{folder.path || folder.name}</option>
-                        ))}
-                      </select>
-                    </td>
-                    <td className="py-3 px-4">
                         <MultiSelectDropdown
                           label="None"
                           options={plans.map((plan) => ({ id: String(plan.id), name: String(plan.name) }))}
@@ -673,20 +649,6 @@ export default function TestSuites() {
                           onChange={(testPlanIds) => updateSuiteInline(suite, { testPlanIds, testPlanId: testPlanIds[0] || '' })}
                           className="min-w-[280px] max-w-[360px]"
                         />
-                      </td>
-                      <td className="py-3 px-4">
-                        <select
-                          value={suiteModuleName(suite, folders)}
-                          onClick={(event) => event.stopPropagation()}
-                          onChange={(event) => updateSuiteInline(suite, { module: event.target.value })}
-                          className="w-full min-w-[100px] rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs font-medium text-[var(--text-primary)] outline-none transition-colors hover:border-[var(--accent)] focus:border-[var(--accent)]"
-                          title="Update module"
-                        >
-                          <option value="">-</option>
-                          {moduleOptions.map((module) => (
-                            <option key={module} value={module}>{module}</option>
-                          ))}
-                        </select>
                       </td>
                       <td className="py-3 px-4">
                         <TagMultiSelect
@@ -744,7 +706,7 @@ export default function TestSuites() {
                     </tr>
                     {isExpanded && (
                       <tr>
-                        <td colSpan={9} className="bg-[var(--bg-secondary)]/50 px-10 py-4">
+                        <td colSpan={7} className="bg-[var(--bg-secondary)]/50 px-10 py-4">
                           <div className="border border-[var(--border)] rounded-lg bg-[var(--bg-card)] overflow-hidden">
                             <div className="flex items-center justify-between gap-3 px-4 py-2 border-b border-[var(--border)]">
                               <span className="text-xs font-bold uppercase tracking-wider text-[var(--text-muted)]">
