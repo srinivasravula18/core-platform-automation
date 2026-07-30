@@ -1050,6 +1050,7 @@ Return a short, structured analysis.`,
         websiteName: params.websiteName,
         baseUrl: params.baseUrl,
         targetUrl: params.targetUrl,
+        ownerId: userId,
       });
       return resolved || { error: 'No matching credentials' };
     }
