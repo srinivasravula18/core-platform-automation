@@ -167,6 +167,9 @@ export function classifyErrorKind(error?: string): string {
   if (!e) return 'unknown';
   if (/MISSION SCOPE VIOLATION/i.test(e)) return 'scope-violation';
   if (/MISSION CONTEXT MISMATCH/i.test(e)) return 'context-mismatch';
+  // A locator that matched a background control obscured by an open overlay is a grounding/tooling fault, not a
+  // product defect — classified before 'timeout' since the runtime marks it while relabeling the click timeout.
+  if (/\bTOOLING_OBSCURED\b|\[tooling\]/i.test(e)) return 'tooling-obscured';
   if (/Timed?\s?out|timeout/i.test(e)) return 'timeout';
   if (/toBeVisible|toBeHidden|toContainText|toHaveValue|toBeEnabled|toBeDisabled|toBeGreaterThan|expect\(/i.test(e)) return 'assertion';
   if (/strict mode violation|resolved to \d+ elements/i.test(e)) return 'ambiguous-locator';
@@ -200,6 +203,9 @@ export function failureSignature(test: TestResultLike, stepLog?: StepLogEntry[])
 }
 
 const FAILED_STATUSES = new Set(['failed', 'timedOut', 'interrupted']);
+
+/** Failure kinds that are tooling/locator faults, never auto-filed as product defects. */
+const NON_PRODUCT_DEFECT_KINDS = new Set(['tooling-obscured']);
 
 function reproStepsFor(caseRef: DefectCaseRef | undefined, stepLog: StepLogEntry[] | undefined): string {
   if (caseRef?.steps?.length) {
@@ -278,6 +284,9 @@ export function buildDefectDrafts(input: DefectReporterInput): DefectReport {
   const updates: DefectOccurrenceUpdate[] = [];
 
   for (const { sig, tests } of clusters.values()) {
+    // Never auto-file a product defect for a tooling/locator fault (a click that timed out on a background
+    // control behind an open overlay). The step still shows as failed in the run; it just isn't a product bug.
+    if (NON_PRODUCT_DEFECT_KINDS.has(sig.errorKind)) continue;
     const lead = tests[0];
     const titles = tests.map((t) => t.title);
     const frequency = tests.length;

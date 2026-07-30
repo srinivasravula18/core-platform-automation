@@ -52,6 +52,35 @@ function candidates(graph: EvidenceGraph, target: string): EvidenceNode[] {
   return graph.nodes.filter((n) => (n.label || '').trim().toLowerCase() === q);
 }
 
+/** Semantic base key: strip the uniqueness suffix ("_2") and trailing required/marker punctuation so a
+ *  field's handle ("Status" from label "Status *") and a same-named resting-page control ("Status" from a
+ *  grid column header) compare equal. App-agnostic — no label/marker is hardcoded. */
+function baseSemantic(s: string): string {
+  return String(s || '').toLowerCase().replace(/_\d+$/, '').replace(/[\s*:()]+$/g, '').trim();
+}
+
+/** Fully trusted, executable node — the same bar resolveTarget enforces before emitting a locator. */
+function isTrustedNode(n: EvidenceNode): boolean {
+  return n.uniqueness === true && n.confidence === 'verified-live' && n.provenance === 'LIVE_DOM' && !!n.selector;
+}
+
+/**
+ * Modal/field disambiguation. A plan target ("Status") collides with BOTH a resting-page control (e.g. a
+ * grid column header, semantic "Status") AND the create/edit-form field of the same base name ("Status *" →
+ * demoted to "Status_2" by uniqueSemantic). The page control tends to win the clean name only because the
+ * list is explored before the modal is opened — yet at execution the field is the intended, on-top target
+ * and the page control is obscured behind the open overlay (→ click timeout → false product defect). When
+ * the exact match is a page node but exactly one TRUSTED form-scoped sibling shares the base name, prefer
+ * the field. Deterministic; only ever swaps to a fully verified node, so a genuine page-only target is untouched.
+ */
+function preferFormField(graph: EvidenceGraph, matched: EvidenceNode): EvidenceNode {
+  if (matched.stateTag === 'form') return matched;
+  const base = baseSemantic(matched.semanticName);
+  const formSibs = graph.nodes.filter((n) => n !== matched && n.stateTag === 'form'
+    && isTrustedNode(n) && baseSemantic(n.semanticName) === base);
+  return formSibs.length === 1 ? formSibs[0] : matched;
+}
+
 /**
  * Resolve a semantic target against the Evidence Graph + Selector Registry. Deterministic; never guesses.
  */
@@ -65,7 +94,8 @@ export function resolveTarget(target: string, graph: EvidenceGraph, run?: any): 
     return { status: 'AMBIGUOUS_SELECTOR', target, node: null, selector: null, selectorType: null,
       reason: `Semantic target matched ${found.length} evidence nodes.` };
   }
-  const node = found[0];
+  // Resolve a name that collides between a resting-page control and the open-form field to the field.
+  const node = preferFormField(graph, found[0]);
   // A node whose registry entry is not uniquely verified is ambiguous — never emit a positional guess.
   if (node.uniqueness !== true) {
     return { status: 'AMBIGUOUS_SELECTOR', target, node, selector: null, selectorType: null,

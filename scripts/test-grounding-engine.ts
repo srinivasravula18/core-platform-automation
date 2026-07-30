@@ -27,6 +27,11 @@ function main() {
         vs('sel_apps', 'button', 'Apps', 'getByRole(button,Apps)', 'role', false), // not unique (4 matches)
         { ...vs('sel_observed', 'button', 'Observed', '#observed', 'css', true), verified: false, confidence: 'inferred', uniqueness: null, sourceEvidenceId: 'inspection' },
         { ...vs('sel_static', 'button', 'Static', '#static', 'css', true), confidence: 'verified-static', provenance: 'STATIC_SOURCE' },
+        // Modal/field name collision: a grid column header "Status" (resting page) and the create-form field
+        // "Status *" (only inside the modal) both reduce to the semantic handle "Status". The header is
+        // registered first (list explored before modal), so it claims "Status" and the field becomes "Status_2".
+        vs('sel_status_hdr', 'button', 'Status', 'role=button[name="Status"]', 'role', true),
+        { ...vs('sel_status_field', 'button', 'Status *', '#create-status', 'css', true), stateTag: 'form' },
       ],
     },
   };
@@ -51,6 +56,15 @@ function main() {
 
   console.log('resolve by node id / selectorRef too');
   eq(resolveTarget('sel_name', graph, run).status, 'RESOLVED', 'resolves by selectorRef');
+
+  console.log('modal/field disambiguation: a page-header name collision resolves to the open-form field');
+  const st = resolveTarget('Status', graph, run);
+  eq(st.status, 'RESOLVED', 'colliding "Status" still resolves');
+  eq(st.selector, '#create-status', 'resolves to the in-modal field, not the obscured grid header');
+  eq(st.node?.stateTag, 'form', 'chosen node is the form-scoped field');
+  // The field can still be targeted by its own demoted handle, and a genuine page-only name is untouched.
+  eq(resolveTarget('Status_2', graph, run).selector, '#create-status', 'the demoted field handle still resolves to the field');
+  eq(resolveTarget('New', graph, run).selector, '[data-testid="new-v2"]', 'a page-only target is unaffected by the swap');
 
   console.log('catalog offers only verified-unique controls');
   const cat = renderTargetCatalogForPrompt(graph);

@@ -160,9 +160,29 @@ export class MissionRunner {
     try { await l.hover({ timeout: 2500, force: true }); } catch { /* best effort */ }
   }
 
+  /** Relabel an obscured/behind-overlay click failure as a TOOLING fault so the defect reporter never files it
+   *  as a product bug. Only ever rewrites an ALREADY-FAILED interaction — it never pre-empts one that would
+   *  succeed. Fires when a modal/overlay is open and the matched element sits OUTSIDE it (e.g. a grid column
+   *  header under the create dialog): the locator matched a background control, which is a grounding/tooling
+   *  fault, not a product defect. App-agnostic (ARIA/overlay heuristics only, no app selectors). */
+  private async reclassifyIfObscured(e: any, spec: LocatorSpec, l: Locator): Promise<any> {
+    const msg = String((e && e.message) || e);
+    if (!/Timeout|intercepts pointer events|not stable|outside of the viewport|not visible/i.test(msg)) return e;
+    const obscured = await l.first().evaluate((el: Element) => {
+      const overlay = document.querySelector('[role="dialog"],[aria-modal="true"],dialog[open],[data-tf-form-scope],[class*="modal" i]');
+      if (!overlay || overlay.contains(el)) return false;      // no modal open, or the target is inside it → not this case
+      const r = el.getBoundingClientRect();
+      if (r.width === 0 || r.height === 0) return true;
+      const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      return !!hit && hit !== el && !el.contains(hit) && !hit.contains(el); // a different element is on top of the target
+    }).catch(() => false);
+    if (!obscured) return e;
+    return new Error('TOOLING_OBSCURED [tooling] - target "' + String(spec.label || spec.selector) + '" resolved to an element behind an open overlay (a background control such as a grid header under the modal); this is a locator/tooling fault, not a product defect.');
+  }
+
   // ---- Reveal-then-act interaction helpers (the compiler emits these instead of raw locator calls) ----
   // Every helper runs through act(): before/after step screenshot + step-log entry, then the interaction.
-  async click(spec: LocatorSpec): Promise<void> { await this.act('click', spec, null, async () => { const l = this.locator(spec); await this.reveal(l); await l.click(); }); }
+  async click(spec: LocatorSpec): Promise<void> { await this.act('click', spec, null, async () => { const l = this.locator(spec); await this.reveal(l); try { await l.click(); } catch (e) { throw await this.reclassifyIfObscured(e, spec, l); } }); }
   async fill(spec: LocatorSpec, value: string): Promise<void> { await this.act('fill', spec, String(value ?? ''), async () => { const l = this.locator(spec); await this.reveal(l); await l.fill(String(value ?? '')); }); }
   async select(spec: LocatorSpec, value: string): Promise<void> { await this.act('select', spec, String(value ?? ''), async () => { const l = this.locator(spec); await this.reveal(l); await l.selectOption(String(value ?? '')); }); }
   async check(spec: LocatorSpec): Promise<void> { await this.act('check', spec, null, async () => { const l = this.locator(spec); await this.reveal(l); await l.check(); }); }

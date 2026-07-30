@@ -39,6 +39,15 @@ function main() {
   eq(classifyErrorKind('MISSION CONTEXT MISMATCH [RUNTIME/x] — executed on the wrong application'), 'context-mismatch', 'context-mismatch kind');
   eq(classifyErrorKind('MISSION SCOPE VIOLATION [RUNTIME/x] — a data-mutating mission cannot run'), 'scope-violation', 'scope-violation kind');
   eq(classifyErrorKind('expect(locator).toContainText failed'), 'assertion', 'assertion kind');
+  eq(classifyErrorKind('TOOLING_OBSCURED [tooling] - target "Status *" resolved to an element behind an open overlay'), 'tooling-obscured', 'obscured-by-overlay is a tooling kind, not a product timeout');
+
+  console.log('tooling/locator faults (obscured behind overlay) are NOT filed as product defects');
+  const toolingErr = 'TOOLING_OBSCURED [tooling] - target "Status *" resolved to an element behind an open overlay (a background control such as a grid header under the modal); this is a locator/tooling fault, not a product defect.';
+  const gated = buildDefectDrafts(baseInput([failedTest('Create an account with required details', toolingErr)]));
+  eq(gated.drafts.length, 0, 'an obscured-by-overlay click timeout files NO product defect');
+  // a real product timeout still files a defect (the gate is precise, not a blanket timeout suppressor)
+  const realTimeout = buildDefectDrafts(baseInput([failedTest('Save record', 'Timed out 10000ms waiting for getByRole(\'button\', { name: \'Save\' })')]));
+  eq(realTimeout.drafts.length, 1, 'a genuine timeout is still reported');
 
   console.log('clustering: N tests sharing one symptom → ONE defect');
   const err = 'Timed out 10000ms waiting for getByRole(\'button\', { name: \'Save\' })';
