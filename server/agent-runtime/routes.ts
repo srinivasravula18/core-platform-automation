@@ -12,6 +12,7 @@
  */
 
 import type { Express } from 'express';
+import { randomUUID } from 'crypto';
 import { routeGoal } from './goals/router';
 import type { CapabilityShadowRecord, RouteKind, RoutingContext, RouteTarget } from './goals/types';
 import { routeTurn, capabilityToLegacyRouteKind } from '../../services/runtime/src/application/routeTurn';
@@ -70,16 +71,32 @@ function recordCapabilityShadow(input: {
   }).catch((err) => console.warn('[capability-shadow] failed:', err?.message || err));
 }
 
+/** A response destination the router logic writes to — real Express res in the sync path, a collector in the
+ * durable-job path. Lets the SAME branch logic serve both without duplication. */
+interface GoalSink {
+  status(code: number): GoalSink;
+  json(payload: unknown): unknown;
+}
+
 export function registerAgentRuntimeRoutes(app: Express) {
-  app.post('/api/agent/goal', async (req, res, next) => {
+  // Durable router jobs (mirrors the understanding-job pattern): the router's typed decision runs a model
+  // call that can be slow, and a single long HTTP request dies when the tab is backgrounded / a proxy times
+  // out — so "Routing request to the right agent…" silently stopped. Run it as a background job the client
+  // polls with SHORT requests, keyed by conversation so a returning client re-attaches instead of losing it.
+  const routerJobs = new Map<string, { status: 'running' | 'done'; result?: { status: number; payload: any }; createdAt: number; conversationId?: string; ownerId?: string }>();
+  const ROUTER_JOB_TTL_MS = 30 * 60 * 1000;
+  const pruneRouterJobs = () => {
+    const cutoff = Date.now() - ROUTER_JOB_TTL_MS;
+    for (const [id, job] of routerJobs) if (job.createdAt < cutoff) routerJobs.delete(id);
+  };
+
+  // The router decision logic, unchanged — writes its single JSON response to the provided sink.
+  async function goalCore(body: GoalRequestBody, scope: ReturnType<typeof reqScope>, res: GoalSink, next: (err?: any) => void): Promise<unknown> {
     try {
-      const body: GoalRequestBody = req.body || {};
       const message = typeof body.message === 'string' ? body.message.trim() : '';
       if (!message) {
         return res.status(400).json({ error: 'message is required' });
       }
-
-      const scope = reqScope(req);
 
       // Fail fast when the workspace isn't set up (no LLM / no target URL+credentials / no project):
       // return one friendly answer turn with the exact setup steps instead of starting work that
@@ -239,5 +256,72 @@ export function registerAgentRuntimeRoutes(app: Express) {
       }
       next(err);
     }
+  }
+
+  /** Run goalCore against an in-memory collector so its single JSON response is captured as {status,payload}. */
+  async function runGoalToResult(body: GoalRequestBody, scope: ReturnType<typeof reqScope>): Promise<{ status: number; payload: any }> {
+    return await new Promise((resolve) => {
+      let settled = false;
+      let statusCode = 200;
+      const done = (r: { status: number; payload: any }) => { if (!settled) { settled = true; resolve(r); } };
+      const sink: GoalSink = {
+        status(code: number) { statusCode = code; return sink; },
+        json(payload: unknown) { done({ status: statusCode, payload }); return payload; },
+      };
+      goalCore(body, scope, sink, (err?: any) => done({ status: err?.status || 500, payload: { error: err?.message || 'Routing failed.' } }))
+        .catch((err: any) => done({ status: err?.status || 500, payload: { error: err?.message || 'Routing failed.' } }));
+    });
+  }
+
+  // Durable router: start a background job and return its id immediately. The job runs to completion regardless
+  // of the client's tab focus, so backgrounding the tab (or a proxy idle-timeout) can no longer kill routing.
+  app.post('/api/agent/goal', async (req, res, next) => {
+    try {
+      const body: GoalRequestBody = req.body || {};
+      if (!(typeof body.message === 'string' && body.message.trim())) {
+        return res.status(400).json({ error: 'message is required' });
+      }
+      const scope = reqScope(req);
+      pruneRouterJobs();
+      const jobId = randomUUID();
+      routerJobs.set(jobId, {
+        status: 'running', createdAt: Date.now(),
+        conversationId: String(body.conversationId || '').trim() || undefined,
+        ownerId: scope.userId || undefined,
+      });
+      runGoalToResult(body, scope).then((result) => {
+        const job = routerJobs.get(jobId);
+        if (job) { job.status = 'done'; job.result = result; }
+      });
+      res.json({ job_id: jobId });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // Poll a router job. Short request → immune to tab-backgrounding/proxy idle-timeouts.
+  app.get('/api/agent/goal/:jobId', (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    const job = routerJobs.get(String(req.params.jobId));
+    if (!job) return res.status(404).json({ error: 'Unknown or expired routing job.' });
+    if (job.status !== 'done' || !job.result) return res.json({ status: 'running' });
+    res.json({ status: 'done', http: job.result.status, result: job.result.payload });
+  });
+
+  // Re-attach after a navigate-away: the latest router job for this conversation (owned by the caller).
+  app.get('/api/agent/goal/for-conversation/:conversationId', (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    pruneRouterJobs();
+    const conversationId = String(req.params.conversationId || '').trim();
+    const ownerId = reqScope(req).userId || '';
+    if (!conversationId) return res.json({ job: null });
+    let latest: { jobId: string; job: any } | null = null;
+    for (const [jobId, job] of routerJobs) {
+      if (job.conversationId !== conversationId) continue;
+      if (ownerId && job.ownerId && job.ownerId !== ownerId) continue;
+      if (!latest || job.createdAt > latest.job.createdAt) latest = { jobId, job };
+    }
+    if (!latest) return res.json({ job: null });
+    res.json({ job: { jobId: latest.jobId, status: latest.job.status, http: latest.job.result?.status ?? null, result: latest.job.result?.payload ?? null } });
   });
 }

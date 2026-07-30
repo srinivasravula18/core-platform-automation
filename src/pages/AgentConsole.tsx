@@ -67,6 +67,7 @@ import { useProjects, type ProjectApp } from '@/src/store/project';
 import { useUiSettings } from '@/src/store/uiSettings';
 import { useSpeechToText } from '@/src/lib/useSpeechToText';
 import { useFlushOnUnload } from '@/src/lib/useFlushOnUnload';
+import { markAgentActive, clearAgentActive } from '@/src/lib/agentActivity';
 import { showAlert, showConfirm } from '@/src/lib/dialog';
 import { showToast } from '@/src/lib/dialog';
 import { WorkflowRunner } from '@/src/components/WorkflowRunner';
@@ -732,6 +733,10 @@ const AppAskCard = memo(function AppAskCard({
   );
 });
 
+// Last-rendered turns per conversation — seeds useState on remount so the first paint shows the chat, not the
+// empty "new chat" flash. The mount load still runs to revalidate + resume.
+const turnsCache = new Map<string, Turn[]>();
+
 export default function AgentConsole() {
   // Active project/app scope. The whole page subtree remounts when this changes
   // (see App.tsx scopeKey), so reading it once at mount binds this console
@@ -755,7 +760,13 @@ export default function AgentConsole() {
   const location = useLocation();
   const { chatId: urlChatId } = useParams<{ chatId?: string }>();
 
-  const [turns, setTurns] = useState<Turn[]>([]);
+  // Seed from cache (same id as conversationId resolves) so a remount paints the chat, not the empty flash.
+  const [turns, setTurns] = useState<Turn[]>(() => {
+    const seedId = urlChatId || readScopedStorage(convKey);
+    return seedId ? (turnsCache.get(seedId) ?? []) : [];
+  });
+  // True when this mount painted from cache (a revisit) — lets the load guard reconcile without wiping.
+  const hydratedRef = useRef(turns.length > 0);
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
   const rememberedConversationIdRef = useRef<string | null>(null);
@@ -766,6 +777,14 @@ export default function AgentConsole() {
   });
   const [conversations, setConversations] = useState<ConversationMeta[]>([]);
   const [historyOpen, setHistoryOpen] = useState(false);
+  // Mirror the console's working state into the durable, cross-tab pre-run signal so the global RunningIndicator
+  // shows a spinner during routing/understanding (which has no agent-runs record yet) and it stays visible after
+  // navigating away. Explicit clear on unmount-while-busy is intentionally omitted — the signal's TTL reaps it,
+  // and keeping it lets the pill persist across pages/tabs while the request is still in flight.
+  useEffect(() => {
+    if (busy) markAgentActive(conversationId, 'Working on your request…');
+    else clearAgentActive(conversationId);
+  }, [busy, conversationId]);
   const [selectedConversationIds, setSelectedConversationIds] = useState<Set<string>>(new Set());
   const [favorites, setFavorites] = useState<Set<string>>(() => {
     const stored = readScopedStorage('tfa_conv_favorites');
@@ -875,6 +894,8 @@ export default function AgentConsole() {
   const targetChoiceRef = useRef<{ applicationId?: string; applicationName?: string; moduleId?: string; moduleName?: string } | null>(null);
   const activeAbortRef = useRef<AbortController | null>(null);
   const activeThinkingIdRef = useRef<string | null>(null);
+  // Bridge to send() for reconcileGoal (send is defined later; a ref avoids the ordering/dep cycle).
+  const sendRef = useRef<((raw?: string, editTurnIdArg?: string | null) => Promise<void>) | null>(null);
 
   // Keep the active conversation id in localStorage (per scope) so a refresh
   // resumes the right conversation for the selected project/app.
@@ -1019,6 +1040,28 @@ export default function AgentConsole() {
     } catch { /* best-effort resume */ }
   }, []);
 
+  // Resume a router decision that finished while the user was away: re-drive the unconsumed message through
+  // send() (reusing its user turn). Guards below skip any double-run. Pairs with the durable goal job.
+  const reconcileGoal = useCallback(async (id: string, token: number) => {
+    try {
+      if (turnsRef.current.some((t) => t.role === 'assistant' && (t.kind === 'thinking' || t.kind === 'folderask'))) return;
+      const u = await fetch(`/api/agent/understand-request/for-conversation/${encodeURIComponent(id)}`).then((x) => x.json()).catch(() => null);
+      if (token !== loadReqRef.current) return;
+      if (u?.job) return; // understanding is in flight — its own reconcile handles it
+      const g = await fetch(`/api/agent/goal/for-conversation/${encodeURIComponent(id)}`, { headers: { 'Cache-Control': 'no-store' } }).then((x) => x.json()).catch(() => null);
+      if (token !== loadReqRef.current || !g?.job) return;
+      // Only the last user turn with no assistant response after it is unconsumed work to resume.
+      const turns = turnsRef.current;
+      let lastUserIdx = -1;
+      for (let i = turns.length - 1; i >= 0; i -= 1) if (turns[i].role === 'user') { lastUserIdx = i; break; }
+      if (lastUserIdx < 0) return;
+      if (turns.slice(lastUserIdx + 1).some((t) => t.role === 'assistant')) return;
+      const text = String((turns[lastUserIdx] as any).text || '').trim();
+      if (!text || !sendRef.current) return;
+      void sendRef.current(text, turns[lastUserIdx].id); // re-drive via the battle-tested send() path
+    } catch { /* best-effort resume */ }
+  }, []);
+
   const loadConversation = useCallback(async (id: string) => {
     const token = ++loadReqRef.current;
     loadedRef.current = false;
@@ -1046,13 +1089,15 @@ export default function AgentConsole() {
       void reconcileConversationRuns(id, token);
       // Resume an understanding that was in flight when the user navigated away mid-thinking.
       void reconcileUnderstanding(id, token);
+      // Resume a router decision that finished while the user was away (before understanding started).
+      void reconcileGoal(id, token);
     } catch {
       // Never wipe a live thread on a failed load — only clear when nothing is on screen.
       if (token === loadReqRef.current && turnsRef.current.length === 0) setTurns([]);
     } finally {
       if (token === loadReqRef.current) loadedRef.current = true;
     }
-  }, [reconcileConversationRuns, reconcileUnderstanding]);
+  }, [reconcileConversationRuns, reconcileUnderstanding, reconcileGoal]);
 
   // Initial load: restore the active conversation + the history list. If the remembered id has no
   // content (e.g. a fresh id was minted before the scope settled, or the user navigated away and
@@ -1111,7 +1156,15 @@ export default function AgentConsole() {
 
       if (token !== loadReqRef.current) return; // a newer load (chat switch/new chat) won
       loadedRef.current = true;
-      if (turnsRef.current.length > 0) return; // user already started a thread — never wipe it
+      if (turnsRef.current.length > 0) {
+        // Never wipe a live/hydrated thread; a cache-hydrated revisit still reconciles (idempotent) to resume.
+        if (hydratedRef.current) {
+          void reconcileConversationRuns(conversationId, token);
+          void reconcileUnderstanding(conversationId, token);
+          void reconcileGoal(conversationId, token);
+        }
+        return;
+      }
       convTitleRef.current = chosenTitle;
       if (chosen !== conversationId) setConversationId(chosen);
       setTurns(chosenTurns);
@@ -1119,6 +1172,8 @@ export default function AgentConsole() {
       void reconcileConversationRuns(chosen, token);
       // Resume an understanding that was in flight when the user navigated away mid-thinking.
       void reconcileUnderstanding(chosen, token);
+      // Resume a router decision that finished while the user was away (before understanding started).
+      void reconcileGoal(chosen, token);
     })();
     fetch('/api/credentials/websites')
       .then((r) => r.json())
@@ -1169,6 +1224,8 @@ export default function AgentConsole() {
   useEffect(() => {
     if (!loadedRef.current) return;
     const clean = turns.filter((t) => !(t.role === 'assistant' && t.kind === 'thinking'));
+    // Keep the hydration cache current so a remount paints this conversation instantly (see turnsCache).
+    if (clean.length) turnsCache.set(conversationId, clean); else turnsCache.delete(conversationId);
     pendingSnapshotRef.current = clean.length ? { conversationId, workspaceId, turns: clean } : null;
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => {
@@ -2462,15 +2519,35 @@ export default function AgentConsole() {
           appId: selectedAppId || undefined,
         };
         appendThinkingDebug(thinkingId, 'Sending request to agent router', routingBody);
-        const res = await fetch('/api/agent/goal', {
+        // Durable router job: start → poll SHORT requests → decision. A backgrounded tab or a proxy idle
+        // timeout can no longer kill routing (the job runs to completion server-side); the poll re-attaches.
+        const startRes = await fetch('/api/agent/goal', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           signal: activeAbortRef.current?.signal,
           body: JSON.stringify(routingBody),
         });
-        const goal = await res.json().catch(() => ({}));
+        const started = await startRes.json().catch(() => ({} as any));
+        let goal: any = started;
+        let goalOk = startRes.ok;
+        if (startRes.ok && started?.job_id) {
+          const jobId = String(started.job_id);
+          const deadline = Date.now() + 180000; // router is quick; cap so a dead job can't poll forever
+          for (;;) {
+            if (activeAbortRef.current?.signal?.aborted) throw new DOMException('aborted', 'AbortError');
+            await new Promise((r) => setTimeout(r, 900));
+            if (Date.now() > deadline) { goalOk = false; goal = { error: 'Routing timed out.' }; break; }
+            const pr = await fetch(`/api/agent/goal/${encodeURIComponent(jobId)}`, {
+              headers: { 'Cache-Control': 'no-store' },
+              signal: activeAbortRef.current?.signal,
+            });
+            if (pr.status === 404) { goalOk = false; goal = { error: 'Routing job expired.' }; break; }
+            const pj = await pr.json().catch(() => ({} as any));
+            if (pj?.status === 'done') { goal = pj.result ?? {}; goalOk = (pj.http ?? 200) < 400; break; }
+          }
+        }
         appendThinkingDebug(thinkingId, 'Agent router result', { ...goal, message: text });
-        if (!res.ok) {
+        if (!goalOk) {
           replaceTurn(thinkingId, {
             id: thinkingId,
             role: 'assistant',
@@ -2972,6 +3049,9 @@ export default function AgentConsole() {
   const providerPortal = providers.length > 0
     ? document.getElementById('topbar-actions')
     : null;
+
+  // Keep the send() bridge current so reconcileGoal can re-drive a message after navigation.
+  sendRef.current = send;
 
   return (
     <><div className="flex h-full w-full flex-col">
