@@ -76,7 +76,7 @@ export default function TestCases() {
   const [platformFilter, setPlatformFilter] = useState('All');
   const [appFilter, setAppFilter] = useState('All');
   const [isFilterOpen, setIsFilterOpen] = useState(false);
-  const [timeSort, setTimeSort] = useState<TimeSortKey>('recentlyUpdated');
+  const [timeSort, setTimeSort] = useState<TimeSortKey>('newestCreated');
   const filterRef = useRef<HTMLDivElement | null>(null);
   // Advanced filter state (bug: expanded filter set + AND/OR combine logic).
   const emptyFilters = {
