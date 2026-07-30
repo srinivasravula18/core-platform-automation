@@ -129,6 +129,7 @@ export default function TestRuns() {
   const [closingRunId, setClosingRunId] = useState('');
   const [editingCase, setEditingCase] = useState<any>(null);
   const [scriptViewer, setScriptViewer] = useState<{ title: string; filename: string; code: string } | null>(null);
+  const [selectedEvidenceIndex, setSelectedEvidenceIndex] = useState<number | null>(null);
   const tagOptions = useMemo(() => normalizeTags([...plans, ...suites, ...cases, ...runs]
     .flatMap((item) => Array.isArray(item.tags) ? item.tags : [])).sort(), [plans, suites, cases, runs]);
 
@@ -397,6 +398,7 @@ export default function TestRuns() {
     const selectedProgress = runProgress[selectedRun.id] || selectedExecution.label;
     const selectedIsRunning = selectedExecution.running || Boolean(runProgress[selectedRun.id]);
     const evidenceItems = collectRunEvidence(selectedRun, selectedRunCases);
+    const selectedEvidence = selectedEvidenceIndex == null ? null : evidenceItems[selectedEvidenceIndex] || null;
     const exportEvidenceItems = caseBulk.selectedCount
       ? evidenceItems.filter((item) => caseBulk.selectedIds.has(item.caseId))
       : evidenceItems;
@@ -523,13 +525,13 @@ export default function TestRuns() {
               <div className="flex gap-3 overflow-x-auto pb-1">
                 {evidenceItems.map((item, index) => (
                   <div key={item.url} className="group relative w-44 shrink-0">
-                    <a href={withBasePath(item.url)} target="_blank" rel="noreferrer">
+                    <button type="button" onClick={() => setSelectedEvidenceIndex(index)} className="block text-left" title={`Expand ${item.caseTitle} ${item.stepLabel}`}>
                       <img
                         src={withBasePath(item.url)}
                         alt={`${item.caseTitle} ${item.stepLabel}`}
                         className="h-28 w-44 rounded-md border border-[var(--border)] bg-black object-cover"
                       />
-                    </a>
+                    </button>
                     <button
                       type="button"
                       onClick={() => {
@@ -757,6 +759,27 @@ export default function TestRuns() {
             </div>
           )}
         </Modal>
+        {selectedEvidence && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4" onClick={() => setSelectedEvidenceIndex(null)}>
+            <div className="flex max-h-[92dvh] w-full max-w-6xl flex-col overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--bg-card)] shadow-2xl" onClick={(event) => event.stopPropagation()}>
+              <div className="flex items-center gap-3 border-b border-[var(--border)] px-4 py-3">
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-sm font-semibold text-[var(--text-primary)]">{selectedEvidence.caseTitle || selectedEvidence.caseId || 'Evidence screenshot'}</div>
+                  <div className="truncate text-xs text-[var(--text-muted)]">{selectedEvidence.stepLabel || 'Captured screenshot'}{selectedEvidence.action ? ` · ${selectedEvidence.action}` : ''}</div>
+                </div>
+                <button type="button" onClick={() => setSelectedEvidenceIndex(null)} className="rounded border border-[var(--border)] px-2 py-1 text-xs font-semibold text-[var(--text-muted)] hover:text-[var(--text-primary)]">Close</button>
+              </div>
+              <div className="min-h-0 flex-1 overflow-auto bg-black p-3">
+                <img src={withBasePath(selectedEvidence.url)} alt={`${selectedEvidence.caseTitle} ${selectedEvidence.stepLabel}`} className="mx-auto max-h-[72dvh] max-w-full object-contain" />
+              </div>
+              <div className="flex items-center justify-between gap-3 border-t border-[var(--border)] px-4 py-3">
+                <button type="button" onClick={() => selectedEvidenceIndex != null && selectedEvidenceIndex > 0 && setSelectedEvidenceIndex(selectedEvidenceIndex - 1)} disabled={!selectedEvidenceIndex} className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-1.5 text-xs font-semibold text-[var(--text-primary)] disabled:cursor-not-allowed disabled:opacity-40">← Previous</button>
+                <span className="text-xs text-[var(--text-muted)]">{selectedEvidenceIndex + 1} / {evidenceItems.length}</span>
+                <button type="button" onClick={() => selectedEvidenceIndex != null && selectedEvidenceIndex < evidenceItems.length - 1 && setSelectedEvidenceIndex(selectedEvidenceIndex + 1)} disabled={selectedEvidenceIndex === evidenceItems.length - 1} className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-1.5 text-xs font-semibold text-[var(--text-primary)] disabled:cursor-not-allowed disabled:opacity-40">Next →</button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     );
   }
