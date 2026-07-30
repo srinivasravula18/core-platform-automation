@@ -10,6 +10,7 @@ import { buildCorePlatformApplicationContext } from '../agent/applicationContext
 import { assembleConversationContext } from '../../ai/memory/contextAssembler';
 import { resolveModelForAgent, resolveProviderForAgent } from '../../ai/orchestrator';
 import { normalizeTestCaseTypes } from '../../../core/shared/testCaseTypes';
+import { prepareSse, sendSse } from '../../shared/sse';
 
 // Server-side conversation reconstruction for requirement drafting, so follow-ups
 // ("also add requirements for X") enrich the running scope instead of starting cold.
@@ -54,40 +55,15 @@ async function applicationContextPromptForScope(scope: ReturnType<typeof reqScop
   return built.promptText;
 }
 
-// Anti-buffering pad: defeats proxies that ignore X-Accel-Buffering by filling their
-// ~4-8KB upstream buffer on every event (SSE comment lines are ignored by the client).
-// See the same constant in controller/routes.ts for the full rationale.
-const STREAM_PROXY_PAD = `: ${' '.repeat(4096)}\n\n`;
-
-function prepareStreamingResponse(res: any) {
-  res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
-  res.setHeader('Cache-Control', 'no-cache, no-transform');
-  res.setHeader('Pragma', 'no-cache');
-  res.setHeader('Surrogate-Control', 'no-store');
-  res.setHeader('X-Accel-Buffering', 'no');
-  res.setHeader('Connection', 'keep-alive');
-  res.socket?.setNoDelay?.(true);
-  res.flushHeaders?.();
-  // Prime the proxy buffer so the FIRST real event isn't held back either.
-  try { res.write(STREAM_PROXY_PAD); } catch { /* client gone */ }
-}
-
-function flushStream(res: any) {
-  try { res.flush?.(); } catch { /* best effort */ }
-}
-
 export function registerRequirementRoutes(app: Express) {
   app.post('/api/requirements/draft/stream', async (req, res) => {
     const query = String(req.body?.query || '').trim();
     if (!query) return res.status(400).json({ error: 'Tell me which feature or section to test.' });
 
-    prepareStreamingResponse(res);
-    const send = (obj: any) => {
-      try { res.write(`data: ${JSON.stringify(obj)}\n\n${STREAM_PROXY_PAD}`); } catch { /* client gone */ }
-    };
+    prepareSse(res);
+    const send = (obj: any) => sendSse(res, obj);
     const heartbeat = setInterval(() => {
       send({ type: 'heartbeat', at: Date.now() });
-      flushStream(res);
     }, 10000);
 
     try {
@@ -95,7 +71,6 @@ export function registerRequirementRoutes(app: Express) {
       let index = 0;
       const onProgress = (text: string) => {
         send({ type: 'step', index: index++, text });
-        flushStream(res);
       };
       onProgress('Starting requirement drafting agent...');
       const surface = surfaceForScope(scope);
@@ -119,7 +94,6 @@ export function registerRequirementRoutes(app: Express) {
         onProgress,
       });
       send({ type: 'final', result });
-      flushStream(res);
     } catch (error: any) {
       send({ type: 'error', error: getAIErrorMessage(error) || error?.message || 'Failed to draft requirement.' });
     } finally {
@@ -168,6 +142,39 @@ export function registerRequirementRoutes(app: Express) {
       res.json(result);
     } catch (error: any) {
       res.status(500).json({ error: getAIErrorMessage(error) || error?.message || 'Failed to discover requirement.' });
+    }
+  });
+
+  app.post('/api/requirements/discover/stream', async (req, res) => {
+    const query = String(req.body?.query || '').trim();
+    if (!query) return res.status(400).json({ error: 'Tell me which feature or section to test.' });
+
+    prepareSse(res);
+    const send = (event: any) => sendSse(res, event);
+    const heartbeat = setInterval(() => send({ type: 'heartbeat', at: Date.now() }), 10000);
+
+    try {
+      const scope = reqScope(req);
+      const surface = surfaceForScope(scope);
+      const applicationContextPrompt = await applicationContextPromptForScope(scope, surface, query).catch(() => '');
+      const result = await discoverRequirement(query, {
+        workspaceId: req.body?.workspaceId || 'default',
+        userId: scope.userId,
+        role: scope.role,
+        repoPath: surface.repoPath,
+        projectId: scope.projectId,
+        appId: scope.appId || '',
+        surface,
+        applicationContextPrompt,
+        requirementsOnly: req.body?.requirementsOnly === true || req.body?.mode === 'requirements_only',
+        onProgress: (text) => send({ type: 'step', text }),
+      });
+      send({ type: 'final', result });
+    } catch (error: any) {
+      send({ type: 'error', error: getAIErrorMessage(error) || error?.message || 'Failed to discover requirement.' });
+    } finally {
+      clearInterval(heartbeat);
+      res.end();
     }
   });
 

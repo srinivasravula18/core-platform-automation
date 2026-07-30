@@ -5,6 +5,7 @@ import path from 'path';
 import * as archiverNs from 'archiver';
 import { z } from 'zod';
 import { generateObject } from 'ai';
+import { prepareSse, sendSse } from '../../shared/sse';
 import { db, addActivity, persistDataInBackground } from '../../shared/storage';
 import { createFolder, findFolderByName, getFolderPath, resolveFolderPath } from '../../shared/folders';
 import { buildCaseDescription, normalizeCaseSteps, normalizeCaseTags } from '../../shared/testCases';
@@ -1065,6 +1066,8 @@ export function registerResourceRoutes(app: Express) {
 
   /* ---------- POST /api/cases/ai-action ---------- */
   app.post('/api/cases/ai-action', async (req, res) => {
+    const stream = String(req.headers.accept || '').includes('text/event-stream');
+    let heartbeat: ReturnType<typeof setInterval> | undefined;
     try {
       const instruction = String(req.body?.instruction || '').trim();
       const caseIds = Array.isArray(req.body?.caseIds) ? req.body.caseIds.map(String) : [];
@@ -1075,6 +1078,11 @@ export function registerResourceRoutes(app: Express) {
       const selectedCases = allCases.filter((testCase: any) => caseIds.includes(testCase.id));
       if (!selectedCases.length) return res.status(404).json({ error: 'Selected test cases were not found.' });
 
+      if (stream) {
+        prepareSse(res);
+        sendSse(res, { type: 'step', text: 'Applying the AI action to selected test cases...' });
+        heartbeat = setInterval(() => sendSse(res, { type: 'heartbeat', at: Date.now() }), 10000);
+      }
       const orch = await getOrchestrator('caseReworker');
       const { object: aiObject, shortCircuit } = await orch.generateObject<z.infer<typeof aiCaseActionSchema>>({
         prompt: `You are a senior QA test repository assistant.
@@ -1108,7 +1116,9 @@ Rules:
       });
 
       if (shortCircuit) {
-        return res.status(200).json({ success: false, summary: shortCircuit, results: [] });
+        const payload = { success: false, summary: shortCircuit, results: [] };
+        if (stream) return sendSse(res, { type: 'final', result: payload });
+        return res.status(200).json(payload);
       }
 
       const object: any = aiObject;
@@ -1155,9 +1165,16 @@ Rules:
 
       if (!isPgEnabled()) persistDataInBackground('AI case action');
       logActivity(req, `AI updated ${results.length} test case artifact(s): ${object.summary}`);
-      res.json({ success: true, summary: object.summary, results });
+      const payload = { success: true, summary: object.summary, results };
+      if (stream) sendSse(res, { type: 'final', result: payload });
+      else res.json(payload);
     } catch (error: any) {
-      res.status(500).json({ error: getAIErrorMessage(error) || error?.message || 'Failed to apply AI case action.' });
+      const message = getAIErrorMessage(error) || error?.message || 'Failed to apply AI case action.';
+      if (stream) sendSse(res, { type: 'error', error: message });
+      else res.status(500).json({ error: message });
+    } finally {
+      if (heartbeat) clearInterval(heartbeat);
+      if (String(res.getHeader('Content-Type') || '').includes('text/event-stream')) res.end();
     }
   });
 

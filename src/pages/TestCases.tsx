@@ -26,6 +26,7 @@ import { TagManagerModal } from '@/src/components/TagManagerModal';
 import { linkSuiteCases } from '@/src/lib/entityLinking';
 import { normalizeTestCaseTypes, testCaseTypeFields } from '@/core/shared/testCaseTypes';
 import { normalizeTags } from '@/src/lib/tags';
+import { readSseJson } from '@/src/lib/sse';
 
 const CASE_STATUSES = ['Draft', 'Under Review', 'Approved', 'Automated', 'Deprecated'];
 const PRIORITIES = ['Low', 'Medium', 'High', 'Critical'];
@@ -424,11 +425,19 @@ export default function TestCases() {
     try {
       const response = await fetch('/api/cases/ai-action', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
         body: JSON.stringify({ caseIds: selectedCaseIds, instruction: caseAIInstruction }),
       });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || 'Failed to apply AI action.');
+      if (!response.ok || !response.body || !(response.headers.get('content-type') || '').includes('text/event-stream')) {
+        throw new Error('The AI service returned an invalid response.');
+      }
+      let data: any = null;
+      await readSseJson(response.body, (event) => {
+        if (event.type === 'step' && event.text) setCaseAIMessage(event.text);
+        if (event.type === 'final') data = event.result;
+        if (event.type === 'error') throw new Error(event.error || 'Failed to apply AI action.');
+      });
+      if (!data) throw new Error('AI action ended before completion.');
       setCaseAIMessage(data.summary || `Updated ${data.results?.length || 0} artifact(s).`);
       setCaseAIInstruction('');
       bulk.clearSelection();

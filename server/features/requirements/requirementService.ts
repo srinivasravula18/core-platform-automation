@@ -1380,7 +1380,7 @@ export async function confirmRequirementDraft(
 
 export async function discoverRequirement(
   query: string,
-  opts: { workspaceId?: string; userId?: string; role?: string; repoPath?: string; projectId?: string; appId?: string; surface?: ResolvedSurfaceScope; applicationContextPrompt?: string; requirementsOnly?: boolean; persistRequirement?: boolean } = {},
+  opts: { workspaceId?: string; userId?: string; role?: string; repoPath?: string; projectId?: string; appId?: string; surface?: ResolvedSurfaceScope; applicationContextPrompt?: string; requirementsOnly?: boolean; persistRequirement?: boolean; onProgress?: (label: string) => void } = {},
 ): Promise<DiscoverResult> {
   const workspaceId = opts.workspaceId || 'default';
   const ownerId = opts.userId || '';
@@ -1394,6 +1394,7 @@ export async function discoverRequirement(
   // 1) Feature analyst + API & Metadata analyst — run in parallel for speed.
   // Pass websiteId (appId from scope) + ownerId so the analyst resolves credentials
   // from the per-workspace Website record, not from hardcoded env vars.
+  opts.onProgress?.('Analyzing the selected application and source code...');
   const apiAnalystOpts = { ...opts, websiteId: opts.appId || undefined, ownerId };
   const [featureResult, apiAnalysis] = await Promise.all([
     analyzeFeatureFromSource(cleanQuery, opts),
@@ -1403,6 +1404,7 @@ export async function discoverRequirement(
 
   // 2) Reconcile against existing cases — only the discovering user's own cases when
   // they're a tester, so isolation holds (admins reconcile against everything).
+  opts.onProgress?.('Checking existing test coverage...');
   const existingCases = await existingCasesForRequirement(ownerId);
   const reconciliation = await reconcileRequirementCoverage(understanding, existingCases, opts, requirementsOnly);
 
@@ -1416,6 +1418,7 @@ export async function discoverRequirement(
   // Create the gap cases (pending review) and remember them for linking.
   const generatedCases: Array<{ id: string; title: string }> = [];
   const proposedCases = requirementsOnly ? [] : (reconciliation.proposedCases || []);
+  opts.onProgress?.(proposedCases.length ? 'Creating cases for uncovered behavior...' : 'Saving the grounded requirement...');
   for (const pc of proposedCases) {
     const caseId = await nextArtifactId('TC', { ownerId, sourceText: cleanQuery });
     const tags = normalizeCaseTags(pc.tags && pc.tags.length ? [...pc.tags, '@requirement'] : ['@requirement']);
@@ -1488,6 +1491,7 @@ export async function discoverRequirement(
     inboxItemId = inbox.id;
   }
 
+  opts.onProgress?.('Finalizing requirement traceability...');
   if (!isPgEnabled()) persistDataInBackground('requirement discovery');
   addActivity(persistRequirement
     ? `Feature Analyst ${duplicateOf ? 'updated' : 'discovered'} requirement "${requirement.title}" with ${existingLinks.length} existing and ${generatedCases.length} new case(s).`

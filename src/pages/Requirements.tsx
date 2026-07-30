@@ -13,6 +13,7 @@ import { can } from '@/src/components/AuthGate';
 import { MarkdownText } from '@/src/components/MarkdownText';
 import { RequirementSrsEditor } from '@/src/components/RequirementSrsEditor';
 import { formatBusinessRulesMarkdown, formatRequirementSrs, type RequirementSrsModule } from '@/src/lib/requirementSrs';
+import { readSseJson } from '@/src/lib/sse';
 
 const REQ_STATUSES = ['Draft', 'Under Review', 'Approved', 'Deprecated'];
 
@@ -75,13 +76,28 @@ export default function Requirements() {
     setDiscovering(true);
     setDiscoverMessage('');
     try {
-      const res = await fetch('/api/requirements/discover', {
+      const res = await fetch('/api/requirements/discover/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ query: discoverQuery, workspaceId: 'default' }),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Discovery failed.');
+      if (!res.ok || !res.body) {
+        const text = await res.text();
+        let message = '';
+        try { message = JSON.parse(text)?.error || ''; } catch { /* non-JSON proxy response */ }
+        throw new Error(message || (text.trim().startsWith('<') ? 'The requirement service timed out. Please try again.' : 'Discovery failed.'));
+      }
+      if (!(res.headers.get('content-type') || '').includes('text/event-stream')) {
+        throw new Error('The requirement service returned an invalid response. Please try again.');
+      }
+
+      let data: any = null;
+      await readSseJson(res.body, (event) => {
+        if (event.type === 'step' && event.text) setDiscoverMessage(event.text);
+        if (event.type === 'final') data = event.result;
+        if (event.type === 'error') throw new Error(event.error || 'Discovery failed.');
+      });
+      if (!data) throw new Error('Requirement creation ended before completion. Please try again.');
       setDiscoverMessage(`Agent created "${data.requirement?.title}" - ${data.existingLinks?.length || 0} existing, ${data.generatedCases?.length || 0} new case(s).`);
       setDiscoverQuery('');
       fetchRequirements();

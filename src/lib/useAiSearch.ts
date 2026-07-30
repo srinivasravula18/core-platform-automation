@@ -1,4 +1,5 @@
 import { useCallback, useRef, useState } from 'react';
+import { readSseJson } from './sse';
 
 /**
  * `@ai` smart search for any list page. Typing `@ai <query>` in a search box
@@ -45,10 +46,18 @@ export function useAiSearch(kind: string) {
         try {
           const res = await fetch('/api/ai/search', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
             body: JSON.stringify({ query: q, kind, items: (items || []).slice(0, 300) }),
           });
-          const data = await res.json();
+          if (!res.ok || !res.body || !(res.headers.get('content-type') || '').includes('text/event-stream')) {
+            throw new Error('The AI search service returned an invalid response.');
+          }
+          let data: any = null;
+          await readSseJson(res.body, (event) => {
+            if (event.type === 'final') data = event.result;
+            if (event.type === 'error') throw new Error(event.error || 'AI search failed.');
+          });
+          if (!data) throw new Error('AI search ended before completion.');
           if (mine !== seq.current) return; // a newer query superseded this one
           setMatchedIds(new Set((data.matchIds || []).map(String)));
           if (data.error) setError(data.error);
