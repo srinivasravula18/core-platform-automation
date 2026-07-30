@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useState } from 'react';
+import { Fragment, useEffect, useRef, useState } from 'react';
 import { Search, Filter, Pencil, ShieldAlert, Camera, Sparkles, Trash2, ChevronDown, ChevronRight } from 'lucide-react';
 import { RowMoreMenu } from '@/src/components/RowMoreMenu';
 import { Timestamp, actorName } from '@/src/components/Timestamp';
@@ -16,6 +16,7 @@ import { AIActionModal } from '@/src/components/AIActionModal';
 import { showAlert, showConfirm } from '@/src/lib/dialog';
 import { can } from '@/src/components/AuthGate';
 import { withBasePath } from '@/src/lib/base-path';
+import { MultiSelectDropdown } from '@/src/components/MultiSelectDropdown';
 
 // A defect's failure snapshot lives in its `evidence` (captured at the failing run). Pull the first usable image URL.
 function defectSnapshotUrl(defect: any): string {
@@ -31,10 +32,11 @@ export default function Defects() {
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const aiSearch = useAiSearch('defects');
-  const [severityFilter, setSeverityFilter] = useState('All');
+  const [filters, setFilters] = useState({ severities: [] as string[], statuses: [] as string[], assignees: [] as string[] });
   const [timeSort, setTimeSort] = useState<TimeSortKey>('recentlyUpdated');
   const [updatedFilter, setUpdatedFilter] = useState<TimeFilterValue>({ key: 'all' });
   const [isFilterOpen, setIsFilterOpen] = useState(false);
+  const filterRef = useRef<HTMLDivElement | null>(null);
   const [isDefectModalOpen, setIsDefectModalOpen] = useState(false);
   const [isAIDefectModalOpen, setIsAIDefectModalOpen] = useState(false);
   const [newDefectTitle, setNewDefectTitle] = useState('');
@@ -54,6 +56,15 @@ export default function Defects() {
   useEffect(() => {
     fetchDefects();
   }, []);
+
+  useEffect(() => {
+    if (!isFilterOpen) return;
+    const closeOnOutsideClick = (event: PointerEvent) => {
+      if (!filterRef.current?.contains(event.target as Node)) setIsFilterOpen(false);
+    };
+    document.addEventListener('pointerdown', closeOnOutsideClick);
+    return () => document.removeEventListener('pointerdown', closeOnOutsideClick);
+  }, [isFilterOpen]);
 
   const openNewModal = () => {
     setSelectedDefectId(null);
@@ -122,10 +133,17 @@ export default function Defects() {
     const matchesSearch = aiSearch.isAiQuery(searchTerm)
       ? (aiSearch.matchedIds ? aiSearch.matchedIds.has(defect.id) : true)
       : (!query || `${defect.id || ''} ${defect.title || ''} ${defect.status || ''} ${defect.severity || ''}`.toLowerCase().includes(query));
-    const matchesSeverity = severityFilter === 'All' || (defect.severity || 'Medium') === severityFilter;
+    const matches = (selected: string[], value: string) => !selected.length || selected.includes(value);
+    const matchesSeverity = matches(filters.severities, defect.severity || 'Medium');
+    const matchesStatus = matches(filters.statuses, defect.status || 'Open');
+    const matchesAssignee = matches(filters.assignees, defect.assignedTo || '');
     const matchesUpdated = passesTimeFilter(defect.metadata?.updatedAt || defect.updatedAt, updatedFilter);
-    return matchesSearch && matchesSeverity && matchesUpdated;
+    return matchesSearch && matchesSeverity && matchesStatus && matchesAssignee && matchesUpdated;
   }), timeSort);
+  const severityOptions = Array.from(new Set(['Low', 'Medium', 'High', 'Critical', ...defects.map((defect) => String(defect.severity || 'Medium'))]));
+  const statusOptions = Array.from(new Set(['Open', 'In Progress', 'Resolved', 'Closed', ...defects.map((defect) => String(defect.status || 'Open'))]));
+  const assigneeOptions = Array.from(new Set(defects.map((defect) => String(defect.assignedTo || '').trim()).filter(Boolean))).sort();
+  const activeFilterCount = Object.values(filters).reduce((count, value) => count + value.length, 0);
 
   return (
     <div className="app-page-shell h-full flex flex-col">
@@ -237,17 +255,19 @@ export default function Defects() {
           </div>
           <TimeSortSelect value={timeSort} onChange={setTimeSort} />
           <TimeRangeFilter value={updatedFilter} onChange={setUpdatedFilter} />
-          <div className="relative">
-            <button onClick={() => setIsFilterOpen(!isFilterOpen)} className="flex items-center gap-2 border border-[var(--border)] bg-[var(--bg-secondary)] hover:bg-[var(--border)] text-[var(--text-primary)] px-3 py-1.5 rounded-md text-sm transition-colors">
-              <Filter className="w-4 h-4" /> {severityFilter === 'All' ? 'Filters' : severityFilter}
+          <div ref={filterRef} className="relative">
+            <button onClick={() => setIsFilterOpen(!isFilterOpen)} aria-expanded={isFilterOpen} className="flex items-center gap-2 border border-[var(--border)] bg-[var(--bg-secondary)] hover:bg-[var(--border)] text-[var(--text-primary)] px-3 py-1.5 rounded-md text-sm transition-colors">
+              <Filter className="w-4 h-4" /> Filters
+              {activeFilterCount > 0 && <span className="rounded-full bg-[var(--accent)] px-1.5 text-[11px] font-semibold text-white">{activeFilterCount}</span>}
             </button>
             {isFilterOpen && (
-              <div className="absolute left-0 top-10 z-20 w-40 overflow-hidden rounded-md border border-[var(--border)] bg-[var(--bg-card)] shadow-xl">
-                {['All', 'Low', 'Medium', 'High', 'Critical'].map((severity) => (
-                  <button key={severity} onClick={() => { setSeverityFilter(severity); setIsFilterOpen(false); }} className="block w-full px-3 py-2 text-left text-sm hover:bg-[var(--bg-secondary)]">
-                    {severity}
-                  </button>
-                ))}
+              <div className="absolute left-0 top-10 z-30 w-72 rounded-md border border-[var(--border)] bg-[var(--bg-card)] p-3 shadow-xl">
+                <div className="mb-3 flex justify-end"><button onClick={() => setFilters({ severities: [], statuses: [], assignees: [] })} className="text-xs font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]">Clear all</button></div>
+                <div className="flex flex-col gap-3">
+                  <div><label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Severity</label><MultiSelectDropdown label="Any severity" options={severityOptions.map((value) => ({ id: value, name: value }))} value={filters.severities} onChange={(severities) => setFilters((current) => ({ ...current, severities }))} /></div>
+                  <div><label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Status</label><MultiSelectDropdown label="Any status" options={statusOptions.map((value) => ({ id: value, name: value }))} value={filters.statuses} onChange={(statuses) => setFilters((current) => ({ ...current, statuses }))} /></div>
+                  <div><label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Assigned To</label><MultiSelectDropdown label="Any assignee" options={assigneeOptions.map((value) => ({ id: value, name: value }))} value={filters.assignees} onChange={(assignees) => setFilters((current) => ({ ...current, assignees }))} /></div>
+                </div>
               </div>
             )}
           </div>
