@@ -609,9 +609,9 @@ export default function Reports() {
                     <td className="px-4 py-3 text-xs"><span className="font-semibold text-emerald-500">{c.passed}</span> / <span className={c.failed ? 'font-semibold text-red-500' : 'text-[var(--text-muted)]'}>{c.failed}</span></td>
                     <td className="px-4 py-3 text-xs text-[var(--text-muted)]">{r.executionTime && r.executionTime !== 'Generated' ? r.executionTime : '—'}</td>
                     <td className="px-4 py-3"><span className={cn('inline-flex rounded border px-2 py-0.5 text-[11px] font-bold', r.status === 'Passed' ? 'border-emerald-500/20 bg-emerald-500/10 text-emerald-600' : r.status === 'Failed' ? 'border-red-500/20 bg-red-500/10 text-red-500' : 'border-slate-500/20 bg-slate-500/10 text-slate-400')}>{r.status}</span></td>
-                    <td className="px-4 py-3 whitespace-nowrap text-xs text-[var(--text-muted)]">
+                    <td className="overflow-hidden px-4 py-3 whitespace-nowrap text-xs text-[var(--text-muted)]">
                       <Timestamp value={r.metadata?.updatedAt || r.updatedAt || r.date} />
-                      {actorName(r.metadata?.updatedBy) && <div className="text-[10px]">by {actorName(r.metadata?.updatedBy)}</div>}
+                      {actorName(r.metadata?.updatedBy) && <div className="truncate text-[10px]" title={`by ${actorName(r.metadata?.updatedBy)}`}>by {actorName(r.metadata?.updatedBy)}</div>}
                     </td>
                     <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}><button onClick={(e) => handleDeleteReport(r.id, e)} title="Delete report" className="rounded p-1 text-[var(--text-muted)] hover:bg-red-500/10 hover:text-red-500"><Trash2 className="h-4 w-4" /></button></td>
                   </tr>

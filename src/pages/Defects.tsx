@@ -340,11 +340,12 @@ export default function Defects() {
                       {defect.status}
                     </span>
                   </td>
-                  <td className="py-3 px-4 whitespace-nowrap text-xs text-[var(--text-muted)]">
+                  <td className="overflow-hidden py-3 px-4 whitespace-nowrap text-xs text-[var(--text-muted)]">
                     <Timestamp value={defect.metadata?.updatedAt || defect.updatedAt} />
-                    {actorName(defect.metadata?.updatedBy) && <div className="text-[10px]">by {actorName(defect.metadata?.updatedBy)}</div>}
+                    {actorName(defect.metadata?.updatedBy) && <div className="truncate text-[10px]" title={`by ${actorName(defect.metadata?.updatedBy)}`}>by {actorName(defect.metadata?.updatedBy)}</div>}
                   </td>
-                  <td className="py-3 px-4 text-right flex gap-1 justify-end">
+                  <td className="py-3 px-4 text-right">
+                    <div className="flex justify-end gap-1">
                     <button onClick={(e) => { e.stopPropagation(); openDefectSnapshot(defect); }} title={defectSnapshotUrl(defect) ? 'View failure snapshot' : 'No snapshot captured'} className={cn('p-1 rounded transition-colors border border-transparent', defectSnapshotUrl(defect) ? 'text-red-500 hover:bg-[var(--bg-primary)] hover:border-red-500' : 'text-[var(--text-muted)] opacity-50')}>
                       <Camera className="w-4 h-4" />
                     </button>
@@ -373,6 +374,7 @@ export default function Defects() {
                         <Trash2 className="w-4 h-4" />
                       </button>
                     )}
+                    </div>
                   </td>
                 </tr>
                 {expandedId === defect.id && hasRichReport(defect) && (

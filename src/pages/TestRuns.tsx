@@ -1054,9 +1054,9 @@ export default function TestRuns() {
                     <td className="px-4 py-4 text-[var(--text-muted)]">
                       {stats.failed ? `${stats.failed} failed` : (/failed/i.test(run.status || '') ? run.progress || 'Execution failed' : '-')}
                     </td>
-                    <td className="px-4 py-4 whitespace-nowrap text-xs text-[var(--text-muted)]">
+                    <td className="overflow-hidden px-4 py-4 whitespace-nowrap text-xs text-[var(--text-muted)]">
                       <Timestamp value={run.metadata?.updatedAt || run.updatedAt || run.date} />
-                      {actorName(run.metadata?.updatedBy) && <div className="text-[10px]">by {actorName(run.metadata?.updatedBy)}</div>}
+                      {actorName(run.metadata?.updatedBy) && <div className="truncate text-[10px]" title={`by ${actorName(run.metadata?.updatedBy)}`}>by {actorName(run.metadata?.updatedBy)}</div>}
                     </td>
                     <td className="px-4 py-4">
                       <div className="flex items-center gap-1">

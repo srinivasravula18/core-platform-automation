@@ -1147,9 +1147,9 @@ export default function TestPlans() {
                     </td>
                     <td className="py-3 px-4 text-center">{planSuites.length}</td>
                     <td className="py-3 px-4 text-center">{planCases.length}</td>
-                    <td className="py-3 px-4 whitespace-nowrap text-xs text-[var(--text-muted)]">
+                    <td className="overflow-hidden py-3 px-4 whitespace-nowrap text-xs text-[var(--text-muted)]">
                       <Timestamp value={plan.metadata?.updatedAt || plan.updatedAt} />
-                      {actorName(plan.metadata?.updatedBy) && <div className="text-[10px]">by {actorName(plan.metadata?.updatedBy)}</div>}
+                      {actorName(plan.metadata?.updatedBy) && <div className="truncate text-[10px]" title={`by ${actorName(plan.metadata?.updatedBy)}`}>by {actorName(plan.metadata?.updatedBy)}</div>}
                     </td>
                     <td className="py-3 px-4 text-right">
                       <div className="relative inline-flex items-center gap-1">

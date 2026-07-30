@@ -693,9 +693,9 @@ export default function TestSuites() {
                           onChange={(tags) => updateSuiteInline(suite, { tags })}
                         />
                       </td>
-                      <td className="py-3 px-4 whitespace-nowrap text-xs text-[var(--text-muted)]">
+                      <td className="overflow-hidden py-3 px-4 whitespace-nowrap text-xs text-[var(--text-muted)]">
                         <Timestamp value={suite.metadata?.updatedAt || suite.updatedAt} />
-                        {actorName(suite.metadata?.updatedBy) && <div className="text-[10px]">by {actorName(suite.metadata?.updatedBy)}</div>}
+                        {actorName(suite.metadata?.updatedBy) && <div className="truncate text-[10px]" title={`by ${actorName(suite.metadata?.updatedBy)}`}>by {actorName(suite.metadata?.updatedBy)}</div>}
                       </td>
                       <td className="py-3 px-4 text-right whitespace-nowrap">
                         <div className="flex items-center justify-end gap-1">

@@ -1392,11 +1392,12 @@ export default function TestCases() {
                       onChange={(tags) => updateCaseInline(tc, { tags })}
                     />
                   </td>
-                  <td className="py-3 px-4 whitespace-nowrap text-xs text-[var(--text-muted)]">
+                  <td className="overflow-hidden py-3 px-4 whitespace-nowrap text-xs text-[var(--text-muted)]">
                     <Timestamp value={tc.metadata?.updatedAt || tc.updatedAt} />
-                    {actorName(tc.metadata?.updatedBy) && <div className="text-[10px]">by {actorName(tc.metadata?.updatedBy)}</div>}
+                    {actorName(tc.metadata?.updatedBy) && <div className="truncate text-[10px]" title={`by ${actorName(tc.metadata?.updatedBy)}`}>by {actorName(tc.metadata?.updatedBy)}</div>}
                   </td>
-                  <td className="py-3 px-4 text-right flex gap-1 justify-end">
+                  <td className="py-3 px-4 text-right">
+                    <div className="flex justify-end gap-1">
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
@@ -1434,6 +1435,7 @@ export default function TestCases() {
                       <Trash2 className="w-4 h-4" />
                     </button>
                     )}
+                    </div>
                   </td>
                 </tr>
               ))}
