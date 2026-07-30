@@ -40,7 +40,7 @@ export function Timestamp({
     <time
       dateTime={datetimeAttr(value)}
       title={absolute}
-      className={`${mode === 'relative' ? 'cursor-help decoration-dotted underline-offset-2 hover:underline' : ''} ${className}`}
+      className={`${mode === 'relative' ? 'decoration-dotted underline-offset-2 hover:underline' : ''} ${className}`}
     >
       {prefix ? `${prefix} ` : ''}{text}
     </time>

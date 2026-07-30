@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useState } from 'react';
+import { Fragment, useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { ChevronDown, ChevronRight, Search, Filter, Pencil, Plus, Sparkles, Trash2, PlayCircle, Loader2 } from 'lucide-react';
 import { Timestamp, actorName } from '@/src/components/Timestamp';
@@ -42,8 +42,9 @@ export default function TestSuites() {
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const aiSearch = useAiSearch('test suites');
-  const [statusFilter, setStatusFilter] = useState('All');
+  const [filters, setFilters] = useState({ statuses: [] as string[], priorities: [] as string[], modules: [] as string[], owners: [] as string[], tags: [] as string[], folders: [] as string[], planIds: [] as string[] });
   const [isFilterOpen, setIsFilterOpen] = useState(false);
+  const filterRef = useRef<HTMLDivElement | null>(null);
   const [isSuiteModalOpen, setIsSuiteModalOpen] = useState(false);
   const [isAISuiteModalOpen, setIsAISuiteModalOpen] = useState(false);
   const [isStartingRun, setIsStartingRun] = useState(false);
@@ -102,6 +103,15 @@ export default function TestSuites() {
     fetch('/api/runs').then((response) => response.json()).then((data) => setRuns(Array.isArray(data) ? data : [])).catch(console.error);
     fetchFolders();
   }, []);
+
+  useEffect(() => {
+    if (!isFilterOpen) return;
+    const closeOnOutsideClick = (event: PointerEvent) => {
+      if (!filterRef.current?.contains(event.target as Node)) setIsFilterOpen(false);
+    };
+    document.addEventListener('pointerdown', closeOnOutsideClick);
+    return () => document.removeEventListener('pointerdown', closeOnOutsideClick);
+  }, [isFilterOpen]);
 
   const openNewModal = () => {
     setSelectedSuiteId(null);
@@ -269,18 +279,32 @@ export default function TestSuites() {
 
   const getSuiteCases = (suiteId: string) => cases.filter((testCase) => caseBelongsToSuite(testCase, suiteId));
   const moduleOptions = Array.from(new Set(suites.map((suite) => suiteModuleName(suite, folders)).filter(Boolean))).sort();
+  const ownerOptions = Array.from(new Set(suites.map((suite) => String(suite.owner || '').trim()).filter(Boolean))).sort();
+  const statusOptions = Array.from(new Set(['Active', 'Draft', 'Under Review', 'Approved', 'In Progress', 'Completed', 'Blocked', 'Deprecated', ...suites.map((suite) => String(suite.status || 'Active'))]));
+  const priorityOptions = Array.from(new Set(['Critical', 'High', 'Medium', 'Low', ...suites.map((suite) => String(suite.priority || 'Medium'))]));
   const tagOptions = normalizeTags([...plans, ...suites, ...cases, ...runs]
-    .flatMap((item) => Array.isArray(item.tags) ? item.tags : [])).sort();
+    .flatMap((item) => Array.isArray(item.tags) ? item.tags : String(item.tags || '').split(','))).sort();
   const relatedCases = cases;
   const filteredSuites = suites.filter((suite) => {
     const query = searchTerm.toLowerCase();
     const matchesSearch = aiSearch.isAiQuery(searchTerm)
       ? (aiSearch.matchedIds ? aiSearch.matchedIds.has(suite.id) : true)
-      : (!query || `${suite.id || ''} ${suite.name || ''} ${suite.description || ''} ${suiteModuleName(suite, folders)} ${(suite.tags || []).join(' ')}`.toLowerCase().includes(query));
-    const matchesStatus = statusFilter === 'All' || (suite.status || 'Active') === statusFilter;
-    return matchesSearch && matchesStatus;
+      : (!query || `${suite.id || ''} ${suite.name || ''} ${suite.description || ''} ${suiteModuleName(suite, folders)} ${suite.owner || ''} ${suite.priority || ''} ${(suite.tags || []).join(' ')}`.toLowerCase().includes(query));
+    const suiteTags = normalizeTags(Array.isArray(suite.tags) ? suite.tags : String(suite.tags || '').split(','));
+    const matches = (selected: string[], value: string) => !selected.length || selected.includes(value);
+    const matchesTags = !filters.tags.length || filters.tags.some((tag) => suiteTags.includes(tag));
+    const matchesPlans = !filters.planIds.length || suitePlanIds(suite).some((id) => filters.planIds.includes(String(id)));
+    return matchesSearch
+      && matches(filters.statuses, suite.status || 'Active')
+      && matches(filters.priorities, suite.priority || 'Medium')
+      && matches(filters.modules, suiteModuleName(suite, folders))
+      && matches(filters.owners, suite.owner || '')
+      && matches(filters.folders, String(suite.folderId || ''))
+      && matchesTags
+      && matchesPlans;
   });
   const orderedSuites = orderSuitesByHierarchy(filteredSuites, suites);
+  const activeFilterCount = Object.values(filters).reduce((count, value) => count + value.length, 0);
 
   return (
     <div className="app-page-shell h-full flex flex-col">
@@ -522,22 +546,28 @@ export default function TestSuites() {
               className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md pl-9 pr-4 py-1.5 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]"
             />
           </div>
-          <div className="relative">
-            <button onClick={() => setIsFilterOpen(!isFilterOpen)} className="flex items-center gap-2 border border-[var(--border)] bg-[var(--bg-secondary)] hover:bg-[var(--border)] text-[var(--text-primary)] px-3 py-1.5 rounded-md text-sm transition-colors">
-              <Filter className="w-4 h-4" /> {statusFilter === 'All' ? 'Filters' : statusFilter}
+          <div ref={filterRef} className="relative">
+            <button onClick={() => setIsFilterOpen(!isFilterOpen)} aria-expanded={isFilterOpen} className="flex items-center gap-2 border border-[var(--border)] bg-[var(--bg-secondary)] hover:bg-[var(--border)] text-[var(--text-primary)] px-3 py-1.5 rounded-md text-sm transition-colors">
+              <Filter className="w-4 h-4" /> Filters
+              {activeFilterCount > 0 && <span className="rounded-full bg-[var(--accent)] px-1.5 text-[11px] font-semibold text-white">{activeFilterCount}</span>}
             </button>
             {isFilterOpen && (
-              <div className="absolute left-0 top-10 z-20 w-44 overflow-hidden rounded-md border border-[var(--border)] bg-[var(--bg-card)] shadow-xl">
-                {['All', 'Active', 'Draft', 'Under Review', 'Approved', 'In Progress', 'Completed', 'Blocked', 'Deprecated'].map((status) => (
-                  <button key={status} onClick={() => { setStatusFilter(status); setIsFilterOpen(false); }} className="block w-full px-3 py-2 text-left text-sm hover:bg-[var(--bg-secondary)]">
-                    {status}
-                  </button>
-                ))}
+              <div className="absolute left-0 top-10 z-30 max-h-[calc(100dvh-20rem)] w-[min(24rem,calc(100vw-2rem))] overflow-auto rounded-md border border-[var(--border)] bg-[var(--bg-card)] p-3 shadow-xl">
+                <div className="mb-3 flex justify-end"><button onClick={() => setFilters({ statuses: [], priorities: [], modules: [], owners: [], tags: [], folders: [], planIds: [] })} className="text-xs font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]">Clear all</button></div>
+                <div className="flex flex-col gap-3">
+                  <div><label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Status</label><MultiSelectDropdown label="Any status" options={statusOptions.map((value) => ({ id: value, name: value }))} value={filters.statuses} onChange={(statuses) => setFilters((current) => ({ ...current, statuses }))} /></div>
+                  <div><label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Priority</label><MultiSelectDropdown label="Any priority" options={priorityOptions.map((value) => ({ id: value, name: value }))} value={filters.priorities} onChange={(priorities) => setFilters((current) => ({ ...current, priorities }))} /></div>
+                  <div><label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Module</label><MultiSelectDropdown label="Any module" options={moduleOptions.map((value) => ({ id: value, name: value }))} value={filters.modules} onChange={(modules) => setFilters((current) => ({ ...current, modules }))} /></div>
+                  <div><label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Owner</label><MultiSelectDropdown label="Any owner" options={ownerOptions.map((value) => ({ id: value, name: value }))} value={filters.owners} onChange={(owners) => setFilters((current) => ({ ...current, owners }))} /></div>
+                  <div><label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Tags</label><MultiSelectDropdown label="Any tag" options={tagOptions.map((value) => ({ id: value, name: value }))} value={filters.tags} onChange={(tags) => setFilters((current) => ({ ...current, tags }))} /></div>
+                  <div><label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Folder</label><MultiSelectDropdown label="Any folder" options={folders.map((folder) => ({ id: String(folder.id), name: String(folder.path || folder.name) }))} value={filters.folders} onChange={(folders) => setFilters((current) => ({ ...current, folders }))} /></div>
+                  <div><label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Test Plan</label><MultiSelectDropdown label="Any test plan" options={plans.map((plan) => ({ id: String(plan.id), name: String(plan.name || plan.id) }))} value={filters.planIds} onChange={(planIds) => setFilters((current) => ({ ...current, planIds }))} /></div>
+                </div>
               </div>
             )}
           </div>
           <div aria-live="polite" className="ml-auto whitespace-nowrap text-xs font-medium text-[var(--text-muted)]">
-            {filteredSuites.length}{(searchTerm || statusFilter !== 'All') ? ` of ${suites.length}` : ''} test suite{filteredSuites.length === 1 ? '' : 's'}
+            {filteredSuites.length}{(searchTerm || activeFilterCount > 0) ? ` of ${suites.length}` : ''} test suite{filteredSuites.length === 1 ? '' : 's'}
           </div>
           {bulk.selectedCount > 0 && (
             <div className="ml-auto flex items-center gap-2">
