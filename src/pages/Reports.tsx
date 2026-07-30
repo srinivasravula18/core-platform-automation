@@ -524,9 +524,8 @@ export default function Reports() {
         </div>
 
         {/* Filter controls */}
-        <div className="p-4 border-b border-[var(--border)] flex flex-wrap gap-3 items-center justify-between">
-          <div className="flex items-center gap-3 flex-1 max-w-md">
-            <div className="relative flex-1">
+        <div className="flex items-center gap-3 overflow-x-auto border-b border-[var(--border)] p-4">
+            <div className="relative min-w-52 flex-1">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--text-muted)]" />
               <input 
                 type="text" 
@@ -537,13 +536,13 @@ export default function Reports() {
                   if (aiSearch.isAiQuery(v)) aiSearch.run(v, reports.map((r) => ({ id: r.id, name: r.name, planName: r.planName, suiteName: r.suiteName, status: r.status })));
                   else aiSearch.reset();
                 }}
-                placeholder="Search reports…  or @ai find smartly"
+                placeholder="Search reports or @ai"
                 className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md pl-9 pr-3 py-1.5 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)] placeholder-[var(--text-muted)] transition-colors"
               />
             </div>
-            <TimeSortSelect value={timeSort} onChange={setTimeSort} />
-            <TimeRangeFilter value={updatedFilter} onChange={setUpdatedFilter} />
-            <div className="flex bg-[var(--bg-secondary)] p-1 rounded-md text-xs border border-[var(--border)]">
+            <TimeSortSelect value={timeSort} onChange={setTimeSort} className="shrink-0" />
+            <TimeRangeFilter value={updatedFilter} onChange={setUpdatedFilter} className="shrink-0" />
+            <div className="flex shrink-0 bg-[var(--bg-secondary)] p-1 rounded-md text-xs border border-[var(--border)]">
               {['All', 'Passed', 'Failed'].map((tab) => (
                 <button
                   key={tab}
@@ -559,15 +558,13 @@ export default function Reports() {
                 </button>
               ))}
             </div>
-          </div>
-          
           {bulk.selectedCount > 0 ? (
-            <button onClick={bulk.deleteSelected} disabled={bulk.busy} className="flex items-center gap-1.5 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
+            <button onClick={bulk.deleteSelected} disabled={bulk.busy} className="ml-auto flex shrink-0 items-center gap-1.5 rounded-md bg-red-600 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-red-700 disabled:opacity-50">
               <Trash2 className="w-4 h-4" /> Delete selected ({bulk.selectedCount})
             </button>
           ) : (
-            <div className="text-xs font-mono text-slate-500">
-              Click step buttons under <strong className="text-slate-600 dark:text-slate-300">Evidence</strong> to display real screen evidence inline
+            <div className="ml-auto shrink-0 whitespace-nowrap font-mono text-xs text-slate-500">
+              Click <strong className="text-slate-600 dark:text-slate-300">Evidence</strong> to view screenshots
             </div>
           )}
         </div>

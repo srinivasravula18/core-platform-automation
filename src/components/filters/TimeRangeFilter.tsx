@@ -58,7 +58,7 @@ export function TimeRangeFilter({
     <div className={`relative ${className}`}>
       <button
         onClick={() => setOpen((o) => !o)}
-        className={`flex items-center gap-1.5 rounded-md border px-3 py-2 text-sm transition-colors ${active ? 'border-[var(--accent)] text-[var(--accent)]' : 'border-[var(--border)] text-[var(--text-primary)] hover:border-[var(--accent)]'}`}
+        className={`inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md border px-3 py-2 text-sm transition-colors ${active ? 'border-[var(--accent)] text-[var(--accent)]' : 'border-[var(--border)] text-[var(--text-primary)] hover:border-[var(--accent)]'}`}
       >
         <CalendarClock className="h-4 w-4" /> {label}: {timeFilterLabel(value)}
         <ChevronDown className={`h-3.5 w-3.5 transition-transform ${open ? 'rotate-180' : ''}`} />
