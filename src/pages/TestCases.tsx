@@ -311,7 +311,7 @@ export default function TestCases() {
       title: testCase.title || '', description: testCase.description || '',
       preconditions: testCase.preconditions || '',
       testPlanIds: planIds, testSuiteIds: suiteIds,
-      createdBy: testCase.createdBy || 'Admin',
+      createdBy: actorName(testCase.metadata?.createdBy) || testCase.createdByName || testCase.createdBy || 'Admin',
       tags: Array.isArray(testCase.tags) ? testCase.tags : String(testCase.tags || '').split(',').map((t: string) => t.trim()).filter(Boolean),
       testingScope: testCase.testingScope || (testCase.type === 'Automated' ? 'Automation' : 'Manual'),
       automationStatus: testCase.automationStatus || 'Not Automated',
