@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef, useMemo, type ComponentProps } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Search, Filter, Pencil, Plus, Sparkles, Loader2, Trash2, PlayCircle, Code2, FolderCheck, ChevronDown } from 'lucide-react';
+import { Search, Filter, Pencil, Plus, Sparkles, Loader2, Trash2, PlayCircle, FolderCheck, ChevronDown } from 'lucide-react';
 import { Timestamp, actorName } from '@/src/components/Timestamp';
 import { TimeSortSelect } from '@/src/components/filters/TimeSortSelect';
 import { sortByTime, type TimeSortKey } from '@/src/lib/time';
@@ -1401,14 +1401,14 @@ export default function TestCases() {
                           title={script.filename || script.name || 'View generated script'}
                           className="inline-flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-xs font-medium text-[var(--accent)] hover:border-[var(--accent)]"
                         >
-                          <Code2 className="h-3.5 w-3.5" /> View
+                          View
                         </button>
                         <button
                           onClick={(event) => { event.stopPropagation(); openScript(script, tc, true); }}
                           title={`Edit ${script.filename || script.name || 'script'}`}
                           className="inline-flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-xs font-medium hover:border-[var(--accent)]"
                         >
-                          <Pencil className="h-3.5 w-3.5" /> Edit
+                          Edit
                         </button>
                       </div>;
                     })()}
