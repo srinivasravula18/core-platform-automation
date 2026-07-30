@@ -1264,7 +1264,7 @@ export default function TestCases() {
         </div>
         
         <div className="flex-1 overflow-auto">
-          <table className="w-full min-w-[2160px] table-fixed text-left text-sm">
+          <table className="w-full min-w-[1968px] table-fixed text-left text-sm">
             <thead className="sticky top-0 bg-[var(--bg-secondary)] border-b border-[var(--border)] z-10">
               <tr className="text-[var(--text-muted)]">
                 <th className="font-medium py-3 px-4 w-10">
@@ -1278,7 +1278,6 @@ export default function TestCases() {
                 </th>
                 <th className="font-medium py-3 px-4 w-20">ID</th>
                 <th className="font-medium py-3 px-4 w-64">Title</th>
-                <th className="font-medium py-3 px-4 w-48">Pre Conditions</th>
                 <th className="font-medium py-3 px-4 w-44">Folder</th>
                 <th className="font-medium py-3 px-4 w-44">Platform / App</th>
                 <th className="font-medium py-3 px-4 w-40">Test Plan</th>
@@ -1295,10 +1294,10 @@ export default function TestCases() {
             </thead>
             <tbody className="divide-y divide-[var(--border)]">
               {loading && (
-                <tr><td colSpan={16} className="py-8 text-center text-[var(--text-muted)]">Loading test cases...</td></tr>
+                <tr><td colSpan={15} className="py-8 text-center text-[var(--text-muted)]">Loading test cases...</td></tr>
               )}
               {!loading && filteredCases.length === 0 && (
-                <tr><td colSpan={16} className="py-8 text-center text-[var(--text-muted)]">No test cases found.</td></tr>
+                <tr><td colSpan={15} className="py-8 text-center text-[var(--text-muted)]">No test cases found.</td></tr>
               )}
               {filteredCases.map((tc) => (
                 <tr key={tc.id} onClick={() => openEditModal(tc)} className="hover:bg-[var(--bg-secondary)] transition-colors cursor-pointer">
@@ -1313,7 +1312,6 @@ export default function TestCases() {
                   </td>
                   <td className="py-3 px-4 font-mono text-xs text-[var(--text-muted)] truncate">{tc.id}</td>
                   <td className="py-3 px-4 font-medium truncate" title={tc.title}>{tc.title}</td>
-                  <td className="py-3 px-4 text-xs text-[var(--text-muted)] truncate" title={tc.preconditions || ''}>{tc.preconditions ? tc.preconditions : <span className="text-[var(--text-muted)]">—</span>}</td>
                   <td className="py-3 px-4">
                     <InlineCaseSelect
                       value={tc.folderId || ''}
