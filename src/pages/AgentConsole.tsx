@@ -1017,18 +1017,29 @@ export default function AgentConsole() {
         setPendingDeep({ prompt, originalRequest, contextPrompt, caseCountPrompt, targetUrl, websiteId, websiteName, understanding, understandingSource, revisionCount: 0 });
         convTargetRef.current = { targetUrl, websiteId, websiteName };
         const cardId = nextId();
-        setTurns((prev) => (token === loadReqRef.current ? [...prev, {
-          id: cardId, role: 'assistant', kind: 'folderask' as const, understanding, understandingSource,
-          originalPrompt: contextPrompt || prompt, contextPrompt, caseCountPrompt, targetUrl, websiteId, websiteName,
-          revisionCount: 0, folderName: suggestedFolderName || suggestFolderName(originalRequest || prompt, websiteName),
-          text: 'Look right? A folder name is suggested below — keep it and Proceed, or pick an existing folder / type your own first.',
-        }] : prev));
+        // Dedup against live turns (not the stale ref): on refresh the restored snapshot already holds
+        // this review card, so re-attaching the durable understanding job must never double it.
+        setTurns((prev) => {
+          if (token !== loadReqRef.current) return prev;
+          if (prev.some((t) => t.role === 'assistant' && t.kind === 'folderask')) return prev;
+          return [...prev, {
+            id: cardId, role: 'assistant', kind: 'folderask' as const, understanding, understandingSource,
+            originalPrompt: contextPrompt || prompt, contextPrompt, caseCountPrompt, targetUrl, websiteId, websiteName,
+            revisionCount: 0, folderName: suggestedFolderName || suggestFolderName(originalRequest || prompt, websiteName),
+            text: 'Look right? A folder name is suggested below — keep it and Proceed, or pick an existing folder / type your own first.',
+          }];
+        });
       };
 
       if (job.status === 'done') { buildCard(job.result); return; }
       // Still running: show a resuming spinner and poll the durable job to completion.
       const thinkingId = nextId();
-      setTurns((prev) => (token === loadReqRef.current ? [...prev, { id: thinkingId, role: 'assistant', kind: 'thinking' as const, label: 'Resuming — finishing what I was analyzing…' }] : prev));
+      // Same dedup: never stack a second resuming-spinner onto a thread that already shows one / a review card.
+      setTurns((prev) => {
+        if (token !== loadReqRef.current) return prev;
+        if (prev.some((t) => t.role === 'assistant' && (t.kind === 'thinking' || t.kind === 'folderask'))) return prev;
+        return [...prev, { id: thinkingId, role: 'assistant', kind: 'thinking' as const, label: 'Resuming — finishing what I was analyzing…' }];
+      });
       for (let i = 0; i < 240; i++) {
         await new Promise((res) => setTimeout(res, 5000));
         if (token !== loadReqRef.current) return;
