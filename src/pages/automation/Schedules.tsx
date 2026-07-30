@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { ChevronRight, Code2, Folder, Loader2, Search, Trash2, CalendarClock, Plus } from 'lucide-react';
 import { showConfirm, showToast } from '@/src/lib/dialog';
 import { Modal } from '@/src/components/Modal';
+import { RequiredMark } from '@/src/components/RequiredMark';
 import { useRemoteAgentFlag, useSchedules, useRecordings } from '@/src/lib/useAutomation';
 
 function fmt(iso: string | null): string {
@@ -210,7 +211,7 @@ function NewScheduleModal({ isOpen, onClose, onCreated }: { isOpen: boolean; onC
       </div>}>
       <div className="mb-3 flex items-center justify-between gap-3">
         <div>
-          <div className="text-sm font-medium text-[var(--text-primary)]">Select scripts from Test Repository</div>
+          <div className="text-sm font-medium text-[var(--text-primary)]">Select scripts from Test Repository<RequiredMark /></div>
           <div className="mt-0.5 text-xs text-[var(--text-muted)]">{selected.size} selected</div>
         </div>
         <label className="relative block w-full max-w-xs">
@@ -239,7 +240,7 @@ function NewScheduleModal({ isOpen, onClose, onCreated }: { isOpen: boolean; onC
         </div>
       </div>
       <label className="mt-4 block text-xs font-medium text-[var(--text-muted)]">
-        Schedule (UTC)
+        Schedule (UTC)<RequiredMark />
         <select value={cronPreset} onChange={(e) => setCronPreset(e.target.value)} className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]">
           {CRON_PRESETS.map((preset) => <option key={preset.value} value={preset.value}>{preset.label}</option>)}
           <option value="custom">Custom cron expression</option>

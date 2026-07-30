@@ -9,6 +9,7 @@ import { useAiSearch } from '@/src/lib/useAiSearch';
 import { useBulkDelete } from '@/src/lib/useBulkDelete';
 import { startSelectedRun } from '@/src/lib/startSelectedRun';
 import { Modal } from '@/src/components/Modal';
+import { RequiredMark } from '@/src/components/RequiredMark';
 import { AIActionModal } from '@/src/components/AIActionModal';
 import { FolderSelect } from '@/src/components/FolderSelect';
 import { CodegenPanel, AppUrlField } from '@/src/components/CodegenPanel';
@@ -742,7 +743,7 @@ export default function TestCases() {
             <div className="flex flex-col gap-4">
               <AppUrlField value={automationUrl} onChange={setAutomationUrl} />
               <div>
-                <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Title</label>
+                <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Title<RequiredMark /></label>
                 <input type="text" value={formData.title} onChange={(e) => setFormData({ ...formData, title: e.target.value })} placeholder="e.g., Login → List view" className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]" />
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -767,7 +768,7 @@ export default function TestCases() {
                   <MultiSelectDropdown label="None" options={suites.map((suite) => ({ id: String(suite.id), name: String(suite.name) }))} value={formData.testSuiteIds} onChange={(ids) => setFormData({ ...formData, testSuiteIds: ids })} />
                 </div>
               </div>
-              <FolderSelect value={formData.folderId} onChange={(folderId) => setFormData({ ...formData, folderId })} includeNone={false} />
+              <FolderSelect value={formData.folderId} onChange={(folderId) => setFormData({ ...formData, folderId })} required includeNone={false} />
               <CodegenPanel
                 title={formData.title}
                 appUrl={automationUrl}
@@ -790,10 +791,11 @@ export default function TestCases() {
           <FolderSelect
             value={formData.folderId}
             onChange={(folderId) => setFormData({ ...formData, folderId })}
+            required
             includeNone={false}
           />
           <div>
-            <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Title</label>
+            <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Title<RequiredMark /></label>
             <input type="text" value={formData.title} onChange={(e) => setFormData({...formData, title: e.target.value})} placeholder="e.g., Login with valid credentials" className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]" />
           </div>
           <div>

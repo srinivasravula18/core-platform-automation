@@ -11,6 +11,7 @@ import { useBulkDelete } from '@/src/lib/useBulkDelete';
 import { cn } from '@/src/lib/utils';
 import html2canvas from 'html2canvas';
 import { Modal } from '@/src/components/Modal';
+import { RequiredMark } from '@/src/components/RequiredMark';
 import { AIActionModal } from '@/src/components/AIActionModal';
 import { showAlert, showConfirm } from '@/src/lib/dialog';
 import { can } from '@/src/components/AuthGate';
@@ -206,7 +207,7 @@ export default function Defects() {
       >
         <div className="space-y-4">
           <div>
-            <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Defect Description</label>
+            <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Defect Description<RequiredMark /></label>
             <input type="text" value={newDefectTitle} onChange={(e) => setNewDefectTitle(e.target.value)} placeholder="e.g. Broken layout on Safari" className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-red-500 text-[var(--text-primary)]" />
           </div>
         </div>

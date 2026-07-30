@@ -8,6 +8,7 @@ import { sortByTime, type TimeSortKey } from '@/src/lib/time';
 import ExportMenu from '../components/ExportMenu';
 import { useBulkDelete } from '@/src/lib/useBulkDelete';
 import { Modal } from '@/src/components/Modal';
+import { RequiredMark } from '@/src/components/RequiredMark';
 import { showAlert, showConfirm } from '@/src/lib/dialog';
 import { can } from '@/src/components/AuthGate';
 import { MarkdownText } from '@/src/components/MarkdownText';
@@ -337,7 +338,7 @@ export default function Requirements() {
             </div>
           )}
           <div>
-            <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Title</label>
+            <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Title<RequiredMark /></label>
             <input value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} className={inputClass} />
           </div>
           <div>

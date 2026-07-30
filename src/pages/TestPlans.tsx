@@ -11,6 +11,7 @@ import { useBulkDelete } from '@/src/lib/useBulkDelete';
 import { startSelectedRun } from '@/src/lib/startSelectedRun';
 import { cn } from '@/src/lib/utils';
 import { Modal } from '@/src/components/Modal';
+import { RequiredMark } from '@/src/components/RequiredMark';
 import { AIActionModal } from '@/src/components/AIActionModal';
 import { FolderSelect } from '@/src/components/FolderSelect';
 import { FolderBadge } from '@/src/components/FolderBadge';
@@ -576,7 +577,7 @@ export default function TestPlans() {
             </div>
           )}
           <div>
-            <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Title</label>
+            <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Title<RequiredMark /></label>
             <input 
               type="text" 
               value={formData.name}
@@ -589,6 +590,7 @@ export default function TestPlans() {
             value={formData.folderId}
             onChange={(folderId) => setFormData({ ...formData, folderId })}
             label="Repository Folder"
+            required
             includeNone={false}
           />
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">

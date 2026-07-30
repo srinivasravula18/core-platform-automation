@@ -3,6 +3,7 @@ import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 
 import { PlayCircle, Target, TestTube2, ShieldAlert, Sparkles, Layers, Activity, FileText, CalendarClock, Clock, AlertTriangle, Gauge, Bug, CheckCircle2, ListChecks, Info } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { Modal } from '@/src/components/Modal';
+import { RequiredMark } from '@/src/components/RequiredMark';
 import { FolderSelect } from '@/src/components/FolderSelect';
 import { cn } from '@/src/lib/utils';
 import { showAlert } from '@/src/lib/dialog';
@@ -153,11 +154,12 @@ export default function Dashboard() {
               value={formData.folderId}
               onChange={(folderId) => setFormData({ ...formData, folderId })}
               label="Repository Folder"
+              required
               includeNone={false}
             />
           </div>
           <div>
-            <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Plan Name (e.g. Release 2.4)</label>
+            <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Plan Name (e.g. Release 2.4)<RequiredMark /></label>
             <input 
               type="text" 
               value={formData.name}

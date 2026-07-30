@@ -11,6 +11,7 @@ import { isActiveTestRun, isClosedTestRun, isPendingReviewTestRun } from '@/core
 import { useBulkDelete } from '@/src/lib/useBulkDelete';
 import { cn } from '@/src/lib/utils';
 import { Modal } from '@/src/components/Modal';
+import { RequiredMark } from '@/src/components/RequiredMark';
 import { AIActionModal } from '@/src/components/AIActionModal';
 import { FolderSelect } from '@/src/components/FolderSelect';
 import { FolderBadge } from '@/src/components/FolderBadge';
@@ -818,7 +819,7 @@ export default function TestRuns() {
         }
       >
         <div className="space-y-4">
-          <label className="block text-xs font-medium text-[var(--text-muted)]">Run Name
+          <label className="block text-xs font-medium text-[var(--text-muted)]">Run Name<RequiredMark />
             <input value={newRunName} onChange={(e) => setNewRunName(e.target.value)} placeholder="Run name" className="mt-1 w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm text-[var(--text-primary)]" />
           </label>
 
@@ -830,7 +831,7 @@ export default function TestRuns() {
                 {plans.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
               </select>
             </label>
-            <div><span className="block text-xs font-medium text-[var(--text-muted)] mb-1">Browse Folder</span><FolderSelect value={newRunFolderId} onChange={setNewRunFolderId} includeNone={false} /></div>
+            <div><FolderSelect value={newRunFolderId} onChange={setNewRunFolderId} label="Browse Folder" required includeNone={false} /></div>
           </div>
 
           {/* #5 — Assign To, State, Tags. */}
@@ -865,7 +866,7 @@ export default function TestRuns() {
 
           {!editingRunId && (
             <div>
-              <label className="mb-1 block text-xs font-medium text-[var(--text-muted)]">Test Cases with Playwright Scripts</label>
+              <label className="mb-1 block text-xs font-medium text-[var(--text-muted)]">Test Cases with Playwright Scripts<RequiredMark /></label>
               <div className="mb-2 flex items-end gap-2">
                 <FolderSelect value={newRunCaseFolderId} onChange={setNewRunCaseFolderId} label="Test Case Folder" allowCreate={false} className="flex-1" />
                 <button

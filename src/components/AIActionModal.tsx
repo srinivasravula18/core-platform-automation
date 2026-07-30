@@ -4,6 +4,7 @@ import { Modal } from './Modal';
 import { useSpeechToText } from '@/src/lib/useSpeechToText';
 import { showAlert } from '@/src/lib/dialog';
 import { FolderSelect } from './FolderSelect';
+import { RequiredMark } from './RequiredMark';
 
 interface AIActionModalProps {
   isOpen: boolean;
@@ -81,11 +82,11 @@ export function AIActionModal({ isOpen, onClose, taskType, onApprove, title }: A
   return (
     <Modal isOpen={isOpen} onClose={handleClose} title={title}>
       <div className="space-y-4">
-        {requiresFolder && <FolderSelect value={folderId} onChange={setFolderId} includeNone={false} />}
+        {requiresFolder && <FolderSelect value={folderId} onChange={setFolderId} required includeNone={false} />}
         {!generatedData ? (
           <div>
             <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">
-               Describe what you want to create via voice or text:
+               Describe what you want to create via voice or text:<RequiredMark />
             </label>
             <p className="text-xs text-[#8b5cf6] mb-3">{getHelperText()}</p>
             <div className="relative flex items-center">

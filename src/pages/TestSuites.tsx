@@ -18,6 +18,7 @@ import {
 } from '@/src/lib/suiteCaseSelection';
 import { cn } from '@/src/lib/utils';
 import { Modal } from '@/src/components/Modal';
+import { RequiredMark } from '@/src/components/RequiredMark';
 import { AIActionModal } from '@/src/components/AIActionModal';
 import { FolderSelect } from '@/src/components/FolderSelect';
 import { TagEditor } from '@/src/components/TagEditor';
@@ -371,6 +372,7 @@ export default function TestSuites() {
           <FolderSelect
             value={formData.folderId}
             onChange={(folderId) => setFormData({ ...formData, folderId })}
+            required
             allowCreate={!selectedSuiteId}
             includeNone={false}
           />
@@ -384,7 +386,7 @@ export default function TestSuites() {
              />
           </div>
           <div>
-            <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Suite Name</label>
+            <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Suite Name<RequiredMark /></label>
             <input type="text" value={formData.name} onChange={(e) => setFormData({...formData, name: e.target.value})} placeholder="e.g., Auth Regression" className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]" />
           </div>
           <div>

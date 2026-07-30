@@ -9,6 +9,7 @@ import { cn } from '@/src/lib/utils';
 import { useAiSearch } from '@/src/lib/useAiSearch';
 import { useBulkDelete } from '@/src/lib/useBulkDelete';
 import { Modal } from '@/src/components/Modal';
+import { RequiredMark } from '@/src/components/RequiredMark';
 import { FolderSelect } from '@/src/components/FolderSelect';
 import { FolderBadge } from '@/src/components/FolderBadge';
 import { withBasePath } from '@/src/lib/base-path';
@@ -753,7 +754,7 @@ export default function Reports() {
           
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
              <div>
-                <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Report / Run Name</label>
+                <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Report / Run Name<RequiredMark /></label>
                 <input 
                   type="text" 
                   value={newReportName} 
