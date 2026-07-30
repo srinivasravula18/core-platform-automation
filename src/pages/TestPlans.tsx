@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, ChevronDown, ChevronRight, Search, Filter, Pencil, Plus, Sparkles, Trash2, PlayCircle, Loader2, Rocket } from 'lucide-react';
+import { ArrowLeft, ChevronDown, ChevronRight, CornerDownRight, Search, Filter, Pencil, Plus, Sparkles, Trash2, PlayCircle, Loader2, Rocket } from 'lucide-react';
 import { Timestamp, actorName } from '@/src/components/Timestamp';
 import { TimeSortSelect } from '@/src/components/filters/TimeSortSelect';
 import { TimeRangeFilter, passesTimeFilter, type TimeFilterValue } from '@/src/components/filters/TimeRangeFilter';
@@ -1056,8 +1056,8 @@ export default function TestPlans() {
                 <th className="font-medium py-3 px-4 w-10">
                   <input type="checkbox" checked={bulk.allSelected(filteredPlans.map((p) => p.id))} onChange={() => bulk.toggleAll(filteredPlans.map((p) => p.id))} />
                 </th>
-                <th className="w-32 px-4 py-3 font-medium">ID</th>
                 <th className="w-72 px-4 py-3 font-medium">Name</th>
+                <th className="w-32 px-4 py-3 font-medium">ID</th>
                 <th className="w-48 px-4 py-3 font-medium">Owner</th>
                 <th className="w-40 px-4 py-3 font-medium">Status</th>
                 <th className="w-32 px-4 py-3 font-medium">Risk Level</th>
@@ -1092,10 +1092,8 @@ export default function TestPlans() {
                     <td className="py-3 px-4" onClick={(e) => e.stopPropagation()}>
                       <input type="checkbox" checked={bulk.isSelected(plan.id)} onChange={() => bulk.toggle(plan.id)} />
                     </td>
-                    <td className="truncate py-3 px-4 font-mono text-xs text-[var(--text-muted)]" title={plan.id}>{plan.id}</td>
                     <td className="py-3 px-4">
                       <div className="flex min-w-0 items-center gap-1.5" style={{ paddingLeft: `${depth * 22}px` }}>
-                        {depth > 0 && <span aria-hidden="true" className="text-[var(--accent)]">└</span>}
                         {hasChildren ? (
                           <button
                             type="button"
@@ -1113,12 +1111,15 @@ export default function TestPlans() {
                           >
                             {collapsedPlanIds.has(plan.id) ? <ChevronRight className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
                           </button>
+                        ) : depth > 0 ? (
+                          <CornerDownRight aria-hidden="true" className="h-4 w-5 shrink-0 text-[var(--accent)]" />
                         ) : (
                           <span className="w-5" aria-hidden="true" />
                         )}
                         <span className="block max-w-[380px] truncate font-medium" title={plan.name}>{plan.name}</span>
                       </div>
                     </td>
+                    <td className="truncate py-3 px-4 font-mono text-xs text-[var(--text-muted)]" title={plan.id}>{plan.id}</td>
                     <td className="truncate py-3 px-4 text-[var(--text-muted)]" title={plan.owner || undefined}>{plan.owner || '-'}</td>
                     <td className="py-3 px-4">
                       <select
