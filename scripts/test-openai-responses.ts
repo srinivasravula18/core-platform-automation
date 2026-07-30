@@ -35,7 +35,7 @@ function fakeMessageOutput(content: Array<{ type: 'output_text'; text: string } 
 function fakeUsage(overrides: Partial<OpenAI.Responses.ResponseUsage> = {}): OpenAI.Responses.ResponseUsage {
   return {
     input_tokens: 100,
-    input_tokens_details: { cached_tokens: 0 },
+    input_tokens_details: { cached_tokens: 0, cache_write_tokens: 0 },
     output_tokens: 20,
     output_tokens_details: { reasoning_tokens: 0 },
     total_tokens: 120,
@@ -57,7 +57,7 @@ async function testSchemaValidHappyPath() {
     id: 'resp_1', model: body.model,
     output: fakeMessageOutput([{ type: 'output_text', text: JSON.stringify(parsed) }]),
     output_parsed: parsed, output_text: JSON.stringify(parsed),
-    usage: fakeUsage({ input_tokens: 100, input_tokens_details: { cached_tokens: 40 } }),
+    usage: fakeUsage({ input_tokens: 100, input_tokens_details: { cached_tokens: 40, cache_write_tokens: 0 } }),
   }));
 
   const result = await callOpenAIResponsesStructured({
