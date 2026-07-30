@@ -1,6 +1,5 @@
 import { Fragment, useEffect, useRef, useState } from 'react';
 import { Search, Filter, Pencil, ShieldAlert, Camera, Sparkles, Trash2, ChevronDown, ChevronRight } from 'lucide-react';
-import { RowMoreMenu } from '@/src/components/RowMoreMenu';
 import { Timestamp, actorName } from '@/src/components/Timestamp';
 import { TimeSortSelect } from '@/src/components/filters/TimeSortSelect';
 import { TimeRangeFilter, passesTimeFilter, type TimeFilterValue } from '@/src/components/filters/TimeRangeFilter';
@@ -362,7 +361,17 @@ export default function Defects() {
                     </button>
                     )}
                     {can('defects:delete') && (
-                    <RowMoreMenu items={[{ label: 'Delete', onClick: () => bulk.deleteOne(defect.id), danger: true }]} />
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          bulk.deleteOne(defect.id);
+                        }}
+                        title="Delete defect"
+                        aria-label="Delete defect"
+                        className="p-1 rounded text-[var(--text-muted)] transition-colors hover:bg-red-500/10 hover:text-red-400"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
                     )}
                   </td>
                 </tr>
