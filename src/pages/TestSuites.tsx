@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useState } from 'react';
+import { Fragment, useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { ChevronDown, ChevronRight, Search, Filter, Pencil, Plus, Sparkles, Trash2, PlayCircle, Loader2 } from 'lucide-react';
 import { Timestamp, actorName } from '@/src/components/Timestamp';
@@ -44,6 +44,7 @@ export default function TestSuites() {
   const aiSearch = useAiSearch('test suites');
   const [filters, setFilters] = useState({ statuses: [] as string[], priorities: [] as string[], modules: [] as string[], owners: [] as string[], tags: [] as string[], folders: [] as string[], planIds: [] as string[] });
   const [isFilterOpen, setIsFilterOpen] = useState(false);
+  const filterRef = useRef<HTMLDivElement | null>(null);
   const [isSuiteModalOpen, setIsSuiteModalOpen] = useState(false);
   const [isAISuiteModalOpen, setIsAISuiteModalOpen] = useState(false);
   const [isStartingRun, setIsStartingRun] = useState(false);
@@ -102,6 +103,15 @@ export default function TestSuites() {
     fetch('/api/runs').then((response) => response.json()).then((data) => setRuns(Array.isArray(data) ? data : [])).catch(console.error);
     fetchFolders();
   }, []);
+
+  useEffect(() => {
+    if (!isFilterOpen) return;
+    const closeOnOutsideClick = (event: PointerEvent) => {
+      if (!filterRef.current?.contains(event.target as Node)) setIsFilterOpen(false);
+    };
+    document.addEventListener('pointerdown', closeOnOutsideClick);
+    return () => document.removeEventListener('pointerdown', closeOnOutsideClick);
+  }, [isFilterOpen]);
 
   const openNewModal = () => {
     setSelectedSuiteId(null);
@@ -270,17 +280,17 @@ export default function TestSuites() {
   const getSuiteCases = (suiteId: string) => cases.filter((testCase) => caseBelongsToSuite(testCase, suiteId));
   const moduleOptions = Array.from(new Set(suites.map((suite) => suiteModuleName(suite, folders)).filter(Boolean))).sort();
   const ownerOptions = Array.from(new Set(suites.map((suite) => String(suite.owner || '').trim()).filter(Boolean))).sort();
-  const statusOptions = Array.from(new Set(suites.map((suite) => String(suite.status || 'Active')))).sort();
-  const priorityOptions = Array.from(new Set(suites.map((suite) => String(suite.priority || 'Medium')))).sort();
+  const statusOptions = Array.from(new Set(['Active', 'Draft', 'Under Review', 'Approved', 'In Progress', 'Completed', 'Blocked', 'Deprecated', ...suites.map((suite) => String(suite.status || 'Active'))]));
+  const priorityOptions = Array.from(new Set(['Critical', 'High', 'Medium', 'Low', ...suites.map((suite) => String(suite.priority || 'Medium'))]));
   const tagOptions = normalizeTags([...plans, ...suites, ...cases, ...runs]
-    .flatMap((item) => Array.isArray(item.tags) ? item.tags : [])).sort();
+    .flatMap((item) => Array.isArray(item.tags) ? item.tags : String(item.tags || '').split(','))).sort();
   const relatedCases = cases;
   const filteredSuites = suites.filter((suite) => {
     const query = searchTerm.toLowerCase();
     const matchesSearch = aiSearch.isAiQuery(searchTerm)
       ? (aiSearch.matchedIds ? aiSearch.matchedIds.has(suite.id) : true)
       : (!query || `${suite.id || ''} ${suite.name || ''} ${suite.description || ''} ${suiteModuleName(suite, folders)} ${suite.owner || ''} ${suite.priority || ''} ${(suite.tags || []).join(' ')}`.toLowerCase().includes(query));
-    const suiteTags = Array.isArray(suite.tags) ? suite.tags : [];
+    const suiteTags = normalizeTags(Array.isArray(suite.tags) ? suite.tags : String(suite.tags || '').split(','));
     const matches = (selected: string[], value: string) => !selected.length || selected.includes(value);
     const matchesTags = !filters.tags.length || filters.tags.some((tag) => suiteTags.includes(tag));
     const matchesPlans = !filters.planIds.length || suitePlanIds(suite).some((id) => filters.planIds.includes(String(id)));
@@ -536,7 +546,7 @@ export default function TestSuites() {
               className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md pl-9 pr-4 py-1.5 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]"
             />
           </div>
-          <div className="relative">
+          <div ref={filterRef} className="relative">
             <button onClick={() => setIsFilterOpen(!isFilterOpen)} aria-expanded={isFilterOpen} className="flex items-center gap-2 border border-[var(--border)] bg-[var(--bg-secondary)] hover:bg-[var(--border)] text-[var(--text-primary)] px-3 py-1.5 rounded-md text-sm transition-colors">
               <Filter className="w-4 h-4" /> Filters
               {activeFilterCount > 0 && <span className="rounded-full bg-[var(--accent)] px-1.5 text-[11px] font-semibold text-white">{activeFilterCount}</span>}
