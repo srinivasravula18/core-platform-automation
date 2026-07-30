@@ -4817,7 +4817,6 @@ Rules:
       const { goal, app_url, username, password, testData, websiteId } = req.body || {};
       const url = String(app_url || '');
       const resolved = resolveCredentials({ targetUrl: url, websiteId: String(websiteId || ''), ownerId: reqScope(req).userId })
-        || resolveCredentials({ targetUrl: url, websiteId: String(websiteId || '') })
         || undefined;
       const settingsCreds = findSettingsCredentials(url);
       const creds = (username && password)

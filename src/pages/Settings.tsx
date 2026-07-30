@@ -1574,7 +1574,8 @@ const hasCredentialChanges = (row: CredRow) => {
     || current.name !== row.saved.name
     || current.url !== row.saved.url
     || current.username !== row.saved.username
-    || current.useForPlaywright !== row.saved.useForPlaywright;
+    || current.useForPlaywright !== row.saved.useForPlaywright
+    || current.shared !== row.saved.shared;
 };
 
 const credentialUrlKey = (value: string) => {

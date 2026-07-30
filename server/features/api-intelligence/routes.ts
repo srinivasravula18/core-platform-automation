@@ -26,7 +26,7 @@ async function resolveToken(req: Request, targetUrl: string): Promise<string | u
   const inline = b.inlineCredentials || {};
   if (inline.token) return String(inline.token);
   const creds =
-    resolveCredentials({ targetUrl, websiteId: b.websiteId, websiteName: b.websiteName, inline: b.inlineCredentials }) ||
+    resolveCredentials({ targetUrl, websiteId: b.websiteId, websiteName: b.websiteName, inline: b.inlineCredentials, ownerId: scopeOf(req).ownerId }) ||
     null;
   const username = inline.username || creds?.username;
   const password = inline.password || (creds as any)?.password;

@@ -11,7 +11,6 @@
 import type { Express } from 'express';
 import { persistDataInBackground } from '../../shared/storage';
 import { reqScope, reqGrants } from '../../shared/scope';
-import { isAllowed, UNRESTRICTED } from '../auth/groupStore';
 import { recordAudit } from '../../shared/recordAudit';
 import {
   listWebsites,
@@ -29,6 +28,8 @@ import {
   resolveCredentials,
   revealPassword,
   maskPassword,
+  canUseWebsite,
+  canManageWebsite,
 } from './credentialsService';
 
 function userResponse(u: any) {
@@ -59,9 +60,7 @@ function canAccessWebsite(req: any, websiteId: string): boolean {
   if (!scope.userId) return true;
   const w = getWebsite(websiteId);
   if (!w) return false;
-  if ((w.ownerId || '') === scope.userId) return true;
-  const grants = reqGrants(req);
-  return grants !== UNRESTRICTED && isAllowed(grants, 'websites', websiteId);
+  return canManageWebsite(w, scope.userId, reqGrants(req));
 }
 function canAccessUser(req: any, userId: string): boolean {
   const u = getUser(userId);
@@ -73,12 +72,8 @@ export function registerCredentialsRoutes(app: Express) {
     const scope = reqScope(req);
     let websites = listWebsites();
     if (scope.userId) {
-      const owned = (w: any) => (w.ownerId || '') === scope.userId;
       const grants = reqGrants(req);
-      // Admin/UNRESTRICTED: own-only. Testers also see admin-shared URLs and anything a group grants.
-      websites = grants === UNRESTRICTED
-        ? websites.filter(owned)
-        : websites.filter((w) => owned(w) || w.shared === true || isAllowed(grants, 'websites', w.id));
+      websites = websites.filter((w) => canUseWebsite(w, scope.userId || '', grants));
     }
     res.json({ websites });
   });

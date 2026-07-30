@@ -27,7 +27,7 @@ import { createCipheriv, createDecipheriv, randomBytes, scryptSync, createHash }
 import { db } from '../../shared/storage';
 import type { AgentRunCredentials } from './types';
 import { getUserById } from '../auth/userStore';
-import { effectiveGrantsForUser, isAllowed, UNRESTRICTED } from '../auth/groupStore';
+import { effectiveGrantsForUser, isAllowed, UNRESTRICTED, type EffectiveGrants } from '../auth/groupStore';
 
 // Derive the key LAZILY (on first encrypt/decrypt), NOT at module load. server.ts runs
 // dotenv.config() AFTER its imports evaluate, so reading CRED_ENC_KEY at module-load time misses
@@ -177,6 +177,26 @@ export function listWebsites(): Website[] {
 export function getWebsite(id: string): Website | null {
   ensureTables();
   return (db.websites as any[]).find((w) => w.id === id) || null;
+}
+
+function isAdminOwnedWebsite(website: Website): boolean {
+  return getUserById(website.ownerId || '')?.role === 'admin';
+}
+
+/** Group grants may share admin-owned credentials, never another member's credentials. */
+export function canUseWebsite(website: Website, viewerId: string, grants: EffectiveGrants): boolean {
+  if (!viewerId || (website.ownerId || '') === viewerId) return true;
+  return isAdminOwnedWebsite(website)
+    && grants !== UNRESTRICTED
+    && (website.shared === true || isAllowed(grants, 'websites', website.id));
+}
+
+/** Shared is use-only; managing another user's credential still requires an explicit group grant. */
+export function canManageWebsite(website: Website, viewerId: string, grants: EffectiveGrants): boolean {
+  if (!viewerId || (website.ownerId || '') === viewerId) return true;
+  return isAdminOwnedWebsite(website)
+    && grants !== UNRESTRICTED
+    && isAllowed(grants, 'websites', website.id);
 }
 
 /**
@@ -419,11 +439,7 @@ export function resolveCredentials(opts: ResolveOptions): ResolvedCredential | n
   // matching the /api/credentials list + canAccessWebsite gates, so a run can only use creds the user
   // can actually access.
   const ownerGrants = opts.ownerId ? effectiveGrantsForUser(getUserById(opts.ownerId)) : UNRESTRICTED;
-  const ownerOk = (w: any) => {
-    if (!opts.ownerId) return true;
-    if ((w?.ownerId || '') === opts.ownerId) return true;
-    return ownerGrants !== UNRESTRICTED && isAllowed(ownerGrants, 'websites', w?.id || '');
-  };
+  const ownerOk = (w: any) => !!w && canUseWebsite(w, opts.ownerId || '', ownerGrants);
   const sites = (db.websites as any[]).filter(ownerOk);
 
   if (opts.userId) {
