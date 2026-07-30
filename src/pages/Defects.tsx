@@ -1,6 +1,5 @@
 import { Fragment, useEffect, useRef, useState } from 'react';
 import { Search, Filter, Pencil, ShieldAlert, Camera, Sparkles, Trash2, ChevronDown, ChevronRight } from 'lucide-react';
-import { RowMoreMenu } from '@/src/components/RowMoreMenu';
 import { Timestamp, actorName } from '@/src/components/Timestamp';
 import { TimeSortSelect } from '@/src/components/filters/TimeSortSelect';
 import { TimeRangeFilter, passesTimeFilter, type TimeFilterValue } from '@/src/components/filters/TimeRangeFilter';
@@ -341,11 +340,12 @@ export default function Defects() {
                       {defect.status}
                     </span>
                   </td>
-                  <td className="py-3 px-4 whitespace-nowrap text-xs text-[var(--text-muted)]">
+                  <td className="overflow-hidden py-3 px-4 whitespace-nowrap text-xs text-[var(--text-muted)]">
                     <Timestamp value={defect.metadata?.updatedAt || defect.updatedAt} />
-                    {actorName(defect.metadata?.updatedBy) && <div className="text-[10px]">by {actorName(defect.metadata?.updatedBy)}</div>}
+                    {actorName(defect.metadata?.updatedBy) && <div className="truncate text-[10px]" title={`by ${actorName(defect.metadata?.updatedBy)}`}>by {actorName(defect.metadata?.updatedBy)}</div>}
                   </td>
-                  <td className="py-3 px-4 text-right flex gap-1 justify-end">
+                  <td className="py-3 px-4 text-right">
+                    <div className="flex justify-end gap-1">
                     <button onClick={(e) => { e.stopPropagation(); openDefectSnapshot(defect); }} title={defectSnapshotUrl(defect) ? 'View failure snapshot' : 'No snapshot captured'} className={cn('p-1 rounded transition-colors border border-transparent', defectSnapshotUrl(defect) ? 'text-red-500 hover:bg-[var(--bg-primary)] hover:border-red-500' : 'text-[var(--text-muted)] opacity-50')}>
                       <Camera className="w-4 h-4" />
                     </button>
@@ -362,8 +362,19 @@ export default function Defects() {
                     </button>
                     )}
                     {can('defects:delete') && (
-                    <RowMoreMenu items={[{ label: 'Delete', onClick: () => bulk.deleteOne(defect.id), danger: true }]} />
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          bulk.deleteOne(defect.id);
+                        }}
+                        title="Delete defect"
+                        aria-label="Delete defect"
+                        className="p-1 rounded text-[var(--text-muted)] transition-colors hover:bg-red-500/10 hover:text-red-400"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
                     )}
+                    </div>
                   </td>
                 </tr>
                 {expandedId === defect.id && hasRichReport(defect) && (

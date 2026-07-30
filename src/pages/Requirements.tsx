@@ -270,9 +270,9 @@ export default function Requirements() {
                       <span className="text-emerald-400">{req.existingCaseCount || 0} existing</span> · <span className="text-sky-400">{req.generatedCaseCount || 0} new</span>
                     </td>
                     <td className="py-3 px-4 text-xs">{req.status}</td>
-                    <td className="py-3 px-4 whitespace-nowrap text-xs text-[var(--text-muted)]">
+                    <td className="overflow-hidden py-3 px-4 whitespace-nowrap text-xs text-[var(--text-muted)]">
                       <Timestamp value={req.metadata?.updatedAt || req.updatedAt} />
-                      {actorName(req.metadata?.updatedBy) && <div className="text-[10px]">by {actorName(req.metadata?.updatedBy)}</div>}
+                      {actorName(req.metadata?.updatedBy) && <div className="truncate text-[10px]" title={`by ${actorName(req.metadata?.updatedBy)}`}>by {actorName(req.metadata?.updatedBy)}</div>}
                     </td>
                     <td className="py-3 px-4 text-right">
                       {can('requirements:delete') && (
