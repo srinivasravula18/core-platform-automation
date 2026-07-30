@@ -100,6 +100,9 @@ const LEGACY_STATUS: Record<WorkflowStatus, string> = {
 const SEED_FIELDS = [
   'app_url', 'appUrl', 'provider', 'model', 'prompt', 'folderId', 'folderPath',
   'testPlanId', 'testSuiteId', 'testCaseId', 'artifactName', 'created_at', 'createdAt',
+  // Stable generated-suite identity/title must survive every projection; dropping either lets
+  // later persistence create a second fallback suite or rename it from URL context.
+  'generatedSuiteId', 'suiteTitle',
   // Conversation/scope linkage: losing these orphaned graph runs from their chat (plan P11).
   'conversationId', 'projectId', 'appId', 'ownerId', 'websiteId',
 ] as const;

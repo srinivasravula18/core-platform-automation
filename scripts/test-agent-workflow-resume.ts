@@ -431,7 +431,15 @@ function testProjectionUnit() {
     evidenceShots: [{ title: 'Case title', url: 'https://target/', screenshotUrl: '/evidence/x-graph-1.png', status: 'passed' }],
   });
 
-  const seed = { credentials: { username: 'admin', password: 'SECRET_MARKER_SEED' }, provider: 'openai', model: 'gpt-test', prompt: 'orig prompt', messages: [] };
+  const seed = {
+    credentials: { username: 'admin', password: 'SECRET_MARKER_SEED' },
+    provider: 'openai',
+    model: 'gpt-test',
+    prompt: 'orig prompt',
+    generatedSuiteId: 'SUITE-STABLE-1',
+    suiteTitle: 'Distinct Prompt Coverage',
+    messages: [],
+  };
   const proj = projectStateToLegacyRun(state, seed);
   eq(proj.id, runId, 'projection id is the runId');
   eq(proj.status, 'running', 'queued maps to running for UI compat');
@@ -446,6 +454,8 @@ function testProjectionUnit() {
   eq(proj.engine, 'langgraph', 'engine stamped langgraph');
   eq(proj.provider, 'openai', 'whitelisted seed field (provider) copied');
   eq(proj.prompt, 'orig prompt', 'seed prompt wins over the goal');
+  eq(proj.generatedSuiteId, 'SUITE-STABLE-1', 'generated suite identity survives projection');
+  eq(proj.suiteTitle, 'Distinct Prompt Coverage', 'authored suite title survives projection');
   ok(!JSON.stringify(proj).includes('SECRET_MARKER_SEED'), 'seed credentials never copied into the projection');
   ok(proj.credentials === undefined, 'no credentials key at all on the projection');
   const wfLines = (proj.messages as any[]).filter((m) => m.agent === 'Workflow');
@@ -453,6 +463,8 @@ function testProjectionUnit() {
 
   const projDone = projectStateToLegacyRun({ ...state, status: 'completed', stage: 'finalize' }, proj);
   eq(projDone.status, 'completed', 'completed maps straight through');
+  eq(projDone.generatedSuiteId, 'SUITE-STABLE-1', 'generated suite identity survives repeated projections');
+  eq(projDone.suiteTitle, 'Distinct Prompt Coverage', 'authored suite title survives repeated projections');
   const doneWf = (projDone.messages as any[]).filter((m) => m.agent === 'Workflow');
   eq(doneWf.length, 2, 'a changed progress line appends exactly one more Workflow message');
   const projSame = projectStateToLegacyRun({ ...state, status: 'completed', stage: 'finalize' }, projDone);
