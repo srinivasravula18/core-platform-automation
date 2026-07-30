@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { BrowserRouter, Routes, Route, Link, Navigate, useLocation, useNavigate } from 'react-router-dom';
-import { LayoutDashboard, TestTube2, Bug, Settings, BrainCircuit, PlayCircle, FolderTree, Sun, Moon, Search, CircleUser, Layers, Menu, ClipboardList, GitBranch, Command, MessagesSquare, ChevronDown, LogOut, Target, ScrollText, Radio, HardDrive, CalendarClock, Gauge, BookOpen, Database, ShieldAlert } from 'lucide-react';
+import { LayoutDashboard, TestTube2, Bug, Settings, BrainCircuit, PlayCircle, FolderTree, Sun, Moon, Search, CircleUser, Layers, Menu, ClipboardList, Command, MessagesSquare, ChevronDown, LogOut, Target, ScrollText, Radio, HardDrive, CalendarClock, Gauge, BookOpen, Database, ShieldAlert } from 'lucide-react';
 import { useRemoteAgentFlag } from '@/src/lib/useAutomation';
 import { cn } from '@/src/lib/utils';
 import { useTheme } from '@/src/store/theme';
@@ -52,7 +52,6 @@ function Sidebar({ isOpen }: { isOpen: boolean }) {
     ] : [
       { name: 'Record & Play', href: '/record-play', icon: Radio },
     ]),
-    { name: 'Git Agent', href: '/git-agent', icon: GitBranch },
   ];
   const navGroups = [
     {
