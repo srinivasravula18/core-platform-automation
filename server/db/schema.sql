@@ -104,6 +104,7 @@ CREATE TABLE IF NOT EXISTS cases (
   approved_at     TIMESTAMPTZ,
   source_run_id   TEXT,
   agent_run_id    TEXT,
+  capture_evidence_on_manual_run BOOLEAN NOT NULL DEFAULT TRUE,
   created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
   deleted_at      TIMESTAMPTZ
@@ -303,6 +304,7 @@ ALTER TABLE cases ADD COLUMN IF NOT EXISTS automation_status TEXT DEFAULT 'Not A
 ALTER TABLE cases ADD COLUMN IF NOT EXISTS testing_scope     TEXT DEFAULT 'Manual';
 ALTER TABLE cases ADD COLUMN IF NOT EXISTS testing_type      TEXT DEFAULT 'Functional';
 ALTER TABLE cases ADD COLUMN IF NOT EXISTS testing_types     JSONB DEFAULT '[]'::jsonb;
+ALTER TABLE cases ADD COLUMN IF NOT EXISTS capture_evidence_on_manual_run BOOLEAN NOT NULL DEFAULT TRUE;
 -- Multi-select plan/suite membership (edit form). Singular test_plan_id/test_suite_id stay in sync
 -- with the first entry so existing run/linking logic keyed on the singular id is unaffected.
 ALTER TABLE cases ADD COLUMN IF NOT EXISTS test_plan_ids  JSONB DEFAULT '[]'::jsonb;

@@ -215,6 +215,7 @@ function mapCase(r: any) {
     testingScope: r.testing_scope || (r.type === 'Automated' ? 'Automation' : 'Manual'),
     testingType: r.testing_type || 'Functional',
     testingTypes: normalizeTestCaseTypes({ testingTypes: r.testing_types, testingType: r.testing_type }),
+    captureEvidenceOnManualRun: r.capture_evidence_on_manual_run !== false,
     tags: r.tags || [],
     folderId: r.folder_id,
     confidence: r.confidence,
@@ -1061,8 +1062,8 @@ export const Cases = {
       ? await queryOne('SELECT title, description, preconditions, steps FROM cases WHERE id = $1', [id])
       : null;
     const row = await queryOne(
-      `INSERT INTO cases (id, title, description, preconditions, steps, test_plan_id, test_suite_id, type, priority, status, tags, folder_id, confidence, sources, approval_state, proposed_by, source_run_id, agent_run_id, automation_status, testing_scope, testing_type, testing_types, test_plan_ids, test_suite_ids, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22::jsonb,$23::jsonb,$24::jsonb, now(), now())
+      `INSERT INTO cases (id, title, description, preconditions, steps, test_plan_id, test_suite_id, type, priority, status, tags, folder_id, confidence, sources, approval_state, proposed_by, source_run_id, agent_run_id, automation_status, testing_scope, testing_type, testing_types, test_plan_ids, test_suite_ids, capture_evidence_on_manual_run, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22::jsonb,$23::jsonb,$24::jsonb,$25, now(), now())
        ON CONFLICT (id) DO UPDATE SET
          title=EXCLUDED.title, description=EXCLUDED.description, preconditions=EXCLUDED.preconditions,
          steps=EXCLUDED.steps, test_plan_id=EXCLUDED.test_plan_id, test_suite_id=EXCLUDED.test_suite_id,
@@ -1072,7 +1073,7 @@ export const Cases = {
          source_run_id=EXCLUDED.source_run_id, agent_run_id=EXCLUDED.agent_run_id,
          automation_status=EXCLUDED.automation_status, testing_scope=EXCLUDED.testing_scope,
          testing_type=EXCLUDED.testing_type, testing_types=EXCLUDED.testing_types, test_plan_ids=EXCLUDED.test_plan_ids,
-         test_suite_ids=EXCLUDED.test_suite_ids, updated_at=now()
+         test_suite_ids=EXCLUDED.test_suite_ids, capture_evidence_on_manual_run=EXCLUDED.capture_evidence_on_manual_run, updated_at=now()
        RETURNING *`,
       [
         id, c.title || 'Untitled Case', c.description || '', c.preconditions || '',
@@ -1083,6 +1084,7 @@ export const Cases = {
         c.sourceRunId || null, c.agentRunId || null,
         c.automationStatus || 'Not Automated', testingScope, testingTypes[0] || 'Functional',
         JSON.stringify(testingTypes), JSON.stringify(planIds), JSON.stringify(suiteIds),
+        c.captureEvidenceOnManualRun !== false,
       ],
     );
     await writeScopeCols('cases', id, c);
