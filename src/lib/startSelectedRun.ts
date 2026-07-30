@@ -4,6 +4,9 @@ type RunSelection = {
   planIds?: string[];
   suiteIds?: string[];
   caseIds?: string[];
+  folderId?: string;
+  tags?: string[];
+  name?: string;
 };
 
 export async function startSelectedRun(selection: RunSelection, navigate: NavigateFunction) {

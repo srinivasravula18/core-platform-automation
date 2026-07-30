@@ -539,11 +539,16 @@ export function registerResourceRoutes(app: Express) {
           } catch (error: any) {
             const latest = await Runs.get(run.id).catch(() => null);
             if (manualExecutionMeta(latest).attemptId === executionAttemptId) {
+              // No test actually ran (auth/target unreachable/crash before the first result), so
+              // passed/failed/steps stay untouched — Untested is the honest state, not a fabricated
+              // Blocked/100% that would claim an assessment happened when it didn't. `progress` is a
+              // real persisted column (unlike an ad hoc field), so the reason survives the save and
+              // the UI can show it instead of a silent, unexplained zero (see TestRuns.tsx banner).
               await Runs.upsert(withManualExecutionMeta({
                 ...latest,
                 status: 'Failed',
                 state: 'Blocked',
-                progress: error?.message || 'Execution failed',
+                progress: error?.message || 'Execution failed before any test ran.',
                 completedAt: new Date().toISOString(),
               }, {
                 heartbeatAt: new Date().toISOString(),

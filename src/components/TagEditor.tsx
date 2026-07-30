@@ -24,6 +24,9 @@ export function TagEditor({ options, value, onChange }: { options: string[]; val
   };
   const remove = (tag: string) => onChange(value.filter((item) => item !== tag));
 
+  // Tags are always @-prefixed (see normalizeTag) — show the prefix as soon as typing starts, not just on commit.
+  const withAtPrefix = (raw: string) => (raw && !raw.startsWith('@') ? `@${raw}` : raw);
+
   const normalizedQuery = normalizeTag(query);
   const available = options.filter((tag) => !value.includes(tag));
   const suggestions = normalizedQuery ? available.filter((tag) => normalizeTag(tag).includes(normalizedQuery)) : available;
@@ -47,14 +50,17 @@ export function TagEditor({ options, value, onChange }: { options: string[]; val
         ))}
         <input
           value={query}
-          onChange={(event) => { setQuery(event.target.value); setOpen(true); }}
-          onFocus={() => setOpen(true)}
+          onChange={(event) => { setQuery(withAtPrefix(event.target.value)); setOpen(true); }}
+          onFocus={() => { setOpen(true); setQuery((q) => q || '@'); }}
           onKeyDown={(event) => {
             if (event.key === 'Enter') {
               event.preventDefault();
               if (suggestions.length) add(suggestions[0]); else add(query);
             }
-            if (event.key === 'Backspace' && !query && value.length) remove(value[value.length - 1]);
+            if (event.key === 'Backspace') {
+              if (query === '@') { setQuery(''); return; }
+              if (!query && value.length) remove(value[value.length - 1]);
+            }
           }}
           placeholder={value.length ? 'Add tag…' : 'Select or create tags…'}
           className="min-w-[8rem] flex-1 bg-transparent px-0.5 py-0.5 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none"

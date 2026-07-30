@@ -15,6 +15,7 @@ import { AIActionModal } from '@/src/components/AIActionModal';
 import { FolderSelect } from '@/src/components/FolderSelect';
 import { FolderBadge } from '@/src/components/FolderBadge';
 import { AutomationRunArtifacts } from '@/src/components/AutomationRunArtifacts';
+import EditableCaseCard from '@/src/components/EditableCaseCard';
 import { TagEditor } from '@/src/components/TagEditor';
 import { MultiSelectDropdown } from '@/src/components/MultiSelectDropdown';
 import { EntityLinker } from '@/src/components/EntityLinker';
@@ -22,7 +23,7 @@ import { showAlert, showConfirm } from '@/src/lib/dialog';
 import { can } from '@/src/components/AuthGate';
 import { withBasePath } from '@/src/lib/base-path';
 import { caseSuiteIds } from '@/src/lib/suiteCaseSelection';
-import { casesForRun, manualRunSelection, runExecutionState, scriptsForRun } from '@/src/lib/manualTestRun';
+import { casesForRun, manualRunSelection, runExecutionState, scriptsForCases, scriptsForRun } from '@/src/lib/manualTestRun';
 import { collectRunEvidence, evidenceDownloadName } from '@/core/shared/runEvidence';
 import { normalizeTags } from '@/src/lib/tags';
 
@@ -122,6 +123,8 @@ export default function TestRuns() {
   const [scripts, setScripts] = useState<any[]>([]);
   const [runProgress, setRunProgress] = useState<Record<string, string>>({});
   const [closingRunId, setClosingRunId] = useState('');
+  const [editingCase, setEditingCase] = useState<any>(null);
+  const [scriptViewer, setScriptViewer] = useState<{ title: string; filename: string; code: string } | null>(null);
   const tagOptions = useMemo(() => normalizeTags([...plans, ...suites, ...cases, ...runs]
     .flatMap((item) => Array.isArray(item.tags) ? item.tags : [])).sort(), [plans, suites, cases, runs]);
 
@@ -402,26 +405,24 @@ export default function TestRuns() {
               <span>/</span>
               <span className="font-mono">{selectedRun.id}</span>
             </div>
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <h1 className="text-2xl font-bold tracking-tight">{selectedRun.name}</h1>
-                <div className="mt-3 flex flex-wrap items-center gap-4 text-sm text-[var(--text-muted)]">
-                  <span className="inline-flex items-center gap-1"><PlayCircle className="w-4 h-4" /> {selectedRun.status || 'In Progress'}</span>
-                  {selectedRun.state && <span className="rounded-full border border-[var(--border)] px-2 py-0.5 text-xs">{selectedRun.state}</span>}
-                  <span>Assigned: {selectedRun.assignedTo || selectedRun.requestedBy || 'Unassigned'}</span>
-                  {selectedRun.testPlanId && <span>Plan: {plans.find((p) => p.id === selectedRun.testPlanId)?.name || selectedRun.testPlanId}</span>}
-                  <span>{selectedRun.date || 'No date'}</span>
-                  <span>{selectedRun.executionTime || '-'}</span>
-                  <FolderBadge folders={folders} folderId={selectedRun.folderId} />
-                  {Array.isArray(selectedRun.tags) && selectedRun.tags.map((t: string) => <span key={t} className="rounded bg-[var(--bg-secondary)] px-2 py-0.5 text-xs">{t}</span>)}
-                </div>
+            <h1 className="truncate text-2xl font-bold tracking-tight">{selectedRun.name}</h1>
+            <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm text-[var(--text-muted)]">
+                <span className="inline-flex items-center gap-1 whitespace-nowrap"><PlayCircle className="w-4 h-4" /> {selectedRun.status || 'In Progress'}</span>
+                {selectedRun.state && <span className="whitespace-nowrap rounded-full border border-[var(--border)] px-2 py-0.5 text-xs">{selectedRun.state}</span>}
+                <span className="whitespace-nowrap">Assigned: {selectedRun.assignedTo || selectedRun.requestedBy || 'Unassigned'}</span>
+                {selectedRun.testPlanId && <span className="whitespace-nowrap">Plan: {plans.find((p) => p.id === selectedRun.testPlanId)?.name || selectedRun.testPlanId}</span>}
+                <span className="whitespace-nowrap">{selectedRun.date || 'No date'}</span>
+                <span className="whitespace-nowrap">{selectedRun.executionTime || '-'}</span>
+                <FolderBadge folders={folders} folderId={selectedRun.folderId} />
+                {Array.isArray(selectedRun.tags) && selectedRun.tags.map((t: string) => <span key={t} className="whitespace-nowrap rounded bg-[var(--bg-secondary)] px-2 py-0.5 text-xs">{t}</span>)}
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 {isPendingReviewTestRun(selectedRun) && can('runs:update') && (
                   <button
                     onClick={() => { void handleCloseRun(selectedRun); }}
                     disabled={closingRunId === selectedRun.id}
-                    className="inline-flex items-center gap-2 rounded-md bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                    className="inline-flex shrink-0 items-center gap-2 whitespace-nowrap rounded-md bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     <CheckCircle className="h-4 w-4" /> {closingRunId === selectedRun.id ? 'Closing…' : 'Confirm & Close'}
                   </button>
@@ -431,7 +432,7 @@ export default function TestRuns() {
                   onClick={() => openEditModal(selectedRun)}
                   disabled={selectedIsRunning}
                   title={selectedIsRunning ? 'A running test run cannot be edited' : 'Edit test run'}
-                  className="inline-flex items-center gap-2 rounded-md border border-[var(--border)] px-4 py-2 text-sm font-medium text-[var(--text-primary)] hover:bg-[var(--bg-secondary)] disabled:cursor-not-allowed disabled:opacity-50"
+                  className="inline-flex shrink-0 items-center gap-2 whitespace-nowrap rounded-md border border-[var(--border)] px-4 py-2 text-sm font-medium text-[var(--text-primary)] hover:bg-[var(--bg-secondary)] disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <Pencil className="h-4 w-4" /> Edit
                 </button>
@@ -441,7 +442,7 @@ export default function TestRuns() {
                   onClick={() => handleExecuteRuns([selectedRun])}
                   disabled={selectedExecution.running || Boolean(runProgress[selectedRun.id]) || selectedRunScripts.length === 0}
                   title={selectedRunScripts.length ? 'Execute linked Playwright scripts' : 'No Playwright scripts are linked to these cases'}
-                  className="inline-flex items-center gap-2 rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
+                  className="inline-flex shrink-0 items-center gap-2 whitespace-nowrap rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <PlayCircle className="h-4 w-4" /> {selectedProgress || 'Run scripts'}
                 </button>
@@ -449,6 +450,16 @@ export default function TestRuns() {
               </div>
             </div>
           </div>
+
+          {/* Execution never produced results (auth/target unreachable/crash before the first test) —
+              say why instead of leaving a silent 0/Untested with no explanation. Recognized by
+              stats.untested === stats.total: no case got any real outcome, so nothing ran. */}
+          {!selectedIsRunning && selectedRun.status === 'Failed' && stats.untested === stats.total && selectedRun.progress && (
+            <div className="border-b border-[var(--border)] bg-red-500/10 px-5 py-3 text-sm text-red-400">
+              <span className="font-medium">Execution didn't run: </span>
+              <span className="whitespace-pre-wrap">{selectedRun.progress}</span>
+            </div>
+          )}
 
           {/* Automation run: execution artifacts (video/screenshots/trace/junit/logs) kept at the top. */}
           {selectedRun.triggerMeta?.automationJobId && (
@@ -602,6 +613,7 @@ export default function TestRuns() {
                     <th className="px-4 py-3 font-medium">Title</th>
                     <th className="px-4 py-3 font-medium">Configurations</th>
                     <th className="px-4 py-3 font-medium">Priority</th>
+                    <th className="px-4 py-3 font-medium">Script</th>
                     <th className="px-4 py-3 font-medium">Status</th>
                     <th className="px-4 py-3 w-12 text-right">
                       <SlidersHorizontal className="w-4 h-4" />
@@ -610,8 +622,10 @@ export default function TestRuns() {
                 </thead>
                 <tbody className="divide-y divide-[var(--border)]">
                   {visibleRunCases.length === 0 ? (
-                    <tr><td colSpan={7} className="px-4 py-8 text-center text-[var(--text-muted)]">No test cases linked to this run.</td></tr>
-                  ) : visibleRunCases.map((testCase) => (
+                    <tr><td colSpan={8} className="px-4 py-8 text-center text-[var(--text-muted)]">No test cases linked to this run.</td></tr>
+                  ) : visibleRunCases.map((testCase) => {
+                    const linkedScript = scriptsForCases([testCase], scripts)[0] || null;
+                    return (
                     <tr key={testCase.id} className="hover:bg-[var(--bg-secondary)]">
                       <td className="px-4 py-3">
                         <input type="checkbox" checked={caseBulk.isSelected(testCase.id)} onChange={() => caseBulk.toggle(testCase.id)} />
@@ -621,12 +635,44 @@ export default function TestRuns() {
                       <td className="px-4 py-3 text-[var(--text-muted)]">--</td>
                       <td className="px-4 py-3">{testCase.priority || '-'}</td>
                       <td className="px-4 py-3">
+                        {linkedScript ? (
+                          <button
+                            type="button"
+                            onClick={() => setScriptViewer({
+                              title: linkedScript.title || testCase.title || 'Script',
+                              filename: linkedScript.filename || linkedScript.name || 'script.spec.ts',
+                              code: String(linkedScript.code || ''),
+                            })}
+                            title="View the linked Playwright script"
+                            className="inline-flex items-center gap-1 rounded-full bg-emerald-500/15 px-2 py-0.5 text-xs font-medium text-emerald-400 hover:bg-emerald-500/25"
+                          >
+                            Linked · View
+                          </button>
+                        ) : (
+                          <span
+                            className="inline-flex items-center gap-1 rounded-full bg-[var(--bg-secondary)] px-2 py-0.5 text-xs font-medium text-[var(--text-muted)]"
+                            title='No Playwright script is linked — "Run scripts" cannot execute this case'
+                          >
+                            No script
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3">
                         <span className="inline-flex items-center gap-2">
                           <span className={cn('w-2 h-2 rounded-full', statusDot(testCase.status || 'Untested'))} />
                           {testCase.status || 'Untested'}
                         </span>
                       </td>
                       <td className="px-4 py-3">
+                        {can('cases:update') && (
+                        <button
+                          onClick={() => setEditingCase(testCase)}
+                          title="Edit this test case"
+                          className="p-1 rounded hover:bg-[var(--border)] text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors"
+                        >
+                          <Pencil className="w-4 h-4" />
+                        </button>
+                        )}
                         {can('cases:delete') && (
                         <button
                           onClick={() => caseBulk.deleteOne(testCase.id)}
@@ -639,12 +685,53 @@ export default function TestRuns() {
                         )}
                       </td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
           </div>
         </div>
+        <Modal
+          isOpen={Boolean(editingCase)}
+          onClose={() => setEditingCase(null)}
+          title="Edit Test Case"
+        >
+          {editingCase && (
+            <EditableCaseCard
+              initial={editingCase}
+              startEditing
+              onSaved={() => {
+                setEditingCase(null);
+                fetchData();
+              }}
+            />
+          )}
+        </Modal>
+        <Modal
+          isOpen={Boolean(scriptViewer)}
+          onClose={() => setScriptViewer(null)}
+          title={scriptViewer ? `Script — ${scriptViewer.filename}` : 'Script'}
+          size="xl"
+          footer={
+            <div className="flex justify-end gap-3">
+              <button
+                onClick={() => { if (scriptViewer) navigator.clipboard?.writeText(scriptViewer.code); }}
+                className="px-4 py-2 text-sm font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+              >
+                Copy code
+              </button>
+              <button onClick={() => setScriptViewer(null)} className="rounded-md bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white hover:bg-[var(--accent-hover)]">Close</button>
+            </div>
+          }
+        >
+          {scriptViewer && (
+            <div>
+              <div className="mb-2 text-sm text-[var(--text-muted)]">Generated Playwright script for <span className="font-medium text-[var(--text-primary)]">{scriptViewer.title}</span></div>
+              <pre className="max-h-[60vh] overflow-auto rounded-lg border border-[var(--border)] bg-[var(--bg-primary)] p-3 text-xs leading-5 text-[var(--text-primary)]"><code>{scriptViewer.code || 'No code available for this script.'}</code></pre>
+            </div>
+          )}
+        </Modal>
       </div>
     );
   }

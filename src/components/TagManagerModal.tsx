@@ -4,6 +4,9 @@ import { Modal } from './Modal';
 import { fetchTagCatalog, type TagCatalogEntry } from '@/src/lib/entityLinking';
 import { showConfirm } from '@/src/lib/dialog';
 
+// Tags are always @-prefixed (server-normalized) — show the prefix as soon as typing starts.
+const withAtPrefix = (raw: string) => (raw && !raw.startsWith('@') ? `@${raw}` : raw);
+
 /**
  * Tag Manager — the surface for the shared tag catalog. Lists every tag with its usage
  * count, and lets you create, rename (write-through to every case/suite/plan/run), recolor,
@@ -90,7 +93,8 @@ export function TagManagerModal({ isOpen, onClose, onChanged }: { isOpen: boolea
         <div className="flex items-center gap-2">
           <input
             value={newName}
-            onChange={(e) => setNewName(e.target.value)}
+            onChange={(e) => setNewName(withAtPrefix(e.target.value))}
+            onFocus={() => setNewName((n) => n || '@')}
             onKeyDown={(e) => e.key === 'Enter' && createTag()}
             placeholder="New tag name…"
             className="flex-1 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-1.5 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
@@ -110,7 +114,7 @@ export function TagManagerModal({ isOpen, onClose, onChanged }: { isOpen: boolea
               <span className="h-3 w-3 shrink-0 rounded-full border border-[var(--border)]" style={{ backgroundColor: t.color || 'transparent' }} />
               <input
                 value={drafts[t.name] ?? t.name}
-                onChange={(e) => setDrafts((d) => ({ ...d, [t.name]: e.target.value }))}
+                onChange={(e) => setDrafts((d) => ({ ...d, [t.name]: withAtPrefix(e.target.value) }))}
                 onBlur={() => rename(t)}
                 onKeyDown={(e) => e.key === 'Enter' && rename(t)}
                 className="min-w-0 flex-1 rounded border border-transparent bg-transparent px-1.5 py-1 text-sm text-[var(--text-primary)] outline-none hover:border-[var(--border)] focus:border-[var(--accent)]"

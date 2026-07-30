@@ -99,6 +99,10 @@ export default function TestCases() {
   const [isCaseAIWorking, setIsCaseAIWorking] = useState(false);
   const [caseAIMessage, setCaseAIMessage] = useState('');
   const [isStartingRun, setIsStartingRun] = useState(false);
+  // Save-and-run dialog: pick the folder (required) + tags before the selected-cases run is created.
+  const [isRunModalOpen, setIsRunModalOpen] = useState(false);
+  const [runFolderId, setRunFolderId] = useState('');
+  const [runTags, setRunTags] = useState<string[]>([]);
   const emptyStep = { action: '', expected: '' };
   const blankForm = { title: '', description: '', preconditions: '', testPlanIds: [] as string[], testSuiteIds: [] as string[], createdBy: 'Admin', tags: [] as string[], testingScope: 'Manual', automationStatus: 'Not Automated', testingTypes: ['Functional'] as string[], priority: 'Medium', status: 'Draft', folderId: '', captureEvidenceOnManualRun: true, steps: [emptyStep] };
   const [formData, setFormData] = useState(blankForm);
@@ -436,11 +440,22 @@ export default function TestCases() {
     }
   };
 
-  const runSelectedCases = async (caseIds = selectedCaseIds) => {
+  // Open the save-and-run dialog, pre-filling the folder the selected cases already share (if any).
+  const openRunModal = () => {
+    if (!selectedCaseIds.length) return;
+    const caseFolder = cases.find((c) => selectedCaseIds.includes(c.id) && c.folderId)?.folderId || '';
+    setRunFolderId(caseFolder);
+    setRunTags([]);
+    setIsRunModalOpen(true);
+  };
+
+  const runSelectedCases = async (caseIds = selectedCaseIds, folderId = runFolderId, tags = runTags) => {
     if (!caseIds.length || isStartingRun) return;
+    if (!folderId) { void showAlert('Pick or create a folder to save this run under.'); return; }
     setIsStartingRun(true);
     try {
-      await startSelectedRun({ caseIds }, navigate);
+      await startSelectedRun({ caseIds, folderId, tags }, navigate);
+      setIsRunModalOpen(false);
       bulk.clearSelection();
     } catch (error: any) {
       void showAlert(error.message || 'Failed to start selected test case run.');
@@ -914,6 +929,36 @@ export default function TestCases() {
 
       <TagManagerModal isOpen={isTagManagerOpen} onClose={() => setIsTagManagerOpen(false)} onChanged={fetchCases} />
 
+      {/* Save-and-run: choose the folder (required) + tags, then the run is created and opened in Test Runs.
+          Cancel/Save & Run live in the pinned footer so the tag suggestions dropdown (in the scrollable
+          body) can never render on top of them. */}
+      <Modal
+        isOpen={isRunModalOpen}
+        onClose={() => setIsRunModalOpen(false)}
+        title={`Run ${selectedCaseIds.length} selected case${selectedCaseIds.length === 1 ? '' : 's'}`}
+        footer={(
+          <div className="flex justify-end gap-2">
+            <button onClick={() => setIsRunModalOpen(false)} className="px-4 py-2 text-sm font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]">Cancel</button>
+            <button
+              onClick={() => runSelectedCases()}
+              disabled={isStartingRun || !runFolderId}
+              className="flex items-center gap-1.5 rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
+            >
+              {isStartingRun ? <Loader2 className="h-4 w-4 animate-spin" /> : <PlayCircle className="h-4 w-4" />} Save & Run
+            </button>
+          </div>
+        )}
+      >
+        <div className="space-y-4">
+          <p className="text-sm text-[var(--text-muted)]">Choose where to save this run. It appears in Test Runs after it starts.</p>
+          <FolderSelect value={runFolderId} onChange={setRunFolderId} includeNone={false} />
+          <div>
+            <label className="mb-1 block text-sm font-medium text-[var(--text-muted)]">Tags (optional)</label>
+            <TagEditor options={tagOptions} value={runTags} onChange={setRunTags} />
+          </div>
+        </div>
+      </Modal>
+
       {/* Tag-driven assembly: pick cases (filter by tag/search) → create a new suite from them. */}
       {isAssembleOpen && (
         <EntityLinker
@@ -1128,7 +1173,7 @@ export default function TestCases() {
                   {selectedCaseIds.length} case{selectedCaseIds.length === 1 ? '' : 's'} selected
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
-                  <button onClick={() => runSelectedCases()} disabled={isStartingRun} className="flex items-center gap-1.5 rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700 disabled:opacity-50">
+                  <button onClick={openRunModal} disabled={isStartingRun} className="flex items-center gap-1.5 rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700 disabled:opacity-50">
                     {isStartingRun ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <PlayCircle className="h-3.5 w-3.5" />} Run selected
                   </button>
                   {can('cases:delete') && (

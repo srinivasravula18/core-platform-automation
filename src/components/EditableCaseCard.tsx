@@ -75,6 +75,7 @@ function priorityClasses(p?: string): string {
 interface Props {
   key?: string;
   initial: EditableCase;
+  startEditing?: boolean;
   linkType?: 'existing' | 'generated';
   selected?: boolean;
   onToggleSelected?: () => void;
@@ -83,10 +84,10 @@ interface Props {
   onSaved?: () => void;
 }
 
-export default function EditableCaseCard({ initial, linkType, selected, onToggleSelected, onUnlink, onSaved }: Props): ReactElement {
+export default function EditableCaseCard({ initial, startEditing = false, linkType, selected, onToggleSelected, onUnlink, onSaved }: Props): ReactElement {
   const navigate = useNavigate();
   const [c, setC] = useState<EditableCase>(() => ({ ...initial, steps: (initial.steps || []).map((s) => ({ ...s })) }));
-  const [editing, setEditing] = useState(false);
+  const [editing, setEditing] = useState(startEditing);
   const [feedback, setFeedback] = useState('');
   const [attachments, setAttachments] = useState<ReworkAttachment[]>([]);
   const [attachError, setAttachError] = useState('');
