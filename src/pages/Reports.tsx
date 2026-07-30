@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Search, Filter, ShieldCheck, ShieldAlert, Sparkles, Plus, Clock, Layers, User, Calendar, Trash2, Eye, EyeOff, AlertTriangle, PlayCircle, ExternalLink, Activity } from 'lucide-react';
 import { Timestamp, actorName } from '@/src/components/Timestamp';
 import { TimeSortSelect } from '@/src/components/filters/TimeSortSelect';
@@ -42,6 +42,11 @@ interface Report {
   metadata?: { updatedAt?: string };
 }
 
+interface EvidenceGalleryItem {
+  key: string;
+  title: string;
+}
+
 function stepEvidence(report: Report, step: Step, index: number): string {
   if (step.screenshot) return step.screenshot;
   const evidence = Array.isArray(report.evidence) ? report.evidence : [];
@@ -56,6 +61,29 @@ function evidenceImageSource(value: string): string {
   return value.startsWith('/evidence/') || value.startsWith('data:')
     ? withBasePath(value)
     : withBasePath(`/api/screenshot?url=${encodeURIComponent(value)}`);
+}
+
+function evidenceGalleryItems(report: Report | null): EvidenceGalleryItem[] {
+  if (!report) return [];
+  const items: EvidenceGalleryItem[] = [];
+  const seen = new Set<string>();
+  const add = (key: unknown, title: string) => {
+    if (typeof key !== 'string' || !key || seen.has(key)) return;
+    seen.add(key);
+    items.push({ key, title });
+  };
+
+  (report.steps || []).forEach((step, index) => {
+    add(stepEvidence(report, step, index), `Step ${index + 1}: ${step.action || 'Captured screenshot'}`);
+  });
+  (Array.isArray(report.evidence) ? report.evidence : []).forEach((entry, index) => {
+    const title = entry?.title || `Evidence ${index + 1}`;
+    (Array.isArray(entry?.stepScreenshots) ? entry.stepScreenshots : []).forEach((key: unknown, stepIndex: number) => {
+      add(key, `${title} — step ${stepIndex + 1}`);
+    });
+    add(entry?.screenshotUrl || entry?.screenshot || entry?.url, title);
+  });
+  return items;
 }
 
 // Preset visual screens to render for screenshot evidence
@@ -276,12 +304,20 @@ export default function Reports() {
 
   // Evidence screenshot lightbox State
   const [lightboxKey, setLightboxKey] = useState<string | null>(null);
+  const [lightboxTab, setLightboxTab] = useState<'current' | 'all'>('current');
   const [showInlineScreenshots, setShowInlineScreenshots] = useState(true);
   
   // Active step & screenshot for inline expanded browser mockup
   const [activeStep, setActiveStep] = useState<{ reportId: string; step: Step } | null>(null);
   // The report opened for full step-by-step detail (#9 — list is a summary; click opens detail).
   const [detailReport, setDetailReport] = useState<Report | null>(null);
+  const galleryItems = useMemo(() => evidenceGalleryItems(detailReport), [detailReport]);
+  const activeGalleryIndex = lightboxKey ? galleryItems.findIndex((item) => item.key === lightboxKey) : -1;
+  const activeGalleryItem = activeGalleryIndex >= 0 ? galleryItems[activeGalleryIndex] : null;
+  const selectScreenshot = (key: string, tab: 'current' | 'all' = 'current') => {
+    setLightboxKey(key);
+    setLightboxTab(tab);
+  };
 
   const stepCounts = (rep: Report) => {
     const steps = rep.steps || [];
@@ -676,7 +712,7 @@ export default function Reports() {
                         <td className="px-3 py-2 text-[var(--text-primary)]">{s.action}</td>
                         <td className="px-3 py-2 text-[var(--text-muted)]">{s.expected}</td>
                         <td className="px-3 py-2"><span className={cn('inline-flex rounded border px-1.5 py-0.5 text-[10px] font-bold', /pass/i.test(String(s.outcome)) ? 'border-emerald-500/20 bg-emerald-500/10 text-emerald-600' : /fail/i.test(String(s.outcome)) ? 'border-red-500/20 bg-red-500/10 text-red-500' : 'border-slate-500/20 bg-slate-500/10 text-slate-400')}>{s.outcome || '—'}</span></td>
-                        <td className="px-3 py-2">{stepEvidence(detailReport, s, i) ? <button onClick={() => setLightboxKey(stepEvidence(detailReport, s, i))} className="rounded border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-xs text-[var(--accent)] hover:border-[var(--accent)]">View</button> : <span className="text-xs text-[var(--text-muted)]">Not captured</span>}</td>
+                        <td className="px-3 py-2">{stepEvidence(detailReport, s, i) ? <button onClick={() => selectScreenshot(stepEvidence(detailReport, s, i))} className="rounded border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-xs text-[var(--accent)] hover:border-[var(--accent)]">View</button> : <span className="text-xs text-[var(--text-muted)]">Not captured</span>}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -705,22 +741,40 @@ export default function Reports() {
                 Close View [ESC]
               </button>
             </div>
+            <div className="flex shrink-0 gap-1 border-b border-[var(--border)] bg-[var(--bg-card)] px-4 pt-2">
+              <button type="button" onClick={() => setLightboxTab('current')} className={cn('border-b-2 px-3 py-2 text-xs font-semibold transition-colors', lightboxTab === 'current' ? 'border-[var(--accent)] text-[var(--accent)]' : 'border-transparent text-[var(--text-muted)] hover:text-[var(--text-primary)]')}>Current screenshot</button>
+              <button type="button" onClick={() => setLightboxTab('all')} className={cn('border-b-2 px-3 py-2 text-xs font-semibold transition-colors', lightboxTab === 'all' ? 'border-[var(--accent)] text-[var(--accent)]' : 'border-transparent text-[var(--text-muted)] hover:text-[var(--text-primary)]')}>All screenshots ({galleryItems.length || 1})</button>
+            </div>
             {/* Browser body canvas content context */}
-            <div className="p-0 bg-slate-900 overflow-hidden flex-1 min-h-0 flex items-center justify-center">
-              <img
-                src={evidenceImageSource(lightboxKey)}
-                alt={SCREENSHOT_PRESETS[lightboxKey]?.title || `Captured URL View: ${lightboxKey}`}
-                className="w-full h-full object-contain"
-                referrerPolicy="no-referrer"
-                onError={(e) => {
-                  e.currentTarget.src = "https://images.unsplash.com/photo-1541560052-5e137f229371?w=1280&q=80";
-                }}
-              />
+            <div className="p-0 bg-slate-900 overflow-auto flex-1 min-h-0">
+              {lightboxTab === 'all' ? (
+                <div className="grid grid-cols-1 gap-3 p-4 sm:grid-cols-2">
+                  {(galleryItems.length ? galleryItems : [{ key: lightboxKey, title: 'Current screenshot' }]).map((item, index) => (
+                    <button key={`${item.key}-${index}`} type="button" onClick={() => selectScreenshot(item.key)} className={cn('overflow-hidden rounded-lg border text-left transition-colors', item.key === lightboxKey ? 'border-[var(--accent)] ring-1 ring-[var(--accent)]' : 'border-[var(--border)] hover:border-[var(--accent)]')}>
+                      <img src={evidenceImageSource(item.key)} alt={item.title} className="h-40 w-full bg-black object-cover" referrerPolicy="no-referrer" />
+                      <span className="block truncate bg-[var(--bg-secondary)] px-2 py-1.5 text-xs text-[var(--text-primary)]">{item.title}</span>
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <div className="flex h-full items-center justify-center">
+                  <img
+                    src={evidenceImageSource(lightboxKey)}
+                    alt={activeGalleryItem?.title || SCREENSHOT_PRESETS[lightboxKey]?.title || `Captured URL View: ${lightboxKey}`}
+                    className="w-full h-full object-contain"
+                    referrerPolicy="no-referrer"
+                    onError={(e) => {
+                      e.currentTarget.src = "https://images.unsplash.com/photo-1541560052-5e137f229371?w=1280&q=80";
+                    }}
+                  />
+                </div>
+              )}
             </div>
             {/* Footer labels */}
             <div className="bg-[var(--bg-secondary)] px-5 py-3.5 border-t border-[var(--border)] flex justify-between items-center text-xs">
-              <span className="font-bold text-[var(--text-primary)]">{SCREENSHOT_PRESETS[lightboxKey]?.title || `Automated live capture of ${lightboxKey}`}</span>
-              <span className="text-[var(--text-muted)] font-mono">Evidence Trace Payload OK</span>
+              <button type="button" onClick={() => activeGalleryIndex > 0 && selectScreenshot(galleryItems[activeGalleryIndex - 1].key)} disabled={activeGalleryIndex <= 0} className="rounded border border-[var(--border)] bg-[var(--bg-primary)] px-2 py-1 font-semibold text-[var(--text-primary)] disabled:cursor-not-allowed disabled:opacity-40">← Previous</button>
+              <span className="min-w-0 flex-1 truncate px-3 text-center font-bold text-[var(--text-primary)]">{activeGalleryItem?.title || SCREENSHOT_PRESETS[lightboxKey]?.title || `Automated live capture of ${lightboxKey}`}{activeGalleryIndex >= 0 && ` (${activeGalleryIndex + 1}/${galleryItems.length})`}</span>
+              <button type="button" onClick={() => activeGalleryIndex >= 0 && activeGalleryIndex < galleryItems.length - 1 && selectScreenshot(galleryItems[activeGalleryIndex + 1].key)} disabled={activeGalleryIndex < 0 || activeGalleryIndex >= galleryItems.length - 1} className="rounded border border-[var(--border)] bg-[var(--bg-primary)] px-2 py-1 font-semibold text-[var(--text-primary)] disabled:cursor-not-allowed disabled:opacity-40">Next →</button>
             </div>
           </div>
         </div>
