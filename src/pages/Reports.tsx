@@ -572,7 +572,7 @@ export default function Reports() {
         {/* Main Table Styled search similar to Image 2 */}
         <div className="flex-1 min-h-0 w-full overflow-x-auto overflow-y-auto rounded-b-xl">
           <table className="w-full min-w-[820px] border-collapse text-left text-sm">
-            <thead className="bg-[var(--bg-secondary)] text-[var(--text-muted)] text-[11px] uppercase tracking-wider font-semibold border-b border-[var(--border)]">
+            <thead className="sticky top-0 z-10 bg-[var(--bg-secondary)] text-[var(--text-muted)] text-[11px] uppercase tracking-wider font-semibold border-b border-[var(--border)]">
               <tr>
                 <th className="w-10 px-4 py-3">
                   <input type="checkbox" checked={bulk.allSelected(filteredReports.map((r) => r.id))} onChange={() => bulk.toggleAll(filteredReports.map((r) => r.id))} />
