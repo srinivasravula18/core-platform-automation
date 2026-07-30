@@ -253,7 +253,7 @@ export default function Dashboard() {
           { label: 'Test Cases', val: stats?.casesCount ?? 0, icon: TestTube2, to: '/cases' },
           { label: 'Active Runs', val: stats?.activeRunsCount ?? 0, icon: PlayCircle, to: '/runs' },
           { label: 'Open Defects', val: stats?.openDefectsCount ?? stats?.defectsCount ?? 0, icon: ShieldAlert, to: '/defects' },
-          { label: 'Cases Not in Any Run', val: stats?.casesNotInAnyRun ?? 0, icon: AlertTriangle, to: '/cases' },
+          { label: 'Cases Not in Any Run', val: stats?.casesNotInAnyRun ?? 0, icon: AlertTriangle, to: '/cases?notInAnyRun=true' },
         ].map((k) => (
           <div key={k.label} onClick={() => navigate(k.to)} className="cursor-pointer rounded-xl border border-[var(--border)] bg-[var(--bg-card)] p-4 shadow-sm transition-colors hover:border-[var(--accent)]">
             <div className="mb-2 flex items-start justify-between">

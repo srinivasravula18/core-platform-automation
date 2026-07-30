@@ -49,7 +49,7 @@ function InlineCaseSelect({ children, ...props }: ComponentProps<'select'>) {
 
 export default function TestCases() {
   const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [cases, setCases] = useState<any[]>([]);
   const [plans, setPlans] = useState<any[]>([]);
   const [suites, setSuites] = useState<any[]>([]);
@@ -91,7 +91,10 @@ export default function TestCases() {
     updatedFrom: '', updatedTo: '',
     notInAnyRun: false,
   };
-  const [filters, setFilters] = useState(emptyFilters);
+  const [filters, setFilters] = useState(() => ({
+    ...emptyFilters,
+    notInAnyRun: searchParams.get('notInAnyRun') === 'true',
+  }));
   const [matchMode, setMatchMode] = useState<'all' | 'any'>('all');
   const [isCaseModalOpen, setIsCaseModalOpen] = useState(false);
   const [isAICaseModalOpen, setIsAICaseModalOpen] = useState(false);
@@ -270,6 +273,8 @@ export default function TestCases() {
 
   useEffect(() => {
     setSearchTerm(searchParams.get('search') || '');
+    const notInAnyRun = searchParams.get('notInAnyRun') === 'true';
+    setFilters((current) => current.notInAnyRun === notInAnyRun ? current : { ...current, notInAnyRun });
   }, [searchParams]);
 
   useEffect(() => {
@@ -555,9 +560,13 @@ export default function TestCases() {
     .map((testCase) => String(testCase.createdBy || '').trim())
     .filter(Boolean))).sort();
   // Cases referenced by at least one test run — drives the "Not in any test run" toggle.
+  // Keep this definition aligned with the dashboard KPI, including single-case automation runs.
   const runCaseIds = useMemo(() => {
     const set = new Set<string>();
-    runs.forEach((run) => (Array.isArray(run.caseIds) ? run.caseIds : []).forEach((id: any) => set.add(String(id))));
+    runs.forEach((run) => {
+      (Array.isArray(run.caseIds) ? run.caseIds : []).forEach((id: any) => set.add(String(id)));
+      if (run?.testCaseId) set.add(String(run.testCaseId));
+    });
     return set;
   }, [runs]);
   const activeFilterCount = (
@@ -609,6 +618,23 @@ export default function TestCases() {
     const matchesApp = appFilter === 'All' || caseAppLabel(testCase) === appFilter;
     return matchesSearch && matchesPlatform && matchesApp && advancedMatch(testCase);
   }), timeSort);
+
+  const setNotInAnyRunFilter = (enabled: boolean) => {
+    setFilters((current) => ({ ...current, notInAnyRun: enabled }));
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current);
+      if (enabled) next.set('notInAnyRun', 'true');
+      else next.delete('notInAnyRun');
+      return next;
+    }, { replace: true });
+  };
+
+  const clearAllFilters = () => {
+    setFilters(emptyFilters);
+    setPlatformFilter('All');
+    setAppFilter('All');
+    setNotInAnyRunFilter(false);
+  };
 
   // New Case → Automation records a Playwright flow via the desktop agent (codegen) and the backend
   // saves it as an Automated, script-linked case. Only offered for NEW cases when the agent feature is on.
@@ -1065,7 +1091,7 @@ export default function TestCases() {
                     <button onClick={() => setMatchMode('all')} className={`rounded px-2 py-1 ${matchMode === 'all' ? 'bg-[var(--accent)] text-white' : 'text-[var(--text-muted)]'}`}>Match all</button>
                     <button onClick={() => setMatchMode('any')} className={`rounded px-2 py-1 ${matchMode === 'any' ? 'bg-[var(--accent)] text-white' : 'text-[var(--text-muted)]'}`}>Match any</button>
                   </div>
-                  <button onClick={() => { setFilters(emptyFilters); setPlatformFilter('All'); setAppFilter('All'); }} className="text-xs font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]">Clear all</button>
+                  <button onClick={clearAllFilters} className="text-xs font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]">Clear all</button>
                 </div>
                 <div className="flex flex-col gap-3">
                   <div>
@@ -1155,15 +1181,28 @@ export default function TestCases() {
                     </div>
                   </div>
                   <label className="flex cursor-pointer items-center gap-2 rounded px-1 py-1 text-sm hover:bg-[var(--bg-secondary)]">
-                    <input type="checkbox" checked={filters.notInAnyRun} onChange={(e) => setFilters((f) => ({ ...f, notInAnyRun: e.target.checked }))} />
+                    <input type="checkbox" checked={filters.notInAnyRun} onChange={(e) => setNotInAnyRunFilter(e.target.checked)} />
                     Not in any test run
                   </label>
                 </div>
               </div>
             )}
           </div>
-          <div aria-live="polite" className="ml-auto whitespace-nowrap text-xs font-medium text-[var(--text-muted)]">
-            {filteredCases.length}{(searchTerm || activeFilterCount > 0) ? ` of ${cases.length}` : ''} test case{filteredCases.length === 1 ? '' : 's'}
+          <div className="flex flex-wrap items-center gap-2 sm:ml-auto">
+            {filters.notInAnyRun && (
+              <button
+                type="button"
+                onClick={() => setNotInAnyRunFilter(false)}
+                className="inline-flex items-center gap-1 rounded-full border border-[var(--accent)]/40 bg-[var(--accent)]/10 px-2 py-1 text-xs font-medium text-[var(--text-primary)] hover:bg-[var(--accent)]/20"
+                aria-label="Remove Not in any test run filter"
+                title="Remove filter"
+              >
+                Not in any test run <span aria-hidden="true" className="text-sm leading-none">×</span>
+              </button>
+            )}
+            <div aria-live="polite" className="whitespace-nowrap text-xs font-medium text-[var(--text-muted)]">
+              {filteredCases.length}{(searchTerm || activeFilterCount > 0) ? ` of ${cases.length}` : ''} test case{filteredCases.length === 1 ? '' : 's'}
+            </div>
           </div>
           </div>
           {selectedCaseIds.length > 0 && (
