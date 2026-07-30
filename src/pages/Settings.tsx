@@ -1790,7 +1790,7 @@ function CredentialsSection() {
           </button>
         </div>
 
-        <div className="mt-4 space-y-2">
+        <div className="mt-4 max-h-[min(60dvh,32rem)] space-y-2 overflow-y-auto pr-1">
           {rows.length === 0 && (
             <div className="rounded-lg border border-dashed border-[var(--border)] bg-[var(--bg-secondary)] p-6 text-center text-sm text-[var(--text-muted)]">
               No credentials yet. Click &ldquo;Add Website&rdquo; to store a login.
