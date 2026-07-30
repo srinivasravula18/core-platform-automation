@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft, CheckCircle, Download, Filter, Folder, Pencil, PlayCircle, Search, SlidersHorizontal, Sparkles, Trash2 } from 'lucide-react';
 import { Timestamp, actorName } from '@/src/components/Timestamp';
@@ -98,10 +98,13 @@ export default function TestRuns() {
   const aiSearch = useAiSearch('test runs');
   const [runView, setRunView] = useState<'active' | 'closed'>('active');
   const [selectedView, setSelectedView] = useState('All Runs');
+  const [filters, setFilters] = useState({ statuses: [] as string[], requesters: [] as string[], suites: [] as string[], folders: [] as string[], sources: [] as string[] });
   const [caseSearchTerm, setCaseSearchTerm] = useState('');
   const [caseStatusFilter, setCaseStatusFilter] = useState('All');
   const [isCaseFilterOpen, setIsCaseFilterOpen] = useState(false);
   const [isViewMenuOpen, setIsViewMenuOpen] = useState(false);
+  const [isFilterOpen, setIsFilterOpen] = useState(false);
+  const filterRef = useRef<HTMLDivElement | null>(null);
   const [isRunModalOpen, setIsRunModalOpen] = useState(false);
   // Opens the unified EntityLinker (search + tag-driven) to pick the run's cases.
   const [isCaseLinkerOpen, setIsCaseLinkerOpen] = useState(false);
@@ -174,6 +177,15 @@ export default function TestRuns() {
     const t = setInterval(() => { void refreshRunsQuiet(); }, 2000);
     return () => clearInterval(t);
   }, [hasRunningRuns, refreshRunsQuiet]);
+
+  useEffect(() => {
+    if (!isFilterOpen) return;
+    const closeOnOutsideClick = (event: PointerEvent) => {
+      if (!filterRef.current?.contains(event.target as Node)) setIsFilterOpen(false);
+    };
+    document.addEventListener('pointerdown', closeOnOutsideClick);
+    return () => document.removeEventListener('pointerdown', closeOnOutsideClick);
+  }, [isFilterOpen]);
   const activeRuns = runs.filter(isActiveTestRun);
   const closedRuns = runs.filter(isClosedTestRun);
 
@@ -186,13 +198,25 @@ export default function TestRuns() {
         : searchable.includes(searchTerm.toLowerCase());
       if (!matchesSearch) return false;
       if (!passesTimeFilter(run.metadata?.updatedAt || run.updatedAt || run.date, updatedFilter)) return false;
+      const matches = (selected: string[], value: string) => !selected.length || selected.includes(value);
+      const matchesFilters = matches(filters.statuses, String(run.status || 'Not Started'))
+        && matches(filters.requesters, String(run.requestedBy || ''))
+        && matches(filters.suites, String(run.suiteName || ''))
+        && matches(filters.folders, String(run.folderId || ''))
+        && matches(filters.sources, run.agentRunId ? 'Automated' : 'Manual');
+      if (!matchesFilters) return false;
       if (selectedView === 'Failed Runs') return getRunStats(run).failed > 0;
       if (selectedView === 'Manual Runs') return !run.agentRunId;
       if (selectedView === 'Automated Runs') return Boolean(run.agentRunId);
       if (selectedView === 'My Runs') return Boolean(run.requestedBy);
       return true;
     }), timeSort);
-  }, [activeRuns, closedRuns, runView, searchTerm, selectedView, aiSearch.matchedIds, aiSearch, updatedFilter, timeSort]);
+  }, [activeRuns, closedRuns, runView, searchTerm, selectedView, filters, aiSearch.matchedIds, aiSearch, updatedFilter, timeSort]);
+
+  const statusOptions = Array.from(new Set(['Not Started', 'In Progress', 'Passed', 'Failed', 'Blocked', 'Completed', ...runs.map((run) => String(run.status || 'Not Started'))]));
+  const requesterOptions = Array.from(new Set(runs.map((run) => String(run.requestedBy || '').trim()).filter(Boolean))).sort();
+  const suiteOptions = Array.from(new Set(runs.map((run) => String(run.suiteName || '').trim()).filter(Boolean))).sort();
+  const activeFilterCount = Object.values(filters).reduce((count, value) => count + value.length, 0);
 
   const selectedRunCases = useMemo(() => selectedRun ? casesForRun(selectedRun, cases, suites) : [], [cases, selectedRun, suites]);
 
@@ -910,7 +934,21 @@ export default function TestRuns() {
             </div>
             <TimeSortSelect value={timeSort} onChange={setTimeSort} />
             <TimeRangeFilter value={updatedFilter} onChange={setUpdatedFilter} />
-            <button onClick={() => setIsViewMenuOpen(!isViewMenuOpen)} title="Open run view filters" className="p-2 rounded-md border border-[var(--border)]"><Filter className="w-4 h-4" /></button>
+            <div ref={filterRef} className="relative">
+              <button onClick={() => setIsFilterOpen((open) => !open)} aria-expanded={isFilterOpen} className="flex items-center gap-2 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] hover:bg-[var(--border)]"><Filter className="w-4 h-4" /> Filters{activeFilterCount > 0 && <span className="rounded-full bg-[var(--accent)] px-1.5 text-[11px] font-semibold text-white">{activeFilterCount}</span>}</button>
+              {isFilterOpen && (
+                <div className="absolute right-0 top-11 z-30 max-h-[calc(100dvh-20rem)] w-[min(24rem,calc(100vw-2rem))] overflow-auto rounded-md border border-[var(--border)] bg-[var(--bg-card)] p-3 shadow-xl">
+                  <div className="mb-3 flex justify-end"><button onClick={() => setFilters({ statuses: [], requesters: [], suites: [], folders: [], sources: [] })} className="text-xs font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]">Clear all</button></div>
+                  <div className="flex flex-col gap-3">
+                    <div><label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Status</label><MultiSelectDropdown label="Any status" options={statusOptions.map((value) => ({ id: value, name: value }))} value={filters.statuses} onChange={(statuses) => setFilters((current) => ({ ...current, statuses }))} /></div>
+                    <div><label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Run Type</label><MultiSelectDropdown label="Any type" options={[{ id: 'Manual', name: 'Manual' }, { id: 'Automated', name: 'Automated' }]} value={filters.sources} onChange={(sources) => setFilters((current) => ({ ...current, sources }))} /></div>
+                    <div><label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Requested By</label><MultiSelectDropdown label="Any requester" options={requesterOptions.map((value) => ({ id: value, name: value }))} value={filters.requesters} onChange={(requesters) => setFilters((current) => ({ ...current, requesters }))} /></div>
+                    <div><label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Test Suite</label><MultiSelectDropdown label="Any suite" options={suiteOptions.map((value) => ({ id: value, name: value }))} value={filters.suites} onChange={(suites) => setFilters((current) => ({ ...current, suites }))} /></div>
+                    <div><label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Folder</label><MultiSelectDropdown label="Any folder" options={folders.map((folder) => ({ id: String(folder.id), name: String(folder.path || folder.name) }))} value={filters.folders} onChange={(folders) => setFilters((current) => ({ ...current, folders }))} /></div>
+                  </div>
+                </div>
+              )}
+            </div>
             {bulk.selectedCount > 0 && (
               <>
                 {bulk.selectedCount > 1 && can('runs:execute') && (

@@ -606,7 +606,7 @@ export default function Reports() {
                       <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-[var(--text-muted)]"><FolderBadge folders={folders} folderId={r.folderId} />{r.planName ? <span>· {r.planName}</span> : null}<span>· {r.date}</span></div>
                     </td>
                     <td className="px-4 py-3"><span className="rounded bg-[var(--bg-secondary)] px-1.5 py-0.5 text-[10px] font-bold text-[var(--text-muted)]">{type}</span></td>
-                    <td className="px-4 py-3 text-xs"><span className="font-semibold text-emerald-500">{c.passed}</span> / <span className={c.failed ? 'font-semibold text-red-500' : 'text-[var(--text-muted)]'}>{c.failed}</span> <span className="text-[var(--text-muted)]">of {c.total}</span></td>
+                    <td className="px-4 py-3 text-xs"><span className="font-semibold text-emerald-500">{c.passed}</span> / <span className={c.failed ? 'font-semibold text-red-500' : 'text-[var(--text-muted)]'}>{c.failed}</span></td>
                     <td className="px-4 py-3 text-xs text-[var(--text-muted)]">{r.executionTime && r.executionTime !== 'Generated' ? r.executionTime : '—'}</td>
                     <td className="px-4 py-3"><span className={cn('inline-flex rounded border px-2 py-0.5 text-[11px] font-bold', r.status === 'Passed' ? 'border-emerald-500/20 bg-emerald-500/10 text-emerald-600' : r.status === 'Failed' ? 'border-red-500/20 bg-red-500/10 text-red-500' : 'border-slate-500/20 bg-slate-500/10 text-slate-400')}>{r.status}</span></td>
                     <td className="px-4 py-3 whitespace-nowrap text-xs text-[var(--text-muted)]">
