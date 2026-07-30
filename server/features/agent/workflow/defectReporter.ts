@@ -204,8 +204,28 @@ export function failureSignature(test: TestResultLike, stepLog?: StepLogEntry[])
 
 const FAILED_STATUSES = new Set(['failed', 'timedOut', 'interrupted']);
 
-/** Failure kinds that are tooling/locator faults, never auto-filed as product defects. */
-const NON_PRODUCT_DEFECT_KINDS = new Set(['tooling-obscured']);
+/** Failure kinds that are tooling/harness faults, never auto-filed as product defects: the test could not be
+ *  driven (obscured/ambiguous/missing locator), or it ran against the wrong target (scope/context), or the
+ *  platform itself failed internally (unknown). Only the APPLICATION misbehaving belongs in the bug section. */
+const NON_PRODUCT_DEFECT_KINDS = new Set([
+  'tooling-obscured', 'ambiguous-locator', 'locator-not-found', 'scope-violation', 'context-mismatch', 'navigation', 'unknown',
+]);
+
+/** Interaction/navigation step kinds — a failure ON one of these means the script could not OPERATE the app
+ *  (locate/click/fill/select/navigate), i.e. a locator/tooling fault, not the application producing a wrong
+ *  result. An ASSERTION step failing (expect*) is the opposite: the app's observed state contradicted the
+ *  expectation — that is a real application-defect candidate and stays eligible for the bug section. */
+const ACTION_STEP_KINDS = new Set([
+  'click', 'fill', 'select', 'check', 'uncheck', 'hover', 'press', 'clear', 'startMission', 'openModule',
+]);
+
+/** True when a failure is a tooling/harness fault rather than an application defect. Only genuine app-behavior
+ *  failures (an assertion/oracle contradicted by the live app) are auto-filed as bugs. */
+function isToolingFailure(errorKind: string, stepLog: StepLogEntry[] | undefined): boolean {
+  if (NON_PRODUCT_DEFECT_KINDS.has(errorKind)) return true;
+  const failed = [...(stepLog ?? [])].reverse().find((s) => s.ok === false);
+  return !!failed && ACTION_STEP_KINDS.has(String(failed.kind || ''));
+}
 
 function reproStepsFor(caseRef: DefectCaseRef | undefined, stepLog: StepLogEntry[] | undefined): string {
   if (caseRef?.steps?.length) {
@@ -284,14 +304,15 @@ export function buildDefectDrafts(input: DefectReporterInput): DefectReport {
   const updates: DefectOccurrenceUpdate[] = [];
 
   for (const { sig, tests } of clusters.values()) {
-    // Never auto-file a product defect for a tooling/locator fault (a click that timed out on a background
-    // control behind an open overlay). The step still shows as failed in the run; it just isn't a product bug.
-    if (NON_PRODUCT_DEFECT_KINDS.has(sig.errorKind)) continue;
     const lead = tests[0];
     const titles = tests.map((t) => t.title);
     const frequency = tests.length;
     const stepLog = input.stepLogsByTitle?.[lead.title];
     const caseRef = casesByTitle.get(lead.title);
+    // The bug section holds ONLY real application defects found by running the scripts. A tooling/harness fault
+    // — the script couldn't drive the app (locate/click/fill/navigate), ran on the wrong target, or the platform
+    // failed internally — is never auto-filed. The step still shows failed in the run; it just isn't a product bug.
+    if (isToolingFailure(sig.errorKind, stepLog)) continue;
 
     // Regression: ANY affected case passed in a prior run.
     let lastPassed: PriorRunSummary | null = null;

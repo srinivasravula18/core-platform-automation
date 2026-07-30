@@ -49,6 +49,21 @@ function main() {
   const realTimeout = buildDefectDrafts(baseInput([failedTest('Save record', 'Timed out 10000ms waiting for getByRole(\'button\', { name: \'Save\' })')]));
   eq(realTimeout.drafts.length, 1, 'a genuine timeout is still reported');
 
+  console.log('bug section = real app defects only: interaction failure = tooling, assertion failure = bug');
+  // A failure ON an interaction step means the script could not DRIVE the app (locate/click) → tooling, not filed.
+  const actionFail = buildDefectDrafts(baseInput(
+    [failedTest('Create record', "Timed out 10000ms waiting for locator('#status')")],
+    { stepLogsByTitle: { 'Create record': [{ n: 3, kind: 'click', label: 'Status', ok: false, ms: 10000, error: 'timeout' }] } }));
+  eq(actionFail.drafts.length, 0, 'a click/interaction failure (could not operate the app) is NOT a product bug');
+  // A failure ON an assertion step means the live app CONTRADICTED the expectation → a real application defect.
+  const assertFail = buildDefectDrafts(baseInput(
+    [failedTest('Verify saved tier', 'expect(locator).toHaveValue failed Expected: "Gold" Received: "Silver"')],
+    { stepLogsByTitle: { 'Verify saved tier': [{ n: 5, kind: 'expectValue', label: 'Tier', value: 'Gold', ok: false, ms: 500, error: 'wrong value' }] } }));
+  eq(assertFail.drafts.length, 1, 'an assertion/oracle failure (app produced the wrong result) IS filed as a bug');
+  // Explicit tooling error-kinds (wrong-target, ambiguous selector) are never filed.
+  eq(buildDefectDrafts(baseInput([failedTest('X', 'MISSION CONTEXT MISMATCH [RUNTIME/x] — executed on the wrong application')])).drafts.length, 0, 'wrong-target (context-mismatch) is not a product bug');
+  eq(buildDefectDrafts(baseInput([failedTest('Y', 'strict mode violation: resolved to 3 elements')])).drafts.length, 0, 'ambiguous-locator is not a product bug');
+
   console.log('clustering: N tests sharing one symptom → ONE defect');
   const err = 'Timed out 10000ms waiting for getByRole(\'button\', { name: \'Save\' })';
   const r1 = buildDefectDrafts(baseInput([
@@ -130,7 +145,9 @@ function main() {
   eq(rClosed.drafts.length, 1, 'closed same-signature defect → fresh defect filed (bug came back)');
 
   console.log('repro steps and test data from the authored case + step log');
-  const rSteps = buildDefectDrafts(baseInput([failedTest('Create account', err)], {
+  // Fixture uses an ASSERTION failure — the app was driven fine (fill+click ok) but the expected outcome (the
+  // new row) never appeared, i.e. a real application defect. That is what the bug section is for.
+  const rSteps = buildDefectDrafts(baseInput([failedTest('Create account', 'expect(locator).toBeVisible() failed waiting for row "Account created"')], {
     cases: [{
       title: 'Create account', preconditions: 'Logged in as tester',
       steps: [{ action: 'Open Accounts', expected: 'List visible' }, { action: 'Click New' }, { action: 'Fill Name and save', expected: 'Account created' }],
@@ -138,7 +155,8 @@ function main() {
     stepLogsByTitle: {
       'Create account': [
         { n: 1, kind: 'fill', label: 'Name *', value: 'Jordan Blake', ok: true },
-        { n: 2, kind: 'click', label: 'Save', ok: false, error: 'timeout' },
+        { n: 2, kind: 'click', label: 'Save', ok: true },
+        { n: 3, kind: 'expectRowInList', label: 'Account created', ok: false, error: 'row not found' },
       ],
     },
   }));
@@ -146,7 +164,7 @@ function main() {
   ok(d.stepsToReproduce.includes('Preconditions: Logged in as tester'), 'preconditions included');
   ok(d.stepsToReproduce.includes('1. Open Accounts'), 'numbered case steps');
   eq(d.metadata.testDataUsed, [{ field: 'Name *', value: 'Jordan Blake' }], 'resolved fill values recorded');
-  ok(d.actual.includes('Failing step: click "Save"'), 'actual names the failing step');
+  ok(d.actual.includes('Failing step: expectRowInList "Account created"'), 'actual names the failing step');
   ok(d.metadata.environment.url.length > 0 && d.metadata.environment.runId.length > 0, 'environment block populated');
 
   console.log(`\n${passed} passed, ${failed} failed`);
