@@ -19,6 +19,7 @@ type ProviderInfo = {
   alternatives: string[];
   enabled: boolean;
   configured: boolean;
+  apiKeyConfigured: boolean;
   callable: boolean;
   model: string;
   authMode: 'api_key' | 'account';
@@ -1125,6 +1126,12 @@ function ProviderCard({ provider, onSaveKey, onSetEnabled, onSetAuthMode, onSetM
   const authMode = provider.authMode === 'account' ? 'account' : 'api_key';
   const accountCliSupported = provider.name === 'openai' || provider.name === 'anthropic';
   const showAccountMode = provider.accountCliAllowed && accountCliSupported;
+  // Testing always uses the credential saved on the provider. Text currently in
+  // the input is not persisted and must not enable a connection attempt.
+  const canTest = authMode === 'api_key' ? provider.apiKeyConfigured : provider.configured;
+  const testUnavailableReason = authMode === 'api_key'
+    ? 'Save an API key before testing this provider'
+    : 'Sign in to the local account before testing this provider';
 
   return (
     <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] p-4">
@@ -1170,8 +1177,8 @@ function ProviderCard({ provider, onSaveKey, onSetEnabled, onSetAuthMode, onSetM
             // The connection check tests the configured credential, not whether the
             // provider is toggled on — so it's available as soon as a key is saved
             // (or account auth is available), even if the provider is currently Off.
-            disabled={!provider.configured}
-            title={!provider.configured ? 'Add an API key (or account auth) first' : 'Run a connection check'}
+            disabled={!canTest}
+            title={!canTest ? testUnavailableReason : 'Run a connection check'}
             className="inline-flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-primary)] px-3 py-1.5 text-xs font-medium hover:border-[var(--accent)] disabled:opacity-50"
           >
             <Activity className="h-3 w-3" /> Test

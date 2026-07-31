@@ -145,6 +145,7 @@ export function registerSettingsRoutes(app: Express) {
         alternatives: listAvailableModels(p, { includeLocalOnly: isLocalCliProviderAllowed() }).filter((m) => m !== DEFAULT_MODELS[p].default),
         enabled: !!stored?.enabled && providerIsCallable(p),
         configured: authMode === 'api_key' ? hasApiKey : accountCallable,
+        apiKeyConfigured: hasApiKey,
         callable: providerIsCallable(p),
         model: stored?.model || DEFAULT_MODELS[p].default,
         authMode,
