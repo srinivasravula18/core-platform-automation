@@ -2,18 +2,11 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { DragEvent } from 'react';
 import { ChevronDown, Database, Download, FileSpreadsheet, Play, Redo2, Search, Table, Trash2, Undo2, Upload, Wand2, X } from 'lucide-react';
 import { Runnable, RunnablePicker, runnableKey } from './RunnablePicker';
-import { FieldChipEditor, PalettePill, tokenLabel } from './FieldChips';
+import { FieldChipEditor, PalettePill } from './FieldChips';
+import { ValuePicker } from './ValuePicker';
 
-// Variable palette, grouped (mirrors server variableEngine BUILTIN_VARIABLES). Tokens are bare (no braces).
-const VARIABLE_GROUPS: Array<{ title: string; items: string[] }> = [
-  { title: 'Fresh · unique each run', items: ['unique.email', 'unique.username', 'unique.id', 'uuid', 'timestamp'] },
-  { title: 'Realistic · faker', items: ['faker.firstName', 'faker.lastName', 'faker.fullName', 'faker.email', 'faker.company', 'faker.phone', 'faker.city', 'faker.country', 'faker.jobTitle', 'faker.int'] },
-  { title: 'Other', items: ['seq', 'run.id', 'today', 'rowNumber'] },
-];
-const TRANSFORM_HINT = 'upper · lower · title · trim · default(x) · replace(a,b) · dateformat(YYYY-MM-DD)';
-const INTENTS = [{ value: 'fixed', label: 'Fixed' }, { value: 'unique', label: 'Unique' }, { value: 'reference', label: 'Reference' }];
-// Client mirror of the server's unique-generator check (drives the inline "unique needs a generator" warning).
-const isUniqueExpr = (expression: string) => /\{\{\s*(unique(\.|\b)|uuid\b|timestamp\b|faker\.email\b)/i.test(expression || '');
+// A field's value comes from a sheet column or a typed fixed value — no generators.
+const INTENTS = [{ value: 'fixed', label: 'Fixed' }, { value: 'reference', label: 'Reference' }];
 
 // Auto-map matching helpers — exact, then case/space-insensitive, then fuzzy.
 const normName = (value: string) => (value || '').toLowerCase().replace(/[^a-z0-9]/g, '');
@@ -37,7 +30,7 @@ function bestColumn(label: string, columns: any[]): any | null {
   return best && score <= Math.max(2, Math.floor(target.length * 0.34)) ? best : null;
 }
 
-type AutoOption = { label: string; kind: 'skip' | 'gen' | 'col'; expression?: string; intent?: string; columnId?: string };
+type AutoOption = { label: string; kind: 'skip' | 'col'; expression?: string; intent?: string; columnId?: string };
 type AutoRow = { stepId: string; label: string; options: AutoOption[]; choice: number };
 
 async function json(url: string, init?: RequestInit) {
@@ -47,7 +40,7 @@ async function json(url: string, init?: RequestInit) {
   return body;
 }
 
-type DragPayload = { type: 'column'; columnId: string } | { type: 'variable'; token: string };
+type DragPayload = { type: 'column'; columnId: string };
 const PAGE = 50;
 
 // Searchable single-select (replaces raw <select> for dataset/profile so it scales to long lists).
@@ -219,15 +212,13 @@ export default function DataBindings() {
   const setIntent = async (stepId: string, intent: string) => {
     await putMapping(stepId, { expression: byStep.get(stepId)?.expression || '', intent });
   };
-  // Append a bare token as a chip (clean single-column bind when empty, otherwise concatenate).
-  const appendToken = async (stepId: string, token: string) => {
-    const current = byStep.get(stepId)?.expression || '';
-    await saveExpression(stepId, `${current}{{${token}}}`, isUniqueExpr(`{{${token}}}`) ? 'unique' : currentIntent(stepId));
+  // One value per field: picking or dropping a column REPLACES the field's value (no stacking).
+  const setColumnValue = async (stepId: string, column: any) => {
+    await mapColumn(stepId, column.id);
   };
-  const appendColumn = async (stepId: string, column: any) => {
-    const current = byStep.get(stepId)?.expression || '';
-    if (!current) await mapColumn(stepId, column.id);
-    else await saveExpression(stepId, `${current}{{${column.name}}}`);
+  // The "type a fixed value" path — sets the field to a plain literal.
+  const setLiteralValue = async (stepId: string, value: string) => {
+    await saveExpression(stepId, value);
   };
   const removeMapping = async (stepId: string) => {
     await json(`/api/automation/recordings/${recordingId}/mappings/${stepId}`, { method: 'DELETE' });
@@ -255,8 +246,7 @@ export default function DataBindings() {
     if (!raw) return;
     try {
       const payload: DragPayload = JSON.parse(raw);
-      if (payload.type === 'column') { const column = (dataset?.columns || []).find((c: any) => c.id === payload.columnId); if (column) void appendColumn(step.id, column); }
-      else void appendToken(step.id, payload.token);
+      if (payload.type === 'column') { const column = (dataset?.columns || []).find((c: any) => c.id === payload.columnId); if (column) void setColumnValue(step.id, column); }
     } catch { /* ignore malformed drag */ }
   };
 
@@ -319,17 +309,10 @@ export default function DataBindings() {
     if (!dataset) return setMessage('Import a dataset first.');
     const autoRows: AutoRow[] = mappableSteps.map((step) => {
       const label = step.metadata?.label || step.locator;
-      const normalized = normName(label);
       const options: AutoOption[] = [{ label: 'Skip', kind: 'skip' }];
-      const emailish = /mail/.test(normalized);
-      const userish = /user|login/.test(normalized);
-      if (emailish) options.push({ label: 'Generate · fresh email', kind: 'gen', expression: '{{unique.email}}', intent: 'unique' });
-      if (userish) options.push({ label: 'Generate · fresh username', kind: 'gen', expression: '{{unique.username}}', intent: 'unique' });
       const best = bestColumn(label, dataset.columns);
       for (const column of dataset.columns) options.push({ label: `Column · ${column.name}`, kind: 'col', expression: `{{${column.name}}}`, intent: 'fixed', columnId: column.id });
-      let choice = 0;
-      if (emailish || userish) choice = 1;
-      else if (best) choice = options.findIndex((option) => option.columnId === best.id);
+      const choice = best ? options.findIndex((option) => option.columnId === best.id) : 0;
       return { stepId: step.id, label, options, choice: choice < 0 ? 0 : choice };
     });
     setAutoMap({ rows: autoRows });
@@ -351,11 +334,6 @@ export default function DataBindings() {
   };
 
   const labelOfStep = (stepId: string) => { const step = steps.find((item) => item.id === stepId); return step?.metadata?.label || step?.locator || 'field'; };
-  // UI-4: keyboard/no-drag binding — pick a column or variable from a menu instead of dragging.
-  const bindFromMenu = async (stepId: string, value: string) => {
-    if (value.startsWith('col:')) { const column = (dataset?.columns || []).find((c: any) => c.id === value.slice(4)); if (column) { await appendColumn(stepId, column); setAnnounce(`${labelOfStep(stepId)} bound to ${column.name}.`); } }
-    else if (value.startsWith('var:')) { const token = value.slice(4); await appendToken(stepId, token); setAnnounce(`${labelOfStep(stepId)} bound to ${tokenLabel(token)}.`); }
-  };
 
   // UI-3: hand-entered dataset (secondary bulk option). Columns mirror the recording's field labels.
   const openManual = () => {
@@ -415,11 +393,20 @@ export default function DataBindings() {
     try { const body = await json(`/api/automation/batches/${batch.id}/reap`, { method: 'POST' }); setMessage(`Reaped ${body.reaped ?? 0} orphaned record${body.reaped === 1 ? '' : 's'}.`); }
     catch (error: any) { setMessage(error.message); }
   };
+  const deleteDataset = async () => {
+    if (!datasetId) return;
+    const ds = datasets.find((item) => item.id === datasetId);
+    if (!window.confirm(`Delete dataset “${ds?.name || datasetId}” and its rows? This can’t be undone.`)) return;
+    try {
+      await json(`/api/automation/datasets/${datasetId}`, { method: 'DELETE' });
+      setDatasetId('');
+      await load();
+      setMessage(`Deleted dataset${ds?.name ? ` “${ds.name}”` : ''}.`);
+    } catch (error: any) { setMessage(error.message); }
+  };
 
   const dragColumn = (event: DragEvent, columnId: string) =>
     event.dataTransfer.setData('application/x-binding', JSON.stringify({ type: 'column', columnId }));
-  const dragVariable = (event: DragEvent, token: string) =>
-    event.dataTransfer.setData('application/x-binding', JSON.stringify({ type: 'variable', token }));
 
   const shownTo = Math.min(offset + rows.length, total);
 
@@ -427,7 +414,7 @@ export default function DataBindings() {
     <div className="flex flex-wrap items-start justify-between gap-3">
       <div>
         <h1 className="text-xl font-semibold text-[var(--text-primary)]">Automation Data</h1>
-        <p className="mt-1 text-sm text-[var(--text-muted)]">Pick a test case, script, or recording; bind its fields to data columns or generators, then run one row or thousands.</p>
+        <p className="mt-1 text-sm text-[var(--text-muted)]">Pick a test case, script, or recording; give each field a value from your imported sheet or a fixed value, then run one row or thousands.</p>
       </div>
       <label className="inline-flex cursor-pointer items-center gap-2 rounded-md border border-[var(--border)] px-3 py-2 text-sm hover:border-[var(--accent)]">
         <Upload className="h-4 w-4" />{busy ? 'Working…' : 'Import CSV/XLSX'}
@@ -436,8 +423,12 @@ export default function DataBindings() {
     </div>
 
     <div className="grid gap-3 sm:grid-cols-2">
-      <SearchableSelect ariaLabel="Dataset" placeholder="Select dataset" value={datasetId} onChange={setDatasetId}
-        items={datasets.map((item) => ({ id: item.id, label: item.name, sub: `${item.rowCount} rows` }))} />
+      <div className="flex items-center gap-2">
+        <div className="min-w-0 flex-1"><SearchableSelect ariaLabel="Dataset" placeholder="Select dataset" value={datasetId} onChange={setDatasetId}
+          items={datasets.map((item) => ({ id: item.id, label: item.name, sub: `${item.rowCount} rows` }))} /></div>
+        <button type="button" disabled={!datasetId} onClick={() => void deleteDataset()} title="Delete this dataset" aria-label="Delete selected dataset"
+          className="shrink-0 rounded-md border border-[var(--border)] p-2 text-[var(--text-muted)] hover:border-red-500 hover:text-red-500 disabled:opacity-40"><Trash2 className="h-4 w-4" /></button>
+      </div>
       <SearchableSelect ariaLabel="Runner" placeholder="Server (headless) — default" value={agentId} onChange={setAgentId}
         items={agents.map((item) => ({ id: item.id, label: item.name, sub: item.status }))} />
     </div>
@@ -490,13 +481,11 @@ export default function DataBindings() {
                     {step.readOnly ? <span className="text-xs text-[var(--text-muted)]">Recorded action — not editable</span>
                       : dataset ? <>
                         <FieldChipEditor expression={mapping?.expression || ''} columnNames={columnNames}
-                          ariaLabel={`Binding for ${label}`} placeholder={over ? 'Release to bind' : 'type, or drop a column/variable'}
+                          ariaLabel={`Value for ${label}`} placeholder={over ? 'Release to add' : 'type a fixed value'}
                           onFocusField={() => { activeStep.current = step.id; }} onSave={(expression) => void saveExpression(step.id, expression)} />
-                        <select aria-label={`Bind ${label}`} value="" onChange={(event) => { if (event.target.value) void bindFromMenu(step.id, event.target.value); }} className="shrink-0 rounded border border-[var(--border)] bg-[var(--bg-secondary)] px-1.5 py-1 text-[11px]">
-                          <option value="">Bind ▾</option>
-                          <optgroup label="Columns">{(dataset.columns || []).map((column: any) => <option key={column.id} value={`col:${column.id}`}>{column.name}</option>)}</optgroup>
-                          <optgroup label="Variables">{VARIABLE_GROUPS.flatMap((group) => group.items).map((token) => <option key={token} value={`var:${token}`}>{tokenLabel(token)}</option>)}</optgroup>
-                        </select>
+                        <ValuePicker columns={dataset.columns || []} hasDataset fieldLabel={label}
+                          onColumn={(column) => void setColumnValue(step.id, column)}
+                          onFixed={(value) => void setLiteralValue(step.id, value)} />
                       </> : <>
                         <input key={`${step.id}-${step.currentOverride}`} aria-label={`Value for ${label}`} placeholder="fixed value" defaultValue={step.currentOverride ?? step.originalValue ?? ''}
                           onFocus={() => { activeStep.current = step.id; }} onBlur={(event) => void saveOverride(step, event.target.value)}
@@ -506,16 +495,15 @@ export default function DataBindings() {
                       </>}
                   </div>
                   {mapping && <>
-                    <select aria-label={`Intent for ${label}`} value={mapping.intent || 'fixed'} onChange={(event) => void setIntent(step.id, event.target.value)} title="Fixed = same each run · Unique = fresh each run · Reference = must already exist"
-                      className={`shrink-0 rounded border bg-[var(--bg-secondary)] px-1 py-1 text-[11px] ${mapping.intent === 'unique' ? 'border-emerald-500 text-emerald-500' : mapping.intent === 'reference' ? 'border-sky-500 text-sky-500' : 'border-[var(--border)] text-[var(--text-muted)]'}`}>
+                    <select aria-label={`Intent for ${label}`} value={mapping.intent || 'fixed'} onChange={(event) => void setIntent(step.id, event.target.value)} title="Fixed = same value every run · Reference = must already exist"
+                      className={`shrink-0 rounded border bg-[var(--bg-secondary)] px-1 py-1 text-[11px] ${mapping.intent === 'reference' ? 'border-sky-500 text-sky-500' : 'border-[var(--border)] text-[var(--text-muted)]'}`}>
                       {INTENTS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
                     </select>
                     <button aria-label="Remove binding" title="Remove binding" onClick={() => void removeMapping(step.id)} className="shrink-0 text-[var(--text-muted)] hover:text-red-500"><Trash2 className="h-4 w-4" /></button>
                   </>}
                 </div>
-                {mapping && (preview || (mapping.intent === 'unique' && !isUniqueExpr(mapping.expression))) && <div className="mt-1 pl-[8.5rem]">
-                  {preview && <div className={`truncate text-[10px] ${preview.error ? 'text-red-500' : 'text-[var(--text-muted)]'}`}>→ {preview.error || (preview.value === '' ? '(empty)' : preview.value)}{!preview.error && isUniqueExpr(mapping.expression) ? ' · fresh each run' : ''}</div>}
-                  {mapping.intent === 'unique' && !isUniqueExpr(mapping.expression) && <div className="text-[10px] text-red-500">⚠ Unique needs a generator — add a fresh chip.</div>}
+                {mapping && preview && <div className="mt-1 pl-[8.5rem]">
+                  <div className={`truncate text-[10px] ${preview.error ? 'text-red-500' : 'text-[var(--text-muted)]'}`}>→ {preview.error || (preview.value === '' ? '(empty)' : preview.value)}</div>
                 </div>}
               </div>;
             })}
@@ -523,7 +511,7 @@ export default function DataBindings() {
         </>}
       </div>
 
-      {/* Right — DATA: profile bar + draggable column & variable pills */}
+      {/* Right — DATA: profile bar + draggable column pills from the imported sheet */}
       <aside onDragOver={(event) => { if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); setFileOver(true); } }} onDragLeave={() => setFileOver(false)} onDrop={dropFile}
         className={`flex min-h-0 flex-col overflow-hidden rounded-lg border ${fileOver ? 'border-[var(--accent)] bg-[var(--accent)]/5' : 'border-[var(--border)] bg-[var(--bg-card)]'}`}>
         <div className="shrink-0 border-b border-[var(--border)] p-2">
@@ -541,22 +529,12 @@ export default function DataBindings() {
             <div className="flex flex-wrap gap-1.5">
               {(dataset.columns || []).map((column: any) => <PalettePill key={column.id} label={column.name} variant="column" draggable
                 onDragStart={(event) => dragColumn(event, column.id)}
-                onClick={() => { if (activeStep.current) void appendColumn(activeStep.current, column); else setMessage('Focus a field first, then click a column to insert it.'); }}
+                onClick={() => { if (activeStep.current) void setColumnValue(activeStep.current, column); else setMessage('Focus a field first, then click a column to insert it.'); }}
                 title={`${column.name} — drag onto a field, or click to insert into the focused field`} />)}
             </div>
           </div> : <div className="rounded-md border border-dashed border-[var(--border)] p-2 text-center text-[11px] text-[var(--text-muted)]">
-            <FileSpreadsheet className="mx-auto mb-1 h-4 w-4" />Import a spreadsheet (top-right) to bind real columns. Variables below work without one.
+            <FileSpreadsheet className="mx-auto mb-1 h-4 w-4" />Download the Template, fill it in Excel, then import it (top-right) — its columns show here to map onto your fields.
           </div>}
-          {VARIABLE_GROUPS.map((group) => <div key={group.title}>
-            <div className="mb-1 text-[10px] uppercase tracking-wide text-[var(--text-muted)]">{group.title}</div>
-            <div className="flex flex-wrap gap-1.5">
-              {group.items.map((token) => <PalettePill key={token} label={tokenLabel(token)} variant="generator" draggable
-                onDragStart={(event) => dragVariable(event, token)}
-                onClick={() => { if (activeStep.current) void appendToken(activeStep.current, token); else setMessage('Focus a field first, then click a variable to insert it.'); }}
-                title={`${tokenLabel(token)} — drag onto a field, or click to insert into the focused field`} />)}
-            </div>
-          </div>)}
-          <p className="text-[10px] leading-4 text-[var(--text-muted)]">Pipe transforms: {TRANSFORM_HINT}</p>
         </div>
       </aside>
     </div>
@@ -617,7 +595,7 @@ export default function DataBindings() {
         <table className="min-w-max text-xs">
           <thead className="sticky top-0 z-10 bg-[var(--bg-card)]"><tr><th className="p-2 text-left"><input aria-label="Select all rows" type="checkbox" checked={rows.length > 0 && selectedRows.length === rows.length} onChange={(event) => setSelectedRows(event.target.checked ? rows.map((row) => row.rowNumber) : [])} /></th><th className="whitespace-nowrap p-2 text-left">Row</th>{dataset.columns.map((column: any) => <th key={column.id} draggable
               onDragStart={(event) => dragColumn(event, column.id)}
-              onClick={() => { const target = mappableSteps.find((step) => !byStep.has(step.id)); if (target) { void appendColumn(target.id, column); setAnnounce(`${column.name} bound to ${labelOfStep(target.id)}.`); } }}
+              onClick={() => { const target = mappableSteps.find((step) => !byStep.has(step.id)); if (target) { void setColumnValue(target.id, column); setAnnounce(`${column.name} bound to ${labelOfStep(target.id)}.`); } }}
               title="Drag this column onto a field above (or click) to bind it"
               className="min-w-36 cursor-grab whitespace-nowrap p-2 text-left hover:text-[var(--accent)] active:cursor-grabbing">{column.name}</th>)}</tr></thead>
           <tbody>{rows.map((row) => { const consumed = row.state === 'consumed'; return <tr key={row.id} className={`border-t border-[var(--border)] align-top ${consumed ? 'opacity-50' : ''}`} title={consumed ? 'Already consumed by an earlier pooled run' : undefined}><td className="p-2"><input aria-label={`Select row ${row.rowNumber}`} type="checkbox" disabled={consumed} checked={selectedRows.includes(row.rowNumber)} onChange={() => setSelectedRows((current) => current.includes(row.rowNumber) ? current.filter((number) => number !== row.rowNumber) : [...current, row.rowNumber])} /></td><td className="p-2 text-[var(--text-muted)]">{row.rowNumber}{consumed ? ' · used' : ''}</td>{dataset.columns.map((column: any) => <td key={column.id} className="max-w-72 overflow-hidden text-ellipsis whitespace-nowrap p-2">{row.values[column.id] || '—'}</td>)}</tr>; })}</tbody>

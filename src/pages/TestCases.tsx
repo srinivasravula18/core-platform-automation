@@ -1,6 +1,7 @@
 import { useEffect, useState, useRef, useMemo, type ComponentProps } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Search, Filter, Pencil, Plus, Sparkles, Loader2, Trash2, PlayCircle, FolderCheck, ChevronDown } from 'lucide-react';
+import { Search, Filter, Pencil, Plus, Sparkles, Loader2, Trash2, PlayCircle, ChevronDown, History } from 'lucide-react';
+import { VersionHistoryPanel } from '@/src/components/VersionHistoryPanel';
 import { Timestamp, actorName } from '@/src/components/Timestamp';
 import { TimeSortSelect } from '@/src/components/filters/TimeSortSelect';
 import { sortByTime, type TimeSortKey } from '@/src/lib/time';
@@ -11,7 +12,6 @@ import { startSelectedRun } from '@/src/lib/startSelectedRun';
 import { Modal } from '@/src/components/Modal';
 import { RequiredMark } from '@/src/components/RequiredMark';
 import { AIActionModal } from '@/src/components/AIActionModal';
-import { FolderSelect } from '@/src/components/FolderSelect';
 import { CodegenPanel, AppUrlField } from '@/src/components/CodegenPanel';
 import CaseHistoryModal from '@/src/components/CaseHistoryModal';
 import { useRemoteAgentFlag } from '@/src/lib/useAutomation';
@@ -22,9 +22,6 @@ import { useDataVersion } from '@/src/store/data';
 import { TagEditor } from '@/src/components/TagEditor';
 import { TagMultiSelect } from '@/src/components/TagMultiSelect';
 import { MultiSelectDropdown } from '@/src/components/MultiSelectDropdown';
-import { EntityLinker } from '@/src/components/EntityLinker';
-import { TagManagerModal } from '@/src/components/TagManagerModal';
-import { linkSuiteCases } from '@/src/lib/entityLinking';
 import { normalizeTestCaseTypes, testCaseTypeFields } from '@/core/shared/testCaseTypes';
 import { normalizeTags } from '@/src/lib/tags';
 import { readSseJson } from '@/src/lib/sse';
@@ -55,7 +52,6 @@ export default function TestCases() {
   const [cases, setCases] = useState<any[]>([]);
   const [plans, setPlans] = useState<any[]>([]);
   const [suites, setSuites] = useState<any[]>([]);
-  const [folders, setFolders] = useState<any[]>([]);
   // agentRunId → { platform, app } for the platform + individual app the run targeted, so each
   // agent-generated case can show the exact app the user chose (e.g. "Core Platform / CRM").
   const [runInfo, setRunInfo] = useState<Record<string, { platformId: string; platform: string; app: string }>>({});
@@ -87,7 +83,6 @@ export default function TestCases() {
     testingTypes: [] as string[],
     tags: [] as string[],
     owners: [] as string[],
-    folders: [] as string[],
     requirement: '',
     createdFrom: '', createdTo: '',
     updatedFrom: '', updatedTo: '',
@@ -104,12 +99,11 @@ export default function TestCases() {
   const [isCaseAIWorking, setIsCaseAIWorking] = useState(false);
   const [caseAIMessage, setCaseAIMessage] = useState('');
   const [isStartingRun, setIsStartingRun] = useState(false);
-  // Save-and-run dialog: pick the folder (required) + tags before the selected-cases run is created.
+  // Save-and-run dialog: pick tags before the selected-cases run is created.
   const [isRunModalOpen, setIsRunModalOpen] = useState(false);
-  const [runFolderId, setRunFolderId] = useState('');
   const [runTags, setRunTags] = useState<string[]>([]);
   const emptyStep = { action: '', expected: '' };
-  const blankForm = { title: '', description: '', preconditions: '', testPlanIds: [] as string[], testSuiteIds: [] as string[], createdBy: 'Admin', tags: [] as string[], testingScope: 'Manual', automationStatus: 'Not Automated', testingTypes: ['Functional'] as string[], priority: 'Medium', status: 'Draft', folderId: '', captureEvidenceOnManualRun: true, steps: [emptyStep] };
+  const blankForm = { title: '', description: '', preconditions: '', testPlanIds: [] as string[], testSuiteIds: [] as string[], createdBy: 'Admin', tags: [] as string[], testingScope: 'Manual', automationStatus: 'Not Automated', testingTypes: ['Functional'] as string[], priority: 'Medium', status: 'Draft', captureEvidenceOnManualRun: true, steps: [emptyStep] };
   const [formData, setFormData] = useState(blankForm);
   const [selectedCaseId, setSelectedCaseId] = useState<string | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
@@ -138,13 +132,6 @@ export default function TestCases() {
     fetch('/api/suites')
       .then(r => r.json())
       .then(data => setSuites(data))
-      .catch(console.error);
-  };
-
-  const fetchFolders = () => {
-    fetch('/api/folders')
-      .then(r => r.json())
-      .then(data => setFolders(Array.isArray(data) ? data : []))
       .catch(console.error);
   };
 
@@ -235,9 +222,7 @@ export default function TestCases() {
   };
 
   const bulk = useBulkDelete('cases', fetchCases, 'case');
-  // Tag-driven assembly: open the unified linker to collect cases (by tag/search) into a NEW suite.
-  const [isAssembleOpen, setIsAssembleOpen] = useState(false);
-  const [isTagManagerOpen, setIsTagManagerOpen] = useState(false);
+  const [historyCase, setHistoryCase] = useState<any | null>(null);
   // The always-on checkbox column drives a single selection that powers BOTH
   // bulk-delete and the AI multi-select action below.
   const selectedCaseIds = Array.from(bulk.selectedIds).map(String);
@@ -249,7 +234,6 @@ export default function TestCases() {
     fetchCases();
     fetchPlans();
     fetchSuites();
-    fetchFolders();
     fetchRunInfo();
     fetchRuns();
     fetchScripts();
@@ -318,7 +302,6 @@ export default function TestCases() {
       automationStatus: testCase.automationStatus || 'Not Automated',
       testingTypes: normalizeTestCaseTypes(testCase),
       priority: testCase.priority || 'Medium', status: testCase.status || 'Draft',
-      folderId: testCase.folderId || '',
       captureEvidenceOnManualRun: testCase.captureEvidenceOnManualRun !== false,
       steps: Array.isArray(testCase.steps) && testCase.steps.length > 0 ? testCase.steps : [emptyStep]
     });
@@ -327,7 +310,6 @@ export default function TestCases() {
 
   const handleSaveCase = () => {
     if (!formData.title.trim()) return;
-    if (!formData.folderId) { void showAlert('Select a folder or create one first.'); return; }
     const tags = formData.tags.map((s) => s.trim()).filter(Boolean);
     const steps = formData.steps
       .map((step) => ({ action: step.action.trim(), expected: step.expected.trim() }))
@@ -455,21 +437,18 @@ export default function TestCases() {
     }
   };
 
-  // Open the save-and-run dialog, pre-filling the folder the selected cases already share (if any).
+  // Open the save-and-run dialog.
   const openRunModal = () => {
     if (!selectedCaseIds.length) return;
-    const caseFolder = cases.find((c) => selectedCaseIds.includes(c.id) && c.folderId)?.folderId || '';
-    setRunFolderId(caseFolder);
     setRunTags([]);
     setIsRunModalOpen(true);
   };
 
-  const runSelectedCases = async (caseIds = selectedCaseIds, folderId = runFolderId, tags = runTags) => {
+  const runSelectedCases = async (caseIds = selectedCaseIds, tags = runTags) => {
     if (!caseIds.length || isStartingRun) return;
-    if (!folderId) { void showAlert('Pick or create a folder to save this run under.'); return; }
     setIsStartingRun(true);
     try {
-      await startSelectedRun({ caseIds, folderId, tags }, navigate);
+      await startSelectedRun({ caseIds, tags }, navigate);
       setIsRunModalOpen(false);
       bulk.clearSelection();
     } catch (error: any) {
@@ -581,7 +560,7 @@ export default function TestCases() {
   }, [runs]);
   const activeFilterCount = (
     filters.statuses.length + filters.priorities.length + filters.automationStatuses.length +
-    filters.testingTypes.length + filters.tags.length + filters.owners.length + filters.folders.length +
+    filters.testingTypes.length + filters.tags.length + filters.owners.length +
     (filters.requirement.trim() ? 1 : 0) + (filters.createdFrom || filters.createdTo ? 1 : 0) +
     (filters.updatedFrom || filters.updatedTo ? 1 : 0) + (filters.notInAnyRun ? 1 : 0) +
     (platformFilter !== 'All' ? 1 : 0) + (appFilter !== 'All' ? 1 : 0)
@@ -605,7 +584,6 @@ export default function TestCases() {
     if (filters.testingTypes.length) conds.push(normalizeTestCaseTypes(testCase).some((type) => filters.testingTypes.includes(type)));
     if (filters.tags.length) conds.push(filters.tags.some((t) => tags.includes(t)));
     if (filters.owners.length) conds.push(filters.owners.includes(String(testCase.createdBy || '')));
-    if (filters.folders.length) conds.push(filters.folders.includes(testCase.folderId || ''));
     if (filters.requirement.trim()) {
       const q = filters.requirement.trim().toLowerCase();
       const refs = [testCase.requirementId, testCase.requirementRef, ...(Array.isArray(testCase.requirementIds) ? testCase.requirementIds : []), ...(Array.isArray(testCase.requirements) ? testCase.requirements : [])]
@@ -685,13 +663,7 @@ export default function TestCases() {
           {/* Gate create actions on cases:create */}
           {can('cases:create') && (
             <>
-              <button onClick={() => setIsTagManagerOpen(true)} className="flex items-center gap-2 border border-[var(--border)] hover:border-[var(--accent)] text-[var(--text-primary)] px-3 py-2 rounded-md text-sm font-medium transition-colors" title="Create, rename, recolor and delete tags across all entities">
-            <FolderCheck className="w-4 h-4" /> Manage tags
-          </button>
-          <button onClick={() => setIsAssembleOpen(true)} className="flex items-center gap-2 border border-[var(--border)] hover:border-[var(--accent)] text-[var(--text-primary)] px-3 py-2 rounded-md text-sm font-medium transition-colors" title="Filter by tag/search, then create a suite from the selection">
-            <FolderCheck className="w-4 h-4" /> Group into suite
-          </button>
-          <button onClick={openNewModal} className="flex items-center gap-2 bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white px-4 py-2 rounded-md text-sm font-medium transition-colors">
+              <button onClick={openNewModal} className="flex items-center gap-2 bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white px-4 py-2 rounded-md text-sm font-medium transition-colors">
                 <Plus className="w-4 h-4" /> New Case
               </button>
               <button onClick={() => setIsAICaseModalOpen(true)} className="flex items-center gap-1.5 bg-[#8b5cf6] hover:bg-[#7c3aed] text-white px-3 py-2 rounded-md text-sm font-medium transition-colors">
@@ -777,11 +749,10 @@ export default function TestCases() {
                   <MultiSelectDropdown label="None" options={suites.map((suite) => ({ id: String(suite.id), name: String(suite.name) }))} value={formData.testSuiteIds} onChange={(ids) => setFormData({ ...formData, testSuiteIds: ids })} />
                 </div>
               </div>
-              <FolderSelect value={formData.folderId} onChange={(folderId) => setFormData({ ...formData, folderId })} required includeNone={false} />
               <CodegenPanel
                 title={formData.title}
                 appUrl={automationUrl}
-                caseMeta={{ ...testCaseTypeFields(formData.testingTypes), priority: formData.priority, folderId: formData.folderId, testPlanIds: formData.testPlanIds, testSuiteIds: formData.testSuiteIds }}
+                caseMeta={{ ...testCaseTypeFields(formData.testingTypes), priority: formData.priority, testPlanIds: formData.testPlanIds, testSuiteIds: formData.testSuiteIds }}
                 onDone={() => { setIsCaseModalOpen(false); fetchCases(); }}
               />
             </div>
@@ -797,12 +768,6 @@ export default function TestCases() {
                 <MultiSelectDropdown label="None" options={suites.map((suite) => ({ id: String(suite.id), name: String(suite.name) }))} value={formData.testSuiteIds} onChange={(ids) => setFormData({ ...formData, testSuiteIds: ids })} />
              </div>
           </div>
-          <FolderSelect
-            value={formData.folderId}
-            onChange={(folderId) => setFormData({ ...formData, folderId })}
-            required
-            includeNone={false}
-          />
           <div>
             <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Title<RequiredMark /></label>
             <input type="text" value={formData.title} onChange={(e) => setFormData({...formData, title: e.target.value})} placeholder="e.g., Login with valid credentials" className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]" />
@@ -964,9 +929,11 @@ export default function TestCases() {
         title="AI Auto: New Test Case"
       />
 
-      <TagManagerModal isOpen={isTagManagerOpen} onClose={() => setIsTagManagerOpen(false)} onChanged={fetchCases} />
+      <Modal isOpen={Boolean(historyCase)} onClose={() => setHistoryCase(null)} title={historyCase ? `Version history — ${historyCase.title || historyCase.id}` : 'Version history'} size="xl">
+        {historyCase && <VersionHistoryPanel entity="cases" id={historyCase.id} onRestored={fetchCases} />}
+      </Modal>
 
-      {/* Save-and-run: choose the folder (required) + tags, then the run is created and opened in Test Runs.
+      {/* Save-and-run: add optional tags, then the run is created and opened in Test Runs.
           Cancel/Save & Run live in the pinned footer so the tag suggestions dropdown (in the scrollable
           body) can never render on top of them. */}
       <Modal
@@ -978,7 +945,7 @@ export default function TestCases() {
             <button onClick={() => setIsRunModalOpen(false)} className="px-4 py-2 text-sm font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]">Cancel</button>
             <button
               onClick={() => runSelectedCases()}
-              disabled={isStartingRun || !runFolderId}
+              disabled={isStartingRun}
               className="flex items-center gap-1.5 rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
             >
               {isStartingRun ? <Loader2 className="h-4 w-4 animate-spin" /> : <PlayCircle className="h-4 w-4" />} Save & Run
@@ -987,41 +954,13 @@ export default function TestCases() {
         )}
       >
         <div className="space-y-4">
-          <p className="text-sm text-[var(--text-muted)]">Choose where to save this run. It appears in Test Runs after it starts.</p>
-          <FolderSelect value={runFolderId} onChange={setRunFolderId} includeNone={false} />
+          <p className="text-sm text-[var(--text-muted)]">This run appears in Test Runs after it starts.</p>
           <div>
             <label className="mb-1 block text-sm font-medium text-[var(--text-muted)]">Tags (optional)</label>
             <TagEditor options={tagOptions} value={runTags} onChange={setRunTags} />
           </div>
         </div>
       </Modal>
-
-      {/* Tag-driven assembly: pick cases (filter by tag/search) → create a new suite from them. */}
-      {isAssembleOpen && (
-        <EntityLinker
-          isOpen={isAssembleOpen}
-          onClose={() => setIsAssembleOpen(false)}
-          title="Create a suite from selected cases"
-          target="cases"
-          initialSelectedIds={selectedCaseIds}
-          confirmLabel="Create suite"
-          onConfirm={async (ids) => {
-            if (!ids.length) { await showAlert('Select at least one case.'); return; }
-            const folderId = cases.find((c) => ids.includes(c.id))?.folderId || '';
-            if (!folderId) { await showAlert('Selected cases have no repository folder; open one and set a folder first.'); return; }
-            const res = await fetch('/api/suites', {
-              method: 'POST', headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ name: `Suite from ${ids.length} case(s)`, folderId }),
-            });
-            if (!res.ok) { await showAlert('Could not create the suite.'); return; }
-            const { id: suiteId } = await res.json();
-            await linkSuiteCases(suiteId, ids, []);
-            setIsAssembleOpen(false);
-            await showAlert(`Created a suite with ${ids.length} case(s). Find it in Test Suites.`);
-            refetchAll();
-          }}
-        />
-      )}
 
       <Modal
         isOpen={!!scriptViewer}
@@ -1150,28 +1089,6 @@ export default function TestCases() {
                     <MultiSelectDropdown label="Any owner" options={ownerOptions.map((o) => ({ id: o, name: o }))} value={filters.owners} onChange={(v) => setFilters((f) => ({ ...f, owners: v }))} />
                   </div>
                   <div>
-                    <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Folder ({filters.folders.length} selected)</label>
-                    <MultiSelectDropdown label="Any folder" options={folders.map((folder) => ({ id: String(folder.id), name: String(folder.path || folder.name) }))} value={filters.folders} onChange={(v) => setFilters((f) => ({ ...f, folders: v }))} />
-                    <label className="mb-1 mt-2 flex items-center gap-1 text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]"><FolderCheck className="h-3.5 w-3.5" />Select cases for a run</label>
-                    <select
-                      aria-label="Select every test case in a folder"
-                      value=""
-                      onChange={(event) => {
-                        const folderId = event.target.value;
-                        if (!folderId) return;
-                        bulk.selectOnly(cases.filter((testCase) => String(testCase.folderId || '') === folderId).map((testCase) => String(testCase.id)));
-                        setIsFilterOpen(false);
-                      }}
-                      className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2.5 py-2 text-xs text-[var(--text-primary)]"
-                    >
-                      <option value="">Select all cases in one folder...</option>
-                      {folders.map((folder) => {
-                        const count = cases.filter((testCase) => String(testCase.folderId || '') === String(folder.id)).length;
-                        return <option key={folder.id} value={folder.id} disabled={count === 0}>{folder.path || folder.name} ({count})</option>;
-                      })}
-                    </select>
-                  </div>
-                  <div>
                     <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Requirements (Jira key / reference)</label>
                     <input value={filters.requirement} onChange={(e) => setFilters((f) => ({ ...f, requirement: e.target.value }))} placeholder="e.g. PROJ-123" className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2.5 py-1.5 text-xs text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
                   </div>
@@ -1273,7 +1190,7 @@ export default function TestCases() {
         </div>
         
         <div className="flex-1 overflow-auto">
-          <table className="w-full min-w-[1968px] table-fixed text-left text-sm">
+          <table className="w-full min-w-[1792px] table-fixed text-left text-sm">
             <thead className="sticky top-0 bg-[var(--bg-secondary)] border-b border-[var(--border)] z-10">
               <tr className="text-[var(--text-muted)]">
                 <th className="font-medium py-3 px-4 w-10">
@@ -1287,7 +1204,6 @@ export default function TestCases() {
                 </th>
                 <th className="font-medium py-3 px-4 w-20">ID</th>
                 <th className="font-medium py-3 px-4 w-64">Title</th>
-                <th className="font-medium py-3 px-4 w-44">Folder</th>
                 <th className="font-medium py-3 px-4 w-44">Platform / App</th>
                 <th className="font-medium py-3 px-4 w-40">Test Plan</th>
                 <th className="font-medium py-3 px-4 w-40">Test Suite</th>
@@ -1303,10 +1219,10 @@ export default function TestCases() {
             </thead>
             <tbody className="divide-y divide-[var(--border)]">
               {loading && (
-                <tr><td colSpan={15} className="py-8 text-center text-[var(--text-muted)]">Loading test cases...</td></tr>
+                <tr><td colSpan={14} className="py-8 text-center text-[var(--text-muted)]">Loading test cases...</td></tr>
               )}
               {!loading && filteredCases.length === 0 && (
-                <tr><td colSpan={15} className="py-8 text-center text-[var(--text-muted)]">No test cases found.</td></tr>
+                <tr><td colSpan={14} className="py-8 text-center text-[var(--text-muted)]">No test cases found.</td></tr>
               )}
               {filteredCases.map((tc) => (
                 <tr key={tc.id} onClick={() => openEditModal(tc)} className="hover:bg-[var(--bg-secondary)] transition-colors cursor-pointer">
@@ -1321,19 +1237,6 @@ export default function TestCases() {
                   </td>
                   <td className="py-3 px-4 font-mono text-xs text-[var(--text-muted)] truncate">{tc.id}</td>
                   <td className="py-3 px-4 font-medium truncate" title={tc.title}>{tc.title}</td>
-                  <td className="py-3 px-4">
-                    <InlineCaseSelect
-                      value={tc.folderId || ''}
-                      onClick={(event) => event.stopPropagation()}
-                      onChange={(event) => updateCaseInline(tc, { folderId: event.target.value })}
-                      title="Update folder"
-                    >
-                      <option value="" disabled>Select a folder</option>
-                      {folders.map((folder) => (
-                        <option key={folder.id} value={folder.id}>{folder.path || folder.name}</option>
-                      ))}
-                    </InlineCaseSelect>
-                  </td>
                   <td className="py-3 px-4 text-xs text-[var(--text-muted)] truncate" title={caseScopeLabel(tc)}>{caseScopeLabel(tc)}</td>
                   <td className="py-3 px-4">
                     <InlineCaseSelect
@@ -1470,6 +1373,13 @@ export default function TestCases() {
                       <Pencil className="w-4 h-4" />
                     </button>
                     )}
+                    <button
+                      onClick={(e) => { e.stopPropagation(); setHistoryCase(tc); }}
+                      title="Version history"
+                      className="p-1 rounded hover:bg-[var(--border)] text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors"
+                    >
+                      <History className="w-4 h-4" />
+                    </button>
                     {can('cases:delete') && (
                     <button
                       onClick={(e) => {

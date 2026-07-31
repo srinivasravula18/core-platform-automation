@@ -58,7 +58,8 @@ import { listProfiles, getProfile, createProfile, updateProfile, removeProfile, 
 import { reapBatch } from './teardownService';
 import { createScriptMaterializer, materializeScript } from './scriptMaterializer';
 import { resolveExpression, newRunToken, expressionHasUniqueGenerator } from './variableEngine';
-import { buildTemplateWorkbook, inferIntent, intentTip } from './templateService';
+import { buildTemplateWorkbook, inferIntent, intentTip, sampleFor } from './templateService';
+import { buildSlots } from './placeholderRegistry';
 import type { AgentRecord, ArtifactKind, ScheduleKind } from './types';
 
 /** Authenticate an agent from its `Authorization: Bearer <agentId>.<secret>` token. */
@@ -246,13 +247,15 @@ export function registerAutomationRoutes(app: Express) {
       const list = Array.isArray(casesById.get(caseId)?.tags) ? casesById.get(caseId).tags : [];
       return Array.from(new Set(list.map((t: any) => String(t || '').trim()).filter(Boolean)));
     };
+    // Test Case is the primary selection axis, so a runnable carries its case's display title.
+    const caseNameFor = (caseId: string): string => String(casesById.get(caseId)?.title || '').trim();
     const scripts = scopeFilter((await Scripts.list()) as any[], scope)
       .filter((s: any) => String(s.code || '').trim())
-      .map((s: any) => ({ kind: 'script' as const, scriptId: s.id, caseId: s.caseId || '', name: s.title || s.name || s.filename || s.id, folderId: s.folderId || casesById.get(s.caseId)?.folderId || '', targetUrl: s.targetUrl || '', updatedAt: s.updatedAt || s.createdAt || '', tags: tagsFor(s.caseId) }));
+      .map((s: any) => ({ kind: 'script' as const, scriptId: s.id, caseId: s.caseId || '', caseName: caseNameFor(s.caseId), name: s.title || s.name || s.filename || s.id, folderId: s.folderId || casesById.get(s.caseId)?.folderId || '', targetUrl: s.targetUrl || '', updatedAt: s.updatedAt || s.createdAt || '', tags: tagsFor(s.caseId) }));
     const linkedScriptIds = new Set(scripts.map((s) => s.scriptId));
     const recordings = scopeFilter((await Recordings.list()) as any[], scope)
       .filter((r: any) => r.status === 'ready' && String(r.script || '').trim() && !(r.metadata?.scriptId && linkedScriptIds.has(r.metadata.scriptId)))
-      .map((r: any) => ({ kind: 'recording' as const, recordingId: r.id, scriptId: r.metadata?.scriptId || '', caseId: r.metadata?.caseId || '', name: r.name || r.id, folderId: '', targetUrl: r.appUrl || '', updatedAt: r.completedAt || r.createdAt || '', tags: tagsFor(r.metadata?.caseId || '') }));
+      .map((r: any) => ({ kind: 'recording' as const, recordingId: r.id, scriptId: r.metadata?.scriptId || '', caseId: r.metadata?.caseId || '', caseName: caseNameFor(r.metadata?.caseId || ''), name: r.name || r.id, folderId: '', targetUrl: r.appUrl || '', updatedAt: r.completedAt || r.createdAt || '', tags: tagsFor(r.metadata?.caseId || '') }));
     res.json({ runnables: [...scripts, ...recordings] });
   });
 
@@ -268,6 +271,20 @@ export function registerAutomationRoutes(app: Express) {
     const recording = await recordingForScript(String(scriptId), scope);
     if (!recording) return res.status(404).json({ error: 'That script has no runnable Playwright code yet.' });
     res.json({ recordingId: recording.id, caseId: recording.metadata?.caseId || '' });
+  });
+
+  // Placeholder Registry — the bindable slots of a runnable (a script resolved to its backing
+  // recording, or a raw recording), as one uniform script-first contract for the binding UI.
+  app.post('/api/automation/runnables/slots', requireAuth, async (req: Request, res: Response) => {
+    const scope = reqScope(req);
+    const { scriptId, recordingId } = req.body || {};
+    let rec: any = null;
+    if (recordingId) rec = await scopedGet((id) => Recordings.get(id), String(recordingId), req);
+    else if (scriptId) rec = await recordingForScript(String(scriptId), scope);
+    else return res.status(400).json({ error: 'scriptId or recordingId is required.' });
+    if (!rec) return res.status(404).json({ error: 'That runnable has no bindable placeholders yet.' });
+    const steps = await listRecordingSteps(rec.id);
+    res.json({ recordingId: rec.id, caseId: rec.metadata?.caseId || '', slots: buildSlots(steps) });
   });
 
   app.get('/api/automation/recordings/:id', requireAuth, async (req: Request, res: Response) => {
@@ -344,8 +361,9 @@ export function registerAutomationRoutes(app: Express) {
     const labelOf = (step: any) => step.metadata?.label || step.locator;
     const fields = steps.map(labelOf);
     const guide = steps.map((step: any) => {
-      const intent = inferIntent(labelOf(step), step.fieldKind);
-      return { label: labelOf(step), intent, required: 'yes', tip: intentTip(intent) };
+      const label = labelOf(step);
+      const intent = inferIntent(label, step.fieldKind);
+      return { label, type: String(step.fieldKind || 'text'), intent, required: 'yes', example: sampleFor(step.fieldKind, label), tip: intentTip(intent) };
     });
     const buffer = await buildTemplateWorkbook(fields, guide);
     const filename = `${String(rec.name || 'recording').replace(/[^A-Za-z0-9._-]+/g, '-')}__template.xlsx`;
@@ -390,6 +408,13 @@ export function registerAutomationRoutes(app: Express) {
     const [scoped] = dataset ? scopeFilter([dataset] as any[], reqScope(req)) : [];
     if (!scoped) return res.status(404).json({ error: 'Dataset not found.' });
     res.json({ dataset: scoped });
+  });
+
+  app.delete('/api/automation/datasets/:id', requireAuth, async (req: Request, res: Response) => {
+    const dataset = await getDataset(req.params.id);
+    const [scoped] = dataset ? scopeFilter([dataset] as any[], reqScope(req)) : [];
+    if (!scoped) return res.status(404).json({ error: 'Dataset not found.' });
+    res.json({ ok: await AutomationDatasets.remove(scoped.id) });
   });
 
   app.get('/api/automation/datasets/:id/rows', requireAuth, async (req: Request, res: Response) => {

@@ -77,3 +77,13 @@ agent/browsers/*
 !agent/browsers/winldd-*/
 # Uploaded run artifacts (cloud host storage, not source)
 /automation-artifacts
+
+# Stray QA/browser-automation artifacts dropped at the repo root (screenshots + page snapshots).
+# Root-level only (leading slash) so src/ assets and the tracked docker-compose.yml are unaffected.
+/*.png
+/*.jpg
+/*.jpeg
+/*.gif
+/*.webp
+/*.yml
+/*.yaml

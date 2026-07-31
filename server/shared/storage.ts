@@ -47,6 +47,7 @@ export const db: any = {
   suites: [] as any[],
   cases: [] as any[],
   runs: [] as any[],
+  runCaseResults: [] as any[],
   defects: [] as any[],
   scripts: [] as any[],
   agentRuns: [] as any[],
@@ -128,6 +129,7 @@ function getPersistableDbSnapshot() {
     suites: db.suites,
     cases: db.cases,
     runs: db.runs,
+    runCaseResults: db.runCaseResults,
     defects: db.defects,
     scripts: db.scripts,
     agentRuns: db.agentRuns,
@@ -198,6 +200,7 @@ export async function loadPersistedData() {
     db.suites = Array.isArray(data.suites) ? data.suites : [];
     db.cases = Array.isArray(data.cases) ? data.cases : [];
     db.runs = Array.isArray(data.runs) ? data.runs : [];
+    db.runCaseResults = Array.isArray(data.runCaseResults) ? data.runCaseResults : [];
     db.defects = Array.isArray(data.defects) ? data.defects : [];
     db.scripts = Array.isArray(data.scripts) ? data.scripts : [];
     db.agentRuns = Array.isArray(data.agentRuns) ? data.agentRuns : [];

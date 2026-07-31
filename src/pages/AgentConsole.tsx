@@ -222,24 +222,12 @@ function requestedFeatureScope(text: string): string {
   return raw || 'requested feature';
 }
 
-function isAutoFolderResponse(text: string): boolean {
-  return /^(auto|automatic|you\s+decide|any|organi[sz]e)\b/i.test(text.trim());
-}
-
-function isExplicitFolderResponse(text: string): boolean {
-  const trimmed = text.trim();
-  return /^folder\s*[:=-]\s*\S+/i.test(trimmed) || /^@\w+/.test(trimmed);
-}
-
-function isLikelyFolderResponse(text: string): boolean {
-  const trimmed = text.trim();
-  if (!trimmed || trimmed.includes('?')) return false;
-  if (isAutoFolderResponse(trimmed) || isExplicitFolderResponse(trimmed)) return true;
-  return trimmed.split(/\s+/).length <= 4 && trimmed.length <= 60;
-}
-
-function stripFolderPrefix(text: string): string {
-  return text.trim().replace(/^folder\s*[:=-]\s*/i, '');
+// A short affirmative reply to the review card ("proceed", "yes", "go ahead") starts the run;
+// any other reply is treated as a new message and routed fresh.
+function isProceedResponse(text: string): boolean {
+  const t = text.trim();
+  if (!t || t.includes('?')) return false;
+  return /^(proceed|go ahead|go|yes|yep|yeah|ok|okay|sure|do it|start|run|looks good|lgtm|confirm|approved?)\b/i.test(t);
 }
 
 // Matches "requirement(s)" and common misspellings/truncations.
@@ -272,40 +260,6 @@ function extractRequirementOnlyQuery(text: string): string {
     .replace(/\b(?:a|an|the)\b/gi, ' ')
     .replace(/\s+/g, ' ')
     .trim();
-}
-
-// Suggest a readable default folder name from the task, so Proceed is enabled immediately and the
-// user can keep it or type their own — every run still lands in a real, named folder.
-// Filler words dropped when deriving a folder name from the prompt, so the name is the SUBJECT
-// (the feature under test), not the raw sentence. Real feature words ("list", "view") are kept.
-const FOLDER_STOPWORDS = new Set([
-  'please', 'can', 'could', 'would', 'will', 'you', 'kindly', 'pls',
-  'generate', 'create', 'write', 'draft', 'author', 'make', 'build', 'add', 'give',
-  'test', 'tests', 'testing', 'case', 'cases', 'scenario', 'scenarios', 'coverage',
-  'verify', 'check', 'validate', 'run', 'execute', 'do', 'help', 'me', 'us', 'i',
-  'for', 'the', 'a', 'an', 'of', 'on', 'in', 'to', 'and', 'some', 'few', 'couple', 'all',
-]);
-
-// Suggest a short, generic folder name from the user's prompt: strip filler, keep the feature
-// subject, Title-Case it, and cap at ~8 words — never the raw prompt sentence.
-function suggestFolderName(text: string, appName = ''): string {
-  const words = String(text || '')
-    .replace(/[^\w\s-]/g, ' ') // drop punctuation (incl. "/") so "settings/actions" → two words
-    .replace(/\s+/g, ' ')
-    .trim()
-    .split(' ')
-    .filter(Boolean);
-  const kept = words.filter((w) => !FOLDER_STOPWORDS.has(w.toLowerCase()));
-  const use = (kept.length ? kept : words).slice(0, 8);
-  const title = (value: string) => value
-    .replace(/[_-]+/g, ' ')
-    .replace(/\b\w/g, (char) => char.toUpperCase())
-    .replace(/\s+/g, ' ')
-    .trim();
-  const feature = use.length ? title(use.join(' ')) : 'Test Run';
-  const app = title(appName.replace(/\blocal\b/ig, '').trim());
-  const name = app && !feature.toLowerCase().includes(app.toLowerCase()) ? `${app} - ${feature}` : feature;
-  return name.slice(0, 72);
 }
 
 function isRequirementDraftApprove(text: string): boolean {
@@ -362,7 +316,7 @@ type Turn =
   | { id: string; role: 'assistant'; kind: 'reqdraft'; result: any; query: string; revisionCount?: number }
   | { id: string; role: 'assistant'; kind: 'cases'; cases: any[] }
   | { id: string; role: 'assistant'; kind: 'clarify'; plan: any; summary: string; confidence: number }
-  | { id: string; role: 'assistant'; kind: 'folderask'; text: string; understanding?: string; understandingSource?: string; folderName?: string; originalPrompt?: string; contextPrompt?: string; caseCountPrompt?: string; targetUrl?: string; websiteId?: string; websiteName?: string; revisionCount?: number; metadataRefs?: string[] }
+  | { id: string; role: 'assistant'; kind: 'folderask'; text: string; understanding?: string; understandingSource?: string; originalPrompt?: string; contextPrompt?: string; caseCountPrompt?: string; targetUrl?: string; websiteId?: string; websiteName?: string; revisionCount?: number; metadataRefs?: string[] }
   | { id: string; role: 'assistant'; kind: 'appask'; text: string; surface: string; platform: 'ADMIN' | 'RUNTIME'; allowAllApps: boolean; apps: Array<{ id: string; name: string; tabs: string[]; group?: string }>; runArgs: Record<string, any> }
   | { id: string; role: 'assistant'; kind: 'thinking'; label: string; debug?: string[] };
 
@@ -440,7 +394,6 @@ const CAPABILITIES: { label: string; icon: typeof FlaskConical }[] = [
   { label: 'Runs', icon: PlayCircle },
   { label: 'Defects', icon: Bug },
   { label: 'Reports', icon: ClipboardList },
-  { label: 'Folders', icon: FolderTree },
   { label: 'Rework / expand', icon: Wand2 },
 ];
 
@@ -455,9 +408,9 @@ const KIND_TO_PAGE: Record<string, { label: string; href: string; icon: typeof F
   create_defect: { label: 'Open Defects', href: '/defects', icon: Bug },
   generate_report: { label: 'Open Reports', href: '/reports', icon: ClipboardList },
   generate_script: { label: 'Open Git Agent', href: '/git-agent', icon: FolderTree },
-  create_folder: { label: 'Open File System', href: '/repository', icon: FolderTree },
-  organize_repository: { label: 'Open File System', href: '/repository', icon: FolderTree },
-  move_to_folder: { label: 'Open File System', href: '/repository', icon: FolderTree },
+  create_folder: { label: 'Open Repository', href: '/repository', icon: FolderTree },
+  organize_repository: { label: 'Open Repository', href: '/repository', icon: FolderTree },
+  move_to_folder: { label: 'Open Repository', href: '/repository', icon: FolderTree },
 };
 
 let turnCounter = 0;
@@ -567,29 +520,24 @@ function drillLinksForPlan(plan: any): { label: string; href: string; icon: type
 // LOCAL here and are committed on blur / select / Proceed only.
 const FolderAskCard = memo(function FolderAskCard({
   turn,
-  folderOptions,
   onCommit,
   onProceed,
   onCancel,
 }: {
   turn: FolderAskTurn;
-  folderOptions: Array<{ id: string; name: string; path?: string }>;
-  onCommit: (turnId: string, patch: { understanding?: string; folderName?: string }) => void;
-  onProceed: (turn: FolderAskTurn, folderName: string) => void;
+  onCommit: (turnId: string, patch: { understanding?: string }) => void;
+  onProceed: (turn: FolderAskTurn) => void;
   onCancel: (turnId: string) => void;
 }) {
-  const [folderName, setFolderName] = useState(turn.folderName || '');
   const [understanding, setUnderstanding] = useState(turn.understanding || '');
   const taRef = useRef<HTMLTextAreaElement>(null);
-  // Reflect external revisions (e.g. a revise-understanding reply) back into the local drafts.
+  // Reflect external revisions (e.g. a revise-understanding reply) back into the local draft.
   useEffect(() => { setUnderstanding(turn.understanding || ''); }, [turn.understanding]);
-  useEffect(() => { setFolderName(turn.folderName || ''); }, [turn.folderName]);
   // One-shot auto-grow (capped at 360px): runs on mount and when the LOCAL value changes only.
   useEffect(() => {
     const el = taRef.current;
     if (el) { el.style.height = 'auto'; el.style.height = `${Math.min(el.scrollHeight, 360)}px`; }
   }, [understanding]);
-  const trimmed = folderName.trim();
   return (
     <div className="flex justify-start">
       <div className="flex max-w-[90%] gap-2.5">
@@ -608,37 +556,12 @@ const FolderAskCard = memo(function FolderAskCard({
             />
           )}
           <p className="text-[var(--text-primary)]">{turn.text}</p>
-          {/* A results folder is REQUIRED before the run can start — pick or name one, then proceed/cancel. */}
+          {/* Review the understanding above (edit if needed), then proceed or cancel. */}
           <div className="mt-2 flex flex-wrap items-center gap-2">
-            <select
-              value={folderOptions.some((f) => (f.path || f.name) === folderName) ? folderName : ''}
-              onChange={(e) => {
-                const name = e.target.value;
-                setFolderName(name);
-                onCommit(turn.id, { folderName: name });
-              }}
-              className="min-w-0 max-w-[240px] truncate rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
-            >
-              <option value="">{folderOptions.length ? 'Select an existing folder…' : 'No existing folders'}</option>
-              {folderOptions.map((f) => (
-                <option key={f.id} value={f.path || f.name}>{f.path || f.name}</option>
-              ))}
-            </select>
-            <input
-              value={folderName}
-              onChange={(e) => setFolderName(e.target.value)}
-              onBlur={() => onCommit(turn.id, { folderName })}
-              placeholder="or new folder name"
-              className="min-w-0 flex-1 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2.5 py-1.5 text-xs text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
-            />
             <button
-              onClick={() => {
-                if (!trimmed) return; // a folder is required — nothing starts without it
-                onProceed({ ...turn, understanding, folderName: trimmed }, trimmed);
-              }}
-              disabled={!trimmed}
-              title={trimmed ? 'Start the run in this folder' : 'Pick or name a folder first'}
-              className="inline-flex shrink-0 items-center gap-1.5 rounded-md bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50 disabled:hover:bg-[var(--accent)]"
+              onClick={() => onProceed({ ...turn, understanding })}
+              title="Start the run"
+              className="inline-flex shrink-0 items-center gap-1.5 rounded-md bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-white hover:bg-[var(--accent-hover)]"
             >
               <Sparkles className="h-3.5 w-3.5" /> Proceed
             </button>
@@ -810,8 +733,6 @@ export default function AgentConsole() {
   const [selectedProvider, setSelectedProvider] = useState('gemini');
   const [selectedModel, setSelectedModel] = useState('');
   const [selectedEffort, setSelectedEffort] = useState('medium');
-  // Existing repository folders, for the deep-run "save results to folder" picker.
-  const [folderOptions, setFolderOptions] = useState<Array<{ id: string; name: string; path?: string }>>([]);
   // Requirement mode: selected from the composer. When on, every message is routed
   // to the requirement-discovery pipeline regardless of phrasing.
   const [reqMode, setReqMode] = useState(false);
@@ -878,13 +799,6 @@ export default function AgentConsole() {
         : t,
     ));
   }, [turns, currentExecution]);
-  // Load existing repository folders for the deep-run results folder picker.
-  useEffect(() => {
-    fetch('/api/folders')
-      .then((r) => r.json())
-      .then((data) => setFolderOptions(Array.isArray(data) ? data : []))
-      .catch(() => setFolderOptions([]));
-  }, []);
   // The target (app URL / website) resolved earlier in THIS chat, so a later generation
   // request ("generate them", "for admin", "yes") reuses it without re-asking — the chat
   // remembers what it's testing, like a normal assistant.
@@ -1012,7 +926,6 @@ export default function AgentConsole() {
         const fallbackUnderstanding = `Here's what I understood:\n• Target: ${target}\n• Task: ${prompt}\n\nPlan: log in to the target → perform the steps on the live app → verify the result → capture screenshots as evidence.`;
         const understanding = String(result?.understanding || '').trim() || fallbackUnderstanding;
         const understandingSource = String(result?.source || 'fallback');
-        const suggestedFolderName = String(result?.suggestedFolderName || '').trim();
         const caseCountPrompt = originalRequest || prompt;
         setPendingDeep({ prompt, originalRequest, contextPrompt, caseCountPrompt, targetUrl, websiteId, websiteName, understanding, understandingSource, revisionCount: 0 });
         convTargetRef.current = { targetUrl, websiteId, websiteName };
@@ -1025,8 +938,8 @@ export default function AgentConsole() {
           return [...prev, {
             id: cardId, role: 'assistant', kind: 'folderask' as const, understanding, understandingSource,
             originalPrompt: contextPrompt || prompt, contextPrompt, caseCountPrompt, targetUrl, websiteId, websiteName,
-            revisionCount: 0, folderName: suggestedFolderName || suggestFolderName(originalRequest || prompt, websiteName),
-            text: 'Look right? A folder name is suggested below — keep it and Proceed, or pick an existing folder / type your own first.',
+            revisionCount: 0,
+            text: 'Look right? Review the summary above, then Proceed — or tell me what to change.',
           }];
         });
       };
@@ -1659,7 +1572,6 @@ export default function AgentConsole() {
     approvedUnderstanding?: string;
     understandingSource?: string;
     priorGrounding?: string;
-    folderMention?: string;
     caseCountPrompt?: string;
     applicationId?: string;
     applicationName?: string;
@@ -1683,13 +1595,12 @@ export default function AgentConsole() {
         priorGrounding: args.priorGrounding || args.approvedUnderstanding || '',
         testCaseCount: parseCaseCount(args.caseCountPrompt || args.prompt),
         flowMode: 'review_cases',
-        folderMention: args.folderMention || undefined,
         provider: selectedProvider,
         model: selectedModel,
         effort: selectedEffort,
         // Explicit target chosen in the app/navigation picker card — authoritative on the server,
         // so no downstream gate ever re-asks. The ref covers the pre-understanding picker whose
-        // choice must survive the understanding → folder-card → run-start chain.
+        // choice must survive the understanding → review-card → run-start chain.
         applicationId: args.applicationId || targetChoiceRef.current?.applicationId || undefined,
         applicationName: args.applicationName || targetChoiceRef.current?.applicationName || undefined,
         moduleId: args.moduleId || targetChoiceRef.current?.moduleId || undefined,
@@ -1790,7 +1701,7 @@ export default function AgentConsole() {
 
   // Present the "Here's what I understood" review card for a deep generation/run request:
   // generate an understanding (grounded in the conversation), stash it as pendingDeep, and
-  // render the folder-ask card so the user can edit, correct, pick a folder, or proceed.
+  // render the review card so the user can edit, correct, or proceed.
   // This is the SAME review-first flow the console has always used for deep runs — it is
   // reused by the unified router's generate_cases / deep_test_run decisions.
   const presentDeepUnderstanding = useCallback(async (args: {
@@ -1813,12 +1724,10 @@ export default function AgentConsole() {
       `Plan: log in to the target → perform the steps on the live app → verify the result → capture screenshots as evidence.`;
     let understanding = fallbackUnderstanding;
     let understandingSource = 'fallback';
-    let suggestedFolderName = '';
     try {
       const generated = await requestDeepUnderstanding({ prompt, originalRequest: originalRequest || prompt, contextPrompt, targetUrl, targetName: websiteName || '', websiteId });
       understanding = generated.understanding || fallbackUnderstanding;
       understandingSource = generated.source || understandingSource;
-      suggestedFolderName = String(generated?.suggestedFolderName || '').trim();
     } catch {
       /* use deterministic fallback */
     }
@@ -1840,9 +1749,7 @@ export default function AgentConsole() {
       websiteId,
       websiteName,
       revisionCount: 0,
-      // Pre-fill a suggested folder name so Proceed is enabled right away — keep it or type your own.
-      folderName: suggestedFolderName || suggestFolderName(originalRequest || prompt, websiteName),
-      text: 'Look right? A folder name is suggested below — keep it and Proceed, or pick an existing folder / type your own first.',
+      text: 'Look right? Review the summary above, then Proceed — or tell me what to change.',
     });
   }, [buildDeepContextPrompt, requestDeepUnderstanding, replaceTurn, updateThinkingLabel]);
 
@@ -1858,7 +1765,7 @@ export default function AgentConsole() {
       : choice.appId === '__all_apps__'
         ? ' — across all apps'
         : ` — target the ${choice.appName} app${choice.tab ? `, focus on the ${choice.tab} tab` : ''}`;
-    // Remember the choice for the WHOLE request chain (understanding → folder card → run start).
+    // Remember the choice for the WHOLE request chain (understanding → review card → run start).
     if (choice.appId && choice.appId !== '__all_apps__') {
       targetChoiceRef.current = turn.platform === 'ADMIN'
         ? { moduleId: choice.appId, moduleName: choice.appName }
@@ -2374,12 +2281,12 @@ export default function AgentConsole() {
         return;
       }
 
-      // A pending "Here's what I understood" card only consumes a SHORT folder-like reply
-      // (a folder name, or "auto"/"proceed"). ANY other message means the user moved on or
-      // is asking something new — abandon the card and route this message fresh, so a
-      // follow-up question ("what else should I test?") gets a chat answer instead of being
-      // swallowed as a correction. (Corrections are still possible by editing the card's box.)
-      const proceedingDeep = !!pendingDeep && isLikelyFolderResponse(text);
+      // A pending "Here's what I understood" card only consumes a SHORT affirmative reply
+      // ("proceed"/"yes"). ANY other message means the user moved on or is asking something
+      // new — abandon the card and route this message fresh, so a follow-up question
+      // ("what else should I test?") gets a chat answer instead of being swallowed as a
+      // correction. (Corrections are still possible by editing the card's box.)
+      const proceedingDeep = !!pendingDeep && isProceedResponse(text);
       if (pendingDeep && !proceedingDeep) setPendingDeep(null);
       const activePending = proceedingDeep ? pendingDeep : null;
 
@@ -2387,12 +2294,12 @@ export default function AgentConsole() {
       // These two flows are explicit, stateful, or have no equivalent backend route-kind,
       // so they are kept exactly as before and short-circuit the /api/agent/goal call.
 
-      // 1) Pending "Here's what I understood" review card: a folder-like reply (folder name
-      //    or "auto"/"proceed") FINALIZES the deep run; any other reply REVISES the
-      //    understanding. (Non-folder replies that abandon the card already cleared
-      //    pendingDeep above and fall through to the unified router.)
+      // 1) Pending "Here's what I understood" review card: an affirmative reply ("proceed"/"yes")
+      //    FINALIZES the deep run; any other reply REVISES the understanding. (Non-affirmative
+      //    replies that abandon the card already cleared pendingDeep above and fall through to
+      //    the unified router.)
       if (activePending) {
-        if (!isLikelyFolderResponse(text)) {
+        if (!isProceedResponse(text)) {
           try {
             updateThinkingLabel(thinkingId, 'Revising reviewed test scope...');
             const revised = await requestDeepUnderstanding({
@@ -2426,8 +2333,7 @@ export default function AgentConsole() {
               websiteId: nextPending.websiteId,
               websiteName: nextPending.websiteName,
               revisionCount: nextPending.revisionCount,
-              folderName: String(revised?.suggestedFolderName || '').trim() || suggestFolderName(nextPending.originalRequest || nextPending.prompt, nextPending.websiteName),
-              text: 'I updated what I understood. Keep the suggested folder below and Proceed, or edit it / correct me again.',
+              text: 'I updated what I understood. Review it and Proceed, or correct me again.',
             });
           } catch (err: any) {
             replaceTurn(thinkingId, {
@@ -2443,8 +2349,7 @@ export default function AgentConsole() {
           }
           return;
         }
-        // Folder-like reply → start the deep run with the reviewed understanding.
-        const folderMention = isAutoFolderResponse(text) ? 'auto' : stripFolderPrefix(text);
+        // Affirmative reply → start the deep run with the reviewed understanding.
         const approvedUnderstanding = activePending.understanding || lastAssistantAnswer(buildHistory());
         setPendingDeep(null);
         try {
@@ -2458,7 +2363,6 @@ export default function AgentConsole() {
             approvedUnderstanding,
             understandingSource: activePending.understandingSource,
             priorGrounding: approvedUnderstanding,
-            folderMention: folderMention || undefined,
             caseCountPrompt: activePending.caseCountPrompt || activePending.originalRequest || activePending.prompt,
           });
         } catch (err: any) {
@@ -2651,7 +2555,7 @@ export default function AgentConsole() {
         }
 
         // generate_cases / deep_test_run → the existing deep pipeline via startDeepRun, with
-        // the review-first folder-ask card. The router's `execute` flag distinguishes a
+        // the review-first understanding card. The router's `execute` flag distinguishes a
         // review (generate_cases) from a full run (deep_test_run); the deep pipeline's
         // flowMode='review_cases' already realizes review-first, so generate_cases shows the
         // understanding card before any execution and deep_test_run proceeds with it.
@@ -2858,7 +2762,7 @@ export default function AgentConsole() {
   // the Proceed buttons working even if the user typed other messages after the card
   // appeared (which clears pendingDeep), so they never misfire into the planner.
   const proceedDeepFromTurn = useCallback(
-    async (turn: { id: string; understanding?: string; understandingSource?: string; originalPrompt?: string; contextPrompt?: string; caseCountPrompt?: string; targetUrl?: string; websiteId?: string; websiteName?: string; metadataRefs?: string[] }, folderName?: string) => {
+    async (turn: { id: string; understanding?: string; understandingSource?: string; originalPrompt?: string; contextPrompt?: string; caseCountPrompt?: string; targetUrl?: string; websiteId?: string; websiteName?: string; metadataRefs?: string[] }) => {
       if (busy) return;
       setBusy(true);
       setPendingDeep(null);
@@ -2878,7 +2782,6 @@ export default function AgentConsole() {
             'Run target',
             `Target URL: ${turn.targetUrl || 'none'}`,
             `Website: ${turn.websiteName || turn.websiteId || 'none'}`,
-            `Folder: ${folderName || 'none'}`,
           ].join('\n'),
         ],
       }]);
@@ -2892,7 +2795,6 @@ export default function AgentConsole() {
           approvedUnderstanding: turn.understanding || '',
           understandingSource: turn.understandingSource || '',
           priorGrounding: turn.understanding || '',
-          folderMention: folderName || 'auto',
           caseCountPrompt: turn.caseCountPrompt || turn.originalPrompt || '',
           metadataRefs: turn.metadataRefs,
         });
@@ -2906,8 +2808,8 @@ export default function AgentConsole() {
     [busy, replaceTurn, startDeepRun],
   );
 
-  // Commit folder-ask drafts back into the turn (and pendingDeep) — on blur/select/proceed, never per keystroke.
-  const commitFolderAskDraft = useCallback((turnId: string, patch: { understanding?: string; folderName?: string }) => {
+  // Commit review-card understanding edits back into the turn (and pendingDeep) — on blur/proceed, never per keystroke.
+  const commitFolderAskDraft = useCallback((turnId: string, patch: { understanding?: string }) => {
     setTurns((prev) => prev.map((item) => (
       item.id === turnId && item.role === 'assistant' && item.kind === 'folderask' ? { ...item, ...patch } : item
     )));
@@ -3568,7 +3470,6 @@ export default function AgentConsole() {
                   <FolderAskCard
                     key={turn.id}
                     turn={turn}
-                    folderOptions={folderOptions}
                     onCommit={commitFolderAskDraft}
                     onProceed={proceedDeepFromTurn}
                     onCancel={cancelFolderAsk}

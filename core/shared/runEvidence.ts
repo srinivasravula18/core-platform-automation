@@ -72,6 +72,34 @@ export function collectRunEvidence(run: any, cases: any[] = []): RunEvidenceItem
   return items;
 }
 
+// Manual runner evidence: screenshots live on run_case_results[].step_results[].screenshots.
+// Produces the same RunEvidenceItem shape so the gallery/ZIP export treat manual and automated alike.
+export function collectManualResultEvidence(results: any[] = []): RunEvidenceItem[] {
+  const items: RunEvidenceItem[] = [];
+  const seen = new Set<string>();
+  for (const [caseIndex, result] of (Array.isArray(results) ? results : []).entries()) {
+    const steps = Array.isArray(result?.stepResults) ? result.stepResults : [];
+    for (const [stepIndex, step] of steps.entries()) {
+      for (const url of (Array.isArray(step?.screenshots) ? step.screenshots : [])) {
+        const value = String(url || '').trim();
+        if (!value || seen.has(value)) continue;
+        seen.add(value);
+        items.push({
+          url: value,
+          caseId: String(result?.caseId || ''),
+          caseTitle: String(result?.caseTitle || `Test case ${caseIndex + 1}`),
+          caseIndex,
+          stepIndex: stepIndex + 1,
+          stepLabel: `Step ${stepIndex + 1}`,
+          action: String(step?.action || ''),
+          outcome: String(step?.outcome || ''),
+        });
+      }
+    }
+  }
+  return items;
+}
+
 export function evidenceDownloadName(runId: string, item: RunEvidenceItem) {
   const safe = (value: string) => value.replace(/[^a-z0-9]+/gi, '-').replace(/^-+|-+$/g, '').slice(0, 60);
   const ext = String(item.url).match(/\.(png|jpe?g|webp)(?:$|\?)/i)?.[1] || 'png';
