@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { MoreHorizontal } from 'lucide-react';
 
 export interface RowMoreItem {
@@ -15,13 +15,31 @@ export interface RowMoreItem {
  */
 export function RowMoreMenu({ items, title = 'More actions', dropUp = false }: { items: RowMoreItem[]; title?: string; dropUp?: boolean }) {
   const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setOpen(false);
+      }
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [open]);
+
   if (!items.length) return null;
+
   return (
     <div className="relative inline-flex">
       <button
         onClick={(e) => { e.stopPropagation(); setOpen((o) => !o); }}
         title={title}
-        className="p-1 rounded hover:bg-[var(--border)] text-[var(--text-muted)] transition-colors"
+        aria-label={title}
+        aria-haspopup="true"
+        aria-expanded={open}
+        className="p-1 rounded hover:bg-[var(--border)] text-[var(--text-muted)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] focus-visible:ring-offset-2"
       >
         <MoreHorizontal className="w-4 h-4" />
       </button>
@@ -30,13 +48,15 @@ export function RowMoreMenu({ items, title = 'More actions', dropUp = false }: {
           <div className="fixed inset-0 z-40" onClick={(e) => { e.stopPropagation(); setOpen(false); }} />
           <div
             onClick={(e) => e.stopPropagation()}
+            role="menu"
             className={`absolute right-0 z-50 min-w-28 overflow-hidden rounded-md border border-[var(--border)] bg-[var(--bg-card)] shadow-xl ${dropUp ? 'bottom-8' : 'top-8'}`}
           >
             {items.map((item) => (
               <button
                 key={item.label}
+                role="menuitem"
                 onClick={() => { setOpen(false); item.onClick(); }}
-                className={`block w-full px-3 py-2 text-left text-sm hover:bg-[var(--bg-secondary)] ${item.danger ? 'text-red-400 hover:bg-red-500/10' : 'text-[var(--text-primary)]'}`}
+                className={`block w-full px-3 py-2 text-left text-sm hover:bg-[var(--bg-secondary)] focus-visible:bg-[var(--bg-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] focus-visible:ring-inset ${item.danger ? 'text-red-400 hover:bg-red-500/10 focus-visible:bg-red-500/10' : 'text-[var(--text-primary)]'}`}
               >
                 {item.label}
               </button>
