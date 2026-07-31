@@ -1076,8 +1076,13 @@ export default function TestRuns() {
                         <span title={`Untested: ${stats.untested}`} className="px-2 py-1 rounded bg-[var(--bg-secondary)] text-[var(--text-muted)] cursor-default">{stats.untested}</span>
                       </div>}
                     </td>
-                    <td className="px-4 py-4 text-[var(--text-muted)]">
-                      {stats.failed ? `${stats.failed} failed` : (/failed/i.test(run.status || '') ? run.progress || 'Execution failed' : '-')}
+                    <td className="overflow-hidden px-4 py-4 text-[var(--text-muted)]">
+                      <div
+                        className="truncate"
+                        title={stats.failed ? `${stats.failed} failed` : (/failed/i.test(run.status || '') ? run.progress || 'Execution failed' : '-')}
+                      >
+                        {stats.failed ? `${stats.failed} failed` : (/failed/i.test(run.status || '') ? run.progress || 'Execution failed' : '-')}
+                      </div>
                     </td>
                     <td className="overflow-hidden px-4 py-4 whitespace-nowrap text-xs text-[var(--text-muted)]">
                       <Timestamp value={run.metadata?.updatedAt || run.updatedAt || run.date} />
