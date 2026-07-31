@@ -4,6 +4,7 @@ import { ChevronDown, ChevronRight, Sparkles, Loader2, Target, ShieldCheck, Aler
 import ExportMenu from '../components/ExportMenu';
 import EditableCaseCard from '../components/EditableCaseCard';
 import { normalizeTestCaseTypes } from '@/core/shared/testCaseTypes';
+import { useUrlState } from '@/src/lib/useUrlState';
 
 const COVERAGE_BADGE: Record<string, { label: string; cls: string }> = {
   covered: { label: 'Covered', cls: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400' },
@@ -51,7 +52,7 @@ export default function Traceability() {
   const [aiWorking, setAiWorking] = useState(false);
   const [aiMessage, setAiMessage] = useState('');
   // #12 — matrix (table) view vs the detailed accordion. Matrix needs coverage for every requirement.
-  const [view, setView] = useState<'matrix' | 'detailed'>('matrix');
+  const [view, setView] = useUrlState('view', 'matrix', ['matrix', 'detailed'] as const);
   const [coverageLoaded, setCoverageLoaded] = useState(false);
 
   const fetchRequirements = useCallback(() => {

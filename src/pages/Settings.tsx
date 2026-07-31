@@ -10,6 +10,7 @@ import { GoogleSheetsIntegration } from '../components/GoogleSheetsIntegration';
 import { isAdmin } from '../components/AuthGate';
 import { showConfirm } from '@/src/lib/dialog';
 import { FEATURE_OPTIONS } from '../lib/features';
+import { useUrlState } from '@/src/lib/useUrlState';
 
 type Provider = 'gemini' | 'openai' | 'anthropic';
 
@@ -83,7 +84,7 @@ const AGENT_LABELS: Record<string, { label: string; description: string }> = {
 
 export default function Settings() {
   const { theme, setTheme } = useTheme();
-  const [tab, setTab] = useState<'appearance' | 'providers' | 'prompts' | 'credentials' | 'cost' | 'data' | 'profiles' | 'deployment'>('providers');
+  const [tab, setTab] = useUrlState('tab', 'providers', ['appearance', 'providers', 'prompts', 'credentials', 'cost', 'data', 'profiles', 'deployment'] as const);
   const admin = isAdmin();
 
   const tabs: Array<[typeof tab, string, any]> = [
@@ -99,6 +100,11 @@ export default function Settings() {
     ...(admin ? [['deployment', 'Deployment', FolderTree] as [typeof tab, string, any]] : []),
     ['appearance', 'Appearance', Sun],
   ];
+
+  // A copied admin-only URL must not leave a standard user on an empty page.
+  useEffect(() => {
+    if (!tabs.some(([key]) => key === tab)) setTab('providers');
+  }, [tab, tabs, setTab]);
 
   return (
     <div className="app-page-shell space-y-6 px-1 sm:px-0">
@@ -199,7 +205,7 @@ interface AppUserRow {
  * (create users in People, then bundle + restrict them in Access Groups).
  */
 function AccessManagement() {
-  const [view, setView] = useState<'people' | 'groups'>('people');
+  const [view, setView] = useUrlState('view', 'people', ['people', 'groups'] as const);
   const items: Array<['people' | 'groups', string, any]> = [
     ['people', 'People', Users],
     ['groups', 'Access Groups', Shield],
