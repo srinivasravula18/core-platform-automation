@@ -1964,6 +1964,14 @@ const WINDOW_META: Array<{ key: string; capKey: string; label: string }> = [
 ];
 const fmtInt = (n: number) => Number(n || 0).toLocaleString();
 const fmtUsd = (n: number) => `$${Number(n || 0).toFixed(Number(n) >= 1 ? 2 : 4)}`;
+type SpendCaps = { day: number; week: number; month: number; year: number };
+const SPEND_CAP_FIELDS: Array<{ k: keyof SpendCaps; label: string }> = [
+  { k: 'day', label: 'Per day' },
+  { k: 'week', label: 'Per 7 days' },
+  { k: 'month', label: 'Per 30 days' },
+  { k: 'year', label: 'Per 365 days' },
+];
+const sameSpendCaps = (left: SpendCaps, right: SpendCaps) => SPEND_CAP_FIELDS.every(({ k }) => left[k] === right[k]);
 
 function CostSection() {
   const { showQueryLogs, load: loadUiSettings, setShowQueryLogs } = useUiSettings();
@@ -1971,7 +1979,10 @@ function CostSection() {
   const [cost, setCost] = useState<{ guardrailLogs: any[] }>({ guardrailLogs: [] });
   const [summary, setSummary] = useState<any>(null);
   const [usage, setUsage] = useState<any[]>([]);
-  const [caps, setCaps] = useState<{ day: number; week: number; month: number; year: number }>({ day: 50, week: 0, month: 0, year: 0 });
+  const [caps, setCaps] = useState<SpendCaps>({ day: 50, week: 0, month: 0, year: 0 });
+  const [savedCaps, setSavedCaps] = useState<SpendCaps>({ day: 50, week: 0, month: 0, year: 0 });
+  const [savingCaps, setSavingCaps] = useState(false);
+  const [capsSaveError, setCapsSaveError] = useState('');
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
 
@@ -1999,7 +2010,10 @@ function CostSection() {
       setCost(c);
       setSummary(s);
       setUsage(u.usage || []);
-      if (s?.caps) setCaps(s.caps);
+      if (s?.caps) {
+        setCaps(s.caps);
+        setSavedCaps(s.caps);
+      }
     } catch (error: any) {
       setLoadError(error?.message || 'Could not load Cost & Logs.');
     } finally {
@@ -2010,12 +2024,30 @@ function CostSection() {
   useEffect(() => { load(); }, [load]);
 
   const saveCaps = async () => {
-    await fetch('/api/ai/cost/caps', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(caps),
-    });
-    await load();
+    if (savingCaps || sameSpendCaps(caps, savedCaps)) return;
+    setSavingCaps(true);
+    setCapsSaveError('');
+    try {
+      const res = await fetch('/api/ai/cost/caps', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(caps),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || 'Could not save spend caps.');
+      const saved = data?.caps as SpendCaps | undefined;
+      if (saved) {
+        setCaps(saved);
+        setSavedCaps(saved);
+      } else {
+        setSavedCaps(caps);
+      }
+      await load();
+    } catch (error: any) {
+      setCapsSaveError(error?.message || 'Could not save spend caps.');
+    } finally {
+      setSavingCaps(false);
+    }
   };
 
   if (loading) return <SkeletonCard />;
@@ -2039,6 +2071,7 @@ function CostSection() {
   const capStatus = summary.capStatus || {};
   const byModel: any[] = summary.byModel || [];
   const allTime = windows.all || emptyWin;
+  const capsDirty = !sameSpendCaps(caps, savedCaps);
 
   return (
     <div className="space-y-6">
@@ -2112,29 +2145,37 @@ function CostSection() {
 
       {/* Per-window spend caps. 0 = no cap. */}
       <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-card)] p-4 sm:p-6 shadow-sm">
-        <h2 className="text-lg font-medium">Spend caps</h2>
-        <p className="mt-1 text-sm text-[var(--text-muted)]">Set a USD cap per window. 0 means no cap. The daily cap also gates new agent runs.</p>
-        <div className="mt-4 flex flex-wrap items-end gap-3">
-          {[
-            { k: 'day', label: 'Per day' },
-            { k: 'week', label: 'Per 7 days' },
-            { k: 'month', label: 'Per 30 days' },
-            { k: 'year', label: 'Per 365 days' },
-          ].map(({ k, label }) => (
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h2 className="text-lg font-medium">Spend caps</h2>
+            <p className="mt-1 text-sm text-[var(--text-muted)]">Set a USD cap per window. 0 means no cap. The daily cap also gates new agent runs.</p>
+          </div>
+          <button
+            onClick={saveCaps}
+            disabled={!capsDirty || savingCaps}
+            title={!capsDirty ? 'Change a spend cap to enable saving' : undefined}
+            className="inline-flex shrink-0 items-center gap-1 rounded-md bg-[var(--accent)] px-3 py-2 text-xs font-medium text-white hover:bg-[var(--accent-hover)] disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <Save className="h-3 w-3" /> {savingCaps ? 'Saving capsâ€¦' : 'Save caps'}
+          </button>
+        </div>
+        <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          {SPEND_CAP_FIELDS.map(({ k, label }) => (
             <div key={k}>
               <label className="mb-1 block text-xs text-[var(--text-muted)]">{label} (USD)</label>
               <input
                 type="number" min="0" step="1"
-                value={(caps as any)[k]}
-                onChange={(e) => setCaps((c) => ({ ...c, [k]: Number(e.target.value) }))}
-                className="w-28 rounded-md border border-[var(--border)] bg-[var(--bg-primary)] px-3 py-2 text-sm"
+                value={caps[k]}
+                onChange={(e) => {
+                  setCaps((current) => ({ ...current, [k]: Number(e.target.value) }));
+                  setCapsSaveError('');
+                }}
+                className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-primary)] px-3 py-2 text-sm"
               />
             </div>
           ))}
-          <button onClick={saveCaps} className="inline-flex items-center gap-1 rounded-md bg-[var(--accent)] px-3 py-2 text-xs font-medium text-white">
-            <Save className="h-3 w-3" /> Save caps
-          </button>
         </div>
+        {capsSaveError && <p className="mt-3 text-xs text-red-500">{capsSaveError}</p>}
       </div>
 
       {/* Per-model breakdown. */}
