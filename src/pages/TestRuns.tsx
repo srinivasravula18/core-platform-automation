@@ -86,6 +86,12 @@ function statusDot(status: string) {
 const scriptLabel = (script: any) => script.filename || script.name || script.title || script.id || 'Unnamed script';
 const MANUAL_RUN_STATUS_OPTIONS = ['Not Started', 'In Progress', 'Passed', 'Failed', 'Blocked', 'Completed'] as const;
 
+/** The exact moment execution began. The legacy `date` field intentionally is not used here: it has no time. */
+function runStartedAt(run: any): string {
+  const value = run?.startedAt || run?.triggerMeta?.manualExecution?.startedAt;
+  return typeof value === 'string' && !Number.isNaN(Date.parse(value)) ? value : '';
+}
+
 export default function TestRuns() {
   const navigate = useNavigate();
   const { runId } = useParams();
@@ -813,6 +819,7 @@ export default function TestRuns() {
               { key: 'suiteName', label: 'Suite' },
               { key: 'scripts', label: 'Scripts', get: (r) => scriptsForRun(r, casesForRun(r, cases, suites), scripts).map(scriptLabel).join(', ') },
               { key: 'executionTime', label: 'Execution Time' },
+              { key: 'runDateTime', label: 'Run Date & Time', get: (r) => runStartedAt(r) || r.createdAt || r.date || '' },
               { key: 'passed', label: 'Passed', get: (r) => (r.steps || []).filter((s: any) => /pass/i.test(s?.outcome || s?.status || '')).length },
               { key: 'failed', label: 'Failed', get: (r) => (r.steps || []).filter((s: any) => /fail/i.test(s?.outcome || s?.status || '')).length },
               { key: 'date', label: 'Date' },
@@ -992,7 +999,7 @@ export default function TestRuns() {
         </div>
 
         <div className="flex-1 overflow-auto">
-          <table className="w-full min-w-[1520px] table-fixed text-left text-sm whitespace-nowrap">
+          <table className="w-full min-w-[1920px] table-fixed text-left text-sm whitespace-nowrap">
             <thead className="sticky top-0 bg-[var(--bg-secondary)] border-b border-[var(--border)] text-[var(--text-muted)]">
               <tr>
                 <th className="px-4 py-3 w-10">
@@ -1004,6 +1011,7 @@ export default function TestRuns() {
                 <th className="w-64 px-4 py-3 font-medium">Scripts</th>
                 <th className="w-28 px-4 py-3 font-medium">Tests</th>
                 <th className="w-28 px-4 py-3 font-medium">Duration</th>
+                <th className="w-52 px-4 py-3 font-medium">Run Date &amp; Time</th>
                 <th className="w-56 px-4 py-3 font-medium">Tests Status</th>
                 <th className="w-40 px-4 py-3 font-medium">Failure Analysis</th>
                 <th className="w-32 px-4 py-3 font-medium">Updated</th>
@@ -1012,9 +1020,9 @@ export default function TestRuns() {
             </thead>
             <tbody className="divide-y divide-[var(--border)]">
               {loading ? (
-                <tr><td colSpan={11} className="px-4 py-8 text-center text-[var(--text-muted)]">Loading runs...</td></tr>
+                <tr><td colSpan={12} className="px-4 py-8 text-center text-[var(--text-muted)]">Loading runs...</td></tr>
               ) : filteredRuns.length === 0 ? (
-                <tr><td colSpan={11} className="px-4 py-8 text-center text-[var(--text-muted)]">No test runs found.</td></tr>
+                <tr><td colSpan={12} className="px-4 py-8 text-center text-[var(--text-muted)]">No test runs found.</td></tr>
               ) : filteredRuns.map((run) => {
                 const stats = getRunStats(run);
                 const runScripts = scriptsForRun(run, casesForRun(run, cases, suites), scripts);
@@ -1058,6 +1066,18 @@ export default function TestRuns() {
                     </td>
                     <td className="px-4 py-4">{stats.total} Tests</td>
                     <td className="px-4 py-4">{running ? 'Running…' : run.executionTime || '-'}</td>
+                    <td className="overflow-hidden px-4 py-4 text-xs text-[var(--text-muted)]">
+                      {runStartedAt(run) ? (
+                        <Timestamp value={runStartedAt(run)} mode="absolute" className="block truncate" />
+                      ) : run.createdAt ? (
+                        <div title="This run has not started; showing when it was created.">
+                          <div className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)]">Not started</div>
+                          <Timestamp value={run.createdAt} mode="absolute" className="block truncate" />
+                        </div>
+                      ) : run.date ? (
+                        <span title="Legacy run record: only its date was recorded.">{run.date}</span>
+                      ) : '—'}
+                    </td>
                     <td className="px-4 py-4">
                       {running ? (
                         <div className="w-36" role="status" aria-live="polite">
