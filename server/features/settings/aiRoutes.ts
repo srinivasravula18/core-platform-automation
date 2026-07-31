@@ -8,7 +8,7 @@
 import type { Express } from 'express';
 import { db, persistDataInBackground, persistSettingsInBackground } from '../../shared/storage';
 import { buildProvider, listConfiguredProviders, resolveProviderForAgent, resolveModelForAgent } from '../../ai/orchestrator';
-import { DEFAULT_MODELS, listAvailableModels, type ProviderAuthMode, type ProviderName } from '../../ai/providers/types';
+import { DEFAULT_MODELS, listAvailableModels, type ProviderAuthMode, type ProviderName, type ProviderHealth } from '../../ai/providers/types';
 import {
   listPrompts,
   getActivePrompt,
@@ -40,11 +40,17 @@ function ensureProviderSettings() {
   db.settings.providerSettings = {};
   for (const name of PROVIDERS) {
     const model = existing[name]?.model || '';
+    const authMode = existing[name]?.authMode || 'api_key';
+    const verifiedForCurrentMode = !!existing[name]?.activationVerifiedAt && existing[name]?.activationVerifiedAuthMode === authMode;
     db.settings.providerSettings[name] = {
       apiKey: existing[name]?.apiKey || '',
       model: listAvailableModels(name, { includeLocalOnly: true }).includes(model) ? model : '',
-      authMode: existing[name]?.authMode || 'api_key',
-      enabled: existing[name]?.enabled === undefined ? name === db.settings.defaultProvider : !!existing[name]?.enabled,
+      authMode,
+      // Older settings could mark an untested provider as enabled. Do not carry that
+      // state forward: activation is granted only by a successful health check.
+      enabled: !!existing[name]?.enabled && verifiedForCurrentMode,
+      activationVerifiedAt: verifiedForCurrentMode ? existing[name]?.activationVerifiedAt : undefined,
+      activationVerifiedAuthMode: verifiedForCurrentMode ? authMode : undefined,
     };
   }
   if (!PROVIDERS.includes(db.settings.defaultProvider)) db.settings.defaultProvider = 'gemini';
@@ -88,10 +94,26 @@ function redactKey(key: string): string {
 
 function providerIsCallable(provider: ProviderName): boolean {
   const stored = db.settings?.providerSettings?.[provider];
-  if (!stored || stored.enabled === false) return false;
+  if (!stored || stored.enabled === false || !stored.activationVerifiedAt || stored.activationVerifiedAuthMode !== (stored.authMode || 'api_key')) return false;
   const authMode = (stored.authMode || 'api_key') as ProviderAuthMode;
   if (authMode === 'account') return isLocalCliProviderAllowed() && supportsAccountCli(provider);
   return !!stored.apiKey || hasEnvApiKey(provider);
+}
+
+/** Health checks deliberately bypass the enabled gate: testing an Off provider is
+ * required before it may be activated. Execution still uses the normal enabled gate. */
+async function checkProviderHealth(provider: ProviderName): Promise<ProviderHealth> {
+  try {
+    return await buildProvider(provider, undefined, { allowDisabled: true }).health();
+  } catch (err: any) {
+    return { ok: false, provider, model: db.settings?.providerSettings?.[provider]?.model || DEFAULT_MODELS[provider].default, error: err?.message || String(err), checkedAt: new Date().toISOString() };
+  }
+}
+
+function clearActivation(slot: any): void {
+  slot.enabled = false;
+  delete slot.activationVerifiedAt;
+  delete slot.activationVerifiedAuthMode;
 }
 
 function repairDefaultProviderIfNeeded(): void {
@@ -121,9 +143,10 @@ export function registerSettingsRoutes(app: Express) {
         name: p,
         defaultModel: DEFAULT_MODELS[p].default,
         alternatives: listAvailableModels(p, { includeLocalOnly: isLocalCliProviderAllowed() }).filter((m) => m !== DEFAULT_MODELS[p].default),
-        enabled: stored?.enabled !== false,
+        enabled: !!stored?.enabled && providerIsCallable(p),
         configured: authMode === 'api_key' ? hasApiKey : accountCallable,
-        callable: (stored?.enabled !== false) && (authMode === 'api_key' ? hasApiKey : accountCallable),
+        apiKeyConfigured: hasApiKey,
+        callable: providerIsCallable(p),
         model: stored?.model || DEFAULT_MODELS[p].default,
         authMode,
         effort: stored?.effort || 'medium',
@@ -146,21 +169,20 @@ export function registerSettingsRoutes(app: Express) {
     const name = req.params.name as ProviderName;
     if (!PROVIDERS.includes(name)) return res.status(404).json({ ok: false, provider: name, error: `Unknown provider: ${name}`, checkedAt: new Date().toISOString() });
     try {
-      const provider = buildProvider(name);
-      const health = await provider.health();
+      ensureProviderSettings();
+      const health = await checkProviderHealth(name);
       res.json(health);
-    } catch (err: any) {
-      res.status(400).json({ ok: false, provider: name, error: err?.message || String(err), checkedAt: new Date().toISOString() });
-    }
+    } catch (err: any) { res.status(400).json({ ok: false, provider: name, error: err?.message || String(err), checkedAt: new Date().toISOString() }); }
   });
 
-  app.put('/api/ai/providers/:name', (req, res) => {
+  app.put('/api/ai/providers/:name', async (req, res) => {
     const name = req.params.name as ProviderName;
     if (!PROVIDERS.includes(name)) return res.status(404).json({ error: `Unknown provider: ${name}` });
     const { apiKey, model, authMode, enabled } = req.body || {};
     ensureProviderSettings();
-    const slot = db.settings.providerSettings[name] || { apiKey: '', model: '', authMode: 'api_key' };
-    if (apiKey !== undefined) slot.apiKey = apiKey;
+    const slot = { ...(db.settings.providerSettings[name] || { apiKey: '', model: '', authMode: 'api_key' }) };
+    const credentialsChanged = apiKey !== undefined || authMode !== undefined;
+    if (apiKey !== undefined) slot.apiKey = String(apiKey);
     if (model !== undefined) slot.model = model;
     if (authMode !== undefined) {
       if (!['api_key', 'account'].includes(authMode)) return res.status(400).json({ error: 'authMode must be api_key or account' });
@@ -169,29 +191,46 @@ export function registerSettingsRoutes(app: Express) {
       }
       slot.authMode = authMode;
     }
-    if (enabled !== undefined) slot.enabled = !!enabled;
+    if (credentialsChanged) clearActivation(slot);
+    if (enabled === false) clearActivation(slot);
+
+    // Assign the candidate before checking it so a newly saved key/auth mode is what
+    // the health check uses. It remains Off unless that check succeeds.
     db.settings.providerSettings[name] = slot;
+    let health: ProviderHealth | undefined;
+    if (enabled === true) {
+      clearActivation(slot);
+      health = await checkProviderHealth(name);
+      if (!health.ok) {
+        persistSettingsInBackground(`provider activation failed: ${name}`);
+        return res.status(400).json({ ok: false, error: health.error || 'Connection test failed. Provider remains off.', health });
+      }
+      slot.enabled = true;
+      slot.activationVerifiedAt = health.checkedAt || new Date().toISOString();
+      slot.activationVerifiedAuthMode = slot.authMode || 'api_key';
+    }
     if (providerIsCallable(name) && !providerIsCallable(db.settings.defaultProvider)) {
       db.settings.defaultProvider = name;
     }
     persistSettingsInBackground(`provider settings: ${name}`);
-    res.json({ ok: true, name, model: slot.model || DEFAULT_MODELS[name].default, authMode: slot.authMode || 'api_key', enabled: slot.enabled !== false });
+    res.json({ ok: true, name, model: slot.model || DEFAULT_MODELS[name].default, authMode: slot.authMode || 'api_key', enabled: providerIsCallable(name), health });
   });
 
   app.delete('/api/ai/providers/:name/key', (req, res) => {
     const name = req.params.name as ProviderName;
     if (db.settings.providerSettings?.[name]) {
       db.settings.providerSettings[name].apiKey = '';
+      clearActivation(db.settings.providerSettings[name]);
       persistSettingsInBackground(`clear provider key: ${name}`);
     }
-    res.json({ ok: true });
+    res.json({ ok: true, enabled: false });
   });
 
   app.put('/api/ai/default-provider', (req, res) => {
     const { provider, model } = req.body || {};
     if (provider && PROVIDERS.includes(provider)) {
       ensureProviderSettings();
-      db.settings.providerSettings[provider].enabled = true;
+      if (!providerIsCallable(provider)) return res.status(400).json({ error: 'Provider must be successfully tested and active before it can be the default.' });
       db.settings.defaultProvider = provider;
     }
     if (model) {
@@ -208,6 +247,8 @@ export function registerSettingsRoutes(app: Express) {
     if (!agent) return res.status(400).json({ error: 'agent is required' });
     if (provider) {
       if (!PROVIDERS.includes(provider)) return res.status(400).json({ error: `Unknown provider: ${provider}` });
+      ensureProviderSettings();
+      if (!providerIsCallable(provider)) return res.status(400).json({ error: 'Provider must be successfully tested and active before it can be assigned to an agent.' });
       if (!db.settings.agentProviderMap) db.settings.agentProviderMap = {};
       db.settings.agentProviderMap[agent] = provider;
     }

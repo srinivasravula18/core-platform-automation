@@ -28,6 +28,7 @@ import { emptyTestPlanCaseFilters, matchesTestPlanCaseFilters, resultStatusesFor
 import { buildTestPlanHierarchy } from '@/src/lib/testPlanHierarchy';
 import { localDateKey, normalizeDateKey, planDateWarnings, planStartConflict } from '@/core/shared/testPlanStart';
 import { normalizeTags } from '@/src/lib/tags';
+import { useUrlState } from '@/src/lib/useUrlState';
 
 const PLAN_STATUSES = ['Draft', 'Under Review', 'Approved', 'In Progress', 'Completed', 'Blocked', 'Cancelled', 'Archived'];
 const MANUAL_PLAN_STATUSES = PLAN_STATUSES.filter((status) => status !== 'In Progress');
@@ -97,9 +98,9 @@ export default function TestPlans() {
   const [suites, setSuites] = useState<any[]>([]);
   const [cases, setCases] = useState<any[]>([]);
   const [runs, setRuns] = useState<any[]>([]);
-  const [activeDetailTab, setActiveDetailTab] = useState<'suites' | 'cases' | 'runs'>('suites');
+  const [activeDetailTab, setActiveDetailTab] = useUrlState('tab', 'suites', ['suites', 'cases', 'runs'] as const);
   const [loading, setLoading] = useState(true);
-  const [planView, setPlanView] = useState<'active' | 'closed'>('active');
+  const [planView, setPlanView] = useUrlState('view', 'active', ['active', 'closed'] as const);
   const [searchTerm, setSearchTerm] = useState('');
   const aiSearch = useAiSearch('test plans');
   const [isFilterOpen, setIsFilterOpen] = useState(false);

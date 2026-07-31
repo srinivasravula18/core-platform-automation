@@ -10,6 +10,7 @@ import { GoogleSheetsIntegration } from '../components/GoogleSheetsIntegration';
 import { isAdmin } from '../components/AuthGate';
 import { showConfirm } from '@/src/lib/dialog';
 import { FEATURE_OPTIONS } from '../lib/features';
+import { useUrlState } from '@/src/lib/useUrlState';
 
 type Provider = 'gemini' | 'openai' | 'anthropic';
 
@@ -19,6 +20,7 @@ type ProviderInfo = {
   alternatives: string[];
   enabled: boolean;
   configured: boolean;
+  apiKeyConfigured: boolean;
   callable: boolean;
   model: string;
   authMode: 'api_key' | 'account';
@@ -82,7 +84,7 @@ const AGENT_LABELS: Record<string, { label: string; description: string }> = {
 
 export default function Settings() {
   const { theme, setTheme } = useTheme();
-  const [tab, setTab] = useState<'appearance' | 'providers' | 'prompts' | 'credentials' | 'cost' | 'data' | 'profiles' | 'deployment'>('providers');
+  const [tab, setTab] = useUrlState('tab', 'providers', ['appearance', 'providers', 'prompts', 'credentials', 'cost', 'data', 'profiles', 'deployment'] as const);
   const admin = isAdmin();
 
   const tabs: Array<[typeof tab, string, any]> = [
@@ -98,6 +100,11 @@ export default function Settings() {
     ...(admin ? [['deployment', 'Deployment', FolderTree] as [typeof tab, string, any]] : []),
     ['appearance', 'Appearance', Sun],
   ];
+
+  // A copied admin-only URL must not leave a standard user on an empty page.
+  useEffect(() => {
+    if (!tabs.some(([key]) => key === tab)) setTab('providers');
+  }, [tab, tabs, setTab]);
 
   return (
     <div className="app-page-shell space-y-6 px-1 sm:px-0">
@@ -198,7 +205,7 @@ interface AppUserRow {
  * (create users in People, then bundle + restrict them in Access Groups).
  */
 function AccessManagement() {
-  const [view, setView] = useState<'people' | 'groups'>('people');
+  const [view, setView] = useUrlState('view', 'people', ['people', 'groups'] as const);
   const items: Array<['people' | 'groups', string, any]> = [
     ['people', 'People', Users],
     ['groups', 'Access Groups', Shield],
@@ -898,6 +905,7 @@ function ProvidersSection() {
   const [agentMap, setAgentMap] = useState<Record<string, Provider>>({});
   const [loading, setLoading] = useState(true);
   const [status, setStatus] = useState<SaveStatus>({ type: 'idle', message: '' });
+  const [activatingProvider, setActivatingProvider] = useState<Provider | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -918,24 +926,18 @@ function ProvidersSection() {
     load();
   }, [load]);
 
-  // All mutations update local state optimistically and DON'T refetch the whole list,
-  // so changing a model/provider/toggle never flashes or "refreshes" the page. We only
-  // re-sync from the server (load) if a request actually fails.
+  // Configuration edits are kept local where safe. Activation is intentionally not
+  // optimistic: the server tests the selected credential before marking a provider On.
   const saveKey = async (provider: Provider, apiKey: string) => {
     setStatus({ type: 'idle', message: '' });
-    const masked = apiKey.length <= 8 ? '****' : `${apiKey.slice(0, 4)}****${apiKey.slice(-4)}`;
-    setProviders((prev) => prev.map((p) => (
-      p.name === provider
-        ? { ...p, apiKeyMasked: masked, configured: p.authMode === 'account' ? p.configured : true, callable: (p.authMode === 'account' ? p.configured : true) && p.enabled }
-        : p
-    )));
     const res = await fetch(`/api/ai/providers/${provider}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ apiKey }),
     });
     if (res.ok) {
-      setStatus({ type: 'success', message: `${PROVIDER_LABELS[provider]} key saved` });
+      setStatus({ type: 'success', message: `${PROVIDER_LABELS[provider]} key saved. Turn it on to run a connection test.` });
+      load();
     } else {
       setStatus({ type: 'error', message: `Failed to save ${PROVIDER_LABELS[provider]} key` });
       load();
@@ -949,17 +951,6 @@ function ProvidersSection() {
       setStatus({ type: 'error', message: 'Subscription/account CLI auth is local-only. Use API key mode in test and production.' });
       return;
     }
-    setProviders((prev) => prev.map((p) => (
-      p.name === provider
-        ? {
-            ...p,
-            authMode,
-            configured: authMode === 'api_key' ? !!p.apiKeyMasked : p.accountCliAllowed && (provider === 'openai' || provider === 'anthropic'),
-            callable: authMode === 'api_key' ? !!p.apiKeyMasked && p.enabled : p.enabled && p.accountCliAllowed && (provider === 'openai' || provider === 'anthropic'),
-            accountTool: authMode === 'account' && provider === 'openai' ? 'codex' : authMode === 'account' && provider === 'anthropic' ? 'claude' : '',
-          }
-        : p
-    )));
     const res = await fetch(`/api/ai/providers/${provider}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -969,9 +960,10 @@ function ProvidersSection() {
       setStatus({
         type: 'success',
         message: authMode === 'api_key'
-          ? `${PROVIDER_LABELS[provider]} will use API key billing`
-          : `${PROVIDER_LABELS[provider]} saved as subscription/account auth`,
+          ? `${PROVIDER_LABELS[provider]} will use API key billing. Turn it on to test the credential.`
+          : `${PROVIDER_LABELS[provider]} saved as subscription/account auth. Turn it on to test the local account.`,
       });
+      load();
     } else {
       setStatus({ type: 'error', message: `Failed to save ${PROVIDER_LABELS[provider]} auth mode` });
       load();
@@ -980,20 +972,25 @@ function ProvidersSection() {
 
   const setEnabled = async (provider: Provider, enabled: boolean) => {
     setStatus({ type: 'idle', message: '' });
-    setProviders((prev) => prev.map((p) => (p.name === provider ? { ...p, enabled, callable: enabled && p.configured } : p)));
-    if (enabled && providers.find((p) => p.name === provider)?.configured && !providers.find((p) => p.name === defaultProvider)?.callable) {
-      setDefaultProvider(provider);
-    }
-    const res = await fetch(`/api/ai/providers/${provider}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ enabled }),
-    });
-    if (res.ok) {
-      setStatus({ type: 'success', message: `${PROVIDER_LABELS[provider]} ${enabled ? 'enabled' : 'disabled'}` });
-    } else {
-      setStatus({ type: 'error', message: `Failed to ${enabled ? 'enable' : 'disable'} ${PROVIDER_LABELS[provider]}` });
+    setActivatingProvider(provider);
+    if (enabled) setStatus({ type: 'idle', message: `Testing ${PROVIDER_LABELS[provider]} before activation…` });
+    try {
+      const res = await fetch(`/api/ai/providers/${provider}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        setStatus({ type: 'success', message: `${PROVIDER_LABELS[provider]} ${enabled ? 'tested and enabled' : 'disabled'}` });
+      } else {
+        setStatus({ type: 'error', message: enabled ? `${PROVIDER_LABELS[provider]} remains off: ${data.error || data.health?.error || 'connection test failed'}` : `Failed to disable ${PROVIDER_LABELS[provider]}` });
+      }
       load();
+    } catch {
+      setStatus({ type: 'error', message: `Failed to ${enabled ? 'test and enable' : 'disable'} ${PROVIDER_LABELS[provider]}` });
+    } finally {
+      setActivatingProvider(null);
     }
   };
 
@@ -1009,11 +1006,11 @@ function ProvidersSection() {
 
   const clearKey = async (provider: Provider) => {
     if (!await showConfirm(`Remove the ${PROVIDER_LABELS[provider]} API key?`, { tone: 'danger' })) return;
-    setProviders((prev) => prev.map((p) => (
-      p.name === provider ? { ...p, apiKeyMasked: '', configured: p.authMode === 'account' ? p.configured : false, callable: false } : p
-    )));
     const res = await fetch(`/api/ai/providers/${provider}/key`, { method: 'DELETE' });
-    if (!res.ok) load();
+    if (res.ok) {
+      setStatus({ type: 'success', message: `${PROVIDER_LABELS[provider]} key removed and provider disabled` });
+    }
+    load();
   };
 
   const test = async (provider: Provider) => {
@@ -1028,15 +1025,16 @@ function ProvidersSection() {
   };
 
   const setDefault = async (provider: Provider, model: string) => {
-    setDefaultProvider(provider);
-    setProviders((prev) => prev.map((p) => (p.name === provider ? { ...p, model, enabled: true, callable: p.configured } : p)));
-    setStatus({ type: 'success', message: `${PROVIDER_LABELS[provider]} set as default` });
     const res = await fetch('/api/ai/default-provider', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ provider, model }),
     });
-    if (!res.ok) load();
+    if (res.ok) {
+      setDefaultProvider(provider);
+      setStatus({ type: 'success', message: `${PROVIDER_LABELS[provider]} set as default` });
+    }
+    load();
   };
 
   const setAgentProvider = async (agent: string, provider: Provider) => {
@@ -1053,7 +1051,7 @@ function ProvidersSection() {
   // (load() flips `loading` again) must NOT unmount the section — otherwise the whole
   // page flashes/reconfigures and the API key being typed in a card is lost.
   if (loading && providers.length === 0) return <SkeletonCard />;
-  const enabledProviders = providers.filter((p) => p.enabled);
+  const enabledProviders = providers.filter((p) => p.callable);
 
   return (
     <div className="space-y-6">
@@ -1077,6 +1075,8 @@ function ProvidersSection() {
               onClearKey={() => clearKey(p.name)}
               onTest={() => test(p.name)}
               onSetDefault={(m) => setDefault(p.name, m)}
+              isDefault={defaultProvider === p.name}
+              activating={activatingProvider === p.name}
             />
           ))}
         </div>
@@ -1097,13 +1097,15 @@ function ProvidersSection() {
               <select
                 value={agentMap[agent] || defaultProvider}
                 onChange={(e) => setAgentProvider(agent, e.target.value as Provider)}
+                disabled={enabledProviders.length === 0}
+                title={enabledProviders.length === 0 ? 'Test and enable an AI provider first' : undefined}
                 className="rounded-md border border-[var(--border)] bg-[var(--bg-primary)] px-2 py-1 text-xs"
               >
-                {(enabledProviders.length ? enabledProviders : providers).map((p) => (
+                {enabledProviders.length ? enabledProviders.map((p) => (
                   <option key={p.name} value={p.name}>
                     {PROVIDER_LABELS[p.name]}
                   </option>
-                ))}
+                )) : <option value="">No active provider</option>}
               </select>
             </div>
           ))}
@@ -1113,7 +1115,7 @@ function ProvidersSection() {
   );
 }
 
-function ProviderCard({ provider, onSaveKey, onSetEnabled, onSetAuthMode, onSetModel, onClearKey, onTest, onSetDefault }: React.PropsWithChildren<{
+function ProviderCard({ provider, onSaveKey, onSetEnabled, onSetAuthMode, onSetModel, onClearKey, onTest, onSetDefault, isDefault, activating }: React.PropsWithChildren<{
   provider: ProviderInfo;
   onSaveKey: (apiKeyValue: string) => void;
   onSetEnabled: (enabled: boolean) => void;
@@ -1122,12 +1124,20 @@ function ProviderCard({ provider, onSaveKey, onSetEnabled, onSetAuthMode, onSetM
   onClearKey: () => void;
   onTest: () => void;
   onSetDefault: (model: string) => void;
+  isDefault: boolean;
+  activating: boolean;
 }>) {
   const [apiKey, setApiKey] = useState('');
   const [showKey, setShowKey] = useState(false);
   const authMode = provider.authMode === 'account' ? 'account' : 'api_key';
   const accountCliSupported = provider.name === 'openai' || provider.name === 'anthropic';
   const showAccountMode = provider.accountCliAllowed && accountCliSupported;
+  // Testing always uses the credential saved on the provider. Text currently in
+  // the input is not persisted and must not enable a connection attempt.
+  const canTest = authMode === 'api_key' ? provider.apiKeyConfigured : provider.configured;
+  const testUnavailableReason = authMode === 'api_key'
+    ? 'Save an API key before testing this provider'
+    : 'Sign in to the local account before testing this provider';
 
   return (
     <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] p-4">
@@ -1140,7 +1150,7 @@ function ProviderCard({ provider, onSaveKey, onSetEnabled, onSetAuthMode, onSetM
             <h3 className="font-medium">{PROVIDER_LABELS[provider.name]}</h3>
             {provider.configured ? (
               <span className="inline-flex items-center gap-1 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-xs text-emerald-500">
-                <CheckCircle className="h-3 w-3" /> {provider.enabled && provider.callable ? 'Active' : 'Configured'}
+                <CheckCircle className="h-3 w-3" /> {provider.enabled && provider.callable ? 'Active' : 'Ready to test'}
               </span>
             ) : (
               <span className="inline-flex items-center gap-1 rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-xs text-amber-500">
@@ -1158,13 +1168,14 @@ function ProviderCard({ provider, onSaveKey, onSetEnabled, onSetAuthMode, onSetM
           <button
             type="button"
             onClick={() => onSetEnabled(!provider.enabled)}
+            disabled={activating}
             className={`inline-flex items-center gap-1 rounded-md border px-3 py-1.5 text-xs font-medium ${
               provider.enabled
                 ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-500'
                 : 'border-[var(--border)] bg-[var(--bg-primary)] text-[var(--text-muted)] hover:border-[var(--accent)]'
             }`}
           >
-            {provider.enabled ? 'On' : 'Off'}
+            {activating ? 'Testing…' : provider.enabled ? 'On' : 'Off'}
           </button>
           <button
             type="button"
@@ -1172,8 +1183,8 @@ function ProviderCard({ provider, onSaveKey, onSetEnabled, onSetAuthMode, onSetM
             // The connection check tests the configured credential, not whether the
             // provider is toggled on — so it's available as soon as a key is saved
             // (or account auth is available), even if the provider is currently Off.
-            disabled={!provider.configured}
-            title={!provider.configured ? 'Add an API key (or account auth) first' : 'Run a connection check'}
+            disabled={!canTest}
+            title={!canTest ? testUnavailableReason : 'Run a connection check'}
             className="inline-flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-primary)] px-3 py-1.5 text-xs font-medium hover:border-[var(--accent)] disabled:opacity-50"
           >
             <Activity className="h-3 w-3" /> Test
@@ -1181,10 +1192,16 @@ function ProviderCard({ provider, onSaveKey, onSetEnabled, onSetAuthMode, onSetM
           <button
             type="button"
             onClick={() => onSetDefault(provider.model)}
-            disabled={!provider.enabled || !provider.configured}
-            className="inline-flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-primary)] px-3 py-1.5 text-xs font-medium hover:border-[var(--accent)] disabled:opacity-50"
+            disabled={!provider.callable || isDefault}
+            title={isDefault ? 'This is the current default provider' : !provider.callable ? 'Test and enable this provider before making it the default' : 'Make this the default provider'}
+            className={`inline-flex items-center gap-1 rounded-md border px-3 py-1.5 text-xs font-medium disabled:cursor-default ${
+              isDefault
+                ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-500'
+                : 'border-[var(--border)] bg-[var(--bg-primary)] hover:border-[var(--accent)] disabled:opacity-50'
+            }`}
           >
-            <Zap className="h-3 w-3" /> Set as default
+            {isDefault ? <CheckCircle className="h-3 w-3" /> : <Zap className="h-3 w-3" />}
+            {isDefault ? 'Default' : 'Set as default'}
           </button>
         </div>
       </div>
@@ -1953,6 +1970,14 @@ const WINDOW_META: Array<{ key: string; capKey: string; label: string }> = [
 ];
 const fmtInt = (n: number) => Number(n || 0).toLocaleString();
 const fmtUsd = (n: number) => `$${Number(n || 0).toFixed(Number(n) >= 1 ? 2 : 4)}`;
+type SpendCaps = { day: number; week: number; month: number; year: number };
+const SPEND_CAP_FIELDS: Array<{ k: keyof SpendCaps; label: string }> = [
+  { k: 'day', label: 'Per day' },
+  { k: 'week', label: 'Per 7 days' },
+  { k: 'month', label: 'Per 30 days' },
+  { k: 'year', label: 'Per 365 days' },
+];
+const sameSpendCaps = (left: SpendCaps, right: SpendCaps) => SPEND_CAP_FIELDS.every(({ k }) => left[k] === right[k]);
 
 function CostSection() {
   const { showQueryLogs, load: loadUiSettings, setShowQueryLogs } = useUiSettings();
@@ -1960,7 +1985,10 @@ function CostSection() {
   const [cost, setCost] = useState<{ guardrailLogs: any[] }>({ guardrailLogs: [] });
   const [summary, setSummary] = useState<any>(null);
   const [usage, setUsage] = useState<any[]>([]);
-  const [caps, setCaps] = useState<{ day: number; week: number; month: number; year: number }>({ day: 50, week: 0, month: 0, year: 0 });
+  const [caps, setCaps] = useState<SpendCaps>({ day: 50, week: 0, month: 0, year: 0 });
+  const [savedCaps, setSavedCaps] = useState<SpendCaps>({ day: 50, week: 0, month: 0, year: 0 });
+  const [savingCaps, setSavingCaps] = useState(false);
+  const [capsSaveError, setCapsSaveError] = useState('');
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
 
@@ -1988,7 +2016,10 @@ function CostSection() {
       setCost(c);
       setSummary(s);
       setUsage(u.usage || []);
-      if (s?.caps) setCaps(s.caps);
+      if (s?.caps) {
+        setCaps(s.caps);
+        setSavedCaps(s.caps);
+      }
     } catch (error: any) {
       setLoadError(error?.message || 'Could not load Cost & Logs.');
     } finally {
@@ -1999,12 +2030,30 @@ function CostSection() {
   useEffect(() => { load(); }, [load]);
 
   const saveCaps = async () => {
-    await fetch('/api/ai/cost/caps', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(caps),
-    });
-    await load();
+    if (savingCaps || sameSpendCaps(caps, savedCaps)) return;
+    setSavingCaps(true);
+    setCapsSaveError('');
+    try {
+      const res = await fetch('/api/ai/cost/caps', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(caps),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || 'Could not save spend caps.');
+      const saved = data?.caps as SpendCaps | undefined;
+      if (saved) {
+        setCaps(saved);
+        setSavedCaps(saved);
+      } else {
+        setSavedCaps(caps);
+      }
+      await load();
+    } catch (error: any) {
+      setCapsSaveError(error?.message || 'Could not save spend caps.');
+    } finally {
+      setSavingCaps(false);
+    }
   };
 
   if (loading) return <SkeletonCard />;
@@ -2028,6 +2077,7 @@ function CostSection() {
   const capStatus = summary.capStatus || {};
   const byModel: any[] = summary.byModel || [];
   const allTime = windows.all || emptyWin;
+  const capsDirty = !sameSpendCaps(caps, savedCaps);
 
   return (
     <div className="space-y-6">
@@ -2101,29 +2151,37 @@ function CostSection() {
 
       {/* Per-window spend caps. 0 = no cap. */}
       <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-card)] p-4 sm:p-6 shadow-sm">
-        <h2 className="text-lg font-medium">Spend caps</h2>
-        <p className="mt-1 text-sm text-[var(--text-muted)]">Set a USD cap per window. 0 means no cap. The daily cap also gates new agent runs.</p>
-        <div className="mt-4 flex flex-wrap items-end gap-3">
-          {[
-            { k: 'day', label: 'Per day' },
-            { k: 'week', label: 'Per 7 days' },
-            { k: 'month', label: 'Per 30 days' },
-            { k: 'year', label: 'Per 365 days' },
-          ].map(({ k, label }) => (
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h2 className="text-lg font-medium">Spend caps</h2>
+            <p className="mt-1 text-sm text-[var(--text-muted)]">Set a USD cap per window. 0 means no cap. The daily cap also gates new agent runs.</p>
+          </div>
+          <button
+            onClick={saveCaps}
+            disabled={!capsDirty || savingCaps}
+            title={!capsDirty ? 'Change a spend cap to enable saving' : undefined}
+            className="inline-flex shrink-0 items-center gap-1 rounded-md bg-[var(--accent)] px-3 py-2 text-xs font-medium text-white hover:bg-[var(--accent-hover)] disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <Save className="h-3 w-3" /> {savingCaps ? 'Saving capsâ€¦' : 'Save caps'}
+          </button>
+        </div>
+        <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          {SPEND_CAP_FIELDS.map(({ k, label }) => (
             <div key={k}>
               <label className="mb-1 block text-xs text-[var(--text-muted)]">{label} (USD)</label>
               <input
                 type="number" min="0" step="1"
-                value={(caps as any)[k]}
-                onChange={(e) => setCaps((c) => ({ ...c, [k]: Number(e.target.value) }))}
-                className="w-28 rounded-md border border-[var(--border)] bg-[var(--bg-primary)] px-3 py-2 text-sm"
+                value={caps[k]}
+                onChange={(e) => {
+                  setCaps((current) => ({ ...current, [k]: Number(e.target.value) }));
+                  setCapsSaveError('');
+                }}
+                className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-primary)] px-3 py-2 text-sm"
               />
             </div>
           ))}
-          <button onClick={saveCaps} className="inline-flex items-center gap-1 rounded-md bg-[var(--accent)] px-3 py-2 text-xs font-medium text-white">
-            <Save className="h-3 w-3" /> Save caps
-          </button>
         </div>
+        {capsSaveError && <p className="mt-3 text-xs text-red-500">{capsSaveError}</p>}
       </div>
 
       {/* Per-model breakdown. */}

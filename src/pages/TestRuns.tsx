@@ -29,6 +29,7 @@ import { casesForRun, manualRunSelection, runExecutionState, scriptsForCases, sc
 import { collectRunEvidence, evidenceDownloadName } from '@/core/shared/runEvidence';
 import { normalizeTags } from '@/src/lib/tags';
 import { ManualRunner } from '@/src/components/manualRunner/ManualRunner';
+import { useUrlState } from '@/src/lib/useUrlState';
 
 async function downloadFromUrl(url: string, filename: string) {
   const response = await fetch(url);
@@ -98,8 +99,8 @@ export default function TestRuns() {
   const [timeSort, setTimeSort] = useState<TimeSortKey>('recentlyUpdated');
   const [updatedFilter, setUpdatedFilter] = useState<TimeFilterValue>({ key: 'all' });
   const aiSearch = useAiSearch('test runs');
-  const [runView, setRunView] = useState<'active' | 'closed'>('active');
-  const [selectedView, setSelectedView] = useState('All Runs');
+  const [runView, setRunView] = useUrlState('view', 'active', ['active', 'closed'] as const);
+  const [selectedView, setSelectedView] = useUrlState('runFilter', 'All Runs', ['All Runs', 'Failed Runs', 'Manual Runs', 'Automated Runs', 'My Runs'] as const);
   const [filters, setFilters] = useState({ statuses: [] as string[], requesters: [] as string[], suites: [] as string[], sources: [] as string[], tags: [] as string[] });
   const [caseSearchTerm, setCaseSearchTerm] = useState('');
   const [caseStatusFilter, setCaseStatusFilter] = useState('All');
@@ -1092,7 +1093,7 @@ export default function TestRuns() {
             <button onClick={() => setIsViewMenuOpen(!isViewMenuOpen)} className="w-48 border border-[var(--border)] bg-[var(--bg-secondary)] rounded-md px-3 py-2 text-sm text-left">{selectedView}</button>
             {isViewMenuOpen && (
               <div className="absolute top-11 left-0 z-20 w-56 rounded-md border border-[var(--border)] bg-[var(--bg-card)] shadow-xl overflow-hidden">
-                {['All Runs', 'My Runs', 'Failed Runs', 'Manual Runs', 'Automated Runs'].map((view) => (
+                {(['All Runs', 'My Runs', 'Failed Runs', 'Manual Runs', 'Automated Runs'] as const).map((view) => (
                   <button key={view} onClick={() => { setSelectedView(view); setIsViewMenuOpen(false); }} className="block w-full px-4 py-3 text-left text-sm hover:bg-[var(--bg-secondary)]">{view}</button>
                 ))}
               </div>
@@ -1225,8 +1226,13 @@ export default function TestRuns() {
                         <span title={`Untested: ${stats.untested}`} className="px-2 py-1 rounded bg-[var(--bg-secondary)] text-[var(--text-muted)] cursor-default">{stats.untested}</span>
                       </div>}
                     </td>
-                    <td className="px-4 py-4 text-[var(--text-muted)]">
-                      {stats.failed ? `${stats.failed} failed` : (/failed/i.test(run.status || '') ? run.progress || 'Execution failed' : '-')}
+                    <td className="overflow-hidden px-4 py-4 text-[var(--text-muted)]">
+                      <div
+                        className="truncate"
+                        title={stats.failed ? `${stats.failed} failed` : (/failed/i.test(run.status || '') ? run.progress || 'Execution failed' : '-')}
+                      >
+                        {stats.failed ? `${stats.failed} failed` : (/failed/i.test(run.status || '') ? run.progress || 'Execution failed' : '-')}
+                      </div>
                     </td>
                     <td className="overflow-hidden px-4 py-4 whitespace-nowrap text-xs text-[var(--text-muted)]">
                       <Timestamp value={run.metadata?.updatedAt || run.updatedAt || run.date} />

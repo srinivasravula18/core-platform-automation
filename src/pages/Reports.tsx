@@ -14,6 +14,7 @@ import { FolderSelect } from '@/src/components/FolderSelect';
 import { FolderBadge } from '@/src/components/FolderBadge';
 import { withBasePath } from '@/src/lib/base-path';
 import { showConfirm } from '@/src/lib/dialog';
+import { useUrlState } from '@/src/lib/useUrlState';
 
 interface Step {
   step: string;
@@ -284,7 +285,7 @@ export default function Reports() {
   const [timeSort, setTimeSort] = useState<TimeSortKey>('recentlyUpdated');
   const [updatedFilter, setUpdatedFilter] = useState<TimeFilterValue>({ key: 'all' });
   const aiSearch = useAiSearch('reports');
-  const [statusFilter, setStatusFilter] = useState<string>('All');
+  const [statusFilter, setStatusFilter] = useUrlState('status', 'All', ['All', 'Passed', 'Failed'] as const);
 
   // Modal forms
   const [isNewReportModalOpen, setIsNewReportModalOpen] = useState(false);
@@ -579,7 +580,7 @@ export default function Reports() {
             <TimeSortSelect value={timeSort} onChange={setTimeSort} className="shrink-0" />
             <TimeRangeFilter value={updatedFilter} onChange={setUpdatedFilter} className="shrink-0" />
             <div className="flex shrink-0 bg-[var(--bg-secondary)] p-1 rounded-md text-xs border border-[var(--border)]">
-              {['All', 'Passed', 'Failed'].map((tab) => (
+              {(['All', 'Passed', 'Failed'] as const).map((tab) => (
                 <button
                   key={tab}
                   onClick={() => setStatusFilter(tab)}

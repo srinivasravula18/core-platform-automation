@@ -9,6 +9,7 @@ import { showAlert } from '@/src/lib/dialog';
 import { MarkdownText } from '@/src/components/MarkdownText';
 import { useProjects } from '@/src/store/project';
 import { normalizeTags } from '@/src/lib/tags';
+import { useUrlState } from '@/src/lib/useUrlState';
 
 const casualGreetingPattern = /^(hi+|h+i+|hlo+|hello+|hey+|good\s+(morning|afternoon|evening)|thanks?|thank\s+you|ok(?:ay)?)\b[\s!.?]*$/i;
 const identityQuestionPattern = /\b(who\s+are\s+you|what\s+can\s+you\s+do|help|your\s+purpose)\b/i;
@@ -86,7 +87,7 @@ export default function AgentPanel() {
   const [isGenerating, setIsGenerating] = useState(false);
   const { run: streamedRun } = useAgentRun(taskId || '');
   const [isReworkingCase, setIsReworkingCase] = useState(false);
-  const [activeTab, setActiveTab] = useState<'cases' | 'code' | 'evidence' | 'transcript' | 'workflows'>('cases');
+  const [activeTab, setActiveTab] = useUrlState('tab', 'cases', ['cases', 'code', 'evidence', 'transcript', 'workflows'] as const);
   const [testCaseCount, setTestCaseCount] = useState(0);
   const [flowMode, setFlowMode] = useState<'review_cases' | 'complete'>('review_cases');
   const [editingCaseIndex, setEditingCaseIndex] = useState<number | null>(null);
