@@ -119,11 +119,8 @@ async function main() {
   const token = login.token;
   if (!token) { console.error('login failed', login); process.exit(1); }
   // pin provider to openai (pro) for speed/quota — best-effort
-  try {
-    const s = await api('/api/settings', {}, token);
-    s.defaultProvider = 'openai'; s.providerSettings.openai.enabled = true; s.agentProviderMap = {};
-    await api('/api/settings', { method: 'POST', body: JSON.stringify(s) }, token);
-  } catch { /* ignore */ }
+    // Provider activation is intentionally not changed by a benchmark. It must be
+    // tested and enabled through Settings -> AI Providers first.
 
   let cases = CASES;
   if (process.env.BENCH_CASES) { const want = new Set(process.env.BENCH_CASES.split(',')); cases = cases.filter((c) => want.has(c.id)); }
