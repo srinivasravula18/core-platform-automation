@@ -3,7 +3,6 @@ import type { DragEvent } from 'react';
 import { ChevronDown, Database, Download, FileSpreadsheet, Play, Redo2, Search, Table, Trash2, Undo2, Upload, Wand2, X } from 'lucide-react';
 import { Runnable, RunnablePicker, runnableKey } from './RunnablePicker';
 import { FieldChipEditor, PalettePill } from './FieldChips';
-import { ValuePicker } from './ValuePicker';
 
 // A field's value comes from a sheet column or a typed fixed value — no generators.
 const INTENTS = [{ value: 'fixed', label: 'Fixed' }, { value: 'reference', label: 'Reference' }];
@@ -32,6 +31,7 @@ function bestColumn(label: string, columns: any[]): any | null {
 
 type AutoOption = { label: string; kind: 'skip' | 'col'; expression?: string; intent?: string; columnId?: string };
 type AutoRow = { stepId: string; label: string; options: AutoOption[]; choice: number };
+type ResolvedValue = { rowNumber: number; value?: string; error?: string };
 
 async function json(url: string, init?: RequestInit) {
   const response = await fetch(url, init);
@@ -94,11 +94,12 @@ export default function DataBindings() {
   const [total, setTotal] = useState(0);
   const [offset, setOffset] = useState(0);
   const [selectedRows, setSelectedRows] = useState<number[]>([]);
+  const [editingRow, setEditingRow] = useState<{ rowNumber: number; values: Record<string, string> } | null>(null);
   const [range, setRange] = useState({ from: 1, to: 10 });
   const [batch, setBatch] = useState<any>(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
-  const [resolved, setResolved] = useState<Record<string, { value?: string; error?: string }>>({});
+  const [resolved, setResolved] = useState<Record<string, ResolvedValue[]>>({});
   const [fileOver, setFileOver] = useState(false);
   const [autoMap, setAutoMap] = useState<{ rows: AutoRow[] } | null>(null);
   const [stopOnFailure, setStopOnFailure] = useState(false);
@@ -141,7 +142,7 @@ export default function DataBindings() {
 
   useEffect(() => { void load().catch((error) => setMessage(error.message)); }, []);
   useEffect(() => { void loadSteps().catch((error) => setMessage(error.message)); }, [recordingId]);
-  useEffect(() => { setSelectedRows([]); setOffset(0); }, [datasetId]);
+  useEffect(() => { setSelectedRows([]); setEditingRow(null); setOffset(0); }, [datasetId]);
   useEffect(() => { void loadRows().catch((error) => setMessage(error.message)); }, [datasetId, offset]);
   useEffect(() => {
     if (!batch?.id) return;
@@ -161,17 +162,19 @@ export default function DataBindings() {
     return query ? steps.filter((step) => String(step.metadata?.label || step.locator || '').toLowerCase().includes(query)) : steps;
   }, [steps, fieldSearch]);
 
-  // Ask the server to resolve every bound field for the first selected (or first) row.
+  // Resolve each selected row so the text below a binding follows the table selection.
   const refreshResolved = async () => {
     if (!recordingId || !datasetId || !byStep.size) { setResolved({}); return; }
-    const rowNumber = selectedRows.length ? Math.min(...selectedRows) : 2;
     try {
       const body = await json(`/api/automation/recordings/${recordingId}/preview`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ datasetId, offset: Math.max(0, rowNumber - 2) }),
+        body: JSON.stringify({ datasetId, rowNumbers: selectedRows }),
       });
-      const next: Record<string, { value?: string; error?: string }> = {};
-      for (const item of body.resolved || []) next[item.stepId] = { value: item.value, error: item.error };
+      const previewRows = body.rows?.length ? body.rows : [{ rowNumber: body.rowNumber, resolved: body.resolved || [] }];
+      const next: Record<string, ResolvedValue[]> = {};
+      for (const previewRow of previewRows) for (const item of previewRow.resolved || []) {
+        (next[item.stepId] ||= []).push({ rowNumber: previewRow.rowNumber, value: item.value, error: item.error });
+      }
       setResolved(next);
     } catch { setResolved({}); }
   };
@@ -215,10 +218,6 @@ export default function DataBindings() {
   // One value per field: picking or dropping a column REPLACES the field's value (no stacking).
   const setColumnValue = async (stepId: string, column: any) => {
     await mapColumn(stepId, column.id);
-  };
-  // The "type a fixed value" path — sets the field to a plain literal.
-  const setLiteralValue = async (stepId: string, value: string) => {
-    await saveExpression(stepId, value);
   };
   const removeMapping = async (stepId: string) => {
     await json(`/api/automation/recordings/${recordingId}/mappings/${stepId}`, { method: 'DELETE' });
@@ -404,11 +403,31 @@ export default function DataBindings() {
       setMessage(`Deleted dataset${ds?.name ? ` “${ds.name}”` : ''}.`);
     } catch (error: any) { setMessage(error.message); }
   };
+  const saveRow = async () => {
+    if (!datasetId || !editingRow) return;
+    setBusy(true);
+    try {
+      await json(`/api/automation/datasets/${datasetId}/rows/${editingRow.rowNumber}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ values: editingRow.values }),
+      });
+      setEditingRow(null);
+      await loadRows();
+      await refreshResolved();
+      setMessage(`Row ${editingRow.rowNumber} saved.`);
+    } catch (error: any) { setMessage(error.message); } finally { setBusy(false); }
+  };
 
   const dragColumn = (event: DragEvent, columnId: string) =>
     event.dataTransfer.setData('application/x-binding', JSON.stringify({ type: 'column', columnId }));
 
   const shownTo = Math.min(offset + rows.length, total);
+  const previewSelectionLabel = selectedRows.length === total && total > 0
+    ? 'All rows selected'
+    : selectedRows.length > 1
+      ? `${selectedRows.length} rows selected`
+      : selectedRows.length === 1
+        ? '1 row selected'
+        : '';
 
   return <div className="flex flex-1 flex-col gap-4">
     <div className="flex flex-wrap items-start justify-between gap-3">
@@ -464,7 +483,7 @@ export default function DataBindings() {
             {visibleSteps.map((step) => {
               const mapping = byStep.get(step.id);
               const modified = step.currentOverride !== null && step.currentOverride !== undefined;
-              const preview = resolved[step.id];
+              const previews = resolved[step.id] || [];
               const over = dragOverStep === step.id;
               const label = step.metadata?.label || step.locator;
               return <div key={step.id}
@@ -479,14 +498,11 @@ export default function DataBindings() {
                   </div>
                   <div className="flex min-w-0 flex-1 items-center gap-1.5">
                     {step.readOnly ? <span className="text-xs text-[var(--text-muted)]">Recorded action — not editable</span>
-                      : dataset ? <>
+                      : dataset ? (
                         <FieldChipEditor expression={mapping?.expression || ''} columnNames={columnNames}
                           ariaLabel={`Value for ${label}`} placeholder={over ? 'Release to add' : 'type a fixed value'}
                           onFocusField={() => { activeStep.current = step.id; }} onSave={(expression) => void saveExpression(step.id, expression)} />
-                        <ValuePicker columns={dataset.columns || []} hasDataset fieldLabel={label}
-                          onColumn={(column) => void setColumnValue(step.id, column)}
-                          onFixed={(value) => void setLiteralValue(step.id, value)} />
-                      </> : <>
+                      ) : <>
                         <input key={`${step.id}-${step.currentOverride}`} aria-label={`Value for ${label}`} placeholder="fixed value" defaultValue={step.currentOverride ?? step.originalValue ?? ''}
                           onFocus={() => { activeStep.current = step.id; }} onBlur={(event) => void saveOverride(step, event.target.value)}
                           className={`min-w-0 flex-1 rounded border px-2 py-1 text-xs ${modified ? 'border-amber-500 bg-amber-500/10' : 'border-[var(--border)] bg-[var(--bg-secondary)]'}`} />
@@ -502,8 +518,11 @@ export default function DataBindings() {
                     <button aria-label="Remove binding" title="Remove binding" onClick={() => void removeMapping(step.id)} className="shrink-0 text-[var(--text-muted)] hover:text-red-500"><Trash2 className="h-4 w-4" /></button>
                   </>}
                 </div>
-                {mapping && preview && <div className="mt-1 pl-[8.5rem]">
-                  <div className={`truncate text-[10px] ${preview.error ? 'text-red-500' : 'text-[var(--text-muted)]'}`}>→ {preview.error || (preview.value === '' ? '(empty)' : preview.value)}</div>
+                {mapping && previews.length > 0 && <div className="mt-1 pl-[8.5rem]">
+                  <div className={`max-h-12 overflow-y-auto whitespace-normal text-[10px] ${previews.some((preview) => preview.error) ? 'text-red-500' : 'text-[var(--text-muted)]'}`}>
+                    {previewSelectionLabel && <span className="font-semibold">{previewSelectionLabel} · </span>}
+                    {previews.map((preview) => `Row ${preview.rowNumber}: ${preview.error || (preview.value === '' ? '(empty)' : preview.value)}`).join('  •  ')}
+                  </div>
                 </div>}
               </div>;
             })}
@@ -597,8 +616,13 @@ export default function DataBindings() {
               onDragStart={(event) => dragColumn(event, column.id)}
               onClick={() => { const target = mappableSteps.find((step) => !byStep.has(step.id)); if (target) { void setColumnValue(target.id, column); setAnnounce(`${column.name} bound to ${labelOfStep(target.id)}.`); } }}
               title="Drag this column onto a field above (or click) to bind it"
-              className="min-w-36 cursor-grab whitespace-nowrap p-2 text-left hover:text-[var(--accent)] active:cursor-grabbing">{column.name}</th>)}</tr></thead>
-          <tbody>{rows.map((row) => { const consumed = row.state === 'consumed'; return <tr key={row.id} className={`border-t border-[var(--border)] align-top ${consumed ? 'opacity-50' : ''}`} title={consumed ? 'Already consumed by an earlier pooled run' : undefined}><td className="p-2"><input aria-label={`Select row ${row.rowNumber}`} type="checkbox" disabled={consumed} checked={selectedRows.includes(row.rowNumber)} onChange={() => setSelectedRows((current) => current.includes(row.rowNumber) ? current.filter((number) => number !== row.rowNumber) : [...current, row.rowNumber])} /></td><td className="p-2 text-[var(--text-muted)]">{row.rowNumber}{consumed ? ' · used' : ''}</td>{dataset.columns.map((column: any) => <td key={column.id} className="max-w-72 overflow-hidden text-ellipsis whitespace-nowrap p-2">{row.values[column.id] || '—'}</td>)}</tr>; })}</tbody>
+              className="min-w-36 cursor-grab whitespace-nowrap p-2 text-left hover:text-[var(--accent)] active:cursor-grabbing">{column.name}</th>)}<th className="sticky right-0 bg-[var(--bg-card)] p-2 text-left">Actions</th></tr></thead>
+          <tbody>{rows.map((row) => { const consumed = row.state === 'consumed'; const editing = editingRow?.rowNumber === row.rowNumber; return <tr key={row.id} className={`border-t border-[var(--border)] align-top ${consumed ? 'opacity-50' : ''}`} title={consumed ? 'Already consumed by an earlier pooled run' : undefined}><td className="p-2"><input aria-label={`Select row ${row.rowNumber}`} type="checkbox" disabled={consumed} checked={selectedRows.includes(row.rowNumber)} onChange={() => setSelectedRows((current) => current.includes(row.rowNumber) ? current.filter((number) => number !== row.rowNumber) : [...current, row.rowNumber])} /></td><td className="p-2 text-[var(--text-muted)]">{row.rowNumber}{consumed ? ' · used' : ''}</td>{dataset.columns.map((column: any) => <td key={column.id} className="max-w-72 p-2">{editing
+                ? <input aria-label={`${column.name} for row ${row.rowNumber}`} value={editingRow.values[column.id] || ''} onChange={(event) => setEditingRow((current) => current && { ...current, values: { ...current.values, [column.id]: event.target.value } })} className="w-full min-w-32 rounded border border-[var(--accent)] bg-[var(--bg-secondary)] px-2 py-1 outline-none" />
+                : <span className="block overflow-hidden text-ellipsis whitespace-nowrap">{row.values[column.id] || '—'}</span>}</td>)}<td className="sticky right-0 whitespace-nowrap bg-[var(--bg-card)] p-2">{editing ? <>
+                  <button disabled={busy} onClick={() => void saveRow()} className="mr-1 rounded bg-[var(--accent)] px-2 py-1 text-white disabled:opacity-40">Save</button>
+                  <button disabled={busy} onClick={() => setEditingRow(null)} className="rounded border border-[var(--border)] px-2 py-1 disabled:opacity-40">Cancel</button>
+                </> : <button disabled={busy} onClick={() => setEditingRow({ rowNumber: row.rowNumber, values: Object.fromEntries(dataset.columns.map((column: any) => [column.id, String(row.values[column.id] ?? '')])) })} className="rounded border border-[var(--border)] px-2 py-1 hover:border-[var(--accent)] disabled:opacity-40">Edit</button>}</td></tr>; })}</tbody>
         </table>
       </div>
     </section>}

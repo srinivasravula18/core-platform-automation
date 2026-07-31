@@ -87,6 +87,25 @@ function statusDot(status: string) {
 
 const scriptLabel = (script: any) => script.filename || script.name || script.title || script.id || 'Unnamed script';
 const MANUAL_RUN_STATUS_OPTIONS = ['Not Started', 'In Progress', 'Passed', 'Failed', 'Blocked', 'Completed'] as const;
+type EditableRunStep = { action: string; expected: string; captureEvidence: boolean };
+type EditableRunResult = { caseId: string; caseTitle: string; originalCount: number; steps: EditableRunStep[] };
+
+// Real elapsed duration of a run: start→completion, or live-elapsed while still running. Falls back to
+// the entered estimate (executionTime) only when the run has no measured timestamps.
+function formatRunDuration(run: any, now: number): string {
+  const start = run?.startedAt ? new Date(run.startedAt).getTime() : 0;
+  const end = run?.completedAt ? new Date(run.completedAt).getTime() : 0;
+  let ms = 0;
+  if (start && end) ms = end - start;
+  else if (start) ms = now - start; // in progress → count up from start
+  if (!ms || ms < 0) return run?.executionTime || '-';
+  const s = Math.round(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return s % 60 ? `${m}m ${s % 60}s` : `${m}m`;
+  const h = Math.floor(m / 60);
+  return m % 60 ? `${h}h ${m % 60}m` : `${h}h`;
+}
 
 export default function TestRuns() {
   const navigate = useNavigate();
@@ -128,12 +147,16 @@ export default function TestRuns() {
   // Step/Action/Expected rows authored in the Create Manual Run form (outcomes are set later in the runner).
   // captureEvidence toggles whether the tester may attach a screenshot to this step during the run.
   const [newRunSteps, setNewRunSteps] = useState<Array<{ action: string; expected: string; captureEvidence: boolean }>>([]);
+  const [editRunResults, setEditRunResults] = useState<EditableRunResult[]>([]);
+  const [editStepsLoading, setEditStepsLoading] = useState(false);
+  const [savingRun, setSavingRun] = useState(false);
   const [newRunCaseIds, setNewRunCaseIds] = useState<Set<string>>(new Set());
   // The tag query the run was composed with (from the linker) — persisted as definition.tagQuery so
   // cases later matching these tags surface as review-gated drift on the run.
   const [newRunTagQuery, setNewRunTagQuery] = useState<TagQuery>({});
   const [plans, setPlans] = useState<any[]>([]);
   const [scripts, setScripts] = useState<any[]>([]);
+  const [now, setNow] = useState(() => Date.now()); // live clock so in-progress run durations count up
   const [runProgress, setRunProgress] = useState<Record<string, string>>({});
   const [closingRunId, setClosingRunId] = useState('');
   const [editingCase, setEditingCase] = useState<any>(null);
@@ -188,6 +211,15 @@ export default function TestRuns() {
     const t = setInterval(() => { void refreshRunsQuiet(); }, 2000);
     return () => clearInterval(t);
   }, [hasRunningRuns, refreshRunsQuiet]);
+
+  // Tick a 1s clock while any run is mid-flight (started, not yet completed) so the Duration column
+  // counts up live rather than sitting static.
+  const hasLiveDurations = runs.some((run) => run.startedAt && !run.completedAt);
+  useEffect(() => {
+    if (!hasLiveDurations) return;
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [hasLiveDurations]);
 
   useEffect(() => {
     if (!isFilterOpen) return;
@@ -267,6 +299,7 @@ export default function TestRuns() {
     setNewRunConfiguration('');
     setNewRunPriority('');
     setNewRunSteps([]);
+    setEditRunResults([]);
     setIsRunModalOpen(true);
   };
 
@@ -280,8 +313,30 @@ export default function TestRuns() {
     setNewRunAssignedTo(run.assignedTo || '');
     setNewRunTags(Array.isArray(run.tags) ? run.tags : []);
     setNewRunStatus(MANUAL_RUN_STATUS_OPTIONS.includes(run.status) ? run.status : 'Not Started');
+    setNewRunMode(run.mode === 'manual' ? 'manual' : 'automated');
+    setNewRunConfiguration('');
+    setNewRunPriority('');
+    setEditRunResults([]);
+    setEditStepsLoading(false);
     setNewRunCaseIds(new Set(casesForRun(run, cases, suites).map((testCase) => String(testCase.id))));
     setIsRunModalOpen(true);
+    if (run.mode === 'manual') {
+      setEditStepsLoading(true);
+      void fetch(`/api/runs/${encodeURIComponent(run.id)}/results`).then(async (response) => {
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(data.error || 'Could not load manual run steps.');
+        const results = Array.isArray(data.results) ? data.results : [];
+        setNewRunConfiguration(results[0]?.configuration || '');
+        setNewRunPriority(results[0]?.priority || '');
+        setEditRunResults(results.map((result: any) => {
+          const steps = Array.isArray(result.stepResults) ? result.stepResults : [];
+          return {
+            caseId: String(result.caseId), caseTitle: String(result.caseTitle || result.caseId), originalCount: steps.length,
+            steps: steps.map((step: any) => ({ action: String(step.action || ''), expected: String(step.expected || ''), captureEvidence: step.captureEvidence !== false })),
+          };
+        }));
+      }).catch((error) => void showAlert(error.message || 'Could not load manual run steps.')).finally(() => setEditStepsLoading(false));
+    }
   };
 
   const handleSaveRun = async () => {
@@ -304,10 +359,31 @@ export default function TestRuns() {
       url = '/api/runs/from-selection';
       body = { name: newRunName, testPlanId: newRunPlanId, requestedBy: newRunRequester, assignedTo: newRunAssignedTo, tags: newRunTags, executionTime: newRunExecutionTime, targetUrl: newRunTargetUrl, status: newRunStatus, mode: newRunMode, definition: { tagQuery: newRunTagQuery }, ...manualRunSelection(newRunPlanId, caseIds) };
     }
+    setSavingRun(true);
     try {
       const response = await fetch(url, { method: editingRunId ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
       const rsp = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(rsp.error || `Failed to ${editingRunId ? 'update' : 'create'} test run.`);
+      if (editingRunId && isManual) {
+        for (const result of editRunResults) {
+          const resultUrl = `/api/runs/${encodeURIComponent(editingRunId)}/results/${encodeURIComponent(result.caseId)}`;
+          const summaryResponse = await fetch(resultUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ configuration: newRunConfiguration, priority: newRunPriority }) });
+          if (!summaryResponse.ok) throw new Error((await summaryResponse.json().catch(() => ({}))).error || 'Failed to update manual run summary.');
+          const common = Math.min(result.originalCount, result.steps.length);
+          for (let index = 0; index < common; index++) {
+            const stepResponse = await fetch(`${resultUrl}/steps/${index}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(result.steps[index]) });
+            if (!stepResponse.ok) throw new Error((await stepResponse.json().catch(() => ({}))).error || `Failed to update step ${index + 1}.`);
+          }
+          for (let index = result.originalCount - 1; index >= result.steps.length; index--) {
+            const stepResponse = await fetch(`${resultUrl}/steps/${index}`, { method: 'DELETE' });
+            if (!stepResponse.ok) throw new Error((await stepResponse.json().catch(() => ({}))).error || `Failed to delete step ${index + 1}.`);
+          }
+          for (let index = result.originalCount; index < result.steps.length; index++) {
+            const stepResponse = await fetch(`${resultUrl}/steps`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(result.steps[index]) });
+            if (!stepResponse.ok) throw new Error((await stepResponse.json().catch(() => ({}))).error || `Failed to add step ${index + 1}.`);
+          }
+        }
+      }
       setIsRunModalOpen(false);
       const wasEditing = Boolean(editingRunId);
       setEditingRunId('');
@@ -315,7 +391,7 @@ export default function TestRuns() {
       if (!wasEditing && rsp.run?.id) navigate(`/runs/${rsp.run.id}`);
     } catch (error: any) {
       void showAlert(error.message || `Failed to ${editingRunId ? 'update' : 'create'} test run.`);
-    }
+    } finally { setSavingRun(false); }
   };
 
   // Start a manual run in place from the list (no scripts) — marks it In Progress, then refreshes the row.
@@ -885,13 +961,13 @@ export default function TestRuns() {
 
       <Modal
         isOpen={isRunModalOpen}
-        onClose={() => { setIsRunModalOpen(false); setEditingRunId(''); }}
+        onClose={() => { setIsRunModalOpen(false); setEditingRunId(''); setEditRunResults([]); }}
         title={editingRunId ? 'Edit Test Run' : 'Create Manual Run'}
         footer={
           <div className="flex justify-end gap-3">
-            <button onClick={() => { setIsRunModalOpen(false); setEditingRunId(''); }} className="px-4 py-2 text-sm text-[var(--text-muted)]">Cancel</button>
+            <button onClick={() => { setIsRunModalOpen(false); setEditingRunId(''); setEditRunResults([]); }} className="px-4 py-2 text-sm text-[var(--text-muted)]">Cancel</button>
             {(editingRunId ? can('runs:update') : can('runs:create')) && (
-            <button onClick={handleSaveRun} className="px-4 py-2 bg-[var(--accent)] text-white text-sm rounded-md">{editingRunId ? 'Save Changes' : 'Create Run'}</button>
+            <button disabled={savingRun || editStepsLoading} onClick={handleSaveRun} className="rounded-md bg-[var(--accent)] px-4 py-2 text-sm text-white disabled:opacity-50">{savingRun ? 'Saving…' : editingRunId ? 'Save Changes' : 'Create Run'}</button>
             )}
           </div>
         }
@@ -1024,6 +1100,34 @@ export default function TestRuns() {
           )}
 
           {/* Manual runs author their own steps in the runner — no case linking. */}
+          {editingRunId && newRunMode === 'manual' && (
+            <div>
+              <label className="mb-1 block text-xs font-medium text-[var(--text-muted)]">Steps</label>
+              {editStepsLoading ? <div className="rounded-md border border-[var(--border)] p-4 text-center text-sm text-[var(--text-muted)]">Loading steps…</div>
+                : editRunResults.map((result, resultIndex) => (
+                  <div key={result.caseId} className="mb-3 last:mb-0">
+                    {editRunResults.length > 1 && <div className="mb-1 truncate text-xs font-medium text-[var(--text-primary)]">{result.caseTitle}</div>}
+                    <div className="rounded-md border border-[var(--border)]">
+                      <div className="grid grid-cols-[1.5rem_1fr_1fr_6rem_1.75rem] items-center gap-2 border-b border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">
+                        <span>#</span><span>Action</span><span>Expected Result</span><span>Attachment</span><span />
+                      </div>
+                      {result.steps.length === 0 && <div className="px-3 py-4 text-center text-xs text-[var(--text-muted)]">No steps yet.</div>}
+                      {result.steps.map((step, stepIndex) => (
+                        <div key={stepIndex} className="grid grid-cols-[1.5rem_1fr_1fr_6rem_1.75rem] items-start gap-2 border-b border-[var(--border)] px-2 py-2 last:border-0">
+                          <span className="pt-2 font-mono text-xs text-[var(--text-muted)]">{stepIndex + 1}</span>
+                          <textarea value={step.action} onChange={(event) => setEditRunResults((groups) => groups.map((group, i) => i === resultIndex ? { ...group, steps: group.steps.map((item, j) => j === stepIndex ? { ...item, action: event.target.value } : item) } : group))} rows={2} placeholder="Describe the action…" className="w-full resize-y rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
+                          <textarea value={step.expected} onChange={(event) => setEditRunResults((groups) => groups.map((group, i) => i === resultIndex ? { ...group, steps: group.steps.map((item, j) => j === stepIndex ? { ...item, expected: event.target.value } : item) } : group))} rows={2} placeholder="Expected result…" className="w-full resize-y rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
+                          <div className="flex items-center pt-1.5"><button type="button" role="switch" aria-checked={step.captureEvidence} title={step.captureEvidence ? 'Attachments allowed — click to turn off' : 'Attachments off — click to allow'} onClick={() => setEditRunResults((groups) => groups.map((group, i) => i === resultIndex ? { ...group, steps: group.steps.map((item, j) => j === stepIndex ? { ...item, captureEvidence: !item.captureEvidence } : item) } : group))} className={`inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors ${step.captureEvidence ? 'bg-[var(--accent)]' : 'bg-[var(--border)]'}`}><span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${step.captureEvidence ? 'translate-x-4' : 'translate-x-0.5'}`} /></button></div>
+                          <button type="button" onClick={() => setEditRunResults((groups) => groups.map((group, i) => i === resultIndex ? { ...group, steps: group.steps.filter((_, j) => j !== stepIndex) } : group))} title="Remove step" className="mt-1 rounded p-1 text-[var(--text-muted)] hover:bg-red-500/10 hover:text-red-500"><Trash2 className="h-4 w-4" /></button>
+                        </div>
+                      ))}
+                    </div>
+                    <button type="button" onClick={() => setEditRunResults((groups) => groups.map((group, i) => i === resultIndex ? { ...group, steps: [...group.steps, { action: '', expected: '', captureEvidence: true }] } : group))} className="mt-2 inline-flex items-center gap-1.5 rounded-md border border-dashed border-[var(--border)] px-3 py-1.5 text-sm font-medium text-[var(--text-muted)] hover:border-[var(--accent)] hover:text-[var(--accent)]"><Plus className="h-4 w-4" /> Add step</button>
+                  </div>
+                ))}
+            </div>
+          )}
+
           {!editingRunId && newRunMode !== 'manual' && (
             <div>
               <div className="mb-1 flex items-center justify-between">
@@ -1153,15 +1257,16 @@ export default function TestRuns() {
                 <th className="w-28 px-4 py-3 font-medium">Duration</th>
                 <th className="w-56 px-4 py-3 font-medium">Tests Status</th>
                 <th className="w-40 px-4 py-3 font-medium">Failure Analysis</th>
+                <th className="w-44 px-4 py-3 font-medium">Run Date</th>
                 <th className="w-32 px-4 py-3 font-medium">Updated</th>
                 <th className="w-20 px-4 py-3"></th>
               </tr>
             </thead>
             <tbody className="divide-y divide-[var(--border)]">
               {loading ? (
-                <tr><td colSpan={11} className="px-4 py-8 text-center text-[var(--text-muted)]">Loading runs...</td></tr>
+                <tr><td colSpan={12} className="px-4 py-8 text-center text-[var(--text-muted)]">Loading runs...</td></tr>
               ) : filteredRuns.length === 0 ? (
-                <tr><td colSpan={11} className="px-4 py-8 text-center text-[var(--text-muted)]">No test runs found.</td></tr>
+                <tr><td colSpan={12} className="px-4 py-8 text-center text-[var(--text-muted)]">No test runs found.</td></tr>
               ) : filteredRuns.map((run) => {
                 const stats = getRunStats(run);
                 const runScripts = scriptsForRun(run, casesForRun(run, cases, suites), scripts);
@@ -1207,7 +1312,7 @@ export default function TestRuns() {
                       {scriptNames.length > 0 && <div className="text-xs text-[var(--text-muted)]">{scriptNames.length} script{scriptNames.length === 1 ? '' : 's'}</div>}
                     </td>
                     <td className="px-4 py-4">{stats.total} Tests</td>
-                    <td className="px-4 py-4">{running ? 'Running…' : run.executionTime || '-'}</td>
+                    <td className="px-4 py-4">{formatRunDuration(run, now)}</td>
                     <td className="px-4 py-4">
                       {running ? (
                         <div className="w-36" role="status" aria-live="polite">
@@ -1233,6 +1338,9 @@ export default function TestRuns() {
                       >
                         {stats.failed ? `${stats.failed} failed` : (/failed/i.test(run.status || '') ? run.progress || 'Execution failed' : '-')}
                       </div>
+                    </td>
+                    <td className="overflow-hidden px-4 py-4 text-xs leading-5 whitespace-normal text-[var(--text-muted)]">
+                      {run.startedAt || run.date ? <Timestamp value={run.startedAt || run.date} mode="absolute" /> : '—'}
                     </td>
                     <td className="overflow-hidden px-4 py-4 whitespace-nowrap text-xs text-[var(--text-muted)]">
                       <Timestamp value={run.metadata?.updatedAt || run.updatedAt || run.date} />

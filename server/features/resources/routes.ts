@@ -262,10 +262,11 @@ function manualRunnerEnabled(): boolean {
 function applyRunRollup(run: any, results: any[]): any {
   const rolled: any = { ...run, ...computeRunRollup(results) };
   const starts = results.map((r) => r.startedAt).filter(Boolean).sort();
-  const ends = results.map((r) => r.completedAt).filter(Boolean).sort();
   rolled.startedAt = starts[0] || run.startedAt || null;
-  // Only stamp completion once the whole run is evaluated; otherwise leave it open so duration reads as elapsed.
-  rolled.completedAt = rolled.state === 'Completed' && ends.length ? ends[ends.length - 1] : null;
+  // A manual run stays open until the tester explicitly Stops it — recording outcomes never
+  // auto-completes the run (only POST /stop stamps completedAt). Keeps the Stop control available.
+  rolled.completedAt = run.completedAt || null;
+  if (!rolled.completedAt && rolled.state === 'Completed') rolled.state = 'In Progress';
   return rolled;
 }
 
@@ -1862,6 +1863,7 @@ Rules:
     if ('expected' in req.body) step.expected = String(req.body.expected ?? '');  // authoring the step text
     if ('actual' in req.body) step.actual = String(req.body.actual ?? '');
     if ('comment' in req.body) step.comment = String(req.body.comment ?? '');
+    if ('captureEvidence' in req.body) step.captureEvidence = req.body.captureEvidence !== false; // attachment on/off
     steps[idx] = step;
     const outcome = rollupCaseOutcome(steps);
     // Timing is stamped only when an OUTCOME is recorded (execution), not when authoring action/expected text.
@@ -1886,7 +1888,7 @@ Rules:
     const existing = await RunCaseResults.get(run.id, req.params.caseId);
     if (!existing) return res.status(404).json({ error: 'That case is not part of this run.' });
     const steps = Array.isArray(existing.stepResults) ? [...existing.stepResults] : [];
-    steps.push({ action: String(req.body?.action || ''), expected: String(req.body?.expected || ''), actual: '', outcome: 'Not Run', comment: '', captureEvidence: true, screenshots: [] });
+    steps.push({ action: String(req.body?.action || ''), expected: String(req.body?.expected || ''), actual: '', outcome: 'Not Run', comment: '', captureEvidence: req.body?.captureEvidence !== false, screenshots: [] });
     const saved = await RunCaseResults.upsert({ ...existing, stepResults: steps, outcome: rollupCaseOutcome(steps) });
     if (!isPgEnabled()) persistDataInBackground('manual step add');
     res.json({ success: true, result: saved });

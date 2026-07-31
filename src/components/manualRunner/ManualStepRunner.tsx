@@ -20,6 +20,7 @@ export function ManualStepRunner({
   steps,
   showImages,
   disabled,
+  authoringDisabled,
   onStepChange,
   onUploadScreenshot,
   onOpenImage,
@@ -29,6 +30,7 @@ export function ManualStepRunner({
   steps: StepResult[];
   showImages: boolean;
   disabled?: boolean;
+  authoringDisabled?: boolean;
   onStepChange: (index: number, patch: Partial<StepResult>) => void;
   onUploadScreenshot: (index: number, dataUrl: string) => void;
   onOpenImage: (url: string) => void;
@@ -58,6 +60,7 @@ export function ManualStepRunner({
               step={step}
               showImages={showImages}
               disabled={disabled}
+              authoringDisabled={authoringDisabled}
               onStepChange={onStepChange}
               onUploadScreenshot={onUploadScreenshot}
               onOpenImage={onOpenImage}
@@ -66,7 +69,7 @@ export function ManualStepRunner({
           ))}
         </tbody>
       </table>
-      {onAddStep && !disabled && (
+      {onAddStep && !disabled && !authoringDisabled && (
         <button
           type="button"
           onClick={onAddStep}
@@ -84,6 +87,7 @@ function StepRow({
   step,
   showImages,
   disabled,
+  authoringDisabled,
   onStepChange,
   onUploadScreenshot,
   onOpenImage,
@@ -93,6 +97,7 @@ function StepRow({
   step: StepResult;
   showImages: boolean;
   disabled?: boolean;
+  authoringDisabled?: boolean;
   onStepChange: (index: number, patch: Partial<StepResult>) => void;
   onUploadScreenshot: (index: number, dataUrl: string) => void;
   onOpenImage: (url: string) => void;
@@ -120,17 +125,17 @@ function StepRow({
         </td>
         <td className="px-3 py-2">
           {/* key includes the value so add/delete (which shifts indices) re-inits the uncontrolled field. */}
-          <textarea key={`action-${index}-${step.action || ''}`} defaultValue={step.action || ''} disabled={disabled} rows={2} placeholder="Describe the action…"
+          <textarea key={`action-${index}-${step.action || ''}`} defaultValue={step.action || ''} disabled={disabled || authoringDisabled} rows={2} placeholder="Describe the action…"
             onBlur={(e) => { if (e.target.value !== (step.action || '')) onStepChange(index, { action: e.target.value }); }}
             className={cellClass} />
         </td>
         <td className="px-3 py-2">
-          <textarea key={`expected-${index}-${step.expected || ''}`} defaultValue={step.expected || ''} disabled={disabled} rows={2} placeholder="Expected result…"
+          <textarea key={`expected-${index}-${step.expected || ''}`} defaultValue={step.expected || ''} disabled={disabled || authoringDisabled} rows={2} placeholder="Expected result…"
             onBlur={(e) => { if (e.target.value !== (step.expected || '')) onStepChange(index, { expected: e.target.value }); }}
             className={cellClass} />
         </td>
         <td className="px-3 py-2">
-          {onDeleteStep && !disabled && (
+          {onDeleteStep && !disabled && !authoringDisabled && (
             <button type="button" onClick={() => onDeleteStep(index)} title="Delete step" className="rounded p-1 text-[var(--text-muted)] hover:bg-red-500/10 hover:text-red-500">
               <Trash2 className="h-4 w-4" />
             </button>
@@ -149,8 +154,18 @@ function StepRow({
                 onBlur={(e) => { if (e.target.value !== (step.comment || '')) onStepChange(index, { comment: e.target.value }); }}
                 className="w-full resize-y rounded-md border border-[var(--border)] bg-[var(--bg-card)] px-2 py-1 text-sm outline-none focus:border-[var(--accent)] disabled:opacity-60" />
             </div>
-            {/* Evidence: upload available only when this step allows it; Show-images controls thumbnails. */}
+            {/* Evidence: an on/off toggle controls whether the tester may attach a screenshot to this step;
+                when on, the upload button shows. Show-images controls thumbnails. */}
             <div className="flex w-40 shrink-0 flex-col gap-1.5 pt-5">
+              <label className="flex items-center gap-2 text-xs text-[var(--text-muted)]">
+                <button type="button" role="switch" aria-checked={step.captureEvidence !== false} disabled={disabled || authoringDisabled}
+                  title={step.captureEvidence !== false ? 'Attachments allowed — click to turn off' : 'Attachments off — click to allow'}
+                  onClick={() => onStepChange(index, { captureEvidence: !(step.captureEvidence !== false) })}
+                  className={`inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors disabled:opacity-50 ${step.captureEvidence !== false ? 'bg-[var(--accent)]' : 'bg-[var(--border)]'}`}>
+                  <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${step.captureEvidence !== false ? 'translate-x-4' : 'translate-x-0.5'}`} />
+                </button>
+                Attachment
+              </label>
               {step.captureEvidence !== false ? (
                 <>
                   <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={(e) => { pickFile(e.target.files?.[0]); e.target.value = ''; }} />
@@ -160,7 +175,7 @@ function StepRow({
                   </button>
                 </>
               ) : (
-                <span className="text-xs text-[var(--text-muted)]">Evidence not enabled</span>
+                <span className="text-xs text-[var(--text-muted)]">Attachments off</span>
               )}
               {showImages && shots.length > 0 && (
                 <div className="flex flex-wrap gap-1.5">

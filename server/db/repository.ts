@@ -2845,6 +2845,19 @@ export const AutomationDatasetRows = {
     ]);
     return { total: Number(count?.count || 0), rows: rows.map((row: any) => ({ id: row.id, datasetId: row.dataset_id, rowNumber: row.row_number, values: row.values, validation: row.validation, state: row.state || 'available', createdAt: row.created_at })) };
   },
+  async updateValues(datasetId: string, rowNumber: number, values: Record<string, string | null>): Promise<any | null> {
+    if (!isPgEnabled()) {
+      const row = db.automationDatasetRows.find((item: any) => item.datasetId === datasetId && item.rowNumber === rowNumber);
+      if (!row) return null;
+      row.values = { ...row.values, ...values };
+      return row;
+    }
+    const row = await queryOne<any>(
+      `UPDATE automation_dataset_rows SET values = values || $3::jsonb WHERE dataset_id = $1 AND row_number = $2 RETURNING id, dataset_id, row_number, values, validation, state, created_at`,
+      [datasetId, rowNumber, JSON.stringify(values)],
+    );
+    return row ? { id: row.id, datasetId: row.dataset_id, rowNumber: row.row_number, values: row.values, validation: row.validation, state: row.state || 'available', createdAt: row.created_at } : null;
+  },
   async select(datasetId: string, rowNumbers?: number[], from?: number, to?: number, availableOnly = false): Promise<any[]> {
     if (!isPgEnabled()) {
       const wanted = rowNumbers?.length ? new Set(rowNumbers) : null;

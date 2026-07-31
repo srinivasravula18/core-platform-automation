@@ -323,10 +323,14 @@ function ResultDetail({
   now: number;
 }) {
   const steps: StepResult[] = Array.isArray(result.stepResults) ? result.stepResults : [];
-  const notStarted = !result.startedAt;
-  const inProgress = Boolean(result.startedAt) && !result.completedAt;
-  // A started-but-unevaluated run reads "In progress", not "Not run".
-  const status = inProgress && (!result.outcome || result.outcome === 'Not Run')
+  // Start/Stop is a RUN-level action, so it follows the RUN lifecycle — NOT the selected case's
+  // completion. Marking one case Passed must not remove the tester's ability to Stop; the run ends
+  // only when the tester clicks Stop.
+  const runNotStarted = !run.startedAt;
+  const runInProgress = Boolean(run.startedAt) && !run.completedAt;
+  const resultInProgress = Boolean(result.startedAt) && !result.completedAt;
+  // A started-but-unevaluated case reads "In progress", not "Not run".
+  const status = resultInProgress && (!result.outcome || result.outcome === 'Not Run')
     ? { Icon: Clock, label: 'In progress', cls: 'text-amber-500' }
     : resultStatus(result.outcome || 'Not Run');
 
@@ -337,7 +341,7 @@ function ResultDetail({
         <div className="flex items-center gap-2">
           {/* Start run: a manual run needs no scripts — this just begins the run + duration clock.
               While in progress, Stop finishes it and freezes the duration. */}
-          {editable && notStarted ? (
+          {editable && runNotStarted ? (
             <button type="button" disabled={busy} onClick={onStart} className="inline-flex items-center gap-2 rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-50">
               <Play className="h-4 w-4" /> Start run
             </button>
@@ -345,7 +349,7 @@ function ResultDetail({
             <>
               <status.Icon className={`h-6 w-6 ${status.cls}`} />
               <span className={`text-lg font-semibold ${status.cls}`}>{status.label}</span>
-              {editable && inProgress && (
+              {editable && runInProgress && (
                 <button type="button" disabled={busy} onClick={onStop} className="ml-2 inline-flex items-center gap-1.5 rounded-md bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50">
                   <Square className="h-3.5 w-3.5" /> Stop run
                 </button>
@@ -388,6 +392,7 @@ function ResultDetail({
         result={result}
         linkedDefects={defects.filter((d: any) => d.linkedCaseId === result.caseId)}
         disabled={!editable}
+        authoringDisabled
         onFieldChange={onFieldChange}
       />
 

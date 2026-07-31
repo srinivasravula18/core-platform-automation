@@ -38,6 +38,7 @@ export function RunSummaryPanel({
   result,
   linkedDefects,
   disabled,
+  authoringDisabled,
   onFieldChange,
 }: {
   run: any;
@@ -46,6 +47,7 @@ export function RunSummaryPanel({
   result: any;
   linkedDefects: any[];
   disabled?: boolean;
+  authoringDisabled?: boolean;
   onFieldChange: (patch: Record<string, string>) => void;
 }) {
   const runBy = result.runBy || run.assignedTo || run.requestedBy || 'Unassigned';
@@ -55,13 +57,13 @@ export function RunSummaryPanel({
         <h3 className="mb-3 text-sm font-semibold">Summary</h3>
         <div className="space-y-2">
           <Field label="Run by">{runBy}</Field>
-          {/* Configuration + Priority are editable on a manual run (save on blur). */}
-          <EditableField label="Configuration" value={result.configuration} disabled={disabled} caseId={result.caseId} field="configuration" onFieldChange={onFieldChange} placeholder="e.g. Sandbox / Chrome" />
+          {/* Configuration + Priority are authored through the run's Edit modal. */}
+          <EditableField label="Configuration" value={result.configuration} disabled={disabled || authoringDisabled} caseId={result.caseId} field="configuration" onFieldChange={onFieldChange} placeholder="e.g. Sandbox / Chrome" />
           <Field label="Completed time">{result.completedAt ? <Timestamp value={result.completedAt} /> : '—'}</Field>
           <Field label="Test plan">{planName || run.testPlanId || '—'}</Field>
           <Field label="Test suite">{suiteName || run.suiteName || '—'}</Field>
           <Field label="Test case">{result.caseTitle || result.caseId}</Field>
-          <EditableField label="Priority" value={result.priority} disabled={disabled} caseId={result.caseId} field="priority" onFieldChange={onFieldChange} placeholder="e.g. 2 / High" />
+          <EditableField label="Priority" value={result.priority} disabled={disabled || authoringDisabled} caseId={result.caseId} field="priority" onFieldChange={onFieldChange} placeholder="e.g. 2 / High" />
         </div>
       </div>
 
