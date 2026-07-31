@@ -1068,6 +1068,7 @@ function ProvidersSection() {
               onClearKey={() => clearKey(p.name)}
               onTest={() => test(p.name)}
               onSetDefault={(m) => setDefault(p.name, m)}
+              isDefault={defaultProvider === p.name}
               activating={activatingProvider === p.name}
             />
           ))}
@@ -1107,7 +1108,7 @@ function ProvidersSection() {
   );
 }
 
-function ProviderCard({ provider, onSaveKey, onSetEnabled, onSetAuthMode, onSetModel, onClearKey, onTest, onSetDefault, activating }: React.PropsWithChildren<{
+function ProviderCard({ provider, onSaveKey, onSetEnabled, onSetAuthMode, onSetModel, onClearKey, onTest, onSetDefault, isDefault, activating }: React.PropsWithChildren<{
   provider: ProviderInfo;
   onSaveKey: (apiKeyValue: string) => void;
   onSetEnabled: (enabled: boolean) => void;
@@ -1116,6 +1117,7 @@ function ProviderCard({ provider, onSaveKey, onSetEnabled, onSetAuthMode, onSetM
   onClearKey: () => void;
   onTest: () => void;
   onSetDefault: (model: string) => void;
+  isDefault: boolean;
   activating: boolean;
 }>) {
   const [apiKey, setApiKey] = useState('');
@@ -1177,10 +1179,16 @@ function ProviderCard({ provider, onSaveKey, onSetEnabled, onSetAuthMode, onSetM
           <button
             type="button"
             onClick={() => onSetDefault(provider.model)}
-            disabled={!provider.callable}
-            className="inline-flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-primary)] px-3 py-1.5 text-xs font-medium hover:border-[var(--accent)] disabled:opacity-50"
+            disabled={!provider.callable || isDefault}
+            title={isDefault ? 'This is the current default provider' : !provider.callable ? 'Test and enable this provider before making it the default' : 'Make this the default provider'}
+            className={`inline-flex items-center gap-1 rounded-md border px-3 py-1.5 text-xs font-medium disabled:cursor-default ${
+              isDefault
+                ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-500'
+                : 'border-[var(--border)] bg-[var(--bg-primary)] hover:border-[var(--accent)] disabled:opacity-50'
+            }`}
           >
-            <Zap className="h-3 w-3" /> Set as default
+            {isDefault ? <CheckCircle className="h-3 w-3" /> : <Zap className="h-3 w-3" />}
+            {isDefault ? 'Default' : 'Set as default'}
           </button>
         </div>
       </div>
