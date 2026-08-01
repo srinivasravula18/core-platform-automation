@@ -7,7 +7,6 @@ import { z } from 'zod';
 import { generateObject } from 'ai';
 import { prepareSse, sendSse } from '../../shared/sse';
 import { asyncRoute } from '../../shared/asyncRoute';
-import { prepareSse, sendSse } from '../../shared/sse';
 import { db, addActivity, persistDataInBackground } from '../../shared/storage';
 import { createFolder, findFolderByName, getFolderPath, resolveFolderPath } from '../../shared/folders';
 import { buildCaseDescription, normalizeCaseSteps, normalizeCaseTags } from '../../shared/testCases';
