@@ -52,6 +52,13 @@ Verify eval entry points resolve to real files before trusting a script list. Ca
 ### 9. `data-governance-check` — new store, PII field, or diligence prep
 Is there a **single** deletion path per user/workspace? Does every table holding user content have an enforced owner FK with cascade (not a bare `owner_id TEXT`)? Is time-based retention being mistaken for erasure? Which routes actually write the audit log — and is there any read/access logging? What content egresses to third parties (prompts carry source code, DOM, records), and is it classified or redacted **outbound**, not just on the response?
 
+### 10a. `phase-reviewer` (VICTOR) — independent gate on completed work
+VP-level reviewer who accepts or rejects a finished phase. Claude Code loads this from `.claude/agents/phase-reviewer.md`; other agents should adopt the role directly. **Reviews only — never writes code.**
+
+Verdict is exactly one of `APPROVED` / `APPROVED_WITH_FOLLOWUPS` / `REJECTED`; never a fourth, never an unlabelled hedge. Checks in order: (1) did it do what the plan said, and stay in scope; (2) **is it proven or merely claimed** — was the backend restarted before any live check, did the eval actually run, would a test fail without the fix; (3) is it correct — read the diff, not the summary, and look for this codebase's known failure modes (dual-writer divergence, null-column scope leaks, per-item writes mirrored as whole-key replaces, verification computed but not gating, positional zips across non-`1:1` boundaries, flag-gated code that is not live, newly hardcoded app facts); (4) does it hold up against current vendor/open-source best practice — web search allowed, cite what was consulted, and justify fit against this system's constraints rather than importing a pattern because it is popular; (5) which KPI moved, and by how much.
+
+Reject unproven security or data-isolation fixes without exception. Cite `file:line` for every criticism. State precisely what would change the verdict.
+
 ### 10. `principal-engineer-review` — full architecture/production review
 Umbrella. Analysis only by default; no code changes during review. Run dimensions in root-cause order: safety → data isolation → canonical state → topology → tool calling → agent dynamics → observability → evaluation → cost/reliability → governance. Take a position on every finding; include what is genuinely good and worth preserving. Name the 2-4 root causes that explain most individual findings. Remediation only when asked, phased, ordered by impact per unit of risk. Never promise 100% accuracy for an LLM system.
 
@@ -96,6 +103,22 @@ When asked to redesign or overhaul a major subsystem (e.g. the Context & Evidenc
 - Before considering any phase complete, verify: build succeeds, existing tests pass, no compile/type errors, no broken imports, no new circular dependencies, existing APIs/agents still work, DOM inspection still works, repo grounding still works, metadata still works, prompt/context assembly works with no silent truncation, validation gates work, Playwright generation uses verified evidence only.
 - After each phase, report: summary of changes, files modified, reason per change, risks, validation performed, remaining work.
 - At the end of all phases, produce a final production-readiness report.
+
+## Autonomous phase loop (when running the remediation programme unattended)
+
+The plan of record is `docs/plans/master-accuracy-remediation-plan-2026-08-01.md`. The durable state is `docs/plans/PHASE-PROGRESS.md` — **read it first, append after every phase.** Context compacts and sessions end; the ledger is the only thing that survives, so never rely on conversation memory to carry phase state.
+
+Loop per phase: **VERIFY** the defect is real in current code (parallel specialists, `file:line`) → **IMPLEMENT** within scope (10-15 files or one subsystem) → **VALIDATE** lint, tests, then **restart the backend** → **PROVE** with the eval suite, or state honestly that it does not exist yet → **REVIEW** by the phase-reviewer, who returns one of the three verdicts → **RECORD** in the ledger → **ADVANCE** or rework.
+
+`REJECTED` means fix and re-submit — it does not mean stop, and it does not mean skip. A phase may be re-attempted; a phase may not be silently abandoned.
+
+**Hard stops — halt and wait for the human on any of these, and only these:**
+1. An irreversible or destructive operation is required (schema migration with data loss, deleting user data, force-push, rewriting published history).
+2. A security or data-isolation fix cannot be **proven** by a test that would fail without it.
+3. The eval regresses beyond tolerance and two consecutive fix attempts fail.
+4. The plan itself is wrong — the premise does not match current code — so continuing would build on a false foundation.
+
+Everything else is decided and recorded, not escalated. Questions that need a human but do not block progress go in the ledger's open-questions section; the loop continues around them.
 
 ## Diagnostics on file
 
