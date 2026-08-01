@@ -6,6 +6,7 @@ Project instructions for Claude Code working in this repo.
 
 - **No hardcoding, anywhere.** Never hardcode app/product facts (names like admin/keystone/shockwave, URLs, ports, endpoints, selectors, field names, auth keys, module lists) in code, prompts, or understanding. Everything app-specific must be LEARNED from the connected repo/URL/OpenAPI at runtime. If you find hardcoding, remove it and route the value through the understanding/learning layer — never just report it.
 - **Comments: precise and short.** One line where possible; no large multi-line comment blocks. Say why, not what. Match surrounding density.
+- **Never commit and never push without explicit approval for that specific action.** Approval given for one commit does NOT carry to the next one. Leave finished work in the working tree for review via `git diff`. This applies to every agent, including autonomous/looping runs.
 
 ## Explaining results (applies to every answer, especially after research/code search)
 

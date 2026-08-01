@@ -6,6 +6,7 @@ Project instructions for Codex/other coding agents working in this repo. (Mirror
 
 - **No hardcoding, anywhere.** Never hardcode app/product facts (product names, URLs, ports, endpoints, selectors, field names, auth keys, module lists) in code, prompts, or understanding. Everything app-specific must be LEARNED from the connected repo/URL/OpenAPI at runtime. If you find hardcoding, remove it and route the value through the understanding/learning layer — never just report it.
 - **Comments: precise and short.** One line where possible; no large multi-line blocks. Say why, not what.
+- **Never commit and never push without explicit approval for that specific action.** Approval given for one commit does NOT carry to the next one. Leave finished work in the working tree for review via `git diff`. This applies to every agent, including autonomous/looping runs.
 - **Backend has no hot reload.** It runs as `tsx server.ts`. After ANY `server/**` or `server.ts` change the backend must be RESTARTED to load it. Order: (1) `npm run lint` (tsc --noEmit) passes, (2) relevant tests pass, (3) THEN restart. Never conclude a backend change "works live" against a process older than the edit.
 
 ## Explaining results (applies to every answer, especially after research/code search)

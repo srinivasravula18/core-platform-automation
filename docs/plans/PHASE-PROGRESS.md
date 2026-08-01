@@ -34,7 +34,7 @@ Status values: `NOT STARTED` · `IN PROGRESS` · `AWAITING REVIEW` · `REJECTED 
 - Backend: `tsx server.ts`, **no hot reload** — restart required after any `server/**` change.
 - `AGENT_GRAPH_V2` default ON (LangGraph is the live executor).
 - `AGENT_NATIVE_V1` default OFF (agent bus/blackboard is shadow-only).
-- SUT (`D:\core-platform`) ports 5001/5002/5003 — **were down** as of 2026-08-01; live re-runs blocked until started.
+- SUT (`D:\core-platform`) ports 5001/5002/5003 — **UP** as of 2026-08-01 14:40 (5001 API returns 404 on `/`, which is normal; 5002 Admin and 5003 Keystone return 200). Live verification is available. Re-check with `netstat -ano | grep LISTENING | grep -E ':(5001|5002|5003)\b'` — note `/dev/tcp` probes are unreliable in Git Bash and give false negatives.
 - No eval suite exists until P1 completes. Any accuracy number before then is an estimate, not a measurement.
 
 ---
