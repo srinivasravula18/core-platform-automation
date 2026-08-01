@@ -37,7 +37,7 @@ export function TagEditor({ options, value, onChange }: { options: string[]; val
   return (
     <div ref={boxRef} className="relative">
       <div
-        className="flex min-h-10 flex-wrap items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 focus-within:border-[var(--accent)]"
+        className="flex min-h-10 max-h-28 flex-wrap items-center gap-1.5 overflow-y-auto rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 focus-within:border-[var(--accent)]"
         onClick={() => setOpen(true)}
       >
         {value.map((tag) => (

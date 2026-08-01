@@ -202,7 +202,6 @@ export function AIReworkPanel<T extends AIReworkCase>({
         {compact && (
           <div className="flex shrink-0 items-center gap-1.5 text-xs font-semibold text-[var(--text-primary)]">
             <Sparkles className="h-4 w-4 text-[var(--accent)]" />
-            <span>Improve with AI</span>
           </div>
         )}
         <textarea
@@ -216,7 +215,8 @@ export function AIReworkPanel<T extends AIReworkCase>({
           }}
           disabled={loading}
           rows={compact ? 1 : 3}
-          placeholder="Describe what should change, or what coverage is missing..."
+          aria-label="Improve with AI"
+          placeholder={compact ? 'Improve with AI — describe changes or missing coverage...' : 'Describe what should change, or what coverage is missing...'}
           className={`min-w-0 flex-1 rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-xs text-[var(--text-primary)] outline-none placeholder:text-[var(--text-muted)] focus:border-[var(--accent)] disabled:opacity-60 ${compact ? 'min-h-10 resize-none' : 'w-full resize-y'}`}
         />
         {compact && (

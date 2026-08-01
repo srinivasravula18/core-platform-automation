@@ -1,16 +1,15 @@
 import { useEffect, useMemo, useState } from 'react';
-import { ChevronRight, FileText, Folder, FolderPlus, Layers, PlayCircle, Search, Trash2, ClipboardList, TestTube2, Code2, Copy, Download, Check, CheckSquare, X, Bug, ScrollText, MoveRight } from 'lucide-react';
+import { FileText, Layers, PlayCircle, Search, Trash2, ClipboardList, TestTube2, Code2, Copy, Download, Check, CheckSquare, X, Bug, ScrollText, Tag as TagIcon, History } from 'lucide-react';
 import { cn } from '@/src/lib/utils';
 import { Modal } from '@/src/components/Modal';
+import { VersionHistoryPanel } from '@/src/components/VersionHistoryPanel';
 import { showAlert, showConfirm } from '@/src/lib/dialog';
-import { can } from '@/src/components/AuthGate';
+import { fetchTagCatalog, type TagCatalogEntry } from '@/src/lib/entityLinking';
 import { useDataVersion } from '@/src/store/data';
 import { useProjects } from '@/src/store/project';
 
 // Artifact groups backed by a real DELETE/bulk-delete endpoint (evidence is derived, not deletable).
 const DELETABLE_KEYS = new Set(['plans', 'suites', 'cases', 'runs', 'reports', 'scripts', 'requirements', 'defects']);
-
-type FolderNode = any & { children: FolderNode[] };
 
 const artifactConfig = [
   { key: 'plans', label: 'Plans', icon: FileText },
@@ -24,139 +23,26 @@ const artifactConfig = [
   { key: 'evidence', label: 'Evidence', icon: ClipboardList },
 ] as const;
 
-function buildTree(folders: any[]) {
-  const byId = new Map<string, FolderNode>();
-  folders.forEach((folder) => byId.set(folder.id, { ...folder, children: [] }));
-  const roots: FolderNode[] = [];
-  byId.forEach((folder) => {
-    const parent = byId.get(folder.parentId);
-    if (parent) parent.children.push(folder);
-    else roots.push(folder);
-  });
-  const sortNodes = (nodes: FolderNode[]) => {
-    nodes.sort((a, b) => String(a.name).localeCompare(String(b.name)));
-    nodes.forEach((node) => sortNodes(node.children));
-  };
-  sortNodes(roots);
-  return roots;
-}
-
-function FolderTreeItem({
-  node,
-  selectedId,
-  selectedFolderIds,
-  onSelect,
-  onToggleFolder,
-  onDelete,
-  depth = 0,
-}: {
-  key?: string;
-  node: FolderNode;
-  selectedId: string;
-  selectedFolderIds: Set<string>;
-  onSelect: (id: string) => void;
-  onToggleFolder: (id: string) => void;
-  onDelete: (id: string, name: string) => void;
-  depth?: number;
-}) {
-  const [open, setOpen] = useState(true);
-  const hasChildren = node.children.length > 0;
-  return (
-    <div>
-      <div
-        className={cn(
-          'group flex items-center rounded-md transition-colors',
-          selectedId === node.id ? 'bg-[var(--accent)]/10' : 'hover:bg-[var(--bg-secondary)]'
-        )}
-      >
-        <button
-          onClick={() => onSelect(node.id)}
-          className={cn(
-            'flex min-w-0 flex-1 items-center gap-2 px-2 py-2 text-left text-sm transition-colors',
-            selectedId === node.id ? 'text-[var(--accent)]' : 'text-[var(--text-muted)] group-hover:text-[var(--text-primary)]'
-          )}
-          style={{ paddingLeft: `${8 + depth * 14}px` }}
-        >
-          <input
-            type="checkbox"
-            checked={selectedFolderIds.has(node.id)}
-            onClick={(e) => e.stopPropagation()}
-            onChange={() => onToggleFolder(node.id)}
-            className="shrink-0"
-            title={`Select ${node.name}`}
-          />
-          {hasChildren ? (
-            <ChevronRight onClick={(e) => { e.stopPropagation(); setOpen(!open); }} className={cn('h-4 w-4 shrink-0 transition-transform', open && 'rotate-90')} />
-          ) : (
-            <span className="h-4 w-4 shrink-0" />
-          )}
-          <Folder className="h-4 w-4 shrink-0" />
-          <span className="min-w-0 truncate">{node.name}</span>
-        </button>
-        {can('folders:delete') && (
-        <button
-          onClick={(e) => { e.stopPropagation(); onDelete(node.id, node.name); }}
-          title="Delete folder"
-          aria-label={`Delete folder ${node.name}`}
-          className="mr-1 shrink-0 rounded p-1 text-[var(--text-muted)] opacity-0 transition-colors hover:bg-red-500/10 hover:text-red-500 focus:opacity-100 group-hover:opacity-100"
-        >
-          <Trash2 className="h-3.5 w-3.5" />
-        </button>
-        )}
-      </div>
-      {open && hasChildren && (
-        <div>
-          {node.children.map((child) => (
-            <FolderTreeItem key={child.id} node={child} selectedId={selectedId} selectedFolderIds={selectedFolderIds} onSelect={onSelect} onToggleFolder={onToggleFolder} onDelete={onDelete} depth={depth + 1} />
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function MoveDestinationItem({ node, selectedId, onSelect, depth = 0 }: { key?: string; node: FolderNode; selectedId: string; onSelect: (id: string) => void; depth?: number }) {
-  return (
-    <div>
-      <button
-        type="button"
-        onClick={() => onSelect(node.id)}
-        className={cn(
-          'flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-sm transition-colors',
-          selectedId === node.id ? 'bg-[var(--accent)]/15 text-[var(--accent)]' : 'text-[var(--text-primary)] hover:bg-[var(--bg-card)]',
-        )}
-        style={{ paddingLeft: `${8 + depth * 18}px` }}
-      >
-        <Folder className="h-4 w-4 shrink-0" />
-        <span className="truncate">{node.name}</span>
-      </button>
-      {node.children.map((child) => <MoveDestinationItem key={child.id} node={child} selectedId={selectedId} onSelect={onSelect} depth={depth + 1} />)}
-    </div>
-  );
-}
+// Compare tags ignoring case + the @/# marker so a stored `@sanity` matches a catalog `@sanity`.
+const tagKey = (t: any) => String(t || '').trim().toLowerCase().replace(/^[@#]+/, '');
 
 export default function TestRepository() {
-  const [folders, setFolders] = useState<any[]>([]);
   const [artifacts, setArtifacts] = useState<Record<string, any[]>>({ plans: [], suites: [], cases: [], runs: [], reports: [], scripts: [], evidence: [] });
+  const [catalog, setCatalog] = useState<TagCatalogEntry[]>([]);
+  const [activeTags, setActiveTags] = useState<string[]>([]);
+  const [tagFilter, setTagFilter] = useState('');
   const [viewerScript, setViewerScript] = useState<any | null>(null);
+  const [scriptHistory, setScriptHistory] = useState(false);
   const [copied, setCopied] = useState(false);
-  const [selectedFolderId, setSelectedFolderId] = useState('');
-  const [newRootFolderName, setNewRootFolderName] = useState('');
-  const [newSubfolderName, setNewSubfolderName] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
   const [selectMode, setSelectMode] = useState(false);
   const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set());
-  const [selectedFolderIds, setSelectedFolderIds] = useState<Set<string>>(new Set());
   const [deleting, setDeleting] = useState(false);
-  const [moveFolderOpen, setMoveFolderOpen] = useState(false);
-  const [moveParentId, setMoveParentId] = useState('');
-  const [movingFolder, setMovingFolder] = useState(false);
   const dataVersion = useDataVersion((s) => s.version);
   const { selectedProjectId, selectedAppId } = useProjects();
 
   const fetchData = () => {
     Promise.all([
-      fetch('/api/folders').then((r) => r.json()),
       fetch('/api/plans').then((r) => r.json()),
       fetch('/api/suites').then((r) => r.json()),
       fetch('/api/cases').then((r) => r.json()),
@@ -167,17 +53,15 @@ export default function TestRepository() {
       fetch('/api/requirements').then((r) => r.json()),
       fetch('/api/defects').then((r) => r.json()),
     ])
-      .then(([folderData, plans, suites, cases, runs, reports, scripts, agentRuns, requirements, defects]) => {
+      .then(([plans, suites, cases, runs, reports, scripts, agentRuns, requirements, defects]) => {
         const evidence = (Array.isArray(agentRuns) ? agentRuns : []).flatMap((run: any) =>
           (run.evidence_screenshots || []).map((shot: any, index: number) => ({
             id: `${run.id}-evidence-${index + 1}`,
             name: shot.title || shot.screenshotUrl || `Evidence ${index + 1}`,
             title: shot.title || shot.screenshotUrl || `Evidence ${index + 1}`,
-            folderId: run.folderId || '',
             status: shot.status ? `HTTP ${shot.status}` : 'Captured',
           }))
         );
-        setFolders(Array.isArray(folderData) ? folderData : []);
         setArtifacts({
           plans, suites, cases, runs, reports,
           scripts: Array.isArray(scripts) ? scripts : [],
@@ -187,6 +71,7 @@ export default function TestRepository() {
         });
       })
       .catch(console.error);
+    fetchTagCatalog().then(setCatalog).catch(() => setCatalog([]));
   };
 
   // Refetch on mount, on any global data-version bump, and when the selected project/app changes.
@@ -203,185 +88,24 @@ export default function TestRepository() {
     return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
   }, []);
 
-  useEffect(() => {
-    if (!selectedFolderId && folders.length > 0) setSelectedFolderId(folders[0].id);
-  }, [folders, selectedFolderId]);
+  const activeKeys = useMemo(() => activeTags.map(tagKey), [activeTags]);
+  const shownCatalog = useMemo(() => {
+    const q = tagFilter.trim().toLowerCase();
+    return catalog.filter((t) => !q || t.name.toLowerCase().includes(q));
+  }, [catalog, tagFilter]);
 
-  const selectedFolder = folders.find((folder) => folder.id === selectedFolderId) || null;
-  const tree = useMemo(() => buildTree(folders), [folders]);
-  const allFolderIds = useMemo(() => folders.map((folder) => folder.id), [folders]);
-  const allFoldersSelected = allFolderIds.length > 0 && allFolderIds.every((id) => selectedFolderIds.has(id));
   const visibleItems = (key: string) => {
     const query = searchTerm.toLowerCase();
     return (artifacts[key] || []).filter((item) => {
-      const inFolder = selectedFolderId ? item.folderId === selectedFolderId : !item.folderId;
+      const itemTags = (Array.isArray(item.tags) ? item.tags : []).map(tagKey);
+      const matchesTags = !activeKeys.length || activeKeys.every((t) => itemTags.includes(t));
       const matchesSearch = !query || `${item.id || ''} ${item.name || ''} ${item.title || ''} ${item.description || ''}`.toLowerCase().includes(query);
-      return inFolder && matchesSearch;
+      return matchesTags && matchesSearch;
     });
   };
 
-  const createRootFolder = async () => {
-    const name = newRootFolderName.trim();
-    if (!name) return;
-    const res = await fetch('/api/folders', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name }),
-    });
-    const data = await res.json();
-    if (!res.ok) {
-      void showAlert(data.error || 'Failed to create folder.');
-      return;
-    }
-    if (data.folder?.id) {
-      setSelectedFolderId(data.folder.id);
-      setNewRootFolderName('');
-      fetchData();
-    }
-  };
-
-  const createSubfolder = async () => {
-    const name = newSubfolderName.trim();
-    if (!name || !selectedFolder) return;
-    const res = await fetch('/api/folders', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, parentId: selectedFolderId }),
-    });
-    const data = await res.json();
-    if (!res.ok) {
-      void showAlert(data.error || 'Failed to create folder.');
-      return;
-    }
-    if (data.folder?.id) {
-      setSelectedFolderId(data.folder.id);
-      setNewSubfolderName('');
-      fetchData();
-    }
-  };
-
-  const deleteFolderById = async (id: string, name?: string) => {
-    if (!id) return;
-    if (!await showConfirm(`Delete folder${name ? ` "${name}"` : ''}? This cannot be undone.`, { tone: 'danger' })) return;
-    const res = await fetch(`/api/folders/${id}`, { method: 'DELETE' });
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
-      void showAlert(data.error || 'Folder cannot be deleted (it may still contain items or subfolders).');
-      return;
-    }
-    if (selectedFolderId === id) setSelectedFolderId('');
-    fetchData();
-  };
-
-  const deleteFolder = () => deleteFolderById(selectedFolderId, selectedFolder?.name);
-
-  const toggleFolderSelection = (id: string) => {
-    setSelectedFolderIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  };
-
-  const toggleAllFolders = () => {
-    setSelectedFolderIds(allFoldersSelected ? new Set() : new Set(allFolderIds));
-  };
-
-  const foldersToMove = useMemo(() => {
-    const requestedIds = new Set(selectedFolderIds);
-    // When both a parent and its child are selected, moving the parent already
-    // moves the child. Keep only top-level selected folders to preserve nesting.
-    return folders.filter((folder) => {
-      if (!requestedIds.has(folder.id)) return false;
-      let parentId = folder.parentId || '';
-      const visited = new Set<string>();
-      while (parentId && !visited.has(parentId)) {
-        if (requestedIds.has(parentId)) return false;
-        visited.add(parentId);
-        parentId = folders.find((candidate) => candidate.id === parentId)?.parentId || '';
-      }
-      return true;
-    });
-  }, [folders, selectedFolder, selectedFolderIds]);
-
-  const moveDestinationFolders = useMemo(() => {
-    const excluded = new Set<string>(foldersToMove.map((folder) => folder.id));
-    let changed = true;
-    while (changed) {
-      changed = false;
-      for (const folder of folders) {
-        if (!excluded.has(folder.id) && excluded.has(folder.parentId || '')) {
-          excluded.add(folder.id);
-          changed = true;
-        }
-      }
-    }
-    return folders.filter((folder) => !excluded.has(folder.id));
-  }, [folders, foldersToMove]);
-  const moveDestinationTree = useMemo(() => buildTree(moveDestinationFolders), [moveDestinationFolders]);
-
-  const openMoveFolder = async () => {
-    if (selectedFolderIds.size === 0) return;
-    // Reload immediately before opening: the destination hierarchy must reflect
-    // folders that may have been moved in another interaction or browser tab.
-    try {
-      const response = await fetch('/api/folders');
-      const latestFolders = await response.json();
-      if (response.ok && Array.isArray(latestFolders)) setFolders(latestFolders);
-    } catch (error) {
-      console.error('Failed to refresh folders before moving.', error);
-    }
-    setMoveParentId('');
-    setMoveFolderOpen(true);
-  };
-
-  const moveFolder = async () => {
-    if (!foldersToMove.length || movingFolder) return;
-    setMovingFolder(true);
-    try {
-      const responses = await Promise.all(foldersToMove.map((folder) => fetch(`/api/folders/${folder.id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ parentId: moveParentId }),
-      })));
-      const failed = responses.find((response) => !response.ok);
-      if (failed) {
-        const data = await failed.json().catch(() => ({}));
-        throw new Error(data.error || 'Failed to move folders.');
-      }
-      setMoveFolderOpen(false);
-      setSelectedFolderIds(new Set());
-      fetchData();
-    } catch (error) {
-      void showAlert(error instanceof Error ? error.message : 'Failed to move folder.');
-    } finally {
-      setMovingFolder(false);
-    }
-  };
-
-  const deleteSelectedFolders = async () => {
-    const ids = Array.from(selectedFolderIds);
-    if (!ids.length) return;
-    if (!await showConfirm(`Delete ${ids.length} selected folder${ids.length === 1 ? '' : 's'} and everything inside? This cannot be undone.`, { tone: 'danger' })) return;
-    setDeleting(true);
-    try {
-      const res = await fetch('/api/folders/bulk-delete', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ids }),
-      });
-      if (!res.ok) throw new Error('Failed to delete folders');
-      setSelectedFolderIds(new Set());
-      if (ids.includes(selectedFolderId)) setSelectedFolderId('');
-      fetchData();
-    } catch (error) {
-      console.error(error);
-      void showAlert('Failed to delete selected folders.');
-    } finally {
-      setDeleting(false);
-    }
-  };
+  const toggleTag = (name: string) =>
+    setActiveTags((cur) => (cur.includes(name) ? cur.filter((t) => t !== name) : [...cur, name]));
 
   const toggleSelectMode = () => {
     setSelectMode((prev) => {
@@ -391,7 +115,6 @@ export default function TestRepository() {
   };
 
   const composeKey = (entity: string, id: string) => `${entity}::${id}`;
-
   const toggleItem = (entity: string, id: string) => {
     const k = composeKey(entity, id);
     setSelectedKeys((prev) => {
@@ -401,7 +124,6 @@ export default function TestRepository() {
       return next;
     });
   };
-
   const isItemSelected = (entity: string, id: string) => selectedKeys.has(composeKey(entity, id));
 
   const deleteArtifact = async (entity: string, id: string) => {
@@ -423,7 +145,6 @@ export default function TestRepository() {
     const keys: string[] = Array.from(selectedKeys);
     if (!keys.length) return;
     if (!await showConfirm(`Delete ${keys.length} selected item${keys.length === 1 ? '' : 's'}? This cannot be undone.`, { tone: 'danger' })) return;
-    // group ids by entity for bulk-delete calls
     const byEntity = new Map<string, string[]>();
     for (const k of keys) {
       const [entity, id] = k.split('::');
@@ -457,100 +178,59 @@ export default function TestRepository() {
       <div className="flex flex-shrink-0 items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Test Repository</h1>
-          <p className="mt-1 text-sm text-[var(--text-muted)]">Organize plans, suites, cases, runs, reports, scripts, and evidence by app or feature folders.</p>
+          <p className="mt-1 text-sm text-[var(--text-muted)]">Browse plans, suites, cases, runs, reports, scripts, and evidence by tag.</p>
         </div>
       </div>
 
-      <div className="grid min-h-0 flex-1 grid-cols-1 gap-5 overflow-hidden lg:grid-cols-[clamp(18rem,22vw,21.25rem)_minmax(0,1fr)]">
+      <div className="grid min-h-0 flex-1 grid-cols-1 gap-5 overflow-hidden lg:grid-cols-[clamp(16rem,20vw,20rem)_minmax(0,1fr)]">
+        {/* Tag rail — the organizing axis (folders removed). Selecting tags narrows every group (match all). */}
         <aside className="flex min-h-0 flex-col overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--bg-card)]">
-          {/* Gate folder-creation controls on folders:create */}
-          {can('folders:create') && (
-          <div className="space-y-4 border-b border-[var(--border)] p-4">
-            <div>
-              <div className="mb-2 text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">Create New Folder</div>
-              <div className="flex gap-2">
-                <input
-                  value={newRootFolderName}
-                  onChange={(e) => setNewRootFolderName(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && createRootFolder()}
-                  placeholder="Folder name"
-                  className="min-w-0 flex-1 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
-                />
-                <button onClick={createRootFolder} disabled={!newRootFolderName.trim()} className="inline-flex items-center gap-2 rounded-md bg-[var(--accent)] px-3 py-2 text-sm font-medium text-white disabled:opacity-50" title="Create root folder">
-                  <FolderPlus className="h-4 w-4" />
-                  New
-                </button>
-              </div>
-            </div>
-            <div>
-              <div className="mb-2 text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">Create Subfolder</div>
-              <div className="mb-2 truncate text-xs text-[var(--text-muted)]">
-                Parent: <span className="text-[var(--text-primary)]">{selectedFolder ? selectedFolder.path : 'Select a folder'}</span>
-              </div>
-              <div className="flex gap-2">
+          <div className="flex items-center justify-between gap-2 border-b border-[var(--border)] p-3">
+            <div className="flex items-center gap-2 text-sm font-semibold"><TagIcon className="h-4 w-4 text-[var(--accent)]" /> Tags</div>
+            {activeTags.length > 0 && (
+              <button onClick={() => setActiveTags([])} className="text-xs font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]">Clear ({activeTags.length})</button>
+            )}
+          </div>
+          <div className="border-b border-[var(--border)] p-3">
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--text-muted)]" />
               <input
-                value={newSubfolderName}
-                onChange={(e) => setNewSubfolderName(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && createSubfolder()}
-                placeholder="Subfolder name"
-                className="min-w-0 flex-1 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
+                value={tagFilter}
+                onChange={(e) => setTagFilter(e.target.value)}
+                placeholder="Filter tags…"
+                className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] py-1.5 pl-8 pr-2.5 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
               />
-              <button onClick={createSubfolder} disabled={!newSubfolderName.trim() || !selectedFolder} className="inline-flex items-center gap-2 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm font-medium text-[var(--text-primary)] hover:border-[var(--accent)] disabled:opacity-50" title="Create subfolder">
-                <FolderPlus className="h-4 w-4" />
-                Add
-              </button>
-              </div>
             </div>
           </div>
-          )}
-          <div className="flex items-center gap-2 border-b border-[var(--border)] p-3">
-            <button
-              onClick={toggleAllFolders}
-              disabled={allFolderIds.length === 0}
-              className="inline-flex items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2.5 py-1.5 text-xs font-medium text-[var(--text-primary)] hover:border-[var(--accent)] disabled:opacity-50"
-            >
-              <CheckSquare className="h-3.5 w-3.5" />
-              {allFoldersSelected ? 'Clear all' : 'Select all'}
-            </button>
-            {can('folders:update') && (
-            <button
-              onClick={openMoveFolder}
-              disabled={foldersToMove.length === 0}
-              className="inline-flex items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2.5 py-1.5 text-xs font-medium text-[var(--text-primary)] hover:border-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-50"
-              title={foldersToMove.length ? `Move ${foldersToMove.length} selected folder${foldersToMove.length === 1 ? '' : 's'}` : 'Select a folder to move'}
-            >
-              <MoveRight className="h-3.5 w-3.5" />
-              Move
-            </button>
-            )}
-            {selectedFolderIds.size > 0 && can('folders:delete') && (
-              <button
-                onClick={deleteSelectedFolders}
-                disabled={deleting}
-                className="inline-flex items-center gap-1.5 rounded-md bg-red-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-50"
-              >
-                <Trash2 className="h-3.5 w-3.5" />
-                Delete ({selectedFolderIds.size})
-              </button>
-            )}
-          </div>
-          <div className="min-h-0 flex-1 overflow-auto p-3">
-            {tree.map((node) => (
-              <FolderTreeItem key={node.id} node={node} selectedId={selectedFolderId} selectedFolderIds={selectedFolderIds} onSelect={setSelectedFolderId} onToggleFolder={toggleFolderSelection} onDelete={deleteFolderById} />
-            ))}
-            {tree.length === 0 && (
+          <div className="min-h-0 flex-1 overflow-auto p-2">
+            {shownCatalog.length === 0 ? (
               <div className="rounded-md border border-dashed border-[var(--border)] px-3 py-6 text-center text-sm text-[var(--text-muted)]">
-                Create a folder to start organizing test assets.
+                No tags yet. Tag cases, suites, plans, or runs to organize them.
               </div>
-            )}
+            ) : shownCatalog.map((t) => {
+              const on = activeTags.includes(t.name);
+              return (
+                <button
+                  key={t.name}
+                  onClick={() => toggleTag(t.name)}
+                  className={cn(
+                    'flex w-full items-center justify-between gap-2 rounded-md px-2.5 py-2 text-left text-sm transition-colors',
+                    on ? 'bg-[var(--accent)]/10 text-[var(--accent)]' : 'text-[var(--text-muted)] hover:bg-[var(--bg-secondary)] hover:text-[var(--text-primary)]',
+                  )}
+                >
+                  <span className="min-w-0 truncate">{t.name}</span>
+                  <span className="shrink-0 rounded-full bg-[var(--bg-secondary)] px-2 py-0.5 text-xs text-[var(--text-muted)]">{t.count}</span>
+                </button>
+              );
+            })}
           </div>
         </aside>
 
         <section className="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--bg-card)]">
           <div className="flex flex-shrink-0 flex-wrap items-center justify-between gap-3 border-b border-[var(--border)] p-4">
             <div className="min-w-0">
-              <div className="text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">Current Folder</div>
-              <h2 className="truncate text-lg font-semibold">{selectedFolder ? selectedFolder.path : 'No folder selected'}</h2>
+              <div className="text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">Filtered by</div>
+              <h2 className="truncate text-lg font-semibold">{activeTags.length ? activeTags.join(' + ') : 'All items'}</h2>
             </div>
             <div className="flex flex-wrap items-center gap-2">
               <div className="relative">
@@ -558,21 +238,16 @@ export default function TestRepository() {
                 <input
                   value={searchTerm}
                   onChange={(e) => setSearchTerm(e.target.value)}
-                  placeholder="Search in folder..."
+                  placeholder="Search items..."
                   className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] py-2 pl-9 pr-3 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)] sm:w-72"
                 />
               </div>
-              <button onClick={toggleSelectMode} className={cn("inline-flex items-center gap-1.5 rounded-md border px-3 py-2 text-sm font-medium transition-colors", selectMode ? "border-[var(--accent)] text-[var(--accent)] bg-[var(--accent)]/10" : "border-[var(--border)] bg-[var(--bg-secondary)] text-[var(--text-primary)] hover:border-[var(--accent)]")}>
+              <button onClick={toggleSelectMode} className={cn('inline-flex items-center gap-1.5 rounded-md border px-3 py-2 text-sm font-medium transition-colors', selectMode ? 'border-[var(--accent)] text-[var(--accent)] bg-[var(--accent)]/10' : 'border-[var(--border)] bg-[var(--bg-secondary)] text-[var(--text-primary)] hover:border-[var(--accent)]')}>
                 {selectMode ? <X className="h-4 w-4" /> : <CheckSquare className="h-4 w-4" />} {selectMode ? 'Cancel' : 'Select'}
               </button>
               {selectMode && selectedKeys.size > 0 && (
                 <button onClick={deleteSelectedArtifacts} disabled={deleting} className="inline-flex items-center gap-1.5 rounded-md bg-red-600 px-3 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50">
                   <Trash2 className="h-4 w-4" /> Delete selected ({selectedKeys.size})
-                </button>
-              )}
-              {selectedFolder && can('folders:delete') && (
-                <button onClick={deleteFolder} className="rounded-md border border-red-500/20 bg-red-500/10 p-2 text-red-400 hover:bg-red-500/20" title="Delete empty folder">
-                  <Trash2 className="h-4 w-4" />
                 </button>
               )}
             </div>
@@ -633,6 +308,13 @@ export default function TestRepository() {
                           {hasCode && <Code2 className="h-3.5 w-3.5 shrink-0 text-indigo-400" />}
                           <span className="truncate">{item.name || item.title || 'Untitled'}</span>
                         </span>
+                        {Array.isArray(item.tags) && item.tags.length > 0 && (
+                          <span className="hidden shrink-0 gap-1 sm:flex">
+                            {item.tags.slice(0, 3).map((tag: string) => (
+                              <span key={tag} className="rounded-full bg-[var(--bg-card)] px-1.5 py-0.5 text-[10px] text-[var(--text-muted)]">{tag}</span>
+                            ))}
+                          </span>
+                        )}
                         <span className="w-[88px] shrink-0 truncate text-right text-xs text-[var(--text-muted)] sm:w-[110px]" title={item.status || item.date || item.type || ''}>{item.status || item.date || item.type || ''}</span>
                         {canDelete && (
                           <button
@@ -647,7 +329,7 @@ export default function TestRepository() {
                       </div>
                       );
                     }) : (
-                      <div className="px-4 py-6 text-center text-sm text-[var(--text-muted)]">No {config.label.toLowerCase()} in this folder.</div>
+                      <div className="px-4 py-6 text-center text-sm text-[var(--text-muted)]">No {config.label.toLowerCase()} match.</div>
                     )}
                   </div>
                 </div>
@@ -657,12 +339,18 @@ export default function TestRepository() {
         </section>
       </div>
 
-      <Modal isOpen={!!viewerScript} onClose={() => setViewerScript(null)} title={viewerScript?.filename || viewerScript?.name || 'Script'}>
+      <Modal isOpen={!!viewerScript} onClose={() => { setViewerScript(null); setScriptHistory(false); }} title={viewerScript?.filename || viewerScript?.name || 'Script'} size="xl">
         {viewerScript && (
           <div className="space-y-3">
             <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-[var(--text-muted)]">
               <span className="font-mono">{viewerScript.id} · {viewerScript.framework || 'playwright'} · {viewerScript.language || 'typescript'}</span>
               <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setScriptHistory((v) => !v)}
+                  className={cn('inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 font-medium', scriptHistory ? 'border-[var(--accent)] text-[var(--accent)] bg-[var(--accent)]/10' : 'border-[var(--border)] bg-[var(--bg-secondary)] text-[var(--text-primary)] hover:border-[var(--accent)]')}
+                >
+                  <History className="h-3.5 w-3.5" /> {scriptHistory ? 'Code' : 'History'}
+                </button>
                 <button
                   onClick={() => { navigator.clipboard?.writeText(viewerScript.code || ''); setCopied(true); setTimeout(() => setCopied(false), 1500); }}
                   className="inline-flex items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2.5 py-1.5 font-medium text-[var(--text-primary)] hover:border-[var(--accent)]"
@@ -685,46 +373,16 @@ export default function TestRepository() {
                 </button>
               </div>
             </div>
-            <pre className="max-h-[60dvh] overflow-auto rounded-md bg-slate-950 p-4 font-mono text-[12px] leading-5 text-slate-200">
-              <code>{viewerScript.code}</code>
-            </pre>
+            {scriptHistory ? (
+              <VersionHistoryPanel entity="scripts" id={viewerScript.id} onRestored={fetchData} />
+            ) : (
+              <pre className="max-h-[60dvh] overflow-auto rounded-md bg-slate-950 p-4 font-mono text-[12px] leading-5 text-slate-200">
+                <code>{viewerScript.code}</code>
+              </pre>
+            )}
           </div>
         )}
-      </Modal>
-
-      <Modal isOpen={moveFolderOpen} onClose={() => !movingFolder && setMoveFolderOpen(false)} title="Move Folder">
-        <div className="space-y-4">
-          <p className="text-sm text-[var(--text-muted)]">
-            Move <span className="font-medium text-[var(--text-primary)]">{foldersToMove.length === 1 ? (foldersToMove[0].path || foldersToMove[0].name) : `${foldersToMove.length} selected folders`}</span> and their subfolders to:
-          </p>
-          <div className="overflow-hidden rounded-md border border-[var(--border)] bg-[var(--bg-secondary)]">
-            <div className="border-b border-[var(--border)] px-3 py-2 text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">Destination folder</div>
-            <div className="max-h-64 overflow-y-auto p-2">
-              <button
-                type="button"
-                onClick={() => setMoveParentId('')}
-                disabled={movingFolder}
-                className={cn('flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-sm transition-colors', moveParentId === '' ? 'bg-[var(--accent)]/15 text-[var(--accent)]' : 'text-[var(--text-primary)] hover:bg-[var(--bg-card)]')}
-              >
-                <Folder className="h-4 w-4 shrink-0" /> Root level
-              </button>
-              {moveDestinationTree.map((folder) => <MoveDestinationItem key={folder.id} node={folder} selectedId={moveParentId} onSelect={setMoveParentId} />)}
-              {moveDestinationTree.length === 0 && <div className="px-2 py-3 text-sm text-[var(--text-muted)]">No valid destination folders.</div>}
-            </div>
-          </div>
-          <div className="flex justify-end gap-2">
-            <button onClick={() => setMoveFolderOpen(false)} disabled={movingFolder} className="rounded-md border border-[var(--border)] px-3 py-2 text-sm font-medium text-[var(--text-primary)] disabled:opacity-50">Cancel</button>
-            <button onClick={moveFolder} disabled={movingFolder || !foldersToMove.length} className="inline-flex items-center gap-1.5 rounded-md bg-[var(--accent)] px-3 py-2 text-sm font-medium text-white disabled:opacity-50">
-              <MoveRight className="h-4 w-4" /> {movingFolder ? 'Moving…' : `Move ${foldersToMove.length === 1 ? 'folder' : 'folders'}`}
-            </button>
-          </div>
-        </div>
       </Modal>
     </div>
   );
 }
-
-
-
-
-

@@ -104,6 +104,7 @@ CREATE TABLE IF NOT EXISTS cases (
   approved_at     TIMESTAMPTZ,
   source_run_id   TEXT,
   agent_run_id    TEXT,
+  capture_evidence_on_manual_run BOOLEAN NOT NULL DEFAULT TRUE,
   created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
   deleted_at      TIMESTAMPTZ
@@ -303,12 +304,20 @@ ALTER TABLE cases ADD COLUMN IF NOT EXISTS automation_status TEXT DEFAULT 'Not A
 ALTER TABLE cases ADD COLUMN IF NOT EXISTS testing_scope     TEXT DEFAULT 'Manual';
 ALTER TABLE cases ADD COLUMN IF NOT EXISTS testing_type      TEXT DEFAULT 'Functional';
 ALTER TABLE cases ADD COLUMN IF NOT EXISTS testing_types     JSONB DEFAULT '[]'::jsonb;
+ALTER TABLE cases ADD COLUMN IF NOT EXISTS capture_evidence_on_manual_run BOOLEAN NOT NULL DEFAULT TRUE;
 -- Multi-select plan/suite membership (edit form). Singular test_plan_id/test_suite_id stay in sync
 -- with the first entry so existing run/linking logic keyed on the singular id is unaffected.
 ALTER TABLE cases ADD COLUMN IF NOT EXISTS test_plan_ids  JSONB DEFAULT '[]'::jsonb;
 ALTER TABLE cases ADD COLUMN IF NOT EXISTS test_suite_ids JSONB DEFAULT '[]'::jsonb;
 ALTER TABLE suites ADD COLUMN IF NOT EXISTS test_plan_ids JSONB DEFAULT '[]'::jsonb;
 ALTER TABLE suites ADD COLUMN IF NOT EXISTS parent_suite_ids JSONB DEFAULT '[]'::jsonb;
+
+-- Tag-native composition (gated by TAG_NATIVE_ORG). `definition` holds how a suite/plan/run selects
+-- its members: {mode:'query', tagQuery:{all[],any[],not[]}} for a live tag-driven set, or {mode:'static'}
+-- for a frozen id list (default/back-compat). Additive; empty object = legacy static behavior.
+ALTER TABLE suites ADD COLUMN IF NOT EXISTS definition JSONB DEFAULT '{}'::jsonb;
+ALTER TABLE plans  ADD COLUMN IF NOT EXISTS definition JSONB DEFAULT '{}'::jsonb;
+ALTER TABLE runs   ADD COLUMN IF NOT EXISTS definition JSONB DEFAULT '{}'::jsonb;
 
 -- Test-run assignment/classification fields (Assign To, Tags, State). Additive so existing readers
 -- are unaffected; `state` is a workflow state distinct from execution `status`.
@@ -322,6 +331,39 @@ ALTER TABLE runs ADD COLUMN IF NOT EXISTS state       TEXT DEFAULT '';
 -- runs (website_id NULL) fall back to URL matching.
 ALTER TABLE runs ADD COLUMN IF NOT EXISTS website_id      TEXT DEFAULT '';
 ALTER TABLE runs ADD COLUMN IF NOT EXISTS credential_role TEXT DEFAULT '';
+
+-- ===== Manual step runner (gated by MANUAL_RUNNER_V1) =====
+-- `mode` discriminates a human step-by-step run ('manual') from the existing automated Playwright
+-- run ('automated'). Additive + default 'automated' so every existing run keeps its behavior and the
+-- automated execute path is unchanged. A manual run never requires linked scripts.
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS mode TEXT NOT NULL DEFAULT 'automated';
+
+-- Per-case result rows for a manual run (Azure Test-Plans "test point → step results" model). Keeps
+-- per-case outcome/comment/analysis/timing out of the flat runs.steps blob (which stays for automated
+-- back-compat), and holds step-level results as a typed JSONB sub-array. revision_no freezes the exact
+-- case revision executed (execution snapshot; null = HEAD at run time). One row per (run, case).
+CREATE TABLE IF NOT EXISTS run_case_results (
+  id             TEXT PRIMARY KEY,
+  run_id         TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+  case_id        TEXT NOT NULL,                 -- lineage id (cases.id; no FK so a case soft-delete can't orphan history)
+  revision_no    INT,                           -- frozen executed revision; null = HEAD at run time
+  case_title     TEXT DEFAULT '',
+  outcome        TEXT NOT NULL DEFAULT 'Not Run',
+  comment        TEXT DEFAULT '',
+  run_by         TEXT DEFAULT '',
+  analysis_owner TEXT DEFAULT '',
+  analysis_note  TEXT DEFAULT '',
+  configuration  TEXT DEFAULT '',               -- optional free-text/environment label (config matrix de-scoped)
+  priority       TEXT DEFAULT '',
+  step_results   JSONB NOT NULL DEFAULT '[]'::jsonb,  -- [{action,expected,actual,outcome,comment,screenshots[]}]
+  started_at     TIMESTAMPTZ,
+  completed_at   TIMESTAMPTZ,
+  duration_ms    BIGINT,
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS run_case_results_run_case_idx ON run_case_results(run_id, case_id);
+CREATE INDEX IF NOT EXISTS run_case_results_run_idx ON run_case_results(run_id);
 
 -- System prompt store: per-agent versioned overrides
 CREATE TABLE IF NOT EXISTS prompts (
@@ -630,6 +672,9 @@ CREATE TABLE IF NOT EXISTS tags (
   owner_id    TEXT,
   created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+-- Tag kind (Phase A1 facets): 'label' = free tag (@sanity); 'facet' = namespaced key:value
+-- (@module:billing). Additive convention only — the UI groups facets by key; no values hardcoded.
+ALTER TABLE tags ADD COLUMN IF NOT EXISTS kind TEXT DEFAULT 'label';
 -- One catalog entry per tag name within a scope (case-insensitive); COALESCE so NULL scope
 -- columns still collide as a single "unscoped" slot rather than allowing duplicates.
 CREATE UNIQUE INDEX IF NOT EXISTS tags_scope_name ON tags
@@ -672,6 +717,53 @@ BEGIN
     -- Backfill legacy rows: attribute authorship to the owner so an already-set created_by marks
     -- them as "not new" (the write path treats a NULL created_by as a first insert).
     EXECUTE format('UPDATE %I SET created_by = COALESCE(created_by, owner_id), updated_by = COALESCE(updated_by, owner_id) WHERE created_by IS NULL AND owner_id IS NOT NULL', t);
+  END LOOP;
+END $$;
+
+-- Human-facing QA artifact titles are unique within an active project, regardless of case or
+-- surrounding whitespace. Preserve legacy duplicates by renaming only the later rows; ids and all
+-- relationships stay unchanged. Re-running this block is a no-op once each project is clean.
+DO $$
+DECLARE
+  artifact TEXT;
+  table_name TEXT;
+  title_column TEXT;
+  changed INT;
+BEGIN
+  FOREACH artifact IN ARRAY ARRAY[
+    'plans:name', 'suites:name', 'cases:title', 'runs:name',
+    'defects:title', 'reports:name', 'scripts:name', 'requirements:title'
+  ] LOOP
+    table_name := split_part(artifact, ':', 1);
+    title_column := split_part(artifact, ':', 2);
+    LOOP
+      EXECUTE format(
+        'WITH ranked AS (
+           SELECT id, row_number() OVER (
+             PARTITION BY COALESCE(project_id, ''''), lower(btrim(%1$I))
+             ORDER BY created_at, id
+           ) AS duplicate_number
+           FROM %2$I WHERE deleted_at IS NULL
+         )
+         UPDATE %2$I target
+         SET %1$I = btrim(target.%1$I) || '' [duplicate:'' || target.id || '']''
+         FROM ranked
+         WHERE target.id = ranked.id AND ranked.duplicate_number > 1',
+        title_column,
+        table_name
+      );
+      GET DIAGNOSTICS changed = ROW_COUNT;
+      EXIT WHEN changed = 0;
+    END LOOP;
+
+    EXECUTE format(
+      'CREATE UNIQUE INDEX IF NOT EXISTS %1$I ON %2$I (
+         COALESCE(project_id, ''''), lower(btrim(%3$I))
+       ) WHERE deleted_at IS NULL',
+      table_name || '_active_project_title_unique',
+      table_name,
+      title_column
+    );
   END LOOP;
 END $$;
 
@@ -1238,6 +1330,36 @@ CREATE INDEX IF NOT EXISTS release_case_pins_case_idx ON release_case_pins(case_
 -- Each run result records the exact case revision it executed, so a historical result always resolves
 -- to the frozen case content even after later edits. Nullable/backfill-null = "HEAD at run time".
 ALTER TABLE reports ADD COLUMN IF NOT EXISTS case_revisions JSONB NOT NULL DEFAULT '{}'::jsonb;
+
+-- ===== Script Versioning — append-only revision history (gated by CASE_VERSIONING, shared with cases) =====
+-- Mirrors case_revisions: `scripts` stays the mutable HEAD; each code edit appends an immutable snapshot.
+-- Versioned content = `code` only (name/status/folder edits do NOT mint a revision). Idempotent; inert
+-- when the flag is off. source_case_revision records the linked case's HEAD at capture for traceability.
+ALTER TABLE scripts ADD COLUMN IF NOT EXISTS current_revision INT NOT NULL DEFAULT 1;
+
+CREATE TABLE IF NOT EXISTS script_revisions (
+  revision_id         TEXT PRIMARY KEY,
+  script_id           TEXT NOT NULL,                 -- lineage id (references scripts.id; no FK so history survives a soft-delete)
+  revision_no         INT  NOT NULL,                 -- 1,2,3… unique per script_id
+  parent_revision     TEXT,                          -- prior revision this was based on (null for the first)
+  -- frozen snapshot of the versioned content only:
+  code                TEXT,
+  language            TEXT,
+  framework           TEXT,
+  source_case_revision INT,                          -- linked case's current_revision at capture time (traceability)
+  -- provenance:
+  change_summary      TEXT,
+  change_kind         TEXT NOT NULL DEFAULT 'manual',-- manual | ai | recorded | rollback
+  author              TEXT,
+  created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS script_revisions_script_no_idx ON script_revisions(script_id, revision_no);
+CREATE INDEX IF NOT EXISTS script_revisions_script_idx ON script_revisions(script_id, created_at);
+
+-- Revision-pinned membership: a suite/plan/run can pin each member case to a specific revision_no (null = follow HEAD).
+ALTER TABLE suites ADD COLUMN IF NOT EXISTS case_pins JSONB DEFAULT '[]'::jsonb;
+ALTER TABLE runs   ADD COLUMN IF NOT EXISTS case_pins JSONB DEFAULT '[]'::jsonb;
+ALTER TABLE plans  ADD COLUMN IF NOT EXISTS case_pins JSONB DEFAULT '[]'::jsonb;
 
 -- ===== Agent-native coordination substrate — Phase 1 (gated by AGENT_NATIVE_V1) =====
 -- The typed A2A surface (server/agent-core/bus). Additive + idempotent: when Postgres is configured the

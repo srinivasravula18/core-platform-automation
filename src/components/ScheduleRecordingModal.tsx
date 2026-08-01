@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Loader2 } from 'lucide-react';
 import { Modal } from '@/src/components/Modal';
+import { RequiredMark } from '@/src/components/RequiredMark';
 import { showToast } from '@/src/lib/dialog';
 
 /**
@@ -37,7 +38,7 @@ export function ScheduleRecordingModal({ isOpen, onClose, recordingId }: { isOpe
         </button>
       </div>}>
       <label className="block text-xs font-medium text-[var(--text-muted)]">
-        Run at (date &amp; time)
+        Run at (date &amp; time)<RequiredMark />
         <input type="datetime-local" value={runAt} onChange={(e) => setRunAt(e.target.value)}
           className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
       </label>

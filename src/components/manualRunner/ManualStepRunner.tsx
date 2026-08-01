@@ -1,0 +1,198 @@
+import { useRef } from 'react';
+import { Paperclip, Plus, Trash2 } from 'lucide-react';
+import { withBasePath } from '@/src/lib/base-path';
+import type { ManualOutcome } from '@/core/shared/manualRun';
+import { OutcomeSelect } from './OutcomeSelect';
+
+export interface StepResult {
+  action: string;
+  expected: string;
+  actual?: string;
+  outcome?: string;
+  comment?: string;
+  screenshots?: string[];
+  captureEvidence?: boolean; // when false, screenshot upload is disabled for this step
+}
+
+// Azure-style step grid for a manual run. Steps are AUTHORED here (Action + Expected are editable) and
+// executed here (Outcome + Actual + Comment + screenshots). Add/remove steps inline.
+export function ManualStepRunner({
+  steps,
+  showImages,
+  disabled,
+  authoringDisabled,
+  onStepChange,
+  onUploadScreenshot,
+  onOpenImage,
+  onAddStep,
+  onDeleteStep,
+}: {
+  steps: StepResult[];
+  showImages: boolean;
+  disabled?: boolean;
+  authoringDisabled?: boolean;
+  onStepChange: (index: number, patch: Partial<StepResult>) => void;
+  onUploadScreenshot: (index: number, dataUrl: string) => void;
+  onOpenImage: (url: string) => void;
+  onAddStep?: () => void;
+  onDeleteStep?: (index: number) => void;
+}) {
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full min-w-[720px] text-left text-sm">
+        <thead className="text-xs uppercase tracking-wide text-[var(--text-muted)]">
+          <tr className="border-b border-[var(--border)]">
+            <th className="w-12 px-3 py-2 font-medium">Step</th>
+            <th className="w-40 px-3 py-2 font-medium">Outcome</th>
+            <th className="px-3 py-2 font-medium">Action</th>
+            <th className="px-3 py-2 font-medium">Expected Result</th>
+            <th className="w-10 px-3 py-2" />
+          </tr>
+        </thead>
+        <tbody className="align-top">
+          {steps.length === 0 && (
+            <tr><td colSpan={5} className="px-3 py-6 text-center text-sm text-[var(--text-muted)]">No steps yet. Add the first step below.</td></tr>
+          )}
+          {steps.map((step, index) => (
+            <StepRow
+              key={index}
+              index={index}
+              step={step}
+              showImages={showImages}
+              disabled={disabled}
+              authoringDisabled={authoringDisabled}
+              onStepChange={onStepChange}
+              onUploadScreenshot={onUploadScreenshot}
+              onOpenImage={onOpenImage}
+              onDeleteStep={onDeleteStep}
+            />
+          ))}
+        </tbody>
+      </table>
+      {onAddStep && !disabled && !authoringDisabled && (
+        <button
+          type="button"
+          onClick={onAddStep}
+          className="mt-2 inline-flex items-center gap-1.5 rounded-md border border-dashed border-[var(--border)] px-3 py-1.5 text-sm font-medium text-[var(--text-muted)] hover:border-[var(--accent)] hover:text-[var(--accent)]"
+        >
+          <Plus className="h-4 w-4" /> Add step
+        </button>
+      )}
+    </div>
+  );
+}
+
+function StepRow({
+  index,
+  step,
+  showImages,
+  disabled,
+  authoringDisabled,
+  onStepChange,
+  onUploadScreenshot,
+  onOpenImage,
+  onDeleteStep,
+}: {
+  index: number;
+  step: StepResult;
+  showImages: boolean;
+  disabled?: boolean;
+  authoringDisabled?: boolean;
+  onStepChange: (index: number, patch: Partial<StepResult>) => void;
+  onUploadScreenshot: (index: number, dataUrl: string) => void;
+  onOpenImage: (url: string) => void;
+  onDeleteStep?: (index: number) => void;
+}) {
+  const fileRef = useRef<HTMLInputElement>(null);
+  const shots = Array.isArray(step.screenshots) ? step.screenshots : [];
+
+  function pickFile(file: File | undefined) {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => onUploadScreenshot(index, String(reader.result || ''));
+    reader.readAsDataURL(file);
+  }
+
+  // Editable cells are uncontrolled + save-on-blur so authoring doesn't POST per keystroke.
+  const cellClass = 'w-full resize-y rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-sm outline-none focus:border-[var(--accent)] disabled:opacity-60';
+
+  return (
+    <>
+      <tr>
+        <td className="px-3 py-2 font-mono text-[var(--text-muted)]">{index + 1}</td>
+        <td className="px-3 py-2">
+          <OutcomeSelect compact value={step.outcome || 'Not Run'} disabled={disabled} onChange={(o: ManualOutcome) => onStepChange(index, { outcome: o })} />
+        </td>
+        <td className="px-3 py-2">
+          {/* key includes the value so add/delete (which shifts indices) re-inits the uncontrolled field. */}
+          <textarea key={`action-${index}-${step.action || ''}`} defaultValue={step.action || ''} disabled={disabled || authoringDisabled} rows={2} placeholder="Describe the action…"
+            onBlur={(e) => { if (e.target.value !== (step.action || '')) onStepChange(index, { action: e.target.value }); }}
+            className={cellClass} />
+        </td>
+        <td className="px-3 py-2">
+          <textarea key={`expected-${index}-${step.expected || ''}`} defaultValue={step.expected || ''} disabled={disabled || authoringDisabled} rows={2} placeholder="Expected result…"
+            onBlur={(e) => { if (e.target.value !== (step.expected || '')) onStepChange(index, { expected: e.target.value }); }}
+            className={cellClass} />
+        </td>
+        <td className="px-3 py-2">
+          {onDeleteStep && !disabled && !authoringDisabled && (
+            <button type="button" onClick={() => onDeleteStep(index)} title="Delete step" className="rounded p-1 text-[var(--text-muted)] hover:bg-red-500/10 hover:text-red-500">
+              <Trash2 className="h-4 w-4" />
+            </button>
+          )}
+        </td>
+      </tr>
+      {/* Detail sub-row: Comment box + evidence on the SAME row, spanning Action/Expected. */}
+      <tr className="border-b border-[var(--border)]">
+        <td />
+        <td />
+        <td colSpan={2} className="px-3 pb-3">
+          <div className="flex items-start gap-2">
+            <div className="min-w-0 flex-1 rounded-md bg-[var(--bg-secondary)] p-2">
+              <label className="mb-1 block text-xs font-medium text-[var(--text-muted)]">Comment</label>
+              <textarea key={`comment-${index}-${step.comment || ''}`} defaultValue={step.comment || ''} disabled={disabled} rows={2} placeholder="Add a comment…"
+                onBlur={(e) => { if (e.target.value !== (step.comment || '')) onStepChange(index, { comment: e.target.value }); }}
+                className="w-full resize-y rounded-md border border-[var(--border)] bg-[var(--bg-card)] px-2 py-1 text-sm outline-none focus:border-[var(--accent)] disabled:opacity-60" />
+            </div>
+            {/* Evidence: an on/off toggle controls whether the tester may attach a screenshot to this step;
+                when on, the upload button shows. Show-images controls thumbnails. */}
+            <div className="flex w-40 shrink-0 flex-col gap-1.5 pt-5">
+              <label className="flex items-center gap-2 text-xs text-[var(--text-muted)]">
+                <button type="button" role="switch" aria-checked={step.captureEvidence !== false} disabled={disabled || authoringDisabled}
+                  title={step.captureEvidence !== false ? 'Attachments allowed — click to turn off' : 'Attachments off — click to allow'}
+                  onClick={() => onStepChange(index, { captureEvidence: !(step.captureEvidence !== false) })}
+                  className={`inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors disabled:opacity-50 ${step.captureEvidence !== false ? 'bg-[var(--accent)]' : 'bg-[var(--border)]'}`}>
+                  <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${step.captureEvidence !== false ? 'translate-x-4' : 'translate-x-0.5'}`} />
+                </button>
+                Attachment
+              </label>
+              {step.captureEvidence !== false ? (
+                <>
+                  <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={(e) => { pickFile(e.target.files?.[0]); e.target.value = ''; }} />
+                  <button type="button" disabled={disabled} onClick={() => fileRef.current?.click()} title="Attach a screenshot to this step"
+                    className="inline-flex items-center justify-center gap-1 rounded-md border border-[var(--border)] px-2 py-1.5 text-xs text-[var(--text-muted)] hover:text-[var(--accent)] disabled:opacity-50">
+                    <Paperclip className="h-3.5 w-3.5" /> Attach evidence
+                  </button>
+                </>
+              ) : (
+                <span className="text-xs text-[var(--text-muted)]">Attachments off</span>
+              )}
+              {showImages && shots.length > 0 && (
+                <div className="flex flex-wrap gap-1.5">
+                  {shots.map((url) => (
+                    <button key={url} type="button" onClick={() => onOpenImage(url)} title="Expand screenshot">
+                      <img src={withBasePath(url)} alt="Step evidence" className="h-12 w-16 rounded border border-[var(--border)] bg-black object-cover" />
+                    </button>
+                  ))}
+                </div>
+              )}
+              {!showImages && shots.length > 0 && (
+                <span className="text-[11px] text-[var(--text-muted)]">{shots.length} attached · toggle “Show images”</span>
+              )}
+            </div>
+          </div>
+        </td>
+      </tr>
+    </>
+  );
+}

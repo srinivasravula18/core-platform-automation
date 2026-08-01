@@ -11,6 +11,13 @@ import { assembleConversationContext } from '../../ai/memory/contextAssembler';
 import { resolveModelForAgent, resolveProviderForAgent } from '../../ai/orchestrator';
 import { normalizeTestCaseTypes } from '../../../core/shared/testCaseTypes';
 import { prepareSse, sendSse } from '../../shared/sse';
+import { asyncRoute } from '../../shared/asyncRoute';
+
+function routeErrorStatus(error: any): number {
+  const status = Number(error?.status || (error?.code === '23505' ? 409 : 500));
+  return status >= 400 && status < 600 ? status : 500;
+}
+
 
 // Server-side conversation reconstruction for requirement drafting, so follow-ups
 // ("also add requirements for X") enrich the running scope instead of starting cold.
@@ -115,7 +122,7 @@ export function registerRequirementRoutes(app: Express) {
       const result = await draftRequirement(query, { workspaceId: req.body?.workspaceId || 'default', userId: scope.userId, role: scope.role, repoPath: surface.repoPath, projectId: scope.projectId, appId: scope.appId || '', surface, applicationContextPrompt, conversationContextPrompt, requirementsOnly: true });
       res.json(result);
     } catch (error: any) {
-      res.status(500).json({ error: getAIErrorMessage(error) || error?.message || 'Failed to draft requirement.' });
+      res.status(routeErrorStatus(error)).json({ error: getAIErrorMessage(error) || error?.message || 'Failed to draft requirement.' });
     }
   });
 
@@ -125,7 +132,7 @@ export function registerRequirementRoutes(app: Express) {
       const result = await confirmRequirementDraft(req.body?.draft || {}, { workspaceId: req.body?.workspaceId || 'default', userId: scope.userId, role: scope.role, projectId: scope.projectId, appId: scope.appId || '' });
       res.json(result);
     } catch (error: any) {
-      res.status(500).json({ error: getAIErrorMessage(error) || error?.message || 'Failed to create requirement.' });
+      res.status(routeErrorStatus(error)).json({ error: getAIErrorMessage(error) || error?.message || 'Failed to create requirement.' });
     }
   });
 
@@ -141,7 +148,7 @@ export function registerRequirementRoutes(app: Express) {
       const result = await discoverRequirement(query, { workspaceId: req.body?.workspaceId || 'default', userId: scope.userId, role: scope.role, repoPath: surface.repoPath, projectId: scope.projectId, appId: scope.appId || '', surface, applicationContextPrompt, requirementsOnly });
       res.json(result);
     } catch (error: any) {
-      res.status(500).json({ error: getAIErrorMessage(error) || error?.message || 'Failed to discover requirement.' });
+      res.status(routeErrorStatus(error)).json({ error: getAIErrorMessage(error) || error?.message || 'Failed to discover requirement.' });
     }
   });
 
@@ -222,7 +229,7 @@ export function registerRequirementRoutes(app: Express) {
   });
 
   /* ---------- edit / delete the requirement itself ---------- */
-  app.put('/api/requirements/:id', async (req, res) => {
+  app.put('/api/requirements/:id', asyncRoute(async (req, res) => {
     const existing = await Requirements.get(req.params.id);
     if (!existing) return res.status(404).json({ error: 'Requirement not found.' });
     const updated = { ...existing, ...req.body, updatedAt: new Date() };
@@ -230,7 +237,7 @@ export function registerRequirementRoutes(app: Express) {
     if (!isPgEnabled()) persistDataInBackground('requirement update');
     addActivity(`Updated requirement: ${updated.title}`, { ownerId: reqScope(req).userId || '' });
     res.json({ success: true });
-  });
+  }));
 
   app.delete('/api/requirements/:id', async (req, res) => {
     const existing = await Requirements.get(req.params.id);

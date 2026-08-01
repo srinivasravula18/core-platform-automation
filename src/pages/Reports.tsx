@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Search, Filter, ShieldCheck, ShieldAlert, Sparkles, Plus, Clock, Layers, User, Calendar, Trash2, Eye, EyeOff, AlertTriangle, PlayCircle, ExternalLink, Activity } from 'lucide-react';
 import { Timestamp, actorName } from '@/src/components/Timestamp';
 import { TimeSortSelect } from '@/src/components/filters/TimeSortSelect';
@@ -9,10 +9,12 @@ import { cn } from '@/src/lib/utils';
 import { useAiSearch } from '@/src/lib/useAiSearch';
 import { useBulkDelete } from '@/src/lib/useBulkDelete';
 import { Modal } from '@/src/components/Modal';
+import { RequiredMark } from '@/src/components/RequiredMark';
 import { FolderSelect } from '@/src/components/FolderSelect';
 import { FolderBadge } from '@/src/components/FolderBadge';
 import { withBasePath } from '@/src/lib/base-path';
 import { showConfirm } from '@/src/lib/dialog';
+import { useUrlState } from '@/src/lib/useUrlState';
 
 interface Step {
   step: string;
@@ -41,6 +43,11 @@ interface Report {
   metadata?: { updatedAt?: string };
 }
 
+interface EvidenceGalleryItem {
+  key: string;
+  title: string;
+}
+
 function stepEvidence(report: Report, step: Step, index: number): string {
   if (step.screenshot) return step.screenshot;
   const evidence = Array.isArray(report.evidence) ? report.evidence : [];
@@ -55,6 +62,29 @@ function evidenceImageSource(value: string): string {
   return value.startsWith('/evidence/') || value.startsWith('data:')
     ? withBasePath(value)
     : withBasePath(`/api/screenshot?url=${encodeURIComponent(value)}`);
+}
+
+function evidenceGalleryItems(report: Report | null): EvidenceGalleryItem[] {
+  if (!report) return [];
+  const items: EvidenceGalleryItem[] = [];
+  const seen = new Set<string>();
+  const add = (key: unknown, title: string) => {
+    if (typeof key !== 'string' || !key || seen.has(key)) return;
+    seen.add(key);
+    items.push({ key, title });
+  };
+
+  (report.steps || []).forEach((step, index) => {
+    add(stepEvidence(report, step, index), `Step ${index + 1}: ${step.action || 'Captured screenshot'}`);
+  });
+  (Array.isArray(report.evidence) ? report.evidence : []).forEach((entry, index) => {
+    const title = entry?.title || `Evidence ${index + 1}`;
+    (Array.isArray(entry?.stepScreenshots) ? entry.stepScreenshots : []).forEach((key: unknown, stepIndex: number) => {
+      add(key, `${title} — step ${stepIndex + 1}`);
+    });
+    add(entry?.screenshotUrl || entry?.screenshot || entry?.url, title);
+  });
+  return items;
 }
 
 // Preset visual screens to render for screenshot evidence
@@ -255,7 +285,7 @@ export default function Reports() {
   const [timeSort, setTimeSort] = useState<TimeSortKey>('recentlyUpdated');
   const [updatedFilter, setUpdatedFilter] = useState<TimeFilterValue>({ key: 'all' });
   const aiSearch = useAiSearch('reports');
-  const [statusFilter, setStatusFilter] = useState<string>('All');
+  const [statusFilter, setStatusFilter] = useUrlState('status', 'All', ['All', 'Passed', 'Failed'] as const);
 
   // Modal forms
   const [isNewReportModalOpen, setIsNewReportModalOpen] = useState(false);
@@ -275,12 +305,20 @@ export default function Reports() {
 
   // Evidence screenshot lightbox State
   const [lightboxKey, setLightboxKey] = useState<string | null>(null);
+  const [lightboxTab, setLightboxTab] = useState<'current' | 'all'>('current');
   const [showInlineScreenshots, setShowInlineScreenshots] = useState(true);
   
   // Active step & screenshot for inline expanded browser mockup
   const [activeStep, setActiveStep] = useState<{ reportId: string; step: Step } | null>(null);
   // The report opened for full step-by-step detail (#9 — list is a summary; click opens detail).
   const [detailReport, setDetailReport] = useState<Report | null>(null);
+  const galleryItems = useMemo(() => evidenceGalleryItems(detailReport), [detailReport]);
+  const activeGalleryIndex = lightboxKey ? galleryItems.findIndex((item) => item.key === lightboxKey) : -1;
+  const activeGalleryItem = activeGalleryIndex >= 0 ? galleryItems[activeGalleryIndex] : null;
+  const selectScreenshot = (key: string, tab: 'current' | 'all' = 'current') => {
+    setLightboxKey(key);
+    setLightboxTab(tab);
+  };
 
   const stepCounts = (rep: Report) => {
     const steps = rep.steps || [];
@@ -523,9 +561,8 @@ export default function Reports() {
         </div>
 
         {/* Filter controls */}
-        <div className="p-4 border-b border-[var(--border)] flex flex-wrap gap-3 items-center justify-between">
-          <div className="flex items-center gap-3 flex-1 max-w-md">
-            <div className="relative flex-1">
+        <div className="flex items-center gap-3 overflow-x-auto border-b border-[var(--border)] p-4">
+            <div className="relative min-w-52 flex-1">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--text-muted)]" />
               <input 
                 type="text" 
@@ -536,14 +573,14 @@ export default function Reports() {
                   if (aiSearch.isAiQuery(v)) aiSearch.run(v, reports.map((r) => ({ id: r.id, name: r.name, planName: r.planName, suiteName: r.suiteName, status: r.status })));
                   else aiSearch.reset();
                 }}
-                placeholder="Search reports…  or @ai find smartly"
+                placeholder="Search reports or @ai"
                 className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md pl-9 pr-3 py-1.5 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)] placeholder-[var(--text-muted)] transition-colors"
               />
             </div>
-            <TimeSortSelect value={timeSort} onChange={setTimeSort} />
-            <TimeRangeFilter value={updatedFilter} onChange={setUpdatedFilter} />
-            <div className="flex bg-[var(--bg-secondary)] p-1 rounded-md text-xs border border-[var(--border)]">
-              {['All', 'Passed', 'Failed'].map((tab) => (
+            <TimeSortSelect value={timeSort} onChange={setTimeSort} className="shrink-0" />
+            <TimeRangeFilter value={updatedFilter} onChange={setUpdatedFilter} className="shrink-0" />
+            <div className="flex shrink-0 bg-[var(--bg-secondary)] p-1 rounded-md text-xs border border-[var(--border)]">
+              {(['All', 'Passed', 'Failed'] as const).map((tab) => (
                 <button
                   key={tab}
                   onClick={() => setStatusFilter(tab)}
@@ -558,15 +595,13 @@ export default function Reports() {
                 </button>
               ))}
             </div>
-          </div>
-          
           {bulk.selectedCount > 0 ? (
-            <button onClick={bulk.deleteSelected} disabled={bulk.busy} className="flex items-center gap-1.5 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
+            <button onClick={bulk.deleteSelected} disabled={bulk.busy} className="ml-auto flex shrink-0 items-center gap-1.5 rounded-md bg-red-600 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-red-700 disabled:opacity-50">
               <Trash2 className="w-4 h-4" /> Delete selected ({bulk.selectedCount})
             </button>
           ) : (
-            <div className="text-xs font-mono text-slate-500">
-              Click step buttons under <strong className="text-slate-600 dark:text-slate-300">Evidence</strong> to display real screen evidence inline
+            <div className="ml-auto shrink-0 whitespace-nowrap font-mono text-xs text-slate-500">
+              Click <strong className="text-slate-600 dark:text-slate-300">Evidence</strong> to view screenshots
             </div>
           )}
         </div>
@@ -574,7 +609,7 @@ export default function Reports() {
         {/* Main Table Styled search similar to Image 2 */}
         <div className="flex-1 min-h-0 w-full overflow-x-auto overflow-y-auto rounded-b-xl">
           <table className="w-full min-w-[820px] border-collapse text-left text-sm">
-            <thead className="bg-[var(--bg-secondary)] text-[var(--text-muted)] text-[11px] uppercase tracking-wider font-semibold border-b border-[var(--border)]">
+            <thead className="sticky top-0 z-10 bg-[var(--bg-secondary)] text-[var(--text-muted)] text-[11px] uppercase tracking-wider font-semibold border-b border-[var(--border)]">
               <tr>
                 <th className="w-10 px-4 py-3">
                   <input type="checkbox" checked={bulk.allSelected(filteredReports.map((r) => r.id))} onChange={() => bulk.toggleAll(filteredReports.map((r) => r.id))} />
@@ -678,7 +713,7 @@ export default function Reports() {
                         <td className="px-3 py-2 text-[var(--text-primary)]">{s.action}</td>
                         <td className="px-3 py-2 text-[var(--text-muted)]">{s.expected}</td>
                         <td className="px-3 py-2"><span className={cn('inline-flex rounded border px-1.5 py-0.5 text-[10px] font-bold', /pass/i.test(String(s.outcome)) ? 'border-emerald-500/20 bg-emerald-500/10 text-emerald-600' : /fail/i.test(String(s.outcome)) ? 'border-red-500/20 bg-red-500/10 text-red-500' : 'border-slate-500/20 bg-slate-500/10 text-slate-400')}>{s.outcome || '—'}</span></td>
-                        <td className="px-3 py-2">{stepEvidence(detailReport, s, i) ? <button onClick={() => setLightboxKey(stepEvidence(detailReport, s, i))} className="rounded border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-xs text-[var(--accent)] hover:border-[var(--accent)]">View</button> : <span className="text-xs text-[var(--text-muted)]">Not captured</span>}</td>
+                        <td className="px-3 py-2">{stepEvidence(detailReport, s, i) ? <button onClick={() => selectScreenshot(stepEvidence(detailReport, s, i))} className="rounded border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-xs text-[var(--accent)] hover:border-[var(--accent)]">View</button> : <span className="text-xs text-[var(--text-muted)]">Not captured</span>}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -707,22 +742,40 @@ export default function Reports() {
                 Close View [ESC]
               </button>
             </div>
+            <div className="flex shrink-0 gap-1 border-b border-[var(--border)] bg-[var(--bg-card)] px-4 pt-2">
+              <button type="button" onClick={() => setLightboxTab('current')} className={cn('border-b-2 px-3 py-2 text-xs font-semibold transition-colors', lightboxTab === 'current' ? 'border-[var(--accent)] text-[var(--accent)]' : 'border-transparent text-[var(--text-muted)] hover:text-[var(--text-primary)]')}>Current screenshot</button>
+              <button type="button" onClick={() => setLightboxTab('all')} className={cn('border-b-2 px-3 py-2 text-xs font-semibold transition-colors', lightboxTab === 'all' ? 'border-[var(--accent)] text-[var(--accent)]' : 'border-transparent text-[var(--text-muted)] hover:text-[var(--text-primary)]')}>All screenshots ({galleryItems.length || 1})</button>
+            </div>
             {/* Browser body canvas content context */}
-            <div className="p-0 bg-slate-900 overflow-hidden flex-1 min-h-0 flex items-center justify-center">
-              <img
-                src={evidenceImageSource(lightboxKey)}
-                alt={SCREENSHOT_PRESETS[lightboxKey]?.title || `Captured URL View: ${lightboxKey}`}
-                className="w-full h-full object-contain"
-                referrerPolicy="no-referrer"
-                onError={(e) => {
-                  e.currentTarget.src = "https://images.unsplash.com/photo-1541560052-5e137f229371?w=1280&q=80";
-                }}
-              />
+            <div className="p-0 bg-slate-900 overflow-auto flex-1 min-h-0">
+              {lightboxTab === 'all' ? (
+                <div className="grid grid-cols-1 gap-3 p-4 sm:grid-cols-2">
+                  {(galleryItems.length ? galleryItems : [{ key: lightboxKey, title: 'Current screenshot' }]).map((item, index) => (
+                    <button key={`${item.key}-${index}`} type="button" onClick={() => selectScreenshot(item.key)} className={cn('overflow-hidden rounded-lg border text-left transition-colors', item.key === lightboxKey ? 'border-[var(--accent)] ring-1 ring-[var(--accent)]' : 'border-[var(--border)] hover:border-[var(--accent)]')}>
+                      <img src={evidenceImageSource(item.key)} alt={item.title} className="h-40 w-full bg-black object-cover" referrerPolicy="no-referrer" />
+                      <span className="block truncate bg-[var(--bg-secondary)] px-2 py-1.5 text-xs text-[var(--text-primary)]">{item.title}</span>
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <div className="flex h-full items-center justify-center">
+                  <img
+                    src={evidenceImageSource(lightboxKey)}
+                    alt={activeGalleryItem?.title || SCREENSHOT_PRESETS[lightboxKey]?.title || `Captured URL View: ${lightboxKey}`}
+                    className="w-full h-full object-contain"
+                    referrerPolicy="no-referrer"
+                    onError={(e) => {
+                      e.currentTarget.src = "https://images.unsplash.com/photo-1541560052-5e137f229371?w=1280&q=80";
+                    }}
+                  />
+                </div>
+              )}
             </div>
             {/* Footer labels */}
             <div className="bg-[var(--bg-secondary)] px-5 py-3.5 border-t border-[var(--border)] flex justify-between items-center text-xs">
-              <span className="font-bold text-[var(--text-primary)]">{SCREENSHOT_PRESETS[lightboxKey]?.title || `Automated live capture of ${lightboxKey}`}</span>
-              <span className="text-[var(--text-muted)] font-mono">Evidence Trace Payload OK</span>
+              <button type="button" onClick={() => activeGalleryIndex > 0 && selectScreenshot(galleryItems[activeGalleryIndex - 1].key)} disabled={activeGalleryIndex <= 0} className="rounded border border-[var(--border)] bg-[var(--bg-primary)] px-2 py-1 font-semibold text-[var(--text-primary)] disabled:cursor-not-allowed disabled:opacity-40">← Previous</button>
+              <span className="min-w-0 flex-1 truncate px-3 text-center font-bold text-[var(--text-primary)]">{activeGalleryItem?.title || SCREENSHOT_PRESETS[lightboxKey]?.title || `Automated live capture of ${lightboxKey}`}{activeGalleryIndex >= 0 && ` (${activeGalleryIndex + 1}/${galleryItems.length})`}</span>
+              <button type="button" onClick={() => activeGalleryIndex >= 0 && activeGalleryIndex < galleryItems.length - 1 && selectScreenshot(galleryItems[activeGalleryIndex + 1].key)} disabled={activeGalleryIndex < 0 || activeGalleryIndex >= galleryItems.length - 1} className="rounded border border-[var(--border)] bg-[var(--bg-primary)] px-2 py-1 font-semibold text-[var(--text-primary)] disabled:cursor-not-allowed disabled:opacity-40">Next →</button>
             </div>
           </div>
         </div>
@@ -753,7 +806,7 @@ export default function Reports() {
           
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
              <div>
-                <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Report / Run Name</label>
+                <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Report / Run Name<RequiredMark /></label>
                 <input 
                   type="text" 
                   value={newReportName} 

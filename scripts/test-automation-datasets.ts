@@ -34,6 +34,10 @@ async function main() {
   assert.strictEqual(page.total, 2);
   assert.strictEqual(page.rows[0].rowNumber, 3);
   assert.strictEqual(page.rows[0].values.col_1, 'bob@example.com');
+  const { AutomationDatasetRows } = await import('../server/db/repository');
+  const edited = await AutomationDatasetRows.updateValues(imported.id, 3, { col_1: 'robert@example.com' });
+  assert.strictEqual(edited.values.col_1, 'robert@example.com');
+  assert.strictEqual((await datasets.datasetPage(imported.id, 1, 1)).rows[0].values.col_1, 'robert@example.com');
 
   const xlsx = await workbookBuffer();
   const excel = await datasets.importDataset({ provider: 'xlsx', filename: 'orders.xlsx', buffer: xlsx }, scope);
@@ -41,7 +45,7 @@ async function main() {
   assert.strictEqual(excel.columns[1].kind, 'number');
 
   await assert.rejects(() => datasets.importDataset({ provider: 'csv', filename: 'bad.csv', buffer: Buffer.from('Name,Name\na,b') }, scope), /Duplicate column header/);
-  console.log('PASS: CSV/XLSX dataset import, normalized paging, type inference, and validation.');
+  console.log('PASS: CSV/XLSX dataset import, row editing, normalized paging, type inference, and validation.');
 }
 
 main().catch((error) => { console.error(error); process.exit(1); });

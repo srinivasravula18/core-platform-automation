@@ -42,6 +42,13 @@ export default function DefectReport({ defect }: { defect: any }) {
   const testData: Array<{ field: string; value: string }> = Array.isArray(m.testDataUsed) ? m.testDataUsed : [];
   const consoleErrors: Array<{ type?: string; text?: string }> = Array.isArray(m.consoleErrors) ? m.consoleErrors : [];
   const recovery: any[] = Array.isArray(m.recoveryAttempts) ? m.recoveryAttempts : [];
+  const hasSecondaryContent = Boolean(
+    risk?.factors?.length
+    || Object.values(env).some(Boolean)
+    || consoleErrors.length
+    || investigation
+    || recovery.length
+  );
   // Plain-English before→after for clients/managers: humanize the raw failure via the shared analyzer instead of dumping it.
   const humanizeSource: string = String(m.rawError || defect?.actual || '').trim();
 
@@ -81,7 +88,7 @@ export default function DefectReport({ defect }: { defect: any }) {
         )}
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-x-6">
+      <div className={cn('grid grid-cols-1 gap-x-6', hasSecondaryContent && 'lg:grid-cols-2')}>
         <div>
           {defect.description && <Section title="Description"><Pre text={defect.description} /></Section>}
           {defect.stepsToReproduce && <Section title="Steps to Reproduce"><Pre text={defect.stepsToReproduce} /></Section>}

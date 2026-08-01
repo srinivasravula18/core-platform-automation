@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Radio, Loader2, Square, Trash2, Circle, Plus, CheckCircle2 } from 'lucide-react';
 import { showToast, showConfirm } from '@/src/lib/dialog';
 import { Modal } from '@/src/components/Modal';
+import { RequiredMark } from '@/src/components/RequiredMark';
 import { useRemoteAgentFlag, useAgents, useRecordingSession, type RecordingCaseMeta } from '@/src/lib/useAutomation';
 import { NoAgentState } from '@/src/components/NoAgentState';
 
@@ -235,12 +236,12 @@ export function AddUrlModal({ isOpen, onClose, onCreated }: { isOpen: boolean; o
         </button>
       </div>}>
       <label className="block text-xs font-medium text-[var(--text-muted)]">
-        Name
+        Name<RequiredMark />
         <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Admin portal"
           className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
       </label>
       <label className="mt-4 block text-xs font-medium text-[var(--text-muted)]">
-        URL
+        URL<RequiredMark />
         <input value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="https://app.example.com"
           className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
       </label>

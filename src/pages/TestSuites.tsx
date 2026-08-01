@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { ChevronDown, ChevronRight, Search, Filter, Pencil, Plus, Sparkles, Trash2, PlayCircle, Loader2 } from 'lucide-react';
+import { ArrowLeft, ChevronDown, ChevronRight, Search, Filter, Pencil, Plus, Sparkles, Trash2, PlayCircle, Loader2, X } from 'lucide-react';
 import { Timestamp, actorName } from '@/src/components/Timestamp';
 import ExportMenu from '../components/ExportMenu';
 import { useAiSearch } from '@/src/lib/useAiSearch';
@@ -18,14 +18,16 @@ import {
 } from '@/src/lib/suiteCaseSelection';
 import { cn } from '@/src/lib/utils';
 import { Modal } from '@/src/components/Modal';
+import { RequiredMark } from '@/src/components/RequiredMark';
 import { AIActionModal } from '@/src/components/AIActionModal';
-import { FolderSelect } from '@/src/components/FolderSelect';
 import { TagEditor } from '@/src/components/TagEditor';
 import { TagMultiSelect } from '@/src/components/TagMultiSelect';
 import { MultiSelectDropdown } from '@/src/components/MultiSelectDropdown';
 import { EntityLinker } from '@/src/components/EntityLinker';
+import { TagDriftBanner } from '@/src/components/TagDriftBanner';
+import { VersionPinSelect } from '@/src/components/VersionPinSelect';
 import { RowMoreMenu } from '@/src/components/RowMoreMenu';
-import { diffSelection, linkSuiteCases } from '@/src/lib/entityLinking';
+import { diffSelection, linkSuiteCases, type TagQuery } from '@/src/lib/entityLinking';
 import { showAlert, showConfirm } from '@/src/lib/dialog';
 import { can } from '@/src/components/AuthGate';
 import { normalizeTags } from '@/src/lib/tags';
@@ -42,13 +44,14 @@ export default function TestSuites() {
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const aiSearch = useAiSearch('test suites');
-  const [filters, setFilters] = useState({ statuses: [] as string[], priorities: [] as string[], modules: [] as string[], owners: [] as string[], tags: [] as string[], folders: [] as string[], planIds: [] as string[] });
+  const [filters, setFilters] = useState({ statuses: [] as string[], priorities: [] as string[], modules: [] as string[], owners: [] as string[], tags: [] as string[], planIds: [] as string[] });
   const [isFilterOpen, setIsFilterOpen] = useState(false);
   const filterRef = useRef<HTMLDivElement | null>(null);
   const [isSuiteModalOpen, setIsSuiteModalOpen] = useState(false);
   const [isAISuiteModalOpen, setIsAISuiteModalOpen] = useState(false);
   const [isStartingRun, setIsStartingRun] = useState(false);
-  const [formData, setFormData] = useState({ name: '', description: '', testPlanIds: [] as string[], parentSuiteIds: [] as string[], module: '', owner: '', tags: [] as string[], priority: 'Medium', status: 'Active', folderId: '' });
+  const [formData, setFormData] = useState({ name: '', description: '', testPlanIds: [] as string[], parentSuiteIds: [] as string[], module: '', owner: '', tags: [] as string[], priority: 'Medium', status: 'Active', tagQuery: {} as TagQuery });
+  const [isCreateCaseLinkerOpen, setIsCreateCaseLinkerOpen] = useState(false);
   const [selectedCaseIds, setSelectedCaseIds] = useState<Set<string>>(new Set());
   // Set only when the modal was opened via a suite's "Add subsuite" action, so the modal can say
   // it's adding under that specific parent instead of showing a generic parent-suite picker.
@@ -57,7 +60,6 @@ export default function TestSuites() {
   const [selectedSuiteId, setSelectedSuiteId] = useState<string | null>(null);
   // Suite whose cases are being mapped through the unified EntityLinker (null = closed).
   const [linkerSuite, setLinkerSuite] = useState<any | null>(null);
-  const inlineSelectClass = "w-full min-w-[140px] rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs font-medium text-[var(--text-primary)] outline-none transition-colors hover:border-[var(--accent)] focus:border-[var(--accent)]";
 
   const fetchSuites = () => {
     fetch('/api/suites')
@@ -116,7 +118,7 @@ export default function TestSuites() {
   const openNewModal = () => {
     setSelectedSuiteId(null);
     setSubsuiteParentId('');
-    setFormData({ name: '', description: '', testPlanIds: [], parentSuiteIds: [], module: '', owner: '', tags: [], priority: 'Medium', status: 'Active', folderId: '' });
+    setFormData({ name: '', description: '', testPlanIds: [], parentSuiteIds: [], module: '', owner: '', tags: [], priority: 'Medium', status: 'Active', tagQuery: {} });
     setSelectedCaseIds(new Set());
     setIsSuiteModalOpen(true);
   };
@@ -129,7 +131,7 @@ export default function TestSuites() {
     setFormData({
       name: suite.name || '', description: suite.description || '', testPlanIds: suitePlanIds(suite), parentSuiteIds: suiteParentIds(suite),
       module: suiteModuleName(suite, folders), owner: suite.owner || '', tags: Array.isArray(suite.tags) ? suite.tags : String(suite.tags || '').split(',').map((tag) => tag.trim()).filter(Boolean),
-      priority: suite.priority || 'Medium', status: suite.status || 'Active', folderId: suite.folderId || ''
+      priority: suite.priority || 'Medium', status: suite.status || 'Active', tagQuery: (suite.definition?.tagQuery || {}) as TagQuery,
     });
     setIsSuiteModalOpen(true);
   };
@@ -140,7 +142,7 @@ export default function TestSuites() {
     setSelectedCaseIds(new Set());
     setFormData({
       name: '', description: '', testPlanIds: suitePlanIds(parent), parentSuiteIds: [parent.id],
-      module: suiteModuleName(parent, folders), owner: parent.owner || '', tags: [], priority: 'Medium', status: 'Active', folderId: parent.folderId || '',
+      module: suiteModuleName(parent, folders), owner: parent.owner || '', tags: [], priority: 'Medium', status: 'Active', tagQuery: {},
     });
     setIsSuiteModalOpen(true);
   };
@@ -153,12 +155,14 @@ export default function TestSuites() {
 
   const handleSaveSuite = async () => {
     if (!formData.name.trim()) { void showAlert('Suite name is required.'); return; }
-    if (!formData.folderId) { void showAlert('Select a folder or create one first.'); return; }
+    const { tagQuery, ...suiteFields } = formData;
     const suitePayload = {
-      ...formData,
+      ...suiteFields,
       testPlanId: formData.testPlanIds[0] || '',
       parentSuite: formData.parentSuiteIds[0] || '',
       module: suiteModuleName(formData, folders),
+      // Persist the tag query so cases later matching it surface as review-gated drift on the suite.
+      definition: { tagQuery },
     };
     try {
       if (selectedSuiteId) {
@@ -267,24 +271,15 @@ export default function TestSuites() {
     );
   };
 
-  // Deep link (/suites/:suiteId, e.g. from a Test Plan's linked-suites tab): open that suite's
-  // cases and scroll it into view once suites have loaded.
-  useEffect(() => {
-    if (!routeSuiteId || !suites.length) return;
-    if (!suites.some((suite) => suite.id === routeSuiteId)) return;
-    setExpandedSuiteIds((current) => (current.includes(routeSuiteId) ? current : [...current, routeSuiteId]));
-    const row = document.getElementById(`suite-row-${routeSuiteId}`);
-    if (row) row.scrollIntoView({ block: 'center' });
-  }, [routeSuiteId, suites]);
-
   const getSuiteCases = (suiteId: string) => cases.filter((testCase) => caseBelongsToSuite(testCase, suiteId));
+  const selectedRouteSuite = suites.find((suite) => String(suite.id) === String(routeSuiteId)) || null;
+  const selectedRouteSuiteCases = selectedRouteSuite ? getSuiteCases(selectedRouteSuite.id) : [];
   const moduleOptions = Array.from(new Set(suites.map((suite) => suiteModuleName(suite, folders)).filter(Boolean))).sort();
   const ownerOptions = Array.from(new Set(suites.map((suite) => String(suite.owner || '').trim()).filter(Boolean))).sort();
   const statusOptions = Array.from(new Set(['Active', 'Draft', 'Under Review', 'Approved', 'In Progress', 'Completed', 'Blocked', 'Deprecated', ...suites.map((suite) => String(suite.status || 'Active'))]));
   const priorityOptions = Array.from(new Set(['Critical', 'High', 'Medium', 'Low', ...suites.map((suite) => String(suite.priority || 'Medium'))]));
   const tagOptions = normalizeTags([...plans, ...suites, ...cases, ...runs]
     .flatMap((item) => Array.isArray(item.tags) ? item.tags : String(item.tags || '').split(','))).sort();
-  const relatedCases = cases;
   const filteredSuites = suites.filter((suite) => {
     const query = searchTerm.toLowerCase();
     const matchesSearch = aiSearch.isAiQuery(searchTerm)
@@ -299,7 +294,6 @@ export default function TestSuites() {
       && matches(filters.priorities, suite.priority || 'Medium')
       && matches(filters.modules, suiteModuleName(suite, folders))
       && matches(filters.owners, suite.owner || '')
-      && matches(filters.folders, String(suite.folderId || ''))
       && matchesTags
       && matchesPlans;
   });
@@ -368,12 +362,6 @@ export default function TestSuites() {
         }
       >
         <div className="space-y-4">
-          <FolderSelect
-            value={formData.folderId}
-            onChange={(folderId) => setFormData({ ...formData, folderId })}
-            allowCreate={!selectedSuiteId}
-            includeNone={false}
-          />
           <div>
              <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Test Plans (Optional)</label>
              <MultiSelectDropdown
@@ -384,7 +372,7 @@ export default function TestSuites() {
              />
           </div>
           <div>
-            <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Suite Name</label>
+            <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Suite Name<RequiredMark /></label>
             <input type="text" value={formData.name} onChange={(e) => setFormData({...formData, name: e.target.value})} placeholder="e.g., Auth Regression" className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]" />
           </div>
           <div>
@@ -412,7 +400,6 @@ export default function TestSuites() {
                       setFormData({
                         ...formData,
                         parentSuiteIds,
-                        folderId: parentSuite?.folderId || formData.folderId,
                         testPlanIds: parentSuite ? suitePlanIds(parentSuite) : formData.testPlanIds,
                       });
                     }}
@@ -461,42 +448,41 @@ export default function TestSuites() {
           </div>
           <div>
               <div className="mb-1 flex items-center justify-between">
-                <label className="text-sm font-medium text-[var(--text-muted)]">Link Individual Test Cases</label>
-                {relatedCases.length > 0 && (
-                  <button
-                    type="button"
-                    onClick={() => setSelectedCaseIds(
-                      relatedCases.every((testCase) => selectedCaseIds.has(testCase.id))
-                        ? new Set()
-                        : new Set(relatedCases.map((testCase) => testCase.id)),
-                    )}
-                    className="text-xs font-medium text-[var(--accent)] hover:underline"
-                  >
-                    {relatedCases.every((testCase) => selectedCaseIds.has(testCase.id)) ? 'Clear all' : 'Select all'}
-                  </button>
-                )}
+                <label className="text-sm font-medium text-[var(--text-muted)]">Link Test Cases</label>
+                <button type="button" onClick={() => setIsCreateCaseLinkerOpen(true)} className="text-xs font-medium text-[var(--accent)] hover:underline">
+                  Search &amp; link by tag
+                </button>
               </div>
-              <div className="max-h-48 overflow-auto rounded-md border border-[var(--border)] bg-[var(--bg-secondary)]/40">
-                {relatedCases.length === 0 ? (
-                  <div className="px-3 py-5 text-center text-sm text-[var(--text-muted)]">
-                    No test cases are available to link.
-                  </div>
-                ) : relatedCases.map((testCase) => (
-                  <label key={testCase.id} className="flex cursor-pointer items-center gap-2 border-b border-[var(--border)] px-3 py-2 text-sm last:border-0 hover:bg-[var(--bg-secondary)]">
-                    <input
-                      type="checkbox"
-                      checked={selectedCaseIds.has(testCase.id)}
-                      onChange={() => setSelectedCaseIds((current) => {
-                        const next = new Set(current);
-                        next.has(testCase.id) ? next.delete(testCase.id) : next.add(testCase.id);
-                        return next;
-                      })}
-                    />
-                    <span className="shrink-0 font-mono text-xs text-[var(--text-muted)]">{testCase.id}</span>
-                    <span className="min-w-0 flex-1 truncate text-[var(--text-primary)]">{testCase.title}</span>
-                  </label>
-                ))}
-              </div>
+              {(formData.tagQuery.all?.length || formData.tagQuery.any?.length) ? (
+                <div className="mb-1 text-xs text-[var(--text-muted)]">
+                  Tag-defined: {[...(formData.tagQuery.all || []), ...(formData.tagQuery.any || [])].join(formData.tagQuery.all?.length ? ' + ' : ' / ')} — new matches will surface for review after saving.
+                </div>
+              ) : null}
+              {selectedCaseIds.size === 0 ? (
+                <button
+                  type="button"
+                  onClick={() => setIsCreateCaseLinkerOpen(true)}
+                  className="w-full rounded-md border border-dashed border-[var(--border)] bg-[var(--bg-secondary)]/40 px-3 py-4 text-center text-sm text-[var(--text-muted)] hover:border-[var(--accent)] hover:text-[var(--text-primary)]"
+                >
+                  Search &amp; link cases by tag
+                </button>
+              ) : (
+                <div className="flex max-h-40 flex-wrap gap-1.5 overflow-auto rounded-md border border-[var(--border)] bg-[var(--bg-secondary)]/40 p-2">
+                  {cases.filter((testCase) => selectedCaseIds.has(testCase.id)).map((testCase) => (
+                    <span key={testCase.id} className="inline-flex max-w-full items-center gap-1 rounded bg-[var(--bg-card)] px-2 py-0.5 text-xs text-[var(--text-primary)]">
+                      <span className="truncate">{testCase.title || testCase.id}</span>
+                      <button
+                        type="button"
+                        onClick={() => setSelectedCaseIds((cur) => { const n = new Set(cur); n.delete(testCase.id); return n; })}
+                        className="opacity-60 hover:opacity-100"
+                        title="Remove"
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
               <div className="mt-1 text-xs text-[var(--text-muted)]">{selectedCaseIds.size} selected</div>
           </div>
         </div>
@@ -519,16 +505,103 @@ export default function TestSuites() {
           target="cases"
           confirmLabel="Save links"
           initialSelectedIds={cases.filter((c) => caseBelongsToSuite(c, linkerSuite.id)).map((c) => c.id)}
-          onConfirm={async (ids) => {
+          onConfirm={async (ids, meta) => {
             const initial = cases.filter((c) => caseBelongsToSuite(c, linkerSuite.id)).map((c) => c.id);
             const { add, remove } = diffSelection(initial, ids);
-            await linkSuiteCases(linkerSuite.id, add, remove);
+            const tagQuery = meta.tagQuery && (meta.tagQuery.all?.length || meta.tagQuery.any?.length) ? meta.tagQuery : undefined;
+            await linkSuiteCases(linkerSuite.id, add, remove, tagQuery);
             await fetchCases();
             setLinkerSuite(null);
           }}
         />
       )}
 
+      {/* Compose the new/edited suite's cases by tag from inside the suite modal: preview matches,
+          select, and capture the tag query so the suite becomes tag-defined (drift after save). */}
+      {isCreateCaseLinkerOpen && (
+        <EntityLinker
+          isOpen={isCreateCaseLinkerOpen}
+          onClose={() => setIsCreateCaseLinkerOpen(false)}
+          title="Link test cases by tag"
+          target="cases"
+          confirmLabel="Use selected cases"
+          initialSelectedIds={[...selectedCaseIds]}
+          onConfirm={(ids, meta) => {
+            setSelectedCaseIds(new Set(ids));
+            setFormData((f) => ({ ...f, tagQuery: meta.tagQuery }));
+            setIsCreateCaseLinkerOpen(false);
+          }}
+        />
+      )}
+
+      {selectedRouteSuite ? (
+        <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl flex flex-col flex-1 min-h-0 shadow-sm overflow-hidden">
+          <div className="p-5 border-b border-[var(--border)]">
+            <button onClick={() => navigate('/suites')} className="mb-3 inline-flex items-center gap-1 text-sm text-[var(--text-muted)] hover:text-[var(--text-primary)]">
+              <ArrowLeft className="h-4 w-4" /> Test Suites
+            </button>
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h2 className="text-2xl font-bold tracking-tight">{selectedRouteSuite.name}</h2>
+                <div className="mt-2 flex flex-wrap gap-3 text-sm text-[var(--text-muted)]">
+                  <span className="font-mono">{selectedRouteSuite.id}</span>
+                  <span>{selectedRouteSuiteCases.length} test case{selectedRouteSuiteCases.length === 1 ? '' : 's'}</span>
+                  <span>{selectedRouteSuite.status || 'Active'}</span>
+                  {suiteModuleName(selectedRouteSuite, folders) && <span>{suiteModuleName(selectedRouteSuite, folders)}</span>}
+                </div>
+                {selectedRouteSuite.description && <p className="mt-3 text-sm text-[var(--text-muted)]">{selectedRouteSuite.description}</p>}
+              </div>
+              {can('suites:update') && <button onClick={() => openEditModal(selectedRouteSuite)} className="inline-flex items-center gap-2 rounded-md border border-[var(--border)] px-3 py-2 text-sm hover:bg-[var(--bg-secondary)]"><Pencil className="h-4 w-4" /> Edit</button>}
+            </div>
+          </div>
+          <div className="flex-1 overflow-auto p-5">
+            {/* Review-gated drift: new tag matches + content-drift (pinned cases behind latest). */}
+            <div className="mb-4 empty:hidden">
+              <TagDriftBanner
+                target="suites"
+                id={selectedRouteSuite.id}
+                onChanged={() => { fetchSuites(); fetchCases(); }}
+                onCreateNew={async (caseIds, drift) => {
+                  try {
+                    const res = await fetch('/api/suites', {
+                      method: 'POST', headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ name: `${selectedRouteSuite.name} (new matches)`, definition: { tagQuery: drift.tagQuery } }),
+                    });
+                    const rsp = await res.json().catch(() => ({}));
+                    if (!res.ok) throw new Error(rsp.error || 'Failed to create suite.');
+                    const newId = rsp.suite?.id || rsp.id;
+                    if (newId) await linkSuiteCases(newId, caseIds, []);
+                    await fetchSuites();
+                  } catch (e: any) { void showAlert(e.message || 'Failed to create suite.'); }
+                }}
+              />
+            </div>
+            <div className="overflow-hidden rounded-lg border border-[var(--border)]">
+              <div className="border-b border-[var(--border)] bg-[var(--bg-secondary)] px-4 py-3 text-sm font-semibold">Linked Test Cases ({selectedRouteSuiteCases.length})</div>
+              {selectedRouteSuiteCases.length === 0 ? (
+                <div className="px-4 py-8 text-center text-sm text-[var(--text-muted)]">No test cases are linked to this suite.</div>
+              ) : (
+                <table className="w-full text-left text-sm whitespace-nowrap">
+                  <thead className="bg-[var(--bg-secondary)] text-[var(--text-muted)]">
+                    <tr><th className="px-4 py-3 font-medium">ID</th><th className="px-4 py-3 font-medium">Title</th><th className="px-4 py-3 font-medium">Version</th><th className="px-4 py-3 font-medium">Priority</th><th className="px-4 py-3 font-medium">Status</th></tr>
+                  </thead>
+                  <tbody className="divide-y divide-[var(--border)]">
+                    {selectedRouteSuiteCases.map((testCase) => (
+                      <tr key={testCase.id} className="hover:bg-[var(--bg-secondary)]/60">
+                        <td className="px-4 py-3 font-mono text-xs text-[var(--text-muted)]">{testCase.id}</td>
+                        <td className="max-w-md whitespace-normal px-4 py-3 font-medium">{testCase.title}</td>
+                        <td className="px-4 py-3"><VersionPinSelect target="suites" groupId={selectedRouteSuite.id} caseId={testCase.id} pinnedRevisionNo={(selectedRouteSuite.casePins || []).find((pin: any) => String(pin?.caseId) === String(testCase.id))?.revisionNo ?? null} onChange={fetchSuites} /></td>
+                        <td className="px-4 py-3 text-[var(--text-muted)]">{testCase.priority || 'Medium'}</td>
+                        <td className="px-4 py-3 text-[var(--text-muted)]">{testCase.status || 'Draft'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          </div>
+        </div>
+      ) : (
       <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl flex flex-col flex-1 min-h-0 shadow-sm">
         <div className="p-4 border-b border-[var(--border)] flex gap-3 h-[68px] flex-shrink-0 items-center">
           <div className="relative flex-1 max-w-sm">
@@ -553,14 +626,13 @@ export default function TestSuites() {
             </button>
             {isFilterOpen && (
               <div className="absolute left-0 top-10 z-30 max-h-[calc(100dvh-20rem)] w-[min(24rem,calc(100vw-2rem))] overflow-auto rounded-md border border-[var(--border)] bg-[var(--bg-card)] p-3 shadow-xl">
-                <div className="mb-3 flex justify-end"><button onClick={() => setFilters({ statuses: [], priorities: [], modules: [], owners: [], tags: [], folders: [], planIds: [] })} className="text-xs font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]">Clear all</button></div>
+                <div className="mb-3 flex justify-end"><button onClick={() => setFilters({ statuses: [], priorities: [], modules: [], owners: [], tags: [], planIds: [] })} className="text-xs font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]">Clear all</button></div>
                 <div className="flex flex-col gap-3">
                   <div><label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Status</label><MultiSelectDropdown label="Any status" options={statusOptions.map((value) => ({ id: value, name: value }))} value={filters.statuses} onChange={(statuses) => setFilters((current) => ({ ...current, statuses }))} /></div>
                   <div><label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Priority</label><MultiSelectDropdown label="Any priority" options={priorityOptions.map((value) => ({ id: value, name: value }))} value={filters.priorities} onChange={(priorities) => setFilters((current) => ({ ...current, priorities }))} /></div>
                   <div><label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Module</label><MultiSelectDropdown label="Any module" options={moduleOptions.map((value) => ({ id: value, name: value }))} value={filters.modules} onChange={(modules) => setFilters((current) => ({ ...current, modules }))} /></div>
                   <div><label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Owner</label><MultiSelectDropdown label="Any owner" options={ownerOptions.map((value) => ({ id: value, name: value }))} value={filters.owners} onChange={(owners) => setFilters((current) => ({ ...current, owners }))} /></div>
                   <div><label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Tags</label><MultiSelectDropdown label="Any tag" options={tagOptions.map((value) => ({ id: value, name: value }))} value={filters.tags} onChange={(tags) => setFilters((current) => ({ ...current, tags }))} /></div>
-                  <div><label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Folder</label><MultiSelectDropdown label="Any folder" options={folders.map((folder) => ({ id: String(folder.id), name: String(folder.path || folder.name) }))} value={filters.folders} onChange={(folders) => setFilters((current) => ({ ...current, folders }))} /></div>
                   <div><label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Test Plan</label><MultiSelectDropdown label="Any test plan" options={plans.map((plan) => ({ id: String(plan.id), name: String(plan.name || plan.id) }))} value={filters.planIds} onChange={(planIds) => setFilters((current) => ({ ...current, planIds }))} /></div>
                 </div>
               </div>
@@ -586,7 +658,7 @@ export default function TestSuites() {
         </div>
 
         <div className="flex-1 overflow-auto">
-          <table className="w-full min-w-[1720px] table-fixed text-left text-sm whitespace-nowrap">
+          <table className="w-full min-w-[1200px] table-fixed text-left text-sm whitespace-nowrap">
             <thead className="sticky top-0 bg-[var(--bg-secondary)] border-b border-[var(--border)] z-10">
               <tr className="text-[var(--text-muted)]">
                 <th className="font-medium py-3 px-4 w-10">
@@ -594,9 +666,7 @@ export default function TestSuites() {
                 </th>
                 <th className="w-52 px-4 py-3 font-medium">ID</th>
                 <th className="w-72 px-4 py-3 font-medium">Name</th>
-                <th className="w-72 px-4 py-3 font-medium">Folder</th>
                 <th className="w-80 px-4 py-3 font-medium">Test Plan</th>
-                <th className="w-48 px-4 py-3 font-medium">Module</th>
                 <th className="w-36 px-4 py-3 font-medium">Tags</th>
                 <th className="w-32 px-4 py-3 font-medium">Updated</th>
                 <th className="w-28 px-4 py-3 text-right font-medium">Actions</th>
@@ -604,9 +674,9 @@ export default function TestSuites() {
             </thead>
             <tbody className="divide-y divide-[var(--border)]">
               {loading ? (
-                <tr><td colSpan={9} className="py-8 text-center text-[var(--text-muted)]">Loading suites...</td></tr>
+                <tr><td colSpan={7} className="py-8 text-center text-[var(--text-muted)]">Loading suites...</td></tr>
               ) : filteredSuites.length === 0 ? (
-                <tr><td colSpan={9} className="py-8 text-center text-[var(--text-muted)]">No suites found.</td></tr>
+                <tr><td colSpan={7} className="py-8 text-center text-[var(--text-muted)]">No suites found.</td></tr>
               ) : orderedSuites.map((suite) => {
                 const suiteCases = getSuiteCases(suite.id);
                 const isExpanded = expandedSuiteIds.includes(suite.id);
@@ -629,39 +699,16 @@ export default function TestSuites() {
                           >
                             {isExpanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
                           </button>
-                          {/* Clicking the suite shows its mapped cases (toggle) and reflects it in the URL so the
-                              view is deep-linkable; Edit stays on the pencil action. */}
                           <button
-                            onClick={() => { toggleSuiteExpanded(suite.id); navigate(isExpanded ? '/suites' : `/suites/${suite.id}`); }}
+                            onClick={() => navigate(`/suites/${suite.id}`)}
                             className="block min-w-0 flex-1 text-left"
-                            title="Show related test cases"
+                            title="Open test suite"
                           >
                             <span className="block font-medium hover:text-[var(--accent)] transition-colors truncate" title={suite.name}>{suite.name}</span>
                             <span className="block text-xs text-[var(--text-muted)] font-normal truncate">{suite.description}</span>
                             <span className="block text-xs text-[var(--text-muted)]">{suiteCases.length} related cases</span>
                           </button>
                       </div>
-                    </td>
-                    <td className="py-3 px-4">
-                      <select
-                        value={suite.folderId || ''}
-                        onClick={(event) => event.stopPropagation()}
-                        onChange={(event) => {
-                          const folderId = event.target.value;
-                          const folderName = folders.find((folder) => folder.id === folderId)?.name || '';
-                          updateSuiteInline(suite, {
-                            folderId,
-                            ...((!suite.module || suite.module === 'QA Assistant') && folderName ? { module: folderName } : {}),
-                          });
-                        }}
-                        className={inlineSelectClass}
-                        title="Update folder"
-                      >
-                        <option value="" disabled>Select a folder</option>
-                        {folders.map((folder) => (
-                          <option key={folder.id} value={folder.id}>{folder.path || folder.name}</option>
-                        ))}
-                      </select>
                     </td>
                     <td className="py-3 px-4">
                         <MultiSelectDropdown
@@ -671,20 +718,6 @@ export default function TestSuites() {
                           onChange={(testPlanIds) => updateSuiteInline(suite, { testPlanIds, testPlanId: testPlanIds[0] || '' })}
                           className="min-w-[280px] max-w-[360px]"
                         />
-                      </td>
-                      <td className="py-3 px-4">
-                        <select
-                          value={suiteModuleName(suite, folders)}
-                          onClick={(event) => event.stopPropagation()}
-                          onChange={(event) => updateSuiteInline(suite, { module: event.target.value })}
-                          className="w-full min-w-[100px] rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs font-medium text-[var(--text-primary)] outline-none transition-colors hover:border-[var(--accent)] focus:border-[var(--accent)]"
-                          title="Update module"
-                        >
-                          <option value="">-</option>
-                          {moduleOptions.map((module) => (
-                            <option key={module} value={module}>{module}</option>
-                          ))}
-                        </select>
                       </td>
                       <td className="py-3 px-4">
                         <TagMultiSelect
@@ -742,7 +775,28 @@ export default function TestSuites() {
                     </tr>
                     {isExpanded && (
                       <tr>
-                        <td colSpan={9} className="bg-[var(--bg-secondary)]/50 px-10 py-4">
+                        <td colSpan={7} className="bg-[var(--bg-secondary)]/50 px-10 py-4">
+                          {/* Review-gated drift: cases newly matching this suite's tag query. */}
+                          <div className="mb-3 empty:hidden">
+                            <TagDriftBanner
+                              target="suites"
+                              id={suite.id}
+                              onChanged={fetchCases}
+                              onCreateNew={async (caseIds, drift) => {
+                                try {
+                                  const res = await fetch('/api/suites', {
+                                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({ name: `${suite.name} (new matches)`, definition: { tagQuery: drift.tagQuery } }),
+                                  });
+                                  const rsp = await res.json().catch(() => ({}));
+                                  if (!res.ok) throw new Error(rsp.error || 'Failed to create suite.');
+                                  const newId = rsp.suite?.id || rsp.id;
+                                  if (newId) await linkSuiteCases(newId, caseIds, []);
+                                  await fetchCases();
+                                } catch (e: any) { void showAlert(e.message || 'Failed to create suite.'); }
+                              }}
+                            />
+                          </div>
                           <div className="border border-[var(--border)] rounded-lg bg-[var(--bg-card)] overflow-hidden">
                             <div className="flex items-center justify-between gap-3 px-4 py-2 border-b border-[var(--border)]">
                               <span className="text-xs font-bold uppercase tracking-wider text-[var(--text-muted)]">
@@ -765,6 +819,7 @@ export default function TestSuites() {
                                     <tr>
                                       <th className="px-4 py-2 font-medium">ID</th>
                                       <th className="px-4 py-2 font-medium">Title</th>
+                                      <th className="px-4 py-2 font-medium">Version</th>
                                       <th className="px-4 py-2 font-medium">Priority</th>
                                       <th className="px-4 py-2 font-medium">Status</th>
                                     </tr>
@@ -774,6 +829,15 @@ export default function TestSuites() {
                                       <tr key={testCase.id} className="hover:bg-[var(--bg-secondary)]/60">
                                         <td className="px-4 py-2 font-mono text-xs text-[var(--text-muted)]">{testCase.id}</td>
                                         <td className="px-4 py-2 font-medium max-w-md whitespace-normal">{testCase.title}</td>
+                                        <td className="px-4 py-2">
+                                          <VersionPinSelect
+                                            target="suites"
+                                            groupId={suite.id}
+                                            caseId={testCase.id}
+                                            pinnedRevisionNo={(suite.casePins || []).find((p: any) => String(p?.caseId) === String(testCase.id))?.revisionNo ?? null}
+                                            onChange={fetchSuites}
+                                          />
+                                        </td>
                                         <td className="px-4 py-2 text-[var(--text-muted)]">{testCase.priority || 'Medium'}</td>
                                         <td className="px-4 py-2">
                                           <span className="text-xs px-2 py-0.5 rounded border border-[var(--border)] text-[var(--text-muted)]">
@@ -797,6 +861,7 @@ export default function TestSuites() {
           </table>
         </div>
       </div>
+      )}
     </div>
   );
 }

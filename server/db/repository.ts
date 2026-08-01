@@ -125,6 +125,50 @@ function stampJsonWrite<T extends Record<string, any>>(next: T, prior: T | null)
   };
 }
 
+type NamedArtifact = {
+  table: 'plans' | 'suites' | 'cases' | 'runs' | 'defects' | 'reports' | 'scripts' | 'requirements';
+  column: 'name' | 'title';
+  label: string;
+  records: any[];
+};
+
+function duplicateArtifactTitle(label: string, value: string): Error & { status: number; code: string } {
+  return Object.assign(new Error(`A ${label} named "${value}" already exists in this project.`), {
+    status: 409,
+    code: 'DUPLICATE_ARTIFACT_TITLE',
+  });
+}
+
+/** Project-wide, case-insensitive title guard shared by UI, agent, and service writes. */
+async function assertUniqueArtifactTitle(config: NamedArtifact, record: any, fallback: string): Promise<string> {
+  const value = String(record?.[config.column] || fallback).trim();
+  const id = String(record?.id || '');
+  if (!isPgEnabled()) {
+    const current = config.records.find((item: any) => String(item.id) === id);
+    const projectId = record?.projectId !== undefined ? String(record.projectId || '') : String(current?.projectId || '');
+    const duplicate = config.records.some((item: any) =>
+      String(item.id) !== id
+      && !item.deletedAt
+      && String(item.projectId || '') === projectId
+      && String(item[config.column] || '').trim().toLocaleLowerCase() === value.toLocaleLowerCase(),
+    );
+    if (duplicate) throw duplicateArtifactTitle(config.label, value);
+    return value;
+  }
+
+  const projectId = record?.projectId !== undefined ? String(record.projectId || '') : null;
+  const duplicate = await queryOne(
+    `SELECT id FROM ${config.table}
+     WHERE deleted_at IS NULL AND id <> $1
+       AND COALESCE(project_id, '') = COALESCE($2, (SELECT project_id FROM ${config.table} WHERE id = $1), '')
+       AND lower(btrim(${config.column})) = lower(btrim($3))
+     LIMIT 1`,
+    [id, projectId, value],
+  );
+  if (duplicate) throw duplicateArtifactTitle(config.label, value);
+  return value;
+}
+
 /* ---------- row mappers ---------- */
 
 function mapPlan(r: any) {
@@ -150,6 +194,8 @@ function mapPlan(r: any) {
     owner: r.owner,
     tags: r.tags || [],
     runIds: r.run_ids || [],
+    definition: r.definition || {},
+    casePins: r.case_pins || [],
     status: r.status,
     riskLevel: r.risk_level,
     parentPlanId: r.parent_plan_id,
@@ -180,9 +226,11 @@ function mapSuite(r: any) {
     module: r.module,
     owner: r.owner,
     tags: r.tags || [],
+    definition: r.definition || {},
     priority: r.priority,
     status: r.status,
     folderId: r.folder_id,
+    casePins: r.case_pins || [],
     approvalState: r.approval_state,
     proposedBy: r.proposed_by,
     approvedBy: r.approved_by,
@@ -215,6 +263,7 @@ function mapCase(r: any) {
     testingScope: r.testing_scope || (r.type === 'Automated' ? 'Automation' : 'Manual'),
     testingType: r.testing_type || 'Functional',
     testingTypes: normalizeTestCaseTypes({ testingTypes: r.testing_types, testingType: r.testing_type }),
+    captureEvidenceOnManualRun: r.capture_evidence_on_manual_run !== false,
     tags: r.tags || [],
     folderId: r.folder_id,
     confidence: r.confidence,
@@ -256,7 +305,10 @@ function mapRun(r: any) {
     targetUrl: r.target_url,
     websiteId: r.website_id || '',
     credentialRole: r.credential_role || '',
+    mode: r.mode || 'automated',
+    definition: r.definition || {},
     folderId: r.folder_id,
+    casePins: r.case_pins || [],
     steps: r.steps || [],
     evidence: r.evidence || [],
     triggerType: r.trigger_type,
@@ -274,6 +326,30 @@ function mapRun(r: any) {
     updatedAt: r.updated_at,
     ...scopeFields(r),
     ...metaFields(r),
+  };
+}
+
+function mapRunCaseResult(r: any) {
+  if (!r) return null;
+  return {
+    id: r.id,
+    runId: r.run_id,
+    caseId: r.case_id,
+    revisionNo: r.revision_no ?? null,
+    caseTitle: r.case_title || '',
+    outcome: r.outcome || 'Not Run',
+    comment: r.comment || '',
+    runBy: r.run_by || '',
+    analysisOwner: r.analysis_owner || '',
+    analysisNote: r.analysis_note || '',
+    configuration: r.configuration || '',
+    priority: r.priority || '',
+    stepResults: r.step_results || [],
+    startedAt: r.started_at,
+    completedAt: r.completed_at,
+    durationMs: r.duration_ms ?? null,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
   };
 }
 
@@ -662,6 +738,7 @@ function mapScript(r: any) {
     language: r.language,
     framework: r.framework,
     status: r.status,
+    currentRevision: r.current_revision ?? 1,
     folderId: r.folder_id,
     caseId: r.case_id,
     targetUrl: r.target_url,
@@ -672,6 +749,74 @@ function mapScript(r: any) {
     ...scopeFields(r),
     ...metaFields(r),
   };
+}
+
+// Script versioning shares the case-versioning flag/precedent. Versioned content = `code` only —
+// a name/status/folder edit must NOT mint a revision.
+function scriptCodeChanged(prev: any, next: any): boolean {
+  if (!prev) return true;
+  return String(prev.code || '') !== String(next.code || '');
+}
+
+function mapScriptRevision(r: any) {
+  if (!r) return null;
+  return {
+    revisionId: r.revision_id,
+    scriptId: r.script_id,
+    revisionNo: r.revision_no,
+    parentRevision: r.parent_revision,
+    code: r.code,
+    language: r.language,
+    framework: r.framework,
+    sourceCaseRevision: r.source_case_revision,
+    changeSummary: r.change_summary,
+    changeKind: r.change_kind,
+    author: r.author,
+    createdAt: r.created_at,
+  };
+}
+
+// The linked case's HEAD revision at capture (best-effort traceability; null when no/unknown case).
+async function scriptSourceCaseRevision(caseId: string | null | undefined): Promise<number | null> {
+  if (!caseId) return null;
+  const r = await queryOne('SELECT current_revision FROM cases WHERE id = $1', [caseId]);
+  return r?.current_revision ?? null;
+}
+
+// Append one immutable script revision snapshot. `content` supplies the frozen code/language/framework.
+async function insertScriptRevision(scriptId: string, revisionNo: number, parentRevision: string | null, content: any, meta: any, changeKind?: string): Promise<string> {
+  const revisionId = uid('SREV');
+  const sourceCaseRevision = await scriptSourceCaseRevision(content.case_id ?? content.caseId);
+  await query(
+    `INSERT INTO script_revisions (revision_id, script_id, revision_no, parent_revision, code, language, framework, source_case_revision, change_summary, change_kind, author, created_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11, now())`,
+    [
+      revisionId, scriptId, revisionNo, parentRevision,
+      content.code || '', content.language || null, content.framework || null,
+      sourceCaseRevision,
+      meta?.changeSummary || null, changeKind || meta?.changeKind || 'manual',
+      meta?.author || meta?.createdBy || 'system',
+    ],
+  );
+  return revisionId;
+}
+
+// Mint a script revision when code changed. `existing` is the pre-upsert row (null = brand-new script).
+async function snapshotScriptRevision(scriptId: string, existing: any, row: any, meta: any): Promise<void> {
+  if (!existing) {
+    await insertScriptRevision(scriptId, 1, null, row, meta, 'initial');
+    return;
+  }
+  if (!scriptCodeChanged(existing, row)) return;
+  const [last] = await query('SELECT revision_id, revision_no FROM script_revisions WHERE script_id = $1 ORDER BY revision_no DESC LIMIT 1', [scriptId]);
+  let parentId: string | null = last?.revision_id || null;
+  let lastNo: number = last?.revision_no || 0;
+  // No captured history yet (script predates versioning): snapshot the pre-edit state so rollback works.
+  if (lastNo === 0) { parentId = await insertScriptRevision(scriptId, 1, null, existing, meta, 'baseline'); lastNo = 1; }
+  const nextNo = lastNo + 1;
+  await insertScriptRevision(scriptId, nextNo, parentId, row, meta);
+  await query('UPDATE scripts SET current_revision = $1 WHERE id = $2', [nextNo, scriptId]);
+  row.current_revision = nextNo; // keep the row the caller maps in sync with the bumped counter
 }
 
 export const Scripts = {
@@ -686,6 +831,7 @@ export const Scripts = {
     return mapScript(r);
   },
   async upsert(s: any): Promise<any> {
+    s = { ...s, name: await assertUniqueArtifactTitle({ table: 'scripts', column: 'name', label: 'script', records: db.scripts }, s, 'Untitled Script') };
     if (!isPgEnabled()) {
       const idx = db.scripts.findIndex((x: any) => x.id === s.id);
       if (idx >= 0) db.scripts[idx] = stampJsonWrite(s, db.scripts[idx]);
@@ -693,22 +839,30 @@ export const Scripts = {
       return s;
     }
     const id = s.id || uid('SCRIPT');
+    // Capture the pre-upsert code so we can detect a real content change (versioning only).
+    const priorForVersion = isCaseVersioningEnabled()
+      ? await queryOne('SELECT code, language, framework, case_id FROM scripts WHERE id = $1', [id])
+      : null;
     const row = await queryOne(
-      `INSERT INTO scripts (id, name, filename, title, code, language, framework, status, folder_id, case_id, target_url, agent_run_id, created_by, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13, now(), now())
+      `INSERT INTO scripts (id, name, filename, title, code, language, framework, status, folder_id, case_id, target_url, agent_run_id, created_by, project_id, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14, now(), now())
        ON CONFLICT (id) DO UPDATE SET
          name=EXCLUDED.name, filename=EXCLUDED.filename, title=EXCLUDED.title,
          code=EXCLUDED.code, language=EXCLUDED.language, framework=EXCLUDED.framework,
          status=EXCLUDED.status, folder_id=EXCLUDED.folder_id, case_id=EXCLUDED.case_id,
          target_url=EXCLUDED.target_url, agent_run_id=EXCLUDED.agent_run_id,
-         created_by=EXCLUDED.created_by, updated_at=now()
+         created_by=EXCLUDED.created_by, project_id=COALESCE(EXCLUDED.project_id, scripts.project_id), updated_at=now()
        RETURNING *`,
       [id, s.name || 'Untitled Script', s.filename || `${id}.ts`, s.title || '',
        s.code || '', s.language || 'typescript', s.framework || 'playwright',
        s.status || 'Generated', s.folderId || null, s.caseId || null,
-       s.targetUrl || '', s.agentRunId || null, s.createdBy || 'QA Assistant'],
+       s.targetUrl || '', s.agentRunId || null, s.createdBy || 'QA Assistant', s.projectId || null],
     );
     await writeScopeCols('scripts', id, s);
+    // Append an immutable revision snapshot on code change. Isolated so a history-write failure never fails the save.
+    if (isCaseVersioningEnabled()) {
+      try { await snapshotScriptRevision(id, priorForVersion, row, s); } catch { /* script still saved */ }
+    }
     return mapScript(row);
   },
   async remove(id: string): Promise<boolean> {
@@ -802,6 +956,7 @@ export const Plans = {
     return mapPlan(r);
   },
   async upsert(plan: any): Promise<any> {
+    plan = { ...plan, name: await assertUniqueArtifactTitle({ table: 'plans', column: 'name', label: 'test plan', records: db.plans }, plan, 'Untitled Plan') };
     const id = plan.id || await nextArtifactId('PLAN', {
       ownerId: plan.ownerId,
       websiteId: plan.websiteId,
@@ -817,8 +972,8 @@ export const Plans = {
       return plan;
     }
     const row = await queryOne(
-      `INSERT INTO plans (id, name, scope, objectives, in_scope, out_of_scope, strategy, test_types, environments, roles, entry_exit, schedule, risks, deliverables, description, start_date, end_date, owner, tags, run_ids, status, risk_level, parent_plan_id, folder_id, approval_state, proposed_by, source_run_id, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27, now(), now())
+      `INSERT INTO plans (id, name, scope, objectives, in_scope, out_of_scope, strategy, test_types, environments, roles, entry_exit, schedule, risks, deliverables, description, start_date, end_date, owner, tags, run_ids, status, risk_level, parent_plan_id, folder_id, approval_state, proposed_by, source_run_id, definition, case_pins, project_id, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28::jsonb,$29::jsonb,$30, now(), now())
        ON CONFLICT (id) DO UPDATE SET
          name=EXCLUDED.name, scope=EXCLUDED.scope, objectives=EXCLUDED.objectives,
          in_scope=EXCLUDED.in_scope, out_of_scope=EXCLUDED.out_of_scope, strategy=EXCLUDED.strategy,
@@ -829,7 +984,9 @@ export const Plans = {
          tags=EXCLUDED.tags, run_ids=EXCLUDED.run_ids, status=EXCLUDED.status, risk_level=EXCLUDED.risk_level,
          parent_plan_id=EXCLUDED.parent_plan_id,
          folder_id=EXCLUDED.folder_id, approval_state=EXCLUDED.approval_state,
-         proposed_by=EXCLUDED.proposed_by, source_run_id=EXCLUDED.source_run_id, updated_at=now()
+         proposed_by=EXCLUDED.proposed_by, source_run_id=EXCLUDED.source_run_id,
+         definition=EXCLUDED.definition, case_pins=EXCLUDED.case_pins,
+         project_id=COALESCE(EXCLUDED.project_id, plans.project_id), updated_at=now()
        RETURNING *`,
       [
         id,
@@ -859,6 +1016,9 @@ export const Plans = {
         plan.approvalState || 'approved',
         plan.proposedBy || plan.createdBy || 'human',
         plan.sourceRunId || null,
+        JSON.stringify(plan.definition || {}),
+        JSON.stringify(Array.isArray(plan.casePins) ? plan.casePins : []),
+        plan.projectId || null,
       ],
     );
     await writeScopeCols('plans', id, plan);
@@ -892,6 +1052,7 @@ export const Suites = {
     return mapSuite(r);
   },
   async upsert(s: any): Promise<any> {
+    s = { ...s, name: await assertUniqueArtifactTitle({ table: 'suites', column: 'name', label: 'test suite', records: db.suites }, s, 'Untitled Suite') };
     const id = s.id || await nextArtifactId('SUITE', {
       ownerId: s.ownerId,
       websiteId: s.websiteId,
@@ -912,21 +1073,24 @@ export const Suites = {
       return normalized;
     }
     const row = await queryOne(
-      `INSERT INTO suites (id, name, description, parent_suite, test_plan_id, module, owner, tags, priority, status, folder_id, approval_state, proposed_by, source_run_id, test_plan_ids, parent_suite_ids, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16, now(), now())
+      `INSERT INTO suites (id, name, description, parent_suite, test_plan_id, module, owner, tags, priority, status, folder_id, approval_state, proposed_by, source_run_id, test_plan_ids, parent_suite_ids, definition, case_pins, project_id, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17::jsonb,$18::jsonb,$19, now(), now())
        ON CONFLICT (id) DO UPDATE SET
          name=EXCLUDED.name, description=EXCLUDED.description, parent_suite=EXCLUDED.parent_suite,
          test_plan_id=EXCLUDED.test_plan_id, module=EXCLUDED.module, owner=EXCLUDED.owner,
          tags=EXCLUDED.tags, priority=EXCLUDED.priority, status=EXCLUDED.status, folder_id=EXCLUDED.folder_id,
          approval_state=EXCLUDED.approval_state, proposed_by=EXCLUDED.proposed_by, source_run_id=EXCLUDED.source_run_id,
-         test_plan_ids=EXCLUDED.test_plan_ids, parent_suite_ids=EXCLUDED.parent_suite_ids, updated_at=now()
+         test_plan_ids=EXCLUDED.test_plan_ids, parent_suite_ids=EXCLUDED.parent_suite_ids,
+         definition=EXCLUDED.definition, case_pins=EXCLUDED.case_pins,
+         project_id=COALESCE(EXCLUDED.project_id, suites.project_id), updated_at=now()
        RETURNING *`,
       [
         id, s.name || 'Untitled Suite', s.description || '', primaryParentSuite,
         primaryPlanId, s.module || '', s.owner || '', s.tags || [],
         s.priority || 'Medium', s.status || 'Active', s.folderId || null,
         s.approvalState || 'approved', s.proposedBy || s.createdBy || 'human', s.sourceRunId || null,
-        JSON.stringify(planIds), JSON.stringify(parentSuiteIds),
+        JSON.stringify(planIds), JSON.stringify(parentSuiteIds), JSON.stringify(s.definition || {}),
+        JSON.stringify(s.casePins || []), s.projectId || null,
       ],
     );
     await writeScopeCols('suites', id, s);
@@ -1033,6 +1197,7 @@ export const Cases = {
     return mapCase(r);
   },
   async upsert(c: any): Promise<any> {
+    c = { ...c, title: await assertUniqueArtifactTitle({ table: 'cases', column: 'title', label: 'test case', records: db.cases }, c, 'Untitled Case') };
     const id = c.id || await nextArtifactId('TC', {
       ownerId: c.ownerId,
       websiteId: c.websiteId,
@@ -1061,8 +1226,8 @@ export const Cases = {
       ? await queryOne('SELECT title, description, preconditions, steps FROM cases WHERE id = $1', [id])
       : null;
     const row = await queryOne(
-      `INSERT INTO cases (id, title, description, preconditions, steps, test_plan_id, test_suite_id, type, priority, status, tags, folder_id, confidence, sources, approval_state, proposed_by, source_run_id, agent_run_id, automation_status, testing_scope, testing_type, testing_types, test_plan_ids, test_suite_ids, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22::jsonb,$23::jsonb,$24::jsonb, now(), now())
+      `INSERT INTO cases (id, title, description, preconditions, steps, test_plan_id, test_suite_id, type, priority, status, tags, folder_id, confidence, sources, approval_state, proposed_by, source_run_id, agent_run_id, automation_status, testing_scope, testing_type, testing_types, test_plan_ids, test_suite_ids, capture_evidence_on_manual_run, project_id, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22::jsonb,$23::jsonb,$24::jsonb,$25,$26, now(), now())
        ON CONFLICT (id) DO UPDATE SET
          title=EXCLUDED.title, description=EXCLUDED.description, preconditions=EXCLUDED.preconditions,
          steps=EXCLUDED.steps, test_plan_id=EXCLUDED.test_plan_id, test_suite_id=EXCLUDED.test_suite_id,
@@ -1072,7 +1237,8 @@ export const Cases = {
          source_run_id=EXCLUDED.source_run_id, agent_run_id=EXCLUDED.agent_run_id,
          automation_status=EXCLUDED.automation_status, testing_scope=EXCLUDED.testing_scope,
          testing_type=EXCLUDED.testing_type, testing_types=EXCLUDED.testing_types, test_plan_ids=EXCLUDED.test_plan_ids,
-         test_suite_ids=EXCLUDED.test_suite_ids, updated_at=now()
+         test_suite_ids=EXCLUDED.test_suite_ids, capture_evidence_on_manual_run=EXCLUDED.capture_evidence_on_manual_run,
+         project_id=COALESCE(EXCLUDED.project_id, cases.project_id), updated_at=now()
        RETURNING *`,
       [
         id, c.title || 'Untitled Case', c.description || '', c.preconditions || '',
@@ -1083,6 +1249,7 @@ export const Cases = {
         c.sourceRunId || null, c.agentRunId || null,
         c.automationStatus || 'Not Automated', testingScope, testingTypes[0] || 'Functional',
         JSON.stringify(testingTypes), JSON.stringify(planIds), JSON.stringify(suiteIds),
+        c.captureEvidenceOnManualRun !== false, c.projectId || null,
       ],
     );
     await writeScopeCols('cases', id, c);
@@ -1146,6 +1313,43 @@ export const CaseRevisions = {
   async getByNo(caseId: string, revisionNo: number): Promise<any | null> {
     if (!isPgEnabled()) return null;
     return mapCaseRevision(await queryOne('SELECT * FROM case_revisions WHERE case_id = $1 AND revision_no = $2', [caseId, revisionNo]));
+  },
+};
+
+/* ---------- script revisions (append-only version history, mirrors CaseRevisions) ---------- */
+
+export const ScriptRevisions = {
+  // Full history for a script, newest first. Empty when versioning is off or PG is disabled.
+  async list(scriptId: string): Promise<any[]> {
+    if (!isPgEnabled()) return [];
+    const rows = await query('SELECT * FROM script_revisions WHERE script_id = $1 ORDER BY revision_no DESC', [scriptId]);
+    return rows.map(mapScriptRevision);
+  },
+  async get(revisionId: string): Promise<any | null> {
+    if (!isPgEnabled()) return null;
+    return mapScriptRevision(await queryOne('SELECT * FROM script_revisions WHERE revision_id = $1', [revisionId]));
+  },
+  // Roll HEAD back to a prior revision's code via Scripts.upsert — appends a NEW rollback revision
+  // rather than mutating history. History stays immutable.
+  async rollback(scriptId: string, revisionId: string): Promise<any | null> {
+    if (!isPgEnabled()) return null;
+    const target = await this.get(revisionId);
+    if (!target || target.scriptId !== scriptId) return null;
+    const current = await Scripts.get(scriptId);
+    if (!current) return null;
+    return Scripts.upsert({
+      ...current,
+      code: target.code,
+      language: target.language ?? current.language,
+      framework: target.framework ?? current.framework,
+      changeKind: 'rollback',
+      changeSummary: `Rolled back to revision ${target.revisionNo}`,
+    });
+  },
+  // Look up a specific revision_no for a script (used to resolve a pin / diff).
+  async getByNo(scriptId: string, revisionNo: number): Promise<any | null> {
+    if (!isPgEnabled()) return null;
+    return mapScriptRevision(await queryOne('SELECT * FROM script_revisions WHERE script_id = $1 AND revision_no = $2', [scriptId, revisionNo]));
   },
 };
 
@@ -1254,6 +1458,7 @@ export const Runs = {
     return mapRun(r);
   },
   async upsert(r: any): Promise<any> {
+    r = { ...r, name: await assertUniqueArtifactTitle({ table: 'runs', column: 'name', label: 'test run', records: db.runs }, r, 'Untitled Run') };
     if (!isPgEnabled()) {
       const idx = db.runs.findIndex((x: any) => x.id === r.id);
       if (idx >= 0) db.runs[idx] = stampJsonWrite(r, db.runs[idx]);
@@ -1265,8 +1470,8 @@ export const Runs = {
     const evidenceJson = JSON.stringify(r.evidence || []);
     const triggerMetaJson = JSON.stringify(r.triggerMeta || {});
     const row = await queryOne(
-      `INSERT INTO runs (id, name, suite_id, test_plan_id, case_ids, requested_by, execution_time, total_executions, passed, failed, progress, status, target_url, folder_id, steps, evidence, trigger_type, trigger_meta, started_at, completed_at, approval_state, proposed_by, source_run_id, date, assigned_to, tags, state, website_id, credential_role, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::jsonb,$16::jsonb,$17,$18::jsonb,$19,$20,$21,$22,$23, COALESCE($24, CURRENT_DATE), $25, $26, $27, $28, $29, now(), now())
+      `INSERT INTO runs (id, name, suite_id, test_plan_id, case_ids, requested_by, execution_time, total_executions, passed, failed, progress, status, target_url, folder_id, steps, evidence, trigger_type, trigger_meta, started_at, completed_at, approval_state, proposed_by, source_run_id, date, assigned_to, tags, state, website_id, credential_role, mode, definition, case_pins, project_id, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::jsonb,$16::jsonb,$17,$18::jsonb,$19,$20,$21,$22,$23, COALESCE($24, CURRENT_DATE), $25, $26, $27, $28, $29, $30, $31::jsonb, $32::jsonb, $33, now(), now())
        ON CONFLICT (id) DO UPDATE SET
          name=EXCLUDED.name, suite_id=EXCLUDED.suite_id, test_plan_id=EXCLUDED.test_plan_id,
          case_ids=EXCLUDED.case_ids, requested_by=EXCLUDED.requested_by, execution_time=EXCLUDED.execution_time,
@@ -1279,6 +1484,8 @@ export const Runs = {
          source_run_id=EXCLUDED.source_run_id,
          assigned_to=EXCLUDED.assigned_to, tags=EXCLUDED.tags, state=EXCLUDED.state,
          website_id=EXCLUDED.website_id, credential_role=EXCLUDED.credential_role,
+         mode=EXCLUDED.mode, definition=EXCLUDED.definition, case_pins=EXCLUDED.case_pins,
+         project_id=COALESCE(EXCLUDED.project_id, runs.project_id),
          updated_at=now()
        RETURNING *`,
       [
@@ -1294,6 +1501,8 @@ export const Runs = {
         r.date || null,
         r.assignedTo || '', r.tags || [], r.state || '',
         r.websiteId || '', r.credentialRole || '',
+        r.mode || 'automated', JSON.stringify(r.definition || {}),
+        JSON.stringify(r.casePins || []), r.projectId || null,
       ],
     );
     await writeScopeCols('runs', id, r);
@@ -1307,6 +1516,56 @@ export const Runs = {
     }
     const res = await query('UPDATE runs SET deleted_at = now(), deleted_by = $2, deleted_by_name = $3 WHERE id = $1 AND deleted_at IS NULL', [id, currentActor().id, currentActor().name]);
     return res.length > 0;
+  },
+};
+
+/* ---------- manual run per-case results (gated by MANUAL_RUNNER_V1 at the route layer) ---------- */
+
+export const RunCaseResults = {
+  async listForRun(runId: string): Promise<any[]> {
+    if (!isPgEnabled()) return ((db as any).runCaseResults || []).filter((x: any) => x.runId === runId);
+    const rows = await query('SELECT * FROM run_case_results WHERE run_id = $1 ORDER BY created_at ASC', [runId]);
+    return rows.map(mapRunCaseResult);
+  },
+  async get(runId: string, caseId: string): Promise<any | null> {
+    if (!isPgEnabled()) return ((db as any).runCaseResults || []).find((x: any) => x.runId === runId && x.caseId === caseId) || null;
+    return mapRunCaseResult(await queryOne('SELECT * FROM run_case_results WHERE run_id = $1 AND case_id = $2', [runId, caseId]));
+  },
+  async upsert(rec: any): Promise<any> {
+    if (!isPgEnabled()) {
+      const store = ((db as any).runCaseResults ||= []);
+      const idx = store.findIndex((x: any) => x.runId === rec.runId && x.caseId === rec.caseId);
+      const merged = { id: rec.id || uid('RCR'), ...store[idx], ...rec, updatedAt: new Date().toISOString() };
+      if (idx >= 0) store[idx] = merged; else store.push(merged);
+      return merged;
+    }
+    const id = rec.id || uid('RCR');
+    const stepResultsJson = JSON.stringify(rec.stepResults || []);
+    const row = await queryOne(
+      `INSERT INTO run_case_results (id, run_id, case_id, revision_no, case_title, outcome, comment, run_by, analysis_owner, analysis_note, configuration, priority, step_results, started_at, completed_at, duration_ms, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb,$14,$15,$16, now(), now())
+       ON CONFLICT (run_id, case_id) DO UPDATE SET
+         revision_no=EXCLUDED.revision_no, case_title=EXCLUDED.case_title, outcome=EXCLUDED.outcome,
+         comment=EXCLUDED.comment, run_by=EXCLUDED.run_by, analysis_owner=EXCLUDED.analysis_owner,
+         analysis_note=EXCLUDED.analysis_note, configuration=EXCLUDED.configuration, priority=EXCLUDED.priority,
+         step_results=EXCLUDED.step_results, started_at=EXCLUDED.started_at, completed_at=EXCLUDED.completed_at,
+         duration_ms=EXCLUDED.duration_ms, updated_at=now()
+       RETURNING *`,
+      [
+        id, rec.runId, rec.caseId, rec.revisionNo ?? null, rec.caseTitle || '',
+        rec.outcome || 'Not Run', rec.comment || '', rec.runBy || '',
+        rec.analysisOwner || '', rec.analysisNote || '', rec.configuration || '', rec.priority || '',
+        stepResultsJson, rec.startedAt || null, rec.completedAt || null, rec.durationMs ?? null,
+      ],
+    );
+    return mapRunCaseResult(row);
+  },
+  async removeForRun(runId: string): Promise<void> {
+    if (!isPgEnabled()) {
+      (db as any).runCaseResults = ((db as any).runCaseResults || []).filter((x: any) => x.runId !== runId);
+      return;
+    }
+    await query('DELETE FROM run_case_results WHERE run_id = $1', [runId]);
   },
 };
 
@@ -1324,6 +1583,7 @@ export const Defects = {
     return mapDefect(r);
   },
   async upsert(d: any): Promise<any> {
+    d = { ...d, title: await assertUniqueArtifactTitle({ table: 'defects', column: 'title', label: 'defect', records: db.defects }, d, 'Untitled Defect') };
     if (!isPgEnabled()) {
       const idx = db.defects.findIndex((x: any) => x.id === d.id);
       if (idx >= 0) db.defects[idx] = stampJsonWrite(d, db.defects[idx]);
@@ -1334,15 +1594,16 @@ export const Defects = {
     const evidenceJson = JSON.stringify(d.evidence || []);
     const metadataJson = JSON.stringify(d.metadata || {});
     const row = await queryOne(
-      `INSERT INTO defects (id, title, description, steps_to_reproduce, expected, actual, severity, status, assigned_to, linked_case_id, linked_run_id, evidence, tags, folder_id, approval_state, proposed_by, source_run_id, metadata, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13,$14,$15,$16,$17,$18::jsonb, now(), now())
+      `INSERT INTO defects (id, title, description, steps_to_reproduce, expected, actual, severity, status, assigned_to, linked_case_id, linked_run_id, evidence, tags, folder_id, approval_state, proposed_by, source_run_id, metadata, project_id, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13,$14,$15,$16,$17,$18::jsonb,$19, now(), now())
        ON CONFLICT (id) DO UPDATE SET
          title=EXCLUDED.title, description=EXCLUDED.description, steps_to_reproduce=EXCLUDED.steps_to_reproduce,
          expected=EXCLUDED.expected, actual=EXCLUDED.actual, severity=EXCLUDED.severity,
          status=EXCLUDED.status, assigned_to=EXCLUDED.assigned_to, linked_case_id=EXCLUDED.linked_case_id,
          linked_run_id=EXCLUDED.linked_run_id, evidence=EXCLUDED.evidence, tags=EXCLUDED.tags,
          folder_id=EXCLUDED.folder_id, approval_state=EXCLUDED.approval_state,
-         proposed_by=EXCLUDED.proposed_by, source_run_id=EXCLUDED.source_run_id, metadata=EXCLUDED.metadata, updated_at=now()
+         proposed_by=EXCLUDED.proposed_by, source_run_id=EXCLUDED.source_run_id, metadata=EXCLUDED.metadata,
+         project_id=COALESCE(EXCLUDED.project_id, defects.project_id), updated_at=now()
        RETURNING *`,
       [
         id, d.title || 'Untitled Defect', d.description || '',
@@ -1351,7 +1612,7 @@ export const Defects = {
         d.assignedTo || null, d.linkedCaseId || null, d.linkedRunId || null,
         evidenceJson, d.tags || [], d.folderId || null,
         d.approvalState || 'approved', d.proposedBy || d.createdBy || 'human',
-        d.sourceRunId || null, metadataJson,
+        d.sourceRunId || null, metadataJson, d.projectId || null,
       ],
     );
     await writeScopeCols('defects', id, d);
@@ -1382,6 +1643,7 @@ export const Reports = {
     return mapReport(r);
   },
   async upsert(rep: any): Promise<any> {
+    rep = { ...rep, name: await assertUniqueArtifactTitle({ table: 'reports', column: 'name', label: 'report', records: db.reports }, rep, 'Untitled Report') };
     if (!isPgEnabled()) {
       const idx = db.reports.findIndex((x: any) => x.id === rep.id);
       if (idx >= 0) db.reports[idx] = stampJsonWrite(rep, db.reports[idx]);
@@ -1393,15 +1655,16 @@ export const Reports = {
     const evidenceJson = JSON.stringify(rep.evidence || []);
     const caseRevisionsJson = JSON.stringify(rep.caseRevisions || {}); // execution snapshot: {caseId: revisionNo}
     const row = await queryOne(
-      `INSERT INTO reports (id, name, plan_id, suite_id, run_id, plan_name, suite_name, requested_by, execution_time, total_executions, status, failure_reason, target_url, steps, evidence, narrative, folder_id, date, case_revisions, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15::jsonb,$16,$17, COALESCE($18, CURRENT_DATE), $19::jsonb, now(), now())
+      `INSERT INTO reports (id, name, plan_id, suite_id, run_id, plan_name, suite_name, requested_by, execution_time, total_executions, status, failure_reason, target_url, steps, evidence, narrative, folder_id, date, case_revisions, project_id, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15::jsonb,$16,$17, COALESCE($18, CURRENT_DATE), $19::jsonb,$20, now(), now())
        ON CONFLICT (id) DO UPDATE SET
          name=EXCLUDED.name, plan_id=EXCLUDED.plan_id, suite_id=EXCLUDED.suite_id, run_id=EXCLUDED.run_id,
          plan_name=EXCLUDED.plan_name, suite_name=EXCLUDED.suite_name, requested_by=EXCLUDED.requested_by,
          execution_time=EXCLUDED.execution_time, total_executions=EXCLUDED.total_executions,
          status=EXCLUDED.status, failure_reason=EXCLUDED.failure_reason, target_url=EXCLUDED.target_url,
          steps=EXCLUDED.steps, evidence=EXCLUDED.evidence, narrative=EXCLUDED.narrative,
-         folder_id=EXCLUDED.folder_id, date=EXCLUDED.date, case_revisions=EXCLUDED.case_revisions, updated_at=now()
+         folder_id=EXCLUDED.folder_id, date=EXCLUDED.date, case_revisions=EXCLUDED.case_revisions,
+         project_id=COALESCE(EXCLUDED.project_id, reports.project_id), updated_at=now()
        RETURNING *`,
       [
         id, rep.name || 'Untitled Report', rep.planId || null, rep.suiteId || null, rep.runId || null,
@@ -1409,7 +1672,7 @@ export const Reports = {
         rep.executionTime || '', rep.totalExecutions || 0, rep.status || 'Passed',
         rep.failureReason || '', rep.targetUrl || '',
         stepsJson, evidenceJson, rep.narrative || '',
-        rep.folderId || null, rep.date || null, caseRevisionsJson,
+        rep.folderId || null, rep.date || null, caseRevisionsJson, rep.projectId || null,
       ],
     );
     await writeScopeCols('reports', id, rep);
@@ -1890,6 +2153,7 @@ export const Requirements = {
     return mapRequirement(r);
   },
   async upsert(rq: any): Promise<any> {
+    rq = { ...rq, title: await assertUniqueArtifactTitle({ table: 'requirements', column: 'title', label: 'requirement', records: db.requirements }, rq, 'Untitled Requirement') };
     if (!isPgEnabled()) {
       const idx = (db.requirements as any[]).findIndex((x: any) => x.id === rq.id);
       if (idx >= 0) db.requirements[idx] = stampJsonWrite(rq, db.requirements[idx]);
@@ -1897,8 +2161,8 @@ export const Requirements = {
       return rq;
     }
     const id = rq.id || uid('REQ');
-    const sql = `INSERT INTO requirements (id, title, description, feature_query, business_rules, srs_modules, data_population_notes, admin_behavior, keystone_behavior, metadata_refs, ui_selectors, source_files, coverage_status, status, folder_id, approval_state, proposed_by, source_run_id, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,$5::jsonb,$6::jsonb,$7,$8,$9,$10::jsonb,$11::jsonb,$12::jsonb,$13,$14,$15,$16,$17,$18, now(), now())
+    const sql = `INSERT INTO requirements (id, title, description, feature_query, business_rules, srs_modules, data_population_notes, admin_behavior, keystone_behavior, metadata_refs, ui_selectors, source_files, coverage_status, status, folder_id, approval_state, proposed_by, source_run_id, project_id, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5::jsonb,$6::jsonb,$7,$8,$9,$10::jsonb,$11::jsonb,$12::jsonb,$13,$14,$15,$16,$17,$18,$19, now(), now())
        ON CONFLICT (id) DO UPDATE SET
          title=EXCLUDED.title, description=EXCLUDED.description, feature_query=EXCLUDED.feature_query,
          business_rules=EXCLUDED.business_rules, srs_modules=EXCLUDED.srs_modules, data_population_notes=EXCLUDED.data_population_notes,
@@ -1906,7 +2170,8 @@ export const Requirements = {
          metadata_refs=EXCLUDED.metadata_refs, ui_selectors=EXCLUDED.ui_selectors, source_files=EXCLUDED.source_files,
          coverage_status=EXCLUDED.coverage_status, status=EXCLUDED.status, folder_id=EXCLUDED.folder_id,
          approval_state=EXCLUDED.approval_state, proposed_by=EXCLUDED.proposed_by,
-         source_run_id=EXCLUDED.source_run_id, updated_at=now()
+         source_run_id=EXCLUDED.source_run_id,
+         project_id=COALESCE(EXCLUDED.project_id, requirements.project_id), updated_at=now()
        RETURNING *`;
     const params = (folderId: string | null) => [
       id, rq.title || 'Untitled Requirement', rq.description || '', rq.featureQuery || '',
@@ -1916,7 +2181,7 @@ export const Requirements = {
       JSON.stringify(rq.sourceFiles || []),
       rq.coverageStatus || 'unknown', rq.status || 'Draft', folderId,
       rq.approvalState || 'proposed', rq.proposedBy || rq.createdBy || 'Feature Analyst',
-      rq.sourceRunId || null,
+      rq.sourceRunId || null, rq.projectId || null,
     ];
     let row: any;
     try {
@@ -2009,10 +2274,14 @@ export const RequirementLinks = {
 
 function mapTag(r: any) {
   if (!r) return null;
+  // kind (Phase A1): stored 'label'|'facet'; fall back to deriving a facet from a key:value name
+  // (e.g. @module:billing) so facet grouping works even for tags registered before the column.
+  const derivedKind = /^[@#]?[^:\s]+:.+/.test(String(r.name || '')) ? 'facet' : 'label';
   return {
     id: r.id,
     name: r.name,
     color: r.color || '',
+    kind: r.kind || derivedKind,
     createdAt: r.created_at,
     ...scopeFields(r),
   };
@@ -2477,6 +2746,19 @@ export const AutomationDatasets = {
         dataset.status || 'ready', dataset.createdAt || null],
     ));
   },
+  // Delete a dataset with its rows and any field bindings that referenced it (no dangling mappings).
+  async remove(id: string): Promise<boolean> {
+    if (!isPgEnabled()) {
+      const before = db.automationDatasets.length;
+      db.automationDatasets = db.automationDatasets.filter((item: any) => item.id !== id);
+      db.automationDatasetRows = db.automationDatasetRows.filter((row: any) => row.datasetId !== id);
+      db.automationDataMappings = db.automationDataMappings.filter((m: any) => m.datasetId !== id);
+      return db.automationDatasets.length < before;
+    }
+    await query('DELETE FROM automation_dataset_rows WHERE dataset_id = $1', [id]);
+    await query('DELETE FROM automation_data_mappings WHERE dataset_id = $1', [id]);
+    return !!await queryOne('DELETE FROM automation_datasets WHERE id = $1 RETURNING id', [id]);
+  },
 };
 
 function mapDataProfile(r: any) {
@@ -2562,6 +2844,19 @@ export const AutomationDatasetRows = {
       queryOne<{ count: string }>('SELECT COUNT(*)::text AS count FROM automation_dataset_rows WHERE dataset_id = $1', [datasetId]),
     ]);
     return { total: Number(count?.count || 0), rows: rows.map((row: any) => ({ id: row.id, datasetId: row.dataset_id, rowNumber: row.row_number, values: row.values, validation: row.validation, state: row.state || 'available', createdAt: row.created_at })) };
+  },
+  async updateValues(datasetId: string, rowNumber: number, values: Record<string, string | null>): Promise<any | null> {
+    if (!isPgEnabled()) {
+      const row = db.automationDatasetRows.find((item: any) => item.datasetId === datasetId && item.rowNumber === rowNumber);
+      if (!row) return null;
+      row.values = { ...row.values, ...values };
+      return row;
+    }
+    const row = await queryOne<any>(
+      `UPDATE automation_dataset_rows SET values = values || $3::jsonb WHERE dataset_id = $1 AND row_number = $2 RETURNING id, dataset_id, row_number, values, validation, state, created_at`,
+      [datasetId, rowNumber, JSON.stringify(values)],
+    );
+    return row ? { id: row.id, datasetId: row.dataset_id, rowNumber: row.row_number, values: row.values, validation: row.validation, state: row.state || 'available', createdAt: row.created_at } : null;
   },
   async select(datasetId: string, rowNumbers?: number[], from?: number, to?: number, availableOnly = false): Promise<any[]> {
     if (!isPgEnabled()) {

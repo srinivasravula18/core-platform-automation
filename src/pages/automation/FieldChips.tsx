@@ -28,13 +28,18 @@ export function chipsToExpression(chips: Chip[]): string {
   return chips.map((chip) => (chip.kind === 'text' ? chip.value : `{{${chip.token}}}`)).join('');
 }
 
-// A token is a generator/variable (dotted or known builtin) vs a plain dataset-column reference.
-const GEN_RE = /^(unique\.|faker\.|uuid\b|timestamp\b|seq\b|today\b|rowNumber\b|run\.)/i;
-export function tokenVariant(token: string, columnNames: string[]): 'column' | 'generator' | 'variable' {
+// Value kind drives the pill color so a real sheet column reads differently from a generated or
+// fresh-each-run value. Precedence mirrors the server resolver: a real column always wins over a
+// same-named generator; then unique (fresh every run) > generated (faker) > other builtins.
+export type ValueKind = 'column' | 'generated' | 'unique' | 'other';
+const UNIQUE_RE = /^(unique\.|unique\b|uuid\b|timestamp\b|faker\.email\b)/i;
+const GENERATED_RE = /^faker\./i;
+export function tokenVariant(token: string, columnNames: string[]): ValueKind {
   const base = token.split('|')[0].trim();
-  if (GEN_RE.test(base)) return 'generator';
   if (columnNames.some((name) => name.toLowerCase() === base.toLowerCase())) return 'column';
-  return 'variable';
+  if (UNIQUE_RE.test(base)) return 'unique';
+  if (GENERATED_RE.test(base)) return 'generated';
+  return 'other';
 }
 
 // Human label for a token pill — dotted parts and transforms rendered with " · ", never braces.
@@ -44,10 +49,12 @@ export function tokenLabel(token: string): string {
   return parts.length > 1 ? `${core} · ${parts.slice(1).join(' · ')}` : core;
 }
 
-const VARIANT_CLS: Record<string, string> = {
-  column: 'border-[var(--accent)]/50 bg-[var(--accent)]/10 text-[var(--accent)]',
-  generator: 'border-emerald-500/50 bg-emerald-500/10 text-emerald-500',
-  variable: 'border-sky-500/50 bg-sky-500/10 text-sky-500',
+// Shared pill palette (also used by the value picker) — one color per value kind.
+export const VARIANT_CLS: Record<ValueKind, string> = {
+  column: 'border-[var(--accent)]/50 bg-[var(--accent)]/10 text-[var(--accent)]',       // blue — from your sheet
+  generated: 'border-purple-500/50 bg-purple-500/10 text-purple-500',                   // purple — fake but realistic
+  unique: 'border-emerald-500/50 bg-emerald-500/10 text-emerald-500',                   // green — fresh every run
+  other: 'border-sky-500/50 bg-sky-500/10 text-sky-500',                                // sky — other builtins
 };
 
 // Inline chip editor for a single recorded field. Emits the serialized expression on every change.
@@ -69,7 +76,7 @@ export function FieldChipEditor({ expression, columnNames, onSave, onFocusField,
   return <div className="flex min-h-[2rem] flex-1 flex-wrap items-center gap-1 rounded border border-[var(--border)] bg-[var(--bg-secondary)] px-1.5 py-1">
     {chips.map((chip, index) => chip.kind === 'token'
       ? <span key={chip.id} className={`inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[11px] font-medium ${VARIANT_CLS[tokenVariant(chip.token, columnNames)]}`}>
-          <span className="opacity-60">⟨</span>{tokenLabel(chip.token)}<span className="opacity-60">⟩</span>
+          {tokenLabel(chip.token)}
           <button type="button" aria-label={`Remove ${tokenLabel(chip.token)}`} onClick={() => removeAt(index)} className="rounded-full hover:text-red-500"><X className="h-3 w-3" /></button>
         </span>
       : chip.value.trim() && <span key={chip.id} className="inline-flex items-center gap-1 rounded border border-[var(--border)] bg-[var(--bg-card)] px-1.5 py-0.5 text-[11px] text-[var(--text-secondary)]">
@@ -84,11 +91,11 @@ export function FieldChipEditor({ expression, columnNames, onSave, onFocusField,
 
 // Draggable palette pill (columns + variables) — drops/clicks insert a chip, never raw braces.
 export function PalettePill({ label, variant, draggable, onDragStart, onClick, title }: {
-  label: string; variant: 'column' | 'generator' | 'variable'; draggable?: boolean;
+  label: string; variant: ValueKind; draggable?: boolean;
   onDragStart?: (event: DragEvent) => void; onClick?: () => void; title?: string;
 }) {
   return <button type="button" draggable={draggable} onDragStart={onDragStart} onClick={onClick} title={title}
     className={`inline-flex cursor-grab items-center gap-1 rounded-full border px-2 py-1 text-[11px] font-medium hover:opacity-90 active:cursor-grabbing ${VARIANT_CLS[variant]}`}>
-    <span className="opacity-60">⟨</span>{label}<span className="opacity-60">⟩</span>
+    {label}
   </button>;
 }

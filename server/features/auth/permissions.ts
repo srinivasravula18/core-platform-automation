@@ -86,13 +86,23 @@ const ROUTE_RULES: RouteRule[] = [
 
   // Runs — specific sub-actions before generic runs CRUD
   R('POST', /^\/api\/runs\/[^/]+\/execute$/, 'runs:execute'),
+  R('POST', /^\/api\/runs\/[^/]+\/start$/, 'runs:execute'),
+  R('POST', /^\/api\/runs\/[^/]+\/stop$/, 'runs:execute'),
   R('POST', /^\/api\/runs\/[^/]+\/close$/, 'runs:update'),
   R('GET', /^\/api\/runs\/[^/]+\/evidence\/export$/, 'runs:export'),
   R('POST', /^\/api\/runs\/from-selection$/, 'runs:create'),
+  // Manual step runner: recording per-case/per-step outcomes is executing the run; bug is a defect create.
+  R('GET', /^\/api\/runs\/[^/]+\/results/, 'runs:read'),
+  R('POST', /^\/api\/runs\/[^/]+\/results\/[^/]+\/bug$/, 'defects:create'),
+  R('POST', /^\/api\/runs\/[^/]+\/results/, 'runs:execute'),
+  R('DELETE', /^\/api\/runs\/[^/]+\/results/, 'runs:execute'),
 
   // Cases — AI/rework/rollback map to update; save-cases to create
   R('POST', /^\/api\/cases\/ai-action$/, 'cases:update'),
   R('POST', /^\/api\/cases\/[^/]+\/rollback/, 'cases:update'),
+
+  // Scripts — rollback maps to update (GET revisions/diff falls through to generic scripts:read)
+  R('POST', /^\/api\/scripts\/[^/]+\/rollback/, 'scripts:update'),
 
   // Agent runs
   R('POST', /^\/api\/agent\/start$/, 'agent:start'),

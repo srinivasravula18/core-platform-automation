@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { BrowserRouter, Routes, Route, Link, Navigate, useLocation, useNavigate } from 'react-router-dom';
-import { LayoutDashboard, TestTube2, Bug, Settings, BrainCircuit, PlayCircle, FolderTree, Sun, Moon, Search, CircleUser, Layers, Menu, ClipboardList, GitBranch, Command, MessagesSquare, ChevronDown, LogOut, Target, ScrollText, Radio, HardDrive, CalendarClock, Gauge, BookOpen, Database, ShieldAlert } from 'lucide-react';
+import { LayoutDashboard, TestTube2, Bug, Settings, BrainCircuit, PlayCircle, FolderTree, Sun, Moon, Search, CircleUser, Layers, Menu, ClipboardList, Command, MessagesSquare, ChevronDown, LogOut, Target, ScrollText, Radio, HardDrive, CalendarClock, Gauge, BookOpen, Database, ShieldAlert } from 'lucide-react';
 import { useRemoteAgentFlag } from '@/src/lib/useAutomation';
 import { cn } from '@/src/lib/utils';
 import { useTheme } from '@/src/store/theme';
@@ -52,7 +52,6 @@ function Sidebar({ isOpen }: { isOpen: boolean }) {
     ] : [
       { name: 'Record & Play', href: '/record-play', icon: Radio },
     ]),
-    { name: 'Git Agent', href: '/git-agent', icon: GitBranch },
   ];
   const navGroups = [
     {
@@ -65,7 +64,6 @@ function Sidebar({ isOpen }: { isOpen: boolean }) {
     {
       label: 'Test Management',
       items: [
-        { name: 'File System', href: '/repository', icon: FolderTree },
         { name: 'Test Plans', href: '/plans', icon: FolderTree },
         { name: 'Test Suites', href: '/suites', icon: Layers },
         { name: 'Test Cases', href: '/cases', icon: TestTube2 },
@@ -429,6 +427,9 @@ function Shell({ children }: { children: React.ReactNode }) {
   // fetch error, so this never deadlocks.)
   const projectsLoaded = useProjects((s) => s.loaded);
   const fetchProjects = useProjects((s) => s.fetchProjects);
+  const pageScrollRef = useRef<HTMLDivElement>(null);
+  const location = useLocation();
+  const pagePositionKey = `testflow:page-position:${location.pathname}${location.search}`;
 
   // Guarantee the workspace loads even if the ProjectSwitcher is not mounted, so the gate above never
   // deadlocks on "Loading workspace…". Idempotent and only runs until loaded.
@@ -454,6 +455,50 @@ function Shell({ children }: { children: React.ReactNode }) {
     return () => window.removeEventListener('resize', onResize);
   }, []);
 
+  // The application scrolls inside <main>, not the browser document. Native
+  // browser scroll restoration therefore cannot restore a refreshed page.
+  // Persist positions per route (including its selected URL-backed section).
+  useEffect(() => {
+    const container = pageScrollRef.current;
+    if (!container) return;
+    const savePosition = () => {
+      try { sessionStorage.setItem(pagePositionKey, String(container.scrollTop)); } catch { /* storage unavailable */ }
+    };
+    container.addEventListener('scroll', savePosition, { passive: true });
+    return () => {
+      savePosition();
+      container.removeEventListener('scroll', savePosition);
+    };
+  }, [pagePositionKey]);
+
+  useEffect(() => {
+    if (!projectsLoaded) return;
+    const container = pageScrollRef.current;
+    if (!container) return;
+    let savedPosition = 0;
+    try { savedPosition = Number(sessionStorage.getItem(pagePositionKey)) || 0; } catch { /* storage unavailable */ }
+    if (!savedPosition) return;
+    // Most pages fetch their content after mounting; retry briefly so their
+    // restored section reaches its saved position once its rows are rendered.
+    // Never let a delayed data-load retry override a scroll the user has made.
+    let userHasScrolled = false;
+    const rememberUserScroll = () => { userHasScrolled = true; };
+    container.addEventListener('scroll', rememberUserScroll, { passive: true });
+    const restore = () => {
+      if (!userHasScrolled) container.scrollTop = savedPosition;
+    };
+    restore();
+    const firstFrame = requestAnimationFrame(restore);
+    const contentTimer = window.setTimeout(restore, 300);
+    const finalTimer = window.setTimeout(restore, 900);
+    return () => {
+      cancelAnimationFrame(firstFrame);
+      window.clearTimeout(contentTimer);
+      window.clearTimeout(finalTimer);
+      container.removeEventListener('scroll', rememberUserScroll);
+    };
+  }, [pagePositionKey, projectsLoaded, scopeKey]);
+
   return (
     <div className="flex h-[100dvh] w-full bg-[var(--bg-primary)] font-sans text-[var(--text-primary)] overflow-hidden">
       {isMobile && isSidebarOpen && (
@@ -478,7 +523,7 @@ function Shell({ children }: { children: React.ReactNode }) {
         <Topbar onMenuClick={() => setIsSidebarOpen(!isSidebarOpen)} onCommandBarOpen={() => setIsCommandBarOpen(true)} />
         <main data-sidebar={isSidebarOpen ? 'open' : 'closed'} className="flex-1 min-h-0 overflow-hidden relative flex flex-col">
           {projectsLoaded ? (
-            <div key={scopeKey} className="flex-1 min-h-0 overflow-auto p-3 sm:p-6 flex flex-col">
+            <div ref={pageScrollRef} key={scopeKey} className="flex-1 min-h-0 overflow-auto p-3 sm:p-6 flex flex-col">
               {children}
             </div>
           ) : (

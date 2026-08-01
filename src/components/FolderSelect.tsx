@@ -1,16 +1,18 @@
 import { useEffect, useState } from 'react';
+import { RequiredMark } from '@/src/components/RequiredMark';
 
 type FolderSelectProps = {
   value: string;
   onChange: (folderId: string) => void;
   label?: string;
+  required?: boolean;
   includeNone?: boolean;
   className?: string;
   /** Show the "New folder/path" inline creator. Off when only picking an existing folder (e.g. editing). */
   allowCreate?: boolean;
 };
 
-export function FolderSelect({ value, onChange, label = 'Repository Folder', includeNone = true, className = '', allowCreate = true }: FolderSelectProps) {
+export function FolderSelect({ value, onChange, label = 'Repository Folder', required = false, includeNone = true, className = '', allowCreate = true }: FolderSelectProps) {
   const [folders, setFolders] = useState<any[]>([]);
   const [newPath, setNewPath] = useState('');
   const [isCreating, setIsCreating] = useState(false);
@@ -49,7 +51,7 @@ export function FolderSelect({ value, onChange, label = 'Repository Folder', inc
 
   return (
     <div className={className}>
-      <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">{label}</label>
+      <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">{label}{required && <RequiredMark />}</label>
       <div className={allowCreate ? 'grid grid-cols-1 gap-2 md:grid-cols-[1fr_auto]' : ''}>
         <select
           value={value || ''}

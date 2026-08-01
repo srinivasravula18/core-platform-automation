@@ -15,7 +15,20 @@ import type { RecordingFieldKind } from './types';
 const archiver: (...args: any[]) => any = (archiverModule as any).default ?? (archiverModule as any);
 
 export type FieldIntent = 'fixed' | 'unique' | 'reference';
-export interface GuideRow { label: string; intent: FieldIntent; required: string; tip: string }
+export interface GuideRow { label: string; type: string; intent: FieldIntent; required: string; example: string; tip: string }
+
+/** A realistic sample value per field kind, so the template shows the user WHAT to type. */
+export function sampleFor(kind: RecordingFieldKind | undefined, label: string): string {
+  switch (kind) {
+    case 'email': return 'jane.doe@example.com';
+    case 'number': return '42';
+    case 'phone': return '+1 555 0100';
+    case 'date': return '1990-04-09';
+    case 'boolean': return 'true';
+    case 'select': return '(one of the field’s options)';
+    default: return `Sample ${label}`.trim();
+  }
+}
 
 /** Recorded field kind/label → a sensible default data intent for the Guide sheet. */
 export function inferIntent(label: string, kind?: RecordingFieldKind): FieldIntent {
@@ -78,8 +91,8 @@ function zipToBuffer(files: Array<{ name: string; content: string }>): Promise<B
 export function buildTemplateWorkbook(fields: string[], guide: GuideRow[]): Promise<Buffer> {
   const dataSheet = sheet([row(1, fields)]);
   const guideSheet = sheet([
-    row(1, ['Field', 'Intent', 'Required', 'Tip']),
-    ...guide.map((item, index) => row(index + 2, [item.label, item.intent, item.required, item.tip])),
+    row(1, ['Field', 'Type', 'Intent', 'Required', 'Example', 'Tip']),
+    ...guide.map((item, index) => row(index + 2, [item.label, item.type, item.intent, item.required, item.example, item.tip])),
   ]);
   return zipToBuffer([
     { name: '[Content_Types].xml', content: CONTENT_TYPES },

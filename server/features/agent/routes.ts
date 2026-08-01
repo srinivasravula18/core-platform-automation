@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { db, addActivity, persistDataInBackground } from '../../shared/storage';
 import { readBlackboard } from './blackboard';
 import { getFolderPath, resolveFolderForAgent } from '../../shared/folders';
+import { tagNativeOrgEnabled } from '../../shared/orgMode';
 import { getAIErrorMessage } from '../../shared/ai';
 import { buildCredentialContext, resolveAgentTargetUrl, findSettingsCredentials } from '../../shared/url';
 import { playwrightScriptsSchema, testCasesSchema } from '../../shared/schemas';
@@ -1200,6 +1201,7 @@ async function persistAgentCaseArtifacts(run: any) {
   const suiteId = agentSuiteId(run);
 
   const cases = reviewedCasesForRun(run);
+  const groupTag = runGroupTag(run); // stamped on every case so the whole run shares one findable tag
   // Rework rounds replace the set: rows from a prior save of THIS run that are no longer in
   // the current case list are removed (reused existing cases keep their original run link).
   const keepIds = new Set(cases.map((c: any, i: number) => c?.id || agentCaseId(run, i)));
@@ -1221,7 +1223,7 @@ async function persistAgentCaseArtifacts(run: any) {
       testPlanId: planId,
       testSuiteId: suiteId,
       status: 'Draft',
-      tags: normalizeCaseTags(testCase.tags || []),
+      tags: normalizeCaseTags([...(testCase.tags || []), groupTag]),
       type: testCase.type || 'Manual',
       priority: testCase.priority || 'Medium',
       folderId: run.folderId || null,
@@ -1239,6 +1241,15 @@ async function persistAgentCaseArtifacts(run: any) {
   persistDataInBackground('agent case artifacts');
 }
 
+// The tag-native replacement for the old "results folder": one grouping tag derived from the run's
+// feature/subject, applied to every artifact this run creates so they stay together and are findable
+// by a single tag (Repository tag rail + list-page tag filters). Empty when no subject is available.
+function runGroupTag(run: any): string {
+  const subject = String(run?.feature_understanding?.title || agentDisplayName(run) || run?.prompt || '')
+    .split(/[.\n]/)[0].trim().slice(0, 40);
+  return subject ? (normalizeCaseTags([subject])[0] || '') : '';
+}
+
 // Suite creation shared by terminal persistence AND /api/agent/save-cases. A plan is linked
 // only when the user selected one; generating cases must not create a Test Plan implicitly.
 async function ensureAgentPlanAndSuite(run: any) {
@@ -1251,9 +1262,11 @@ async function ensureAgentPlanAndSuite(run: any) {
 
   // The suite's tags should reflect the coverage it actually holds  -  reuse the real tags the
   // cases were generated with (deduped), not a generic "@agent" label the user doesn't recognize.
-  const suiteTags = Array.from(new Set(
-    (run.generated_cases || []).flatMap((c: any) => normalizeCaseTags(c.tags || [])),
-  ));
+  // Union of the real case tags + the per-run grouping tag, so plan + suite share the run's label.
+  const suiteTags = Array.from(new Set([
+    ...(run.generated_cases || []).flatMap((c: any) => normalizeCaseTags(c.tags || [])),
+    runGroupTag(run),
+  ].filter(Boolean)));
 
   // Persist a Test PLAN from the run's real data so the Plans section is populated and cases link to it.
   // Agent-synthesized plans only — a user-selected plan (run.testPlanId) is left untouched. Created BEFORE
@@ -5738,7 +5751,10 @@ Rules:
     const availableFolders = scopeFilter(await Folders.list(), scope);
     const explicitFolderId = !!(req.body.folderId && availableFolders.some((f: any) => f.id === req.body.folderId));
     const explicitFolderMention = !!String(req.body.folderMention || '').trim();
-    if (!explicitFolderId && !explicitFolderMention) {
+    // Tag-native (default): runs no longer require a folder — artifacts are organized by tags. The
+    // folder gate only applies under the legacy flag. When on, a folder stays optional (used only if
+    // the caller supplied one).
+    if (!tagNativeOrgEnabled() && !explicitFolderId && !explicitFolderMention) {
       const existing = [...new Set(availableFolders.map((f: any) => getFolderPath(f.id, availableFolders)).filter(Boolean))].slice(0, 25);
       const listing = existing.length ? `\n\nExisting folders: ${existing.join(' - ')}` : '';
       return res.json({

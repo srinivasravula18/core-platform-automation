@@ -4,8 +4,9 @@ import { DEFAULT_MODELS, listAvailableModels, type ProviderName } from '../ai/pr
 import { isPostgresEnabled, query } from '../db/pool';
 
 const PROVIDERS: ProviderName[] = ['gemini', 'openai', 'anthropic'];
-const DEFAULT_PROVIDER_SETTINGS: Record<ProviderName, { apiKey: string; model: string; authMode?: 'api_key' | 'account'; enabled?: boolean; effort?: 'low' | 'medium' | 'high' }> = {
-  gemini: { apiKey: '', model: '', authMode: 'api_key', enabled: true, effort: 'medium' },
+const DEFAULT_PROVIDER_SETTINGS: Record<ProviderName, { apiKey: string; model: string; authMode?: 'api_key' | 'account'; enabled?: boolean; activationVerifiedAt?: string; activationVerifiedAuthMode?: 'api_key' | 'account'; effort?: 'low' | 'medium' | 'high' }> = {
+  // A provider can only become enabled through a successful connection check.
+  gemini: { apiKey: '', model: '', authMode: 'api_key', enabled: false, effort: 'medium' },
   openai: { apiKey: '', model: '', authMode: 'api_key', enabled: false, effort: 'medium' },
   anthropic: { apiKey: '', model: '', authMode: 'api_key', enabled: false, effort: 'medium' },
 };
@@ -16,15 +17,23 @@ function isProviderName(value: unknown): value is ProviderName {
 
 function normalizeProviderSettings(settings: any) {
   const existing = settings?.providerSettings || {};
-  const providerSettings = {} as Record<ProviderName, { apiKey: string; model: string; authMode?: 'api_key' | 'account'; enabled?: boolean; effort?: 'low' | 'medium' | 'high' }>;
+  const providerSettings = {} as Record<ProviderName, { apiKey: string; model: string; authMode?: 'api_key' | 'account'; enabled?: boolean; activationVerifiedAt?: string; activationVerifiedAuthMode?: 'api_key' | 'account'; effort?: 'low' | 'medium' | 'high' }>;
   for (const provider of PROVIDERS) {
     const stored = existing[provider] || {};
+    const authMode = stored.authMode === 'account' ? 'account' : 'api_key';
+    // Do this during startup normalization as well as in the Settings route. That
+    // prevents legacy `enabled: true` records from being usable by agents before a
+    // user happens to open Settings -> AI Providers.
+    const verifiedForCurrentMode = typeof stored.activationVerifiedAt === 'string'
+      && stored.activationVerifiedAuthMode === authMode;
     providerSettings[provider] = {
       ...DEFAULT_PROVIDER_SETTINGS[provider],
       apiKey: typeof stored.apiKey === 'string' ? stored.apiKey : '',
       model: typeof stored.model === 'string' ? stored.model : '',
-      authMode: stored.authMode === 'account' ? 'account' : 'api_key',
-      enabled: typeof stored.enabled === 'boolean' ? stored.enabled : DEFAULT_PROVIDER_SETTINGS[provider].enabled,
+      authMode,
+      enabled: !!stored.enabled && verifiedForCurrentMode,
+      activationVerifiedAt: verifiedForCurrentMode ? stored.activationVerifiedAt : undefined,
+      activationVerifiedAuthMode: verifiedForCurrentMode ? authMode : undefined,
       effort: ['low', 'medium', 'high'].includes(stored.effort) ? stored.effort : 'medium',
     };
   }
@@ -47,6 +56,7 @@ export const db: any = {
   suites: [] as any[],
   cases: [] as any[],
   runs: [] as any[],
+  runCaseResults: [] as any[],
   defects: [] as any[],
   scripts: [] as any[],
   agentRuns: [] as any[],
@@ -128,6 +138,7 @@ function getPersistableDbSnapshot() {
     suites: db.suites,
     cases: db.cases,
     runs: db.runs,
+    runCaseResults: db.runCaseResults,
     defects: db.defects,
     scripts: db.scripts,
     agentRuns: db.agentRuns,
@@ -198,6 +209,7 @@ export async function loadPersistedData() {
     db.suites = Array.isArray(data.suites) ? data.suites : [];
     db.cases = Array.isArray(data.cases) ? data.cases : [];
     db.runs = Array.isArray(data.runs) ? data.runs : [];
+    db.runCaseResults = Array.isArray(data.runCaseResults) ? data.runCaseResults : [];
     db.defects = Array.isArray(data.defects) ? data.defects : [];
     db.scripts = Array.isArray(data.scripts) ? data.scripts : [];
     db.agentRuns = Array.isArray(data.agentRuns) ? data.agentRuns : [];

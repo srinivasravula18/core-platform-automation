@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, CheckCircle, Download, Filter, Folder, Pencil, PlayCircle, Search, SlidersHorizontal, Sparkles, Trash2 } from 'lucide-react';
+import { ArrowLeft, CheckCircle, Download, Filter, Folder, Pencil, PlayCircle, Plus, Search, SlidersHorizontal, Sparkles, Trash2, X } from 'lucide-react';
 import { Timestamp, actorName } from '@/src/components/Timestamp';
 import { TimeSortSelect } from '@/src/components/filters/TimeSortSelect';
 import { TimeRangeFilter, passesTimeFilter, type TimeFilterValue } from '@/src/components/filters/TimeRangeFilter';
@@ -11,14 +11,16 @@ import { isActiveTestRun, isClosedTestRun, isPendingReviewTestRun } from '@/core
 import { useBulkDelete } from '@/src/lib/useBulkDelete';
 import { cn } from '@/src/lib/utils';
 import { Modal } from '@/src/components/Modal';
+import { RequiredMark } from '@/src/components/RequiredMark';
 import { AIActionModal } from '@/src/components/AIActionModal';
-import { FolderSelect } from '@/src/components/FolderSelect';
-import { FolderBadge } from '@/src/components/FolderBadge';
 import { AutomationRunArtifacts } from '@/src/components/AutomationRunArtifacts';
 import EditableCaseCard from '@/src/components/EditableCaseCard';
 import { TagEditor } from '@/src/components/TagEditor';
 import { MultiSelectDropdown } from '@/src/components/MultiSelectDropdown';
 import { EntityLinker } from '@/src/components/EntityLinker';
+import { TagDriftBanner } from '@/src/components/TagDriftBanner';
+import { VersionPinSelect } from '@/src/components/VersionPinSelect';
+import type { TagQuery } from '@/src/lib/entityLinking';
 import { showAlert, showConfirm } from '@/src/lib/dialog';
 import { can } from '@/src/components/AuthGate';
 import { withBasePath } from '@/src/lib/base-path';
@@ -26,6 +28,8 @@ import { caseSuiteIds } from '@/src/lib/suiteCaseSelection';
 import { casesForRun, manualRunSelection, runExecutionState, scriptsForCases, scriptsForRun } from '@/src/lib/manualTestRun';
 import { collectRunEvidence, evidenceDownloadName } from '@/core/shared/runEvidence';
 import { normalizeTags } from '@/src/lib/tags';
+import { ManualRunner } from '@/src/components/manualRunner/ManualRunner';
+import { useUrlState } from '@/src/lib/useUrlState';
 
 async function downloadFromUrl(url: string, filename: string) {
   const response = await fetch(url);
@@ -83,6 +87,30 @@ function statusDot(status: string) {
 
 const scriptLabel = (script: any) => script.filename || script.name || script.title || script.id || 'Unnamed script';
 const MANUAL_RUN_STATUS_OPTIONS = ['Not Started', 'In Progress', 'Passed', 'Failed', 'Blocked', 'Completed'] as const;
+type EditableRunStep = { action: string; expected: string; captureEvidence: boolean };
+type EditableRunResult = { caseId: string; caseTitle: string; originalCount: number; steps: EditableRunStep[] };
+
+// Real elapsed duration of a run: start→completion, or live-elapsed while still running. Falls back to
+// the entered estimate (executionTime) only when the run has no measured timestamps.
+function formatRunDuration(run: any, now: number): string {
+  const start = run?.startedAt ? new Date(run.startedAt).getTime() : 0;
+  const end = run?.completedAt ? new Date(run.completedAt).getTime() : 0;
+  let ms = 0;
+  if (start && end) ms = end - start;
+  else if (start) ms = now - start; // in progress → count up from start
+  if (!ms || ms < 0) return run?.executionTime || '-';
+  const s = Math.round(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return s % 60 ? `${m}m ${s % 60}s` : `${m}m`;
+  const h = Math.floor(m / 60);
+  return m % 60 ? `${h}h ${m % 60}m` : `${h}h`;
+}
+
+function runStartedAt(run: any): string {
+  const value = run?.startedAt || run?.triggerMeta?.manualExecution?.startedAt;
+  return typeof value === 'string' && !Number.isNaN(Date.parse(value)) ? value : '';
+}
 
 export default function TestRuns() {
   const navigate = useNavigate();
@@ -90,15 +118,14 @@ export default function TestRuns() {
   const [runs, setRuns] = useState<any[]>([]);
   const [cases, setCases] = useState<any[]>([]);
   const [suites, setSuites] = useState<any[]>([]);
-  const [folders, setFolders] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [timeSort, setTimeSort] = useState<TimeSortKey>('recentlyUpdated');
   const [updatedFilter, setUpdatedFilter] = useState<TimeFilterValue>({ key: 'all' });
   const aiSearch = useAiSearch('test runs');
-  const [runView, setRunView] = useState<'active' | 'closed'>('active');
-  const [selectedView, setSelectedView] = useState('All Runs');
-  const [filters, setFilters] = useState({ statuses: [] as string[], requesters: [] as string[], suites: [] as string[], folders: [] as string[], sources: [] as string[] });
+  const [runView, setRunView] = useUrlState('view', 'active', ['active', 'closed'] as const);
+  const [selectedView, setSelectedView] = useUrlState('runFilter', 'All Runs', ['All Runs', 'Failed Runs', 'Manual Runs', 'Automated Runs', 'My Runs'] as const);
+  const [filters, setFilters] = useState({ statuses: [] as string[], requesters: [] as string[], suites: [] as string[], sources: [] as string[], tags: [] as string[] });
   const [caseSearchTerm, setCaseSearchTerm] = useState('');
   const [caseStatusFilter, setCaseStatusFilter] = useState('All');
   const [isCaseFilterOpen, setIsCaseFilterOpen] = useState(false);
@@ -114,20 +141,32 @@ export default function TestRuns() {
   const [newRunRequester, setNewRunRequester] = useState('');
   const [newRunExecutionTime, setNewRunExecutionTime] = useState('');
   const [newRunTargetUrl, setNewRunTargetUrl] = useState('');
-  const [newRunFolderId, setNewRunFolderId] = useState('');
-  const [newRunCaseFolderId, setNewRunCaseFolderId] = useState('');
-  // #3/#4/#5 — pick cases from the folder tree, map to a Test Plan, and set Assign To / Tags / State.
+  // #3/#4/#5 — pick cases, map to a Test Plan, and set Assign To / Tags / State.
   const [newRunPlanId, setNewRunPlanId] = useState('');
   const [newRunAssignedTo, setNewRunAssignedTo] = useState('');
   const [newRunTags, setNewRunTags] = useState<string[]>([]);
   const [newRunStatus, setNewRunStatus] = useState<(typeof MANUAL_RUN_STATUS_OPTIONS)[number]>('Not Started');
+  const [newRunMode, setNewRunMode] = useState<'manual' | 'automated'>('manual');
+  const [newRunConfiguration, setNewRunConfiguration] = useState('');
+  const [newRunPriority, setNewRunPriority] = useState('');
+  // Step/Action/Expected rows authored in the Create Manual Run form (outcomes are set later in the runner).
+  // captureEvidence toggles whether the tester may attach a screenshot to this step during the run.
+  const [newRunSteps, setNewRunSteps] = useState<Array<{ action: string; expected: string; captureEvidence: boolean }>>([]);
+  const [editRunResults, setEditRunResults] = useState<EditableRunResult[]>([]);
+  const [editStepsLoading, setEditStepsLoading] = useState(false);
+  const [savingRun, setSavingRun] = useState(false);
   const [newRunCaseIds, setNewRunCaseIds] = useState<Set<string>>(new Set());
+  // The tag query the run was composed with (from the linker) — persisted as definition.tagQuery so
+  // cases later matching these tags surface as review-gated drift on the run.
+  const [newRunTagQuery, setNewRunTagQuery] = useState<TagQuery>({});
   const [plans, setPlans] = useState<any[]>([]);
   const [scripts, setScripts] = useState<any[]>([]);
+  const [now, setNow] = useState(() => Date.now()); // live clock so in-progress run durations count up
   const [runProgress, setRunProgress] = useState<Record<string, string>>({});
   const [closingRunId, setClosingRunId] = useState('');
   const [editingCase, setEditingCase] = useState<any>(null);
   const [scriptViewer, setScriptViewer] = useState<{ title: string; filename: string; code: string } | null>(null);
+  const [selectedEvidenceIndex, setSelectedEvidenceIndex] = useState<number | null>(null);
   const tagOptions = useMemo(() => normalizeTags([...plans, ...suites, ...cases, ...runs]
     .flatMap((item) => Array.isArray(item.tags) ? item.tags : [])).sort(), [plans, suites, cases, runs]);
 
@@ -137,15 +176,13 @@ export default function TestRuns() {
       fetch('/api/runs').then((r) => r.json()),
       fetch('/api/cases').then((r) => r.json()),
       fetch('/api/suites').then((r) => r.json()),
-      fetch('/api/folders').then((r) => r.json()),
       fetch('/api/plans').then((r) => r.json()),
       fetch('/api/scripts').then((r) => r.json()),
     ])
-      .then(([runData, caseData, suiteData, folderData, planData, scriptData]) => {
+      .then(([runData, caseData, suiteData, planData, scriptData]) => {
         setRuns(Array.isArray(runData) ? runData : []);
         setCases(Array.isArray(caseData) ? caseData : []);
         setSuites(Array.isArray(suiteData) ? suiteData : []);
-        setFolders(Array.isArray(folderData) ? folderData : []);
         setPlans(Array.isArray(planData) ? planData : []);
         setScripts(Array.isArray(scriptData) ? scriptData : []);
         setLoading(false);
@@ -169,14 +206,25 @@ export default function TestRuns() {
     try { const r = await fetch('/api/runs').then((res) => res.json()); setRuns(Array.isArray(r) ? r : []); } catch { /* keep */ }
   }, []);
 
-  const selectedRun = runs.find((run) => run.id === runId) || null;
+  const selectedRun = runs.find((run) => String(run.id) === String(runId)) || null;
 
-  const hasRunningRuns = runs.some((run) => runExecutionState(run).running);
+  // Only AUTOMATED executions drive the 2s live-poll. A manual run sits at "In Progress" while a tester
+  // fills it in — polling/refetching then would flicker the page and reset their in-progress selections.
+  const hasRunningRuns = runs.some((run) => run.mode !== 'manual' && runExecutionState(run).running);
   useEffect(() => {
     if (!hasRunningRuns) return;
     const t = setInterval(() => { void refreshRunsQuiet(); }, 2000);
     return () => clearInterval(t);
   }, [hasRunningRuns, refreshRunsQuiet]);
+
+  // Tick a 1s clock while any run is mid-flight (started, not yet completed) so the Duration column
+  // counts up live rather than sitting static.
+  const hasLiveDurations = runs.some((run) => run.startedAt && !run.completedAt);
+  useEffect(() => {
+    if (!hasLiveDurations) return;
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [hasLiveDurations]);
 
   useEffect(() => {
     if (!isFilterOpen) return;
@@ -199,15 +247,16 @@ export default function TestRuns() {
       if (!matchesSearch) return false;
       if (!passesTimeFilter(run.metadata?.updatedAt || run.updatedAt || run.date, updatedFilter)) return false;
       const matches = (selected: string[], value: string) => !selected.length || selected.includes(value);
+      const runTags = (Array.isArray(run.tags) ? run.tags : []).map((t: string) => t.toLowerCase());
       const matchesFilters = matches(filters.statuses, String(run.status || 'Not Started'))
         && matches(filters.requesters, String(run.requestedBy || ''))
         && matches(filters.suites, String(run.suiteName || ''))
-        && matches(filters.folders, String(run.folderId || ''))
-        && matches(filters.sources, run.agentRunId ? 'Automated' : 'Manual');
+        && matches(filters.sources, run.mode === 'manual' ? 'Manual' : 'Automated')
+        && (!filters.tags.length || filters.tags.some((t) => runTags.includes(t.toLowerCase())));
       if (!matchesFilters) return false;
       if (selectedView === 'Failed Runs') return getRunStats(run).failed > 0;
-      if (selectedView === 'Manual Runs') return !run.agentRunId;
-      if (selectedView === 'Automated Runs') return Boolean(run.agentRunId);
+      if (selectedView === 'Manual Runs') return run.mode === 'manual';
+      if (selectedView === 'Automated Runs') return run.mode !== 'manual';
       if (selectedView === 'My Runs') return Boolean(run.requestedBy);
       return true;
     }), timeSort);
@@ -246,13 +295,16 @@ export default function TestRuns() {
     setNewRunRequester('');
     setNewRunExecutionTime('');
     setNewRunTargetUrl('');
-    setNewRunFolderId('');
-    setNewRunCaseFolderId('');
     setNewRunPlanId('');
     setNewRunAssignedTo('');
     setNewRunTags([]);
     setNewRunStatus('Not Started');
     setNewRunCaseIds(new Set());
+    setNewRunTagQuery({});
+    setNewRunConfiguration('');
+    setNewRunPriority('');
+    setNewRunSteps([]);
+    setEditRunResults([]);
     setIsRunModalOpen(true);
   };
 
@@ -262,38 +314,81 @@ export default function TestRuns() {
     setNewRunRequester(run.requestedBy || '');
     setNewRunExecutionTime(run.executionTime || '');
     setNewRunTargetUrl(run.targetUrl || '');
-    setNewRunFolderId(run.folderId || '');
     setNewRunPlanId(run.testPlanId || '');
     setNewRunAssignedTo(run.assignedTo || '');
     setNewRunTags(Array.isArray(run.tags) ? run.tags : []);
     setNewRunStatus(MANUAL_RUN_STATUS_OPTIONS.includes(run.status) ? run.status : 'Not Started');
+    setNewRunMode(run.mode === 'manual' ? 'manual' : 'automated');
+    setNewRunConfiguration('');
+    setNewRunPriority('');
+    setEditRunResults([]);
+    setEditStepsLoading(false);
     setNewRunCaseIds(new Set(casesForRun(run, cases, suites).map((testCase) => String(testCase.id))));
     setIsRunModalOpen(true);
+    if (run.mode === 'manual') {
+      setEditStepsLoading(true);
+      void fetch(`/api/runs/${encodeURIComponent(run.id)}/results`).then(async (response) => {
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(data.error || 'Could not load manual run steps.');
+        const results = Array.isArray(data.results) ? data.results : [];
+        setNewRunConfiguration(results[0]?.configuration || '');
+        setNewRunPriority(results[0]?.priority || '');
+        setEditRunResults(results.map((result: any) => {
+          const steps = Array.isArray(result.stepResults) ? result.stepResults : [];
+          return {
+            caseId: String(result.caseId), caseTitle: String(result.caseTitle || result.caseId), originalCount: steps.length,
+            steps: steps.map((step: any) => ({ action: String(step.action || ''), expected: String(step.expected || ''), captureEvidence: step.captureEvidence !== false })),
+          };
+        }));
+      }).catch((error) => void showAlert(error.message || 'Could not load manual run steps.')).finally(() => setEditStepsLoading(false));
+    }
   };
 
   const handleSaveRun = async () => {
     if (!newRunName.trim()) { void showAlert('Run name is required.'); return; }
-    if (!newRunFolderId) { void showAlert('Select a folder or create one first.'); return; }
     const caseIds = [...newRunCaseIds] as string[];
-    if (!caseIds.length) { void showAlert('Select at least one test case.'); return; }
-    const shared = {
-      name: newRunName,
-      testPlanId: newRunPlanId,
-      requestedBy: newRunRequester,
-      assignedTo: newRunAssignedTo,
-      tags: newRunTags,
-      executionTime: newRunExecutionTime,
-      targetUrl: newRunTargetUrl,
-      folderId: newRunFolderId,
-      status: newRunStatus,
-      caseIds,
-    };
-    const url = editingRunId ? `/api/runs/${encodeURIComponent(editingRunId)}` : '/api/runs/from-selection';
-    const body = editingRunId ? shared : { ...shared, ...manualRunSelection(newRunPlanId, caseIds) };
+    const isManual = newRunMode === 'manual';
+    // Manual runs are authored standalone (steps added in the runner, no linked cases). Automated runs
+    // still execute linked cases/scripts, so they require a selection.
+    if (!editingRunId && !isManual && !caseIds.length) { void showAlert('Select at least one test case.'); return; }
+    let url: string;
+    let body: any;
+    if (editingRunId) {
+      url = `/api/runs/${encodeURIComponent(editingRunId)}`;
+      body = { name: newRunName, requestedBy: newRunRequester, assignedTo: newRunAssignedTo, tags: newRunTags, executionTime: newRunExecutionTime, targetUrl: newRunTargetUrl, status: newRunStatus, testPlanId: isManual ? '' : newRunPlanId };
+      if (!isManual) body.caseIds = caseIds; // don't disturb a case-less manual run's membership
+    } else if (isManual) {
+      url = '/api/runs';
+      body = { name: newRunName, mode: 'manual', tags: newRunTags, status: newRunStatus, requestedBy: newRunRequester, assignedTo: newRunAssignedTo, targetUrl: newRunTargetUrl, configuration: newRunConfiguration, priority: newRunPriority, steps: newRunSteps.filter((s) => s.action.trim() || s.expected.trim()) };
+    } else {
+      url = '/api/runs/from-selection';
+      body = { name: newRunName, testPlanId: newRunPlanId, requestedBy: newRunRequester, assignedTo: newRunAssignedTo, tags: newRunTags, executionTime: newRunExecutionTime, targetUrl: newRunTargetUrl, status: newRunStatus, mode: newRunMode, definition: { tagQuery: newRunTagQuery }, ...manualRunSelection(newRunPlanId, caseIds) };
+    }
+    setSavingRun(true);
     try {
       const response = await fetch(url, { method: editingRunId ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
       const rsp = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(rsp.error || `Failed to ${editingRunId ? 'update' : 'create'} test run.`);
+      if (editingRunId && isManual) {
+        for (const result of editRunResults) {
+          const resultUrl = `/api/runs/${encodeURIComponent(editingRunId)}/results/${encodeURIComponent(result.caseId)}`;
+          const summaryResponse = await fetch(resultUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ configuration: newRunConfiguration, priority: newRunPriority }) });
+          if (!summaryResponse.ok) throw new Error((await summaryResponse.json().catch(() => ({}))).error || 'Failed to update manual run summary.');
+          const common = Math.min(result.originalCount, result.steps.length);
+          for (let index = 0; index < common; index++) {
+            const stepResponse = await fetch(`${resultUrl}/steps/${index}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(result.steps[index]) });
+            if (!stepResponse.ok) throw new Error((await stepResponse.json().catch(() => ({}))).error || `Failed to update step ${index + 1}.`);
+          }
+          for (let index = result.originalCount - 1; index >= result.steps.length; index--) {
+            const stepResponse = await fetch(`${resultUrl}/steps/${index}`, { method: 'DELETE' });
+            if (!stepResponse.ok) throw new Error((await stepResponse.json().catch(() => ({}))).error || `Failed to delete step ${index + 1}.`);
+          }
+          for (let index = result.originalCount; index < result.steps.length; index++) {
+            const stepResponse = await fetch(`${resultUrl}/steps`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(result.steps[index]) });
+            if (!stepResponse.ok) throw new Error((await stepResponse.json().catch(() => ({}))).error || `Failed to add step ${index + 1}.`);
+          }
+        }
+      }
       setIsRunModalOpen(false);
       const wasEditing = Boolean(editingRunId);
       setEditingRunId('');
@@ -301,6 +396,18 @@ export default function TestRuns() {
       if (!wasEditing && rsp.run?.id) navigate(`/runs/${rsp.run.id}`);
     } catch (error: any) {
       void showAlert(error.message || `Failed to ${editingRunId ? 'update' : 'create'} test run.`);
+    } finally { setSavingRun(false); }
+  };
+
+  // Start a manual run in place from the list (no scripts) — marks it In Progress, then refreshes the row.
+  const startManualRun = async (run: any) => {
+    try {
+      const res = await fetch(`/api/runs/${encodeURIComponent(run.id)}/start`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || 'Failed to start the run.');
+      void refreshRunsQuiet();
+    } catch (error: any) {
+      void showAlert(error.message || 'Failed to start the run.');
     }
   };
 
@@ -309,6 +416,7 @@ export default function TestRuns() {
     const errors: string[] = [];
     for (const run of runsToExecute) {
       if (runProgress[run.id] || runExecutionState(run).running) continue;
+      if (run.mode === 'manual') continue; // manual runs are started/executed by hand in the run view, not via scripts
       const runCases = casesForRun(run, cases, suites);
       const runScripts = scriptsForRun(run, runCases, scripts);
       if (!runScripts.length) {
@@ -370,16 +478,12 @@ export default function TestRuns() {
     }
   };
 
-  const selectableCases = cases;
-  const selectableCasesInFolder = useMemo(() => selectableCases.filter((testCase) =>
-    String(testCase.folderId || '') === newRunCaseFolderId
-  ), [selectableCases, newRunCaseFolderId]);
-  const selectableCaseOptions = useMemo(() => selectableCases
-    .map((testCase) => ({
-      id: String(testCase.id),
-      name: `${folders.find((folder) => folder.id === testCase.folderId)?.path || folders.find((folder) => folder.id === testCase.folderId)?.name || 'Unfiled'} — ${testCase.id}: ${testCase.title}`,
-    }))
-    .sort((a, b) => a.name.localeCompare(b.name)), [selectableCases, folders]);
+  // Automated runs execute Playwright scripts, so only cases that HAVE a linked script are runnable.
+  // (Manual runs author their own steps and don't use this list.)
+  const selectableCases = useMemo(() => cases.filter((c) => scriptsForCases([c], scripts).length > 0), [cases, scripts]);
+  const selectableCaseIdSet = useMemo(() => new Set(selectableCases.map((c) => String(c.id))), [selectableCases]);
+  // Cases WITHOUT a script — excluded from the automated case picker so it only offers scripted cases.
+  const nonScriptedCaseIds = useMemo(() => cases.filter((c) => !selectableCaseIdSet.has(String(c.id))).map((c) => String(c.id)), [cases, selectableCaseIdSet]);
 
   const handleAIApprove = (data: any) => {
     fetch('/api/runs', {
@@ -396,6 +500,7 @@ export default function TestRuns() {
     const selectedProgress = runProgress[selectedRun.id] || selectedExecution.label;
     const selectedIsRunning = selectedExecution.running || Boolean(runProgress[selectedRun.id]);
     const evidenceItems = collectRunEvidence(selectedRun, selectedRunCases);
+    const selectedEvidence = selectedEvidenceIndex == null ? null : evidenceItems[selectedEvidenceIndex] || null;
     const exportEvidenceItems = caseBulk.selectedCount
       ? evidenceItems.filter((item) => caseBulk.selectedIds.has(item.caseId))
       : evidenceItems;
@@ -438,7 +543,6 @@ export default function TestRuns() {
                 {selectedRun.testPlanId && <span className="whitespace-nowrap">Plan: {plans.find((p) => p.id === selectedRun.testPlanId)?.name || selectedRun.testPlanId}</span>}
                 <span className="whitespace-nowrap">{selectedRun.date || 'No date'}</span>
                 <span className="whitespace-nowrap">{selectedRun.executionTime || '-'}</span>
-                <FolderBadge folders={folders} folderId={selectedRun.folderId} />
                 {Array.isArray(selectedRun.tags) && selectedRun.tags.map((t: string) => <span key={t} className="whitespace-nowrap rounded bg-[var(--bg-secondary)] px-2 py-0.5 text-xs">{t}</span>)}
               </div>
               <div className="flex flex-wrap items-center gap-2">
@@ -461,7 +565,8 @@ export default function TestRuns() {
                   <Pencil className="h-4 w-4" /> Edit
                 </button>
                 )}
-                {can('runs:execute') && (
+                {/* "Run scripts" is an AUTOMATED action only — manual runs are executed by hand in the runner. */}
+                {selectedRun.mode !== 'manual' && can('runs:execute') && (
                 <button
                   onClick={() => handleExecuteRuns([selectedRun])}
                   disabled={selectedExecution.running || Boolean(runProgress[selectedRun.id]) || selectedRunScripts.length === 0}
@@ -475,6 +580,31 @@ export default function TestRuns() {
             </div>
           </div>
 
+          {/* Review-gated drift: cases that newly match this run's tag query, with add / create-new /
+              dismiss. Renders nothing (empty:hidden) when the run has no tag query or nothing new. */}
+          <div className="px-5 pt-4 empty:hidden">
+            <TagDriftBanner
+              target="runs"
+              id={selectedRun.id}
+              onChanged={refreshRunsQuiet}
+              onCreateNew={async (caseIds, drift) => {
+                try {
+                  const res = await fetch('/api/runs/from-selection', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name: `${selectedRun.name} (new matches)`, status: 'Not Started', caseIds, definition: { tagQuery: drift.tagQuery } }),
+                  });
+                  const rsp = await res.json().catch(() => ({}));
+                  if (!res.ok) throw new Error(rsp.error || 'Failed to create run.');
+                  fetchData();
+                  if (rsp.run?.id) navigate(`/runs/${rsp.run.id}`);
+                } catch (e: any) { void showAlert(e.message || 'Failed to create run.'); }
+              }}
+            />
+          </div>
+
+          {selectedRun.mode === 'manual' ? (
+            <ManualRunner run={selectedRun} cases={selectedRunCases} plans={plans} suites={suites} onChanged={refreshRunsQuiet} />
+          ) : (<>
           {/* Execution never produced results (auth/target unreachable/crash before the first test) —
               say why instead of leaving a silent 0/Untested with no explanation. Recognized by
               stats.untested === stats.total: no case got any real outcome, so nothing ran. */}
@@ -522,13 +652,13 @@ export default function TestRuns() {
               <div className="flex gap-3 overflow-x-auto pb-1">
                 {evidenceItems.map((item, index) => (
                   <div key={item.url} className="group relative w-44 shrink-0">
-                    <a href={withBasePath(item.url)} target="_blank" rel="noreferrer">
+                    <button type="button" onClick={() => setSelectedEvidenceIndex(index)} className="block text-left" title={`Expand ${item.caseTitle} ${item.stepLabel}`}>
                       <img
                         src={withBasePath(item.url)}
                         alt={`${item.caseTitle} ${item.stepLabel}`}
                         className="h-28 w-44 rounded-md border border-[var(--border)] bg-black object-cover"
                       />
-                    </a>
+                    </button>
                     <button
                       type="button"
                       onClick={() => {
@@ -635,7 +765,7 @@ export default function TestRuns() {
                     </th>
                     <th className="px-4 py-3 font-medium">ID</th>
                     <th className="px-4 py-3 font-medium">Title</th>
-                    <th className="px-4 py-3 font-medium">Configurations</th>
+                    <th className="px-4 py-3 font-medium">Version</th>
                     <th className="px-4 py-3 font-medium">Priority</th>
                     <th className="px-4 py-3 font-medium">Script</th>
                     <th className="px-4 py-3 font-medium">Status</th>
@@ -656,7 +786,15 @@ export default function TestRuns() {
                       </td>
                       <td className="px-4 py-3 font-mono">{testCase.id}</td>
                       <td className="px-4 py-3 font-medium max-w-md truncate">{testCase.title}</td>
-                      <td className="px-4 py-3 text-[var(--text-muted)]">--</td>
+                      <td className="px-4 py-3">
+                        <VersionPinSelect
+                          target="runs"
+                          groupId={selectedRun.id}
+                          caseId={testCase.id}
+                          pinnedRevisionNo={(selectedRun.casePins || []).find((p: any) => String(p?.caseId) === String(testCase.id))?.revisionNo ?? null}
+                          onChange={refreshRunsQuiet}
+                        />
+                      </td>
                       <td className="px-4 py-3">{testCase.priority || '-'}</td>
                       <td className="px-4 py-3">
                         {linkedScript ? (
@@ -715,6 +853,7 @@ export default function TestRuns() {
               </table>
             </div>
           </div>
+          </>)}
         </div>
         <Modal
           isOpen={Boolean(editingCase)}
@@ -756,6 +895,27 @@ export default function TestRuns() {
             </div>
           )}
         </Modal>
+        {selectedEvidence && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4" onClick={() => setSelectedEvidenceIndex(null)}>
+            <div className="flex max-h-[92dvh] w-full max-w-6xl flex-col overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--bg-card)] shadow-2xl" onClick={(event) => event.stopPropagation()}>
+              <div className="flex items-center gap-3 border-b border-[var(--border)] px-4 py-3">
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-sm font-semibold text-[var(--text-primary)]">{selectedEvidence.caseTitle || selectedEvidence.caseId || 'Evidence screenshot'}</div>
+                  <div className="truncate text-xs text-[var(--text-muted)]">{selectedEvidence.stepLabel || 'Captured screenshot'}{selectedEvidence.action ? ` · ${selectedEvidence.action}` : ''}</div>
+                </div>
+                <button type="button" onClick={() => setSelectedEvidenceIndex(null)} className="rounded border border-[var(--border)] px-2 py-1 text-xs font-semibold text-[var(--text-muted)] hover:text-[var(--text-primary)]">Close</button>
+              </div>
+              <div className="min-h-0 flex-1 overflow-auto bg-black p-3">
+                <img src={withBasePath(selectedEvidence.url)} alt={`${selectedEvidence.caseTitle} ${selectedEvidence.stepLabel}`} className="mx-auto max-h-[72dvh] max-w-full object-contain" />
+              </div>
+              <div className="flex items-center justify-between gap-3 border-t border-[var(--border)] px-4 py-3">
+                <button type="button" onClick={() => selectedEvidenceIndex != null && selectedEvidenceIndex > 0 && setSelectedEvidenceIndex(selectedEvidenceIndex - 1)} disabled={!selectedEvidenceIndex} className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-1.5 text-xs font-semibold text-[var(--text-primary)] disabled:cursor-not-allowed disabled:opacity-40">← Previous</button>
+                <span className="text-xs text-[var(--text-muted)]">{selectedEvidenceIndex + 1} / {evidenceItems.length}</span>
+                <button type="button" onClick={() => selectedEvidenceIndex != null && selectedEvidenceIndex < evidenceItems.length - 1 && setSelectedEvidenceIndex(selectedEvidenceIndex + 1)} disabled={selectedEvidenceIndex === evidenceItems.length - 1} className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-1.5 text-xs font-semibold text-[var(--text-primary)] disabled:cursor-not-allowed disabled:opacity-40">Next →</button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     );
   }
@@ -788,6 +948,7 @@ export default function TestRuns() {
               { key: 'suiteName', label: 'Suite' },
               { key: 'scripts', label: 'Scripts', get: (r) => scriptsForRun(r, casesForRun(r, cases, suites), scripts).map(scriptLabel).join(', ') },
               { key: 'executionTime', label: 'Execution Time' },
+              { key: 'runDateTime', label: 'Run Date & Time', get: (r) => runStartedAt(r) || r.createdAt || r.date || '' },
               { key: 'passed', label: 'Passed', get: (r) => (r.steps || []).filter((s: any) => /pass/i.test(s?.outcome || s?.status || '')).length },
               { key: 'failed', label: 'Failed', get: (r) => (r.steps || []).filter((s: any) => /fail/i.test(s?.outcome || s?.status || '')).length },
               { key: 'date', label: 'Date' },
@@ -806,35 +967,54 @@ export default function TestRuns() {
 
       <Modal
         isOpen={isRunModalOpen}
-        onClose={() => { setIsRunModalOpen(false); setEditingRunId(''); }}
+        onClose={() => { setIsRunModalOpen(false); setEditingRunId(''); setEditRunResults([]); }}
         title={editingRunId ? 'Edit Test Run' : 'Create Manual Run'}
         footer={
           <div className="flex justify-end gap-3">
-            <button onClick={() => { setIsRunModalOpen(false); setEditingRunId(''); }} className="px-4 py-2 text-sm text-[var(--text-muted)]">Cancel</button>
+            <button onClick={() => { setIsRunModalOpen(false); setEditingRunId(''); setEditRunResults([]); }} className="px-4 py-2 text-sm text-[var(--text-muted)]">Cancel</button>
             {(editingRunId ? can('runs:update') : can('runs:create')) && (
-            <button onClick={handleSaveRun} className="px-4 py-2 bg-[var(--accent)] text-white text-sm rounded-md">{editingRunId ? 'Save Changes' : 'Create Run'}</button>
+            <button disabled={savingRun || editStepsLoading} onClick={handleSaveRun} className="rounded-md bg-[var(--accent)] px-4 py-2 text-sm text-white disabled:opacity-50">{savingRun ? 'Saving…' : editingRunId ? 'Save Changes' : 'Create Run'}</button>
             )}
           </div>
         }
       >
         <div className="space-y-4">
-          <label className="block text-xs font-medium text-[var(--text-muted)]">Run Name
+          <label className="block text-xs font-medium text-[var(--text-muted)]">Run Name<RequiredMark />
             <input value={newRunName} onChange={(e) => setNewRunName(e.target.value)} placeholder="Run name" className="mt-1 w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm text-[var(--text-primary)]" />
           </label>
 
-          {/* #4 — map the run to an existing Test Plan (not a free-text suite). */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <label className="block text-xs font-medium text-[var(--text-muted)]">Test Plan
-              <select value={newRunPlanId} onChange={(e) => setNewRunPlanId(e.target.value)} className="mt-1 w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm text-[var(--text-primary)]">
-                <option value="">No plan</option>
-                {plans.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-              </select>
-            </label>
-            <div><span className="block text-xs font-medium text-[var(--text-muted)] mb-1">Browse Folder</span><FolderSelect value={newRunFolderId} onChange={setNewRunFolderId} includeNone={false} /></div>
-          </div>
+          {/* Run type: manual = human step-by-step runner; automated = Playwright execution. Fixed at creation. */}
+          {!editingRunId && (
+            <div>
+              <label className="block text-xs font-medium text-[var(--text-muted)]">Run Type</label>
+              <div className="mt-1 inline-flex rounded-md border border-[var(--border)] p-0.5">
+                {(['manual', 'automated'] as const).map((m) => (
+                  <button
+                    key={m}
+                    type="button"
+                    onClick={() => setNewRunMode(m)}
+                    className={cn('rounded px-3 py-1.5 text-sm font-medium capitalize transition-colors', newRunMode === m ? 'bg-[var(--accent)] text-white' : 'text-[var(--text-muted)] hover:text-[var(--text-primary)]')}
+                  >
+                    {m}
+                  </button>
+                ))}
+              </div>
+              <p className="mt-1 text-[11px] text-[var(--text-muted)]">{newRunMode === 'manual' ? 'Testers record per-step outcomes, actuals, comments and screenshots.' : 'Runs linked Playwright scripts automatically.'}</p>
+            </div>
+          )}
 
-          {/* #5 — Assign To, State, Tags. */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          {/* Automated runs map to a Test Plan; manual runs are standalone (organized by tags). */}
+          {newRunMode !== 'manual' && (
+          <label className="block text-xs font-medium text-[var(--text-muted)]">Test Plan
+            <select value={newRunPlanId} onChange={(e) => setNewRunPlanId(e.target.value)} className="mt-1 w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm text-[var(--text-primary)]">
+              <option value="">No plan</option>
+              {plans.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+            </select>
+          </label>
+          )}
+
+          {/* Assign To + Status */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <label className="block text-xs font-medium text-[var(--text-muted)]">Assign To
               <input value={newRunAssignedTo} onChange={(e) => setNewRunAssignedTo(e.target.value)} placeholder="e.g. QA name" className="mt-1 w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm text-[var(--text-primary)]" />
             </label>
@@ -843,54 +1023,155 @@ export default function TestRuns() {
                 {MANUAL_RUN_STATUS_OPTIONS.map((status) => <option key={status} value={status}>{status}</option>)}
               </select>
             </label>
-            <div>
-              <label className="block text-xs font-medium text-[var(--text-muted)]">Tags</label>
-              <div className="mt-1">
-                <TagEditor options={tagOptions} value={newRunTags} onChange={setNewRunTags} />
-              </div>
-            </div>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          {/* Manual runs capture Configuration + Priority up front (the Azure Summary fields). */}
+          {newRunMode === 'manual' && (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <label className="block text-xs font-medium text-[var(--text-muted)]">Configuration
+              <input value={newRunConfiguration} onChange={(e) => setNewRunConfiguration(e.target.value)} placeholder="e.g. Sandbox / Chrome" className="mt-1 w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm text-[var(--text-primary)]" />
+            </label>
+            <label className="block text-xs font-medium text-[var(--text-muted)]">Priority
+              <input value={newRunPriority} onChange={(e) => setNewRunPriority(e.target.value)} placeholder="e.g. 2 / High" className="mt-1 w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm text-[var(--text-primary)]" />
+            </label>
+          </div>
+          )}
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <label className="block text-xs font-medium text-[var(--text-muted)]">Requested By
               <input value={newRunRequester} onChange={(e) => setNewRunRequester(e.target.value)} placeholder="Requester" className="mt-1 w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm text-[var(--text-primary)]" />
             </label>
             <label className="block text-xs font-medium text-[var(--text-muted)]">Target URL
               <input value={newRunTargetUrl} onChange={(e) => setNewRunTargetUrl(e.target.value)} placeholder="Optional" className="mt-1 w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm text-[var(--text-primary)]" />
             </label>
+            {/* Manual-run duration is measured from start→completion, not entered up front. */}
+            {newRunMode !== 'manual' && (
             <label className="block text-xs font-medium text-[var(--text-muted)]">Estimated Duration
               <input value={newRunExecutionTime} onChange={(e) => setNewRunExecutionTime(e.target.value)} placeholder="e.g. 15m" className="mt-1 w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm text-[var(--text-primary)]" />
             </label>
+            )}
           </div>
 
-          {!editingRunId && (
+          {/* Tags on their own full-width row so a long tag list never unbalances the form. */}
+          <div>
+            <label className="block text-xs font-medium text-[var(--text-muted)]">Tags</label>
+            <div className="mt-1">
+              <TagEditor options={tagOptions} value={newRunTags} onChange={setNewRunTags} />
+            </div>
+          </div>
+
+          {/* Author the test steps here (Action + Expected). Outcomes/evidence/comments are recorded
+              later in the runner after you open the run. Manual create only. */}
+          {!editingRunId && newRunMode === 'manual' && (
             <div>
-              <label className="mb-1 block text-xs font-medium text-[var(--text-muted)]">Test Cases with Playwright Scripts</label>
-              <div className="mb-2 flex items-end gap-2">
-                <FolderSelect value={newRunCaseFolderId} onChange={setNewRunCaseFolderId} label="Test Case Folder" allowCreate={false} className="flex-1" />
-                <button
-                  type="button"
-                  disabled={!selectableCasesInFolder.length}
-                  onClick={() => setNewRunCaseIds((current) => new Set([...current, ...selectableCasesInFolder.map((testCase) => String(testCase.id))]))}
-                  className="shrink-0 rounded-md border border-[var(--border)] px-3 py-2 text-sm font-medium text-[var(--text-primary)] hover:bg-[var(--bg-secondary)] disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  Select all
-                </button>
-                <button
-                  type="button"
-                  disabled={!newRunCaseIds.size}
-                  onClick={() => setNewRunCaseIds(new Set())}
-                  className="shrink-0 rounded-md border border-[var(--border)] px-3 py-2 text-sm font-medium text-[var(--text-primary)] hover:bg-[var(--bg-secondary)] disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  Clear
+              <label className="mb-1 block text-xs font-medium text-[var(--text-muted)]">Steps</label>
+              <div className="rounded-md border border-[var(--border)]">
+                <div className="grid grid-cols-[1.5rem_1fr_1fr_6rem_1.75rem] items-center gap-2 border-b border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">
+                  <span>#</span><span>Action</span><span>Expected Result</span><span>Evidence</span><span />
+                </div>
+                <div className="max-h-56 overflow-y-auto">
+                  {newRunSteps.length === 0 && (
+                    <div className="px-3 py-4 text-center text-xs text-[var(--text-muted)]">No steps yet. Add the first step below.</div>
+                  )}
+                  {newRunSteps.map((step, index) => (
+                    <div key={index} className="grid grid-cols-[1.5rem_1fr_1fr_6rem_1.75rem] items-start gap-2 border-b border-[var(--border)] px-2 py-2 last:border-0">
+                      <span className="pt-2 font-mono text-xs text-[var(--text-muted)]">{index + 1}</span>
+                      <textarea value={step.action} onChange={(e) => setNewRunSteps((s) => s.map((it, i) => i === index ? { ...it, action: e.target.value } : it))} rows={2} placeholder="Describe the action…" className="w-full resize-y rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
+                      <textarea value={step.expected} onChange={(e) => setNewRunSteps((s) => s.map((it, i) => i === index ? { ...it, expected: e.target.value } : it))} rows={2} placeholder="Expected result…" className="w-full resize-y rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
+                      {/* Evidence toggle: when ON, the tester can attach a screenshot to this step during
+                          the run; when OFF, uploads are disabled for it. No upload happens at create time. */}
+                      <div className="flex items-center pt-1.5">
+                        <button
+                          type="button"
+                          role="switch"
+                          aria-checked={step.captureEvidence}
+                          title={step.captureEvidence ? 'Evidence allowed on this step — click to disable' : 'Evidence disabled — click to allow'}
+                          onClick={() => setNewRunSteps((s) => s.map((it, i) => i === index ? { ...it, captureEvidence: !it.captureEvidence } : it))}
+                          className={`inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors ${step.captureEvidence ? 'bg-[var(--accent)]' : 'bg-[var(--border)]'}`}
+                        >
+                          <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${step.captureEvidence ? 'translate-x-4' : 'translate-x-0.5'}`} />
+                        </button>
+                      </div>
+                      <button type="button" onClick={() => setNewRunSteps((s) => s.filter((_, i) => i !== index))} title="Remove step" className="mt-1 rounded p-1 text-[var(--text-muted)] hover:bg-red-500/10 hover:text-red-500">
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              <button type="button" onClick={() => setNewRunSteps((s) => [...s, { action: '', expected: '', captureEvidence: true }])} className="mt-2 inline-flex items-center gap-1.5 rounded-md border border-dashed border-[var(--border)] px-3 py-1.5 text-sm font-medium text-[var(--text-muted)] hover:border-[var(--accent)] hover:text-[var(--accent)]">
+                <Plus className="h-4 w-4" /> Add step
+              </button>
+            </div>
+          )}
+
+          {/* Manual runs author their own steps in the runner — no case linking. */}
+          {editingRunId && newRunMode === 'manual' && (
+            <div>
+              <label className="mb-1 block text-xs font-medium text-[var(--text-muted)]">Steps</label>
+              {editStepsLoading ? <div className="rounded-md border border-[var(--border)] p-4 text-center text-sm text-[var(--text-muted)]">Loading steps…</div>
+                : editRunResults.map((result, resultIndex) => (
+                  <div key={result.caseId} className="mb-3 last:mb-0">
+                    {editRunResults.length > 1 && <div className="mb-1 truncate text-xs font-medium text-[var(--text-primary)]">{result.caseTitle}</div>}
+                    <div className="rounded-md border border-[var(--border)]">
+                      <div className="grid grid-cols-[1.5rem_1fr_1fr_6rem_1.75rem] items-center gap-2 border-b border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">
+                        <span>#</span><span>Action</span><span>Expected Result</span><span>Attachment</span><span />
+                      </div>
+                      {result.steps.length === 0 && <div className="px-3 py-4 text-center text-xs text-[var(--text-muted)]">No steps yet.</div>}
+                      {result.steps.map((step, stepIndex) => (
+                        <div key={stepIndex} className="grid grid-cols-[1.5rem_1fr_1fr_6rem_1.75rem] items-start gap-2 border-b border-[var(--border)] px-2 py-2 last:border-0">
+                          <span className="pt-2 font-mono text-xs text-[var(--text-muted)]">{stepIndex + 1}</span>
+                          <textarea value={step.action} onChange={(event) => setEditRunResults((groups) => groups.map((group, i) => i === resultIndex ? { ...group, steps: group.steps.map((item, j) => j === stepIndex ? { ...item, action: event.target.value } : item) } : group))} rows={2} placeholder="Describe the action…" className="w-full resize-y rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
+                          <textarea value={step.expected} onChange={(event) => setEditRunResults((groups) => groups.map((group, i) => i === resultIndex ? { ...group, steps: group.steps.map((item, j) => j === stepIndex ? { ...item, expected: event.target.value } : item) } : group))} rows={2} placeholder="Expected result…" className="w-full resize-y rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
+                          <div className="flex items-center pt-1.5"><button type="button" role="switch" aria-checked={step.captureEvidence} title={step.captureEvidence ? 'Attachments allowed — click to turn off' : 'Attachments off — click to allow'} onClick={() => setEditRunResults((groups) => groups.map((group, i) => i === resultIndex ? { ...group, steps: group.steps.map((item, j) => j === stepIndex ? { ...item, captureEvidence: !item.captureEvidence } : item) } : group))} className={`inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors ${step.captureEvidence ? 'bg-[var(--accent)]' : 'bg-[var(--border)]'}`}><span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${step.captureEvidence ? 'translate-x-4' : 'translate-x-0.5'}`} /></button></div>
+                          <button type="button" onClick={() => setEditRunResults((groups) => groups.map((group, i) => i === resultIndex ? { ...group, steps: group.steps.filter((_, j) => j !== stepIndex) } : group))} title="Remove step" className="mt-1 rounded p-1 text-[var(--text-muted)] hover:bg-red-500/10 hover:text-red-500"><Trash2 className="h-4 w-4" /></button>
+                        </div>
+                      ))}
+                    </div>
+                    <button type="button" onClick={() => setEditRunResults((groups) => groups.map((group, i) => i === resultIndex ? { ...group, steps: [...group.steps, { action: '', expected: '', captureEvidence: true }] } : group))} className="mt-2 inline-flex items-center gap-1.5 rounded-md border border-dashed border-[var(--border)] px-3 py-1.5 text-sm font-medium text-[var(--text-muted)] hover:border-[var(--accent)] hover:text-[var(--accent)]"><Plus className="h-4 w-4" /> Add step</button>
+                  </div>
+                ))}
+            </div>
+          )}
+
+          {!editingRunId && newRunMode !== 'manual' && (
+            <div>
+              <div className="mb-1 flex items-center justify-between">
+                <label className="block text-xs font-medium text-[var(--text-muted)]">Test Cases with Playwright Scripts<RequiredMark /></label>
+                <button type="button" onClick={() => setIsCaseLinkerOpen(true)} className="text-xs font-medium text-[var(--accent)] hover:underline">
+                  Search &amp; link by tag
                 </button>
               </div>
-              <MultiSelectDropdown
-                label={selectableCaseOptions.length ? 'Select individual test cases' : 'No test cases are available to link.'}
-                options={selectableCaseOptions}
-                value={[...newRunCaseIds]}
-                onChange={(ids) => setNewRunCaseIds(new Set(ids))}
-              />
+              {(newRunTagQuery.all?.length || newRunTagQuery.any?.length) ? (
+                <div className="mb-1 text-xs text-[var(--text-muted)]">
+                  Tag-defined: {[...(newRunTagQuery.all || []), ...(newRunTagQuery.any || [])].join(newRunTagQuery.all?.length ? ' + ' : ' / ')} — new matches will surface for review after saving.
+                </div>
+              ) : null}
+              {newRunCaseIds.size === 0 ? (
+                <button
+                  type="button"
+                  onClick={() => setIsCaseLinkerOpen(true)}
+                  className="w-full rounded-md border border-dashed border-[var(--border)] bg-[var(--bg-secondary)]/40 px-3 py-4 text-center text-sm text-[var(--text-muted)] hover:border-[var(--accent)] hover:text-[var(--text-primary)]"
+                >
+                  Search &amp; link scripted cases by tag
+                </button>
+              ) : (
+                <div className="flex max-h-40 flex-wrap gap-1.5 overflow-auto rounded-md border border-[var(--border)] bg-[var(--bg-secondary)]/40 p-2">
+                  {selectableCases.filter((testCase) => newRunCaseIds.has(String(testCase.id))).map((testCase) => (
+                    <span key={testCase.id} className="inline-flex max-w-full items-center gap-1 rounded bg-[var(--bg-card)] px-2 py-0.5 text-xs text-[var(--text-primary)]">
+                      <span className="truncate">{testCase.title || testCase.id}</span>
+                      <button
+                        type="button"
+                        onClick={() => setNewRunCaseIds((cur) => { const n = new Set(cur); n.delete(String(testCase.id)); return n; })}
+                        className="opacity-60 hover:opacity-100"
+                        title="Remove"
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
               <p aria-live="polite" className="mt-1 text-xs text-[var(--text-muted)]">
                 {newRunCaseIds.size} test case{newRunCaseIds.size === 1 ? '' : 's'} selected
               </p>
@@ -907,11 +1188,12 @@ export default function TestRuns() {
         <EntityLinker
           isOpen={isCaseLinkerOpen}
           onClose={() => setIsCaseLinkerOpen(false)}
-          title="Link test cases to this run"
+          title="Link scripted test cases to this run"
           target="cases"
           confirmLabel="Use selected cases"
           initialSelectedIds={[...newRunCaseIds]}
-          onConfirm={(ids) => { setNewRunCaseIds(new Set(ids)); setIsCaseLinkerOpen(false); }}
+          excludeIds={nonScriptedCaseIds}
+          onConfirm={(ids, meta) => { setNewRunCaseIds(new Set(ids)); setNewRunTagQuery(meta.tagQuery); setIsCaseLinkerOpen(false); }}
         />
       )}
 
@@ -921,7 +1203,7 @@ export default function TestRuns() {
             <button onClick={() => setIsViewMenuOpen(!isViewMenuOpen)} className="w-48 border border-[var(--border)] bg-[var(--bg-secondary)] rounded-md px-3 py-2 text-sm text-left">{selectedView}</button>
             {isViewMenuOpen && (
               <div className="absolute top-11 left-0 z-20 w-56 rounded-md border border-[var(--border)] bg-[var(--bg-card)] shadow-xl overflow-hidden">
-                {['All Runs', 'My Runs', 'Failed Runs', 'Manual Runs', 'Automated Runs'].map((view) => (
+                {(['All Runs', 'My Runs', 'Failed Runs', 'Manual Runs', 'Automated Runs'] as const).map((view) => (
                   <button key={view} onClick={() => { setSelectedView(view); setIsViewMenuOpen(false); }} className="block w-full px-4 py-3 text-left text-sm hover:bg-[var(--bg-secondary)]">{view}</button>
                 ))}
               </div>
@@ -938,13 +1220,13 @@ export default function TestRuns() {
               <button onClick={() => setIsFilterOpen((open) => !open)} aria-expanded={isFilterOpen} className="flex items-center gap-2 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] hover:bg-[var(--border)]"><Filter className="w-4 h-4" /> Filters{activeFilterCount > 0 && <span className="rounded-full bg-[var(--accent)] px-1.5 text-[11px] font-semibold text-white">{activeFilterCount}</span>}</button>
               {isFilterOpen && (
                 <div className="absolute right-0 top-11 z-30 max-h-[calc(100dvh-20rem)] w-[min(24rem,calc(100vw-2rem))] overflow-auto rounded-md border border-[var(--border)] bg-[var(--bg-card)] p-3 shadow-xl">
-                  <div className="mb-3 flex justify-end"><button onClick={() => setFilters({ statuses: [], requesters: [], suites: [], folders: [], sources: [] })} className="text-xs font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]">Clear all</button></div>
+                  <div className="mb-3 flex justify-end"><button onClick={() => setFilters({ statuses: [], requesters: [], suites: [], sources: [], tags: [] })} className="text-xs font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]">Clear all</button></div>
                   <div className="flex flex-col gap-3">
                     <div><label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Status</label><MultiSelectDropdown label="Any status" options={statusOptions.map((value) => ({ id: value, name: value }))} value={filters.statuses} onChange={(statuses) => setFilters((current) => ({ ...current, statuses }))} /></div>
                     <div><label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Run Type</label><MultiSelectDropdown label="Any type" options={[{ id: 'Manual', name: 'Manual' }, { id: 'Automated', name: 'Automated' }]} value={filters.sources} onChange={(sources) => setFilters((current) => ({ ...current, sources }))} /></div>
                     <div><label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Requested By</label><MultiSelectDropdown label="Any requester" options={requesterOptions.map((value) => ({ id: value, name: value }))} value={filters.requesters} onChange={(requesters) => setFilters((current) => ({ ...current, requesters }))} /></div>
                     <div><label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Test Suite</label><MultiSelectDropdown label="Any suite" options={suiteOptions.map((value) => ({ id: value, name: value }))} value={filters.suites} onChange={(suites) => setFilters((current) => ({ ...current, suites }))} /></div>
-                    <div><label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Folder</label><MultiSelectDropdown label="Any folder" options={folders.map((folder) => ({ id: String(folder.id), name: String(folder.path || folder.name) }))} value={filters.folders} onChange={(folders) => setFilters((current) => ({ ...current, folders }))} /></div>
+                    <div><label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Tags</label><MultiSelectDropdown label="Any tag" options={tagOptions.map((value) => ({ id: value, name: value }))} value={filters.tags} onChange={(tags) => setFilters((current) => ({ ...current, tags }))} /></div>
                   </div>
                 </div>
               )}
@@ -967,7 +1249,7 @@ export default function TestRuns() {
         </div>
 
         <div className="flex-1 overflow-auto">
-          <table className="w-full min-w-[1520px] table-fixed text-left text-sm whitespace-nowrap">
+          <table className="w-full min-w-[1920px] table-fixed text-left text-sm whitespace-nowrap">
             <thead className="sticky top-0 bg-[var(--bg-secondary)] border-b border-[var(--border)] text-[var(--text-muted)]">
               <tr>
                 <th className="px-4 py-3 w-10">
@@ -975,10 +1257,11 @@ export default function TestRuns() {
                 </th>
                 <th className="px-4 py-3 w-10"></th>
                 <th className="w-80 px-4 py-3 font-medium">Run</th>
-                <th className="w-60 px-4 py-3 font-medium">Folder</th>
+                <th className="w-28 px-4 py-3 font-medium">Type</th>
                 <th className="w-64 px-4 py-3 font-medium">Scripts</th>
                 <th className="w-28 px-4 py-3 font-medium">Tests</th>
                 <th className="w-28 px-4 py-3 font-medium">Duration</th>
+                <th className="w-52 px-4 py-3 font-medium">Run Date &amp; Time</th>
                 <th className="w-56 px-4 py-3 font-medium">Tests Status</th>
                 <th className="w-40 px-4 py-3 font-medium">Failure Analysis</th>
                 <th className="w-32 px-4 py-3 font-medium">Updated</th>
@@ -987,9 +1270,9 @@ export default function TestRuns() {
             </thead>
             <tbody className="divide-y divide-[var(--border)]">
               {loading ? (
-                <tr><td colSpan={11} className="px-4 py-8 text-center text-[var(--text-muted)]">Loading runs...</td></tr>
+                <tr><td colSpan={12} className="px-4 py-8 text-center text-[var(--text-muted)]">Loading runs...</td></tr>
               ) : filteredRuns.length === 0 ? (
-                <tr><td colSpan={11} className="px-4 py-8 text-center text-[var(--text-muted)]">No test runs found.</td></tr>
+                <tr><td colSpan={12} className="px-4 py-8 text-center text-[var(--text-muted)]">No test runs found.</td></tr>
               ) : filteredRuns.map((run) => {
                 const stats = getRunStats(run);
                 const runScripts = scriptsForRun(run, casesForRun(run, cases, suites), scripts);
@@ -1010,11 +1293,12 @@ export default function TestRuns() {
                           <div className="truncate font-semibold" title={run.name}>{run.name}</div>
                       <div className="truncate text-xs text-[var(--text-muted)]">Assigned to {run.assignedTo || run.requestedBy || 'Unassigned'}{run.state ? ` · ${run.state}` : ''}</div>
                         </div>
+                        {/* Manual runs: Run is enabled (no scripts needed) and opens the run to start it. */}
                         {can('runs:execute') && (
                         <button
-                          onClick={(event) => { event.stopPropagation(); void handleExecuteRuns([run]); }}
-                          disabled={running || !hasScripts}
-                          title={hasScripts ? 'Run linked Playwright scripts' : 'No Playwright scripts are linked to this run'}
+                          onClick={(event) => { event.stopPropagation(); if (run.mode === 'manual') void startManualRun(run); else void handleExecuteRuns([run]); }}
+                          disabled={run.mode !== 'manual' && (running || !hasScripts)}
+                          title={run.mode === 'manual' ? 'Start this manual run' : (hasScripts ? 'Run linked Playwright scripts' : 'No Playwright scripts are linked to this run')}
                           className="inline-flex shrink-0 items-center gap-1 rounded-md bg-emerald-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
                         >
                           <PlayCircle className="h-3.5 w-3.5" /> {running ? 'Running…' : 'Run'}
@@ -1022,8 +1306,10 @@ export default function TestRuns() {
                         )}
                       </div>
                     </td>
-                    <td className="overflow-hidden px-4 py-4">
-                      <FolderBadge folders={folders} folderId={run.folderId} />
+                    <td className="px-4 py-4">
+                      <span className={cn('inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium', run.mode === 'manual' ? 'bg-sky-500/15 text-sky-400' : 'bg-violet-500/15 text-violet-400')}>
+                        {run.mode === 'manual' ? 'Manual' : 'Automated'}
+                      </span>
                     </td>
                     <td className="overflow-hidden px-4 py-4">
                       <div className="truncate text-[var(--text-primary)]" title={scriptNames.join(', ') || 'No linked scripts'}>
@@ -1032,7 +1318,19 @@ export default function TestRuns() {
                       {scriptNames.length > 0 && <div className="text-xs text-[var(--text-muted)]">{scriptNames.length} script{scriptNames.length === 1 ? '' : 's'}</div>}
                     </td>
                     <td className="px-4 py-4">{stats.total} Tests</td>
-                    <td className="px-4 py-4">{running ? 'Running…' : run.executionTime || '-'}</td>
+                    <td className="px-4 py-4">{formatRunDuration(run, now)}</td>
+                    <td className="overflow-hidden px-4 py-4 text-xs text-[var(--text-muted)]">
+                      {runStartedAt(run) ? (
+                        <Timestamp value={runStartedAt(run)} mode="absolute" className="block truncate" />
+                      ) : run.createdAt ? (
+                        <div title="This run has not started; showing when it was created.">
+                          <div className="text-[10px] font-medium uppercase tracking-wide text-[var(--text-muted)]">Not started</div>
+                          <Timestamp value={run.createdAt} mode="absolute" className="block truncate" />
+                        </div>
+                      ) : run.date ? (
+                        <span title="Legacy run record: only its date was recorded.">{run.date}</span>
+                      ) : '—'}
+                    </td>
                     <td className="px-4 py-4">
                       {running ? (
                         <div className="w-36" role="status" aria-live="polite">
@@ -1051,8 +1349,13 @@ export default function TestRuns() {
                         <span title={`Untested: ${stats.untested}`} className="px-2 py-1 rounded bg-[var(--bg-secondary)] text-[var(--text-muted)] cursor-default">{stats.untested}</span>
                       </div>}
                     </td>
-                    <td className="px-4 py-4 text-[var(--text-muted)]">
-                      {stats.failed ? `${stats.failed} failed` : (/failed/i.test(run.status || '') ? run.progress || 'Execution failed' : '-')}
+                    <td className="overflow-hidden px-4 py-4 text-[var(--text-muted)]">
+                      <div
+                        className="truncate"
+                        title={stats.failed ? `${stats.failed} failed` : (/failed/i.test(run.status || '') ? run.progress || 'Execution failed' : '-')}
+                      >
+                        {stats.failed ? `${stats.failed} failed` : (/failed/i.test(run.status || '') ? run.progress || 'Execution failed' : '-')}
+                      </div>
                     </td>
                     <td className="overflow-hidden px-4 py-4 whitespace-nowrap text-xs text-[var(--text-muted)]">
                       <Timestamp value={run.metadata?.updatedAt || run.updatedAt || run.date} />

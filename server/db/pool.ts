@@ -75,8 +75,19 @@ export async function migrate(): Promise<{ applied: boolean; reason?: string }> 
 }
 
 export async function query<T = any>(text: string, params: any[] = []): Promise<T[]> {
-  const res = await getPool().query(text, params);
-  return res.rows as T[];
+  try {
+    const res = await getPool().query(text, params);
+    return res.rows as T[];
+  } catch (error: any) {
+    const match = String(error?.constraint || '').match(/^(plans|suites|cases|runs|defects|reports|scripts|requirements)_active_project_title_unique$/);
+    if (error?.code === '23505' && match) {
+      const labels: Record<string, string> = { plans: 'test plan', suites: 'test suite', cases: 'test case', runs: 'test run', defects: 'defect', reports: 'report', scripts: 'script', requirements: 'requirement' };
+      error.status = 409;
+      error.code = 'DUPLICATE_ARTIFACT_TITLE';
+      error.message = `A ${labels[match[1]]} with this name already exists in this project.`;
+    }
+    throw error;
+  }
 }
 
 export async function queryOne<T = any>(text: string, params: any[] = []): Promise<T | null> {

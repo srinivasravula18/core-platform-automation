@@ -6,6 +6,8 @@ import * as archiverNs from 'archiver';
 import { z } from 'zod';
 import { generateObject } from 'ai';
 import { prepareSse, sendSse } from '../../shared/sse';
+import { asyncRoute } from '../../shared/asyncRoute';
+import { prepareSse, sendSse } from '../../shared/sse';
 import { db, addActivity, persistDataInBackground } from '../../shared/storage';
 import { createFolder, findFolderByName, getFolderPath, resolveFolderPath } from '../../shared/folders';
 import { buildCaseDescription, normalizeCaseSteps, normalizeCaseTags } from '../../shared/testCases';
@@ -17,7 +19,10 @@ import { ensureTagsInCatalog } from '../tags/routes';
 import { runPlaywrightRequest } from '../playwright/routes';
 import { resolveCredentials } from '../credentials/credentialsService';
 import { testCaseTypeFields } from '../../../core/shared/testCaseTypes';
-import { collectRunEvidence, evidenceDownloadName } from '../../../core/shared/runEvidence';
+import { collectRunEvidence, collectManualResultEvidence, evidenceDownloadName } from '../../../core/shared/runEvidence';
+import { isManualOutcome, rollupCaseOutcome, computeRunRollup } from '../../../core/shared/manualRun';
+import { tagNativeOrgEnabled } from '../../shared/orgMode';
+import { readGroupDefinition, resolveTagQuery, computeDrift, type TagQuery } from './tagComposition';
 import { planStartConflict } from '../../../core/shared/testPlanStart';
 import { isPendingReviewTestRun, isStaleManualTestRun } from '../../../core/shared/testRunStatus';
 
@@ -40,9 +45,11 @@ import {
   CaseRevisions,
   ReleasePins,
   Runs,
+  RunCaseResults,
   Defects,
   Reports,
   Scripts,
+  ScriptRevisions,
   Folders,
   Requirements,
   Activity,
@@ -90,6 +97,16 @@ function isStaleManualRun(run: any, now = Date.now()): boolean {
 async function requireRepositoryFolder(req: Request, res: Response, next: NextFunction) {
   try {
     const folderId = String(req.body?.folderId || '').trim();
+    // Tag-native: a folder is optional. Validate it only when one is supplied; never require it.
+    if (tagNativeOrgEnabled()) {
+      if (folderId) {
+        const folder = await Folders.get(folderId);
+        req.body.folderId = folder && scopeFilter([folder], reqScope(req)).length ? folderId : '';
+      } else {
+        req.body.folderId = '';
+      }
+      return next();
+    }
     const folder = folderId ? await Folders.get(folderId) : null;
     if (!folder || !scopeFilter([folder], reqScope(req)).length) return res.status(400).json({ error: FOLDER_REQUIRED_ERROR });
     req.body.folderId = folderId;
@@ -235,6 +252,73 @@ function manualRunStatus(value: unknown): string | null {
   return MANUAL_RUN_STATUSES.has(status) ? status : null;
 }
 
+// ----- Manual step runner (Phase B1) -----
+// Escape hatch, default ON: additive endpoints are inert unless a run is created with mode='manual'.
+function manualRunnerEnabled(): boolean {
+  return String(process.env.MANUAL_RUNNER_V1 ?? 'true').trim().toLowerCase() !== 'false';
+}
+
+// Roll run-level aggregate onto a shallow run copy from its per-case results. Also derives the run's
+// start/complete timestamps (earliest activity → latest completion) so duration is the actual run time.
+function applyRunRollup(run: any, results: any[]): any {
+  const rolled: any = { ...run, ...computeRunRollup(results) };
+  const starts = results.map((r) => r.startedAt).filter(Boolean).sort();
+  rolled.startedAt = starts[0] || run.startedAt || null;
+  // A manual run stays open until the tester explicitly Stops it — recording outcomes never
+  // auto-completes the run (only POST /stop stamps completedAt). Keeps the Stop control available.
+  rolled.completedAt = run.completedAt || null;
+  if (!rolled.completedAt && rolled.state === 'Completed') rolled.state = 'In Progress';
+  return rolled;
+}
+
+// Seed one run_case_results row per case, freezing the executed revision. Idempotent per (run, case).
+async function seedManualResults(run: any, selectedCases: any[]): Promise<void> {
+  // Per-case version pins (run an older @vN): map caseId → pinned revision number.
+  const pins = new Map<string, number>();
+  for (const p of (Array.isArray(run.casePins) ? run.casePins : [])) {
+    if (p?.caseId != null && p?.revisionNo != null) pins.set(String(p.caseId), Number(p.revisionNo));
+  }
+  for (const testCase of selectedCases) {
+    // Honor a version pin by seeding that frozen revision's steps; else the current (HEAD) content.
+    let steps = normalizeCaseSteps(testCase.steps);
+    let revisionNo = testCase.currentRevision ?? null;
+    const pinnedNo = pins.get(String(testCase.id));
+    if (pinnedNo != null) {
+      const rev = await CaseRevisions.getByNo(testCase.id, pinnedNo);
+      if (rev) { steps = normalizeCaseSteps(rev.steps); revisionNo = pinnedNo; }
+    }
+    const stepResults = steps.map((step) => ({
+      action: step.action,
+      expected: step.expected,
+      actual: '',
+      outcome: 'Not Run',
+      comment: '',
+      screenshots: [] as string[],
+    }));
+    await RunCaseResults.upsert({
+      runId: run.id,
+      caseId: testCase.id,
+      revisionNo,
+      caseTitle: testCase.title || '',
+      priority: testCase.priority || '',
+      outcome: 'Not Run',
+      stepResults,
+    });
+  }
+}
+
+// Persist a base64/data-URL screenshot to the shared /evidence store; returns its served URL.
+function saveEvidenceImage(dataUrl: string, runId: string): string {
+  const match = /^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/s.exec(String(dataUrl || ''));
+  if (!match) return '';
+  const ext = (match[1].split('/')[1] || 'png').replace(/[^a-z0-9]/gi, '') || 'png';
+  const dir = path.resolve(process.cwd(), 'evidence');
+  fs.mkdirSync(dir, { recursive: true });
+  const file = `manual-${String(runId).replace(/[^A-Za-z0-9]/g, '')}-${randomUUID()}.${ext}`;
+  fs.writeFileSync(path.join(dir, file), Buffer.from(match[2], 'base64'));
+  return `/evidence/${file}`;
+}
+
 async function parentPlanValidationError(parentPlanId: string, currentPlanId: string, req: any): Promise<string | null> {
   if (!parentPlanId) return null;
   if (parentPlanId === currentPlanId) return 'A test plan cannot be its own parent.';
@@ -251,32 +335,137 @@ async function parentPlanValidationError(parentPlanId: string, currentPlanId: st
   return null;
 }
 
+// Compare tags ignoring case and the leading @/# marker, so `sanity` matches a stored `@sanity`.
+const tagKey = (t: any) => String(t || '').trim().toLowerCase().replace(/^[@#]+/, '');
+
 // Server-side text/tag/folder filtering for list endpoints. Additive + backward compatible:
-// with no query params it returns the list unchanged (removing the old ~300-item client cap
-// only when a filter is actually supplied). `q` matches name/title/description/id substrings;
-// `tags` is a comma list matched any/all via `tagMatch`; `folderId` narrows by folder.
+// with no query params it returns the list unchanged. `q` matches name/title/description/id;
+// `tags` (any/all via `tagMatch`) includes, `notTags` excludes — the tag-query composition primitive;
+// `folderId` narrows by folder (legacy).
 function filterListByQuery(items: any[], req: any): any[] {
   const q = String(req.query?.q || '').trim().toLowerCase();
   const folderId = String(req.query?.folderId || '').trim();
   const tagList = String(req.query?.tags || '').split(',').map((t) => t.trim()).filter(Boolean);
+  const notTagList = String(req.query?.notTags || '').split(',').map((t) => t.trim()).filter(Boolean);
   const tagMatch = String(req.query?.tagMatch || 'any').toLowerCase();
-  if (!q && !folderId && !tagList.length) return items;
-  const tagSet = tagList.map((t) => t.toLowerCase());
+  if (!q && !folderId && !tagList.length && !notTagList.length) return items;
+  const tagSet = tagList.map(tagKey);
+  const notSet = notTagList.map(tagKey);
   return items.filter((it) => {
     if (folderId && String(it?.folderId || '') !== folderId) return false;
+    const rowTags = (Array.isArray(it?.tags) ? it.tags : []).map(tagKey);
     if (tagSet.length) {
-      const rowTags = (Array.isArray(it?.tags) ? it.tags : []).map((t: any) => String(t).toLowerCase());
-      const ok = tagMatch === 'all'
-        ? tagSet.every((t) => rowTags.includes(t))
-        : tagSet.some((t) => rowTags.includes(t));
+      const ok = tagMatch === 'all' ? tagSet.every((t) => rowTags.includes(t)) : tagSet.some((t) => rowTags.includes(t));
       if (!ok) return false;
     }
+    if (notSet.length && notSet.some((t) => rowTags.includes(t))) return false;
     if (q) {
       const hay = `${it?.name || ''} ${it?.title || ''} ${it?.description || ''} ${it?.id || ''}`.toLowerCase();
       if (!hay.includes(q)) return false;
     }
     return true;
   });
+}
+
+// ===== Tag-native composition (Phase A1) =====
+// A run/suite/plan can define its membership by a tag query (definition.tagQuery). Cases matching
+// the query but not yet in the reviewed membership ("accepted") surface as drift, which the user
+// resolves with add / create-new / dismiss. Execution always uses the accepted membership only
+// (Option A) — for runs that IS run.caseIds, so the existing execute path needs no change.
+type TagTarget = 'runs' | 'suites' | 'plans';
+const TAG_TARGET_REPOS: Record<TagTarget, { get(id: string): Promise<any>; upsert(x: any): Promise<any> }> = {
+  runs: Runs, suites: Suites, plans: Plans,
+};
+const isTagTarget = (t: any): t is TagTarget => t === 'runs' || t === 'suites' || t === 'plans';
+const idList = (v: any): string[] => (Array.isArray(v) ? v.map(String) : []);
+const caseSummary = (c: any) => ({
+  id: String(c.id), title: c.title || c.name || '', tags: Array.isArray(c.tags) ? c.tags : [],
+  priority: c.priority || '', status: c.status || '',
+});
+
+// The reviewed membership of a group, as case ids. Runs store it on the row (case_ids); suites/plans
+// store it on the child cases (test_suite_ids / test_plan_ids), mirroring POST /api/suites/:id/cases.
+function acceptedCaseIds(target: TagTarget, group: any, allCases: any[]): string[] {
+  if (target === 'runs') return uniqueStrings(group.caseIds);
+  const key = target === 'suites' ? 'testSuiteIds' : 'testPlanIds';
+  const singular = target === 'suites' ? 'testSuiteId' : 'testPlanId';
+  return allCases
+    .filter((c) => idList(c[key]).includes(String(group.id)) || String(c[singular] || '') === String(group.id))
+    .map((c) => String(c.id));
+}
+
+// Materialize accepted cases into membership. Runs → union into case_ids; suites/plans → add the
+// group id to each case's link array (keeps dual singular/plural fields in sync). Returns #changed.
+async function addAcceptedCases(target: TagTarget, group: any, caseIds: string[], allCases: any[]): Promise<number> {
+  const ids = uniqueStrings(caseIds);
+  if (!ids.length) return 0;
+  if (target === 'runs') {
+    const before = idList(group.caseIds);
+    const next = uniqueStrings([...before, ...ids]);
+    if (next.length === before.length) return 0;
+    await Runs.upsert({ ...group, caseIds: next, updatedAt: new Date() });
+    return next.length - before.length;
+  }
+  const key = target === 'suites' ? 'testSuiteIds' : 'testPlanIds';
+  const singular = target === 'suites' ? 'testSuiteId' : 'testPlanId';
+  let changed = 0;
+  for (const cid of ids) {
+    const c = allCases.find((x) => String(x.id) === String(cid));
+    if (!c) continue;
+    const current = uniqueStrings([...idList(c[key]), ...(c[singular] ? [String(c[singular])] : [])]);
+    if (current.includes(String(group.id))) continue;
+    const next = uniqueStrings([...current, String(group.id)]);
+    const sing = c[singular] ? String(c[singular]) : (next[0] || '');
+    await Cases.upsert({ ...c, [singular]: sing, [key]: next, updatedAt: new Date() });
+    changed += 1;
+  }
+  return changed;
+}
+
+// Resolve a group's tag query against scoped cases and compute review-gated drift. Returns null when
+// the group is missing/out-of-scope so callers can 404 uniformly.
+async function loadGroupDrift(target: TagTarget, id: string, req: any) {
+  const scope = reqScope(req);
+  const group = await TAG_TARGET_REPOS[target].get(id);
+  if (!group || !scopeFilter([group], scope).length) return null;
+  const def = readGroupDefinition(group);
+  const allCases = scopeFilter(await Cases.list(), scope);
+  const matched = resolveTagQuery(allCases, def.tagQuery || {});
+  const accepted = acceptedCaseIds(target, group, allCases);
+  const drift = computeDrift({ matchedIds: matched.map((c: any) => String(c.id)), acceptedIds: accepted, dismissedIds: def.dismissed });
+  // Content drift: an accepted case PINNED below its current HEAD revision (a newer version exists).
+  // Unpinned accepted cases follow HEAD automatically, so they are never "outdated".
+  const caseById = new Map(allCases.map((c: any) => [String(c.id), c]));
+  const pinnedNo = new Map<string, number>();
+  for (const p of (Array.isArray(group.casePins) ? group.casePins : [])) {
+    if (p?.caseId != null && p?.revisionNo != null) pinnedNo.set(String(p.caseId), Number(p.revisionNo));
+  }
+  const outdatedPins = accepted.flatMap((cid) => {
+    const pin = pinnedNo.get(cid);
+    const c = caseById.get(cid);
+    const head = c?.currentRevision;
+    if (pin == null || head == null || Number(head) <= pin) return [];
+    return [{ caseId: cid, title: c?.title || c?.name || '', pinnedRevisionNo: pin, headRevisionNo: Number(head) }];
+  });
+  return { scope, group, def, allCases, matched, drift, outdatedPins };
+}
+
+// Shared response shape for the drift/accept/dismiss endpoints (case objects for the preview panel).
+function driftResponse(ctx: NonNullable<Awaited<ReturnType<typeof loadGroupDrift>>>) {
+  const byId = new Map(ctx.matched.map((c: any) => [String(c.id), c]));
+  const project = (ids: string[]) => ids.map((id) => byId.get(id)).filter(Boolean).map(caseSummary);
+  return {
+    tagQuery: ctx.def.tagQuery as TagQuery,
+    matchedCount: ctx.drift.matchedIds.length,
+    acceptedCount: ctx.drift.acceptedIds.length,
+    newMatchCount: ctx.drift.newMatchIds.length,
+    newMatches: project(ctx.drift.newMatchIds),
+    staleIds: ctx.drift.staleIds,
+    dismissedIds: ctx.drift.dismissedIds,
+    // Content drift — accepted cases whose pin is behind the latest version.
+    outdatedPins: ctx.outdatedPins,
+    outdatedCount: ctx.outdatedPins.length,
+  };
 }
 
 export function registerResourceRoutes(app: Express) {
@@ -316,7 +505,8 @@ export function registerResourceRoutes(app: Express) {
     }
     const folderId = String(req.body?.folderId || '').trim();
     const folder = folderId ? await Folders.get(folderId) : null;
-    if (!folder || !scopeFilter([folder], reqScope(req)).length) return res.status(400).json({ error: FOLDER_REQUIRED_ERROR });
+    if (!tagNativeOrgEnabled() && (!folder || !scopeFilter([folder], reqScope(req)).length)) return res.status(400).json({ error: FOLDER_REQUIRED_ERROR });
+    const resolvedFolderId = folder && scopeFilter([folder], reqScope(req)).length ? folderId : '';
     const name = String(req.body?.name || '').trim();
     if (!name) return res.status(400).json({ error: 'Run name is required.' });
     const status = manualRunStatus(req.body?.status);
@@ -330,7 +520,7 @@ export function registerResourceRoutes(app: Express) {
       tags: normalizeCaseTags(req.body?.tags || []),
       executionTime: String(req.body?.executionTime || ''),
       targetUrl: normalizeTargetUrl(req.body?.targetUrl || ''),
-      folderId,
+      folderId: resolvedFolderId,
       status,
       caseIds,
     });
@@ -366,7 +556,9 @@ export function registerResourceRoutes(app: Express) {
       ? run.caseIds.map((id: any) => casesById.get(String(id))).filter(Boolean)
       : allCases.filter((testCase: any) => run.agentRunId && testCase.agentRunId === run.agentRunId);
     const selectedCaseIds = new Set(String(req.query.caseIds || '').split(',').map((id) => id.trim()).filter(Boolean));
-    const evidence = collectRunEvidence(run, linkedCases)
+    // Manual runs keep evidence on per-case results; merge both sources so the ZIP is mode-agnostic.
+    const manualEvidence = run.mode === 'manual' ? collectManualResultEvidence(await RunCaseResults.listForRun(run.id)) : [];
+    const evidence = [...collectRunEvidence(run, linkedCases), ...manualEvidence]
       .filter((item) => !selectedCaseIds.size || selectedCaseIds.has(item.caseId));
     const evidenceRoot = path.resolve(process.cwd(), 'evidence');
     const files = evidence.flatMap((item, index) => {
@@ -772,8 +964,17 @@ export function registerResourceRoutes(app: Express) {
     { name: 'reports', repo: Reports },
   ];
 
+  const unlinkRunsFromPlans = async (runIds: string[]) => {
+    const deleted = new Set(runIds.map(String));
+    for (const plan of await Plans.list()) {
+      const current = Array.isArray(plan.runIds) ? plan.runIds.map(String) : [];
+      const remaining = current.filter((id: string) => !deleted.has(id));
+      if (remaining.length !== current.length) await Plans.upsert({ ...plan, runIds: remaining });
+    }
+  };
+
   for (const e of crudEntities) {
-    app.put(`/api/${e.name}/:id`, async (req, res) => {
+    app.put(`/api/${e.name}/:id`, asyncRoute(async (req, res) => {
       const existing = await e.repo.get(req.params.id);
       if (!existing) return res.status(404).json({ error: 'Not found' });
       const scheduleConflictConfirmed = req.body?.scheduleConflictConfirmed === true;
@@ -795,8 +996,10 @@ export function registerResourceRoutes(app: Express) {
       if (['plans', 'suites', 'cases', 'runs'].includes(e.name)) {
         const folderId = String(req.body?.folderId ?? existing.folderId ?? '').trim();
         const folder = folderId ? await Folders.get(folderId) : null;
-        if (!folder || !scopeFilter([folder], reqScope(req)).length) return res.status(400).json({ error: FOLDER_REQUIRED_ERROR });
-        req.body.folderId = folderId;
+        const valid = Boolean(folder && scopeFilter([folder], reqScope(req)).length);
+        // Tag-native: folder optional — keep a valid one if present, else clear; never reject.
+        if (!tagNativeOrgEnabled() && !valid) return res.status(400).json({ error: FOLDER_REQUIRED_ERROR });
+        req.body.folderId = valid ? folderId : '';
       }
       if (e.name === 'cases') {
         if ('testPlanId' in req.body && !('testPlanIds' in req.body)) req.body.testPlanIds = req.body.testPlanId ? [req.body.testPlanId] : [];
@@ -811,12 +1014,13 @@ export function registerResourceRoutes(app: Express) {
       if ('tags' in req.body) await ensureTagsInCatalog(updated.tags, reqScope(req));
       logActivity(req, `Updated ${e.name.slice(0, -1)}: ${updated.name || updated.title}`);
       res.json({ success: true });
-    });
+    }));
 
     app.delete(`/api/${e.name}/:id`, async (req, res) => {
       const existing = await e.repo.get(req.params.id);
       if (!existing) return res.status(404).json({ error: 'Not found' });
       await e.repo.remove(req.params.id);
+      if (e.name === 'runs') await unlinkRunsFromPlans([req.params.id]);
       if (!isPgEnabled()) persistDataInBackground(`${e.name} delete`);
       logActivity(req, `Deleted ${e.name.slice(0, -1)}: ${existing.name || existing.title}`);
       res.json({ success: true });
@@ -826,12 +1030,15 @@ export function registerResourceRoutes(app: Express) {
       const ids: string[] = Array.isArray(req.body?.ids) ? req.body.ids.map(String) : [];
       if (!ids.length) return res.status(400).json({ error: 'ids array is required' });
       let deleted = 0;
+      const deletedIds: string[] = [];
       for (const id of ids) {
         const existing = await e.repo.get(id);
         if (!existing) continue;
         await e.repo.remove(id);
+        deletedIds.push(id);
         deleted += 1;
       }
+      if (e.name === 'runs') await unlinkRunsFromPlans(deletedIds);
       if (!isPgEnabled()) persistDataInBackground(`${e.name} bulk delete`);
       logActivity(req, `Deleted ${deleted} ${e.name}`);
       res.json({ success: true, deleted });
@@ -853,6 +1060,39 @@ export function registerResourceRoutes(app: Express) {
     if (!updated) return res.status(404).json({ error: 'Case or revision not found.' });
     logActivity(req, `Rolled back case: ${updated.title}`, { type: 'case', entityId: updated.id });
     res.json({ success: true, case: updated });
+  });
+
+  // Diff two case revisions by NUMBER — returns both frozen snapshots; the client renders the diff.
+  app.get('/api/cases/:id/revisions/:a/diff/:b', async (req, res) => {
+    const a = await CaseRevisions.getByNo(req.params.id, Number(req.params.a));
+    const b = await CaseRevisions.getByNo(req.params.id, Number(req.params.b));
+    if (!a || !b) return res.status(404).json({ error: 'Revision not found.' });
+    res.json({ a, b });
+  });
+
+  /* ---------- Script Versioning — revision history + rollback + diff (Phase C1) ---------- */
+  // Full append-only history for a script, newest first. Empty array when CASE_VERSIONING is off.
+  app.get('/api/scripts/:id/revisions', async (req, res) => {
+    const existing = await Scripts.get(req.params.id);
+    if (!existing) return res.status(404).json({ error: 'Not found' });
+    const revisions = await ScriptRevisions.list(req.params.id);
+    res.json({ revisions, currentRevision: existing.currentRevision ?? null });
+  });
+
+  // Roll the script's HEAD back to a prior revision. Writes a NEW rollback revision (history stays immutable).
+  app.post('/api/scripts/:id/rollback/:revisionId', async (req, res) => {
+    const updated = await ScriptRevisions.rollback(req.params.id, req.params.revisionId);
+    if (!updated) return res.status(404).json({ error: 'Script or revision not found.' });
+    logActivity(req, `Rolled back script: ${updated.name}`, { type: 'script', entityId: updated.id });
+    res.json({ success: true, script: updated });
+  });
+
+  // Diff two script revisions by NUMBER — returns both frozen snapshots; the client renders the diff.
+  app.get('/api/scripts/:id/revisions/:a/diff/:b', async (req, res) => {
+    const a = await ScriptRevisions.getByNo(req.params.id, Number(req.params.a));
+    const b = await ScriptRevisions.getByNo(req.params.id, Number(req.params.b));
+    if (!a || !b) return res.status(404).json({ error: 'Revision not found.' });
+    res.json({ a, b });
   });
 
   /* ---------- Release pinning — freeze a case to a revision within a release/plan (Phase A3) ---------- */
@@ -884,7 +1124,7 @@ export function registerResourceRoutes(app: Express) {
   });
 
   /* ---------- POST /api/reports (special: processed steps) ---------- */
-  app.post('/api/reports', async (req, res) => {
+  app.post('/api/reports', asyncRoute(async (req, res) => {
     const r = req.body;
     const name = r.name || 'New Execution Report';
     const reportId = `REP-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
@@ -925,10 +1165,10 @@ export function registerResourceRoutes(app: Express) {
     if (!isPgEnabled()) persistDataInBackground('report');
     logActivity(req, `Logged Test Report: ${name}`);
     res.json({ success: true, report: newReport });
-  });
+  }));
 
   /* ---------- POST /api/plans ---------- */
-  app.post('/api/plans', requireRepositoryFolder, async (req, res) => {
+  app.post('/api/plans', requireRepositoryFolder, asyncRoute(async (req, res) => {
     const p = req.body;
     const parentPlanId = String(p.parentPlanId || '').trim();
     const parentError = await parentPlanValidationError(parentPlanId, '', req);
@@ -958,6 +1198,7 @@ export function registerResourceRoutes(app: Express) {
       riskLevel: p.riskLevel || 'Medium',
       parentPlanId,
       folderId: p.folderId || '',
+      definition: p.definition || {},
       createdAt: new Date(),
     };
     const savedPlan = await Plans.upsert(newPlan);
@@ -965,10 +1206,10 @@ export function registerResourceRoutes(app: Express) {
     await ensureTagsInCatalog(newPlan.tags, reqScope(req));
     logActivity(req, `Created Plan: ${savedPlan.name}`, { type: 'plan', entityId: savedPlan.id });
     res.json({ success: true, id: savedPlan.id, plan: savedPlan });
-  });
+  }));
 
   /* ---------- POST /api/suites ---------- */
-  app.post('/api/suites', requireRepositoryFolder, async (req, res) => {
+  app.post('/api/suites', requireRepositoryFolder, asyncRoute(async (req, res) => {
     const s = req.body;
     const newSuite = {
       ...scopeStamp(reqScope(req)),
@@ -984,6 +1225,8 @@ export function registerResourceRoutes(app: Express) {
       status: s.status || 'Active',
       folderId: s.folderId || '',
       tags: normalizeCaseTags(s.tags || []),
+      definition: s.definition || {},
+      casePins: s.casePins || [],
       riskLevel: s.riskLevel || 'Low',
       createdBy: 'User',
       createdAt: new Date(),
@@ -993,7 +1236,7 @@ export function registerResourceRoutes(app: Express) {
     await ensureTagsInCatalog(newSuite.tags, reqScope(req));
     logActivity(req, `Created Suite: ${savedSuite.name}`, { type: 'suite', entityId: savedSuite.id });
     res.json({ success: true, id: savedSuite.id, suite: savedSuite });
-  });
+  }));
 
   /* ---------- POST /api/suites/:id/cases — bulk link/unlink cases to a suite ---------- */
   // One call to add/remove many cases from a suite, instead of N per-case PUTs. Keeps the
@@ -1006,7 +1249,13 @@ export function registerResourceRoutes(app: Express) {
     const suiteId = suite.id;
     const add = uniqueStrings(Array.isArray(req.body?.add) ? req.body.add.map(String) : []);
     const remove = uniqueStrings(Array.isArray(req.body?.remove) ? req.body.remove.map(String) : []);
-    if (!add.length && !remove.length) return res.status(400).json({ error: 'Provide case ids to add or remove.' });
+    // Optional: persist the tag query the suite was composed with, so future matching cases surface
+    // as review-gated drift on the suite (definition.tagQuery). Membership itself stays the accepted set.
+    const hasTagQuery = req.body?.tagQuery && typeof req.body.tagQuery === 'object';
+    if (hasTagQuery) {
+      await Suites.upsert({ ...suite, definition: { ...(suite.definition || {}), tagQuery: req.body.tagQuery }, updatedAt: new Date() });
+    }
+    if (!add.length && !remove.length && !hasTagQuery) return res.status(400).json({ error: 'Provide case ids to add or remove.' });
 
     let changed = 0;
     for (const caseId of [...add, ...remove]) {
@@ -1030,8 +1279,92 @@ export function registerResourceRoutes(app: Express) {
     res.json({ success: true, changed });
   });
 
+  /* ---------- Tag-native composition: drift / accept / dismiss (Phase A1) ---------- */
+  // GET the review-gated drift for a tag-defined run/suite/plan: what the query matches now, what is
+  // already accepted, and the NEW matches the user should review (the notification-dot payload).
+  app.get('/api/:target/:id/tag-drift', async (req, res) => {
+    const target = req.params.target;
+    if (!isTagTarget(target)) return res.status(404).json({ error: 'Unknown target.' });
+    const ctx = await loadGroupDrift(target, req.params.id, req);
+    if (!ctx) return res.status(404).json({ error: `${target.slice(0, -1)} not found.` });
+    res.json(driftResponse(ctx));
+  });
+
+  // Accept tag-matched cases into the group's membership (the "add to this group" choice). With no
+  // body, accepts ALL current new matches; otherwise only the given ids that still match (safety).
+  app.post('/api/:target/:id/tag-accept', async (req, res) => {
+    const target = req.params.target;
+    if (!isTagTarget(target)) return res.status(404).json({ error: 'Unknown target.' });
+    const ctx = await loadGroupDrift(target, req.params.id, req);
+    if (!ctx) return res.status(404).json({ error: `${target.slice(0, -1)} not found.` });
+    const requested = uniqueStrings(Array.isArray(req.body?.caseIds) ? req.body.caseIds.map(String) : []);
+    const acceptable = requested.length ? requested.filter((id) => ctx.drift.matchedIds.includes(id)) : ctx.drift.newMatchIds;
+    const changed = await addAcceptedCases(target, ctx.group, acceptable, ctx.allCases);
+    // A manual run shows one result row per case; accepting new cases must seed their rows too,
+    // otherwise they join caseIds but never appear as test points in the runner.
+    if (target === 'runs' && ctx.group.mode === 'manual' && acceptable.length) {
+      const toSeed = ctx.allCases.filter((c: any) => acceptable.includes(String(c.id)));
+      if (toSeed.length) await seedManualResults(ctx.group, toSeed);
+    }
+    if (!isPgEnabled()) persistDataInBackground('tag-accept');
+    logActivity(req, `Accepted ${changed} tag-matched case(s) into ${target.slice(0, -1)}: ${ctx.group.name}`, { type: target.slice(0, -1), entityId: ctx.group.id });
+    const after = await loadGroupDrift(target, req.params.id, req);
+    res.json({ success: true, changed, ...(after ? driftResponse(after) : {}) });
+  });
+
+  // Dismiss tag-matched cases so they stop resurfacing as drift (the "ignore" choice). Recorded on
+  // definition.dismissed; execution is unaffected (dismissed cases were never in the accepted set).
+  app.post('/api/:target/:id/tag-dismiss', async (req, res) => {
+    const target = req.params.target;
+    if (!isTagTarget(target)) return res.status(404).json({ error: 'Unknown target.' });
+    const ctx = await loadGroupDrift(target, req.params.id, req);
+    if (!ctx) return res.status(404).json({ error: `${target.slice(0, -1)} not found.` });
+    const add = uniqueStrings(Array.isArray(req.body?.caseIds) ? req.body.caseIds.map(String) : []);
+    const dismissed = uniqueStrings([...(ctx.def.dismissed || []), ...add]);
+    await TAG_TARGET_REPOS[target].upsert({ ...ctx.group, definition: { ...(ctx.group.definition || {}), tagQuery: ctx.def.tagQuery, dismissed }, updatedAt: new Date() });
+    if (!isPgEnabled()) persistDataInBackground('tag-dismiss');
+    const after = await loadGroupDrift(target, req.params.id, req);
+    res.json({ success: true, ...(after ? driftResponse(after) : {}) });
+  });
+
+  // Pin a case in a run/suite to a specific version (@vN), or clear the pin to follow latest. Stored
+  // in case_pins as {caseId, revisionNo, revisionId} (immutable id = truth; number = display). Manual
+  // runs seed the pinned revision's steps; the pin also records which version this group intends.
+  app.post('/api/:target/:id/case-pin', async (req, res) => {
+    const target = req.params.target;
+    if (!isTagTarget(target)) return res.status(404).json({ error: 'Unknown target.' });
+    const scope = reqScope(req);
+    const repo = TAG_TARGET_REPOS[target];
+    const group = await repo.get(req.params.id);
+    if (!group || !scopeFilter([group], scope).length) return res.status(404).json({ error: `${target.slice(0, -1)} not found.` });
+    const caseId = String(req.body?.caseId || '');
+    if (!caseId) return res.status(400).json({ error: 'caseId is required.' });
+    const clear = req.body?.revisionNo == null;
+    let revisionId = '';
+    let revisionNo = 0;
+    if (!clear) {
+      revisionNo = Number(req.body.revisionNo);
+      if (!Number.isInteger(revisionNo)) return res.status(400).json({ error: 'revisionNo must be an integer.' });
+      const rev = await CaseRevisions.getByNo(caseId, revisionNo);
+      if (!rev) return res.status(404).json({ error: `Revision v${revisionNo} not found for ${caseId}.` });
+      revisionId = rev.revisionId || rev.revision_id || '';
+    }
+    const pins = (Array.isArray(group.casePins) ? group.casePins : []).filter((p: any) => String(p?.caseId) !== caseId);
+    if (!clear) pins.push({ caseId, revisionNo, revisionId });
+    const savedGroup = await repo.upsert({ ...group, casePins: pins, updatedAt: new Date() });
+    // For a manual run that hasn't started, re-seed this case so the pin takes effect immediately
+    // (its step_results become the pinned version's steps). Automated runs execute compiled scripts,
+    // so a pin there records intent only until per-case script-revision execution lands.
+    if (target === 'runs' && savedGroup.mode === 'manual' && String(savedGroup.status || '') === 'Not Started') {
+      const testCase = await Cases.get(caseId);
+      if (testCase && scopeFilter([testCase], scope).length) await seedManualResults(savedGroup, [testCase]);
+    }
+    if (!isPgEnabled()) persistDataInBackground('case-pin');
+    res.json({ success: true, casePins: pins });
+  });
+
   /* ---------- POST /api/cases ---------- */
-  app.post('/api/cases', requireRepositoryFolder, async (req, res) => {
+  app.post('/api/cases', requireRepositoryFolder, asyncRoute(async (req, res) => {
     const c = req.body;
     const typeFields = testCaseTypeFields(c.testingTypes, c.testingType);
     const newCase = {
@@ -1062,7 +1395,7 @@ export function registerResourceRoutes(app: Express) {
     logActivity(req, `Created Case: ${savedCase.title}`, { type: 'case', entityId: savedCase.id });
     // Return the generated id so clients (e.g. GeneratedCases save-fallback) can adopt it.
     res.json({ success: true, id: savedCase.id });
-  });
+  }));
 
   /* ---------- POST /api/cases/ai-action ---------- */
   app.post('/api/cases/ai-action', async (req, res) => {
@@ -1179,7 +1512,7 @@ Rules:
   });
 
   /* ---------- POST /api/runs/from-selection ---------- */
-  app.post('/api/runs/from-selection', async (req, res) => {
+  app.post('/api/runs/from-selection', asyncRoute(async (req, res) => {
     const scope = reqScope(req);
     const selectedPlanIds = uniqueStrings(req.body?.planIds);
     const selectedSuiteIds = uniqueStrings(req.body?.suiteIds);
@@ -1234,13 +1567,20 @@ Rules:
     const targetUrl = normalizeTargetUrl(req.body?.targetUrl || findSettingsPlaywrightTargetUrl() || '');
     const selectedPlans = plans.filter((plan: any) => planIds.has(plan.id));
     const selectedSuites = suites.filter((suite: any) => suiteIds.has(suite.id));
+    // Inherit version pins from the source plan(s)/suite(s) so the run honors the container's chosen
+    // @vN per case (suite pin wins over plan pin as the more specific container). Only for run members.
+    const inheritedPins = new Map<string, any>();
+    for (const p of selectedPlans) for (const pin of (Array.isArray(p.casePins) ? p.casePins : [])) if (pin?.caseId) inheritedPins.set(String(pin.caseId), pin);
+    for (const s of selectedSuites) for (const pin of (Array.isArray(s.casePins) ? s.casePins : [])) if (pin?.caseId) inheritedPins.set(String(pin.caseId), pin);
+    const inheritedCasePins = [...inheritedPins.values()].filter((pin) => caseIds.has(String(pin.caseId)));
     const folderId = req.body?.folderId
       || selectedCases.find((testCase: any) => testCase.folderId)?.folderId
       || selectedSuites.find((suite: any) => suite.folderId)?.folderId
       || selectedPlans.find((plan: any) => plan.folderId)?.folderId
       || '';
     const folder = folderId ? await Folders.get(folderId) : null;
-    if (!folder || !scopeFilter([folder], scope).length) {
+    const folderValid = Boolean(folder && scopeFilter([folder], scope).length);
+    if (!tagNativeOrgEnabled() && !folderValid) {
       return res.status(400).json({ error: FOLDER_REQUIRED_ERROR });
     }
 
@@ -1284,10 +1624,13 @@ Rules:
 
     const status = manualRunStatus(req.body?.status);
     if (!status) return res.status(400).json({ error: 'Select a supported test-run status.' });
+    const runMode = manualRunnerEnabled() && String(req.body?.mode || '').toLowerCase() === 'manual' ? 'manual' : 'automated';
     const newRun = {
       ...scopeStamp(scope),
       id: runId,
       name,
+      mode: runMode,
+      definition: req.body?.definition || {},
       suiteName,
       // Prefer an explicitly-chosen plan; else fall back to the first plan resolved from the selection.
       testPlanId: req.body?.testPlanId || Array.from(planIds)[0] || '',
@@ -1306,10 +1649,11 @@ Rules:
       passed,
       failed,
       targetUrl,
-      folderId,
+      folderId: folderValid ? folderId : '',
       testCaseId: selectedCases.length === 1 ? selectedCases[0].id : '',
       testCaseTitle: selectedCases.length === 1 ? selectedCases[0].title || '' : '',
       caseIds: selectedCases.map((testCase: any) => testCase.id),
+      casePins: (Array.isArray(req.body?.casePins) && req.body.casePins.length) ? req.body.casePins : inheritedCasePins,
       suiteIds: Array.from(suiteIds),
       planIds: Array.from(planIds),
       captureEvidence: Boolean(targetUrl),
@@ -1317,13 +1661,14 @@ Rules:
       steps,
     };
     await Runs.upsert(newRun);
+    if (runMode === 'manual') await seedManualResults(newRun, selectedCases);
     if (!isPgEnabled()) persistDataInBackground('selection run');
-    logActivity(req, `Created manual run: ${name}`, { type: 'run', entityId: newRun.id });
+    logActivity(req, `Created ${runMode} run: ${name}`, { type: 'run', entityId: newRun.id });
     res.json({ success: true, run: newRun });
-  });
+  }));
 
   /* ---------- POST /api/runs ---------- */
-  app.post('/api/runs', requireRepositoryFolder, async (req, res) => {
+  app.post('/api/runs', requireRepositoryFolder, asyncRoute(async (req, res) => {
     const name = req.body.name || 'New Run';
     const runId = `RUN-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
     const targetUrl = normalizeTargetUrl(req.body.targetUrl || findSettingsPlaywrightTargetUrl() || '');
@@ -1351,10 +1696,13 @@ Rules:
 
     const status = manualRunStatus(req.body?.status);
     if (!status) return res.status(400).json({ error: 'Select a supported test-run status.' });
+    const runMode = manualRunnerEnabled() && String(req.body?.mode || '').toLowerCase() === 'manual' ? 'manual' : 'automated';
     const newRun = {
       ...scopeStamp(reqScope(req)),
       id: runId,
       name,
+      mode: runMode,
+      definition: req.body?.definition || {},
       suiteName: req.body.suiteName || 'Playwright Verification Suite',
       // Map the run to an existing Test Plan (and suite) instead of just a free-text suite name.
       testPlanId: req.body.testPlanId || '',
@@ -1376,19 +1724,253 @@ Rules:
       testCaseId: selectedCase?.id || '',
       testCaseTitle: selectedCase?.title || '',
       caseIds: Array.isArray(req.body.caseIds) && req.body.caseIds.length ? req.body.caseIds : (selectedCase?.id ? [selectedCase.id] : []),
+      casePins: req.body?.casePins || [],
       captureEvidence: shouldCaptureCaseEvidence,
       ...pinRunWebsite(targetUrl, reqScope(req).userId),
       steps,
     };
     await Runs.upsert(newRun);
+    if (runMode === 'manual') {
+      const ids = newRun.caseIds || [];
+      const seedCases = ids.length
+        ? (await Cases.list()).filter((c: any) => ids.includes(c.id))
+        : (selectedCase ? [selectedCase] : []);
+      if (seedCases.length) {
+        await seedManualResults(newRun, seedCases);
+      } else {
+        // Case-less manual run: one result row keyed to the run itself, seeded with the
+        // Configuration/Priority + any Step/Action/Expected rows authored in the create form.
+        const authored = Array.isArray(req.body?.steps) ? req.body.steps : [];
+        const seededSteps = authored
+          .map((s: any) => ({
+            action: String(s?.action || ''), expected: String(s?.expected || ''), actual: '', outcome: 'Not Run', comment: '',
+            // captureEvidence (default true) gates whether the tester may attach a screenshot during the run.
+            captureEvidence: s?.captureEvidence !== false,
+            screenshots: [] as string[],
+          }))
+          .filter((s: any) => s.action || s.expected);
+        await RunCaseResults.upsert({
+          runId: newRun.id, caseId: newRun.id, caseTitle: newRun.name, outcome: 'Not Run',
+          configuration: String(req.body?.configuration || ''), priority: String(req.body?.priority || ''),
+          runBy: newRun.assignedTo || newRun.requestedBy || '', stepResults: seededSteps,
+        });
+      }
+    }
     if (!isPgEnabled()) persistDataInBackground('run');
     await ensureTagsInCatalog(newRun.tags, reqScope(req));
-    logActivity(req, `Created manual run: ${name}`, { type: 'run', entityId: runId });
+    logActivity(req, `Created ${runMode} run: ${name}`, { type: 'run', entityId: runId });
     res.json({ success: true, run: newRun });
+  }));
+
+  /* ---------- Manual step runner — per-case/per-step results (Phase B1) ---------- */
+  // Results for a manual run (test points + step results). Also returns the run for the summary panel.
+  app.get('/api/runs/:id/results', async (req, res) => {
+    const run = await Runs.get(req.params.id);
+    if (!run || !scopeFilter([run], reqScope(req)).length) return res.status(404).json({ error: 'Run not found.' });
+    res.json({ run, results: await RunCaseResults.listForRun(run.id) });
+  });
+
+  // Start a MANUAL run — begins the run (stamps the start clock, status → In Progress) with NO scripts
+  // required. The tester then records per-step outcomes/evidence by hand.
+  app.post('/api/runs/:id/start', async (req, res) => {
+    const run = await Runs.get(req.params.id);
+    if (!run || !scopeFilter([run], reqScope(req)).length) return res.status(404).json({ error: 'Run not found.' });
+    const now = new Date().toISOString();
+    const results = await RunCaseResults.listForRun(run.id);
+    for (const r of results) if (!r.startedAt) await RunCaseResults.upsert({ ...r, startedAt: now });
+    const started = { ...run, status: 'In Progress', state: 'In Progress', startedAt: run.startedAt || now, completedAt: null, progress: 'Run in progress' };
+    await Runs.upsert(started);
+    if (!isPgEnabled()) persistDataInBackground('manual start');
+    logActivity(req, `Started manual run: ${run.name}`, { type: 'run', entityId: run.id });
+    res.json({ success: true, run: started });
+  });
+
+  // Stop/finish a MANUAL run — freezes the duration clock and marks it Completed (keeping the rolled-up
+  // pass/fail status when the run was fully evaluated).
+  app.post('/api/runs/:id/stop', async (req, res) => {
+    const run = await Runs.get(req.params.id);
+    if (!run || !scopeFilter([run], reqScope(req)).length) return res.status(404).json({ error: 'Run not found.' });
+    const now = new Date().toISOString();
+    const results = await RunCaseResults.listForRun(run.id);
+    for (const r of results) if (r.startedAt && !r.completedAt) await RunCaseResults.upsert({ ...r, completedAt: now });
+    const rolled = applyRunRollup(run, await RunCaseResults.listForRun(run.id));
+    const status = rolled.status === 'In Progress' || rolled.status === 'Not Started' ? 'Completed' : rolled.status;
+    const stopped = { ...rolled, state: 'Completed', status, completedAt: now, progress: 'Run completed' };
+    await Runs.upsert(stopped);
+    if (!isPgEnabled()) persistDataInBackground('manual stop');
+    logActivity(req, `Stopped manual run: ${run.name}`, { type: 'run', entityId: run.id });
+    res.json({ success: true, run: stopped });
+  });
+
+  // Bulk-set the case outcome across many cases (the "Pass all" / "Mark Blocked" toolbar).
+  // MUST be registered before the /results/:caseId route so "bulk" isn't captured as a caseId.
+  app.post('/api/runs/:id/results/bulk', async (req, res) => {
+    const run = await Runs.get(req.params.id);
+    if (!run || !scopeFilter([run], reqScope(req)).length) return res.status(404).json({ error: 'Run not found.' });
+    const outcome = String(req.body?.outcome || '');
+    if (!isManualOutcome(outcome)) return res.status(400).json({ error: 'Unsupported outcome.' });
+    const caseIds = uniqueStrings(req.body?.caseIds);
+    const targets = caseIds.length ? caseIds : (await RunCaseResults.listForRun(run.id)).map((r: any) => r.caseId);
+    const now = new Date().toISOString();
+    for (const caseId of targets) {
+      const existing = await RunCaseResults.get(run.id, caseId);
+      if (!existing) continue;
+      await RunCaseResults.upsert({
+        ...existing,
+        outcome,
+        startedAt: existing.startedAt || (outcome !== 'Not Run' ? now : null),
+        completedAt: outcome !== 'Not Run' && outcome !== 'Paused' ? now : existing.completedAt,
+      });
+    }
+    const rolled = applyRunRollup(run, await RunCaseResults.listForRun(run.id));
+    await Runs.upsert(rolled);
+    if (!isPgEnabled()) persistDataInBackground('manual bulk');
+    res.json({ success: true, run: rolled, results: await RunCaseResults.listForRun(run.id) });
+  });
+
+  // Set case-level fields (outcome/comment/analysis/config/priority) and re-roll the run aggregate.
+  app.post('/api/runs/:id/results/:caseId', async (req, res) => {
+    const run = await Runs.get(req.params.id);
+    if (!run || !scopeFilter([run], reqScope(req)).length) return res.status(404).json({ error: 'Run not found.' });
+    const existing = await RunCaseResults.get(run.id, req.params.caseId);
+    if (!existing) return res.status(404).json({ error: 'That case is not part of this run.' });
+    if ('outcome' in req.body && !isManualOutcome(req.body.outcome)) return res.status(400).json({ error: 'Unsupported outcome.' });
+    const patch: any = {};
+    for (const f of ['outcome', 'comment', 'runBy', 'analysisOwner', 'analysisNote', 'configuration', 'priority']) {
+      if (f in req.body) patch[f] = String(req.body[f] ?? '');
+    }
+    if (patch.outcome && patch.outcome !== 'Not Run' && !existing.startedAt) patch.startedAt = new Date().toISOString();
+    if (patch.outcome && patch.outcome !== 'Not Run' && patch.outcome !== 'Paused') patch.completedAt = new Date().toISOString();
+    const saved = await RunCaseResults.upsert({ ...existing, ...patch });
+    const rolled = applyRunRollup(run, await RunCaseResults.listForRun(run.id));
+    await Runs.upsert(rolled);
+    if (!isPgEnabled()) persistDataInBackground('manual result');
+    res.json({ success: true, result: saved, run: rolled });
+  });
+
+  // Set a single step's outcome/actual/comment; auto-rolls the case outcome, then the run aggregate.
+  app.post('/api/runs/:id/results/:caseId/steps/:index', async (req, res) => {
+    const run = await Runs.get(req.params.id);
+    if (!run || !scopeFilter([run], reqScope(req)).length) return res.status(404).json({ error: 'Run not found.' });
+    const existing = await RunCaseResults.get(run.id, req.params.caseId);
+    if (!existing) return res.status(404).json({ error: 'That case is not part of this run.' });
+    const idx = Number(req.params.index);
+    const steps = Array.isArray(existing.stepResults) ? [...existing.stepResults] : [];
+    if (!Number.isInteger(idx) || idx < 0 || idx >= steps.length) return res.status(400).json({ error: 'Step index out of range.' });
+    if ('outcome' in req.body && !isManualOutcome(req.body.outcome)) return res.status(400).json({ error: 'Unsupported outcome.' });
+    const step = { ...steps[idx] };
+    if ('outcome' in req.body) step.outcome = String(req.body.outcome);
+    if ('action' in req.body) step.action = String(req.body.action ?? '');       // authoring the step text
+    if ('expected' in req.body) step.expected = String(req.body.expected ?? '');  // authoring the step text
+    if ('actual' in req.body) step.actual = String(req.body.actual ?? '');
+    if ('comment' in req.body) step.comment = String(req.body.comment ?? '');
+    if ('captureEvidence' in req.body) step.captureEvidence = req.body.captureEvidence !== false; // attachment on/off
+    steps[idx] = step;
+    const outcome = rollupCaseOutcome(steps);
+    // Timing is stamped only when an OUTCOME is recorded (execution), not when authoring action/expected text.
+    const touchedOutcome = 'outcome' in req.body;
+    const saved = await RunCaseResults.upsert({
+      ...existing,
+      stepResults: steps,
+      outcome,
+      startedAt: existing.startedAt || (touchedOutcome ? new Date().toISOString() : existing.startedAt),
+      completedAt: touchedOutcome && outcome !== 'Not Run' && outcome !== 'Paused' ? new Date().toISOString() : existing.completedAt,
+    });
+    const rolled = applyRunRollup(run, await RunCaseResults.listForRun(run.id));
+    await Runs.upsert(rolled);
+    if (!isPgEnabled()) persistDataInBackground('manual step');
+    res.json({ success: true, result: saved, run: rolled });
+  });
+
+  // Append a newly-authored step (Action + Expected) to a manual run's step list.
+  app.post('/api/runs/:id/results/:caseId/steps', async (req, res) => {
+    const run = await Runs.get(req.params.id);
+    if (!run || !scopeFilter([run], reqScope(req)).length) return res.status(404).json({ error: 'Run not found.' });
+    const existing = await RunCaseResults.get(run.id, req.params.caseId);
+    if (!existing) return res.status(404).json({ error: 'That case is not part of this run.' });
+    const steps = Array.isArray(existing.stepResults) ? [...existing.stepResults] : [];
+    steps.push({ action: String(req.body?.action || ''), expected: String(req.body?.expected || ''), actual: '', outcome: 'Not Run', comment: '', captureEvidence: req.body?.captureEvidence !== false, screenshots: [] });
+    const saved = await RunCaseResults.upsert({ ...existing, stepResults: steps, outcome: rollupCaseOutcome(steps) });
+    if (!isPgEnabled()) persistDataInBackground('manual step add');
+    res.json({ success: true, result: saved });
+  });
+
+  // Delete an authored step by index.
+  app.delete('/api/runs/:id/results/:caseId/steps/:index', async (req, res) => {
+    const run = await Runs.get(req.params.id);
+    if (!run || !scopeFilter([run], reqScope(req)).length) return res.status(404).json({ error: 'Run not found.' });
+    const existing = await RunCaseResults.get(run.id, req.params.caseId);
+    if (!existing) return res.status(404).json({ error: 'That case is not part of this run.' });
+    const idx = Number(req.params.index);
+    const steps = Array.isArray(existing.stepResults) ? [...existing.stepResults] : [];
+    if (!Number.isInteger(idx) || idx < 0 || idx >= steps.length) return res.status(400).json({ error: 'Step index out of range.' });
+    steps.splice(idx, 1);
+    const saved = await RunCaseResults.upsert({ ...existing, stepResults: steps, outcome: rollupCaseOutcome(steps) });
+    const rolled = applyRunRollup(run, await RunCaseResults.listForRun(run.id));
+    await Runs.upsert(rolled);
+    if (!isPgEnabled()) persistDataInBackground('manual step delete');
+    res.json({ success: true, result: saved, run: rolled });
+  });
+
+  // Attach a tester screenshot (base64/data URL) to a step; stored in the shared /evidence pipeline.
+  app.post('/api/runs/:id/results/:caseId/attachments', async (req, res) => {
+    const run = await Runs.get(req.params.id);
+    if (!run || !scopeFilter([run], reqScope(req)).length) return res.status(404).json({ error: 'Run not found.' });
+    const existing = await RunCaseResults.get(run.id, req.params.caseId);
+    if (!existing) return res.status(404).json({ error: 'That case is not part of this run.' });
+    const url = saveEvidenceImage(req.body?.dataUrl || '', run.id);
+    if (!url) return res.status(400).json({ error: 'A base64 image data URL is required.' });
+    const idx = Number(req.body?.stepIndex);
+    const steps = Array.isArray(existing.stepResults) ? [...existing.stepResults] : [];
+    if (Number.isInteger(idx) && idx >= 0 && idx < steps.length) {
+      steps[idx] = { ...steps[idx], screenshots: [...(steps[idx].screenshots || []), url] };
+    }
+    const saved = await RunCaseResults.upsert({ ...existing, stepResults: steps });
+    if (!isPgEnabled()) persistDataInBackground('manual attachment');
+    res.json({ success: true, url, result: saved });
+  });
+
+  // Create a defect prefilled from a failed case result (the "Create bug" action).
+  app.post('/api/runs/:id/results/:caseId/bug', async (req, res) => {
+    try {
+      const run = await Runs.get(req.params.id);
+      if (!run || !scopeFilter([run], reqScope(req)).length) return res.status(404).json({ error: 'Run not found.' });
+      const result = await RunCaseResults.get(run.id, req.params.caseId);
+      if (!result) return res.status(404).json({ error: 'That case is not part of this run.' });
+      const steps = Array.isArray(result.stepResults) ? result.stepResults : [];
+      const failed = steps.filter((s: any) => /fail|block/i.test(String(s?.outcome || '')));
+      const reproduce = steps.map((s: any, i: number) => `${i + 1}. ${s.action}`).join('\n');
+      const evidence = steps.flatMap((s: any) => (Array.isArray(s.screenshots) ? s.screenshots : [])).map((url: string) => ({ url }));
+      const id = `DEF-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
+      // A case-less manual run uses run.id as the result key; that is NOT a real case, so leave
+      // linked_case_id null (it FKs cases.id) and only link a genuine case. linked_run_id keeps the tie.
+      const linkedCaseId = result.caseId && result.caseId !== run.id ? result.caseId : null;
+      const defect = await Defects.upsert({
+        ...scopeStamp(reqScope(req)),
+        id,
+        title: String(req.body?.title || `${result.caseTitle || result.caseId} failed`),
+        description: String(req.body?.description || result.comment || ''),
+        stepsToReproduce: reproduce,
+        expected: (failed[0]?.expected) || '',
+        actual: (failed[0]?.actual) || result.comment || '',
+        severity: String(req.body?.severity || 'Medium'),
+        status: 'New',
+        linkedCaseId,
+        linkedRunId: run.id,
+        evidence,
+        folderId: run.folderId || null,
+        sourceRunId: run.id,
+      });
+      logActivity(req, `Filed bug from manual run: ${defect.title}`, { type: 'defect', entityId: id });
+      res.json({ success: true, defect });
+    } catch (error: any) {
+      console.error('[runs] create-bug failed:', error?.message || error);
+      res.status(500).json({ error: 'Failed to create the bug.' });
+    }
   });
 
   /* ---------- POST /api/defects ---------- */
-  app.post('/api/defects', async (req, res) => {
+  app.post('/api/defects', asyncRoute(async (req, res) => {
     const title = req.body.title || 'New Defect';
     const newDefect = {
       ...scopeStamp(reqScope(req)),
@@ -1402,7 +1984,7 @@ Rules:
     if (!isPgEnabled()) persistDataInBackground('defect');
     logActivity(req, `Logged Defect: ${title}`, { type: 'defect', entityId: newDefect.id, meta: { severity: newDefect.severity } });
     res.json({ success: true });
-  });
+  }));
 
   /* ---------- unused import suppression (referenced only for type docs) ---------- */
   void db;

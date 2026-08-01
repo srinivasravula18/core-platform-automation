@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, ChevronDown, ChevronRight, CornerDownRight, Search, Filter, Pencil, Plus, Sparkles, Trash2, PlayCircle, Loader2, Rocket } from 'lucide-react';
+import { ArrowLeft, ChevronDown, ChevronRight, CornerDownRight, Search, Filter, Pencil, Plus, Sparkles, Trash2, PlayCircle, Loader2, Rocket, X } from 'lucide-react';
 import { Timestamp, actorName } from '@/src/components/Timestamp';
 import { TimeSortSelect } from '@/src/components/filters/TimeSortSelect';
 import { TimeRangeFilter, passesTimeFilter, type TimeFilterValue } from '@/src/components/filters/TimeRangeFilter';
@@ -11,12 +11,14 @@ import { useBulkDelete } from '@/src/lib/useBulkDelete';
 import { startSelectedRun } from '@/src/lib/startSelectedRun';
 import { cn } from '@/src/lib/utils';
 import { Modal } from '@/src/components/Modal';
+import { RequiredMark } from '@/src/components/RequiredMark';
 import { AIActionModal } from '@/src/components/AIActionModal';
-import { FolderSelect } from '@/src/components/FolderSelect';
-import { FolderBadge } from '@/src/components/FolderBadge';
 import { MultiSelectDropdown } from '@/src/components/MultiSelectDropdown';
 import { EntityLinker } from '@/src/components/EntityLinker';
+import { TagDriftBanner } from '@/src/components/TagDriftBanner';
+import { VersionPinSelect } from '@/src/components/VersionPinSelect';
 import { TagEditor } from '@/src/components/TagEditor';
+import type { TagQuery } from '@/src/lib/entityLinking';
 import { showAlert, showConfirm } from '@/src/lib/dialog';
 import { can } from '@/src/components/AuthGate';
 import { caseBelongsToSuite, casePlanIds, casePlanMembershipUpdate, caseSuiteIds, suitePlanIds, suitePlanMembershipUpdate } from '@/src/lib/suiteCaseSelection';
@@ -25,8 +27,8 @@ import { emptyTestPlanFilters, linkedRunsForPlan, matchesTestPlanFilters } from 
 import { emptyTestPlanCaseFilters, matchesTestPlanCaseFilters, resultStatusesForTestCase } from '@/src/lib/testPlanDetailFilters';
 import { buildTestPlanHierarchy } from '@/src/lib/testPlanHierarchy';
 import { localDateKey, normalizeDateKey, planDateWarnings, planStartConflict } from '@/core/shared/testPlanStart';
-import { withBasePath } from '@/src/lib/base-path';
 import { normalizeTags } from '@/src/lib/tags';
+import { useUrlState } from '@/src/lib/useUrlState';
 
 const PLAN_STATUSES = ['Draft', 'Under Review', 'Approved', 'In Progress', 'Completed', 'Blocked', 'Cancelled', 'Archived'];
 const MANUAL_PLAN_STATUSES = PLAN_STATUSES.filter((status) => status !== 'In Progress');
@@ -40,7 +42,6 @@ const displayPlanDate = (value: unknown) => {
 };
 const emptyPlanForm = () => ({
   name: '',
-  folderId: '',
   startDate: '',
   endDate: '',
   owner: '',
@@ -54,6 +55,8 @@ const emptyPlanForm = () => ({
   caseIds: [] as string[],
   runIds: [] as string[],
   description: '',
+  // Tag query the plan's cases were composed with — persisted as definition.tagQuery for drift.
+  tagQuery: {} as TagQuery,
 });
 
 function getStatusBadgeClass(status: string) {
@@ -95,10 +98,9 @@ export default function TestPlans() {
   const [suites, setSuites] = useState<any[]>([]);
   const [cases, setCases] = useState<any[]>([]);
   const [runs, setRuns] = useState<any[]>([]);
-  const [folders, setFolders] = useState<any[]>([]);
-  const [activeDetailTab, setActiveDetailTab] = useState<'suites' | 'cases' | 'runs'>('suites');
+  const [activeDetailTab, setActiveDetailTab] = useUrlState('tab', 'suites', ['suites', 'cases', 'runs'] as const);
   const [loading, setLoading] = useState(true);
-  const [planView, setPlanView] = useState<'active' | 'closed'>('active');
+  const [planView, setPlanView] = useUrlState('view', 'active', ['active', 'closed'] as const);
   const [searchTerm, setSearchTerm] = useState('');
   const aiSearch = useAiSearch('test plans');
   const [isFilterOpen, setIsFilterOpen] = useState(false);
@@ -113,6 +115,8 @@ export default function TestPlans() {
   const [isPlanModalOpen, setIsPlanModalOpen] = useState(false);
   // Opens the unified EntityLinker (search + tag-driven) to pick the plan's suites.
   const [isSuiteLinkerOpen, setIsSuiteLinkerOpen] = useState(false);
+  const [isCaseLinkerOpen, setIsCaseLinkerOpen] = useState(false);
+  const [isRunLinkerOpen, setIsRunLinkerOpen] = useState(false);
   const [isAIPlanModalOpen, setIsAIPlanModalOpen] = useState(false);
   const [isStartingRun, setIsStartingRun] = useState(false);
   const [startingPlanId, setStartingPlanId] = useState<string | null>(null);
@@ -147,13 +151,11 @@ export default function TestPlans() {
       fetch('/api/suites').then(r => r.json()),
       fetch('/api/cases').then(r => r.json()),
       fetch('/api/runs').then(r => r.json()),
-      fetch('/api/folders').then(r => r.json()),
     ])
-      .then(([suiteData, caseData, runData, folderData]) => {
+      .then(([suiteData, caseData, runData]) => {
         setSuites(Array.isArray(suiteData) ? suiteData : []);
         setCases(Array.isArray(caseData) ? caseData : []);
         setRuns(Array.isArray(runData) ? runData : []);
-        setFolders(Array.isArray(folderData) ? folderData : []);
       })
       .catch(console.error);
   };
@@ -204,7 +206,6 @@ export default function TestPlans() {
     setFormData({
       ...emptyPlanForm(),
       parentPlanId: String(parentPlan.id),
-      folderId: String(parentPlan.folderId || ''),
       owner: String(parentPlan.owner || ''),
     });
     setDateValidationMessage('');
@@ -214,11 +215,11 @@ export default function TestPlans() {
   const openEditModal = (plan: any) => {
     setSelectedPlanId(plan.id);
     setDateValidationMessage('');
-    const linkedRunIds = new Set<string>((Array.isArray(plan.runIds) ? plan.runIds : []).map(String));
-    runs.filter((run) => run.testPlanId === plan.id).forEach((run) => linkedRunIds.add(String(run.id)));
+    const existingRunIds = new Set(runs.map((run) => String(run.id)));
+    const linkedRunIds = new Set<string>((Array.isArray(plan.runIds) ? plan.runIds : []).map(String).filter((id) => existingRunIds.has(id)));
+    runs.filter((run) => String(run.testPlanId) === String(plan.id)).forEach((run) => linkedRunIds.add(String(run.id)));
     setFormData({
       name: plan.name || '',
-      folderId: plan.folderId || '',
       startDate: normalizeDateKey(plan.startDate),
       endDate: normalizeDateKey(plan.endDate),
       owner: plan.owner || '',
@@ -232,13 +233,13 @@ export default function TestPlans() {
       caseIds: cases.filter((testCase) => casePlanIds(testCase).includes(plan.id)).map((testCase) => String(testCase.id)),
       runIds: Array.from(linkedRunIds),
       description: plan.description || plan.objectives || '',
+      tagQuery: (plan.definition?.tagQuery || {}) as TagQuery,
     });
     setIsPlanModalOpen(true);
   };
 
   const handleSavePlan = async () => {
     if (!formData.name.trim()) { void showAlert('Plan name is required.'); return; }
-    if (!formData.folderId) { void showAlert('Select a folder or create one first.'); return; }
     if (formData.endDate && !formData.startDate) {
       setDateValidationMessage('Enter a start date when an end date is provided.');
       return;
@@ -248,7 +249,9 @@ export default function TestPlans() {
       return;
     }
     setDateValidationMessage('');
-    const { suiteIds, caseIds, ...planPayload } = formData;
+    const { suiteIds, caseIds, tagQuery, ...planFields } = formData;
+    // Persist the tag query so cases later matching it surface as review-gated drift on the plan.
+    const planPayload = { ...planFields, definition: { tagQuery } };
     try {
       const response = await fetch(selectedPlanId ? `/api/plans/${selectedPlanId}` : '/api/plans', {
         method: selectedPlanId ? 'PUT' : 'POST',
@@ -414,7 +417,7 @@ export default function TestPlans() {
   const tagOptions = normalizeTags([...plans, ...suites, ...cases, ...runs]
     .flatMap((item) => Array.isArray(item.tags) ? item.tags : [])).sort();
   const ownerOptions = Array.from(new Set<string>(plans.map((plan) => String(plan.owner || '').trim()).filter(Boolean))).sort();
-  const activeFilterCount = filters.statuses.length + filters.owners.length + filters.tags.length + filters.folders.length
+  const activeFilterCount = filters.statuses.length + filters.owners.length + filters.tags.length
     + (filters.startFrom || filters.endTo ? 1 : 0) + (filters.environments.trim() ? 1 : 0)
     + (filters.roles.trim() ? 1 : 0) + filters.runIds.length + (filters.notYetExecuted ? 1 : 0);
   const activePlans = plans.filter((plan) => !/completed|cancelled|archived/i.test(plan.status || ''));
@@ -576,7 +579,7 @@ export default function TestPlans() {
             </div>
           )}
           <div>
-            <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Title</label>
+            <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Title<RequiredMark /></label>
             <input 
               type="text" 
               value={formData.name}
@@ -585,12 +588,6 @@ export default function TestPlans() {
               className="w-full bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-3 py-2 text-sm outline-none focus:border-[var(--accent)] text-[var(--text-primary)]" 
             />
           </div>
-          <FolderSelect
-            value={formData.folderId}
-            onChange={(folderId) => setFormData({ ...formData, folderId })}
-            label="Repository Folder"
-            includeNone={false}
-          />
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Start Date</label>
@@ -632,50 +629,68 @@ export default function TestPlans() {
           <div>
             <div className="mb-1 flex items-center justify-between">
               <label className="block text-sm font-medium text-[var(--text-muted)]">Link Test Suites</label>
-              <button type="button" onClick={() => setIsSuiteLinkerOpen(true)} className="text-xs font-medium text-[var(--accent)] hover:underline">
-                Search &amp; link by tag
-              </button>
+              <button type="button" onClick={() => setIsSuiteLinkerOpen(true)} className="text-xs font-medium text-[var(--accent)] hover:underline">Search &amp; link by tag</button>
             </div>
-            <MultiSelectDropdown
-              label="Select test suites"
-              options={suites.map((suite) => ({ id: String(suite.id), name: String(suite.name || suite.id) }))}
-              value={formData.suiteIds}
-              onChange={(suiteIds) => setFormData({...formData, suiteIds})}
-              emptyContent={
-                <div className="px-2 py-2 text-xs text-[var(--text-muted)]">
-                  <p>No test suites available. Create one first from the Test Suites section, then link it here.</p>
-                  <a href={withBasePath('/suites')} target="_blank" rel="noreferrer" className="mt-2 inline-flex items-center gap-1 font-medium text-[var(--accent)] hover:underline">
-                    <Plus className="h-3.5 w-3.5" /> Create Test Suite
-                  </a>
-                </div>
-              }
-            />
+            {formData.suiteIds.length === 0 ? (
+              <button type="button" onClick={() => setIsSuiteLinkerOpen(true)} className="w-full rounded-md border border-dashed border-[var(--border)] bg-[var(--bg-secondary)]/40 px-3 py-3 text-center text-sm text-[var(--text-muted)] hover:border-[var(--accent)] hover:text-[var(--text-primary)]">Search &amp; link suites by tag</button>
+            ) : (
+              <div className="flex max-h-28 flex-wrap gap-1.5 overflow-auto rounded-md border border-[var(--border)] bg-[var(--bg-secondary)]/40 p-2">
+                {formData.suiteIds.map((sid) => {
+                  const s = suites.find((x) => String(x.id) === String(sid));
+                  return (
+                    <span key={sid} className="inline-flex max-w-full items-center gap-1 rounded bg-[var(--bg-card)] px-2 py-0.5 text-xs text-[var(--text-primary)]">
+                      <span className="truncate">{s?.name || sid}</span>
+                      <button type="button" onClick={() => setFormData((f) => ({ ...f, suiteIds: f.suiteIds.filter((id) => id !== sid) }))} className="opacity-60 hover:opacity-100" title="Remove"><X className="h-3 w-3" /></button>
+                    </span>
+                  );
+                })}
+              </div>
+            )}
           </div>
           <div>
-            <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Link Individual Test Cases</label>
-            <MultiSelectDropdown
-              label="Select test cases"
-              options={cases.map((testCase) => ({ id: String(testCase.id), name: String(testCase.title || testCase.id) }))}
-              value={formData.caseIds}
-              onChange={(caseIds) => setFormData({...formData, caseIds})}
-            />
+            <div className="mb-1 flex items-center justify-between">
+              <label className="block text-sm font-medium text-[var(--text-muted)]">Link Test Cases</label>
+              <button type="button" onClick={() => setIsCaseLinkerOpen(true)} className="text-xs font-medium text-[var(--accent)] hover:underline">Search &amp; link by tag</button>
+            </div>
+            {(formData.tagQuery.all?.length || formData.tagQuery.any?.length) ? (
+              <div className="mb-1 text-xs text-[var(--text-muted)]">Tag-defined: {[...(formData.tagQuery.all || []), ...(formData.tagQuery.any || [])].join(formData.tagQuery.all?.length ? ' + ' : ' / ')} — new matches surface for review after saving.</div>
+            ) : null}
+            {formData.caseIds.length === 0 ? (
+              <button type="button" onClick={() => setIsCaseLinkerOpen(true)} className="w-full rounded-md border border-dashed border-[var(--border)] bg-[var(--bg-secondary)]/40 px-3 py-3 text-center text-sm text-[var(--text-muted)] hover:border-[var(--accent)] hover:text-[var(--text-primary)]">Search &amp; link cases by tag</button>
+            ) : (
+              <div className="flex max-h-28 flex-wrap gap-1.5 overflow-auto rounded-md border border-[var(--border)] bg-[var(--bg-secondary)]/40 p-2">
+                {formData.caseIds.map((cid) => {
+                  const c = cases.find((x) => String(x.id) === String(cid));
+                  return (
+                    <span key={cid} className="inline-flex max-w-full items-center gap-1 rounded bg-[var(--bg-card)] px-2 py-0.5 text-xs text-[var(--text-primary)]">
+                      <span className="truncate">{c?.title || cid}</span>
+                      <button type="button" onClick={() => setFormData((f) => ({ ...f, caseIds: f.caseIds.filter((id) => id !== cid) }))} className="opacity-60 hover:opacity-100" title="Remove"><X className="h-3 w-3" /></button>
+                    </span>
+                  );
+                })}
+              </div>
+            )}
           </div>
           <div>
-            <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Link Test Runs</label>
-            <MultiSelectDropdown
-              label="Select test runs"
-              options={runs.map((run) => ({ id: String(run.id), name: String(run.name || run.id) }))}
-              value={formData.runIds}
-              onChange={(runIds) => setFormData({...formData, runIds})}
-              emptyContent={
-                <div className="px-2 py-2 text-xs text-[var(--text-muted)]">
-                  <p>No test runs available. Create one from the Test Runs section, then link it here.</p>
-                  <a href={withBasePath('/runs')} target="_blank" rel="noreferrer" className="mt-2 inline-flex items-center gap-1 font-medium text-[var(--accent)] hover:underline">
-                    <Plus className="h-3.5 w-3.5" /> Create Test Run
-                  </a>
-                </div>
-              }
-            />
+            <div className="mb-1 flex items-center justify-between">
+              <label className="block text-sm font-medium text-[var(--text-muted)]">Link Test Runs</label>
+              <button type="button" onClick={() => setIsRunLinkerOpen(true)} className="text-xs font-medium text-[var(--accent)] hover:underline">Search &amp; link by tag</button>
+            </div>
+            {formData.runIds.length === 0 ? (
+              <button type="button" onClick={() => setIsRunLinkerOpen(true)} className="w-full rounded-md border border-dashed border-[var(--border)] bg-[var(--bg-secondary)]/40 px-3 py-3 text-center text-sm text-[var(--text-muted)] hover:border-[var(--accent)] hover:text-[var(--text-primary)]">Search &amp; link runs by tag</button>
+            ) : (
+              <div className="flex max-h-28 flex-wrap gap-1.5 overflow-auto rounded-md border border-[var(--border)] bg-[var(--bg-secondary)]/40 p-2">
+                {formData.runIds.map((rid) => {
+                  const r = runs.find((x) => String(x.id) === String(rid));
+                  return (
+                    <span key={rid} className="inline-flex max-w-full items-center gap-1 rounded bg-[var(--bg-card)] px-2 py-0.5 text-xs text-[var(--text-primary)]">
+                      <span className="truncate">{r?.name || rid}</span>
+                      <button type="button" onClick={() => setFormData((f) => ({ ...f, runIds: f.runIds.filter((id) => id !== rid) }))} className="opacity-60 hover:opacity-100" title="Remove"><X className="h-3 w-3" /></button>
+                    </span>
+                  );
+                })}
+              </div>
+            )}
           </div>
           <div>
             <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Description</label>
@@ -698,7 +713,33 @@ export default function TestPlans() {
         />
       )}
 
-      <AIActionModal 
+      {/* Compose the plan's cases by tag; captures the tag query so the plan becomes tag-defined
+          (definition.tagQuery) and surfaces review-gated drift in the plan detail. */}
+      {isCaseLinkerOpen && (
+        <EntityLinker
+          isOpen={isCaseLinkerOpen}
+          onClose={() => setIsCaseLinkerOpen(false)}
+          title="Link test cases to this plan"
+          target="cases"
+          confirmLabel="Use selected cases"
+          initialSelectedIds={formData.caseIds}
+          onConfirm={(caseIds, meta) => { setFormData((f) => ({ ...f, caseIds, tagQuery: meta.tagQuery })); setIsCaseLinkerOpen(false); }}
+        />
+      )}
+
+      {isRunLinkerOpen && (
+        <EntityLinker
+          isOpen={isRunLinkerOpen}
+          onClose={() => setIsRunLinkerOpen(false)}
+          title="Link test runs to this plan"
+          target="runs"
+          confirmLabel="Use selected runs"
+          initialSelectedIds={formData.runIds}
+          onConfirm={(runIds) => { setFormData((f) => ({ ...f, runIds })); setIsRunLinkerOpen(false); }}
+        />
+      )}
+
+      <AIActionModal
         isOpen={isAIPlanModalOpen}
         onClose={() => setIsAIPlanModalOpen(false)}
         taskType="plan"
@@ -722,7 +763,6 @@ export default function TestPlans() {
                 <div className="mt-2 flex flex-wrap items-center gap-3 text-sm text-[var(--text-muted)]">
                   <span>Status: <span className={cn("ml-1 inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium border", getStatusBadgeClass(selectedDetailPlan.status || 'Draft'))}>{selectedDetailPlan.status || 'Draft'}</span></span>
                   <span>Risk: <span className={cn("ml-1 inline-flex items-center px-2 py-0.5 rounded text-xs font-bold uppercase tracking-wider", getRiskBadgeClass(selectedDetailPlan.riskLevel || 'Medium'))}>{selectedDetailPlan.riskLevel || 'Medium'}</span></span>
-                  <FolderBadge folders={folders} folderId={selectedDetailPlan.folderId} />
                   {selectedParentPlan && (
                     <button type="button" onClick={() => navigate(`/plans/${selectedParentPlan.id}`)} className="hover:text-[var(--accent)] hover:underline">
                       Parent: {selectedParentPlan.name}
@@ -772,6 +812,33 @@ export default function TestPlans() {
             )}
           </div>
 
+          {/* Review-gated drift: cases newly matching this plan's tag query (add / create-new / dismiss). */}
+          <div className="px-5 pt-4 empty:hidden">
+            <TagDriftBanner
+              target="plans"
+              id={selectedDetailPlan.id}
+              onChanged={() => { fetchPlanRelations(); fetchPlans(); }}
+              onCreateNew={async (caseIds, drift) => {
+                try {
+                  const res = await fetch('/api/plans', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name: `${selectedDetailPlan.name} (new matches)`, definition: { tagQuery: drift.tagQuery } }),
+                  });
+                  const rsp = await res.json().catch(() => ({}));
+                  if (!res.ok) throw new Error(rsp.error || 'Failed to create plan.');
+                  const newId = rsp.plan?.id || rsp.id;
+                  if (newId) {
+                    await Promise.all(caseIds.map((cid) => {
+                      const tc = cases.find((c) => String(c.id) === cid);
+                      return tc ? fetch(`/api/cases/${cid}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(casePlanMembershipUpdate(tc, newId, true)) }) : null;
+                    }));
+                  }
+                  fetchPlanRelations(); fetchPlans();
+                } catch (e: any) { void showAlert(e.message || 'Failed to create plan.'); }
+              }}
+            />
+          </div>
+
           <div className="flex items-center gap-6 border-b border-[var(--border)] px-5">
             {[
               { id: 'suites', label: `Linked Test Suites (${getPlanSuites(selectedDetailPlan.id).length})` },
@@ -807,10 +874,6 @@ export default function TestPlans() {
                       <button type="button" onClick={() => setDetailCaseFilters(emptyTestPlanCaseFilters())} className="text-xs font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]">Clear all</button>
                     </div>
                     <div className="grid gap-3 sm:grid-cols-2">
-                      <div>
-                        <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Folder</label>
-                        <MultiSelectDropdown label="Any folder" options={folders.map((folder) => ({ id: String(folder.id), name: String(folder.path || folder.name) }))} value={detailCaseFilters.folderIds} onChange={(folderIds) => setDetailCaseFilters((current) => ({ ...current, folderIds }))} />
-                      </div>
                       <div>
                         <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Test Runs</label>
                         <MultiSelectDropdown label="Any test run" options={detailPlanRuns.map((run) => ({ id: String(run.id), name: String(run.name || run.id) }))} value={detailCaseFilters.runIds} onChange={(runIds) => setDetailCaseFilters((current) => ({ ...current, runIds }))} />
@@ -890,6 +953,7 @@ export default function TestPlans() {
                     <tr>
                       <th className="px-4 py-3 font-medium">ID</th>
                       <th className="px-4 py-3 font-medium">Title</th>
+                      <th className="px-4 py-3 font-medium">Version</th>
                       <th className="px-4 py-3 font-medium">Suite</th>
                       <th className="px-4 py-3 font-medium">Result Status</th>
                       <th className="px-4 py-3 font-medium">State</th>
@@ -898,13 +962,22 @@ export default function TestPlans() {
                   </thead>
                   <tbody className="divide-y divide-[var(--border)]">
                     {detailPlanCases.length === 0 ? (
-                      <tr><td colSpan={6} className="px-4 py-6 text-center text-[var(--text-muted)]">No test cases are linked to this plan.</td></tr>
+                      <tr><td colSpan={7} className="px-4 py-6 text-center text-[var(--text-muted)]">No test cases are linked to this plan.</td></tr>
                     ) : filteredDetailPlanCases.length === 0 ? (
-                      <tr><td colSpan={6} className="px-4 py-6 text-center text-[var(--text-muted)]">No linked test cases match these filters.</td></tr>
+                      <tr><td colSpan={7} className="px-4 py-6 text-center text-[var(--text-muted)]">No linked test cases match these filters.</td></tr>
                     ) : filteredDetailPlanCases.map((testCase) => (
                       <tr key={testCase.id}>
                         <td className="px-4 py-3 font-mono text-xs text-[var(--text-muted)]">{testCase.id}</td>
                         <td className="px-4 py-3 font-medium">{testCase.title}</td>
+                        <td className="px-4 py-3">
+                          <VersionPinSelect
+                            target="plans"
+                            groupId={selectedDetailPlan.id}
+                            caseId={testCase.id}
+                            pinnedRevisionNo={(selectedDetailPlan.casePins || []).find((p: any) => String(p?.caseId) === String(testCase.id))?.revisionNo ?? null}
+                            onChange={() => { fetchPlanRelations(); fetchPlans(); }}
+                          />
+                        </td>
                         <td className="px-4 py-3 text-[var(--text-muted)]">
                           {caseSuiteIds(testCase).map((suiteId) => suites.find((suite) => suite.id === suiteId)?.name || suiteId).join(', ') || 'None'}
                         </td>
@@ -997,10 +1070,6 @@ export default function TestPlans() {
                   <div>
                     <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Tags</label>
                     <MultiSelectDropdown label="Any tag" options={tagOptions.map((tag) => ({ id: tag, name: tag }))} value={filters.tags} onChange={(tags) => setFilters((current) => ({ ...current, tags }))} />
-                  </div>
-                  <div>
-                    <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Repository Folder</label>
-                    <MultiSelectDropdown label="Any folder" options={folders.map((folder) => ({ id: String(folder.id), name: String(folder.path || folder.name) }))} value={filters.folders} onChange={(folders) => setFilters((current) => ({ ...current, folders }))} />
                   </div>
                   <div>
                     <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Start Date / End Date</label>

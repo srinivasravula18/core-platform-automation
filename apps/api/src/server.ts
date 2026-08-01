@@ -169,7 +169,8 @@ export async function createExpressApp() {
   app.use((error: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
     if (res.headersSent) return next(error);
     console.error('Unhandled server route error:', error);
-    res.status(500).json({ error: error?.message || 'Internal server error' });
+    const status = Number(error?.status || (error?.code === '23505' ? 409 : 500));
+    res.status(status >= 400 && status < 600 ? status : 500).json({ error: error?.message || 'Internal server error' });
   });
 
   return app;
