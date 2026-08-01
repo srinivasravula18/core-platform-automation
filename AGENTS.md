@@ -2,6 +2,59 @@
 
 Project instructions for Codex/other coding agents working in this repo. (Mirrors `CLAUDE.md`, kept in sync — see that file for the Claude Code equivalent.)
 
+## Non-negotiable coding rules (apply to me AND every spawned agent)
+
+- **No hardcoding, anywhere.** Never hardcode app/product facts (product names, URLs, ports, endpoints, selectors, field names, auth keys, module lists) in code, prompts, or understanding. Everything app-specific must be LEARNED from the connected repo/URL/OpenAPI at runtime. If you find hardcoding, remove it and route the value through the understanding/learning layer — never just report it.
+- **Comments: precise and short.** One line where possible; no large multi-line blocks. Say why, not what.
+- **Backend has no hot reload.** It runs as `tsx server.ts`. After ANY `server/**` or `server.ts` change the backend must be RESTARTED to load it. Order: (1) `npm run lint` (tsc --noEmit) passes, (2) relevant tests pass, (3) THEN restart. Never conclude a backend change "works live" against a process older than the edit.
+
+## Explaining results (applies to every answer, especially after research/code search)
+
+After any deep code search, audit, forensic trace, or multi-step research, **do not dump the full findings as the answer.** Lead with a version readable in under a minute:
+
+1. **Verdict first** — 1-3 sentences. What is true, what it means. No preamble.
+2. **One ASCII diagram** whenever there is a sequence, pipeline, changing count, or decision tree.
+3. **One concrete end-to-end example** with real values from the actual finding — walk one case all the way through.
+4. **Then** the detail, clearly separated, so the reader can stop once they have what they need.
+
+If asked "should I do X or not", answer yes/no in the first line, then explain. Full `file:line` evidence belongs in the written deliverable under `docs/`, not the chat answer.
+
+## Review disciplines
+
+Apply the matching discipline whenever its trigger fits. Claude Code loads these automatically from `.claude/skills/<name>/SKILL.md`; other agents should follow the condensed rules below and may read the full file for detail.
+
+**Universal rules for all of them:** cite `file:line` for every claim; inspect current code, never memory or docs; *"a mechanism exists"* is not a finding — *"the mechanism fired on this run"* is; if something cannot be determined from the code, write `DEFECT: unanswerable — <why>` rather than describing intended behavior; and always separate **built** from **live** (a subsystem that is flag-gated off, has zero callers, or runs shadow-only is not the current behavior).
+
+### 1. `agent-pipeline-forensics` — debugging a pipeline run
+Pick one real persisted run and justify the choice. Trace every stage boundary with **literal payloads** copied from the store, not descriptions. Build the count chain explicitly and name the single boundary where multiplication/loss happens. Classify each boundary `1:1` / `1:N` / `N:1` / decoupled. Check whether a traceable id survives each hop. Distinguish deliberate short-circuits from mislabelled failures. Prove the negative — where exactly was the missing thing lost.
+
+### 2. `memory-canonicalization-audit` — any state/memory store
+Per store ask: canonical or shadow? insert-only or versioned? what exactly enforces scope (quote the `WHERE`)? can two writers disagree? Hunt leaks on **every** read path: `OR col IS NULL` predicates, unscoped `SELECT *`, process-global caches keyed without owner, call sites that default the scope, wildcard/empty-owner buckets, stores keyed only by a guessable id. Distinguish raw-transcript re-read from extracted durable facts; a longer lookback is not memory.
+
+### 3. `tool-call-safety-review` — new/changed tool or dispatch logic
+Effect (`read`/`write`/`destructive`) must be **declared, never name-inferred**. Arguments must be schema-validated **before** dispatch. Capability re-checked **at dispatch**, not only when building the tool list. Write/destructive tools need deterministic re-read verification that **gates acceptance**, not merely informs the model. Terminal success must not be self-declared ("stopped calling tools" ≠ "succeeded"). Bound and disclose result truncation.
+
+### 4. `prompt-injection-and-scope-audit` — prompts and personas
+Trace the literal system string: does it route through the shared policy composer, or is it a standalone constant that skips injection/safety/scope policy? Can an override **replace** rather than layer onto the stack? Enumerate every untrusted channel (repo files, DB text, DOM, tool results, prior turns, uploads) and verify each is delimited and marked non-instructional. Secrets flow by reference only. Check the prompt does not contradict the agent's real tool permissions.
+
+### 5. `agent-handoff-contract-check` — A's output becomes B's input
+Structural schema match, then **semantic** match (same name for the same concept; same meaning per field), then **identity survival** (does a per-item id cross the boundary?), then **actual consumption** — grep the consumer for the field; a stage can be handed data it never reads. Where identity is missing, check whether anything reconstructs it positionally; positional reconstruction across a non-`1:1` boundary is always wrong.
+
+### 6. `evidence-step-correspondence-check` — artifacts don't map to steps
+Build the count chain with real numbers (source units → intermediate → runner calls → artifacts). The single non-`1:1` arrow is the whole answer. Check whether the UI maps by explicit id or **positional index**. Rule out retries, polling, before/after pairs (read the code, not stale comments), and harness-level extras before blaming the multiplier. Report semantic duplication too — N artifacts of one unchanged screen.
+
+### 7. `concurrency-and-crash-safety-review` — dispatch, scheduling, shared state
+Trace the exact line that starts work: awaited, fire-and-forget, or queued? Is there a concurrency cap? Two writers on one key: overwrite, version, or reject? Watch for per-item writes mirrored as **whole-key replace** — that silently discards all but the last. On crash: what is in-memory only, does the checkpoint hold payloads or just references, does work resume or fail? For multi-instance, check in order: boot-time reconcilers without ownership checks, per-process registries, in-memory DB mirrors, timers without leader election.
+
+### 8. `eval-golden-set-runner` — before/after any prompt or pipeline change
+Verify eval entry points resolve to real files before trusting a script list. Capture the baseline **before** changing anything. Report per-metric, never one aggregate; state sample size and the noise floor; name every regressed fixture with its diff. Prefer property assertions over golden strings wherever output has legitimate variation. Never estimate a score — if the suite did not run, there is no number.
+
+### 9. `data-governance-check` — new store, PII field, or diligence prep
+Is there a **single** deletion path per user/workspace? Does every table holding user content have an enforced owner FK with cascade (not a bare `owner_id TEXT`)? Is time-based retention being mistaken for erasure? Which routes actually write the audit log — and is there any read/access logging? What content egresses to third parties (prompts carry source code, DOM, records), and is it classified or redacted **outbound**, not just on the response?
+
+### 10. `principal-engineer-review` — full architecture/production review
+Umbrella. Analysis only by default; no code changes during review. Run dimensions in root-cause order: safety → data isolation → canonical state → topology → tool calling → agent dynamics → observability → evaluation → cost/reliability → governance. Take a position on every finding; include what is genuinely good and worth preserving. Name the 2-4 root causes that explain most individual findings. Remediation only when asked, phased, ordered by impact per unit of risk. Never promise 100% accuracy for an LLM system.
+
 ## Architecture-change process ("Principal Architect" mode)
 
 When asked to redesign or overhaul a major subsystem (e.g. the Context & Evidence Pipeline, the orchestrator, the agent pipeline), follow this process. This was requested explicitly and applies to any future "act as Principal/Staff Architect" request.
