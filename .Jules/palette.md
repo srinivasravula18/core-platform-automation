@@ -1,0 +1,3 @@
+## 2026-03-05 - Custom Popovers and Context Menus
+**Learning:** Custom trigger-based elements and popover menus (like `RowMoreMenu`) must register a global Escape key event listener when open to allow seamless keyboard dismissal, configure proper visual focus rings using Tailwind `focus-visible`, and bind required screen reader fields (`aria-expanded`, `aria-haspopup`, `aria-label`).
+**Action:** Always add keyboard handlers (`keydown` for Escape), focus states (`focus-visible:ring-2`), and complete ARIA roles/states whenever implementing toggleable or overlay-based dropdown menus in the application.
