@@ -5,6 +5,7 @@ import { TimeSortSelect } from '@/src/components/filters/TimeSortSelect';
 import { TimeRangeFilter, passesTimeFilter, type TimeFilterValue } from '@/src/components/filters/TimeRangeFilter';
 import { sortByTime, type TimeSortKey } from '@/src/lib/time';
 import ExportMenu from '../components/ExportMenu';
+import { downloadFile, toReportHTML } from '../lib/exportData';
 import { cn } from '@/src/lib/utils';
 import { useAiSearch } from '@/src/lib/useAiSearch';
 import { useBulkDelete } from '@/src/lib/useBulkDelete';
@@ -23,11 +24,16 @@ interface Step {
   expected: string;
   outcome: 'Pass' | 'Fail' | 'Skipped';
   reason?: string;
+  actual?: string;
+  durationMs?: number;
+  testCaseTitle?: string;
   screenshot: string;
 }
 
 interface Report {
   id: string;
+  runId?: string;
+  planId?: string;
   name: string;
   folderId?: string;
   planName: string;
@@ -37,6 +43,7 @@ interface Report {
   totalExecutions: number;
   status: 'Passed' | 'Failed' | 'Skipped';
   failureReason?: string;
+  targetUrl?: string;
   date: string;
   steps: Step[];
   evidence?: any[];
@@ -333,6 +340,21 @@ export default function Reports() {
     const url = `${window.location.origin}${window.location.pathname}#report-${reportId}`;
     try { await navigator.clipboard?.writeText(url); await showConfirm('Report link copied to clipboard.'); }
     catch { /* clipboard unavailable */ }
+  };
+
+  const handleHtmlReportExport = async (report: Report) => {
+    let run: any;
+    let results: any[] = [];
+    if (report.runId) {
+      try {
+        const response = await fetch(`/api/runs/${encodeURIComponent(report.runId)}/results`);
+        if (response.ok) ({ run, results = [] } = await response.json());
+      } catch (error) {
+        console.error('Unable to load linked run details for report export.', error);
+      }
+    }
+    const plan = plans.find((item: any) => String(item.id) === String(report.planId || run?.testPlanId));
+    downloadFile(toReportHTML(report, { run, results, plan }), `report-${report.id}.html`, 'text/html;charset=utf-8');
   };
 
   const fetchReports = (showLoading = true) => {
@@ -646,7 +668,8 @@ export default function Reports() {
                   dropUp
                   filename={`report-${detailReport.id}`}
                   title={detailReport.name}
-                  formats={['pdf', 'csv', 'md', 'json', 'html']}
+                  formats={['pdf', 'csv', 'md', 'json']}
+                  extraItems={[{ label: 'HTML Report (.html)', onClick: () => void handleHtmlReportExport(detailReport) }]}
                   rows={(detailReport.steps || []).map((step, index) => ({
                     ...step,
                     evidence: stepEvidence(detailReport, step, index),

@@ -726,7 +726,7 @@ export default function TestCases() {
               { key: 'id', label: 'ID' },
               { key: 'title', label: 'Title' },
               { key: 'description', label: 'Description' },
-              { key: 'testingScope', label: 'Testing Scope', get: (c) => c.testingScope || (c.type === 'Automated' ? 'Automation' : 'Manual') },
+              { key: 'testingScope', label: 'Testing Scope', get: (c) => (c.testingScope || (c.type === 'Automated' ? 'Automation' : 'Manual')) === 'Automation' ? 'Record' : 'Manual' },
               { key: 'automationStatus', label: 'Automation Status', get: (c) => c.automationStatus || 'Not Automated' },
               { key: 'testingType', label: 'Type Of Test Case', get: (c) => normalizeTestCaseTypes(c).join(', ') },
               { key: 'priority', label: 'Priority', get: (c) => c.priority || 'Medium' },
@@ -794,12 +794,12 @@ export default function TestCases() {
                 {TESTING_SCOPES.map((scope) => (
                   <button key={scope} type="button" onClick={() => setFormData({ ...formData, testingScope: scope })}
                     className={`px-4 py-1.5 text-sm font-medium rounded transition-colors ${formData.testingScope === scope ? 'bg-[var(--accent)] text-white' : 'text-[var(--text-muted)] hover:text-[var(--text-primary)]'}`}>
-                    {scope}
+                    {scope === 'Automation' ? 'Record' : scope}
                   </button>
                 ))}
               </div>
               {formData.testingScope === 'Automation' && remoteAgentFlag === false && (
-                <p className="mt-2 text-xs text-amber-500">Automation recording needs the local desktop agent, which isn’t enabled here. Saving will create a manual case.</p>
+                <p className="mt-2 text-xs text-amber-500">Recording needs the local desktop agent, which isn’t enabled here. Saving will create a manual case.</p>
               )}
             </div>
           )}

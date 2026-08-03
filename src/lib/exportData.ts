@@ -109,6 +109,57 @@ function printHTML(html: string) {
   void Promise.race([loaded, new Promise((resolve) => setTimeout(resolve, 3000))]).then(() => w.print());
 }
 
+export function toReportHTML(report: any, context: { run?: any; results?: any[]; plan?: any } = {}): string {
+  const esc = (value: unknown) => String(value ?? '').replace(/[&<>"']/g, (char) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[char] || char));
+  const duration = (value: unknown) => {
+    const ms = Number(value);
+    if (!Number.isFinite(ms)) return value ? String(value) : 'Not recorded';
+    return ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(ms < 10_000 ? 2 : 1)} s`;
+  };
+  const run = context.run || {};
+  const plan = context.plan || {};
+  const manualResults = Array.isArray(context.results) ? context.results : [];
+  const featureName = report.suiteName || plan.name || report.planName || 'General';
+  const environment = run.triggerMeta?.environment || run.definition?.environment
+    || manualResults.map((result) => result.configuration).find(Boolean)
+    || plan.environments || report.targetUrl || run.targetUrl || 'Not recorded';
+  const tags = Array.from(new Set([
+    ...(Array.isArray(run.tags) ? run.tags : []),
+    ...(Array.isArray(plan.tags) ? plan.tags : []),
+  ].filter(Boolean)));
+  const cases = manualResults.length
+    ? manualResults.map((result) => ({
+      title: result.caseTitle || 'Untitled test case',
+      feature: result.feature || featureName,
+      steps: result.stepResults || [],
+    }))
+    : Array.from((report.steps || []).reduce((groups: Map<string, any>, step: any) => {
+      const title = step.testCaseTitle || report.name || 'Execution';
+      if (!groups.has(title)) groups.set(title, { title, feature: step.feature || featureName, steps: [] });
+      groups.get(title).steps.push(step);
+      return groups;
+    }, new Map<string, any>()).values());
+  const features = Array.from(new Set(cases.map((testCase: any) => testCase.feature)));
+  const caseSections = features.map((feature) => `<section class="feature"><h2>Feature: ${esc(feature)}</h2>${cases.filter((testCase: any) => testCase.feature === feature).map((testCase: any) => `<section class="case">
+    <h3>${esc(testCase.title)}</h3>
+    <table><thead><tr><th>#</th><th>Test step</th><th>Expected result</th><th>Actual result</th><th>Outcome</th><th>Execution time</th></tr></thead><tbody>
+    ${(testCase.steps || []).map((step: any, index: number) => {
+      const failed = /fail|block/i.test(String(step.outcome || ''));
+      const actual = step.actual || step.reason || step.comment || (failed ? 'No actual result was recorded.' : '—');
+      const elapsed = step.durationMs ?? (step.startedAt && step.completedAt
+        ? new Date(step.completedAt).getTime() - new Date(step.startedAt).getTime()
+        : undefined);
+      return `<tr class="${failed ? 'failed' : ''}"><td>${esc(step.step || index + 1)}</td><td>${esc(step.action)}</td><td>${esc(step.expected || 'Not recorded')}</td><td>${esc(actual)}</td><td>${esc(step.outcome || 'Not Run')}</td><td>${esc(duration(elapsed))}</td></tr>`;
+    }).join('')}</tbody></table></section>`).join('')}</section>`).join('');
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>${esc(report.name)}</title><style>
+    body{font-family:Arial,sans-serif;margin:28px;color:#172033}h1{margin-bottom:4px}.muted{color:#64748b;font-size:12px}.summary{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin:22px 0}.card,.case{border:1px solid #dbe2ea;border-radius:8px;padding:12px}.label{display:block;color:#64748b;font-size:11px;font-weight:700;text-transform:uppercase;margin-bottom:4px}h2{margin-top:28px}h3{margin:0 0 10px}table{width:100%;border-collapse:collapse;font-size:12px}th,td{border:1px solid #dbe2ea;padding:7px;text-align:left;vertical-align:top}th{background:#f1f5f9}.case{margin:12px 0;padding:14px}.failed{background:#fff1f2}.failed td:nth-child(3),.failed td:nth-child(4){font-weight:600}@media print{@page{margin:12mm}.case{break-inside:avoid}}
+  </style></head><body><h1>${esc(report.name)}</h1><div class="muted">Generated ${esc(new Date().toLocaleString())}</div>
+  <div class="summary"><div class="card"><span class="label">Environment</span>${esc(environment)}</div><div class="card"><span class="label">Features executed</span>${esc(features.join(', ') || 'Not recorded')}</div><div class="card"><span class="label">Tags</span>${esc(tags.join(', ') || 'None')}</div><div class="card"><span class="label">Overall execution time</span>${esc(report.executionTime || duration(run.durationMs) || 'Not recorded')}</div></div>
+  <h2>Feature-wise test cases and steps</h2>${caseSections || '<p>No execution steps were recorded.</p>'}</body></html>`;
+}
+
 const slug = (s: string) => (s || 'export').replace(/[^a-z0-9]+/gi, '-').toLowerCase().replace(/^-+|-+$/g, '').slice(0, 50);
 
 export function exportRows(

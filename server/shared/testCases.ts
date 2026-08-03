@@ -67,7 +67,10 @@ export function buildAgentExecutionSteps(run: any) {
         expected: testCase.description || 'Expected behavior is verified.',
         outcome,
         reason,
+        actual: reason,
+        durationMs: Number(ev?.durationMs) || 0,
         screenshot,
+        testCaseTitle: testCase.title,
       }];
     }
 
@@ -78,6 +81,8 @@ export function buildAgentExecutionSteps(run: any) {
       expected: step.expected,
       outcome,
       reason,
+      actual: reason,
+      durationMs: Number(ev?.durationMs) || 0,
       // Distinct per-step screenshot when the script captured one; else the case-level shot.
       screenshot: stepShots[stepIndex] || screenshot,
       testCaseTitle: testCase.title,

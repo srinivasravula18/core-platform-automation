@@ -1241,7 +1241,7 @@ export default function TestRuns() {
                 </button>
               ) : (
                 <div className="flex max-h-40 flex-wrap gap-1.5 overflow-auto rounded-md border border-[var(--border)] bg-[var(--bg-secondary)]/40 p-2">
-                  {selectableCases.filter((testCase) => newRunCaseIds.has(String(testCase.id))).map((testCase) => (
+                  {cases.filter((testCase) => newRunCaseIds.has(String(testCase.id))).map((testCase) => (
                     <span key={testCase.id} className="inline-flex max-w-full items-center gap-1 rounded bg-[var(--bg-card)] px-2 py-0.5 text-xs text-[var(--text-primary)]">
                       <span className="truncate">{testCase.title || testCase.id}</span>
                       <button

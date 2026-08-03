@@ -236,9 +236,12 @@ function executionSteps(tests: any[]): any[] {
   return tests.map((test: any, index: number) => ({
     step: String(index + 1),
     action: test.title || `Playwright test ${index + 1}`,
+    testCaseTitle: test.title || `Playwright test ${index + 1}`,
     expected: 'Playwright script completes successfully.',
     outcome: /pass/i.test(test.status || '') ? 'Passed' : /skip/i.test(test.status || '') ? 'Skipped' : 'Failed',
     reason: test.error || '',
+    actual: test.error || '',
+    durationMs: Number(test.durationMs) || 0,
     screenshot: test.screenshotUrl || '',
     screenshots: Array.isArray(test.evidenceUrls) ? test.evidenceUrls : [],
   }));
@@ -1862,12 +1865,19 @@ Rules:
     if (!Number.isInteger(idx) || idx < 0 || idx >= steps.length) return res.status(400).json({ error: 'Step index out of range.' });
     if ('outcome' in req.body && !isManualOutcome(req.body.outcome)) return res.status(400).json({ error: 'Unsupported outcome.' });
     const step = { ...steps[idx] };
+    const now = new Date().toISOString();
     if ('outcome' in req.body) step.outcome = String(req.body.outcome);
     if ('action' in req.body) step.action = String(req.body.action ?? '');       // authoring the step text
     if ('expected' in req.body) step.expected = String(req.body.expected ?? '');  // authoring the step text
     if ('actual' in req.body) step.actual = String(req.body.actual ?? '');
     if ('comment' in req.body) step.comment = String(req.body.comment ?? '');
     if ('captureEvidence' in req.body) step.captureEvidence = req.body.captureEvidence !== false; // attachment on/off
+    const touchedExecution = ['outcome', 'actual', 'comment'].some((field) => field in req.body);
+    if (touchedExecution && !step.startedAt) step.startedAt = now;
+    if ('outcome' in req.body && !/^(Not Run|Paused)$/i.test(step.outcome)) {
+      step.completedAt = now;
+      step.durationMs = Math.max(0, new Date(step.completedAt).getTime() - new Date(step.startedAt).getTime());
+    }
     steps[idx] = step;
     const outcome = rollupCaseOutcome(steps);
     // Timing is stamped only when an OUTCOME is recorded (execution), not when authoring action/expected text.
