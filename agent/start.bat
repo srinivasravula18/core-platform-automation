@@ -1,20 +1,22 @@
 @echo off
-REM TestFlow Desktop Agent — launcher. Self-contained: prod node_modules + compiled dist ship inside,
-REM so there is NOTHING to install. Just double-click this file.
+REM TestFlow Desktop Agent — launcher only. Self-contained: prod node_modules, compiled dist and
+REM Chromium all ship inside the ZIP you unzipped, so there is NOTHING to install or unpack.
 setlocal
 cd /d "%~dp0"
 set "AGENT_HOME=%CD%"
 set "PLAYWRIGHT_BROWSERS_PATH=%CD%\browsers"
 
-REM The server keeps one pre-compressed runtime ZIP and adds only this launcher + config per user.
-REM Expand it once on first start; later starts go directly to the compiled agent.
+REM Legacy: bundles downloaded before the flat-archive change carry a nested runtime.zip. Current
+REM downloads never do — the ZIP you unzipped is already the complete agent. Remove after one release.
 if exist "%CD%\runtime.zip" (
-  echo Preparing the TestFlow Agent runtime ^(one time^)...
-  powershell -NoProfile -ExecutionPolicy Bypass -Command "Expand-Archive -LiteralPath '%CD%\runtime.zip' -DestinationPath '%CD%' -Force"
-  if errorlevel 1 (
-    echo The bundled runtime could not be extracted. Re-download the agent and try again.
-    pause
-    exit /b 1
+  if not exist "dist\index.js" (
+    echo Preparing the TestFlow Agent runtime ^(one time^)...
+    powershell -NoProfile -ExecutionPolicy Bypass -Command "Expand-Archive -LiteralPath '%CD%\runtime.zip' -DestinationPath '%CD%' -Force"
+    if errorlevel 1 (
+      echo The bundled runtime could not be extracted. Re-download the agent and try again.
+      pause
+      exit /b 1
+    )
   )
   del /q "%CD%\runtime.zip"
 )

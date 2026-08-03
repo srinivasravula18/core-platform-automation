@@ -146,6 +146,9 @@ const PUBLIC_API_PREFIXES = [
   '/api/automation/hooks',
   // Agent version check — non-sensitive; polled by the desktop agent's updater (agent token, not human).
   '/api/automation/agent/latest',
+  // Bundle download: a browser navigation cannot send an Authorization header, so this authenticates
+  // by single-use download ticket inside the handler, which 401s when neither ticket nor session is present.
+  '/api/automation/agent/download',
 ];
 
 /**

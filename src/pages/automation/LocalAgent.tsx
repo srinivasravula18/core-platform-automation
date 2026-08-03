@@ -23,8 +23,8 @@ export default function LocalAgent() {
 
   const handleDownload = async () => {
     setDownloading(true);
-    try { await downloadAgent(); showToast('Agent bundle downloaded. Unzip and run start.bat.', { tone: 'success' }); }
-    catch { showToast('Could not download the agent bundle.', { tone: 'error' }); }
+    try { await downloadAgent(); showToast('Download started — watch your browser downloads. Unzip it and run start.bat.', { tone: 'success' }); }
+    catch { showToast('Could not start the agent download.', { tone: 'error' }); }
     finally { setDownloading(false); }
   };
 

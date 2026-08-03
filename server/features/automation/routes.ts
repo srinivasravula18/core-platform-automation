@@ -16,7 +16,7 @@ import type { Express, Request, Response, NextFunction } from 'express';
 import { randomBytes } from 'crypto';
 import { createReadStream } from 'fs';
 import { reqScope, scopeFilter } from '../../shared/scope';
-import { requireAuth } from '../auth/routes';
+import { requireAuth, isAuthed } from '../auth/routes';
 import { hashPassword, verifyPassword } from '../auth/userStore';
 import { Agents, AutomationJobs, AutomationSchedules, AutomationDatasets, AutomationDatasetRows, AutomationDataMappings, AutomationExecutionBatches, AutomationRunData, Recordings, Cases, Runs, Scripts } from '../../db/repository';
 import { uid, isPostgresEnabled } from '../../db/pool';
@@ -53,6 +53,7 @@ import { computeNextRun } from './schedulerService';
 import { saveArtifact, listArtifacts, resolveArtifact, contentTypeFor } from './artifactService';
 import { subscribe } from './eventsService';
 import { streamAgentZip, warmAgentBundleCache, agentLatestInfo, agentDirExists } from './downloadService';
+import { createDownloadTicket, readDownloadTicket } from './downloadTickets';
 import { ensureBundledChromium } from './bundleBrowsers';
 import { createManualDataset, datasetPage, getDataset, importDataset, listDatasets } from './datasetService';
 import { listProfiles, getProfile, createProfile, updateProfile, removeProfile, captureFromRecording, applyProfile } from './dataProfileService';
@@ -857,14 +858,44 @@ export function registerAutomationRoutes(app: Express) {
     return `${req.protocol}://${req.get('host')}`;
   }
 
-  // Download a ready-to-run agent bundle with a fresh single-use pairing token baked in.
-  app.get('/api/automation/agent/download', requireAuth, async (req: Request, res: Response) => {
+  // Clicking Download mints a ticket; the browser then navigates to the bundle URL so Chrome
+  // downloads it natively (streaming, with its own progress) instead of the page buffering 300 MB.
+  app.post('/api/automation/agent/download-ticket', requireAuth, (req: Request, res: Response) => {
     if (!agentDirExists()) return res.status(503).json({ error: 'Agent bundle is not available on this server.' });
     const scope = reqScope(req);
-    const { pairingToken } = createPairingToken({ userId: scope.userId || '', projectId: scope.projectId, appId: scope.appId || '', name: String(req.query.name || '') });
+    const name = String(req.query.name || req.body?.name || 'TestFlow Agent');
+    const { pairingToken, expiresInMs } = createPairingToken({ userId: scope.userId || '', projectId: scope.projectId, appId: scope.appId || '', name });
+    const ticket = createDownloadTicket({ pairingToken, name, userId: scope.userId || '', expiresInMs });
+    res.json({ ticket, expiresInMs });
+  });
+
+  // Download a ready-to-run agent bundle with a single-use pairing token baked in. Authorized either
+  // by a ticket (browser navigation, which cannot send headers) or by the usual session header.
+  app.get('/api/automation/agent/download', async (req: Request, res: Response) => {
+    if (!agentDirExists()) return res.status(503).json({ error: 'Agent bundle is not available on this server.' });
+
+    const ticket = req.query.ticket ? readDownloadTicket(String(req.query.ticket)) : null;
+    if (req.query.ticket && !ticket) {
+      return res.status(410).json({ error: 'This download link has expired. Click Download Agent again.' });
+    }
+    if (!ticket && !isAuthed(req)) return res.status(401).json({ error: 'Authentication required.' });
+
+    // A ticket pins its pairing token, so retries and resumes return byte-identical bytes.
+    let pairingToken: string;
+    let name: string;
+    if (ticket) {
+      pairingToken = ticket.pairingToken;
+      name = ticket.name;
+    } else {
+      const scope = reqScope(req);
+      name = String(req.query.name || 'TestFlow Agent');
+      pairingToken = createPairingToken({ userId: scope.userId || '', projectId: scope.projectId, appId: scope.appId || '', name: String(req.query.name || '') }).pairingToken;
+    }
+
     // cloudUrl is the base the agent calls <base>/api/automation/... — APP_URL already carries any
     // base path (e.g. /automation in production); the request-origin fallback is used in local dev.
-    await streamAgentZip(res, { pairingToken, cloudUrl: publicOrigin(req), name: String(req.query.name || 'TestFlow Agent') });
+    // Forward Range so a dropped 300 MB download resumes instead of restarting.
+    await streamAgentZip(res, { pairingToken, cloudUrl: publicOrigin(req), name, range: req.headers.range });
   });
 
   // Latest published agent version (allowlisted so a running agent's updater can poll it).

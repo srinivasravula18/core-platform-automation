@@ -2,18 +2,21 @@ import { useState } from 'react';
 import { Download, BookOpen, RefreshCcw, Loader2, MonitorOff } from 'lucide-react';
 import { Modal } from '@/src/components/Modal';
 import { showToast } from '@/src/lib/dialog';
+import { withBasePath } from '@/src/lib/base-path';
 
-/** Downloads the agent bundle (auth-carrying fetch, not a bare anchor) and saves it. */
+/**
+ * Starts the agent download in the browser itself.
+ *
+ * The bundle is ~300 MB. Fetching it into a blob would hold all of it in the tab's memory and show
+ * nothing until the last byte arrived; instead we mint a ticket and navigate, so the browser streams
+ * it to disk immediately with its own download indicator, progress and resume.
+ */
 export async function downloadAgent(): Promise<void> {
-  const res = await fetch('/api/automation/agent/download');
+  const res = await fetch('/api/automation/agent/download-ticket', { method: 'POST' });
   if (!res.ok) throw new Error('Download failed');
-  const blob = await res.blob();
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = 'TestFlow-Agent.zip';
-  a.click();
-  URL.revokeObjectURL(url);
+  const { ticket } = await res.json();
+  if (!ticket) throw new Error('Download failed');
+  window.location.href = withBasePath(`/api/automation/agent/download?ticket=${encodeURIComponent(ticket)}`);
 }
 
 /** Shown when the caller has no connected agent — the mandated download / guide / retry actions. */
@@ -23,8 +26,8 @@ export function NoAgentState({ onRetry }: { onRetry: () => void }) {
 
   const handleDownload = async () => {
     setBusy(true);
-    try { await downloadAgent(); showToast('Agent bundle downloaded. Unzip and run start.bat.', { tone: 'success' }); }
-    catch { showToast('Could not download the agent bundle.', { tone: 'error' }); }
+    try { await downloadAgent(); showToast('Download started — watch your browser downloads. Unzip it and run start.bat.', { tone: 'success' }); }
+    catch { showToast('Could not start the agent download.', { tone: 'error' }); }
     finally { setBusy(false); }
   };
 

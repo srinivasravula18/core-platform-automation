@@ -13,22 +13,27 @@ can reach applications inside your corporate network that the cloud never could.
 ## 1. Download
 
 In TestFlow AI, go to **Automation → Local Agent** and click **Download Agent**. This gives you a
-`TestFlow-Agent.zip` containing the agent and a `config.json` with a **one-time pairing token** (valid
-for 10 minutes). Download it fresh each time you set up a new machine.
+`TestFlow-Agent.zip` (~310 MB) containing the agent and a `config.json` with a **one-time pairing token**
+(valid for 10 minutes). Download it fresh each time you set up a new machine.
+
+The download reports its exact size, so the browser shows real progress, and it **resumes** if the
+connection drops — no need to start a large download over.
 
 ## 2. Install — nothing to install
 
-The bundle is **self-contained**: production `node_modules` and the compiled `dist/` ship inside it —
-there is no install step at all.
+The bundle is **self-contained**: production `node_modules`, the compiled `dist/` and Chromium all ship
+inside it. There is no install step and nothing to unpack a second time.
 
-1. Unzip `TestFlow-Agent.zip` to a folder you control, e.g. `C:\TestFlow-Agent`.
+1. Unzip `TestFlow-Agent.zip` to a folder you control, e.g. `C:\TestFlow-Agent`. This is the **only**
+   extraction — it produces a `TestFlow-Agent` folder holding the complete agent.
 2. Double-click **start.bat**. That's it.
 
 Requires Node.js 18+ on the machine (or a bundled portable Node in `agent/node/`).
 
 ## 3. Start
 
-Double-click **start.bat**. On first launch the agent:
+Double-click **start.bat**. It launches the agent immediately — there is no preparation or unpacking
+step. On first launch the agent:
 
 - exchanges the pairing token for a durable, machine-bound agent token (stored in `config.json`),
 - opens a WebSocket to the cloud and begins sending heartbeats,
@@ -54,7 +59,11 @@ Back in **Automation → Local Agent**, the status badge turns green (**Connecte
 
 When a newer agent is published, **Automation → Local Agent** shows an **Update Agent** action, and the
 agent logs a notice on startup. Download the new ZIP and unzip it over the same folder, then run
-start.bat (your `config.json` and token are preserved).
+start.bat.
+
+Keep a copy of your existing `config.json` first and restore it afterwards: every download ships its own
+`config.json` carrying a fresh pairing token, so overwriting yours discards the durable agent token and
+forces the machine to pair again.
 
 ## Security notes
 
