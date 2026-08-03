@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { casesForPlan, casesForRun, manualRunSelection, runExecutionState, runnableCases, scriptsForCases, scriptsForRun } from '../src/lib/manualTestRun';
+import { casesForPlan, casesForRun, getRunStats, manualRunSelection, runExecutionState, runnableCases, scriptsForCases, scriptsForRun } from '../src/lib/manualTestRun';
 import { agentRunStatusForList, isActiveTestRun, isClosedTestRun, isPendingReviewTestRun, isStaleManualTestRun } from '../core/shared/testRunStatus';
 
 const suites = [
@@ -40,6 +40,11 @@ assert.deepEqual(runExecutionState({
   label: 'Completed 2/4 scripts',
 });
 assert.equal(runExecutionState({ status: 'In Progress' }).running, true);
+assert.deepEqual(
+  getRunStats({ totalExecutions: 1, passed: 1, failed: 0, steps: [{ outcome: 'Failed' }] }),
+  { total: 1, passed: 1, failed: 0, blocked: 0, skipped: 0, retest: 0, untested: 0, completed: 100 },
+  'explicit zero counters replace stale outcomes after a successful rerun',
+);
 assert.equal(isActiveTestRun({ status: 'In Progress' }), true);
 assert.equal(isActiveTestRun({ status: 'Review Required' }), true);
 assert.equal(agentRunStatusForList('completed'), 'Completed — Pending Review');

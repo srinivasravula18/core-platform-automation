@@ -25,7 +25,7 @@ import { showAlert, showConfirm } from '@/src/lib/dialog';
 import { can } from '@/src/components/AuthGate';
 import { withBasePath } from '@/src/lib/base-path';
 import { caseSuiteIds } from '@/src/lib/suiteCaseSelection';
-import { casesForRun, manualRunSelection, runExecutionState, scriptsForCases, scriptsForRun } from '@/src/lib/manualTestRun';
+import { casesForRun, getRunStats, manualRunSelection, runExecutionState, scriptsForCases, scriptsForRun } from '@/src/lib/manualTestRun';
 import { collectRunEvidence, evidenceDownloadName } from '@/core/shared/runEvidence';
 import { normalizeTags } from '@/src/lib/tags';
 import { ManualRunner } from '@/src/components/manualRunner/ManualRunner';
@@ -40,41 +40,6 @@ async function downloadFromUrl(url: string, filename: string) {
   anchor.download = filename;
   anchor.click();
   setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
-}
-
-function getRunStats(run: any, caseCount?: number) {
-  const steps = Array.isArray(run?.steps) ? run.steps : [];
-  // A run detail displays test cases, not the individual instructions inside each
-  // case. Older runs persisted their instruction count in totalExecutions, which
-  // made "Untested" larger than the cases shown in this table.
-  const storedTotal = Number(run?.totalExecutions) || 0;
-  const total = caseCount || storedTotal || steps.length || 0;
-  const hasLegacyStepTotal = Boolean(caseCount && storedTotal > caseCount);
-  const caseOutcomes = new Map<string, string>();
-  if (hasLegacyStepTotal) {
-    steps.forEach((step: any, index: number) => {
-      const caseKey = String(step?.testCaseId || step?.testCaseTitle || String(step?.step || '').match(/^(\d+)\./)?.[1] || index);
-      const outcome = String(step?.outcome || step?.status || '');
-      const previous = caseOutcomes.get(caseKey) || '';
-      // Retain the most serious result when a legacy checklist contains several
-      // instruction rows for the same case.
-      if (/fail/i.test(outcome) || !previous) caseOutcomes.set(caseKey, outcome);
-    });
-  }
-  const outcomes = hasLegacyStepTotal ? [...caseOutcomes.values()] : steps.map((step: any) => String(step?.outcome || step?.status || ''));
-  const passed = hasLegacyStepTotal
-    ? outcomes.filter((outcome) => /pass|passed/i.test(outcome)).length
-    : Number(run?.passed) || outcomes.filter((outcome) => /pass|passed/i.test(outcome)).length;
-  const failed = hasLegacyStepTotal
-    ? outcomes.filter((outcome) => /fail|failed/i.test(outcome)).length
-    : Number(run?.failed) || outcomes.filter((outcome) => /fail|failed/i.test(outcome)).length;
-  const blocked = outcomes.filter((outcome) => /block|blocked/i.test(outcome)).length;
-  const skipped = outcomes.filter((outcome) => /skip|skipped/i.test(outcome)).length;
-  const retest = outcomes.filter((outcome) => /retest/i.test(outcome)).length;
-  const untested = Math.max(0, total - passed - failed - blocked - skipped - retest);
-  const completed = total ? Math.round(((passed + failed + blocked + skipped + retest) / total) * 100) : 0;
-
-  return { total, passed, failed, blocked, skipped, retest, untested, completed };
 }
 
 function statusDot(status: string) {
@@ -561,8 +526,8 @@ export default function TestRuns() {
     };
 
     return (
-      <div className="app-page-shell h-full flex flex-col">
-        <div className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl flex flex-col flex-1 min-h-0 overflow-hidden">
+      <div className="app-page-shell min-h-full">
+        <div className="min-w-0 overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--bg-card)]">
           <div className="p-5 border-b border-[var(--border)]">
             <div className="flex items-center gap-2 text-sm text-[var(--text-muted)] mb-3">
               <button onClick={() => navigate('/runs')} className="inline-flex items-center gap-1 hover:text-[var(--text-primary)]">
@@ -822,7 +787,7 @@ export default function TestRuns() {
             </div>
           </div>
 
-          <div className="flex-1 min-h-0 overflow-hidden flex flex-col md:grid md:grid-cols-[280px_1fr]">
+          <div className="flex min-h-[22rem] flex-col overflow-hidden md:grid md:grid-cols-[280px_minmax(0,1fr)]">
             <div className="md:border-r border-b md:border-b-0 border-[var(--border)] overflow-auto md:max-h-full max-h-48">
               <div className="px-4 py-3 text-xs font-semibold uppercase text-[var(--text-muted)] border-b border-[var(--border)]">Sort by: Custom</div>
               {groupedCases.length === 0 ? (

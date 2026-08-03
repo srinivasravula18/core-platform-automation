@@ -93,3 +93,32 @@ export function runExecutionState(run: any) {
     label: running ? String(run?.progress || `Running ${total || ''} scripts`).trim() : '',
   };
 }
+
+export function getRunStats(run: any, caseCount?: number) {
+  const steps = Array.isArray(run?.steps) ? run.steps : [];
+  const storedTotal = Number(run?.totalExecutions) || 0;
+  const total = caseCount || storedTotal || steps.length || 0;
+  const hasLegacyStepTotal = Boolean(caseCount && storedTotal > caseCount);
+  const caseOutcomes = new Map<string, string>();
+  if (hasLegacyStepTotal) {
+    steps.forEach((step: any, index: number) => {
+      const caseKey = String(step?.testCaseId || step?.testCaseTitle || String(step?.step || '').match(/^(\d+)\./)?.[1] || index);
+      const outcome = String(step?.outcome || step?.status || '');
+      const previous = caseOutcomes.get(caseKey) || '';
+      if (/fail/i.test(outcome) || !previous) caseOutcomes.set(caseKey, outcome);
+    });
+  }
+  const outcomes = hasLegacyStepTotal ? [...caseOutcomes.values()] : steps.map((step: any) => String(step?.outcome || step?.status || ''));
+  const storedCount = (key: 'passed' | 'failed') => {
+    const value = run?.[key];
+    return value !== null && value !== undefined && Number.isFinite(Number(value)) ? Number(value) : null;
+  };
+  const passed = hasLegacyStepTotal ? outcomes.filter((outcome) => /pass/i.test(outcome)).length : storedCount('passed') ?? outcomes.filter((outcome) => /pass/i.test(outcome)).length;
+  const failed = hasLegacyStepTotal ? outcomes.filter((outcome) => /fail/i.test(outcome)).length : storedCount('failed') ?? outcomes.filter((outcome) => /fail/i.test(outcome)).length;
+  const blocked = outcomes.filter((outcome) => /block/i.test(outcome)).length;
+  const skipped = outcomes.filter((outcome) => /skip/i.test(outcome)).length;
+  const retest = outcomes.filter((outcome) => /retest/i.test(outcome)).length;
+  const untested = Math.max(0, total - passed - failed - blocked - skipped - retest);
+  const completed = total ? Math.round(((passed + failed + blocked + skipped + retest) / total) * 100) : 0;
+  return { total, passed, failed, blocked, skipped, retest, untested, completed };
+}

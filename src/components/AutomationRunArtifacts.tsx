@@ -54,6 +54,13 @@ export function AutomationRunArtifacts({ jobId }: { jobId: string }) {
 
   useEffect(() => { setLogs([]); void loadJob(); void loadArtifacts(); }, [loadJob, loadArtifacts]);
 
+  // SSE can be missed while a tab is hidden or reconnecting; poll until the durable job is terminal.
+  useEffect(() => {
+    if (job && !['queued', 'dispatched', 'running', 'uploading'].includes(job.status)) return;
+    const timer = window.setInterval(() => { void loadJob(); void loadArtifacts(); }, 2000);
+    return () => window.clearInterval(timer);
+  }, [job?.status, loadJob, loadArtifacts]);
+
   useAgentEvents((evt) => {
     if (evt.scopeType !== 'job' || evt.scopeId !== jobId) return;
     void loadJob();
