@@ -134,36 +134,6 @@ export async function warmAgentBundleCache(): Promise<void> {
   console.log(`[automation] agent runtime cache ready (${path.basename(cached)}, ${Date.now() - started}ms)`);
 }
 
-export async function agentRuntimeBundle(): Promise<{ filename: string; path: string; size: number }> {
-  const runtimePath = await ensureRuntimeCache();
-  return {
-    filename: path.basename(runtimePath),
-    path: runtimePath,
-    size: fs.statSync(runtimePath).size,
-  };
-}
-
-/** Serve the shared runtime as an immutable, range-capable asset suitable for a CDN/object store. */
-export async function sendAgentRuntime(res: Response, requestedFilename: string): Promise<void> {
-  let runtime: Awaited<ReturnType<typeof agentRuntimeBundle>>;
-  try { runtime = await agentRuntimeBundle(); }
-  catch (error: any) {
-    res.status(503).json({ error: error?.message || 'The agent runtime is still being prepared. Retry shortly.' });
-    return;
-  }
-  if (requestedFilename !== runtime.filename) {
-    res.status(404).json({ error: 'Agent runtime not found.' });
-    return;
-  }
-  res.setHeader('Content-Type', 'application/zip');
-  res.setHeader('Content-Disposition', `inline; filename="${runtime.filename}"`);
-  res.setHeader('Content-Length', String(runtime.size));
-  res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
-  res.setHeader('Accept-Ranges', 'bytes');
-  res.setHeader('X-Accel-Buffering', 'no');
-  res.sendFile(runtime.path, { acceptRanges: true, cacheControl: false });
-}
-
 export function agentDirExists(): boolean {
   return fs.existsSync(path.join(AGENT_DIR, 'package.json'));
 }
@@ -177,8 +147,9 @@ export function agentLatestInfo(downloadUrl: string): { version: string; downloa
   return { version, downloadUrl };
 }
 
-export async function streamAgentZip(res: Response, opts: { pairingToken: string; cloudUrl: string; runtimeUrl: string; name?: string }): Promise<void> {
-  try { await ensureRuntimeCache(); }
+export async function streamAgentZip(res: Response, opts: { pairingToken: string; cloudUrl: string; name?: string }): Promise<void> {
+  let runtimeZip: string;
+  try { runtimeZip = await ensureRuntimeCache(); }
   catch (error: any) {
     res.status(503).json({ error: error?.message || 'The agent bundle is still being prepared. Retry shortly.' });
     return;
@@ -186,8 +157,6 @@ export async function streamAgentZip(res: Response, opts: { pairingToken: string
 
   res.setHeader('Content-Type', 'application/zip');
   res.setHeader('Content-Disposition', 'attachment; filename="TestFlow-Agent.zip"');
-  res.setHeader('Cache-Control', 'no-store');
-  res.setHeader('X-Accel-Buffering', 'no');
 
   const archive = archiver('zip', { zlib: { level: 1 }, statConcurrency: 64 });
   archive.on('error', (err) => {
@@ -197,8 +166,9 @@ export async function streamAgentZip(res: Response, opts: { pairingToken: string
   });
   archive.pipe(res);
 
-  // Keep the personalized download tiny. start.bat fetches this immutable, CDN-cacheable runtime once.
-  archive.append(`${opts.runtimeUrl}\r\n`, { name: 'TestFlow-Agent/runtime.url' });
+  // The large runtime is already compressed once. Store it unchanged inside the personalized outer
+  // ZIP; start.bat expands it on first launch, then removes the inner archive.
+  archive.append(fs.createReadStream(runtimeZip), { name: 'TestFlow-Agent/runtime.zip', store: true });
   archive.file(path.join(AGENT_DIR, 'start.bat'), { name: 'TestFlow-Agent/start.bat' });
 
   // Per-download config with the single-use pairing token baked in.

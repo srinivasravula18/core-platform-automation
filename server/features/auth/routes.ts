@@ -146,8 +146,6 @@ const PUBLIC_API_PREFIXES = [
   '/api/automation/hooks',
   // Agent version check — non-sensitive; polled by the desktop agent's updater (agent token, not human).
   '/api/automation/agent/latest',
-  // Immutable runtime contains no user data or pairing token and is safe for CDN caching.
-  '/api/automation/agent/runtime',
 ];
 
 /**
