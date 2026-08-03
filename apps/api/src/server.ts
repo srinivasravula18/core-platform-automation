@@ -186,12 +186,26 @@ export async function startExpressServer() {
   // the port via the HTTP upgrade path. Both attach + scheduler are no-ops when REMOTE_AGENT_V1 is off.
   const httpServer = http.createServer(app);
   attachAutomationGateway(httpServer);
-  if (isRemoteAgentEnabled()) {
-    startScheduler();
-    await recoverOrphanedJobs().catch((err) => console.error('[automation] orphaned-job recovery failed:', err?.message || err));
-  }
+
+  // A restart that races the previous process must die, not linger: the uncaughtException guard would
+  // otherwise swallow EADDRINUSE and leave a process that never serves yet still owns a scheduler tick
+  // and DB connections — invisible to any supervisor, because it never exits.
+  httpServer.on('error', (err: NodeJS.ErrnoException) => {
+    if (err.code === 'EADDRINUSE') {
+      console.error(`[startup] port ${port} is already in use — the previous backend is still running. Stop it first; exiting so the supervisor can restart cleanly.`);
+    } else {
+      console.error('[startup] HTTP server error:', err?.stack || err?.message || err);
+    }
+    process.exit(1);
+  });
 
   httpServer.listen(port, '0.0.0.0', () => {
     console.log(`Backend running on http://localhost:${port}`);
+    // Owned only once the port is ours. Started before listen, a failed bind would double-tick the
+    // scheduler and let orphan recovery fail jobs the live process is still running.
+    if (isRemoteAgentEnabled()) {
+      startScheduler();
+      void recoverOrphanedJobs().catch((err) => console.error('[automation] orphaned-job recovery failed:', err?.message || err));
+    }
   });
 }
