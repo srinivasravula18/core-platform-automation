@@ -13,7 +13,18 @@ import os from 'os';
 import { createRequire } from 'module';
 import { chromiumChannel } from './browsers.js';
 const require = createRequire(import.meta.url);
-const playwrightCli = path.join(path.dirname(require.resolve('playwright/package.json')), 'cli.js');
+// playwright-core carries codegen without the test-runner layer that playwright's CLI also loads:
+// measured 415ms vs 696ms just to boot the CLI. Fall back if a bundle ever ships only playwright.
+const resolveCli = () => {
+    for (const pkg of ['playwright-core', 'playwright']) {
+        try {
+            return path.join(path.dirname(require.resolve(`${pkg}/package.json`)), 'cli.js');
+        }
+        catch { /* try the next one */ }
+    }
+    return '';
+};
+const playwrightCli = resolveCli();
 function deriveStats(script) {
     const lines = script.split('\n');
     return {
