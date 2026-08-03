@@ -8,7 +8,7 @@ import { sortByTime, type TimeSortKey } from '@/src/lib/time';
 import ExportMenu from '../components/ExportMenu';
 import { useAiSearch } from '@/src/lib/useAiSearch';
 import { useBulkDelete } from '@/src/lib/useBulkDelete';
-import { startSelectedRun } from '@/src/lib/startSelectedRun';
+import { createClientRunId, pendingRunState, startSelectedRun } from '@/src/lib/startSelectedRun';
 import { Modal } from '@/src/components/Modal';
 import { RequiredMark } from '@/src/components/RequiredMark';
 import { AIActionModal } from '@/src/components/AIActionModal';
@@ -451,12 +451,17 @@ export default function TestCases() {
 
   // Automation cases execute their recorded Playwright script headlessly on the server; the Test Run
   // that opens shows the live execution artifacts (video/screenshots/trace/junit/logs).
-  const startAutomationRun = async (testCase: any): Promise<string> => {
+  const startAutomationRun = async (testCase: any, openImmediately: boolean): Promise<string> => {
+    const runId = createClientRunId();
+    if (openImmediately) navigate(`/runs/${runId}`, {
+      state: pendingRunState(runId, testCase.title || 'Automation run', [testCase.id]),
+    });
     const res = await fetch('/api/automation/runs', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ caseId: testCase.id }),
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ caseId: testCase.id, runId }),
     });
     const data = await readAutomationRunResponse(res);
     if (!data?.run?.id) throw new Error('Automation run started without a run ID.');
+    if (openImmediately) navigate(`/runs/${data.run.id}`, { replace: true, state: { pendingRun: data.run } });
     return data.run.id;
   };
 
@@ -501,17 +506,18 @@ export default function TestCases() {
       const failures: string[] = [];
       let firstAutomationRunId = '';
       for (const testCase of automationCases) {
+        const openImmediately = !firstAutomationRunId;
         try {
-          const runId = await startAutomationRun(testCase);
+          const runId = await startAutomationRun(testCase, openImmediately);
           if (!firstAutomationRunId) firstAutomationRunId = runId;
         } catch (error: any) {
+          if (openImmediately) navigate('/cases', { replace: true });
           failures.push(`${testCase.title || testCase.id}: ${error.message || 'could not start'}`);
         }
       }
 
       // startSelectedRun navigates itself; otherwise open the first automation run dispatched.
       if (otherCaseIds.length) await startSelectedRun({ caseIds: otherCaseIds, tags: normalizedRunTags }, navigate);
-      else if (firstAutomationRunId) navigate(`/runs/${firstAutomationRunId}`);
 
       setIsRunModalOpen(false);
       bulk.clearSelection();

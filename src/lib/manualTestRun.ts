@@ -1,19 +1,22 @@
 import { caseBelongsToSuite, casePlanIds, caseSuiteIds, suiteParentIds, suitePlanIds } from './suiteCaseSelection';
 import { normalizeTags } from './tags';
 
-export async function readAutomationRunResponse(response: Response): Promise<any> {
+export async function readAutomationRunResponse(response: Response, requestUrl = response.url || '/api/automation/runs'): Promise<any> {
   const text = await response.text();
   let data: any = null;
   try { data = text ? JSON.parse(text) : null; } catch { /* proxy/server returned HTML or text */ }
   if (data && response.ok) return data;
-  if (data?.error) throw new Error(data.error);
+  if (data?.error) throw new Error(`${data.error}\nRequest URL: ${requestUrl}\nServer response: HTTP ${response.status}`);
   if (/^\s*<(?:!doctype|html)/i.test(text)) {
-    const message = response.status >= 500
-      ? `Automation service is temporarily unavailable (HTTP ${response.status}). Try again after the server finishes restarting.`
-      : `Automation API returned HTML instead of JSON (HTTP ${response.status}). The backend route is unavailable.`;
+    const issue = response.status === 504
+      ? 'Gateway timeout: the web server/proxy did not receive a response from the backend automation service in time.'
+      : response.status >= 500
+        ? 'Server/proxy failure: the web server could not get a valid response from the backend automation service.'
+        : 'Route failure: the web server returned HTML instead of an automation API response.';
+    const message = `${issue}\nRequest URL: ${requestUrl}\nServer response: HTTP ${response.status}`;
     throw new Error(message);
   }
-  throw new Error(text.trim().slice(0, 200) || `Could not start the automation run (HTTP ${response.status}).`);
+  throw new Error(`${text.trim().slice(0, 200) || 'Could not start the automation run.'}\nRequest URL: ${requestUrl}\nServer response: HTTP ${response.status}`);
 }
 
 export function runTagsForCases(cases: any[], caseIds: string[]): string[] {

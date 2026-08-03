@@ -9,18 +9,34 @@ type RunSelection = {
   name?: string;
 };
 
+export function createClientRunId(): string {
+  return `RUN-${crypto.randomUUID().replaceAll('-', '').slice(0, 16).toUpperCase()}`;
+}
+
+export function pendingRunState(id: string, name: string, caseIds: string[] = []) {
+  return {
+    pendingRun: {
+      id, name, caseIds, mode: 'automated', status: 'Running', progress: 'Starting test run…',
+      startedAt: new Date().toISOString(), date: new Date().toISOString().split('T')[0],
+    },
+  };
+}
+
 export async function startSelectedRun(selection: RunSelection, navigate: NavigateFunction) {
-  const response = await fetch('/api/runs/from-selection', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(selection),
-  });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    throw new Error(data.error || 'Failed to start selected run.');
+  const runId = createClientRunId();
+  navigate(`/runs/${runId}`, { state: pendingRunState(runId, selection.name || 'Preparing selected run', selection.caseIds) });
+  try {
+    const response = await fetch('/api/runs/from-selection', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...selection, runId }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || 'Failed to start selected run.');
+    if (data.run?.id) navigate(`/runs/${data.run.id}`, { replace: true, state: { pendingRun: data.run } });
+    return data.run;
+  } catch (error) {
+    navigate(-1);
+    throw error;
   }
-  if (data.run?.id) {
-    navigate(`/runs/${data.run.id}`);
-  }
-  return data.run;
 }

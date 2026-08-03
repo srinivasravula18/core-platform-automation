@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft, CheckCircle, Download, Filter, Folder, Pencil, PlayCircle, Plus, Search, SlidersHorizontal, Sparkles, Trash2, X } from 'lucide-react';
 import { Timestamp, actorName } from '@/src/components/Timestamp';
 import { TimeSortSelect } from '@/src/components/filters/TimeSortSelect';
@@ -79,6 +79,7 @@ function runStartedAt(run: any): string {
 
 export default function TestRuns() {
   const navigate = useNavigate();
+  const location = useLocation();
   const { runId } = useParams();
   const [runs, setRuns] = useState<any[]>([]);
   const [cases, setCases] = useState<any[]>([]);
@@ -172,11 +173,14 @@ export default function TestRuns() {
     try { const r = await fetch('/api/runs').then((res) => res.json()); setRuns(Array.isArray(r) ? r : []); } catch { /* keep */ }
   }, []);
 
-  const selectedRun = runs.find((run) => String(run.id) === String(runId)) || null;
+  const pendingRun = (location.state as any)?.pendingRun;
+  const persistedRun = runs.find((run) => String(run.id) === String(runId)) || null;
+  const selectedRun = persistedRun || (String(pendingRun?.id) === String(runId) ? pendingRun : null);
 
   // Only AUTOMATED executions drive the 2s live-poll. A manual run sits at "In Progress" while a tester
   // fills it in — polling/refetching then would flicker the page and reset their in-progress selections.
-  const hasRunningRuns = runs.some((run) => run.mode !== 'manual' && runExecutionState(run).running);
+  const hasRunningRuns = runs.some((run) => run.mode !== 'manual' && runExecutionState(run).running)
+    || Boolean(pendingRun && !persistedRun);
   useEffect(() => {
     if (!hasRunningRuns) return;
     const t = setInterval(() => { void refreshRunsQuiet(); }, 2000);

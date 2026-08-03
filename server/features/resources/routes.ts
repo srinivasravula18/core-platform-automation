@@ -1630,7 +1630,10 @@ Rules:
       return res.status(400).json({ error: 'No test cases are linked to the selected item(s).' });
     }
 
-    const runId = `RUN-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
+    const requestedRunId = String(req.body?.runId || '');
+    if (requestedRunId && !/^RUN-[A-F0-9]{16}$/.test(requestedRunId)) return res.status(400).json({ error: 'Invalid run ID.' });
+    if (requestedRunId && await Runs.get(requestedRunId)) return res.status(409).json({ error: 'Run ID already exists.' });
+    const runId = requestedRunId || `RUN-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
     const targetUrl = normalizeTargetUrl(req.body?.targetUrl || findSettingsPlaywrightTargetUrl() || '');
     const selectedPlans = plans.filter((plan: any) => planIds.has(plan.id));
     const selectedSuites = suites.filter((suite: any) => suiteIds.has(suite.id));

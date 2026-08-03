@@ -26,8 +26,8 @@ assert.equal(allCasesHaveRunTags([{ id: 'C1', tags: ['  '] }], ['C1']), false);
 assert.equal(allCasesHaveRunTags([{ id: 'C1', tags: ['@smoke'] }, { id: 'C2', tags: ['@regression'] }], ['C1', 'C2']), true);
 assert.equal((await readAutomationRunResponse(new Response('{"run":{"id":"RUN-1"}}', { status: 201 }))).run.id, 'RUN-1');
 await assert.rejects(
-  readAutomationRunResponse(new Response('<html><h1>Bad Gateway</h1></html>', { status: 502 })),
-  /temporarily unavailable \(HTTP 502\)/,
+  readAutomationRunResponse(new Response('<html><h1>Gateway Timeout</h1></html>', { status: 504 }), 'https://test.example/api/automation/runs'),
+  (error: Error) => error.message === 'Gateway timeout: the web server/proxy did not receive a response from the backend automation service in time.\nRequest URL: https://test.example/api/automation/runs\nServer response: HTTP 504',
 );
 assert.deepEqual(casesForRun({ planIds: ['P1'] }, cases, suites).map(({ id }) => id), ['C1', 'C2']);
 assert.deepEqual(casesForRun({ caseIds: ['C3'] }, cases, suites).map(({ id }) => id), ['C3']);

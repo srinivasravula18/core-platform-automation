@@ -16,6 +16,7 @@ import type { Express, Request, Response, NextFunction } from 'express';
 import { randomBytes } from 'crypto';
 import { createReadStream } from 'fs';
 import { reqScope, scopeFilter } from '../../shared/scope';
+import { asyncRoute } from '../../shared/asyncRoute';
 import { requireAuth, isAuthed } from '../auth/routes';
 import { hashPassword, verifyPassword } from '../auth/userStore';
 import { Agents, AutomationJobs, AutomationSchedules, AutomationDatasets, AutomationDatasetRows, AutomationDataMappings, AutomationExecutionBatches, AutomationRunData, Recordings, Cases, Runs, Scripts } from '../../db/repository';
@@ -672,7 +673,7 @@ export function registerAutomationRoutes(app: Express) {
 
   /* ---------- run an Automation test case on the server, tracked as a Test Run ---------- */
   // Manual and scheduled executions share the same headless runner and artifact pipeline.
-  app.post('/api/automation/runs', requireAuth, async (req: Request, res: Response) => {
+  app.post('/api/automation/runs', requireAuth, asyncRoute(async (req: Request, res: Response) => {
     const caseId = String(req.body?.caseId || '');
     const testCase = await scopedGet((id) => Cases.get(id), caseId, req);
     if (!testCase) return res.status(404).json({ error: 'Test case not found.' });
@@ -682,11 +683,15 @@ export function registerAutomationRoutes(app: Express) {
     if (!rec) return res.status(400).json({ error: 'No recorded script for this case yet. Record it via New Case → Automation.' });
     // Persist the linked run before execution. A fast completion must be able to
     // synchronize its counts onto this record.
+    const requestedRunId = String(req.body?.runId || '');
+    if (requestedRunId && !/^RUN-[A-F0-9]{16}$/.test(requestedRunId)) return res.status(400).json({ error: 'Invalid run ID.' });
+    if (requestedRunId && await Runs.get(requestedRunId)) return res.status(409).json({ error: 'Run ID already exists.' });
     const job = await createServerJob({ recordingId: rec.id, trigger: 'manual' }, reqScope(req));
+    const runId = requestedRunId || `RUN-${randomBytes(2).toString('hex').toUpperCase()}`;
     const run = {
       ...scopeStamp(reqScope(req)),
-      id: `RUN-${randomBytes(2).toString('hex').toUpperCase()}`,
-      name: testCase.title || 'Automation run',
+      id: runId,
+      name: `${testCase.title || 'Automation run'} - ${runId}`,
       caseIds: [caseId],
       requestedBy: req.body?.requestedBy || '',
       status: 'Running',
@@ -702,7 +707,7 @@ export function registerAutomationRoutes(app: Express) {
     if (isPostgresEnabled()) { /* persisted */ } else persistDataInBackground('automation run');
     void runJobOnServer(job.id).catch((error) => console.error('[automation] manual server run failed:', error?.message || error));
     res.status(201).json({ run, jobId: job.id });
-  });
+  }));
 
   /* ---------- schedules (human, scoped) ---------- */
 
