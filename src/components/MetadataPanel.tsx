@@ -35,7 +35,7 @@ export function MetadataPanel({
 
       {changed && (
         <div className="mb-3 border-t border-[var(--border)] pt-3">
-          <div className="text-xs text-[var(--text-muted)]">Last updated</div>
+          <div className="text-xs text-[var(--text-muted)]">Last Updated</div>
           <div className="text-[var(--text-primary)]">{relativeTime(metadata.updatedAt)}</div>
           <div className="text-xs text-[var(--text-muted)]">{absoluteDate(metadata.updatedAt)} · {absoluteClock(metadata.updatedAt)}</div>
           {updatedByName && <div className="text-xs text-[var(--text-muted)]">by {updatedByName}</div>}

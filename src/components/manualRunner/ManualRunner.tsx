@@ -36,10 +36,10 @@ function formatDuration(result: any, now?: number): string {
 
 // The large Azure-style result status derived from a case outcome.
 function resultStatus(outcome: string) {
-  if (outcome === 'Passed') return { Icon: Check, label: 'Test passed', cls: 'text-emerald-500' };
-  if (outcome === 'Failed') return { Icon: X, label: 'Test failed', cls: 'text-red-500' };
-  if (!outcome || outcome === 'Not Run') return { Icon: Circle, label: 'Not run', cls: 'text-[var(--text-muted)]' };
-  return { Icon: Clock, label: 'In progress', cls: 'text-amber-500' };
+  if (outcome === 'Passed') return { Icon: Check, label: 'Test Passed', cls: 'text-emerald-500' };
+  if (outcome === 'Failed') return { Icon: X, label: 'Test Failed', cls: 'text-red-500' };
+  if (!outcome || outcome === 'Not Run') return { Icon: Circle, label: 'Not Run', cls: 'text-[var(--text-muted)]' };
+  return { Icon: Clock, label: 'In Progress', cls: 'text-amber-500' };
 }
 
 // Manual test runner: master (test-points list + bulk toolbar) / detail (selected case result) view,
@@ -331,7 +331,7 @@ function ResultDetail({
   const resultInProgress = Boolean(result.startedAt) && !result.completedAt;
   // A started-but-unevaluated case reads "In progress", not "Not run".
   const status = resultInProgress && (!result.outcome || result.outcome === 'Not Run')
-    ? { Icon: Clock, label: 'In progress', cls: 'text-amber-500' }
+    ? { Icon: Clock, label: 'In Progress', cls: 'text-amber-500' }
     : resultStatus(result.outcome || 'Not Run');
 
   return (
@@ -358,7 +358,7 @@ function ResultDetail({
           )}
         </div>
         <div className="ml-auto flex flex-wrap items-center gap-x-4 gap-y-2 text-sm text-[var(--text-muted)]">
-          <span className="whitespace-nowrap">Start time <span className="text-[var(--text-primary)]">{result.startedAt ? <Timestamp value={result.startedAt} /> : '—'}</span></span>
+          <span className="whitespace-nowrap">Start Time <span className="text-[var(--text-primary)]">{result.startedAt ? <Timestamp value={result.startedAt} /> : '—'}</span></span>
           <span className="whitespace-nowrap">Duration <span className="text-[var(--text-primary)]">{formatDuration(result, now)}</span></span>
           <label className="flex shrink-0 items-center gap-2 whitespace-nowrap text-[var(--text-primary)]">
             {/* Self-contained switch: inline-flex track + inline-block knob (no absolute), so the knob
@@ -372,7 +372,7 @@ function ResultDetail({
             >
               <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${showImages ? 'translate-x-4' : 'translate-x-0.5'}`} />
             </button>
-            Show images
+            Show Images
           </label>
           {editable && (
             <button type="button" disabled={busy} onClick={onCreateBug} className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-[var(--border)] px-3 py-1.5 text-sm font-medium text-[var(--text-primary)] hover:text-red-500 disabled:opacity-50">

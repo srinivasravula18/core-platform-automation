@@ -92,7 +92,7 @@ export default function StepGroupList({ steps }: { steps: ViewStep[] }) {
       <div className="flex items-center justify-between">
         <span className="text-[11px] font-medium text-[var(--text-muted)]">{groups.length} groups · {steps.length} steps</span>
         <button onClick={toggleAll} className="text-[11px] font-medium text-[var(--accent)] hover:underline">
-          {allOpen ? 'Collapse all' : 'Expand all'}
+          {allOpen ? 'Collapse All' : 'Expand All'}
         </button>
       </div>
       <div className="overflow-hidden rounded-lg border border-[var(--border)]">

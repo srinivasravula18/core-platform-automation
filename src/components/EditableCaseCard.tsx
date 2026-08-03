@@ -408,7 +408,7 @@ export default function EditableCaseCard({ initial, startEditing = false, linkTy
           <div className="space-y-2 border-t border-[var(--border)] pt-2">
             <AIReworkPanel
               compact
-              scopeLabel={c.title || 'Current case'}
+              scopeLabel={c.title || 'Current Case'}
               showScopeLabel={false}
               value={feedback}
               onChange={setFeedback}
@@ -445,7 +445,7 @@ export default function EditableCaseCard({ initial, startEditing = false, linkTy
                 </button>
                 <button onClick={saveCase} disabled={busy === 'save'} className="inline-flex items-center gap-1.5 rounded-md bg-[var(--accent)] px-3 py-1.5 text-[11px] font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50">
                   {busy === 'save' ? <Loader2 className="h-3 w-3 animate-spin" /> : <Check className="h-3 w-3" />}
-                  Save changes
+                  Save Changes
                 </button>
               </div>
             </div>

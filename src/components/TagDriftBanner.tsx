@@ -221,7 +221,7 @@ export function TagDriftBanner({
             disabled={busy || !selected.size}
             className="inline-flex items-center gap-1.5 rounded-md border border-[var(--border)] px-2.5 py-1.5 text-xs font-medium text-[var(--accent)] hover:bg-[var(--bg-secondary)] disabled:opacity-50"
           >
-            <Plus className="h-3.5 w-3.5" /> Create new {noun}
+            <Plus className="h-3.5 w-3.5" /> Create New {noun}
           </button>
         )}
         <button
@@ -257,7 +257,7 @@ export function TagDriftBanner({
                   onClick={() => setOpenDiff((cur) => { const n = new Set(cur); n.has(p.caseId) ? n.delete(p.caseId) : n.add(p.caseId); return n; })}
                   className="inline-flex shrink-0 items-center gap-1 rounded-md border border-[var(--border)] px-2 py-1 text-xs font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]"
                 >
-                  {showing ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />} View changes
+                  {showing ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />} View Changes
                 </button>
                 <button
                   type="button"

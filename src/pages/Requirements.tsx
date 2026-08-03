@@ -21,8 +21,8 @@ const REQ_STATUSES = ['Draft', 'Under Review', 'Approved', 'Deprecated'];
 const COVERAGE_BADGE: Record<string, { label: string; cls: string }> = {
   covered: { label: 'Covered', cls: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400' },
   partial: { label: 'Partial', cls: 'border-amber-500/30 bg-amber-500/10 text-amber-400' },
-  'gaps-proposed': { label: 'Gaps proposed', cls: 'border-sky-500/30 bg-sky-500/10 text-sky-400' },
-  none: { label: 'No coverage', cls: 'border-rose-500/30 bg-rose-500/10 text-rose-400' },
+  'gaps-proposed': { label: 'Gaps Proposed', cls: 'border-sky-500/30 bg-sky-500/10 text-sky-400' },
+  none: { label: 'No Coverage', cls: 'border-rose-500/30 bg-rose-500/10 text-rose-400' },
   unknown: { label: 'Unknown', cls: 'border-slate-500/30 bg-slate-500/10 text-slate-400' },
 };
 
@@ -176,7 +176,7 @@ export default function Requirements() {
             filename="requirements"
             title="Requirements"
             rows={exportRequirements}
-            label={bulk.selectedCount ? `Export selected (${bulk.selectedCount})` : 'Export'}
+            label={bulk.selectedCount ? `Export Selected (${bulk.selectedCount})` : 'Export'}
             columns={[
               { key: 'id', label: 'ID' },
               { key: 'title', label: 'Title' },
@@ -222,7 +222,7 @@ export default function Requirements() {
             className="inline-flex items-center justify-center gap-2 rounded-md bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50"
           >
             {discovering ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
-            Create with agent
+            Create with Agent
           </button>
         </div>
         {discoverMessage && <div className="mt-2 text-xs text-[var(--text-muted)]">{discoverMessage}</div>}
@@ -245,7 +245,7 @@ export default function Requirements() {
           <TimeRangeFilter value={updatedFilter} onChange={setUpdatedFilter} />
           {bulk.selectedCount > 0 && can('requirements:delete') && (
             <button onClick={bulk.deleteSelected} disabled={bulk.busy} className="ml-auto flex items-center gap-1.5 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
-              <Trash2 className="w-4 h-4" /> Delete selected ({bulk.selectedCount})
+              <Trash2 className="w-4 h-4" /> Delete Selected ({bulk.selectedCount})
             </button>
           )}
         </div>
@@ -259,7 +259,7 @@ export default function Requirements() {
                 </th>
                 <th className="font-medium py-3 px-4 w-28">ID</th>
                 <th className="font-medium py-3 px-4">Title</th>
-                <th className="font-medium py-3 px-4">Feature query</th>
+                <th className="font-medium py-3 px-4">Feature Query</th>
                 <th className="font-medium py-3 px-4 w-36">Coverage</th>
                 <th className="font-medium py-3 px-4 w-44">Cases</th>
                 <th className="font-medium py-3 px-4 w-28">Status</th>
@@ -371,7 +371,7 @@ export default function Requirements() {
             <textarea value={form.businessRules} onChange={(e) => setForm({ ...form, businessRules: e.target.value })} className={`${inputClass} h-28 resize-y font-mono text-xs`} />
           </div>
           <div>
-            <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Background data population</label>
+            <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Background Data Population</label>
             <textarea value={form.dataPopulationNotes} onChange={(e) => setForm({ ...form, dataPopulationNotes: e.target.value })} className={`${inputClass} h-20 resize-y`} />
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -386,7 +386,7 @@ export default function Requirements() {
           {/* Read-only: metadata source of truth + cited source files */}
           {Array.isArray(selected?.metadataRefs) && selected.metadataRefs.length > 0 && (
             <div>
-              <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">Source of truth (metadata)</div>
+              <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">Source of Truth (Metadata)</div>
               <div className="flex flex-wrap gap-1.5">
                 {selected.metadataRefs.map((m: any, i: number) => (
                   <span key={i} className="rounded border border-[var(--border)] bg-[var(--bg-secondary)] px-1.5 py-0.5 text-[10px] text-[var(--text-primary)]" title={m.note}>{m.object}</span>
@@ -396,7 +396,7 @@ export default function Requirements() {
           )}
           {selectedUiSelectorRows.length > 0 && (
             <div>
-              <div className="mb-1 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]"><FileCode2 className="h-3.5 w-3.5" /> Repo UI hooks for testing</div>
+              <div className="mb-1 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]"><FileCode2 className="h-3.5 w-3.5" /> Repo UI Hooks for Testing</div>
               <div className="space-y-1 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] p-2">
                 {selectedUiSelectorRows.map((row) => (
                   <div key={row.label} className="text-[11px]">
@@ -409,7 +409,7 @@ export default function Requirements() {
           )}
           {Array.isArray(selected?.sourceFiles) && selected.sourceFiles.length > 0 && (
             <div>
-              <div className="mb-1 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]"><FileCode2 className="h-3.5 w-3.5" /> Source files</div>
+              <div className="mb-1 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]"><FileCode2 className="h-3.5 w-3.5" /> Source Files</div>
               <div className="space-y-0.5">
                 {selected.sourceFiles.map((f: any, i: number) => (
                   <div key={i} className="flex items-start gap-1.5 text-[11px]">

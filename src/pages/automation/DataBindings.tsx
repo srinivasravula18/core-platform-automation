@@ -346,7 +346,7 @@ export default function DataBindings() {
     try {
       const body = await json('/api/automation/datasets/manual', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: manual.name || 'Manual dataset', columns: manual.columns, rows: manual.rows }),
+        body: JSON.stringify({ name: manual.name || 'Manual Dataset', columns: manual.columns, rows: manual.rows }),
       });
       setManual(null);
       await load();
@@ -373,12 +373,12 @@ export default function DataBindings() {
     setBusy(true);
     try {
       const body = await json('/api/automation/data-profiles/from-recording', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ recordingId, name: saveProfile.name || 'Data profile' }),
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ recordingId, name: saveProfile.name || 'Data Profile' }),
       });
       setSaveProfile(null);
       await load();
       if (body.profile?.id) setProfileId(body.profile.id);
-      setMessage(`Saved profile “${body.profile?.name || 'Data profile'}”.`);
+      setMessage(`Saved profile “${body.profile?.name || 'Data Profile'}”.`);
     } catch (error: any) { setMessage(error.message); } finally { setBusy(false); }
   };
 
@@ -422,7 +422,7 @@ export default function DataBindings() {
 
   const shownTo = Math.min(offset + rows.length, total);
   const previewSelectionLabel = selectedRows.length === total && total > 0
-    ? 'All rows selected'
+    ? 'All Rows Selected'
     : selectedRows.length > 1
       ? `${selectedRows.length} rows selected`
       : selectedRows.length === 1
@@ -470,7 +470,7 @@ export default function DataBindings() {
           <div className="flex shrink-0 flex-wrap items-center gap-1.5 border-b border-[var(--border)] p-2">
             <button onClick={() => void downloadTemplate()} className="inline-flex items-center gap-1.5 rounded border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-xs hover:border-[var(--accent)]"><Download className="h-3.5 w-3.5" />Template</button>
             <button disabled={!dataset} onClick={openAutoMap} title={dataset ? 'Suggest field↔column bindings by name' : 'Import a dataset first'} className="inline-flex items-center gap-1.5 rounded border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-xs hover:border-[var(--accent)] disabled:opacity-40"><Wand2 className="h-3.5 w-3.5" />Auto-map</button>
-            <button onClick={openManual} title="Type rows by hand instead of uploading" className="inline-flex items-center gap-1.5 rounded border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-xs hover:border-[var(--accent)]"><Table className="h-3.5 w-3.5" />Manual grid</button>
+            <button onClick={openManual} title="Type rows by hand instead of uploading" className="inline-flex items-center gap-1.5 rounded border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-xs hover:border-[var(--accent)]"><Table className="h-3.5 w-3.5" />Manual Grid</button>
             <label className="relative ml-auto block w-40">
               <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--text-muted)]" />
               <input type="search" value={fieldSearch} onChange={(e) => setFieldSearch(e.target.value)} placeholder="Filter fields" aria-label="Filter fields"
@@ -534,7 +534,7 @@ export default function DataBindings() {
       <aside onDragOver={(event) => { if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); setFileOver(true); } }} onDragLeave={() => setFileOver(false)} onDrop={dropFile}
         className={`flex min-h-0 flex-col overflow-hidden rounded-lg border ${fileOver ? 'border-[var(--accent)] bg-[var(--accent)]/5' : 'border-[var(--border)] bg-[var(--bg-card)]'}`}>
         <div className="shrink-0 border-b border-[var(--border)] p-2">
-          <div className="mb-1.5 px-1 text-sm font-semibold">Data profile<span className="ml-1 text-[11px] font-normal text-[var(--text-muted)]">reuse across scripts</span></div>
+          <div className="mb-1.5 px-1 text-sm font-semibold">Data Profile<span className="ml-1 text-[11px] font-normal text-[var(--text-muted)]">reuse across scripts</span></div>
           <SearchableSelect ariaLabel="Data profile" placeholder="Select a saved profile" value={profileId} onChange={setProfileId}
             items={profiles.map((item) => ({ id: item.id, label: item.name, sub: item.description }))} />
           <div className="mt-1.5 flex gap-1.5">
@@ -570,18 +570,18 @@ export default function DataBindings() {
         </div>
         <div className="flex flex-wrap items-center gap-2 text-xs">
           <select aria-label="Data policy" value={dataPolicy} onChange={(event) => setDataPolicy(event.target.value)} title="fresh = generate new data · ephemeral = also delete after · pooled = consume rows once" className="rounded border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-2">
-            <option value="fresh">Fresh data</option>
-            <option value="ephemeral">Ephemeral (clean up after)</option>
-            <option value="pooled">Pooled (consume rows)</option>
+            <option value="fresh">Fresh Data</option>
+            <option value="ephemeral">Ephemeral (Clean Up After)</option>
+            <option value="pooled">Pooled (Consume Rows)</option>
           </select>
-          {dataPolicy === 'pooled' && <button onClick={() => void resetPool()} title="Mark every pooled row available again" className="rounded border border-[var(--border)] px-2 py-2 hover:border-[var(--accent)]">Reset pool</button>}
-          <label className="inline-flex items-center gap-1 rounded border border-[var(--border)] px-2 py-2"><input type="checkbox" checked={stopOnFailure} onChange={(event) => setStopOnFailure(event.target.checked)} />Stop on first failure</label>
-          <button disabled={busy} onClick={() => void run('all')} className="rounded bg-[var(--accent)] px-3 py-2 text-white"><Play className="mr-1 inline h-3 w-3" />Run all</button>
-          <button disabled={busy} onClick={() => void run('selected')} className="rounded border border-[var(--border)] px-3 py-2">Run selected ({selectedRows.length})</button>
+          {dataPolicy === 'pooled' && <button onClick={() => void resetPool()} title="Mark every pooled row available again" className="rounded border border-[var(--border)] px-2 py-2 hover:border-[var(--accent)]">Reset Pool</button>}
+          <label className="inline-flex items-center gap-1 rounded border border-[var(--border)] px-2 py-2"><input type="checkbox" checked={stopOnFailure} onChange={(event) => setStopOnFailure(event.target.checked)} />Stop on First Failure</label>
+          <button disabled={busy} onClick={() => void run('all')} className="rounded bg-[var(--accent)] px-3 py-2 text-white"><Play className="mr-1 inline h-3 w-3" />Run All</button>
+          <button disabled={busy} onClick={() => void run('selected')} className="rounded border border-[var(--border)] px-3 py-2">Run Selected ({selectedRows.length})</button>
           <input aria-label="Range start" type="number" min={1} value={range.from} onChange={(event) => setRange({ ...range, from: Number(event.target.value) })} className="w-16 rounded border border-[var(--border)] bg-transparent p-2" />
           <span>–</span>
           <input aria-label="Range end" type="number" min={1} max={dataset.rowCount} value={range.to} onChange={(event) => setRange({ ...range, to: Number(event.target.value) })} className="w-16 rounded border border-[var(--border)] bg-transparent p-2" />
-          <button disabled={busy} onClick={() => void run('range')} className="rounded border border-[var(--border)] px-3 py-2">Run range</button>
+          <button disabled={busy} onClick={() => void run('range')} className="rounded border border-[var(--border)] px-3 py-2">Run Range</button>
         </div>
       </div>
       {batch && <div className="flex flex-wrap items-center gap-3 border-b border-[var(--border)] px-3 py-2 text-xs text-[var(--text-secondary)]">
@@ -591,13 +591,13 @@ export default function DataBindings() {
         <span>{batch.summary?.running || 0} running</span>
         <span>{batch.summary?.queued || 0} queued</span>
         <div className="ml-auto flex gap-2">
-          {batch.status === 'failed' && <button onClick={() => void json(`/api/automation/batches/${batch.id}/retry`, { method: 'POST' }).then((body) => setBatch(body.batch)).catch((error) => setMessage(error.message))} className="rounded border border-[var(--border)] px-2 py-1">Retry failed rows</button>}
-          {['done', 'failed', 'cancelled'].includes(batch.status) && <button onClick={() => void reapOrphans()} title="Delete SUT records this batch created but orphaned" className="rounded border border-[var(--border)] px-2 py-1">Reap orphans</button>}
+          {batch.status === 'failed' && <button onClick={() => void json(`/api/automation/batches/${batch.id}/retry`, { method: 'POST' }).then((body) => setBatch(body.batch)).catch((error) => setMessage(error.message))} className="rounded border border-[var(--border)] px-2 py-1">Retry Failed Rows</button>}
+          {['done', 'failed', 'cancelled'].includes(batch.status) && <button onClick={() => void reapOrphans()} title="Delete SUT records this batch created but orphaned" className="rounded border border-[var(--border)] px-2 py-1">Reap Orphans</button>}
         </div>
       </div>}
       {batch && batchJobs.length > 0 && <div className="max-h-56 overflow-auto border-b border-[var(--border)]">
         <table className="min-w-max text-[11px]">
-          <thead className="sticky top-0 bg-[var(--bg-card)] text-[var(--text-muted)]"><tr><th className="p-2 text-left">Row</th><th className="p-2 text-left">Status</th><th className="p-2 text-left">Data written (ledger)</th>{batch.dataPolicy === 'ephemeral' && <th className="p-2 text-left">Cleanup</th>}</tr></thead>
+          <thead className="sticky top-0 bg-[var(--bg-card)] text-[var(--text-muted)]"><tr><th className="p-2 text-left">Row</th><th className="p-2 text-left">Status</th><th className="p-2 text-left">Data Written (Ledger)</th>{batch.dataPolicy === 'ephemeral' && <th className="p-2 text-left">Cleanup</th>}</tr></thead>
           <tbody>{[...batchJobs].sort((a, b) => (a.rowNumber || 0) - (b.rowNumber || 0)).map((job) => {
             const fields = batchData.filter((entry) => entry.rowNumber === job.rowNumber);
             const tone = job.status === 'done' ? 'text-emerald-500' : job.status === 'failed' ? 'text-red-500' : job.status === 'cancelled' ? 'text-[var(--text-muted)]' : 'text-amber-500';
@@ -638,7 +638,7 @@ export default function DataBindings() {
         </div>
         <div className="min-h-0 flex-1 overflow-auto p-3">
           <table className="w-full text-sm">
-            <thead><tr className="text-left text-[11px] uppercase tracking-wide text-[var(--text-muted)]"><th className="py-1 pr-3">Field</th><th className="py-1">Bind to</th></tr></thead>
+            <thead><tr className="text-left text-[11px] uppercase tracking-wide text-[var(--text-muted)]"><th className="py-1 pr-3">Field</th><th className="py-1">Bind To</th></tr></thead>
             <tbody>{autoMap.rows.map((autoRow, index) => <tr key={autoRow.stepId} className="border-t border-[var(--border)]">
               <td className="py-2 pr-3 align-middle">{autoRow.label}</td>
               <td className="py-2">
@@ -653,7 +653,7 @@ export default function DataBindings() {
         </div>
         <div className="flex items-center justify-end gap-2 border-t border-[var(--border)] p-3">
           <button onClick={() => setAutoMap(null)} className="rounded border border-[var(--border)] px-3 py-1.5 text-sm">Cancel</button>
-          <button disabled={busy} onClick={() => void applyAutoMap()} className="rounded bg-[var(--accent)] px-3 py-1.5 text-sm text-white disabled:opacity-40">Apply selected</button>
+          <button disabled={busy} onClick={() => void applyAutoMap()} className="rounded bg-[var(--accent)] px-3 py-1.5 text-sm text-white disabled:opacity-40">Apply Selected</button>
         </div>
       </div>
     </div>}
@@ -667,7 +667,7 @@ export default function DataBindings() {
           className="w-full rounded border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-2 text-sm outline-none focus:border-[var(--accent)]" />
         <div className="mt-3 flex items-center justify-end gap-2">
           <button onClick={() => setSaveProfile(null)} className="rounded border border-[var(--border)] px-3 py-1.5 text-sm">Cancel</button>
-          <button disabled={busy || !saveProfile.name.trim()} onClick={() => void saveCurrentProfile()} className="rounded bg-[var(--accent)] px-3 py-1.5 text-sm text-white disabled:opacity-40">Save profile</button>
+          <button disabled={busy || !saveProfile.name.trim()} onClick={() => void saveCurrentProfile()} className="rounded bg-[var(--accent)] px-3 py-1.5 text-sm text-white disabled:opacity-40">Save Profile</button>
         </div>
       </div>
     </div>}
@@ -682,7 +682,7 @@ export default function DataBindings() {
           <button aria-label="Close" onClick={() => setManual(null)} className="text-[var(--text-muted)] hover:text-[var(--text-primary)]"><X className="h-4 w-4" /></button>
         </div>
         <div className="flex items-center gap-2 border-b border-[var(--border)] p-3">
-          <label className="text-xs text-[var(--text-muted)]">Dataset name</label>
+          <label className="text-xs text-[var(--text-muted)]">Dataset Name</label>
           <input aria-label="Dataset name" value={manual.name} onChange={(event) => setManual({ ...manual, name: event.target.value })} placeholder="Manual dataset" className="flex-1 rounded border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-sm" />
           <span className="text-[11px] text-amber-500">● Unsaved · {manual.rows.length} row{manual.rows.length === 1 ? '' : 's'}</span>
         </div>
@@ -701,7 +701,7 @@ export default function DataBindings() {
         </div>
         <div className="flex items-center justify-end gap-2 border-t border-[var(--border)] p-3">
           <button onClick={() => setManual(null)} className="rounded border border-[var(--border)] px-3 py-1.5 text-sm">Discard</button>
-          <button disabled={busy} onClick={() => void saveManual()} className="rounded bg-[var(--accent)] px-3 py-1.5 text-sm text-white disabled:opacity-40">Save as dataset</button>
+          <button disabled={busy} onClick={() => void saveManual()} className="rounded bg-[var(--accent)] px-3 py-1.5 text-sm text-white disabled:opacity-40">Save as Dataset</button>
         </div>
       </div>
     </div>}

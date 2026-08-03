@@ -133,14 +133,14 @@ export function CodegenPanel({ title, appUrl, caseMeta, onDone }: {
           Done
         </button>
         <button onClick={session.reset} className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] hover:border-[var(--accent)]">
-          Record again
+          Record Again
         </button>
       </div>
     </div>
   );
 }
 
-/** Application URL selector (saved-URL dropdown + free text + inline Add URL). Controlled. */
+/** Application URL selector (saved-URL dropdown + inline Add URL). Controlled. */
 export function AppUrlField({ value, onChange, onEnvironment }: {
   value: string;
   onChange: (url: string) => void;
@@ -155,7 +155,7 @@ export function AppUrlField({ value, onChange, onEnvironment }: {
   return (
     <div>
       <div className="flex items-center justify-between">
-        <label className="block text-xs font-medium text-[var(--text-muted)]">Application URL</label>
+        <label className="block text-xs font-medium text-[var(--text-muted)]">Application URL<RequiredMark /></label>
         <button type="button" onClick={() => setAddUrlOpen(true)} className="inline-flex items-center gap-1 text-xs font-medium text-[var(--accent)] hover:underline">
           <Plus className="h-3.5 w-3.5" /> Add URL
         </button>
@@ -174,8 +174,6 @@ export function AppUrlField({ value, onChange, onEnvironment }: {
           {websites.map((w) => <option key={w.id} value={w.baseUrl}>{w.name} — {w.baseUrl}</option>)}
         </select>
       )}
-      <input value={value} onChange={(e) => onChange(e.target.value)} placeholder="https://app.example.com"
-        className="mt-2 w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
       <AddUrlModal isOpen={addUrlOpen} onClose={() => setAddUrlOpen(false)} onCreated={(w) => { onChange(w.baseUrl); void loadWebsites(); }} />
     </div>
   );

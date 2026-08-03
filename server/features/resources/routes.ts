@@ -1125,6 +1125,7 @@ export function registerResourceRoutes(app: Express) {
   /* ---------- POST /api/reports (special: processed steps) ---------- */
   app.post('/api/reports', asyncRoute(async (req, res) => {
     const r = req.body;
+    if (!Array.isArray(r.steps) || !r.steps.length) return res.status(400).json({ error: 'Add at least one verification step.' });
     const name = r.name || 'New Execution Report';
     const reportId = `REP-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
     const targetUrl = r.targetUrl || '';
@@ -1660,6 +1661,9 @@ Rules:
       steps,
     };
     await Runs.upsert(newRun);
+    // Same as POST /api/runs: a tag typed here must enter the catalog, or it never comes back as a
+    // suggestion and the tester retypes it on every run.
+    await ensureTagsInCatalog(newRun.tags, scope);
     if (runMode === 'manual') await seedManualResults(newRun, selectedCases);
     if (!isPgEnabled()) persistDataInBackground('selection run');
     logActivity(req, `Created ${runMode} run: ${name}`, { type: 'run', entityId: newRun.id });

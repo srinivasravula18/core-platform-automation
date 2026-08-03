@@ -38,10 +38,14 @@ export function runnableCases(cases: any[], scripts: any[]): any[] {
   return cases.filter((testCase) => scriptsForCases([testCase], scripts).length > 0);
 }
 
-export function casesForRun(run: any, cases: any[], suites: any[]): any[] {
-  if (Array.isArray(run?.caseIds) && run.caseIds.length) {
-    const ids = new Set(run.caseIds);
-    return cases.filter((testCase) => ids.has(testCase.id));
+export function casesForRun(run: any, cases: any[], suites: any[], plans: any[] = []): any[] {
+  const linkedPlanIds = plans
+    .filter((plan) => Array.isArray(plan?.runIds) && plan.runIds.map(String).includes(String(run?.id)))
+    .map((plan) => String(plan.id));
+  if ((Array.isArray(run?.caseIds) && run.caseIds.length) || linkedPlanIds.length) {
+    const ids = new Set((Array.isArray(run?.caseIds) ? run.caseIds : []).map(String));
+    linkedPlanIds.forEach((planId) => casesForPlan(cases, suites, planId).forEach((testCase) => ids.add(String(testCase.id))));
+    return cases.filter((testCase) => ids.has(String(testCase.id)));
   }
   if (Array.isArray(run?.suiteIds) && run.suiteIds.length) {
     const ids = new Set(run.suiteIds);

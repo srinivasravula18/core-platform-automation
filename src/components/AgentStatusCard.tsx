@@ -59,7 +59,7 @@ export const AgentStatusCard: FC<{ agent: Agent; actions?: ReactNode; onRename?:
     { icon: ShieldCheck, label: 'Browsers', value: agent.browsers?.length ? agent.browsers.join(', ') : 'none installed' },
     { icon: Cpu, label: 'CPU', value: `${agent.cpu?.cores ?? '?'} cores` },
     { icon: MemoryStick, label: 'Memory', value: agent.memory?.totalMb ? `${Math.round((agent.memory.totalMb) / 1024)} GB` : '?' },
-    { icon: Clock, label: 'Last heartbeat', value: timeAgo(agent.lastHeartbeatAt) },
+    { icon: Clock, label: 'Last Heartbeat', value: timeAgo(agent.lastHeartbeatAt) },
   ];
   return (
     <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-card)] p-4">

@@ -15,9 +15,9 @@ import { RequirementSrsEditor } from '@/src/components/RequirementSrsEditor';
 
 const COVERAGE_BADGE: Record<string, { label: string; cls: string }> = {
   covered: { label: 'Covered', cls: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400' },
-  partial: { label: 'Partial coverage', cls: 'border-amber-500/30 bg-amber-500/10 text-amber-400' },
-  none: { label: 'No linked coverage', cls: 'border-rose-500/30 bg-rose-500/10 text-rose-400' },
-  unknown: { label: 'Code grounded', cls: 'border-sky-500/30 bg-sky-500/10 text-sky-300' },
+  partial: { label: 'Partial Coverage', cls: 'border-amber-500/30 bg-amber-500/10 text-amber-400' },
+  none: { label: 'No Linked Coverage', cls: 'border-rose-500/30 bg-rose-500/10 text-rose-400' },
+  unknown: { label: 'Code Grounded', cls: 'border-sky-500/30 bg-sky-500/10 text-sky-300' },
 };
 
 function selectorRows(selectors: any): Array<{ label: string; values: string[] }> {
@@ -86,7 +86,7 @@ export function RequirementDraftReview({
     <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-card)] p-3">
       <div className="mb-3 flex flex-wrap items-center gap-2">
         <ScrollText className="h-4 w-4 text-[var(--accent)]" />
-        <span className="text-sm font-semibold text-[var(--text-primary)]">Requirement draft</span>
+        <span className="text-sm font-semibold text-[var(--text-primary)]">Requirement Draft</span>
         <span className={cn('rounded-md border px-1.5 py-0.5 text-[10px] font-semibold uppercase', badge.cls)}>{badge.label}</span>
       </div>
 
@@ -155,7 +155,7 @@ export function RequirementDraftReview({
               <MarkdownText value={formatBusinessRulesMarkdown(businessRules)} />
             </div>
           )}
-          <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">Business rules (one per line)</label>
+          <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">Business Rules (One per Line)</label>
           <textarea
             value={businessRules.join('\n')}
             onChange={(event) => updateRequirement({ businessRules: event.target.value.split('\n') })}
@@ -179,7 +179,7 @@ export function RequirementDraftReview({
 
         {metadataRefs.length > 0 && (
           <div>
-            <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">Metadata source</div>
+            <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">Metadata Source</div>
             <div className="flex flex-wrap gap-1.5">
               {metadataRefs.map((m, index) => (
                 <span key={index} className="rounded border border-[var(--border)] bg-[var(--bg-secondary)] px-1.5 py-0.5 text-[10px] text-[var(--text-primary)]" title={m.note}>

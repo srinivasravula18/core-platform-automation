@@ -353,11 +353,11 @@ export default function TestPlans() {
     }
     if (conflict === 'future-start') {
       const date = new Date(`${candidate.startDate}T00:00:00`).toLocaleDateString();
-      if (!await showConfirm(`This plan's scheduled start date is ${date}. Start it now anyway?`, { title: 'Start plan early', confirmText: 'Start now' })) return;
+      if (!await showConfirm(`This plan's scheduled start date is ${date}. Start it now anyway?`, { title: 'Start Plan Early', confirmText: 'Start Now' })) return;
     }
     if (conflict === 'past-end') {
       const date = new Date(`${candidate.endDate}T00:00:00`).toLocaleDateString();
-      if (!await showConfirm(`This plan's end date (${date}) has already passed. Start it anyway? The end date will not be changed.`, { title: 'Plan schedule is overdue', confirmText: 'Start anyway' })) return;
+      if (!await showConfirm(`This Plan's End Date (${date}) has already passed. Start it anyway? The end date will not be changed.`, { title: 'Plan schedule is overdue', confirmText: 'Start Anyway' })) return;
     }
     setStartingPlanId(plan.id);
     try {
@@ -471,7 +471,7 @@ export default function TestPlans() {
               { key: 'runIds', label: 'Linked Test Runs', get: (p) => getPlanRuns(p).map((run) => run.name || run.id).join(', ') },
               { key: 'description', label: 'Description' },
               { key: 'suiteCount', label: 'Suites', get: (p) => suites.filter((s) => suitePlanIds(s).includes(p.id)).length },
-              { key: 'caseCount', label: 'Cases', get: (p) => cases.filter((c) => c.testPlanId === p.id).length },
+              { key: 'caseCount', label: 'Cases', get: (p) => cases.filter((c) => casePlanIds(c).includes(p.id)).length },
               { key: 'updatedAt', label: 'Updated', get: (p: any) => p.metadata?.updatedAt || p.updatedAt || '' },
               { key: 'updatedBy', label: 'Updated By', get: (p: any) => p.metadata?.updatedBy?.name || '' },
               { key: 'createdAt', label: 'Created', get: (p: any) => p.metadata?.createdAt || p.createdAt || '' },
@@ -629,7 +629,7 @@ export default function TestPlans() {
           <div>
             <div className="mb-1 flex items-center justify-between">
               <label className="block text-sm font-medium text-[var(--text-muted)]">Link Test Suites</label>
-              <button type="button" onClick={() => setIsSuiteLinkerOpen(true)} className="text-xs font-medium text-[var(--accent)] hover:underline">Search &amp; link by tag</button>
+              <button type="button" onClick={() => setIsSuiteLinkerOpen(true)} className="text-xs font-medium text-[var(--accent)] hover:underline">Search &amp; Link by Tag</button>
             </div>
             {formData.suiteIds.length === 0 ? (
               <button type="button" onClick={() => setIsSuiteLinkerOpen(true)} className="w-full rounded-md border border-dashed border-[var(--border)] bg-[var(--bg-secondary)]/40 px-3 py-3 text-center text-sm text-[var(--text-muted)] hover:border-[var(--accent)] hover:text-[var(--text-primary)]">Search &amp; link suites by tag</button>
@@ -650,7 +650,7 @@ export default function TestPlans() {
           <div>
             <div className="mb-1 flex items-center justify-between">
               <label className="block text-sm font-medium text-[var(--text-muted)]">Link Test Cases</label>
-              <button type="button" onClick={() => setIsCaseLinkerOpen(true)} className="text-xs font-medium text-[var(--accent)] hover:underline">Search &amp; link by tag</button>
+              <button type="button" onClick={() => setIsCaseLinkerOpen(true)} className="text-xs font-medium text-[var(--accent)] hover:underline">Search &amp; Link by Tag</button>
             </div>
             {(formData.tagQuery.all?.length || formData.tagQuery.any?.length) ? (
               <div className="mb-1 text-xs text-[var(--text-muted)]">Tag-defined: {[...(formData.tagQuery.all || []), ...(formData.tagQuery.any || [])].join(formData.tagQuery.all?.length ? ' + ' : ' / ')} — new matches surface for review after saving.</div>
@@ -674,7 +674,7 @@ export default function TestPlans() {
           <div>
             <div className="mb-1 flex items-center justify-between">
               <label className="block text-sm font-medium text-[var(--text-muted)]">Link Test Runs</label>
-              <button type="button" onClick={() => setIsRunLinkerOpen(true)} className="text-xs font-medium text-[var(--accent)] hover:underline">Search &amp; link by tag</button>
+              <button type="button" onClick={() => setIsRunLinkerOpen(true)} className="text-xs font-medium text-[var(--accent)] hover:underline">Search &amp; Link by Tag</button>
             </div>
             {formData.runIds.length === 0 ? (
               <button type="button" onClick={() => setIsRunLinkerOpen(true)} className="w-full rounded-md border border-dashed border-[var(--border)] bg-[var(--bg-secondary)]/40 px-3 py-3 text-center text-sm text-[var(--text-muted)] hover:border-[var(--accent)] hover:text-[var(--text-primary)]">Search &amp; link runs by tag</button>
@@ -870,8 +870,8 @@ export default function TestPlans() {
                 {isDetailFilterOpen && (
                   <div className="absolute right-0 top-10 z-30 max-h-[calc(100dvh-16rem)] w-[min(28rem,calc(100vw-2rem))] overflow-auto rounded-md border border-[var(--border)] bg-[var(--bg-card)] p-3 shadow-xl">
                     <div className="mb-3 flex items-center justify-between gap-2">
-                      <span className="text-xs font-semibold text-[var(--text-primary)]">Filter linked test cases</span>
-                      <button type="button" onClick={() => setDetailCaseFilters(emptyTestPlanCaseFilters())} className="text-xs font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]">Clear all</button>
+                      <span className="text-xs font-semibold text-[var(--text-primary)]">Filter Linked Test Cases</span>
+                      <button type="button" onClick={() => setDetailCaseFilters(emptyTestPlanCaseFilters())} className="text-xs font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]">Clear All</button>
                     </div>
                     <div className="grid gap-3 sm:grid-cols-2">
                       <div>
@@ -1053,10 +1053,10 @@ export default function TestPlans() {
               <div className="absolute right-0 top-10 z-30 max-h-[calc(100dvh-20rem)] w-[min(24rem,calc(100vw-2rem))] overflow-auto rounded-md border border-[var(--border)] bg-[var(--bg-card)] p-3 shadow-xl">
                 <div className="mb-3 flex items-center justify-between gap-2">
                   <div className="inline-flex rounded-md border border-[var(--border)] p-0.5 text-[11px] font-medium">
-                    <button onClick={() => setMatchMode('all')} className={`rounded px-2 py-1 ${matchMode === 'all' ? 'bg-[var(--accent)] text-white' : 'text-[var(--text-muted)]'}`}>Match all</button>
-                    <button onClick={() => setMatchMode('any')} className={`rounded px-2 py-1 ${matchMode === 'any' ? 'bg-[var(--accent)] text-white' : 'text-[var(--text-muted)]'}`}>Match any</button>
+                    <button onClick={() => setMatchMode('all')} className={`rounded px-2 py-1 ${matchMode === 'all' ? 'bg-[var(--accent)] text-white' : 'text-[var(--text-muted)]'}`}>Match All</button>
+                    <button onClick={() => setMatchMode('any')} className={`rounded px-2 py-1 ${matchMode === 'any' ? 'bg-[var(--accent)] text-white' : 'text-[var(--text-muted)]'}`}>Match Any</button>
                   </div>
-                  <button onClick={() => setFilters(emptyTestPlanFilters())} className="text-xs font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]">Clear all</button>
+                  <button onClick={() => setFilters(emptyTestPlanFilters())} className="text-xs font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]">Clear All</button>
                 </div>
                 <div className="flex flex-col gap-3">
                   <div>
@@ -1093,7 +1093,7 @@ export default function TestPlans() {
                   </div>
                   <label className="flex cursor-pointer items-center gap-2 rounded px-1 py-1 text-sm hover:bg-[var(--bg-secondary)]">
                     <input type="checkbox" checked={filters.notYetExecuted} onChange={(event) => setFilters((current) => ({ ...current, notYetExecuted: event.target.checked }))} />
-                    Not yet executed
+                    Not Yet Executed
                   </label>
                 </div>
               </div>
@@ -1106,12 +1106,12 @@ export default function TestPlans() {
             <div className="ml-auto flex items-center gap-2">
               {bulk.selectedCount > 1 && (
                 <button onClick={() => runSelectedPlans()} disabled={isStartingRun || selectedPlanIds.reduce((count, id) => count + getPlanCases(id).length, 0) === 0} title={runCaseCountLabel(selectedPlanIds.reduce((count, id) => count + getPlanCases(id).length, 0))} className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
-                  {isStartingRun ? <Loader2 className="w-4 h-4 animate-spin" /> : <PlayCircle className="w-4 h-4" />} Run selected ({bulk.selectedCount})
+                  {isStartingRun ? <Loader2 className="w-4 h-4 animate-spin" /> : <PlayCircle className="w-4 h-4" />} Run Selected ({bulk.selectedCount})
                 </button>
               )}
               {can('plans:delete') && (
                 <button onClick={bulk.deleteSelected} disabled={bulk.busy} className="flex items-center gap-1.5 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
-                  <Trash2 className="w-4 h-4" /> Delete selected ({bulk.selectedCount})
+                  <Trash2 className="w-4 h-4" /> Delete Selected ({bulk.selectedCount})
                 </button>
               )}
             </div>

@@ -226,7 +226,7 @@ export default function Defects() {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-6 backdrop-blur-md" onClick={() => setSnapshotUrl('')}>
           <div className="flex max-h-[90dvh] w-full max-w-4xl flex-col overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--bg-card)] shadow-2xl" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between border-b border-[var(--border)] bg-[var(--bg-secondary)] px-4 py-3">
-              <span className="text-sm font-semibold text-[var(--text-primary)]">Failure snapshot</span>
+              <span className="text-sm font-semibold text-[var(--text-primary)]">Failure Snapshot</span>
               <button onClick={() => setSnapshotUrl('')} className="rounded border border-[var(--border)] bg-[var(--bg-primary)] px-2 py-1 text-xs text-[var(--text-muted)] hover:text-[var(--text-primary)]">Close</button>
             </div>
             <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto bg-slate-900 p-2">
@@ -262,7 +262,7 @@ export default function Defects() {
             </button>
             {isFilterOpen && (
               <div className="absolute left-0 top-10 z-30 w-72 rounded-md border border-[var(--border)] bg-[var(--bg-card)] p-3 shadow-xl">
-                <div className="mb-3 flex justify-end"><button onClick={() => setFilters({ severities: [], statuses: [], assignees: [] })} className="text-xs font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]">Clear all</button></div>
+                <div className="mb-3 flex justify-end"><button onClick={() => setFilters({ severities: [], statuses: [], assignees: [] })} className="text-xs font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]">Clear All</button></div>
                 <div className="flex flex-col gap-3">
                   <div><label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Severity</label><MultiSelectDropdown label="Any severity" options={severityOptions.map((value) => ({ id: value, name: value }))} value={filters.severities} onChange={(severities) => setFilters((current) => ({ ...current, severities }))} /></div>
                   <div><label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Status</label><MultiSelectDropdown label="Any status" options={statusOptions.map((value) => ({ id: value, name: value }))} value={filters.statuses} onChange={(statuses) => setFilters((current) => ({ ...current, statuses }))} /></div>
@@ -273,7 +273,7 @@ export default function Defects() {
           </div>
           {bulk.selectedCount > 0 && can('defects:delete') && (
             <button onClick={bulk.deleteSelected} disabled={bulk.busy} className="ml-auto flex items-center gap-1.5 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-md text-sm font-medium transition-colors">
-              <Trash2 className="w-4 h-4" /> Delete selected ({bulk.selectedCount})
+              <Trash2 className="w-4 h-4" /> Delete Selected ({bulk.selectedCount})
             </button>
           )}
         </div>

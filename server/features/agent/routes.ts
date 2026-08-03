@@ -4910,11 +4910,19 @@ Rules:
    */
   // context carries the folder-ask continuation args so a client that navigated away mid-thinking can re-attach
   // by conversation and rebuild the review card without re-running the understanding.
-  const understandingJobs = new Map<string, { status: 'running' | 'done'; result?: any; createdAt: number; conversationId?: string; ownerId?: string; context?: any }>();
+  const understandingJobs = new Map<string, { status: 'running' | 'done'; result?: any; createdAt: number; conversationId?: string; ownerId?: string; context?: any; consumed?: boolean }>();
   const UNDERSTANDING_JOB_TTL_MS = 30 * 60 * 1000;
   function pruneUnderstandingJobs() {
     const cutoff = Date.now() - UNDERSTANDING_JOB_TTL_MS;
     for (const [id, job] of understandingJobs) if (job.createdAt < cutoff) understandingJobs.delete(id);
+  }
+  // The review gate is a one-shot: once the user proceeds (a run starts) or cancels, the job must stop
+  // being re-attachable. Without this it stayed offerable for its whole TTL, so any later reload grafted
+  // a second "Look right? … Proceed" card onto a conversation whose run was already underway.
+  function consumeUnderstandingJobs(conversationId: string) {
+    const id = String(conversationId || '').trim();
+    if (!id) return;
+    for (const job of understandingJobs.values()) if (job.conversationId === id) job.consumed = true;
   }
 
   async function computeUnderstanding(body: any, scope: { userId?: string; projectId?: string | null; appId?: string | null }): Promise<any> {
@@ -5111,11 +5119,18 @@ Rules:
     let latest: { jobId: string; job: any } | null = null;
     for (const [jobId, job] of understandingJobs) {
       if (job.conversationId !== conversationId) continue;
+      if (job.consumed) continue; // already proceeded/cancelled — never offer the review gate twice
       if (ownerId && job.ownerId && job.ownerId !== ownerId) continue;
       if (!latest || job.createdAt > latest.job.createdAt) latest = { jobId, job };
     }
     if (!latest) return res.json({ job: null });
     res.json({ job: { jobId: latest.jobId, status: latest.job.status, result: latest.job.result ?? null, context: latest.job.context ?? null } });
+  });
+
+  // The client calls this when the user dismisses the review card, so a cancelled gate cannot re-attach.
+  app.delete('/api/agent/understand-request/for-conversation/:conversationId', (req, res) => {
+    consumeUnderstandingJobs(String(req.params.conversationId || ''));
+    res.json({ ok: true });
   });
 
   app.get('/api/agent/understand-request/:jobId/events', (req, res) => {
@@ -5445,6 +5460,9 @@ Rules:
       return res.json({ chat_response: setup.message });
     }
     const conversationId = String(req.body.conversationId || req.body.agentConsoleId || req.body.sessionId || '').trim();
+    // Starting a run IS proceeding past the review gate — retire its understanding job so a later
+    // reload cannot re-attach and append the "Look right? … Proceed" card behind the running card.
+    consumeUnderstandingJobs(conversationId);
     let approvedUnderstanding = String(req.body.approvedUnderstanding || '').trim();
     const understandingSource = String(req.body.understandingSource || '').trim();
     let priorGrounding = String(req.body.priorGrounding || approvedUnderstanding || '').trim();
@@ -5666,7 +5684,7 @@ Rules:
             ? { allApps: true, app: null as any, candidates: apps }
             : resolveTargetApp(apps, targetText);
           if (picked.allApps) {
-            application = { id: ALL_APPS_ID, name: 'All apps' };
+            application = { id: ALL_APPS_ID, name: 'All Apps' };
           } else if (picked.app) {
             application = { id: picked.app.id, name: picked.app.label };
           } else {

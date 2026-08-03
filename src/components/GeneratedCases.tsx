@@ -428,7 +428,7 @@ export function GeneratedCases({ cases: initial, onCasesChange }: { cases: Case[
             disabled={bulkRunning}
             className="rounded-md border border-[var(--border)] bg-[var(--bg-card)] px-2 py-1 text-[11px] font-medium text-[var(--text-muted)] hover:border-[var(--accent)] hover:text-[var(--text-primary)] disabled:opacity-50"
           >
-            {allSelected ? 'Select none' : 'Select all'}
+            {allSelected ? 'Select None' : 'Select All'}
           </button>
         )}
       </div>
@@ -637,7 +637,7 @@ export function GeneratedCases({ cases: initial, onCasesChange }: { cases: Case[
                       className="inline-flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-card)] px-2 py-1 text-[11px] font-medium text-[var(--text-primary)] hover:border-[var(--accent)] disabled:opacity-50"
                     >
                       {busy === `expand-${i}` ? <Loader2 className="h-3 w-3 animate-spin" /> : <SplitSquareHorizontal className="h-3 w-3" />}
-                      Expand steps
+                      Expand Steps
                     </button>
                   </div>
                 </div>
@@ -707,7 +707,7 @@ export function GeneratedCases({ cases: initial, onCasesChange }: { cases: Case[
                       className="inline-flex items-center gap-1.5 rounded-md bg-[var(--accent)] px-3 py-1.5 text-[11px] font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50"
                     >
                       {busy === `save-${i}` ? <Loader2 className="h-3 w-3 animate-spin" /> : <Check className="h-3 w-3" />}
-                      Save changes
+                      Save Changes
                     </button>
                   </div>
                 </div>

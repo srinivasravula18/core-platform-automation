@@ -64,15 +64,15 @@ import {
  */
 
 const PIPELINE: { key: string; label: string; sub?: boolean }[] = [
-  { key: 'ScopeAgent', label: 'Scope gate' },
-  { key: 'AuthSessionAgent', label: 'Auth session' },
-  { key: 'MetadataFetch', label: 'Metadata agent' },
-  { key: 'ApplicationInspector', label: 'Live inspector' },
-  { key: 'SelectorRegistry', label: 'Selector registry' },
-  { key: 'TestGenerationAgent', label: 'Case writer' },
-  { key: 'PlaywrightAgent', label: 'Script author' },
-  { key: 'SelectorVerifier', label: 'Script verifier' },
-  { key: 'EvidenceAgent', label: 'Evidence runner' },
+  { key: 'ScopeAgent', label: 'Scope Gate' },
+  { key: 'AuthSessionAgent', label: 'Auth Session' },
+  { key: 'MetadataFetch', label: 'Metadata Agent' },
+  { key: 'ApplicationInspector', label: 'Live Inspector' },
+  { key: 'SelectorRegistry', label: 'Selector Registry' },
+  { key: 'TestGenerationAgent', label: 'Case Writer' },
+  { key: 'PlaywrightAgent', label: 'Script Author' },
+  { key: 'SelectorVerifier', label: 'Script Verifier' },
+  { key: 'EvidenceAgent', label: 'Evidence Runner' },
 ];
 
 // Statuses that halt polling and await a human decision or are final.
@@ -392,7 +392,7 @@ export function DeepRunResult({
   const droppedCases: { title: string; reasons: any[] }[] = (() => {
     const byTitle = new Map<string, any[]>();
     for (const d of compilerDiagnostics) {
-      const title = String(d?.title || 'Untitled case');
+      const title = String(d?.title || 'Untitled Case');
       (byTitle.get(title) ?? byTitle.set(title, []).get(title)!).push(d);
     }
     return [...byTitle.entries()].map(([title, reasons]) => ({ title, reasons }));
@@ -554,7 +554,7 @@ export function DeepRunResult({
   };
   const addCase = () => {
     const newCase = {
-      title: 'New test case',
+      title: 'New Test Case',
       description: '',
       priority: 'Medium',
       type: 'Manual',
@@ -614,7 +614,7 @@ export function DeepRunResult({
     const source = picked.map((i) => list[i]);
     const merged: Case = {
       ...source[0],
-      title: source[0].title || 'Merged test case',
+      title: source[0].title || 'Merged Test Case',
       description: source.map((c) => c.description).filter(Boolean).join('\n\n'),
       priority: source.reduce((best, c) => (priorityRank(c.priority) > priorityRank(best) ? c.priority : best), source[0].priority) || 'Medium',
       tags: [...new Set(source.flatMap((c) => c.tags || []))],
@@ -1031,12 +1031,12 @@ export function DeepRunResult({
       const r = resultForCase(c);
       const badge = r ? `<span class="b ${esc(r.status)}">${esc(r.status)}</span>` : '';
       const steps = (c.steps || []).map((s, si) => `<tr><td>${si + 1}. ${esc(s.action)}</td><td>${esc(s.expected)}</td></tr>`).join('');
-      return `<div class="c"><h3>${i + 1}. ${esc(c.title)} ${badge}</h3><div class="m">${esc(c.priority || 'Medium')} · ${esc(c.type || 'Manual')}${(c.tags || []).length ? ' · ' + (c.tags || []).map(esc).join(', ') : ''}</div>${c.description ? `<p>${esc(c.description)}</p>` : ''}<table><thead><tr><th>Step</th><th>Expected result</th></tr></thead><tbody>${steps || '<tr><td colspan="2">No steps</td></tr>'}</tbody></table>${r?.error ? `<pre class="e">${esc(stripAnsi(r.error))}</pre>` : ''}</div>`;
+      return `<div class="c"><h3>${i + 1}. ${esc(c.title)} ${badge}</h3><div class="m">${esc(c.priority || 'Medium')} · ${esc(c.type || 'Manual')}${(c.tags || []).length ? ' · ' + (c.tags || []).map(esc).join(', ') : ''}</div>${c.description ? `<p>${esc(c.description)}</p>` : ''}<table><thead><tr><th>Step</th><th>Expected Result</th></tr></thead><tbody>${steps || '<tr><td colspan="2">No Steps</td></tr>'}</tbody></table>${r?.error ? `<pre class="e">${esc(stripAnsi(r.error))}</pre>` : ''}</div>`;
     }).join('');
     // Downloaded HTML is opened outside the app, so screenshot links must be absolute (origin + base path).
     const absShot = (u: string) => (u && u.startsWith('/') ? `${window.location.origin}${withBasePath(u)}` : u);
     const evHtml = (evidence || []).map((shot) => `<div class="ev"><div class="m">${esc(shot.title || 'Evidence')} — ${esc(shot.url || '')}</div>${shot.screenshotUrl ? `<img src="${esc(absShot(shot.screenshotUrl))}"/>` : ''}</div>`).join('');
-    return `<!doctype html><html><head><meta charset="utf-8"><meta name="color-scheme" content="light dark"><title>${esc(run?.artifactName || 'Test Report')}</title><style>:root{color-scheme:light dark}body{font-family:Arial,Helvetica,sans-serif;margin:28px;color:#111;background:#fff}h1{margin:0;font-size:22px}.s{color:#555;margin:6px 0 18px}.c{border:1px solid #e2e2e2;border-radius:8px;padding:12px 14px;margin:10px 0;page-break-inside:avoid}.c h3{margin:0 0 4px;font-size:15px}.m{color:#666;font-size:12px;margin-bottom:6px}table{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:6px}th,td{border:1px solid #eee;padding:6px 8px;text-align:left;vertical-align:top}th{background:#fafafa}.b{font-size:11px;padding:1px 7px;border-radius:10px;color:#fff}.b.passed{background:#16a34a}.b.failed,.b.timedOut,.b.interrupted{background:#dc2626}.b.skipped{background:#9ca3af}.e{background:#fef2f2;color:#b91c1c;padding:8px;white-space:pre-wrap;font-size:12px;border-radius:6px;margin-top:6px}.ev img{max-width:100%;border:1px solid #ddd;border-radius:6px}h2{margin-top:24px;border-top:1px solid #eee;padding-top:14px}@media (prefers-color-scheme:dark){body{color:#e5e7eb;background:#0f172a}.s{color:#94a3b8}.c{border-color:#334155}.m{color:#94a3b8}th,td{border-color:#334155}th{background:#1e293b}.e{background:#3f1d1d;color:#fca5a5}.ev img{border-color:#334155}h2{border-top-color:#334155}}@media print{body{color:#111;background:#fff}.s{color:#555}.c{border-color:#e2e2e2}.m{color:#666}th,td{border-color:#eee}th{background:#fafafa}h2{border-top-color:#eee}}</style></head><body><h1>${esc(run?.artifactName || 'Agent Test Report')}</h1><div class="s">${esc(run?.app_url || 'No target URL')} · ${esc(summary)} · ${new Date().toLocaleString()}</div><h2>Test cases (${list.length})</h2>${casesHtml}${(evidence || []).length ? `<h2>Evidence (${evidence.length})</h2>${evHtml}` : ''}</body></html>`;
+    return `<!doctype html><html><head><meta charset="utf-8"><meta name="color-scheme" content="light dark"><title>${esc(run?.artifactName || 'Test Report')}</title><style>:root{color-scheme:light dark}body{font-family:Arial,Helvetica,sans-serif;margin:28px;color:#111;background:#fff}h1{margin:0;font-size:22px}.s{color:#555;margin:6px 0 18px}.c{border:1px solid #e2e2e2;border-radius:8px;padding:12px 14px;margin:10px 0;page-break-inside:avoid}.c h3{margin:0 0 4px;font-size:15px}.m{color:#666;font-size:12px;margin-bottom:6px}table{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:6px}th,td{border:1px solid #eee;padding:6px 8px;text-align:left;vertical-align:top}th{background:#fafafa}.b{font-size:11px;padding:1px 7px;border-radius:10px;color:#fff}.b.passed{background:#16a34a}.b.failed,.b.timedOut,.b.interrupted{background:#dc2626}.b.skipped{background:#9ca3af}.e{background:#fef2f2;color:#b91c1c;padding:8px;white-space:pre-wrap;font-size:12px;border-radius:6px;margin-top:6px}.ev img{max-width:100%;border:1px solid #ddd;border-radius:6px}h2{margin-top:24px;border-top:1px solid #eee;padding-top:14px}@media (prefers-color-scheme:dark){body{color:#e5e7eb;background:#0f172a}.s{color:#94a3b8}.c{border-color:#334155}.m{color:#94a3b8}th,td{border-color:#334155}th{background:#1e293b}.e{background:#3f1d1d;color:#fca5a5}.ev img{border-color:#334155}h2{border-top-color:#334155}}@media print{body{color:#111;background:#fff}.s{color:#555}.c{border-color:#e2e2e2}.m{color:#666}th,td{border-color:#eee}th{background:#fafafa}h2{border-top-color:#eee}}</style></head><body><h1>${esc(run?.artifactName || 'Agent Test Report')}</h1><div class="s">${esc(run?.app_url || 'No Target URL')} · ${esc(summary)} · ${new Date().toLocaleString()}</div><h2>Test cases (${list.length})</h2>${casesHtml}${(evidence || []).length ? `<h2>Evidence (${evidence.length})</h2>${evHtml}` : ''}</body></html>`;
   };
 
   const downloadFile = (content: string, filename: string, type: string) => {
@@ -1076,7 +1076,7 @@ export function DeepRunResult({
         <div className="flex min-w-0 items-center gap-2">
           <FlaskConical className="h-4 w-4 shrink-0 text-[var(--accent)]" />
           <span className="truncate text-sm font-semibold text-[var(--text-primary)]">
-            {run?.artifactName || 'Deep test generation'}
+            {run?.artifactName || 'Deep Test Generation'}
           </span>
         </div>
         <div className="flex shrink-0 items-center gap-2">
@@ -1106,7 +1106,7 @@ export function DeepRunResult({
           {totalMs != null && (
             <span
               className="inline-flex items-center gap-1 text-[11px] font-medium text-[var(--text-muted)]"
-              title={status === 'completed' || failed ? 'Total time to complete this run (excludes case-review time)' : 'Elapsed so far'}
+              title={status === 'completed' || failed ? 'Total time to complete this run (excludes case-review time)' : 'Elapsed So Far'}
             >
               <Clock className="h-3 w-3" />
               {fmtDuration(totalMs)}
@@ -1218,7 +1218,7 @@ export function DeepRunResult({
       <details open={hasA2A} className="mb-3 rounded-lg border border-[var(--border)] bg-[var(--bg-primary)]">
         <summary className="flex cursor-pointer items-center gap-2 px-3 py-2 text-xs font-semibold text-[var(--text-primary)]">
           <MessageSquareText className="h-4 w-4 text-[var(--accent)]" />
-          {hasA2A ? 'Agent-to-agent communication' : 'Background communication'}
+          {hasA2A ? 'Agent-to-agent Communication' : 'Background Communication'}
           <span className="text-[11px] font-normal text-[var(--text-muted)]">
             ({hasA2A ? `${a2aMessages.length} messages · ${a2aFacts.length} facts` : `${visibleMessages.length} messages`})
           </span>
@@ -1263,7 +1263,7 @@ export function DeepRunResult({
               })}
               {a2aFacts.length > 0 && (
                 <details className="mt-2 text-xs">
-                  <summary className="cursor-pointer font-semibold text-[var(--accent)]">Shared blackboard ({a2aFacts.length} facts)</summary>
+                  <summary className="cursor-pointer font-semibold text-[var(--accent)]">Shared Blackboard ({a2aFacts.length} facts)</summary>
                   <div className="mt-1 space-y-1">
                     {a2aFacts.map((f: any, i: number) => (
                       <div key={f.id || i} className="flex flex-wrap items-center gap-2 rounded border border-[var(--border)] bg-[var(--bg-primary)] px-2 py-1 text-[11px]">
@@ -1298,7 +1298,7 @@ export function DeepRunResult({
                       ))}
                     </div>
                     <details className="mt-2 text-xs">
-                      <summary className="cursor-pointer text-[var(--accent)]">Recorded message</summary>
+                      <summary className="cursor-pointer text-[var(--accent)]">Recorded Message</summary>
                       <pre className="custom-scrollbar mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-md bg-[var(--bg-primary)] p-2 text-[11px] leading-5 text-[var(--text-primary)]">
                         {audit.detail}
                       </pre>
@@ -1374,7 +1374,7 @@ export function DeepRunResult({
               className="inline-flex items-center gap-1.5 rounded-md bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50"
             >
               {busy === 'cov-reuse' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Recycle className="h-3.5 w-3.5" />}
-              Reuse these
+              Reuse These
             </button>
             <button
               onClick={() => coverageDecide('gaps')}
@@ -1383,7 +1383,7 @@ export function DeepRunResult({
               className="inline-flex items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-1.5 text-xs font-medium text-[var(--text-primary)] hover:border-[var(--accent)] disabled:opacity-50"
             >
               {busy === 'cov-gaps' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />}
-              Existing + gaps
+              Existing + Gaps
             </button>
             <button
               onClick={() => coverageDecide('fresh')}
@@ -1392,13 +1392,13 @@ export function DeepRunResult({
               className="inline-flex items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-1.5 text-xs font-medium text-[var(--text-primary)] hover:border-[var(--accent)] disabled:opacity-50"
             >
               {busy === 'cov-fresh' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <FlaskConical className="h-3.5 w-3.5" />}
-              Generate fresh
+              Generate Fresh
             </button>
             <button
               onClick={() => navigate('/cases')}
               className="ml-auto inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]"
             >
-              Open in workspace
+              Open in Workspace
               <ArrowRight className="h-3 w-3" />
             </button>
           </div>
@@ -1462,14 +1462,14 @@ export function DeepRunResult({
                     disabled={!list.length}
                     className="h-3.5 w-3.5 accent-[var(--accent)] disabled:opacity-50"
                   />
-                  Select all
+                  Select All
                 </label>
                 {selectedCases.size > 0 && (
                   <button
                     onClick={deleteSelectedCases}
                     className="inline-flex items-center gap-1 rounded-md border border-red-500/30 bg-red-500/10 px-2.5 py-1.5 text-xs font-medium text-red-400 hover:bg-red-500/20"
                   >
-                    <Trash2 className="h-3.5 w-3.5" /> Delete selected ({selectedCases.size})
+                    <Trash2 className="h-3.5 w-3.5" /> Delete Selected ({selectedCases.size})
                   </button>
                 )}
                 {selectedCases.size > 1 && (
@@ -1477,7 +1477,7 @@ export function DeepRunResult({
                     onClick={mergeSelectedCases}
                     className="inline-flex items-center gap-1 rounded-md border border-[var(--accent)] bg-[var(--accent)]/10 px-2.5 py-1.5 text-xs font-medium text-[var(--accent)] hover:bg-[var(--accent)]/20"
                   >
-                    <SplitSquareHorizontal className="h-3.5 w-3.5 rotate-180" /> Merge selected ({selectedCases.size})
+                    <SplitSquareHorizontal className="h-3.5 w-3.5 rotate-180" /> Merge Selected ({selectedCases.size})
                   </button>
                 )}
                 <button
@@ -1501,7 +1501,7 @@ export function DeepRunResult({
                         <div className="fixed inset-0 z-10" onClick={() => setReportOpen(false)} />
                         <div className="absolute right-0 z-20 mt-1 w-40 overflow-hidden rounded-md border border-[var(--border)] bg-[var(--bg-card)] shadow-lg">
                           <div className="border-b border-[var(--border)] px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">Download as</div>
-                          <button onClick={() => exportReport('pdf')} className="block w-full px-3 py-2 text-left text-xs hover:bg-[var(--bg-secondary)]">PDF (print)</button>
+                          <button onClick={() => exportReport('pdf')} className="block w-full px-3 py-2 text-left text-xs hover:bg-[var(--bg-secondary)]">PDF (Print)</button>
                           <button onClick={() => exportReport('html')} className="block w-full px-3 py-2 text-left text-xs hover:bg-[var(--bg-secondary)]">HTML</button>
                           <button onClick={() => exportReport('csv')} className="block w-full px-3 py-2 text-left text-xs hover:bg-[var(--bg-secondary)]">CSV (.csv)</button>
                         </div>
@@ -1514,7 +1514,7 @@ export function DeepRunResult({
                     className="inline-flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2.5 py-1.5 text-xs font-medium text-[var(--text-primary)] hover:border-[var(--accent)] disabled:opacity-50"
                   >
                     {busy === 'save' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
-                    {saved ? 'Saved' : 'Save all'}
+                    {saved ? 'Saved' : 'Save All'}
                   </button>
                   {(reviewing || canRegenerateScripts || canGenerateAdditionalScripts) && (
                     <button
@@ -1524,12 +1524,12 @@ export function DeepRunResult({
                     >
                       {busy === 'continue' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
                       {scriptReviewing
-                        ? 'Run scripts & capture evidence'
+                        ? 'Run Scripts & Capture Evidence'
                         : canGenerateAdditionalScripts
                           ? `Generate scripts for ${selectedCases.size} selected`
                         : canRegenerateScripts
                           ? `Generate scripts for ${selectedCases.size ? `${selectedCases.size} selected` : `all ${list.length}`}`
-                          : selectedCases.size ? `Continue selected (${selectedCases.size}) -> scripts` : 'Continue -> scripts'}
+                          : selectedCases.size ? `Continue Selected (${selectedCases.size}) -> scripts` : 'Continue -> scripts'}
                     </button>
                   )}
                 </div>
@@ -1602,7 +1602,7 @@ export function DeepRunResult({
                       )}
                       {aiChangeMarkers[i] && (
                         <span className="rounded border border-emerald-500/35 bg-emerald-500/10 px-1.5 py-0.5 text-[9px] font-bold uppercase text-emerald-300">
-                          AI updated
+                          AI Updated
                         </span>
                       )}
                       <span className="min-w-0 flex-1">
@@ -1768,10 +1768,10 @@ export function DeepRunResult({
                       </button>
                       <div className="flex items-center gap-2 border-b border-[var(--border)] px-3 py-2">
                         <div className="min-w-0 flex-1">
-                          <div className="truncate text-sm font-semibold text-[var(--text-primary)]">{c.title || 'Untitled case'}</div>
+                          <div className="truncate text-sm font-semibold text-[var(--text-primary)]">{c.title || 'Untitled Case'}</div>
                           <div className="flex items-center gap-2 text-[10px] text-[var(--text-muted)]">
                             <span>Case {i + 1} of {list.length}</span>
-                            {aiChangeMarkers[i] && <span className="rounded border border-emerald-500/35 bg-emerald-500/10 px-1.5 py-0.5 font-semibold uppercase tracking-wide text-emerald-300">AI updated</span>}
+                            {aiChangeMarkers[i] && <span className="rounded border border-emerald-500/35 bg-emerald-500/10 px-1.5 py-0.5 font-semibold uppercase tracking-wide text-emerald-300">AI Updated</span>}
                           </div>
                         </div>
                         <button
@@ -1905,7 +1905,7 @@ export function DeepRunResult({
                           className="inline-flex min-h-9 items-center gap-1.5 rounded-md bg-[var(--accent)] px-3 text-xs font-semibold text-white hover:bg-[var(--accent-hover)] disabled:opacity-50"
                         >
                           {busy === 'save' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
-                          {busy === 'save' ? 'Saving...' : 'Save changes'}
+                          {busy === 'save' ? 'Saving...' : 'Save Changes'}
                         </button>
                       </div>
                     </div>
@@ -1961,7 +1961,7 @@ export function DeepRunResult({
                       onClick={() => setSelectedScripts(new Set(scripts.map((_, idx) => idx)))}
                       className="rounded border border-[var(--border)] px-1.5 py-0.5 hover:bg-[var(--bg-secondary)]"
                     >
-                      Select all
+                      Select All
                     </button>
                     {selectedScripts.size > 0 && (
                       <>
@@ -1985,7 +1985,7 @@ export function DeepRunResult({
                     className="inline-flex items-center gap-1.5 rounded-md bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50"
                   >
                     {pwRunning ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <PlayCircle className="h-3.5 w-3.5" />}
-                    {pwRunning ? 'Running...' : selectedScripts.size ? `Run selected (${selectedScripts.size})` : pwResult ? 'Re-run all scripts' : 'Run all scripts'}
+                    {pwRunning ? 'Running...' : selectedScripts.size ? `Run Selected (${selectedScripts.size})` : pwResult ? 'Re-run All Scripts' : 'Run All Scripts'}
                   </button>
                 </div>
               )}
@@ -2057,7 +2057,7 @@ export function DeepRunResult({
                     className="inline-flex items-center gap-1 rounded-md bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50"
                   >
                     {busy === 'continue' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
-                    Run scripts & capture evidence
+                    Run Scripts & Capture Evidence
                   </button>
                 </div>
               )}
@@ -2261,7 +2261,7 @@ export function DeepRunResult({
               {(scripts.length > 0 && (failedCount > 0 || evidence.length > 0)) && (
                 <div className="mb-2 flex items-center justify-between gap-2 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-1.5">
                   <span className="text-[11px] text-[var(--text-muted)]">
-                    {failedCount > 0 ? `${failedCount} test(s) failed` : 'All tests passed'}
+                    {failedCount > 0 ? `${failedCount} test(s) failed` : 'All Tests Passed'}
                   </span>
                   <div className="flex items-center gap-1.5">
                     {failedCount > 0 && (
@@ -2273,7 +2273,7 @@ export function DeepRunResult({
                         className="inline-flex items-center gap-1 rounded border border-[var(--accent)]/30 bg-[var(--accent)]/10 px-2 py-1 text-[11px] font-semibold text-[var(--accent)] hover:bg-[var(--accent)]/20 disabled:opacity-50"
                       >
                         {pwRunning ? <Loader2 className="h-3 w-3 animate-spin" /> : <RotateCcw className="h-3 w-3" />}
-                        {pwRunning ? 'Re-running…' : `Re-run failed (${failedCount})`}
+                        {pwRunning ? 'Re-running…' : `Re-run Failed (${failedCount})`}
                       </button>
                     )}
                     <button
@@ -2284,7 +2284,7 @@ export function DeepRunResult({
                       className="inline-flex items-center gap-1 rounded border border-[var(--border)] bg-[var(--bg-card)] px-2 py-1 text-[11px] font-medium text-[var(--text-secondary)] hover:bg-[var(--bg-secondary)] disabled:opacity-50"
                     >
                       {pwRunning ? <Loader2 className="h-3 w-3 animate-spin" /> : <RotateCcw className="h-3 w-3" />}
-                      Re-run all
+                      Re-run All
                     </button>
                   </div>
                 </div>
@@ -2338,7 +2338,7 @@ export function DeepRunResult({
                       className="inline-flex items-center gap-1 rounded border border-[var(--accent)]/30 bg-[var(--accent)]/10 px-2 py-1 text-[11px] font-semibold text-[var(--accent)] hover:bg-[var(--accent)]/20 disabled:opacity-50"
                     >
                       {pwRunning ? <Loader2 className="h-3 w-3 animate-spin" /> : <RotateCcw className="h-3 w-3" />}
-                      {pwRunning ? 'Re-running…' : `Re-run failed (${bugs.length})`}
+                      {pwRunning ? 'Re-running…' : `Re-run Failed (${bugs.length})`}
                     </button>
                   </div>
                   <div className="space-y-2">
@@ -2445,7 +2445,7 @@ export function DeepRunResult({
               <div className="flex items-center justify-between border-t border-[var(--border)] px-4 py-2">
                 <button onClick={() => setShotOpen(Math.max(0, shotOpen - 1))} disabled={shotOpen === 0} className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2.5 py-1 text-xs text-[var(--text-primary)] disabled:opacity-40">← Prev case</button>
                 <span className="text-[11px] text-[var(--text-muted)]">{shotOpen + 1} / {evidence.length}</span>
-                <button onClick={() => setShotOpen(Math.min(evidence.length - 1, shotOpen + 1))} disabled={shotOpen === evidence.length - 1} className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2.5 py-1 text-xs text-[var(--text-primary)] disabled:opacity-40">Next case →</button>
+                <button onClick={() => setShotOpen(Math.min(evidence.length - 1, shotOpen + 1))} disabled={shotOpen === evidence.length - 1} className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2.5 py-1 text-xs text-[var(--text-primary)] disabled:opacity-40">Next Case →</button>
               </div>
             </div>
             {/* Full-size zoom of one step frame, layered above the case modal — stays in-app. */}

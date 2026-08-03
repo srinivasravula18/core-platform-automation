@@ -1,3 +1,5 @@
+export const TESTING_TYPES = ['Functional', 'Smoke', 'Sanity', 'Regression', 'Integration', 'End to End', 'Acceptance', 'Performance', 'Security', 'Usability', 'Exploratory'];
+
 export function normalizeTestCaseTypes(testCase: { testingTypes?: unknown; testingType?: unknown } = {}) {
   const values = Array.isArray(testCase.testingTypes) && testCase.testingTypes.length
     ? testCase.testingTypes

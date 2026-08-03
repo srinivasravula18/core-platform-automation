@@ -111,7 +111,7 @@ export function VersionHistoryPanel({
                 </button>
                 {!isHead && (
                   <button type="button" disabled={restoring === rev.revisionId} onClick={() => restore(rev)} className="mt-1 inline-flex items-center gap-1 text-[11px] font-medium text-amber-400 hover:text-amber-300 disabled:opacity-50">
-                    {restoring === rev.revisionId ? <Loader2 className="h-3 w-3 animate-spin" /> : <RotateCcw className="h-3 w-3" />} Restore this version
+                    {restoring === rev.revisionId ? <Loader2 className="h-3 w-3 animate-spin" /> : <RotateCcw className="h-3 w-3" />} Restore This Version
                   </button>
                 )}
               </li>

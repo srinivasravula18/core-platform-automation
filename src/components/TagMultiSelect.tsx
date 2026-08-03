@@ -28,7 +28,7 @@ export function TagMultiSelect({ options, value, onChange }: { options: string[]
         title={selected.length ? selected.join(', ') : 'No tags'}
         onClick={(event) => { event.preventDefault(); setOpen((prev) => !prev); }}
       >
-        {selected.length ? `${selected.length} tag${selected.length === 1 ? '' : 's'}` : 'No tags'}
+        {selected.length ? `${selected.length} tag${selected.length === 1 ? '' : 's'}` : 'No Tags'}
       </summary>
       <div className="absolute right-0 z-30 mt-1 max-h-56 w-56 overflow-auto rounded-md border border-[var(--border)] bg-[var(--bg-card)] p-1 shadow-xl">
         {options.length ? options.map((tag) => (
@@ -36,7 +36,7 @@ export function TagMultiSelect({ options, value, onChange }: { options: string[]
             <input type="checkbox" checked={selected.includes(tag)} onChange={() => toggle(tag)} />
             <span className="min-w-0 truncate" title={tag}>{tag}</span>
           </label>
-        )) : <span className="block px-2 py-1.5 text-xs text-[var(--text-muted)]">No tags available</span>}
+        )) : <span className="block px-2 py-1.5 text-xs text-[var(--text-muted)]">No Tags Available</span>}
       </div>
     </details>
   );

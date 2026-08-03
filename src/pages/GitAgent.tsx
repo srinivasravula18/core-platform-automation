@@ -80,7 +80,7 @@ export default function GitAgent() {
         </div>
         <div className="flex items-center gap-3">
           <label className="text-sm text-[var(--text-muted)]">
-            Base ref
+            Base Ref
             <input
               value={baseRef}
               onChange={(e) => setBaseRef(e.target.value)}

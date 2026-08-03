@@ -60,7 +60,7 @@ export function TopbarActions({
         to="/settings"
         className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1 text-xs font-medium text-[var(--text-muted)] transition-colors hover:bg-[var(--bg-card)] hover:text-[var(--accent)]"
       >
-        Connect an AI provider
+        Connect an AI Provider
       </Link>
     );
   }

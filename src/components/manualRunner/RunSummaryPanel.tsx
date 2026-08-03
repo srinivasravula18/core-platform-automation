@@ -71,7 +71,7 @@ export function RunSummaryPanel({
         <h3 className="mb-3 text-sm font-semibold">Analysis</h3>
         <div className="space-y-3">
           <div>
-            <label className="mb-1 block text-xs font-medium text-[var(--text-muted)]">Analysis owner</label>
+            <label className="mb-1 block text-xs font-medium text-[var(--text-muted)]">Analysis Owner</label>
             {/* Uncontrolled + save-on-blur; key resets defaults when the selected case changes. */}
             <input
               key={`ao-${result.caseId}`}
@@ -98,9 +98,9 @@ export function RunSummaryPanel({
       </div>
 
       <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-card)] p-4 lg:col-span-2">
-        <h3 className="mb-3 text-sm font-semibold">Linked work items <span className="text-[var(--text-muted)]">({linkedDefects.length})</span></h3>
+        <h3 className="mb-3 text-sm font-semibold">Linked Work Items <span className="text-[var(--text-muted)]">({linkedDefects.length})</span></h3>
         {linkedDefects.length === 0 ? (
-          <div className="text-sm text-[var(--text-muted)]">No work items linked</div>
+          <div className="text-sm text-[var(--text-muted)]">No Work Items Linked</div>
         ) : (
           <ul className="space-y-1.5 text-sm">
             {linkedDefects.map((d) => (

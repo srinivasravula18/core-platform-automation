@@ -22,16 +22,15 @@ import { useDataVersion } from '@/src/store/data';
 import { TagEditor } from '@/src/components/TagEditor';
 import { TagMultiSelect } from '@/src/components/TagMultiSelect';
 import { MultiSelectDropdown } from '@/src/components/MultiSelectDropdown';
-import { normalizeTestCaseTypes, testCaseTypeFields } from '@/core/shared/testCaseTypes';
+import { normalizeTestCaseTypes, TESTING_TYPES, testCaseTypeFields } from '@/core/shared/testCaseTypes';
 import { normalizeTags } from '@/src/lib/tags';
 import { readSseJson } from '@/src/lib/sse';
+import { casePlanIds, caseSuiteIds } from '@/src/lib/suiteCaseSelection';
 
 const CASE_STATUSES = ['Draft', 'Under Review', 'Approved', 'Automated', 'Deprecated'];
 const PRIORITIES = ['Low', 'Medium', 'High', 'Critical'];
 const AUTOMATION_STATUSES = ['Automated', 'Not Automated', 'Automation Not Required', 'Cannot Be Automated'];
 const TESTING_SCOPES = ['Manual', 'Automation'];
-const TESTING_TYPES = ['Functional', 'Smoke', 'Sanity', 'Regression', 'Integration', 'End to End', 'Acceptance', 'Performance', 'Security', 'Usability', 'Exploratory'];
-
 function InlineCaseSelect({ children, ...props }: ComponentProps<'select'>) {
   return (
     <div className="relative min-w-0">
@@ -437,41 +436,95 @@ export default function TestCases() {
     }
   };
 
-  // Open the save-and-run dialog.
-  const openRunModal = () => {
-    if (!selectedCaseIds.length) return;
-    setRunTags([]);
-    setIsRunModalOpen(true);
+  /**
+   * Tags carried by the most recent run of any of these cases.
+   *
+   * Runs already persist the tags they were started with, so the last run is the answer to "what did
+   * the tester tag this with", and the modal can prefill instead of asking for the same tag again.
+   */
+  const lastRunTagsFor = (caseIds: string[]): string[] => {
+    const wanted = new Set(caseIds.map(String));
+    // A run that has not executed yet carries no startedAt/completedAt — only `date` — so fall all
+    // the way through, and let a later array entry win ties so same-day runs still resolve.
+    const runTime = (run: any): number => {
+      const stamp = run.completedAt || run.startedAt || run.triggerMeta?.manualExecution?.startedAt
+        || run.metadata?.updatedAt || run.createdAt || run.date;
+      const parsed = Date.parse(String(stamp || ''));
+      return Number.isFinite(parsed) ? parsed : -Infinity;
+    };
+    let newest = -Infinity;
+    let tags: string[] = [];
+    for (const run of runs) {
+      if (!Array.isArray(run.tags) || !run.tags.length) continue;
+      const ids = [...(Array.isArray(run.caseIds) ? run.caseIds : []), run.testCaseId].filter(Boolean);
+      if (!ids.some((id: any) => wanted.has(String(id)))) continue;
+      const time = runTime(run);
+      if (time < newest) continue;
+      newest = time;
+      tags = run.tags;
+    }
+    return tags;
   };
 
-  const runSelectedCases = async (caseIds = selectedCaseIds, tags = runTags) => {
-    if (!caseIds.length || isStartingRun) return;
-    setIsStartingRun(true);
-    try {
-      await startSelectedRun({ caseIds, tags }, navigate);
-      setIsRunModalOpen(false);
-      bulk.clearSelection();
-    } catch (error: any) {
-      void showAlert(error.message || 'Failed to start selected test case run.');
-    } finally {
-      setIsStartingRun(false);
-    }
+  // Open the save-and-run dialog, prefilled with the tags these cases were last run under.
+  const openRunModal = () => {
+    if (!selectedCaseIds.length) return;
+    setRunTags(lastRunTagsFor(selectedCaseIds));
+    setIsRunModalOpen(true);
   };
 
   // Automation cases execute their recorded Playwright script on the desktop agent; the Test Run
   // that opens shows the live execution artifacts (video/screenshots/trace/junit/logs).
-  const runAutomationCase = async (testCase: any) => {
-    if (isStartingRun) return;
+  const startAutomationRun = async (testCase: any): Promise<string> => {
+    const res = await fetch('/api/automation/runs', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ caseId: testCase.id }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data?.error || 'Could not start the automation run.');
+    return data.run.id;
+  };
+
+  /**
+   * Single entry point for the per-row Run button AND Run selected.
+   *
+   * Automation cases with a recorded script execute on the agent; everything else becomes a Test Run
+   * built from the selection. Routing both buttons through here is what stops "Run selected" from
+   * silently creating a Not Started run for cases the row button would have actually executed.
+   * One case failing to dispatch (e.g. no connected agent) must not abort the rest of the selection.
+   */
+  const runSelectedCases = async (caseIds = selectedCaseIds, tags = runTags) => {
+    if (!caseIds.length || isStartingRun) return;
     setIsStartingRun(true);
     try {
-      const res = await fetch('/api/automation/runs', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ caseId: testCase.id }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data?.error || 'Could not start the automation run.');
-      navigate(`/runs/${data.run.id}`);
+      const automationCases: any[] = [];
+      const otherCaseIds: string[] = [];
+      for (const id of caseIds) {
+        const testCase = cases.find((item: any) => String(item.id) === String(id));
+        // An id we cannot resolve keeps the previous behaviour rather than being dropped.
+        if (testCase && isAutomationCase(testCase)) automationCases.push(testCase);
+        else otherCaseIds.push(id);
+      }
+
+      const failures: string[] = [];
+      let firstAutomationRunId = '';
+      for (const testCase of automationCases) {
+        try {
+          const runId = await startAutomationRun(testCase);
+          if (!firstAutomationRunId) firstAutomationRunId = runId;
+        } catch (error: any) {
+          failures.push(`${testCase.title || testCase.id}: ${error.message || 'could not start'}`);
+        }
+      }
+
+      // startSelectedRun navigates itself; otherwise open the first automation run dispatched.
+      if (otherCaseIds.length) await startSelectedRun({ caseIds: otherCaseIds, tags }, navigate);
+      else if (firstAutomationRunId) navigate(`/runs/${firstAutomationRunId}`);
+
+      setIsRunModalOpen(false);
+      bulk.clearSelection();
+      if (failures.length) void showAlert(`Some automation cases did not start:\n\n${failures.join('\n')}`);
     } catch (error: any) {
-      void showAlert(error.message || 'Could not start the automation run.');
+      void showAlert(error.message || 'Failed to start selected test case run.');
     } finally {
       setIsStartingRun(false);
     }
@@ -488,6 +541,20 @@ export default function TestCases() {
     if (testCase.testSuiteId) return testCase.testSuiteId;
     return suites.find((suite) => testCase.agentRunId && suite.agentRunId === testCase.agentRunId)?.id || '';
   };
+  // Full membership for the list's plan/suite pickers: the stored ids, else the one inferred above —
+  // so an agent-generated case with no explicit link still shows the plan/suite it came from.
+  const resolvePlanIds = (testCase: any): string[] => {
+    const ids = casePlanIds(testCase);
+    if (ids.length) return ids;
+    const inferred = resolvePlanId(testCase);
+    return inferred ? [inferred] : [];
+  };
+  const resolveSuiteIds = (testCase: any): string[] => {
+    const ids = caseSuiteIds(testCase);
+    if (ids.length) return ids;
+    const inferred = resolveSuiteId(testCase);
+    return inferred ? [inferred] : [];
+  };
   const apps = projects.flatMap((project) => project.apps || []);
   // Platform dropdown: credential websites (dedupe by name so the same platform never appears twice).
   const platformFilterOptions = (() => {
@@ -501,7 +568,7 @@ export default function TestCases() {
     }
     return out;
   })();
-  const appName = (appId: string) => apps.find((app) => app.id === appId)?.name || platforms.find((platform) => platform.id === appId)?.name || (appId ? 'Unknown app' : 'All apps');
+  const appName = (appId: string) => apps.find((app) => app.id === appId)?.name || platforms.find((platform) => platform.id === appId)?.name || (appId ? 'Unknown App' : 'All Apps');
   // The individual app a case targets (e.g. "CRM"), independent of its platform.
   const caseAppLabel = (testCase: any) => {
     const info = runInfo[testCase.agentRunId || testCase.sourceRunId || ''];
@@ -542,7 +609,7 @@ export default function TestCases() {
     .filter((testCase) => platformFilter === 'All' || casePlatformId(testCase) === platformFilter)
     .map((testCase) => caseAppLabel(testCase).trim())
     // Exclude the "All apps"/"Unknown app" fallbacks so they never duplicate the placeholder option.
-    .filter((label) => label && label !== 'All apps' && label !== 'Unknown app'))).sort();
+    .filter((label) => label && label !== 'All Apps' && label !== 'Unknown App'))).sort();
   const tagOptions = normalizeTags([...plans, ...suites, ...cases, ...runs]
     .flatMap((item) => Array.isArray(item.tags) ? item.tags : [])).sort();
   const ownerOptions: string[] = Array.from(new Set<string>(cases
@@ -668,7 +735,8 @@ export default function TestCases() {
               { key: 'tags', label: 'Tags' },
               { key: 'lastRunAt', label: 'Last Run', get: (c: any) => lastRunAtByCase.get(String(c.id)) || '' },
               { key: 'createdBy', label: 'Created By' },
-              { key: 'suite', label: 'Suite', get: (c) => (suites.find((s) => s.id === c.testSuiteId) || {}).name || '' },
+              { key: 'suite', label: 'Suite', get: (c) => resolveSuiteIds(c).map((id) => suites.find((s) => s.id === id)?.name).filter(Boolean).join(', ') },
+              { key: 'plan', label: 'Test Plan', get: (c) => resolvePlanIds(c).map((id) => plans.find((p) => p.id === id)?.name).filter(Boolean).join(', ') },
               { key: 'stepCount', label: 'Steps', get: (c) => (c.steps || []).length },
               { key: 'stepDetail', label: 'Step Detail', get: (c) => (c.steps || []).map((s: any, i: number) => `${i + 1}. ${s.action || ''}${s.expected ? ' => ' + s.expected : ''}`).join('\n') },
               { key: 'updatedAt', label: 'Updated', get: (c: any) => c.metadata?.updatedAt || c.updatedAt || '' },
@@ -972,7 +1040,7 @@ export default function TestCases() {
         <div className="space-y-4">
           <p className="text-sm text-[var(--text-muted)]">This run appears in Test Runs after it starts.</p>
           <div>
-            <label className="mb-1 block text-sm font-medium text-[var(--text-muted)]">Tags (optional)</label>
+            <label className="mb-1 block text-sm font-medium text-[var(--text-muted)]">Tags (Optional)</label>
             <TagEditor options={tagOptions} value={runTags} onChange={setRunTags} />
           </div>
         </div>
@@ -989,7 +1057,7 @@ export default function TestCases() {
               onClick={() => { if (scriptViewer) navigator.clipboard?.writeText(isEditingScript ? scriptDraft : scriptViewer.code); }}
               className="px-4 py-2 text-sm font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]"
             >
-              Copy code
+              Copy Code
             </button>
             {isEditingScript ? (
               <>
@@ -1054,28 +1122,28 @@ export default function TestCases() {
               <div className="absolute left-0 top-10 z-30 w-[22rem] max-h-[70vh] overflow-auto rounded-md border border-[var(--border)] bg-[var(--bg-card)] p-3 shadow-xl">
                 <div className="mb-3 flex items-center justify-between gap-2">
                   <div className="inline-flex rounded-md border border-[var(--border)] p-0.5 text-[11px] font-medium">
-                    <button onClick={() => setMatchMode('all')} className={`rounded px-2 py-1 ${matchMode === 'all' ? 'bg-[var(--accent)] text-white' : 'text-[var(--text-muted)]'}`}>Match all</button>
-                    <button onClick={() => setMatchMode('any')} className={`rounded px-2 py-1 ${matchMode === 'any' ? 'bg-[var(--accent)] text-white' : 'text-[var(--text-muted)]'}`}>Match any</button>
+                    <button onClick={() => setMatchMode('all')} className={`rounded px-2 py-1 ${matchMode === 'all' ? 'bg-[var(--accent)] text-white' : 'text-[var(--text-muted)]'}`}>Match All</button>
+                    <button onClick={() => setMatchMode('any')} className={`rounded px-2 py-1 ${matchMode === 'any' ? 'bg-[var(--accent)] text-white' : 'text-[var(--text-muted)]'}`}>Match Any</button>
                   </div>
-                  <button onClick={clearAllFilters} className="text-xs font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]">Clear all</button>
+                  <button onClick={clearAllFilters} className="text-xs font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]">Clear All</button>
                 </div>
                 <div className="flex flex-col gap-3">
                   <div>
-                    <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Sort by</label>
+                    <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Sort By</label>
                     <TimeSortSelect value={timeSort} onChange={setTimeSort} className="w-full" />
                   </div>
                   <div className="grid grid-cols-2 gap-2">
                     <div>
                       <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Platform</label>
                       <select value={platformFilter} onChange={(event) => { setPlatformFilter(event.target.value); setAppFilter('All'); }} className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2.5 py-2 text-xs text-[var(--text-primary)]">
-                        <option value="All">All platforms</option>
+                        <option value="All">All Platforms</option>
                         {platformFilterOptions.map((option) => <option key={option.id} value={option.id}>{option.name}</option>)}
                       </select>
                     </div>
                     <div>
                       <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">App</label>
                       <select value={appFilter} onChange={(event) => setAppFilter(event.target.value)} className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2.5 py-2 text-xs text-[var(--text-primary)]">
-                        <option value="All">All apps</option>
+                        <option value="All">All Apps</option>
                         {appFilterOptions.map((option) => <option key={option} value={option}>{option}</option>)}
                       </select>
                     </div>
@@ -1105,11 +1173,11 @@ export default function TestCases() {
                     <MultiSelectDropdown label="Any owner" options={ownerOptions.map((o) => ({ id: o, name: o }))} value={filters.owners} onChange={(v) => setFilters((f) => ({ ...f, owners: v }))} />
                   </div>
                   <div>
-                    <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Requirements (Jira key / reference)</label>
+                    <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Requirements (Jira Key / Reference)</label>
                     <input value={filters.requirement} onChange={(e) => setFilters((f) => ({ ...f, requirement: e.target.value }))} placeholder="e.g. PROJ-123" className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2.5 py-1.5 text-xs text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
                   </div>
                   <div>
-                    <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Created (date range)</label>
+                    <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Created (Date Range)</label>
                     <div className="flex items-center gap-2">
                       <input type="date" value={filters.createdFrom} onChange={(e) => setFilters((f) => ({ ...f, createdFrom: e.target.value }))} className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
                       <span className="text-xs text-[var(--text-muted)]">to</span>
@@ -1117,7 +1185,7 @@ export default function TestCases() {
                     </div>
                   </div>
                   <div>
-                    <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Last Updated (date range)</label>
+                    <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Last Updated (Date Range)</label>
                     <div className="flex items-center gap-2">
                       <input type="date" value={filters.updatedFrom} onChange={(e) => setFilters((f) => ({ ...f, updatedFrom: e.target.value }))} className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-xs text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
                       <span className="text-xs text-[var(--text-muted)]">to</span>
@@ -1126,7 +1194,7 @@ export default function TestCases() {
                   </div>
                   <label className="flex cursor-pointer items-center gap-2 rounded px-1 py-1 text-sm hover:bg-[var(--bg-secondary)]">
                     <input type="checkbox" checked={filters.notInAnyRun} onChange={(e) => setNotInAnyRunFilter(e.target.checked)} />
-                    Not in any test run
+                    Not in Any Test Run
                   </label>
                 </div>
               </div>
@@ -1157,7 +1225,7 @@ export default function TestCases() {
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
                   <button onClick={openRunModal} disabled={isStartingRun} className="flex items-center gap-1.5 rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700 disabled:opacity-50">
-                    {isStartingRun ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <PlayCircle className="h-3.5 w-3.5" />} Run selected
+                    {isStartingRun ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <PlayCircle className="h-3.5 w-3.5" />} Run Selected
                   </button>
                   {can('cases:delete') && (
                     <button onClick={bulk.deleteSelected} disabled={bulk.busy} className="flex items-center gap-1.5 rounded-md border border-red-500/40 px-3 py-1.5 text-xs font-medium text-red-400 hover:bg-red-500/10 disabled:opacity-50">
@@ -1256,37 +1324,39 @@ export default function TestCases() {
                   <td className="py-3 px-4 font-medium truncate" title={tc.title}>{tc.title}</td>
                   <td className="py-3 px-4 text-xs text-[var(--text-muted)] truncate" title={caseScopeLabel(tc)}>{caseScopeLabel(tc)}</td>
                   <td className="py-3 px-4">
-                    <InlineCaseSelect
-                      value={resolvePlanId(tc)}
-                      onClick={(event) => event.stopPropagation()}
-                      onChange={(event) => updateCaseInline(tc, { testPlanId: event.target.value })}
-                      title="Update test plan"
-                    >
-                      <option value="">None</option>
-                      {plans.map((plan) => (
-                        <option key={plan.id} value={plan.id}>{plan.name}</option>
-                      ))}
-                    </InlineCaseSelect>
+                    <MultiSelectDropdown
+                      label="None"
+                      menuPortal
+                      title="Update test plans"
+                      options={plans.map((plan) => ({ id: String(plan.id), name: String(plan.name) }))}
+                      value={resolvePlanIds(tc)}
+                      onChange={(ids) => updateCaseInline(tc, { testPlanIds: ids, testPlanId: ids[0] || '' })}
+                    />
                   </td>
                   <td className="py-3 px-4">
-                    <InlineCaseSelect
-                      value={resolveSuiteId(tc)}
-                      onClick={(event) => event.stopPropagation()}
-                      onChange={(event) => {
-                        const suiteId = event.target.value;
-                        const selectedSuite = suites.find((suite) => suite.id === suiteId);
+                    <MultiSelectDropdown
+                      label="None"
+                      menuPortal
+                      title="Update test suites"
+                      options={suites.map((suite) => ({ id: String(suite.id), name: String(suite.name) }))}
+                      value={resolveSuiteIds(tc)}
+                      onChange={(ids) => {
+                        // Adding a suite still pulls in its plan (the old single-select convenience),
+                        // but as a UNION so it can never drop plans the case already belongs to.
+                        const added = ids.filter((id) => !resolveSuiteIds(tc).includes(id));
+                        const planIds = [...resolvePlanIds(tc)];
+                        for (const id of added) {
+                          const planId = suites.find((suite) => suite.id === id)?.testPlanId;
+                          if (planId && !planIds.includes(planId)) planIds.push(planId);
+                        }
                         updateCaseInline(tc, {
-                          testSuiteId: suiteId,
-                          ...(selectedSuite?.testPlanId ? { testPlanId: selectedSuite.testPlanId } : {}),
+                          testSuiteIds: ids,
+                          testSuiteId: ids[0] || '',
+                          testPlanIds: planIds,
+                          testPlanId: planIds[0] || '',
                         });
                       }}
-                      title="Update test suite"
-                    >
-                      <option value="">None</option>
-                      {suites.map((suite) => (
-                        <option key={suite.id} value={suite.id}>{suite.name}</option>
-                      ))}
-                    </InlineCaseSelect>
+                    />
                   </td>
                   <td className="py-3 px-4">
                     <InlineCaseSelect
@@ -1372,8 +1442,8 @@ export default function TestCases() {
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
-                        if (isAutomationCase(tc)) runAutomationCase(tc);
-                        else runSelectedCases([tc.id]);
+                        // Its own remembered tags, never whatever the modal last held.
+                        runSelectedCases([tc.id], lastRunTagsFor([tc.id]));
                       }}
                       disabled={isStartingRun}
                       title={isAutomationCase(tc) ? 'Run automation (executes on the agent)' : 'Run test case'}

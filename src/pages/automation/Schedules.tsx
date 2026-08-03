@@ -11,13 +11,78 @@ function fmt(iso: string | null): string {
   return Number.isNaN(d.getTime()) ? '—' : d.toLocaleString();
 }
 
-const CRON_PRESETS = [
-  { label: 'Every 15 minutes', value: '*/15 * * * *' },
-  { label: 'Every hour', value: '0 * * * *' },
-  { label: 'Daily at 2:00 AM', value: '0 2 * * *' },
-  { label: 'Weekdays at 9:00 AM', value: '0 9 * * 1-5' },
-  { label: 'Weekly on Monday at 9:00 AM', value: '0 9 * * 1' },
+type ScheduleTab = 'daily' | 'weekly' | 'monthly' | 'once';
+
+const SCHEDULE_TABS: Array<{ id: ScheduleTab; label: string }> = [
+  { id: 'daily', label: 'Daily' },
+  { id: 'weekly', label: 'Weekly' },
+  { id: 'monthly', label: 'Monthly' },
+  { id: 'once', label: 'Specific Date' },
 ];
+
+/** `datetime-local` is timezone-naive; this modal is UTC throughout, so read it as UTC. */
+function runAtFromUtcInput(value: string): string {
+  const parsed = Date.parse(`${value}:00Z`);
+  return Number.isFinite(parsed) ? new Date(parsed).toISOString() : '';
+}
+
+/** Default the picker to the next whole hour, in UTC, so it is never a past instant. */
+function nextHourUtcInput(): string {
+  const d = new Date();
+  d.setUTCMinutes(0, 0, 0);
+  d.setUTCHours(d.getUTCHours() + 1);
+  return d.toISOString().slice(0, 16);
+}
+
+// Cron day-of-week is 0=Sunday. Letters repeat (S/T), so each pill carries the full name for a11y.
+const WEEKDAYS = [
+  { value: 0, letter: 'S', name: 'Sunday' },
+  { value: 1, letter: 'M', name: 'Monday' },
+  { value: 2, letter: 'T', name: 'Tuesday' },
+  { value: 3, letter: 'W', name: 'Wednesday' },
+  { value: 4, letter: 'T', name: 'Thursday' },
+  { value: 5, letter: 'F', name: 'Friday' },
+  { value: 6, letter: 'S', name: 'Saturday' },
+];
+
+const ordinal = (n: number) => `${n}${['th', 'st', 'nd', 'rd'][(n % 100 - n % 10 !== 10 && n % 10 < 4) ? n % 10 : 0]}`;
+
+/**
+ * Build the cron expression for a tab.
+ *
+ * Everything submits as kind 'cron' on purpose: the backend's 'daily'/'weekly'/'monthly' kinds are
+ * plain interval arithmetic (now + 24h / 7d / 1 month) that ignores time-of-day and day selection,
+ * so a "Daily at 09:00" schedule sent as kind 'daily' would fire at whatever time it was created.
+ */
+function buildCron(tab: ScheduleTab, time: string, weekdays: number[], monthDay: number): string {
+  if (tab === 'once') return '';
+  const [hours, minutes] = time.split(':');
+  const h = Number(hours);
+  const m = Number(minutes);
+  if (!Number.isFinite(h) || !Number.isFinite(m)) return '';
+  if (tab === 'daily') return `${m} ${h} * * *`;
+  if (tab === 'weekly') return weekdays.length ? `${m} ${h} * * ${[...weekdays].sort((a, b) => a - b).join(',')}` : '';
+  return `${m} ${h} ${monthDay} * *`;
+}
+
+/** Plain-English echo of the current selection, so nobody has to read the cron to trust it. */
+function describeSchedule(tab: ScheduleTab, time: string, weekdays: number[], monthDay: number): string {
+  if (tab === 'daily') return `Everyday at ${time} UTC`;
+  if (tab === 'weekly') {
+    if (!weekdays.length) return 'Pick at least one day';
+    const names = [...weekdays].sort((a, b) => a - b).map((d) => WEEKDAYS[d].name);
+    return `Every ${names.join(', ')} at ${time} UTC`;
+  }
+  if (tab === 'monthly') return `On the ${ordinal(monthDay)} of every month at ${time} UTC`;
+  return '';
+}
+
+/** Human echo for a one-off, rendered from the UTC instant that will actually be stored. */
+function describeRunAt(runAt: string): string {
+  if (!runAt) return 'Pick a date and time';
+  const d = new Date(runAt);
+  return `Once on ${d.toISOString().slice(0, 10)} at ${d.toISOString().slice(11, 16)} UTC`;
+}
 
 export default function Schedules() {
   const flag = useRemoteAgentFlag();
@@ -68,8 +133,8 @@ export default function Schedules() {
             <thead>
               <tr className="border-b border-[var(--border)] text-left text-xs uppercase tracking-wide text-[var(--text-muted)]">
                 <th className="px-4 py-2.5 font-medium">Recording</th>
-                <th className="px-4 py-2.5 font-medium">Runs at</th>
-                <th className="px-4 py-2.5 font-medium">Last run</th>
+                <th className="px-4 py-2.5 font-medium">Runs At</th>
+                <th className="px-4 py-2.5 font-medium">Last Run</th>
                 <th className="px-4 py-2.5 font-medium">Enabled</th>
                 <th className="px-4 py-2.5 font-medium text-right">Actions</th>
               </tr>
@@ -136,8 +201,11 @@ function FolderPicker({ node, selectedId, counts, onSelect, depth = 0 }: { key?:
 
 function NewScheduleModal({ isOpen, onClose, onCreated }: { isOpen: boolean; onClose: () => void; onCreated: () => void }) {
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [cronPreset, setCronPreset] = useState(CRON_PRESETS[2].value);
-  const [customCron, setCustomCron] = useState('');
+  const [tab, setTab] = useState<ScheduleTab>('daily');
+  const [time, setTime] = useState('02:00');
+  const [weekdays, setWeekdays] = useState<number[]>([1]);
+  const [monthDay, setMonthDay] = useState(1);
+  const [onceAt, setOnceAt] = useState(nextHourUtcInput());
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(false);
   const [folders, setFolders] = useState<FolderNode[]>([]);
@@ -178,15 +246,21 @@ function NewScheduleModal({ isOpen, onClose, onCreated }: { isOpen: boolean; onC
       : (script.folderId || UNCATEGORIZED_ID) === selectedFolderId);
   }, [scripts, search, selectedFolderId]);
   const toggle = (id: string) => setSelected((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
-  const cron = cronPreset === 'custom' ? customCron.trim() : cronPreset;
+  const toggleWeekday = (day: number) => setWeekdays((prev) => (prev.includes(day) ? prev.filter((d) => d !== day) : [...prev, day]));
+  const cron = buildCron(tab, time, weekdays, monthDay);
+  const runAt = tab === 'once' ? runAtFromUtcInput(onceAt) : '';
+  const summary = tab === 'once' ? describeRunAt(runAt) : describeSchedule(tab, time, weekdays, monthDay);
+  const scheduleReady = tab === 'once' ? Boolean(runAt) : Boolean(cron);
 
   const submit = async () => {
     if (selected.size === 0) { showToast('Select at least one item.', { tone: 'error' }); return; }
-    if (!cron) { showToast('Enter a cron expression.', { tone: 'error' }); return; }
+    if (!scheduleReady) { showToast(tab === 'weekly' ? 'Pick at least one day of the week.' : 'Pick a date and time.', { tone: 'error' }); return; }
+    // A one-off in the past would be dispatched by the very next scheduler tick.
+    if (tab === 'once' && Date.parse(runAt) <= Date.now()) { showToast('Pick a future date and time (UTC).', { tone: 'error' }); return; }
     setBusy(true);
     try {
       const results = await Promise.all([...selected].map(async (id) => {
-        const response = await fetch('/api/automation/schedules', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ scriptId: id, kind: 'cron', cron, timezone: 'UTC' }) });
+        const response = await fetch('/api/automation/schedules', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(tab === 'once' ? { scriptId: id, kind: 'once', runAt, timezone: 'UTC' } : { scriptId: id, kind: 'cron', cron, timezone: 'UTC' }) });
         if (!response.ok) throw new Error((await response.json().catch(() => ({})))?.error || 'Could not create the schedule.');
         return true;
       }));
@@ -194,7 +268,7 @@ function NewScheduleModal({ isOpen, onClose, onCreated }: { isOpen: boolean; onC
       if (ok === 0) throw new Error();
       showToast(`Created ${ok} cron schedule${ok > 1 ? 's' : ''}.`, { tone: 'success' });
       if (ok < selected.size) showToast(`${selected.size - ok} script${selected.size - ok > 1 ? 's were' : ' was'} skipped.`, { tone: 'error' });
-      setSelected(new Set()); setCustomCron('');
+      setSelected(new Set());
       onCreated();
       onClose();
     } catch (error: any) { showToast(error?.message || 'Could not create the schedule.', { tone: 'error' }); }
@@ -205,13 +279,13 @@ function NewScheduleModal({ isOpen, onClose, onCreated }: { isOpen: boolean; onC
     <Modal isOpen={isOpen} onClose={onClose} title="New schedule" size="xl"
       footer={<div className="flex justify-end gap-2">
         <button onClick={onClose} className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)]">Cancel</button>
-        <button onClick={submit} disabled={busy || selected.size === 0 || !cron} className="inline-flex items-center gap-2 rounded-md bg-[var(--accent)] px-3 py-2 text-sm font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50">
+        <button onClick={submit} disabled={busy || selected.size === 0 || !scheduleReady} className="inline-flex items-center gap-2 rounded-md bg-[var(--accent)] px-3 py-2 text-sm font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50">
           {busy && <Loader2 className="h-4 w-4 animate-spin" />} Create Schedule
         </button>
       </div>}>
       <div className="mb-3 flex items-center justify-between gap-3">
         <div>
-          <div className="text-sm font-medium text-[var(--text-primary)]">Select scripts from Test Repository<RequiredMark /></div>
+          <div className="text-sm font-medium text-[var(--text-primary)]">Select Scripts from Test Repository<RequiredMark /></div>
           <div className="mt-0.5 text-xs text-[var(--text-muted)]">{selected.size} selected</div>
         </div>
         <label className="relative block w-full max-w-xs">
@@ -239,19 +313,86 @@ function NewScheduleModal({ isOpen, onClose, onCreated }: { isOpen: boolean; onC
             ))}
         </div>
       </div>
-      <label className="mt-4 block text-xs font-medium text-[var(--text-muted)]">
-        Schedule (UTC)<RequiredMark />
-        <select value={cronPreset} onChange={(e) => setCronPreset(e.target.value)} className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]">
-          {CRON_PRESETS.map((preset) => <option key={preset.value} value={preset.value}>{preset.label}</option>)}
-          <option value="custom">Custom cron expression</option>
-        </select>
-      </label>
-      {cronPreset === 'custom' && <label className="mt-3 block text-xs font-medium text-[var(--text-muted)]">Custom cron expression
-        <input value={customCron} onChange={(e) => setCustomCron(e.target.value)} placeholder="0 2 * * *" className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 font-mono text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]" />
-        <span className="mt-1 block font-normal">Five space-separated values: minute, hour, day of month, month, day of week.</span>
-        <span className="mt-1 block font-normal">Examples: <code>0 2 * * *</code> every day at 2 AM; <code>0 9 * * 1-5</code> weekdays at 9 AM; <code>*/15 * * * *</code> every 15 minutes.</span>
-      </label>}
-      <p className="mt-3 text-xs text-[var(--text-muted)]">Cron uses minute, hour, day of month, month, and day of week. Snapshots and video appear under Test Runs.</p>
+      <div className="mt-4 text-sm font-medium text-[var(--text-primary)]">Schedule (UTC)<RequiredMark /></div>
+      <div className="mt-2 flex gap-6 border-b border-[var(--border)] text-sm" role="tablist" aria-label="Schedule frequency">
+        {SCHEDULE_TABS.map((item) => (
+          <button
+            key={item.id}
+            type="button"
+            role="tab"
+            aria-selected={tab === item.id}
+            onClick={() => setTab(item.id)}
+            className={`border-b-2 pb-2 ${tab === item.id ? 'border-[var(--accent)] text-[var(--accent)]' : 'border-transparent text-[var(--text-muted)] hover:text-[var(--text-primary)]'}`}
+          >
+            {item.label}
+          </button>
+        ))}
+      </div>
+
+      <div className="mt-3">
+        {tab === 'weekly' && (
+          <div className="mb-3">
+            <div className="mb-1.5 text-xs font-medium text-[var(--text-muted)]">Repeat On</div>
+            <div className="flex gap-1.5">
+              {WEEKDAYS.map((day) => (
+                <button
+                  key={day.value}
+                  type="button"
+                  aria-label={day.name}
+                  aria-pressed={weekdays.includes(day.value)}
+                  onClick={() => toggleWeekday(day.value)}
+                  className={`h-9 w-9 rounded-full border text-sm font-medium transition-colors ${weekdays.includes(day.value)
+                    ? 'border-[var(--accent)] bg-[var(--accent)] text-white'
+                    : 'border-[var(--border)] bg-[var(--bg-secondary)] text-[var(--text-muted)] hover:border-[var(--accent)] hover:text-[var(--text-primary)]'}`}
+                >
+                  {day.letter}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {tab === 'monthly' && (
+          <label className="mb-3 block text-xs font-medium text-[var(--text-muted)]">
+            Day Of Month
+            <select
+              value={monthDay}
+              onChange={(e) => setMonthDay(Number(e.target.value))}
+              className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
+            >
+              {Array.from({ length: 31 }, (_, i) => i + 1).map((day) => <option key={day} value={day}>{ordinal(day)}</option>)}
+            </select>
+            {monthDay > 28 && <span className="mt-1 block font-normal">Months without day {monthDay} are skipped.</span>}
+          </label>
+        )}
+
+        {tab === 'once' ? (
+          <label className="block text-xs font-medium text-[var(--text-muted)]">
+            Date &amp; Time (UTC)
+            <input
+              type="datetime-local"
+              value={onceAt}
+              onChange={(e) => setOnceAt(e.target.value)}
+              className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)] [color-scheme:dark]"
+            />
+            <span className="mt-1 block font-normal">Runs once at this UTC instant, then switches itself off.</span>
+          </label>
+        ) : (
+          <label className="block text-xs font-medium text-[var(--text-muted)]">
+            Time (UTC)
+            <input
+              type="time"
+              value={time}
+              onChange={(e) => setTime(e.target.value)}
+              className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)] [color-scheme:dark]"
+            />
+          </label>
+        )}
+      </div>
+
+      <p className="mt-3 text-xs text-[var(--text-muted)]">
+        <span className="text-[var(--text-primary)]">{summary}</span> · Snapshots and video appear under Test Runs.
+      </p>
     </Modal>
   );
 }

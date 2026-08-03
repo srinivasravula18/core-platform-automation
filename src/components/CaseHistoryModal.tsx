@@ -177,11 +177,11 @@ export default function CaseHistoryModal({ caseId, isOpen, onClose, onRolledBack
                     <p className="text-[11px] text-[var(--text-muted)]">{(selected.steps?.length ?? 0)} step{(selected.steps?.length ?? 0) === 1 ? '' : 's'}</p>
                   </div>
                   {currentRevision != null && selected.revisionNo === currentRevision ? (
-                    <span className="inline-flex items-center gap-1 text-[11px] font-medium text-emerald-400"><Check className="h-3.5 w-3.5" /> Current revision</span>
+                    <span className="inline-flex items-center gap-1 text-[11px] font-medium text-emerald-400"><Check className="h-3.5 w-3.5" /> Current Revision</span>
                   ) : (
                     <button onClick={() => restore(selected)} disabled={busy}
                       className="inline-flex items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--bg-card)] px-3 py-1.5 text-xs font-medium text-[var(--text-primary)] hover:border-[var(--accent)] disabled:opacity-50">
-                      {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RotateCcw className="h-3.5 w-3.5" />} Restore this revision
+                      {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RotateCcw className="h-3.5 w-3.5" />} Restore This Revision
                     </button>
                   )}
                 </div>
@@ -190,7 +190,7 @@ export default function CaseHistoryModal({ caseId, isOpen, onClose, onRolledBack
                 <div className="overflow-hidden rounded-lg border border-[var(--border)]">
                   <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2">
                     <div>
-                      <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">Exact changes</div>
+                      <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">Exact Changes</div>
                       <div className="text-xs text-[var(--text-primary)]">
                         {previous ? `Revision ${previous.revisionNo} → Revision ${selected.revisionNo}` : `Revision ${selected.revisionNo} is the initial snapshot`}
                       </div>
@@ -252,7 +252,7 @@ export default function CaseHistoryModal({ caseId, isOpen, onClose, onRolledBack
                     </select>
                     <button onClick={pinSelected} disabled={!pinPlanId || pinBusy}
                       className="inline-flex items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--bg-card)] px-3 py-1.5 text-xs font-medium text-[var(--text-primary)] hover:border-[var(--accent)] disabled:opacity-50">
-                      {pinBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Pin className="h-3.5 w-3.5" />} Pin revision {selected.revisionNo}
+                      {pinBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Pin className="h-3.5 w-3.5" />} Pin Revision {selected.revisionNo}
                     </button>
                   </div>
                 </div>

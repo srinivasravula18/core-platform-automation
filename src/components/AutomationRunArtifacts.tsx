@@ -82,7 +82,7 @@ export function AutomationRunArtifacts({ jobId }: { jobId: string }) {
   return (
     <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)]/40 px-4 py-4">
       <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-[var(--text-primary)]">
-        Execution artifacts
+        Execution Artifacts
         <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${meta.cls}`}>{meta.label}</span>
       </div>
       <div className="grid gap-2 sm:grid-cols-4">
@@ -97,7 +97,7 @@ export function AutomationRunArtifacts({ jobId }: { jobId: string }) {
         <>
           {video && previews[video.id] && (
             <div className="mt-3">
-              <div className="mb-1 text-xs font-medium text-[var(--text-muted)]">Video (every action)</div>
+              <div className="mb-1 text-xs font-medium text-[var(--text-muted)]">Video (Every Action)</div>
               <video src={previews[video.id]} controls className="max-h-72 w-full rounded border border-[var(--border)]" />
             </div>
           )}
@@ -120,13 +120,13 @@ export function AutomationRunArtifacts({ jobId }: { jobId: string }) {
               ); })}
             </div>
           )}
-          {artifacts.length === 0 && !logs.length && <div className="mt-3 text-xs text-[var(--text-muted)]">No snapshots yet{running ? ' — run in progress…' : '.'}</div>}
+          {artifacts.length === 0 && !logs.length && <div className="mt-3 text-xs text-[var(--text-muted)]">No Snapshots Yet{running ? ' — run in progress…' : '.'}</div>}
         </>
       )}
 
       {logs.length > 0 && (
         <div className="mt-3">
-          <div className="mb-1 text-xs font-medium text-[var(--text-muted)]">Live logs</div>
+          <div className="mb-1 text-xs font-medium text-[var(--text-muted)]">Live Logs</div>
           <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-words rounded bg-slate-950 p-3 font-mono text-xs leading-5 text-slate-200">{logs.join('\n')}</pre>
         </div>
       )}

@@ -138,7 +138,7 @@ export default function RecordPlay() {
                   }}
                   className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
                 >
-                  <option value="">Select saved URL</option>
+                  <option value="">Select Saved URL</option>
                   {websites.map((site) => (
                     <option key={site.id} value={site.baseUrl}>{site.name} - {site.baseUrl}</option>
                   ))}
@@ -147,7 +147,7 @@ export default function RecordPlay() {
             )}
 
             <label className="block text-xs font-medium text-[var(--text-muted)]">
-              Script name
+              Script Name
               <input
                 value={scriptName}
                 onChange={(e) => setScriptName(e.target.value)}
@@ -164,7 +164,7 @@ export default function RecordPlay() {
                 className="inline-flex items-center gap-2 rounded-md bg-[var(--accent)] px-3 py-2 text-sm font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50"
               >
                 {isBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Radio className="h-4 w-4" />}
-                Start recorder
+                Start Recorder
               </button>
               <button
                 onClick={loadCode}
@@ -173,7 +173,7 @@ export default function RecordPlay() {
                 className="inline-flex items-center gap-2 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm font-medium text-[var(--text-primary)] hover:border-[var(--accent)] disabled:opacity-50"
               >
                 <RefreshCcw className="h-4 w-4" />
-                Load code
+                Load Code
               </button>
               <button
                 onClick={stopRecorder}
@@ -182,13 +182,13 @@ export default function RecordPlay() {
                 className="inline-flex items-center gap-2 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm font-medium text-red-400 hover:border-red-500 disabled:opacity-50"
               >
                 <Square className="h-4 w-4" />
-                Stop & load code
+                Stop & Load Code
               </button>
             </div>
 
             <div className="space-y-2 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] p-3 text-xs">
               <div className="text-[var(--text-muted)]">Session</div>
-              <div className="break-all font-mono text-[var(--text-primary)]">{sessionId || 'Not started'}</div>
+              <div className="break-all font-mono text-[var(--text-primary)]">{sessionId || 'Not Started'}</div>
               {outputPath && (
                 <>
                   <div className="pt-2 text-[var(--text-muted)]">Output</div>

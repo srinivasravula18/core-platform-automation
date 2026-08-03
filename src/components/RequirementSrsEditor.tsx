@@ -63,7 +63,7 @@ export function RequirementSrsEditor({
                       onChange={(event) => updateRequirement(moduleIndex, requirementIndex, { priority: event.target.value })}
                       className={inputClass}
                     >
-                      <option value="">No priority</option>
+                      <option value="">No Priority</option>
                       {['Must', 'Should', 'Could', "Won't"].map((priority) => <option key={priority}>{priority}</option>)}
                     </select>
                   </div>

@@ -67,7 +67,7 @@ export function AIReworkPanel<T extends AIReworkCase>({
           <div>
             <div className="flex items-center gap-1.5 text-xs font-semibold text-[var(--text-primary)]">
               <Sparkles className="h-4 w-4 text-[var(--accent)]" />
-              AI proposal
+              AI Proposal
             </div>
             <p className="mt-0.5 text-[11px] text-[var(--text-muted)]">
               {updated ? `${updated} case${updated === 1 ? '' : 's'} changed` : ''}
@@ -112,7 +112,7 @@ export function AIReworkPanel<T extends AIReworkCase>({
                       {item.kind === 'new' && (
                         <span className="rounded bg-emerald-500/10 px-1.5 py-0.5 text-[9px] font-semibold uppercase text-emerald-400">New</span>
                       )}
-                      <span className="truncate text-xs font-semibold text-[var(--text-primary)]">{item.after.title || 'Untitled case'}</span>
+                      <span className="truncate text-xs font-semibold text-[var(--text-primary)]">{item.after.title || 'Untitled Case'}</span>
                     </div>
                     <p className="mt-0.5 text-[10px] text-[var(--text-muted)]">
                       {item.kind === 'new'
@@ -123,7 +123,7 @@ export function AIReworkPanel<T extends AIReworkCase>({
                 </div>
                 <details className="group border-t border-[var(--border)]">
                   <summary className="flex min-h-10 cursor-pointer list-none items-center justify-between gap-2 px-3 py-2 text-[11px] font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]">
-                    {item.kind === 'new' ? 'Preview case' : 'Show exact changes'}
+                    {item.kind === 'new' ? 'Preview Case' : 'Show Exact Changes'}
                     <ChevronDown className="h-3.5 w-3.5 transition-transform group-open:rotate-180" />
                   </summary>
                   <div className="space-y-2 border-t border-[var(--border)] p-3">
@@ -141,7 +141,7 @@ export function AIReworkPanel<T extends AIReworkCase>({
                       <div key={`${difference.type}-${difference.label}`} className="grid gap-2 text-[11px] sm:grid-cols-[7rem_1fr_1fr]">
                         <span className="font-semibold text-[var(--text-primary)]">{difference.label}</span>
                         <span className="rounded bg-red-500/5 px-2 py-1 text-red-300 line-through">
-                          {difference.before?.value || 'Not present'}
+                          {difference.before?.value || 'Not Present'}
                         </span>
                         <span className="rounded bg-emerald-500/5 px-2 py-1 text-emerald-300">
                           {difference.after?.value || 'Removed'}

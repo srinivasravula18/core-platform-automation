@@ -175,7 +175,7 @@ function StepRow({
                   </button>
                 </>
               ) : (
-                <span className="text-xs text-[var(--text-muted)]">Attachments off</span>
+                <span className="text-xs text-[var(--text-muted)]">Attachments Off</span>
               )}
               {showImages && shots.length > 0 && (
                 <div className="flex flex-wrap gap-1.5">

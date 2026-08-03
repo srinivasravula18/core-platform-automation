@@ -230,7 +230,7 @@ export default function TestRepository() {
           <div className="flex flex-shrink-0 flex-wrap items-center justify-between gap-3 border-b border-[var(--border)] p-4">
             <div className="min-w-0">
               <div className="text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">Filtered by</div>
-              <h2 className="truncate text-lg font-semibold">{activeTags.length ? activeTags.join(' + ') : 'All items'}</h2>
+              <h2 className="truncate text-lg font-semibold">{activeTags.length ? activeTags.join(' + ') : 'All Items'}</h2>
             </div>
             <div className="flex flex-wrap items-center gap-2">
               <div className="relative">
@@ -247,7 +247,7 @@ export default function TestRepository() {
               </button>
               {selectMode && selectedKeys.size > 0 && (
                 <button onClick={deleteSelectedArtifacts} disabled={deleting} className="inline-flex items-center gap-1.5 rounded-md bg-red-600 px-3 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50">
-                  <Trash2 className="h-4 w-4" /> Delete selected ({selectedKeys.size})
+                  <Trash2 className="h-4 w-4" /> Delete Selected ({selectedKeys.size})
                 </button>
               )}
             </div>

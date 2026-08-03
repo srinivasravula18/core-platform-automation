@@ -117,7 +117,7 @@ export function GoogleSheetsIntegration() {
          },
          {
              range: 'Test Plans!A2:D' + (plans.length + 1),
-             values: plans.length > 0 ? plans.map((p: any) => [p.id, p.name, p.scope, p.status || 'Active']) : [['No plans yet']]
+             values: plans.length > 0 ? plans.map((p: any) => [p.id, p.name, p.scope, p.status || 'Active']) : [['No Plans Yet']]
          },
          {
              range: 'Test Suites!A1:D1',
@@ -125,7 +125,7 @@ export function GoogleSheetsIntegration() {
          },
          {
              range: 'Test Suites!A2:D' + (suites.length + 1),
-             values: suites.length > 0 ? suites.map((s: any) => [s.id, s.name, s.description, s.status || 'Active']) : [['No suites yet']]
+             values: suites.length > 0 ? suites.map((s: any) => [s.id, s.name, s.description, s.status || 'Active']) : [['No Suites Yet']]
          },
          {
              range: 'Test Cases!A1:E1',
@@ -133,7 +133,7 @@ export function GoogleSheetsIntegration() {
          },
          {
              range: 'Test Cases!A2:E' + (cases.length + 1),
-             values: cases.length > 0 ? cases.map((c: any) => [c.id, c.title, c.description, c.priority, c.type]) : [['No cases yet']]
+             values: cases.length > 0 ? cases.map((c: any) => [c.id, c.title, c.description, c.priority, c.type]) : [['No Cases Yet']]
          }
       ];
 
@@ -199,7 +199,7 @@ export function GoogleSheetsIntegration() {
                  </div>
               </div>
               <button onClick={handleLogout} className="text-xs text-[var(--text-muted)] hover:text-red-500 transition-colors">
-                Sign out
+                Sign Out
               </button>
            </div>
            

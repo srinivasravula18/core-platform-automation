@@ -131,7 +131,7 @@ export function analyzeFailure(rawError: string): FailureAnalysis {
     const tag = cap(resolvedElement || '', /^<(\w+)/)?.toLowerCase() ?? '';
     const kindWord = tag === 'select' ? 'a dropdown' : tag === 'button' ? 'a button' : tag ? `a <${tag}> (not a text box)` : 'something you cannot type into';
     return {
-      kind: 'unknown', label: 'Wrong kind of control', attempted, target, resolvedElement,
+      kind: 'unknown', label: 'Wrong Kind of Control', attempted, target, resolvedElement,
       expected: `${humanTarget(target)} accepts typed text.`,
       actual: `The test tried to type into ${humanTarget(target)}, but it is ${kindWord} — you cannot type text into it.`,
       likelyCause: 'The test used "type text" on the wrong kind of control. A dropdown needs to be opened and an option picked; a checkbox needs to be ticked; a button needs to be clicked.',
@@ -198,7 +198,7 @@ export function analyzeFailure(rawError: string): FailureAnalysis {
 
   if (strictViolation) {
     return {
-      kind: 'ambiguous-locator', label: 'Too many matches', attempted, target, resolvedElement,
+      kind: 'ambiguous-locator', label: 'Too Many Matches', attempted, target, resolvedElement,
       expected: `The name ${humanTarget(target)} should point to exactly one thing on the screen.`,
       actual: 'It matched more than one thing, so the test stopped instead of guessing which one to use.',
       likelyCause: "Several things on this screen share the same name or label, so the test couldn't tell them apart.",
@@ -215,7 +215,7 @@ export function analyzeFailure(rawError: string): FailureAnalysis {
     // honestly instead of implying a wrong-screen bug — this is the #1 source of confusing "error not shown" cards.
     if (/\[role="alert"|aria-invalid|aria-errormessage/i.test(target || '')) {
       return {
-        kind: 'element-not-found', label: 'No error appeared', attempted, target, resolvedElement,
+        kind: 'element-not-found', label: 'No Error Appeared', attempted, target, resolvedElement,
         expected: 'an error or validation message appears after the steps run.',
         actual: `No error or validation message appeared, even after waiting ${waited}.`,
         likelyCause: "Often this means the app behaved CORRECTLY — it accepted the input, so there was nothing to warn about — and this check does not fit this case. Otherwise the app shows validation a different way (an inline message or a banner) that this check did not look for.",
@@ -241,7 +241,7 @@ export function analyzeFailure(rawError: string): FailureAnalysis {
   if (isAssertion) {
     const expectation = cap(e, /Expected:?\s*([^\n]+)/) ?? 'the right result';
     return {
-      kind: 'assertion-failed', label: 'Wrong result', attempted, target, resolvedElement,
+      kind: 'assertion-failed', label: 'Wrong Result', attempted, target, resolvedElement,
       expected: `${humanTarget(target)} should be: ${expectation}`.slice(0, 200),
       actual: (cap(e, /Received:?\s*([^\n]+)/) ?? `It still wasn't right after ${waited}.`).slice(0, 200),
       likelyCause: 'After the steps, the app showed something different from what the test expected — either the feature behaved differently, or the test was expecting the wrong thing for this case.',
@@ -267,7 +267,7 @@ export function analyzeFailure(rawError: string): FailureAnalysis {
 
   if (/Timeout|timed out/i.test(e)) {
     return {
-      kind: 'timeout', label: 'Took too long', attempted, target, resolvedElement,
+      kind: 'timeout', label: 'Took Too Long', attempted, target, resolvedElement,
       expected: 'The step finishes in time.',
       actual: `The step still wasn't done after ${waited}.`,
       likelyCause: 'The app was slow or stuck, a loading spinner never finished, or the test was waiting for something that can never happen.',
@@ -279,7 +279,7 @@ export function analyzeFailure(rawError: string): FailureAnalysis {
   }
 
   return {
-    kind: 'unknown', label: 'Something went wrong', attempted, target, resolvedElement,
+    kind: 'unknown', label: 'Something Went Wrong', attempted, target, resolvedElement,
     expected: 'The step finishes without an error.',
     actual: e.split('\n')[0].slice(0, 200) || 'Unknown problem.',
     likelyCause: "This one doesn't match a common pattern — open the full error below to see the details.",

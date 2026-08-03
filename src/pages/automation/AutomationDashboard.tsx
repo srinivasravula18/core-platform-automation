@@ -56,8 +56,8 @@ export default function AutomationDashboard() {
 
       <div className="min-w-0 overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--bg-card)]">
         <div className="flex items-center justify-between border-b border-[var(--border)] px-4 py-3">
-          <div className="text-sm font-semibold text-[var(--text-primary)]">Recent executions</div>
-          <Link to="/runs" className="text-xs text-[var(--accent)] hover:underline">View all</Link>
+          <div className="text-sm font-semibold text-[var(--text-primary)]">Recent Executions</div>
+          <Link to="/runs" className="text-xs text-[var(--accent)] hover:underline">View All</Link>
         </div>
         {recent.length === 0 ? (
           <div className="px-4 py-10 text-center text-sm text-[var(--text-muted)]">No executions yet.</div>
