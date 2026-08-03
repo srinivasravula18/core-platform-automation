@@ -29,6 +29,7 @@ async function main() {
   const events = await import('../server/features/automation/eventsService');
   const { db } = await import('../server/shared/storage');
   const { AutomationEvents, Scripts } = await import('../server/db/repository');
+  const { playwrightFailure } = await import('../agent/src/playwrightFailure');
   db.recordings = []; db.scripts = []; db.automationJobs = []; db.automationSchedules = []; db.automationArtifacts = []; db.automationEvents = [];
 
   console.log('recording lifecycle');
@@ -66,6 +67,16 @@ async function main() {
   const job2 = await jobs.createJob({ recordingId: r.id, agentId: 'agent-x', trigger: 'manual' }, SCOPE);
   await gateway.deliverAgentFrame('agent-x', { type: 'job.done', agentId: 'agent-x', seq: 1, payload: { jobId: job2.id, exitCode: 1, error: 'timeout' } });
   ok((await jobs.getJob(job2.id)).status === 'failed', 'non-zero exit → failed');
+
+  console.log('Playwright failures identify the recorded step and source line');
+  const failedScript = "test('flow', async ({ page }) => {\n  await page.goto('https://example.com');\n  await page.getByRole('button', { name: 'Save' }).click();\n});";
+  const failure = playwrightFailure({ suites: [{ specs: [{ tests: [{ results: [{
+    status: 'failed', error: { message: 'locator.click: Timeout 30000ms exceeded.' },
+    errorLocation: { file: 'tests/recording.spec.ts', line: 3, column: 56 },
+  }] }] }] }] }, failedScript);
+  ok(failure.includes('script line 3:56') && failure.includes('recorded step 2'), 'failure includes exact line and recorded step number');
+  ok(failure.includes("Code: await page.getByRole('button', { name: 'Save' }).click();"), 'failure includes the failing source line');
+  ok(failure.includes('locator.click: Timeout 30000ms exceeded.'), 'failure includes the Playwright error');
 
   console.log('orphan recovery fails mid-flight jobs, leaves queued alone');
   const orphan = await jobs.createJob({ recordingId: r.id, agentId: 'agent-x', trigger: 'manual' }, SCOPE);

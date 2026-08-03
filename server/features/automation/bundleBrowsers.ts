@@ -58,8 +58,8 @@ async function fetchAndExtract(url: string, targetDir: string): Promise<void> {
   fs.writeFileSync(path.join(targetDir, 'DEPENDENCIES_VALIDATED'), '');
 }
 
-/** Fire-and-forget at boot. Set AGENT_BUNDLE_CHROMIUM=0 to skip (saves ~600 MB server disk). */
-export function ensureBundledChromium(): void {
+/** Prepare the offline browser bundle. Set AGENT_BUNDLE_CHROMIUM=0 to skip. */
+export async function ensureBundledChromium(): Promise<void> {
   if (process.env.AGENT_BUNDLE_CHROMIUM === '0') return;
   const info = chromiumInfo();
   if (!info) return; // no agent bundle on this server — nothing to enrich
@@ -67,8 +67,7 @@ export function ensureBundledChromium(): void {
     { dir: `chromium-${info.revision}`, zip: 'chrome-win64.zip' },
     { dir: `chromium_headless_shell-${info.revision}`, zip: 'chrome-headless-shell-win64.zip' },
   ];
-  void (async () => {
-    for (const part of parts) {
+  for (const part of parts) {
       const target = path.join(AGENT_DIR, 'browsers', part.dir);
       if (fs.existsSync(path.join(target, 'INSTALLATION_COMPLETE'))) continue;
       console.log(`[automation] bundling ${part.zip} (Chromium ${info.browserVersion}) into the agent download…`);
@@ -78,6 +77,5 @@ export function ensureBundledChromium(): void {
       } catch (err: any) {
         console.error(`[automation] could not bundle ${part.dir}: ${err?.message || err} (end users will auto-install instead)`);
       }
-    }
-  })();
+  }
 }

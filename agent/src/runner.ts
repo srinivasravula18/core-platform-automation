@@ -16,6 +16,7 @@ import { uploadArtifact } from './cloud.js';
 import type { ArtifactKind } from './artifacts.js';
 import { collectArtifacts } from './artifacts.js';
 import { chromiumChannel } from './browsers.js';
+import { playwrightFailure } from './playwrightFailure.js';
 
 export interface Job {
   jobId: string;
@@ -83,9 +84,10 @@ export class Runner {
     }
 
     const summary = this.parseSummary(runDir);
+    const failure = exitCode === 0 ? '' : this.parseFailure(runDir, job.script);
     this.send('job.progress', { jobId: job.jobId, phase: 'uploading' });
     await this.uploadAll(job.jobId, runDir).catch((err) => this.log.error({ err: err?.message }, 'artifact upload failed'));
-    this.send('job.done', { jobId: job.jobId, exitCode, summary, error: exitCode === 0 ? '' : 'Test run reported failures.' });
+    this.send('job.done', { jobId: job.jobId, exitCode, summary, error: failure || (exitCode === 0 ? '' : 'Test run reported failures.') });
     this.log.info({ jobId: job.jobId, exitCode, summary }, 'job finished');
   }
 
@@ -120,6 +122,14 @@ export class Runner {
       };
     } catch {
       return {};
+    }
+  }
+
+  private parseFailure(runDir: string, script: string): string {
+    try {
+      return playwrightFailure(JSON.parse(fs.readFileSync(path.join(runDir, 'results.json'), 'utf-8')), script);
+    } catch {
+      return '';
     }
   }
 

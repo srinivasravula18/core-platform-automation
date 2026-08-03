@@ -89,7 +89,7 @@ export function AutomationRunArtifacts({ jobId }: { jobId: string }) {
         <Stat label="Passed" value={(s as any).passed ?? 0} /><Stat label="Failed" value={(s as any).failed ?? 0} />
         <Stat label="Skipped" value={(s as any).skipped ?? 0} /><Stat label="Duration" value={(s as any).durationMs ? `${((s as any).durationMs / 1000).toFixed(1)}s` : '—'} />
       </div>
-      {job?.error && <div className="mt-2 rounded-md border border-red-500/30 bg-red-500/10 p-2 text-xs text-red-500">{job.error}</div>}
+      {job?.error && <div className="mt-2 whitespace-pre-wrap rounded-md border border-red-500/30 bg-red-500/10 p-2 text-xs text-red-500">{job.error}</div>}
 
       {loading ? (
         <div className="mt-3 flex items-center gap-2 text-xs text-[var(--text-muted)]"><Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading snapshots…</div>

@@ -51,7 +51,7 @@ import { isAgentConnected } from './agentGateway';
 import { computeNextRun } from './schedulerService';
 import { saveArtifact, listArtifacts, resolveArtifact, contentTypeFor } from './artifactService';
 import { subscribe } from './eventsService';
-import { streamAgentZip, agentLatestInfo, agentDirExists } from './downloadService';
+import { streamAgentZip, warmAgentBundleCache, agentLatestInfo, agentDirExists } from './downloadService';
 import { ensureBundledChromium } from './bundleBrowsers';
 import { createManualDataset, datasetPage, getDataset, importDataset, listDatasets } from './datasetService';
 import { listProfiles, getProfile, createProfile, updateProfile, removeProfile, captureFromRecording, applyProfile } from './dataProfileService';
@@ -80,7 +80,9 @@ export function registerAutomationRoutes(app: Express) {
   if (!isRemoteAgentEnabled()) return;
 
   // Enrich the downloadable agent with Windows Chromium at boot so end users install nothing.
-  ensureBundledChromium();
+  void ensureBundledChromium()
+    .then(() => warmAgentBundleCache())
+    .catch((error) => console.error('[automation] agent bundle preparation failed:', error?.message || error));
 
   /* ---------- human API (scoped) ---------- */
 
@@ -844,13 +846,13 @@ export function registerAutomationRoutes(app: Express) {
   }
 
   // Download a ready-to-run agent bundle with a fresh single-use pairing token baked in.
-  app.get('/api/automation/agent/download', requireAuth, (req: Request, res: Response) => {
+  app.get('/api/automation/agent/download', requireAuth, async (req: Request, res: Response) => {
     if (!agentDirExists()) return res.status(503).json({ error: 'Agent bundle is not available on this server.' });
     const scope = reqScope(req);
     const { pairingToken } = createPairingToken({ userId: scope.userId || '', projectId: scope.projectId, appId: scope.appId || '', name: String(req.query.name || '') });
     // cloudUrl is the base the agent calls <base>/api/automation/... — APP_URL already carries any
     // base path (e.g. /automation in production); the request-origin fallback is used in local dev.
-    streamAgentZip(res, { pairingToken, cloudUrl: publicOrigin(req), name: String(req.query.name || 'TestFlow Agent') });
+    await streamAgentZip(res, { pairingToken, cloudUrl: publicOrigin(req), name: String(req.query.name || 'TestFlow Agent') });
   });
 
   // Latest published agent version (allowlisted so a running agent's updater can poll it).
