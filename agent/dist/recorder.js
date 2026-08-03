@@ -10,7 +10,10 @@ import { spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import { createRequire } from 'module';
 import { chromiumChannel } from './browsers.js';
+const require = createRequire(import.meta.url);
+const playwrightCli = path.join(path.dirname(require.resolve('playwright/package.json')), 'cli.js');
 function deriveStats(script) {
     const lines = script.split('\n');
     return {
@@ -41,13 +44,12 @@ export class Recorder {
         const outputPath = path.join(dir, `${recordingId}.spec.ts`);
         fs.writeFileSync(outputPath, '');
         const engine = ['chromium', 'firefox', 'webkit'].includes(browser) ? browser : 'chromium';
-        // `npx playwright codegen` opens the headed recorder window; --output writes the growing spec.
-        // Fall back to the user's installed Google Chrome when bundled Chromium is absent.
+        // Invoke Playwright's installed CLI directly. Going through npx + cmd.exe added seconds to every
+        // recording start on Windows and unnecessarily interpreted URL characters in a shell.
         const channel = engine === 'chromium' ? chromiumChannel() : undefined;
-        const args = ['playwright', 'codegen', url, '--output', outputPath, '--browser', engine, ...(channel ? ['--channel', channel] : [])];
-        const child = spawn('npx', args, {
+        const args = [playwrightCli, 'codegen', url, '--output', outputPath, '--browser', engine, ...(channel ? ['--channel', channel] : [])];
+        const child = spawn(process.execPath, args, {
             stdio: 'ignore',
-            shell: process.platform === 'win32',
         });
         this.log.info({ recordingId, url, engine }, 'recording started');
         const state = { child, outputPath, lastScript: '', poll: setInterval(() => this.tick(recordingId), 1000) };
