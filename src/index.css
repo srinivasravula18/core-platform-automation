@@ -28,10 +28,11 @@
   :root[data-theme="dark"] {
     --bg-primary: #0a0f1e;
     --bg-secondary: #0f172a;
-    --bg-card: #111827;
-    --border: #1e293b;
+    --bg-card: #121b2b;
+    --border: #2c394d;
+    --control-border: #47566f;
     --text-primary: #f1f5f9;
-    --text-muted: #94a3b8;
+    --text-muted: #a8b3c4;
     --accent: #38bdf8;
     --accent-hover: #7dd3fc;
     --scrollbar-track: #0f172a;
@@ -67,6 +68,10 @@
   *::-webkit-scrollbar-corner {
     background: var(--scrollbar-track);
   }
+}
+
+:root[data-theme="dark"] :is(input:not([type="checkbox"]):not([type="radio"]), textarea, select):not(:focus) {
+  border-color: var(--control-border);
 }
 
 @layer components {
