@@ -134,6 +134,26 @@ export function isAnyProviderConfigured(): boolean {
   return listConfiguredProviders().length > 0;
 }
 
+/**
+ * Why no provider can run, in the user's terms. "Connect an AI provider" is wrong — and reads as a bug —
+ * when Settings plainly shows one switched ON: a provider is enabled yet unusable when it is in
+ * subscription/CLI (account) mode on a deployment that cannot run the CLI, or in API-key mode with no key.
+ * Returns '' when a provider IS usable.
+ */
+export function providerBlockerReason(): string {
+  if (isAnyProviderConfigured()) return '';
+  const cliAllowed = isLocalCliProviderAllowed();
+  const enabled = PROVIDERS.filter((p) => db.settings?.providerSettings?.[p]?.enabled !== false);
+  const cliBlocked = enabled.filter((p) => db.settings?.providerSettings?.[p]?.authMode === 'account' && !cliAllowed);
+  if (cliBlocked.length) {
+    return `${cliBlocked.join(', ')} is enabled but set to subscription/CLI (account) mode, which this deployment cannot run — switch it to API key mode and add a key in Settings → AI Providers.`;
+  }
+  if (enabled.length) {
+    return `${enabled.join(', ')} is enabled but has no API key — add one in Settings → AI Providers.`;
+  }
+  return 'Connect an AI provider so the agent can think — Settings → AI Providers.';
+}
+
 export function resolveProviderForAgent(agent: string, userId?: string): ProviderName {
   const map = db.settings?.agentProviderMap;
   const rawPreferred = map && (map as any)[agent] ? (map as any)[agent] : db.settings?.defaultProvider;
@@ -651,9 +671,7 @@ export async function getToolCapableOrchestrator(agent: string, opts: { workspac
     if (model && (base as any).defaultModel !== model) (base as any).defaultModel = model;
     return new AgentOrchestrator(base, canonical, opts.workspaceId || 'default', opts.userId, resolveEffortForAgent(canonical, provider, opts.effort));
   }
-  throw new Error(
-    'No tool-capable AI provider is configured. Enable a provider in Settings → AI Providers (Gemini/OpenAI/Anthropic API key, or codex/claude in account mode).',
-  );
+  throw new Error(`No tool-capable AI provider is available. ${providerBlockerReason() || 'The enabled provider cannot run tool calls — pick an API-key provider in Settings → AI Providers.'}`);
 }
 
 export async function getOrchestrator(agent: string, opts: { workspaceId?: string; userId?: string; effort?: string } = {}): Promise<AgentOrchestrator> {

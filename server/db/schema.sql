@@ -511,7 +511,11 @@ CREATE TABLE IF NOT EXISTS chat_messages (
 CREATE INDEX IF NOT EXISTS chat_messages_conversation_created ON chat_messages(conversation_id, created_at);
 CREATE INDEX IF NOT EXISTS chat_messages_content_search ON chat_messages USING gin (to_tsvector('simple', content));
 
--- Idempotent legacy backfill. The JSONB column stays readable until the migration flag is retired.
+-- One-time legacy backfill: seed the transcript ONLY for conversations that have no messages at all.
+-- This whole file is re-applied on every boot, so a per-turn `ON CONFLICT (conversation_id, seq)` guard
+-- was not enough — once the snapshot grew past the log's last seq, each restart re-inserted the snapshot's
+-- tail at ordinals the append-only writers had assigned to different exchanges, and the transcript filled
+-- with duplicated turns that the console then rendered and saved back.
 INSERT INTO chat_messages (conversation_id, seq, role, kind, content, payload, token_estimate, created_at)
 SELECT c.id,
        t.ordinality,
@@ -523,6 +527,7 @@ SELECT c.id,
        c.created_at + (t.ordinality * interval '1 millisecond')
 FROM chat_conversations c
 CROSS JOIN LATERAL jsonb_array_elements(c.turns) WITH ORDINALITY AS t(turn, ordinality)
+WHERE NOT EXISTS (SELECT 1 FROM chat_messages m WHERE m.conversation_id = c.id)
 ON CONFLICT (conversation_id, seq) DO NOTHING;
 
 CREATE TABLE IF NOT EXISTS context_manifests (

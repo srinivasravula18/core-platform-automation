@@ -1917,6 +1917,31 @@ function mapMessage(r: any) {
   return { ...payload, role: r.role, kind: r.kind || payload.kind || 'text', ...(payload.content === undefined && payload.text === undefined ? { text: r.content || '' } : {}) };
 }
 
+/** Identity of a stored turn/message for reconciliation: role + kind + its text. */
+function turnSignature(turn: any): string {
+  return `${turn?.role === 'assistant' ? 'assistant' : 'user'}|${String(turn?.kind || 'text')}|${messageContent(turn).slice(0, 400)}`;
+}
+
+/**
+ * Reconcile the console's rich `turns` snapshot with the append-only `chat_messages` log.
+ *
+ * Both stores describe the same conversation but are written by different paths (the console PUTs the
+ * whole snapshot; server chat paths append). Picking whichever was LONGER made the console render the
+ * append log wholesale — replaying every exchange the log had recorded more than once as a visible
+ * duplicate, which it then PUT back as the snapshot. Instead: keep the snapshot (rich cards intact) and
+ * append only the log's TAIL — what follows its last entry the snapshot recognizes. Everything before
+ * that point is the same conversation the console already shows, including a retried request's abandoned
+ * first answer, which is not a second exchange the user ever saw.
+ */
+export function reconcileConversationTurns(snapshot: any[], logged: any[]): any[] {
+  if (!snapshot.length) return logged;
+  const shown = new Set(snapshot.map(turnSignature));
+  let lastRecognized = -1;
+  logged.forEach((message, i) => { if (shown.has(turnSignature(message))) lastRecognized = i; });
+  const extra = logged.slice(lastRecognized + 1).filter((message) => !shown.has(turnSignature(message)));
+  return extra.length ? [...snapshot, ...extra] : snapshot;
+}
+
 function mapConversation(r: any, includeTurns = true) {
   if (!r) return null;
   return {
@@ -1973,10 +1998,10 @@ export const ChatConversations = {
     if (!r) return null;
     const messages = await query('SELECT role, kind, content, payload FROM chat_messages WHERE conversation_id = $1 ORDER BY seq', [id]);
     // Two writers coexist: the console PUTs the FULL turn snapshot (rich cards) into turns JSONB, while
-    // server chat paths append plain text rows to chat_messages — return whichever holds more of the chat.
+    // server chat paths append rows to chat_messages — reconcile instead of picking the longer one.
     const snapshot = Array.isArray((r as any).turns) ? (r as any).turns : [];
     const mapped = messages.map(mapMessage);
-    return { ...mapConversation(r, true), turns: snapshot.length >= mapped.length ? snapshot : mapped };
+    return { ...mapConversation(r, true), turns: reconcileConversationTurns(snapshot, mapped) };
   },
   async listMessages(id: string): Promise<Array<{ seq: number; role: string; kind: string; content: string; payload: any }>> {
     if (!isPgEnabled()) {
@@ -2035,6 +2060,17 @@ export const ChatConversations = {
       );
       const next = await client.query('SELECT COALESCE(MAX(seq), 0)::bigint AS seq FROM chat_messages WHERE conversation_id = $1', [c.id]);
       let seq = Number(next.rows[0]?.seq || 0);
+      // Idempotent tail: a re-driven request (client resumed after navigating away) re-persists the SAME
+      // exchange, which then read back as a duplicated answer. Skip when the tail already holds it.
+      const tail = await client.query(
+        'SELECT role, kind, content FROM (SELECT role, kind, content, seq FROM chat_messages WHERE conversation_id = $1 ORDER BY seq DESC LIMIT $2) t ORDER BY seq',
+        [c.id, incoming.length],
+      );
+      const tailRows = tail.rows;
+      if (tailRows.length === incoming.length
+        && incoming.every((m, i) => tailRows[i].role === m.role && (tailRows[i].kind || 'text') === m.kind && tailRows[i].content === m.content)) {
+        return;
+      }
       for (const message of incoming) {
         seq += 1;
         await client.query(

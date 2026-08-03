@@ -967,16 +967,20 @@ export default function AgentConsole() {
 
   // Resume a router decision that finished while the user was away: re-drive the unconsumed message through
   // send() (reusing its user turn). Guards below skip any double-run. Pairs with the durable goal job.
-  const reconcileGoal = useCallback(async (id: string, token: number) => {
+  // `restored` is the conversation the caller just loaded: turnsRef still holds the PREVIOUS
+  // conversation at this point (state updates land after this tick), and re-driving against it
+  // re-ran an already-answered message — which the console then showed as a duplicate response.
+  const reconcileGoal = useCallback(async (id: string, token: number, restored?: Turn[]) => {
     try {
-      if (turnsRef.current.some((t) => t.role === 'assistant' && (t.kind === 'thinking' || t.kind === 'folderask'))) return;
+      const known = restored ?? turnsRef.current;
+      if (known.some((t) => t.role === 'assistant' && (t.kind === 'thinking' || t.kind === 'folderask'))) return;
       const u = await fetch(`/api/agent/understand-request/for-conversation/${encodeURIComponent(id)}`).then((x) => x.json()).catch(() => null);
       if (token !== loadReqRef.current) return;
       if (u?.job) return; // understanding is in flight — its own reconcile handles it
       const g = await fetch(`/api/agent/goal/for-conversation/${encodeURIComponent(id)}`, { headers: { 'Cache-Control': 'no-store' } }).then((x) => x.json()).catch(() => null);
       if (token !== loadReqRef.current || !g?.job) return;
       // Only the last user turn with no assistant response after it is unconsumed work to resume.
-      const turns = turnsRef.current;
+      const turns = known;
       let lastUserIdx = -1;
       for (let i = turns.length - 1; i >= 0; i -= 1) if (turns[i].role === 'user') { lastUserIdx = i; break; }
       if (lastUserIdx < 0) return;
@@ -1015,7 +1019,7 @@ export default function AgentConsole() {
       // Resume an understanding that was in flight when the user navigated away mid-thinking.
       void reconcileUnderstanding(id, token);
       // Resume a router decision that finished while the user was away (before understanding started).
-      void reconcileGoal(id, token);
+      void reconcileGoal(id, token, clean);
     } catch {
       // Never wipe a live thread on a failed load — only clear when nothing is on screen.
       if (token === loadReqRef.current && turnsRef.current.length === 0) setTurns([]);
@@ -1086,7 +1090,7 @@ export default function AgentConsole() {
         if (hydratedRef.current) {
           void reconcileConversationRuns(conversationId, token);
           void reconcileUnderstanding(conversationId, token);
-          void reconcileGoal(conversationId, token);
+          void reconcileGoal(conversationId, token, turnsRef.current);
         }
         return;
       }
@@ -1098,7 +1102,7 @@ export default function AgentConsole() {
       // Resume an understanding that was in flight when the user navigated away mid-thinking.
       void reconcileUnderstanding(chosen, token);
       // Resume a router decision that finished while the user was away (before understanding started).
-      void reconcileGoal(chosen, token);
+      void reconcileGoal(chosen, token, chosenTurns);
     })();
     fetch('/api/credentials/websites')
       .then((r) => r.json())
@@ -1644,7 +1648,7 @@ export default function AgentConsole() {
         id: args.thinkingId,
         role: 'assistant',
         kind: 'text',
-        text: data?.error || 'I could not start the generation. Check that an AI provider key is set in Settings.',
+        text: data?.error || 'I could not start the generation — the agent returned no run and no answer.',
       });
     }
   }, [commitTurn, buildHistory, updateThinkingLabel, selectedProvider, selectedModel, selectedEffort, conversationId]);
@@ -2747,7 +2751,7 @@ export default function AgentConsole() {
           id: thinkingId,
           role: 'assistant',
           kind: 'text',
-          text: `Something went wrong: ${err?.message || 'unknown error'}. Check that an AI provider key is configured in Settings.`,
+          text: `Something went wrong: ${err?.message || 'unknown error'}.`,
         });
       } finally {
         clearActiveRequest();
