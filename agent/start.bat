@@ -6,18 +6,42 @@ cd /d "%~dp0"
 set "AGENT_HOME=%CD%"
 set "PLAYWRIGHT_BROWSERS_PATH=%CD%\browsers"
 
-REM The server keeps one pre-compressed runtime ZIP and adds only this launcher + config per user.
-REM Expand it once on first start; later starts go directly to the compiled agent.
-if exist "%CD%\runtime.zip" (
-  echo Preparing the TestFlow Agent runtime ^(one time^)...
-  powershell -NoProfile -ExecutionPolicy Bypass -Command "Expand-Archive -LiteralPath '%CD%\runtime.zip' -DestinationPath '%CD%' -Force"
-  if errorlevel 1 (
-    echo The bundled runtime could not be extracted. Re-download the agent and try again.
-    pause
-    exit /b 1
-  )
-  del /q "%CD%\runtime.zip"
+REM The personalized ZIP is tiny. Fetch the shared Playwright + Chromium runtime once from the
+REM immutable URL supplied by the server; curl resumes interrupted downloads automatically.
+if exist "%CD%\dist\index.js" goto runtime_ready
+if exist "%CD%\runtime.zip" goto extract_runtime
+if not exist "%CD%\runtime.url" goto runtime_ready
+
+set /p "RUNTIME_URL="<"%CD%\runtime.url"
+if "%RUNTIME_URL%"=="" (
+  echo The agent runtime URL is missing. Re-download the agent and try again.
+  pause
+  exit /b 1
 )
+echo Downloading the TestFlow Agent runtime ^(Playwright + Chromium, one time^)...
+curl.exe --fail --location --retry 3 --retry-delay 2 --continue-at - --output "%CD%\runtime.zip.part" "%RUNTIME_URL%"
+if errorlevel 1 (
+  echo curl could not download the runtime; retrying with PowerShell...
+  powershell -NoProfile -ExecutionPolicy Bypass -Command "$ProgressPreference='SilentlyContinue'; Invoke-WebRequest -UseBasicParsing -Uri '%RUNTIME_URL%' -OutFile '%CD%\runtime.zip.part'"
+)
+if errorlevel 1 (
+  echo The agent runtime download failed. Check your connection and run start.bat again to retry.
+  pause
+  exit /b 1
+)
+move /y "%CD%\runtime.zip.part" "%CD%\runtime.zip" >nul
+
+:extract_runtime
+echo Preparing the TestFlow Agent runtime ^(one time^)...
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Expand-Archive -LiteralPath '%CD%\runtime.zip' -DestinationPath '%CD%' -Force"
+if errorlevel 1 (
+  echo The agent runtime could not be extracted. Run start.bat again to retry.
+  pause
+  exit /b 1
+)
+del /q "%CD%\runtime.zip"
+
+:runtime_ready
 
 REM Prefer a bundled portable Node if present, so Node need not be installed on this machine.
 if exist "%CD%\node\node.exe" set "PATH=%CD%\node;%PATH%"

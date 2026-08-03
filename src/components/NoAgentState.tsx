@@ -23,7 +23,7 @@ export function NoAgentState({ onRetry }: { onRetry: () => void }) {
 
   const handleDownload = async () => {
     setBusy(true);
-    try { await downloadAgent(); showToast('Agent bundle downloaded. Unzip and run start.bat.', { tone: 'success' }); }
+    try { await downloadAgent(); showToast('Agent setup downloaded. Unzip and run start.bat.', { tone: 'success' }); }
     catch { showToast('Could not download the agent bundle.', { tone: 'error' }); }
     finally { setBusy(false); }
   };
@@ -62,10 +62,10 @@ export function NoAgentState({ onRetry }: { onRetry: () => void }) {
 
       <Modal isOpen={guideOpen} onClose={() => setGuideOpen(false)} title="Install the TestFlow Agent" size="md">
         <ol className="list-decimal space-y-3 pl-5 text-sm text-[var(--text-primary)]">
-          <li>Click <strong>Download Agent</strong> to get <code>TestFlow-Agent.zip</code> (it contains a one-time pairing token valid for 10 minutes).</li>
+          <li>Click <strong>Download Agent</strong> to get the small <code>TestFlow-Agent.zip</code> setup (it contains a one-time pairing token valid for 10 minutes).</li>
           <li>Unzip it to a folder you control, e.g. <code>C:\TestFlow-Agent</code>.</li>
-          <li>Double-click <strong>start.bat</strong> — the agent connects to TestFlow AI and this page turns green.</li>
-          <li>Playwright Chromium is included, so Chrome and a separate browser installation are not required.</li>
+          <li>Double-click <strong>start.bat</strong> — it downloads the cached Playwright + Chromium runtime once, then connects to TestFlow AI.</li>
+          <li>Chrome and a separate Playwright browser installation are not required.</li>
         </ol>
         <p className="mt-4 text-xs text-[var(--text-muted)]">Requires Node.js 18+ on your machine. The agent connects outbound only and opens no inbound ports.</p>
       </Modal>

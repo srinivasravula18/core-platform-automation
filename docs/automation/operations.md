@@ -36,6 +36,7 @@ works for local dev.
 
 - Backend: `GET /api/health` → `{ ok: true }`; `GET /api/app-config` → `remoteAgent` flag.
 - Agent version endpoint: `GET /api/automation/agent/latest` → `{ version, downloadUrl }`.
+- Shared runtime: `GET /api/automation/agent/runtime/<runtime-hash>.zip` → immutable, range-capable ZIP.
 - A user's agents: `GET /api/automation/agents` (authenticated) — check `status` and `lastHeartbeatAt`.
 - On the agent machine: `GET http://localhost:2424/status` (needs `X-Agent-Local-Key`).
 
@@ -56,6 +57,10 @@ fails jobs whose in-flight state died with the previous process. Re-run them fro
 Only one backend process should own the scheduler — do not run multiple schedulers against one DB.
 
 ## Storage & retention
+
+Set `AGENT_BUNDLE_CACHE_DIR` to a persistent volume so deployments do not recompress the runtime after
+every restart. For production, mirror each `runtime-*.zip` to object storage/CDN and set
+`AGENT_RUNTIME_PUBLIC_BASE_URL` to that directory; the personalized setup ZIP remains on the backend.
 
 Artifacts live under `automation-artifacts/<jobId>/` on the backend host and are served only through the
 scope-authorized download route. There is no automatic retention yet — prune old job directories on a

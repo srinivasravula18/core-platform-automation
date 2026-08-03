@@ -51,7 +51,7 @@ import { isAgentConnected } from './agentGateway';
 import { computeNextRun } from './schedulerService';
 import { saveArtifact, listArtifacts, resolveArtifact, contentTypeFor } from './artifactService';
 import { subscribe } from './eventsService';
-import { streamAgentZip, warmAgentBundleCache, agentLatestInfo, agentDirExists } from './downloadService';
+import { agentRuntimeBundle, sendAgentRuntime, streamAgentZip, warmAgentBundleCache, agentLatestInfo, agentDirExists } from './downloadService';
 import { ensureBundledChromium } from './bundleBrowsers';
 import { createManualDataset, datasetPage, getDataset, importDataset, listDatasets } from './datasetService';
 import { listProfiles, getProfile, createProfile, updateProfile, removeProfile, captureFromRecording, applyProfile } from './dataProfileService';
@@ -850,9 +850,25 @@ export function registerAutomationRoutes(app: Express) {
     if (!agentDirExists()) return res.status(503).json({ error: 'Agent bundle is not available on this server.' });
     const scope = reqScope(req);
     const { pairingToken } = createPairingToken({ userId: scope.userId || '', projectId: scope.projectId, appId: scope.appId || '', name: String(req.query.name || '') });
+    let runtime: Awaited<ReturnType<typeof agentRuntimeBundle>>;
+    try { runtime = await agentRuntimeBundle(); }
+    catch (error: any) {
+      return res.status(503).json({ error: error?.message || 'The agent runtime is still being prepared. Retry shortly.' });
+    }
+    const runtimeBaseUrl = (process.env.AGENT_RUNTIME_PUBLIC_BASE_URL || `${publicOrigin(req)}/api/automation/agent/runtime`).replace(/\/$/, '');
     // cloudUrl is the base the agent calls <base>/api/automation/... — APP_URL already carries any
     // base path (e.g. /automation in production); the request-origin fallback is used in local dev.
-    await streamAgentZip(res, { pairingToken, cloudUrl: publicOrigin(req), name: String(req.query.name || 'TestFlow Agent') });
+    await streamAgentZip(res, {
+      pairingToken,
+      cloudUrl: publicOrigin(req),
+      runtimeUrl: `${runtimeBaseUrl}/${encodeURIComponent(runtime.filename)}`,
+      name: String(req.query.name || 'TestFlow Agent'),
+    });
+  });
+
+  // Shared runtime has no pairing/user data, so a CDN may cache it once for every agent download.
+  app.get('/api/automation/agent/runtime/:filename', async (req: Request, res: Response) => {
+    await sendAgentRuntime(res, String(req.params.filename || ''));
   });
 
   // Latest published agent version (allowlisted so a running agent's updater can poll it).

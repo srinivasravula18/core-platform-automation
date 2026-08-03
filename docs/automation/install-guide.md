@@ -13,13 +13,14 @@ can reach applications inside your corporate network that the cloud never could.
 ## 1. Download
 
 In TestFlow AI, go to **Automation → Local Agent** and click **Download Agent**. This gives you a
-`TestFlow-Agent.zip` containing the agent and a `config.json` with a **one-time pairing token** (valid
-for 10 minutes). Download it fresh each time you set up a new machine.
+small `TestFlow-Agent.zip` setup containing `start.bat`, a runtime URL, and a `config.json` with a
+**one-time pairing token** (valid for 10 minutes). Download it fresh each time you set up a new machine.
 
 ## 2. Install — nothing to install
 
-The bundle is **self-contained**: production `node_modules` and the compiled `dist/` ship inside it —
-there is no install step at all.
+There is no manual installation step. On first launch, `start.bat` downloads the shared, versioned
+runtime containing production `node_modules`, Playwright, and Chromium. Interrupted downloads resume;
+later starts reuse the extracted runtime.
 
 1. Unzip `TestFlow-Agent.zip` to a folder you control, e.g. `C:\TestFlow-Agent`.
 2. Double-click **start.bat**. That's it.
