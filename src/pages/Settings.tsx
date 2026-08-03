@@ -905,7 +905,6 @@ function ProvidersSection() {
   const [agentMap, setAgentMap] = useState<Record<string, Provider>>({});
   const [loading, setLoading] = useState(true);
   const [status, setStatus] = useState<SaveStatus>({ type: 'idle', message: '' });
-  const [activatingProvider, setActivatingProvider] = useState<Provider | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -926,18 +925,24 @@ function ProvidersSection() {
     load();
   }, [load]);
 
-  // Configuration edits are kept local where safe. Activation is intentionally not
-  // optimistic: the server tests the selected credential before marking a provider On.
+  // All mutations update local state optimistically and DON'T refetch the whole list,
+  // so changing a model/provider/toggle never flashes or "refreshes" the page. We only
+  // re-sync from the server (load) if a request actually fails.
   const saveKey = async (provider: Provider, apiKey: string) => {
     setStatus({ type: 'idle', message: '' });
+    const masked = apiKey.length <= 8 ? '****' : `${apiKey.slice(0, 4)}****${apiKey.slice(-4)}`;
+    setProviders((prev) => prev.map((p) => (
+      p.name === provider
+        ? { ...p, apiKeyMasked: masked, configured: p.authMode === 'account' ? p.configured : true, callable: (p.authMode === 'account' ? p.configured : true) && p.enabled }
+        : p
+    )));
     const res = await fetch(`/api/ai/providers/${provider}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ apiKey }),
     });
     if (res.ok) {
-      setStatus({ type: 'success', message: `${PROVIDER_LABELS[provider]} key saved. Turn it on to run a connection test.` });
-      load();
+      setStatus({ type: 'success', message: `${PROVIDER_LABELS[provider]} key saved` });
     } else {
       setStatus({ type: 'error', message: `Failed to save ${PROVIDER_LABELS[provider]} key` });
       load();
@@ -951,6 +956,17 @@ function ProvidersSection() {
       setStatus({ type: 'error', message: 'Subscription/account CLI auth is local-only. Use API key mode in test and production.' });
       return;
     }
+    setProviders((prev) => prev.map((p) => (
+      p.name === provider
+        ? {
+            ...p,
+            authMode,
+            configured: authMode === 'api_key' ? !!p.apiKeyMasked : p.accountCliAllowed && (provider === 'openai' || provider === 'anthropic'),
+            callable: authMode === 'api_key' ? !!p.apiKeyMasked && p.enabled : p.enabled && p.accountCliAllowed && (provider === 'openai' || provider === 'anthropic'),
+            accountTool: authMode === 'account' && provider === 'openai' ? 'codex' : authMode === 'account' && provider === 'anthropic' ? 'claude' : '',
+          }
+        : p
+    )));
     const res = await fetch(`/api/ai/providers/${provider}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -960,10 +976,9 @@ function ProvidersSection() {
       setStatus({
         type: 'success',
         message: authMode === 'api_key'
-          ? `${PROVIDER_LABELS[provider]} will use API key billing. Turn it on to test the credential.`
-          : `${PROVIDER_LABELS[provider]} saved as subscription/account auth. Turn it on to test the local account.`,
+          ? `${PROVIDER_LABELS[provider]} will use API key billing`
+          : `${PROVIDER_LABELS[provider]} saved as subscription/account auth`,
       });
-      load();
     } else {
       setStatus({ type: 'error', message: `Failed to save ${PROVIDER_LABELS[provider]} auth mode` });
       load();
@@ -972,25 +987,20 @@ function ProvidersSection() {
 
   const setEnabled = async (provider: Provider, enabled: boolean) => {
     setStatus({ type: 'idle', message: '' });
-    setActivatingProvider(provider);
-    if (enabled) setStatus({ type: 'idle', message: `Testing ${PROVIDER_LABELS[provider]} before activation…` });
-    try {
-      const res = await fetch(`/api/ai/providers/${provider}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enabled }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (res.ok) {
-        setStatus({ type: 'success', message: `${PROVIDER_LABELS[provider]} ${enabled ? 'tested and enabled' : 'disabled'}` });
-      } else {
-        setStatus({ type: 'error', message: enabled ? `${PROVIDER_LABELS[provider]} remains off: ${data.error || data.health?.error || 'connection test failed'}` : `Failed to disable ${PROVIDER_LABELS[provider]}` });
-      }
+    setProviders((prev) => prev.map((p) => (p.name === provider ? { ...p, enabled, callable: enabled && p.configured } : p)));
+    if (enabled && providers.find((p) => p.name === provider)?.configured && !providers.find((p) => p.name === defaultProvider)?.callable) {
+      setDefaultProvider(provider);
+    }
+    const res = await fetch(`/api/ai/providers/${provider}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled }),
+    });
+    if (res.ok) {
+      setStatus({ type: 'success', message: `${PROVIDER_LABELS[provider]} ${enabled ? 'enabled' : 'disabled'}` });
+    } else {
+      setStatus({ type: 'error', message: `Failed to ${enabled ? 'enable' : 'disable'} ${PROVIDER_LABELS[provider]}` });
       load();
-    } catch {
-      setStatus({ type: 'error', message: `Failed to ${enabled ? 'test and enable' : 'disable'} ${PROVIDER_LABELS[provider]}` });
-    } finally {
-      setActivatingProvider(null);
     }
   };
 
@@ -1006,11 +1016,11 @@ function ProvidersSection() {
 
   const clearKey = async (provider: Provider) => {
     if (!await showConfirm(`Remove the ${PROVIDER_LABELS[provider]} API key?`, { tone: 'danger' })) return;
+    setProviders((prev) => prev.map((p) => (
+      p.name === provider ? { ...p, apiKeyMasked: '', configured: p.authMode === 'account' ? p.configured : false, callable: false } : p
+    )));
     const res = await fetch(`/api/ai/providers/${provider}/key`, { method: 'DELETE' });
-    if (res.ok) {
-      setStatus({ type: 'success', message: `${PROVIDER_LABELS[provider]} key removed and provider disabled` });
-    }
-    load();
+    if (!res.ok) load();
   };
 
   const test = async (provider: Provider) => {
@@ -1025,16 +1035,15 @@ function ProvidersSection() {
   };
 
   const setDefault = async (provider: Provider, model: string) => {
+    setDefaultProvider(provider);
+    setProviders((prev) => prev.map((p) => (p.name === provider ? { ...p, model, enabled: true, callable: p.configured } : p)));
+    setStatus({ type: 'success', message: `${PROVIDER_LABELS[provider]} set as default` });
     const res = await fetch('/api/ai/default-provider', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ provider, model }),
     });
-    if (res.ok) {
-      setDefaultProvider(provider);
-      setStatus({ type: 'success', message: `${PROVIDER_LABELS[provider]} set as default` });
-    }
-    load();
+    if (!res.ok) load();
   };
 
   const setAgentProvider = async (agent: string, provider: Provider) => {
@@ -1051,7 +1060,7 @@ function ProvidersSection() {
   // (load() flips `loading` again) must NOT unmount the section — otherwise the whole
   // page flashes/reconfigures and the API key being typed in a card is lost.
   if (loading && providers.length === 0) return <SkeletonCard />;
-  const enabledProviders = providers.filter((p) => p.callable);
+  const enabledProviders = providers.filter((p) => p.enabled);
 
   return (
     <div className="space-y-6">
@@ -1076,7 +1085,6 @@ function ProvidersSection() {
               onTest={() => test(p.name)}
               onSetDefault={(m) => setDefault(p.name, m)}
               isDefault={defaultProvider === p.name}
-              activating={activatingProvider === p.name}
             />
           ))}
         </div>
@@ -1097,15 +1105,13 @@ function ProvidersSection() {
               <select
                 value={agentMap[agent] || defaultProvider}
                 onChange={(e) => setAgentProvider(agent, e.target.value as Provider)}
-                disabled={enabledProviders.length === 0}
-                title={enabledProviders.length === 0 ? 'Test and enable an AI provider first' : undefined}
                 className="rounded-md border border-[var(--border)] bg-[var(--bg-primary)] px-2 py-1 text-xs"
               >
-                {enabledProviders.length ? enabledProviders.map((p) => (
+                {(enabledProviders.length ? enabledProviders : providers).map((p) => (
                   <option key={p.name} value={p.name}>
                     {PROVIDER_LABELS[p.name]}
                   </option>
-                )) : <option value="">No active provider</option>}
+                ))}
               </select>
             </div>
           ))}
@@ -1115,7 +1121,7 @@ function ProvidersSection() {
   );
 }
 
-function ProviderCard({ provider, onSaveKey, onSetEnabled, onSetAuthMode, onSetModel, onClearKey, onTest, onSetDefault, isDefault, activating }: React.PropsWithChildren<{
+function ProviderCard({ provider, onSaveKey, onSetEnabled, onSetAuthMode, onSetModel, onClearKey, onTest, onSetDefault, isDefault }: React.PropsWithChildren<{
   provider: ProviderInfo;
   onSaveKey: (apiKeyValue: string) => void;
   onSetEnabled: (enabled: boolean) => void;
@@ -1125,7 +1131,6 @@ function ProviderCard({ provider, onSaveKey, onSetEnabled, onSetAuthMode, onSetM
   onTest: () => void;
   onSetDefault: (model: string) => void;
   isDefault: boolean;
-  activating: boolean;
 }>) {
   const [apiKey, setApiKey] = useState('');
   const [showKey, setShowKey] = useState(false);
@@ -1150,7 +1155,7 @@ function ProviderCard({ provider, onSaveKey, onSetEnabled, onSetAuthMode, onSetM
             <h3 className="font-medium">{PROVIDER_LABELS[provider.name]}</h3>
             {provider.configured ? (
               <span className="inline-flex items-center gap-1 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-xs text-emerald-500">
-                <CheckCircle className="h-3 w-3" /> {provider.enabled && provider.callable ? 'Active' : 'Ready to test'}
+                <CheckCircle className="h-3 w-3" /> {provider.enabled && provider.callable ? 'Active' : 'Configured'}
               </span>
             ) : (
               <span className="inline-flex items-center gap-1 rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-xs text-amber-500">
@@ -1168,14 +1173,13 @@ function ProviderCard({ provider, onSaveKey, onSetEnabled, onSetAuthMode, onSetM
           <button
             type="button"
             onClick={() => onSetEnabled(!provider.enabled)}
-            disabled={activating}
             className={`inline-flex items-center gap-1 rounded-md border px-3 py-1.5 text-xs font-medium ${
               provider.enabled
                 ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-500'
                 : 'border-[var(--border)] bg-[var(--bg-primary)] text-[var(--text-muted)] hover:border-[var(--accent)]'
             }`}
           >
-            {activating ? 'Testing…' : provider.enabled ? 'On' : 'Off'}
+            {provider.enabled ? 'On' : 'Off'}
           </button>
           <button
             type="button"
@@ -1192,8 +1196,8 @@ function ProviderCard({ provider, onSaveKey, onSetEnabled, onSetAuthMode, onSetM
           <button
             type="button"
             onClick={() => onSetDefault(provider.model)}
-            disabled={!provider.callable || isDefault}
-            title={isDefault ? 'This is the current default provider' : !provider.callable ? 'Test and enable this provider before making it the default' : 'Make this the default provider'}
+            disabled={!provider.enabled || !provider.configured || isDefault}
+            title={isDefault ? 'This is the current default provider' : !provider.enabled || !provider.configured ? 'Enable and configure this provider before making it the default' : 'Make this the default provider'}
             className={`inline-flex items-center gap-1 rounded-md border px-3 py-1.5 text-xs font-medium disabled:cursor-default ${
               isDefault
                 ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-500'

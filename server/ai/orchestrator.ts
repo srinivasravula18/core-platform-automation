@@ -40,9 +40,9 @@ function isProviderName(value: unknown): value is ProviderName {
   return PROVIDERS.includes(value as ProviderName);
 }
 
-export function getProviderCredentials(provider: ProviderName, opts?: { allowDisabled?: boolean }): ProviderCredentials | null {
+export function getProviderCredentials(provider: ProviderName): ProviderCredentials | null {
   const settings = db.settings?.providerSettings?.[provider];
-  if (!opts?.allowDisabled && settings?.enabled === false) return null;
+  if (settings?.enabled === false) return null;
   if (settings?.authMode === 'account' && isLocalCliProviderAllowed()) {
     return { apiKey: '', model: settings.model, authMode: 'account' };
   }
@@ -78,8 +78,8 @@ function isLocalCliProviderAllowed(): boolean {
   );
 }
 
-export function buildProvider(provider: ProviderName, modelOverride?: string, opts?: { allowDisabled?: boolean }): AIProvider {
-  const creds = getProviderCredentials(provider, opts);
+export function buildProvider(provider: ProviderName, modelOverride?: string): AIProvider {
+  const creds = getProviderCredentials(provider);
   if (!creds) {
     throw new Error(
       `No credentials configured for provider "${provider}". Add an API key in Settings → AI Providers.`,
