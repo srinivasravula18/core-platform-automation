@@ -65,12 +65,14 @@ export function NoAgentState({ onRetry }: { onRetry: () => void }) {
 
       <Modal isOpen={guideOpen} onClose={() => setGuideOpen(false)} title="Install the TestFlow Agent" size="md">
         <ol className="list-decimal space-y-3 pl-5 text-sm text-[var(--text-primary)]">
-          <li>Click <strong>Download Agent</strong> to get <code>TestFlow-Agent.zip</code> (it contains a one-time pairing token valid for 10 minutes).</li>
-          <li>Unzip it to a folder you control, e.g. <code>C:\TestFlow-Agent</code>.</li>
-          <li>Double-click <strong>start.bat</strong> — the agent connects to TestFlow AI and this page turns green.</li>
-          <li>Playwright Chromium is included, so Chrome and a separate browser installation are not required.</li>
+          <li>Click <strong>Download Agent</strong>. You get a file called <code>TestFlow-Agent.zip</code> with a one-time setup code inside — start it within 10 minutes or download it again.</li>
+          <li>Unzip it into a folder of your own, for example <code>C:\TestFlow-Agent</code>.</li>
+          <li>Double-click <strong>start.bat</strong> and leave that window open. This page turns green once it connects.</li>
+          <li>A browser is already included, so there is nothing else to install.</li>
         </ol>
-        <p className="mt-4 text-xs text-[var(--text-muted)]">Requires Node.js 18+ on your machine. The agent connects outbound only and opens no inbound ports.</p>
+        <p className="mt-4 text-xs text-[var(--text-muted)]">
+          Needs Node.js 18 or newer on your computer. The agent only reaches out to TestFlow AI — nothing from the internet can reach your computer through it, so you do not need to change any firewall or network settings.
+        </p>
       </Modal>
     </div>
   );

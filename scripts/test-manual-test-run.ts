@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { casesForPlan, casesForRun, getRunStats, manualRunSelection, runExecutionState, runnableCases, scriptsForCases, scriptsForRun } from '../src/lib/manualTestRun';
+import { allCasesHaveRunTags, casesForPlan, casesForRun, getRunStats, manualRunSelection, runExecutionState, runnableCases, runTagsForCases, scriptsForCases, scriptsForRun } from '../src/lib/manualTestRun';
 import { agentRunStatusForList, isActiveTestRun, isClosedTestRun, isPendingReviewTestRun, isStaleManualTestRun } from '../core/shared/testRunStatus';
 
 const suites = [
@@ -20,6 +20,10 @@ assert.deepEqual(scriptsForCases(cases.slice(0, 2), [
 assert.deepEqual(manualRunSelection('P1', ['C1']), { planIds: [], caseIds: ['C1'] });
 assert.deepEqual(manualRunSelection('', ['C1', 'C3']), { planIds: [], caseIds: ['C1', 'C3'] });
 assert.deepEqual(manualRunSelection('P1', []), { planIds: ['P1'], caseIds: [] });
+assert.deepEqual(runTagsForCases([{ id: 'C1', tags: ['smoke'] }, { id: 'C2', tags: ['@regression'] }], ['C1', 'C2']), ['@smoke', '@regression']);
+assert.equal(allCasesHaveRunTags([{ id: 'C1', tags: ['@smoke'] }, { id: 'C2', tags: [] }], ['C1', 'C2']), false);
+assert.equal(allCasesHaveRunTags([{ id: 'C1', tags: ['  '] }], ['C1']), false);
+assert.equal(allCasesHaveRunTags([{ id: 'C1', tags: ['@smoke'] }, { id: 'C2', tags: ['@regression'] }], ['C1', 'C2']), true);
 assert.deepEqual(casesForRun({ planIds: ['P1'] }, cases, suites).map(({ id }) => id), ['C1', 'C2']);
 assert.deepEqual(casesForRun({ caseIds: ['C3'] }, cases, suites).map(({ id }) => id), ['C3']);
 assert.deepEqual(casesForRun({ id: 'R1', caseIds: ['C3'] }, cases, suites, [{ id: 'P1', runIds: ['R1'] }]).map(({ id }) => id), ['C1', 'C2', 'C3']);

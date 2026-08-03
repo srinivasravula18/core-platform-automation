@@ -1,4 +1,16 @@
 import { caseBelongsToSuite, casePlanIds, caseSuiteIds, suiteParentIds, suitePlanIds } from './suiteCaseSelection';
+import { normalizeTags } from './tags';
+
+export function runTagsForCases(cases: any[], caseIds: string[]): string[] {
+  const selected = new Set(caseIds.map(String));
+  return normalizeTags(cases.filter((testCase) => selected.has(String(testCase.id))).flatMap((testCase) => Array.isArray(testCase.tags) ? testCase.tags : []));
+}
+
+export function allCasesHaveRunTags(cases: any[], caseIds: string[]): boolean {
+  const selected = new Set(caseIds.map(String));
+  const matched = cases.filter((testCase) => selected.has(String(testCase.id)));
+  return matched.length === selected.size && matched.every((testCase) => normalizeTags(Array.isArray(testCase.tags) ? testCase.tags : []).length > 0);
+}
 
 export function casesForPlan(cases: any[], suites: any[], planId: string): any[] {
   if (!planId) return cases;

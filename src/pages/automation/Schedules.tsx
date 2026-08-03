@@ -113,7 +113,7 @@ export default function Schedules() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-xl font-semibold tracking-tight text-[var(--text-primary)]">Schedules</h1>
-          <p className="mt-1 text-sm text-[var(--text-muted)]">Pick repository scripts and a date &amp; time — they run on the server headless, no agent needed.</p>
+          <p className="mt-1 text-sm text-[var(--text-muted)]">Pick your scripts and when to run them. TestFlow runs them for you, so your computer does not need to be switched on.</p>
         </div>
         <button onClick={() => setCreateOpen(true)} className="inline-flex items-center gap-2 rounded-md bg-[var(--accent)] px-3 py-2 text-sm font-medium text-white hover:bg-[var(--accent-hover)]">
           <Plus className="h-4 w-4" /> New Schedule

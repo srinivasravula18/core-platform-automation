@@ -448,7 +448,7 @@ export default function DataBindings() {
         <button type="button" disabled={!datasetId} onClick={() => void deleteDataset()} title="Delete this dataset" aria-label="Delete selected dataset"
           className="shrink-0 rounded-md border border-[var(--border)] p-2 text-[var(--text-muted)] hover:border-red-500 hover:text-red-500 disabled:opacity-40"><Trash2 className="h-4 w-4" /></button>
       </div>
-      <SearchableSelect ariaLabel="Runner" placeholder="Server (headless) — default" value={agentId} onChange={setAgentId}
+      <SearchableSelect ariaLabel="Runner" placeholder="Run on TestFlow's servers (default)" value={agentId} onChange={setAgentId}
         items={agents.map((item) => ({ id: item.id, label: item.name, sub: item.status }))} />
     </div>
 

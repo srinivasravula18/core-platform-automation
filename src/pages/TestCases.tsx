@@ -26,6 +26,7 @@ import { normalizeTestCaseTypes, TESTING_TYPES, testCaseTypeFields } from '@/cor
 import { normalizeTags } from '@/src/lib/tags';
 import { readSseJson } from '@/src/lib/sse';
 import { casePlanIds, caseSuiteIds } from '@/src/lib/suiteCaseSelection';
+import { allCasesHaveRunTags, runTagsForCases } from '@/src/lib/manualTestRun';
 
 const CASE_STATUSES = ['Draft', 'Under Review', 'Approved', 'Automated', 'Deprecated'];
 const PRIORITIES = ['Low', 'Medium', 'High', 'Critical'];
@@ -436,40 +437,15 @@ export default function TestCases() {
     }
   };
 
-  /**
-   * Tags carried by the most recent run of any of these cases.
-   *
-   * Runs already persist the tags they were started with, so the last run is the answer to "what did
-   * the tester tag this with", and the modal can prefill instead of asking for the same tag again.
-   */
-  const lastRunTagsFor = (caseIds: string[]): string[] => {
-    const wanted = new Set(caseIds.map(String));
-    // A run that has not executed yet carries no startedAt/completedAt — only `date` — so fall all
-    // the way through, and let a later array entry win ties so same-day runs still resolve.
-    const runTime = (run: any): number => {
-      const stamp = run.completedAt || run.startedAt || run.triggerMeta?.manualExecution?.startedAt
-        || run.metadata?.updatedAt || run.createdAt || run.date;
-      const parsed = Date.parse(String(stamp || ''));
-      return Number.isFinite(parsed) ? parsed : -Infinity;
-    };
-    let newest = -Infinity;
-    let tags: string[] = [];
-    for (const run of runs) {
-      if (!Array.isArray(run.tags) || !run.tags.length) continue;
-      const ids = [...(Array.isArray(run.caseIds) ? run.caseIds : []), run.testCaseId].filter(Boolean);
-      if (!ids.some((id: any) => wanted.has(String(id)))) continue;
-      const time = runTime(run);
-      if (time < newest) continue;
-      newest = time;
-      tags = run.tags;
-    }
-    return tags;
-  };
-
-  // Open the save-and-run dialog, prefilled with the tags these cases were last run under.
+  // Ask only for cases that have never had a run tag saved. Once saved, run immediately forever.
   const openRunModal = () => {
     if (!selectedCaseIds.length) return;
-    setRunTags(lastRunTagsFor(selectedCaseIds));
+    const savedTags = runTagsForCases(cases, selectedCaseIds);
+    setRunTags(savedTags);
+    if (allCasesHaveRunTags(cases, selectedCaseIds)) {
+      void runSelectedCases(selectedCaseIds, savedTags);
+      return;
+    }
     setIsRunModalOpen(true);
   };
 
@@ -492,10 +468,27 @@ export default function TestCases() {
    * silently creating a Not Started run for cases the row button would have actually executed.
    * One case failing to start must not abort the rest of the selection.
    */
-  const runSelectedCases = async (caseIds = selectedCaseIds, tags = runTags) => {
+  const runSelectedCases = async (caseIds = selectedCaseIds, tags = runTags, saveTagsToCases = false) => {
     if (!caseIds.length || isStartingRun) return;
+    const normalizedRunTags = normalizeTags(tags);
+    if (saveTagsToCases && !normalizedRunTags.length) { void showAlert('Add at least one tag before starting this case.'); return; }
     setIsStartingRun(true);
     try {
+      if (saveTagsToCases) {
+        const selected = cases.filter((testCase) => caseIds.includes(String(testCase.id)));
+        await Promise.all(selected.map(async (testCase) => {
+          const mergedTags = normalizeTags([...(Array.isArray(testCase.tags) ? testCase.tags : []), ...normalizedRunTags]);
+          const response = await fetch(`/api/cases/${encodeURIComponent(testCase.id)}`, {
+            method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tags: mergedTags }),
+          });
+          const data = await response.json().catch(() => ({}));
+          if (!response.ok) throw new Error(data.error || `Could not save tags for ${testCase.title || testCase.id}.`);
+        }));
+        setCases((current) => current.map((testCase) => caseIds.includes(String(testCase.id))
+          ? { ...testCase, tags: normalizeTags([...(Array.isArray(testCase.tags) ? testCase.tags : []), ...normalizedRunTags]) }
+          : testCase));
+      }
+
       const automationCases: any[] = [];
       const otherCaseIds: string[] = [];
       for (const id of caseIds) {
@@ -517,7 +510,7 @@ export default function TestCases() {
       }
 
       // startSelectedRun navigates itself; otherwise open the first automation run dispatched.
-      if (otherCaseIds.length) await startSelectedRun({ caseIds: otherCaseIds, tags }, navigate);
+      if (otherCaseIds.length) await startSelectedRun({ caseIds: otherCaseIds, tags: normalizedRunTags }, navigate);
       else if (firstAutomationRunId) navigate(`/runs/${firstAutomationRunId}`);
 
       setIsRunModalOpen(false);
@@ -1028,8 +1021,8 @@ export default function TestCases() {
           <div className="flex justify-end gap-2">
             <button onClick={() => setIsRunModalOpen(false)} className="px-4 py-2 text-sm font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]">Cancel</button>
             <button
-              onClick={() => runSelectedCases()}
-              disabled={isStartingRun}
+              onClick={() => runSelectedCases(selectedCaseIds, runTags, true)}
+              disabled={isStartingRun || !runTags.length}
               className="flex items-center gap-1.5 rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
             >
               {isStartingRun ? <Loader2 className="h-4 w-4 animate-spin" /> : <PlayCircle className="h-4 w-4" />} Save & Run
@@ -1040,7 +1033,7 @@ export default function TestCases() {
         <div className="space-y-4">
           <p className="text-sm text-[var(--text-muted)]">This run appears in Test Runs after it starts.</p>
           <div>
-            <label className="mb-1 block text-sm font-medium text-[var(--text-muted)]">Tags (Optional)</label>
+            <label className="mb-1 block text-sm font-medium text-[var(--text-muted)]">Tags<RequiredMark /></label>
             <TagEditor options={tagOptions} value={runTags} onChange={setRunTags} />
           </div>
         </div>
@@ -1442,8 +1435,8 @@ export default function TestCases() {
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
-                        // Its own remembered tags, never whatever the modal last held.
-                        runSelectedCases([tc.id], lastRunTagsFor([tc.id]));
+                        // Its own saved tags, never whatever the modal last held.
+                        runSelectedCases([tc.id], runTagsForCases(cases, [tc.id]));
                       }}
                       disabled={isStartingRun}
                       title={isAutomationCase(tc) ? 'Run automation on server' : 'Run test case'}
