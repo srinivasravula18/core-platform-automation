@@ -1,6 +1,21 @@
 import { caseBelongsToSuite, casePlanIds, caseSuiteIds, suiteParentIds, suitePlanIds } from './suiteCaseSelection';
 import { normalizeTags } from './tags';
 
+export async function readAutomationRunResponse(response: Response): Promise<any> {
+  const text = await response.text();
+  let data: any = null;
+  try { data = text ? JSON.parse(text) : null; } catch { /* proxy/server returned HTML or text */ }
+  if (data && response.ok) return data;
+  if (data?.error) throw new Error(data.error);
+  if (/^\s*<(?:!doctype|html)/i.test(text)) {
+    const message = response.status >= 500
+      ? `Automation service is temporarily unavailable (HTTP ${response.status}). Try again after the server finishes restarting.`
+      : `Automation API returned HTML instead of JSON (HTTP ${response.status}). The backend route is unavailable.`;
+    throw new Error(message);
+  }
+  throw new Error(text.trim().slice(0, 200) || `Could not start the automation run (HTTP ${response.status}).`);
+}
+
 export function runTagsForCases(cases: any[], caseIds: string[]): string[] {
   const selected = new Set(caseIds.map(String));
   return normalizeTags(cases.filter((testCase) => selected.has(String(testCase.id))).flatMap((testCase) => Array.isArray(testCase.tags) ? testCase.tags : []));

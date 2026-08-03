@@ -26,7 +26,7 @@ import { normalizeTestCaseTypes, TESTING_TYPES, testCaseTypeFields } from '@/cor
 import { normalizeTags } from '@/src/lib/tags';
 import { readSseJson } from '@/src/lib/sse';
 import { casePlanIds, caseSuiteIds } from '@/src/lib/suiteCaseSelection';
-import { allCasesHaveRunTags, runTagsForCases } from '@/src/lib/manualTestRun';
+import { allCasesHaveRunTags, readAutomationRunResponse, runTagsForCases } from '@/src/lib/manualTestRun';
 
 const CASE_STATUSES = ['Draft', 'Under Review', 'Approved', 'Automated', 'Deprecated'];
 const PRIORITIES = ['Low', 'Medium', 'High', 'Critical'];
@@ -455,8 +455,8 @@ export default function TestCases() {
     const res = await fetch('/api/automation/runs', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ caseId: testCase.id }),
     });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data?.error || 'Could not start the automation run.');
+    const data = await readAutomationRunResponse(res);
+    if (!data?.run?.id) throw new Error('Automation run started without a run ID.');
     return data.run.id;
   };
 

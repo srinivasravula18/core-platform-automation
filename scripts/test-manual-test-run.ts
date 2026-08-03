@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { allCasesHaveRunTags, casesForPlan, casesForRun, getRunStats, manualRunSelection, runExecutionState, runnableCases, runTagsForCases, scriptsForCases, scriptsForRun } from '../src/lib/manualTestRun';
+import { allCasesHaveRunTags, casesForPlan, casesForRun, getRunStats, manualRunSelection, readAutomationRunResponse, runExecutionState, runnableCases, runTagsForCases, scriptsForCases, scriptsForRun } from '../src/lib/manualTestRun';
 import { agentRunStatusForList, isActiveTestRun, isClosedTestRun, isPendingReviewTestRun, isStaleManualTestRun } from '../core/shared/testRunStatus';
 
 const suites = [
@@ -24,6 +24,11 @@ assert.deepEqual(runTagsForCases([{ id: 'C1', tags: ['smoke'] }, { id: 'C2', tag
 assert.equal(allCasesHaveRunTags([{ id: 'C1', tags: ['@smoke'] }, { id: 'C2', tags: [] }], ['C1', 'C2']), false);
 assert.equal(allCasesHaveRunTags([{ id: 'C1', tags: ['  '] }], ['C1']), false);
 assert.equal(allCasesHaveRunTags([{ id: 'C1', tags: ['@smoke'] }, { id: 'C2', tags: ['@regression'] }], ['C1', 'C2']), true);
+assert.equal((await readAutomationRunResponse(new Response('{"run":{"id":"RUN-1"}}', { status: 201 }))).run.id, 'RUN-1');
+await assert.rejects(
+  readAutomationRunResponse(new Response('<html><h1>Bad Gateway</h1></html>', { status: 502 })),
+  /temporarily unavailable \(HTTP 502\)/,
+);
 assert.deepEqual(casesForRun({ planIds: ['P1'] }, cases, suites).map(({ id }) => id), ['C1', 'C2']);
 assert.deepEqual(casesForRun({ caseIds: ['C3'] }, cases, suites).map(({ id }) => id), ['C3']);
 assert.deepEqual(casesForRun({ id: 'R1', caseIds: ['C3'] }, cases, suites, [{ id: 'P1', runIds: ['R1'] }]).map(({ id }) => id), ['C1', 'C2', 'C3']);
