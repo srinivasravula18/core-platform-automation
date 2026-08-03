@@ -805,7 +805,17 @@ export default function TestRuns() {
             </div>
 
             <div className="overflow-auto">
-              <table className="w-full text-left text-sm whitespace-nowrap">
+              <table className="w-full min-w-[70rem] table-fixed text-left text-sm whitespace-nowrap">
+                <colgroup>
+                  <col className="w-14" />
+                  <col className="w-56" />
+                  <col className="w-72" />
+                  <col className="w-28" />
+                  <col className="w-28" />
+                  <col className="w-32" />
+                  <col className="w-32" />
+                  <col className="w-16" />
+                </colgroup>
                 <thead className="sticky top-0 bg-[var(--bg-secondary)] text-[var(--text-muted)] border-b border-[var(--border)]">
                   <tr>
                     <th className="px-4 py-3 w-10">
@@ -836,8 +846,12 @@ export default function TestRuns() {
                       <td className="px-4 py-3">
                         <input type="checkbox" checked={caseBulk.isSelected(testCase.id)} onChange={() => caseBulk.toggle(testCase.id)} />
                       </td>
-                      <td className="px-4 py-3 font-mono">{testCase.id}</td>
-                      <td className="px-4 py-3 font-medium max-w-md truncate">{testCase.title}</td>
+                      <td className="overflow-hidden px-4 py-3 font-mono">
+                        <span className="block truncate" title={testCase.id}>{testCase.id}</span>
+                      </td>
+                      <td className="overflow-hidden px-4 py-3 font-medium">
+                        <span className="block truncate" title={testCase.title}>{testCase.title}</span>
+                      </td>
                       <td className="px-4 py-3">
                         <VersionPinSelect
                           target="runs"
