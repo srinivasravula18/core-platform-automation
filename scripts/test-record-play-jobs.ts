@@ -63,6 +63,9 @@ async function main() {
   ok(finished.status === 'done' && finished.exitCode === 0, 'job.done exitCode 0 → done');
   ok(finished.summary.passed === 5, 'job summary persisted');
 
+  const serverJob = await jobs.createServerJob({ recordingId: r.id, trigger: 'manual' }, SCOPE);
+  ok(serverJob.status === 'queued' && serverJob.agentId === '', 'manual server job does not require an agent');
+
   console.log('job failure path');
   const job2 = await jobs.createJob({ recordingId: r.id, agentId: 'agent-x', trigger: 'manual' }, SCOPE);
   await gateway.deliverAgentFrame('agent-x', { type: 'job.done', agentId: 'agent-x', seq: 1, payload: { jobId: job2.id, exitCode: 1, error: 'timeout' } });

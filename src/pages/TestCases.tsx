@@ -473,7 +473,7 @@ export default function TestCases() {
     setIsRunModalOpen(true);
   };
 
-  // Automation cases execute their recorded Playwright script on the desktop agent; the Test Run
+  // Automation cases execute their recorded Playwright script headlessly on the server; the Test Run
   // that opens shows the live execution artifacts (video/screenshots/trace/junit/logs).
   const startAutomationRun = async (testCase: any): Promise<string> => {
     const res = await fetch('/api/automation/runs', {
@@ -487,10 +487,10 @@ export default function TestCases() {
   /**
    * Single entry point for the per-row Run button AND Run selected.
    *
-   * Automation cases with a recorded script execute on the agent; everything else becomes a Test Run
+   * Automation cases with a recorded script execute on the server; everything else becomes a Test Run
    * built from the selection. Routing both buttons through here is what stops "Run selected" from
    * silently creating a Not Started run for cases the row button would have actually executed.
-   * One case failing to dispatch (e.g. no connected agent) must not abort the rest of the selection.
+   * One case failing to start must not abort the rest of the selection.
    */
   const runSelectedCases = async (caseIds = selectedCaseIds, tags = runTags) => {
     if (!caseIds.length || isStartingRun) return;
@@ -1446,7 +1446,7 @@ export default function TestCases() {
                         runSelectedCases([tc.id], lastRunTagsFor([tc.id]));
                       }}
                       disabled={isStartingRun}
-                      title={isAutomationCase(tc) ? 'Run automation (executes on the agent)' : 'Run test case'}
+                      title={isAutomationCase(tc) ? 'Run automation on server' : 'Run test case'}
                       className="p-1 rounded hover:bg-emerald-500/10 text-[var(--text-muted)] hover:text-emerald-400 disabled:opacity-50 transition-colors"
                     >
                       <PlayCircle className="w-4 h-4" />

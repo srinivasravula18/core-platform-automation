@@ -46,9 +46,8 @@ import {
   undoRecordingStepOverride,
   redoRecordingStepOverride,
 } from './recordingService';
-import { createJob, cancelJob, refreshExecutionBatch, tryDispatch } from './jobService';
-import { runBatchOnServer } from './serverRunner';
-import { isAgentConnected } from './agentGateway';
+import { createJob, createServerJob, cancelJob, refreshExecutionBatch, tryDispatch } from './jobService';
+import { runBatchOnServer, runJobOnServer } from './serverRunner';
 import { computeNextRun } from './schedulerService';
 import { saveArtifact, listArtifacts, resolveArtifact, contentTypeFor } from './artifactService';
 import { subscribe } from './eventsService';
@@ -671,10 +670,8 @@ export function registerAutomationRoutes(app: Express) {
     res.json(out);
   });
 
-  /* ---------- run an Automation test case → executes on the agent, tracked as a Test Run ---------- */
-  // Bridges Test Management and the agent job engine: dispatch the case's recorded script to the
-  // agent and create a Test Run linked to the job (trigger_meta.automationJobId). The Test Runs UI
-  // then renders the job's artifacts (video/trace/screenshots/junit/logs) and job.done syncs the run.
+  /* ---------- run an Automation test case on the server, tracked as a Test Run ---------- */
+  // Manual and scheduled executions share the same headless runner and artifact pipeline.
   app.post('/api/automation/runs', requireAuth, async (req: Request, res: Response) => {
     const caseId = String(req.body?.caseId || '');
     const testCase = await scopedGet((id) => Cases.get(id), caseId, req);
@@ -683,11 +680,9 @@ export function registerAutomationRoutes(app: Express) {
     const rec = scopeFilter((await Recordings.list()) as any[], reqScope(req))
       .find((r: any) => r.metadata?.caseId === caseId && r.status === 'ready' && r.script);
     if (!rec) return res.status(400).json({ error: 'No recorded script for this case yet. Record it via New Case → Automation.' });
-    const agentId = String(req.body?.agentId || rec.agentId || '');
-    if (!isAgentConnected(agentId)) return res.status(409).json({ error: 'Select a connected agent to run on.' });
-    // Persist the linked run before dispatching. A fast completion must be able to
+    // Persist the linked run before execution. A fast completion must be able to
     // synchronize its counts onto this record.
-    const job = await createJob({ recordingId: rec.id, agentId, trigger: 'manual', headed: false, dispatch: false }, reqScope(req));
+    const job = await createServerJob({ recordingId: rec.id, trigger: 'manual' }, reqScope(req));
     const run = {
       ...scopeStamp(reqScope(req)),
       id: `RUN-${randomBytes(2).toString('hex').toUpperCase()}`,
@@ -695,17 +690,17 @@ export function registerAutomationRoutes(app: Express) {
       caseIds: [caseId],
       requestedBy: req.body?.requestedBy || '',
       status: 'Running',
-      progress: 'Dispatched to agent',
+      progress: 'Running on server',
       targetUrl: rec.appUrl || '',
       folderId: testCase.folderId || '',
       triggerType: 'automation',
-      triggerMeta: { automationJobId: job.id, agentId },
+      triggerMeta: { automationJobId: job.id, agentId: '' },
       startedAt: new Date().toISOString(),
       date: new Date().toISOString().split('T')[0],
     };
     await Runs.upsert(run);
     if (isPostgresEnabled()) { /* persisted */ } else persistDataInBackground('automation run');
-    await tryDispatch(job.id);
+    void runJobOnServer(job.id).catch((error) => console.error('[automation] manual server run failed:', error?.message || error));
     res.status(201).json({ run, jobId: job.id });
   });
 
