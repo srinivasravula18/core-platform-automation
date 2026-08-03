@@ -24,6 +24,7 @@ import {
   Wand2,
   History,
   MessageSquare,
+  MessagesSquare,
   Star,
   Target,
   Trash2,
@@ -2972,7 +2973,7 @@ export default function AgentConsole() {
       <div className="mb-2 flex items-center justify-between gap-3">
         <div className="flex items-center gap-2">
           <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-[var(--accent)]/10 text-[var(--accent)]">
-            <BrainCircuit className="h-5 w-5" />
+            <MessagesSquare className="h-5 w-5" />
           </div>
           <div>
             <div className="flex items-center gap-1.5">
