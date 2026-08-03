@@ -558,6 +558,21 @@ export default function TestCases() {
     });
     return set;
   }, [runs]);
+  const lastRunAtByCase = useMemo(() => {
+    const latest = new Map<string, string>();
+    runs.forEach((run) => {
+      const value = run.completedAt || run.startedAt || run.triggerMeta?.manualExecution?.startedAt;
+      const time = Date.parse(String(value || ''));
+      if (!Number.isFinite(time)) return;
+      const caseIds = [...(Array.isArray(run.caseIds) ? run.caseIds : []), run.testCaseId].filter(Boolean);
+      caseIds.forEach((caseId) => {
+        const key = String(caseId);
+        const previous = latest.get(key);
+        if (!previous || time > Date.parse(previous)) latest.set(key, String(value));
+      });
+    });
+    return latest;
+  }, [runs]);
   const activeFilterCount = (
     filters.statuses.length + filters.priorities.length + filters.automationStatuses.length +
     filters.testingTypes.length + filters.tags.length + filters.owners.length +
@@ -651,6 +666,7 @@ export default function TestCases() {
               { key: 'status', label: 'Status', get: (c) => c.status || 'Draft' },
               { key: 'app', label: 'Platform / App', get: (c) => caseScopeLabel(c) },
               { key: 'tags', label: 'Tags' },
+              { key: 'lastRunAt', label: 'Last Run', get: (c: any) => lastRunAtByCase.get(String(c.id)) || '' },
               { key: 'createdBy', label: 'Created By' },
               { key: 'suite', label: 'Suite', get: (c) => (suites.find((s) => s.id === c.testSuiteId) || {}).name || '' },
               { key: 'stepCount', label: 'Steps', get: (c) => (c.steps || []).length },
@@ -1190,7 +1206,7 @@ export default function TestCases() {
         </div>
         
         <div className="flex-1 overflow-auto">
-          <table className="w-full min-w-[1792px] table-fixed text-left text-sm">
+          <table className="w-full min-w-[1920px] table-fixed text-left text-sm">
             <thead className="sticky top-0 bg-[var(--bg-secondary)] border-b border-[var(--border)] z-10">
               <tr className="text-[var(--text-muted)]">
                 <th className="font-medium py-3 px-4 w-10">
@@ -1213,16 +1229,17 @@ export default function TestCases() {
                 <th className="font-medium py-3 px-4 w-32">Script</th>
                 <th className="font-medium py-3 px-4 w-32">Evidence</th>
                 <th className="font-medium py-3 px-4 w-28">Tags</th>
+                <th className="font-medium py-3 px-4 w-32">Last Run</th>
                 <th className="font-medium py-3 px-4 w-32">Updated</th>
                 <th className="font-medium py-3 px-4 w-24 text-right">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-[var(--border)]">
               {loading && (
-                <tr><td colSpan={14} className="py-8 text-center text-[var(--text-muted)]">Loading test cases...</td></tr>
+                <tr><td colSpan={15} className="py-8 text-center text-[var(--text-muted)]">Loading test cases...</td></tr>
               )}
               {!loading && filteredCases.length === 0 && (
-                <tr><td colSpan={14} className="py-8 text-center text-[var(--text-muted)]">No test cases found.</td></tr>
+                <tr><td colSpan={15} className="py-8 text-center text-[var(--text-muted)]">No test cases found.</td></tr>
               )}
               {filteredCases.map((tc) => (
                 <tr key={tc.id} onClick={() => openEditModal(tc)} className="hover:bg-[var(--bg-secondary)] transition-colors cursor-pointer">
@@ -1342,6 +1359,9 @@ export default function TestCases() {
                       value={Array.isArray(tc.tags) ? tc.tags : []}
                       onChange={(tags) => updateCaseInline(tc, { tags })}
                     />
+                  </td>
+                  <td className="overflow-hidden py-3 px-4 whitespace-nowrap text-xs text-[var(--text-muted)]">
+                    {lastRunAtByCase.has(String(tc.id)) ? <Timestamp value={lastRunAtByCase.get(String(tc.id))} /> : 'Never'}
                   </td>
                   <td className="overflow-hidden py-3 px-4 whitespace-nowrap text-xs text-[var(--text-muted)]">
                     <Timestamp value={tc.metadata?.updatedAt || tc.updatedAt} />
