@@ -32,7 +32,11 @@ const AGENT_DIR = path.resolve(process.env.AGENT_BUNDLE_DIR || path.join(process
 const EXCLUDE_DIRS = new Set(['logs', 'playwright', '.git', 'src']);
 const EXCLUDE_FILES = new Set(['config.json', 'config.example.json', 'package-lock.json', 'tsconfig.json']);
 const NON_RUNTIME_FILE = /\.(?:d\.ts|map|md|markdown)$/i;
-const NON_RUNTIME_DIR = /\/(?:test|tests|docs|benchmarks|coverage|examples?)(?:\/|$)/i;
+// Directory names are NOT safe to strip: a package's own runtime can live under one. Trimming any
+// path containing /test/ removed playwright/lib/mcp/test/testBackend.js, which program.js requires,
+// so cli.js died on load and every codegen recording finished instantly with an empty script.
+// Only prune directories at the root of a package, where they really are fixtures/docs.
+const NON_RUNTIME_DIR = /^node_modules\/(?:@[^/]+\/)?[^/]+\/(?:test|tests|docs|benchmarks|coverage|examples?)(?:\/|$)/i;
 // Used only if agent/package.json can't be read; the real version comes from that file.
 const AGENT_VERSION_FALLBACK = '1.0.0';
 
