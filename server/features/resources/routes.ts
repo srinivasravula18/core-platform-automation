@@ -321,6 +321,57 @@ function saveEvidenceImage(dataUrl: string, runId: string): string {
   return `/evidence/${file}`;
 }
 
+const DEFECT_SEVERITIES = new Set(['Critical', 'High', 'Medium', 'Low']);
+const DEFECT_STATUSES = new Set(['Open', 'In Progress', 'Resolved', 'Closed', 'Reopened']);
+
+export function defectInputError(body: any): string {
+  if (body?.severity != null && !DEFECT_SEVERITIES.has(String(body.severity))) return 'Select a supported defect severity.';
+  if (body?.status != null && !DEFECT_STATUSES.has(String(body.status))) return 'Select a supported defect status.';
+  if (body?.attachments != null && !Array.isArray(body.attachments)) return 'Attachments must be an array.';
+  if ((body?.attachments || []).length > 3) return 'Attach up to 3 screenshots.';
+  for (const attachment of body?.attachments || []) {
+    const match = /^data:(image\/(?:png|jpeg|webp|gif));base64,(.+)$/s.exec(String(attachment?.dataUrl || ''));
+    if (!match) return 'Attachments must be PNG, JPEG, WebP, or GIF images.';
+    if (Buffer.from(match[2], 'base64').length > 1024 * 1024) return 'Each attachment must be 1 MB or smaller.';
+  }
+  return '';
+}
+
+export function defectPayload(body: any, existing: any, id: string): any {
+  const text = (key: string, fallback = '') => String(body?.[key] ?? existing?.[key] ?? fallback).trim();
+  const incomingEnvironment = body?.metadata?.environment || {};
+  const uploaded = (body?.attachments || []).map((attachment: any) => ({
+    title: String(attachment?.name || 'Screenshot'),
+    screenshotUrl: saveEvidenceImage(attachment.dataUrl, id),
+  }));
+  return {
+    ...existing,
+    title: text('title', 'New Defect'),
+    description: text('description'),
+    stepsToReproduce: text('stepsToReproduce'),
+    expected: text('expected'),
+    actual: text('actual'),
+    severity: text('severity', 'Medium'),
+    status: text('status', 'Open'),
+    assignedTo: text('assignedTo'),
+    linkedCaseId: text('linkedCaseId') || null,
+    linkedRunId: text('linkedRunId') || null,
+    folderId: text('folderId') || null,
+    evidence: [...(Array.isArray(existing?.evidence) ? existing.evidence : []), ...uploaded],
+    metadata: {
+      ...(existing?.metadata || {}),
+      ...(body?.metadata && typeof body.metadata === 'object' ? body.metadata : {}),
+      component: text('component', String(body?.metadata?.component ?? existing?.metadata?.component ?? '')),
+      environment: {
+        ...(existing?.metadata?.environment || {}),
+        ...incomingEnvironment,
+        name: text('environment', String(incomingEnvironment.name ?? existing?.metadata?.environment?.name ?? '')),
+        browser: text('browser', String(incomingEnvironment.browser ?? existing?.metadata?.environment?.browser ?? '')),
+      },
+    },
+  };
+}
+
 async function parentPlanValidationError(parentPlanId: string, currentPlanId: string, req: any): Promise<string | null> {
   if (!parentPlanId) return null;
   if (parentPlanId === currentPlanId) return 'A test plan cannot be its own parent.';
@@ -979,6 +1030,19 @@ export function registerResourceRoutes(app: Express) {
     app.put(`/api/${e.name}/:id`, asyncRoute(async (req, res) => {
       const existing = await e.repo.get(req.params.id);
       if (!existing) return res.status(404).json({ error: 'Not found' });
+      if (e.name === 'defects') {
+        const inputError = defectInputError(req.body);
+        if (inputError) return res.status(400).json({ error: inputError });
+        const linkedCaseId = String(req.body?.linkedCaseId || '').trim();
+        const linkedRunId = String(req.body?.linkedRunId || '').trim();
+        const [linkedCase, linkedRun] = await Promise.all([
+          linkedCaseId ? Cases.get(linkedCaseId) : null,
+          linkedRunId ? Runs.get(linkedRunId) : null,
+        ]);
+        if (linkedCaseId && (!linkedCase || !scopeFilter([linkedCase], reqScope(req)).length)) return res.status(400).json({ error: 'The linked test case was not found.' });
+        if (linkedRunId && (!linkedRun || !scopeFilter([linkedRun], reqScope(req)).length)) return res.status(400).json({ error: 'The linked test run was not found.' });
+        req.body = defectPayload(req.body, existing, existing.id);
+      }
       const scheduleConflictConfirmed = req.body?.scheduleConflictConfirmed === true;
       delete req.body.scheduleConflictConfirmed;
       if (e.name === 'plans' && req.body?.status === 'In Progress' && existing.status !== 'In Progress') {
@@ -1984,19 +2048,27 @@ Rules:
 
   /* ---------- POST /api/defects ---------- */
   app.post('/api/defects', asyncRoute(async (req, res) => {
-    const title = req.body.title || 'New Defect';
+    const inputError = defectInputError(req.body);
+    if (inputError) return res.status(400).json({ error: inputError });
+    const linkedCaseId = String(req.body?.linkedCaseId || '').trim();
+    const linkedRunId = String(req.body?.linkedRunId || '').trim();
+    const [linkedCase, linkedRun] = await Promise.all([
+      linkedCaseId ? Cases.get(linkedCaseId) : null,
+      linkedRunId ? Runs.get(linkedRunId) : null,
+    ]);
+    if (linkedCaseId && (!linkedCase || !scopeFilter([linkedCase], reqScope(req)).length)) return res.status(400).json({ error: 'The linked test case was not found.' });
+    if (linkedRunId && (!linkedRun || !scopeFilter([linkedRun], reqScope(req)).length)) return res.status(400).json({ error: 'The linked test run was not found.' });
+    const id = `DEF-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
+    const title = String(req.body?.title || 'New Defect').trim() || 'New Defect';
     const newDefect = {
       ...scopeStamp(reqScope(req)),
-      id: `DEF-${Math.random().toString(36).substring(2, 6).toUpperCase()}`,
-      title,
-      severity: req.body.severity || 'High',
-      status: 'Open',
-      folderId: req.body.folderId || '',
+      ...defectPayload({ ...req.body, title }, {}, id),
+      id,
     };
     await Defects.upsert(newDefect);
     if (!isPgEnabled()) persistDataInBackground('defect');
     logActivity(req, `Logged Defect: ${title}`, { type: 'defect', entityId: newDefect.id, meta: { severity: newDefect.severity } });
-    res.json({ success: true });
+    res.json({ success: true, defect: newDefect });
   }));
 
   /* ---------- unused import suppression (referenced only for type docs) ---------- */
