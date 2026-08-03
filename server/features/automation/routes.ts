@@ -29,6 +29,7 @@ import {
   authenticateAgent,
   refreshAgentToken,
   heartbeat,
+  renameAgent,
   revokeAgent,
   publicAgent,
   withLiveStatus,
@@ -112,6 +113,17 @@ export function registerAutomationRoutes(app: Express) {
     const [scoped] = scopeFilter([agent] as any[], reqScope(req));
     if (!scoped) return res.status(404).json({ error: 'Agent not found.' });
     res.json({ agent: withLiveStatus(publicAgent(agent)) });
+  });
+
+  app.patch('/api/automation/agents/:id', requireAuth, async (req: Request, res: Response) => {
+    const agent = await Agents.get(req.params.id);
+    if (!agent) return res.status(404).json({ error: 'Agent not found.' });
+    const [scoped] = scopeFilter([agent] as any[], reqScope(req));
+    if (!scoped) return res.status(404).json({ error: 'Agent not found.' });
+    const name = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
+    if (!name) return res.status(400).json({ error: 'Agent name is required.' });
+    if (name.length > 80) return res.status(400).json({ error: 'Agent name must be 80 characters or fewer.' });
+    res.json({ agent: withLiveStatus(await renameAgent(agent as AgentRecord, name)) });
   });
 
   app.post('/api/automation/agents/:id/revoke', requireAuth, async (req: Request, res: Response) => {

@@ -38,6 +38,22 @@ export default function LocalAgent() {
     } catch { showToast('Could not revoke the agent.', { tone: 'error' }); }
   };
 
+  const rename = async (id: string, name: string) => {
+    try {
+      const res = await fetch(`/api/automation/agents/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+      });
+      if (!res.ok) throw new Error((await res.json())?.error || 'Rename failed.');
+      showToast('Agent name saved.', { tone: 'success' });
+      await refresh();
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'Could not rename the agent.', { tone: 'error' });
+      throw error;
+    }
+  };
+
   const active = agents.filter((a) => !a.revoked);
 
   return (
@@ -69,6 +85,7 @@ export default function LocalAgent() {
               <AgentStatusCard
                 key={agent.id}
                 agent={agent}
+                onRename={(name) => rename(agent.id, name)}
                 actions={
                   <>
                     {updateAvailable && (

@@ -58,6 +58,10 @@ async function main() {
   ok(hb.version === '1.1.0' && hb.status === 'busy', 'heartbeat updates telemetry + status');
   ok(!!hb.lastHeartbeatAt, 'lastHeartbeatAt set');
 
+  console.log('rename');
+  const renamed = await svc.renameAgent(authed!, 'CI Agent');
+  ok(renamed.name === 'CI Agent' && db.agents[0]?.name === 'CI Agent', 'rename persists the card title');
+
   console.log('token refresh rotates the access token');
   const refreshed = await svc.refreshAgentToken(reg.refreshToken);
   ok(!!refreshed && refreshed.agentToken.startsWith(`${reg.agentId}.`), 'refresh issues a new access token');
