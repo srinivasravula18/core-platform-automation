@@ -76,7 +76,21 @@ async function main() {
   const editedMissionSteps = await service.listRecordingSteps(repositoryRecording.id);
   const materialized = createScriptMaterializer(MISSION_SCRIPT, editedMissionSteps, [], [])({ values: {} });
   assert.ok(materialized.includes('"alice@example.com"'), 'MissionRunner value override is materialized');
-  console.log('PASS: recording step derivation, immutable overrides, and undo/redo.');
+  // An empty recording must not become a test case: the only step it could carry is the generic
+  // "Run the recorded Playwright script", which reads like a real case but describes nothing.
+  const EMPTY_SCRIPT = `import { test } from '@playwright/test';
+test('empty', async ({ page }) => {
+});`;
+  assert.strictEqual(service.recordingHasInteractions(EMPTY_SCRIPT), false, 'boilerplate-only script has no interactions');
+  assert.strictEqual(service.recordingHasInteractions(''), false, 'empty script has no interactions');
+  assert.strictEqual(service.recordingHasInteractions(SCRIPT), true, 'a real recording has interactions');
+  assert.strictEqual(
+    service.scriptToSteps(SCRIPT).some((step: any) => /Run the recorded Playwright script/i.test(step.action)),
+    false,
+    'a parseable recording never falls back to the generic run-the-script step',
+  );
+
+  console.log('PASS: recording step derivation, immutable overrides, undo/redo, and empty-recording guard.');
 }
 
 main().catch((error) => { console.error(error); process.exit(1); });

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Radio, Loader2, Square, Trash2, Circle, Plus, CheckCircle2 } from 'lucide-react';
+import { Radio, Loader2, Square, Trash2, Circle, Plus, CheckCircle2, AlertTriangle } from 'lucide-react';
 import { showToast, showConfirm } from '@/src/lib/dialog';
 import { Modal } from '@/src/components/Modal';
 import { RequiredMark } from '@/src/components/RequiredMark';
@@ -24,7 +24,7 @@ export function CodegenPanel({ title, appUrl, caseMeta, onDone }: {
   const flag = useRemoteAgentFlag();
   const { agents, loading, refresh } = useAgents();
   const session = useRecordingSession({ onAgentEvent: () => { void refresh(); } });
-  const { phase, recordingId, script, stats, mmss, busy, caseId } = session;
+  const { phase, recordingId, script, stats, mmss, busy, caseId, empty } = session;
 
   const [agentId, setAgentId] = useState('');
   const [browser, setBrowser] = useState<string>('chromium');
@@ -123,9 +123,17 @@ export function CodegenPanel({ title, appUrl, caseMeta, onDone }: {
   // summary
   return (
     <div className="space-y-4">
-      <div className="flex items-center gap-2 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-sm font-medium text-emerald-500">
-        <CheckCircle2 className="h-4 w-4" /> {caseId ? 'Automated test case created.' : 'Recording finished.'}
-      </div>
+      {empty ? (
+        // Nothing was captured, so no case was created — say so plainly instead of a green tick.
+        <div className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm font-medium text-amber-500">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+          <span>No steps were recorded, so no test case was created. Record again and interact with your app — clicks, typing and navigation are captured.</span>
+        </div>
+      ) : (
+        <div className="flex items-center gap-2 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-sm font-medium text-emerald-500">
+          <CheckCircle2 className="h-4 w-4" /> {caseId ? 'Automated test case created.' : 'Recording finished.'}
+        </div>
+      )}
       <ScriptPane script={script} placeholder="No script was generated." />
       <div className="flex flex-wrap gap-2">
         <button onClick={() => onDone(caseId)}

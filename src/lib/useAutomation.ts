@@ -147,7 +147,7 @@ export type RecordingPhase = 'setup' | 'recording' | 'summary';
  */
 export function useRecordingSession(opts?: { onAgentEvent?: () => void }): {
   phase: RecordingPhase; recordingId: string; script: string; stats: Record<string, number>;
-  elapsed: number; mmss: string; busy: boolean; caseId: string;
+  elapsed: number; mmss: string; busy: boolean; caseId: string; empty: boolean;
   start: (input: StartRecordingInput) => Promise<string>; stop: () => Promise<void>;
   discard: () => Promise<void>; reset: () => void;
 } {
@@ -158,6 +158,8 @@ export function useRecordingSession(opts?: { onAgentEvent?: () => void }): {
   const [elapsed, setElapsed] = useState(0);
   const [busy, setBusy] = useState(false);
   const [caseId, setCaseId] = useState('');
+  // True when the finished recording captured no interactions, so no test case was created.
+  const [empty, setEmpty] = useState(false);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   // Safety net for Stop: the UI leaves 'recording' when recording.done lands. If that event is
   // delayed/lost, this fallback still moves us to summary so the timer can't count forever.
@@ -177,6 +179,7 @@ export function useRecordingSession(opts?: { onAgentEvent?: () => void }): {
       const rec = evt.data.recording as Recording | undefined;
       if (rec) { setScript(rec.script || ''); setStats(rec.stats || {}); }
       if (typeof evt.data.caseId === 'string') setCaseId(evt.data.caseId);
+      setEmpty(evt.data.empty === true);
       stopTimer();
       setPhase('summary');
     }
@@ -195,7 +198,7 @@ export function useRecordingSession(opts?: { onAgentEvent?: () => void }): {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agentId: input.agentId }),
       });
       if (!started.ok) throw new Error((await started.json())?.error || 'start failed');
-      setRecordingId(id); setScript(''); setStats({}); setCaseId(''); setPhase('recording'); startTimer();
+      setRecordingId(id); setScript(''); setStats({}); setCaseId(''); setEmpty(false); setPhase('recording'); startTimer();
       return id;
     } finally { setBusy(false); }
   };
@@ -217,8 +220,8 @@ export function useRecordingSession(opts?: { onAgentEvent?: () => void }): {
     setRecordingId(''); setScript(''); setStats({}); setCaseId(''); setPhase('setup');
   };
 
-  const reset = () => { setPhase('setup'); setRecordingId(''); setScript(''); setStats({}); setCaseId(''); };
+  const reset = () => { setPhase('setup'); setRecordingId(''); setScript(''); setStats({}); setCaseId(''); setEmpty(false); };
 
   const mmss = `${String(Math.floor(elapsed / 60)).padStart(2, '0')}:${String(elapsed % 60).padStart(2, '0')}`;
-  return { phase, recordingId, script, stats, elapsed, mmss, busy, caseId, start, stop, discard, reset };
+  return { phase, recordingId, script, stats, elapsed, mmss, busy, caseId, empty, start, stop, discard, reset };
 }

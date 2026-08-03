@@ -110,14 +110,27 @@ export async function finalizeRecording(recordingId: string, patch: { script?: s
   })));
   // Reflect the recording into Test Management as an Automated, script-linked test case. Isolated
   // so a case-write failure never blocks the recording from finalizing.
+  // A recording that captured nothing produces no case: there is no flow to describe, so the case
+  // could only say "Run the recorded Playwright script" over an empty script — noise in Test
+  // Management that reads like a real case. The recording itself is still saved.
+  const empty = !recordingHasInteractions(finalScript);
   let caseId = '';
-  try { caseId = await reflectRecordingAsCase(saved, finalScript); } catch { /* recording still saved */ }
+  if (!empty) {
+    try { caseId = await reflectRecordingAsCase(saved, finalScript); } catch { /* recording still saved */ }
+  }
   persist('recording completed');
-  await emitEvent({ scopeType: 'recording', scopeId: recordingId, type: 'recording.done', ownerId: rec.ownerId, data: { recording: saved, caseId } });
+  await emitEvent({ scopeType: 'recording', scopeId: recordingId, type: 'recording.done', ownerId: rec.ownerId, data: { recording: saved, caseId, empty } });
+}
+
+/** True when the script contains at least one recorded interaction (navigation, click, input, assertion). */
+export function recordingHasInteractions(script: string): boolean {
+  return parseAtomicSteps(String(script || '')).length > 0;
 }
 
 // Best-effort parse of a Playwright codegen spec into human-readable case steps so the created
-// test case reads meaningfully in Test Management. Falls back to a single run-the-script step.
+// test case reads meaningfully in Test Management. Falls back to a single run-the-script step —
+// only reachable for a script that HAS interactions but whose shape this parser cannot read, since
+// an empty recording never becomes a case (see finalizeRecording).
 // With RECORDER_STEP_GROUPING on, steps are coalesced + tagged with collapsible logical groups
 // (see stepGrouping.ts); off, it stays the legacy 1 script-line -> 1 flat step behavior.
 export function scriptToSteps(script: string): Array<{ action: string; expected: string; group?: string; groupIndex?: number }> {
