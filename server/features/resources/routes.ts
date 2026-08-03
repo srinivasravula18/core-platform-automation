@@ -689,6 +689,11 @@ export function registerResourceRoutes(app: Express) {
         startedAt: new Date().toISOString(),
         completedAt: null,
         evidence: [],
+        steps: [],
+        passed: 0,
+        failed: 0,
+        totalExecutions: 0,
+        executionTime: '',
       }, {
         attemptId: executionAttemptId,
         startedAt: new Date().toISOString(),

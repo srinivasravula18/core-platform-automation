@@ -10,10 +10,11 @@ process.chdir(scratch);
 async function main() {
   const { createScriptMaterializer } = await import('../server/features/automation/scriptMaterializer');
   const { AutomationExecutionBatches, AutomationJobs } = await import('../server/db/repository');
-  const { refreshExecutionBatch } = await import('../server/features/automation/jobService');
+  const { createLinkedTestRun, refreshExecutionBatch, syncLinkedRun } = await import('../server/features/automation/jobService');
   const { db } = await import('../server/shared/storage');
   db.automationExecutionBatches = [];
   db.automationJobs = [];
+  db.runs = [];
 
   const script = `import { test } from '@playwright/test';
 test('row', async ({ page }) => {
@@ -55,7 +56,18 @@ test('row', async ({ page }) => {
   const stored = await AutomationJobs.get('job-1');
   if (stored.batchId !== batch.id || stored.rowNumber !== 1) throw new Error('job row identity was not persisted');
 
-  console.log('PASS: deterministic row materialization, immutable source, durable batch aggregation.');
+  const linkedRun = await createLinkedTestRun(stored, { id: 'rec-1', name: 'Customer flow', appUrl: 'https://example.test', metadata: { caseId: 'case-1' } }, { projectId: 'project-1', appId: null, userId: 'user-1', role: '' }, {
+    name: 'Customer flow · customers.xlsx · Row 1',
+    triggerMeta: { automationBatchId: batch.id, datasetId: 'd1', rowNumber: 1 },
+  });
+  if (linkedRun.triggerMeta.automationJobId !== stored.id || linkedRun.triggerMeta.rowNumber !== 1 || linkedRun.caseIds[0] !== 'case-1') {
+    throw new Error('data-driven job was not linked to a Test Run');
+  }
+  await syncLinkedRun(stored.id, 'done', { passed: 1, failed: 0, durationMs: 1500 });
+  const completedRun = db.runs.find((run: any) => run.id === linkedRun.id);
+  if (!String(completedRun?.status || '').startsWith('Completed') || completedRun?.passed !== 1) throw new Error('linked Test Run result was not synchronized');
+
+  console.log('PASS: deterministic row materialization, durable batch aggregation, and linked Test Run results.');
 }
 
 main().catch((error) => { console.error(error); process.exit(1); });

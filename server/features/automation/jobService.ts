@@ -151,6 +151,29 @@ export async function createJob(input: { recordingId: string; agentId: string; t
   return saved;
 }
 
+/** Create the durable Test Run that exposes an automation job's status and evidence. */
+export async function createLinkedTestRun(job: any, recording: any, scope: Scope, input: { id?: string; name?: string; caseId?: string; requestedBy?: string; folderId?: string; progress?: string; triggerMeta?: Record<string, any> } = {}) {
+  const id = input.id || uid('RUN');
+  const caseId = input.caseId || recording?.metadata?.caseId || '';
+  const run = await Runs.upsert({
+    ...scopeStamp(scope),
+    id,
+    name: `${input.name || recording?.name || 'Automation run'} - ${id}`,
+    caseIds: caseId ? [caseId] : [],
+    requestedBy: input.requestedBy || '',
+    status: 'Running',
+    progress: input.progress || 'Running on server',
+    targetUrl: recording?.appUrl || '',
+    folderId: input.folderId || '',
+    triggerType: 'automation',
+    triggerMeta: { automationJobId: job.id, agentId: job.agentId || '', ...(input.triggerMeta || {}) },
+    startedAt: new Date().toISOString(),
+    date: new Date().toISOString().split('T')[0],
+  });
+  persist('automation run created');
+  return run;
+}
+
 export async function cancelJob(jobId: string) {
   const job = await AutomationJobs.get(jobId);
   if (!job) return { error: 'Job not found.', status: 404 };

@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef, useMemo, type ComponentProps } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Search, Filter, Pencil, Plus, Sparkles, Loader2, Trash2, PlayCircle, ChevronDown, History } from 'lucide-react';
+import { Search, Filter, Pencil, Plus, Sparkles, Loader2, Trash2, PlayCircle, ChevronDown, History, Monitor, Server } from 'lucide-react';
 import { VersionHistoryPanel } from '@/src/components/VersionHistoryPanel';
 import { Timestamp, actorName } from '@/src/components/Timestamp';
 import { TimeSortSelect } from '@/src/components/filters/TimeSortSelect';
@@ -102,6 +102,8 @@ export default function TestCases() {
   // Save-and-run dialog: pick tags before the selected-cases run is created.
   const [isRunModalOpen, setIsRunModalOpen] = useState(false);
   const [runTags, setRunTags] = useState<string[]>([]);
+  const [pendingRunCaseIds, setPendingRunCaseIds] = useState<string[]>([]);
+  const [runMode, setRunMode] = useState<'headless' | 'headed'>('headless');
   const emptyStep = { action: '', expected: '' };
   const blankForm = { title: '', description: '', preconditions: '', testPlanIds: [] as string[], testSuiteIds: [] as string[], createdBy: 'Admin', tags: [] as string[], testingScope: 'Manual', automationStatus: 'Not Automated', testingTypes: ['Functional'] as string[], priority: 'Medium', status: 'Draft', captureEvidenceOnManualRun: true, steps: [emptyStep] };
   const [formData, setFormData] = useState(blankForm);
@@ -438,26 +440,31 @@ export default function TestCases() {
   };
 
   // Ask only for cases that have never had a run tag saved. Once saved, run immediately forever.
-  const openRunModal = () => {
-    if (!selectedCaseIds.length) return;
-    const savedTags = runTagsForCases(cases, selectedCaseIds);
+  const openRunModal = (caseIds = selectedCaseIds) => {
+    if (!caseIds.length) return;
+    const savedTags = runTagsForCases(cases, caseIds);
     setRunTags(savedTags);
-    if (allCasesHaveRunTags(cases, selectedCaseIds)) {
-      void runSelectedCases(selectedCaseIds, savedTags);
+    const hasAutomation = caseIds.some((id) => {
+      const testCase = cases.find((item: any) => String(item.id) === String(id));
+      return testCase && isAutomationCase(testCase);
+    });
+    if (allCasesHaveRunTags(cases, caseIds) && !hasAutomation) {
+      void runSelectedCases(caseIds, savedTags);
       return;
     }
+    setPendingRunCaseIds(caseIds);
+    setRunMode('headless');
     setIsRunModalOpen(true);
   };
 
-  // Automation cases execute their recorded Playwright script headlessly on the server; the Test Run
-  // that opens shows the live execution artifacts (video/screenshots/trace/junit/logs).
-  const startAutomationRun = async (testCase: any, openImmediately: boolean): Promise<string> => {
+  // Automation cases can execute headless on the server or headed on their recording's local agent.
+  const startAutomationRun = async (testCase: any, openImmediately: boolean, headed: boolean): Promise<string> => {
     const runId = createClientRunId();
     if (openImmediately) navigate(`/runs/${runId}`, {
       state: pendingRunState(runId, testCase.title || 'Automation run', [testCase.id]),
     });
     const res = await fetch('/api/automation/runs', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ caseId: testCase.id, runId }),
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ caseId: testCase.id, runId, headed }),
     });
     const data = await readAutomationRunResponse(res);
     if (!data?.run?.id) throw new Error('Automation run started without a run ID.');
@@ -473,7 +480,7 @@ export default function TestCases() {
    * silently creating a Not Started run for cases the row button would have actually executed.
    * One case failing to start must not abort the rest of the selection.
    */
-  const runSelectedCases = async (caseIds = selectedCaseIds, tags = runTags, saveTagsToCases = false) => {
+  const runSelectedCases = async (caseIds = selectedCaseIds, tags = runTags, saveTagsToCases = false, executionMode: 'headless' | 'headed' = 'headless') => {
     if (!caseIds.length || isStartingRun) return;
     const normalizedRunTags = normalizeTags(tags);
     if (saveTagsToCases && !normalizedRunTags.length) { void showAlert('Add at least one tag before starting this case.'); return; }
@@ -508,7 +515,7 @@ export default function TestCases() {
       for (const testCase of automationCases) {
         const openImmediately = !firstAutomationRunId;
         try {
-          const runId = await startAutomationRun(testCase, openImmediately);
+          const runId = await startAutomationRun(testCase, openImmediately, executionMode === 'headed');
           if (!firstAutomationRunId) firstAutomationRunId = runId;
         } catch (error: any) {
           if (openImmediately) navigate('/cases', { replace: true });
@@ -603,6 +610,11 @@ export default function TestCases() {
     return candidates.find((script) => normalizeTitle(script.title) === title || normalizeTitle(script.test_case_title) === title)
       || (runId && candidates.length === 1 ? candidates[0] : null);
   };
+  const pendingRunHasAutomation = pendingRunCaseIds.some((id) => {
+    const testCase = cases.find((item: any) => String(item.id) === String(id));
+    return testCase && isAutomationCase(testCase);
+  });
+  const pendingRunNeedsTags = !allCasesHaveRunTags(cases, pendingRunCaseIds);
   // App dropdown: distinct app labels across cases, scoped to the selected platform when one is chosen.
   const appFilterOptions = Array.from(new Set<string>(cases
     .filter((testCase) => platformFilter === 'All' || casePlatformId(testCase) === platformFilter)
@@ -1022,26 +1034,40 @@ export default function TestCases() {
       <Modal
         isOpen={isRunModalOpen}
         onClose={() => setIsRunModalOpen(false)}
-        title={`Run ${selectedCaseIds.length} selected case${selectedCaseIds.length === 1 ? '' : 's'}`}
+        title={`Run ${pendingRunCaseIds.length} selected case${pendingRunCaseIds.length === 1 ? '' : 's'}`}
         footer={(
           <div className="flex justify-end gap-2">
             <button onClick={() => setIsRunModalOpen(false)} className="px-4 py-2 text-sm font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]">Cancel</button>
             <button
-              onClick={() => runSelectedCases(selectedCaseIds, runTags, true)}
-              disabled={isStartingRun || !runTags.length}
+              onClick={() => runSelectedCases(pendingRunCaseIds, runTags, pendingRunNeedsTags, runMode)}
+              disabled={isStartingRun || (pendingRunNeedsTags && !runTags.length)}
               className="flex items-center gap-1.5 rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
             >
-              {isStartingRun ? <Loader2 className="h-4 w-4 animate-spin" /> : <PlayCircle className="h-4 w-4" />} Save & Run
+              {isStartingRun ? <Loader2 className="h-4 w-4 animate-spin" /> : <PlayCircle className="h-4 w-4" />} {pendingRunNeedsTags ? 'Save & Run' : 'Run'}
             </button>
           </div>
         )}
       >
         <div className="space-y-4">
           <p className="text-sm text-[var(--text-muted)]">This run appears in Test Runs after it starts.</p>
-          <div>
+          {pendingRunHasAutomation && <fieldset>
+            <legend className="mb-2 text-sm font-medium text-[var(--text-muted)]">Execution mode</legend>
+            <div className="grid gap-2 sm:grid-cols-2">
+              <label className={`flex cursor-pointer gap-3 rounded-lg border p-3 ${runMode === 'headed' ? 'border-[var(--accent)] bg-[var(--accent)]/10' : 'border-[var(--border)]'}`}>
+                <input type="radio" name="run-mode" value="headed" checked={runMode === 'headed'} onChange={() => setRunMode('headed')} className="mt-1" />
+                <span><span className="flex items-center gap-1.5 text-sm font-semibold text-[var(--text-primary)]"><Monitor className="h-4 w-4" /> Headed</span><span className="mt-1 block text-xs text-[var(--text-muted)]">Open the browser on the local agent for OTP, access codes, or other manual input.</span></span>
+              </label>
+              <label className={`flex cursor-pointer gap-3 rounded-lg border p-3 ${runMode === 'headless' ? 'border-[var(--accent)] bg-[var(--accent)]/10' : 'border-[var(--border)]'}`}>
+                <input type="radio" name="run-mode" value="headless" checked={runMode === 'headless'} onChange={() => setRunMode('headless')} className="mt-1" />
+                <span><span className="flex items-center gap-1.5 text-sm font-semibold text-[var(--text-primary)]"><Server className="h-4 w-4" /> Headless</span><span className="mt-1 block text-xs text-[var(--text-muted)]">Run unattended on the server. No browser window is shown.</span></span>
+              </label>
+            </div>
+            {runMode === 'headed' && <p className="mt-2 text-xs text-amber-500">The local agent used to record the case must be online.</p>}
+          </fieldset>}
+          {pendingRunNeedsTags && <div>
             <label className="mb-1 block text-sm font-medium text-[var(--text-muted)]">Tags<RequiredMark /></label>
             <TagEditor options={tagOptions} value={runTags} onChange={setRunTags} />
-          </div>
+          </div>}
         </div>
       </Modal>
 
@@ -1223,7 +1249,7 @@ export default function TestCases() {
                   {selectedCaseIds.length} case{selectedCaseIds.length === 1 ? '' : 's'} selected
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
-                  <button onClick={openRunModal} disabled={isStartingRun} className="flex items-center gap-1.5 rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700 disabled:opacity-50">
+                  <button onClick={() => openRunModal()} disabled={isStartingRun} className="flex items-center gap-1.5 rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700 disabled:opacity-50">
                     {isStartingRun ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <PlayCircle className="h-3.5 w-3.5" />} Run Selected
                   </button>
                   {can('cases:delete') && (
@@ -1442,7 +1468,7 @@ export default function TestCases() {
                       onClick={(e) => {
                         e.stopPropagation();
                         // Its own saved tags, never whatever the modal last held.
-                        runSelectedCases([tc.id], runTagsForCases(cases, [tc.id]));
+                        openRunModal([tc.id]);
                       }}
                       disabled={isStartingRun}
                       title={isAutomationCase(tc) ? 'Run automation on server' : 'Run test case'}

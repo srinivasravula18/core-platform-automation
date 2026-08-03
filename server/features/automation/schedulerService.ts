@@ -8,11 +8,11 @@
  */
 
 import cronParser from 'cron-parser';
-import { AutomationSchedules } from '../../db/repository';
+import { AutomationSchedules, Recordings } from '../../db/repository';
 import { isPostgresEnabled } from '../../db/pool';
 import { persistDataInBackground } from '../../shared/storage';
 import { isRemoteAgentEnabled } from './flag';
-import { createServerJob } from './jobService';
+import { createLinkedTestRun, createServerJob } from './jobService';
 import { runJobOnServer } from './serverRunner';
 import type { ScheduleKind } from './types';
 
@@ -58,6 +58,8 @@ async function tick() {
       const scope = { projectId: s.projectId || '', appId: s.appId || null, userId: s.ownerId || '', role: '' };
       // Scheduled runs execute on the SERVER headless (reliable when the agent is offline).
       const job = await createServerJob({ recordingId: s.recordingId, scheduleId: s.id, trigger: 'schedule' }, scope);
+      const recording = await Recordings.get(s.recordingId);
+      if (recording) await createLinkedTestRun(job, recording, scope);
       void runJobOnServer(job.id).catch((err) => console.error('[automation] server run failed:', err?.message || err));
       const oneShot = s.kind === 'now' || s.kind === 'once';
       const next = computeNextRun(s.kind, s.cron, s.timezone, now);

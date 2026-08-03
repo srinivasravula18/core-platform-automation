@@ -11,13 +11,14 @@ function fmt(iso: string | null): string {
   return Number.isNaN(d.getTime()) ? '—' : d.toLocaleString();
 }
 
-type ScheduleTab = 'daily' | 'weekly' | 'monthly' | 'once';
+type ScheduleTab = 'daily' | 'weekly' | 'monthly' | 'once' | 'cron';
 
 const SCHEDULE_TABS: Array<{ id: ScheduleTab; label: string }> = [
   { id: 'daily', label: 'Daily' },
   { id: 'weekly', label: 'Weekly' },
   { id: 'monthly', label: 'Monthly' },
   { id: 'once', label: 'Specific Date' },
+  { id: 'cron', label: 'Cron' },
 ];
 
 /** `datetime-local` is timezone-naive; this modal is UTC throughout, so read it as UTC. */
@@ -206,6 +207,9 @@ function NewScheduleModal({ isOpen, onClose, onCreated }: { isOpen: boolean; onC
   const [weekdays, setWeekdays] = useState<number[]>([1]);
   const [monthDay, setMonthDay] = useState(1);
   const [onceAt, setOnceAt] = useState(nextHourUtcInput());
+  const [cronInput, setCronInput] = useState('At 04:05 on day-of-month 5');
+  const [cronResolved, setCronResolved] = useState<{ expression: string; description: string; nextRuns: string[]; error?: string }>({ expression: '', description: '', nextRuns: [] });
+  const [cronResolving, setCronResolving] = useState(false);
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(false);
   const [folders, setFolders] = useState<FolderNode[]>([]);
@@ -234,6 +238,22 @@ function NewScheduleModal({ isOpen, onClose, onCreated }: { isOpen: boolean; onC
       .finally(() => setLoading(false));
   }, [isOpen]);
 
+  // Resolve through the server so the preview uses the same parser the scheduler fires on.
+  useEffect(() => {
+    if (tab !== 'cron') return;
+    const text = cronInput.trim();
+    if (!text) { setCronResolved({ expression: '', description: '', nextRuns: [] }); return; }
+    setCronResolving(true);
+    const timer = setTimeout(() => {
+      fetch('/api/automation/cron/resolve', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ input: text }) })
+        .then((r) => r.json())
+        .then((data) => setCronResolved(data))
+        .catch(() => setCronResolved({ expression: '', description: '', nextRuns: [], error: 'Could not check that expression.' }))
+        .finally(() => setCronResolving(false));
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [tab, cronInput]);
+
   const counts = useMemo(() => {
     const result = new Map<string, number>();
     scripts.forEach((script) => result.set(script.folderId || UNCATEGORIZED_ID, (result.get(script.folderId || UNCATEGORIZED_ID) || 0) + 1));
@@ -247,14 +267,14 @@ function NewScheduleModal({ isOpen, onClose, onCreated }: { isOpen: boolean; onC
   }, [scripts, search, selectedFolderId]);
   const toggle = (id: string) => setSelected((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
   const toggleWeekday = (day: number) => setWeekdays((prev) => (prev.includes(day) ? prev.filter((d) => d !== day) : [...prev, day]));
-  const cron = buildCron(tab, time, weekdays, monthDay);
+  const cron = tab === 'cron' ? cronResolved.expression : buildCron(tab, time, weekdays, monthDay);
   const runAt = tab === 'once' ? runAtFromUtcInput(onceAt) : '';
-  const summary = tab === 'once' ? describeRunAt(runAt) : describeSchedule(tab, time, weekdays, monthDay);
-  const scheduleReady = tab === 'once' ? Boolean(runAt) : Boolean(cron);
+  const summary = tab === 'once' ? describeRunAt(runAt) : tab === 'cron' ? (cronResolved.description || cronResolved.error || 'Type a schedule or a cron expression') : describeSchedule(tab, time, weekdays, monthDay);
+  const scheduleReady = tab === 'once' ? Boolean(runAt) : Boolean(cron) && !(tab === 'cron' && cronResolved.error);
 
   const submit = async () => {
     if (selected.size === 0) { showToast('Select at least one item.', { tone: 'error' }); return; }
-    if (!scheduleReady) { showToast(tab === 'weekly' ? 'Pick at least one day of the week.' : 'Pick a date and time.', { tone: 'error' }); return; }
+    if (!scheduleReady) { showToast(tab === 'weekly' ? 'Pick at least one day of the week.' : tab === 'cron' ? (cronResolved.error || 'Enter a schedule we can read.') : 'Pick a date and time.', { tone: 'error' }); return; }
     // A one-off in the past would be dispatched by the very next scheduler tick.
     if (tab === 'once' && Date.parse(runAt) <= Date.now()) { showToast('Pick a future date and time (UTC).', { tone: 'error' }); return; }
     setBusy(true);
@@ -366,7 +386,43 @@ function NewScheduleModal({ isOpen, onClose, onCreated }: { isOpen: boolean; onC
           </label>
         )}
 
-        {tab === 'once' ? (
+        {tab === 'cron' ? (
+          <div>
+            <label className="block text-xs font-medium text-[var(--text-muted)]">
+              Schedule or cron expression
+              <input
+                value={cronInput}
+                onChange={(e) => setCronInput(e.target.value)}
+                placeholder="At 04:05 on day-of-month 5   —   or   —   5 4 5 * *"
+                className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
+              />
+              <span className="mt-1 block font-normal">Write it either way. Examples: <code>every 15 minutes</code> · <code>at 09:00 on weekdays</code> · <code>at 02:00 in January and June</code> · <code>*/15 * * * *</code></span>
+            </label>
+
+            <div className="mt-3 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)]/40 p-3">
+              {cronResolving ? (
+                <div className="flex items-center gap-2 text-xs text-[var(--text-muted)]"><Loader2 className="h-3.5 w-3.5 animate-spin" /> Checking…</div>
+              ) : cronResolved.error ? (
+                <div className="text-xs text-red-400">{cronResolved.error}</div>
+              ) : cronResolved.expression ? (
+                <>
+                  <div className="flex flex-wrap items-baseline gap-2">
+                    <span className="text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">Cron</span>
+                    <code className="rounded bg-[var(--bg-card)] px-2 py-0.5 font-mono text-sm text-[var(--accent)]">{cronResolved.expression}</code>
+                    <span className="text-xs text-[var(--text-primary)]">{cronResolved.description}</span>
+                  </div>
+                  {cronResolved.nextRuns.length > 0 && (
+                    <div className="mt-2 text-xs text-[var(--text-muted)]">
+                      Next: {cronResolved.nextRuns.map((run) => `${run.slice(0, 10)} ${run.slice(11, 16)}`).join(' · ')} UTC
+                    </div>
+                  )}
+                </>
+              ) : (
+                <div className="text-xs text-[var(--text-muted)]">Type a schedule above to see the exact cron expression.</div>
+              )}
+            </div>
+          </div>
+        ) : tab === 'once' ? (
           <label className="block text-xs font-medium text-[var(--text-muted)]">
             Date &amp; Time (UTC)
             <input

@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Radio, Loader2, Square, Trash2, Circle, Plus, CheckCircle2, AlertTriangle } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import { Radio, Loader2, Square, Trash2, Circle, Plus, CheckCircle2, AlertTriangle, Monitor, Server } from 'lucide-react';
 import { showToast, showConfirm } from '@/src/lib/dialog';
 import { Modal } from '@/src/components/Modal';
 import { RequiredMark } from '@/src/components/RequiredMark';
 import { useRemoteAgentFlag, useAgents, useRecordingSession, type RecordingCaseMeta } from '@/src/lib/useAutomation';
 import { NoAgentState } from '@/src/components/NoAgentState';
+import { createClientRunId } from '@/src/lib/startSelectedRun';
+import { readAutomationRunResponse } from '@/src/lib/manualTestRun';
 
 const BROWSERS = ['chromium', 'firefox', 'webkit'] as const;
 const ENVIRONMENTS = ['QA', 'DEV', 'TEST', 'PROD'] as const;
@@ -21,6 +24,7 @@ export function CodegenPanel({ title, appUrl, caseMeta, onDone }: {
   caseMeta: RecordingCaseMeta;
   onDone: (caseId: string) => void;
 }) {
+  const navigate = useNavigate();
   const flag = useRemoteAgentFlag();
   const { agents, loading, refresh } = useAgents();
   const session = useRecordingSession({ onAgentEvent: () => { void refresh(); } });
@@ -29,6 +33,7 @@ export function CodegenPanel({ title, appUrl, caseMeta, onDone }: {
   const [agentId, setAgentId] = useState('');
   const [browser, setBrowser] = useState<string>('chromium');
   const [environment, setEnvironment] = useState<string>('QA');
+  const [startingRun, setStartingRun] = useState(false);
 
   const connected = useMemo(() => agents.filter((a) => !a.revoked && (a.status === 'online' || a.status === 'busy')), [agents]);
   const selectedAgent = connected.find((a) => a.id === agentId) || connected[0];
@@ -45,6 +50,25 @@ export function CodegenPanel({ title, appUrl, caseMeta, onDone }: {
   const discard = async () => {
     if (recordingId && !(await showConfirm('Discard this recording?'))) return;
     void session.discard();
+  };
+
+  const runRecordedCase = async (headed: boolean) => {
+    if (!caseId || startingRun) return;
+    setStartingRun(true);
+    try {
+      const runId = createClientRunId();
+      const response = await fetch('/api/automation/runs', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ caseId, runId, headed }),
+      });
+      const data = await readAutomationRunResponse(response);
+      if (!data?.run?.id) throw new Error('Automation run started without a run ID.');
+      onDone(caseId);
+      navigate(`/runs/${data.run.id}`, { state: { pendingRun: data.run } });
+    } catch (error: any) {
+      showToast(error?.message || 'Could not start the recorded case.', { tone: 'error', durationMs: 5000 });
+    } finally {
+      setStartingRun(false);
+    }
   };
 
   if (flag === false) return <div className="p-4 text-sm text-[var(--text-muted)]">The local desktop agent feature is not enabled on this server.</div>;
@@ -135,12 +159,26 @@ export function CodegenPanel({ title, appUrl, caseMeta, onDone }: {
         </div>
       )}
       <ScriptPane script={script} placeholder="No script was generated." />
+      {!empty && caseId && <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] p-3">
+        <div className="text-sm font-semibold text-[var(--text-primary)]">Run this recorded case now?</div>
+        <p className="mt-1 text-xs text-[var(--text-muted)]">Recording always uses the headed local agent. Choose how the generated script should execute.</p>
+        <div className="mt-3 flex flex-wrap gap-2">
+          <button onClick={() => void runRecordedCase(true)} disabled={startingRun}
+            className="inline-flex items-center gap-2 rounded-md bg-[var(--accent)] px-3 py-2 text-sm font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50">
+            {startingRun ? <Loader2 className="h-4 w-4 animate-spin" /> : <Monitor className="h-4 w-4" />} Run Headed
+          </button>
+          <button onClick={() => void runRecordedCase(false)} disabled={startingRun}
+            className="inline-flex items-center gap-2 rounded-md border border-[var(--border)] bg-[var(--bg-card)] px-3 py-2 text-sm font-medium text-[var(--text-primary)] hover:border-[var(--accent)] disabled:opacity-50">
+            <Server className="h-4 w-4" /> Run Headless
+          </button>
+        </div>
+      </div>}
       <div className="flex flex-wrap gap-2">
-        <button onClick={() => onDone(caseId)}
+        <button onClick={() => onDone(caseId)} disabled={startingRun}
           className="inline-flex items-center gap-2 rounded-md bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white hover:bg-[var(--accent-hover)]">
-          Done
+          Done Without Running
         </button>
-        <button onClick={session.reset} className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] hover:border-[var(--accent)]">
+        <button onClick={session.reset} disabled={startingRun} className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] hover:border-[var(--accent)] disabled:opacity-50">
           Record Again
         </button>
       </div>

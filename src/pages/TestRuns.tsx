@@ -419,6 +419,7 @@ export default function TestRuns() {
 
   const handleExecuteRuns = async (runsToExecute: any[]) => {
     if (!runsToExecute.length) return;
+    setSelectedEvidenceIndex(null);
     const errors: string[] = [];
     for (const run of runsToExecute) {
       if (runProgress[run.id] || runExecutionState(run).running) continue;
@@ -435,6 +436,13 @@ export default function TestRuns() {
         status: 'Running',
         state: 'In Progress',
         progress: `Starting 0/${runScripts.length} scripts`,
+        evidence: [],
+        steps: [],
+        passed: 0,
+        failed: 0,
+        totalExecutions: 0,
+        executionTime: '',
+        completedAt: null,
         triggerMeta: {
           ...(item.triggerMeta || {}),
           manualExecution: { completed: 0, total: runScripts.length },
@@ -505,6 +513,7 @@ export default function TestRuns() {
     const selectedExecution = runExecutionState(selectedRun);
     const selectedProgress = runProgress[selectedRun.id] || selectedExecution.label;
     const selectedIsRunning = selectedExecution.running || Boolean(runProgress[selectedRun.id]);
+    const resettingRunStats = selectedIsRunning && selectedExecution.completed === 0;
     const evidenceItems = collectRunEvidence(selectedRun, selectedRunCases);
     const selectedEvidence = selectedEvidenceIndex == null ? null : evidenceItems[selectedEvidenceIndex] || null;
     const exportEvidenceItems = caseBulk.selectedCount
@@ -707,12 +716,12 @@ export default function TestRuns() {
             <span role="status" aria-live="polite">
               {selectedIsRunning ? `${selectedExecution.percent}% · ${selectedProgress}` : `${stats.completed}% Completed`}
             </span>
-            <span className="text-emerald-400">Passed {stats.passed}</span>
-            <span className="text-red-400">Failed {stats.failed}</span>
-            <span className="text-indigo-400">Blocked {stats.blocked}</span>
-            <span className="text-yellow-400">Retest {stats.retest}</span>
-            <span className="text-slate-400">Skipped {stats.skipped}</span>
-            <span className="text-[var(--text-muted)]">Untested {stats.untested}</span>
+            <span className="text-emerald-400">Passed {resettingRunStats ? 0 : stats.passed}</span>
+            <span className="text-red-400">Failed {resettingRunStats ? 0 : stats.failed}</span>
+            <span className="text-indigo-400">Blocked {resettingRunStats ? 0 : stats.blocked}</span>
+            <span className="text-yellow-400">Retest {resettingRunStats ? 0 : stats.retest}</span>
+            <span className="text-slate-400">Skipped {resettingRunStats ? 0 : stats.skipped}</span>
+            <span className="text-[var(--text-muted)]">Untested {resettingRunStats ? 0 : stats.untested}</span>
           </div>
 
           <div className="p-4 border-b border-[var(--border)] flex items-center justify-between gap-3">

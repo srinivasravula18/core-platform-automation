@@ -14,6 +14,7 @@
 import express from 'express';
 import type { Express, Request, Response, NextFunction } from 'express';
 import { randomBytes } from 'crypto';
+import cronParser from 'cron-parser';
 import { createReadStream } from 'fs';
 import { reqScope, scopeFilter } from '../../shared/scope';
 import { asyncRoute } from '../../shared/asyncRoute';
@@ -47,13 +48,15 @@ import {
   undoRecordingStepOverride,
   redoRecordingStepOverride,
 } from './recordingService';
-import { createJob, createServerJob, cancelJob, refreshExecutionBatch, tryDispatch } from './jobService';
+import { createJob, createServerJob, createLinkedTestRun, cancelJob, refreshExecutionBatch, tryDispatch } from './jobService';
+import { isAgentConnected } from './agentGateway';
 import { runBatchOnServer, runJobOnServer } from './serverRunner';
 import { computeNextRun } from './schedulerService';
 import { saveArtifact, listArtifacts, resolveArtifact, contentTypeFor } from './artifactService';
 import { subscribe } from './eventsService';
 import { streamAgentZip, warmAgentBundleCache, agentLatestInfo, agentDirExists } from './downloadService';
 import { createDownloadTicket, readDownloadTicket } from './downloadTickets';
+import { describeCron, parseCronText, looksLikeCron } from './cronText';
 import { ensureBundledChromium } from './bundleBrowsers';
 import { createManualDataset, datasetPage, getDataset, importDataset, listDatasets } from './datasetService';
 import { listProfiles, getProfile, createProfile, updateProfile, removeProfile, captureFromRecording, applyProfile } from './dataProfileService';
@@ -217,10 +220,12 @@ export function registerAutomationRoutes(app: Express) {
     await AutomationRunData.replaceForBatch(batch.id, ledger);
     // Pooled policy consumes its rows so a later batch never re-uses them.
     if (dataPolicy === 'pooled') await AutomationDatasetRows.markConsumed(dataset.id, rows.map((row: any) => row.rowNumber), batch.id);
+    const caseId = String(rec.metadata?.caseId || '');
+    const testCase = caseId ? await Cases.get(caseId) : null;
     for (let index = 0; index < rows.length; index++) {
       const row = rows[index];
       // agentId '' => the job stays queued (no agent dispatch); it executes on the server below.
-      await createJob({
+      const job = await createJob({
         recordingId: rec.id,
         agentId: '',
         trigger: 'manual',
@@ -229,6 +234,13 @@ export function registerAutomationRoutes(app: Express) {
         datasetRowId: row.id,
         rowNumber: row.rowNumber,
       }, scope);
+      await createLinkedTestRun(job, rec, scope, {
+        name: `${rec.name || 'Automation run'} · ${dataset.name || 'Dataset'} · Row ${row.rowNumber}`,
+        caseId,
+        folderId: testCase?.folderId || '',
+        progress: `Dataset row ${row.rowNumber} queued`,
+        triggerMeta: { automationBatchId: batch.id, datasetId: dataset.id, datasetName: dataset.name || '', rowNumber: row.rowNumber },
+      });
     }
     batch = await refreshExecutionBatch(batch.id);
     // Execute the batch headless on the SERVER — no desktop agent needed. Fire-and-forget so the HTTP
@@ -603,6 +615,24 @@ export function registerAutomationRoutes(app: Express) {
     }
   });
 
+  // Resolve either a cron expression or a plain-English sentence to the exact expression that will
+  // run, with the next fire times. Server-side on purpose: same parser the scheduler ticks on.
+  app.post('/api/automation/cron/resolve', requireAuth, (req: Request, res: Response) => {
+    const input = String(req.body?.input || '').trim();
+    if (!input) return res.json({ expression: '', description: '', nextRuns: [] });
+    const expression = looksLikeCron(input) ? input : parseCronText(input);
+    if (!expression) {
+      return res.json({ expression: '', description: '', nextRuns: [], error: 'Could not read that. Try "At 04:05 on day-of-month 5" or a cron expression like 5 4 5 * *.' });
+    }
+    try {
+      const iterator = cronParser.parseExpression(expression, { currentDate: new Date(), tz: 'UTC' });
+      const nextRuns = [0, 1, 2].map(() => iterator.next().toDate().toISOString());
+      res.json({ expression, description: describeCron(expression), nextRuns });
+    } catch {
+      res.json({ expression, description: '', nextRuns: [], error: `"${expression}" is not a valid cron expression.` });
+    }
+  });
+
   app.get('/api/automation/batches', requireAuth, async (req, res) => {
     res.json({ batches: scopeFilter(await AutomationExecutionBatches.list(), reqScope(req)) });
   });
@@ -649,6 +679,7 @@ export function registerAutomationRoutes(app: Express) {
     const rec = await scopedGet((id) => Recordings.get(id), recordingId, req);
     if (!rec) return res.status(404).json({ error: 'Recording not found.' });
     const job = await createJob({ recordingId, agentId, trigger: 'manual', headed: !!headed }, reqScope(req));
+    await createLinkedTestRun(job, rec, reqScope(req));
     res.status(201).json({ job });
   });
 
@@ -686,26 +717,25 @@ export function registerAutomationRoutes(app: Express) {
     const requestedRunId = String(req.body?.runId || '');
     if (requestedRunId && !/^RUN-[A-F0-9]{16}$/.test(requestedRunId)) return res.status(400).json({ error: 'Invalid run ID.' });
     if (requestedRunId && await Runs.get(requestedRunId)) return res.status(409).json({ error: 'Run ID already exists.' });
-    const job = await createServerJob({ recordingId: rec.id, trigger: 'manual' }, reqScope(req));
-    const runId = requestedRunId || `RUN-${randomBytes(2).toString('hex').toUpperCase()}`;
-    const run = {
-      ...scopeStamp(reqScope(req)),
-      id: runId,
-      name: `${testCase.title || 'Automation run'} - ${runId}`,
-      caseIds: [caseId],
+    const headed = !!req.body?.headed;
+    const agentId = String(req.body?.agentId || rec.agentId || '');
+    if (headed && (!agentId || !isAgentConnected(agentId))) {
+      return res.status(409).json({ error: 'Headed execution requires the recording\'s local agent to be online. Open Local Agent and try again, or choose Headless.' });
+    }
+    const job = headed
+      ? await createJob({ recordingId: rec.id, agentId, trigger: 'manual', headed: true, dispatch: false }, reqScope(req))
+      : await createServerJob({ recordingId: rec.id, trigger: 'manual' }, reqScope(req));
+    const run = await createLinkedTestRun(job, rec, reqScope(req), {
+      id: requestedRunId || undefined,
+      name: testCase.title || 'Automation run',
+      caseId,
       requestedBy: req.body?.requestedBy || '',
-      status: 'Running',
-      progress: 'Running on server',
-      targetUrl: rec.appUrl || '',
       folderId: testCase.folderId || '',
-      triggerType: 'automation',
-      triggerMeta: { automationJobId: job.id, agentId: '' },
-      startedAt: new Date().toISOString(),
-      date: new Date().toISOString().split('T')[0],
-    };
-    await Runs.upsert(run);
-    if (isPostgresEnabled()) { /* persisted */ } else persistDataInBackground('automation run');
-    void runJobOnServer(job.id).catch((error) => console.error('[automation] manual server run failed:', error?.message || error));
+      progress: headed ? 'Running headed on local agent' : 'Running headless on server',
+      triggerMeta: { executionMode: headed ? 'headed' : 'headless' },
+    });
+    if (headed) await tryDispatch(job.id);
+    else void runJobOnServer(job.id).catch((error) => console.error('[automation] manual server run failed:', error?.message || error));
     res.status(201).json({ run, jobId: job.id });
   }));
 
@@ -912,6 +942,8 @@ export function registerAutomationRoutes(app: Express) {
     if (!match) return res.status(401).json({ error: 'Invalid webhook token.' });
     const scope = { projectId: match.projectId || '', appId: match.appId || null, userId: match.ownerId || '', role: '' };
     const job = await createJob({ recordingId: match.recordingId, agentId: match.agentId, trigger: 'webhook', scheduleId: match.id }, scope);
+    const rec = await Recordings.get(match.recordingId);
+    if (rec) await createLinkedTestRun(job, rec, scope);
     res.status(201).json({ ok: true, jobId: job.id });
   });
 }
