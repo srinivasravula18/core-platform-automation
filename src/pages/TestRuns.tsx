@@ -728,7 +728,7 @@ export default function TestRuns() {
             {selectedIsRunning ? (
               <div
                 className="h-full animate-pulse bg-[var(--accent)] transition-[width] duration-500"
-                style={{ width: `${selectedExecution.total ? Math.max(2, selectedExecution.percent) : 100}%` }}
+                style={{ width: `${Math.min(100, Math.max(2, selectedExecution.percent || 5))}%` }}
               />
             ) : (
               <>

@@ -15,11 +15,13 @@ import { persistDataInBackground } from '../../shared/storage';
 import type { Scope } from '../../shared/scope';
 import { scopeStamp } from '../../shared/scope';
 import { agentRunStatusForList } from '../../../core/shared/testRunStatus';
+import { automationProgressPercent, mergeExecutionProgress } from '../../../core/shared/automationProgress';
 import { emitEvent } from './eventsService';
 import { onAgentFrame, onAgentConnected, dispatchToAgent, isAgentConnected } from './agentGateway';
 import { cancelServerJob } from './serverRunner';
 import { runTeardown } from './teardownService';
 import type { AgentFrame, JobStatus, JobTrigger } from './types';
+import { parseAtomicSteps } from './stepGrouping';
 
 function persist(reason: string) {
   if (!isPostgresEnabled()) persistDataInBackground(reason);
@@ -32,6 +34,7 @@ export async function setJobStatus(jobId: string, status: JobStatus, patch: Reco
   persist('job status');
   await emitEvent({ scopeType: 'job', scopeId: jobId, type: `job.${status}`, ownerId: job.ownerId, data: { job: saved } });
   if (saved.batchId) await refreshExecutionBatch(saved.batchId);
+  if (['queued', 'dispatched', 'running', 'uploading'].includes(status)) await syncLinkedRunProgress(jobId, status, saved.summary || {});
   return saved;
 }
 const setStatus = setJobStatus;
@@ -74,12 +77,14 @@ export async function tryDispatch(jobId: string): Promise<boolean> {
     item.id !== job.id && item.agentId === job.agentId && ['dispatched', 'running', 'uploading'].includes(item.status));
   if (active) return false;
   const rec = job.recordingId ? await Recordings.get(job.recordingId) : null;
+  const script = (job as any).script || rec?.script || '';
   const ok = dispatchToAgent(job.agentId, {
     type: 'job.dispatch',
     payload: {
       jobId: job.id,
       recordingId: job.recordingId,
-      script: (job as any).script || rec?.script || '',
+      script,
+      stepTotal: parseAtomicSteps(script).length,
       browser: rec?.browser || 'chromium',
       environment: rec?.environment || 'QA',
       appUrl: rec?.appUrl || '',
@@ -166,7 +171,7 @@ export async function createLinkedTestRun(job: any, recording: any, scope: Scope
     targetUrl: recording?.appUrl || '',
     folderId: input.folderId || '',
     triggerType: 'automation',
-    triggerMeta: { automationJobId: job.id, agentId: job.agentId || '', ...(input.triggerMeta || {}) },
+    triggerMeta: { automationJobId: job.id, agentId: job.agentId || '', automationExecution: { completed: 0, total: 0, percent: 5, phase: 'queued' }, ...(input.triggerMeta || {}) },
     startedAt: new Date().toISOString(),
     date: new Date().toISOString().split('T')[0],
   });
@@ -182,6 +187,7 @@ export async function cancelJob(jobId: string) {
   if (job.agentId && isAgentConnected(job.agentId)) dispatchToAgent(job.agentId, { type: 'cancel', payload: { jobId } });
   else cancelServerJob(jobId); // server-side run (scheduled): kill the local playwright process
   await setStatus(jobId, 'cancelled', { finishedAt: new Date().toISOString() });
+  await syncLinkedRun(jobId, 'cancelled', {});
   if (job.agentId) await dispatchNextForAgent(job.agentId);
   return { ok: true };
 }
@@ -214,10 +220,22 @@ onAgentConnected((agentId) => {
 });
 
 onAgentFrame('job.progress', async (_agentId, frame: AgentFrame) => {
-  const { jobId, phase } = frame.payload || {};
+  const { jobId, phase, ...detail } = frame.payload || {};
   if (!jobId) return;
   const status: JobStatus = phase === 'uploading' ? 'uploading' : 'running';
-  await setStatus(jobId, status, status === 'running' ? { startedAt: new Date().toISOString() } : {});
+  const current = await AutomationJobs.get(jobId);
+  const prior = current?.summary || {};
+  const merged = mergeExecutionProgress(prior, detail);
+  await setStatus(jobId, status, {
+    ...(status === 'running' && !current?.startedAt ? { startedAt: new Date().toISOString() } : {}),
+    summary: {
+      ...merged,
+      completed: detail.completed == null ? Number(prior.completed) || 0 : Number(detail.completed) || 0,
+      total: detail.total == null ? Number(prior.total) || 0 : Number(detail.total) || 0,
+      currentTest: detail.currentTest == null ? String(prior.currentTest || '') : String(detail.currentTest || ''),
+      event: detail.event == null ? String(prior.event || '') : String(detail.event || ''),
+    },
+  });
 });
 
 onAgentFrame('job.log', async (_agentId, frame: AgentFrame) => {
@@ -231,8 +249,11 @@ onAgentFrame('job.log', async (_agentId, frame: AgentFrame) => {
 onAgentFrame('job.done', async (_agentId, frame: AgentFrame) => {
   const { jobId, exitCode, summary, error } = frame.payload || {};
   if (!jobId) return;
+  const current = await AutomationJobs.get(jobId);
+  if (current?.status === 'cancelled') return; // late process-exit frame must not turn a user stop into a failure
   const status: JobStatus = Number(exitCode) === 0 ? 'done' : 'failed';
-  await setStatus(jobId, status, { exitCode: Number(exitCode) || 0, summary: summary || {}, error: error || '', finishedAt: new Date().toISOString() });
+  const finalSummary = { ...(current?.summary || {}), ...(summary || {}) };
+  await setStatus(jobId, status, { exitCode: Number(exitCode) || 0, summary: finalSummary, error: error || '', finishedAt: new Date().toISOString() });
   await syncLinkedRun(jobId, status, summary || {});
   const job = await AutomationJobs.get(jobId);
   // Result gate: on a failed row in a stop-on-failure batch, cancel the rest so no more bad data is written.
@@ -248,6 +269,31 @@ async function enforceStopOnFailure(batchId: string): Promise<void> {
   for (const job of pending) await cancelJob(job.id);
 }
 
+export async function syncLinkedRunProgress(jobId: string, phase: string, detail: any = {}) {
+  const run = (await Runs.list()).find((r: any) => r.triggerMeta?.automationJobId === jobId);
+  if (!run) return;
+  const completed = Math.max(0, Number(detail.stepCompleted ?? detail.completed) || 0);
+  const total = Math.max(0, Number(detail.stepTotal ?? detail.total) || 0);
+  const event = String(detail.event || '');
+  const percent = automationProgressPercent(phase, completed, total, event);
+  const currentTest = String(detail.stepTitle || detail.currentTest || '').trim();
+  const label = phase === 'uploading'
+    ? 'Uploading execution evidence'
+    : phase === 'dispatched'
+      ? 'Starting on local agent'
+      : phase === 'queued'
+        ? 'Queued for execution'
+        : event === 'step_started'
+          ? `Step ${Math.min(completed + 1, total || completed + 1)} of ${total || '?'} · ${currentTest}`
+          : `${completed}/${total || '?'} steps completed${currentTest ? ` · ${currentTest}` : ''}`;
+  await Runs.upsert({
+    ...run,
+    progress: label,
+    triggerMeta: { ...run.triggerMeta, automationExecution: { completed, total, percent, phase, currentTest } },
+  });
+  persist('automation run progress');
+}
+
 // A Test Run started via POST /api/automation/runs is linked to this job by trigger_meta. When the
 // job finishes, mirror its real pass/fail/duration onto the run so the Test Runs list shows it.
 export async function syncLinkedRun(jobId: string, status: JobStatus, summary: any) {
@@ -256,16 +302,21 @@ export async function syncLinkedRun(jobId: string, status: JobStatus, summary: a
   const passed = Number(summary.passed || 0);
   const failed = Number(summary.failed || 0);
   const skipped = Number(summary.skipped || 0);
-  const runStatus = agentRunStatusForList(status === 'done' ? 'completed' : 'failed');
+  const cancelled = status === 'cancelled';
+  const runStatus = cancelled ? 'Cancelled' : agentRunStatusForList(status === 'done' ? 'completed' : 'failed');
   await Runs.upsert({
     ...run,
     status: runStatus,
-    state: 'Pending Review',
-    approvalState: 'pending_review',
+    state: cancelled ? 'Cancelled' : 'Pending Review',
+    approvalState: cancelled ? '' : 'pending_review',
     passed,
     failed,
     totalExecutions: passed + failed + skipped,
-    progress: `${passed} passed`,
+    progress: cancelled ? 'Stopped by user' : `${passed} passed`,
+    triggerMeta: {
+      ...run.triggerMeta,
+      automationExecution: { completed: passed + failed + skipped, total: passed + failed + skipped, percent: cancelled ? Number(run.triggerMeta?.automationExecution?.percent || 0) : 100, phase: status },
+    },
     executionTime: summary.durationMs ? `${Math.round(Number(summary.durationMs) / 1000)}s` : run.executionTime,
     completedAt: new Date().toISOString(),
   });

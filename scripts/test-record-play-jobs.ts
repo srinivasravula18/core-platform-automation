@@ -28,7 +28,7 @@ async function main() {
   const gateway = await import('../server/features/automation/agentGateway');
   const events = await import('../server/features/automation/eventsService');
   const { db } = await import('../server/shared/storage');
-  const { AutomationEvents, Scripts } = await import('../server/db/repository');
+  const { AutomationEvents, Runs, Scripts } = await import('../server/db/repository');
   const { playwrightFailure } = await import('../agent/src/playwrightFailure');
   db.recordings = []; db.scripts = []; db.automationJobs = []; db.automationSchedules = []; db.automationArtifacts = []; db.automationEvents = [];
 
@@ -65,6 +65,18 @@ async function main() {
 
   const serverJob = await jobs.createServerJob({ recordingId: r.id, trigger: 'manual' }, SCOPE);
   ok(serverJob.status === 'queued' && serverJob.agentId === '', 'manual server job does not require an agent');
+
+  console.log('stopping a job cancels its linked Test Run');
+  const cancelledJob = await jobs.createServerJob({ recordingId: r.id, trigger: 'manual' }, SCOPE);
+  const linkedRun = await jobs.createLinkedTestRun(cancelledJob, r, SCOPE);
+  await jobs.syncLinkedRunProgress(cancelledJob.id, 'running', { completed: 1, total: 2, event: 'test_finished', currentTest: 'First test' });
+  const progressingRun = await Runs.get(linkedRun.id);
+  ok(progressingRun?.triggerMeta?.automationExecution?.percent === 50 && progressingRun?.progress.includes('1/2'), 'linked Test Run receives incremental progress');
+  await jobs.cancelJob(cancelledJob.id);
+  ok((await jobs.getJob(cancelledJob.id)).status === 'cancelled', 'stopped job remains cancelled');
+  ok((await Runs.get(linkedRun.id))?.status === 'Cancelled', 'linked Test Run closes as Cancelled');
+  await gateway.deliverAgentFrame('agent-x', { type: 'job.done', agentId: 'agent-x', seq: 3, payload: { jobId: cancelledJob.id, exitCode: 130 } });
+  ok((await jobs.getJob(cancelledJob.id)).status === 'cancelled', 'late process exit cannot overwrite cancellation');
 
   console.log('job failure path');
   const job2 = await jobs.createJob({ recordingId: r.id, agentId: 'agent-x', trigger: 'manual' }, SCOPE);

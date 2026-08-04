@@ -27,7 +27,7 @@ export interface Recording {
 export interface Job {
   id: string; recordingId: string; agentId: string; trigger: string; status: string;
   queuedAt: string; startedAt: string | null; finishedAt: string | null; exitCode: number | null;
-  summary: Record<string, number>; error: string;
+  summary: Record<string, any>; error: string;
 }
 
 export interface Schedule {

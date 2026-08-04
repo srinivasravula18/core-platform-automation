@@ -112,14 +112,14 @@ export function manualRunSelection(planId: string, caseIds: string[]) {
 
 export function runExecutionState(run: any) {
   const running = /^(running|in progress)$/i.test(String(run?.status || ''));
-  const execution = run?.triggerMeta?.manualExecution || {};
+  const execution = run?.triggerMeta?.automationExecution || run?.triggerMeta?.manualExecution || {};
   const total = Math.max(0, Number(execution.total ?? run?.executionTotal) || 0);
   const completed = Math.min(total, Math.max(0, Number(execution.completed ?? run?.executionCompleted) || 0));
   return {
     running,
     total,
     completed,
-    percent: total ? Math.round((completed / total) * 100) : 0,
+    percent: Number.isFinite(Number(execution.percent)) ? Number(execution.percent) : (total ? Math.round((completed / total) * 100) : 0),
     label: running ? String(run?.progress || `Running ${total || ''} scripts`).trim() : '',
   };
 }
