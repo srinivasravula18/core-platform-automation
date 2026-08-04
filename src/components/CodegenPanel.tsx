@@ -12,7 +12,7 @@ import { readAutomationRunResponse } from '@/src/lib/manualTestRun';
 import { handleCodeEditorKeyDown } from '@/src/lib/codeEditor';
 
 const BROWSERS = ['chromium', 'firefox', 'webkit'] as const;
-const ENVIRONMENTS = ['QA', 'DEV', 'TEST', 'PROD'] as const;
+const ENVIRONMENTS = ['QA', 'DEV', 'TEST', 'PROD', 'staging'] as const;
 
 /**
  * The Playwright codegen record flow (setup → recording → summary) as an embeddable panel. Used by
@@ -20,11 +20,13 @@ const ENVIRONMENTS = ['QA', 'DEV', 'TEST', 'PROD'] as const;
  * panel owns URL/browser/environment/agent and the record lifecycle. On finish the backend has
  * already created the linked Automated test case, so we hand its id back via onDone.
  */
-export function CodegenPanel({ title, appUrl, caseMeta, onDone, footerTarget }: {
+export function CodegenPanel({ title, appUrl, caseMeta, onDone, footerTarget, selectedEnvironment, onEnvironmentChange }: {
   title: string;
   appUrl: string;
   caseMeta: RecordingCaseMeta;
   onDone: (caseId: string) => void;
+  selectedEnvironment?: string;
+  onEnvironmentChange?: (environment: string) => void;
   footerTarget: HTMLElement;
 }) {
   const navigate = useNavigate();
@@ -37,6 +39,7 @@ export function CodegenPanel({ title, appUrl, caseMeta, onDone, footerTarget }: 
   const [browser, setBrowser] = useState<string>('chromium');
   const [environment, setEnvironment] = useState<string>('QA');
   const [startingRun, setStartingRun] = useState(false);
+  useEffect(() => { if (selectedEnvironment) setEnvironment(selectedEnvironment); }, [selectedEnvironment]);
   const [savedScript, setSavedScript] = useState('');
   const [scriptDraft, setScriptDraft] = useState('');
   const [editingScript, setEditingScript] = useState(false);
@@ -121,7 +124,7 @@ export function CodegenPanel({ title, appUrl, caseMeta, onDone, footerTarget }: 
           </label>
           <label className="block text-xs font-medium text-[var(--text-muted)]">
             Environment
-            <select value={environment} onChange={(e) => setEnvironment(e.target.value)}
+            <select value={environment} onChange={(e) => { setEnvironment(e.target.value); onEnvironmentChange?.(e.target.value); }}
               className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]">
               {ENVIRONMENTS.map((e) => <option key={e} value={e}>{e}</option>)}
             </select>
@@ -329,7 +332,7 @@ export function AddUrlModal({ isOpen, onClose, onCreated }: { isOpen: boolean; o
       onCreated(data.website || { name: name.trim(), baseUrl: baseUrl.trim(), environment });
       setName(''); setBaseUrl('');
       onClose();
-    } catch { showToast('Could not add the URL.', { tone: 'error' }); }
+    } catch (error) { showToast(error instanceof Error && error.message ? error.message : 'Could not add the URL.', { tone: 'error' }); }
     finally { setBusy(false); }
   };
   return (
@@ -354,7 +357,7 @@ export function AddUrlModal({ isOpen, onClose, onCreated }: { isOpen: boolean; o
         Environment
         <select value={environment} onChange={(e) => setEnvironment(e.target.value)}
           className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]">
-          {['QA', 'DEV', 'TEST', 'PROD', 'staging'].map((e) => <option key={e} value={e}>{e}</option>)}
+          {ENVIRONMENTS.map((e) => <option key={e} value={e}>{e}</option>)}
         </select>
       </label>
       <p className="mt-4 text-xs text-[var(--text-muted)]">Saved URLs are shared with Settings → credentials and reusable across recordings.</p>
