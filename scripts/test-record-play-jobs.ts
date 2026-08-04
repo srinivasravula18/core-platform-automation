@@ -92,6 +92,8 @@ async function main() {
   ok(failure.includes('script line 3:56') && failure.includes('recorded step 2'), 'failure includes exact line and recorded step number');
   ok(failure.includes("Code: await page.getByRole('button', { name: 'Save' }).click();"), 'failure includes the failing source line');
   ok(failure.includes('locator.click: Timeout 30000ms exceeded.'), 'failure includes the Playwright error');
+  const loadFailure = playwrightFailure({ errors: [{ message: 'SyntaxError: Unexpected token' }] }, failedScript);
+  ok(loadFailure.includes('failed before a test could run') && loadFailure.includes('Unexpected token'), 'load failures remain actionable when no test starts');
 
   console.log('orphan recovery fails mid-flight jobs, leaves queued alone');
   const orphan = await jobs.createJob({ recordingId: r.id, agentId: 'agent-x', trigger: 'manual' }, SCOPE);

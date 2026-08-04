@@ -20,6 +20,7 @@ import { emitEvent } from './eventsService';
 import type { ArtifactKind } from './types';
 import { parseAtomicSteps } from './stepGrouping';
 import { mergeExecutionProgress } from '../../../core/shared/automationProgress';
+import { playwrightFailure } from '../../../agent/src/playwrightFailure';
 
 const RUN_ROOT = path.resolve(process.cwd(), '.testflow-pw', 'automation');
 const running = new Map<string, ReturnType<typeof spawn>>();
@@ -96,6 +97,11 @@ function parseSummary(runDir: string): Record<string, number> {
   } catch { return {}; }
 }
 
+function parseFailure(runDir: string, script: string): string {
+  try { return playwrightFailure(JSON.parse(fs.readFileSync(path.join(runDir, 'results.json'), 'utf-8')), script); }
+  catch { return ''; }
+}
+
 /** Execute a queued job's recording headless on the server. Resolves when the run + upload finish. */
 export async function runJobOnServer(jobId: string): Promise<void> {
   const job = await AutomationJobs.get(jobId);
@@ -117,6 +123,7 @@ export async function runJobOnServer(jobId: string): Promise<void> {
 
   await setJobStatus(jobId, 'running', { startedAt: new Date().toISOString() });
   const log = (line: string) => emitEvent({ scopeType: 'job', scopeId: jobId, type: 'job.log', ownerId: job.ownerId, data: { line } });
+  const output: string[] = [];
 
   let progressWrites = Promise.resolve();
   const exitCode: number = await new Promise((resolve) => {
@@ -126,7 +133,7 @@ export async function runJobOnServer(jobId: string): Promise<void> {
     running.set(jobId, child);
     const onLine = (line: string) => {
       const progress = progressFromLine(line);
-      if (!progress) { void log(line); return; }
+      if (!progress) { output.push(line); if (output.length > 30) output.shift(); void log(line); return; }
       progressWrites = progressWrites.then(async () => {
         const current = await AutomationJobs.get(jobId);
         if (!current || current.status === 'cancelled') return;
@@ -136,7 +143,7 @@ export async function runJobOnServer(jobId: string): Promise<void> {
     if (child.stdout) createInterface({ input: child.stdout }).on('line', onLine);
     if (child.stderr) createInterface({ input: child.stderr }).on('line', onLine);
     child.once('close', (code) => { running.delete(jobId); resolve(code ?? 1); });
-    child.once('error', (err) => { void log(`runner error: ${err.message}`); running.delete(jobId); resolve(1); });
+    child.once('error', (err) => { output.push(`Runner error: ${err.message}`); void log(output.at(-1)!); running.delete(jobId); resolve(1); });
   });
   await progressWrites;
 
@@ -153,7 +160,9 @@ export async function runJobOnServer(jobId: string): Promise<void> {
   const summary = parseSummary(runDir);
   const status = exitCode === 0 ? 'done' : 'failed';
   const current = await AutomationJobs.get(jobId);
-  await setJobStatus(jobId, status, { exitCode, summary: { ...(current?.summary || {}), ...summary }, error: exitCode === 0 ? '' : 'Test run reported failures.', finishedAt: new Date().toISOString() });
+  const outputFailure = output.join('\n').slice(-4000);
+  const failure = exitCode === 0 ? '' : parseFailure(runDir, scriptSource) || (outputFailure ? `Execution failed.\nRunner output:\n${outputFailure}` : 'Test run reported failures.');
+  await setJobStatus(jobId, status, { exitCode, summary: { ...(current?.summary || {}), ...summary }, error: failure, finishedAt: new Date().toISOString() });
   // Keep server-scheduled execution in parity with agent execution: the linked Test Run is what
   // powers durable dashboard/test-management outcome views.
   await syncLinkedRun(jobId, status, summary);

@@ -9,10 +9,37 @@
 import { spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
+import { createInterface } from 'readline';
 import { uploadArtifact } from './cloud.js';
 import { collectArtifacts } from './artifacts.js';
 import { chromiumChannel } from './browsers.js';
 import { playwrightFailure } from './playwrightFailure.js';
+const PROGRESS_PREFIX = '@@TESTFLOW_PROGRESS@@';
+const progressReporterSource = `
+class TestFlowProgressReporter {
+  constructor() { this.completed = 0; this.total = 0; this.stepCompleted = 0; this.stepTotal = Number(process.env.TESTFLOW_STEP_TOTAL) || 0; this.stepStarted = 0; this.stepIndexes = new Map(); }
+  emit(event, test, status) { console.log('${PROGRESS_PREFIX}' + JSON.stringify({ event, completed: this.completed, total: this.total, currentTest: test ? test.title : '', testStatus: status || '', stepCompleted: this.stepCompleted, stepTotal: this.stepTotal })); }
+  tracked(step) { return step.category === 'pw:api' || step.category === 'expect'; }
+  title(step) { const title = String(step.title || ''); return title.includes('.fill(') || title.includes('.type(') ? title.slice(0, title.lastIndexOf('(') + 1) + '"***")' : title; }
+  onBegin(_config, suite) { this.total = suite.allTests().length; this.emit('started'); }
+  onTestBegin(test) { this.emit('test_started', test); }
+  onTestEnd(test, result) { this.completed += 1; this.emit('test_finished', test, result.status); }
+  onStepBegin(_test, _result, step) { if (!this.tracked(step)) return; const index = ++this.stepStarted; this.stepIndexes.set(step.id, index); this.stepTotal = Math.max(this.stepTotal, index); console.log('${PROGRESS_PREFIX}' + JSON.stringify({ event: 'step_started', stepId: step.id, stepIndex: index, stepCompleted: this.stepCompleted, stepTotal: this.stepTotal, stepTitle: this.title(step), stepStartedAt: Date.now() })); }
+  onStepEnd(_test, _result, step) { if (!this.tracked(step)) return; this.stepCompleted += 1; console.log('${PROGRESS_PREFIX}' + JSON.stringify({ event: 'step_finished', stepId: step.id, stepIndex: this.stepIndexes.get(step.id) || this.stepCompleted, stepCompleted: this.stepCompleted, stepTotal: Math.max(this.stepTotal, this.stepCompleted), stepTitle: this.title(step), stepStartedAt: Date.now() - Number(step.duration || 0), stepDurationMs: Number(step.duration || 0), stepError: step.error ? String(step.error.message || step.error).slice(0, 1000) : '' })); }
+}
+module.exports = TestFlowProgressReporter;
+`;
+function progressFromLine(line) {
+    const at = line.indexOf(PROGRESS_PREFIX);
+    if (at < 0)
+        return null;
+    try {
+        return JSON.parse(line.slice(at + PROGRESS_PREFIX.length));
+    }
+    catch {
+        return null;
+    }
+}
 function configTemplate(engine, headed) {
     const browserName = ['chromium', 'firefox', 'webkit'].includes(engine) ? engine : 'chromium';
     // Use system Chrome when bundled Chromium is absent (same resolution as the recorder).
@@ -22,7 +49,7 @@ export default defineConfig({
   testDir: './tests',
   outputDir: './test-results',
   timeout: 60000,
-  reporter: [['list'], ['json', { outputFile: 'results.json' }], ['junit', { outputFile: 'results.xml' }], ['html', { outputFolder: 'playwright-report', open: 'never' }]],
+  reporter: [['./progress-reporter.cjs'], ['list'], ['json', { outputFile: 'results.json' }], ['junit', { outputFile: 'results.xml' }], ['html', { outputFolder: 'playwright-report', open: 'never' }]],
   // Capture on every run (not just failures) so each execution has step snapshots, a full video of
   // every action, and a trace to download. 'on' screenshots at each test end; the video + trace carry
   // the per-action detail.
@@ -60,17 +87,19 @@ export class Runner {
         const runDir = path.join(this.workDir, 'runs', job.jobId.replace(/[^a-zA-Z0-9._-]/g, '_'));
         fs.mkdirSync(path.join(runDir, 'tests'), { recursive: true });
         fs.writeFileSync(path.join(runDir, 'playwright.config.ts'), configTemplate(job.browser, !!job.headed));
+        fs.writeFileSync(path.join(runDir, 'progress-reporter.cjs'), progressReporterSource);
         fs.writeFileSync(path.join(runDir, 'tests', 'recording.spec.ts'), job.script || '');
         this.log.info({ jobId: job.jobId, browser: job.browser, headed: !!job.headed }, 'job started');
         this.send('job.progress', { jobId: job.jobId, phase: 'running' });
-        const exitCode = await this.execute(job, runDir);
+        const { exitCode, output } = await this.execute(job, runDir);
         if (this.cancelled.has(job.jobId)) {
             this.cancelled.delete(job.jobId);
             this.send('job.done', { jobId: job.jobId, exitCode: 130, summary: {}, error: 'Cancelled.' });
             return;
         }
         const summary = this.parseSummary(runDir);
-        const failure = exitCode === 0 ? '' : this.parseFailure(runDir, job.script);
+        const outputFailure = output.join('\n').slice(-4000);
+        const failure = exitCode === 0 ? '' : this.parseFailure(runDir, job.script) || (outputFailure ? `Execution failed.\nRunner output:\n${outputFailure}` : '');
         this.send('job.progress', { jobId: job.jobId, phase: 'uploading' });
         await this.uploadAll(job.jobId, runDir).catch((err) => this.log.error({ err: err?.message }, 'artifact upload failed'));
         this.send('job.done', { jobId: job.jobId, exitCode, summary, error: failure || (exitCode === 0 ? '' : 'Test run reported failures.') });
@@ -78,17 +107,30 @@ export class Runner {
     }
     execute(job, runDir) {
         return new Promise((resolve) => {
+            const output = [];
             const child = spawn('npx', ['playwright', 'test', '--config', 'playwright.config.ts'], {
                 cwd: runDir,
                 shell: process.platform === 'win32',
-                env: { ...process.env, PLAYWRIGHT_HTML_OPEN: 'never' },
+                env: { ...process.env, PLAYWRIGHT_HTML_OPEN: 'never', TESTFLOW_STEP_TOTAL: String(job.stepTotal || 0) },
             });
             this.running.set(job.jobId, child);
-            const onLine = (buf) => String(buf).split('\n').filter(Boolean).forEach((line) => this.send('job.log', { jobId: job.jobId, line }));
-            child.stdout?.on('data', onLine);
-            child.stderr?.on('data', onLine);
-            child.once('close', (code) => { this.running.delete(job.jobId); resolve(code ?? 1); });
-            child.once('error', (err) => { this.log.error({ err: err.message }, 'runner spawn error'); this.running.delete(job.jobId); resolve(1); });
+            const onLine = (line) => {
+                const progress = progressFromLine(line);
+                if (progress)
+                    this.send('job.progress', { jobId: job.jobId, phase: 'running', ...progress });
+                else {
+                    output.push(line);
+                    if (output.length > 30)
+                        output.shift();
+                    this.send('job.log', { jobId: job.jobId, line });
+                }
+            };
+            if (child.stdout)
+                createInterface({ input: child.stdout }).on('line', onLine);
+            if (child.stderr)
+                createInterface({ input: child.stderr }).on('line', onLine);
+            child.once('close', (code) => { this.running.delete(job.jobId); resolve({ exitCode: code ?? 1, output }); });
+            child.once('error', (err) => { this.log.error({ err: err.message }, 'runner spawn error'); this.running.delete(job.jobId); resolve({ exitCode: 1, output: [...output, `Runner error: ${err.message}`] }); });
         });
     }
     parseSummary(runDir) {

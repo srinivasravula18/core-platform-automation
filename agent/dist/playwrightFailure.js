@@ -41,6 +41,11 @@ export function playwrightFailure(report, script) {
             }
         }
     }
+    const reportError = report?.errors?.[0];
+    if (reportError) {
+        const message = String(reportError.message || reportError.stack || reportError).replace(ANSI, '').trim();
+        return message ? `Execution failed before a test could run.\nError: ${message}` : '';
+    }
     return '';
 }
 //# sourceMappingURL=playwrightFailure.js.map

@@ -100,7 +100,7 @@ export class Runner {
     this.log.info({ jobId: job.jobId, browser: job.browser, headed: !!job.headed }, 'job started');
     this.send('job.progress', { jobId: job.jobId, phase: 'running' });
 
-    const exitCode = await this.execute(job, runDir);
+    const { exitCode, output } = await this.execute(job, runDir);
 
     if (this.cancelled.has(job.jobId)) {
       this.cancelled.delete(job.jobId);
@@ -109,15 +109,17 @@ export class Runner {
     }
 
     const summary = this.parseSummary(runDir);
-    const failure = exitCode === 0 ? '' : this.parseFailure(runDir, job.script);
+    const outputFailure = output.join('\n').slice(-4000);
+    const failure = exitCode === 0 ? '' : this.parseFailure(runDir, job.script) || (outputFailure ? `Execution failed.\nRunner output:\n${outputFailure}` : '');
     this.send('job.progress', { jobId: job.jobId, phase: 'uploading' });
     await this.uploadAll(job.jobId, runDir).catch((err) => this.log.error({ err: err?.message }, 'artifact upload failed'));
     this.send('job.done', { jobId: job.jobId, exitCode, summary, error: failure || (exitCode === 0 ? '' : 'Test run reported failures.') });
     this.log.info({ jobId: job.jobId, exitCode, summary }, 'job finished');
   }
 
-  private execute(job: Job, runDir: string): Promise<number> {
+  private execute(job: Job, runDir: string): Promise<{ exitCode: number; output: string[] }> {
     return new Promise((resolve) => {
+      const output: string[] = [];
       const child = spawn('npx', ['playwright', 'test', '--config', 'playwright.config.ts'], {
         cwd: runDir,
         shell: process.platform === 'win32',
@@ -127,12 +129,12 @@ export class Runner {
       const onLine = (line: string) => {
         const progress = progressFromLine(line);
         if (progress) this.send('job.progress', { jobId: job.jobId, phase: 'running', ...progress });
-        else this.send('job.log', { jobId: job.jobId, line });
+        else { output.push(line); if (output.length > 30) output.shift(); this.send('job.log', { jobId: job.jobId, line }); }
       };
       if (child.stdout) createInterface({ input: child.stdout }).on('line', onLine);
       if (child.stderr) createInterface({ input: child.stderr }).on('line', onLine);
-      child.once('close', (code) => { this.running.delete(job.jobId); resolve(code ?? 1); });
-      child.once('error', (err) => { this.log.error({ err: err.message }, 'runner spawn error'); this.running.delete(job.jobId); resolve(1); });
+      child.once('close', (code) => { this.running.delete(job.jobId); resolve({ exitCode: code ?? 1, output }); });
+      child.once('error', (err) => { this.log.error({ err: err.message }, 'runner spawn error'); this.running.delete(job.jobId); resolve({ exitCode: 1, output: [...output, `Runner error: ${err.message}`] }); });
     });
   }
 
