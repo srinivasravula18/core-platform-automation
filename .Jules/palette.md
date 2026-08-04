@@ -1,0 +1,3 @@
+## 2026-07-21 - [Aria properties & Escape key dismissals for RowMoreMenu]
+**Learning:** Popover dropdowns and micro-triggers (like table RowMoreMenu button actions) must register an active global Escape key down listener when visible to support fluent keyboard dismissals, configure proper keyboard focus indicator outlines (`focus-visible:ring-2`), and expose the correct ARIA attributes (`aria-expanded`, `aria-haspopup="true"`, `aria-label`) for screen readers.
+**Action:** Always wrap standard interactive menu components with proper aria tags, design-consistent focus states, and keydown listeners to guarantee intuitive focus flow and fully accessible keyboard-only operations.

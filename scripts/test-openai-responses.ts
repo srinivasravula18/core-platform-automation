@@ -32,7 +32,7 @@ function fakeMessageOutput(content: Array<{ type: 'output_text'; text: string } 
   return [{ id: 'msg_1', type: 'message' as const, role: 'assistant' as const, status: 'completed' as const, content }];
 }
 
-function fakeUsage(overrides: Partial<OpenAI.Responses.ResponseUsage> = {}): OpenAI.Responses.ResponseUsage {
+function fakeUsage(overrides: any = {}): any {
   return {
     input_tokens: 100,
     input_tokens_details: { cached_tokens: 0 },
@@ -40,7 +40,7 @@ function fakeUsage(overrides: Partial<OpenAI.Responses.ResponseUsage> = {}): Ope
     output_tokens_details: { reasoning_tokens: 0 },
     total_tokens: 120,
     ...overrides,
-  };
+  } as any;
 }
 
 type FakeParse = (body: any, options?: { signal?: AbortSignal | null }) => Promise<any>;
