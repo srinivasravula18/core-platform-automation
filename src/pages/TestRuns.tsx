@@ -630,7 +630,7 @@ export default function TestRuns() {
                   title={selectedRunScripts.length ? 'Execute linked Playwright scripts' : 'No Playwright scripts are linked to these cases'}
                   className="inline-flex shrink-0 items-center gap-2 whitespace-nowrap rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  <PlayCircle className="h-4 w-4" /> {selectedProgress || 'Run Scripts'}
+                  <PlayCircle className="h-4 w-4" /> Run Scripts
                 </button>
                 )}
               </div>

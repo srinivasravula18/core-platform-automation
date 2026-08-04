@@ -209,6 +209,24 @@ export function useRecordingSession(opts?: { onAgentEvent?: () => void }): {
     }
   });
 
+  useEffect(() => {
+    if (phase !== 'finalizing' || !recordingId) return;
+    const check = async () => {
+      try {
+        const response = await fetch(`/api/automation/recordings/${encodeURIComponent(recordingId)}`);
+        const recording = (await response.json().catch(() => ({}))).recording as Recording | undefined;
+        if (recording?.status !== 'ready') return;
+        setScript(recording.script || '');
+        setStats(recording.stats || {});
+        setCaseId(String(recording.metadata.caseId || ''));
+        setPhase('summary');
+      } catch { /* SSE can still complete the session. */ }
+    };
+    void check();
+    const poll = setInterval(() => { void check(); }, 1000);
+    return () => clearInterval(poll);
+  }, [phase, recordingId]);
+
   const start = async (input: StartRecordingInput): Promise<string> => {
     if (busy) throw new Error('A recording is already starting.');
     setBusy(true);

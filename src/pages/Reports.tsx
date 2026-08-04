@@ -5,7 +5,7 @@ import { TimeSortSelect } from '@/src/components/filters/TimeSortSelect';
 import { TimeRangeFilter, passesTimeFilter, type TimeFilterValue } from '@/src/components/filters/TimeRangeFilter';
 import { sortByTime, type TimeSortKey } from '@/src/lib/time';
 import ExportMenu from '../components/ExportMenu';
-import { downloadFile, toReportHTML } from '../lib/exportData';
+import { downloadFile, reportMetrics, reportTypeLabel, toReportHTML } from '../lib/exportData';
 import { cn } from '@/src/lib/utils';
 import { useAiSearch } from '@/src/lib/useAiSearch';
 import { useBulkDelete } from '@/src/lib/useBulkDelete';
@@ -27,6 +27,7 @@ interface Step {
   actual?: string;
   durationMs?: number;
   testCaseTitle?: string;
+  testCaseId?: string;
   screenshot: string;
 }
 
@@ -285,6 +286,9 @@ const SCREENSHOT_PRESETS: Record<string, { title: string; url: string; contentHt
 export default function Reports() {
   const [reports, setReports] = useState<Report[]>([]);
   const [plans, setPlans] = useState<any[]>([]);
+  const [runs, setRuns] = useState<any[]>([]);
+  const [cases, setCases] = useState<any[]>([]);
+  const [suites, setSuites] = useState<any[]>([]);
   const [folders, setFolders] = useState<any[]>([]);
   
   const [loading, setLoading] = useState(true);
@@ -354,7 +358,7 @@ export default function Reports() {
       }
     }
     const plan = plans.find((item: any) => String(item.id) === String(report.planId || run?.testPlanId));
-    downloadFile(toReportHTML(report, { run, results, plan }), `report-${report.id}.html`, 'text/html;charset=utf-8');
+    downloadFile(toReportHTML(report, { run, results, plan, cases, suites }), `report-${report.id}.html`, 'text/html;charset=utf-8');
   };
 
   const fetchReports = (showLoading = true) => {
@@ -379,8 +383,16 @@ export default function Reports() {
   };
 
   const fetchDataConfigs = () => {
-    fetch('/api/plans').then(r => r.json()).then(data => setPlans(data)).catch(console.error);
-    fetch('/api/folders').then(r => r.json()).then(data => setFolders(Array.isArray(data) ? data : [])).catch(console.error);
+    const load = (url: string) => fetch(url).then((response) => response.json()).then((data) => Array.isArray(data) ? data : []);
+    void Promise.all([load('/api/plans'), load('/api/runs'), load('/api/cases'), load('/api/suites'), load('/api/folders')])
+      .then(([nextPlans, nextRuns, nextCases, nextSuites, nextFolders]) => {
+        setPlans(nextPlans);
+        setRuns(nextRuns);
+        setCases(nextCases);
+        setSuites(nextSuites);
+        setFolders(nextFolders);
+      })
+      .catch(console.error);
   };
 
   useEffect(() => {
@@ -489,7 +501,13 @@ export default function Reports() {
     const matchesUpdated = passesTimeFilter(r.metadata?.updatedAt || r.updatedAt || r.date, updatedFilter);
     return matchesSearch && matchesStatus && matchesUpdated;
   }), timeSort);
-  const totalReportSteps = filteredReports.reduce((total, report) => total + (report.steps?.length || report.totalExecutions || 0), 0);
+  const runById = useMemo(() => new Map(runs.map((run) => [String(run.id), run])), [runs]);
+  const reportMetricsById = useMemo(() => new Map(reports.map((report) => [report.id, reportMetrics(report, {
+    run: runById.get(String(report.runId || '')),
+    cases,
+  })])), [reports, runById, cases]);
+  const totalReportCases = filteredReports.reduce((total, report) => total + (reportMetricsById.get(report.id)?.caseCount || 0), 0);
+  const totalReportSteps = filteredReports.reduce((total, report) => total + (reportMetricsById.get(report.id)?.stepCount || 0), 0);
   const passedReportSteps = filteredReports.reduce((total, report) => {
     const steps = report.steps || [];
     if (steps.length > 0) return total + steps.filter(step => /pass/i.test(String(step.outcome || ''))).length;
@@ -516,16 +534,18 @@ export default function Reports() {
             rows={filteredReports}
             columns={[
               { key: 'id', label: 'ID' },
+              { key: 'runId', label: 'Run ID' },
               { key: 'name', label: 'Name' },
+              { key: 'type', label: 'Type', get: (r) => reportTypeLabel(r, { run: runById.get(String(r.runId || '')), cases }) },
               { key: 'status', label: 'Status' },
               { key: 'planName', label: 'Plan' },
               { key: 'suiteName', label: 'Suite' },
               { key: 'requestedBy', label: 'Requested By' },
               { key: 'executionTime', label: 'Execution Time' },
-              { key: 'totalExecutions', label: 'Total Executions' },
+              { key: 'caseCount', label: 'Executed Cases', get: (r) => reportMetricsById.get(r.id)?.caseCount || 0 },
+              { key: 'stepCount', label: 'Executed Steps', get: (r) => reportMetricsById.get(r.id)?.stepCount || 0 },
               { key: 'failureReason', label: 'Failure Reason' },
               { key: 'date', label: 'Date' },
-              { key: 'stepCount', label: 'Steps', get: (r) => (r.steps || []).length },
               { key: 'updatedAt', label: 'Updated', get: (r: any) => r.metadata?.updatedAt || r.updatedAt || '' },
               { key: 'updatedBy', label: 'Updated By', get: (r: any) => r.metadata?.updatedBy?.name || '' },
               { key: 'createdAt', label: 'Created', get: (r: any) => r.metadata?.createdAt || r.createdAt || '' },
@@ -541,11 +561,17 @@ export default function Reports() {
       <div className="flex-1 min-h-0 flex flex-col bg-[var(--bg-card)] border border-[var(--border)] rounded-xl shadow-sm overflow-hidden mb-2">
         
         {/* Statistics Executive Summary Row */}
-        <div className="p-5 border-b border-[var(--border)] bg-[var(--bg-secondary)]/30 grid grid-cols-1 md:grid-cols-2 gap-4 text-left">
+        <div className="p-5 border-b border-[var(--border)] bg-[var(--bg-secondary)]/30 grid grid-cols-1 md:grid-cols-3 gap-4 text-left">
           <div className="bg-[var(--bg-card)] border border-[var(--border)] p-3 rounded-lg shadow-inner">
-            <span className="block text-[10px] font-bold text-[var(--text-muted)] uppercase tracking-wider">Total Executed Cases (Steps)</span>
+            <span className="block text-[10px] font-bold text-[var(--text-muted)] uppercase tracking-wider">Executed Cases</span>
             <span className="block text-xs font-semibold text-[var(--text-primary)] mt-1">
-              {totalReportSteps} Verification Steps in {filteredReports.length} Scenarios
+              {totalReportCases} Test Cases
+            </span>
+          </div>
+          <div className="bg-[var(--bg-card)] border border-[var(--border)] p-3 rounded-lg shadow-inner">
+            <span className="block text-[10px] font-bold text-[var(--text-muted)] uppercase tracking-wider">Executed Steps</span>
+            <span className="block text-xs font-semibold text-[var(--text-primary)] mt-1">
+              {totalReportSteps} Verification Steps
             </span>
           </div>
           <div className="bg-[var(--bg-card)] border border-[var(--border)] p-3 rounded-lg shadow-inner">
@@ -606,13 +632,14 @@ export default function Reports() {
 
         {/* Main Table Styled search similar to Image 2 */}
         <div className="flex-1 min-h-0 w-full overflow-x-auto overflow-y-auto rounded-b-xl">
-          <table className="w-full min-w-[820px] border-collapse text-left text-sm">
+          <table className="w-full min-w-[940px] border-collapse text-left text-sm">
             <thead className="sticky top-0 z-10 bg-[var(--bg-secondary)] text-[var(--text-muted)] text-[11px] uppercase tracking-wider font-semibold border-b border-[var(--border)]">
               <tr>
                 <th className="w-10 px-4 py-3">
                   <input type="checkbox" checked={bulk.allSelected(filteredReports.map((r) => r.id))} onChange={() => bulk.toggleAll(filteredReports.map((r) => r.id))} />
                 </th>
                 <th className="w-24 px-4 py-3">ID</th>
+                <th className="w-28 px-4 py-3">Run ID</th>
                 <th className="px-4 py-3">Test Scenario</th>
                 <th className="w-28 px-4 py-3">Type</th>
                 <th className="w-32 px-4 py-3">Pass / Fail</th>
@@ -624,16 +651,17 @@ export default function Reports() {
             </thead>
             <tbody className="divide-y divide-[var(--border)]">
               {filteredReports.length === 0 ? (
-                <tr><td colSpan={9} className="py-12 px-4 text-center text-sm text-[var(--text-muted)]">No test reports found.</td></tr>
+                <tr><td colSpan={10} className="py-12 px-4 text-center text-sm text-[var(--text-muted)]">No test reports found.</td></tr>
               ) : filteredReports.map((r) => {
                 const c = stepCounts(r);
-                const type = r.suiteName || '—';
+                const type = reportTypeLabel(r, { run: runById.get(String(r.runId || '')), cases });
                 return (
                   <tr key={r.id} onClick={() => setDetailReport(r)} className="cursor-pointer align-top hover:bg-[var(--bg-secondary)]/40 transition-colors">
                     <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
                       <input type="checkbox" checked={bulk.isSelected(r.id)} onChange={() => bulk.toggle(r.id)} />
                     </td>
                     <td className="px-4 py-3 font-mono text-xs text-[var(--text-muted)]">{r.id}</td>
+                    <td className="px-4 py-3 font-mono text-xs text-[var(--text-muted)]">{r.runId || '—'}</td>
                     <td className="px-4 py-3">
                       <div className="font-semibold text-[var(--text-primary)]">{r.name}</div>
                       <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-[var(--text-muted)]"><FolderBadge folders={folders} folderId={r.folderId} />{r.planName ? <span>· {r.planName}</span> : null}<span>· {r.date}</span></div>
@@ -672,7 +700,7 @@ export default function Reports() {
                   extraItems={[{ label: 'HTML Report (.html)', onClick: () => void handleHtmlReportExport(detailReport) }]}
                   rows={(detailReport.steps || []).map((step, index) => ({
                     ...step,
-                    evidence: stepEvidence(detailReport, step, index),
+                    evidence: stepEvidence(detailReport, step, index) ? evidenceImageSource(stepEvidence(detailReport, step, index)) : '',
                   }))}
                   columns={[
                     { key: 'step', label: '#' },
@@ -680,7 +708,7 @@ export default function Reports() {
                     { key: 'expected', label: 'Expected Result' },
                     { key: 'outcome', label: 'Outcome' },
                     { key: 'reason', label: 'Reason' },
-                    { key: 'evidence', label: 'Evidence' },
+                    { key: 'evidence', label: 'Evidence', kind: 'image' },
                   ]}
                 />
               )}
