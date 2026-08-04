@@ -36,7 +36,7 @@ export function RowMoreMenu({ items, title = 'More actions', dropUp = false }: {
               <button
                 key={item.label}
                 onClick={() => { setOpen(false); item.onClick(); }}
-                className={`block w-full px-3 py-2 text-left text-sm hover:bg-[var(--bg-secondary)] ${item.danger ? 'text-red-400 hover:bg-red-500/10' : 'text-[var(--text-primary)]'}`}
+                className={`block w-full px-3 py-2 text-left text-sm hover:bg-[var(--bg-secondary)] ${item.danger ? 'delete-action' : 'text-[var(--text-primary)]'}`}
               >
                 {item.label}
               </button>

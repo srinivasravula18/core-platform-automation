@@ -248,7 +248,7 @@ export default function Defects() {
           <div className="flex justify-between items-center">
             <div>
               {selectedDefectId && can('defects:delete') && (
-                <button onClick={handleDeleteDefect} className="px-4 py-2 text-sm font-medium text-red-500 hover:text-red-400">Delete</button>
+                <button onClick={handleDeleteDefect} className="delete-action rounded-md border px-4 py-2 text-sm font-medium">Delete</button>
               )}
             </div>
             <div className="flex gap-3">

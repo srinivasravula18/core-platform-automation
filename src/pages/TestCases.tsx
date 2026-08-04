@@ -778,7 +778,7 @@ export default function TestCases() {
           <div className="flex justify-between items-center">
             <div className="flex items-center gap-3">
               {selectedCaseId && can('cases:delete') && (
-                <button onClick={handleDeleteCase} className="px-4 py-2 text-sm font-medium text-red-500 hover:text-red-400">Delete</button>
+                <button onClick={handleDeleteCase} className="delete-action rounded-md border px-4 py-2 text-sm font-medium">Delete</button>
               )}
               {selectedCaseId && (
                 <button onClick={() => setHistoryOpen(true)} className="px-4 py-2 text-sm font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]">History</button>

@@ -16,6 +16,9 @@
     --text-muted: #64748b;
     --accent: #0ea5e9;
     --accent-hover: #0284c7;
+    --danger-action: #a95555;
+    --danger-action-bg: #f8eeee;
+    --danger-action-border: #ddbaba;
     --scrollbar-track: #f1f5f9;
     --scrollbar-thumb: #cbd5e1;
     --scrollbar-thumb-hover: #94a3b8;
@@ -35,6 +38,9 @@
     --text-muted: #a8b3c4;
     --accent: #38bdf8;
     --accent-hover: #7dd3fc;
+    --danger-action: #d58a8a;
+    --danger-action-bg: #251b24;
+    --danger-action-border: #68404a;
     --scrollbar-track: #0f172a;
     --scrollbar-thumb: #334155;
     --scrollbar-thumb-hover: #475569;
@@ -75,6 +81,20 @@
 }
 
 @layer components {
+  /* Destructive controls stay recognizable without competing with the page's primary action. */
+  :is(.delete-action, button[title*="delete" i], button[aria-label*="delete" i], button:has(.lucide-trash-2):not([data-delete-style="ignore"])) {
+    border-color: var(--danger-action-border) !important;
+    background-color: var(--danger-action-bg) !important;
+    color: var(--danger-action) !important;
+    box-shadow: none !important;
+  }
+
+  :is(.delete-action, button[title*="delete" i], button[aria-label*="delete" i], button:has(.lucide-trash-2):not([data-delete-style="ignore"])):hover:not(:disabled) {
+    border-color: color-mix(in srgb, var(--danger-action) 65%, var(--border)) !important;
+    background-color: color-mix(in srgb, var(--danger-action-bg) 78%, var(--danger-action) 22%) !important;
+    color: color-mix(in srgb, var(--danger-action) 82%, var(--text-primary)) !important;
+  }
+
   /* Every section page fills the full available width, matching the Agent Console (which uses a
      plain w-full root). The old min(100%,1280px)+auto-margins capped content and centered it,
      leaving side gaps once the nav collapses and the viewport widens. */

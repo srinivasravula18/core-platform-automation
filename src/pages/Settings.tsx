@@ -117,6 +117,7 @@ export default function Settings() {
         {tabs.map(([key, label, Icon]) => (
           <button
             key={key}
+            data-delete-style={key === 'data' ? 'ignore' : undefined}
             onClick={() => setTab(key)}
             className={`inline-flex flex-1 items-center justify-center gap-2 whitespace-nowrap rounded-md px-3 py-2 font-medium transition-colors ${
               tab === key ? 'bg-[var(--accent)] text-white' : 'text-[var(--text-muted)] hover:bg-[var(--bg-secondary)] hover:text-[var(--text-primary)]'

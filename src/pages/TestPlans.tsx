@@ -548,7 +548,7 @@ export default function TestPlans() {
           <div className="flex justify-between items-center">
             <div>
               {selectedPlanId && can('plans:delete') && (
-                <button onClick={handleDeletePlan} className="px-4 py-2 text-sm font-medium text-red-500 hover:text-red-400">Delete</button>
+                <button onClick={handleDeletePlan} className="delete-action rounded-md border px-4 py-2 text-sm font-medium">Delete</button>
               )}
             </div>
             <div className="flex gap-3">

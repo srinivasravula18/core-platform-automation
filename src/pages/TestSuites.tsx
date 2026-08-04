@@ -347,7 +347,7 @@ export default function TestSuites() {
           <div className="flex justify-between items-center">
             <div>
               {selectedSuiteId && can('suites:delete') && (
-                <button onClick={handleDeleteSuite} className="px-4 py-2 text-sm font-medium text-red-500 hover:text-red-400">Delete</button>
+                <button onClick={handleDeleteSuite} className="delete-action rounded-md border px-4 py-2 text-sm font-medium">Delete</button>
               )}
             </div>
             <div className="flex gap-3">

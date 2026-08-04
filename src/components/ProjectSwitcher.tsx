@@ -391,7 +391,7 @@ export function ProjectSwitcher() {
               <button onClick={() => setConfirm(null)} className="rounded-md px-3 py-1.5 text-xs font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]">
                 Cancel
               </button>
-              <button onClick={() => void doDelete()} className="rounded-md bg-red-500 px-3 py-1.5 text-xs font-semibold text-white hover:bg-red-600">
+              <button onClick={() => void doDelete()} className="delete-action rounded-md border px-3 py-1.5 text-xs font-semibold">
                 Delete
               </button>
             </div>
@@ -428,7 +428,7 @@ export function ProjectSwitcher() {
               <button onClick={() => setBulkConfirm(null)} className="rounded-md px-3 py-1.5 text-xs font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]">
                 Cancel
               </button>
-              <button onClick={() => void doBulkDelete()} className="rounded-md bg-red-500 px-3 py-1.5 text-xs font-semibold text-white hover:bg-red-600">
+              <button onClick={() => void doBulkDelete()} className="delete-action rounded-md border px-3 py-1.5 text-xs font-semibold">
                 Delete All
               </button>
             </div>
