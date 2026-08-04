@@ -263,6 +263,10 @@ export function CodegenPanel({ title, appUrl, caseMeta, onDone, footerTarget, se
     );
   }
 
+  if (phase === 'finalizing') {
+    return <div className="flex min-h-56 flex-col items-center justify-center gap-3 text-center"><Loader2 className="h-7 w-7 animate-spin text-[var(--accent)]" /><div className="text-sm font-semibold text-[var(--text-primary)]">Generating your Playwright script…</div><p className="text-xs text-[var(--text-muted)]">Your recording is being finalized. This screen will update when it is ready.</p></div>;
+  }
+
   // summary
   return (
     <div className="space-y-4">
