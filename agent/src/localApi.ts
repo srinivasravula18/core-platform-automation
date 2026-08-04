@@ -10,6 +10,7 @@
 import express from 'express';
 import fs from 'fs';
 import { spawn, type ChildProcess } from 'child_process';
+import type { Server } from 'http';
 import type { Logger } from 'pino';
 import { LOCAL_PORT, AGENT_VERSION } from './version.js';
 import { collectTelemetry } from './system.js';
@@ -17,7 +18,7 @@ import type { AgentConfig } from './config.js';
 import type { ConnectionManager } from './connection.js';
 import type { LoggerHandle } from './logger.js';
 
-export function startLocalApi(deps: { log: Logger; loggerHandle: LoggerHandle; config: AgentConfig; conn: ConnectionManager }): void {
+export async function startLocalApi(deps: { log: Logger; loggerHandle: LoggerHandle; config: AgentConfig; conn: ConnectionManager }, preferredPort = LOCAL_PORT): Promise<Server> {
   const { log, loggerHandle, config, conn } = deps;
   const app = express();
   app.use(express.json({ limit: '2mb' }));
@@ -126,5 +127,22 @@ export function startLocalApi(deps: { log: Logger; loggerHandle: LoggerHandle; c
     res.json({ ok: true });
   });
 
-  app.listen(LOCAL_PORT, '127.0.0.1', () => log.info({ port: LOCAL_PORT }, 'local API listening on 127.0.0.1'));
+  const listen = (port: number) => new Promise<Server>((resolve, reject) => {
+    const server = app.listen(port, '127.0.0.1');
+    server.once('error', reject);
+    server.once('listening', () => {
+      server.off('error', reject);
+      const address = server.address();
+      log.info({ port: typeof address === 'object' && address ? address.port : port }, 'local API listening on 127.0.0.1');
+      resolve(server);
+    });
+  });
+
+  try {
+    return await listen(preferredPort);
+  } catch (error: any) {
+    if (error?.code !== 'EADDRINUSE' || preferredPort === 0) throw error;
+    log.warn({ port: preferredPort }, 'local API port is in use; using an available loopback port');
+    return listen(0);
+  }
 }

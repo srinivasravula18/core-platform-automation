@@ -11,7 +11,7 @@ import fs from 'fs';
 import { spawn } from 'child_process';
 import { LOCAL_PORT, AGENT_VERSION } from './version.js';
 import { collectTelemetry } from './system.js';
-export function startLocalApi(deps) {
+export async function startLocalApi(deps, preferredPort = LOCAL_PORT) {
     const { log, loggerHandle, config, conn } = deps;
     const app = express();
     app.use(express.json({ limit: '2mb' }));
@@ -116,6 +116,24 @@ export function startLocalApi(deps) {
         }
         res.json({ ok: true });
     });
-    app.listen(LOCAL_PORT, '127.0.0.1', () => log.info({ port: LOCAL_PORT }, 'local API listening on 127.0.0.1'));
+    const listen = (port) => new Promise((resolve, reject) => {
+        const server = app.listen(port, '127.0.0.1');
+        server.once('error', reject);
+        server.once('listening', () => {
+            server.off('error', reject);
+            const address = server.address();
+            log.info({ port: typeof address === 'object' && address ? address.port : port }, 'local API listening on 127.0.0.1');
+            resolve(server);
+        });
+    });
+    try {
+        return await listen(preferredPort);
+    }
+    catch (error) {
+        if (error?.code !== 'EADDRINUSE' || preferredPort === 0)
+            throw error;
+        log.warn({ port: preferredPort }, 'local API port is in use; using an available loopback port');
+        return listen(0);
+    }
 }
 //# sourceMappingURL=localApi.js.map

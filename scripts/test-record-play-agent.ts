@@ -78,6 +78,19 @@ async function main() {
   console.log('bundled Playwright runtime');
   ok(bundledTestRuntime(`import { test } from '@playwright/test';`) === `import { test } from 'playwright/test';`, 'recorded scripts use the bundled test runtime');
 
+  console.log('local agent port collision');
+  const { startLocalApi } = await import('../agent/src/localApi');
+  const log = { info() {}, warn() {}, error() {} } as any;
+  const localDeps = { log, loggerHandle: { currentLogFile: () => '' }, config: { localKey: 'test' }, conn: {} } as any;
+  const firstApi = await startLocalApi(localDeps, 0);
+  const firstAddress = firstApi.address();
+  const occupiedPort = typeof firstAddress === 'object' && firstAddress ? firstAddress.port : 0;
+  const secondApi = await startLocalApi(localDeps, occupiedPort);
+  const secondAddress = secondApi.address();
+  const fallbackPort = typeof secondAddress === 'object' && secondAddress ? secondAddress.port : 0;
+  ok(occupiedPort > 0 && fallbackPort > 0 && fallbackPort !== occupiedPort, 'second local agent falls back when its preferred port is occupied');
+  await Promise.all([new Promise<void>((resolve) => firstApi.close(() => resolve())), new Promise<void>((resolve) => secondApi.close(() => resolve()))]);
+
   console.log('revocation');
   ok(await svc.revokeAgent(reg.agentId), 'revoke succeeds');
   ok(!(await svc.authenticateAgent(refreshed!.agentToken)), 'revoked agent token rejected');

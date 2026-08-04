@@ -46,7 +46,7 @@ async function main() {
     const conn = new ConnectionManager(log, baseDir, workDir, config);
     if (config.agentToken)
         conn.start();
-    startLocalApi({ log, loggerHandle, config, conn });
+    void startLocalApi({ log, loggerHandle, config, conn }).catch((err) => log.error({ err: err?.message }, 'local API failed to start'));
     // Make sure a browser is usable (system Chrome or bundled Chromium; else background-install Chromium).
     ensureBrowsers(log, baseDir);
     // ...then absorb its first-run cost now, while the tester is still setting up the recording.
