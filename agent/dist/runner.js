@@ -7,6 +7,7 @@
  * on the user's machine; only results + artifacts go back up.
  */
 import { spawn } from 'child_process';
+import { createRequire } from 'module';
 import fs from 'fs';
 import path from 'path';
 import { createInterface } from 'readline';
@@ -15,6 +16,11 @@ import { collectArtifacts } from './artifacts.js';
 import { chromiumChannel } from './browsers.js';
 import { playwrightFailure } from './playwrightFailure.js';
 const PROGRESS_PREFIX = '@@TESTFLOW_PROGRESS@@';
+const require = createRequire(import.meta.url);
+const playwrightCli = path.join(path.dirname(require.resolve('playwright/package.json')), 'cli.js');
+export function bundledTestRuntime(source) {
+    return source.replace(/(['"])@playwright\/test\1/g, '$1playwright/test$1');
+}
 const progressReporterSource = `
 class TestFlowProgressReporter {
   constructor() { this.completed = 0; this.total = 0; this.stepCompleted = 0; this.stepTotal = Number(process.env.TESTFLOW_STEP_TOTAL) || 0; this.stepStarted = 0; this.stepIndexes = new Map(); }
@@ -44,7 +50,7 @@ function configTemplate(engine, headed) {
     const browserName = ['chromium', 'firefox', 'webkit'].includes(engine) ? engine : 'chromium';
     // Use system Chrome when bundled Chromium is absent (same resolution as the recorder).
     const channel = browserName === 'chromium' ? chromiumChannel() : undefined;
-    return `import { defineConfig } from '@playwright/test';
+    return `import { defineConfig } from 'playwright/test';
 export default defineConfig({
   testDir: './tests',
   outputDir: './test-results',
@@ -88,7 +94,7 @@ export class Runner {
         fs.mkdirSync(path.join(runDir, 'tests'), { recursive: true });
         fs.writeFileSync(path.join(runDir, 'playwright.config.ts'), configTemplate(job.browser, !!job.headed));
         fs.writeFileSync(path.join(runDir, 'progress-reporter.cjs'), progressReporterSource);
-        fs.writeFileSync(path.join(runDir, 'tests', 'recording.spec.ts'), job.script || '');
+        fs.writeFileSync(path.join(runDir, 'tests', 'recording.spec.ts'), bundledTestRuntime(job.script || ''));
         this.log.info({ jobId: job.jobId, browser: job.browser, headed: !!job.headed }, 'job started');
         this.send('job.progress', { jobId: job.jobId, phase: 'running' });
         const { exitCode, output } = await this.execute(job, runDir);
@@ -108,9 +114,8 @@ export class Runner {
     execute(job, runDir) {
         return new Promise((resolve) => {
             const output = [];
-            const child = spawn('npx', ['playwright', 'test', '--config', 'playwright.config.ts'], {
+            const child = spawn(process.execPath, [playwrightCli, 'test', '--config', 'playwright.config.ts'], {
                 cwd: runDir,
-                shell: process.platform === 'win32',
                 env: { ...process.env, PLAYWRIGHT_HTML_OPEN: 'never', TESTFLOW_STEP_TOTAL: String(job.stepTotal || 0) },
             });
             this.running.set(job.jobId, child);

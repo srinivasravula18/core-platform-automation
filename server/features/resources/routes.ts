@@ -522,6 +522,9 @@ function driftResponse(ctx: NonNullable<Awaited<ReturnType<typeof loadGroupDrift
 }
 
 export function registerResourceRoutes(app: Express) {
+  // Legacy backfill is best-effort startup work; script list requests must never wait for it.
+  void reconcileAgentScriptsToRepository();
+
   /* ---------- read endpoints (PG-backed, scoped to the selected project/app) ---------- */
   app.get('/api/plans', async (req, res) => res.json(filterListByQuery(scopeFilter(await Plans.list(), reqScope(req)), req)));
   app.get('/api/suites', async (req, res) => res.json(filterListByQuery(scopeFilter(await Suites.list(), reqScope(req)), req)));
@@ -815,11 +818,7 @@ export function registerResourceRoutes(app: Express) {
     }
   });
   app.get('/api/defects', async (req, res) => res.json(scopeFilter(await Defects.list(), reqScope(req))));
-  app.get('/api/scripts', async (req, res) => {
-    // Self-heal: surface any agent-generated scripts that never made it into the repository.
-    await reconcileAgentScriptsToRepository();
-    res.json(scopeFilter(await Scripts.list(), reqScope(req)));
-  });
+  app.get('/api/scripts', async (req, res) => res.json(scopeFilter(await Scripts.list(), reqScope(req))));
   app.get('/api/reports', async (req, res) => res.json(scopeFilter(await Reports.list(), reqScope(req))));
   app.get('/api/folders', async (req, res) => {
     const folders = await Folders.list();

@@ -22,6 +22,7 @@ const ok = (c: boolean, n: string) => { if (c) { passed++; console.log(`  ✓ ${
 
 async function main() {
   const svc = await import('../server/features/automation/agentService');
+  const { bundledTestRuntime } = await import('../agent/src/runner');
   const { db } = await import('../server/shared/storage');
   db.agents = [];
 
@@ -73,6 +74,9 @@ async function main() {
   ok(stale.status === 'offline', 'stale heartbeat → offline regardless of stored status');
   const fresh = svc.withLiveStatus({ ...hb, status: 'online', lastHeartbeatAt: new Date().toISOString() });
   ok(fresh.status === 'online', 'fresh heartbeat stays online');
+
+  console.log('bundled Playwright runtime');
+  ok(bundledTestRuntime(`import { test } from '@playwright/test';`) === `import { test } from 'playwright/test';`, 'recorded scripts use the bundled test runtime');
 
   console.log('revocation');
   ok(await svc.revokeAgent(reg.agentId), 'revoke succeeds');
