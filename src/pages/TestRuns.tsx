@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, CheckCircle, Download, Filter, Folder, Pencil, PlayCircle, Plus, Search, SlidersHorizontal, Sparkles, Trash2, X } from 'lucide-react';
+import { ArrowLeft, CheckCircle, Download, Filter, Folder, Pencil, PlayCircle, Plus, Search, SlidersHorizontal, Sparkles, Square, Trash2, X } from 'lucide-react';
 import { Timestamp, actorName } from '@/src/components/Timestamp';
 import { TimeSortSelect } from '@/src/components/filters/TimeSortSelect';
 import { TimeRangeFilter, passesTimeFilter, type TimeFilterValue } from '@/src/components/filters/TimeRangeFilter';
@@ -131,6 +131,7 @@ export default function TestRuns() {
   const [now, setNow] = useState(() => Date.now()); // live clock so in-progress run durations count up
   const [runProgress, setRunProgress] = useState<Record<string, string>>({});
   const [closingRunId, setClosingRunId] = useState('');
+  const [stoppingRunId, setStoppingRunId] = useState('');
   const [editingCase, setEditingCase] = useState<any>(null);
   const [scriptViewer, setScriptViewer] = useState<{ title: string; filename: string; code: string } | null>(null);
   const [selectedEvidenceIndex, setSelectedEvidenceIndex] = useState<number | null>(null);
@@ -492,6 +493,25 @@ export default function TestRuns() {
     }
   };
 
+  const handleStopRun = async (run: any) => {
+    if (!await showConfirm('Stop this running execution?', { title: 'Stop Test Run', confirmText: 'Stop Run', tone: 'danger' })) return;
+    setStoppingRunId(run.id);
+    try {
+      const jobId = String(run.triggerMeta?.automationJobId || '');
+      const url = jobId
+        ? `/api/automation/jobs/${encodeURIComponent(jobId)}/cancel`
+        : `/api/runs/${encodeURIComponent(run.id)}/stop`;
+      const response = await fetch(url, { method: 'POST' });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || 'Failed to stop test run.');
+      await refreshRunsQuiet();
+    } catch (error: any) {
+      void showAlert(error.message || 'Failed to stop test run.');
+    } finally {
+      setStoppingRunId('');
+    }
+  };
+
   // Automated runs execute Playwright scripts, so only cases that HAVE a linked script are runnable.
   // (Manual runs author their own steps and don't use this list.)
   const selectableCases = useMemo(() => cases.filter((c) => scriptsForCases([c], scripts).length > 0), [cases, scripts]);
@@ -581,6 +601,15 @@ export default function TestRuns() {
                 </button>
                 )}
                 {/* "Run scripts" is an AUTOMATED action only — manual runs are executed by hand in the runner. */}
+                {selectedRun.mode !== 'manual' && selectedIsRunning && can('runs:execute') && (
+                  <button
+                    onClick={() => { void handleStopRun(selectedRun); }}
+                    disabled={stoppingRunId === selectedRun.id}
+                    className="inline-flex shrink-0 items-center gap-2 whitespace-nowrap rounded-md border border-red-500/40 bg-red-500/10 px-4 py-2 text-sm font-medium text-red-400 hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <Square className="h-3.5 w-3.5 fill-current" /> {stoppingRunId === selectedRun.id ? 'Stopping…' : 'Stop Run'}
+                  </button>
+                )}
                 {selectedRun.mode !== 'manual' && can('runs:execute') && (
                 <button
                   onClick={() => handleExecuteRuns([selectedRun])}

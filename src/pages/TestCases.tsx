@@ -13,6 +13,7 @@ import { Modal } from '@/src/components/Modal';
 import { RequiredMark } from '@/src/components/RequiredMark';
 import { AIActionModal } from '@/src/components/AIActionModal';
 import { CodegenPanel, AppUrlField } from '@/src/components/CodegenPanel';
+import { handleCodeEditorKeyDown } from '@/src/lib/codeEditor';
 import CaseHistoryModal from '@/src/components/CaseHistoryModal';
 import { useRemoteAgentFlag } from '@/src/lib/useAutomation';
 import { showAlert, showConfirm } from '@/src/lib/dialog';
@@ -1106,6 +1107,7 @@ export default function TestCases() {
                 aria-label={`Edit ${scriptViewer.filename}`}
                 value={scriptDraft}
                 onChange={(event) => setScriptDraft(event.target.value)}
+                onKeyDown={(event) => handleCodeEditorKeyDown(event, scriptDraft, setScriptDraft)}
                 spellCheck={false}
                 className="h-[60vh] w-full resize-y rounded-lg border border-[var(--border)] bg-[var(--bg-primary)] p-3 font-mono text-xs leading-5 text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
               />

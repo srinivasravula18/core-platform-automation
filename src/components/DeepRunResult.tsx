@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { cn } from '@/src/lib/utils';
+import { handleCodeEditorKeyDown } from '@/src/lib/codeEditor';
 import { withBasePath } from '@/src/lib/base-path';
 import { showAlert } from '@/src/lib/dialog';
 import { containsPrivateFileActivity } from '@/src/lib/userFacingAgentActivity';
@@ -2111,6 +2112,7 @@ export function DeepRunResult({
                             <textarea
                               value={editingScript!.draft}
                               onChange={(e) => setEditingScript({ key, draft: e.target.value })}
+                              onKeyDown={(e) => handleCodeEditorKeyDown(e, editingScript!.draft, (draft) => setEditingScript({ key, draft }))}
                               spellCheck={false}
                               className="h-72 w-full resize-y rounded border border-[var(--border)] bg-slate-950 p-2 font-mono text-[11px] leading-5 text-slate-200 outline-none focus:border-[var(--accent)]"
                             />
@@ -2213,6 +2215,7 @@ export function DeepRunResult({
                             <textarea
                               value={editingScript!.draft}
                               onChange={(e) => setEditingScript({ key, draft: e.target.value })}
+                              onKeyDown={(e) => handleCodeEditorKeyDown(e, editingScript!.draft, (draft) => setEditingScript({ key, draft }))}
                               spellCheck={false}
                               className="h-[70dvh] min-h-72 w-full resize-y rounded border border-[var(--border)] bg-slate-950 p-2 font-mono text-[11px] leading-5 text-slate-200 outline-none focus:border-[var(--accent)]"
                             />
