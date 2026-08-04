@@ -60,7 +60,7 @@ export function CodegenPanel({ title, appUrl, caseMeta, onDone, footerTarget }: 
     try {
       const runId = createClientRunId();
       const response = await fetch('/api/automation/runs', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ caseId, runId, headed }),
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ caseId, runId, headed, ...(headed && selectedAgent ? { agentId: selectedAgent.id } : {}) }),
       });
       const data = await readAutomationRunResponse(response);
       if (!data?.run?.id) throw new Error('Automation run started without a run ID.');
@@ -165,7 +165,7 @@ export function CodegenPanel({ title, appUrl, caseMeta, onDone, footerTarget }: 
         <div className="text-sm font-semibold text-[var(--text-primary)]">Run this recorded case now?</div>
         <p className="mt-1 text-xs text-[var(--text-muted)]">Recording always uses the headed local agent. Choose how the generated script should execute.</p>
         <div className="mt-3 flex flex-wrap gap-2">
-          <button onClick={() => void runRecordedCase(true)} disabled={startingRun}
+          <button onClick={() => void runRecordedCase(true)} disabled={startingRun || !selectedAgent}
             className="inline-flex items-center gap-2 rounded-md bg-[var(--accent)] px-3 py-2 text-sm font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50">
             {startingRun ? <Loader2 className="h-4 w-4 animate-spin" /> : <Monitor className="h-4 w-4" />} Run Headed
           </button>

@@ -719,8 +719,9 @@ export function registerAutomationRoutes(app: Express) {
     if (requestedRunId && await Runs.get(requestedRunId)) return res.status(409).json({ error: 'Run ID already exists.' });
     const headed = !!req.body?.headed;
     const agentId = String(req.body?.agentId || rec.agentId || '');
-    if (headed && (!agentId || !isAgentConnected(agentId))) {
-      return res.status(409).json({ error: 'Headed execution requires the recording\'s local agent to be online. Open Local Agent and try again, or choose Headless.' });
+    const agent = headed && agentId ? await scopedGet((id) => Agents.get(id), agentId, req) : null;
+    if (headed && (!agent || agent.revokedAt || !isAgentConnected(agentId))) {
+      return res.status(409).json({ error: 'Headed execution requires one of your local agents to be online. Open Local Agent and try again, or choose Headless.' });
     }
     const job = headed
       ? await createJob({ recordingId: rec.id, agentId, trigger: 'manual', headed: true, dispatch: false }, reqScope(req))
