@@ -15,7 +15,7 @@ import { persistDataInBackground } from '../../shared/storage';
 import type { Scope } from '../../shared/scope';
 import { scopeStamp } from '../../shared/scope';
 import { agentRunStatusForList } from '../../../core/shared/testRunStatus';
-import { automationProgressPercent, mergeExecutionProgress } from '../../../core/shared/automationProgress';
+import { automationProgressPercent, finalizeExecutionProgress, mergeExecutionProgress } from '../../../core/shared/automationProgress';
 import { emitEvent } from './eventsService';
 import { onAgentFrame, onAgentConnected, dispatchToAgent, isAgentConnected } from './agentGateway';
 import { cancelServerJob } from './serverRunner';
@@ -30,7 +30,12 @@ function persist(reason: string) {
 export async function setJobStatus(jobId: string, status: JobStatus, patch: Record<string, any> = {}) {
   const job = await AutomationJobs.get(jobId);
   if (!job) return null;
-  const saved = await AutomationJobs.upsert({ ...job, status, ...patch });
+  if (['done', 'failed', 'cancelled'].includes(job.status) && ['queued', 'dispatched', 'running', 'uploading'].includes(status)) return job;
+  const terminal = status === 'done' || status === 'failed' || status === 'cancelled';
+  const summary = terminal
+    ? finalizeExecutionProgress(patch.summary || job.summary || {}, status, String(patch.error || job.error || ''), Date.parse(String(patch.finishedAt || '')) || Date.now())
+    : patch.summary;
+  const saved = await AutomationJobs.upsert({ ...job, status, ...patch, ...(summary ? { summary } : {}) });
   persist('job status');
   await emitEvent({ scopeType: 'job', scopeId: jobId, type: `job.${status}`, ownerId: job.ownerId, data: { job: saved } });
   if (saved.batchId) await refreshExecutionBatch(saved.batchId);
@@ -193,7 +198,15 @@ export async function cancelJob(jobId: string) {
 }
 
 export async function listJobs() { return AutomationJobs.list(); }
-export async function getJob(id: string) { return AutomationJobs.get(id); }
+export async function getJob(id: string) {
+  const job = await AutomationJobs.get(id);
+  if (!job || !['done', 'failed', 'cancelled'].includes(job.status)) return job;
+  const summary = finalizeExecutionProgress(job.summary || {}, job.status, String(job.error || ''), Date.parse(String(job.finishedAt || '')) || Date.now());
+  if (summary === job.summary) return job;
+  const repaired = await AutomationJobs.upsert({ ...job, summary });
+  persist('terminal job progress repaired');
+  return repaired;
+}
 
 /**
  * Reconcile jobs left in a non-terminal state by a previous process. Their agents' in-memory dispatch

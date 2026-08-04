@@ -146,10 +146,12 @@ async function assertUniqueArtifactTitle(config: NamedArtifact, record: any, fal
   if (!isPgEnabled()) {
     const current = config.records.find((item: any) => String(item.id) === id);
     const projectId = record?.projectId !== undefined ? String(record.projectId || '') : String(current?.projectId || '');
+    const ownerId = record?.ownerId !== undefined ? String(record.ownerId || '') : String(current?.ownerId || '');
     const duplicate = config.records.some((item: any) =>
       String(item.id) !== id
       && !item.deletedAt
       && String(item.projectId || '') === projectId
+      && String(item.ownerId || '') === ownerId
       && String(item[config.column] || '').trim().toLocaleLowerCase() === value.toLocaleLowerCase(),
     );
     if (duplicate) throw duplicateArtifactTitle(config.label, value);
@@ -157,13 +159,15 @@ async function assertUniqueArtifactTitle(config: NamedArtifact, record: any, fal
   }
 
   const projectId = record?.projectId !== undefined ? String(record.projectId || '') : null;
+  const ownerId = record?.ownerId !== undefined ? String(record.ownerId || '') : null;
   const duplicate = await queryOne(
     `SELECT id FROM ${config.table}
      WHERE deleted_at IS NULL AND id <> $1
        AND COALESCE(project_id, '') = COALESCE($2, (SELECT project_id FROM ${config.table} WHERE id = $1), '')
-       AND lower(btrim(${config.column})) = lower(btrim($3))
+       AND COALESCE(owner_id, '') = COALESCE($3, (SELECT owner_id FROM ${config.table} WHERE id = $1), '')
+       AND lower(btrim(${config.column})) = lower(btrim($4))
      LIMIT 1`,
-    [id, projectId, value],
+    [id, projectId, ownerId, value],
   );
   if (duplicate) throw duplicateArtifactTitle(config.label, value);
   return value;
@@ -743,6 +747,8 @@ function mapScript(r: any) {
     caseId: r.case_id,
     targetUrl: r.target_url,
     agentRunId: r.agent_run_id,
+    executionMode: r.execution_mode || r.executionMode || 'headless',
+    preferredAgentId: r.preferred_agent_id || r.preferredAgentId || '',
     createdBy: r.created_by,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
@@ -834,29 +840,35 @@ export const Scripts = {
     s = { ...s, name: await assertUniqueArtifactTitle({ table: 'scripts', column: 'name', label: 'script', records: db.scripts }, s, 'Untitled Script') };
     if (!isPgEnabled()) {
       const idx = db.scripts.findIndex((x: any) => x.id === s.id);
+      const prior = idx >= 0 ? db.scripts[idx] as any : null;
+      s.executionMode = s.executionMode === 'headed' || s.executionMode === 'headless' ? s.executionMode : prior?.executionMode || 'headless';
+      s.preferredAgentId = s.preferredAgentId === undefined ? prior?.preferredAgentId || '' : String(s.preferredAgentId || '');
       if (idx >= 0) db.scripts[idx] = stampJsonWrite(s, db.scripts[idx]);
       else db.scripts.unshift(stampJsonWrite(s, null));
       return s;
     }
     const id = s.id || uid('SCRIPT');
     // Capture the pre-upsert code so we can detect a real content change (versioning only).
-    const priorForVersion = isCaseVersioningEnabled()
-      ? await queryOne('SELECT code, language, framework, case_id FROM scripts WHERE id = $1', [id])
-      : null;
+    const prior = await queryOne('SELECT code, language, framework, case_id, execution_mode, preferred_agent_id FROM scripts WHERE id = $1', [id]);
+    const priorForVersion = isCaseVersioningEnabled() ? prior : null;
+    const executionMode = s.executionMode === 'headed' || s.executionMode === 'headless' ? s.executionMode : prior?.execution_mode || 'headless';
+    const preferredAgentId = s.preferredAgentId === undefined ? prior?.preferred_agent_id || null : String(s.preferredAgentId || '') || null;
     const row = await queryOne(
-      `INSERT INTO scripts (id, name, filename, title, code, language, framework, status, folder_id, case_id, target_url, agent_run_id, created_by, project_id, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14, now(), now())
+      `INSERT INTO scripts (id, name, filename, title, code, language, framework, status, folder_id, case_id, target_url, agent_run_id, created_by, project_id, execution_mode, preferred_agent_id, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16, now(), now())
        ON CONFLICT (id) DO UPDATE SET
          name=EXCLUDED.name, filename=EXCLUDED.filename, title=EXCLUDED.title,
          code=EXCLUDED.code, language=EXCLUDED.language, framework=EXCLUDED.framework,
          status=EXCLUDED.status, folder_id=EXCLUDED.folder_id, case_id=EXCLUDED.case_id,
-         target_url=EXCLUDED.target_url, agent_run_id=EXCLUDED.agent_run_id,
-         created_by=EXCLUDED.created_by, project_id=COALESCE(EXCLUDED.project_id, scripts.project_id), updated_at=now()
+          target_url=EXCLUDED.target_url, agent_run_id=EXCLUDED.agent_run_id,
+          created_by=EXCLUDED.created_by, project_id=COALESCE(EXCLUDED.project_id, scripts.project_id),
+          execution_mode=EXCLUDED.execution_mode, preferred_agent_id=EXCLUDED.preferred_agent_id, updated_at=now()
        RETURNING *`,
       [id, s.name || 'Untitled Script', s.filename || `${id}.ts`, s.title || '',
        s.code || '', s.language || 'typescript', s.framework || 'playwright',
        s.status || 'Generated', s.folderId || null, s.caseId || null,
-       s.targetUrl || '', s.agentRunId || null, s.createdBy || 'QA Assistant', s.projectId || null],
+       s.targetUrl || '', s.agentRunId || null, s.createdBy || 'QA Assistant', s.projectId || null,
+       executionMode, preferredAgentId],
     );
     await writeScopeCols('scripts', id, s);
     // Append an immutable revision snapshot on code change. Isolated so a history-write failure never fails the save.

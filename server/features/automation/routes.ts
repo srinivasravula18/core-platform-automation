@@ -48,7 +48,7 @@ import {
   undoRecordingStepOverride,
   redoRecordingStepOverride,
 } from './recordingService';
-import { createJob, createServerJob, createLinkedTestRun, cancelJob, refreshExecutionBatch, tryDispatch } from './jobService';
+import { createJob, createServerJob, createLinkedTestRun, cancelJob, getJob, refreshExecutionBatch, tryDispatch } from './jobService';
 import { isAgentConnected } from './agentGateway';
 import { runBatchOnServer, runJobOnServer } from './serverRunner';
 import { computeNextRun } from './schedulerService';
@@ -689,7 +689,7 @@ export function registerAutomationRoutes(app: Express) {
   });
 
   app.get('/api/automation/jobs/:id', requireAuth, async (req: Request, res: Response) => {
-    const job = await scopedGet((id) => AutomationJobs.get(id), req.params.id, req);
+    const job = await scopedGet(getJob, req.params.id, req);
     if (!job) return res.status(404).json({ error: 'Job not found.' });
     res.json({ job });
   });
@@ -706,6 +706,7 @@ export function registerAutomationRoutes(app: Express) {
   // Manual and scheduled executions share the same headless runner and artifact pipeline.
   app.post('/api/automation/runs', requireAuth, asyncRoute(async (req: Request, res: Response) => {
     const caseId = String(req.body?.caseId || '');
+    const scope = reqScope(req);
     const testCase = await scopedGet((id) => Cases.get(id), caseId, req);
     if (!testCase) return res.status(404).json({ error: 'Test case not found.' });
     // The recorded script lives on the recording that produced this case (linked via metadata.caseId).
@@ -723,10 +724,19 @@ export function registerAutomationRoutes(app: Express) {
     if (headed && (!agent || agent.revokedAt || !isAgentConnected(agentId))) {
       return res.status(409).json({ error: 'Headed execution requires one of your local agents to be online. Open Local Agent and try again, or choose Headless.' });
     }
+    const linkedScript = scopeFilter((await Scripts.list()) as any[], scope)
+      .find((script: any) => script.id === rec.metadata?.scriptId || String(script.caseId || '') === caseId);
+    if (linkedScript) {
+      await Scripts.upsert({
+        ...linkedScript,
+        executionMode: headed ? 'headed' : 'headless',
+        preferredAgentId: headed ? agentId : '',
+      });
+    }
     const job = headed
-      ? await createJob({ recordingId: rec.id, agentId, trigger: 'manual', headed: true, dispatch: false }, reqScope(req))
-      : await createServerJob({ recordingId: rec.id, trigger: 'manual' }, reqScope(req));
-    const run = await createLinkedTestRun(job, rec, reqScope(req), {
+      ? await createJob({ recordingId: rec.id, agentId, trigger: 'manual', headed: true, dispatch: false }, scope)
+      : await createServerJob({ recordingId: rec.id, trigger: 'manual' }, scope);
+    const run = await createLinkedTestRun(job, rec, scope, {
       id: requestedRunId || undefined,
       name: testCase.title || 'Automation run',
       caseId,

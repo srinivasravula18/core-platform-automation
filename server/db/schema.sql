@@ -180,6 +180,8 @@ CREATE TABLE IF NOT EXISTS scripts (
   case_id         TEXT REFERENCES cases(id) ON DELETE SET NULL,
   target_url      TEXT DEFAULT '',
   agent_run_id    TEXT,
+  execution_mode  TEXT NOT NULL DEFAULT 'headless',
+  preferred_agent_id TEXT,
   created_by      TEXT DEFAULT 'QA Assistant',
   created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -725,7 +727,7 @@ BEGIN
   END LOOP;
 END $$;
 
--- Human-facing QA artifact titles are unique within an active project, regardless of case or
+-- Human-facing QA artifact titles are unique for each owner within an active project, regardless of case or
 -- surrounding whitespace. Preserve legacy duplicates by renaming only the later rows; ids and all
 -- relationships stay unchanged. Re-running this block is a no-op once each project is clean.
 DO $$
@@ -745,7 +747,7 @@ BEGIN
       EXECUTE format(
         'WITH ranked AS (
            SELECT id, row_number() OVER (
-             PARTITION BY COALESCE(project_id, ''''), lower(btrim(%1$I))
+             PARTITION BY COALESCE(project_id, ''''), COALESCE(owner_id, ''''), lower(btrim(%1$I))
              ORDER BY created_at, id
            ) AS duplicate_number
            FROM %2$I WHERE deleted_at IS NULL
@@ -761,9 +763,10 @@ BEGIN
       EXIT WHEN changed = 0;
     END LOOP;
 
+    EXECUTE format('DROP INDEX IF EXISTS %I', table_name || '_active_project_title_unique');
     EXECUTE format(
-      'CREATE UNIQUE INDEX IF NOT EXISTS %1$I ON %2$I (
-         COALESCE(project_id, ''''), lower(btrim(%3$I))
+      'CREATE UNIQUE INDEX %1$I ON %2$I (
+         COALESCE(project_id, ''''), COALESCE(owner_id, ''''), lower(btrim(%3$I))
        ) WHERE deleted_at IS NULL',
       table_name || '_active_project_title_unique',
       table_name,
@@ -1341,6 +1344,8 @@ ALTER TABLE reports ADD COLUMN IF NOT EXISTS case_revisions JSONB NOT NULL DEFAU
 -- Versioned content = `code` only (name/status/folder edits do NOT mint a revision). Idempotent; inert
 -- when the flag is off. source_case_revision records the linked case's HEAD at capture for traceability.
 ALTER TABLE scripts ADD COLUMN IF NOT EXISTS current_revision INT NOT NULL DEFAULT 1;
+ALTER TABLE scripts ADD COLUMN IF NOT EXISTS execution_mode TEXT NOT NULL DEFAULT 'headless';
+ALTER TABLE scripts ADD COLUMN IF NOT EXISTS preferred_agent_id TEXT;
 
 CREATE TABLE IF NOT EXISTS script_revisions (
   revision_id         TEXT PRIMARY KEY,

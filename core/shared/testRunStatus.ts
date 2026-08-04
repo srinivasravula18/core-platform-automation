@@ -27,6 +27,14 @@ export function agentRunStatusForList(status: unknown): string {
   }
 }
 
+export function withoutAutomationJobMeta(triggerMeta: any): any {
+  const next = { ...(triggerMeta || {}) };
+  delete next.automationJobId;
+  delete next.agentId;
+  delete next.automationExecution;
+  return next;
+}
+
 /**
  * A manual run left in `Running` after its worker stopped is not active.  The
  * runs endpoint repairs these records on read; consumers that only aggregate

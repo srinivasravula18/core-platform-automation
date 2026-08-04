@@ -15,15 +15,16 @@ try {
     const firstId = `UNIQUENESS-${table}-1`;
     const filenameColumn = table === 'scripts' ? ', filename' : '';
     const filenameValue = table === 'scripts' ? ', $4' : '';
-    const params = (id: string, title: string, projectId: string) => table === 'scripts'
-      ? [id, title, projectId, `${id}.ts`]
-      : [id, title, projectId];
-    await client.query(`INSERT INTO ${table} (id, ${column}, project_id${filenameColumn}) VALUES ($1, $2, $3${filenameValue})`, params(firstId, 'Checkout Flow', 'uniqueness-project'));
-    await client.query(`INSERT INTO ${table} (id, ${column}, project_id${filenameColumn}) VALUES ($1, $2, $3${filenameValue})`, params(`UNIQUENESS-${table}-2`, 'checkout flow', 'other-project'));
+    const params = (id: string, title: string, projectId: string, ownerId: string) => table === 'scripts'
+      ? [id, title, projectId, `${id}.ts`, ownerId]
+      : [id, title, projectId, ownerId];
+    await client.query(`INSERT INTO ${table} (id, ${column}, project_id${filenameColumn}, owner_id) VALUES ($1, $2, $3${filenameValue}, $${table === 'scripts' ? 5 : 4})`, params(firstId, 'Checkout Flow', 'uniqueness-project', 'owner-a'));
+    await client.query(`INSERT INTO ${table} (id, ${column}, project_id${filenameColumn}, owner_id) VALUES ($1, $2, $3${filenameValue}, $${table === 'scripts' ? 5 : 4})`, params(`UNIQUENESS-${table}-2`, 'checkout flow', 'other-project', 'owner-a'));
+    await client.query(`INSERT INTO ${table} (id, ${column}, project_id${filenameColumn}, owner_id) VALUES ($1, $2, $3${filenameValue}, $${table === 'scripts' ? 5 : 4})`, params(`UNIQUENESS-${table}-other-owner`, 'checkout flow', 'uniqueness-project', 'owner-b'));
     await assert.rejects(
-      client.query(`INSERT INTO ${table} (id, ${column}, project_id${filenameColumn}) VALUES ($1, $2, $3${filenameValue})`, params(`UNIQUENESS-${table}-3`, '  CHECKOUT FLOW  ', 'uniqueness-project')),
+      client.query(`INSERT INTO ${table} (id, ${column}, project_id${filenameColumn}, owner_id) VALUES ($1, $2, $3${filenameValue}, $${table === 'scripts' ? 5 : 4})`, params(`UNIQUENESS-${table}-3`, '  CHECKOUT FLOW  ', 'uniqueness-project', 'owner-a')),
       (error: any) => error?.code === '23505' && error?.constraint === `${table}_active_project_title_unique`,
-      `${table}: database rejects a normalized duplicate in one project`,
+      `${table}: database rejects a normalized duplicate for one owner in one project`,
     );
     await client.query('ROLLBACK TO SAVEPOINT artifact_title_check');
   }

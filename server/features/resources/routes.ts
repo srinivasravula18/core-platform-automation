@@ -16,6 +16,9 @@ import { getOrchestrator } from '../../ai/orchestrator';
 import { reqScope, scopeFilter, scopeStamp } from '../../shared/scope';
 import { ensureTagsInCatalog } from '../tags/routes';
 import { runPlaywrightRequest } from '../playwright/routes';
+import { createJob, tryDispatch } from '../automation/jobService';
+import { isAgentConnected } from '../automation/agentGateway';
+import { recordingForScript } from '../automation/recordingService';
 import { resolveCredentials } from '../credentials/credentialsService';
 import { testCaseTypeFields } from '../../../core/shared/testCaseTypes';
 import { collectRunEvidence, collectManualResultEvidence, evidenceDownloadName } from '../../../core/shared/runEvidence';
@@ -23,7 +26,7 @@ import { isManualOutcome, rollupCaseOutcome, computeRunRollup } from '../../../c
 import { tagNativeOrgEnabled } from '../../shared/orgMode';
 import { readGroupDefinition, resolveTagQuery, computeDrift, type TagQuery } from './tagComposition';
 import { planStartConflict } from '../../../core/shared/testPlanStart';
-import { isPendingReviewTestRun, isStaleManualTestRun } from '../../../core/shared/testRunStatus';
+import { isPendingReviewTestRun, isStaleManualTestRun, withoutAutomationJobMeta } from '../../../core/shared/testRunStatus';
 
 const archiver = ((archiverNs as any).default ?? archiverNs) as (format: string, options?: Record<string, any>) => any;
 
@@ -53,6 +56,7 @@ import {
   Requirements,
   Activity,
   AgentRuns,
+  Agents,
   isPgEnabled,
 } from '../../db/repository';
 
@@ -681,14 +685,62 @@ export function registerResourceRoutes(app: Express) {
       if (!runnableScripts.length) return res.status(400).json({ error: 'No linked Playwright scripts were found for this run.' });
 
       if (activeManualRunExecutions.has(run.id)) return res.status(409).json({ error: 'This run is already executing.' });
-      const executionAttemptId = `${run.id}-${randomUUID().slice(0, 8)}`;
       const targetUrl = run.targetUrl || runnableScripts.find((script: any) => script.targetUrl)?.targetUrl || '';
       const scope = reqScope(req);
+      const preferredAgentId = String(runnableScripts[0]?.preferredAgentId || '');
+      const onlineAgents = scopeFilter((await Agents.list()) as any[], scope)
+        .filter((agent: any) => !agent.revokedAt && isAgentConnected(String(agent.id)));
+      const localAgent = req.body?.preferLocalAgent !== false && runnableScripts.length === 1
+        ? onlineAgents.find((agent: any) => String(agent.id) === preferredAgentId) || onlineAgents[0]
+        : null;
+      if (localAgent) {
+        const recording = await recordingForScript(String(runnableScripts[0].id), scope);
+        if (recording) {
+          const job = await createJob({
+            recordingId: recording.id,
+            agentId: String(localAgent.id),
+            trigger: 'manual',
+            headed: true,
+            script: String(runnableScripts[0].code || ''),
+            dispatch: false,
+          }, scope);
+          const agentLabel = String(localAgent.name || localAgent.machineName || localAgent.id);
+          const runningRun = {
+            ...run,
+            status: 'Running',
+            state: 'In Progress',
+            progress: `Running headed on local agent ${agentLabel}`,
+            startedAt: new Date().toISOString(),
+            completedAt: null,
+            evidence: [],
+            steps: [],
+            passed: 0,
+            failed: 0,
+            totalExecutions: 0,
+            executionTime: '',
+            triggerType: 'automation',
+            triggerMeta: {
+              ...withoutAutomationJobMeta(run.triggerMeta),
+              automationJobId: job.id,
+              agentId: String(localAgent.id),
+              executionMode: 'headed',
+              automationExecution: { completed: 0, total: 0, percent: 5, phase: 'queued' },
+            },
+          };
+          await Runs.upsert(runningRun);
+          await tryDispatch(job.id);
+          return res.status(202).json({ run: runningRun, executionMode: 'headed', message: runningRun.progress });
+        }
+      }
+
+      const executionAttemptId = `${run.id}-${randomUUID().slice(0, 8)}`;
+      const fallbackReason = runnableScripts.length > 1 ? 'multiple scripts run together' : 'no local agent available';
       const runningRun = withManualExecutionMeta({
         ...run,
+        triggerMeta: withoutAutomationJobMeta(run.triggerMeta),
         status: 'Running',
         state: 'In Progress',
-        progress: `Starting 0/${runnableScripts.length} scripts`,
+        progress: `Running headless on server (${fallbackReason}) · Starting 0/${runnableScripts.length} scripts`,
         startedAt: new Date().toISOString(),
         completedAt: null,
         evidence: [],
@@ -713,7 +765,7 @@ export function registerResourceRoutes(app: Express) {
         activeManualRunExecutions.delete(run.id);
         throw error;
       }
-      res.status(202).json({ run: runningRun, executionAttemptId });
+      res.status(202).json({ run: runningRun, executionAttemptId, executionMode: 'headless', message: runningRun.progress });
 
       setImmediate(() => {
         void (async () => {

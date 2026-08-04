@@ -28,7 +28,7 @@ async function main() {
   const gateway = await import('../server/features/automation/agentGateway');
   const events = await import('../server/features/automation/eventsService');
   const { db } = await import('../server/shared/storage');
-  const { AutomationEvents, Runs, Scripts } = await import('../server/db/repository');
+  const { AutomationEvents, AutomationJobs, Runs, Scripts } = await import('../server/db/repository');
   const { playwrightFailure } = await import('../agent/src/playwrightFailure');
   db.recordings = []; db.scripts = []; db.automationJobs = []; db.automationSchedules = []; db.automationArtifacts = []; db.automationEvents = [];
 
@@ -51,6 +51,13 @@ async function main() {
   const reusedScriptRecording = await rec.recordingForScript(repositoryScript.id, SCOPE);
   ok(scriptRecording?.status === 'ready' && scriptRecording.script === repositoryScript.code, 'repository script prepared for scheduling');
   ok(reusedScriptRecording?.id === scriptRecording?.id, 'repository script reuses its execution recording');
+  const preferredScript = await Scripts.upsert({ ...repositoryScript, executionMode: 'headed', preferredAgentId: 'agent-x' });
+  const scriptWithoutPreference = { ...preferredScript };
+  delete scriptWithoutPreference.executionMode;
+  delete scriptWithoutPreference.preferredAgentId;
+  await Scripts.upsert({ ...scriptWithoutPreference, status: 'Ready' });
+  const preservedPreference = await Scripts.get(repositoryScript.id);
+  ok(preservedPreference?.executionMode === 'headed' && preservedPreference?.preferredAgentId === 'agent-x', 'script execution preference survives unrelated updates');
 
   console.log('job stays queued when agent offline, then progresses via frames');
   const job = await jobs.createJob({ recordingId: r.id, agentId: 'agent-x', trigger: 'manual' }, SCOPE);
@@ -62,6 +69,19 @@ async function main() {
   const finished = await jobs.getJob(job.id);
   ok(finished.status === 'done' && finished.exitCode === 0, 'job.done exitCode 0 → done');
   ok(finished.summary.passed === 5, 'job summary persisted');
+
+  console.log('progress frames stay ordered through terminal completion');
+  const orderedJob = await jobs.createJob({ recordingId: r.id, agentId: 'agent-x', trigger: 'manual' }, SCOPE);
+  await Promise.all([
+    gateway.deliverAgentFrame('agent-x', { type: 'job.progress', agentId: 'agent-x', seq: 10, payload: { jobId: orderedJob.id, phase: 'running', event: 'step_started', stepId: 'step-1', stepIndex: 1, stepTitle: 'Open page', stepStartedAt: 100 } }),
+    gateway.deliverAgentFrame('agent-x', { type: 'job.progress', agentId: 'agent-x', seq: 11, payload: { jobId: orderedJob.id, phase: 'running', event: 'step_finished', stepId: 'step-1', stepIndex: 1, stepTitle: 'Open page', stepStartedAt: 100, stepDurationMs: 200 } }),
+    gateway.deliverAgentFrame('agent-x', { type: 'job.done', agentId: 'agent-x', seq: 12, payload: { jobId: orderedJob.id, exitCode: 0, summary: { passed: 1, failed: 0 } } }),
+  ]);
+  await gateway.deliverAgentFrame('agent-x', { type: 'job.progress', agentId: 'agent-x', seq: 13, payload: { jobId: orderedJob.id, phase: 'running', event: 'step_started', stepId: 'late-step', stepIndex: 2, stepTitle: 'Late frame', stepStartedAt: 300 } });
+  const orderedResult = await jobs.getJob(orderedJob.id);
+  ok(orderedResult.status === 'done' && orderedResult.summary.executionSteps[0].status === 'Passed', 'terminal job cannot retain or accept Running steps');
+  await AutomationJobs.upsert({ ...orderedResult, summary: { executionSteps: [{ id: 'stale', index: 1, title: 'Stale step', status: 'Running', startedAt: 100, durationMs: 0 }] } });
+  ok((await jobs.getJob(orderedJob.id)).summary.executionSteps[0].status === 'Passed', 'opening a historical terminal job repairs stale Running steps');
 
   const serverJob = await jobs.createServerJob({ recordingId: r.id, trigger: 'manual' }, SCOPE);
   ok(serverJob.status === 'queued' && serverJob.agentId === '', 'manual server job does not require an agent');

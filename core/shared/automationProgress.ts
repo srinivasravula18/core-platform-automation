@@ -39,3 +39,22 @@ export function mergeExecutionProgress(prior: Record<string, any>, detail: Recor
   next.executionSteps = steps.sort((a, b) => a.index - b.index);
   return next;
 }
+
+export function finalizeExecutionProgress(
+  prior: Record<string, any>,
+  phase: 'done' | 'failed' | 'cancelled',
+  error = '',
+  finishedAt = Date.now(),
+): Record<string, any> {
+  if (!Array.isArray(prior.executionSteps) || !prior.executionSteps.some((step: any) => step.status === 'Running')) return prior;
+  const status: ExecutionStepProgress['status'] = phase === 'done' ? 'Passed' : phase === 'failed' ? 'Failed' : 'Skipped';
+  return {
+    ...prior,
+    executionSteps: prior.executionSteps.map((step: ExecutionStepProgress) => step.status !== 'Running' ? step : {
+      ...step,
+      status,
+      durationMs: Math.max(Number(step.durationMs) || 0, finishedAt - Number(step.startedAt || finishedAt)),
+      ...(status === 'Failed' && error && !step.error ? { error } : {}),
+    }),
+  };
+}

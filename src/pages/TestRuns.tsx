@@ -7,7 +7,7 @@ import { TimeRangeFilter, passesTimeFilter, type TimeFilterValue } from '@/src/c
 import { sortByTime, type TimeSortKey } from '@/src/lib/time';
 import ExportMenu from '../components/ExportMenu';
 import { useAiSearch } from '@/src/lib/useAiSearch';
-import { isActiveTestRun, isClosedTestRun, isPendingReviewTestRun } from '@/core/shared/testRunStatus';
+import { isActiveTestRun, isClosedTestRun, isPendingReviewTestRun, withoutAutomationJobMeta } from '@/core/shared/testRunStatus';
 import { useBulkDelete } from '@/src/lib/useBulkDelete';
 import { cn } from '@/src/lib/utils';
 import { Modal } from '@/src/components/Modal';
@@ -30,6 +30,7 @@ import { collectRunEvidence, evidenceDownloadName } from '@/core/shared/runEvide
 import { normalizeTags } from '@/src/lib/tags';
 import { ManualRunner } from '@/src/components/manualRunner/ManualRunner';
 import { useUrlState } from '@/src/lib/useUrlState';
+import { useAgents } from '@/src/lib/useAutomation';
 
 async function downloadFromUrl(url: string, filename: string) {
   const response = await fetch(url);
@@ -128,6 +129,7 @@ export default function TestRuns() {
   const [newRunTagQuery, setNewRunTagQuery] = useState<TagQuery>({});
   const [plans, setPlans] = useState<any[]>([]);
   const [scripts, setScripts] = useState<any[]>([]);
+  const { agents: runAgents } = useAgents();
   const [now, setNow] = useState(() => Date.now()); // live clock so in-progress run durations count up
   const [runProgress, setRunProgress] = useState<Record<string, string>>({});
   const [closingRunId, setClosingRunId] = useState('');
@@ -431,12 +433,18 @@ export default function TestRuns() {
         errors.push(`${run.name}: no linked Playwright scripts`);
         continue;
       }
-      setRunProgress((current) => ({ ...current, [run.id]: `Running ${runScripts.length} script${runScripts.length === 1 ? '' : 's'}…` }));
+      const onlineAgent = runScripts.length === 1
+        ? runAgents.find((agent) => !agent.revoked && (agent.status === 'online' || agent.status === 'busy'))
+        : null;
+      const launchProgress = onlineAgent
+        ? `Starting headed on local agent ${onlineAgent.name || onlineAgent.machineName}`
+        : `Starting headless on server (${runScripts.length > 1 ? 'multiple scripts run together' : 'no local agent available'})`;
+      setRunProgress((current) => ({ ...current, [run.id]: launchProgress }));
       setRuns((current) => current.map((item) => item.id === run.id ? {
         ...item,
         status: 'Running',
         state: 'In Progress',
-        progress: `Starting 0/${runScripts.length} scripts`,
+        progress: launchProgress,
         evidence: [],
         steps: [],
         passed: 0,
@@ -445,12 +453,16 @@ export default function TestRuns() {
         executionTime: '',
         completedAt: null,
         triggerMeta: {
-          ...(item.triggerMeta || {}),
+          ...withoutAutomationJobMeta(item.triggerMeta),
           manualExecution: { completed: 0, total: runScripts.length },
         },
       } : item));
       try {
-        const response = await fetch(`/api/runs/${run.id}/execute`, { method: 'POST' });
+        const response = await fetch(`/api/runs/${run.id}/execute`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ preferLocalAgent: true }),
+        });
         const responseText = await response.text();
         let data: any = {};
         try { data = responseText ? JSON.parse(responseText) : {}; } catch { /* proxy/server returned text */ }

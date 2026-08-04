@@ -457,7 +457,12 @@ export default function TestCases() {
       return;
     }
     setPendingRunCaseIds(caseIds);
-    setRunMode('headless');
+    const selectedCase = caseIds.length === 1
+      ? cases.find((item: any) => String(item.id) === String(caseIds[0]))
+      : null;
+    const savedScript = selectedCase ? relatedScript(selectedCase) : null;
+    setRunMode(savedScript?.executionMode === 'headed' ? 'headed' : 'headless');
+    setRunAgentId(String(savedScript?.preferredAgentId || ''));
     setIsRunModalOpen(true);
   };
 
@@ -520,6 +525,12 @@ export default function TestCases() {
         const openImmediately = !firstAutomationRunId;
         try {
           const runId = await startAutomationRun(testCase, openImmediately, executionMode === 'headed', agentId);
+          const script = relatedScript(testCase);
+          if (script) setScripts((current) => current.map((item) => item.id === script.id ? {
+            ...item,
+            executionMode,
+            preferredAgentId: executionMode === 'headed' ? agentId : '',
+          } : item));
           if (!firstAutomationRunId) firstAutomationRunId = runId;
         } catch (error: any) {
           if (openImmediately) navigate('/cases', { replace: true });

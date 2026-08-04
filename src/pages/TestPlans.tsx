@@ -261,6 +261,7 @@ export default function TestPlans() {
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(data?.error || 'Failed to save test plan.');
       const planId = selectedPlanId || String(data?.id || data?.plan?.id || '');
+      if (data?.plan) setPlans((current) => [data.plan, ...current.filter((plan) => String(plan.id) !== planId)]);
       const selectedSuiteIds = new Set(suiteIds);
       const changedSuites = suites.filter((suite) =>
         suitePlanIds(suite).includes(planId) !== selectedSuiteIds.has(String(suite.id)),
@@ -432,8 +433,6 @@ export default function TestPlans() {
     return matchesSearch && matchesTestPlanFilters(plan, runs, filters, matchMode) && matchesUpdated;
   }), timeSort);
   const hierarchyRows = buildTestPlanHierarchy(filteredPlans, collapsedPlanIds);
-  const modalParentPlan = plans.find((plan) => plan.id === formData.parentPlanId) || null;
-
   return (
     <div className="app-page-shell h-full flex flex-col">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-6 flex-shrink-0">
@@ -573,11 +572,15 @@ export default function TestPlans() {
               {dateWarningMessage}
             </div>
           )}
-          {modalParentPlan && (
-            <div className="rounded-md border border-[var(--accent)]/30 bg-[var(--accent)]/10 px-3 py-2 text-sm text-[var(--text-primary)]">
-              Parent Test Plan: <span className="font-semibold">{modalParentPlan.name}</span>
-            </div>
-          )}
+          <label className="block text-sm font-medium text-[var(--text-muted)]">Parent Test Plan (Optional)
+            <select value={formData.parentPlanId} onChange={(e) => setFormData({ ...formData, parentPlanId: e.target.value })} className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]">
+              <option value="">None (top-level plan)</option>
+              {plans.filter((plan) => String(plan.id) !== String(selectedPlanId || '')).map((plan) => {
+                const tags = normalizeTags(Array.isArray(plan.tags) ? plan.tags : []);
+                return <option key={plan.id} value={plan.id}>{plan.name}{tags.length ? ` — ${tags.join(', ')}` : ''}</option>;
+              })}
+            </select>
+          </label>
           <div>
             <label className="block text-sm font-medium mb-1 text-[var(--text-muted)]">Title<RequiredMark /></label>
             <input 

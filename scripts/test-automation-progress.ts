@@ -1,5 +1,5 @@
 import { strict as assert } from 'node:assert';
-import { automationProgressPercent, mergeExecutionProgress } from '../core/shared/automationProgress';
+import { automationProgressPercent, finalizeExecutionProgress, mergeExecutionProgress } from '../core/shared/automationProgress';
 
 assert.equal(automationProgressPercent('queued'), 5);
 assert.equal(automationProgressPercent('dispatched'), 10);
@@ -16,5 +16,10 @@ assert.deepEqual(started.executionSteps[0], { id: 's1', index: 1, title: 'Open p
 const finished = mergeExecutionProgress(started, { event: 'step_finished', stepId: 's1', stepIndex: 1, stepTitle: 'Open page', stepStartedAt: 100, stepDurationMs: 1250 });
 assert.equal(finished.executionSteps[0].status, 'Passed');
 assert.equal(finished.executionSteps[0].durationMs, 1250);
+
+const terminal = finalizeExecutionProgress(started, 'failed', 'Timed out', 1500);
+assert.equal(terminal.executionSteps[0].status, 'Failed');
+assert.equal(terminal.executionSteps[0].durationMs, 1400);
+assert.equal(terminal.executionSteps[0].error, 'Timed out');
 
 console.log('automation progress checks passed');

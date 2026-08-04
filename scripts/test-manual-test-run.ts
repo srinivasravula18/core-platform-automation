@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { allCasesHaveRunTags, casesForPlan, casesForRun, getRunStats, manualRunSelection, readAutomationRunResponse, runExecutionState, runnableCases, runTagsForCases, scriptsForCases, scriptsForRun } from '../src/lib/manualTestRun';
-import { agentRunStatusForList, isActiveTestRun, isClosedTestRun, isPendingReviewTestRun, isStaleManualTestRun } from '../core/shared/testRunStatus';
+import { agentRunStatusForList, isActiveTestRun, isClosedTestRun, isPendingReviewTestRun, isStaleManualTestRun, withoutAutomationJobMeta } from '../core/shared/testRunStatus';
 
 const suites = [
   { id: 'S1', testPlanId: 'P1' },
@@ -55,6 +55,7 @@ assert.deepEqual(
   'explicit zero counters replace stale outcomes after a successful rerun',
 );
 assert.equal(isActiveTestRun({ status: 'In Progress' }), true);
+assert.deepEqual(withoutAutomationJobMeta({ automationJobId: 'old-job', agentId: 'old-agent', automationExecution: { phase: 'failed' }, manualExecution: { total: 1 } }), { manualExecution: { total: 1 } });
 assert.equal(isActiveTestRun({ status: 'Review Required' }), true);
 assert.equal(agentRunStatusForList('completed'), 'Completed — Pending Review');
 assert.equal(isPendingReviewTestRun({ status: agentRunStatusForList('completed') }), true);
