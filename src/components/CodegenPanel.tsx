@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
-import { Radio, Loader2, Square, Trash2, Circle, Plus, CheckCircle2, AlertTriangle, Monitor, Server } from 'lucide-react';
+import { Radio, Loader2, Square, Trash2, Circle, Plus, CheckCircle2, AlertTriangle, Monitor, Server, Pencil } from 'lucide-react';
 import { showToast, showConfirm } from '@/src/lib/dialog';
 import { Modal } from '@/src/components/Modal';
 import { RequiredMark } from '@/src/components/RequiredMark';
@@ -9,6 +9,7 @@ import { useRemoteAgentFlag, useAgents, useRecordingSession, type RecordingCaseM
 import { NoAgentState } from '@/src/components/NoAgentState';
 import { createClientRunId } from '@/src/lib/startSelectedRun';
 import { readAutomationRunResponse } from '@/src/lib/manualTestRun';
+import { handleCodeEditorKeyDown } from '@/src/lib/codeEditor';
 
 const BROWSERS = ['chromium', 'firefox', 'webkit'] as const;
 const ENVIRONMENTS = ['QA', 'DEV', 'TEST', 'PROD'] as const;
@@ -36,6 +37,12 @@ export function CodegenPanel({ title, appUrl, caseMeta, onDone, footerTarget }: 
   const [browser, setBrowser] = useState<string>('chromium');
   const [environment, setEnvironment] = useState<string>('QA');
   const [startingRun, setStartingRun] = useState(false);
+  const [savedScript, setSavedScript] = useState('');
+  const [scriptDraft, setScriptDraft] = useState('');
+  const [editingScript, setEditingScript] = useState(false);
+  const [savingScript, setSavingScript] = useState(false);
+
+  useEffect(() => { setSavedScript(script); setScriptDraft(script); }, [script]);
 
   const connected = useMemo(() => agents.filter((a) => !a.revoked && (a.status === 'online' || a.status === 'busy')), [agents]);
   const selectedAgent = connected.find((a) => a.id === agentId) || connected[0];
@@ -70,6 +77,30 @@ export function CodegenPanel({ title, appUrl, caseMeta, onDone, footerTarget }: 
       showToast(error?.message || 'Could not start the recorded case.', { tone: 'error', durationMs: 5000 });
     } finally {
       setStartingRun(false);
+    }
+  };
+
+  const saveScript = async () => {
+    if (!caseId || !scriptDraft.trim() || savingScript) return;
+    setSavingScript(true);
+    try {
+      const scripts = await fetch('/api/scripts').then((response) => response.json());
+      const linked = Array.isArray(scripts) ? scripts.find((item) => String(item.caseId || '') === caseId) : null;
+      if (!linked?.id) throw new Error('The generated script could not be found.');
+      const response = await fetch(`/api/scripts/${linked.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: scriptDraft }),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.error || 'Could not save the script.');
+      setSavedScript(scriptDraft);
+      setEditingScript(false);
+      showToast('Script saved.', { tone: 'success' });
+    } catch (error: any) {
+      showToast(error?.message || 'Could not save the script.', { tone: 'error' });
+    } finally {
+      setSavingScript(false);
     }
   };
 
@@ -160,7 +191,17 @@ export function CodegenPanel({ title, appUrl, caseMeta, onDone, footerTarget }: 
           <CheckCircle2 className="h-4 w-4" /> {caseId ? 'Automated test case created.' : 'Recording finished.'}
         </div>
       )}
-      <ScriptPane script={script} placeholder="No script was generated." />
+      <ScriptPane
+        script={savedScript}
+        placeholder="No script was generated."
+        editing={editingScript}
+        draft={scriptDraft}
+        onDraftChange={setScriptDraft}
+        actions={!empty && caseId ? (editingScript ? <>
+          <button type="button" onClick={() => { setScriptDraft(savedScript); setEditingScript(false); }} disabled={savingScript} className="text-xs font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)] disabled:opacity-50">Cancel</button>
+          <button type="button" onClick={() => void saveScript()} disabled={savingScript || !scriptDraft.trim()} className="rounded-md bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-white hover:bg-[var(--accent-hover)] disabled:opacity-50">{savingScript ? 'Saving…' : 'Save'}</button>
+        </> : <button type="button" onClick={() => setEditingScript(true)} className="inline-flex items-center gap-1.5 rounded-md border border-[var(--border)] px-3 py-1.5 text-xs font-medium text-[var(--text-primary)] hover:border-[var(--accent)]"><Pencil className="h-3.5 w-3.5" /> Edit</button>) : undefined}
+      />
       {!empty && caseId && <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] p-3">
         <div className="text-sm font-semibold text-[var(--text-primary)]">Run this recorded case now?</div>
         <p className="mt-1 text-xs text-[var(--text-muted)]">Recording always uses the headed local agent. Choose how the generated script should execute.</p>
@@ -236,11 +277,31 @@ export function StatTile({ label, value }: { label: string; value: number | stri
   );
 }
 
-export function ScriptPane({ script, placeholder, tall }: { script: string; placeholder: string; tall?: boolean }) {
+export function ScriptPane({ script, placeholder, tall, editing, draft, onDraftChange, actions }: {
+  script: string;
+  placeholder: string;
+  tall?: boolean;
+  editing?: boolean;
+  draft?: string;
+  onDraftChange?: (value: string) => void;
+  actions?: React.ReactNode;
+}) {
   return (
     <div className="min-w-0 overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--bg-card)]">
-      <div className="border-b border-[var(--border)] px-4 py-3 text-sm font-semibold text-[var(--text-primary)]">Generated Playwright Script</div>
-      {script ? (
+      <div className="flex items-center justify-between gap-3 border-b border-[var(--border)] px-4 py-2.5">
+        <span className="text-sm font-semibold text-[var(--text-primary)]">Generated Playwright Script</span>
+        {actions && <div className="flex items-center gap-2">{actions}</div>}
+      </div>
+      {editing && onDraftChange ? (
+        <textarea
+          aria-label="Edit generated Playwright script"
+          value={draft ?? ''}
+          onChange={(event) => onDraftChange(event.target.value)}
+          onKeyDown={(event) => handleCodeEditorKeyDown(event, draft ?? '', onDraftChange)}
+          spellCheck={false}
+          className={`${tall ? 'h-[calc(100dvh-15rem)]' : 'h-96'} w-full resize-y bg-slate-950 p-4 font-mono text-xs leading-5 text-slate-200 outline-none focus:ring-1 focus:ring-inset focus:ring-[var(--accent)]`}
+        />
+      ) : script ? (
         <pre className={`${tall ? 'max-h-[calc(100dvh-15rem)]' : 'max-h-[24rem]'} overflow-auto whitespace-pre-wrap break-words bg-slate-950 p-4 font-mono text-xs leading-5 text-slate-200`}><code>{script}</code></pre>
       ) : (
         <div className={`flex ${tall ? 'h-80' : 'h-40'} items-center justify-center px-6 text-center text-sm text-[var(--text-muted)]`}>{placeholder}</div>

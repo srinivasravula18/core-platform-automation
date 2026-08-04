@@ -51,6 +51,7 @@ import {
   Defects,
   Reports,
   Scripts,
+  Recordings,
   ScriptRevisions,
   Folders,
   Requirements,
@@ -1132,6 +1133,11 @@ export function registerResourceRoutes(app: Express) {
       }
       const updated = { ...existing, ...req.body, updatedAt: new Date() };
       await e.repo.upsert(updated);
+      if (e.name === 'scripts' && 'code' in req.body) {
+        const recording = (await Recordings.list()).find((item: any) =>
+          item.metadata?.scriptId === existing.id || (existing.caseId && item.metadata?.caseId === existing.caseId));
+        if (recording) await Recordings.upsert({ ...recording, script: updated.code });
+      }
       if (!isPgEnabled()) persistDataInBackground(`${e.name} update`);
       if ('tags' in req.body) await ensureTagsInCatalog(updated.tags, reqScope(req));
       logActivity(req, `Updated ${e.name.slice(0, -1)}: ${updated.name || updated.title}`);
