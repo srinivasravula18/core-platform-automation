@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
 import { Radio, Loader2, Square, Trash2, Circle, Plus, CheckCircle2, AlertTriangle, Monitor, Server } from 'lucide-react';
 import { showToast, showConfirm } from '@/src/lib/dialog';
@@ -18,11 +19,12 @@ const ENVIRONMENTS = ['QA', 'DEV', 'TEST', 'PROD'] as const;
  * panel owns URL/browser/environment/agent and the record lifecycle. On finish the backend has
  * already created the linked Automated test case, so we hand its id back via onDone.
  */
-export function CodegenPanel({ title, appUrl, caseMeta, onDone }: {
+export function CodegenPanel({ title, appUrl, caseMeta, onDone, footerTarget }: {
   title: string;
   appUrl: string;
   caseMeta: RecordingCaseMeta;
   onDone: (caseId: string) => void;
+  footerTarget: HTMLElement;
 }) {
   const navigate = useNavigate();
   const flag = useRemoteAgentFlag();
@@ -173,7 +175,7 @@ export function CodegenPanel({ title, appUrl, caseMeta, onDone }: {
           </button>
         </div>
       </div>}
-      <div className="flex flex-wrap gap-2">
+      {createPortal(<div className="flex flex-wrap gap-2">
         <button onClick={() => onDone(caseId)} disabled={startingRun}
           className="inline-flex items-center gap-2 rounded-md bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white hover:bg-[var(--accent-hover)]">
           Done Without Running
@@ -181,7 +183,7 @@ export function CodegenPanel({ title, appUrl, caseMeta, onDone }: {
         <button onClick={session.reset} disabled={startingRun} className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] hover:border-[var(--accent)] disabled:opacity-50">
           Record Again
         </button>
-      </div>
+      </div>, footerTarget)}
     </div>
   );
 }

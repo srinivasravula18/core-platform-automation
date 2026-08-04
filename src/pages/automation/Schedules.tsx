@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { ChevronRight, Code2, Folder, Loader2, Search, Trash2, CalendarClock, Plus } from 'lucide-react';
+import { ChevronRight, Code2, Folder, Info, Loader2, Search, Trash2, CalendarClock, Plus } from 'lucide-react';
 import { showConfirm, showToast } from '@/src/lib/dialog';
 import { Modal } from '@/src/components/Modal';
 import { RequiredMark } from '@/src/components/RequiredMark';
@@ -210,6 +210,7 @@ function NewScheduleModal({ isOpen, onClose, onCreated }: { isOpen: boolean; onC
   const [cronInput, setCronInput] = useState('At 04:05 on day-of-month 5');
   const [cronResolved, setCronResolved] = useState<{ expression: string; description: string; nextRuns: string[]; error?: string }>({ expression: '', description: '', nextRuns: [] });
   const [cronResolving, setCronResolving] = useState(false);
+  const [showCronHelp, setShowCronHelp] = useState(false);
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(false);
   const [folders, setFolders] = useState<FolderNode[]>([]);
@@ -388,16 +389,35 @@ function NewScheduleModal({ isOpen, onClose, onCreated }: { isOpen: boolean; onC
 
         {tab === 'cron' ? (
           <div>
+            <div className="flex items-center gap-1.5 text-xs font-medium text-[var(--text-muted)]">
+              <label htmlFor="cron-expression">Schedule or cron expression</label>
+              <button type="button" onClick={() => setShowCronHelp((open) => !open)} aria-label="Show cron expression examples" aria-expanded={showCronHelp} className="rounded p-0.5 text-[var(--accent)] hover:bg-[var(--bg-secondary)]">
+                <Info className="h-4 w-4" />
+              </button>
+            </div>
             <label className="block text-xs font-medium text-[var(--text-muted)]">
-              Schedule or cron expression
               <input
+                id="cron-expression"
                 value={cronInput}
                 onChange={(e) => setCronInput(e.target.value)}
                 placeholder="At 04:05 on day-of-month 5   —   or   —   5 4 5 * *"
                 className="mt-1 w-full rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
               />
-              <span className="mt-1 block font-normal">Write it either way. Examples: <code>every 15 minutes</code> · <code>at 09:00 on weekdays</code> · <code>at 02:00 in January and June</code> · <code>*/15 * * * *</code></span>
+              <span className="mt-1 block font-normal">Write it in plain English or as a five-part cron expression. Times use UTC.</span>
             </label>
+            {showCronHelp && (
+              <div role="note" className="mt-2 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] p-3 text-xs text-[var(--text-muted)]">
+                <div className="font-medium text-[var(--text-primary)]">English examples</div>
+                <ul className="mt-1 space-y-1">
+                  <li><code>every 15 minutes</code> — runs every 15 minutes</li>
+                  <li><code>at 9am</code> — runs daily at 09:00</li>
+                  <li><code>at 5pm on Monday</code> — runs every Monday at 17:00</li>
+                  <li><code>at 09:00 on weekdays</code> — runs Monday through Friday</li>
+                  <li><code>at 04:05 on day-of-month 5</code> — runs on the 5th of every month</li>
+                </ul>
+                <div className="mt-2">Cron format: <code>minute hour day-of-month month day-of-week</code>. Example: <code>0 9 * * 1-5</code>.</div>
+              </div>
+            )}
 
             <div className="mt-3 rounded-md border border-[var(--border)] bg-[var(--bg-secondary)]/40 p-3">
               {cronResolving ? (

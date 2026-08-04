@@ -61,6 +61,7 @@ export default function TestCases() {
   const remoteAgentFlag = useRemoteAgentFlag();
   // Application URL for the New Case → Automation (codegen) recording; shown above Title.
   const [automationUrl, setAutomationUrl] = useState('');
+  const [automationFooterTarget, setAutomationFooterTarget] = useState<HTMLDivElement | null>(null);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState(searchParams.get('search') || '');
   const aiSearch = useAiSearch('test cases');
@@ -786,6 +787,7 @@ export default function TestCases() {
               )}
             </div>
             <div className="flex gap-3">
+              {automationMode && <div ref={setAutomationFooterTarget} />}
               <button onClick={() => setIsCaseModalOpen(false)} className="px-4 py-2 text-sm font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)]">Cancel</button>
               {/* Automation mode: the codegen panel owns Start/Done, so the manual Create button is hidden. Gate on create/update. */}
               {!automationMode && (selectedCaseId ? can('cases:update') : can('cases:create')) && (
@@ -806,7 +808,7 @@ export default function TestCases() {
                 {TESTING_SCOPES.map((scope) => (
                   <button key={scope} type="button" onClick={() => setFormData({ ...formData, testingScope: scope })}
                     className={`px-4 py-1.5 text-sm font-medium rounded transition-colors ${formData.testingScope === scope ? 'bg-[var(--accent)] text-white' : 'text-[var(--text-muted)] hover:text-[var(--text-primary)]'}`}>
-                    {scope === 'Automation' ? 'Record' : scope}
+                    {scope === 'Automation' ? 'Record and Play' : scope}
                   </button>
                 ))}
               </div>
@@ -845,12 +847,13 @@ export default function TestCases() {
                   <MultiSelectDropdown label="None" options={suites.map((suite) => ({ id: String(suite.id), name: String(suite.name) }))} value={formData.testSuiteIds} onChange={(ids) => setFormData({ ...formData, testSuiteIds: ids })} />
                 </div>
               </div>
-              <CodegenPanel
+              {automationFooterTarget && <CodegenPanel
                 title={formData.title}
                 appUrl={automationUrl}
                 caseMeta={{ ...testCaseTypeFields(formData.testingTypes), priority: formData.priority, testPlanIds: formData.testPlanIds, testSuiteIds: formData.testSuiteIds }}
                 onDone={() => { setIsCaseModalOpen(false); fetchCases(); }}
-              />
+                footerTarget={automationFooterTarget}
+              />}
             </div>
           ) : (
           <>
