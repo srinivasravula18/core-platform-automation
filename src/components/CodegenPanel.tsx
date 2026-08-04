@@ -15,6 +15,15 @@ import { handleCodeEditorKeyDown } from '@/src/lib/codeEditor';
 const BROWSERS = ['chromium', 'firefox', 'webkit'] as const;
 const ENVIRONMENTS = ['QA', 'DEV', 'TEST', 'PROD', 'staging'] as const;
 
+function currentLocation(): Promise<GeolocationCoordinates> {
+  if (!navigator.geolocation) return Promise.reject(new Error('This browser does not support location services.'));
+  return new Promise((resolve, reject) => navigator.geolocation.getCurrentPosition(
+    (position) => resolve(position.coords),
+    () => reject(new Error('Location access is required to use your current location.')),
+    { timeout: 10_000 },
+  ));
+}
+
 /**
  * The Playwright codegen record flow (setup → recording → summary) as an embeddable panel. Used by
  * the New Case → Automation modal: the parent owns the case Title + classification (caseMeta); this
@@ -40,8 +49,8 @@ export function CodegenPanel({ title, appUrl, caseMeta, onDone, footerTarget, se
   const [browser, setBrowser] = useState<string>('chromium');
   const [environment, setEnvironment] = useState<string>('QA');
   const [permissions, setPermissions] = useState<AutomationBrowserPermission[]>([]);
-  const [latitude, setLatitude] = useState('0');
-  const [longitude, setLongitude] = useState('0');
+  const [geolocation, setGeolocation] = useState<{ latitude: number; longitude: number; accuracy: number }>();
+  const [locating, setLocating] = useState(false);
   const [fakeMedia, setFakeMedia] = useState(true);
   const [acceptDialogs, setAcceptDialogs] = useState(false);
   const [startingRun, setStartingRun] = useState(false);
@@ -54,6 +63,16 @@ export function CodegenPanel({ title, appUrl, caseMeta, onDone, footerTarget, se
   useEffect(() => { setSavedScript(script); setScriptDraft(script); }, [script]);
   useEffect(() => { if (selectedEnvironment) setEnvironment(selectedEnvironment); }, [selectedEnvironment]);
 
+  const useCurrentLocation = async () => {
+    setLocating(true);
+    try {
+      const { latitude, longitude, accuracy } = await currentLocation();
+      setGeolocation({ latitude, longitude, accuracy });
+    } finally {
+      setLocating(false);
+    }
+  };
+
   const connected = useMemo(() => agents.filter((a) => !a.revoked && (a.status === 'online' || a.status === 'busy')), [agents]);
   const selectedAgent = connected.find((a) => a.id === agentId) || connected[0];
   useEffect(() => { if (!agentId && connected[0]) setAgentId(connected[0].id); }, [connected, agentId]);
@@ -61,9 +80,10 @@ export function CodegenPanel({ title, appUrl, caseMeta, onDone, footerTarget, se
   const startRecording = async () => {
     if (!appUrl.trim() || !title.trim() || !selectedAgent || busy) return;
     try {
+      const location = permissions.includes('geolocation') ? geolocation || await currentLocation() : undefined;
       const browserPermissions: BrowserPermissionSettings = {
         permissions,
-        ...(permissions.includes('geolocation') ? { geolocation: { latitude: Number(latitude), longitude: Number(longitude) } } : {}),
+        ...(location ? { geolocation: { latitude: location.latitude, longitude: location.longitude, accuracy: location.accuracy } } : {}),
         ...(fakeMedia ? { fakeMedia: true } : {}),
         ...(acceptDialogs ? { acceptDialogs: true } : {}),
       };
@@ -176,7 +196,10 @@ export function CodegenPanel({ title, appUrl, caseMeta, onDone, footerTarget, se
           <div className="grid gap-2 sm:grid-cols-2">
             {AUTOMATION_BROWSER_PERMISSIONS.map((permission) => (
               <label key={permission} className="flex items-center gap-2 text-sm capitalize text-[var(--text-primary)]">
-                <input type="checkbox" checked={permissions.includes(permission)} onChange={(event) => setPermissions((current) => event.target.checked ? [...current, permission] : current.filter((item) => item !== permission))} />
+                <input type="checkbox" checked={permissions.includes(permission)} onChange={(event) => {
+                  setPermissions((current) => event.target.checked ? [...current, permission] : current.filter((item) => item !== permission));
+                  if (permission === 'geolocation' && event.target.checked) void useCurrentLocation().catch((error) => showToast(error.message, { tone: 'error' }));
+                }} />
                 {permission}
               </label>
             ))}
@@ -192,9 +215,9 @@ export function CodegenPanel({ title, appUrl, caseMeta, onDone, footerTarget, se
             )}
           </div>
           {permissions.includes('geolocation') && (
-            <div className="mt-3 grid grid-cols-2 gap-2">
-              <label className="text-xs text-[var(--text-muted)]">Latitude<input type="number" min="-90" max="90" step="any" value={latitude} onChange={(event) => setLatitude(event.target.value)} className="mt-1 w-full rounded border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-sm text-[var(--text-primary)]" /></label>
-              <label className="text-xs text-[var(--text-muted)]">Longitude<input type="number" min="-180" max="180" step="any" value={longitude} onChange={(event) => setLongitude(event.target.value)} className="mt-1 w-full rounded border border-[var(--border)] bg-[var(--bg-secondary)] px-2 py-1.5 text-sm text-[var(--text-primary)]" /></label>
+            <div className="mt-3 flex items-center justify-between gap-3 text-xs text-[var(--text-muted)]">
+              <span>{geolocation ? `Current location: ${geolocation.latitude.toFixed(6)}, ${geolocation.longitude.toFixed(6)}` : 'Allow location access to use your current location.'}</span>
+              <button type="button" onClick={() => void useCurrentLocation().catch((error) => showToast(error.message, { tone: 'error' }))} disabled={locating} className="shrink-0 text-[var(--accent)] hover:underline disabled:opacity-50">{locating ? 'Getting location…' : 'Refresh location'}</button>
             </div>
           )}
           <p className="mt-2 text-[11px] text-[var(--text-muted)]">Playback grants selected permissions before navigation. Recording uses a dedicated site profile, so browser-level approvals can be remembered safely.</p>
